@@ -30,19 +30,19 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - The opt-in centered CameraAgent profile retains single and stack previews with their original overlay revisions, so an archived view can be reopened after late evidence arrives. #1922
 
-- Release tooling can check local LogicHost identity candidates against their archive bytes, checksums and central compatibility declarations without loading or installing them. Refs #1242
-
 ### Changed
 
 - SkyMonitor CI and the standard local validation commands now skip the retired LogicHost and combined CameraAgent–LogicHost test suites. The active CI inventory has 16,583 of 17,819 Unit cases and 916 of 1,540 Integration cases. #2048
 
-- The CameraAgent and LogicHost API reference pages have updated styling for request and response examples. #2032
+- The CameraAgent API reference pages have updated styling for request and response examples. #2032
 
 - Ordinary VirtualSky rendering defaults to 2,000 stellar candidates when the host and camera profile supply no explicit limit. The sky map keeps its own limit. #1901
 
 - CameraAgent capture processing checks the shared journal's integrity and foreign keys once per startup instead of three times, so processing and the Current Sky plate solution become available sooner after a restart with a long retained history. #1914
 
 ### Removed
+
+- Removed the LogicHost application, its deployment and qualification tooling, and the split-host installer commands. SkyMonitor installs and runs standalone CameraAgent, including the stock Silo layout. #2061
 
 - Full qualification drops the retired LogicHost and combined jobs and stops publishing LogicHost artifacts. Required CI reports the result of the active checks. #2049
 

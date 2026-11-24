@@ -1,10 +1,12 @@
 using System;
 using System.Diagnostics.CodeAnalysis;
 using HVO.SkyMonitor.CameraAgent.Authentication;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Configuration;
 using HVO.SkyMonitor.CameraAgent.Extensions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using Moq;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests;
@@ -69,6 +71,37 @@ public class SkyMonitorClientOptionsTests
             .Build());
 
         AssertRedirectsDisabled(services);
+    }
+
+    [TestMethod]
+    public void StandaloneClientCanBeCreatedWithoutCentralAddresses()
+    {
+        var services = CreateServices();
+        services.AddSingleton(Options.Create(new CameraAgentHostOptions
+        {
+            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
+        }));
+        services.AddSkyMonitorApiClient(new ConfigurationBuilder().Build());
+
+        using var provider = services.BuildServiceProvider();
+        using var client = provider.GetRequiredService<IHttpClientFactory>().CreateClient(SkyMonitorClientOptions.HttpClientName);
+
+        Assert.IsNull(client.BaseAddress);
+    }
+
+    [TestMethod]
+    public void CentralClientRequiresExplicitAddresses()
+    {
+        var services = CreateServices();
+        services.AddSkyMonitorApiClient(new ConfigurationBuilder().Build());
+
+        using var provider = services.BuildServiceProvider();
+        var options = provider.GetRequiredService<IOptions<SkyMonitorClientOptions>>();
+
+        var error = Assert.ThrowsExactly<OptionsValidationException>(() => _ = options.Value);
+        CollectionAssert.AreEquivalent(
+            new[] { "SkyMonitor:BaseUrl must be a valid absolute URI.", "SkyMonitor:PublicBaseUrl must be a valid absolute URI." },
+            error.Failures.ToArray());
     }
 
     [TestMethod]

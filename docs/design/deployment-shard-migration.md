@@ -1,5 +1,7 @@
 # Deployment Contract Shard Migration
 
+This proposal records the former split-host CI topology. See the [current CI runbook](../runbooks/ci-pipeline.md) for the active gates.
+
 Issue #875, parent #876, under the target architecture in
 [ci-deployment-target-architecture.md](ci-deployment-target-architecture.md)
 section 3.4. This is the start-gate deliverable: the scenario-to-owner map and the

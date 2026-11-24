@@ -12,7 +12,6 @@ reason="non-pull-request events always run the full matrix"
 deployment="true"
 deployment_reason="non-pull-request events always run deployment contracts"
 deployment_catalog="true"
-deployment_shards="true"
 deployment_installer="true"
 complete="true"
 complete_reason="non-pull-request events always run the complete solution matrix"
@@ -40,9 +39,9 @@ write_summary_path() {
 
 finish() {
   if [[ -n "$summary_file" && "${classification_scope:-}" != "docs-fast-only" ]]; then
-    printf '\nMode: **%s**  \nMode reason: %s  \nDeployment contracts: **%s**  \nDeployment reason: %s  \nExhaustive catalog: **%s**  \nExhaustive shards: **%s**  \nExhaustive installer: **%s**  \nComplete matrix: **%s**  \nComplete reason: %s  \nShared libraries: **%s**  \nCameraAgent: **%s**  \nDelivery: **%s**  \nSecret scan contract: **%s**  \nRelease scripts: **%s**  \nCatalog recipe: **%s**  \nPath count: %s\n' \
+    printf '\nMode: **%s**  \nMode reason: %s  \nDeployment contracts: **%s**  \nDeployment reason: %s  \nExhaustive catalog: **%s**  \nExhaustive installer: **%s**  \nComplete matrix: **%s**  \nComplete reason: %s  \nShared libraries: **%s**  \nCameraAgent: **%s**  \nDelivery: **%s**  \nSecret scan contract: **%s**  \nRelease scripts: **%s**  \nCatalog recipe: **%s**  \nPath count: %s\n' \
       "$mode" "$reason" "$deployment" "$deployment_reason" "$deployment_catalog" \
-      "$deployment_shards" "$deployment_installer" "$complete" "$complete_reason" \
+      "$deployment_installer" "$complete" "$complete_reason" \
       "$shared" "$cameraagent" "$delivery" "$secret_scan_contract" "$release_scripts" \
       "$catalog_recipe" "$path_count" >> "$summary_file"
   fi
@@ -57,8 +56,8 @@ finish() {
     "$mode" "$deployment" "$complete" "$shared" "$cameraagent" \
     "$delivery" "$secret_scan_contract" "$release_scripts" "$catalog_recipe" "$reason" "$deployment_reason" \
     "$complete_reason" "$path_count" >&2
-  printf 'mode=%s\ndeployment=%s\ndeployment_catalog=%s\ndeployment_shards=%s\ndeployment_installer=%s\ncomplete=%s\nshared=%s\ncameraagent=%s\ndelivery=%s\nsecret_scan_contract=%s\nrelease_scripts=%s\ncatalog_recipe=%s\n' \
-    "$mode" "$deployment" "$deployment_catalog" "$deployment_shards" "$deployment_installer" \
+  printf 'mode=%s\ndeployment=%s\ndeployment_catalog=%s\ndeployment_installer=%s\ncomplete=%s\nshared=%s\ncameraagent=%s\ndelivery=%s\nsecret_scan_contract=%s\nrelease_scripts=%s\ncatalog_recipe=%s\n' \
+    "$mode" "$deployment" "$deployment_catalog" "$deployment_installer" \
     "$complete" "$shared" "$cameraagent" "$delivery" "$secret_scan_contract" \
     "$release_scripts" "$catalog_recipe"
   printf 'docs_fast_path=%s\ndocs_fast_path_reason=%s\n' "$docs_fast_path" "$docs_fast_path_reason"
@@ -407,16 +406,7 @@ is_deployment_path() {
     scripts/ci:* | scripts/test:ci-classification | scripts/release:* | scripts/test:release-images | scripts/test:release-install | scripts/test:release-scripts | scripts/test:cameraagent-r2r | scripts/cameraagent-release.targets | scripts/lib/*)
       return 0
       ;;
-    scripts/deploy:environment | scripts/deploy/*)
-      return 0
-      ;;
-    scripts/qualify:filesystem-object-store | scripts/qualify:silo-runtime | scripts/test:silo-runtime-qualification | scripts/test:deploy-environment | scripts/test:deploy-environment-cli | scripts/test:deployment-installer | scripts/test:deployment-installer-qualification | scripts/test:deployment-logichost-outage-contract | scripts/test:deployment-normal-flow-contract | scripts/test:filesystem-object-store-qualification)
-      return 0
-      ;;
-    scripts/deploy-contracts/*)
-      return 0
-      ;;
-    scripts/catalog:* | scripts/catalog/* | scripts/infra:operation-lock)
+    scripts/qualify:silo-runtime | scripts/test:silo-runtime-qualification | scripts/test:deployment-installer | scripts/test:deployment-installer-qualification | scripts/catalog:* | scripts/catalog/* | scripts/infra:operation-lock)
       return 0
       ;;
     deploy/*)
@@ -425,7 +415,7 @@ is_deployment_path() {
     tests/fixtures/catalog/hyg-v42-bright-stars.sqlite)
       return 0
       ;;
-    src/HVO.SkyMonitor.CameraAgent/Dockerfile | src/HVO.SkyMonitor.LogicHost/Dockerfile)
+    src/HVO.SkyMonitor.CameraAgent/Dockerfile)
       return 0
       ;;
     src/HVO.SkyMonitor.Deployment.Cli/* | src/HVO.SkyMonitor.Deployment.Contracts/* | tests/HVO.SkyMonitor.Deployment.Cli.Tests/* | tests/HVO.SkyMonitor.Deployment.Distribution.Tests/* | tools/HVO.SkyMonitor.Deployment.ReleaseTool/*)
@@ -450,72 +440,25 @@ select_deployment_suites() {
   local path="$1"
 
   case "$path" in
-    .github/workflows/ci.yml | global.json | scripts/ci:* | scripts/test:ci-classification)
+    .github/workflows/ci.yml | global.json | scripts/ci:* | scripts/test:ci-classification | .github/workflows/release-image.yml | .github/workflows/release.yml | .github/workflows/prerelease.yml)
+      select_all_deployment_suites
+      ;;
+    scripts/catalog:* | scripts/catalog/* | tests/fixtures/catalog/hyg-v42-bright-stars.sqlite | scripts/infra:operation-lock)
       deployment_catalog="true"
-      deployment_shards="true"
+      ;;
+    .dockerignore | src/HVO.SkyMonitor.CameraAgent/Dockerfile | scripts/test:deployment-installer | scripts/test:deployment-installer-qualification | scripts/release:* | scripts/test:release-images | scripts/test:release-install | scripts/test:release-scripts | scripts/test:cameraagent-r2r | scripts/cameraagent-release.targets | scripts/lib/* | src/HVO.SkyMonitor.Deployment.Cli/* | src/HVO.SkyMonitor.Deployment.Contracts/* | src/HVO.SkyMonitor.TerminalUi/* | tests/HVO.SkyMonitor.Deployment.Cli.Tests/* | tests/HVO.SkyMonitor.Deployment.Distribution.Tests/* | tools/HVO.SkyMonitor.Deployment.ReleaseTool/*)
       deployment_installer="true"
-      ;;
-    scripts/catalog/catalog-common.sh | tests/fixtures/catalog/hyg-v42-bright-stars.sqlite)
-      deployment_catalog="true"
-      deployment_shards="true"
-      ;;
-    scripts/catalog:* | scripts/catalog/*)
-      deployment_catalog="true"
-      deployment_shards="true"
-      ;;
-    scripts/infra:operation-lock)
-      deployment_catalog="true"
-      deployment_shards="true"
-      ;;
-    scripts/deploy/common.sh | scripts/deploy/product-layout.sh)
-      deployment_shards="true"
-      ;;
-    scripts/lib/deploy-test-lifecycle.sh)
-      # Every shard body calls the runners and staging in this library (#875), so a
-      # change here can break all ten shards without touching a file that names them.
-      # A case takes the first match, so the installer suite scripts/lib/* always
-      # selected is set here explicitly rather than relied on from the later arm.
-      deployment_shards="true"
-      deployment_installer="true"
-      ;;
-    .github/workflows/release-image.yml | .github/workflows/release.yml | .github/workflows/prerelease.yml)
-      deployment_catalog="true"
-      deployment_installer="true"
-      ;;
-    src/HVO.SkyMonitor.Deployment.Cli/SplitHost/Preflight*.cs | src/HVO.SkyMonitor.Deployment.Cli/SplitHost/SplitHostPreflight.cs | src/HVO.SkyMonitor.Deployment.Contracts/Preflight*.cs | tests/HVO.SkyMonitor.Deployment.Cli.Tests/Preflight*Tests.cs | tests/HVO.SkyMonitor.Deployment.Cli.Tests/PreflightFixture.cs | tests/HVO.SkyMonitor.Deployment.Cli.Tests/PreflightFixtures.json)
-      # The preflight shard now executes these typed validators and fake-target contracts (#1593).
-      deployment_shards="true"
-      deployment_installer="true"
-      ;;
-    scripts/test:deployment-installer | scripts/test:deployment-installer-qualification | scripts/release:* | scripts/test:release-images | scripts/test:release-install | scripts/test:release-scripts | scripts/test:cameraagent-r2r | scripts/cameraagent-release.targets | scripts/lib/* | src/HVO.SkyMonitor.Deployment.Cli/* | src/HVO.SkyMonitor.Deployment.Contracts/* | src/HVO.SkyMonitor.TerminalUi/* | tests/HVO.SkyMonitor.Deployment.Cli.Tests/* | tests/HVO.SkyMonitor.Deployment.Distribution.Tests/* | tools/HVO.SkyMonitor.Deployment.ReleaseTool/*)
-      deployment_installer="true"
-      ;;
-    scripts/qualify:filesystem-object-store | scripts/test:filesystem-object-store-qualification)
-      # The Deployment Contracts job always runs this lightweight preflight fixture.
-      ;;
-    scripts/qualify:silo-runtime | scripts/test:silo-runtime-qualification)
-      # A host qualification recipe for the stock Silo runtime (#1966), run on dispatched hosts and never in CI, and its
-      # Docker-free containment proof, which the Deployment Contracts job always runs beside the filesystem one.
-      ;;
-    .dockerignore | src/HVO.SkyMonitor.CameraAgent/Dockerfile | src/HVO.SkyMonitor.LogicHost/Dockerfile)
-      deployment_shards="true"
-      deployment_installer="true"
-      ;;
-    .env.template | docker-compose.apps.yml | scripts/deploy:environment | scripts/deploy/* | scripts/test:deploy-environment | scripts/deploy-contracts/* | deploy/* | src/HVO.SkyMonitor.CameraAgent/cameraagent.sample.json | src/HVO.SkyMonitor.CameraAgent/virtual-asi174.full.json | src/HVO.SkyMonitor.CameraAgent/virtual-asi178mc.full.json)
-      deployment_shards="true"
       ;;
   esac
 }
 
 select_all_deployment_suites() {
   deployment_catalog="true"
-  deployment_shards="true"
   deployment_installer="true"
 }
 
 # Component ownership is keyed on the exact project directory segment so that
-# sibling names such as HVO.SkyMonitor.CameraAgent.Tests and
-# HVO.SkyMonitor.CameraAgent.LogicHost.Tests can never match by prefix.
+# an unknown sibling project takes the complete-matrix fallback.
 shared_projects=(
   HVO.SkyMonitor.AgentCore
   HVO.SkyMonitor.Astronomy
@@ -641,18 +584,9 @@ select_components() {
   local path="$1" linked_projects="${2:-}" top rest project linked_project
 
   # A source that another project compiles or copies also selects that project's
-  # component, wherever the source itself lives. Links into retained LogicHost
-  # projects have no component gate to select. Direct changes to those projects
-  # still take the complete-matrix fallback while they are in the solution.
+  # component, wherever the source itself lives.
   while IFS= read -r linked_project; do
     [[ -n "$linked_project" ]] || continue
-    case "$linked_project" in
-      HVO.SkyMonitor.LogicHost | HVO.SkyMonitor.LogicHost.IntegrationTests | \
-        HVO.SkyMonitor.LogicHost.TestInfrastructure | HVO.SkyMonitor.LogicHost.Tests | \
-        HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests | HVO.SkyMonitor.CameraAgent.LogicHost.Tests)
-        continue
-        ;;
-    esac
     select_project_component "$linked_project" "a linked source is compiled by a project outside every component boundary"
   done <<< "$linked_projects"
 
@@ -729,7 +663,6 @@ reason="pull request contains only allowlisted documentation and developer-envir
 deployment="false"
 deployment_reason="pull request does not change deployment-contract inputs"
 deployment_catalog="false"
-deployment_shards="false"
 deployment_installer="false"
 complete="false"
 complete_reason="pull request changes only component-scoped paths"

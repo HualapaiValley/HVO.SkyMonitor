@@ -1,5 +1,7 @@
 # Deferred Phase 14 Evidence Campaign
 
+This campaign is historical. Reproduce its commands and fixtures at the [last split-host source revision](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/66e6aa237b40c70342815af6e2511122daa56bb6/docs/planning/phase14-evidence-campaign.md).
+
 ## Authority And Scope
 
 Issue #305 owns post-milestone Phase 14 evidence import, remaining real fault

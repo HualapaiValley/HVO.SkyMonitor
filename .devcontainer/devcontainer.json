@@ -85,8 +85,6 @@
     5001,
     5010,
     5011,
-    7096,
-    5174,
     5130
   ],
   "portsAttributes": {
@@ -105,13 +103,6 @@
     "5011": {
       "onAutoForward": "notify",
       "elevateIfNeeded": true
-    },
-    "7096": {
-      "onAutoForward": "notify",
-      "elevateIfNeeded": true
-    },
-    "5174": {
-      "onAutoForward": "notify"
     },
     "5130": {
       "onAutoForward": "silent"

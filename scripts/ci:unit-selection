@@ -69,10 +69,6 @@ coverage_job="$(job_block coverage)"
 errors=0
 fail() { printf 'Unit selection: %s\n' "$1" >&2; errors=$((errors + 1)); }
 
-is_logichost_project() {
-  [[ "$1" == tests/HVO.SkyMonitor.LogicHost.*/* || "$1" == tests/HVO.SkyMonitor.CameraAgent.LogicHost.*/* ]]
-}
-
 # Split captured output without another input delivery (including a here-string
 # temporary file). Command substitutions already remove trailing newlines.
 split_lines() {
@@ -263,7 +259,6 @@ for inventory in "${inventories[@]}"; do
   split_lines projects "$project_text"
   ((${#projects[@]} == 1)) || { fail "inventory without exactly one project beside it: $inventory"; continue; }
   project="tests/$(basename "$dir")/${projects[0]}"
-  is_logichost_project "$project" && continue
   expected["$project"]="$unit"
 done
 
@@ -334,9 +329,7 @@ done
 
 for command in "${commands[@]}"; do
   project="$(sed -nE 's#^[[:space:]]+dotnet test (tests/[^ ]+) .*#\1#p' <<<"$command")"
-  if is_logichost_project "$project"; then
-    fail "the Unit job selects retired LogicHost project $project"
-  elif [[ -z "${expected[$project]:-}" ]]; then
+  if [[ -z "${expected[$project]:-}" ]]; then
     fail "the Unit job selects $project, which owns no Unit cases"
   fi
 done

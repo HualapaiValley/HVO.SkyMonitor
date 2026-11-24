@@ -20,7 +20,6 @@ readonly DOCS=(
     docs/runbooks/infra-operations.md
     docs/runbooks/local-dev.md
     docs/runbooks/smoke-test.md
-    docs/runbooks/split-host-preflight.md
     docs/runbooks/ci-pipeline.md
     docs/runbooks/deployment-installer.md
     docs/runbooks/releases.md
@@ -31,7 +30,7 @@ readonly DOCS=(
     docs/validation/ci-reduced-mode.md
     docs/validation/issue-331-production-like-install-findings.md
     src/HVO.SkyMonitor.Astronomy/README.md
-    src/HVO.SkyMonitor.LogicHost/README.md
+    src/HVO.SkyMonitor.CameraAgent/README.md
 )
 
 for document in "${DOCS[@]}"; do
@@ -57,19 +56,14 @@ if grep -En 'Historical and non-executable|quarantined historical' "${DOCS[@]}";
     exit 1
 fi
 
-if grep -En 'MINIO_|mc admin|minio/minio' "${DOCS[@]}"; then
-    printf 'Active operations guidance still provisions a MinIO server; LogicHost uses the filesystem object store.\n' >&2
-    exit 1
-fi
-
-if grep -En 'build-hyg-v42|bundle-hyg-v42' docs/runbooks/split-host-preflight.md scripts/deploy/catalog.sh; then
-    printf 'Split-host catalog deployment must install the approved bundle, not rebuild it.\n' >&2
+if grep -En 'src/HVO[.]SkyMonitor[.]LogicHost/|(^|[[:space:]])[.]/scripts/(deploy:environment|identity:smoke|smoke:env|infra:(backup|restore)-app-state)([[:space:]]|$)|compose[.]logichost[.]yml' "${DOCS[@]}"; then
+    printf 'Active operations guidance contains a retired application path or command.\n' >&2
     exit 1
 fi
 
 if grep -ERn --exclude-dir=bin --exclude-dir=obj --include='appsettings*.json' \
     '"(AdminPassword|ClientSecret|AccessKey|SecretKey|Key)"[[:space:]]*:[[:space:]]*"[^"[:space:]]+"' \
-    src/HVO.SkyMonitor.CameraAgent src/HVO.SkyMonitor.LogicHost; then
+    src/HVO.SkyMonitor.CameraAgent; then
     printf 'Application appsettings contains a usable committed credential.\n' >&2
     exit 1
 fi
@@ -84,17 +78,6 @@ tracked_path_exists() {
 
 if tracked_path_exists ':(glob)**/DataProtection-Keys/**'; then
     printf 'Runtime Data Protection keys must not be tracked.\n' >&2
-    exit 1
-fi
-
-if tracked_path_exists ':(glob)src/HVO.SkyMonitor.LogicHost/wwwroot/lib/bootstrap/**'; then
-    printf 'The unused local Bootstrap vendor tree must not be tracked.\n' >&2
-    exit 1
-fi
-
-if grep -En 'schema-v6 split-host|schema v6 split-host|Production source currently has no certificate loader|Production has no repository-supported certificate' \
-    docs/identity/overview.md docs/identity/operations-runbook.md docs/security/secrets.md docs/runbooks/infra-operations.md; then
-    printf 'Active operations guidance contains a superseded capability or deployment schema.\n' >&2
     exit 1
 fi
 
@@ -350,20 +333,11 @@ if [[ ! "$category_rows" =~ ^[1-9][0-9]*$ || ! "$category_unit" =~ ^[1-9][0-9]*$
     exit 1
 fi
 
-require_source_reference '[HttpGet("detailed")]' src/HVO.SkyMonitor.LogicHost/Controllers/StatusController.cs
-require_source_reference '[HttpGet("protected")]' src/HVO.SkyMonitor.LogicHost/Controllers/StatusController.cs
-require_source_reference '/connect/token' src/HVO.SkyMonitor.LogicHost/Program.cs
 require_source_reference 'X-API-Key' src/HVO.SkyMonitor.Common/Security/ApiKeyAuthenticationOptions.cs
-require_source_reference 'Redis__InstanceName: "skymonitor:"' docker-compose.apps.yml
-require_source_reference 'skymonitor-diagnostics' src/HVO.SkyMonitor.LogicHost/Configuration/CentralObjectStorageOptions.cs
-require_source_reference 'skymonitor-artifacts' src/HVO.SkyMonitor.LogicHost/Configuration/CentralObjectStorageOptions.cs
 require_source_reference 'DeviceProvisioning__StateDirectory: /app/data/provisioning' docker-compose.apps.yml
-require_source_reference 'DeviceBootstrap__CentralIdentity__ClientCredentials__ClientSecret' docker-compose.apps.yml
-require_source_reference 'OpenIddictCertificateOptions.SectionName' src/HVO.SkyMonitor.LogicHost/Program.cs
-require_source_reference 'options.AddSigningCertificate(signing).AddEncryptionCertificate(encryption);' src/HVO.SkyMonitor.LogicHost/Program.cs
-require_source_reference '"api.artifacts.read"' src/HVO.SkyMonitor.LogicHost/Program.cs
-require_source_reference '"api.owner.write"' src/HVO.SkyMonitor.LogicHost/Program.cs
-require_source_reference 'ArtifactManifestV2.CurrentSchemaVersion' src/HVO.SkyMonitor.LogicHost/Services/ArtifactIngestService.cs
+require_source_reference 'CameraAgent__CentralIntegration__Mode: Disabled' docker-compose.apps.yml
+require_source_reference 'LocalIdentity__AdminPassword:' docker-compose.apps.yml
+require_source_reference './scripts/test:silo-runtime-qualification' docs/runbooks/ci-pipeline.md
 require_required_check_row '\*\*Unit Tests\*\*' "${category_unit} Unit cases across ${active_unit_projects} active assemblies"
 require_required_check_row '\*\*Integration Tests\*\*' "${category_integration} Integration-category cases"
 require_source_reference "The complete solution plan runs the other $((category_integration - architecture_integration)) cases" docs/runbooks/ci-pipeline.md
@@ -388,34 +362,14 @@ require_source_reference "Merge those $coverage_report_count explicit reports" d
 require_source_reference "The Coverlet 10.0.1 baseline is $coverage_line_percent% line and $coverage_branch_percent% branch coverage." docs/runbooks/ci-pipeline.md
 require_source_reference "aggregate baseline is $coverage_line_percent percent line and $coverage_branch_percent percent branch" docs/planning/performance-validation.md
 require_source_reference "CI collects $coverage_report_count explicit" docs/planning/performance-validation.md
-require_source_reference 'public string? AccessKey' src/HVO.SkyMonitor.LogicHost/Configuration/CentralObjectStorageOptions.cs
-require_source_reference 'public string? SecretKey' src/HVO.SkyMonitor.LogicHost/Configuration/CentralObjectStorageOptions.cs
 # shellcheck disable=SC2016 # Backticks are literal Markdown.
 require_source_reference 'canonical builder for package `hyg-v4.2-p3-s2-r1` is Ubuntu 24.04 on' docs/catalog/production-install.md
 require_source_reference 'ARM64 operators must install the' docs/catalog/production-install.md
-require_source_reference 'It never copies or executes the catalog builder remotely.' docs/runbooks/split-host-preflight.md
-require_source_reference 'Two consecutive' docs/runbooks/split-host-preflight.md
-require_source_reference 'final reassertion' docs/runbooks/split-host-preflight.md
-require_source_reference 'There is no generic privilege escalation path.' docs/runbooks/split-host-preflight.md
-require_source_reference 'including a same-device bind' docs/runbooks/split-host-preflight.md
-require_source_reference 'It removes neither marker nor root.' docs/runbooks/split-host-preflight.md
-require_source_reference '--pull never' docs/runbooks/split-host-preflight.md
-require_source_reference 'does not claim inode binding' docs/runbooks/split-host-preflight.md
-require_source_reference 'POSIX/BusyBox-compatible syntax' docs/runbooks/split-host-preflight.md
-require_source_reference 'inventory-label-drift-retained' docs/runbooks/split-host-preflight.md
-require_source_reference 'never uses a' docs/runbooks/split-host-preflight.md
-require_source_reference 'wildcard.' docs/runbooks/split-host-preflight.md
-require_source_reference 'no intent permits partial absence' docs/runbooks/split-host-preflight.md
-require_source_reference 'deploy_capture_queues_converged' scripts/deploy/common.sh
-require_source_reference './scripts/test:deploy-environment --parallel' docs/runbooks/ci-pipeline.md
 require_source_reference 'name: Catalog Contracts' .github/workflows/ci.yml
 require_source_reference 'name: Deployment Contracts' .github/workflows/ci.yml
 # shellcheck disable=SC2016 # GitHub expression syntax is intentionally literal.
 require_source_reference 'deployment: ${{ steps.classify.outputs.deployment }}' .github/workflows/ci.yml
 require_source_reference 'is_deployment_path()' scripts/ci:classify
-# shellcheck disable=SC2016 # The deployment source must retain this literal shell expression.
-require_source_reference 'deploy_transport_copy "$bundle/$file"' scripts/deploy/catalog.sh
-require_source_reference 'deploy_transport_catalog_install' scripts/deploy/catalog.sh
 require_source_reference '<harness>:<provider>:<host>:<session-short-id>' AGENTS.md
 require_source_reference 'UNREGISTERED/WAIT' AGENTS.md
 require_source_reference 'JOIN REQUEST' docs/planning/agent-execution.md

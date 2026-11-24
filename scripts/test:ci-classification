@@ -47,12 +47,11 @@ expect_plan() {
 }
 
 expect_suites() {
-  local expected_catalog="$1" expected_shards="$2" expected_installer="$3"
-  local event_name="$4" base_sha="$5" head_sha="$6" output
+  local expected_catalog="$1" expected_installer="$2"
+  local event_name="$3" base_sha="$4" head_sha="$5" output
   output="$(cd "$work_root" && "$classifier" "$event_name" "$base_sha" "$head_sha")"
   for expectation in \
     "deployment_catalog=$expected_catalog" \
-    "deployment_shards=$expected_shards" \
     "deployment_installer=$expected_installer"; do
     grep -Fxq "$expectation" <<< "$output" || {
       printf 'Expected suite output %s, received %s\n' "$expectation" "$output" >&2
@@ -787,8 +786,8 @@ expect_components true true true true push "$base_sha" "$head_sha"
 expect_plan full true workflow_dispatch "$base_sha" "$head_sha"
 expect_components true true true true workflow_dispatch "$base_sha" "$head_sha"
 expect_components true true true true merge_group "$base_sha" "$head_sha"
-expect_suites true true true push "$base_sha" "$head_sha"
-expect_suites true true true workflow_dispatch "$base_sha" "$head_sha"
+expect_suites true true push "$base_sha" "$head_sha"
+expect_suites true true workflow_dispatch "$base_sha" "$head_sha"
 summary_file="$work_root/.git/classification-summary.md"
 (cd "$work_root" && GITHUB_STEP_SUMMARY="$summary_file" "$classifier" pull_request "$base_sha" "$head_sha" >/dev/null)
 grep -Fq 'Mode: **reduced**' "$summary_file"
@@ -1064,19 +1063,6 @@ verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Common/Environmental/Deliv
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Common/Transients/Candidate.cs"  full false false false true false
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Common/Modules/VirtualSky/Sky.cs" full false false false true false
 
-# Direct changes in projects awaiting removal still get the complete fallback.
-retired_project_directories=(
-  src/HVO.SkyMonitor.LogicHost
-  tests/HVO.SkyMonitor.LogicHost.Tests
-  tests/HVO.SkyMonitor.LogicHost.IntegrationTests
-  tests/HVO.SkyMonitor.LogicHost.TestInfrastructure
-  tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests
-  tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests
-)
-for project_directory in "${retired_project_directories[@]}"; do
-  verify_component_plan "$project_directory/RetainedProjectProbe.cs" full false true true true true
-done
-
 verify_component_plan "src/HVO.SkyMonitor.Deployment.Contracts/Installation.cs"        full true false false false true
 verify_component_plan "tests/HVO.SkyMonitor.Deployment.Cli.Tests/InstallerTests.cs"    full true false false false true
 verify_component_plan "tools/HVO.SkyMonitor.Deployment.ReleaseTool/Program.cs"         full true false false false true
@@ -1088,21 +1074,8 @@ verify_deployment_installer_path() {
   commit_file "$path"
   deployment_head="$(git -C "$work_root" rev-parse HEAD)"
   expect_plan full true pull_request "$deployment_base" "$deployment_head"
-  expect_suites false false true pull_request "$deployment_base" "$deployment_head"
+  expect_suites false true pull_request "$deployment_base" "$deployment_head"
 }
-
-# Typed preflight ownership must retain both shard and installer selection (#1593).
-verify_preflight_owner_path() {
-  local path="$1" deployment_base deployment_head
-  deployment_base="$(git -C "$work_root" rev-parse HEAD)"
-  commit_file "$path"
-  deployment_head="$(git -C "$work_root" rev-parse HEAD)"
-  expect_plan full true pull_request "$deployment_base" "$deployment_head"
-  expect_suites false true true pull_request "$deployment_base" "$deployment_head"
-}
-verify_preflight_owner_path "src/HVO.SkyMonitor.Deployment.Cli/SplitHost/SplitHostPreflight.cs"
-verify_preflight_owner_path "src/HVO.SkyMonitor.Deployment.Contracts/PreflightContracts.cs"
-verify_preflight_owner_path "tests/HVO.SkyMonitor.Deployment.Cli.Tests/PreflightTests.cs"
 
 # Release-shell validation changes must select the tests that execute their gates even when no .NET path changes.
 verify_deployment_installer_path "scripts/release:cameraagent-publish"
@@ -1124,13 +1097,11 @@ verify_deployment_installer_path "src/HVO.SkyMonitor.TerminalUi/TerminalText.cs"
 # Deployment inputs that are not project directories keep their independent
 # deployment-contract selection and otherwise stay on the complete matrix,
 # because test code reads several of them from the repository root at run time.
-verify_component_plan "deploy/split-host/compose.logichost.yml"                        full true true true true true
-verify_component_plan "deploy/sql/logichost-runtime-role.sql"                          full true true true true true
+verify_component_plan "deploy/split-host/compose.cameraagent.yml"                        full true true true true true
 verify_component_plan "deploy/split-host/camera-modules/allsky01.virtual-asi676mc.full.json" full true true true true true
 verify_component_plan "docs/catalog/hyg-v42-license.md"                                full false true true true true
 verify_component_plan "docs/catalog/hyg-v44-attribution.md"                            full false true true true true
 verify_component_plan "scripts/catalog/hyg-v44-common.sh"                              full true true true true true
-verify_component_plan "scripts/deploy/product-layout.sh"                               full true true true true true
 verify_component_plan "scripts/catalog/install-hyg-v42.sh"                             full true true true true true
 
 # A source compiled into an active project through an MSBuild <Compile Include>
@@ -1323,7 +1294,7 @@ complete_matrix_paths=(
   "tests/Example.Tests/ExampleTests.cs"
   "tests/fixtures/frames/sample.bin"
   "tests/fixtures/catalog/hyg-v42-bright-stars.sqlite"
-  "docs/validation/central-transient-fault-matrix.json"
+  "docs/validation/cameraagent-transient-fault-matrix.json"
   "tools/asi-capture/capture.sh"
   "docker/local/Dockerfile"
 )
@@ -1334,12 +1305,9 @@ for path in "${complete_matrix_paths[@]}"; do
   expect_components true true true true pull_request "$component_base" "$component_head"
 done
 
-# The retired UI suite was the only project that copied this historical input.
-verify_component_plan "docs/validation/logichost-ui-runtime-signals.json" reduced false false false false false
-
 # An unknown including project still widens a CameraAgent file to the complete
-# matrix, even if the project name resembles one of the retired projects.
-unknown_project="HVO.SkyMonitor.CameraAgent.LogicHost.Unclassified"
+# matrix, even if the project name resembles an active CameraAgent project.
+unknown_project="HVO.SkyMonitor.CameraAgent.Unclassified"
 mkdir -p "$work_root/tests/$unknown_project"
 printf '<Project><ItemGroup><Compile Include="../../%s" /></ItemGroup></Project>\n' "$linked_cameraagent_source" \
   > "$work_root/tests/$unknown_project/$unknown_project.csproj"
@@ -1348,10 +1316,8 @@ git -C "$work_root" commit --quiet -m 'Add an unclassified project that links a 
 verify_component_plan "$linked_cameraagent_source" full false true true true true
 
 # CameraAgent Dockerfile and configuration changes stay in their component lane.
-# The retained LogicHost Dockerfile uses the fallback. Both select deployment contracts.
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent/Dockerfile"                    full true false false true false
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent/cameraagent.sample.json"       full true false false true false
-verify_component_plan "src/HVO.SkyMonitor.LogicHost/Dockerfile"                      full true true true true true
 
 # A mixed diff unions every affected lane.
 base_sha="$(git -C "$work_root" rev-parse HEAD)"
@@ -1371,18 +1337,8 @@ expect_components false false true false pull_request "$base_sha" "$head_sha"
 deployment_paths=(
   ".env.template"
   "docker-compose.apps.yml"
-  "scripts/deploy:environment"
-  "scripts/deploy/common.sh"
-  "scripts/test:deploy-environment"
-  "scripts/deploy-contracts/smoke.sh"
-  "scripts/lib/deploy-test-lifecycle.sh"
-  "scripts/test:deploy-environment-cli"
   "scripts/test:deployment-installer"
   "scripts/test:deployment-installer-qualification"
-  "scripts/test:deployment-logichost-outage-contract"
-  "scripts/test:deployment-normal-flow-contract"
-  "scripts/qualify:filesystem-object-store"
-  "scripts/test:filesystem-object-store-qualification"
   "scripts/qualify:silo-runtime"
   "scripts/test:silo-runtime-qualification"
   "scripts/catalog:install"
@@ -1390,8 +1346,6 @@ deployment_paths=(
   "deploy/acceptance/cameraagent-dual-standalone-smoke/compose.yml"
   "deploy/hvo-docker/README.md"
   "deploy/hvo-docker/docker-compose.shared-services.yml"
-  "deploy/split-host/workloads/canonical-workloads.json"
-  "deploy/sql/logichost-runtime-role.sql"
   "tests/fixtures/catalog/hyg-v42-bright-stars.sqlite"
   "src/HVO.SkyMonitor.Deployment.Cli/Program.cs"
   "tests/HVO.SkyMonitor.Deployment.Distribution.Tests/ReleaseAssetsToolTests.cs"
@@ -1407,37 +1361,28 @@ for path in "${deployment_paths[@]}"; do
 done
 
 verify_targeted_suites() {
-  local path="$1" expected_catalog="$2" expected_shards="$3" expected_installer="$4"
+  local path="$1" expected_catalog="$2" expected_installer="$3"
   local targeted_base targeted_head
   targeted_base="$(git -C "$work_root" rev-parse HEAD)"
   update_file "$path"
   targeted_head="$(git -C "$work_root" rev-parse HEAD)"
   expect_plan full true pull_request "$targeted_base" "$targeted_head"
-  expect_suites "$expected_catalog" "$expected_shards" "$expected_installer" \
+  expect_suites "$expected_catalog" "$expected_installer" \
     pull_request "$targeted_base" "$targeted_head"
 }
 
-verify_targeted_suites ".github/workflows/ci.yml" true true true
-verify_targeted_suites ".github/workflows/release.yml" true false true
-verify_targeted_suites ".github/workflows/prerelease.yml" true false true
-verify_targeted_suites ".github/workflows/release-image.yml" true false true
-verify_targeted_suites "scripts/catalog/install-hyg-v42.sh" true true false
-verify_targeted_suites "scripts/ci:component-build" true true true
-verify_targeted_suites "tests/fixtures/catalog/hyg-v42-bright-stars.sqlite" true true false
-verify_targeted_suites "scripts/infra:operation-lock" true true false
-verify_targeted_suites "scripts/deploy/common.sh" false true false
-verify_targeted_suites "scripts/deploy/product-layout.sh" false true false
-verify_targeted_suites "scripts/test:deploy-environment" false true false
-# A shard body extracted from the harness (#875 stage 2) is the same contract input.
-verify_targeted_suites "scripts/deploy-contracts/smoke.sh" false true false
-verify_targeted_suites "scripts/lib/deploy-test-lifecycle.sh" false true true
-verify_targeted_suites "scripts/test:deployment-installer" false false true
-verify_targeted_suites "scripts/test:deployment-installer-qualification" false false true
-verify_targeted_suites "scripts/test:deployment-normal-flow-contract" false false false
-verify_targeted_suites "scripts/qualify:filesystem-object-store" false false false
-verify_targeted_suites "scripts/test:filesystem-object-store-qualification" false false false
-verify_targeted_suites "scripts/qualify:silo-runtime" false false false
-verify_targeted_suites "scripts/test:silo-runtime-qualification" false false false
+verify_targeted_suites ".github/workflows/ci.yml" true true
+verify_targeted_suites ".github/workflows/release.yml" true true
+verify_targeted_suites ".github/workflows/prerelease.yml" true true
+verify_targeted_suites ".github/workflows/release-image.yml" true true
+verify_targeted_suites "scripts/catalog/install-hyg-v42.sh" true false
+verify_targeted_suites "scripts/ci:component-build" true true
+verify_targeted_suites "tests/fixtures/catalog/hyg-v42-bright-stars.sqlite" true false
+verify_targeted_suites "scripts/infra:operation-lock" true false
+verify_targeted_suites "scripts/test:deployment-installer" false true
+verify_targeted_suites "scripts/test:deployment-installer-qualification" false true
+verify_targeted_suites "scripts/qualify:silo-runtime" false false
+verify_targeted_suites "scripts/test:silo-runtime-qualification" false false
 
 # The complete fallback matrix.
 base_sha="$(git -C "$work_root" rev-parse HEAD)"
@@ -1522,7 +1467,7 @@ esac
 EOF
 chmod +x "$work_root/fake-bin/git"
 
-expected_fail_closed=$'mode=full\ndeployment=true\ndeployment_catalog=true\ndeployment_shards=true\ndeployment_installer=true\ncomplete=true\nshared=true\ncameraagent=true\ndelivery=true\nsecret_scan_contract=true\nrelease_scripts=true\ncatalog_recipe=true'
+expected_fail_closed=$'mode=full\ndeployment=true\ndeployment_catalog=true\ndeployment_installer=true\ncomplete=true\nshared=true\ncameraagent=true\ndelivery=true\nsecret_scan_contract=true\nrelease_scripts=true\ncatalog_recipe=true'
 for fake_case in malformed unterminated empty-path failure; do
   if [[ "$fake_case" == failure ]]; then fake_failure=true; else fake_failure=false; fi
   PATH="$work_root/fake-bin:$PATH" REAL_GIT="$real_git" FAKE_GIT_DIFF_FAILURE="$fake_failure" FAKE_GIT_DIFF_SHAPE="$fake_case" \
@@ -1837,11 +1782,7 @@ done
 printf 'Required CI SIGPIPE regression passed: 6 iterations (3 plan, 3 result); shim fired for each.\n'
 
 # Workflow shape.
-grep -Fq "if: needs.changes.outputs.mode == 'full' && github.event_name == 'workflow_dispatch'" "$workflow" || {
-  printf 'Historical Phase 14 acceptance must remain manual-dispatch only.\n' >&2
-  exit 1
-}
-for suite in catalog shards installer; do
+for suite in catalog installer; do
   grep -Fq "if: needs.changes.outputs.deployment_$suite == 'true'" "$workflow" || {
     printf 'Exhaustive deployment suite is not controlled by its classifier output: %s\n' "$suite" >&2
     exit 1
@@ -1866,10 +1807,6 @@ extract_workflow_job() {
 }
 
 deployment_job="$(extract_workflow_job deployment-contracts)"
-grep -Fq './scripts/test:filesystem-object-store-qualification' <<< "$deployment_job" || {
-  printf 'Deployment Contracts must run the filesystem object-store qualification fixture.\n' >&2
-  exit 1
-}
 grep -Fq './scripts/test:silo-runtime-qualification' <<< "$deployment_job" || {
   printf 'Deployment Contracts must run the stock Silo qualifier containment test.\n' >&2
   exit 1

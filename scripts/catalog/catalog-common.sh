@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Constants library sourced by scripts/catalog/*.sh, scripts/test:phase14-source-import and the
+# Constants library sourced by scripts/catalog/*.sh and the
 # deployment shards; the readers are in other files, which ShellCheck cannot see from here.
 # shellcheck disable=SC2034
 

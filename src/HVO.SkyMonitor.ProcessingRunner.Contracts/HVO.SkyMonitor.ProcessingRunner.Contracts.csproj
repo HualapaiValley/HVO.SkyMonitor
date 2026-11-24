@@ -10,8 +10,5 @@
   <ItemGroup>
     <InternalsVisibleTo Include="HVO.SkyMonitor.ProcessingRunner" />
     <InternalsVisibleTo Include="HVO.SkyMonitor.ProcessingRunner.Tests" />
-    <InternalsVisibleTo Include="HVO.SkyMonitor.LogicHost" />
-    <InternalsVisibleTo Include="HVO.SkyMonitor.LogicHost.Tests" />
-    <InternalsVisibleTo Include="HVO.SkyMonitor.LogicHost.IntegrationTests" />
   </ItemGroup>
 </Project>

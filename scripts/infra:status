@@ -8,7 +8,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
 if [[ $# -eq 0 ]]; then
-    set -- logichost cameraagent
+    set -- cameraagent
 fi
 
 docker compose -f docker-compose.apps.yml ps "$@"

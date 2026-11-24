@@ -14,9 +14,7 @@ public sealed class HostImageBindingTests
 {
     [TestMethod]
     [TestCategory("Unit")]
-    [DataRow("HVO.SkyMonitor.CameraAgent")]
-    [DataRow("HVO.SkyMonitor.LogicHost")]
-    public async Task HostImage_ResolvesExistingUrlsWithoutPortOverrideWarning(string hostName)
+    public async Task HostImage_ResolvesExistingUrlsWithoutPortOverrideWarning()
     {
         var root = new DirectoryInfo(AppContext.BaseDirectory);
         while (root is not null && !File.Exists(Path.Combine(root.FullName, "HVO.SkyMonitor.v9.slnx")))
@@ -32,7 +30,7 @@ public sealed class HostImageBindingTests
             ["HTTP_PORTS"] = "8080",
             ["HTTPS_PORTS"] = string.Empty
         };
-        var dockerfile = await File.ReadAllTextAsync(Path.Combine(root.FullName, "src", hostName, "Dockerfile")).ConfigureAwait(false);
+        var dockerfile = await File.ReadAllTextAsync(Path.Combine(root.FullName, "src", "HVO.SkyMonitor.CameraAgent", "Dockerfile")).ConfigureAwait(false);
         var runtime = dockerfile[dockerfile.LastIndexOf("\nFROM ", StringComparison.Ordinal)..];
         foreach (var line in runtime.Replace("\\\n", " ", StringComparison.Ordinal).Split('\n'))
         {

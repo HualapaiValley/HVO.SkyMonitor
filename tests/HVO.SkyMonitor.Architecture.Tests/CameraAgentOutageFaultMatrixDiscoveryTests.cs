@@ -17,7 +17,7 @@ public sealed class CameraAgentOutageFaultMatrixDiscoveryTests
         var matrixPath = Path.Combine(
             AppContext.BaseDirectory,
             "Validation",
-            "central-transient-fault-matrix.json");
+            "cameraagent-transient-fault-matrix.json");
         using var document = JsonDocument.Parse(
             await File.ReadAllTextAsync(matrixPath).ConfigureAwait(false));
         var row = Assert.ContainsSingle(document.RootElement.GetProperty("rows").EnumerateArray().Where(

@@ -8,7 +8,7 @@ worker, physical sensitivity, or a UI.
 ## Acceptance Boundaries
 
 The executable fault inventory is
-[`central-transient-fault-matrix.json`](central-transient-fault-matrix.json).
+[`central-transient-fault-matrix.json`](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/66e6aa237b40c70342815af6e2511122daa56bb6/docs/validation/central-transient-fault-matrix.json).
 Each row names its deterministic control, durable invariant, exact MSTest filter,
 and Docker requirement. The Docker-free unit gate validates that every required
 row remains present and executable evidence is named:
@@ -128,7 +128,7 @@ head. The path is covered by the repository-wide `TestResults/` ignore rule.
 
 ## Runtime Signals
 
-[`central-transient-runtime-signals.json`](central-transient-runtime-signals.json)
+[`central-transient-runtime-signals.json`](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/66e6aa237b40c70342815af6e2511122daa56bb6/docs/validation/central-transient-runtime-signals.json)
 is the machine-readable runtime signal manifest. It pins event IDs and fields,
 metric names/units/bounded labels, span boundaries, health transitions,
 collection commands, privacy exclusions, and retained evidence paths.

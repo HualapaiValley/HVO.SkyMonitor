@@ -40,7 +40,7 @@ facts and an upgrade-only decision boundary instead.
 
 LogicHost already has SQL recovery records/scripts and offline object-store
 maintenance/restore primitives. The [#586 report](../validation/logichost-filesystem-qualification-586.md#final-disposition)
-and [lifecycle preparation](logichost-lifecycle-contract.md) retain their actual
+and [lifecycle preparation](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/66e6aa237b40c70342815af6e2511122daa56bb6/docs/planning/logichost-lifecycle-contract.md) retain their actual
 topology, image and qualification limits. These are reusable evidence, not proof
 of a new SQL/object/config checkpoint implementation.
 

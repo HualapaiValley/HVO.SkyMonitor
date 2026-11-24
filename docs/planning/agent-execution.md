@@ -126,7 +126,7 @@ stacked PR series.
 
 - Implement the smallest coherent issue slice that satisfies its acceptance
   gate.
-- Keep CameraAgent and LogicHost independent.
+- Keep CameraAgent and its replay runner independently deployable.
 - Keep AgentCore transport-neutral.
 - Put pure astronomy, imaging, and recipe behavior in their shared owners.
 - Keep Common limited to reusable web/security/identity/API/observability
@@ -430,12 +430,12 @@ dotnet format HVO.SkyMonitor.v9.slnx --no-restore --verify-no-changes
 ./scripts/test:pr-review-tools
 DOCKER_HOST=unix:///tmp/hvo-no-docker.sock \
 dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release \
-  --filter 'TestCategory=Unit&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost' \
-  -p:SkipLogicHostTests=true --settings tests/coverage.runsettings \
+  --filter 'TestCategory=Unit' \
+   --settings tests/coverage.runsettings \
   --collect:"XPlat Code Coverage"
 dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release \
-  --filter 'TestCategory=Integration&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost' \
-  -p:SkipLogicHostTests=true --settings tests/coverage.runsettings \
+  --filter 'TestCategory=Integration' \
+   --settings tests/coverage.runsettings \
   --collect:"XPlat Code Coverage"
 ```
 
