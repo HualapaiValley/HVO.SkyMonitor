@@ -170,8 +170,8 @@ git -C "$fast_root" commit -qm inventory
 fast_base="$(git -C "$fast_root" rev-parse HEAD)"
 fast_cases=0
 fast_expect() {
-  local expected="$1" event="$2" base="$3" head="$4" output
-  output="$(cd "$fast_root" && "$classifier" "$event" "$base" "$head")"
+  local expected="$1" event="$2" base="$3" head="$4" scope="${5:-}" output
+  output="$(cd "$fast_root" && "$classifier" "$event" "$base" "$head" "$scope")"
   grep -Fxq "docs_fast_path=$expected" <<< "$output" || { printf 'Fast path expected %s: %s\n' "$expected" "$output" >&2; exit 1; }
   grep -q '^docs_fast_path_reason=.' <<< "$output"
   ((fast_cases += 1))
@@ -371,6 +371,105 @@ for sdk_form in attribute element; do
   printf 'changed\n' >> "$fast_root/docs/runbooks/releases.md"
   git -C "$fast_root" commit -qam doc-change
   fast_reason 'project inventory unavailable' "$imported_sdk_base" "$(git -C "$fast_root" rev-parse HEAD)"
+done
+# Give each fixture a certificate that binds its exact input blobs, including
+# the intentionally unsupported declarations. A stale inventory would reject
+# the fixture before the SDK and package guards could distinguish the cases.
+python3 - "$classifier" "$fast_root/.git" <<'PY'
+import pathlib
+import sys
+
+classifier = pathlib.Path(sys.argv[1]).read_text()
+directory = pathlib.Path(sys.argv[2])
+for name, original, replacement in (
+    ("nested-sdk", " and node is root", ""),
+    ("external-sdk", 'node.attrib["Sdk"] in ("Microsoft.NET.Sdk", "Microsoft.NET.Sdk.Web")', "True"),
+):
+    if classifier.count(original) != 1:
+        raise SystemExit(f"Could not construct the certificate fixture mutation {name}")
+    (directory / f"classifier-{name}").write_text(classifier.replace(original, replacement))
+PY
+for certificate_case in builtin-sdk web-sdk external-sdk versioned-sdk multiple-sdks sdk-element nested-sdk \
+  props-sdk explicit-sdk-import global-package package-download lowercase-package executable-certificate \
+  symlink-certificate stale-source-hash; do
+  git -C "$fast_root" reset -q --hard "$fast_base"
+  mkdir -p "$fast_root/scripts/ci" "$fast_root/docs/runbooks"
+  cp "$repo_root/scripts/ci/restore-imports.py" "$fast_root/scripts/ci/restore-imports.py"
+  project='<Project Sdk="Microsoft.NET.Sdk"><Import Project="shared.props" /></Project>'
+  props='<Project><ItemGroup><PackageReference Include="Fixture" Version="1.0.0" /></ItemGroup></Project>'
+  certificate_expected=false
+  case "$certificate_case" in
+    builtin-sdk) certificate_expected=verify-restore ;;
+    web-sdk) project='<Project Sdk="Microsoft.NET.Sdk.Web" />'; certificate_expected=verify-restore ;;
+    external-sdk) project='<Project Sdk="MSTest.Sdk" />' ;;
+    versioned-sdk) project='<Project Sdk="Microsoft.NET.Sdk/10.0.0" />' ;;
+    multiple-sdks) project='<Project Sdk="A;B" />' ;;
+    sdk-element) project='<Project><Sdk Name="Microsoft.NET.Sdk" /></Project>' ;;
+    nested-sdk) project='<Project><Project Sdk="Microsoft.NET.Sdk" /></Project>' ;;
+    props-sdk) props='<Project Sdk="Microsoft.NET.Sdk" />' ;;
+    explicit-sdk-import) project='<Project><Import Project="shared.props" Sdk="Microsoft.NET.Sdk" /></Project>' ;;
+    global-package) project='<Project><ItemGroup><GlobalPackageReference Include="Fixture" Version="1.0.0" /></ItemGroup></Project>' ;;
+    package-download) project='<Project><ItemGroup><PackageDownload Include="Fixture" Version="[1.0.0]" /></ItemGroup></Project>' ;;
+    lowercase-package) project='<Project><ItemGroup><packagereference Include="Fixture" Version="1.0.0" /></ItemGroup></Project>' ;;
+  esac
+  printf '%s\n' "$project" > "$fast_root/tests/Example/Example.csproj"
+  printf '%s\n' "$props" > "$fast_root/tests/Example/shared.props"
+  printf 'original\n' > "$fast_root/docs/runbooks/certified.md"
+  git -C "$fast_root" add . && git -C "$fast_root" commit -qm "$certificate_case sources"
+  git -C "$fast_root" ls-tree -rz HEAD -- HVO.SkyMonitor.v9.slnx tests/Example | python3 -I -c '
+import sys
+entries = [entry.split(b"\t", 1) for entry in sys.stdin.buffer.read().split(b"\0") if entry]
+for metadata, path in sorted(entries, key=lambda entry: entry[1]):
+    print(metadata.decode("ascii") + " " + repr(path))
+' > "$fast_root/scripts/ci:docs-inventory"
+  certificate_path=scripts/ci:restore-import-certificate.json
+  python3 - "$fast_root" "$certificate_path" "$certificate_case" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+source_hash = hashlib.sha256((root / "scripts/ci:docs-inventory").read_bytes()).hexdigest()
+digest = "0" * 64
+imports = {"sha256": digest, "imports": []}
+certificate = {
+    "version": 1,
+    "sourceSha256": digest if sys.argv[3] == "stale-source-hash" else source_hash,
+    "sdk": {"version": "10.0.402", "platform": "linux-x64", "sha256": digest},
+    "packages": {},
+    "projects": {"tests/Example/Example.csproj": {
+        "graphSha256": digest, "sources": [], "props": imports, "targets": imports,
+    }},
+}
+(root / sys.argv[2]).write_text(json.dumps(certificate))
+PY
+  if [[ "$certificate_case" == symlink-certificate ]]; then
+    mv "$fast_root/$certificate_path" "$fast_root/scripts/fixture-certificate.json"
+    ln -s fixture-certificate.json "$fast_root/$certificate_path"
+    git -C "$fast_root" add scripts/fixture-certificate.json
+  fi
+  git -C "$fast_root" add -- scripts/ci:docs-inventory "$certificate_path"
+  if [[ "$certificate_case" == executable-certificate ]]; then
+    chmod +x "$fast_root/$certificate_path"
+    git -C "$fast_root" update-index --chmod=+x -- "$certificate_path"
+  fi
+  git -C "$fast_root" commit -qm "$certificate_case certificate"
+  certificate_base="$(git -C "$fast_root" rev-parse HEAD)"
+  printf 'changed\n' >> "$fast_root/docs/runbooks/certified.md"
+  git -C "$fast_root" commit -qam 'certified docs edit'
+  [[ "$(git -C "$fast_root" diff --name-only "$certificate_base" HEAD)" == docs/runbooks/certified.md ]]
+  fast_expect "$certificate_expected" pull_request "$certificate_base" HEAD docs-fast-only
+  case "$certificate_case" in
+    nested-sdk|external-sdk)
+      mutant_output="$(cd "$fast_root" && bash ".git/classifier-$certificate_case" pull_request "$certificate_base" HEAD docs-fast-only)"
+      if ! grep -Fxq 'docs_fast_path=verify-restore' <<< "$mutant_output"; then
+        printf 'The %s fixture did not distinguish its loosened guard.\n%s\n' "$certificate_case" "$mutant_output" >&2
+        exit 1
+      fi
+      printf 'Killed certificate source audit mutation: %s.\n' "$certificate_case"
+      ;;
+  esac
 done
 # Ordinary UTF-8 declarations, including case variants, remain eligible.
 for declared in utf-8 UTF-8; do
@@ -634,6 +733,9 @@ printf '%s\n' "$canary_head" > "$fast_root/.git/canary-commit"
 if git -C "$repo_root" show "$real_base:scripts/ci:docs-inventory" > "$fast_root/.git/certified" 2>/dev/null; then
   if (cd "$repo_root" && "$classifier" --print-docs-inventory "$real_base") > "$fast_root/.git/actual" && cmp -s "$fast_root/.git/certified" "$fast_root/.git/actual"; then
     canary_expected=true
+    if git -C "$repo_root" cat-file -e "$real_base:scripts/ci:restore-import-certificate.json"; then
+      canary_expected=verify-restore
+    fi
   else
     canary_expected=false
   fi
