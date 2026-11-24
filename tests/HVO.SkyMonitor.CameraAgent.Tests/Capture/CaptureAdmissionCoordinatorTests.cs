@@ -16,7 +16,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture;
 [TestCategory("Unit")]
 [DoNotParallelize]
 [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Test helpers receive only constant SQL from this test class.")]
-public sealed class CaptureAdmissionCoordinatorTests
+public sealed partial class CaptureAdmissionCoordinatorTests
 {
     [TestMethod]
     public async Task StartupInitializerInitializesAdmissionWithoutCaptureWorkerAsync()
@@ -600,17 +600,19 @@ public sealed class CaptureAdmissionCoordinatorTests
 
         internal FleetRuntimeState RuntimeState { get; }
 
-        internal static async Task<CoordinatorFixture> CreateAsync(string root, bool provisioningGate = false)
+        internal static async Task<CoordinatorFixture> CreateAsync(
+            string root, bool provisioningGate = false, Guid? firstBootPauseId = null)
         {
             var telemetry = new CaptureControlTelemetry();
             var runtimeState = new FleetRuntimeState(TimeProvider.System);
             var coordinator = new CaptureAdmissionCoordinator(
-                new InitializingIngress(root),
+                new InitializingIngress(root, new FirstBootPauseOptions { Id = firstBootPauseId }.Identity),
                 Options.Create(new CameraAgentHostOptions
                 {
                     RawIngressRoot = root,
                     RawIngressSqliteBusyTimeoutSeconds = 1,
-                    ProvisioningStartupGate = new ProvisioningStartupGateOptions { Enabled = provisioningGate }
+                    ProvisioningStartupGate = new ProvisioningStartupGateOptions { Enabled = provisioningGate },
+                    FirstBootPause = new FirstBootPauseOptions { Id = firstBootPauseId }
                 }),
                 TimeProvider.System,
                 telemetry,
@@ -626,10 +628,11 @@ public sealed class CaptureAdmissionCoordinatorTests
         }
     }
 
-    private sealed class InitializingIngress(string root) : IRawCaptureIngress
+    private sealed class InitializingIngress(string root, FirstBootPauseIdentity? firstBootPause = null) : IRawCaptureIngress
     {
         public async ValueTask InitializeAsync(CancellationToken cancellationToken)
-            => await CreateJournal(root).InitializeAsync(cancellationToken).ConfigureAwait(false);
+            => await new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1, firstBootPause: firstBootPause)
+                .InitializeAsync(cancellationToken).ConfigureAwait(false);
 
         public ValueTask<RawCaptureReceipt?> AcceptAsync(
             CameraModuleConfig configuration,

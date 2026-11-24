@@ -33,7 +33,7 @@ namespace HVO.SkyMonitor.Deployment;
 /// directory where the layout has one. Every blob is checked against the digest that names it, and its JSON is read
 /// with <see cref="ReleaseJson"/>.
 /// </summary>
-internal static class ReleaseImageArchive
+internal static partial class ReleaseImageArchive
 {
     /// <summary>The longest layout, index, manifest or configuration entry read into memory.</summary>
     private const int MaximumMetadataBytes = 4 * 1024 * 1024;
