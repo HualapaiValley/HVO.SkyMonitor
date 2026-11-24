@@ -147,10 +147,11 @@ COPY --from=build /app/replay-runner /app/replay-runner
 # Its change makes existing installers checkpoint the paired databases before store conversion;
 # rollback restores that checkpoint rather than handing converted stores to older readers.
 # This revision reads raw schema 17, processing schema 12 and the settled environmental schema 5.
-# The centered-view retention-index reader advances the boundary so the installer takes a paired
-# checkpoint even when the installed image already writes raw schema 17 and processing schema 12.
+# The combined layout includes the registration retention index and input diagnostics (#1961)
+# and the six centered-view retention indexes (#2000). Use the pre-sync draft revision as a
+# distinct boundary so the installer checkpoints from either reader at raw 17 and processing 12.
 # The checkpoint preserves the previous reader's processing and environmental stores.
-# Refs #1901, #1919, #1922, #1938, #2000.
+# Refs #1901, #1919, #1922, #1938.
 # The state-contracts label is the image's state contract (install contract section 6), which
 # release.json's stateContracts.cameraAgent repeats: for each SQLite store an instance keeps,
 # the schema this image writes and the schemas it reads. CameraAgentStateContractsLabelTests
@@ -165,7 +166,7 @@ ARG HVO_SOURCE_REVISION
 ARG HVO_CREATED
 LABEL io.hvo.skymonitor.component="CameraAgent" \
       io.hvo.skymonitor.state-compatibility="cameraagent-state-v2" \
-      io.hvo.skymonitor.minimum-compatible-revision="ee848ab110e094ef888c1aca4225ea9c8be226f6" \
+      io.hvo.skymonitor.minimum-compatible-revision="ded7cadc6fe005f8bdda09387e1c3d1337f66e4e" \
       io.hvo.skymonitor.identity-migration="20260827053715_InitialIdentity" \
       io.hvo.skymonitor.raw-ingress-schema="17" \
       io.hvo.skymonitor.raw-ingress-migration="canonical-v13-v14-v15-v16-to-v17" \

@@ -4,9 +4,10 @@ This file records the changes to HVO.SkyMonitor that operators and users notice.
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-`[Unreleased]` records the work merged to `development/v1` since the last release. A release renames `[Unreleased]`
-to its version and adds `docs/upgrade-notes/X.Y.Z.md` (install contract section 3). 0.9.0, the first release, starts
-with the work merged from 2026-10-16 onward; earlier development is recorded in its pull requests.
+Each operator-visible pull request adds one [changelog fragment](changelog.d/README.md).
+The release PR assembles the fragments and remaining Unreleased entries into the
+new version section and adds `docs/upgrade-notes/X.Y.Z.md`. 0.9.0, the first release,
+starts with the work merged from 2026-10-16 onward. Pull requests record earlier development.
 
 ## [Unreleased]
 
@@ -30,21 +31,21 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - The opt-in centered CameraAgent profile retains single and stack previews with their original overlay revisions, so an archived view can be reopened after late evidence arrives. #1922
 
+- Release tooling can check local LogicHost identity candidates against their archive bytes, checksums and central compatibility declarations without loading or installing them. Refs #1242
+
 ### Changed
 
-- The shipped CameraAgent `appsettings.json` defaults `CentralIntegration:Mode` to `Disabled` and omits the previous `SkyMonitor:BaseUrl` default of `http://logichost:8080`. Enabling central integration requires explicit service addresses. #2061
+- SkyMonitor CI keeps functional tests on the merge path and reports tight timing and allocation checks in a separate Raspberry Pi 5 workflow. The Pi workflow flags timings more than 20% above a rolling baseline. #2060
 
 - SkyMonitor CI and the standard local validation commands now skip the retired LogicHost and combined CameraAgent–LogicHost test suites. The active CI inventory has 16,583 of 17,819 Unit cases and 916 of 1,540 Integration cases. #2048
 
-- The CameraAgent API reference pages have updated styling for request and response examples. #2032
+- The CameraAgent and LogicHost API reference pages have updated styling for request and response examples. #2032
 
 - Ordinary VirtualSky rendering defaults to 2,000 stellar candidates when the host and camera profile supply no explicit limit. The sky map keeps its own limit. #1901
 
 - CameraAgent capture processing checks the shared journal's integrity and foreign keys once per startup instead of three times, so processing and the Current Sky plate solution become available sooner after a restart with a long retained history. #1914
 
 ### Removed
-
-- Removed the LogicHost application, its deployment and qualification tooling, and the split-host installer commands. SkyMonitor installs and runs standalone CameraAgent, including the stock Silo layout. #2061
 
 - Full qualification drops the retired LogicHost and combined jobs and stops publishing LogicHost artifacts. Required CI reports the result of the active checks. #2049
 
@@ -71,6 +72,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 - CameraAgent can stop its local automation worker repeatedly, including after disposal, while waiting for any active adapter to finish draining. #1932
 - CameraAgent shutdown releases its remaining services after a local automation task fails during cancellation. The stop still reports the original failure. #1936
 - CameraAgent can upgrade the beta astrometry journal to centered processing while retaining captures and indexed astrometry history. #1922
+
+- CameraAgent identifies the retained input that blocked centered registration, reports unavailable predecessor history on resumed runs, and keeps retention lookups fast as window history grows. #1961
 
 - CameraAgent refuses new legacy reference-astrometry presets while the active camera profile uses centered exposure (#1919).
 

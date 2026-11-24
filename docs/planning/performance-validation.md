@@ -719,7 +719,7 @@ line/90 percent branch floors, and renderer/catalog paths retain 90/85 floors. T
 native JPEG wrapper retains 95/80 because defensive null/failure branches inside
 successful Skia factory and codec calls cannot be induced deterministically.
 
-ReportGenerator is the single authoritative merger. CI collects 19 explicit
+ReportGenerator is the single authoritative merger. CI collects the configured
 Unit, Integration, and architecture reports from the active test projects, creates one canonical Cobertura
 report, and enforces and publishes that same result. Pull requests cannot remove
 risk paths, lower thresholds, or widen tolerance relative to the target branch.
@@ -728,11 +728,12 @@ regressions are corrected rather than accepted through a generic disposition.
 
 ## Elastic provider evidence (#430)
 
-`ElasticProviderPerformanceEvidenceTests` (Manual) drives the `local-process`
-adapter against a Kestrel-hosted LogicHost with the real runner binary and
-records cold and warm start, drain throughput with 1, 2, and 4 instances,
-scale-to-zero and cleanup timing, and host CPU/memory to
+The pre-retirement `ElasticProviderPerformanceEvidenceTests` (Manual) drove
+the `local-process` adapter against the central host with the real runner
+binary. It recorded cold and warm start, drain throughput with 1, 2, and 4
+instances, scale-to-zero and cleanup timing, and host CPU/memory in
 `TestResults/elastic-providers/<revision>/elastic-provider-evidence.json`.
+[Historical procedure](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/66e6aa237b40c70342815af6e2511122daa56bb6/docs/planning/performance-validation.md#elastic-provider-evidence-430).
 
 ## Space-weather refresh composition (Refs #1398)
 

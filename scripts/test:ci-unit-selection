@@ -52,6 +52,8 @@ expect_fail 'expected exactly 1' --workflow "$scratch/duplicate.yml"
 # shellcheck disable=SC2016
 mutate filter '/unit\/cameraagent-integration/ s#--filter "\$UNIT_FILTER"#--filter "TestCategory=Integration"#'
 expect_fail 'lacks --filter' --workflow "$scratch/filter.yml"
+mutate performance '/^  unit:/,/^  integration:/ s/&TestCategory!=Performance//'
+expect_fail 'the Unit job must use the positive Unit filter' --workflow "$scratch/performance.yml"
 mutate nobuild '/unit\/cameraagent-integration/ s# --no-build##'
 expect_fail 'lacks --no-build' --workflow "$scratch/nobuild.yml"
 
@@ -204,24 +206,21 @@ printf() {
 DELIVERY
 BASH_ENV="$scratch/fail-delivery.bash" expect_fail 'could not inspect input (delivery=9, grep=1)' --workflow "$workflow"
 
-# Discovery may emit a complete-looking list before failing; capture its status
-# before consuming either the inventory list or a project's adjacent csproj list.
-real_find="$(command -v find)"
-cat > "$scratch/inspection-bin/find" <<'FIND'
+# A failed inventory read can still emit complete-looking output. Check the
+# reader's status before using any project names.
+real_jq="$(command -v jq)"
+cat > "$scratch/inspection-bin/jq" <<'JQ'
 #!/usr/bin/env bash
 set -euo pipefail
-"$HVO_UNIT_REAL_FIND" "$@"
-case "${HVO_UNIT_INSPECTION_SCOPE-}:$*" in
-  inventories:*'-maxdepth 2 '*|projects:*'-maxdepth 1 '*)
-    printf 'Simulated partial discovery failure.\n' >&2; exit 2 ;;
-esac
-FIND
-chmod +x "$scratch/inspection-bin/find"
-for scope in inventories projects; do
-  PATH="$scratch/inspection-bin:$PATH" HVO_UNIT_INSPECTION_SCOPE="$scope" \
-    HVO_UNIT_REAL_FIND="$real_find" HVO_UNIT_REAL_GREP="$real_grep" \
-    expect_fail 'could not inspect' --workflow "$workflow"
-done
+"$HVO_UNIT_REAL_JQ" "$@"
+printf 'Simulated inventory read failure.\n' >&2
+exit 2
+JQ
+chmod +x "$scratch/inspection-bin/jq"
+PATH="$scratch/inspection-bin:$PATH" HVO_UNIT_REAL_JQ="$real_jq" HVO_UNIT_REAL_GREP="$real_grep" \
+  expect_fail 'invalid Unit project membership' --workflow "$workflow"
+# Keep ordinary workflow mutations on the real reader again.
+unlink "$scratch/inspection-bin/jq"
 
 mutate noupload '/^  unit:/,/^  integration:/ s#^          path: TestResults/unit/$#          path: TestResults/unit/astronomy/#'
 expect_fail 'must upload TestResults/unit/' --workflow "$scratch/noupload.yml"
@@ -250,21 +249,31 @@ expect_fail 'invalid Docker endpoint' --workflow "$scratch/docker.yml"
 
 # Inventory-driven: a new project that owns Unit cases must be selected, and a
 # selected project that owns none is stale. The fixture mirrors the real
-# inventories and project names without copying any test source.
+# project membership without copying any test source.
 fixture="$scratch/tests"
-while IFS= read -r inventory; do
-  name="$(basename "$(dirname "$inventory")")"
+mkdir "$fixture"
+inventory="$repo_root/tests/unit-test-projects.json"
+cp "$inventory" "$fixture/unit-test-projects.json"
+while IFS= read -r name; do
   mkdir -p "$fixture/$name"
-  cp "$inventory" "$fixture/$name/test-categories.json"
   : > "$fixture/$name/$name.csproj"
-done < <(find "$repo_root/tests" -mindepth 2 -maxdepth 2 -name test-categories.json | sort)
+done < <(jq -r '.[]' "$inventory")
 expect_pass --workflow "$workflow" --tests-root "$fixture"
+printf '{"Unit":3}\n' > "$fixture/unit-test-projects.json"
+expect_fail 'invalid Unit project membership' --workflow "$workflow" --tests-root "$fixture"
+cat "$inventory" "$inventory" > "$fixture/unit-test-projects.json"
+expect_fail 'invalid Unit project membership' --workflow "$workflow" --tests-root "$fixture"
+jq '. + [.[0]]' "$inventory" > "$fixture/unit-test-projects.json"
+expect_fail 'invalid Unit project membership' --workflow "$workflow" --tests-root "$fixture"
+jq '. + ["HVO.SkyMonitor.New.Tests"]' "$inventory" > "$fixture/unit-test-projects.json"
+expect_fail 'unknown Unit project: HVO.SkyMonitor.New.Tests' --workflow "$workflow" --tests-root "$fixture"
 mkdir -p "$fixture/HVO.SkyMonitor.New.Tests"
-printf '{"Unit":3,"Integration":0,"Manual":0,"Soak":0,"External":0,"Hardware":0}\n' > "$fixture/HVO.SkyMonitor.New.Tests/test-categories.json"
 : > "$fixture/HVO.SkyMonitor.New.Tests/HVO.SkyMonitor.New.Tests.csproj"
-expect_fail 'tests/HVO.SkyMonitor.New.Tests/HVO.SkyMonitor.New.Tests.csproj owns 3 Unit case(s)' --workflow "$workflow" --tests-root "$fixture"
-rm -r "$fixture/HVO.SkyMonitor.New.Tests"
-printf '{"Unit":0,"Integration":1,"Manual":0,"Soak":0,"External":0,"Hardware":0}\n' > "$fixture/HVO.SkyMonitor.Astronomy.Tests/test-categories.json"
+expect_fail 'tests/HVO.SkyMonitor.New.Tests/HVO.SkyMonitor.New.Tests.csproj owns Unit cases' --workflow "$workflow" --tests-root "$fixture"
+# A Performance-only project can exist without a Unit selection.
+cp "$inventory" "$fixture/unit-test-projects.json"
+expect_pass --workflow "$workflow" --tests-root "$fixture"
+jq 'map(select(. != "HVO.SkyMonitor.Astronomy.Tests"))' "$inventory" > "$fixture/unit-test-projects.json"
 expect_fail 'selects tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj, which owns no Unit cases' --workflow "$workflow" --tests-root "$fixture"
 
 # Each component's supplemental command is independently protected. Mutations
@@ -302,6 +311,8 @@ while IFS='|' read -r job component name slot; do
   done
   mutate "$component-envfilter" "$range { /^      UNIT_FILTER:/ s#TestCategory=Unit#TestCategory=Integration#; }"
   expect_fail "$job must use the complete positive Unit filter" --workflow "$scratch/$component-envfilter.yml"
+  mutate "$component-performance" "$range { /^      UNIT_FILTER:/ s/&TestCategory!=Performance//; }"
+  expect_fail "$job must use the complete positive Unit filter" --workflow "$scratch/$component-performance.yml"
   mutate "$component-build-binding" "$range { s#run: ./scripts/ci:component-build $component#run: ./scripts/ci:component-build delivery#; }"
   expect_fail "$job supplemental command must follow its component build" --workflow "$scratch/$component-build-binding.yml"
   # Remove each owned root from the actual build script, rather than from a
@@ -333,4 +344,4 @@ for component in shared cameraagent delivery; do
   cmp "$scratch/expected" "$scratch/actual"
 done
 
-printf 'CI Unit selection contract passed (full job, two supplemental component selections/build roots, three component build plans, 2 multiline key controls, clean export absence, and 17 input-inspection failure controls).\n'
+printf 'CI Unit selection contract passed (full job, supplemental component selections, build plans, workflow boundaries, and Unit membership).\n'

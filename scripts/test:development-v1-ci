@@ -43,6 +43,7 @@ short = (root / ".github/workflows/development-v1.yml").read_text()
 full = (root / ".github/workflows/ci.yml").read_text()
 promotion = (root / ".github/workflows/promote-main.yml").read_text()
 queue_gate = (root / ".github/workflows/merge-queue-reviewed-head.yml").read_text()
+pi5 = (root / ".github/workflows/performance-pi5.yml").read_text()
 
 
 def read_workflows(directory):
@@ -123,7 +124,7 @@ def normalized_name(value):
     return " ".join(value.split()).casefold() if isinstance(value, str) else None
 
 
-required_names = ("hvo/reviewed-head", "Development v1 / Preflight", "Development v1 / Build and Unit")
+required_names = ("hvo/reviewed-head", "Development v1 / Preflight", "Development v1 / Build and Unit", "Required CI")
 
 
 classifier_run_line = (
@@ -164,10 +165,40 @@ def lint_commands(executable):
 merge_group_trigger = (
     "  merge_group:\n    types: [checks_requested]\n    branches: [development/v1]\n"
 )
+merge_group_lookup = "Find successful merge-group validation for the pushed SHA"
+queue_push_condition = (
+    "if: github.event_name == 'push' && github.ref == 'refs/heads/development/v1' && "
+    "github.actor == 'github-merge-queue[bot]'"
+)
+build_runner = (
+    "    runs-on: ${{ fromJSON(needs.preflight.outputs.merge_group_run_id != '' && "
+    "'[\"ubuntu-24.04\"]' || '[\"self-hosted\", \"linux\", \"x64\", \"hvo-skymonitor-build\"]') }}"
+)
+workload_step = "Select Build and Unit workload"
+workload_condition = "if: ${{ steps.workload.outcome != 'success' || steps.workload.outputs.run_full != 'false' }}"
 
 
 preflight_timeout = "    timeout-minutes: 6"
-unit_filter = "TestCategory=Unit"
+changelog_error = "Preflight validates fragments and binds the PR limit to the checked-out merge parents"
+changelog_contract = """\
+env:
+  PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+run: |
+  args=(--check)
+  if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+    parents="$(git rev-list --parents -n 1 HEAD)" || parents=''
+    read -r merge first second extra <<< "$parents"
+    if [[ "$merge" == "$GITHUB_SHA" && -n "$first" && -n "$second" && "$second" == "$PR_HEAD_SHA" && -z "$extra" ]]; then
+      args+=(--base "$first")
+    else
+      echo 'Cannot bind the changelog fragment limit to the checked-out PR merge parents.' >&2
+      exit 1
+    fi
+  fi
+  ./scripts/release:changelog "${args[@]}"
+  ./scripts/test:changelog
+"""
+unit_filter = "TestCategory=Unit&TestCategory!=Performance"
 unit_command = " \\\n".join((
     "            dotnet test HVO.SkyMonitor.v9.slnx",
     "              --no-build",
@@ -178,11 +209,12 @@ unit_command = " \\\n".join((
     '              --results-directory "$DEV_V1_EVIDENCE_ROOT/unit"',
     "              --logger trx",
 ))
-unit_selection_error = "exact solution Unit command with the positive Unit category"
+unit_selection_error = "exact solution Unit command with the positive Unit category and Performance exclusion"
 queue_permissions = "permissions:\n  contents: read\n  pull-requests: read\n  statuses: read\n"
 trusted_checkout = """        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: refs/heads/development/v1
+          fetch-depth: 0
           persist-credentials: false"""
 queue_execution = """        env:
           GH_TOKEN: ${{ github.token }}
@@ -208,6 +240,7 @@ def violations(short, full, queue=None, extra=None):
 
     require("name: Development v1 / Preflight" in preflight, "required Preflight name")
     require("name: Development v1 / Build and Unit" in build, "required Build and Unit name")
+    require("    name: Required CI" in job(full, "required").splitlines(), "required full qualification name")
     require("needs: preflight" in build, "preflight dependency")
     require(
         "if: github.event_name == 'push' || github.event_name == 'merge_group' || "
@@ -338,7 +371,7 @@ def violations(short, full, queue=None, extra=None):
             "queue exact read-only permissions without job overrides")
     require(step(queue, "Checkout trusted development base").strip() == trusted_checkout.strip(),
             "queue trusted branch checkout with credentials disabled")
-    require(step(queue, "Require the reviewed-head status on the queued pull request head").strip() ==
+    require(step(queue, "Verify reviewed diffs and clean queue merges").strip() ==
             queue_execution.strip(), "queue exact environment and trusted-base execution")
     require(len(re.findall(r"^      - ", queue, re.M)) == 2 and
             re.findall(r"^  ([\w-]+):$", jobs_section(queue), re.M) == ["reviewed-head"],
@@ -346,7 +379,6 @@ def violations(short, full, queue=None, extra=None):
     require("        if:" not in queue and "    if:" not in queue and "continue-on-error:" not in queue,
             "queue reviewed-head is unconditional and fails closed")
     require("hvo/reviewed-head" not in short, "the v1 checks never report hvo/reviewed-head")
-    require("cancel-in-progress: true" in short, "stale-run cancellation")
     require("continue-on-error:" not in short, "required checks must fail closed")
     for command in (
         "ci:shell-syntax", "test:ci-classification", "test:coordination-guard",
@@ -372,6 +404,12 @@ def violations(short, full, queue=None, extra=None):
     base_images = step(preflight, "Check Dockerfile base images")
     require(base_images.strip() == "run: ./scripts/ci:base-images",
             "base-image check is unconditional and fail-closed")
+    changelog = step(preflight, "Validate changelog fragments")
+    require(textwrap.dedent(changelog).strip() == changelog_contract.strip(), changelog_error)
+    full_changelog = step(quality, "Validate changelog fragments")
+    require("./scripts/release:changelog --check" in full_changelog and
+            "./scripts/test:changelog" in full_changelog and "        if:" not in full_changelog,
+            "Full Quality validates fragments on every qualified tree")
     require(preflight_timeout in preflight.splitlines(), "Preflight allows 360 seconds for every event")
     # Issue #1321: both required profiles scan the complete history for secrets,
     # inside a check that branch protection already requires.
@@ -434,14 +472,25 @@ def violations(short, full, queue=None, extra=None):
         require(coverage.splitlines().count(command) == 1, f"per-file gate wiring: {command}")
     require('        id: coverage\n' in coverage and 'bash -euo pipefail -c' in coverage,
             "coverage failures propagate and retain stage identity")
-    fast_condition = "if: ${{ steps.docs-classify.outcome != 'success' || steps.docs-classify.outputs.run_full != 'false' }}"
+    lookup = step(preflight, merge_group_lookup)
+    require(queue_push_condition in lookup and 'id: merge-group' in lookup and
+            'GH_TOKEN: ${{ github.token }}' in lookup and
+            'merge_group_run_id: ${{ steps.merge-group.outputs.run_id }}' in preflight and
+            '      actions: read' in preflight.splitlines(),
+            "queue evidence is read-only and limited to development/v1 merge-queue pushes")
+    require('MERGE_GROUP_RUN_ID: ${{ needs.preflight.outputs.merge_group_run_id }}' in build,
+            "Build and Unit uses the Preflight queue proof")
     for name in ("Setup .NET from global.json", "Restore solution", "Build warning-clean Release solution",
                  "Run Docker-disabled Unit selection", "Enforce canonical per-file coverage floors"):
         body = step(build, name)
-        require(body.count(fast_condition) == 1 and "continue-on-error:" not in body,
-                f"{name} skips only explicit successful docs classification")
-    fast = step(build, "Classify exact documentation diff")
-    for expected in ('id: docs-classify', 'PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}',
+        require(body.count(workload_condition) == 1 and "continue-on-error:" not in body,
+                f"{name} skips only explicit successful workload classification")
+    screenshots = step(build, "Draw terminal screenshots")
+    require("if: ${{ !cancelled() && (steps.workload.outcome != 'success' || "
+            "steps.workload.outputs.run_full != 'false') }}" in screenshots,
+            "terminal screenshots follow the selected workload")
+    fast = step(build, workload_step)
+    for expected in ('id: workload', 'PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}',
                      'EVENT_NAME: ${{ github.event_name }}', 'Preflight dependency: success',
                      'git show "$base:scripts/ci:classify"', '"$second" == "$PR_HEAD_SHA"',
                      '"$merge_commit" == "$GITHUB_SHA"', 'docs-fast-only',
@@ -451,9 +500,11 @@ def violations(short, full, queue=None, extra=None):
                      'timeout --signal=TERM --kill-after=5s 30s bash "$classifier" --verify-docs-restore "$base"',
                      'printf \'restore_imports_verified=true\\n\' | cmp -s - "$proof"'):
         require(expected in fast, f"exact classification wiring: {expected}")
-    require("fetch-depth: ${{ github.event_name == 'pull_request' && '0' || '1' }}" in step(build, "Checkout exact commit") and
-            build.find("Classify exact documentation diff") < build.find("Setup .NET from global.json"),
-            "event-specific checkout depth and classification order")
+    checkout = step(build, "Checkout exact commit")
+    require("fetch-depth: ${{ github.event_name == 'pull_request' && '0' || '1' }}" in checkout and
+            "if: env.MERGE_GROUP_RUN_ID == ''" in checkout and
+            build.find(workload_step) < build.find("Setup .NET from global.json"),
+            "event-specific checkout and classification order")
     require('docsFastPath:$docsFastPath,docsFastPathReason:$docsFastPathReason,preflight:"success"' in build and
             'baseSha:$baseSha,prHeadSha:$prHeadSha,mergeSha:$headSha' in build,
             "fast decision, commits and preflight in retained manifest")
@@ -485,9 +536,10 @@ def violations(short, full, queue=None, extra=None):
     )
     require("if: needs.changes.outputs.mode == 'full'" in qualification_build,
             "category audit belongs to full qualification")
+    require("run: ./scripts/test:test-category-audit" in qualification_build,
+            "full Build tests category discovery contracts")
     # Refs #1747. Atlas assigned the build label only to gh-runner-05/06.
     # Qualification retains its own label; v1 selects the ready build pair.
-    build_pool = "[self-hosted, linux, x64, hvo-skymonitor-build]"
     reserved = "[self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]"
     # A selector is either a bare GitHub-hosted image or the exact reserved list;
     # anything else (a self-hosted list carrying an image label, a mapping or an
@@ -496,8 +548,8 @@ def violations(short, full, queue=None, extra=None):
     require(reserved in selectors and all(
         value == reserved or re.fullmatch(r"ubuntu-(latest|\d+\.\d+)", value) for value in selectors),
         "every self-hosted qualification job requires hvo-qualification")
-    require(re.findall(r"^    runs-on: (.+)$", build, re.M) == [build_pool],
-            "v1 Build and Unit uses the reserved build pair")
+    require(re.findall(r"^    runs-on: .+$", build, re.M) == [build_runner],
+            "v1 Build and Unit uses the reserved build pair and hosts only the verified fast path")
     require("hvo-qualification" not in short, "v1 profile never requires the qualification label")
     return errors
 
@@ -575,7 +627,7 @@ if errors:
 
 # Mutation controls prove the checks reject costly creep and silent loss of gates.
 mutations = (
-    ("fast classification missing", short.replace("id: docs-classify", "id: absent"), full),
+    ("fast classification missing", short.replace("id: workload", "id: absent"), full),
     ("missing PR head allowed", short.replace('-n "$PR_HEAD_SHA" && ', ''), full),
     ("tip comparison omitted", short.replace('for endpoint in "$PR_HEAD_SHA" "$merge_commit"', 'for endpoint in "$merge_commit"'), full),
     ("merge parent not bound", short.replace('"$second" == "$PR_HEAD_SHA"', '"$second" == "$second"'), full),
@@ -598,12 +650,16 @@ mutations = (
         "- name: Check Dockerfile base images", "- name: Check Dockerfile base images\n        if: false"), full),
     ("base-image failure masked", short.replace("run: ./scripts/ci:base-images", "run: ./scripts/ci:base-images || true"), full),
     ("missing Unit filter", short.replace(f'--filter "{unit_filter}"', ""), full),
+    ("missing Performance exclusion", short.replace("&TestCategory!=Performance", ""), full),
     ("coverage not collected", short.replace('--collect:"XPlat Code Coverage"', ""), full),
     ("coverage policy removed", short.replace('run: ./scripts/coverage:policy ', 'run: true '), full),
     ("coverage settings lost", short.replace('--settings "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings"', ""), full),
     ("coverage gate removed", short.replace('./scripts/coverage:development-v1 "$DEV_V1_EVIDENCE_ROOT/unit"', 'true "$DEV_V1_EVIDENCE_ROOT/unit"'), full),
     ("coverage failure masked", short.replace('./scripts/coverage:development-v1 "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage"', './scripts/coverage:development-v1 "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage" || true'), full),
-    ("coverage step conditional", short.replace("if: ${{ steps.docs-classify.outcome != 'success' || steps.docs-classify.outputs.run_full != 'false' }}", "if: false"), full),
+    ("coverage step conditional", short.replace(workload_condition, "if: false"), full),
+    ("direct push eligible for reuse", short.replace(" && github.actor == 'github-merge-queue[bot]'", ""), full),
+    ("queue run eligible for reuse", short.replace(queue_push_condition, "if: github.event_name == 'merge_group'"), full),
+    ("queue proof output disconnected", short.replace("${{ steps.merge-group.outputs.run_id }}", "''"), full),
     ("coverage errors tolerated", short.replace('        id: coverage', '        continue-on-error: true\n        id: coverage'), full),
     ("coverage regression tests lost", short.replace('./scripts/test:coverage-development-v1', 'true'), full),
     ("coverage timing lost", short.replace('stages:[$restore,$build,$unit,$coverage]', 'stages:[$restore,$build,$unit]'), full),
@@ -632,6 +688,7 @@ mutations = (
         "scripts/test-categories/HVO.SkyMonitor.TestCategoryAudit.csproj", "missing.csproj")),
     ("lint destination removed", short, full.replace("./scripts/ci:shellcheck", ":")),
     ("control guard removed", short.replace("./scripts/test:ci-classification", ":"), full),
+    ("full fragment validation removed", short, full.replace("./scripts/release:changelog --check", ":")),
     ("evidence lost on failure", short.replace("if: always()", "if: success()"), full),
     ("qualification job on general pool", short, full.replace(
         "x64, hvo-skymonitor, hvo-qualification]", "x64, hvo-skymonitor]", 1)),
@@ -641,9 +698,9 @@ mutations = (
     ("qualification selector with an image label", short, full.replace(
         "x64, hvo-skymonitor, hvo-qualification]", "x64, hvo-skymonitor, ubuntu-24.04]", 1)),
     ("v1 confined to qualification runners", short.replace(
-        "x64, hvo-skymonitor-build]", "x64, hvo-skymonitor-build, hvo-qualification]"), full),
+        '"x64", "hvo-skymonitor-build"]', '"x64", "hvo-skymonitor-build", "hvo-qualification"]'), full),
     ("v1 returns to the general runner pool", short.replace(
-        "x64, hvo-skymonitor-build]", "x64, hvo-skymonitor]"), full),
+        '"x64", "hvo-skymonitor-build"]', '"x64", "hvo-skymonitor"]'), full),
     ("v1 secret scan removed", short.replace("./scripts/ci:secret-scan", ":"), full),
     ("v1 contract removed", short.replace("./scripts/test:ci-secret-scan", ":"), full),
     ("v1 history scan gated", short.replace(
@@ -681,6 +738,7 @@ queue_mutations = [
     ("job permissions override", queue_gate.replace("    runs-on:", "    permissions: write-all\n    runs-on:")),
     ("credentials persisted", queue_gate.replace("persist-credentials: false", "persist-credentials: true")),
     ("credential setting removed", queue_gate.replace("          persist-credentials: false\n", "")),
+    ("queue checkout shallow", queue_gate.replace("fetch-depth: 0", "fetch-depth: 1")),
     ("queued checkout", queue_gate.replace("ref: refs/heads/development/v1", "ref: ${{ github.event.merge_group.head_sha }}")),
     ("base_sha checkout", queue_gate.replace("ref: refs/heads/development/v1", "ref: ${{ github.event.merge_group.base_sha }}")),
     ("checkout failure ignored", queue_gate.replace("        with:", "        continue-on-error: true\n        with:")),
@@ -711,7 +769,7 @@ queue_mutations.extend([
                                                     "GROUP_SHA: ${{ github.event.pull_request.head.sha }}")),
 ])
 mutations += tuple((name, short, full, candidate) for name, candidate in queue_mutations)
-for required in ("hvo/reviewed-head", "Development v1 / Preflight", "Development v1 / Build and Unit"):
+for required in required_names:
     spoof = f"name: Spoof\non: push\njobs:\n  spoof:\n    name: {json.dumps(required)}\n    runs-on: ubuntu-24.04\n    steps:\n      - run: 'true'\n"
     mutations += ((f"spoof workflow: {required}", short, full, queue_gate, {"spoof.yml": spoof}),)
 mutations += (("inline jobs spoof", short, full, queue_gate,
@@ -925,7 +983,67 @@ with tempfile.TemporaryDirectory(prefix="hvo-yaml-parser-") as directory:
 for name, candidate, qualification, *queue in mutations:
     if not violations(candidate, qualification, *queue):
         raise SystemExit(f"Mutation was not rejected: {name}")
-for replacement in ("TestCategory=Integration", "TestCategory!=Integration", "TestCategory=Unit&FullyQualifiedName~Narrow"):
+changelog = step(job(short, "preflight"), "Validate changelog fragments")
+for label, original, replacement in (
+    ("limit removed", 'args+=(--base "$first")', ":"),
+    ("stale event base", 'args+=(--base "$first")', 'args+=(--base "${{ github.event.pull_request.base.sha }}")'),
+    ("merge SHA unchecked", '"$merge" == "$GITHUB_SHA" && ', ""),
+    ("PR head unchecked", '"$second" == "$PR_HEAD_SHA" && ', ""),
+    ("extra parent allowed", ' && -z "$extra"', ""),
+    ("binding failure ignored", "exit 1", ":"),
+):
+    candidate = short.replace(changelog, changelog.replace(original, replacement), 1)
+    if candidate == short or changelog_error not in violations(candidate, full):
+        raise SystemExit(f"PR changelog mutation was not rejected: {label}")
+    print(f"Rejected PR changelog mutation: {label}")
+
+# Run the Preflight shell against real Git parent lists and record both validator calls.
+changelog_script = textwrap.dedent(changelog.split("        run: |\n", 1)[1])
+with tempfile.TemporaryDirectory(prefix="hvo-changelog-workflow-") as directory:
+    fixture = pathlib.Path(directory)
+
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=fixture, check=True, capture_output=True, text=True).stdout.strip()
+
+    git("init", "-q")
+    git("config", "user.email", "fixture@example.invalid")
+    git("config", "user.name", "fixture")
+    git("commit", "-qm", "base", "--allow-empty")
+    base = git("rev-parse", "HEAD")
+    tree = git("rev-parse", "HEAD^{tree}")
+    candidate = git("commit-tree", tree, "-p", base, "-m", "candidate")
+    third = git("commit-tree", tree, "-p", base, "-m", "third parent")
+    merge = git("commit-tree", tree, "-p", base, "-p", candidate, "-m", "PR merge")
+    octopus = git("commit-tree", tree, "-p", base, "-p", candidate, "-p", third, "-m", "octopus")
+    (fixture / "scripts").mkdir()
+    for name in ("release:changelog", "test:changelog"):
+        script = fixture / "scripts" / name
+        script.write_text('#!/usr/bin/env bash\nprintf "%s " "${0##*/}" "$@" >> "$CALLS"\nprintf "\\n" >> "$CALLS"\n')
+        script.chmod(0o700)
+    calls = fixture / "calls"
+    expected_calls = [f"release:changelog --check --base {base}", "test:changelog"]
+    for label, checkout, workflow_sha, pr_head, passes in (
+        ("valid merge", merge, merge, candidate, True),
+        ("mismatched checkout", merge, third, candidate, False),
+        ("wrong PR parent", merge, merge, third, False),
+        ("single parent", candidate, candidate, candidate, False),
+        ("extra parent", octopus, octopus, candidate, False),
+    ):
+        git("checkout", "-q", "--detach", checkout)
+        calls.write_text("")
+        env = dict(os.environ, GITHUB_EVENT_NAME="pull_request", GITHUB_SHA=workflow_sha,
+                   PR_HEAD_SHA=pr_head, CALLS=str(calls))
+        result = subprocess.run(["bash", "-euo", "pipefail", "-c", changelog_script],
+                                cwd=fixture, env=env, capture_output=True, text=True, timeout=10)
+        observed = [line.rstrip() for line in calls.read_text().splitlines()]
+        if passes:
+            if result.returncode or observed != expected_calls:
+                raise SystemExit(f"Preflight changelog case {label} failed: {observed} {result.stderr}")
+        elif result.returncode != 1 or observed or "Cannot bind the changelog fragment limit" not in result.stderr:
+            raise SystemExit(f"Preflight changelog case {label} did not fail closed: {observed} {result.stderr}")
+    print("Preflight changelog merge-parent binding: 5 behavioral cases passed.")
+
+for replacement in ("TestCategory=Unit", "TestCategory=Unit|TestCategory!=Performance", "TestCategory=Integration", "TestCategory!=Integration", "TestCategory=Unit&FullyQualifiedName~Narrow"):
     candidate = short.replace(f'--filter "{unit_filter}"', f'--filter "{replacement}"')
     if candidate == short or unit_selection_error not in violations(candidate, full):
         raise SystemExit(f"Unit filter mutation was not rejected: {replacement}")
@@ -950,8 +1068,57 @@ with tempfile.TemporaryDirectory(prefix="hvo-inventory-reproduce-") as directory
 
 # Run the actual decision shell with synthetic merge commits and a trusted-base
 # classifier. This verifies literal output parsing and merge-parent binding.
-fast_step = step(job(short, "build-unit"), "Classify exact documentation diff")
+fast_step = step(job(short, "build-unit"), workload_step)
 fast_script = textwrap.dedent(fast_step.split("        run: |\n", 1)[1])
+lookup_step = step(job(short, "preflight"), merge_group_lookup)
+lookup_script = textwrap.dedent(lookup_step.split("        run: |\n", 1)[1])
+with tempfile.TemporaryDirectory(prefix="hvo-merge-group-lookup-") as directory:
+    fixture = pathlib.Path(directory)
+    gh = fixture / "gh"
+    gh.write_text("""#!/usr/bin/env python3
+import json, os, pathlib, sys
+pathlib.Path(os.environ["CALLS"]).write_text(json.dumps(sys.argv[1:]))
+print(os.environ["RESPONSE"])
+sys.exit(int(os.environ["API_EXIT"]))
+""")
+    gh.chmod(0o700)
+    output = fixture / "output"
+    calls = fixture / "calls.json"
+    sha = "a" * 40
+    expected_arguments = ["api", "--method", "GET", "--paginate", "--slurp",
+                          "repos/example/repo/actions/workflows/development-v1.yml/runs",
+                          "-f", "event=merge_group", "-f", f"head_sha={sha}", "-F", "per_page=100"]
+    exact = dict(id=42, head_sha=sha, event="merge_group", status="completed", conclusion="success",
+                 head_branch=f"gh-readonly-queue/development/v1/pr-17-{'b' * 40}",
+                 path=".github/workflows/development-v1.yml")
+    cases = [(key, [{"workflow_runs": [dict(exact, **{key: value})]}], 0, "") for key, value in (
+        ("head_sha", "c" * 40), ("event", "push"), ("status", "in_progress"), ("conclusion", "failure"),
+        ("head_branch", "gh-readonly-queue/development/v10/pr-17"), ("head_branch", None),
+        ("path", ".github/workflows/ci.yml"), ("id", "42"),
+    )]
+    good_page = {"workflow_runs": [exact]}
+    cases.extend((
+        ("exact", [good_page], 0, "run_id=42\n"),
+        ("match on later page", [{"workflow_runs": [dict(exact, head_sha="c" * 40)]}, good_page], 0, "run_id=42\n"),
+        ("missing", [{"workflow_runs": []}], 0, ""),
+        ("failed after printing match", [good_page], 1, ""),
+        ("timeout", [], 124, ""),
+        ("malformed", '{"workflow_runs":[', 0, ""),
+        ("malformed later page", [good_page, {"workflow_runs": None}], 0, ""),
+        ("extra JSON document", json.dumps([good_page]) + "\n[]", 0, ""),
+    ))
+    for label, response, api_exit, expected in cases:
+        output.write_text("")
+        calls.write_text("")
+        env = dict(os.environ, PATH=f"{fixture}:{os.environ['PATH']}", GITHUB_REPOSITORY="example/repo",
+                   GITHUB_SHA=sha, GITHUB_OUTPUT=str(output), CALLS=str(calls), API_EXIT=str(api_exit),
+                   RESPONSE=response if isinstance(response, str) else json.dumps(response))
+        result = subprocess.run(["bash", "-e", "-c", lookup_script], cwd=root, env=env,
+                                capture_output=True, text=True, timeout=10)
+        if result.returncode or output.read_text() != expected or json.loads(calls.read_text()) != expected_arguments:
+            raise SystemExit(f"Merge-group lookup case {label} failed: {output.read_text()} {result.stderr}")
+    print(f"Merge-group lookup: {len(cases)} exact binding, pagination and fallback cases passed.")
+
 with tempfile.TemporaryDirectory(prefix="hvo-fast-workflow-") as directory:
     fixture = pathlib.Path(directory)
     def git(*args):
@@ -1014,7 +1181,7 @@ exit "$FAKE_EXIT"
         evidence.mkdir(exist_ok=True)
         output = fixture / "output"
         output.write_text("")
-        env = dict(os.environ, DEV_V1_EVIDENCE_ROOT=str(evidence), GITHUB_OUTPUT=str(output),
+        env = dict(os.environ, DEV_V1_EVIDENCE_ROOT=str(evidence), GITHUB_OUTPUT=str(output), MERGE_GROUP_RUN_ID="",
                    GITHUB_SHA=merge, EVENT_NAME=event, PR_HEAD_SHA=pr_head,
                    FAKE_CONTENT=content, FAKE_EXIT=exit_code)
         result = subprocess.run(["bash", "-euo", "pipefail", "-c", fast_script], cwd=fixture, env=env,
@@ -1304,14 +1471,26 @@ exit "$FAKE_EXIT"
             raise SystemExit(f"Imported SDK {sdk_form} qualified: {output.read_text()} {result.stderr}")
     # Preserve the expected merge identifier in the later manifest case.
     env.update(GITHUB_SHA=changed_merge)
-    # Execute the actual manifest step for fast and missing-output fallback.
+    output.write_text("")
+    result = subprocess.run(["bash", "-euo", "pipefail", "-c", fast_script], cwd=fixture,
+                            env=dict(env, EVENT_NAME="push", MERGE_GROUP_RUN_ID="42", PR_HEAD_SHA=""),
+                            capture_output=True, text=True)
+    if (result.returncode or "run_full=false" not in output.read_text().splitlines() or
+            "mergeGroupRunId=42" not in (evidence / "classification.md").read_text().splitlines()):
+        raise SystemExit(f"Verified merge-group push selected the wrong workload: {output.read_text()} {result.stderr}")
+    # Execute the actual manifest step for both fast paths and missing-output fallback.
     summary_step = step(job(short, "build-unit"), "Write evidence summary")
     summary_script = textwrap.dedent(summary_step.split("        run: |\n", 1)[1])
     (evidence / "unit").mkdir(exist_ok=True)
     (evidence / "timing").mkdir(exist_ok=True)
-    for decision, outcome, expected in (("false", "success", True), ("", "failure", False)):
-        env.update(CLASSIFY_OUTCOME=outcome, RUN_FULL=decision, DOCS_FAST_PATH_REASON="",
-                   CLASSIFIED_BASE=code_base, GITHUB_EVENT_NAME="pull_request", PR_HEAD_SHA=doc_head,
+    summary = fixture / "step-summary.md"
+    for decision, outcome, group_id, expected in (("false", "success", "", True), ("", "failure", "", False),
+                                                   ("false", "success", "42", False)):
+        event, summary_base, summary_head = ("push", "", "") if group_id else ("pull_request", code_base, doc_head)
+        group_url = f"https://github.com/example/repo/actions/runs/{group_id}" if group_id else None
+        env.update(CLASSIFY_OUTCOME=outcome, RUN_FULL=decision, WORKLOAD_REASON="", MERGE_GROUP_RUN_ID=group_id,
+                   CLASSIFIED_BASE=summary_base, GITHUB_EVENT_NAME=event, PR_HEAD_SHA=summary_head,
+                   GITHUB_SERVER_URL="https://github.com", GITHUB_REPOSITORY="example/repo", GITHUB_STEP_SUMMARY=str(summary),
                    RESTORE_OUTCOME="skipped", BUILD_OUTCOME="skipped", UNIT_OUTCOME="skipped",
                    COVERAGE_OUTCOME="skipped", DEV_V1_STARTED_AT_EPOCH="0")
         result = subprocess.run(["bash", "-euo", "pipefail", "-c", summary_script], cwd=fixture, env=env,
@@ -1320,11 +1499,13 @@ exit "$FAKE_EXIT"
             raise SystemExit(f"Manifest simulation failed: {result.stderr}")
         manifest = json.loads((evidence / "manifest.json").read_text())
         if (manifest["docsFastPath"] is not expected or not manifest["docsFastPathReason"] or
-                manifest["baseSha"] != code_base or manifest["prHeadSha"] != doc_head or
+                manifest["baseSha"] != summary_base or manifest["prHeadSha"] != summary_head or
                 manifest["mergeSha"] != changed_merge or manifest["schema"] != "hvo-development-v1-ci-v6" or
-                (expected and manifest["sdkVersion"] is not None)):
+                manifest["mergeGroupRunUrl"] != group_url or
+                (decision == "false" and (manifest["sdkVersion"] is not None or manifest["unitTrxCount"] != 0)) or
+                (group_url and (group_url not in summary.read_text() or changed_merge not in summary.read_text()))):
             raise SystemExit(f"Invalid manifest evidence: {manifest}")
-    print("Fast workflow shell: 28 decision, binding and trusted-base cases; 2 manifest cases passed.")
+    print("Fast workflow shell: 29 decision, binding and trusted-base cases; 3 manifest cases passed.")
 
 # Exercise the real final promotion step with an offline gh substitute. Creating
 # a PR must be draft; refreshing one must preserve its state; API errors must fail.
@@ -1388,9 +1569,101 @@ else:
         elif request[:3] != ["api", "-X", "POST"] or "draft=true" not in request:
             raise SystemExit("New promotion was not created as draft")
 print(f"Development v1 CI contracts passed; {len(mutations)} mutation controls and 8 offline promotion cases passed.")
+
+
+pr_workflow_prefixes = {"development-v1.yml": "development-v1-", "ci.yml": "ci-${{ github.workflow }}-"}
+
+
+def queue_safe_concurrency(path, workflow):
+    config = yaml.load(workflow, Loader=yaml.BaseLoader)
+    events = config["on"]
+    if isinstance(events, str):
+        events = [events]
+    if path in pr_workflow_prefixes:
+        return ("pull_request" in events and config.get("concurrency") == {
+            "group": pr_workflow_prefixes[path] + "${{ github.event_name }}-" +
+                     "${{ github.event_name == 'merge_group' && github.run_id || github.event.pull_request.number || github.ref }}",
+            "cancel-in-progress": "${{ github.event_name != 'merge_group' }}",
+        } and all("concurrency" not in job for job in config["jobs"].values()))
+    if path == "merge-queue-reviewed-head.yml":
+        return (set(events) == {"merge_group"} and "concurrency" not in config and
+                all("concurrency" not in job for job in config["jobs"].values()))
+    return not {"pull_request", "pull_request_target", "merge_group"}.intersection(events)
+
+
+for path, workflow in workflows.items():
+    if not queue_safe_concurrency(path, workflow):
+        raise SystemExit(f"Review PR and merge-group concurrency for {path}")
+for path in pr_workflow_prefixes:
+    for original, replacement in (
+        ("github.event_name != 'merge_group'", "true"),
+        ("github.event_name == 'merge_group' && github.run_id || ", ""),
+        ("${{ github.event_name }}-", ""),
+    ):
+        if queue_safe_concurrency(path, workflows[path].replace(original, replacement, 1)):
+            raise SystemExit(f"Concurrency mutation passed for {path}: {original}")
+if queue_safe_concurrency("new-workflow.yml", "on: [push, pull_request]\n"):
+    raise SystemExit("A new PR workflow escaped the concurrency audit")
+print(f"Workflow concurrency: {len(workflows)} workflows audited; 7 mutation controls passed.")
+
+
+def pi5_contract(workflow):
+    config = yaml.load(workflow, Loader=yaml.BaseLoader)
+    triggers = config["on"]
+    performance = config["jobs"]["performance"]
+    steps = {step["name"]: step for step in performance["steps"]}
+    restore = steps["Restore last accepted Pi baseline"]
+    run = steps["Run and compare Performance cases"]
+    save = steps["Save accepted Pi baseline"]
+    return (
+        set(triggers) == {"push", "schedule", "workflow_dispatch"}
+        and triggers["push"] == {"branches": ["development/v1"]}
+        and triggers["schedule"] == [{"cron": "0 9 * * *"}]
+        and config["concurrency"] == {"group": "skymonitor-perf-${{ github.ref }}", "cancel-in-progress": "true"}
+        and set(config["jobs"]) == {"performance"}
+        and performance["if"] == "github.ref == 'refs/heads/development/v1'"
+        and performance["runs-on"] == ["self-hosted", "linux", "arm64", "pi5", "hvo-skymonitor-arm64"]
+        and performance["timeout-minutes"] == "30"
+        and steps["Setup .NET from global.json"]["with"] == {
+            "dotnet-version": "10.0.402", "global-json-file": "global.json"
+        }
+        and "needs" not in performance and "continue-on-error" not in performance
+        and restore.get("id") == "restore-baseline"
+        and restore.get("if") == "${{ !inputs.reset_baseline }}"
+        and run.get("env", {}).get("PI5_CACHE_MATCHED_KEY") == "${{ steps.restore-baseline.outputs.cache-matched-key }}"
+        and run.get("env", {}).get("PI5_CACHE_RESTORE_OUTCOME") == "${{ steps.restore-baseline.outcome }}"
+        and "ci/pi5_performance.py" in run["run"]
+        and "continue-on-error" not in run and "if" not in run
+        and "if" not in save and "continue-on-error" not in save
+        and list(steps).index(run["name"]) < list(steps).index(save["name"])
+    )
+
+
+if not pi5_contract(pi5):
+    raise SystemExit("Pi 5 Performance workflow lost its standalone, fail-closed contract")
+for original, replacement in (
+    ("on:\n", "on:\n  pull_request:\n"),
+    ("on:\n", "on:\n  merge_group:\n"),
+    ("development/v1]", "main]"),
+    ("0 9 * * *", "17 9 * * *"),
+    ("skymonitor-perf-", "cameraagent-arm64-advisory-"),
+    ("cancel-in-progress: true", "cancel-in-progress: false"),
+    ("timeout-minutes: 30", "timeout-minutes: 45"),
+    ("10.0.402", "10.0.403"),
+    ("arm64, pi5,", "arm64,"),
+    ("hvo-skymonitor-arm64", "hvo-skymonitor"),
+    ("outputs.cache-matched-key", "outputs.cache-hit"),
+    ("steps.restore-baseline.outcome", "'success'"),
+    ("- name: Run and compare Performance cases", "- name: Run and compare Performance cases\n        continue-on-error: true"),
+    ("- name: Save accepted Pi baseline", "- name: Save accepted Pi baseline\n        if: always()"),
+):
+    if pi5_contract(pi5.replace(original, replacement, 1)):
+        raise SystemExit(f"Pi 5 Performance mutation passed: {replacement}")
+print("Pi 5 Performance workflow contract and 14 mutation controls passed.")
 PY
 
 # Keep the cheap image and runtime-directory fixtures on the Preflight contract path.
 "$repo_root/scripts/test:ci-base-images"
 "$repo_root/scripts/test:cameraagent-arm64-preflight"
 "$repo_root/scripts/test:ci-queue-reviewed-head"
+python3 -B "$repo_root/scripts/ci/test_pi5_performance.py"

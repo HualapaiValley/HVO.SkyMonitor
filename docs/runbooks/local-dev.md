@@ -81,7 +81,7 @@ Use the exact SDK and canonical commands from the
 ```bash
 DOCKER_HOST=unix:///tmp/hvo-no-docker.sock \
   dotnet test HVO.SkyMonitor.v9.slnx \
-    --filter 'TestCategory=Unit'
+    --filter 'TestCategory=Unit&TestCategory!=Performance'
 
 
 dotnet test HVO.SkyMonitor.v9.slnx \
@@ -89,7 +89,7 @@ dotnet test HVO.SkyMonitor.v9.slnx \
 
 ```
 
-Docker-backed CameraAgent acceptance requires an isolated Docker environment. Manual, Soak, External and Hardware selections follow the CI runbook.
+Docker-backed CameraAgent acceptance requires an isolated Docker environment. Manual, Soak, Performance, External and Hardware selections follow the CI runbook.
 
 Validate infrastructure and active documentation commands with:
 

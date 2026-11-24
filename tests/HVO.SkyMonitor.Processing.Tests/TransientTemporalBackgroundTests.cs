@@ -25,7 +25,11 @@ public sealed class TransientTemporalBackgroundTests
                 TransientDetectorExecutionMode.Off,
                 UnexpectedWindowFactory));
         }
+    }
 
+    internal static long MeasureDisabledActivationAllocations()
+    {
+        _ = TransientTemporalWindowActivation.CreateWhenEnabled(TransientDetectorExecutionMode.Off, UnexpectedWindowFactory);
         var allocationStart = GC.GetAllocatedBytesForCurrentThread();
         object? window = null;
         for (var index = 0; index < 1_000; index++)
@@ -37,7 +41,7 @@ public sealed class TransientTemporalBackgroundTests
         var allocatedBytes = GC.GetAllocatedBytesForCurrentThread() - allocationStart;
 
         Assert.IsNull(window);
-        Assert.AreEqual(0, allocatedBytes, "Off must retain no window and allocate no detector-window state.");
+        return allocatedBytes;
     }
 
     [TestMethod]
