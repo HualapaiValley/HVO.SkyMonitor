@@ -40,7 +40,12 @@ internal sealed class SiloPublisher(
     /// artifact revision already staged or published with other bytes or other producer and sidecar facts, is a conflict
     /// and stages nothing.
     /// </summary>
-    public async ValueTask<bool> StageAsync(SiloGroupDraft draft, CancellationToken cancellationToken)
+    public ValueTask<bool> StageAsync(SiloGroupDraft draft, CancellationToken cancellationToken) =>
+        StageAsync(draft, null, cancellationToken);
+
+    /// <summary>Durably stage each source and claim all of them under the same gate used to release staged files.</summary>
+    public async ValueTask<bool> StageAsync(SiloGroupDraft draft,
+        Func<SiloDraftMember, CancellationToken, ValueTask<Stream>>? openContent, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(draft);
         ValidateDraft(draft);
@@ -68,6 +73,13 @@ internal sealed class SiloPublisher(
                 {
                     throw new SiloConflictException("silo.artifact-revision-conflict",
                         $"Artifact revision {member.ArtifactId}/{member.ArtifactRevision} is published with other bytes or facts; it is never replaced.");
+                }
+            }
+            if (openContent is not null)
+            {
+                foreach (var member in draft.Members)
+                {
+                    await payloads.StageAsync(member, openContent, cancellationToken).ConfigureAwait(false);
                 }
             }
             return await state.StageAsync(draft, json, sha, cancellationToken).ConfigureAwait(false);
@@ -135,6 +147,8 @@ internal sealed class SiloPublisher(
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            await payloads.ReconcileAsync(await state.ListClaimedPayloadTokensAsync(cancellationToken).ConfigureAwait(false), cancellationToken)
+                .ConfigureAwait(false);
             // A pending segment is reconciled before any cleanup or new commit.
             await journal.ReconcilePendingAsync(cancellationToken).ConfigureAwait(false);
             await CleanupSpoolLockedAsync(cancellationToken).ConfigureAwait(false);
@@ -531,7 +545,13 @@ internal sealed class SiloPublisher(
     {
         foreach (var member in group.Members.Where(static member => !member.Released))
         {
-            await payloads.ReleaseAsync(member.Draft.SourceToken, cancellationToken).ConfigureAwait(false);
+            // Staging and release share the publisher gate. Each member gives up its claim, but only the final
+            // claimant unlinks the bytes. If interrupted between unlink and mark, the unlink is safe to retry.
+            if (!await state.HasOtherPayloadOwnerAsync(group.Draft.GroupId, group.Draft.RevisionId, member, cancellationToken)
+                .ConfigureAwait(false))
+            {
+                await payloads.ReleaseAsync(member.Draft.SourceToken, cancellationToken).ConfigureAwait(false);
+            }
             await state.MarkReleasedAsync(group.Draft.GroupId, group.Draft.RevisionId, member.Ordinal, cancellationToken).ConfigureAwait(false);
         }
         if (group.ManifestSha256 is { } sha)
@@ -545,7 +565,7 @@ internal sealed class SiloPublisher(
         await journal.ExclusiveAsync(async () =>
         {
             var referenced = await state.ReferencedSpoolNamesAsync(cancellationToken).ConfigureAwait(false);
-            var removed = 0;
+            var removed = spool.CleanupPartials(SweepBatch);
             foreach (var name in spool.Names().Where(name => !referenced.Contains(name)))
             {
                 spool.Delete(name);

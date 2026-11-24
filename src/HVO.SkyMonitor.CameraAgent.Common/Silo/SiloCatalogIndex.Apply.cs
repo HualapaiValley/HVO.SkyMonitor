@@ -18,8 +18,8 @@ internal sealed partial class SiloCatalogIndex
     internal static SiloIdentityKind ParseKind(string kind) => kind == "member" ? SiloIdentityKind.Member : SiloIdentityKind.Manifest;
 
     /// <summary>
-    /// Apply one authenticated segment after the cursor and advance the cursor to it, atomically. A segment that does
-    /// not continue the cursor is refused, so the index never skips or reorders authority.
+    /// Apply one authenticated segment and advance the cursor atomically. Overlapping catch-up can replay the exact
+    /// current segment. A different hash at the cursor, or a segment that does not extend it, is refused.
     /// </summary>
     public async ValueTask ApplySegmentAsync(
         SiloJournalPosition position, string sha256, string? previousSha256, IReadOnlyList<SiloPositionedRecord> records,
@@ -31,6 +31,10 @@ internal sealed partial class SiloCatalogIndex
             using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
             using var transaction = BeginImmediate(connection);
             var (cursor, cursorSha) = await ReadCursorAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+            if (cursor == position && string.Equals(cursorSha, sha256, StringComparison.Ordinal))
+            {
+                return;
+            }
             var continues = cursor is null
                 ? position == new SiloJournalPosition(1, 1) && previousSha256 is null
                 : string.Equals(previousSha256, cursorSha, StringComparison.Ordinal) &&

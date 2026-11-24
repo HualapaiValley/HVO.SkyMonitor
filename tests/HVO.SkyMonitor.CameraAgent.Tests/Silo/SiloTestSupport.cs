@@ -67,6 +67,8 @@ internal sealed class SiloTestStore(string storeId, string bucket, SiloStoreClas
     /// <summary>A HEAD for the key's current version times out: a read failure that says nothing about any write.</summary>
     public Func<string, bool>? HeadUnavailable { get; set; }
 
+    public Func<CancellationToken, Task>? BeforeList { get; set; }
+
     public int Puts { get; private set; }
 
     public async ValueTask<SiloPutResult> PutCreateOnlyAsync(SiloPutRequest request, CancellationToken cancellationToken)
@@ -156,6 +158,10 @@ internal sealed class SiloTestStore(string storeId, string bucket, SiloStoreClas
         string prefix, string? startAfter, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
         ThrowIfUnreachable("list");
+        if (BeforeList is { } beforeList)
+        {
+            await beforeList(cancellationToken).ConfigureAwait(false);
+        }
         string[] keys;
         lock (_gate)
         {
@@ -326,6 +332,18 @@ internal sealed class SiloTestPayloads : ISiloPayloadSpool
     public ValueTask<Stream> OpenAsync(string sourceToken, CancellationToken cancellationToken) =>
         ValueTask.FromResult<Stream>(new MemoryStream(_bytes[sourceToken].ToArray(), writable: false));
 
+    public async ValueTask StageAsync(SiloDraftMember member, Func<SiloDraftMember, CancellationToken, ValueTask<Stream>> open,
+        CancellationToken cancellationToken)
+    {
+        var input = await open(member, cancellationToken).ConfigureAwait(false);
+        await using var lease = input.ConfigureAwait(false);
+        using var output = new MemoryStream();
+        await input.CopyToAsync(output, cancellationToken).ConfigureAwait(false);
+        _bytes.TryAdd(member.SourceToken, output.ToArray());
+    }
+
+    public ValueTask ReconcileAsync(IReadOnlySet<string> claimedTokens, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
     public ValueTask ReleaseAsync(string sourceToken, CancellationToken cancellationToken)
     {
         Released.AddOrUpdate(sourceToken, 1, static (_, count) => count + 1);
@@ -458,6 +476,8 @@ internal sealed class SiloHarness : IDisposable
     public SiloTestStore Local { get; private set; }
     public SiloTestStore Archive { get; }
     public SiloTestPayloads Payloads { get; } = new();
+    public (long Bytes, int Files)? FileSpoolCapacity { get; set; }
+    public ISiloPayloadSpool PayloadSpool { get; private set; } = null!;
     public SiloTestFaults Faults { get; } = new();
     public SiloTestAuthority Authority { get; } = new();
     public SiloTestClock Clock { get; } = new(Start);
@@ -500,7 +520,10 @@ internal sealed class SiloHarness : IDisposable
         Stores = new SiloStoreSet(Local, Archive);
         Catalog = new SiloCatalog(Index, Stores, Authority, Faults);
         Journal = new SiloJournalWriter(State, StateRoot.Spool, Local, Binding, Clock, Faults);
-        Publisher = new SiloPublisher(State, StateRoot.Spool, Journal, Catalog, Payloads, Binding, Clock, Faults);
+        PayloadSpool = FileSpoolCapacity is { } capacity
+            ? new SiloFilePayloadSpool(StateRoot, capacity.Bytes, capacity.Files)
+            : Payloads;
+        Publisher = new SiloPublisher(State, StateRoot.Spool, Journal, Catalog, PayloadSpool, Binding, Clock, Faults);
     }
 
     public async Task RestartAsync()

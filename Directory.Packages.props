@@ -93,6 +93,7 @@
     <PackageVersion Include="Microsoft.Extensions.FileProviders.Abstractions" Version="10.0.14" />
     <PackageVersion Include="Microsoft.Extensions.FileProviders.Physical" Version="10.0.14" />
     <PackageVersion Include="Microsoft.Extensions.FileSystemGlobbing" Version="10.0.14" />
+    <PackageVersion Include="Testcontainers" Version="4.16.0" />
     <PackageVersion Include="Testcontainers.MsSql" Version="4.16.0" />
     <PackageVersion Include="Testcontainers.Redis" Version="4.16.0" />
   </ItemGroup>
