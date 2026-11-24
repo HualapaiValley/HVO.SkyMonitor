@@ -112,7 +112,8 @@ internal sealed partial class RawCaptureIngress :
             resolvedLaneFaultInjector,
             timeProvider.GetUtcNow,
             _options.TransientDetection, centeredProductChanges: centeredProductChanges,
-            centeredWindowWakeup: centeredWindowWakeup);
+            centeredWindowWakeup: centeredWindowWakeup,
+            firstBootPause: _options.FirstBootPause.Identity);
         _files = new RawIngressFileStore(
             root,
             faultInjector,

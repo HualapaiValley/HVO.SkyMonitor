@@ -1873,14 +1873,14 @@ public sealed partial class InstallerFlowTests
         {
             var mounts = new List<object>
             {
-                new { Source = Path.Combine(instanceRoot, "config", "camera-module.json"), Destination = "/app/cameraagent.deploy.json", RW = false },
-                new { Source = catalog, Destination = "/app/catalog", RW = false },
-                new { Source = Path.Combine(instanceRoot, "state", "identity"), Destination = "/app/App_Data", RW = true }
+                new { Type = "bind", Source = Path.Combine(instanceRoot, "config", "camera-module.json"), Destination = "/app/cameraagent.deploy.json", RW = false },
+                new { Type = "bind", Source = catalog, Destination = "/app/catalog", RW = false },
+                new { Type = "bind", Source = Path.Combine(instanceRoot, "state", "identity"), Destination = "/app/App_Data", RW = true }
             };
             const string prefix = "HVO_DEEP_SKY_CATALOG_ROOT=";
             if (LastComposeUp?.Contains(DeepSkyCatalogSelection.Mount, StringComparison.Ordinal) == true &&
                 LastComposeUpEnvironment?.Split('\n').SingleOrDefault(static line => line.StartsWith(prefix, StringComparison.Ordinal)) is { } root)
-                mounts.Add(new { Source = root[prefix.Length..], Destination = "/app/deep-sky-catalog", RW = false });
+                mounts.Add(new { Type = "bind", Source = root[prefix.Length..], Destination = "/app/deep-sky-catalog", RW = false });
             return [.. mounts];
         }
 

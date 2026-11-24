@@ -35,6 +35,28 @@
           "configDigest": "sha256:107be59056f76bbd0312989e63a44e1376ccf230bee41d354b406462ad80c756"
         }
       ]
+    },
+    "silo": {
+      "repository": "docker.io/pgsty/silo",
+      "tag": "RELEASE.2026-11-12T00-00-00Z",
+      "digest": "sha256:c20d112390b9a9ce8c11b8af95ad35bcaa62f4759663c09c936cd8d2b511f329",
+      "reference": "docker.io/pgsty/silo:RELEASE.2026-11-12T00-00-00Z@sha256:c20d112390b9a9ce8c11b8af95ad35bcaa62f4759663c09c936cd8d2b511f329",
+      "platforms": [
+        {
+          "platform": "linux/amd64",
+          "manifestDigest": "sha256:6f48a60830eb101e19f955124914554d73c4a4721396d3d13d61634e1396eadf",
+          "configDigest": "sha256:f8cec3d6c63585d664c035acecfacb92dc974ab70c1f57a528d5baa3c224e082"
+        },
+        {
+          "platform": "linux/arm64",
+          "manifestDigest": "sha256:dad2a4bc279f9095d9835398dda266abd4f2f7486d0cb66a071951f1e4a6791d",
+          "configDigest": "sha256:66e09caa8c3e0e834de2202d9a4c45a9a0608f63ab2061a8f3953ae23fc135e7"
+        }
+      ],
+      "revision": "44e848fedf8cec3d8c0da4b1aa8422390a2b7a8b",
+      "license": "AGPL-3.0-or-later",
+      "source": "https://github.com/pgsty/silo/tree/RELEASE.2026-11-12T00-00-00Z",
+      "supplier": "upstream"
     }
   },
   "stateContracts": {
