@@ -263,7 +263,7 @@ else
                         <button class="text-button refresh-measured-evidence" type="button" disabled="@(_layers is null || _layerLoading || _saving || _viewerOpen)" @onclick="RefreshMeasuredEvidenceAsync">@(_layerLoading ? "Reading measured evidence..." : "Refresh measured evidence")</button>
                         @if (!HasLayer(AstrometricDiagnosticPresentation.AssociationsLayer))
                         {
-                            <label><input type="checkbox" disabled /><span class="layer-swatch stars"></span><span><strong>Measured stellar associations</strong><small>@(_astrometry?.DiagnosticsReason ?? "No compatible accepted result retained")</small></span></label>
+                            <label><input type="checkbox" disabled /><span class="layer-swatch stars"></span><span><strong>Measured stellar associations</strong><small>@MeasuredDiagnosticsReason</small></span></label>
                         }
                         @foreach (var layer in RetainedLayers("Measured")) { @LayerToggle(layer) }
                         @if (!HasLayer("MeasuredTransientTrails"))
@@ -302,7 +302,7 @@ else
                         <label><input type="checkbox" disabled /><span class="layer-swatch expected"></span><span><strong>Expected, not detected</strong><small>diagnostic catalog positions / arrives with #526</small></span></label>
                         @if (!HasLayer(AstrometricDiagnosticPresentation.ResidualsLayer))
                         {
-                            <label><input type="checkbox" disabled /><span class="layer-swatch residuals"></span><span><strong>Astrometric residuals</strong><small>@(_astrometry?.DiagnosticsReason ?? "No compatible accepted result retained")</small></span></label>
+                            <label><input type="checkbox" disabled /><span class="layer-swatch residuals"></span><span><strong>Astrometric residuals</strong><small>@MeasuredDiagnosticsReason</small></span></label>
                         }
                         @if (!HasLayer(HVO.SkyMonitor.Processing.OrbitalTrackPresentation.LayerKind))
                         {

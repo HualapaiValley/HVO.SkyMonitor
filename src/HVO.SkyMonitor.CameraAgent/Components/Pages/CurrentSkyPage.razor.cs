@@ -743,10 +743,11 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         }
 
         // A retained assessment describes the selected capture independently of its display geometry.
-        if (value?.Astrometry is { } astrometry && (!_showingBaseOnlyForMismatch || astrometry.Solution is not null))
-            ApplyAstrometry(captureId, astrometry);
-        else
+        var astrometry = value?.Astrometry;
+        if (astrometry is null)
             _ = LoadAstrometryAsync(captureId, generation, layerLifetime.Token);
+        else if (!_showingBaseOnlyForMismatch || astrometry.Solution is not null || _astrometry?.Solution is null)
+            ApplyAstrometry(captureId, astrometry);
         StateHasChanged();
     }
 
