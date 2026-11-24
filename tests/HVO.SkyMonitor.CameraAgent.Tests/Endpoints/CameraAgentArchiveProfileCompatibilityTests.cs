@@ -12,6 +12,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Endpoints;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
@@ -85,20 +86,64 @@ public sealed class CameraAgentArchiveProfileCompatibilityTests
             }
 
             // A retained raw-only journal has no evidence of product publication.
-            var journal = Path.Combine(archive, "journal", "raw-ingress.db");
+            var journalDirectory = Path.Combine(archive, "journal");
+            var journal = Path.Combine(journalDirectory, "raw-ingress.db");
             Assert.IsFalse(File.Exists(journal), "Browsing the standalone files must not create archive journal records.");
-            Directory.CreateDirectory(Path.GetDirectoryName(journal)!);
+            Directory.CreateDirectory(journalDirectory);
+            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            var date = new DateOnly(2026, 1, 2);
+            Assert.HasCount(1, storage.List(archive, date, FrameArtifactRole.Calibrated, 10));
             var connection = new SqliteConnection($"Data Source={journal};Pooling=False");
             await using (connection.ConfigureAwait(false))
             {
-                await connection.OpenAsync().ConfigureAwait(false);
+                await connection.OpenAsync(timeout.Token).ConfigureAwait(false);
                 using var schema = connection.CreateCommand();
-                schema.CommandText = "PRAGMA user_version=15; CREATE TABLE raw_captures(capture_id TEXT PRIMARY KEY);";
-                await schema.ExecuteNonQueryAsync().ConfigureAwait(false);
+                schema.CommandText = """
+                    PRAGMA journal_mode=DELETE;
+                    PRAGMA user_version=15;
+                    CREATE TABLE raw_captures(capture_id TEXT PRIMARY KEY);
+                    BEGIN EXCLUSIVE;
+                    """;
+                await schema.ExecuteNonQueryAsync(timeout.Token).ConfigureAwait(false);
+                var locked = Assert.ThrowsExactly<SqliteException>(() => storage.List(archive, date, FrameArtifactRole.Calibrated, 10));
+                Assert.AreEqual(5, locked.SqliteErrorCode, "The authority must be busy while the exclusive lock is held.");
+                await AssertArchiveRefusedAfterReopenAsync(root, config, id, FrameArtifactRole.Calibrated, timeout.Token)
+                    .ConfigureAwait(false);
             }
 
+            Assert.IsEmpty(storage.List(archive, date, FrameArtifactRole.Calibrated, 10));
             await AssertArchiveRefusedAfterReopenAsync(root, config, id, FrameArtifactRole.Calibrated,
-                CancellationToken.None).ConfigureAwait(false);
+                timeout.Token).ConfigureAwait(false);
+
+            if (OperatingSystem.IsLinux())
+            {
+                var redirected = Path.Combine(root, "redirected-journal.db");
+                File.Move(journal, redirected);
+                File.CreateSymbolicLink(journal, redirected);
+                _ = Assert.ThrowsExactly<IOException>(() => storage.List(archive, date, FrameArtifactRole.Calibrated, 10));
+                await AssertArchiveRefusedAfterReopenAsync(root, config, id, FrameArtifactRole.Calibrated, timeout.Token)
+                    .ConfigureAwait(false);
+
+                File.Delete(redirected);
+                _ = Assert.ThrowsExactly<IOException>(() => storage.List(archive, date, FrameArtifactRole.Calibrated, 10));
+            }
+            File.Delete(journal);
+            Directory.CreateDirectory(journal);
+            _ = Assert.ThrowsExactly<IOException>(() => storage.List(archive, date, FrameArtifactRole.Calibrated, 10));
+            await AssertArchiveRefusedAfterReopenAsync(root, config, id, FrameArtifactRole.Calibrated, timeout.Token)
+                .ConfigureAwait(false);
+            Directory.Delete(journal);
+
+            Directory.Delete(journalDirectory);
+            await File.WriteAllTextAsync(journalDirectory, "invalid", timeout.Token).ConfigureAwait(false);
+            _ = Assert.ThrowsExactly<IOException>(() => storage.List(archive, date, FrameArtifactRole.Calibrated, 10));
+            await AssertArchiveRefusedAfterReopenAsync(root, config, id, FrameArtifactRole.Calibrated, timeout.Token)
+                .ConfigureAwait(false);
+            File.Delete(journalDirectory);
+
+            var recovered = CreateApp(root, config);
+            await using var recoveredScope = recovered.ConfigureAwait(false);
+            await AssertArchiveAsync(recovered, id, FrameArtifactRole.Calibrated, expected, timeout.Token).ConfigureAwait(false);
         }
         finally
         {
@@ -207,6 +252,30 @@ public sealed class CameraAgentArchiveProfileCompatibilityTests
                 Observatory = legacy.Observatory,
                 CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
             }), NullLogger<FileCameraAgentConfigurationLoader>.Instance, moduleConfigurationValidator: validation);
+            var supportedSchedule = supportedConfig.Schedule!;
+            var alwaysOpen = supportedSchedule with
+            {
+                LegacyAlwaysOpen = true,
+                LegacySetpointProfileId = supportedSchedule.SetpointProfiles[0].Id
+            };
+            document["module"]!["type"] = compatibleModule.Type;
+            document["centeredExposure"] = JsonSerializer.SerializeToNode(validCentered, JsonSerializerOptions.Web);
+            var fileSchedule = document["schedule"]!;
+            fileSchedule["legacyAlwaysOpen"] = true;
+            fileSchedule["legacySetpointProfileId"] = fileSchedule["setpointProfiles"]![0]!["id"]!.GetValue<string>();
+            await File.WriteAllTextAsync(filePath, document.ToJsonString(), token).ConfigureAwait(false);
+            var alwaysOpenFile = await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => loader.LoadAsync(token))
+                .ConfigureAwait(false);
+            StringAssert.Contains(alwaysOpenFile.Message, "legacy schedule compatibility", StringComparison.Ordinal);
+            fileSchedule.AsObject().Remove("legacyAlwaysOpen");
+            fileSchedule.AsObject().Remove("legacySetpointProfileId");
+
+            var beforeAlwaysOpen = await store.GetSnapshotAsync(token).ConfigureAwait(false);
+            var refusedAlwaysOpen = await Assert.ThrowsExactlyAsync<ArgumentException>(() => schedule.StageAsync(
+                LocalCaptureProfileDefinition.CreateV2(supportedConfig, alwaysOpen), "stage-centered-always-open",
+                beforeAlwaysOpen.Version, "owner", null, token)).ConfigureAwait(false);
+            StringAssert.Contains(refusedAlwaysOpen.Message, "localProfile.schedule.weeklyWindows", StringComparison.Ordinal);
+            Assert.AreEqual(beforeAlwaysOpen.Version, (await store.GetSnapshotAsync(token).ConfigureAwait(false)).Version);
             foreach (var invalidProfile in invalid)
             {
                 document["module"]!["type"] = invalidProfile.ModuleType;

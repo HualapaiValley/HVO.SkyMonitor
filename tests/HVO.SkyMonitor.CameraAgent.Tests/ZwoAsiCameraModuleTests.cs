@@ -1055,8 +1055,8 @@ public sealed class ZwoAsiCameraModuleTests
         Assert.AreEqual($"ZWO {profile.Model}", frame.Metadata.SourceId);
     }
 
-    internal static ZwoAsiCameraModule Module(FakeAsiNativeApi native)
-        => new(TimeProvider.System, _ => native, ResolveEnvironmentVariable);
+    internal static ZwoAsiCameraModule Module(FakeAsiNativeApi native, TimeProvider? timeProvider = null)
+        => new(timeProvider ?? TimeProvider.System, _ => native, ResolveEnvironmentVariable);
 
     private static CameraModuleDocument LoadSample(SupportedProfile profile)
     {

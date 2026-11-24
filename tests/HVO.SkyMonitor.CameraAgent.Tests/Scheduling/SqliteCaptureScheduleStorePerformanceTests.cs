@@ -33,7 +33,10 @@ public sealed class SqliteCaptureScheduleStorePerformanceTests
     private const int ReaderCount = 4;
     private const int ReaderQueriesPerReader = 32;
     private const int HistoryPageSize = 100;
-    private const int ExpectedAggregateRecords = 10_000;
+    private const int SubmittedRecordCount = 10_000;
+    private const int RetainedExpansionCount = SqliteCaptureScheduleStore.RecentExpansionLimit + 2;
+    private const int ExpectedAggregateRecords = SubmittedRecordCount -
+        (RevisionCount - RetainedExpansionCount) * (1 + PreviewDayCount);
     private static readonly DateOnly PreviewFirstDate = new(2025, 1, 1);
     private static readonly DateTimeOffset FixedUtcNow = new(2025, 1, 1, 0, 0, 0, TimeSpan.Zero);
     private static readonly JsonSerializerOptions EvidenceJsonOptions = CreateEvidenceJsonOptions();
@@ -397,7 +400,7 @@ public sealed class SqliteCaptureScheduleStorePerformanceTests
                     IntervalsPerRevision = PreviewDayCount,
                     IntervalCount = RevisionCount * PreviewDayCount,
                     AdmissionCount = 1,
-                    AggregateImmutableRecords = ExpectedAggregateRecords,
+                    AggregateSubmittedRecords = SubmittedRecordCount,
                     PreviewFirstDate,
                     TimeZone = TimeZoneInfo.Utc.Id,
                     WindowComposition = "Seven deterministic same-day fixed local-time windows, one for each weekday, expanded for 30 days.",
@@ -811,8 +814,8 @@ public sealed class SqliteCaptureScheduleStorePerformanceTests
         Assert.AreEqual(RevisionCount, evidence.Counts.Revisions);
         Assert.AreEqual(StageCommandCount, evidence.Counts.Commands);
         Assert.AreEqual(1, evidence.Counts.Activations);
-        Assert.AreEqual(RevisionCount, evidence.Counts.Expansions);
-        Assert.AreEqual(RevisionCount * PreviewDayCount, evidence.Counts.Intervals);
+        Assert.AreEqual(RetainedExpansionCount, evidence.Counts.Expansions);
+        Assert.AreEqual(RetainedExpansionCount * PreviewDayCount, evidence.Counts.Intervals);
         Assert.AreEqual(1, evidence.Counts.Admissions);
         Assert.AreEqual(ExpectedAggregateRecords, evidence.Counts.Aggregate);
         Assert.HasCount(1, evidence.Pragmas.IntegrityCheckResults);
@@ -820,7 +823,7 @@ public sealed class SqliteCaptureScheduleStorePerformanceTests
         Assert.AreEqual(0, evidence.Pragmas.ForeignKeyCheckRows);
         Assert.AreEqual(1, evidence.Pragmas.ForeignKeysEnabled);
         Assert.AreEqual("wal", evidence.Pragmas.JournalMode, ignoreCase: true);
-        Assert.AreEqual(8, evidence.Pragmas.UserVersion);
+        Assert.AreEqual((long)SqliteRawCaptureJournal.CurrentSchemaVersion, evidence.Pragmas.UserVersion);
         Assert.AreEqual(2, evidence.Pragmas.Synchronous);
         Assert.IsTrue(evidence.LatestHistoryQueryPlan.Any(
             static detail => detail.Contains("INDEX", StringComparison.OrdinalIgnoreCase)));

@@ -34,6 +34,10 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - The CameraAgent and LogicHost API reference pages have updated styling for request and response examples. #2032
 
+- CameraAgent limits cached schedule expansions and keeps the admission evidence recorded with each capture for replay. #1950
+
+- Centered ZWO acquisition reports metering unavailable for opaque RAW16 samples and carries the prior exposure and gain forward in the same run. #1950
+
 - Ordinary VirtualSky rendering defaults to 2,000 stellar candidates when the host and camera profile supply no explicit limit. The sky map keeps its own limit. #1901
 
 - CameraAgent capture processing checks the shared journal's integrity and foreign keys once per startup instead of three times, so processing and the Current Sky plate solution become available sooner after a restart with a long retained history. #1914
@@ -43,6 +47,10 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 - CameraAgent clears centered-view history after the reference capture's raw files and view preview expire. It releases the journal and lifecycle locks between batches so capture writers can commit. Open live intervals and saved selections keep their journal records, and retained views keep the true last-live revision. Exact archive links to pruned revisions return HTTP 404. #2000
 
 - CameraAgent rejects capture journal integrity damage committed between schema inspection and writable startup validation, preserving the journal and its write-ahead log on rejection. #2005
+
+- CameraAgent refuses new legacy astrometry presets as soon as centered profile activation commits, while keeping existing preset receipts replayable. #1950
+
+- CameraAgent refuses file-only archive fallback when the publication journal is redirected or unreadable. #1950
 
 - CameraAgent Silo checkpoint retries read an occupied key only up to the configured limit plus one byte. #2001
 

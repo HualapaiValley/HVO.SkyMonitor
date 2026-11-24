@@ -509,7 +509,7 @@ its schema in today, and what `io.hvo.skymonitor.state-contracts` and `stateCont
 | Store | Database (under the instance's state root) | Schema marker today | Declared today |
 | --- | --- | --- | --- |
 | `identity` | `identity/cameraagent_identity.db` | The applied EF Core migrations in `__EFMigrationsHistory` (their number is the store's schema) | Writes 1, reads 1 to 1. `io.hvo.skymonitor.identity-migration` also names the newest, `20260827053715_InitialIdentity` |
-| `rawIngress` | `raw/journal/raw-ingress.db` | `PRAGMA user_version` | Beta writes 16 and reads 13 to 16. The private centered foundation source writes 17 and reads 13 to 17. The centered scheduler uses the same raw range and retains processing schema 12 in this journal. The migration contract is `canonical-v13-v14-v15-v16-to-v17` |
+| `rawIngress` | `raw/journal/raw-ingress.db` | `PRAGMA user_version` | `development/v1` writes 17 and accepts canonical schemas 13 through 17. The migration contract is `canonical-v13-v14-v15-v16-to-v17`. The journal also holds the separately versioned processing schema 12 |
 | `artifactOutbox` | `outbox/artifact-outbox.db` in each storage root (`raw`, `archive`, and every FileStorage root) | The `artifact_outbox_schema.version` column | Writes 2, reads 2 to 2 |
 | `fleetStatus` | `raw/.fleet/fleet-status.db` | The `fleet_status_metadata.schema_version` column | Writes 1, reads 1 to 1 |
 | `environmentalOutbox` | `raw/.environment/environmental-observation-outbox.db` | `PRAGMA user_version` | Writes 5, reads 3 to 5. Combined reader boundary `e7b9af4b98d1521c3939ef5925608a3663c63302` selects a paired checkpoint before upgrade from schema 3 or 4, from either single-reader image for #1901 or #1938, or from the earlier private joined reader. Rollback restores the previous image's paired state |
@@ -528,6 +528,11 @@ The centered-view journal retention reader advances the minimum-compatible revis
 object set validated by older readers. The installer selects a paired checkpoint
 even for private schema-12 images carrying the previous minimum, with the raw
 and processing schema numbers still 17 and 12.
+
+Each supported raw journal version identifies one canonical raw-ingress layout.
+Assign a new raw version to any future change to that layout. Validate and upgrade
+the supported predecessor through the existing transactional raw migration path,
+and update the image's raw schema and migration declarations together.
 
 The environmental v5 journal retains a settled held slot so reopening the same cadence does not acquire it again.
 The first released v5 reader validates the canonical shape before opening for writes. A private rehearsal v5
