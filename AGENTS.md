@@ -270,8 +270,9 @@ have follow-up tracking.
   original-requirement evidence mapping. Kepler creates the draft; draft checks
   pass on its exact head before independent formal review begins (Roy t594s3390).
   Ready-state CI requires formal review convergence and resolution, testing,
-  and review of any real merge/product conflicts. The queue's verified
-  clean-base-sync path may carry an already published diff approval.
+  and review of any real merge/product conflicts. The queue may carry an already
+  published diff approval through a verified clean sync under
+  [Roy's recorded C4 decision](docs/development/policy/skymonitor.md#c4-policy-authorization).
   Target-tip movement alone requires no synchronization, re-testing, or new review.
 - Initial review covers the full merge-base-to-candidate diff and original
   requirements. Correction review covers the prior-reviewed-head delta and
@@ -285,11 +286,13 @@ have follow-up tracking.
   these profiles never reduce LOW's one Sol or HIGH's Sol-and-Opus requirement.
 - For the operated `development/v1` merge queue, Kepler revalidates the
   **CURRENT PR HEAD SHA**, complete requirement evidence, required formal
-  CLEAN reviews for its approved diff, passing required CI, and resolved conversations. Kepler alone
-  publishes `hvo/reviewed-head` on that exact head and then enqueues with
-  GraphQL `enqueuePullRequest`, checking the expected head. Under the queue,
-  `gh pr merge --merge` warns and does **not** enqueue. Coding threads stop at
-  handoff; they do not perform any of these PR/status/queue operations.
+  CLEAN reviews for its approved diff, passing required CI, and resolved
+  conversations. Kepler alone publishes `hvo/reviewed-head` on that exact head,
+  including for carries authorized by [Roy's C4 decision](docs/development/policy/skymonitor.md#c4-policy-authorization).
+  Kepler supersedes prior approvals when stamping a newly reviewed revision.
+  Kepler then enqueues with GraphQL `enqueuePullRequest`, checking the expected
+  head. Under the queue, `gh pr merge --merge` warns and does **not** enqueue.
+  Coding threads stop at handoff; they do not perform any of these PR/status/queue operations.
 - Direct merge and auto-merge are separate fallback routes, used only by Kepler
   when the queue is unavailable or an operator explicitly selects the fallback.
   They retain the same completeness, exact-candidate reviews, checks, and
@@ -308,9 +311,9 @@ have follow-up tracking.
   Preserve existing conflict resolutions and reviewed history. A candidate with
   a PR edit or conflict resolution needs applicable local evidence and the
   required tier's reviewers CLEAN on its new SHA before Kepler advances it.
-  For the operated queue, the
-  [reviewed-diff proof](docs/development-v1.md#diff-bound-review-approval)
-  can carry a versioned approval through a verified clean merge-only sync from
+  For the operated queue, [Roy's C4 decision](docs/development/policy/skymonitor.md#c4-policy-authorization)
+  authorizes the [reviewed-diff proof](docs/development-v1.md#diff-bound-review-approval)
+  to carry a versioned approval through a verified clean merge-only sync from
   `development/v1`. The formal reports remain tied to the reviewed SHA. Kepler
   revalidates integration evidence, required CI and conversations on the current
   PR head. Target-tip movement with an unchanged PR head does not trigger the

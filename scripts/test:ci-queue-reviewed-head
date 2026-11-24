@@ -36,9 +36,21 @@ args = args[3:]
 with open(os.environ["FAKE_GH_STATE"]) as source:
     endpoints = json.load(source)
 if args[:2] == ["--method", "POST"]:
-    if args[2] not in endpoints or args[3:8] != ["-f", "state=success", "-f", "context=hvo/reviewed-head", "-f"]:
+    path = args[2]
+    if (len(args) != 9 or path not in endpoints or args[3] != "-f" or args[4] not in ("state=success", "state=failure")
+            or args[5:8] != ["-f", "context=hvo/reviewed-head", "-f"] or not args[8].startswith("description=")):
         sys.exit("unexpected status write")
-    print("{}")
+    if endpoints[path].get("fail"):
+        sys.exit("simulated status write failure")
+    repo, sha = path.rsplit("/statuses/", 1)
+    pages = endpoints[f"{repo}/commits/{sha}/statuses?per_page=100"]["pages"]
+    newest = max((record["id"] for page in pages for record in page), default=9)
+    status = {"id": newest + 1, "state": args[4].split("=", 1)[1], "context": "hvo/reviewed-head",
+              "creator": endpoints["user"]["pages"][0], "description": args[8].split("=", 1)[1]}
+    pages[0].insert(0, status)
+    with open(os.environ["FAKE_GH_STATE"], "w") as output:
+        json.dump(endpoints, output)
+    print(json.dumps(status))
     sys.exit(0)
 path, *flags = args
 if path not in endpoints or flags not in ([], ["--paginate", "--slurp"]):
@@ -58,12 +70,12 @@ else:
 '''
 
 
-def endpoint(path):
-    return f"repos/{REPO}/{path}"
+def endpoint(path, repo=REPO):
+    return f"repos/{repo}/{path}"
 
 
-def statuses(sha):
-    return endpoint(f"commits/{sha}/statuses?per_page=100")
+def statuses(sha, repo=REPO):
+    return endpoint(f"commits/{sha}/statuses?per_page=100", repo)
 
 
 def associations(sha):
@@ -85,9 +97,9 @@ def base_response(sha):
 
 class QueueReviewedHead(unittest.TestCase):
     def setUp(self):
-        cache = pathlib.Path.home() / ".cache"
-        cache.mkdir(mode=0o700, exist_ok=True)
-        scratch = tempfile.TemporaryDirectory(prefix="hvo-scratch-review-diff-", dir=cache)
+        scratch_root = pathlib.Path(os.environ.get("TMPDIR") or pathlib.Path.home() / ".cache")
+        scratch_root.mkdir(mode=0o700, exist_ok=True)
+        scratch = tempfile.TemporaryDirectory(prefix="hvo-scratch-review-diff-", dir=scratch_root)
         self.addCleanup(scratch.cleanup)
         self.dir = pathlib.Path(scratch.name)
         self.origin = self.dir / "origin"
@@ -200,10 +212,12 @@ class QueueReviewedHead(unittest.TestCase):
         if not args:
             env.setdefault("HEAD_REF", self.queue_ref)
             env.setdefault("GROUP_SHA", self.group)
-        return subprocess.run(
+        result = subprocess.run(
             [str(gate), *args], cwd=self.checkout, env=env,
             capture_output=True, text=True, timeout=90,
         )
+        self.data = json.loads(self.state.read_text())
+        return result
 
     def calls(self):
         return [json.loads(line) for line in self.call_log.read_text().splitlines()]
@@ -219,9 +233,9 @@ class QueueReviewedHead(unittest.TestCase):
         self.assertIn(reason, result.stderr)
         self.assertEqual(self.writes(), [], result.stdout)
 
-    def stamp(self, head, *args, number=PR):
-        self.data[endpoint(f"statuses/{head}")] = {"pages": []}
-        return self.run_command("stamp", str(number), head, "--repo", REPO, *args)
+    def stamp(self, reviewed, *args, number=PR, head=None, repo=REPO):
+        self.data.setdefault(endpoint(f"statuses/{head or reviewed}", repo), {})
+        return self.run_command("stamp", str(number), reviewed, "--repo", repo, *args)
 
     def approve(self, *, number=PR, reviewed=None, base=None):
         reviewed = reviewed or self.reviewed
@@ -232,7 +246,6 @@ class QueueReviewedHead(unittest.TestCase):
         description = self.writes()[0][-1].split("=", 1)[1]
         self.assertRegex(description, rf"^{VERSION}:{reviewed}:{base}:[A-Za-z0-9_-]{{43}}$")
         self.assertLessEqual(len(description), 140)
-        self.set_status(reviewed, [status(description=description)])
         return description
 
     def test_exact_reviewed_head_legacy_and_versioned(self):
@@ -253,10 +266,17 @@ class QueueReviewedHead(unittest.TestCase):
         self.set_status(self.reviewed, [status()])
         self.assert_pass(self.run_command())
 
-    def test_unrelated_file_clean_sync(self):
-        self.approve()
+    def test_unrelated_file_clean_sync_requires_authorized_status_on_queued_head(self):
+        description = self.approve()
         head = self.sync(self.reviewed, self.advance())
         self.make_group(head)
+        self.assert_fails(self.run_command(), f"queued PR head {head} has no authorized {CONTEXT} status")
+        self.assertFalse(any(statuses(self.reviewed) in call for call in self.calls()))
+        self.set_status(head, [status(description=description, actor={"login": "other", "id": 2})])
+        self.assert_fails(self.run_command(), "has an unauthorized publisher")
+        self.set_status(head, [])
+        self.assert_pass(self.stamp(self.reviewed, "--carry", head=head))
+        self.assertEqual(self.writes()[0][5], endpoint(f"statuses/{head}"))
         result = self.run_command()
         self.assert_pass(result)
         self.assertIn(f"against approval on {self.reviewed}", result.stdout)
@@ -274,16 +294,13 @@ class QueueReviewedHead(unittest.TestCase):
         self.set_status(first, [])
         second = self.sync(first, self.advance(same_file=True))
         self.make_group(second)
-        self.assert_pass(self.run_command())
-        self.data[endpoint(f"statuses/{second}")] = {"pages": []}
-        args = ("stamp", str(PR), self.reviewed, "--repo", REPO, "--carry")
-        self.assert_pass(self.run_command(*args))
+        self.assert_fails(self.run_command(), "has no authorized hvo/reviewed-head status")
+        self.assert_pass(self.stamp(self.reviewed, "--carry", head=second))
         self.assertEqual(self.writes()[0][-1], f"description={description}")
-        self.set_status(second, [status(description=description)])
         self.assert_pass(self.run_command())
         self.set_status(self.reviewed, [status(description=description)], [status(11, state="pending")])
         self.assert_fails(self.run_command(), "is pending")
-        self.assert_fails(self.run_command(*args), "is pending")
+        self.assert_fails(self.stamp(self.reviewed, "--carry", head=second), "is pending")
 
     def test_stale_fingerprint_after_every_kind_of_pr_file_edit(self):
         original = self.approve()
@@ -344,10 +361,11 @@ class QueueReviewedHead(unittest.TestCase):
         self.write("shared.txt", self.original.replace("line 18", "PR change"))
         self.reviewed = self.commit("reviewed change with union driver")
         self.data[endpoint(BASE_API)] = base_response(self.base)
-        self.approve()
+        description = self.approve()
         tip = self.conflicting_tip()
         head = self.sync(self.reviewed, tip)
         self.make_group(head)
+        self.set_status(head, [status(description=description)])
         self.assert_fails(self.run_command(), "cannot reproduce a clean merge")
 
     def test_evil_sync_edit_anywhere_fails(self):
@@ -373,23 +391,29 @@ class QueueReviewedHead(unittest.TestCase):
         self.assert_fails(self.run_command(), "differs from the clean merge")
 
     def test_sync_from_non_mainline_commit_or_with_reversed_parents_fails(self):
-        self.approve()
+        description = self.approve()
         self.switch(self.base)
         self.write("side.txt", "side branch\n")
         side = self.commit("merged side branch")
         self.git("switch", "-q", BRANCH)
         tip = self.merge(side)
         self.data[endpoint(BASE_API)] = base_response(tip)
-        self.make_group(self.sync(self.reviewed, side))
+        head = self.sync(self.reviewed, side)
+        self.make_group(head)
+        self.set_status(head, [status(description=description)])
         self.assert_fails(self.run_command(), "does not advance the protected base")
         self.switch(tip)
         swapped = self.merge(self.reviewed)
         self.make_group(swapped)
+        self.set_status(swapped, [status(description=description)])
         self.assert_fails(self.run_command(), "does not advance the protected base")
 
     def test_legacy_success_cannot_cross_shas(self):
+        description = self.approve()
         self.set_status(self.reviewed, [status(description="Dual-CLEAN")])
-        self.make_group(self.sync(self.reviewed, self.advance()))
+        head = self.sync(self.reviewed, self.advance())
+        self.make_group(head)
+        self.set_status(head, [status(description=description)])
         self.assert_fails(self.run_command(), "legacy approval is valid only on the exact PR head")
 
     def test_missing_failed_and_tampered_reviewed_ancestor_fail(self):
@@ -400,7 +424,7 @@ class QueueReviewedHead(unittest.TestCase):
         for ancestor_page, diagnostic in (
             ([], "has no hvo/reviewed-head status"),
             ([status(description=description, state="failure")], "is failure"),
-            ([status(description=description[::-1])], "unverified reviewed diff approval"),
+            ([status(description=description[::-1])], "legacy approval is valid only on the exact PR head"),
             ([status(description=description, actor={"login": "fake", "id": 2})], "unauthorized"),
         ):
             with self.subTest(diagnostic=diagnostic):
@@ -415,7 +439,7 @@ class QueueReviewedHead(unittest.TestCase):
             (status(description=good, actor={"login": "RoySalisbury", "id": 999}), "unauthorized"),
             (status(description=good, actor={"login": "RoySalisbury2", "id": ACTOR["id"]}), "unauthorized"),
             (status(description=good, actor=None), "unauthorized"),
-            (status(description=good, context="other"), "is not a merge-only base sync"),
+            (status(description=good, context="other"), "has no authorized hvo/reviewed-head status"),
             (status(description=good, context=CONTEXT.upper()), "noncanonical"),
             (status(description=good, state="failure"), "is failure"),
             (status(description=good.replace(VERSION, "hvo-diff-v2")), "unknown or malformed"),
@@ -433,6 +457,27 @@ class QueueReviewedHead(unittest.TestCase):
         self.approve(number=43)
         self.make_group(number=PR)
         self.assert_fails(self.run_command(), "fingerprint does not match pull request #42")
+
+    def test_fingerprint_for_another_repository_cannot_be_replayed(self):
+        other = "other/repo"
+        self.make_group()
+        self.data[endpoint(BASE_API, other)] = base_response(self.base)
+        self.data[endpoint(f"pulls/{PR}", other)] = {"pages": [pull(PR, self.reviewed, repo=other)]}
+        self.data[statuses(self.reviewed, other)] = {"pages": [[]]}
+        self.assert_pass(self.stamp(self.reviewed, "--reviewed-base", self.base, repo=other))
+        self.assert_pass(self.run_command(REPOSITORY=other))
+        self.data[statuses(self.reviewed)] = self.data[statuses(self.reviewed, other)]
+        self.assert_fails(self.run_command(), "fingerprint does not match pull request #42")
+
+    def test_versioned_stamp_description_requires_an_exact_match(self):
+        description = self.approve()
+        self.make_group()
+        for altered in (description + " ", f"({description})", f"ok {description}",
+                        description.replace(":", "=", 1), description.upper()):
+            with self.subTest(description=altered):
+                self.assertLessEqual(len(altered), 140)
+                self.set_status(self.reviewed, [status(description=altered)])
+                self.assert_fails(self.run_command(), "unknown or malformed reviewed diff fingerprint")
 
     def test_stamped_base_must_be_in_reviewed_and_protected_history(self):
         description = self.approve()
@@ -461,6 +506,14 @@ class QueueReviewedHead(unittest.TestCase):
                 self.data[path] = {"pages": [[]], "raw": "{invalid"}
                 self.assert_fails(self.run_command(), "cannot read GitHub API response")
                 self.data[path] = previous
+
+    def test_duplicate_commit_status_ids_fail_closed(self):
+        self.make_group()
+        for pages in (([status(), status()],), ([status()], [status()]),
+                      ([status()], [status(context="other")])):
+            with self.subTest(pages=pages):
+                self.set_status(self.reviewed, *pages)
+                self.assert_fails(self.run_command(), "duplicate commit status ID 10")
 
     def test_wrong_head_target_and_group_ref_fail(self):
         self.make_group()
@@ -544,6 +597,40 @@ class QueueReviewedHead(unittest.TestCase):
         self.data[endpoint(BASE_API)] = base_response("0" * 40)
         self.assert_fails(self.run_command(), "merge-base")
 
+    def test_git_replace_objects_and_grafts_are_ignored(self):
+        self.make_group()
+        self.set_status(self.reviewed, [status()])
+        self.clone()
+        self.git("replace", self.group, self.reviewed, where=self.checkout)
+        self.assertEqual(self.git("rev-list", "--parents", "-1", self.group, where=self.checkout),
+                         f"{self.group} {self.base}")
+        self.assert_pass(self.run_command())
+        self.git("replace", "-d", self.group, where=self.checkout)
+
+        grafts = self.checkout / ".git/info/grafts"
+        grafts.write_text(f"{self.group} {self.base}\n")
+        self.assertEqual(self.git("rev-list", "--parents", "-1", self.group, where=self.checkout),
+                         f"{self.group} {self.base}")
+        self.assert_pass(self.run_command())
+
+    def test_partial_clone_configuration_fails_closed(self):
+        self.make_group()
+        self.set_status(self.reviewed, [status()])
+        self.clone()
+        self.git("config", "core.repositoryformatversion", "1", where=self.checkout)
+        for key, value in (("extensions.partialclone", "origin"), ("remote.origin.promisor", "true")):
+            with self.subTest(config=key):
+                self.git("config", key, value, where=self.checkout)
+                self.assert_fails(self.run_command(), "partial Git history")
+                self.git("config", "--unset", key, where=self.checkout)
+
+    def test_local_git_info_attributes_fail_closed(self):
+        self.make_group()
+        self.set_status(self.reviewed, [status()])
+        self.clone()
+        (self.checkout / ".git/info/attributes").write_text("shared.txt merge=union\n")
+        self.assert_fails(self.run_command(), "local Git attribute overrides are present")
+
     def make_chain(self, entries):
         tip = self.base
         heads = []
@@ -617,6 +704,93 @@ class QueueReviewedHead(unittest.TestCase):
         self.data[endpoint(f"pulls/{PR}")] = {"sequence": [old, {"pages": [pull(PR, self.base)]}]}
         self.assert_fails(self.stamp(self.reviewed, "--reviewed-base", self.base), "moved during approval")
 
+    def test_new_review_supersedes_original_and_carried_approvals(self):
+        description = self.approve()
+        tip = self.advance()
+        carried = self.sync(self.reviewed, tip)
+        self.make_group(carried)
+        self.assert_pass(self.stamp(self.reviewed, "--carry", head=carried))
+        self.assert_pass(self.run_command())
+
+        self.switch(carried)
+        self.write("revision.txt", "newly reviewed PR change\n")
+        newer = self.commit("new reviewed PR head")
+        self.make_group(newer)
+        self.assert_pass(self.stamp(newer, "--reviewed-base", tip,
+                                    "--supersede", carried, "--supersede", self.reviewed))
+        revocations = [(endpoint(f"statuses/{head}"), "state=failure", f"description=Superseded by {newer}")
+                       for head in sorted((carried, self.reviewed))]
+        writes = [(call[5], call[7], call[11]) for call in self.writes()]
+        self.assertEqual(writes[:-1], revocations)
+        self.assertEqual(writes[-1][:2], (endpoint(f"statuses/{newer}"), "state=success"))
+        self.assert_pass(self.run_command())
+
+        self.make_group(carried)
+        self.assert_fails(self.run_command(), f"on {carried} is failure")
+        old_sync = self.sync(self.reviewed, self.advance(same_file=True))
+        self.make_group(old_sync)
+        self.assert_fails(self.stamp(self.reviewed, "--carry", head=old_sync), f"on {self.reviewed} is failure")
+        self.set_status(old_sync, [status(description=description)])
+        self.assert_fails(self.run_command(), f"on {self.reviewed} is failure")
+
+    def test_supersession_validates_prior_stamps_before_writing(self):
+        self.approve(number=PR + 1)
+        tip = self.advance()
+        carried = self.sync(self.reviewed, tip)
+        self.set_pull(PR + 1, carried)
+        self.assert_pass(self.stamp(self.reviewed, "--carry", number=PR + 1, head=carried))
+        self.switch(carried)
+        self.write("revision.txt", "revision on another PR\n")
+        newer = self.commit("different PR head")
+        self.set_pull(PR, newer)
+        for args, diagnostic in (
+            (("--supersede", newer), "cannot supersede the head being stamped"),
+            (("--supersede", carried), "include reviewed head"),
+            (("--supersede", self.reviewed, "--supersede", carried), "does not match pull request #42"),
+        ):
+            with self.subTest(args=args):
+                self.assert_fails(self.stamp(newer, "--reviewed-base", tip, *args), diagnostic)
+
+    def test_new_review_can_supersede_legacy_exact_head_approval(self):
+        self.make_group()
+        self.set_status(self.reviewed, [status(description="Dual-CLEAN")])
+        self.data[endpoint(f"statuses/{self.reviewed}")] = {}
+        self.assert_pass(self.run_command())
+
+        self.switch(self.reviewed)
+        self.write("revision.txt", "revision after legacy approval\n")
+        newer = self.commit("new reviewed head after legacy approval")
+        self.make_group(newer)
+        self.assert_pass(self.stamp(newer, "--reviewed-base", self.base, "--supersede", self.reviewed))
+        self.assert_pass(self.run_command())
+        self.make_group()
+        self.assert_fails(self.run_command(), f"on {self.reviewed} is failure")
+
+    def test_revocation_failure_blocks_new_stamp_and_can_resume(self):
+        self.approve()
+        tip = self.advance()
+        carried = self.sync(self.reviewed, tip)
+        self.make_group(carried)
+        self.assert_pass(self.stamp(self.reviewed, "--carry", head=carried))
+        self.switch(carried)
+        self.write("revision.txt", "reviewed revision\n")
+        newer = self.commit("new reviewed head after carry")
+        self.make_group(newer)
+        first, second = sorted((self.reviewed, carried))
+        first_status, second_status = (endpoint(f"statuses/{head}") for head in (first, second))
+        self.data[second_status]["fail"] = True
+        args = ("--reviewed-base", tip, "--supersede", first, "--supersede", second)
+        result = self.stamp(newer, *args)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("simulated status write failure", result.stderr)
+        self.assertEqual([call[5] for call in self.writes()], [first_status, second_status])
+        self.assert_fails(self.run_command(), f"queued PR head {newer} has no authorized {CONTEXT} status")
+
+        self.data[second_status].pop("fail")
+        self.assert_pass(self.stamp(newer, *args))
+        self.assertEqual([call[5] for call in self.writes()], [second_status, endpoint(f"statuses/{newer}")])
+        self.assert_pass(self.run_command())
+
     def test_mutations_are_caught_by_tree_fingerprint_and_trust_fixtures(self):
         good = self.approve()
         source = GATE.read_text()
@@ -640,7 +814,9 @@ class QueueReviewedHead(unittest.TestCase):
         self.switch(self.reviewed)
         self.merge(tip, options=("--no-commit",))
         self.write("extra", "evil merge\n")
-        self.make_group(self.commit("unexpected tree"))
+        head = self.commit("unexpected tree")
+        self.make_group(head)
+        self.set_status(head, [status(description=good)])
         self.assert_fails(self.run_command(), "differs from the clean merge")
         before = "require(self.tree(commit) == self.clean_merge(left, right),"
         self.assertIn(before, source)

@@ -2,9 +2,10 @@ name: Merge queue reviewed head
 
 # Produces the required hvo/reviewed-head context on merge queue commits.
 #
-# Branch rules require an operator status on the current PR head before
-# enqueueing. The group job verifies the approved PR diff, any base-only
-# syncs and the queue's merge trees against trusted Git history.
+# Branch rules require a passing check from any source on the current PR head
+# before enqueueing. The group job requires an authorized commit status on
+# that exact head and verifies the approved PR diff, any base-only syncs and
+# the queue's merge trees against trusted Git history.
 #
 # This workflow must only ever trigger on merge_group. A job with this name that
 # ran, or was skipped, on pull_request would satisfy the required context on

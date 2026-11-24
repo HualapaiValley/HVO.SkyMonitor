@@ -44,17 +44,41 @@ and the fingerprint in the PR ledger. A legacy status remains valid for its
 exact SHA and can be stamped with a fingerprint while that reviewed head is
 still current.
 
+Before stamping a newly reviewed revision, Kepler must revoke every active
+approval for that PR on another head. Use the PR ledger to identify the prior
+reviewed SHAs and every head that received their carry, including legacy
+approvals and SHAs outside the current PR history. Serialize these writes for
+the PR. Dequeue any entry that relied on the prior approval and require a new
+group check before re-entry.
+
+Repeat `--supersede` for each of those SHAs when publishing the new stamp.
+
+```bash
+./scripts/ci:queue-reviewed-head stamp "$pr_number" "$reviewed_head" \
+  --reviewed-base "$reviewed_merge_base" \
+  --supersede "$prior_reviewed_head" --supersede "$prior_carried_head"
+```
+
+GitHub commit statuses are indexed by SHA, so Kepler supplies the full list
+from the ledger. The publisher checks the authorized status on each supplied
+SHA and validates versioned approvals against this PR's fingerprint. It
+posts `failure` with `Superseded by <new_sha>` before publishing the new
+success. If a revocation fails, reconcile the latest statuses and repeat the
+command with the same list. The publisher skips prior statuses already marked
+`failure` or `error` by the authorized publisher.
+
 If the PR head advances solely through clean merges from `development/v1`,
 revalidate current-head checks, conversations and any integration evidence.
-Use the original reviewed SHA from the existing versioned status:
+Use the original reviewed SHA from the active versioned status.
 
 ```bash
 ./scripts/ci:queue-reviewed-head stamp "$pr_number" "$reviewed_head" --carry
 ```
 
 The publisher verifies the original status and the full merge-only history.
-It then publishes the verified approval reference on the current head for
-GitHub's admission requirement. Record both SHAs in the ledger. Enqueue with
+It then publishes the verified approval reference on the current head. The
+queue verifier requires that exact-head status and also checks that the
+original approval is still valid. Record both SHAs in the ledger. Enqueue with
 `expectedHeadOid` set to the current head. If review must be revoked after a
 group gate has passed, dequeue the PR and require a new group check before
 re-entry. A new PR edit, a conflict resolution or an inconclusive verification

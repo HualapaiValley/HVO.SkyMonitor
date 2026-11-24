@@ -202,30 +202,32 @@ class GitHub:
                 and actor["login"] in self.setters and type(actor.get("id")) is int
                 and actor["id"] == TRUSTED_SETTERS[actor["login"]])
 
-    def latest_status(self, head):
+    def latest_status(self, head, *, require_success=True):
         statuses = self.records(f"commits/{head}/statuses", paginated=True)
-        matching = {}
+        seen = set()
+        matching = []
         for status in statuses:
             id_ = status["id"]
             require(type(id_) is int and id_ > 0 and isinstance(status["context"], str)
                     and status["state"] in ("success", "failure", "pending", "error"),
                     f"malformed commit status on {head}")
+            require(id_ not in seen, f"duplicate commit status ID {id_} on {head}")
+            seen.add(id_)
             if status["context"].casefold() == CONTEXT:
-                require(id_ not in matching or status == matching[id_],
-                        f"ambiguous commit status on {head}")
-                matching[id_] = status
+                matching.append(status)
         if not matching:
             return None
-        latest = matching[max(matching)]
+        latest = max(matching, key=lambda status: status["id"])
         require(latest["context"] == CONTEXT, f"newest status on {head} has a noncanonical {CONTEXT} context")
-        require(latest["state"] == "success", f"newest {CONTEXT} on {head} is {latest['state']}")
+        if require_success:
+            require(latest["state"] == "success", f"newest {CONTEXT} on {head} is {latest['state']}")
         require(self.is_authorized(latest["creator"]),
                 f"newest {CONTEXT} on {head} has an unauthorized publisher")
         return latest
 
-    def publish(self, head, description):
+    def publish(self, head, description, *, state="success"):
         command(["gh", "api", "--hostname", "github.com", "--method", "POST",
-                 f"repos/{self.repo}/statuses/{head}", "-f", "state=success",
+                 f"repos/{self.repo}/statuses/{head}", "-f", f"state={state}",
                  "-f", f"context={CONTEXT}", "-f", f"description={description}"], discard=True)
 
 
@@ -246,7 +248,8 @@ class Approval:
             isinstance(description, str) and len(description) <= 140
             and (not description or description.isprintable())
         ), "malformed reviewed-head description")
-        if not description or not description.lstrip().casefold().startswith("hvo-diff"):
+        # Extra text around a versioned stamp must never turn it into a legacy approval.
+        if not description or "hvo-diff" not in description.casefold():
             return None
         match = STAMP.fullmatch(description)
         require(match, "unknown or malformed reviewed diff fingerprint")
@@ -267,37 +270,60 @@ class Approval:
 def verify_approval(git, api, pr, head, tip, *, reviewed=None):
     current = head
     approval = None
-    while current != reviewed:
+    while True:
         status = api.latest_status(current)
-        if status is not None:
+        if status is None:
+            # Only stamp --carry has an explicit reviewed SHA before reading the head.
+            require(reviewed is not None, f"queued PR head {head} has no authorized {CONTEXT} status")
+            require(current != reviewed, f"reviewed ancestor {current} has no {CONTEXT} status")
+        else:
             candidate = Approval.parse(status)
             if candidate is None:
-                require(current == head and reviewed is None and approval is None,
+                require(reviewed is None,
                         "legacy approval is valid only on the exact PR head")
-                return current, None
-            if approval is None:
-                approval = candidate
-                require(reviewed is None or reviewed == approval.reviewed,
-                        "approval names a different reviewed head")
-                reviewed = approval.reviewed
-            require(approval == candidate, f"reviewed diff approval changed at {current}")
+                return head, None
+            require(reviewed is None or reviewed == candidate.reviewed, "approval names a different reviewed head")
+            require(approval is None or approval == candidate, f"reviewed diff approval changed at {current}")
+            reviewed, approval = candidate.reviewed, candidate
             if current == reviewed:
                 break
         current = git.sync_parent(current, tip)
 
     # The origin must still carry the latest success with its own versioned
     # record. A copied status is only a pointer, including on intermediate syncs.
-    status = api.latest_status(current)
-    require(status is not None, f"reviewed ancestor {current} has no {CONTEXT} status")
-    origin = Approval.parse(status)
-    require(origin is not None and origin.reviewed == current and (approval is None or origin == approval),
-            f"unverified reviewed diff approval on {current}")
+    origin = candidate
     common = git.merge_base(tip, origin.reviewed)
     require(git.merge_base(common, origin.base) == origin.base,
             "stamped merge base is outside the protected and reviewed history")
     require(origin == Approval.calculate(git, api.repo, pr, origin.reviewed, origin.base),
             f"reviewed diff fingerprint does not match pull request #{pr}")
     return current, origin
+
+
+def plan_supersessions(git, api, pr, head, previous_heads):
+    heads = {oid(value, "superseded head SHA") for value in previous_heads}
+    require(head not in heads, "cannot supersede the head being stamped")
+    pending = []
+    checked = set()
+    for previous in sorted(heads):
+        status = api.latest_status(previous, require_success=False)
+        require(status is not None, f"prior head {previous} has no {CONTEXT} status")
+        if status["state"] in ("failure", "error"):
+            continue  # An interrupted publication can resume after a completed revocation.
+        require(status["state"] == "success", f"prior {CONTEXT} on {previous} is {status['state']}")
+        approval = Approval.parse(status)
+        if approval is not None:
+            require(approval.reviewed in heads, f"include reviewed head {approval.reviewed} in --supersede")
+            if approval not in checked:
+                try:
+                    git.commit(approval.reviewed)
+                except subprocess.CalledProcessError:
+                    git.fetch(approval.reviewed, approval.reviewed)
+                require(approval == Approval.calculate(git, api.repo, pr, approval.reviewed, approval.base),
+                        f"prior approval on {previous} does not match pull request #{pr}")
+                checked.add(approval)
+        pending.append(previous)
+    return pending
 
 
 def prepare_checkout(git, api):
@@ -363,6 +389,7 @@ def publish_approval(args):
     api = GitHub(args.repo, set(TRUSTED_SETTERS))
     pr = pr_number(args.pr)
     reviewed = oid(args.reviewed, "reviewed head SHA")
+    require(not (args.carry and args.supersede), "--supersede requires --reviewed-base")
     require(api.is_authorized(api.api("user")),
             "gh is authenticated as an unauthorized status publisher")
     pull = api.pull(pr)
@@ -382,9 +409,19 @@ def publish_approval(args):
         require(head == reviewed, "the PR head has changed since review")
         require(base == git.merge_base(tip, head), "the reviewed merge base does not match the PR")
         approval = Approval.calculate(git, api.repo, pr, reviewed, base)
-    pull = api.pull(pr)
-    require(pull["state"] == "open" and pull["head"]["sha"] == head,
-            "the PR moved during approval verification")
+
+    def require_current_head():
+        current = api.pull(pr)
+        require(current["state"] == "open" and current["head"]["sha"] == head,
+                "the PR moved during approval verification")
+
+    previous_heads = plan_supersessions(git, api, pr, head, args.supersede)
+    require_current_head()
+    for previous in previous_heads:
+        api.publish(previous, f"Superseded by {head}", state="failure")
+        print(f"Superseded {CONTEXT} on #{pr} head {previous}")
+    if previous_heads:
+        require_current_head()
     api.publish(head, approval.description)
     print(f"Published {CONTEXT}=success on #{pr} head {head} for reviewed diff {approval.digest}")
 
@@ -395,6 +432,8 @@ def main():
     stamp.add_argument("pr", type=int)
     stamp.add_argument("reviewed", metavar="REVIEWED_HEAD")
     stamp.add_argument("--repo", default=REPOSITORY)
+    stamp.add_argument("--supersede", metavar="PRIOR_SHA", action="append", default=[],
+                       help="revoke a previous stamp from this PR's ledger before a fresh stamp; repeat for each SHA")
     mode = stamp.add_mutually_exclusive_group(required=True)
     mode.add_argument("--reviewed-base", metavar="REVIEWED_MERGE_BASE")
     mode.add_argument("--carry", action="store_true")

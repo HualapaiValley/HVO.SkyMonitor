@@ -446,8 +446,9 @@ stricter policy only if evidence shows a need and Roy authorizes it. This rule
 governs any synchronization language elsewhere in the lifecycle procedure.
 
 PR edits and actual merge/product conflicts require applicable local evidence
-and independent review on the new candidate. The operated queue can carry an
-existing versioned approval through a
+and independent review on the new candidate. Under
+[Roy's recorded C4 decision](../../../docs/development/policy/skymonitor.md#c4-policy-authorization),
+the operated queue can carry an existing versioned approval through a
 [verified clean merge-only sync](../../../docs/development-v1.md#diff-bound-review-approval)
 from `development/v1`. Keep the formal reports and completeness evidence
 bound to the originally reviewed SHA and validate applicable integration
@@ -470,12 +471,15 @@ does not replace this operated route or authorize a coding thread to finalize.
    SHA** and verifies complete original-requirement evidence, required
    formal CLEAN reports (LOW: Sol; HIGH: Sol and Opus, all on the reviewed SHA), passing
    required CI, resolved conversations, and no actual merge/product conflict.
-   A changed head needs the clean-sync proof above or the applicable
-   implementation, test and review loop.
+   A changed head needs the applicable implementation, test and review loop or
+   the clean-sync proof authorized by [Roy's C4 decision](../../../docs/development/policy/skymonitor.md#c4-policy-authorization).
 4. Kepler alone sets `hvo/reviewed-head=success` on exactly the revalidated head.
    Use the [reviewed-diff stamp command](../../../docs/runbooks/development-v1-merge-queue.md#publish-review-approval)
    to bind the original review or publish a verified carry reference on a
-   cleanly synced head. Kepler records issue completeness in the PR ledger.
+   cleanly synced head. Before stamping a newly reviewed revision, use the PR
+   ledger and `--supersede` to revoke all earlier approvals on other heads,
+   including the original reviewed SHAs and heads that received a carry.
+   Kepler records issue completeness and the superseded SHAs in the PR ledger.
 5. Kepler revalidates the head and enqueues with GraphQL `enqueuePullRequest`,
    binding `expectedHeadOid` to that head. An example mutation for Kepler is:
 
@@ -680,8 +684,9 @@ corrections and local evidence, then stop at handoff.
   unchanged successful local gates.
 - On a target that requires it (`development/v1`), Kepler publishes
   `hvo/reviewed-head` on exactly that head before merging, whichever route is
-  used. Require fresh current-head checks and review convergence or the
-  operated queue's verified clean-sync carry.
+  used. Require fresh current-head checks and review convergence. The operated
+  queue accepts a verified clean-sync carry under
+  [Roy's recorded C4 decision](../../../docs/development/policy/skymonitor.md#c4-policy-authorization).
 - Kepler merges only when the approved diff has all required tier-specific
   CLEAN reports, merge and product conflicts are resolved, required current-head
   and applicable queue checks are green, and actionable conversations are resolved.

@@ -34,7 +34,8 @@ successful draft Preflight. Ready PRs run Preflight and, after it succeeds,
 Build and Unit on self-hosted Linux x64. A `merge_group` runs both checks and
 `merge-queue-reviewed-head.yml`. The latter verifies the approved PR diff, any
 clean merge-only sync from the protected branch, and the queue merge trees.
-It requires a successful `hvo/reviewed-head` status from `RoySalisbury`.
+It requires a successful `hvo/reviewed-head` status from `RoySalisbury` on
+each queued PR's exact head.
 
 The status is a queue-entry and merge gate, not an admission gate for draft or
 ready CI. After reviews converge, threads are resolved, and applicable ready-head
@@ -44,6 +45,24 @@ GraphQL `enqueuePullRequest` with that expected head. `gh pr merge --merge`
 does not enqueue under the queue. Queue CI tests the integration candidate.
 The target-specific checks and full-qualification distinction remain in
 [development-v1.md](../../development-v1.md); this profile changes no CI route.
+
+### C4 policy authorization
+
+Roy authorized C4 for the `HVO.SkyMonitor` `development/v1` merge queue.
+[Roy widget approval (2026-11-24 08:33 PST, relayed via Kepler, recorded in #2063)](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/2063#issuecomment-7140162353)
+
+The decision authorizes carrying a diff-bound `hvo/reviewed-head` approval
+through a conflict-free base move or a clean merge-only sync from the protected
+branch.
+`scripts/ci:queue-reviewed-head` verifies the approved diff and Git history
+fail-closed. Kepler publishes a verified carry on the exact synced PR head,
+and formal review evidence stays bound to the originally reviewed SHA. The
+authorization requires the merge-commit-only method and the three required
+check names listed above.
+
+The upstream `HVO.WebSite` repository is currently parked. Alignment of its
+`docs/development/policy/common.md` with this decision is scheduled for the
+next upstream policy refresh.
 
 ## Local contracts and discovery
 

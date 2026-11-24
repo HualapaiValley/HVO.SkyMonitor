@@ -131,16 +131,19 @@ digest.
   cannot attest a conflict as clean.
 - **Approval authority.** The verifier selects the numeric newest matching
   status across all API pages and requires `success` from GitHub account
-  `RoySalisbury` (ID `12501943`). A carried status points to the original
-  reviewed commit, whose own status must still be current and valid. PR
-  comments provide no gate input. Malformed or unknown `hvo-diff` versions
-  and digests for another PR or diff fail closed.
+  `RoySalisbury` (ID `12501943`) on the exact queued PR head. A carried status
+  points to the original reviewed commit, whose latest status must still be
+  valid. PR comments provide no gate input. Duplicate status IDs, malformed or
+  unknown `hvo-diff` versions, and digests for another repository, PR or diff
+  fail closed.
 
 Existing unversioned success statuses from the authorized account work on the
 exact PR head, including after a clean base advance with the PR untouched. A
 head-changing sync requires a verified versioned status on the reviewed
-ancestor. GitHub still requires a status on the current PR head for admission.
-Kepler can publish a verified carry with the
+ancestor and a matching carry on the exact queued head. GitHub's branch rules
+require a passing check from any source on the current PR head for admission.
+The queue verifier checks that the commit status itself is authorized. Kepler
+publishes carries and supersedes earlier approvals with the
 [stamp command](runbooks/development-v1-merge-queue.md#publish-review-approval).
 
 The [published webhook schema](https://github.com/octokit/webhooks/blob/main/payload-schemas/api.github.com/merge_group/checks_requested.schema.json)
