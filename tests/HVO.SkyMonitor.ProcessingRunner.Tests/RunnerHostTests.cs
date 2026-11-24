@@ -1,5 +1,7 @@
 using System.Net;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.Processing.Tests;
 using HVO.SkyMonitor.ProcessingRunner.Contracts;
 
 namespace HVO.SkyMonitor.ProcessingRunner.Tests;
@@ -42,6 +44,43 @@ public sealed class RunnerHostTests
         Assert.AreEqual("object.missing", result.Failure!.ReasonCode);
         Assert.IsTrue(result.Failure.Retryable);
         Assert.AreEqual(claim.Inputs[0].ArtifactId, result.Failure.UnavailableArtifactId);
+        Assert.AreEqual(claim.LeaseToken, result.Failure.LeaseToken);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    [DataRow(false, true, ProcessingRunnerReasonCodes.PayloadChecksumMismatch)]
+    [DataRow(true, true, ProcessingRunnerReasonCodes.PayloadChecksumMismatch)]
+    [DataRow(false, false, ProcessingReasonCodes.InvalidProjectedScene)]
+    [DataRow(true, false, ProcessingReasonCodes.InvalidProjectedScene)]
+    public async Task JobExecutionRejectsScenePayloadAndContentIdentityIndependently(
+        bool resolvedSun, bool tamperPayload, string expectedReason)
+    {
+        var scene = await MeasuredStellarAssociationFixtures.StarFieldAsync(resolvedSun, ("fixture-star", 0, 1, 1));
+        Assert.AreEqual(resolvedSun ? ProjectedSceneV1.ResolvedFootprintSchemaVersion : ProjectedSceneV1.CurrentSchemaVersion,
+            scene.SchemaVersion);
+        var auxiliary = MeasuredStellarAssociationFixtures.SceneAuxiliary(scene);
+        var metadata = ProcessingRunnerProjection.ProjectAuxiliaryInput(auxiliary);
+        Assert.AreNotEqual(metadata.IdentitySha256, metadata.ChecksumSha256);
+        var decoded = ProcessingRunnerProjection.ReconstructAuxiliaryInput(metadata);
+        Assert.AreEqual(scene.SceneIdentitySha256, decoded.IdentitySha256);
+
+        var tampered = tamperPayload
+            ? metadata with { CanonicalJson = metadata.CanonicalJson + " " }
+            : metadata with { IdentitySha256 = new string('A', 64) };
+        var claim = RunnerTestData.NoOpClaim() with { AuxiliaryInputs = [tampered] };
+        using var handler = new ScriptedHttpHandler();
+        handler.Map(HttpMethod.Get, claim.Inputs[0].ContentPath, (_, _) => ScriptedHttpHandler.Bytes(RunnerTestData.NoOpPayload));
+        using var http = RunnerTestData.CreateHttpClient(handler);
+        using var client = new ProcessingRunnerClient(http, RunnerTestData.ClientOptions());
+
+        var result = await RunnerJobExecution.ExecuteAsync(
+            client, new ProcessingRecipeExecutor(), claim, ProcessingRunnerProtocol.MaximumTransferBytes, TimeProvider.System, CancellationToken.None);
+
+        Assert.IsNull(result.Outcome);
+        Assert.IsNotNull(result.Failure);
+        Assert.AreEqual(expectedReason, result.Failure.ReasonCode);
+        Assert.IsFalse(result.Failure.Retryable);
         Assert.AreEqual(claim.LeaseToken, result.Failure.LeaseToken);
     }
 

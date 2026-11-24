@@ -99,9 +99,10 @@ public class SkyMonitorClientOptionsTests
         var options = provider.GetRequiredService<IOptions<SkyMonitorClientOptions>>();
 
         var error = Assert.ThrowsExactly<OptionsValidationException>(() => _ = options.Value);
-        CollectionAssert.AreEquivalent(
-            new[] { "SkyMonitor:BaseUrl must be a valid absolute URI.", "SkyMonitor:PublicBaseUrl must be a valid absolute URI." },
-            error.Failures.ToArray());
+        var failures = error.Failures.ToArray();
+        Assert.HasCount(2, failures);
+        Assert.Contains("SkyMonitor:BaseUrl must be a valid absolute URI.", failures);
+        Assert.Contains("SkyMonitor:PublicBaseUrl must be a valid absolute URI.", failures);
     }
 
     [TestMethod]
