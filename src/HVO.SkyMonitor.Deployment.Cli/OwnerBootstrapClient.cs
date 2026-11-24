@@ -47,8 +47,9 @@ internal sealed record InstallationVerificationExpectation(
 
 internal sealed class OwnerBootstrapClient(
     Uri baseAddress,
-    HttpMessageHandler? handler = null,
-    TimeSpan? protectedReadTimeout = null) : IOwnerBootstrapClient
+    HttpMessageHandler? handler,
+    TimeSpan? protectedReadTimeout,
+    TimeProvider timeProvider) : IOwnerBootstrapClient
 {
     internal static readonly TimeSpan ProtectedReadTimeout = TimeSpan.FromSeconds(120);
     internal const string VerificationStateHeader = "X-HVO-Installation-Verification";
@@ -64,6 +65,15 @@ internal sealed class OwnerBootstrapClient(
         "name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"",
         RegexOptions.CultureInvariant | RegexOptions.Compiled,
         TimeSpan.FromSeconds(1));
+
+    // The native startup acceptance test also activates this constructor via reflection.
+    public OwnerBootstrapClient(
+        Uri baseAddress,
+        HttpMessageHandler? handler = null,
+        TimeSpan? protectedReadTimeout = null)
+        : this(baseAddress, handler, protectedReadTimeout, TimeProvider.System)
+    {
+    }
 
     public async Task WaitForHealthAsync(
         ApprovedCatalogContract expectedCatalog,
@@ -85,9 +95,9 @@ internal sealed class OwnerBootstrapClient(
             BaseAddress = baseAddress,
             Timeout = TimeSpan.FromSeconds(5)
         };
-        var deadline = DateTimeOffset.UtcNow + (timeout ?? TimeSpan.FromMinutes(3));
+        var deadline = timeProvider.GetUtcNow() + (timeout ?? TimeSpan.FromMinutes(3));
         string? latest = null;
-        while (DateTimeOffset.UtcNow < deadline)
+        while (timeProvider.GetUtcNow() < deadline)
         {
             try
             {
@@ -118,7 +128,7 @@ internal sealed class OwnerBootstrapClient(
             {
                 latest = exception.Message;
             }
-            await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
+            await Task.Delay(TimeSpan.FromSeconds(2), timeProvider, cancellationToken).ConfigureAwait(false);
         }
         throw new InstallerException($"CameraAgent health did not become ready: {Redaction.SafeDiagnostic(latest ?? string.Empty)}");
     }
