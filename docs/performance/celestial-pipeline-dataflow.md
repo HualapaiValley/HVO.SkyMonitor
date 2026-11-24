@@ -810,10 +810,13 @@ classifier. Frames owned by an open sibling are measured and reported here, not 
    (`src/HVO.SkyMonitor.CameraAgent.Common/Capture/Processing/SqliteCaptureProcessingStore.cs`).
    - **What it fixes.** Each unpooled open re-read and re-parsed the whole `raw-ingress.db` schema before its
      first PRAGMA. The private cache from #698 is kept.
-   - **No state crosses callers.**
+   - **Connection setup.**
      - The gallery rank function is re-registered per open.
      - The window-candidate temp table is emptied before each use.
      - The migration temp tables are created and dropped inside the migration transaction.
+   - **Checkpoint-on-close.** A rejected restart can return its native SQLite handle to the pool with
+     checkpoint-on-close disabled. A later caller can rent that handle with the setting still disabled.
+     A successful restart restores checkpoint-on-close on the handle it used.
    - **Unchanged.** The read-only inspection connection that disables checkpoint-on-close stays unpooled.
    - **Inode pinning.** A pooled connection keeps its inode open, as the raw journal, lane store and admission
      coordinator already do for the same file. Nothing in the product replaces `raw-ingress.db` while the agent runs.
