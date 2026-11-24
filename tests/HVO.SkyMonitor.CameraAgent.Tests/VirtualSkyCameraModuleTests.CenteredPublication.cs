@@ -547,7 +547,8 @@ public sealed partial class VirtualSkyCameraModuleTests
                 await prior.OpenAsync(token).ConfigureAwait(false);
                 using var command = prior.CreateCommand();
                 // Retain real windows and views under all three pre-index schema-12 layouts.
-                command.CommandText = "DROP INDEX ix_processing_outputs_astrometry_lookup;\n" +
+                command.CommandText = SqliteCaptureProcessingSchemaTests.DropCenteredRegistrationStateSql +
+                    "\nDROP INDEX ix_processing_outputs_astrometry_lookup;\n" +
                     (hasTrustedCutoff ? string.Empty : format == CameraPixelFormat.Mono16
                         ? "DROP TABLE processing_centered_output_availability;"
                         : "DROP INDEX ix_processing_centered_output_availability_cutoff;\n" +
