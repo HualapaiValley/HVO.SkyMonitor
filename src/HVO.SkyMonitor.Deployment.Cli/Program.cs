@@ -186,6 +186,17 @@ internal static class Program
                     refused: true).ConfigureAwait(false);
                 return (int)InstallerExitCode.Refused;
             }
+            else if (command is SiloCommandRequest silo)
+            {
+                var result = await services.Silo(silo, cancellationToken).ConfigureAwait(false);
+                await Console.Out.WriteLineAsync(silo.Json
+                    ? result.ToJsonString()
+                    : string.Join(Environment.NewLine, result.Select(static pair => $"{pair.Key}: {pair.Value?.ToJsonString().Trim('"')}")))
+                    .ConfigureAwait(false);
+                // A verification that finds the runtime not ready reports it in full and exits as a refusal; nothing changed.
+                if (result["readiness"]?.GetValue<string>() == "not-ready")
+                    return (int)InstallerExitCode.Refused;
+            }
             else if (command is CameraAgentStateResetRequest reset)
             {
                 var result = await services.Reset(reset, cancellationToken).ConfigureAwait(false);
@@ -467,6 +478,7 @@ internal sealed record ProgramServices(
     Func<LifecycleRequest, CancellationToken, Task<LifecycleResult>> Lifecycle)
 {
     public Func<LifecycleWorkerRequest, CancellationToken, Task> ControlWorker { get; init; } = CameraAgentLifecycleManager.RunControlWorkerAsync;
+    public Func<SiloCommandRequest, CancellationToken, Task<System.Text.Json.Nodes.JsonObject>> Silo { get; init; } = SiloCommands.ExecuteAsync;
     public Func<PreflightRequest, CancellationToken, Task<System.Text.Json.Nodes.JsonObject>> SplitHostPreflight { get; init; } = global::HVO.SkyMonitor.Deployment.SplitHostPreflight.ExecuteAsync;
     public Func<ExistingDownRequest, CancellationToken, Task<System.Text.Json.Nodes.JsonObject>> ExistingDown { get; init; } = global::HVO.SkyMonitor.Deployment.ExistingDown.ExecuteAsync;
     public Func<PartialPrepareRequest, CancellationToken, Task<System.Text.Json.Nodes.JsonObject>> PartialPrepare { get; init; } = PartialPrepareRecovery.ExecuteAsync;

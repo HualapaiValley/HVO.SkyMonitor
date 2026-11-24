@@ -46,6 +46,9 @@ public sealed class CameraAgentHostOptions : IValidatableObject
     public ProvisioningStartupGateOptions ProvisioningStartupGate { get; init; } = new();
 
     [Required]
+    public FirstBootPauseOptions FirstBootPause { get; init; } = new();
+
+    [Required]
     public CentralIntegrationOptions CentralIntegration { get; init; } = new();
 
     [Required]
@@ -600,6 +603,29 @@ public sealed class ExecutionEvidenceExportOptions : IValidatableObject
 public sealed class ProvisioningStartupGateOptions
 {
     public bool Enabled { get; init; }
+}
+
+/// <summary>
+/// The installer-owned pause a clean Silo-layout install seeds before the instance first starts (#1966). When
+/// <see cref="Id"/> is set, the capture control store's first initialization records a completed, changed pause owned
+/// by that identity in the same transaction that leaves the schema's initial state, so a version-0 running state is
+/// never observable. While that pause is still the latest accepted command, only the matching first resume may resume.
+/// </summary>
+public sealed class FirstBootPauseOptions
+{
+    public Guid? Id { get; init; }
+
+    public FirstBootPauseIdentity? Identity => Id is { } id && id != Guid.Empty ? new FirstBootPauseIdentity(id) : null;
+}
+
+/// <summary>The command identities derived from one first-boot pause.</summary>
+public sealed record FirstBootPauseIdentity(Guid Id)
+{
+    public string PauseKey => $"installer:first-boot:{Id:D}:pause";
+    public string ResumeKey => $"installer:first-boot:{Id:D}:resume";
+    public string Actor => $"installer-first-boot:{Id:D}";
+    public const string PauseReason = "Installer first-boot pause";
+    public const string ResumeReason = "Installer first resume";
 }
 
 public sealed class DeploymentLocationOptions : IValidatableObject

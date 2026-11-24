@@ -83,6 +83,29 @@ internal sealed partial class CameraAgentInstaller
             if (File.Exists(paths.ResultPath))
                 _ = await ReadResultAsync(paths.ResultPath, cancellationToken).ConfigureAwait(false);
         }
+        // The Silo layout is a clean install with a new state contract (#1966; cutover contract D1, 2, 8.1). An instance
+        // never changes layout in place, a completed Silo-layout instance is not re-run in this release, and a new one
+        // starts only on an absent data root on local ext4. Every check here only reads.
+        var silo = request.StorageLayout == CameraAgentStorageLayout.Silo;
+        if (retained?.Manifest is { } retainedManifest &&
+            string.Equals(retainedManifest.ComponentSchemaVersion, SiloRuntimeProfile.ComponentSchemaVersion, StringComparison.Ordinal) != silo)
+        {
+            throw InstallerException.Refused(
+                "An instance's storage layout is never changed in place; install the other layout as a new instance. Nothing was changed.");
+        }
+        (string FileSystem, string Device)? siloDataRoot = null;
+        if (silo && retained is not { Completed: true })
+        {
+            var mountInfo = await File.ReadAllTextAsync(HostProductRootPolicy.MountInfoPath, cancellationToken).ConfigureAwait(false);
+            var dataRoot = SiloRuntimeProfile.DataRoot(paths);
+            siloDataRoot = retained is not null && Directory.Exists(dataRoot)
+                ? SiloRuntimeProfile.AdmitRetainedDataRoot(dataRoot, mountInfo, uid, gid)
+                : SiloRuntimeProfile.AdmitFreshDataRoot(dataRoot, mountInfo);
+            var headroom = SiloRuntimeProfile.HeadroomOf(dataRoot);
+            if (!headroom.Ready)
+                throw InstallerException.Refused(
+                    $"The Silo data-root filesystem has {headroom.AvailableBytes} bytes free; it must keep {headroom.RequiredBytes}. Nothing was changed.");
+        }
         // Read before anything is prepared, so the host is checked against the limits this run would apply. A run that
         // goes on to change something reads everything again under the instance lock.
         var hostCheckLimits = HostCheckLimits(request, retained);
@@ -100,6 +123,27 @@ internal sealed partial class CameraAgentInstaller
         var (preflightDaemon, warnings) = await EnsureHostPrerequisitesAsync(
                 request, docker, hostEnvironment, hostCheckLimits, cancellationToken)
             .ConfigureAwait(false);
+        SiloArchiveIdentity? siloArchive = null;
+        SiloImagePin.PlatformImage? siloPlatform = null;
+        using var stagedSilo = new SiloImageSnapshotHolder();
+        if (silo && retained is not { Completed: true })
+        {
+            // Every Silo input is proved before anything changes (#1966): the release, when one is used, pins exactly the
+            // Silo image this installer qualifies; a staged archive is that image for this architecture, blob for blob;
+            // a run that may not download already holds it; and an optional archive store answers as configured.
+            var platform = SiloImagePin.ForArchitecture(preflightDaemon.Architecture)
+                ?? throw InstallerException.Refused($"The pinned Silo release has no image for the {preflightDaemon.Architecture} architecture.");
+            siloPlatform = platform;
+            if (acquiredImage?.VerifiedRelease.Manifest is { } release)
+                SiloInstallation.AdmitRelease(release);
+            if (request.SiloImageArchive is { } staged)
+                stagedSilo.Snapshot = await SiloImageSnapshot.CreateAsync(staged, platform, cancellationToken).ConfigureAwait(false);
+            else if (request.NoDownload && await docker.ResolvePinnedSiloImageAsync(platform, cancellationToken).ConfigureAwait(false) is null)
+                throw InstallerException.Refused(
+                    "--no-download needs the pinned Silo image on this Docker daemon, or a staged --silo-image-archive. Nothing was changed.");
+            if (request.HasSiloArchive)
+                siloArchive = await SiloInstallation.AdmitArchiveAsync(request, cancellationToken).ConfigureAwait(false);
+        }
         // The clock gate protects every production install, whichever root the host policy names; only an admitted
         // test root is exempt.
         if (request.IsProductionRoot && !NativeLinux.IsClockSynchronized())
@@ -140,6 +184,24 @@ internal sealed partial class CameraAgentInstaller
                     request, acquiredImage, docker, catalogId, import: retained is null && !request.DryRun, cancellationToken)
                 .ConfigureAwait(false);
         }
+        if (silo && retained is not { Completed: true })
+        {
+            // The CameraAgent image must honor the installer's first-boot pause. A release's image is checked here, once
+            // imported and before anything is claimed; an image Docker does not hold yet is checked by the image phase.
+            await SiloInstallation.EnsureFirstBootCapableAsync(
+                    docker, [request.ImageReference, .. acquiredImage?.Image.ImageIds ?? []], required: releaseImported, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        if (silo && retained is { Completed: true, Manifest: { } completedManifest, Result: { } completedResult })
+        {
+            var sameInputs = RequestIdentityMatches(retained.State.RequestSha256, identityRequest, instanceId, acquiredImage?.VerifiedRelease);
+            // A plan makes the run's refusals and reports what the run would verify; it starts no container (#1966 review).
+            return request.DryRun
+                ? SiloInstallation.PlanReRun(instanceId, sameInputs, completedManifest, completedResult, warnings)
+                : await SiloInstallation.ReRunAsync(docker, paths, instanceId, sameInputs, completedManifest, completedResult, warnings,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+        }
         if (retained is { Completed: true })
         {
             return request.DryRun
@@ -157,21 +219,42 @@ internal sealed partial class CameraAgentInstaller
         }
         if (request.DryRun)
         {
-            var plan = await PlanAsync(request, paths, instanceId, docker, acquiredImage, retained?.Manifest, cancellationToken)
+            // A Silo-layout plan renders the Silo model in memory and names what the run would create beside CameraAgent; it
+            // reads the daemon's pinned image without loading or pulling anything (#1966 review).
+            (SiloComposeInputs Inputs, string ImageSource)? plannedSilo = null;
+            if (silo)
+            {
+                var present = await docker.ResolvePinnedSiloImageAsync(siloPlatform!, cancellationToken).ConfigureAwait(false);
+                var pause = SiloInstallation.GetOrCreateFirstBootPauseId(paths, allowCreation: false);
+                plannedSilo = (
+                    new SiloComposeInputs(present?.Reference ?? SiloImagePin.IndexDigest, siloPlatform!.Platform, SiloRuntimeProfile.DataRoot(paths),
+                        pause == Guid.Empty ? Guid.NewGuid() : pause),
+                    present is not null ? "already on this Docker daemon"
+                    : request.SiloImageArchive is not null ? "loaded from the staged --silo-image-archive"
+                    : "pulled by digest");
+            }
+            var plan = await PlanAsync(request, paths, instanceId, docker, acquiredImage, retained?.Manifest, cancellationToken, plannedSilo?.Inputs)
                 .ConfigureAwait(false);
             var plannedPaths = paths.WithCatalog(Path.GetFileName(plan.Catalog.InstallRoot));
             var plannedRecord = InstallRecordLocation.For(plannedPaths.ProductRoot, request.ProductionProductRoot);
+            var installed = InstalledPlan(
+                plannedPaths,
+                instanceId,
+                plan.Image.ImageId,
+                request.ContainerResources(),
+                FreshInstallFacts.Observe(plannedPaths),
+                await FreshRecordActionAsync(plannedRecord, instanceId, cancellationToken).ConfigureAwait(false),
+                plannedRecord);
             return plan with
             {
                 Warnings = warnings,
-                Plan = InstalledPlan(
-                    plannedPaths,
-                    instanceId,
-                    plan.Image.ImageId,
-                    request.ContainerResources(),
-                    FreshInstallFacts.Observe(plannedPaths),
-                    await FreshRecordActionAsync(plannedRecord, instanceId, cancellationToken).ConfigureAwait(false),
-                    plannedRecord)
+                Plan = plannedSilo is { } planned
+                    ? DeploymentPlan.Of([
+                        .. installed.Items,
+                        .. SiloInstallation.PlanItems(plannedPaths, instanceId, siloPlatform!, planned.ImageSource, siloDataRoot!.Value,
+                            resumed: retained is not null)
+                    ])
+                    : installed
             };
         }
 
@@ -188,7 +271,7 @@ internal sealed partial class CameraAgentInstaller
 
         var requestSha256 = ComputeRequestSha256(identityRequest, instanceId, acquiredImage?.VerifiedRelease);
         var existingState = await ReadStateAsync(paths.StatePath, cancellationToken).ConfigureAwait(false);
-        EnsureInstanceRootCanBeOwned(paths, existingState is not null);
+        EnsureInstanceRootCanBeOwned(paths, existingState is not null, silo);
         // Read again under the lock: another run may have moved the installation on since it was admitted.
         if (existingState?.Status == InstallationStatus.Completed)
         {
@@ -223,7 +306,7 @@ internal sealed partial class CameraAgentInstaller
                 paths.ApplicationIdentityPath,
                 allowCreation: true,
                 cancellationToken).ConfigureAwait(false);
-            var existingManifest = await ReadManifestAsync(paths.ManifestPath, cancellationToken).ConfigureAwait(false);
+            var existingManifest = await ReadManifestAsync(paths.ManifestPath, cancellationToken, allowSiloLayout: silo).ConfigureAwait(false);
             if (existingManifest is not null &&
                 (existingManifest.Product != "HVO.SkyMonitor" ||
                  existingManifest.Component != DeploymentComponent.CameraAgent ||
@@ -262,8 +345,28 @@ internal sealed partial class CameraAgentInstaller
             {
                 throw new InstallerException("The Docker daemon identity changed after preflight.");
             }
+            // The pinned stock Silo image is proved to be that release for this daemon's architecture before any
+            // configuration names it; it is pulled by its index digest only when the run may download.
+            var siloImage = silo
+                ? await docker.PrepareSiloImageAsync(daemon.Architecture, allowPull: !request.NoDownload, stagedSilo.Snapshot, cancellationToken)
+                    .ConfigureAwait(false)
+                : null;
+            if (silo)
+                await SiloInstallation.EnsureFirstBootCapableAsync(docker, image.ImageId, required: true, cancellationToken).ConfigureAwait(false);
 
             state = await RecordPhaseAsync(paths, state, InstallationPhase.Configuration, cancellationToken).ConfigureAwait(false);
+            SiloComposeInputs? siloInputs = null;
+            var firstBootPauseId = Guid.Empty;
+            if (silo)
+            {
+                foreach (var directory in new[] { paths.ConfigRoot, paths.StateRoot, paths.DeploymentStateRoot })
+                    SafeFileSystem.CreateOwnerDirectory(directory);
+                firstBootPauseId = SiloInstallation.GetOrCreateFirstBootPauseId(paths, allowCreation: true);
+                if (siloArchive is not null)
+                    SiloInstallation.PersistArchiveConfiguration(paths, request, siloArchive);
+                siloInputs = new SiloComposeInputs(siloImage!.ImageId, "linux/" + siloImage.Architecture, SiloRuntimeProfile.DataRoot(paths),
+                    firstBootPauseId);
+            }
             var generatedPasswordPath = Path.Combine(paths.ConfigRoot, "owner-bootstrap", "temporary-password");
             var passwordPath = await CreateOwnerPasswordAsync(
                     request,
@@ -294,7 +397,7 @@ internal sealed partial class CameraAgentInstaller
                 verificationToken,
                 lifecycleControlToken,
                 passwordAuthorityEnabled,
-                resources, deepSkyCatalog: deepSkyCatalog);
+                resources, deepSkyCatalog: deepSkyCatalog, silo: siloInputs);
             StepCompleted("configuration-written");
 
             // Compose writing created every writable bind source with the runtime identity. Prove the persisted
@@ -326,10 +429,24 @@ internal sealed partial class CameraAgentInstaller
                 ["config"],
                 cancellationToken).ConfigureAwait(false);
             var composeModelSha256 = ComposeDeployment.ComputeSha256(rendered.StandardOutput);
+            SiloInstallationIdentity? siloIdentity = null;
+            if (silo)
+            {
+                // Before CameraAgent first starts: bootstrap the store and bind it to this instance, then persist the
+                // first-boot pause and prove it durable from the database itself (contract 7.2, 8.1).
+                var bound = await SiloInstallation.BootstrapAsync(
+                        docker, compose, paths, instanceId, firstBootPauseId, siloImage!, siloDataRoot!.Value, cancellationToken)
+                    .ConfigureAwait(false);
+                siloIdentity = bound with { Archive = siloArchive };
+                StepCompleted("silo-bound");
+                await SiloInstallation.PersistFirstBootPauseAsync(docker, compose, paths, firstBootPauseId, cancellationToken)
+                    .ConfigureAwait(false);
+                StepCompleted("first-boot-pause-persisted");
+            }
             var manifest = CreateManifest(
                 request, paths, instanceId, installationId, applicationIdentity, uid, gid,
                 verificationToken, lifecycleControlToken, compose, composeModelSha256, catalog, image, daemon, existingManifest,
-                resources);
+                resources, silo: siloIdentity);
             await SafeFileSystem.WriteJsonAtomicAsync(
                 paths.ManifestPath,
                 manifest,
@@ -373,7 +490,7 @@ internal sealed partial class CameraAgentInstaller
                     verificationToken,
                     lifecycleControlToken,
                     passwordAuthorityEnabled: false,
-                    resources, deepSkyCatalog: deepSkyCatalog);
+                    resources, deepSkyCatalog: deepSkyCatalog, silo: siloInputs);
                 rendered = await docker.ComposeAsync(
                     compose.ComposeFile,
                     compose.EnvironmentFile,
@@ -418,6 +535,21 @@ internal sealed partial class CameraAgentInstaller
                     catalog,
                     AllowCompletedPasswordReplacement: false, DeepSkyCatalog: deepSkyCatalog),
                 cancellationToken).ConfigureAwait(false);
+            if (silo)
+            {
+                // Authenticated readiness for the Silo layout: the store, binding, private listener and data root verify,
+                // and the first-boot pause is still durable and in force through startup and owner bootstrap.
+                var verification = await SiloInstallation.VerifyAsync(docker, paths, instanceId, siloIdentity!, image, cancellationToken)
+                    .ConfigureAwait(false);
+                if (verification.Readiness == "not-ready")
+                    throw new InstallerException("The Silo runtime is not ready: its data-root headroom or archive store failed verification.");
+                await SiloInstallation.VerifyPersistedFirstBootPauseAsync(paths.StateRoot, firstBootPauseId, requireInForce: true, cancellationToken)
+                    .ConfigureAwait(false);
+                var firstBoot = await SiloCommands.ClientFactory(baseAddress).ReadAsync(lifecycleControlToken, cancellationToken)
+                    .ConfigureAwait(false);
+                if (firstBoot.Id != firstBootPauseId || !firstBoot.InForce || firstBoot.State != "paused" || firstBoot.Version != 1)
+                    throw new InstallerException("CameraAgent did not start held by the installer's first-boot pause.");
+            }
 
             manifest = manifest with { ComposeModelSha256 = composeModelSha256 };
             await SafeFileSystem.WriteJsonAtomicAsync(
@@ -661,7 +793,8 @@ internal sealed partial class CameraAgentInstaller
         DockerClient docker,
         AcquiredImage? release,
         InstanceManifest? retainedManifest,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        SiloComposeInputs? silo = null)
     {
         var applicationIdentity = Guid.NewGuid();
         var catalog = CatalogInstaller.Inspect(request.CatalogBundle!, finalPaths.CatalogRoot);
@@ -688,7 +821,7 @@ internal sealed partial class CameraAgentInstaller
             "dry-run-installation-verification-token",
             "dry-run-lifecycle-control-token",
             passwordAuthorityEnabled: true,
-            request.ContainerResources(), deepSkyCatalog: deepSkyCatalog).Files;
+            request.ContainerResources(), deepSkyCatalog: deepSkyCatalog, silo: silo).Files;
         return new InstallationResult(
             DeploymentSchemaVersions.InstallationResult,
             InstallationOutcome.Planned,
@@ -787,7 +920,8 @@ internal sealed partial class CameraAgentInstaller
         DockerDaemonIdentity daemon,
         InstanceManifest? previous,
         ContainerResourceLimits? resources,
-        bool keepPreviousStateSnapshot = false)
+        bool keepPreviousStateSnapshot = false,
+        SiloInstallationIdentity? silo = null)
     {
         var location = HVO.SkyMonitor.AgentCore.DeploymentLocationSnapshot.Create(
             $"installer-{instanceId:D}",
@@ -803,7 +937,7 @@ internal sealed partial class CameraAgentInstaller
         return new(
             DeploymentSchemaVersions.InstanceManifest,
             "HVO.SkyMonitor",
-            "cameraagent-install-v1",
+            silo is null ? "cameraagent-install-v1" : SiloRuntimeProfile.ComponentSchemaVersion,
             DeploymentComponent.CameraAgent,
             instanceId,
             request.FriendlyName,
@@ -822,7 +956,7 @@ internal sealed partial class CameraAgentInstaller
             paths.ProductRoot,
             paths.ConfigRoot,
             paths.StateRoot,
-            ComposeDeployment.TemplateVersionFor(request.ReplayProfile),
+            silo is null ? ComposeDeployment.TemplateVersionFor(request.ReplayProfile) : SiloRuntimeProfile.ComposeTemplateVersion,
             compose.ConfigurationSha256,
             compose.RigProfileSha256,
             compose.ScheduleSha256,
@@ -855,7 +989,8 @@ internal sealed partial class CameraAgentInstaller
             // Catalog selections are deployment configuration and survive state reset and reinstall.
             previous?.DeepSkyCatalog,
             previous?.PreviousDeepSkyCatalog,
-            previous?.HasPreviousDeepSkySelection ?? false);
+            previous?.HasPreviousDeepSkySelection ?? false,
+            silo);
     }
 
     private static InstallationResult CreateInstalledResult(
@@ -891,7 +1026,9 @@ internal sealed partial class CameraAgentInstaller
             paths.StateRoot,
             uid,
             gid,
-            ComposeDeployment.TemplateVersionFor(request.ReplayProfile),
+            request.StorageLayout == CameraAgentStorageLayout.Silo
+                ? SiloRuntimeProfile.ComposeTemplateVersion
+                : ComposeDeployment.TemplateVersionFor(request.ReplayProfile),
             request.LatitudeDegrees,
             request.LongitudeDegrees,
             request.ElevationMeters,
@@ -993,7 +1130,7 @@ internal sealed partial class CameraAgentInstaller
         return request with { ImageArchive = stagedPath };
     }
 
-    private static async Task<InstallationState?> ReadStateAsync(string path, CancellationToken cancellationToken)
+    internal static async Task<InstallationState?> ReadStateAsync(string path, CancellationToken cancellationToken)
     {
         if (!File.Exists(path))
         {
@@ -1022,16 +1159,17 @@ internal sealed partial class CameraAgentInstaller
         return value;
     }
 
-    private static async Task<InstanceManifest?> ReadManifestAsync(string path, CancellationToken cancellationToken)
+    private static async Task<InstanceManifest?> ReadManifestAsync(
+        string path, CancellationToken cancellationToken, bool allowSiloLayout = false)
     {
         return File.Exists(path)
-            ? await CameraAgentLifecycleManager.ReadManifestAsync(path, cancellationToken).ConfigureAwait(false)
+            ? await CameraAgentLifecycleManager.ReadManifestAsync(path, cancellationToken, allowSiloLayout).ConfigureAwait(false)
             : null;
     }
 
     private static async Task<InstallationResult> ReadResultAsync(string path, CancellationToken cancellationToken)
     {
-        return await CameraAgentLifecycleManager.ReadResultAsync(path, cancellationToken).ConfigureAwait(false);
+        return await CameraAgentLifecycleManager.ReadResultAsync(path, cancellationToken, allowSiloLayout: true).ConfigureAwait(false);
     }
 
     private static bool IsValid(CatalogInstallationIdentity? value)
@@ -1105,12 +1243,14 @@ internal sealed partial class CameraAgentInstaller
             DeploymentJsonContext.Default.InstallationState,
             cancellationToken);
 
-    private static void EnsureInstanceRootCanBeOwned(InstallationPaths paths, bool hasState)
+    private static void EnsureInstanceRootCanBeOwned(InstallationPaths paths, bool hasState, bool siloLayout = false)
     {
         var allowed = new HashSet<string>(StringComparer.Ordinal)
         {
             ".deployment.lock", "config", "state", "application-identity.json", "instance-manifest.json"
         };
+        // A resumed Silo-layout install owns the data root it created; admission already proved its identity and filesystem.
+        if (siloLayout) allowed.Add(SiloRuntimeProfile.DataDirectoryName);
         var unexpected = Directory.EnumerateFileSystemEntries(paths.InstanceRoot)
             .Select(Path.GetFileName)
             .FirstOrDefault(name => name is not null && !allowed.Contains(name));
@@ -1227,6 +1367,21 @@ internal sealed partial class CameraAgentInstaller
             request.ReplayProfile
         });
         var sha256 = Convert.ToHexStringLower(SHA256.HashData(identity));
+        if (request.StorageLayout != CameraAgentStorageLayout.Filesystem)
+        {
+            // Only a non-default layout joins the identity, so every filesystem installation keeps the identity it had.
+            sha256 = Convert.ToHexStringLower(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                request = sha256,
+                storageLayout = request.StorageLayout.ToString(),
+                siloImage = SiloImagePin.Reference,
+                request.SiloImageArchive,
+                request.SiloArchiveEndpoint,
+                request.SiloArchiveBucket,
+                request.SiloArchiveCaFile,
+                request.SiloArchiveCredentialFile
+            })));
+        }
         if (request.IlluminationMode is not null)
         {
             // Only explicit lighting joins the identity: omitted lighting must still resume older installations.
@@ -1273,6 +1428,7 @@ internal sealed partial class CameraAgentInstaller
            // The legacy identity predates replay profiles, explicit illumination, container limits and releases,
            // so a request using any of them never matches it.
            release is null && request.ReplayProfile == CameraAgentReplayProfile.InProcess && request.Cpus is null &&
+           request.StorageLayout == CameraAgentStorageLayout.Filesystem &&
            request.Memory is null && request.IlluminationMode is null &&
            string.Equals(
                retainedSha256,
