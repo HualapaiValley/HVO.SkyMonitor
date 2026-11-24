@@ -239,7 +239,9 @@ internal sealed partial class CameraAgentLifecycleManager
                 FailureCode = SignedAutomaticRestoreHeld,
                 FailureMessage = Redaction.SafeDiagnostic(exception.Message)
             }, cancellationToken).ConfigureAwait(false);
-            throw InstallerException.SignedRecoveryHeld(exception);
+            throw InstallerException.SignedRecoveryHeld(
+                $"Automatic signed recovery is held. Preserve the retained stores and checkpoints. {Redaction.SafeDiagnostic(exception.Message)}",
+                exception);
         }
     }
 

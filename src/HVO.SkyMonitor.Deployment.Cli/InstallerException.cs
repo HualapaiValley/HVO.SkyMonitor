@@ -42,8 +42,8 @@ internal sealed class InstallerException : Exception
     /// <summary>The signed recovery journal has recorded a hold on the retained stores.</summary>
     internal bool IsSignedRecoveryHeld { get; private init; }
 
-    internal static InstallerException SignedRecoveryHeld(Exception cause) =>
-        new($"Automatic signed recovery is held. Preserve the retained stores and checkpoints. {Redaction.SafeDiagnostic(cause.Message)}", cause)
+    internal static InstallerException SignedRecoveryHeld(string message, Exception cause) =>
+        new(message, cause)
         {
             IsRefusal = true,
             IsSignedRecoveryHeld = true
