@@ -40,6 +40,7 @@ commits = ["f0d6517809544dce574b08cc671050883d388f50"]
 paths = [
   '''^\.devcontainer/devcontainer\.json$''',
   '''^\.env\.(development|template)$''',
+  '''^src/HVO\.SkyMonitor\.LogicHost/appsettings(\.Development)?\.json$''',
 ]
 
 [[allowlists]]
@@ -64,6 +65,8 @@ targetRules = ["private-key", "aws-access-token"]
 condition = "AND"
 commits = ["286b004f2386ebbba84f0517af7e5e25d3f2b13c"]
 paths = [
+  '''^src/HVO\.SkyMonitor\.LogicHost/Services/ProcessingGraphCatalogService\.cs$''',
+  '''^tests/HVO\.SkyMonitor\.LogicHost\.Tests/Services/ProcessingGraphCatalogAndDeliveryServiceTests\.cs$''',
 ]
 
 [[allowlists]]
