@@ -14,6 +14,7 @@ public sealed partial class DurableCaptureProcessingTests
     public async Task RetainedAstrometry_LatestScanOpensOneJournalConnectionAndMatchesUnpooledHeadline()
     {
         var root = CreateTestRoot();
+        CameraAgentArtifactService.RetainedHistoryRead? captured = null;
         try
         {
             var oldest = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true).ConfigureAwait(false);
@@ -46,16 +47,26 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.AreEqual(7L, unpooledArtifacts.JournalConnectionOpens, "Two rejections and five accepted-fit inputs.");
 
             using var artifacts = new CameraAgentArtifactService(oldest.Fixture.Options, store, new CameraAgentPreviewEncoder());
-            using var pooled = new CameraAgentRetainedAstrometryService(store, artifacts);
+            using var pooled = new CameraAgentRetainedAstrometryService(store, artifacts,
+                () => captured = artifacts.BeginRetainedHistoryRead());
             Assert.AreEqual(expected, await pooled.ReadLatestAcceptedAsync(CancellationToken.None).ConfigureAwait(false));
             Assert.AreEqual(7L, artifacts.PayloadValidationReads);
             Assert.AreEqual(1L, artifacts.JournalConnectionOpens);
+            Assert.IsNotNull(captured);
+            Assert.ThrowsExactly<ObjectDisposedException>(() => captured.Take());
 
+            captured = null;
             Assert.AreEqual(expected, await pooled.ReadLatestAcceptedAsync(CancellationToken.None).ConfigureAwait(false));
             Assert.AreEqual(12L, artifacts.PayloadValidationReads);
             Assert.AreEqual(2L, artifacts.JournalConnectionOpens, "The next request owns its own handle.");
+            Assert.IsNotNull(captured);
+            Assert.ThrowsExactly<ObjectDisposedException>(() => captured.Take());
         }
-        finally { Directory.Delete(root, recursive: true); }
+        finally
+        {
+            captured?.Dispose();
+            Directory.Delete(root, recursive: true);
+        }
     }
 
     private static CameraAgentRetainedAstrometryService CreateUnpooledAstrometryReader(

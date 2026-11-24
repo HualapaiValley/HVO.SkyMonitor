@@ -1040,8 +1040,9 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
                     throw new IOException("The artifact journal was replaced during lookup.");
 
                 // All commands and readers have ended. File validation and returned streams own no database lease.
-                history!.Return(connection, generation);
+                var returned = connection;
                 connection = null;
+                history!.Return(returned, generation);
             }
             return (evidence, archive);
         }
@@ -1384,17 +1385,16 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
 
         internal void Return(SqliteConnection connection, ArtifactJournalIdentity identity)
         {
+            SqliteConnection? displaced = connection;
             lock (_gate)
             {
                 if (!_disposed)
                 {
-                    if (_idle.Connection is { } displaced && !ReferenceEquals(displaced, connection))
-                        displaced.Dispose();
+                    displaced = ReferenceEquals(_idle.Connection, connection) ? null : _idle.Connection;
                     _idle = (connection, identity);
-                    return;
                 }
             }
-            connection.Dispose();
+            displaced?.Dispose();
         }
 
         public void Dispose()

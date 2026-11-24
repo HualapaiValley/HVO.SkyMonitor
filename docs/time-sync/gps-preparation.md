@@ -12,11 +12,12 @@ receipt timestamps and monotonic freshness. The reader never opens a path.
 
 Each read has a 4096-byte budget and a two-second deadline, including waiting
 for another read. Streams must honor asynchronous read cancellation. Caller
-cancellation propagates. An internal deadline ends a round normally. Each line
-is limited to 82 characters including its optional CR, excluding LF. LF ends a
-physical line and one CR is allowed only immediately before it. Non-ASCII, DEL,
-other control characters, invalid checksums, unsupported sentences, and
-malformed supported data are ignored. Overlong or invalid lines are discarded
+cancellation throws `OperationCanceledException` with the caller's token. An
+internal deadline ends a round normally. Each line is limited to 82 characters
+including its optional CR, excluding LF. LF ends a physical line and one CR is
+allowed only immediately before it. Non-ASCII, DEL, other control characters,
+invalid checksums, unsupported sentences, and malformed supported data are
+ignored. Overlong or invalid lines are discarded
 through the next LF. Partial lines are not buffered across rounds: their tails
 remain discarded through LF when the same source continues, even after a byte
 budget, timeout, cancellation, EOF, or an intervening read from another source.
@@ -42,10 +43,14 @@ clears all RMC, GGA, and simulated PPS evidence and reports Unavailable. If
 caller cancellation is also requested, the reader clears the evidence before
 propagating caller cancellation. An `OperationCanceledException` from the stream
 counts as a stream failure only when neither caller cancellation nor the
-internal deadline is requested. Caller cancellation and the internal deadline
-on their own retain completed evidence until normal expiry. Caller cancellation
-also propagates if both cancellation sources are requested. Unexpected
-programming exceptions propagate. A subsequent valid sentence permits recovery.
+internal deadline is requested. To honor read cancellation, production adapters
+must translate I/O aborted by their own cancellation or deadline handling into
+`OperationCanceledException`. Surfacing `IOException` or `ObjectDisposedException`
+clears evidence as it would for a transport fault. Caller cancellation and the
+internal deadline on their own retain completed evidence until normal expiry.
+Caller cancellation takes precedence when both cancellation sources are
+requested. Unexpected programming exceptions propagate. A subsequent valid
+sentence permits recovery.
 EOF simply ends a scripted round and is not interpreted as a real-device
 unplug indication.
 
