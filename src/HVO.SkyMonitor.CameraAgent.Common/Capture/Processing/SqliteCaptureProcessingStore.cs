@@ -250,6 +250,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         """;
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
     private const string AstrometryLookupIndexSql = LegacyAstrometryJournalSchema.LookupIndexDefinition + ";";
+    private const string SchemaBeforeCenteredViewRetentionIndexesSql =
+        SchemaBeforeRegistrationStateSql + "\n" + CenteredRegistrationStateSchemaSql;
     private static string SchemaBeforeAstrometryIndexSql =>
         SchemaBeforeRegistrationStateSql.Replace(AstrometryLookupIndexSql, string.Empty, StringComparison.Ordinal);
     private static readonly string ViewsBeforeRuntimeSchemaSql = SchemaBeforeAstrometryIndexSql
@@ -4459,6 +4461,6 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             WHERE fact_kind IN ('Accepted', 'Rejected', 'Expired');
         """ + "\n" + CenteredWindowSchemaSql + "\n" + CenteredViewSchemaSql + "\n" + CenteredViewRuntimeSchemaSql;
 
-    private const string SchemaSql = SchemaBeforeRegistrationStateSql + "\n" + CenteredRegistrationStateSchemaSql;
+    private const string SchemaSql = SchemaBeforeCenteredViewRetentionIndexesSql + "\n" + CenteredViewRetentionSchema.IndexSql;
 
 }

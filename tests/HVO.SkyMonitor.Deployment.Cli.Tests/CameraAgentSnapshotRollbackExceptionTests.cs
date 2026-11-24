@@ -22,7 +22,7 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
     private const string RawIngressMigration = "io.hvo.skymonitor.raw-ingress-migration";
     private const string MinimumCompatibleRevision = "io.hvo.skymonitor.minimum-compatible-revision";
     private const string BetaReaderRevision = "33903f07a1dd86166fc17197df981b32d45013a1";
-    private const string CombinedReaderRevision = "19694b969ae1968254988eb641a9044fa6010bbc";
+    private const string CurrentReaderRevision = "ded7cadc6fe005f8bdda09387e1c3d1337f66e4e";
     private const string SettledBetaReaderRevision = "e7b9af4b98d1521c3939ef5925608a3663c63302";
     private const string ProcessingV10Reader = "ac373b8f9f3f7e02a0281e73b969d224181ae089";
     private const string OriginalEnvironmentalV5Reader = "bc14cc415973f6d106cfe8f1c2fb9bfbedbc9a56";
@@ -82,7 +82,7 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
             JsonSerializer.SerializeToElement(candidate));
         var changes = CameraAgentStateMigration.DeclaredChanges(paths, installed, installed.UpgradeCompatibility,
             target, Path.Combine(paths.StateRoot, "absent", "raw-ingress.db"));
-        Assert.AreEqual(CombinedReaderRevision, candidate[MinimumCompatibleRevision]);
+        Assert.AreEqual(CurrentReaderRevision, candidate[MinimumCompatibleRevision]);
         Assert.HasCount(1, AssertBoundaryAndRawIngressChanges(changes, previous, candidate, 1, string.Join("; ", changes)));
     }
 
@@ -90,7 +90,7 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
     public void RawSeventeenSelectsThePairedCheckpointFromTheJoinedBetaReader()
     {
         var candidate = ReadDockerfileLabels();
-        Assert.AreEqual(CombinedReaderRevision, candidate[MinimumCompatibleRevision]);
+        Assert.AreEqual(CurrentReaderRevision, candidate[MinimumCompatibleRevision]);
         Assert.AreEqual("17", candidate[RawIngressSchema]);
         var previous = new Dictionary<string, string>(candidate, StringComparer.Ordinal)
         {
@@ -246,7 +246,7 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
         var candidate = ReadDockerfileLabels();
         const string boundary = "io.hvo.skymonitor.minimum-compatible-revision";
         Assert.AreEqual("ead49e46a3705a507f7a08aa5c8a2a46dcb58e3c", previous[boundary]);
-        Assert.AreEqual(CombinedReaderRevision, candidate[boundary]);
+        Assert.AreEqual(CurrentReaderRevision, candidate[boundary]);
         Assert.AreEqual("5f5d253dd38308b8e62be9a1e32194dd675d0b60", exception["previousImageRevision"]!.GetValue<string>());
         CollectionAssert.AreEquivalent(ReadSchemaThreeImageLabels().ToArray(), previous.ToArray());
         // Isolate the processing-ledger checkpoint trigger from unrelated reader-capability upgrades.
@@ -276,12 +276,14 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
     [DataRow(SettledEnvironmentalV5Reader, DisplayName = "Corrected environmental-only reader to combined reader")]
     [DataRow("9c233e2ea15c81c0077757927cec3dc6adbbe973", DisplayName = "Centered processing 10 to processing 12")]
     [DataRow("5b46f7294a9e55d15198ea346c3f52a145d79d5a", DisplayName = "Centered publisher to combined reader")]
-    [DataRow("1c76d83224bacdcc129041c6d1779eb5f95716cb", DisplayName = "Original processing 12 to indexed registration retention")]
-    public void RetainedAstrometryIndexUpgradeCheckpointsWithUnchangedRawIngressLabels(string installedBoundary)
+    [DataRow("1c76d83224bacdcc129041c6d1779eb5f95716cb", DisplayName = "Original processing 12 to combined retention reader")]
+    [DataRow("19694b969ae1968254988eb641a9044fa6010bbc", DisplayName = "Centered registration reader to combined retention reader")]
+    [DataRow("ee848ab110e094ef888c1aca4225ea9c8be226f6", DisplayName = "Centered-view retention reader to combined retention reader")]
+    public void MinimumCompatibleRevisionSelectsCheckpointWithUnchangedRawIngressLabels(string installedBoundary)
     {
         ArgumentNullException.ThrowIfNull(installedBoundary);
         var candidate = ReadDockerfileLabels();
-        Assert.AreEqual(CombinedReaderRevision, candidate[MinimumCompatibleRevision]);
+        Assert.AreEqual(CurrentReaderRevision, candidate[MinimumCompatibleRevision]);
         // Align the other labels so only the combined reader's boundary can select the checkpoint.
         var previous = new Dictionary<string, string>(candidate, StringComparer.Ordinal)
         {

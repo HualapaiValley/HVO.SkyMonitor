@@ -2762,7 +2762,8 @@ separately when it opens that journal.
   its non-covering cutoff index, and the covering-index layout with or without
   the retained astrometry index. Earlier layouts with untrusted cutoff observations
   use confirmed observations for open windows after upgrading to the covering index.
-  The current layout includes a publication retention index and a table for registration input failures.
+  The current layout includes a publication retention index, a table for registration input failures,
+  and six centered-view retention indexes. It can adopt either retention layout atomically.
   The migration preserves closed window receipts, saved selections, view revisions and active custody.
 - An unrecognized processing layout fails startup validation. Raw journal migration can
   commit before processing validation runs, so keep the paired checkpoint for recovery.
@@ -2774,6 +2775,15 @@ display planes when reopened. A historical closure with an older pin that lacks 
 artifact envelope or linear layout keeps its original closure identity and receipt.
 Registration and archive recomputation require current, fully bound pins and the
 current registration recipe.
+
+**Centered-view journal retention (Ref #2000).** The reader that first added its
+six indexes in the shared raw journal declared `ee848ab110e094ef888c1aca4225ea9c8be226f6`.
+Earlier processing-schema-12 readers validate the schema objects exactly. The
+reader that combines #1961 and #2000 declares `ded7cadc6fe005f8bdda09387e1c3d1337f66e4e`
+so upgrades from either reader select a paired checkpoint, as do upgrades from
+earlier private builds declaring `1c76d83224bacdcc129041c6d1779eb5f95716cb`.
+The raw and processing schema numbers stay at 17 and 12. Rollback to an older
+reader restores the state paired with that image.
 
 **Legacy migration rule, still enforced by current tests.** A CameraAgent schema change must stay readable by the previous release for one release: add
 first, remove in a later release. The unit test `PreviousReleaseStoreReadabilityTests` holds every CameraAgent SQLite

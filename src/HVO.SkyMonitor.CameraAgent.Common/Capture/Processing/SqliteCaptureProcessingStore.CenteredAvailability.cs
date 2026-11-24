@@ -46,6 +46,8 @@ internal sealed partial class SqliteCaptureProcessingStore
             LegacyCenteredAvailabilityCutoffIndex, StringComparison.Ordinal)));
     private static readonly Lazy<Dictionary<string, string>> LegacySchema12BeforeRegistrationStateDefinitions =
         new(() => CreateSchemaDefinitions(SchemaBeforeRegistrationStateSql));
+    private static readonly Lazy<Dictionary<string, string>> LegacySchema12BeforeViewRetentionDefinitions =
+        new(() => CreateSchemaDefinitions(SchemaBeforeCenteredViewRetentionIndexesSql));
 
     internal static string LegacySchema10BeforeAvailabilitySqlForTests => LegacySchema10BeforeAvailabilitySql;
     internal const string LegacyCenteredAvailabilityCutoffIndexForTests = LegacyCenteredAvailabilityCutoffIndex;
@@ -55,17 +57,40 @@ internal sealed partial class SqliteCaptureProcessingStore
             ? LegacySchema12WithAvailabilityDefinitions.Value : LegacySchema12BeforeAvailabilityDefinitions.Value);
 
     private static bool IsEarlierCenteredSchema(Dictionary<string, string> actual)
-        => MatchesSchemaDefinitions(actual, LegacySchema12BeforeRegistrationStateDefinitions.Value) ||
-           MatchesSchemaDefinitions(actual, PreAstrometrySchema12Definitions.Value) ||
-           IsEarlierCenteredAvailabilitySchema(actual);
+        => BeforeViewRetentionIndexes(actual) is { } earlier &&
+           (MatchesSchemaDefinitions(earlier, LegacySchema12BeforeRegistrationStateDefinitions.Value) ||
+            MatchesSchemaDefinitions(earlier, LegacySchema12BeforeViewRetentionDefinitions.Value) ||
+            MatchesSchemaDefinitions(earlier, PreAstrometrySchema12Definitions.Value) ||
+            IsEarlierCenteredAvailabilitySchema(earlier));
+
+    private static Dictionary<string, string>? BeforeViewRetentionIndexes(Dictionary<string, string> actual)
+    {
+        var names = CenteredViewRetentionSchema.IndexNames;
+        if (!names.Any(actual.ContainsKey))
+            return actual;
+
+        // The retention indexes and the older availability adoption are independent. A complete
+        // canonical index group can accompany an older shape. A partial or changed group fails closed.
+        if (!names.All(name => actual.TryGetValue(name, out var value) && value == CanonicalSchemaDefinitions.Value[name]))
+            return null;
+
+        var withoutIndexes = new Dictionary<string, string>(actual, StringComparer.Ordinal);
+        foreach (var name in names)
+            withoutIndexes.Remove(name);
+        return withoutIndexes;
+    }
 
     private async ValueTask EnsureCurrentCenteredSchemaAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
         // The read-only inspection already verified the full layout. Recheck under the write
         // transaction before adopting a predecessor, including if another initializer won the race.
         if (await ExecuteScalarLongAsync(connection,
-                "SELECT COUNT(*) FROM sqlite_schema WHERE name = 'processing_centered_registration_input_failures';",
-                cancellationToken).ConfigureAwait(false) == 1)
+                """
+                SELECT COUNT(*) FROM sqlite_schema
+                WHERE name IN ('ix_processing_outputs_astrometry_lookup', 'ix_processing_centered_view_changes_base',
+                    'processing_centered_registration_input_failures');
+                """,
+                cancellationToken).ConfigureAwait(false) == 3)
             return;
 
 #pragma warning disable CA1849 // Microsoft.Data.Sqlite exposes immediate transactions only through the synchronous overload.
@@ -78,13 +103,21 @@ internal sealed partial class SqliteCaptureProcessingStore
             throw new InvalidDataException("The earlier centered processing schema is not canonical.");
 
         _faultInjector.Inject(CaptureProcessingFaultPoint.AfterSchemaTransactionBegan, "schema");
-        if (IsEarlierCenteredAvailabilitySchema(actual))
+        if (BeforeViewRetentionIndexes(actual) is { } earlier && IsEarlierCenteredAvailabilitySchema(earlier))
             await AdoptCenteredAvailabilityHistoryAsync(transaction, actual.ContainsKey(CenteredAvailabilityTable), cancellationToken)
                 .ConfigureAwait(false);
         if (!actual.ContainsKey(LegacyAstrometryJournalSchema.LookupIndexName))
             await ExecuteSchemaStatementsAsync(connection, transaction, cancellationToken, AstrometryLookupIndexPrefix)
                 .ConfigureAwait(false);
-        await AddCenteredRegistrationStateSchemaAsync(transaction, cancellationToken).ConfigureAwait(false);
+        if (!actual.ContainsKey("processing_centered_registration_input_failures"))
+            await AddCenteredRegistrationStateSchemaAsync(transaction, cancellationToken).ConfigureAwait(false);
+        if (!actual.ContainsKey(CenteredViewRetentionSchema.IndexNames[0]))
+        {
+            using var indexes = connection.CreateCommand();
+            indexes.Transaction = transaction;
+            indexes.CommandText = CenteredViewRetentionSchema.IndexSql;
+            await indexes.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
         await ValidateSchemaAsync(connection, cancellationToken, transaction).ConfigureAwait(false);
         _faultInjector.Inject(CaptureProcessingFaultPoint.BeforeSchemaCommit, "schema");
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
