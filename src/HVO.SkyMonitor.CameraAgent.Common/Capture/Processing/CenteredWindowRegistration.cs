@@ -17,7 +17,8 @@ internal interface ICenteredWindowRegistrationSource : ICenteredStackInputReader
 }
 
 internal sealed record CenteredWindowRegistrationAttempt(
-    ProcessingOutcome Outcome, CenteredWindowRegistrationResult? Result);
+    ProcessingOutcome Outcome, CenteredWindowRegistrationResult? Result,
+    CenteredRegistrationInputFailure? InputFailure = null, Exception? InputReadException = null);
 
 internal sealed class CenteredWindowRegistrationResult
 {
@@ -63,9 +64,7 @@ internal sealed class CenteredWindowRegistrationResult
         if (closure.HasLegacyRegistrationPins)
             return new(ProcessingOutcome.TerminalFailure("registration.legacy-window-pins-unavailable"), null);
 
-        var recipe = new CenteredRegisteredStackRecipe(source);
-        var recipeIdentity = ProcessingIdentity.CreateRecipeIdentity(recipe.Definition, recipe.NormalizeOptions(default));
-        if (closure.Schedule.RegistrationRecipeIdentitySha256 != recipeIdentity.IdentitySha256)
+        if (closure.Schedule.RegistrationRecipeIdentitySha256 != CenteredRegisteredStackRecipe.FixedIdentity.IdentitySha256)
             return new(ProcessingOutcome.TerminalFailure("registration.recipe-identity-mismatch"), null);
 
         var plan = BuildPlan(closure);
@@ -104,10 +103,21 @@ internal sealed class CenteredWindowRegistrationResult
                 }
                 else
                 {
-                    artifact = await source.ReadArtifactAsync(exposure.Key, pin, cancellationToken).ConfigureAwait(false);
+                    try
+                    {
+                        artifact = await source.ReadArtifactAsync(exposure.Key, pin, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (Exception exception) when (IsRetryableInputRead(exception))
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        return UnreadableInput(exposure.Key, pin, exception);
+                    }
                 }
                 if (artifact is null)
-                    continue;
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    return UnreadableInput(exposure.Key, pin);
+                }
                 if (artifact.CaptureId != exposure.Key.CaptureId || CenteredStackArtifactPin.From(artifact) != pin)
                     throw new InvalidDataException("A retained registration artifact differs from the frozen pin.");
                 inputBytes += artifact.Payload.Length;
@@ -126,14 +136,52 @@ internal sealed class CenteredWindowRegistrationResult
         if (linearVariant is null)
             return new(ProcessingOutcome.RetryableFailure(CenteredRegisteredStackRecipe.RetainedInputsUnavailable), null);
 
+        var retainedLinear = new RegistrationLinearReader(source, plan);
+        var recipe = new CenteredRegisteredStackRecipe(retainedLinear);
         var request = CenteredRegisteredStackRecipe.CreateRequest(plan, linearVariant,
             recomputationId is null ? "centered-live" : "centered-archive-recomputation", artifacts);
         var outcome = await new ProcessingRecipeExecutor([recipe]).ExecuteAsync(request, cancellationToken).ConfigureAwait(false);
         if (outcome.Status != ProcessingOutcomeStatus.Produced)
-            return new(outcome, null);
+            return retainedLinear.Failure ?? new(outcome, null);
 
         var result = ReadProduced(closure, plan, outcome.Products, recomputationId, cancellationToken);
         return new(outcome, result);
+    }
+
+    internal static bool IsRetryableInputRead(Exception exception) => exception is IOException or UnauthorizedAccessException;
+
+    internal static CenteredWindowRegistrationAttempt UnreadableInput(
+        ExposureKey exposure, CenteredStackArtifactPin pin, Exception? exception = null) =>
+        new(ProcessingOutcome.RetryableFailure(CenteredRegisteredStackRecipe.RetainedInputsUnavailable), null,
+            new(exposure, pin, exception is null or FileNotFoundException or DirectoryNotFoundException
+                ? CenteredRegistrationInputFailureKind.Unavailable : CenteredRegistrationInputFailureKind.ReadError),
+            exception);
+
+    private sealed class RegistrationLinearReader(ICenteredWindowRegistrationSource source, CenteredStackPlanV1 plan)
+        : ICenteredStackInputReader
+    {
+        internal CenteredWindowRegistrationAttempt? Failure { get; private set; }
+
+        public async ValueTask<CenteredStackQualifiedExposure?> ReadLinearAsync(ExposureKey key, ProcessingArtifact linear,
+            CancellationToken cancellationToken)
+        {
+            Exception? failure = null;
+            try
+            {
+                var result = await source.ReadLinearAsync(key, linear, cancellationToken).ConfigureAwait(false);
+                if (result is not null)
+                    return result;
+            }
+            catch (Exception exception) when (IsRetryableInputRead(exception))
+            {
+                failure = exception;
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            var pin = plan.Slots.Single(slot => slot.Exposure?.Key == key).Exposure!.Linear;
+            Failure = UnreadableInput(key, pin, failure);
+            return null;
+        }
     }
 
     private static CenteredStackPlanV1 BuildPlan(CenteredWindowClosure closure)

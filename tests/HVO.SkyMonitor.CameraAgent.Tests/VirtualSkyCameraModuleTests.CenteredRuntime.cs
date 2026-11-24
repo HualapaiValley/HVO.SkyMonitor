@@ -650,7 +650,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                     using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
                     await connection.OpenAsync(token).ConfigureAwait(false);
                     using var command = connection.CreateCommand();
-                    command.CommandText = """
+                    command.CommandText = SqliteCaptureProcessingSchemaTests.DropCenteredRegistrationStateSql + "\n" + """
                         DROP INDEX ix_processing_outputs_astrometry_lookup;
                         UPDATE processing_centered_attempt_calendar SET admitted_ticks = $legacy WHERE attempt_id = $attempt;
                         """ + "\n" + (priorAvailabilityBuild
