@@ -22,7 +22,9 @@ development/v1
 
 Create work from the current `development/v1` head. Ordinary issue branches and pull requests target `development/v1`, not `main`.
 
-A pull request that changes what operators or users notice adds a line under `## [Unreleased]` in [`CHANGELOG.md`](../CHANGELOG.md). The rule is in [`AGENTS.md`](../AGENTS.md#changelog).
+A pull request that changes what operators or users notice adds one
+[changelog fragment](../changelog.d/README.md). The release PR assembles the
+pending fragments into [`CHANGELOG.md`](../CHANGELOG.md).
 
 ## Issue And Pull Request Forms
 
@@ -45,7 +47,7 @@ Microsoft NuGet package pins use 10.0.14. The .NET 10.0.14 runtime security fixe
 
 The branch currently requires:
 
-- **Development v1 / Preflight** on a GitHub-hosted runner: exact-range whitespace validation, pinned workflow linting, shell syntax, the inexpensive CI-control regression checks, coverage baseline policy, the full-history [secret scan](runbooks/ci-pipeline.md#secret-scan), and, when the classifier selects them, the [release script tests](runbooks/ci-pipeline.md#release-script-tests).
+- **Development v1 / Preflight** on a GitHub-hosted runner: exact-range whitespace and changelog fragment validation, pinned workflow linting, shell syntax, the inexpensive CI-control regression checks, coverage baseline policy, the full-history [secret scan](runbooks/ci-pipeline.md#secret-scan), and, when the classifier selects them, the [release script tests](runbooks/ci-pipeline.md#release-script-tests).
 - **Development v1 / Build and Unit** runs its full workload on a self-hosted x64 runner with pinned SDK setup, solution restore, a warning-clean Release build, the [Docker-disabled Unit selection for active test projects](runbooks/ci-pipeline.md#logichost-test-retirement), and [canonical per-file coverage floors](runbooks/ci-pipeline.md#development-v1-per-file-coverage). Collection targets the assemblies owning those floors. Catalog-dependent ReleaseTool and full-suite aggregate/component coverage retain their documented local/full-qualification scope.
 
 The [Pi 5 performance workflow](runbooks/ci-pipeline.md#raspberry-pi-5-performance) runs independently of these checks. Build and Unit excludes the Performance category.
@@ -201,7 +203,7 @@ The operator-approved #1142 split keeps these checks off the short path:
 | Check | Required full-qualification owner in `ci.yml` |
 | --- | --- |
 | Whole-repository ShellCheck and its contract tests | Quality |
-| Exhaustive test discovery, category disjointness and inventory counts | Build |
+| Exhaustive test discovery, category disjointness and generated totals | Build |
 | Integration, full-suite aggregate/component coverage, architecture/publish and migrations | Existing full-matrix jobs; measurable canonical per-file floors run in Build and Unit |
 | Deployment qualification | Existing selected Deployment Contracts job |
 
@@ -246,6 +248,13 @@ relays verified finding dispositions under the
 [common policy](development/policy/common.md#authority-and-precedence).
 
 A pull request is marked ready only after the current head is reviewed, every finding has a verified terminal disposition, and every review thread is resolved.
+
+After Ready, build or test breaks, High or Medium correctness findings, and
+missed acceptance criteria require correction. Kepler tracks post-Ready Low
+findings in [rolling issues labeled `follow-up` and `low-batch`](planning/agent-execution.md#rolling-low-batches).
+Sync a v1 PR with
+`git merge --no-ff origin/development/v1` only to resolve an actual conflict.
+The merge queue validates the combined tree.
 
 ## Promotion To main
 

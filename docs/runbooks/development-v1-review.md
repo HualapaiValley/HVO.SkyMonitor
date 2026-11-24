@@ -217,7 +217,20 @@ Kepler records convergence before marking the PR ready, subject to the lifecycle
 
 ## CI And Merge
 
-If Development v1 CI finds a real code defect, Kepler returns the PR to draft. Correct it and obtain the full tier’s required CLEAN reviews on the changed head after draft checks pass; a focused exceptional review cannot replace them. An infrastructure failure does not create a code finding and follows the current bounded retry policy.
+After Ready, build or test breaks, High or Medium correctness findings, and
+missed acceptance criteria require correction. Kepler returns the PR to draft
+for these corrections. Obtain the required CLEAN reviews on the changed head
+after draft checks pass. Kepler adds Low findings, including style,
+documentation polish, and other improvements, to
+[rolling issues labeled `follow-up` and `low-batch`](../planning/agent-execution.md#rolling-low-batches).
+Infrastructure failures follow the bounded retry policy.
+
+Sync with `git merge --no-ff origin/development/v1` only to resolve an actual
+Git or product conflict. Validate and review the resulting head. The merge
+queue tests the combined tree.
+
+Link the [generated discovery report or Unit evidence](ci-pipeline.md#categories)
+when test counts are relevant to review.
 
 Merge when review is converged, all conversations and actual conflicts are resolved,
 and required Development v1 checks pass on the current head. Follow

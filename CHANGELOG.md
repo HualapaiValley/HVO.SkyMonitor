@@ -4,9 +4,10 @@ This file records the changes to HVO.SkyMonitor that operators and users notice.
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-`[Unreleased]` records the work merged to `development/v1` since the last release. A release renames `[Unreleased]`
-to its version and adds `docs/upgrade-notes/X.Y.Z.md` (install contract section 3). 0.9.0, the first release, starts
-with the work merged from 2026-10-16 onward; earlier development is recorded in its pull requests.
+Each operator-visible pull request adds one [changelog fragment](changelog.d/README.md).
+The release PR assembles the fragments and remaining Unreleased entries into the
+new version section and adds `docs/upgrade-notes/X.Y.Z.md`. 0.9.0, the first release,
+starts with the work merged from 2026-10-16 onward. Pull requests record earlier development.
 
 ## [Unreleased]
 

@@ -7,7 +7,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from pi5_performance import compare, evaluate, load_baseline, main, measure, read_trx, ticks
+from pi5_performance import compare, evaluate, load_baseline, main, measure, performance_projects, read_trx, ticks
 
 
 TEST_ID = "01234567-89ab-cdef-0123-456789abcdef"
@@ -124,23 +124,75 @@ class TrxTests(unittest.TestCase):
 
 
 class TrialTests(unittest.TestCase):
+    def test_discovery_matrix_selects_performance_projects_without_count_inventories(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = Path("tests/Fixture.Performance.Tests/Fixture.Performance.Tests.csproj")
+            (root / project).parent.mkdir(parents=True)
+            (root / project).touch()
+            matrix = root / "discovery.tsv"
+            matrix.write_text(f"Unit\t{project}\t4\nPerformance\t{project}\t2\n")
+            self.assertEqual(list(performance_projects(root, matrix)), [(root / project, 2)])
+            matrix.write_text(f"Unit\t{project}\t4\nPerformance\t{project}\t0\n")
+            self.assertEqual(list(performance_projects(root, matrix)), [])
+            for rows in (
+                f"Performance\t{project}\t1\nPerformance\t{project}\t2\n",
+                f"Performance\t{project}\t-1\n",
+                f"Performance\t../{project}\t2\n",
+            ):
+                with self.subTest(rows=rows):
+                    matrix.write_text(rows)
+                    with self.assertRaisesRegex(ValueError, "Invalid or duplicate Performance discovery row"):
+                        list(performance_projects(root, matrix))
+
+    def test_fresh_run_builds_before_discovery_and_rejects_partial_discovery(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scratch = root / "raw"
+            actions = []
+
+            def run(command, *, stdout, **_):
+                actions.append(command[1])
+                if command[1] == "build":
+                    self.assertEqual(command[2:], ["HVO.SkyMonitor.v9.slnx", "--configuration", "Release", "-warnaserror"])
+                    return subprocess.CompletedProcess(command, 0)
+                self.assertEqual(command[1], "run")
+                stdout.write("Performance\ttests/Fixture.Tests/Fixture.Tests.csproj\t1\n")
+                return subprocess.CompletedProcess(command, 1)
+
+            with (patch("pi5_performance.REPO_ROOT", root),
+                  patch("pi5_performance.subprocess.run", side_effect=run)):
+                with self.assertRaisesRegex(ValueError, "Performance discovery failed"):
+                    measure(scratch, no_build=False)
+            self.assertEqual(actions, ["build", "run"])
+
     def test_failed_trial_reports_its_case_to_stdout_log_and_artifact(self):
         with tempfile.TemporaryDirectory() as directory:
-            scratch = Path(directory, "raw")
-            baseline = Path(directory, "baseline.json")
-            report = Path(directory, "comparison.json")
-            project = Path(directory, "Project.csproj")
+            root = Path(directory)
+            scratch = root / "raw"
+            baseline = root / "baseline.json"
+            report = root / "comparison.json"
+            project = root / "tests/Fixture.Performance.Tests/Fixture.Performance.Tests.csproj"
+            project.parent.mkdir(parents=True)
+            project.touch()
             trx = scratch / project.stem / "sample-1.trx"
             baseline.write_text('{"version":1,"history":{"case":[100]}}')
             before = baseline.read_bytes()
 
-            def run_test(command, **_):
+            def run_test(command, *, stdout, **_):
+                if command[1] == "run":
+                    self.assertEqual(command[-2:], ["--", "--emit-matrix"])
+                    stdout.write(f"Performance\t{project.relative_to(root)}\t1\n")
+                    return subprocess.CompletedProcess(command, 0)
+                self.assertEqual(command[1:3], ["test", str(project)])
+                self.assertIn("--no-build", command)
+                self.assertIn("TestCategory=Performance", command)
                 result = TEST_RESULT.replace('outcome="Passed"', 'outcome="Failed" testName="Raw display text"')
                 trx.write_text(trx_document(result))
                 return subprocess.CompletedProcess(command, 1)
 
             stdout = io.StringIO()
-            with (patch("pi5_performance.performance_projects", return_value=[(project, 1)]),
+            with (patch("pi5_performance.REPO_ROOT", root),
                   patch("pi5_performance.subprocess.run", side_effect=run_test),
                   patch.dict("os.environ", {"PI5_CACHE_MATCHED_KEY": "prior-key", "PI5_CACHE_RESTORE_OUTCOME": "success"}),
                   redirect_stdout(stdout)):
@@ -148,7 +200,7 @@ class TrialTests(unittest.TestCase):
 
             artifact = json.loads(report.read_text())
             for evidence in (stdout.getvalue(), trx.with_suffix(".log").read_text(), artifact["error"]):
-                self.assertIn("Project Performance trial 1 failed (exit 1)", evidence)
+                self.assertIn(f"{project.stem} Performance trial 1 failed (exit 1)", evidence)
                 self.assertIn(f"Suite.Measurements.Measured (testId={TEST_ID}, outcome=Failed)", evidence)
                 self.assertNotIn("Raw display text", evidence)
             self.assertEqual(artifact["baselineCache"], {"matchedKey": "prior-key", "restoreOutcome": "success"})

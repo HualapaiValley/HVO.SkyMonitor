@@ -69,6 +69,7 @@ jobs:
           # A step with no shell: is bash -e without pipefail, which would let tee hide the gate's failure.
           set -o pipefail
           [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF_TYPE" == tag ]]
+          # Final release notes are assembled in the release PR and checked from this tag.
           ./scripts/release:gate "$TAG" "$GITHUB_SHA" | tee -a "$GITHUB_OUTPUT"
 
   # The qualification main's pushes run, for the tagged commit, before anything is built from it.

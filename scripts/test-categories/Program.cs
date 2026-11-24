@@ -1,283 +1,222 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Xml.Linq;
 
-// This engine owns no counts. Every test project owns its own expected category inventory in a
-// test-categories.json beside its project file (#853), so a count change is a change inside the
-// owning project's directory and selects that project's component lane rather than the complete
-// solution matrix that editing this file selects. The engine still discovers every project under
-// tests/ and compares every actual case against every inventory, so ownership moved without any
-// narrowing of what is audited: a missing, malformed, duplicate, unknown, or stale inventory fails.
-var root = FindRepositoryRoot();
 var categories = new[] { "Unit", "Integration", "Manual", "Soak", "External", "Hardware", "Performance" };
-var failures = new List<string>();
-var expected = LoadInventories(root, categories, failures);
-
-// The M5 macOS validation workflow pinned its own per-project expected Unit totals by hand, and
-// they went stale the moment a repository-wide compile item added test methods to every project
-// (#764). Two sources describing the same thing, and only one of them moved. Emitting this matrix
-// lets that workflow read the numbers this audit already validates against a real discovery run,
-// so the two cannot drift apart again. Tab-separated rather than JSON so the consumer needs only
-// awk, which is present wherever the workflow runs. A structurally invalid inventory fails here
-// too: a matrix emitted from a half-loaded inventory would be exactly the stale pin this replaces.
-if (args.Contains("--emit-matrix", StringComparer.Ordinal))
+var emitMatrix = args is ["--emit-matrix"];
+if (args.Length != 0 && !emitMatrix)
 {
-    if (failures.Count > 0)
+    await Console.Error.WriteLineAsync("Usage: hvo-test-category-audit [--emit-matrix]").ConfigureAwait(false);
+    return 2;
+}
+
+try
+{
+    var root = FindRepositoryRoot();
+    var projects = LoadProjects(root);
+    var unitProjects = LoadUnitProjects(root, projects);
+    var failures = await CheckSourcesAsync(root, categories).ConfigureAwait(false);
+    var report = new SortedDictionary<string, Dictionary<string, int>>(StringComparer.Ordinal);
+
+    foreach (var (project, relativePath) in projects)
     {
-        return ReportFailures(failures);
+        var counts = categories.ToDictionary(static category => category, static _ => 0, StringComparer.Ordinal);
+        foreach (var test in await DiscoverAsync(root, project, relativePath).ConfigureAwait(false))
+        {
+            var unknownCategories = test.Categories.Except(categories, StringComparer.Ordinal).ToArray();
+            if (unknownCategories.Length > 0)
+            {
+                failures.Add($"{project}: unknown test category on {test.Name}: {string.Join(", ", unknownCategories)}");
+            }
+            else if (test.Categories.Length == 0)
+            {
+                failures.Add($"{project}: uncategorized test {test.Name}");
+            }
+            else if (test.Categories.Length > 1)
+            {
+                failures.Add($"{project}: multiply categorized test {test.Name}: {string.Join(", ", test.Categories)}");
+            }
+            else
+            {
+                counts[test.Categories[0]]++;
+            }
+        }
+
+        if ((counts["Unit"] > 0) != unitProjects.Contains(project))
+        {
+            failures.Add($"{project}: Unit discovery disagrees with membership in tests/unit-test-projects.json");
+        }
+
+        report.Add(project, counts);
     }
 
-    foreach (var (relativeProject, counts) in expected.OrderBy(static entry => entry.Key, StringComparer.Ordinal))
+    if (failures.Count > 0)
     {
-        foreach (var category in categories)
+        await Console.Error.WriteLineAsync("Test category audit failed:").ConfigureAwait(false);
+        foreach (var failure in failures.Order(StringComparer.Ordinal))
         {
-            Console.WriteLine($"{category}\t{relativeProject}\t{counts![category]}");
+            await Console.Error.WriteLineAsync($"- {failure}").ConfigureAwait(false);
+        }
+
+        return 1;
+    }
+
+    if (emitMatrix)
+    {
+        foreach (var (project, counts) in report)
+        {
+            foreach (var category in categories)
+            {
+                await Console.Out.WriteLineAsync($"{category}\t{projects[project]}\t{counts[category]}").ConfigureAwait(false);
+            }
+        }
+    }
+    else
+    {
+        var table = BuildTable(report, categories);
+        await Console.Out.WriteAsync(table).ConfigureAwait(false);
+        if (Environment.GetEnvironmentVariable("GITHUB_STEP_SUMMARY") is { Length: > 0 } summaryPath)
+        {
+            await File.AppendAllTextAsync(summaryPath, table).ConfigureAwait(false);
         }
     }
 
     return 0;
 }
-
-var totals = categories.ToDictionary(static category => category, static _ => 0, StringComparer.Ordinal);
-
-foreach (var file in Directory.EnumerateFiles(Path.Combine(root, "tests"), "*.cs", SearchOption.AllDirectories)
-             .Where(static path => !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal) &&
-                 !path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal)))
+catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException
+    or InvalidOperationException or KeyNotFoundException or JsonException or System.Xml.XmlException)
 {
-    var text = await File.ReadAllTextAsync(file).ConfigureAwait(false);
-    foreach (Match match in CategoryPatterns.TestCategoryExpression().Matches(text))
-    {
-        if (match.Groups[2].Success)
-        {
-            failures.Add($"test category must use a literal value in {Path.GetRelativePath(root, file)}: {match.Value}");
-            continue;
-        }
-
-        var category = match.Groups[1].Value;
-        if (!categories.Contains(category, StringComparer.Ordinal))
-        {
-            failures.Add($"unknown test category '{category}' in {Path.GetRelativePath(root, file)}");
-        }
-    }
-
-    // Every count below comes from static discovery, which expands a DataRow into one case per row but reports a
-    // method whose rows come from a data source once however many rows that source yields. The matrix would then be
-    // satisfied by a number smaller than what the Unit and Integration jobs execute, and it would stay satisfied while
-    // the difference grew, because the audit and the runner would each be internally consistent and disagreeing only
-    // with each other. That is the one failure this audit cannot see, so refuse the shape instead of counting it: a
-    // pin that cannot enumerate what it is pinning is not a pin. The escape is either a DataRow per row, or teaching
-    // this audit to expand the source and re-pinning the matrix against the expanded count.
-    foreach (Match match in CategoryPatterns.UnexpandableTestDataExpression().Matches(text))
-    {
-        failures.Add(
-            $"test data source that static discovery cannot expand in {Path.GetRelativePath(root, file)}: " +
-            $"{match.Value.Trim()}; use DataRow so every row is discovered, or teach this audit (scripts/test-categories/Program.cs) to expand the source and re-pin the matrix against the expanded count");
-    }
-}
-
-// Every discovered project is audited against real discovery, including one whose inventory is
-// missing or unusable: its structural failure is already recorded, and reporting the actual counts
-// beside it means the operator can write the correct inventory from one run instead of guessing.
-foreach (var (relativeProject, expectedCounts) in expected)
-{
-    var project = Path.Combine(root, relativeProject);
-    var all = await DiscoverAsync(root, project, filter: null).ConfigureAwait(false);
-    var selected = new Dictionary<string, IReadOnlyDictionary<Guid, string>>(StringComparer.Ordinal);
-    foreach (var category in categories)
-    {
-        selected[category] = await DiscoverAsync(root, project, $"TestCategory={category}").ConfigureAwait(false);
-        totals[category] += selected[category].Count;
-        if (expectedCounts is null)
-        {
-            failures.Add($"{relativeProject}: {category} discovery count is {selected[category].Count}; no usable inventory to compare against");
-        }
-        else if (selected[category].Count != expectedCounts[category])
-        {
-            failures.Add($"{relativeProject}: {category} discovery count is {selected[category].Count}; expected {expectedCounts[category]}");
-        }
-    }
-
-    var union = selected.Values.SelectMany(static tests => tests.Keys).ToHashSet();
-    foreach (var missing in all.Keys.Except(union))
-    {
-        failures.Add($"uncategorized test in {relativeProject}: {all[missing]} ({missing})");
-    }
-
-    foreach (var unexpected in union.Except(all.Keys))
-    {
-        var fullyQualifiedName = selected.Values
-            .Select(tests => tests.GetValueOrDefault(unexpected))
-            .First(static name => name is not null);
-        failures.Add($"category discovery returned an unknown test in {relativeProject}: {fullyQualifiedName} ({unexpected})");
-    }
-
-    for (var left = 0; left < categories.Length; left++)
-    {
-        for (var right = left + 1; right < categories.Length; right++)
-        {
-            foreach (var overlap in selected[categories[left]].Keys.Intersect(selected[categories[right]].Keys))
-            {
-                failures.Add($"multiply categorized test in {relativeProject}: {selected[categories[left]][overlap]} ({overlap}; {categories[left]}, {categories[right]})");
-            }
-        }
-    }
-}
-
-if (failures.Count > 0)
-{
-    return ReportFailures(failures);
-}
-
-Console.WriteLine($"Test category audit passed: {string.Join(", ", categories.Select(category => $"{category}={totals[category]}"))}.");
-return 0;
-
-static int ReportFailures(List<string> failures)
-{
-    Console.Error.WriteLine("Test category audit failed:");
-    foreach (var failure in failures.Order(StringComparer.Ordinal))
-    {
-        Console.Error.WriteLine($"- {failure}");
-    }
-
+    await Console.Error.WriteLineAsync($"Test category audit failed: {exception.Message}").ConfigureAwait(false);
     return 1;
 }
 
-// Every project directory under tests/ that contains a project file must contain exactly one
-// inventory, and every inventory must sit beside exactly one project file, so a project cannot
-// be added without a count and an inventory cannot outlive its project. The file is a flat JSON
-// object with one non-negative integer per known category, every category present, nothing else.
-// Anything looser is rejected rather than defaulted: a category that defaults to zero is a pin
-// that silently stops pinning the moment a case is recategorized.
-static Dictionary<string, IReadOnlyDictionary<string, int>?> LoadInventories(string root, string[] categories, List<string> failures)
+static string BuildTable(SortedDictionary<string, Dictionary<string, int>> report, string[] categories)
 {
-    const string inventoryFileName = "test-categories.json";
-    var inventories = new Dictionary<string, IReadOnlyDictionary<string, int>?>(StringComparer.Ordinal);
-    var testsRoot = Path.Combine(root, "tests");
-    var projectFiles = Directory.EnumerateFiles(testsRoot, "*.csproj", SearchOption.AllDirectories);
-    var projectsByDirectory = projectFiles
-        .GroupBy(static path => Path.GetDirectoryName(path)!, StringComparer.Ordinal)
-        .ToDictionary(static group => group.Key, static group => group.ToArray(), StringComparer.Ordinal);
-    var inventoryFiles = Directory.EnumerateFiles(testsRoot, inventoryFileName, SearchOption.AllDirectories)
+    var lines = new List<string>
+    {
+        "### Discovered test cases",
+        "",
+        $"| Assembly | {string.Join(" | ", categories)} | Total |",
+        $"| --- | {string.Join(" | ", categories.Select(static _ => "---:"))} | ---: |"
+    };
+    foreach (var (project, counts) in report)
+    {
+        lines.Add($"| {project} | {string.Join(" | ", categories.Select(category => counts[category]))} | {counts.Values.Sum()} |");
+    }
+
+    var totals = categories.Select(category => report.Values.Sum(counts => counts[category])).ToArray();
+    lines.Add($"| **Total** | {string.Join(" | ", totals)} | {totals.Sum()} |");
+    return string.Join('\n', lines) + "\n\n";
+}
+
+static SortedDictionary<string, string> LoadProjects(string root)
+{
+    var projects = new SortedDictionary<string, string>(StringComparer.Ordinal);
+    foreach (var file in EnumerateTestFiles(root, "*.csproj"))
+    {
+        var project = Path.GetFileNameWithoutExtension(file);
+        var path = Relative(root, file);
+        if (!CategoryPatterns.ProjectName().IsMatch(project) ||
+            path != $"tests/{project}/{project}.csproj" ||
+            !projects.TryAdd(project, path))
+        {
+            throw new InvalidDataException($"Invalid or ambiguous test project path: {path}");
+        }
+    }
+
+    var solutionPaths = XDocument.Load(Path.Combine(root, "HVO.SkyMonitor.v9.slnx"))
+        .Descendants("Project").Select(static node => (string?)node.Attribute("Path"))
+        .OfType<string>().Where(static path => path.StartsWith("tests/", StringComparison.Ordinal)).ToArray();
+    if (projects.Count == 0 || !projects.Values.Order(StringComparer.Ordinal).SequenceEqual(solutionPaths.Order(StringComparer.Ordinal)))
+    {
+        var missing = projects.Values.Except(solutionPaths, StringComparer.Ordinal);
+        var extra = solutionPaths.Except(projects.Values, StringComparer.Ordinal);
+        throw new InvalidDataException(
+            $"Test projects and solution inventory differ (missing: {string.Join(", ", missing)}; extra: {string.Join(", ", extra)}).");
+    }
+
+    return projects;
+}
+
+static HashSet<string> LoadUnitProjects(string root, SortedDictionary<string, string> projects)
+{
+    const string inventory = "tests/unit-test-projects.json";
+    var entries = JsonSerializer.Deserialize<string[]>(File.ReadAllText(Path.Combine(root, inventory)));
+    var unitProjects = new HashSet<string>(StringComparer.Ordinal);
+    if (entries is not { Length: > 0 })
+    {
+        throw new InvalidDataException($"{inventory} must list the Unit-bearing test projects.");
+    }
+
+    foreach (var entry in entries)
+    {
+        if (entry is null || !projects.ContainsKey(entry) || !unitProjects.Add(entry))
+        {
+            throw new InvalidDataException($"Invalid, duplicate, or unknown project '{entry}' in {inventory}.");
+        }
+    }
+
+    return unitProjects;
+}
+
+static async Task<List<string>> CheckSourcesAsync(string root, string[] categories)
+{
+    var failures = new List<string>();
+    foreach (var file in EnumerateTestFiles(root, "*.cs"))
+    {
+        var text = await File.ReadAllTextAsync(file).ConfigureAwait(false);
+        var path = Relative(root, file);
+        foreach (Match match in CategoryPatterns.TestCategoryExpression().Matches(text))
+        {
+            if (match.Groups[2].Success)
+            {
+                failures.Add($"test category must use a literal value in {path}: {match.Value}");
+            }
+            else if (!categories.Contains(match.Groups[1].Value, StringComparer.Ordinal))
+            {
+                failures.Add($"unknown test category '{match.Groups[1].Value}' in {path}");
+            }
+        }
+
+        // Discovery expands DataRow cases. Sources that can defer expansion
+        // until execution cannot provide dependable discovery totals.
+        foreach (Match match in CategoryPatterns.UnexpandableTestDataExpression().Matches(text))
+        {
+            failures.Add($"test data source that static discovery cannot expand in {path}: {match.Value.Trim()}; use DataRow");
+        }
+    }
+
+    return failures;
+}
+
+static IEnumerable<string> EnumerateTestFiles(string root, string pattern) =>
+    Directory.EnumerateFiles(Path.Combine(root, "tests"), pattern, SearchOption.AllDirectories)
         .Where(static path => !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal) &&
-            !path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
-        .ToArray();
-
-    foreach (var inventoryFile in inventoryFiles)
-    {
-        var directory = Path.GetDirectoryName(inventoryFile)!;
-        if (!projectsByDirectory.ContainsKey(directory))
-        {
-            failures.Add($"category inventory has no test project beside it: {Relative(root, inventoryFile)}");
-        }
-    }
-
-    foreach (var (directory, projects) in projectsByDirectory)
-    {
-        if (projects.Length != 1)
-        {
-            failures.Add($"category inventory ownership is ambiguous; {projects.Length} project files share {Relative(root, directory)}");
-            continue;
-        }
-
-        var relativeProject = Relative(root, projects[0]);
-        var inventoryFile = Path.Combine(directory, inventoryFileName);
-        if (!File.Exists(inventoryFile))
-        {
-            failures.Add($"test project is missing its category inventory {inventoryFileName}: {relativeProject}");
-            inventories[relativeProject] = null;
-            continue;
-        }
-
-        inventories[relativeProject] = ParseInventory(root, inventoryFile, categories, failures);
-    }
-
-    return inventories;
-}
-
-static IReadOnlyDictionary<string, int>? ParseInventory(string root, string inventoryFile, string[] categories, List<string> failures)
-{
-    var relativeInventory = Relative(root, inventoryFile);
-    JsonDocument document;
-    try
-    {
-        document = JsonDocument.Parse(File.ReadAllText(inventoryFile), new JsonDocumentOptions { AllowTrailingCommas = false, CommentHandling = JsonCommentHandling.Disallow });
-    }
-    catch (JsonException exception)
-    {
-        failures.Add($"malformed category inventory {relativeInventory}: {exception.Message}");
-        return null;
-    }
-
-    using (document)
-    {
-        if (document.RootElement.ValueKind is not JsonValueKind.Object)
-        {
-            failures.Add($"category inventory must be a JSON object: {relativeInventory}");
-            return null;
-        }
-
-        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
-        var valid = true;
-        foreach (var property in document.RootElement.EnumerateObject())
-        {
-            if (!categories.Contains(property.Name, StringComparer.Ordinal))
-            {
-                failures.Add($"unknown category '{property.Name}' in {relativeInventory}");
-                valid = false;
-                continue;
-            }
-
-            if (counts.ContainsKey(property.Name))
-            {
-                failures.Add($"duplicate category '{property.Name}' in {relativeInventory}");
-                valid = false;
-                continue;
-            }
-
-            if (property.Value.ValueKind is not JsonValueKind.Number || !property.Value.TryGetInt32(out var count) || count < 0)
-            {
-                failures.Add($"category '{property.Name}' must be a non-negative integer in {relativeInventory}");
-                valid = false;
-                // Record the category as present so the value failure is reported once, not also as missing.
-                counts[property.Name] = 0;
-                continue;
-            }
-
-            counts[property.Name] = count;
-        }
-
-        foreach (var category in categories.Where(category => !counts.ContainsKey(category)))
-        {
-            failures.Add($"category '{category}' is missing from {relativeInventory}");
-            valid = false;
-        }
-
-        return valid ? counts : null;
-    }
-}
+            !path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal));
 
 static string Relative(string root, string path) => Path.GetRelativePath(root, path).Replace('\\', '/');
 
-static async Task<IReadOnlyDictionary<Guid, string>> DiscoverAsync(string root, string project, string? filter)
+static async Task<IReadOnlyCollection<DiscoveredTest>> DiscoverAsync(string root, string project, string relativePath)
 {
-    var diagnosticPath = Path.Combine(Path.GetTempPath(), $"hvo-test-discovery-{Guid.NewGuid():N}.diag");
-    var arguments = new List<string>
+    var assembly = Path.Combine(root, Path.GetDirectoryName(relativePath)!, "bin", "Release", "net10.0", $"{project}.dll");
+    if (!File.Exists(assembly))
     {
-        "test", project, "--no-build", "--no-restore", "--configuration", "Release", "--list-tests", "--diag", diagnosticPath
-    };
-    if (filter is not null)
-    {
-        arguments.Add("--filter");
-        arguments.Add(filter);
+        throw new InvalidDataException($"Release assembly missing for {project}. Build the solution in Release before discovery.");
     }
 
-    var startInfo = new ProcessStartInfo("dotnet")
+    var diagnosticPath = Path.Combine(Path.GetTempPath(), $"hvo-test-discovery-{Guid.NewGuid():N}.diag");
+    var startInfo = new ProcessStartInfo(Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet")
     {
         WorkingDirectory = root,
         RedirectStandardOutput = true,
         RedirectStandardError = true
     };
-    foreach (var argument in arguments)
+    foreach (var argument in new[]
+    {
+        "test", relativePath, "--no-build", "--no-restore", "--configuration", "Release", "--list-tests", "--diag", diagnosticPath
+    })
     {
         startInfo.ArgumentList.Add(argument);
     }
@@ -288,125 +227,100 @@ static async Task<IReadOnlyDictionary<Guid, string>> DiscoverAsync(string root, 
         var outputTask = process.StandardOutput.ReadToEndAsync();
         var errorTask = process.StandardError.ReadToEndAsync();
         await process.WaitForExitAsync().ConfigureAwait(false);
-        var output = await outputTask.ConfigureAwait(false);
-        var error = await errorTask.ConfigureAwait(false);
         if (process.ExitCode != 0)
         {
-            throw new InvalidOperationException($"Test discovery failed for '{project}'.{Environment.NewLine}{output}{Environment.NewLine}{error}");
+            throw new InvalidOperationException(
+                $"Test discovery failed for '{project}'.\n{await outputTask.ConfigureAwait(false)}\n{await errorTask.ConfigureAwait(false)}");
         }
 
-        return ParseDiscoveredTests(diagnosticPath, project);
+        return ParseDiscoveredTests(diagnosticPath, project, assembly);
     }
     finally
     {
-        DeleteDiagnosticFiles(diagnosticPath);
-    }
-}
-
-static void DeleteDiagnosticFiles(string diagnosticPath)
-{
-    var directory = Path.GetDirectoryName(diagnosticPath)!;
-    var stem = Path.GetFileNameWithoutExtension(diagnosticPath);
-    var diagnosticFiles = Directory.EnumerateFiles(directory, $"{stem}.*.diag", SearchOption.TopDirectoryOnly)
-        .Append(diagnosticPath)
-        .Distinct(StringComparer.Ordinal)
-        .ToArray();
-    Exception? deleteFailure = null;
-    foreach (var file in diagnosticFiles)
-    {
-        try
+        var directory = Path.GetDirectoryName(diagnosticPath)!;
+        var stem = Path.GetFileNameWithoutExtension(diagnosticPath);
+        foreach (var file in Directory.EnumerateFiles(directory, $"{stem}.*.diag").Append(diagnosticPath))
         {
             File.Delete(file);
         }
-        catch (IOException exception)
-        {
-            deleteFailure ??= exception;
-        }
-        catch (UnauthorizedAccessException exception)
-        {
-            deleteFailure ??= exception;
-        }
-    }
-
-    if (deleteFailure is not null)
-    {
-        throw new IOException($"Unable to delete test discovery diagnostics for '{diagnosticPath}'.", deleteFailure);
     }
 }
 
-static IReadOnlyDictionary<Guid, string> ParseDiscoveredTests(string diagnosticPath, string project)
+static IReadOnlyCollection<DiscoveredTest> ParseDiscoveredTests(string diagnosticPath, string project, string assembly)
 {
-    if (!File.Exists(diagnosticPath))
-    {
-        throw new InvalidOperationException($"Test diagnostics did not yield discovery completion for '{project}': the diagnostic file was not created.");
-    }
+    const string marker = "Received message: ";
+    var tests = new Dictionary<Guid, DiscoveredTest>();
+    int? total = null;
 
-    const string receivedMessageMarker = "Received message: ";
-    var tests = new Dictionary<Guid, string>();
-    var discoveryCompleted = false;
     foreach (var line in File.ReadLines(diagnosticPath))
     {
-        var markerIndex = line.IndexOf(receivedMessageMarker, StringComparison.Ordinal);
+        var markerIndex = line.IndexOf(marker, StringComparison.Ordinal);
         if (markerIndex < 0)
         {
             continue;
         }
 
-        using var message = JsonDocument.Parse(line[(markerIndex + receivedMessageMarker.Length)..]);
+        using var message = JsonDocument.Parse(line[(markerIndex + marker.Length)..]);
         var root = message.RootElement;
-        if (!root.TryGetProperty("MessageType", out var messageType))
+        switch (root.GetProperty("MessageType").GetString())
         {
-            continue;
-        }
+            case "TestDiscovery.TestFound":
+                AddTests(root.GetProperty("Payload"), tests, project, assembly);
+                break;
+            case "TestDiscovery.Completed":
+                var payload = root.GetProperty("Payload");
+                var sources = payload.GetProperty("FullyDiscoveredSources").EnumerateArray().Select(static source => source.GetString());
+                if (total.HasValue || payload.GetProperty("IsAborted").GetBoolean() ||
+                    !sources.SequenceEqual(new[] { assembly }, StringComparer.Ordinal) ||
+                    payload.GetProperty("PartiallyDiscoveredSources").GetArrayLength() != 0 ||
+                    payload.GetProperty("NotDiscoveredSources").GetArrayLength() != 0 ||
+                    payload.GetProperty("SkippedDiscoverySources").GetArrayLength() != 0)
+                {
+                    throw new InvalidDataException($"Incomplete or ambiguous VSTest discovery for '{project}'.");
+                }
 
-        if (messageType.ValueEquals("TestDiscovery.TestFound"))
-        {
-            AddTests(root.GetProperty("Payload"), tests, project);
-        }
-        else if (messageType.ValueEquals("TestDiscovery.Completed"))
-        {
-            discoveryCompleted = true;
-            var payload = root.GetProperty("Payload");
-            if (payload.TryGetProperty("LastDiscoveredTests", out var lastDiscoveredTests) &&
-                lastDiscoveredTests.ValueKind is not JsonValueKind.Null)
-            {
-                AddTests(lastDiscoveredTests, tests, project);
-            }
+                total = payload.GetProperty("TotalTests").GetInt32();
+                if (payload.GetProperty("LastDiscoveredTests") is { ValueKind: not JsonValueKind.Null } lastTests)
+                {
+                    AddTests(lastTests, tests, project, assembly);
+                }
+
+                break;
         }
     }
 
-    if (!discoveryCompleted)
+    if (total is null || total <= 0 || total != tests.Count)
     {
-        throw new InvalidOperationException($"Test diagnostics did not yield a TestDiscovery.Completed message for '{project}'.");
+        var reported = total?.ToString(CultureInfo.InvariantCulture) ?? "no total";
+        throw new InvalidDataException($"VSTest discovery for '{project}' reported {reported} and yielded {tests.Count} unique cases.");
     }
 
-    return tests;
+    return tests.Values;
 }
 
-static void AddTests(JsonElement payload, IDictionary<Guid, string> tests, string project)
+static void AddTests(JsonElement payload, Dictionary<Guid, DiscoveredTest> tests, string project, string assembly)
 {
-    if (payload.ValueKind is not JsonValueKind.Array)
-    {
-        throw new InvalidOperationException($"Test diagnostics contained a non-array discovery payload for '{project}'.");
-    }
-
     foreach (var test in payload.EnumerateArray())
     {
         if (!test.TryGetProperty("Id", out var idElement) ||
-            !Guid.TryParse(idElement.GetString(), out var id) ||
+            !Guid.TryParse(idElement.GetString(), out var id) || id == Guid.Empty ||
             !test.TryGetProperty("FullyQualifiedName", out var nameElement) ||
-            string.IsNullOrWhiteSpace(nameElement.GetString()))
+            string.IsNullOrWhiteSpace(nameElement.GetString()) ||
+            !test.GetProperty("Source").ValueEquals(assembly))
         {
-            throw new InvalidOperationException($"Test diagnostics contained a discovered case without a stable Id and FullyQualifiedName for '{project}'.");
+            throw new InvalidDataException($"VSTest discovery returned a case without a stable identity or with an unexpected assembly for '{project}'.");
         }
 
-        var fullyQualifiedName = nameElement.GetString()!;
-        if (tests.TryGetValue(id, out var existingName) && !string.Equals(existingName, fullyQualifiedName, StringComparison.Ordinal))
+        var categories = test.GetProperty("Properties").EnumerateArray()
+            .Where(static property => property.GetProperty("Key").GetProperty("Id").ValueEquals("MSTestDiscoverer.TestCategory"))
+            .SelectMany(static property => property.GetProperty("Value").EnumerateArray())
+            .Select(static category => category.GetString() ?? throw new InvalidDataException("VSTest discovery returned a null test category."))
+            .Distinct(StringComparer.Ordinal).ToArray();
+        var name = nameElement.GetString()!;
+        if (!tests.TryAdd(id, new DiscoveredTest(name, categories)))
         {
-            throw new InvalidOperationException($"Test diagnostics reused stable Id '{id}' for '{existingName}' and '{fullyQualifiedName}' in '{project}'.");
+            throw new InvalidDataException($"VSTest discovery reused case ID '{id}' for '{name}' in '{project}'.");
         }
-
-        tests[id] = fullyQualifiedName;
     }
 }
 
@@ -421,21 +335,16 @@ static string FindRepositoryRoot()
     return directory?.FullName ?? throw new DirectoryNotFoundException("Unable to locate the repository root.");
 }
 
-static partial class CategoryPatterns
+internal sealed record DiscoveredTest(string Name, string[] Categories);
+
+internal static partial class CategoryPatterns
 {
+    [GeneratedRegex(@"\A[A-Za-z0-9]+(\.[A-Za-z0-9]+)+\z", RegexOptions.CultureInvariant)]
+    internal static partial Regex ProjectName();
+
     [GeneratedRegex("(?:Microsoft\\.VisualStudio\\.TestTools\\.UnitTesting\\.)?TestCategory(?:Attribute)?\\s*\\(\\s*(?:\"([^\"]+)\"|([^\\)]*))\\s*\\)", RegexOptions.CultureInvariant)]
     internal static partial Regex TestCategoryExpression();
 
-    // A denylist of names, deliberately, rather than anything that decides whether a source looks expandable. The
-    // first alternative is a DynamicData attribute in an attribute list, which is why it requires an opening bracket
-    // or a separating comma ahead of the name rather than matching the word anywhere. The second is a type declaring
-    // MSTest's data-source interface or deriving from the attribute, which are the custom forms of the same thing; a
-    // base list is the only place either name follows a colon or a comma.
-    //
-    // The holes are the ones a name list has and are worth stating rather than discovering: a using-alias for either
-    // name, and a type reaching ITestDataSource through an intermediate base or interface rather than declaring it.
-    // Both are visible in review; neither is silent the way the counting failure this replaces was. The pattern is
-    // text, so it also matches these names in a comment or a string, which fails loudly in the safe direction.
     [GeneratedRegex("(?:\\[|,)\\s*(?:Microsoft\\.VisualStudio\\.TestTools\\.UnitTesting\\.)?DynamicData(?:Attribute)?\\s*\\(|[:,]\\s*(?:ITestDataSource|DynamicDataAttribute)\\b", RegexOptions.CultureInvariant)]
     internal static partial Regex UnexpandableTestDataExpression();
 }

@@ -63,10 +63,10 @@ shopt -s nullglob
 # GUID originals only: TRX also copies attachments under a deeper In/ tree.
 # The caller supplies the fresh root owned by this one Unit invocation.
 reports=("$results_dir"/*/coverage.cobertura.xml)
-expected_reports="$(jq -ne '
-  [inputs | select(.Unit > 0) | input_filename | split("/")[-2]
-   | select(startswith("HVO.SkyMonitor.LogicHost.") or startswith("HVO.SkyMonitor.CameraAgent.LogicHost.") | not)]
-  | length' "$repo_root"/tests/*/test-categories.json)"
+expected_reports="$(jq -se '
+  select(length == 1) | .[0]
+  | map(select(startswith("HVO.SkyMonitor.LogicHost.") or startswith("HVO.SkyMonitor.CameraAgent.LogicHost.") | not))
+  | length' "$repo_root/tests/unit-test-projects.json")"
 if (( expected_reports == 0 || ${#reports[@]} != expected_reports )); then
   printf 'Missing or extra Unit coverage data: expected %s reports (one per selected Unit-bearing project), found %s in %s. Rerun the Development v1 Unit selection with the generated settings and XPlat collection in a fresh directory.\n' \
     "$expected_reports" "${#reports[@]}" "$results_dir" >&2

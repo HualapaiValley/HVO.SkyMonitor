@@ -1,4 +1,4 @@
-"""Run the inventory-owned Performance selection and compare its TRX durations."""
+"""Discover Performance cases, then run them and compare their TRX durations."""
 
 import argparse
 import json
@@ -17,6 +17,8 @@ DURATION = re.compile(r"(?:(\d+)\.)?(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,7}))?")
 TEST_ID = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
 TEST_NAME = re.compile(r"[\w.+]+", re.ASCII)
 REPO_ROOT = Path(__file__).resolve().parents[2]
+AUDIT_PROJECT = "scripts/test-categories/HVO.SkyMonitor.TestCategoryAudit.csproj"
+PROJECT_NAME = re.compile(r"[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)+")
 
 
 def ticks(duration):
@@ -75,25 +77,49 @@ def read_trx(path, project, expected_count):
     return {case: ticks(result.get("duration", "")) for case, result in cases.items()}
 
 
-def performance_projects(root):
-    for project in sorted((root / "tests").glob("*/*.csproj")):
-        if "LogicHost" in project.stem:
+def performance_projects(root, matrix):
+    seen = set()
+    for line in matrix.read_text().splitlines():
+        fields = line.split("\t")
+        if len(fields) != 3:
+            raise ValueError("Invalid test category discovery row")
+        category, path, count = fields
+        if category != "Performance":
             continue
-        inventory = json.loads(project.with_name("test-categories.json").read_text())
-        count = inventory.get("Performance") if isinstance(inventory, dict) else None
-        if type(count) is not int or count < 0:
-            raise ValueError(f"{project.stem} has an invalid Performance inventory")
-        if count:
-            yield project, count
+        project = root / path
+        name = project.stem
+        if (not PROJECT_NAME.fullmatch(name) or path != f"tests/{name}/{name}.csproj"
+                or not project.is_file() or path in seen or not re.fullmatch(r"[0-9]+", count)):
+            raise ValueError("Invalid or duplicate Performance discovery row")
+        seen.add(path)
+        if "LogicHost" not in name and int(count) > 0:
+            yield project, int(count)
 
 
 def measure(scratch, no_build):
     if SAMPLES_PER_RUN < 1 or SAMPLES_PER_RUN % 2 == 0:
         raise ValueError("Performance trial count must be a positive odd integer")
-    projects = list(performance_projects(REPO_ROOT))
-    if not projects:
-        raise ValueError("No projects declare Performance cases")
     scratch.mkdir(mode=0o700, parents=True)
+    if not no_build:
+        with (scratch / "build.log").open("w") as log:
+            build = subprocess.run(
+                ["dotnet", "build", "HVO.SkyMonitor.v9.slnx", "--configuration", "Release", "-warnaserror"],
+                cwd=REPO_ROOT, stdout=log, stderr=subprocess.STDOUT, check=False,
+            )
+        if build.returncode:
+            raise ValueError(f"Performance preparation build failed (exit {build.returncode})")
+    matrix = scratch / "discovery.tsv"
+    with matrix.open("w") as output, (scratch / "discovery.log").open("w") as log:
+        discovery = subprocess.run(
+            ["dotnet", "run", "--project", AUDIT_PROJECT, "--configuration", "Release", "--verbosity", "quiet",
+             "--", "--emit-matrix"],
+            cwd=REPO_ROOT, stdout=output, stderr=log, check=False,
+        )
+    if discovery.returncode:
+        raise ValueError(f"Performance discovery failed (exit {discovery.returncode})")
+    projects = list(performance_projects(REPO_ROOT, matrix))
+    if not projects:
+        raise ValueError("No projects discovered Performance cases")
     measurements = {}
     for project, count in projects:
         output = scratch / project.stem
@@ -103,11 +129,10 @@ def measure(scratch, no_build):
             trx = output / f"sample-{trial + 1}.trx"
             command = [
                 "dotnet", "test", str(project), "--configuration", "Release",
+                "--no-build", "--no-restore",
                 "--filter", "TestCategory=Performance", "--results-directory", str(output),
                 "--logger", f"trx;LogFileName={trx.name}",
             ]
-            if no_build or trial > 0:
-                command.extend(["--no-build", "--no-restore"])
             with trx.with_suffix(".log").open("w") as log:
                 result = subprocess.run(command, cwd=REPO_ROOT, stdout=log, stderr=subprocess.STDOUT, check=False)
                 try:

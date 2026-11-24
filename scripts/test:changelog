@@ -1,0 +1,241 @@
+#!/usr/bin/env python3
+"""Validate changelog behavior in temporary release worktrees."""
+
+from pathlib import Path
+import runpy
+import shutil
+import subprocess
+import tempfile
+import unittest
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parent.parent
+HISTORY = """## [1.1.0] - 2025-06-01
+
+### Security
+
+- The first release.
+
+[Unreleased]: https://github.com/HualapaiValley/HVO.SkyMonitor/compare/v1.1.0...development/v1
+[1.1.0]: https://github.com/HualapaiValley/HVO.SkyMonitor/releases/tag/v1.1.0
+"""
+
+
+class ChangelogTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        scripts = self.root / "scripts"
+        scripts.mkdir()
+        self.command = scripts / "release:changelog"
+        for name in ("release:changelog", "release:notes"):
+            shutil.copy2(ROOT / "scripts" / name, scripts / name)
+        self.fragments = self.root / "changelog.d"
+        self.fragments.mkdir()
+        (self.fragments / "README.md").write_text("# Changelog fragments\n")
+        self.changelog = self.root / "CHANGELOG.md"
+        self.changelog.write_text("# Changelog\n\n## [Unreleased]\n\n" + HISTORY)
+
+    def fragment(self, name, text="- An operator can inspect status. (#123)\n"):
+        path = self.fragments / name
+        path.write_bytes(text if isinstance(text, bytes) else text.encode("utf-8"))
+        return path
+
+    def run_script(self, *args):
+        return subprocess.run([self.command, *args], cwd=self.root, capture_output=True, text=True)
+
+    def snapshot(self):
+        return {path.name: path.read_bytes() for path in (self.changelog, *self.fragments.iterdir())}
+
+    def test_assembly_dry_run_and_release_notes_round_trip(self):
+        self.changelog.write_text(
+            "# Changelog\n\n## [Unreleased]\n\n### Fixed\n\n- Legacy fix.\n\n"
+            "### Added\n\n- Legacy addition.\n\n### Fixed\n\n- Another legacy fix.\n\n"
+            "### Changed\n\n" + HISTORY)
+        self.fragment("z.fixed.md", "- Last fix. (#124)\n")
+        self.fragment("a.fixed.md", "- Earlier fix.\n  It has more detail. #123\n")
+        self.fragment("111.added.md", "- A new command. (#111)\n")
+        self.fragment("112.security.md", "- A security update. (#112)\n")
+        self.fragment("113.removed.md", "- A retired option. (#113)\n")
+        self.fragment("114.deprecated.md", "- A deprecated option. (#114)\n")
+        self.fragment("115.changed.md", "- A changed option. (#115)\n")
+        before = self.snapshot()
+        preview = self.run_script("--dry-run", "1.2.0", "--date", "2026-11-24")
+        self.assertEqual(preview.returncode, 0, preview.stderr)
+        self.assertEqual(preview.stderr, "Would consume 7 changelog fragment(s).\n")
+        self.assertEqual(before, self.snapshot())
+        self.assertEqual(preview.stdout, self.run_script("1.2.0", "--date", "2026-11-24", "--dry-run").stdout)
+        applied = self.run_script("1.2.0", "--date", "2026-11-24")
+        self.assertEqual(applied.returncode, 0, applied.stderr)
+        self.assertEqual(preview.stdout, self.changelog.read_text())
+        self.assertEqual(list(self.fragments.iterdir()), [self.fragments / "README.md"])
+        self.assertEqual(self.run_script("--check").returncode, 0)
+        self.assertIn("## [Unreleased]\n\n## [1.2.0] - 2026-11-24", preview.stdout)
+        release, history = preview.stdout.split("## [1.1.0]", 1)
+        self.assertEqual(history, HISTORY.split("## [1.1.0]", 1)[1].replace(
+            "[Unreleased]: https://github.com/HualapaiValley/HVO.SkyMonitor/compare/v1.1.0...development/v1",
+            "[Unreleased]: https://github.com/HualapaiValley/HVO.SkyMonitor/compare/v1.2.0...development/v1\n"
+            "[1.2.0]: https://github.com/HualapaiValley/HVO.SkyMonitor/releases/tag/v1.2.0"))
+        expected = (
+            "### Added\n\n- Legacy addition.\n\n- A new command. (#111)\n\n"
+            "### Changed\n\n- A changed option. (#115)\n\n"
+            "### Deprecated\n\n- A deprecated option. (#114)\n\n"
+            "### Removed\n\n- A retired option. (#113)\n\n"
+            "### Fixed\n\n- Legacy fix.\n\n- Another legacy fix.\n\n"
+            "- Earlier fix.\n  It has more detail. #123\n\n- Last fix. (#124)\n\n"
+            "### Security\n\n- A security update. (#112)"
+        )
+        self.assertEqual(release.split("## [1.2.0] - 2026-11-24\n\n")[1].strip(), expected)
+        notes = self.root / "docs/upgrade-notes"
+        notes.mkdir(parents=True)
+        (notes / "1.2.0.md").write_text("Restart CameraAgent.\n")
+        reader = self.root / "scripts/release:notes"
+        check = subprocess.run([reader, "--check", "1.2.0"], capture_output=True, text=True)
+        self.assertEqual(check.returncode, 0, check.stderr)
+        body = subprocess.check_output([reader, "--body", "1.2.0"], text=True)
+        self.assertEqual(body.strip(), f"## Changes\n\n{expected}\n\n## Upgrade notes\n\nRestart CameraAgent.")
+        after = self.snapshot()
+        result = self.run_script("1.2.0", "--date", "2026-11-24")
+        self.assertEqual(result.returncode, 1, result)
+        self.assertIn("already has a 1.2.0 heading", result.stderr)
+        self.assertEqual(after, self.snapshot())
+
+    def test_empty_unreleased_and_legacy_only_cuts(self):
+        self.assertIn("no Unreleased entries or fragments", self.run_script(
+            "1.2.0", "--date", "2026-11-24", "--dry-run").stderr)
+        self.changelog.write_text("# Changelog\n\n## [Unreleased]\n\n### Added\n\n- Existing item.\n")
+        result = self.run_script("1.2.0", "--date", "2026-11-24", "--dry-run")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("### Added\n\n- Existing item.", result.stdout)
+        self.changelog.write_text("# Changelog\n\n## [Unreleased]\n")
+        self.fragment("123.fixed.md")
+        result = self.run_script("1.2.0", "--date", "2026-11-24")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("### Fixed\n\n- An operator can inspect status.", self.changelog.read_text())
+
+    def test_cleanup_failure_preserves_every_note(self):
+        first = self.fragment("one.fixed.md", "- First fix. (#123)\n")
+        second = self.fragment("two.fixed.md", "- Second fix. (#124)\n")
+        tool = runpy.run_path(str(self.command))
+        fragments = tool["read_fragments"](self.fragments)
+        original = self.changelog.read_bytes()
+        updated = tool["assemble"](original.decode("utf-8"), fragments, "1.2.0", "2026-11-24")
+        unlink = Path.unlink
+
+        def fail_second_cleanup(path, *args, **kwargs):
+            if path == second:
+                raise PermissionError("interrupted cleanup")
+            return unlink(path, *args, **kwargs)
+
+        with patch.object(Path, "unlink", fail_second_cleanup):
+            with self.assertRaisesRegex(PermissionError, "interrupted cleanup"):
+                tool["write_release"](self.changelog, original, updated, fragments)
+        self.assertFalse(first.exists())
+        self.assertTrue(second.exists())
+        self.assertEqual(self.changelog.read_text(), updated)
+        self.assertIn(second.read_text(), updated)
+        second.unlink()
+        self.assertEqual(self.run_script("--check").returncode, 0)
+
+    def test_malformed_fragment_aborts_validation_and_assembly(self):
+        for name, contents, reason in (
+            ("123.Fixed.md", b"- Valid note. #123\n", "expected <id>.<section>.md"),
+            ("123.other.md", b"- Valid note. #123\n", "Keep a Changelog section"),
+            ("123.fixed.md", b"### Fixed\n- A note. #123\n", "one Markdown bullet"),
+            ("123.fixed.md", b"- A note.\n- Another note. #123\n", "one Markdown bullet"),
+            ("123.fixed.md", b"- A note without an issue reference.\n", "issue reference"),
+            ("123.fixed.md", b"- #123\n", "one Markdown bullet"),
+            ("123.fixed.md", b"- A note. #123", "newline"),
+            ("123.fixed.md", b"- A note. #123\r\n", "one Markdown bullet"),
+            ("123.fixed.md", b"- A note.\x00 #123\n", "one Markdown bullet"),
+            ("123.fixed.md", b"\xff", "decode"),
+        ):
+            with self.subTest(name=name, contents=contents):
+                fragment = self.fragment(name, contents)
+                before = self.snapshot()
+                for args in (("--check",), ("1.2.0", "--date", "2026-11-24")):
+                    result = self.run_script(*args)
+                    self.assertEqual(result.returncode, 1, result)
+                    self.assertIn(reason, result.stderr)
+                    self.assertEqual(before, self.snapshot())
+                fragment.unlink()
+
+    def test_duplicate_ids_and_nonregular_fragments_are_rejected(self):
+        first = self.fragment("123.added.md")
+        duplicate = self.fragment("123.fixed.md")
+        self.assertIn("duplicate changelog fragment ID", self.run_script("--check").stderr)
+        duplicate.unlink()
+        duplicate.symlink_to(first)
+        self.assertIn("accepts regular files only", self.run_script("--check").stderr)
+        duplicate.unlink()
+        duplicate.mkdir()
+        self.assertIn("accepts regular files only", self.run_script("--check").stderr)
+
+    def test_invalid_release_arguments_and_headers_preserve_inputs(self):
+        self.fragment("123.fixed.md")
+        for version, day in (("v1.2.0", "2026-11-24"), ("1.2.0-rc.1", "2026-11-24"),
+                             ("1.2.0", "2026-02-30"), ("1.2.0", "20261124")):
+            with self.subTest(version=version, date=day):
+                before = self.snapshot()
+                self.assertEqual(self.run_script(version, "--date", day).returncode, 1)
+                self.assertEqual(before, self.snapshot())
+        for header, reason in (
+            ("## [1.0.0]\n", "one ## [Unreleased] heading"),
+            ("## [Unreleased]\n\n## [Unreleased]\n", "one ## [Unreleased] heading"),
+            ("## [Unreleased]\n\n### Typo\n\n- Pending work.\n", "Unknown Unreleased section"),
+        ):
+            with self.subTest(header=header):
+                self.changelog.write_text(header + "\n" + HISTORY)
+                before = self.snapshot()
+                result = self.run_script("1.2.0", "--date", "2026-11-24")
+                self.assertEqual(result.returncode, 1, result)
+                self.assertIn(reason, result.stderr)
+                self.assertEqual(before, self.snapshot())
+
+    def test_pr_limit_applies_to_exact_range_and_allows_release_consumption(self):
+        def git(*args):
+            return subprocess.check_output(["git", *args], cwd=self.root, text=True).strip()
+
+        def commit(message):
+            git("add", ".")
+            git("commit", "-qm", message)
+
+        git("init", "-q", "--initial-branch=development/v1")
+        git("config", "user.name", "Fixture")
+        git("config", "user.email", "fixture@example.invalid")
+        git("config", "commit.gpgsign", "false")
+        self.fragment("existing.fixed.md")
+        commit("base")
+        stale_base = git("rev-parse", "HEAD")
+        git("switch", "-qc", "pull-request")
+        self.fragment("example.changed.md")
+        commit("one new fragment")
+
+        git("switch", "-q", "development/v1")
+        self.fragment("upstream.fixed.md")
+        commit("another PR lands a fragment on development/v1")
+        current_base = git("rev-parse", "HEAD")
+        git("merge", "--no-ff", "-qm", "GitHub test merge", "pull-request")
+        base = git("rev-parse", "HEAD^1")
+        self.assertEqual(base, current_base)
+        result = self.run_script("--check", "--base", stale_base)
+        self.assertEqual(result.returncode, 1, result)
+        self.assertIn("Each PR may add or change one changelog fragment", result.stderr)
+        self.assertIn("changelog.d/upstream.fixed.md", result.stderr)
+        self.assertIn("changelog.d/example.changed.md", result.stderr)
+        result = self.run_script("--check", "--base", base)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        self.fragment("second.added.md")
+        commit("two new fragments")
+        result = self.run_script("--check", "--base", base)
+        self.assertEqual(result.returncode, 1, result)
+        self.assertIn("Each PR may add or change one changelog fragment", result.stderr)
+        self.assertEqual(self.run_script("--check").returncode, 0)
+        current = git("rev-parse", "HEAD")
+        self.assertEqual(self.run_script("1.2.0", "--date", "2026-11-24").returncode, 0)
+        commit("release consumes all fragments")
+        self.assertEqual(self.run_script("--check", "--base", current).returncode, 0)
+
+
+if __name__ == "__main__":
+    unittest.main()
