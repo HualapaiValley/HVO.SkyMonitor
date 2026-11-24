@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 import re
 import statistics
 import subprocess
@@ -13,6 +14,8 @@ SAMPLES_PER_RUN = 3
 HISTORY_SIZE = 5
 NS = {"trx": "http://microsoft.com/schemas/VisualStudio/TeamTest/2010"}
 DURATION = re.compile(r"(?:(\d+)\.)?(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,7}))?")
+TEST_ID = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
+TEST_NAME = re.compile(r"[\w.+]+", re.ASCII)
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -33,30 +36,43 @@ def ticks(duration):
 def read_trx(path, project, expected_count):
     document = ET.parse(path)
     results = document.findall("trx:Results/trx:UnitTestResult", NS)
-    if len(results) != expected_count or any(result.get("outcome") != "Passed" for result in results):
-        raise ValueError(f"{project} did not pass all {expected_count} expected Performance cases")
 
     methods = {}
     for definition in document.findall("trx:TestDefinitions/trx:UnitTest", NS):
+        test_id = definition.get("id", "")
+        if not TEST_ID.fullmatch(test_id):
+            raise ValueError("TRX contains a missing or malformed test definition id")
         method = definition.find("trx:TestMethod", NS)
         if method is not None:
-            name = f'{method.get("className", "")}.{method.get("name", "")}'
-            if not re.fullmatch(r"[\w.+]+", name, flags=re.ASCII):
-                raise ValueError(f"{project} TRX contains a malformed test name")
-            methods[definition.get("id")] = name
+            class_name = method.get("className", "")
+            method_name = method.get("name", "")
+            if not TEST_NAME.fullmatch(class_name) or not TEST_NAME.fullmatch(method_name):
+                raise ValueError("TRX contains a malformed test name")
+            methods[test_id] = f"{class_name}.{method_name}"
 
-    measurements = {}
+    cases = {}
+    failures = []
     for result in results:
-        test_id = result.get("testId")
-        if test_id not in methods or not re.fullmatch(r"[0-9a-fA-F-]{36}", test_id):
-            raise ValueError(f"{project} TRX result is missing a test definition")
+        test_id = result.get("testId", "")
+        if test_id not in methods:
+            raise ValueError("TRX result is missing a valid test definition")
         # VSTest distinguishes data rows in testId. Class and method names give
         # the reader an identifier without copying arbitrary TRX display text.
         case = f"{project}/{methods[test_id]} [{test_id}]"
-        if case in measurements:
-            raise ValueError(f"{project} TRX contains duplicate results")
-        measurements[case] = ticks(result.get("duration", ""))
-    return measurements
+        if case in cases:
+            raise ValueError("TRX contains duplicate results")
+        cases[case] = result
+        outcome = result.get("outcome", "")
+        if outcome != "Passed":
+            outcome = outcome if re.fullmatch(r"[A-Za-z]+", outcome) else "Unknown"
+            failures.append(f"{methods[test_id]} (testId={test_id}, outcome={outcome})")
+    if failures or len(cases) != expected_count:
+        passed = len(cases) - len(failures)
+        message = f"expected {expected_count} passing cases, found {passed} of {len(cases)} results"
+        if failures:
+            message += "\n  " + "\n  ".join(failures)
+        raise ValueError(message)
+    return {case: ticks(result.get("duration", "")) for case, result in cases.items()}
 
 
 def performance_projects(root):
@@ -72,6 +88,8 @@ def performance_projects(root):
 
 
 def measure(scratch, no_build):
+    if SAMPLES_PER_RUN < 1 or SAMPLES_PER_RUN % 2 == 0:
+        raise ValueError("Performance trial count must be a positive odd integer")
     projects = list(performance_projects(REPO_ROOT))
     if not projects:
         raise ValueError("No projects declare Performance cases")
@@ -92,11 +110,18 @@ def measure(scratch, no_build):
                 command.extend(["--no-build", "--no-restore"])
             with trx.with_suffix(".log").open("w") as log:
                 result = subprocess.run(command, cwd=REPO_ROOT, stdout=log, stderr=subprocess.STDOUT, check=False)
-            if result.returncode:
-                raise ValueError(f"{project.stem} Performance trial {trial + 1} failed (exit {result.returncode})")
-            if not trx.is_file():
-                raise ValueError(f"{project.stem} Performance trial {trial + 1} produced no TRX")
-            trials.append(read_trx(trx, project.stem, count))
+                try:
+                    if not trx.is_file():
+                        raise ValueError("dotnet test produced no TRX")
+                    sample = read_trx(trx, project.stem, count)
+                    if result.returncode:
+                        raise ValueError("dotnet test exited unsuccessfully")
+                except (ValueError, ET.ParseError) as error:
+                    detail = "malformed TRX" if isinstance(error, ET.ParseError) else str(error)
+                    message = f"{project.stem} Performance trial {trial + 1} failed (exit {result.returncode}): {detail}"
+                    print(message, file=log)
+                    raise ValueError(message) from error
+            trials.append(sample)
         if any(trial.keys() != trials[0].keys() for trial in trials[1:]):
             raise ValueError(f"{project.stem} discovered different Performance cases between trials")
         measurements.update({
@@ -140,7 +165,11 @@ def compare(measurements, history):
 
 def write_report(path, **data):
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"version": 1, **data}, indent=2) + "\n")
+    baseline_cache = {
+        "matchedKey": os.environ.get("PI5_CACHE_MATCHED_KEY") or None,
+        "restoreOutcome": os.environ.get("PI5_CACHE_RESTORE_OUTCOME") or None,
+    }
+    path.write_text(json.dumps({"version": 1, "baselineCache": baseline_cache, **data}, indent=2) + "\n")
 
 
 def evaluate(measurements, baseline_path, report_path):
@@ -167,13 +196,13 @@ def evaluate(measurements, baseline_path, report_path):
     return 0
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("scratch", type=Path, help="New private directory for raw TRX and dotnet output")
     parser.add_argument("baseline", type=Path)
     parser.add_argument("report", type=Path)
     parser.add_argument("--no-build", action="store_true", help="Use prebuilt Release tests")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     try:
         return evaluate(measure(args.scratch, args.no_build), args.baseline, args.report)
     except (OSError, ValueError, ET.ParseError) as error:

@@ -97,8 +97,12 @@ public sealed class PresentationLayerCompositorTests
     }
 
     [TestMethod]
-    public void CompositionBudgetsRejectOversizedWorkAndAdmitFullResolutionW6() =>
-        _ = VerifyCompositionBudgets();
+    public void CompositionBudgetsRejectOversizedWorkAndAdmitFullResolutionW6()
+    {
+        var (oversized, tooManyLayers) = VerifyCompositionBudgets();
+        Assert.IsLessThan(1_000_000L, oversized, "Rejected dimensions must not allocate output pixels.");
+        Assert.IsLessThan(1_000_000L, tooManyLayers, "Rejected stack must not allocate its 38 MB output.");
+    }
 
     internal static (long Oversized, long TooManyLayers) VerifyCompositionBudgets()
     {
@@ -326,8 +330,11 @@ public sealed class PresentationLayerCompositorTests
     [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
-    public void CancellationAtEndOfAdmissionLeavesSourceIntact(bool promoteToRgb) =>
-        _ = VerifyCancellationAtEndOfAdmission(promoteToRgb);
+    public void CancellationAtEndOfAdmissionLeavesSourceIntact(bool promoteToRgb)
+    {
+        var allocated = VerifyCancellationAtEndOfAdmission(promoteToRgb);
+        Assert.IsLessThan(1_000_000L, allocated, "Admission cancellation must precede the 4/12 MiB output allocation and any base copy.");
+    }
 
     internal static long VerifyCancellationAtEndOfAdmission(bool promoteToRgb)
     {

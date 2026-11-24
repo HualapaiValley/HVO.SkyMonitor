@@ -910,8 +910,10 @@ The baseline is the median of the most recent five accepted run medians per
 case. A duration **more than 20%** above its previous median fails the Pi job.
 Exactly 20% is accepted. An entirely new baseline or a new test case seeds from
 the first clean Pi measurement. A failing run leaves the full previous history
-in place. The comparison artifact records per-case timings and the decision
-for 30 days. Raw TRX and test logs stay in the runner's temporary workspace.
+in place. The uploaded comparison JSON retains per-case timings and decisions
+or a failure summary for 30 days. When the TRX identifies a failed case, the
+summary includes its class, method, test ID, and outcome. Raw TRX files and
+full test logs are written under `$RUNNER_TEMP`.
 
 New Pi performance runs cancel older runs on the same ref under
 `skymonitor-perf-${{ github.ref }}`. Native CameraAgent Evidence uses its own
@@ -919,8 +921,11 @@ concurrency group and queues independently on the Pi. The workflow saves a new i
 Actions cache entry under `skymonitor-development-v1-pi5-performance-v1-` for
 each accepted run attempt. It restores the newest matching entry on
 `development/v1` and verifies each save by exact key. If the cache is empty or
-has been evicted, the next clean Pi run seeds it. To recalibrate after a runner,
-SDK, or intentional workload change, dispatch **SkyMonitor Pi 5 Performance**
+has been evicted, the next clean Pi run seeds it. The report's `baselineCache`
+records the matched key and restore step outcome. A successful restore step with
+a null key means a cache miss. A skipped restore means a requested reset. A
+matched key can accompany seeded cases when new tests are added. To recalibrate
+after a runner, SDK, or intentional workload change, dispatch **SkyMonitor Pi 5 Performance**
 on `development/v1` with `reset_baseline` enabled. A successful reset becomes
 the newest baseline. The next scheduled comparisons use that calibration.
 Local runs confirm execution and leave the GitHub cache alone.

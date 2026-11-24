@@ -400,6 +400,8 @@ public sealed class CameraAgentLifecycleClientTests
         Assert.IsTrue(handler.RequestCount > 1, $"expected retries before the deadline, saw {handler.RequestCount} requests");
     }
 
+    // Unit checks the pause and drain outcome. PauseAndDrainDoesNotStackDeadlines
+    // checks the shared wall-clock budget in the Performance suite.
     [TestMethod]
     [Timeout(30_000)]
     public async Task PauseAndDrain_SharesOneDrainBudgetBetweenTheCommandAndTheBoundary() =>

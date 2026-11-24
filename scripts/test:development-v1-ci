@@ -1410,6 +1410,7 @@ def pi5_contract(workflow):
     triggers = config["on"]
     performance = config["jobs"]["performance"]
     steps = {step["name"]: step for step in performance["steps"]}
+    restore = steps["Restore last accepted Pi baseline"]
     run = steps["Run and compare Performance cases"]
     save = steps["Save accepted Pi baseline"]
     return (
@@ -1425,6 +1426,10 @@ def pi5_contract(workflow):
             "dotnet-version": "10.0.402", "global-json-file": "global.json"
         }
         and "needs" not in performance and "continue-on-error" not in performance
+        and restore.get("id") == "restore-baseline"
+        and restore.get("if") == "${{ !inputs.reset_baseline }}"
+        and run.get("env", {}).get("PI5_CACHE_MATCHED_KEY") == "${{ steps.restore-baseline.outputs.cache-matched-key }}"
+        and run.get("env", {}).get("PI5_CACHE_RESTORE_OUTCOME") == "${{ steps.restore-baseline.outcome }}"
         and "ci/pi5_performance.py" in run["run"]
         and "continue-on-error" not in run and "if" not in run
         and "if" not in save and "continue-on-error" not in save
@@ -1445,12 +1450,14 @@ for original, replacement in (
     ("10.0.402", "10.0.403"),
     ("arm64, pi5,", "arm64,"),
     ("hvo-skymonitor-arm64", "hvo-skymonitor"),
+    ("outputs.cache-matched-key", "outputs.cache-hit"),
+    ("steps.restore-baseline.outcome", "'success'"),
     ("- name: Run and compare Performance cases", "- name: Run and compare Performance cases\n        continue-on-error: true"),
     ("- name: Save accepted Pi baseline", "- name: Save accepted Pi baseline\n        if: always()"),
 ):
     if pi5_contract(pi5.replace(original, replacement, 1)):
         raise SystemExit(f"Pi 5 Performance mutation passed: {replacement}")
-print("Pi 5 Performance workflow contract and 12 mutation controls passed.")
+print("Pi 5 Performance workflow contract and 14 mutation controls passed.")
 PY
 
 # Keep the cheap image and runtime-directory fixtures on the Preflight contract path.

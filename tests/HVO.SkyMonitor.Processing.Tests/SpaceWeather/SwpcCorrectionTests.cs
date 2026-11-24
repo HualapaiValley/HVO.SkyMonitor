@@ -133,7 +133,11 @@ public sealed class SwpcCorrectionTests
     }
 
     [TestMethod]
-    public void OversizeMessageIsRejected() => _ = VerifyOversizeMessageRejection();
+    public void OversizeMessageIsRejected()
+    {
+        var allocated = VerifyOversizeMessageRejection();
+        Assert.IsLessThan(131_072L, allocated, "Reject the oversized message before materializing its text.");
+    }
 
     internal static long VerifyOversizeMessageRejection()
     {
@@ -148,7 +152,11 @@ public sealed class SwpcCorrectionTests
     }
 
     [TestMethod]
-    public void RecordCountIsRejectedAfterCompleteSyntaxValidation() => _ = VerifyRecordCountRejection();
+    public void RecordCountIsRejectedAfterCompleteSyntaxValidation()
+    {
+        var allocated = VerifyRecordCountRejection();
+        Assert.IsLessThan(4_096L, allocated, "Reject the excessive record count before building a JSON DOM.");
+    }
 
     internal static long VerifyRecordCountRejection()
     {

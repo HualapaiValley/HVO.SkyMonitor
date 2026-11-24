@@ -57,6 +57,7 @@ jobs:
             exit 1
           fi
       - name: Restore last accepted Pi baseline
+        id: restore-baseline
         if: ${{ !inputs.reset_baseline }}
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
@@ -66,6 +67,9 @@ jobs:
       - name: Run and compare Performance cases
         id: measure
         shell: bash
+        env:
+          PI5_CACHE_MATCHED_KEY: ${{ steps.restore-baseline.outputs.cache-matched-key }}
+          PI5_CACHE_RESTORE_OUTCOME: ${{ steps.restore-baseline.outcome }}
         run: |
           flock --close /tmp/hvo-heavy-gate.lock python3 scripts/ci/pi5_performance.py \
             "$RUNNER_TEMP/pi5-performance-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \

@@ -174,8 +174,12 @@ public sealed class JournalNightlyProductSourceReaderTests
     [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
-    public async Task Restore_RejectsOversizedCommittedFiles(bool sidecar) =>
-        _ = await VerifyOversizedFileRejectionAsync(_root, sidecar);
+    public async Task Restore_RejectsOversizedCommittedFiles(bool sidecar)
+    {
+        var allocated = await VerifyOversizedFileRejectionAsync(_root, sidecar);
+        Assert.IsLessThan(64L * 1024 * 1024, allocated,
+            "Reject the oversized file before allocating a buffer based on its untrusted length.");
+    }
 
     internal static async Task<long> VerifyOversizedFileRejectionAsync(string root, bool sidecar)
     {
