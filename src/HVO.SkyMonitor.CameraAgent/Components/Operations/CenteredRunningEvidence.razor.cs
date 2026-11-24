@@ -92,7 +92,8 @@ public sealed partial class CenteredRunningEvidence : SiteTimeComponent
         return Snapshot.Acquisition?.ObservedUtc is { } observed && end != default && observed >= end ? observed - end : null;
     }
 
-    private string ObservedTime(DateTimeOffset? time) => SiteTime.Format(time, unavailable: "Unavailable");
+    private string ObservedTime(DateTimeOffset? time) => time is { } instant && instant != default
+        ? SiteTime.Format(instant) : "Unavailable";
 
     private static string GraphUrl(string revision) => $"/operations/pipeline/graphs/{Uri.EscapeDataString(revision)}";
 

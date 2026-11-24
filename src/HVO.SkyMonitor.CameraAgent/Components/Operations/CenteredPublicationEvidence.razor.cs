@@ -30,24 +30,38 @@ public sealed partial class CenteredPublicationEvidence : SiteTimeComponent
 
     private static string LayerLabel(string kind) => CultureInfo.InvariantCulture.TextInfo.ToTitleCase(kind.Replace('-', ' '));
 
-    internal static string? Reason(string? value) => value?.Split('/', 2)[0] switch
+    internal static string? Reason(string? value)
     {
-        "centered.awaiting-product" => "Awaiting source product at publication",
-        "centered.layer-not-configured" => "Layer absent from the selected configuration",
-        "centered.registration-map-unavailable" => "Source registration map unavailable",
-        "centered.segments-outside-registration" => "Segments fall outside the registered image",
-        "centered.rich-text-preview-too-small" => "Preview is too small for this layer",
-        "centered.product-expired" => "Source product expired",
-        "centered.product-missing-evidence" => "Source product evidence missing",
-        "centered.product-failed" => "Source production failed",
-        "centered.product-unavailable" => "Source product unavailable",
-        "centered.product-incompatible" => "Source product is incompatible",
-        "centered.trail-geometry-unavailable" => "Measured trail geometry unavailable",
-        "runtime.live-buffer-unobserved" => "Live buffer was not observed",
-        "runtime.no-centered-run" => "No centered acquisition run recorded",
-        "runtime.journal-not-ready" => "Acquisition journal is initializing",
-        _ => CameraAgentReplayUiService.Sanitize(value)
-    };
+        // Only known producer codes bypass free-text redaction. Any detail after the code stays private.
+        var code = value?.Split('/', 2)[0].Trim();
+        return code switch
+        {
+            "centered.awaiting-product" => "Awaiting source product at publication",
+            "centered.layer-not-configured" => "Layer absent from the selected configuration",
+            "centered.registration-map-unavailable" => "Source registration map unavailable",
+            "centered.segments-outside-registration" => "Segments fall outside the registered image",
+            "centered.rich-text-preview-too-small" => "Preview is too small for this layer",
+            "centered.product-expired" => "Source product expired",
+            "centered.product-missing-evidence" => "Source product evidence missing",
+            "centered.product-failed" => "Source production failed",
+            "centered.product-unavailable" => "Source product unavailable",
+            "centered.product-incompatible" => "Source product is incompatible",
+            "centered.trail-geometry-unavailable" => "Measured trail geometry unavailable",
+            "runtime.live-buffer-unobserved" => "Live buffer was not observed",
+            "runtime.no-centered-run" => "No centered acquisition run recorded",
+            "runtime.journal-not-ready" => "Acquisition journal is initializing",
+            "calendar-predecessor-unavailable" or "exposure-start-outside-tolerance" or "processing-deadline-expired" or
+            "invalid-window-checkpoint" or "window-capacity-exhausted" or "registration-deadline-expired" or
+            "registration.invalid-retained-evidence" or "registration.legacy-window-pins-unavailable" or
+            "registration.recipe-identity-mismatch" or "registration.reference-input-unavailable" or
+            "schedule-admission-interrupted" or "schedule.start-window-closed" or "window.input-custody-unavailable" or
+            "window.registration-pixel-limit" or "linear.calibration-master-evidence-missing" or "linear.exact-product-unavailable" or
+            "linear.explicit-no-correction" or "linear.no-configured-step" or "linear.original-provenance-mismatch" or
+            "linear.unqualified-output" or "linear.unsupported-or-unverified-layout" or "product.configured-output-not-retained" or
+            "product.retained-output-unavailable" or "product.settlement-identity-missing" => code,
+            _ => CameraAgentReplayUiService.Sanitize(value)
+        };
+    }
 
     internal static string FormatDuration(TimeSpan? value) => value is { } duration
         ? string.Create(CultureInfo.InvariantCulture, $"{duration.TotalSeconds:0.###} s") : "Unavailable";
@@ -86,7 +100,7 @@ public sealed partial class CenteredPublicationEvidence : SiteTimeComponent
         public CenteredViewReadiness? Readiness => Pending ? CenteredViewReadiness.Waiting :
             Live && Evidence?.Readiness == CenteredViewReadiness.Waiting ? null : Evidence?.Readiness;
 
-        public string? Description => Pending ? "Exact source producer is queued or running" :
+        public string? Description => Pending ? "Exact source producer is queued, running, or awaiting retry" :
             Live && Evidence?.Readiness == CenteredViewReadiness.Waiting ? "Waiting at publication. Current producer state unavailable." :
             Reason(Evidence?.Reason);
     }

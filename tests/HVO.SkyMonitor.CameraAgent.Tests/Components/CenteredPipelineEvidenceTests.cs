@@ -3,11 +3,15 @@ using Bunit;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Components.Operations;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Moq;
 using TestContext = Microsoft.VisualStudio.TestTools.UnitTesting.TestContext;
 
@@ -42,7 +46,7 @@ public sealed class CenteredPipelineEvidenceTests
         Assert.Contains("4/5 assessed", cut.Find("[data-layer-kind='predicted-satellites'] summary").TextContent);
         var lastMember = cut.FindAll("[data-layer-kind='predicted-satellites'] tbody tr")[4];
         Assert.AreEqual("Waiting", lastMember.Children[1].TextContent);
-        Assert.Contains("Exact source producer is queued or running", lastMember.TextContent);
+        Assert.Contains("Exact source producer is queued, running, or awaiting retry", lastMember.TextContent);
         Assert.Contains(format, cut.Markup);
         Assert.Contains(bayer ? "origin (1, 1)" : "No CFA", cut.Markup);
         Assert.Contains("Source to reference mapping", cut.Markup);
@@ -51,6 +55,37 @@ public sealed class CenteredPipelineEvidenceTests
         Assert.AreEqual(CenteredViewLinks.Revision(captures[2].Capture.CaptureId, view.Base.BaseId, view.Revision.RevisionId),
             cut.FindAll("a").Single(anchor => anchor.TextContent.Contains("Open exact", StringComparison.Ordinal)).GetAttribute("href"));
     }
+
+    [TestMethod]
+    public void UnsetAcquisitionTimestampRendersUnavailableInPhoenix()
+    {
+        var head = Exposures(false)[4];
+        var acquisition = Runtime(head, CenteredRuntimeEvidenceBasis.ActiveAcquisition) with { ObservedUtc = default };
+        var snapshot = new CenteredPipelineRunningSnapshot(Stream.Camera, Acquisition: acquisition, Head: head.Input);
+        using var context = new BunitContext();
+        context.Services.AddSingleton<IObservingDayCalendarProvider>(
+            new FixedObservingDayCalendarProvider(ObservingDayCalendar.Create("America/Phoenix")));
+
+        var cut = context.Render<CenteredRunningEvidence>(parameters => parameters.Add(component => component.Snapshot, snapshot));
+
+        var facts = cut.Find("[aria-label='Acquisition and buffer']");
+        var observed = facts.QuerySelectorAll("dt").Single(term => term.TextContent == "Observed");
+        Assert.AreEqual("Unavailable", observed.NextElementSibling?.TextContent);
+        Assert.Contains("-07:00 (America/Phoenix)", facts.TextContent);
+    }
+
+    [TestMethod]
+    [DataRow("exposure-start-outside-tolerance", "exposure-start-outside-tolerance")]
+    [DataRow("processing-deadline-expired", "processing-deadline-expired")]
+    [DataRow("linear.no-configured-step", "linear.no-configured-step")]
+    [DataRow("calendar-predecessor-unavailable", "calendar-predecessor-unavailable")]
+    [DataRow("centered.product-failed/var/lib/hvo/raw", "Source production failed")]
+    [DataRow("/var/lib/hvo/raw", "Withheld")]
+    [DataRow("ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "Withheld")]
+    [DataRow("Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.AAAAAAAAA", "Withheld")]
+    [DataRow("password=test-credential-for-redaction", "Withheld")]
+    public void PublicationReasonsPreserveKnownCodesAndWithholdSensitiveDetails(string value, string expected)
+        => Assert.AreEqual(expected, CenteredPublicationEvidence.Reason(value));
 
     [TestMethod]
     public void LiveReadinessDistinguishesMissingProgressDisabledAndAssessedEmpty()
@@ -206,6 +241,57 @@ public sealed class CenteredPipelineEvidenceTests
         })
             Assert.IsFalse(CenteredViewLayerProgressReader.IsActiveSource(run with { Execution = mismatched }, Stream, source));
         Assert.IsFalse(CenteredViewLayerProgressReader.IsActiveSource(null, Stream, source));
+    }
+
+    [TestMethod]
+    [DataRow("Pending", true)]
+    [DataRow("Running", true)]
+    [DataRow("RetryableFailure", true)]
+    [DataRow("TerminalFailure", false)]
+    public async Task LayerProgressWaitsForAProducerThatCanStillRun(string status, bool pending)
+    {
+        const string producer = "satellite-layer";
+        var source = Exposures(false)[2];
+        var layer = Layer(source, CenteredViewReadiness.Waiting);
+        var view = View(source, [source], [layer]);
+        var output = new ProcessingGraphProductContract(FrameArtifactRole.Metadata, "capture-satellites-v1-layer",
+            ProcessingProductKind.Metadata, SchemaVersion: PresentationLayerPayloadV1.CurrentSchemaVersion);
+        var graph = new ProcessingGraphDefinition(ProcessingGraphSchemaVersions.V1, "centered", "1", [],
+            [new(producer, CaptureSatelliteLayerProcessingStep.Alias, "1", ProcessingOperationKind.Transform, true,
+                ProcessingGraphNodeFailurePolicy.Optional, 0, JsonSerializer.SerializeToElement(new { }), [], [], [output], null, [], [])]);
+        var pipeline = CapturePipelineConfig.Empty;
+        var revision = new ProcessingGraphRevisionSnapshot(
+            new(Stream.GenerationId, graph.Name, graph.Revision, ProcessingGraphRevisionLifecycle.Validated,
+                ProcessingGraphJson.ComputeDefinitionIdentity(graph), Checksum, Checksum, Start, Start, null, null),
+            pipeline, JsonSerializer.SerializeToUtf8Bytes(pipeline, JsonSerializerOptions.Web), ProcessingGraphJson.SerializeCanonical(graph),
+            "{}"u8.ToArray(), []);
+        var token = TestContext.CancellationToken;
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-centered-layer-progress");
+        try
+        {
+            var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1);
+            await journal.InitializeAsync(token).ConfigureAwait(false);
+            using var store = new SqliteCaptureProcessingStore(Options.Create(new CameraAgentHostOptions { RawIngressRoot = root }));
+            await store.UpsertConfiguredBasicRevisionAsync(revision, token).ConfigureAwait(false);
+            var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
+            var node = new ProcessingGraphExecutionNodeState(producer, false, Checksum, status, null, 1, Start, null, [], [], [])
+            {
+                OutputContracts = [output]
+            };
+            operations.Setup(service => service.ReadRunManifestAsync(source.ExecutionId, token))
+                .ReturnsAsync(new ProcessingGraphExecutionDetail(Execution(source), [node]));
+
+            var progress = await new CenteredViewLayerProgressReader(store, operations.Object).ReadPendingAsync(view, token).ConfigureAwait(false);
+
+            if (pending)
+                Assert.AreEqual(layer.Key, Assert.ContainsSingle(progress));
+            else
+                Assert.IsEmpty(progress);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
     }
 
     public TestContext TestContext { get; set; } = default!;

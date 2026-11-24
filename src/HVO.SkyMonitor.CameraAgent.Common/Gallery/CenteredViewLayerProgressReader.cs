@@ -41,7 +41,7 @@ internal sealed class CenteredViewLayerProgressReader(SqliteCaptureProcessingSto
 
             foreach (var (port, binding) in relevant)
             {
-                if (run.Nodes.Any(node => node.NodeId == port.Producer && node.Status is "Pending" or "Running" &&
+                if (run.Nodes.Any(node => node.NodeId == port.Producer && node.Status is "Pending" or "Running" or "RetryableFailure" &&
                     node.OutputContracts.Any(output => output.Role == FrameArtifactRole.Metadata &&
                         output.SchemaVersion == port.Schema && output.Variant == port.Variant)))
                     pending.Add(binding.Key(captureId));
