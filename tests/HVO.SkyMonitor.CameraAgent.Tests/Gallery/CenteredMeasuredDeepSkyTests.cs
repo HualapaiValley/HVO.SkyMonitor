@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading.Channels;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -9,9 +10,13 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Tests.Orbital;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -236,6 +241,74 @@ public sealed partial class CameraAgentArtifactServiceTests
     }
 
     [TestMethod]
+    public async Task MeasuredDeepSkySchedulerKeepsHostRunningWhenRawJournalSchemaIsNewer()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var token = timeout.Token;
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-measured-scheduler-refusal");
+        try
+        {
+            var journalDirectory = Directory.CreateDirectory(Path.Combine(root, "journal"));
+            var connectionString = new SqliteConnectionStringBuilder
+            {
+                DataSource = Path.Combine(journalDirectory.FullName, "raw-ingress.db"),
+                Pooling = false
+            };
+            using (var connection = new SqliteConnection(connectionString.ToString()))
+            {
+                await connection.OpenAsync(token).ConfigureAwait(false);
+                using var command = connection.CreateCommand();
+                command.CommandText = "PRAGMA user_version = 99;";
+                await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+            }
+
+            var clock = new SignalingTimeProvider(DateTimeOffset.UtcNow);
+            var logger = new MeasuredSchedulerWarningLogger();
+            using var provider = ProcessingGraphOperationsTests.CreateProvider(root, timeProvider: clock, configureServices: services =>
+                services.AddSingleton<ICelestialCatalog>(new InMemoryCelestialCatalog([]))
+                    .AddSingleton<ILogger<CenteredMeasuredDeepSkyScheduler>>(logger));
+            var worker = provider.GetRequiredService<CenteredMeasuredDeepSkyScheduler>();
+            using var host = new HostBuilder().ConfigureServices(services => services.AddSingleton<IHostedService>(worker)).Build();
+            await host.StartAsync(token).ConfigureAwait(false);
+            var execution = worker.ExecuteTask!;
+            try
+            {
+                await AssertSchemaRefusalAsync().ConfigureAwait(false);
+                Assert.AreEqual(TimeSpan.FromSeconds(3), await clock.WaitForTimerAsync().WaitAsync(token).ConfigureAwait(false));
+                var backoff = await clock.WaitForTimerAsync().WaitAsync(token).ConfigureAwait(false);
+                Assert.AreEqual(TimeSpan.FromSeconds(15), backoff);
+
+                clock.Advance(backoff);
+                await AssertSchemaRefusalAsync().ConfigureAwait(false);
+                Assert.AreEqual(backoff, await clock.WaitForTimerAsync().WaitAsync(token).ConfigureAwait(false));
+                Assert.IsFalse(execution.IsCompleted);
+                Assert.IsFalse(host.Services.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping.IsCancellationRequested);
+            }
+            finally
+            {
+                await host.StopAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+
+            Assert.IsTrue(execution.IsCanceled);
+
+            async Task AssertSchemaRefusalAsync()
+            {
+                var warning = logger.Warnings.ReadAsync(token).AsTask();
+                var first = await Task.WhenAny(warning, execution).WaitAsync(token).ConfigureAwait(false);
+                await first.ConfigureAwait(false);
+                Assert.AreSame(warning, first);
+                var refusal = await warning.ConfigureAwait(false);
+                Assert.IsInstanceOfType<InvalidOperationException>(refusal);
+                StringAssert.Contains(refusal.Message, "Raw ingress schema 99 is newer", StringComparison.Ordinal);
+            }
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
     public async Task MeasuredDeepSkySchedulerPagesAcrossGraphChangesAndDefersFailures()
     {
         var token = CancellationToken.None;
@@ -354,6 +427,24 @@ public sealed partial class CameraAgentArtifactServiceTests
         {
             if (point == CaptureProcessingFaultPoint.BeforeSchemaCommit)
                 reached.TrySetResult();
+        }
+    }
+
+    private sealed class MeasuredSchedulerWarningLogger : ILogger<CenteredMeasuredDeepSkyScheduler>
+    {
+        private readonly Channel<Exception> _warnings = Channel.CreateUnbounded<Exception>();
+
+        internal ChannelReader<Exception> Warnings => _warnings.Reader;
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => logLevel == LogLevel.Warning;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (logLevel == LogLevel.Warning && exception is not null)
+                _warnings.Writer.TryWrite(exception);
         }
     }
 
