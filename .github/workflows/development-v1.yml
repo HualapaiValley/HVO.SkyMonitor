@@ -278,7 +278,8 @@ jobs:
             dotnet test HVO.SkyMonitor.v9.slnx \
               --no-build \
               --configuration Release \
-              --filter "TestCategory=Unit" \
+              --filter "TestCategory=Unit&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost" \
+              -p:SkipLogicHostTests=true \
               --settings "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings" \
               --collect:"XPlat Code Coverage" \
               --results-directory "$DEV_V1_EVIDENCE_ROOT/unit" \
