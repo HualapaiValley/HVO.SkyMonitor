@@ -160,6 +160,53 @@ public sealed class InstallWizardRunnerTests
         StringAssert.StartsWith(error, message, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// The answers file has no member for the Silo layout's options (#1966), so a wizard install would drop them and
+    /// install a filesystem-layout instance. Each is refused on the command line before the wizard opens: nothing is asked,
+    /// planned, installed or saved.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("--storage-layout", "silo", "--storage-layout silo")]
+    [DataRow("--silo-image-archive", "/srv/hvo/silo.tar", "--silo-image-archive")]
+    [DataRow("--silo-archive-endpoint", "https://archive.example:9443", "--silo-archive-endpoint")]
+    [DataRow("--silo-archive-bucket", "hvo-archive", "--silo-archive-bucket")]
+    [DataRow("--silo-archive-ca-file", "/srv/hvo/ca.pem", "--silo-archive-ca-file")]
+    [DataRow("--silo-archive-credential-file", "/srv/hvo/credential", "--silo-archive-credential-file")]
+    public async Task ASiloLayoutOption_IsRefusedBeforeTheWizardOpens(string option, string value, string named)
+    {
+        using var host = new WizardHost();
+        var interactive = Interactive(host, _ => throw new AssertFailedException("The wizard must not open."));
+
+        var (exitCode, output, error) = await RunAsync(host, [.. Args, option, value], interactive);
+
+        Assert.AreEqual(2, exitCode);
+        StringAssert.StartsWith(error, $"The wizard does not ask {named}: a Silo-layout install takes every answer on the command line.",
+            StringComparison.Ordinal);
+        Assert.AreEqual(string.Empty, output);
+        Assert.IsEmpty(host.Requests, "Nothing is planned or installed.");
+        Assert.IsFalse(File.Exists(host.AnswersPath), "No answers are saved.");
+    }
+
+    /// <summary>The control: the default layout named explicitly still opens the wizard, which the operator can leave.</summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task TheFilesystemLayoutNamedExplicitly_StillOpensTheWizard()
+    {
+        using var host = new WizardHost();
+        var opened = false;
+
+        var (exitCode, _, error) = await RunAsync(host, [.. Args, "--storage-layout", "filesystem"], driver =>
+        {
+            opened = true;
+            driver.Press(Key.Esc);
+        });
+
+        Assert.IsTrue(opened, "The wizard opened.");
+        Assert.AreEqual(130, exitCode);
+        StringAssert.Contains(error, "[CANCELLED] Cancelled: nothing was changed.", StringComparison.Ordinal);
+    }
+
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public void ThePanels_SayWhatRunsAndHowToCarryOn_ForEveryExitCode()
