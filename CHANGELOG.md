@@ -38,6 +38,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- The CameraAgent virtual focuser returns a cancelled task for a pre-cancelled abort request and lets any active move continue. #1837
+
 - CameraAgent rejects capture journal integrity damage committed between schema inspection and writable startup validation, preserving the journal and its write-ahead log on rejection. #2005
 
 - CameraAgent Silo checkpoint retries read an occupied key only up to the configured limit plus one byte. #2001
