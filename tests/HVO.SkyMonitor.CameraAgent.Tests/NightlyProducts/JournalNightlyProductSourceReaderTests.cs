@@ -18,6 +18,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.NightlyProducts;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "NightlyProducts")]
 [DoNotParallelize]
 [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "Focused MSTest methods do not require context-free continuations.")]
 public sealed class JournalNightlyProductSourceReaderTests
@@ -174,9 +175,16 @@ public sealed class JournalNightlyProductSourceReaderTests
     [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
-    public async Task Restore_RejectsOversizedCommittedFilesWithoutAllocatingTheirUntrustedLength(bool sidecar)
+    public async Task Restore_RejectsOversizedCommittedFiles(bool sidecar)
     {
-        using var provider = CreateProvider();
+        var allocated = await VerifyOversizedFileRejectionAsync(_root, sidecar);
+        Assert.IsLessThan(64L * 1024 * 1024, allocated,
+            "Reject the oversized file before allocating a buffer based on its untrusted length.");
+    }
+
+    internal static async Task<long> VerifyOversizedFileRejectionAsync(string root, bool sidecar)
+    {
+        using var provider = CreateProvider(root);
         await CaptureAsync(provider);
         var reader = provider.GetRequiredService<INightlyProductSourceReader>();
         var selected = (await reader.ReadCandidatesAsync(NightlyProductFixture.NodeId, Exposure(0), Exposure(1), 32,
@@ -184,16 +192,14 @@ public sealed class JournalNightlyProductSourceReaderTests
         var output = await provider.GetRequiredService<SqliteCaptureProcessingStore>()
             .ReadOutputByArtifactIdAsync(selected.ArtifactId, CancellationToken.None);
         Assert.IsNotNull(output);
-        var path = Path.Combine(_root, sidecar ? output.SidecarRelativePath : output.PayloadRelativePath);
+        var path = Path.Combine(root, sidecar ? output.SidecarRelativePath : output.PayloadRelativePath);
         using (var file = new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.None))
             file.SetLength(256L * 1024 * 1024 + 1);
 
         var before = GC.GetTotalAllocatedBytes(precise: true);
         await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
             await reader.RestoreAsync([selected], CancellationToken.None));
-        var allocated = GC.GetTotalAllocatedBytes(precise: true) - before;
-        Assert.IsLessThan(1024L * 1024, allocated,
-            "A sparse corrupt payload/sidecar must be rejected using its retained length before reading its oversized contents.");
+        return GC.GetTotalAllocatedBytes(precise: true) - before;
     }
 
     [TestMethod]
@@ -243,14 +249,16 @@ public sealed class JournalNightlyProductSourceReaderTests
 
     private static DateTimeOffset Exposure(int index) => FirstExposureUtc.AddMinutes(index);
 
-    private ServiceProvider CreateProvider()
+    private ServiceProvider CreateProvider() => CreateProvider(_root);
+
+    private static ServiceProvider CreateProvider(string root)
     {
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
             new Dictionary<string, string?>
             {
-                ["CameraAgent:RawIngressRoot"] = _root,
+                ["CameraAgent:RawIngressRoot"] = root,
                 ["CameraAgent:RawIngressReserveBytes"] = "0",
                 ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false"
             }).Build());
@@ -377,5 +385,32 @@ public sealed class JournalNightlyProductSourceReaderTests
             command.Parameters.AddWithValue(name, value);
         }
         Assert.IsGreaterThan(0, command.ExecuteNonQuery());
+    }
+}
+
+[TestClass]
+[TestCategory("Performance")]
+[TestProperty("Area", "NightlyProducts")]
+[DoNotParallelize]
+public sealed class JournalNightlyProductSourceReaderPerformanceTests
+{
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task Restore_RejectsOversizedCommittedFilesWithoutAllocatingTheirUntrustedLength(bool sidecar)
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-nightly-journal");
+        try
+        {
+            var allocated = await JournalNightlyProductSourceReaderTests.VerifyOversizedFileRejectionAsync(root, sidecar)
+                .ConfigureAwait(false);
+            Assert.IsLessThan(1024L * 1024, allocated,
+                "A sparse corrupt payload/sidecar must be rejected using its retained length before reading its oversized contents.");
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            Directory.Delete(root, recursive: true);
+        }
     }
 }

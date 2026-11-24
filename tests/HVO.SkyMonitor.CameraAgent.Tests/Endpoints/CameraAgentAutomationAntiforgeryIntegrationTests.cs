@@ -29,6 +29,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 /// <summary>Real cookie/key authentication, owner authorization, antiforgery middleware and durable SQLite commands.</summary>
 [TestClass]
 [TestCategory("Integration")]
+[TestProperty("Area", "Endpoints")]
 [DoNotParallelize]
 public sealed class CameraAgentAutomationAntiforgeryIntegrationTests
 {

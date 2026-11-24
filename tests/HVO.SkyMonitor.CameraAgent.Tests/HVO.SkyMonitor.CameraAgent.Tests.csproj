@@ -5,7 +5,6 @@
     <!-- The SDK Roslyn references below have Linux ReadyToRun PE headers. Keep this test assembly AnyCPU rather
          than inferring a compiler platform from the native-asset RID, which causes CS8012 with those references. -->
     <PlatformTarget>AnyCPU</PlatformTarget>
-    <DefineConstants>$(DefineConstants);CAMERAAGENT_FLEET_PERFORMANCE_TESTS</DefineConstants>
     <!-- hvo-sky ui runs here as hvo-sky ships it: without Terminal.Gui's syntax highlighting (Directory.Build.targets). -->
     <HvoTerminalProgram>true</HvoTerminalProgram>
   </PropertyGroup>
@@ -41,7 +40,6 @@
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.TestSupport\HVO.SkyMonitor.TestSupport.csproj" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.CameraAgent.Common\HVO.SkyMonitor.CameraAgent.Common.csproj" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.CameraAgent.Modules.Zwo\HVO.SkyMonitor.CameraAgent.Modules.Zwo.csproj" />
-    <Compile Include="..\HVO.SkyMonitor.LogicHost.IntegrationTests\FleetStatusPerformanceTests.cs" Link="Fleet\FleetStatusPerformanceTests.cs" />
     <Compile Include="../../src/HVO.SkyMonitor.Deployment.Cli/InstallerControlVerifier.cs" Link="Deployment/InstallerControlVerifier.cs" />
     <Compile Include="../../src/HVO.SkyMonitor.Deployment.Cli/InstallerControlHttpClient.cs" Link="Deployment/InstallerControlHttpClient.cs" />
     <Compile Include="../../src/HVO.SkyMonitor.Deployment.Cli/CameraAgentLifecycleClient.cs" Link="Deployment/CameraAgentLifecycleClient.cs" />
@@ -60,6 +58,7 @@
     <None Include="../fixtures/state-compatibility/automation-schema3-processing9-image-labels.json" Link="Fixtures/automation-schema3-processing9-image-labels.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../fixtures/virtual-sky/installer-controlled-night.json" Link="Fixtures/installer-controlled-night.json" CopyToOutputDirectory="PreserveNewest" />
     <Compile Include="../HVO.SkyMonitor.Processing.Tests/CaptureSatelliteFixture.cs" Link="Capture/Processing/CaptureSatelliteFixture.cs" />
+    <Compile Include="../HVO.SkyMonitor.Processing.Tests/CaptureOrbitalPredictionFixtures.cs" Link="Capture/Processing/CaptureOrbitalPredictionFixtures.cs" />
     <Compile Include="../HVO.SkyMonitor.Processing.Tests/MeasuredAstrometryFixture.cs" Link="Capture/Processing/MeasuredAstrometryFixture.cs" />
     <Compile Include="../HVO.SkyMonitor.Processing.Tests/MeasuredStellarAssociationFixtures.cs" Link="Capture/Processing/MeasuredStellarAssociationFixtures.cs" />
     <None Include="../fixtures/orbital-prediction-v1/virtual-camera/snapshots/six-facts/*.json" Link="Fixtures/Nominal/snapshot/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />

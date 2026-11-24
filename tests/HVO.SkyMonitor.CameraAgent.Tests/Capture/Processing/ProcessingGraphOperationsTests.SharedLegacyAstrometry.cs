@@ -58,15 +58,16 @@ public sealed partial class ProcessingGraphOperationsTests
             .Returns(location);
         var zenith = EquatorialPrecession.PrecessToJ2000(new EquatorialPoint(
             AstronomyTime.LocalMeanSiderealDegrees(celestialUtc, location.LongitudeDegrees) / 15, location.LatitudeDegrees), celestialUtc);
-#pragma warning disable CA5394 // Seeded synthetic sky, with no security use.
-        var random = new Random(934817);
-        var stars = Enumerable.Range(0, 560).Select(i => new CelestialCatalogObject($"SYN{i:0000}", $"Artificial {i}",
-            random.NextDouble() * 24, Math.Asin(2 * random.NextDouble() - 1) * 180 / Math.PI, 1.8 + 2.6 * random.NextDouble()))
+        const int size = CompactAstrometryField.Size;
+        const double focalLength = CompactAstrometryField.FocalLength;
+        var projection = new ProjectionContext(ProjectionModel.EquidistantFisheye, size / 2d, size / 2d, focalLength, focalLength,
+            size, size, ProjectionAperture.Circular, CompactAstrometryField.ImageCircleRadius, 90, 0, 0);
+        var observer = new ObserverLocation(location.LatitudeDegrees, location.LongitudeDegrees, location.ElevationMeters);
+        var stars = CompactAstrometryField.CreateStars(projection, observer, celestialUtc)
             .Concat([
                 new("hip-901", "Cassiopeia A", zenith.RightAscensionHours, zenith.DeclinationDegrees - 2, 2, null, "901"),
                 new("hip-902", "Cassiopeia B", zenith.RightAscensionHours, zenith.DeclinationDegrees + 2, 3, null, "902")
             ]).ToArray();
-#pragma warning restore CA5394
         var catalog = new InMemoryCelestialCatalog(stars);
         var metadata = new CatalogMetadata("legacy-shared-test", "v1", new Uri("https://example.invalid"),
             new string('A', 64), "fixture", "v1");
@@ -107,16 +108,16 @@ public sealed partial class ProcessingGraphOperationsTests
             DeploymentLocation = location,
             Rig = baseline.Rig with
             {
-                Sensor = baseline.Rig.Sensor with { WidthPixels = 512, HeightPixels = 512, ResponseMode = SensorResponseMode.Monochrome },
+                Sensor = baseline.Rig.Sensor with { WidthPixels = size, HeightPixels = size, ResponseMode = SensorResponseMode.Monochrome },
                 Optics = baseline.Rig.Optics with
                 {
-                    PrincipalPointX = 256,
-                    PrincipalPointY = 256,
-                    ImageCircleRadiusPixels = 232,
-                    FocalLengthXPixels = 144,
-                    FocalLengthYPixels = 144
+                    PrincipalPointX = projection.PrincipalPointX,
+                    PrincipalPointY = projection.PrincipalPointY,
+                    ImageCircleRadiusPixels = projection.ImageCircleRadiusPixels,
+                    FocalLengthXPixels = projection.FocalLengthXPixels,
+                    FocalLengthYPixels = projection.FocalLengthYPixels
                 },
-                Readout = new(new(0, 0, 512, 512), 1, 1, FrameBinningAlgorithm.IdentityV1,
+                Readout = new(new(0, 0, size, size), 1, 1, FrameBinningAlgorithm.IdentityV1,
                     CameraPixelFormat.Mono16, 16, 16, FrameSamplePacking.ByteAligned, FrameStoredCodeTransform.IdentityV1,
                     FrameLevelCodeSpace.StoredContainer, 0, ushort.MaxValue)
             },
@@ -128,6 +129,8 @@ public sealed partial class ProcessingGraphOperationsTests
                 includeConstellationEndpointStars = true,
                 magnitudeZeroElectronsPerSecond = 6000,
                 backgroundElectronsPerSecond = 100,
+                // A flat background keeps the compact field measurable by the unchanged centroid gates.
+                vignettingStrength = 0,
                 catalogChecksumSha256 = new string('B', 64)
             })),
             Pipeline = baseline.Pipeline with { Steps = [sceneStep, storage] }

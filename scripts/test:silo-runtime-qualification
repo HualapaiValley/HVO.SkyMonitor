@@ -1,0 +1,914 @@
+#!/usr/bin/env bash
+# Proves the containment of scripts/qualify:silo-runtime (#1966) without a Docker daemon, a host filesystem under test
+# or the network. Docker, findmnt, df, the host-bridge probe and the failing filesystem calls are fakes on PATH.
+#
+# Part 1 runs the qualifier's block between its "# >>> containment" and "# <<< containment" markers exactly as written,
+# with the qualifier's own reserved names, as its EXIT trap would after a run. Cleanup removes a container or network
+# only when the daemon reports its ID carrying this invocation's identity; a caller-chosen --name, its label or a
+# reserved name never authorizes a removal. Cleanup is complete only when the final read-only inventory is answered in
+# full and lists nothing. A failed, hung or unreadable query, an elapsed deadline, a removal that did not take, a
+# resource of someone else's holding the name, credentials or the private Docker configuration that could not be
+# removed, evidence that could not be published without replacing anything, or a run root that could not be removed
+# makes the script exit nonzero and say what it kept, without printing a credential.
+#
+# Part 2 runs the whole qualifier against a fake daemon that answers every call it makes. It proves that an unanswered
+# inventory before startup refuses the run before anything is created, that one before the replacement fails the run
+# before the replacement, that another invocation given the same --name is never touched, and that the cleanup and
+# filesystem failures above change the exit status of a run that otherwise passed.
+set -euo pipefail
+umask 077
+
+(( $(id -u) != 0 )) || { printf 'Run as an unprivileged user; the qualifier refuses root.\n' >&2; exit 1; }
+command -v python3 >/dev/null || { printf 'python3 is required to create placeholder Unix sockets.\n' >&2; exit 1; }
+repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+qualifier=$repo_root/scripts/qualify:silo-runtime
+temp=$(mktemp -d)
+sockets=$(mktemp -d /tmp/hvoqs.XXXXXX)
+trap 'rm -rf -- "$temp" "$sockets"' EXIT
+
+block=$temp/containment.bash
+sed -n '/^# >>> containment/,/^# <<< containment$/p' "$qualifier" > "$block"
+for definition in listing inventory mounting ours scrub publish_evidence cleanup; do
+  grep -q "^$definition() {" "$block" || { printf 'scripts/qualify:silo-runtime has no complete marked containment block.\n' >&2; exit 1; }
+done
+grep -q '^# <<< containment$' "$block" || { printf 'scripts/qualify:silo-runtime has no complete marked containment block.\n' >&2; exit 1; }
+names=$temp/names.bash
+grep -E '^(containers|networks)_named=\(' "$qualifier" > "$names"
+[[ $(wc -l < "$names") == 2 ]] || { printf 'scripts/qualify:silo-runtime reserved names not found.\n' >&2; exit 1; }
+image=$(sed -n "s/^image='\(.*\)'$/\1/p" "$qualifier")
+release=$(sed -n "s/^release='\(.*\)'$/\1/p" "$qualifier")
+revision=$(sed -n "s/^revision='\(.*\)'$/\1/p" "$qualifier")
+[[ $image == *@sha256:* && -n $release && -n $revision ]] || { printf 'scripts/qualify:silo-runtime image pin not found.\n' >&2; exit 1; }
+
+mkdir -m 700 "$temp/bin"
+cat > "$temp/bin/docker" <<'EOF'
+#!/usr/bin/env bash
+# A fake daemon. State: "$FAKE_STATE"/containers/ID and /networks/ID are directories holding name and labels ("k=v"
+# lines), and for a container also net (its network's name), ip, running and mounts. Every call is appended to /calls,
+# every removal to /mutations, every ID a create returned to /created and every call the fake does not recognize to
+# /unexpected. /faults holds
+# "FROM TO MODE GLOB" lines: the FROMth through TOth (0: every later) call matching GLOB fails like an unreachable
+# daemon (MODE fail), never answers (MODE hang), answers rc 0 with text that is not an ID (MODE garbage) or, for a
+# create, makes the resource but reports the ID held in /misreport instead (MODE misreport). /stuck lists
+# IDs whose removal the daemon refuses. /hooks holds "GLOB|ACTION|ARG..." lines: before the first call matching GLOB is
+# answered, someone else acts on the daemon: add-network ID NAME LABELS, add-container ID NAME NET MOUNT LABELS or
+# remove-container REF, as a concurrent invocation or an operator would.
+set -uo pipefail
+state=$FAKE_STATE
+[[ "${1-}" == --host && "${2-}" == "unix://$FAKE_SOCKET" ]] || { printf 'unexpected daemon %s %s\n' "${1-}" "${2-}" >&2; exit 97; }
+shift 2
+call="$*"
+printf '%s\n' "$call" >> "$state/calls"
+mkdir -p "$state/containers" "$state/networks"
+
+new_network() { # id name labels
+  mkdir "$state/networks/$1" && printf '%s\n' "$2" > "$state/networks/$1/name" &&
+    tr ',' '\n' <<< "$3" | sed '/^$/d' > "$state/networks/$1/labels"
+}
+new_container() { # id name net mount labels
+  local dir=$state/containers/$1 n
+  mkdir "$dir" && printf '%s\n' "$2" > "$dir/name" && printf '%s\n' "$3" > "$dir/net" && printf 'true\n' > "$dir/running"
+  n=$(cat "$state/ipseq" 2>/dev/null || echo 1); n=$((n + 1)); printf '%d\n' "$n" > "$state/ipseq"
+  printf '192.0.2.%d\n' "$n" > "$dir/ip"
+  printf '%s\n' "$4" | sed '/^$/d' > "$dir/mounts"
+  tr ',' '\n' <<< "$5" | sed '/^$/d' > "$dir/labels"
+}
+find_in() { # kind ref -> id
+  local dir
+  for dir in "$state/$1"/*; do
+    [[ -d $dir ]] || continue
+    if [[ ${dir##*/} == "$2" || $(cat "$dir/name") == "${2#/}" ]]; then printf '%s' "${dir##*/}"; return 0; fi
+  done
+  return 1
+}
+
+if [[ -f "$state/hooks" ]]; then
+  line_no=0
+  while IFS='|' read -r glob action a1 a2 a3 a4 a5; do
+    line_no=$((line_no + 1))
+    # shellcheck disable=SC2053 # GLOB is a pattern.
+    [[ $call == $glob ]] || continue
+    grep -qx "$line_no" "$state/hooks.fired" 2>/dev/null && continue
+    printf '%s\n' "$line_no" >> "$state/hooks.fired"
+    case $action in
+      add-network) new_network "$a1" "$a2" "$a3" ;;
+      add-container) new_container "$a1" "$a2" "$a3" "$a4" "$a5" ;;
+      remove-container) ref=$(find_in containers "$a1") && rm -rf -- "${state:?}/containers/$ref" ;;
+    esac
+  done < "$state/hooks"
+fi
+reported=''
+if [[ -f "$state/faults" ]]; then
+  while read -r from to mode glob; do
+    # shellcheck disable=SC2053 # GLOB is a pattern.
+    [[ $call == $glob ]] || continue
+    seen=0
+    while IFS= read -r line; do
+      # shellcheck disable=SC2053
+      [[ $line == $glob ]] && seen=$((seen + 1))
+    done < "$state/calls"
+    (( seen >= from && (to == 0 || seen <= to) )) || continue
+    case $mode in
+      fail) printf 'Cannot connect to the Docker daemon at unix://%s.\n' "$FAKE_SOCKET" >&2; exit 1 ;;
+      hang) exec sleep 120 ;;
+      garbage) printf 'WARNING: the daemon answered with something other than IDs\n'; exit 0 ;;
+      misreport) reported=$(cat "$state/misreport") ;;
+    esac
+  done < "$state/faults"
+fi
+
+unexpected() { printf 'unexpected call: %s\n' "$call" >&2; printf '%s\n' "$call" >> "$state/unexpected"; exit 96; }
+label_of() { awk -v k="$2" 'index($0, k "=") == 1 { print substr($0, length(k) + 2); exit }' "$1/labels"; }
+h() { printf '%s' "$1" | sha256sum | cut -d' ' -f1; }
+
+list() { # kind [filter]
+  local kind=$1 filter=${2-} dir id key value
+  for dir in "$state/$kind"/*; do
+    [[ -d $dir ]] || continue
+    id=${dir##*/}
+    case $filter in
+      '') ;;
+      label=*) key=${filter#label=}; value=${key#*=}; key=${key%%=*}
+        grep -qxF -- "$key=$value" "$dir/labels" || continue ;;
+      name=^/*\$) [[ $kind == containers ]] || unexpected; value=${filter#name=^/}; [[ $(cat "$dir/name") == "${value%\$}" ]] || continue ;;
+      name=^*\$) [[ $kind == networks ]] || unexpected; value=${filter#name=^}; [[ $(cat "$dir/name") == "${value%\$}" ]] || continue ;;
+      id=*) [[ $id == "${filter#id=}" ]] || continue ;;
+      *) unexpected ;;
+    esac
+    printf '%s\n' "$id"
+  done
+}
+# Renders the Go templates the qualifier uses, and refuses any other.
+render() { # kind dir format
+  local kind=$1 dir=$2 out=$3 id name re value members m running slash=''
+  id=${dir##*/}
+  name=$(cat "$dir/name")
+  running=false
+  [[ $kind == networks ]] || { running=$(cat "$dir/running"); slash=/; }
+  [[ $out != *'{{range .Mounts}}{{println .Source}}{{end}}'* ]] || out=${out//'{{range .Mounts}}{{println .Source}}{{end}}'/$(cat "$dir/mounts")}
+  if [[ $out == *'{{range .Containers}}{{.Name}} {{end}}'* ]]; then
+    members=''
+    for m in "$state/containers"/*; do
+      [[ -d $m && $(cat "$m/net") == "$name" && $(cat "$m/running") == true ]] && members+="$(cat "$m/name") "
+    done
+    out=${out//'{{range .Containers}}{{.Name}} {{end}}'/$members}
+  fi
+  if [[ $out == *'{{range .NetworkSettings.Networks}}{{.NetworkID}} {{end}}'* ]]; then
+    value=$(find_in networks "$(cat "$dir/net")") || value=''
+    out=${out//'{{range .NetworkSettings.Networks}}{{.NetworkID}} {{end}}'/${value:+$value }}
+  fi
+  re='\{\{index \.(Config\.)?Labels "([^"]+)"\}\}'
+  while [[ $out =~ $re ]]; do
+    [[ ( -n ${BASH_REMATCH[1]} && $kind == containers ) || ( -z ${BASH_REMATCH[1]} && $kind == networks ) ]] || unexpected
+    value=$(label_of "$dir" "${BASH_REMATCH[2]}")
+    out=${out/"${BASH_REMATCH[0]}"/$value}
+  done
+  re='\{\{\(index \.NetworkSettings\.Networks "([^"]+)"\)\.IPAddress\}\}'
+  while [[ $out =~ $re ]]; do
+    [[ $(cat "$dir/net") == "${BASH_REMATCH[1]}" ]] || { printf 'template: nil pointer evaluating IPAddress\n' >&2; exit 1; }
+    out=${out/"${BASH_REMATCH[0]}"/$(cat "$dir/ip")}
+  done
+  out=${out//'{{println .Name}}'/$slash$name$'\n'}
+  out=${out//'{{.Id}}'/$id}
+  out=${out//'{{.Name}}'/$slash$name}
+  out=${out//'{{.Internal}}'/true}
+  out=${out//'{{json .HostConfig.PortBindings}}'/'{}'}
+  out=${out//'{{.HostConfig.ReadonlyRootfs}}'/true}
+  out=${out//'{{.State.Health.Status}}'/$([[ $running == true ]] && echo healthy || echo unhealthy)}
+  out=${out//'{{.State.Running}}'/$running}
+  out=${out//'{{.State.Pid}}'/$([[ $running == true ]] && echo 999999999 || echo 0)}
+  out=${out//'{{.State.ExitCode}}'/0}
+  [[ $out != *'{{'* ]] || unexpected
+  printf '%s\n' "$out"
+}
+inspect() { # kind format ref
+  local id
+  id=$(find_in "$1" "$3") || { printf 'Error: No such %s: %s\n' "${1%s}" "$3" >&2; exit 1; }
+  if [[ -z $2 ]]; then printf '[{"Id":"%s"}]\n' "$id"; else render "$1" "$state/$1/$id" "$2"; fi
+}
+remove() { # kind ref force
+  local id
+  printf '%s\n' "$call" >> "$state/mutations"
+  if [[ -f "$state/stuck" ]] && grep -qx -- "$2" "$state/stuck"; then
+    printf 'Error response from daemon: removal of %s failed\n' "$2" >&2
+    exit 1
+  fi
+  id=$(find_in "$1" "$2") || { printf 'Error: No such object: %s\n' "$2" >&2; exit 1; }
+  [[ $3 == true || $(cat "$state/$1/$id/running") == false ]] || { printf 'Error: container is running\n' >&2; exit 1; }
+  rm -rf -- "${state:?}/$1/$id"
+}
+set_running() { # ref value
+  local id
+  id=$(find_in containers "$1") || { printf 'Error: No such container: %s\n' "$1" >&2; exit 1; }
+  printf '%s\n' "$2" > "$state/containers/$id/running"
+}
+image() { # format ref
+  local out=$1
+  [[ $2 == "$FAKE_IMAGE" ]] || { printf 'Error: No such image: %s\n' "$2" >&2; exit 1; }
+  [[ -n $out ]] || { printf '[{}]\n'; return; }
+  out=${out//'{{.Architecture}}'/amd64}
+  out=${out//'{{index .Config.Labels "org.opencontainers.image.version"}}'/$FAKE_RELEASE}
+  out=${out//'{{index .Config.Labels "org.opencontainers.image.revision"}}'/$FAKE_REVISION}
+  out=${out//'{{index .Config.Labels "org.opencontainers.image.licenses"}}'/AGPL-3.0-or-later}
+  out=${out//'{{.Id}}'/sha256:$(h config)}
+  out=${out//'{{join .RepoDigests ","}}'/$FAKE_IMAGE}
+  [[ $out != *'{{'* ]] || unexpected
+  printf '%s\n' "$out"
+}
+run() {
+  local name='' net='' labels='' mounts='' id
+  shift
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      -d | --read-only) shift ;;
+      --name) name=$2; shift 2 ;;
+      --label) labels+="$2,"; shift 2 ;;
+      --network) net=$2; shift 2 ;;
+      -v) mounts+="${2%%:*}"$'\n'; shift 2 ;;
+      --network-alias | --user | --tmpfs | --cap-drop | --security-opt | --cpus | --memory | --pids-limit | -e | \
+        --health-cmd | --health-interval | --health-retries) shift 2 ;;
+      -*) unexpected ;;
+      *) break ;;
+    esac
+  done
+  [[ ${1-} == "$FAKE_IMAGE" && "${*:2}" == 'server /data --address :9000' ]] || unexpected
+  ! find_in containers "$name" >/dev/null ||
+    { printf 'docker: Error response from daemon: Conflict. The container name "/%s" is already in use.\n' "$name" >&2; exit 125; }
+  net=$(find_in networks "$net") || { printf 'docker: Error response from daemon: network not found\n' >&2; exit 125; }
+  id=$(h "container-$name-$RANDOM-$RANDOM-$$")
+  new_container "$id" "$name" "$(cat "$state/networks/$net/name")" "$mounts" "$labels"
+  printf '%s\n' "$id" >> "$state/created"
+  printf '%s\n' "${reported:-$id}"
+}
+network_create() {
+  local labels='' id
+  shift 2
+  [[ $1 == --internal ]] || unexpected
+  shift
+  while [[ $1 == --label ]]; do labels+="$2,"; shift 2; done
+  [[ $# == 1 ]] || unexpected
+  ! find_in networks "$1" >/dev/null || { printf 'Error response from daemon: network with name %s already exists\n' "$1" >&2; exit 1; }
+  id=$(h "network-$1-$RANDOM-$RANDOM-$$")
+  new_network "$id" "$1" "$labels"
+  printf '%s\n' "$id" >> "$state/created"
+  printf '%s\n' "${reported:-$id}"
+}
+# A Silo container's shell: what the qualifier's client scripts receive from a healthy stock server.
+box() { # id
+  local script dir n i
+  script=$(cat)
+  dir=$state/containers/$1
+  [[ $(cat "$dir/running") == true ]] || { printf 'Error: container %s is not running\n' "$1" >&2; exit 1; }
+  printf '%s\n' "$script" >> "$state/box"
+  if [[ $script == *'echo rc='* ]]; then
+    printf '{"status":"error","error":{"Code":"AccessDenied","message":"Access Denied."}}\nrc=1\n'
+  elif [[ $script =~ accesskey\ create\ root/\ --policy\ /tmp/p.json\ --name\ hvo-writer-g([0-9]+) ]]; then
+    printf '{"status":"success","accessKey":"FAKEWRITER%s","secretKey":"fakesecret%s"}\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[1]}"
+  elif [[ $script == *"If-None-Match: *"* ]]; then
+    printf 'mv-1|%s|%s|{"status":"error","error":{"Code":"PreconditionFailed"}}\n' "$(h mv-1)" "$(h mv-1)"
+  elif [[ $script == *'version info root/'* ]]; then
+    printf '{"status":"success","versioning":{"status":"Enabled"}}\n'
+  elif [[ $script == *'for size in 4096 1048576 7340032 26214400; do for round in 1 2'* ]]; then
+    for n in 4096 1048576 7340032 26214400; do for i in 1 2; do printf '%s v-%s-%s %s\n' "$n" "$n" "$i" "$(h "v-$n-$i")"; done; done
+  elif [[ $script =~ mcli\ mb\ root/timing.*seq\ 1\ ([0-9]+) ]]; then
+    for ((i = 1; i <= BASH_REMATCH[1]; i++)); do printf '%d\n' $((20000 + i)); done
+  elif [[ $script == *'for i in 1 2 3 4 5; do'*'kill-$i'* ]]; then
+    for i in 1 2 3 4 5; do printf 'kill-%s vk-%s %s\n' "$i" "$i" "$(h "vk-$i")"; done
+  elif [[ $script =~ mcli\ cat\ --version-id\ ([A-Za-z0-9-]+)\  ]]; then
+    printf '%s  -\n' "$(h "${BASH_REMATCH[1]}")"
+  elif [[ $script == *'mcli cat w/'*'/meta/instance.v1.json'* ]]; then
+    printf '{"format":"hvo.cameraagent.silo.instance/1","qualification":"%s"}\n' "$(label_of "$dir" io.hvo.qualification)"
+  elif [[ $script == *'mcli mb root/other-bucket'* || $script == *'mcli mb --with-versioning root/hvo-sibling'* || $script == *'accesskey disable'* ]]; then
+    :
+  else
+    printf 'BOX %s\n' "$script" >> "$state/unexpected"; exit 96
+  fi
+}
+container_exec() {
+  local id
+  if [[ $1 == -i ]]; then
+    [[ $# == 4 && $3 == bash && $4 == -s ]] || unexpected
+    id=$(find_in containers "$2") || exit 1
+    box "$id"
+    return
+  fi
+  id=$(find_in containers "$1") || { printf 'Error: No such container: %s\n' "$1" >&2; exit 1; }
+  [[ $(cat "$state/containers/$id/running") == true ]] || { printf 'Error: container %s is not running\n' "$1" >&2; exit 1; }
+  if [[ "${*:2}" == 'cat /proc/net/tcp /proc/net/tcp6' ]]; then
+    printf '  sl  local_address rem_address   st\n   0: 00000000:2328 00000000:0000 0A\n   1: 0B00007F:A1B2 00000000:0000 0A\n'
+  elif [[ $2 == bash && $3 == -c && $4 =~ /dev/tcp/([^/]+)/([0-9]+) ]]; then
+    if [[ ${BASH_REMATCH[2]} == 9000 && ( ${BASH_REMATCH[1]} == 127.0.0.1 || ${BASH_REMATCH[1]} == $(cat "$state/containers/$id/ip") ) ]]; then
+      echo OPEN
+    else
+      echo BLOCKED
+    fi
+  else
+    unexpected
+  fi
+}
+
+case "${1-} ${2-}" in
+  'info --format') case $3 in '{{.OSType}}') echo linux ;; '{{.ID}}') echo FAKE:DAEMON ;; *) unexpected ;; esac ;;
+  'version --format') [[ $3 == '{{.Server.Version}}' ]] || unexpected; echo 29.0.0-fake ;;
+  'ps -aq')
+    if [[ $# == 3 && $3 == --no-trunc ]]; then list containers
+    elif [[ $# == 5 && "$3 $4" == '--no-trunc --filter' ]]; then list containers "$5"
+    else unexpected; fi ;;
+  'network ls') [[ $# == 6 && "$3 $4 $5" == '-q --no-trunc --filter' ]] || unexpected; list networks "$6" ;;
+  'container inspect') [[ $3 == --format && $# == 5 ]] || unexpected; inspect containers "$4" "$5" ;;
+  'inspect --format') [[ $# == 4 ]] || unexpected; inspect containers "$3" "$4" ;;
+  'network inspect') [[ $3 == --format && $# == 5 ]] || unexpected; inspect networks "$4" "$5" ;;
+  'image inspect')
+    if [[ $3 == --format && $# == 5 ]]; then image "$4" "$5"; elif [[ $# == 3 ]]; then image '' "$3"; else unexpected; fi ;;
+  'network create') network_create "$@" ;;
+  'network rm') [[ $# == 3 ]] || unexpected; remove networks "$3" true ;;
+  'rm -f') [[ $# == 3 ]] || unexpected; remove containers "$3" true ;;
+  rm\ *) [[ $# == 2 ]] || unexpected; remove containers "$2" false ;;
+  run\ *) run "$@" ;;
+  exec\ *) shift; container_exec "$@" ;;
+  port\ *) [[ $# == 2 ]] || unexpected; find_in containers "$2" >/dev/null || exit 1 ;;
+  'kill --signal') [[ $# == 4 && $3 == KILL ]] || unexpected; set_running "$4" false ;;
+  start\ *) [[ $# == 2 ]] || unexpected; set_running "$2" true; printf '%s\n' "$2" ;;
+  'stop --timeout') [[ $# == 4 ]] || unexpected; set_running "$4" false ;;
+  *) unexpected ;;
+esac
+EOF
+cat > "$temp/bin/findmnt" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  '-no FSTYPE -T '*) printf 'ext4\n' ;;
+  '-no MAJ:MIN -T '*) printf ' 8:1\n' ;;
+  *) printf 'unexpected findmnt %s\n' "$*" >&2; exit 2 ;;
+esac
+EOF
+cat > "$temp/bin/df" <<'EOF'
+#!/usr/bin/env bash
+[[ "$*" == '--output=avail -B1 -- '* ]] || { printf 'unexpected df %s\n' "$*" >&2; exit 2; }
+printf '    Avail\n1099511627776\n'
+EOF
+# The host-bridge probe never leaves this host: it is answered as refused and logged. Every other call is the real one.
+cat > "$temp/bin/timeout" <<EOF
+#!/usr/bin/env bash
+if [[ \${2-} == bash && \${3-} == -c && \${4-} == 'exec 3<>/dev/tcp/'* ]]; then printf '%s\n' "\$*" >> "\$FAKE_STATE/host-probes"; exit 1; fi
+exec $(type -P timeout) "\$@"
+EOF
+# rm and ln fail for an argument matching a "COMMAND MODE GLOB" line of \$FAKE_FS_FAULTS: MODE fail reports the failure,
+# MODE ignore reports success. rm still removes every other argument; ln does nothing.
+for command in rm ln; do
+  cat > "$temp/bin/$command" <<EOF
+#!/usr/bin/env bash
+real=$(type -P "$command")
+[[ -n \${FAKE_FS_FAULTS-} && -f \$FAKE_FS_FAULTS ]] || exec "\$real" "\$@"
+mode=''
+kept=()
+for arg in "\$@"; do
+  hit=''
+  while read -r which how glob; do
+    # shellcheck disable=SC2053 # GLOB is a pattern.
+    [[ \$which == $command && \$arg == \$glob ]] && { hit=\$how; break; }
+  done < "\$FAKE_FS_FAULTS"
+  if [[ -n \$hit ]]; then mode=\$hit; printf '$command %s\n' "\$arg" >> "\$FAKE_FS_FAULTS.hit"; else kept+=("\$arg"); fi
+done
+[[ -n \$mode ]] || exec "\$real" "\$@"
+status=0
+[[ $command == ln ]] || "\$real" "\${kept[@]}" || status=\$?
+[[ \$mode == ignore ]] && exit "\$status"
+printf '$command: cannot remove or link: Operation not permitted\n' >&2
+exit 1
+EOF
+done
+chmod 700 "$temp/bin"/*
+
+id_of() { printf '%s' "$1" | sha256sum | cut -d' ' -f1; }
+run=hvoqtest0123456789
+inv=0123456789abcdef0123456789abcdef  # this invocation's identity
+sib=fedcba9876543210fedcba9876543210  # another invocation given the same --name
+other=hvoqforeign98765
+A=$(id_of container-a)        # recorded, reserved name, this invocation's
+X=$(id_of container-x)        # this invocation's, unrecorded: a create that timed out after Docker made it
+N=$(id_of network-a)          # recorded, reserved name, this invocation's
+B=$(id_of network-b)          # this invocation's, unrecorded, reserved name
+F=$(id_of container-foreign)  # someone else's, unrelated
+R=$(id_of container-reserved) # someone else's, holding a reserved name
+S=$(id_of container-sibling)  # another invocation's with the same --name: its label and a reserved name
+T=$(id_of network-sibling)    # another invocation's with the same --name: its label, an unreserved name
+secret=S3CR3T-$(id_of "$$-$RANDOM" | cut -c1-24)
+
+passed=0
+fail() {
+  printf 'not ok - %s: %s\n' "$case_name" "$1" >&2
+  [[ -s $case_dir/stderr ]] && sed 's/^/    /' "$case_dir/stderr" >&2
+  [[ -s $case_dir/state/unexpected ]] && sed 's/^/    unexpected: /' "$case_dir/state/unexpected" >&2
+  exit 1
+}
+ok() { passed=$((passed + 1)); printf 'ok - %s\n' "$case_name"; }
+seed_container() { # id name net mount labels
+  local dir=$case_dir/state/containers/$1
+  mkdir -p "$dir"
+  printf '%s\n' "$2" > "$dir/name"; printf '%s\n' "$3" > "$dir/net"; printf 'true\n' > "$dir/running"
+  printf '198.51.100.9\n' > "$dir/ip"; printf '%s\n' "$4" | sed '/^$/d' > "$dir/mounts"
+  tr ',' '\n' <<< "$5" | sed '/^$/d' > "$dir/labels"
+}
+seed_network() { # id name labels
+  mkdir -p "$case_dir/state/networks/$1"
+  printf '%s\n' "$2" > "$case_dir/state/networks/$1/name"
+  tr ',' '\n' <<< "$3" | sed '/^$/d' > "$case_dir/state/networks/$1/labels"
+}
+new_case() {
+  case_name=$1
+  case_dir=$temp/case-$((passed + 1))
+  mkdir -m 700 "$case_dir" "$case_dir/state" "$case_dir/state/containers" "$case_dir/state/networks"
+  : > "$case_dir/state/calls"
+  ours_ids=' '
+  fs_faults=false
+}
+# Nothing the daemon was asked to remove may be someone else's, and no call may be one the fake does not recognize.
+check_daemon() {
+  local target
+  [[ ! -s $case_dir/state/unexpected ]] || fail 'the qualifier made a call the fake daemon does not recognize'
+  if [[ -f $case_dir/state/mutations ]]; then
+    while read -r target; do
+      [[ $ours_ids == *" ${target##* } "* ]] || fail "removed ${target##* }, which is not this invocation's"
+    done < "$case_dir/state/mutations"
+  fi
+}
+# The credential's value never appears in anything the run printed or sent to the daemon.
+check_secret() {
+  ! grep -rqF -- "$secret" "$case_dir/stdout" "$case_dir/stderr" "$case_dir/state/calls" || fail 'a credential was printed or passed to docker'
+}
+
+# --- Part 1: the containment block, as the qualifier's EXIT trap ------------------------------------------------------
+cat > "$temp/harness.bash" <<'EOF'
+set -euo pipefail
+umask 077
+name=$H_NAME
+invocation=$H_INVOCATION
+socket=$H_SOCKET
+keep=$H_KEEP
+deadline=$((SECONDS + 300))
+cleanup_seconds=$H_SECONDS
+cleanup_deadline=0
+root=$H_ROOT
+evidence=$root/evidence.jsonl
+evidence_copy=$H_COPY
+docker_config=$H_CONFIG
+read -r -a container_ids <<< "$H_CONTAINER_IDS"
+read -r -a network_ids <<< "$H_NETWORK_IDS"
+# shellcheck disable=SC1090
+source "$H_NAMES"
+# shellcheck disable=SC1090
+source "$H_BLOCK"
+trap cleanup EXIT
+exit "$H_STATUS"
+EOF
+
+# Sets up a fresh case: this invocation's resources, an unrelated foreign container and a fresh run root.
+begin() {
+  new_case "$1"
+  mkdir -m 700 "$case_dir/config" "$case_dir/root" "$case_dir/root/a-data" "$case_dir/root/secrets-a"
+  seed_container "$A" "$run-a" "$run-a" '' "io.hvo.qualification=$run,io.hvo.qualification.invocation=$inv"
+  seed_container "$X" "${run}x-timedout" "$run-a" '' "io.hvo.qualification=$run,io.hvo.qualification.invocation=$inv"
+  seed_container "$F" foreign-web bridge '' "io.hvo.qualification=$other,io.hvo.qualification.invocation=$sib"
+  seed_network "$N" "$run-a" "io.hvo.qualification=$run,io.hvo.qualification.invocation=$inv"
+  seed_network "$B" "$run-b" "io.hvo.qualification=$run,io.hvo.qualification.invocation=$inv"
+  ours_ids=" $A $X $N $B "
+  printf '{"check":"platform","result":"pass"}\n' > "$case_dir/root/evidence.jsonl"
+  printf 'object\n' > "$case_dir/root/a-data/part.1"
+  printf '%s\n' "$secret" > "$case_dir/root/secrets-a/root-password"
+  status=0 keep=false seconds=180 recorded_containers=$A recorded_networks=$N
+}
+
+finish() {
+  local started=$SECONDS sock=$case_dir/docker.sock
+  set +e
+  FAKE_STATE=$case_dir/state FAKE_SOCKET=$sock FAKE_FS_FAULTS=$case_dir/fsfaults PATH="$temp/bin:$PATH" \
+    H_NAME=$run H_INVOCATION=$inv H_SOCKET=$sock H_KEEP=$keep H_SECONDS=$seconds H_ROOT=$case_dir/root \
+    H_COPY=$case_dir/$run.evidence.jsonl H_CONFIG=$case_dir/config H_CONTAINER_IDS="$recorded_containers" \
+    H_NETWORK_IDS="$recorded_networks" H_NAMES=$names H_BLOCK=$block H_STATUS=$status \
+    bash "$temp/harness.bash" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  elapsed=$((SECONDS - started))
+  check_daemon
+  check_secret
+  # Unless the case makes the filesystem refuse, the credentials and the private Docker configuration are gone.
+  [[ $fs_faults == true || ( ! -e $case_dir/root/secrets-a && ! -e $case_dir/config ) ]] ||
+    fail 'credentials or the Docker configuration survived'
+}
+
+expect_kept() {
+  (( rc != 0 )) || fail "exited 0; expected nonzero"
+  [[ -f $case_dir/root/evidence.jsonl && -f $case_dir/root/a-data/part.1 ]] || fail 'the run root was not kept'
+  [[ ! -e $case_dir/$run.evidence.jsonl ]] || fail 'the evidence was published as if the run had been cleaned up'
+  grep -qF "kept $case_dir/root (invocation $inv)" "$case_dir/stderr" || fail 'stderr does not say the root was kept'
+  [[ -z $1 ]] || grep -Fq -- "$1" "$case_dir/stderr" || fail "stderr does not say: $1"
+}
+fs_fault() { fs_faults=true; printf '%s\n' "$@" > "$case_dir/fsfaults"; }
+
+incomplete='could not complete its final inventory'
+never='never removed: it holds the name'
+
+begin 'a clean final inventory removes only this invocation'"'"'s resources, then the root after publishing its evidence'
+finish
+(( rc == 0 )) || fail "exited $rc"
+[[ ! -e $case_dir/root ]] || fail 'the run root was kept'
+cmp -s <(printf '{"check":"platform","result":"pass"}\n') "$case_dir/$run.evidence.jsonl" || fail 'the published evidence differs'
+[[ $(ls "$case_dir/state/containers") == "$F" ]] || fail 'containers left other than the foreign one'
+[[ -z $(ls "$case_dir/state/networks") ]] || fail 'networks were left'
+[[ $(wc -l < "$case_dir/state/mutations") == 4 ]] || fail 'expected exactly four removals'
+grep -q 'filter name=^/'"$run"'-off\$$' "$case_dir/state/calls" || fail 'the reserved container names were not inventoried'
+grep -q 'filter label=io.hvo.qualification='"$run"'$' "$case_dir/state/calls" || fail 'the name label was not inventoried'
+grep -q 'filter id='"$N"'$' "$case_dir/state/calls" || fail 'the recorded network ID was not inventoried'
+[[ ! -s $case_dir/stderr ]] || fail 'a clean cleanup printed something'
+ok
+
+for fault in \
+  'final invocation container query|2 0 fail ps -aq --no-trunc --filter label=io.hvo.qualification.invocation=*' \
+  'final invocation network query|2 0 fail network ls -q --no-trunc --filter label=io.hvo.qualification.invocation=*' \
+  'final container name-label query|1 0 fail ps -aq --no-trunc --filter label=io.hvo.qualification=*' \
+  'final network name-label query|1 0 fail network ls -q --no-trunc --filter label=io.hvo.qualification=*' \
+  'reserved container name query|4 0 fail ps -aq --no-trunc --filter name=*' \
+  'reserved network name query|1 0 fail network ls -q --no-trunc --filter name=*' \
+  'recorded ID query|1 0 fail network ls -q --no-trunc --filter id=*' \
+  'final inventory answer that is not IDs|1 0 garbage ps -aq --no-trunc --filter name=*'; do
+  begin "a failed ${fault%%|*} keeps the root"
+  printf '%s\n' "${fault#*|}" > "$case_dir/state/faults"
+  finish
+  expect_kept "$incomplete"
+  ok
+done
+
+begin 'an unreachable daemon keeps the root and removes nothing'
+printf '1 0 fail *\n' > "$case_dir/state/faults"
+finish
+expect_kept "$incomplete"
+[[ ! -e $case_dir/state/mutations ]] || fail 'something was removed'
+ok
+
+begin 'the cleanup deadline elapsing during the final inventory keeps the root'
+seconds=4
+printf '2 0 hang ps -aq --no-trunc --filter label=io.hvo.qualification.invocation=*\n' > "$case_dir/state/faults"
+finish
+expect_kept "$incomplete"
+(( elapsed <= 20 )) || fail "cleanup took ${elapsed}s against a 4s deadline"
+ok
+
+begin 'a resource the reconciliation missed is found by the final inventory'
+printf '1 1 fail ps -aq --no-trunc --filter label=io.hvo.qualification.invocation=*\n' > "$case_dir/state/faults"
+finish
+expect_kept "cleanup left $X"
+ok
+
+begin 'a removal that did not take keeps the root'
+printf '%s\n' "$A" > "$case_dir/state/stuck"
+finish
+expect_kept "cleanup left $A"
+ok
+
+begin 'a foreign resource holding a reserved name is never removed and keeps the root'
+seed_container "$R" "$run-b" bridge '' "io.hvo.qualification=$other"
+finish
+expect_kept "cleanup left $R"
+[[ -d $case_dir/state/containers/$R ]] || fail 'the foreign container was removed'
+ok
+
+begin 'another invocation given the same --name is never removed, by its label or a reserved name, and keeps the root'
+seed_container "$S" "$run-off" "$run-q" /elsewhere "io.hvo.qualification=$run,io.hvo.qualification.invocation=$sib"
+seed_network "$T" "$run-q" "io.hvo.qualification=$run,io.hvo.qualification.invocation=$sib"
+finish
+expect_kept "$never $run"
+grep -qF "$S" "$case_dir/stderr" && grep -qF "$T" "$case_dir/stderr" || fail 'stderr does not name the sibling resources'
+[[ -d $case_dir/state/containers/$S && -d $case_dir/state/networks/$T ]] || fail 'a sibling resource was removed'
+[[ ! -d $case_dir/state/containers/$A && ! -d $case_dir/state/networks/$N ]] || fail 'this invocation'"'"'s resources were not removed'
+ok
+
+begin 'a recorded ID that reads back as another invocation'"'"'s is never removed'
+seed_container "$S" "${run}x-sibling" bridge '' "io.hvo.qualification=$run,io.hvo.qualification.invocation=$sib"
+recorded_containers="$A $S"
+finish
+expect_kept "cleanup left $S"
+[[ -d $case_dir/state/containers/$S ]] || fail 'the sibling container was removed'
+ok
+
+begin 'a failed ownership readback removes nothing it could not prove and keeps the root'
+printf '1 0 fail container inspect --format {{.Id}} {{.Name}} * %s\n' "$A" > "$case_dir/state/faults"
+finish
+expect_kept "cleanup left $A"
+[[ -d $case_dir/state/containers/$A ]] || fail 'an unproven container was removed'
+ok
+
+begin 'a recorded ID that is not a full ID never aborts cleanup and keeps the root'
+recorded_containers="$A deadbeef"
+recorded_networks=" "
+finish
+expect_kept "$incomplete"
+[[ ! -d $case_dir/state/containers/$A && ! -d $case_dir/state/networks/$N ]] || fail 'cleanup stopped before removing this invocation'"'"'s resources'
+ok
+
+begin 'a failed run keeps its root after a clean inventory'
+status=1
+finish
+(( rc == 1 )) || fail "exited $rc; expected the run's status 1"
+expect_kept ''
+[[ -z $(ls "$case_dir/state/networks") ]] || fail 'networks were left'
+ok
+
+begin '--keep leaves every resource and the root, and asks the daemon nothing'
+keep=true
+finish
+(( rc == 0 )) || fail "exited $rc"
+[[ -f $case_dir/root/evidence.jsonl && -f $case_dir/root/a-data/part.1 ]] || fail 'the run root was not kept'
+[[ ! -s $case_dir/state/calls ]] || fail 'the daemon was queried'
+ok
+
+begin 'credentials that could not be removed fail a clean run, name only their path and keep the root'
+fs_fault 'rm fail */root/secrets-*'
+finish
+expect_kept "could not remove $case_dir/root/secrets-a"
+[[ -f $case_dir/root/secrets-a/root-password && ! -e $case_dir/config ]] || fail 'the fault did not hit only the credentials'
+ok
+
+begin 'credentials a removal reported gone but left fail a clean run'
+fs_fault 'rm ignore */root/secrets-*'
+finish
+expect_kept "could not remove $case_dir/root/secrets-a"
+ok
+
+begin 'credentials that could not be removed fail a --keep run'
+keep=true
+fs_fault 'rm fail */root/secrets-*'
+finish
+(( rc == 1 )) || fail "exited $rc; expected 1"
+grep -qF "could not remove $case_dir/root/secrets-a" "$case_dir/stderr" || fail 'stderr does not name the credentials'
+grep -qF "kept $case_dir/root" "$case_dir/stderr" || fail 'stderr does not say the root was kept'
+ok
+
+begin 'a private Docker configuration that could not be removed fails a clean run'
+fs_fault 'rm fail */config'
+finish
+expect_kept "could not remove $case_dir/config"
+[[ ! -e $case_dir/root/secrets-a ]] || fail 'the credentials were not removed'
+ok
+
+begin 'evidence that could not be published fails a clean run and keeps the root'
+fs_fault 'ln fail *.evidence.jsonl'
+finish
+expect_kept 'could not publish the evidence'
+ok
+
+begin 'a publication that reported success without linking the evidence fails a clean run'
+fs_fault 'ln ignore *.evidence.jsonl'
+finish
+expect_kept 'could not publish the evidence'
+ok
+
+begin 'a file that took the evidence name during the run is never replaced'
+printf 'not this run'"'"'s\n' > "$case_dir/$run.evidence.jsonl"
+finish
+(( rc != 0 )) || fail 'exited 0'
+[[ $(cat "$case_dir/$run.evidence.jsonl") == "not this run's" ]] || fail 'the file holding the evidence name was replaced'
+[[ -f $case_dir/root/evidence.jsonl && -f $case_dir/root/a-data/part.1 ]] || fail 'the run root was not kept'
+grep -qF 'could not publish the evidence' "$case_dir/stderr" || fail 'stderr does not say the evidence was not published'
+ok
+
+begin 'a run root that could not be removed fails a clean run after publishing its evidence'
+fs_fault "rm fail $case_dir/root"
+finish
+(( rc == 1 )) || fail "exited $rc; expected 1"
+cmp -s "$case_dir/root/evidence.jsonl" "$case_dir/$run.evidence.jsonl" || fail 'the evidence was not published'
+grep -qF "could not remove the run root; the evidence is at $case_dir/$run.evidence.jsonl" "$case_dir/stderr" || fail 'stderr does not say so'
+ok
+
+begin 'a run root a removal reported gone but left fails a clean run'
+fs_fault "rm ignore $case_dir/root"
+finish
+(( rc == 1 )) || fail "exited $rc; expected 1"
+grep -qF 'could not remove the run root' "$case_dir/stderr" || fail 'stderr does not say so'
+ok
+
+# --- Part 2: the whole qualifier against a fake daemon ----------------------------------------------------------------
+# Runs the qualifier with this case's daemon state, a fresh owner-only parent and a private TMPDIR.
+qualify() { # extra arguments
+  local sock
+  sock=$(mktemp -d "$sockets/s.XXXXXX")/s
+  python3 -I -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$sock"
+  mkdir -m 700 "$case_dir/parent" "$case_dir/tmp"
+  set +e
+  FAKE_STATE=$case_dir/state FAKE_SOCKET=$sock FAKE_IMAGE=$image FAKE_RELEASE=$release FAKE_REVISION=$revision \
+    FAKE_FS_FAULTS=$case_dir/fsfaults TMPDIR=$case_dir/tmp PATH="$temp/bin:$PATH" \
+    bash "$qualifier" --root "$case_dir/parent/run" --docker-socket "$sock" --samples 3 --max-seconds 300 --name "$run" "$@" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  invocation=$(sed -n 's/^\(network create\|run\) .*--label io\.hvo\.qualification\.invocation=\([0-9a-f]*\) .*/\2/p' "$case_dir/state/calls" | sort -u)
+  # What a create returned to this invocation, and nothing else, is its own to remove.
+  ours_ids=' '
+  [[ ! -f $case_dir/state/created ]] || ours_ids+="$(tr '\n' ' ' < "$case_dir/state/created")"
+  check_daemon
+  [[ -z $(ls -A "$case_dir/tmp") || $fs_faults == true ]] || fail 'the private Docker configuration survived'
+}
+starts() { [[ -z $(grep -E '^(network create|run |image |pull )' "$case_dir/state/calls") ]]; }
+checks() { sed -n 's/^{"check":"\([a-z-]*\)","result":"\([a-z]*\)".*/\1:\2/p' "$1" | tr '\n' ' '; }
+last_check() { tail -1 "$case_dir/parent/run/evidence.jsonl" | sed -n 's/^{"check":"\([a-z-]*\)","result":"\([a-z]*\)".*/\1:\2/p'; }
+expect_refused() {
+  (( rc == 3 )) || fail "exited $rc; expected the refusal status 3"
+  starts || fail 'the qualifier created or pulled something after the inventory was not answered'
+  [[ ! -e $case_dir/parent/run && -z $(ls -A "$case_dir/parent") ]] || fail 'the run root or evidence was created'
+  [[ ! -e $case_dir/state/mutations ]] || fail 'something was removed'
+  grep -qF "qualify:silo-runtime refused: $1" "$case_dir/stderr" || fail "stderr does not say: $1"
+}
+# The replacement never started: its old container was not removed and the a2 container was never run.
+expect_no_replacement() {
+  ! grep -qE '^rm [0-9a-f]{64}$' "$case_dir/state/calls" || fail 'the replaced container was removed'
+  ! grep -q -- "--name $run-a2 " "$case_dir/state/calls" || fail 'the replacement container was started'
+  [[ $(last_check) == exit-exclusive:fail ]] || fail "the last check was $(last_check), not a failed exit-exclusive"
+}
+# This invocation's own resources are gone, and its root is kept.
+expect_contained() {
+  local dir
+  for dir in "$case_dir/state/containers"/* "$case_dir/state/networks"/*; do
+    [[ -d $dir ]] || continue
+    ! grep -qx "io.hvo.qualification.invocation=$invocation" "$dir/labels" || fail "this invocation's ${dir##*/} was left"
+  done
+  [[ -d $case_dir/parent/run && ! -e $case_dir/parent/$run.evidence.jsonl ]] || fail 'the run root was not kept'
+  grep -qF "kept $case_dir/parent/run (invocation $invocation)" "$case_dir/stderr" || fail 'stderr does not say the root was kept'
+  [[ $fs_faults == true || -z $(find "$case_dir/parent/run" -path '*/secrets-*' -type f) ]] || fail 'credentials survived'
+}
+everything='platform:pass listener:pass bootstrap:pass writer-denials:pass versioned-io:pass osync-cost:measured kill-recovery:pass exit-exclusive:pass replacement:pass rotation:pass wrong-endpoint:pass isolation:pass summary:pass '
+
+new_case 'a whole run passes every check, binds every create to its invocation and leaves only foreign resources'
+seed_container "$F" foreign-web bridge /srv/web "io.hvo.qualification=$other"
+qualify
+(( rc == 0 )) || fail "exited $rc"
+[[ $(checks "$case_dir/stdout") == "$everything" ]] || fail "checks were: $(checks "$case_dir/stdout")"
+[[ $invocation =~ ^[0-9a-f]{32}$ ]] || fail "creates did not carry one invocation identity: $invocation"
+[[ $(grep -cE '^(network create|run )' "$case_dir/state/calls") == 7 ]] || fail 'expected three networks and four containers created'
+[[ $(grep -E '^(network create|run )' "$case_dir/state/calls" | grep -c -- "--label io.hvo.qualification.invocation=$invocation ") == 7 ]] ||
+  fail 'a create did not carry this invocation'"'"'s identity'
+[[ $(grep -cE '^run .* --network [0-9a-f]{64} ' "$case_dir/state/calls") == 4 ]] || fail 'a container was not created on its network by ID'
+# Each create is read back by its ID during the run, and each recorded ID again before cleanup removes it.
+[[ $(grep -c '^container inspect --format {{.Id}} {{.Name}} {{index .Config.Labels "io.hvo.qualification.invocation"}} [0-9a-f]\{64\}$' "$case_dir/state/calls") == 8 ]] ||
+  fail 'containers were not read back by ID during the run and before removal'
+[[ $(grep -c '^network inspect --format {{.Id}} {{.Name}} {{index .Labels "io.hvo.qualification.invocation"}} [0-9a-f]\{64\}$' "$case_dir/state/calls") == 6 ]] ||
+  fail 'networks were not read back by ID during the run and before removal'
+[[ $(ls "$case_dir/state/containers") == "$F" && -z $(ls "$case_dir/state/networks") ]] || fail 'the daemon holds more than the foreign container'
+[[ ! -e $case_dir/parent/run ]] || fail 'the run root was kept'
+cmp -s "$case_dir/stdout" "$case_dir/parent/$run.evidence.jsonl" || fail 'the published evidence differs from the run output'
+[[ $(wc -l < "$case_dir/state/host-probes") == 1 ]] || fail 'the host-bridge probe did not run exactly once, faked'
+[[ ! -s $case_dir/stderr ]] || fail 'a passing run printed to stderr'
+ok
+
+for fault in \
+  'every inventory query|the Docker daemon did not answer the inventory of the names and labels|1 0 fail ps *|1 0 fail network ls *' \
+  'the name-label network query|the Docker daemon did not answer the inventory of the names and labels|1 0 fail network ls -q --no-trunc --filter label=io.hvo.qualification=*' \
+  'a reserved container name query|the Docker daemon did not answer the inventory of the names and labels|3 3 fail ps -aq --no-trunc --filter name=*' \
+  'a name query answered with something other than IDs|the Docker daemon did not answer the inventory of the names and labels|1 0 garbage network ls -q --no-trunc --filter name=*' \
+  'the container list of the mount inventory|the Docker daemon did not answer the inventory of container mounts|1 0 fail ps -aq --no-trunc'; do
+  IFS='|' read -r what says one two <<< "$fault"
+  new_case "an unanswered pre-start inventory ($what) refuses the run before anything is created"
+  seed_container "$F" foreign-web bridge /srv/web "io.hvo.qualification=$other"
+  printf '%s\n' "$one" ${two:+"$two"} > "$case_dir/state/faults"
+  qualify
+  expect_refused "$says"
+  ok
+done
+
+new_case 'a mount inventory that cannot inspect a container still listed refuses the run before anything is created'
+seed_container "$F" foreign-web bridge /srv/web "io.hvo.qualification=$other"
+printf '1 0 fail container inspect --format {{println .Name}}* %s\n' "$F" > "$case_dir/state/faults"
+qualify
+expect_refused 'the Docker daemon did not answer the inventory of container mounts'
+ok
+
+new_case 'control: a container mounting the parent refuses the run when the inventory is answered'
+seed_container "$F" foreign-web bridge "$case_dir/parent" "io.hvo.qualification=$other"
+qualify
+expect_refused "an existing container mounts the root, one of its ancestors or something beneath it: foreign-web=$case_dir/parent"
+ok
+
+new_case 'control: a container removed between the listing and its inspection does not block the run'
+seed_container "$F" foreign-web bridge /srv/web "io.hvo.qualification=$other"
+printf 'container inspect --format {{println .Name}}* %s|remove-container|%s\n' "$F" "$F" > "$case_dir/state/hooks"
+qualify
+(( rc == 0 )) || fail "exited $rc"
+[[ $(checks "$case_dir/stdout") == "$everything" ]] || fail "checks were: $(checks "$case_dir/stdout")"
+ok
+
+new_case 'control: another invocation'"'"'s resource with the same --name refuses the run before anything is created'
+seed_network "$T" "$run-q" "io.hvo.qualification=$run,io.hvo.qualification.invocation=$sib"
+qualify
+expect_refused "containers or networks with this run's name, label or reserved names already exist: $T"
+[[ -d $case_dir/state/networks/$T ]] || fail 'the sibling network was removed'
+ok
+
+intruder="stop --timeout 30 *|add-container|$(id_of intruder)|intruder|bridge|PATH|io.hvo.qualification=$other"
+new_case 'an unanswered container list before the replacement fails the run before the replacement'
+printf '%s\n' "${intruder/PATH/$case_dir/parent/run/a-data}" > "$case_dir/state/hooks"
+printf '2 2 fail ps -aq --no-trunc\n' > "$case_dir/state/faults"
+qualify
+(( rc == 1 )) || fail "exited $rc; expected 1"
+expect_no_replacement
+grep -qF '"detail":"the Docker daemon did not answer the inventory of container mounts"' "$case_dir/parent/run/evidence.jsonl" || fail 'the failure does not say why'
+expect_contained
+[[ -d $case_dir/state/containers/$(id_of intruder) ]] || fail 'the intruder was removed'
+ok
+
+new_case 'an unanswered inspection of a container still listed before the replacement fails the run before the replacement'
+printf '%s\n' "${intruder/PATH/$case_dir/parent/run/a-data}" > "$case_dir/state/hooks"
+printf '1 0 fail container inspect --format {{println .Name}}* %s\n' "$(id_of intruder)" > "$case_dir/state/faults"
+qualify
+(( rc == 1 )) || fail "exited $rc; expected 1"
+expect_no_replacement
+expect_contained
+ok
+
+new_case 'control: another container mounting the data root before the replacement fails the run when answered'
+printf '%s\n' "${intruder/PATH/$case_dir/parent/run}" > "$case_dir/state/hooks"
+qualify
+(( rc == 1 )) || fail "exited $rc; expected 1"
+expect_no_replacement
+grep -qF "another container mounts the data root or an ancestor: intruder=$case_dir/parent/run" "$case_dir/parent/run/evidence.jsonl" || fail 'the failure does not name the intruder'
+expect_contained
+ok
+
+new_case 'another invocation given the same --name that takes a reserved network name first is never touched'
+printf 'network create *|add-network|%s|%s-a|io.hvo.qualification=%s,io.hvo.qualification.invocation=%s\n' "$T" "$run" "$run" "$sib" > "$case_dir/state/hooks"
+printf 'network create *|add-container|%s|%s-x|%s-a|/elsewhere|io.hvo.qualification=%s,io.hvo.qualification.invocation=%s\n' "$S" "$run" "$run" "$run" "$sib" >> "$case_dir/state/hooks"
+qualify
+(( rc == 1 )) || fail "exited $rc; expected 1"
+[[ -d $case_dir/state/networks/$T && -d $case_dir/state/containers/$S ]] || fail 'a sibling resource was removed'
+grep -qF "$never $run" "$case_dir/stderr" || fail 'stderr does not say the sibling resources were never removed'
+expect_contained
+ok
+
+new_case 'another invocation given the same --name that takes a reserved container name first is never touched'
+printf 'run *|add-network|%s|%s-q|io.hvo.qualification=%s,io.hvo.qualification.invocation=%s\n' "$T" "$run" "$run" "$sib" > "$case_dir/state/hooks"
+printf 'run *|add-container|%s|%s-a|%s-q|/elsewhere|io.hvo.qualification=%s,io.hvo.qualification.invocation=%s\n' "$S" "$run" "$run" "$run" "$sib" >> "$case_dir/state/hooks"
+qualify
+(( rc != 0 )) || fail 'exited 0'
+[[ -d $case_dir/state/networks/$T && -d $case_dir/state/containers/$S ]] || fail 'a sibling resource was removed'
+grep -qF "$never $run" "$case_dir/stderr" || fail 'stderr does not say the sibling resources were never removed'
+expect_contained
+ok
+
+new_case 'another invocation given the same --name that appears mid-run fails a passing run and is never touched'
+printf 'kill --signal KILL *|add-container|%s|%s-x|bridge|/elsewhere|io.hvo.qualification=%s,io.hvo.qualification.invocation=%s\n' "$S" "$run" "$run" "$sib" > "$case_dir/state/hooks"
+qualify
+(( rc == 1 )) || fail "exited $rc; expected 1"
+[[ $(checks "$case_dir/stdout") == "$everything" ]] || fail "checks were: $(checks "$case_dir/stdout")"
+[[ -d $case_dir/state/containers/$S ]] || fail 'the sibling container was removed'
+grep -qF "cleanup left $S (not invocation $invocation's, $never $run" "$case_dir/stderr" || fail 'stderr does not name the sibling container'
+expect_contained
+ok
+
+new_case 'a create that reports an ID reading back as another invocation'"'"'s fails the run before that ID is used'
+seed_network "$T" "${run}x-sibling" "io.hvo.qualification.invocation=$sib"
+printf '%s\n' "$T" > "$case_dir/state/misreport"
+printf '1 1 misreport network create *\n' > "$case_dir/state/faults"
+qualify
+(( rc == 1 )) || fail "exited $rc; expected 1"
+[[ $(last_check) == startup:fail ]] || fail "the last check was $(last_check), not a failed startup"
+grep -qF "network $run-a does not read back as this invocation's" "$case_dir/parent/run/evidence.jsonl" || fail 'the failure does not say why'
+! grep -qE "^(network create|run) .*$T" "$case_dir/state/calls" || fail 'the misreported ID was used'
+[[ $(grep -cE '^(network create|run )' "$case_dir/state/calls") == 1 ]] || fail 'the run created more after the readback failed'
+[[ -d $case_dir/state/networks/$T ]] || fail 'the sibling network was removed'
+grep -qF "cleanup left $T (recorded by or carrying invocation $invocation; not provably its own" "$case_dir/stderr" || fail 'stderr does not name the unproven ID'
+expect_contained
+ok
+
+new_case 'evidence that could not be published fails a passing run and keeps its root'
+fs_faults=true
+printf 'ln fail *.evidence.jsonl\n' > "$case_dir/fsfaults"
+qualify
+(( rc == 1 )) || fail "exited $rc; expected 1"
+[[ $(checks "$case_dir/stdout") == "$everything" ]] || fail "checks were: $(checks "$case_dir/stdout")"
+grep -qF 'could not publish the evidence' "$case_dir/stderr" || fail 'stderr does not say the evidence was not published'
+fs_faults=false
+expect_contained
+ok
+
+new_case 'credentials that could not be removed fail a passing --keep run without printing them'
+fs_faults=true
+printf 'rm fail */parent/run/secrets-*\n' > "$case_dir/fsfaults"
+qualify --keep
+(( rc == 1 )) || fail "exited $rc; expected 1"
+[[ $(find "$case_dir/parent/run" -path '*/secrets-*' -type f | wc -l) == 4 ]] || fail 'the fault did not keep the credentials'
+grep -qF "could not remove $case_dir/parent/run/secrets-a $case_dir/parent/run/secrets-b" "$case_dir/stderr" || fail 'stderr does not name the credentials'
+for file in "$case_dir/parent/run"/secrets-*/*; do
+  value=$(cat "$file")
+  [[ $value =~ ^hvo[0-9a-f]{24,64}$ ]] || fail "$file does not hold a generated credential"
+  ! grep -rqF -- "$value" "$case_dir/stdout" "$case_dir/stderr" "$case_dir/state/calls" || fail 'a credential was printed or passed to docker'
+done
+ok
+
+new_case 'a run root that could not be removed fails a passing run after publishing its evidence'
+fs_faults=true
+printf 'rm fail %s\n' "$case_dir/parent/run" > "$case_dir/fsfaults"
+qualify
+(( rc == 1 )) || fail "exited $rc; expected 1"
+cmp -s "$case_dir/stdout" "$case_dir/parent/$run.evidence.jsonl" || fail 'the evidence was not published'
+grep -qF 'could not remove the run root' "$case_dir/stderr" || fail 'stderr does not say so'
+[[ -z $(find "$case_dir/parent/run" -path '*/secrets-*' -type f) ]] || fail 'credentials survived'
+ok
+
+printf 'silo-runtime qualification containment: %d cases passed\n' "$passed"

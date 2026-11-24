@@ -149,6 +149,19 @@ public sealed class SparseLinear16MeterTests
             new SparseMeteringOptions(1, 1, bayerPhotosites: BayerMeteringPhotosites.None)));
     }
 
+    private static void Write(byte[] pixels, int stride, int x, int y, ushort value)
+    {
+        var offset = y * stride + x * 2;
+        pixels[offset] = (byte)value;
+        pixels[offset + 1] = (byte)(value >> 8);
+    }
+}
+
+[TestClass]
+[TestCategory("Performance")]
+[DoNotParallelize]
+public sealed class SparseLinear16MeterPerformanceTests
+{
     [TestMethod]
     public void Measure_AfterWarmupDoesNotAllocatePerCall()
     {
@@ -167,10 +180,4 @@ public sealed class SparseLinear16MeterTests
         Assert.AreEqual(0, allocated);
     }
 
-    private static void Write(byte[] pixels, int stride, int x, int y, ushort value)
-    {
-        var offset = y * stride + x * 2;
-        pixels[offset] = (byte)value;
-        pixels[offset + 1] = (byte)(value >> 8);
-    }
 }

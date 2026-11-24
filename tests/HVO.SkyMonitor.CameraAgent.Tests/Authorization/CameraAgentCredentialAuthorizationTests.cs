@@ -15,6 +15,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Authorization;
 /// <summary>Which credential each CameraAgent policy accepts, beyond the site-owner checks.</summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Hosting")]
 public sealed class CameraAgentCredentialAuthorizationTests
 {
     private const string ConfiguredEmail = "owner@cameraagent.test";

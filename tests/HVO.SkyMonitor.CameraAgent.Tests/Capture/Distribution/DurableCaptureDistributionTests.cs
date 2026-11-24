@@ -22,6 +22,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Distribution;
 
 [TestClass]
 [TestCategory("Integration")]
+[TestProperty("Area", "Capture.Distribution")]
 [DoNotParallelize]
 public sealed partial class DurableCaptureDistributionTests
 {

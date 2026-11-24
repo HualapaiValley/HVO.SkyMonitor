@@ -19,6 +19,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Scheduling;
 
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "Scheduling")]
 [DoNotParallelize]
 public sealed class SqliteCaptureScheduleStorePerformanceTests
 {

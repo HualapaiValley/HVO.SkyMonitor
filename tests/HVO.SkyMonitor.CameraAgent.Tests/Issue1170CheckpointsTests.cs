@@ -12,6 +12,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture")]
 public sealed partial class Issue1170CheckpointsTests
 {
     [TestMethod]

@@ -9,6 +9,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.OpticalCalibration;
 
 [TestClass]
 [TestCategory("Integration")]
+[TestProperty("Area", "OpticalCalibration")]
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 public sealed class HorizonObstructionStoreIntegrationTests
 {

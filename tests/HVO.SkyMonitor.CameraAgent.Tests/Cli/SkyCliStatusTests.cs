@@ -6,6 +6,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Cli;
 /// <summary><c>status</c>, <c>status --watch</c> and <c>info</c> against the fake API.</summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Cli")]
 public sealed class SkyCliStatusTests
 {
     [TestMethod]

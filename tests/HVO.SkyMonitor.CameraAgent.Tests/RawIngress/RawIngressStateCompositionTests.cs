@@ -4,6 +4,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.RawIngress;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "RawIngress")]
 public sealed class RawIngressStateCompositionTests
 {
     [TestMethod]

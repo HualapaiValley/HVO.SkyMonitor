@@ -6,6 +6,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Cli;
 /// <summary><c>config show|get|set|diff|apply</c>, built from the settings catalogue (#1316), against the fake API.</summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Cli")]
 public sealed class SkyCliConfigTests
 {
     private static readonly string[] UnchangedSite = ["site.observatoryName"];

@@ -5,6 +5,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture.Exposure")]
 public sealed class ExposureControllerTests
 {
     [TestMethod]

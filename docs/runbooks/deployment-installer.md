@@ -2757,6 +2757,13 @@ paired with the previous image. The corrected reader refuses a private v5 journa
 without the settlement column. Restore the verified paired v4 checkpoint before
 using the corrected reader with state from that rehearsal.
 
+The private centered foundation join is a source-only checkpoint with raw
+schema 17, processing schema 10 and corrected environmental schema 5. It
+carries the same combined minimum `e7b9af4b98d1521c3939ef5925608a3663c63302`.
+Its raw schema and migration labels independently select the paired checkpoint
+from the corrected raw-16 reader. The earlier private joined reader also
+differs at the minimum-compatible-revision.
+
 CameraAgent images built from `development/v1` declare raw schema 17 and
 `canonical-v13-v14-v15-v16-to-v17`. Startup validates the canonical raw layout
 selected by the journal version. The declared migration accepts canonical
@@ -2765,29 +2772,55 @@ labels select the paired checkpoint for adoption from raw 16. A future
 different raw layout requires a new version and a declared migration through
 the same path.
 
-The centered scheduling and storage stage declares `1c76d83224bacdcc129041c6d1779eb5f95716cb`
-for raw 17, processing 12 and the settled environmental v5 reader. The minimum
-change selects the paired checkpoint from the earlier centered foundation
-with processing 10 even though both images declare raw 17 and environmental 5.
+The centered scheduling and storage stage declared `1c76d83224bacdcc129041c6d1779eb5f95716cb`
+for raw 17, processing 12 and the settled environmental v5 reader. The minimum change also selects
+the paired checkpoint from the earlier private raw-17 publisher when both
+images declare the same raw and environmental schema numbers.
+
+The publisher activation reused this storage boundary.
+
+The scheduling and storage stage also changes the minimum from the centered
+foundation's processing schema 10, where raw schema 17 and environmental schema 5
+were already in use.
+
+**Centered processing compatibility (Refs #1921, #1922 and #1961).** The changed
+`minimum-compatible-revision` selects a paired checkpoint before startup, including
+when the installed image already uses raw schema 17 and environmental schema 5.
+Rollback to an earlier image restores that image's checkpoint. The raw schema label
+covers the shared journal's raw tables. CameraAgent validates the processing layout
+separately when it opens that journal.
 Processing has its own version marker in the shared raw journal.
 
-**Centered view custody (Refs #1921 and #1922).** Processing schema 12 adds the
-attempt calendar, output availability history, and retained view revisions to
-the raw journal database. The changed `minimum-compatible-revision` selects
-the paired checkpoint before an older processing reader is replaced, including
-an upgrade from schema 10 with raw schema 17 already installed. Rollback
-restores the paired checkpoint for the earlier reader. Both earlier schema-12
-layouts without trusted cutoff observations also upgrade to the covering
-index. Closed windows, view revisions and saved selections retain their identities. Open windows rely on
-confirmed commit observations after the upgrade. The exception names the
-changed processing objects and applies to a database recording processing
-schema 12. The frozen previous-release SQL image remains the same.
+- Canonical processing schemas 5 through 9 upgrade to 12. Schema 10 also supports
+  the released astrometry layout with its partial lookup index and the known centered
+  layouts with no output availability table, the earlier cutoff index, or the covering cutoff index.
+- The canonical schema 11 checkpoint upgrades when its centered window table is empty.
+  The upgrade closes its open runs with an unavailable-calendar reason. A populated
+  schema 11 window table requires explicit state disposition before the processing upgrade.
+- Schema 12 accepts the earlier layouts without the availability table or with
+  its non-covering cutoff index, and the covering-index layout with or without
+  the retained astrometry index. Earlier layouts with untrusted cutoff observations
+  use confirmed observations for open windows after upgrading to the covering index.
+  The current layout includes a publication retention index, a table for registration input failures,
+  and six centered-view retention indexes. It can adopt either retention layout atomically.
+  The migration preserves closed window receipts, saved selections, view revisions and active custody.
+- An unrecognized processing layout fails startup validation. Raw journal migration can
+  commit before processing validation runs, so keep the paired checkpoint for recovery.
 
-**Centered-view journal retention (Ref #2000).** The current image declares
-`ee848ab110e094ef888c1aca4225ea9c8be226f6` and installs six processing indexes in
-the shared raw journal at startup. Earlier processing-schema-12 readers validate the schema
-objects exactly. The changed minimum selects a paired checkpoint when upgrading
-from any of those readers, including private builds declaring `1c76d83224bacdcc129041c6d1779eb5f95716cb`.
+The retained `centered-registered-stack-evidence-v1` reader accepts verified
+`centered-direct-registration-v1` and `centered-direct-registration-v2` envelopes.
+It checks the original plan, lineage and artifact checksums, including the support and
+display planes when reopened. A historical closure with an older pin that lacks the
+artifact envelope or linear layout keeps its original closure identity and receipt.
+Registration and archive recomputation require current, fully bound pins and the
+current registration recipe.
+
+**Centered-view journal retention (Ref #2000).** The reader that first added its
+six indexes in the shared raw journal declared `ee848ab110e094ef888c1aca4225ea9c8be226f6`.
+Earlier processing-schema-12 readers validate the schema objects exactly. The
+reader that combines #1961 and #2000 declares `ded7cadc6fe005f8bdda09387e1c3d1337f66e4e`
+so upgrades from either reader select a paired checkpoint, as do upgrades from
+earlier private builds declaring `1c76d83224bacdcc129041c6d1779eb5f95716cb`.
 The raw and processing schema numbers stay at 17 and 12. Rollback to an older
 reader restores the state paired with that image.
 

@@ -4,6 +4,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Focus;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture")]
 public sealed class CameraModuleOwnershipTests
 {
     [TestMethod]

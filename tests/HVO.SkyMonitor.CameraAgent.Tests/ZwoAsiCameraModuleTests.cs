@@ -13,6 +13,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 [TestClass]
+[TestProperty("Area", "Modules.Zwo")]
 [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "Focused MSTest methods do not require context-free continuations.")]
 public sealed class ZwoAsiCameraModuleTests
 {

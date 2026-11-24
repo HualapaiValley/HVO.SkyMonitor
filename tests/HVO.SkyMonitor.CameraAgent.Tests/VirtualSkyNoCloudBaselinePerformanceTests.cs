@@ -10,6 +10,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "Modules.VirtualSky")]
 public sealed class VirtualSkyNoCloudBaselinePerformanceTests
 {
     private const int WarmupCount = 5;

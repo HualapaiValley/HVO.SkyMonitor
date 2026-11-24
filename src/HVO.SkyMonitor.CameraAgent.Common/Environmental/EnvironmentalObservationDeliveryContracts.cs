@@ -158,6 +158,9 @@ internal readonly record struct EnvironmentalHeldPoll(
 
 internal interface IEnvironmentalHeldPollPublisher
 {
+    bool SupportsHeldPollSettlement { get; }
+
+    // One transaction settles the held slot, its acquisition attempt, and the observation.
     ValueTask<EnvironmentalAcquisitionReceipt> PublishHeldPollAsync(
         EnvironmentalObservationFactV1 fact, EnvironmentalHeldPoll poll, CancellationToken cancellationToken);
 }

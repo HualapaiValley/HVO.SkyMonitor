@@ -23,6 +23,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Transients;
 
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "Transients")]
 [DoNotParallelize]
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 public sealed partial class Issue247TransientCandidateReservationPerformanceTests

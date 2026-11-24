@@ -10,7 +10,7 @@ the design decision; this file holds the numbers and the operations.
 
 Atlas completed Roy's approved capacity work at 9:04–9:05 AM PST. The reserved
 pair `gh-runner-05` and `gh-runner-06` has 8 vCPU per runner; only that pair carries
-`hvo-skymonitor-build`. SkyMonitor Build and Unit now selects exactly
+`hvo-skymonitor-build`. The full SkyMonitor Build and Unit workload selects exactly
 `[self-hosted, linux, x64, hvo-skymonitor-build]`. Runners 01–04 and every other
 job's selector are unchanged. Keep the 22-minute hard timeout and 1,080 s soft
 budget while measuring this allocation. Refs #1747.
@@ -36,7 +36,7 @@ Pool consumers:
 
 | Workflow | Selector | Notes |
 | --- | --- | --- |
-| SkyMonitor `development-v1.yml` Build and Unit (ready PRs, v1 pushes, queue groups) | `[self-hosted, linux, x64, hvo-skymonitor-build]` | reserved gh-runner-05/06 pair, 8 vCPU each; new duration measurement pending |
+| SkyMonitor `development-v1.yml` Build and Unit (ready PRs, pushes without exact queue evidence, queue groups) | `[self-hosted, linux, x64, hvo-skymonitor-build]` | reserved gh-runner-05/06 pair, 8 vCPU each. The hosted proof job for verified queue pushes is outside this pool. |
 | SkyMonitor `ci.yml` (14 self-hosted jobs: promotion PRs, `main` pushes, dispatch) | `[self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]` after #849 | one run fans out to seven or more concurrent jobs for 20-23 minutes |
 | HVO.AgentControl | `hvo-agentcontrol` | low volume; can use any of the six runners |
 | HVO.WebSite | GitHub-hosted (`ubuntu-latest`) on 2026-10-15 | the `hvo-website` label is currently unused |

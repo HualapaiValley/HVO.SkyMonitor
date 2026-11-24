@@ -16,6 +16,7 @@ using Microsoft.Extensions.Options;
 namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
 [TestClass]
+[TestProperty("Area", "Ui")]
 public sealed class ObservingDayTimeLapseStateTests
 {
     [TestMethod]

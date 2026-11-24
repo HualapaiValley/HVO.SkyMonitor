@@ -28,6 +28,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.NightlyProducts;
 /// <summary>Bounded actual VirtualSky → raw ingress → durable fixed preview → still producer qualification.</summary>
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "NightlyProducts")]
 [DoNotParallelize]
 [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "Bounded manual qualification.")]
 public sealed class FullDayStillProductQualificationTests
