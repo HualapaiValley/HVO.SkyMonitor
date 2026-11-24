@@ -167,6 +167,9 @@ public sealed class ExposureMeasurementTests
         var retry = await Produce(request);
         Assert.AreEqual(product.OutputIdentitySha256, retry.OutputIdentitySha256);
         CollectionAssert.AreEqual(product.Payload.ToArray(), retry.Payload.ToArray());
+
+        await AssertFocusBudgetPrefersEligibleDetections(bayer, eligibleCount: 36);
+        await AssertFocusBudgetPrefersEligibleDetections(bayer, eligibleCount: 4);
     }
 
     [TestMethod]
@@ -295,6 +298,93 @@ public sealed class ExposureMeasurementTests
         }
     }
 
+    private static async Task AssertFocusBudgetPrefersEligibleDetections(bool bayer, int eligibleCount)
+    {
+        const int pitch = 56;
+        const int columns = 8;
+        const int sourceCount = 48;
+        var layout = Layout(pitch * columns, pitch * (sourceCount / columns), bayer);
+        var light = CreateRaw(layout, Generate(layout, (x, y) =>
+        {
+            var index = y / pitch * columns + x / pitch;
+            var truncated = index == sourceCount - 1;
+            var saturated = index >= eligibleCount && index % 2 == 0;
+            var trailed = index >= eligibleCount && !saturated && !truncated;
+            var dx = (x % pitch - pitch / 2) / (trailed ? 3.7 : 1.5);
+            var dy = (y % pitch - (truncated ? pitch - 12 : pitch / 2)) / 1.5;
+            var amplitude = saturated ? 4800 : trailed ? 2300 : truncated ? 3300 : 1250;
+            return (ushort)Math.Min(4095, Math.Round(180 + amplitude * Math.Exp(-(dx * dx + dy * dy) / 2)));
+        }));
+        var (lookup, raw, borrowed) = await BindToAdmission(light);
+        var request = ExposureMeasurementBindings.Request(lookup, raw, borrowed);
+        var product = await Produce(request);
+        var result = ExposureMeasurementProducts.Read(product);
+
+        Assert.HasCount(sourceCount, result.Sources.Detections);
+        var eligible = new List<int>();
+        var rejected = new Dictionary<int, string>();
+        foreach (var detection in result.Sources.Detections)
+        {
+            var position = (int)detection.Pixel.Y / pitch * columns + (int)detection.Pixel.X / pitch;
+            if (position < eligibleCount)
+            {
+                Assert.AreEqual(StellarSourceConditions.None, detection.Conditions);
+                eligible.Add(detection.Index);
+            }
+            else if (position == sourceCount - 1)
+            {
+                Assert.AreEqual(StellarSourceConditions.None, detection.Conditions);
+                rejected.Add(detection.Index, FocusStarReasonCodes.ApertureTruncated);
+            }
+            else
+            {
+                var saturated = position % 2 == 0;
+                Assert.IsTrue(detection.Conditions.HasFlag(saturated
+                    ? StellarSourceConditions.Saturated : StellarSourceConditions.Trailed));
+                rejected.Add(detection.Index, saturated ? FocusStarReasonCodes.Saturated : "trailed-source");
+            }
+        }
+        Assert.HasCount(eligibleCount, eligible);
+        var cap = ExposureMeasurementProducts.MaximumHfdSamples;
+        Assert.AreEqual(Math.Min(cap, rejected.Count), rejected.Keys.Count(index => index < cap),
+            "The brighter ineligible detections must displace eligible detections in the old sampler.");
+        Assert.AreEqual(Math.Min(cap, eligibleCount), result.Hfd.ValidCount);
+        Assert.AreEqual("focus-budget-limited", result.Hfd.Reason);
+        Assert.AreEqual(sourceCount - cap, result.Hfd.OmittedCount);
+        CollectionAssert.AreEqual(eligible.Concat(rejected.Keys.Order()).Take(cap).Order().ToArray(),
+            result.Hfd.Samples.Select(sample => sample.DetectionIndex).ToArray());
+        foreach (var sample in result.Hfd.Samples)
+        {
+            Assert.AreEqual(rejected.GetValueOrDefault(sample.DetectionIndex, FocusStarReasonCodes.Valid), sample.Reason);
+            Assert.AreEqual(!rejected.ContainsKey(sample.DetectionIndex), sample.DiameterPixels is > 0);
+        }
+        CollectionAssert.AreEqual(product.Payload.ToArray(), (await Produce(request)).Payload.ToArray());
+
+        bool[] historicalPolicies = bayer ? [false, true] : [false];
+        foreach (var bayerCoreCheck in historicalPolicies)
+        {
+            var historical = await Produce(request with { Options = HistoricalFocusOptions(result.Input, bayerCoreCheck) });
+            var previous = ExposureMeasurementProducts.Read(historical);
+            Assert.AreNotEqual(historical.OutputIdentitySha256, product.OutputIdentitySha256);
+            CollectionAssert.AreEqual(previous.Sources.Detections.ToArray(), result.Sources.Detections.ToArray());
+            CollectionAssert.AreEqual(Enumerable.Range(0, cap).ToArray(),
+                previous.Hfd.Samples.Select(sample => sample.DetectionIndex).ToArray());
+            Assert.AreEqual(eligible.Count(index => index < cap), previous.Hfd.ValidCount);
+            Assert.AreEqual(result.Hfd.OmittedCount, previous.Hfd.OmittedCount);
+            await AssertRetainedReplay(lookup, raw, borrowed, historical);
+            Reject(result with { Hfd = previous.Hfd });
+        }
+        Reject(result with { Hfd = result.Hfd with { OmittedCount = sourceCount } });
+        var samples = result.Hfd.Samples.ToArray();
+        (samples[0], samples[1]) = (samples[1], samples[0]);
+        Reject(result with { Hfd = result.Hfd with { Samples = samples } });
+        samples[0] = samples[1];
+        Reject(result with { Hfd = result.Hfd with { Samples = samples } });
+
+        void Reject(ExposureMeasurementV1 measurement)
+            => Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(WithMeasurement(product, measurement)));
+    }
+
     [TestMethod]
     public async Task RetainedMeasurementRejectsIncompleteAccountingAndInconsistentSaturationFlags()
     {
@@ -304,7 +394,17 @@ public sealed class ExposureMeasurementTests
             (ushort)Math.Round(180 + stars.Sum(star => Gaussian(x, y, star, 1.5, 2400)))));
         var linear = await Normalize(raw);
         var input = Bind(raw, linear);
-        var product = await Produce(ExposureMeasurementProducts.Request(input, raw, linear));
+        var request = ExposureMeasurementProducts.Request(input, raw, linear);
+        AssertRejectsTamperedMeasurement(raw, input, await Produce(request));
+        AssertRejectsTamperedMeasurement(raw, input, await Produce(request with
+        {
+            Options = HistoricalFocusOptions(input, bayerCoreCheck: false)
+        }));
+    }
+
+    private static void AssertRejectsTamperedMeasurement(ProcessingArtifact raw, ExposureMeasurementInputV1 input,
+        ProcessingProduct product)
+    {
         var result = ExposureMeasurementProducts.Read(product);
         Assert.HasCount(36, result.Sources.Detections);
         Assert.AreEqual(32, result.Hfd.ValidCount);
@@ -325,6 +425,9 @@ public sealed class ExposureMeasurementTests
 
         var original = result.Sources.Detections[0];
         detections[0] = original with { Conditions = original.Conditions | StellarSourceConditions.Trailed };
+        // Both policies can retain the brightest rejection when the omitted sources are also ineligible.
+        for (var index = result.Hfd.Samples.Count; index < detections.Length; index++)
+            detections[index] = detections[index] with { Conditions = detections[index].Conditions | StellarSourceConditions.Trailed };
         var trailed = result with { Sources = result.Sources with { Detections = detections } };
         Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(Rehash(trailed)),
             "A trailed detection cannot contribute an HFD diameter.");
@@ -356,41 +459,27 @@ public sealed class ExposureMeasurementTests
         accepted = ExposureMeasurementProducts.Read(Rehash(trailed with { Hfd = focus }));
         Assert.AreEqual(samples[0], accepted.Hfd.Samples[0]);
 
-        ProcessingProduct Rehash(ExposureMeasurementV1 measurement)
-        {
-            var payload = JsonSerializer.SerializeToUtf8Bytes(
-                CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(measurement, MeasurementJson)));
-            var hash = ProcessingIdentity.ComputePayloadSha256(payload);
-            return product with { Payload = payload, ChecksumSha256 = hash, ContentIdentitySha256 = hash };
-        }
+        ProcessingProduct Rehash(ExposureMeasurementV1 measurement) => WithMeasurement(product, measurement);
     }
 
     [TestMethod]
     public async Task CommittedReaderVerifiesIndependentAdmissionAndExactProductSlot()
     {
-        var layout = Layout(96, 96);
+        await AssertCommittedReaderAndReplay(bayer: false);
+        await AssertCommittedReaderAndReplay(bayer: true);
+    }
+
+    private static async Task AssertCommittedReaderAndReplay(bool bayer)
+    {
+        var layout = Layout(96, 96, bayer);
         var light = CreateRaw(layout, Generate(layout, static (_, _) => 91));
-        var checksum = Convert.ToHexString(SHA256.HashData(light.Payload.Span));
-        var identity = new ProfileIdentityDescriptor("fixture", "1", new string('E', 64));
-        var descriptor = new ReconstructionDescriptor(new("agent", "rig", 1, light.CaptureId!.Value),
-            new(ExposureTime, ExposureTime, ExposureTime, ExposureTime, ExposureTime),
-            new(light.Integration, light.Integration, 10, 10, 0, 0, null, null),
-            new(identity, identity, identity, identity, identity), layout,
-            new(light.ArtifactId, light.Role, "raw", light.Variant, ExposureTime, [], RawRecipe, light.MediaType, checksum));
-        var raw = light with { DescriptorIdentitySha256 = CaptureContractJson.ComputeDescriptorSha256(descriptor) };
-        var key = new ExposureKey(new("agent", "virtual"), Guid.NewGuid(), descriptor.Capture.CaptureId);
-        var execution = Guid.NewGuid();
-        var exposure = new ExposureInputV1(key, descriptor, new(layout, new(90, 0, 0), identity.Sha256, "optics-1", 1320));
-        var linear = await Normalize(raw);
-        var linearRef = new ExposureProductRef(key, new(execution, "linear", "linear-v1", linear.Variant),
-            linear.ArtifactId, linear.ContentIdentitySha256!, Convert.ToHexString(SHA256.HashData(linear.Payload.Span)), null);
-        var provenance = new LinearInputProvenanceV1(LinearExposureDisposition.QualifiedNormalizationOnly,
-            raw.ArtifactId, raw.DescriptorIdentitySha256, checksum, linear.ArtifactId, linear.DescriptorIdentitySha256!,
-            linearRef.PayloadSha256, linearRef.OutputIdentitySha256, ProcessingIdentity.CreateRecipeIdentity(linear.RecipeDescriptor!),
-            [], new(raw.ArtifactId, 4095), new(linear.ArtifactId, 4095));
-        var lookup = new LinearExposureLookup(exposure, provenance.Disposition, 1, linearRef, provenance, null);
-        var request = ExposureMeasurementBindings.Request(lookup, raw, new(exposure, linear, provenance));
-        var retained = ProductArtifact(await Produce(request), raw);
+        var (lookup, raw, borrowed) = await BindToAdmission(light);
+        var key = lookup.Exposure.Key;
+        var linearRef = lookup.Product!;
+        var execution = linearRef.Slot.ExecutionId;
+        var request = ExposureMeasurementBindings.Request(lookup, raw, borrowed);
+        var current = await Produce(request);
+        var retained = ProductArtifact(current, raw);
         var slot = new ExposureProductSlot(execution, ExposureMeasurementProducts.StepAlias,
             ExposureMeasurementProducts.SchemaVersion, ExposureMeasurementProducts.Variant);
         var exact = new ExposureProductRef(key, slot, retained.ArtifactId,
@@ -403,6 +492,17 @@ public sealed class ExposureMeasurementTests
         Assert.AreEqual(1320, read.Input.PixelScaleArcseconds);
         Assert.AreEqual(ExposureMeasurementStatus.Empty, read.Sources.Status);
         Assert.AreEqual(0, read.Hfd.ValidCount);
+        await AssertRetainedReplay(lookup, raw, borrowed, current);
+        var legacy = await Produce(request with { Options = HistoricalFocusOptions(read.Input, bayerCoreCheck: false) });
+        Assert.AreNotEqual(current.OutputIdentitySha256, legacy.OutputIdentitySha256);
+        await AssertRetainedReplay(lookup, raw, borrowed, legacy);
+        if (bayer)
+        {
+            var formerBayer = await Produce(request with { Options = HistoricalFocusOptions(read.Input, bayerCoreCheck: true) });
+            Assert.AreNotEqual(current.OutputIdentitySha256, formerBayer.OutputIdentitySha256);
+            Assert.AreNotEqual(legacy.OutputIdentitySha256, formerBayer.OutputIdentitySha256);
+            await AssertRetainedReplay(lookup, raw, borrowed, formerBayer);
+        }
         var byExecution = await ExposureMeasurementBindings.ReadCommittedAsync(reader, key, execution, retained, CancellationToken.None);
         Assert.AreEqual(read.Input, byExecution.Input);
         var expired = lookup with { Disposition = LinearExposureDisposition.Expired, Reason = "retention-expired" };
@@ -415,7 +515,7 @@ public sealed class ExposureMeasurementTests
             reader with { Linear = expired with { Product = null, Provenance = null } }, exact, retained, CancellationToken.None));
         await Assert.ThrowsExactlyAsync<InvalidDataException>(async () => await ExposureMeasurementBindings.ReadCommittedAsync(
             reader, exact with { Slot = slot with { ExecutionId = Guid.NewGuid() } }, retained, CancellationToken.None));
-        var wrongLookup = lookup with { Provenance = provenance with { LinearDescriptorSha256 = new string('F', 64) } };
+        var wrongLookup = lookup with { Provenance = borrowed.Provenance with { LinearDescriptorSha256 = new string('F', 64) } };
         var wrongReader = reader with { Linear = wrongLookup };
         await Assert.ThrowsExactlyAsync<InvalidDataException>(async () => await ExposureMeasurementBindings.ReadCommittedAsync(
             wrongReader, exact, retained, CancellationToken.None));
@@ -426,6 +526,40 @@ public sealed class ExposureMeasurementTests
             exact, retained, CancellationToken.None));
         Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementBindings.FromAdmitted(
             lookup with { Disposition = LinearExposureDisposition.Pending }));
+    }
+
+    private static async Task<(LinearExposureLookup Lookup, ProcessingArtifact Raw, LinearExposureInputV1 Borrowed)>
+        BindToAdmission(ProcessingArtifact light)
+    {
+        var layout = light.Layout!;
+        var checksum = Convert.ToHexString(SHA256.HashData(light.Payload.Span));
+        var identity = new ProfileIdentityDescriptor("fixture", "1", new string('E', 64));
+        var descriptor = new ReconstructionDescriptor(new("agent", "rig", 1, light.CaptureId!.Value),
+            new(ExposureTime, ExposureTime, ExposureTime, ExposureTime, ExposureTime),
+            new(light.Integration, light.Integration, 10, 10, 0, 0, null, null),
+            new(identity, identity, identity, identity, identity), layout,
+            new(light.ArtifactId, light.Role, "raw", light.Variant, ExposureTime, [], RawRecipe, light.MediaType, checksum));
+        var raw = light with { DescriptorIdentitySha256 = CaptureContractJson.ComputeDescriptorSha256(descriptor) };
+        var key = new ExposureKey(new("agent", "virtual"), Guid.NewGuid(), descriptor.Capture.CaptureId);
+        var exposure = new ExposureInputV1(key, descriptor, new(layout, new(90, 0, 0), identity.Sha256, "optics-1", 1320));
+        var linear = await Normalize(raw);
+        var linearRef = new ExposureProductRef(key, new(Guid.NewGuid(), "linear", "linear-v1", linear.Variant),
+            linear.ArtifactId, linear.ContentIdentitySha256!, Convert.ToHexString(SHA256.HashData(linear.Payload.Span)), null);
+        var provenance = new LinearInputProvenanceV1(LinearExposureDisposition.QualifiedNormalizationOnly,
+            raw.ArtifactId, raw.DescriptorIdentitySha256, checksum, linear.ArtifactId, linear.DescriptorIdentitySha256!,
+            linearRef.PayloadSha256, linearRef.OutputIdentitySha256, ProcessingIdentity.CreateRecipeIdentity(linear.RecipeDescriptor!),
+            [], new(raw.ArtifactId, 4095), new(linear.ArtifactId, 4095));
+        return (new(exposure, provenance.Disposition, 1, linearRef, provenance, null), raw, new(exposure, linear, provenance));
+    }
+
+    private static async Task AssertRetainedReplay(LinearExposureLookup lookup, ProcessingArtifact raw,
+        LinearExposureInputV1 borrowed, ProcessingProduct expected)
+    {
+        var replay = await Produce(ExposureMeasurementBindings.Request(lookup, raw, borrowed, null, null,
+            expected.OutputIdentitySha256));
+        Assert.AreEqual(expected.OutputIdentitySha256, replay.OutputIdentitySha256);
+        Assert.AreEqual(expected.ChecksumSha256, replay.ChecksumSha256);
+        CollectionAssert.AreEqual(expected.Payload.ToArray(), replay.Payload.ToArray());
     }
 
     [TestMethod]
@@ -771,11 +905,13 @@ public sealed class ExposureMeasurementTests
     private static async Task AssertBayerProofRequiresItsRetainedRecipeAsync(ProcessingExecutionRequest request,
         ProcessingProduct currentProduct, ExposureMeasurementV1 result, ExposureHfdSampleV1 focus)
     {
-        var historical = await Produce(request with { Options = JsonSerializer.SerializeToElement(result.Input, MeasurementJson) });
+        var historical = await Produce(request with { Options = HistoricalFocusOptions(result.Input, bayerCoreCheck: false) });
         var original = ExposureMeasurementProducts.Read(historical);
         Assert.AreNotEqual(historical.OutputIdentitySha256, currentProduct.OutputIdentitySha256);
         CollectionAssert.AreEqual(original.Sources.Detections.ToArray(), result.Sources.Detections.ToArray());
         Assert.AreEqual("trailed-source", original.Hfd.Samples[focus.DetectionIndex].Reason);
+        var previous = await Produce(request with { Options = HistoricalFocusOptions(result.Input, bayerCoreCheck: true) });
+        CollectionAssert.AreEqual(previous.Payload.ToArray(), currentProduct.Payload.ToArray());
 
         Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(ReplaceSample(
             currentProduct, focus with { BayerCoreTrailUpperPixels = 3 })));
@@ -787,11 +923,21 @@ public sealed class ExposureMeasurementTests
         {
             var samples = result.Hfd.Samples.ToArray();
             samples[replacement.DetectionIndex] = replacement;
-            var payload = JsonSerializer.SerializeToUtf8Bytes(CaptureContractJson.Canonicalize(
-                JsonSerializer.SerializeToElement(result with { Hfd = result.Hfd with { Samples = samples } }, MeasurementJson)));
-            var hash = ProcessingIdentity.ComputePayloadSha256(payload);
-            return product with { Payload = payload, ChecksumSha256 = hash, ContentIdentitySha256 = hash };
+            return WithMeasurement(product, result with { Hfd = result.Hfd with { Samples = samples } });
         }
+    }
+
+    private static JsonElement HistoricalFocusOptions(ExposureMeasurementInputV1 input, bool bayerCoreCheck)
+        => bayerCoreCheck
+            ? JsonSerializer.SerializeToElement(new { BayerFocus = "noise-corrected-bayer-core-v1", Input = input }, MeasurementJson)
+            : JsonSerializer.SerializeToElement(input, MeasurementJson);
+
+    private static ProcessingProduct WithMeasurement(ProcessingProduct product, ExposureMeasurementV1 measurement)
+    {
+        var payload = JsonSerializer.SerializeToUtf8Bytes(CaptureContractJson.Canonicalize(
+            JsonSerializer.SerializeToElement(measurement, MeasurementJson)));
+        var hash = ProcessingIdentity.ComputePayloadSha256(payload);
+        return product with { Payload = payload, ChecksumSha256 = hash, ContentIdentitySha256 = hash };
     }
 
     private static double Gaussian(int x, int y, PixelPoint center, double sigma, double amplitude)
@@ -910,8 +1056,14 @@ public sealed class ExposureMeasurementTests
         return outcome.Products.Single();
     }
 
-    internal static async Task<ExposureMeasurementV1> Run(ProcessingArtifact raw, ProcessingArtifact? linear, ExposureMeasurementInputV1 input)
-        => ExposureMeasurementProducts.Read(await Produce(ExposureMeasurementProducts.Request(input, raw, linear)));
+    internal static async Task<ExposureMeasurementV1> Run(ProcessingArtifact raw, ProcessingArtifact? linear,
+        ExposureMeasurementInputV1 input, bool historicalFocus = false)
+    {
+        var request = ExposureMeasurementProducts.Request(input, raw, linear);
+        if (historicalFocus)
+            request = request with { Options = HistoricalFocusOptions(input, bayerCoreCheck: false) };
+        return ExposureMeasurementProducts.Read(await Produce(request));
+    }
 
     private sealed record RetainedReader(LinearExposureLookup Linear, ExposureProductLookup Product) : IExposureProductReader
     {
