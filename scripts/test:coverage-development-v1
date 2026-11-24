@@ -267,11 +267,13 @@ if result.returncode != 0:
     raise SystemExit(f"Inventory fixture build failed: {result.stdout}{result.stderr}")
 shutil.copy2(assembly_output / f"{assembly_name}.dll", assembly_output / "Fixture.Tests.dll")
 shutil.copy2(assembly_output / f"{assembly_name}.deps.json", assembly_output / "Fixture.Tests.deps.json")
-(inventory_repo / "tests/Fixture.Tests/test-categories.json").write_text('{"Unit":1}')
-for retired_project in ("HVO.SkyMonitor.LogicHost.Tests", "HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests"):
-    retired_inventory = inventory_repo / "tests" / retired_project / "test-categories.json"
-    retired_inventory.parent.mkdir()
-    retired_inventory.write_text('{"Unit":4}')
+unit_inventory = inventory_repo / "tests/unit-test-projects.json"
+unit_projects = ["Fixture.Tests", "HVO.SkyMonitor.LogicHost.Tests", "HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests"]
+for project in unit_projects:
+    project_file = inventory_repo / "tests" / project / f"{project}.csproj"
+    project_file.parent.mkdir(exist_ok=True)
+    project_file.touch()
+unit_inventory.write_text(json.dumps(unit_projects))
 shutil.copy2(root / "tests/coverage.runsettings", inventory_repo / "tests/coverage.runsettings")
 fixture_scripts = inventory_repo / "scripts"
 fixture_scripts.mkdir()
@@ -420,7 +422,8 @@ second_output = second_project / "bin/Release/net10.0"
 shutil.copytree(assembly_output, second_output)
 shutil.copy2(second_output / "Fixture.Tests.dll", second_output / "ZFixture.Tests.dll")
 shutil.copy2(second_output / "Fixture.Tests.deps.json", second_output / "ZFixture.Tests.deps.json")
-(second_project / "test-categories.json").write_text('{"Unit":1}')
+(second_project / "ZFixture.Tests.csproj").touch()
+unit_inventory.write_text(json.dumps([*unit_projects, "ZFixture.Tests"]))
 second_report = results / "zzz/coverage.cobertura.xml"
 second_report.parent.mkdir()
 second_attachment = results / "zattachment/In/computer/coverage.cobertura.xml"
@@ -455,6 +458,7 @@ dependencies_file.write_text(json.dumps(dependencies))
 wrapper_case("classless report with empty roots and no included assemblies is valid", 0, "Coverage gate passed.")
 # These are private temporary fixtures owned by this test.
 shutil.rmtree(second_project)
+unit_inventory.write_text(json.dumps(unit_projects))
 shutil.rmtree(second_report.parent)
 shutil.rmtree(results / "zattachment")
 second_trx.unlink()

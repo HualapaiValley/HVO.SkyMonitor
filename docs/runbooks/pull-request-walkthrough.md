@@ -74,8 +74,8 @@ Plus the focused tests for what changed. A PR that touches the shared
 dependency graph, CI control, or a shell library additionally runs the gates
 that graph feeds: the category audit, `scripts/test:ci-classification`,
 `scripts/ci:shell-syntax`, `scripts/docs:audit-operations`, and, when
-behaviour could move, the Integration selection locally. Record what you ran
-and the numbers in the PR body; "tests pass" without counts is not evidence.
+behaviour could move, the Integration selection locally. Record commands and
+outcomes in the PR body. Link the [generated discovery report or TRX evidence](ci-pipeline.md#categories).
 
 ## 4. Open the draft
 

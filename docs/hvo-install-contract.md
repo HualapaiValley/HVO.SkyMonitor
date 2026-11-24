@@ -56,8 +56,8 @@ controller's verified Stop and idle-only redeploy, and CameraAgent's capture pau
 ## 3. Cutting a release
 
 1. A version-bump PR.
-2. A release PR. It renames `## [Unreleased]` in `CHANGELOG.md` (Keep a Changelog) to the version and adds a non-empty
-   `docs/upgrade-notes/X.Y.Z.md`.
+2. A release PR. Use `scripts/release:changelog` to assemble the pending fragments and any remaining Unreleased
+   entries into the version section in `CHANGELOG.md`. Add a non-empty `docs/upgrade-notes/X.Y.Z.md`.
 3. An annotated tag `vX.Y.Z` (or `vX.Y.Z-rc.<n>`) on the release branch. That is the default branch, except in
    SkyMonitor, whose default branch is the `development/v1` integration branch and whose release branch is `main`.
 

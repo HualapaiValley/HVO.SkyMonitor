@@ -226,8 +226,9 @@ as HIGH. HIGH concerns override LOW categories. Apply this at each formal
 review stage after draft checks pass on the exact head; profiles and the A/B/C/M validation ladder do not replace reviewers.
 Humans/bots, an availability waiver, elapsed time, or the legacy correction cap
 cannot substitute for the required named CLEAN reports. Only High/Medium
-review findings block; Critical is High. Lows become follow-up issues through
-Kepler. Incompleteness or missing required evidence is always at least Medium,
+review findings block; Critical is High. Kepler tracks Lows through follow-ups
+and uses [rolling Low batches](../planning/agent-execution.md#rolling-low-batches)
+after Ready. Incompleteness or missing required evidence is always at least Medium,
 never Low or deferrable. Required tests and CI remain separate gates.
 
 1. The owner reads the original GitHub issue, all discussion and acceptance

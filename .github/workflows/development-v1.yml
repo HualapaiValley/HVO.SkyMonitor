@@ -45,6 +45,17 @@ jobs:
           fi
           git diff --check "$BASE_SHA" "$HEAD_SHA"
 
+      - name: Validate changelog fragments
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          args=(--check)
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            args+=(--base "${BASE_SHA:?Missing PR base SHA}")
+          fi
+          ./scripts/release:changelog "${args[@]}"
+          ./scripts/test:changelog
+
       - name: Lint workflows
         run: |
           curl -fsSL -o "$RUNNER_TEMP/actionlint.tar.gz" \

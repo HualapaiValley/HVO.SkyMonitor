@@ -22,7 +22,9 @@ development/v1
 
 Create work from the current `development/v1` head. Ordinary issue branches and pull requests target `development/v1`, not `main`.
 
-A pull request that changes what operators or users notice adds a line under `## [Unreleased]` in [`CHANGELOG.md`](../CHANGELOG.md). The rule is in [`AGENTS.md`](../AGENTS.md#changelog).
+A pull request that changes what operators or users notice adds one
+[changelog fragment](../changelog.d/README.md). The release PR assembles the
+pending fragments into [`CHANGELOG.md`](../CHANGELOG.md).
 
 ## Issue And Pull Request Forms
 
@@ -45,7 +47,7 @@ Microsoft NuGet package pins use 10.0.14. The .NET 10.0.14 runtime security fixe
 
 The branch currently requires:
 
-- **Development v1 / Preflight** on a GitHub-hosted runner: exact-range whitespace validation, pinned workflow linting, shell syntax, the inexpensive CI-control regression checks, coverage baseline policy, the full-history [secret scan](runbooks/ci-pipeline.md#secret-scan), and, when the classifier selects them, the [release script tests](runbooks/ci-pipeline.md#release-script-tests).
+- **Development v1 / Preflight** on a GitHub-hosted runner: exact-range whitespace and changelog fragment validation, pinned workflow linting, shell syntax, the inexpensive CI-control regression checks, coverage baseline policy, the full-history [secret scan](runbooks/ci-pipeline.md#secret-scan), and, when the classifier selects them, the [release script tests](runbooks/ci-pipeline.md#release-script-tests).
 - **Development v1 / Build and Unit** on a self-hosted x64 runner: pinned SDK setup, solution restore, warning-clean Release build, the [Docker-disabled Unit selection for active test projects](runbooks/ci-pipeline.md#logichost-test-retirement), and [canonical per-file coverage floors](runbooks/ci-pipeline.md#development-v1-per-file-coverage). Collection targets the assemblies owning those floors. Catalog-dependent ReleaseTool and full-suite aggregate/component coverage retain their documented local/full-qualification scope.
 
 Ready PRs can use a documentation fast path after Preflight succeeds. Build and Unit verifies the checked-out merge parents and runs the first parent's classifier against both exact endpoints, the PR head and the merge tree. Only regular, non-executable added or modified UTF-8 text without control characters under `docs/` with `.md`, `.markdown` or `.txt` extensions, plus root `README.md`, `AGENTS.md` and `CLAUDE.md`, can qualify. Catalog, contracts, validation, generated evidence, merge-queue drill artifacts, images and upgrade notes are excluded. Both endpoint inventories must pass the existing project and import audit and match the base inventory. A tree with SDK or package restore inputs also requires a successful replay against the base's reviewed restore-import certificate. The fast path skips the ordinary workload, including the solution build, Unit, coverage and terminal screenshots. A missing, stale or unverifiable certificate or any uncertain classification selects full validation. Build and Unit records the merge, base and PR head, decision, reason and Preflight dependency. Push and merge-group runs always perform the full workload. See the [restore-import runbook](runbooks/development-v1-restore-imports.md) for capture, review and diagnosis. Refs #1989 and #1995.
@@ -158,7 +160,7 @@ The operator-approved #1142 split keeps these checks off the short path:
 | Check | Required full-qualification owner in `ci.yml` |
 | --- | --- |
 | Whole-repository ShellCheck and its contract tests | Quality |
-| Exhaustive test discovery, category disjointness and inventory counts | Build |
+| Exhaustive test discovery, category disjointness and generated totals | Build |
 | Integration, full-suite aggregate/component coverage, architecture/publish and migrations | Existing full-matrix jobs; measurable canonical per-file floors run in Build and Unit |
 | Deployment qualification | Existing selected Deployment Contracts job |
 
@@ -203,6 +205,13 @@ relays verified finding dispositions under the
 [common policy](development/policy/common.md#authority-and-precedence).
 
 A pull request is marked ready only after the current head is reviewed, every finding has a verified terminal disposition, and every review thread is resolved.
+
+After Ready, build or test breaks, High or Medium correctness findings, and
+missed acceptance criteria require correction. Kepler tracks post-Ready Low
+findings in [rolling issues labeled `follow-up` and `low-batch`](planning/agent-execution.md#rolling-low-batches).
+Sync a v1 PR with
+`git merge --no-ff origin/development/v1` only to resolve an actual conflict.
+The merge queue validates the combined tree.
 
 ## Promotion To main
 

@@ -89,7 +89,7 @@ is_release_scripts_path() {
     scripts/release:cameraagent-publish | scripts/release:check-cameraagent-publish | scripts/cameraagent-release.targets | scripts/test:cameraagent-r2r | \
     scripts/time-data:update | scripts/release:assets | scripts/release:combine-images | scripts/release:check-image-labels | scripts/release:push-image | \
       scripts/release:prerelease-gate | scripts/release:prerelease-check | scripts/release:publish-prerelease | \
-      scripts/release:version | scripts/release:notes | scripts/release:gate | scripts/release:check-environment | \
+      scripts/release:version | scripts/release:notes | scripts/release:changelog | scripts/release:gate | scripts/release:check-environment | \
       scripts/release:publish | scripts/release:tag-latest | \
       scripts/test:release-images | scripts/test:release-install | scripts/test:release-scripts | scripts/lib/deployment-installer-qualification.sh | \
       scripts/lib/github-api.sh | scripts/lib/releases.sh | \
@@ -121,6 +121,9 @@ is_reduced_path() {
   if [[ "$path" =~ ^\.agents/skills/[^/]+/SKILL\.md$ ]]; then
     return 0
   fi
+  if [[ "$path" =~ ^changelog\.d/[a-z0-9]+(-[a-z0-9]+)*\.(added|changed|deprecated|removed|fixed|security)\.md$ ]]; then
+    return 0
+  fi
 
   case "$path" in
     docs/catalog/hyg-v42-attribution.md | docs/catalog/hyg-v42-license.md | docs/catalog/hyg-v44-attribution.md | docs/catalog/hyg-v44-license.md)
@@ -132,7 +135,7 @@ is_reduced_path() {
     docs/* | .devcontainer/* | .vscode/* | .github/prompts/*)
       return 0
       ;;
-    README.md | AGENTS.md | CLAUDE.md | CHANGELOG.md | THIRD-PARTY-NOTICES.md)
+    README.md | CONTRIBUTING.md | AGENTS.md | CLAUDE.md | CHANGELOG.md | THIRD-PARTY-NOTICES.md | changelog.d/README.md)
       return 0
       ;;
     .github/copilot-instructions.md | .github/pull_request_template.md)

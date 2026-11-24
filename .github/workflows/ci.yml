@@ -154,6 +154,10 @@ jobs:
           mapfile -d '' -t workflows < "$RUNNER_TEMP/actionlint-workflows.list"
           ((${#workflows[@]} > 0)) || { echo 'No workflow files found for actionlint.' >&2; exit 1; }
           /tmp/actionlint "${workflows[@]}"
+      - name: Validate changelog fragments
+        run: |
+          ./scripts/release:changelog --check
+          ./scripts/test:changelog
       - name: Run static and lightweight contract checks
         run: |
           ./scripts/ci:shell-syntax
@@ -320,6 +324,8 @@ jobs:
         run: dotnet build HVO.SkyMonitor.v9.slnx --no-restore --no-incremental --configuration Release -warnaserror
       - name: Audit behavioral test categories
         run: dotnet run --project scripts/test-categories/HVO.SkyMonitor.TestCategoryAudit.csproj --configuration Release
+      - name: Test category discovery contracts
+        run: ./scripts/test:test-category-audit
 
   unit:
     name: Unit Tests

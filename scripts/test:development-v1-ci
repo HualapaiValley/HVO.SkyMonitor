@@ -377,6 +377,17 @@ def violations(short, full, queue=None, extra=None):
     base_images = step(preflight, "Check Dockerfile base images")
     require(base_images.strip() == "run: ./scripts/ci:base-images",
             "base-image check is unconditional and fail-closed")
+    changelog = step(preflight, "Validate changelog fragments")
+    require('BASE_SHA: ${{ github.event.pull_request.base.sha }}' in changelog and
+            'if [[ "$GITHUB_EVENT_NAME" == pull_request ]]' in changelog and
+            'args+=(--base "${BASE_SHA:?Missing PR base SHA}")' in changelog and
+            './scripts/release:changelog "${args[@]}"' in changelog and
+            "./scripts/test:changelog" in changelog and "        if:" not in changelog,
+            "Preflight validates fragments and limits each PR against the exact base")
+    full_changelog = step(quality, "Validate changelog fragments")
+    require("./scripts/release:changelog --check" in full_changelog and
+            "./scripts/test:changelog" in full_changelog and "        if:" not in full_changelog,
+            "Full Quality validates fragments on every qualified tree")
     require(preflight_timeout in preflight.splitlines(), "Preflight allows 360 seconds for every event")
     # Issue #1321: both required profiles scan the complete history for secrets,
     # inside a check that branch protection already requires.
@@ -490,6 +501,8 @@ def violations(short, full, queue=None, extra=None):
     )
     require("if: needs.changes.outputs.mode == 'full'" in qualification_build,
             "category audit belongs to full qualification")
+    require("run: ./scripts/test:test-category-audit" in qualification_build,
+            "full Build tests category discovery contracts")
     # Refs #1747. Atlas assigned the build label only to gh-runner-05/06.
     # Qualification retains its own label; v1 selects the ready build pair.
     build_pool = "[self-hosted, linux, x64, hvo-skymonitor-build]"
@@ -637,6 +650,8 @@ mutations = (
         "scripts/test-categories/HVO.SkyMonitor.TestCategoryAudit.csproj", "missing.csproj")),
     ("lint destination removed", short, full.replace("./scripts/ci:shellcheck", ":")),
     ("control guard removed", short.replace("./scripts/test:ci-classification", ":"), full),
+    ("PR fragment limit removed", short.replace('args+=(--base "${BASE_SHA:?Missing PR base SHA}")', ":"), full),
+    ("full fragment validation removed", short, full.replace("./scripts/release:changelog --check", ":")),
     ("evidence lost on failure", short.replace("if: always()", "if: success()"), full),
     ("qualification job on general pool", short, full.replace(
         "x64, hvo-skymonitor, hvo-qualification]", "x64, hvo-skymonitor]", 1)),

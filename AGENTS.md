@@ -49,8 +49,9 @@ waiver, elapsed time, and a correction cap cannot substitute for required Sol/
 Opus CLEAN reports on the candidate. Missing required review means BLOCKED.
 
 Only **High and Medium review findings block**; classify a Critical finding as
-High. Lows become linked follow-up issues through Kepler and do not force
-another correction round. Incompleteness or missing required evidence always
+High. Kepler tracks Lows through linked follow-ups. Post-Ready Lows follow the
+[rolling Low-batch policy](docs/planning/agent-execution.md#rolling-low-batches).
+Incompleteness or missing required evidence always
 blocks, is at least Medium, and is **never Low** or deferrable. Required tests
 and CI checks remain gates independently of finding severity. CLEAN requires
 complete scope and no unresolved High/Medium findings; any remaining Lows must
@@ -122,6 +123,11 @@ have follow-up tracking.
   so the review is the wrong instrument and the gate is the right one.
 - Reproduce the exact category/project evidence, architecture/publish, migration, and canonical coverage gates with `docs/runbooks/ci-pipeline.md` and `.github/workflows/ci.yml`.
 - Unit selection is positive and passes with an invalid Docker endpoint. Integration selection is a separate required gate and requires Docker for the Testcontainers assemblies.
+- Full qualification publishes discovered case counts by assembly and category
+  in the Build job summary. After a Release build, reproduce it with
+  `dotnet run --project scripts/test-categories/HVO.SkyMonitor.TestCategoryAudit.csproj --configuration Release`.
+  `tests/unit-test-projects.json` records Unit assembly membership for test selection
+  and coverage. Update it when a project gains or loses its Unit selection.
 - Run a focused MSTest with `dotnet test <project> --filter "FullyQualifiedName~Namespace.Class.Method"`.
 - `tests/coverage.runsettings` excludes test assemblies, `TestSupport`, migrations, and build output; keep coverage configuration aligned when adding projects.
 - Use the risk-tiered validation ladder in `docs/planning/agent-execution.md`:
@@ -180,13 +186,14 @@ have follow-up tracking.
 
 ## Changelog
 
-- A pull request that changes what an operator or user notices adds a line under `## [Unreleased]` in `CHANGELOG.md`.
+- A pull request that changes what an operator or user notices adds one [changelog fragment](changelog.d/README.md).
   This covers the installer, UI, API, configuration, deployment, images, and the logs and metrics operators act on.
-- Put the line under the Keep a Changelog heading that fits: `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed` or
-  `Security`. Write it for an operator, and end it with the issue number.
+- Choose the Keep a Changelog section in the filename. Write one bullet for an operator
+  and end it with the issue number. Run `./scripts/release:changelog --check`.
 - Internal refactoring, tests, CI and agent-process changes add no entry.
-- Cutting a release renames `[Unreleased]` and adds `docs/upgrade-notes/X.Y.Z.md`. That is the release procedure of the
-  install contract (section 3), not part of an ordinary pull request.
+- The release PR assembles the fragments and remaining Unreleased entries into
+  `CHANGELOG.md` and adds `docs/upgrade-notes/X.Y.Z.md`. Follow the
+  [release runbook](docs/runbooks/releases.md#cutting-a-release).
 
 ## Roadmap Execution
 
