@@ -222,20 +222,20 @@ itself prevent that timeout. Refs #1747.
 
 ## Development v1 documentation fast path
 
-A ready PR still runs the required Build and Unit job after successful hosted Preflight. Its full-history checkout verifies the merge parents and runs the first parent’s `scripts/ci:classify` against both the PR head and checked-out merge tree, relative to that base. Only a successful, literal `docs_fast_path=true` normalized by the shell skips the workload; a missing output or classifier failure selects the full workload. The artifact retains the exact path list, decision, reason and Preflight dependency. The base-controlled `scripts/ci:docs-inventory` certifies the audited build-input tree; changes to it require review, and a mismatch selects full validation with the inventory differences in the artifact. The narrow allowlist and exclusions are documented in [Development v1](../development-v1.md). Push and merge-group runs remain full validation; no result is reused across events. Refs #1989.
+A ready PR still runs the required Build and Unit job after successful hosted Preflight. Its full-history checkout verifies the merge parents and runs the first parent's `scripts/ci:classify` against both the PR head and checked-out merge tree. Both endpoints must pass the base-controlled source inventory audit. For SDK or package restore inputs, the job also requires a successful proof against the [reviewed restore-import certificate](development-v1-restore-imports.md). A missing result, mismatch or failed proof selects full validation. The artifact retains the exact path list, decision, reason and Preflight dependency. The narrow allowlist and exclusions are documented in [Development v1](../development-v1.md). Push and merge-group runs always perform full validation. Refs #1989 and #1995.
 
-### Refresh the documentation CI inventory
+### Reproduce the documentation CI inventory
 
-When a build input changes, generate a candidate from the committed tree and replace the certificate only after the generator succeeds:
+Use the [combined refresh procedure](development-v1-restore-imports.md#refresh-and-review) for any inventory change. With a current restore certificate, this read-only check reproduces the inventory from the committed tree and compares it byte for byte with the checked-out copy.
 
 ```bash
-inventory_tmp="$(mktemp "${TMPDIR:-/tmp}/hvo-docs-inventory.XXXXXXXX")" &&
-  ./scripts/ci:classify --print-docs-inventory HEAD > "$inventory_tmp" &&
-  cp "$inventory_tmp" scripts/ci:docs-inventory &&
-  rm "$inventory_tmp"
+(
+  set -o pipefail
+  ./scripts/ci:classify --print-docs-inventory HEAD | cmp - scripts/ci:docs-inventory
+)
 ```
 
-The generator follows committed explicit MSBuild imports regardless of suffix, checks the resulting inputs and rejects unknown imports, tracked symlinks and submodules, automatic user/response inputs, repository-root or docs-rooted projects, escaped paths, unsafe globs and references to eligible documentation. Review its output and the build-input diff together: verify each import resolves to the intended committed file, that no imported or implicit input is missing, and that no eligible documentation becomes a build or test input. Run the generator again and compare its output byte-for-byte with the certificate, then run the classifier and workflow contract suites. A failed audit or stale certificate keeps the workload on the full path; Preflight reports a non-failing warning with the audit reason. Restore can generate package build imports that are not represented by the committed inventory. Until reviewed package identities, sources and restore-time imports are bound to a certificate, the generator refuses trees containing SDK projects or package references. The current solution contains such references, so documentation PRs currently run full validation; refreshing the inventory cannot waive that condition. A mandatory certificate-maintenance gate remains a separate follow-up. Refs #1989.
+The generator follows committed explicit MSBuild imports regardless of suffix. It rejects unknown imports, tracked symlinks and submodules, automatic user and response inputs, repository-root or docs-rooted projects, escaped paths, unsafe globs and references to eligible documentation. Review its output and the build-input diff together. Check that each import resolves to the intended committed file, all implicit inputs are accounted for, and eligible documentation remains outside the build and test inputs. A failed audit or stale certificate selects full validation, and hosted Preflight reports a non-failing warning with the source audit reason. The mandatory certificate-maintenance gate is tracked in #1996.
 
 ## Development v1 Preflight Budget
 
