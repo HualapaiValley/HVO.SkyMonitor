@@ -253,6 +253,61 @@ public sealed partial class VirtualSkyCameraModuleTests
     }
 
     [TestMethod]
+    public async Task RegionalStellarVisibility_UnreadableLinearLeavesOpaqueTilesInsufficient()
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-regvis-unreadable-linear");
+        var token = TestContext.CancellationToken;
+        var clock = new CenteredClock { UtcNow = RegionalNightUtc };
+        var deviceClock = new ExposureTestTimeProvider(RegionalNightUtc, autoAdvance: true);
+        try
+        {
+            var profile = CreateRegionalVisibilityProfile(root, RegionalNightUtc, CameraPixelFormat.Mono16);
+            var (patchy, clearTiles, opaqueTiles) = FindHeldOutPatchyCloudScenario(profile, RegionalNightUtc);
+            profile = CreateRegionalVisibilityProfile(root, RegionalNightUtc, CameraPixelFormat.Mono16, cloudScenario: patchy);
+            var catalog = CreateRegionalVisibilityCatalog(RegionalNightUtc, profile, starsPerInnerTile: 4,
+                tiles: clearTiles.Concat(opaqueTiles).ToHashSet());
+            var fault = new MissingLinearBeforeStep30bFault(root);
+
+            var assessment = await RunSingleRegionalVisibilityAsync(root, clock, deviceClock, profile, catalog,
+                RegionalNightUtc, token, fault).ConfigureAwait(false);
+
+            Assert.IsTrue(fault.Injected);
+            Assert.AreEqual(0, assessment.Grid.DeficitTileCount);
+            foreach (var (column, row) in opaqueTiles)
+            {
+                var tile = assessment.Tiles.Single(item => item.Column == column && item.Row == row);
+                Assert.AreEqual(RegionalVisibilityTileStatus.InsufficientEvidence, tile.Status);
+                CollectionAssert.Contains(tile.ReasonCodes.ToArray(), RegionalVisibilityReasonCodes.TileBackgroundUnavailable);
+            }
+            foreach (var (column, row) in clearTiles)
+            {
+                var tile = assessment.Tiles.Single(item => item.Column == column && item.Row == row);
+                Assert.AreEqual(RegionalVisibilityTileStatus.Clear, tile.Status);
+            }
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private sealed class MissingLinearBeforeStep30bFault(string root) : ICaptureProcessingFaultInjector
+    {
+        public bool Injected { get; private set; }
+
+        public void Inject(CaptureProcessingFaultPoint point, string nodeId)
+        {
+            if (!Injected && nodeId == "regional-visibility" && point == CaptureProcessingFaultPoint.BeforeNodeExecution)
+            {
+                var linear = Directory.EnumerateFiles(Path.Combine(root, "frames"), "*.bin", SearchOption.AllDirectories)
+                    .Single(path => Path.GetFileName(Path.GetDirectoryName(path)) == "Calibrated");
+                File.Move(linear, linear + ".moved");
+                Injected = true;
+            }
+        }
+    }
+
+    [TestMethod]
     [DataRow("defocused", RegionalVisibilityAssessmentStatus.Withheld, RegionalVisibilityReasonCodes.PoorFocus,
         DisplayName = "RegionalStellarVisibility_Confounder_PoorFocusWithholds")]
     [DataRow("daylight", RegionalVisibilityAssessmentStatus.Withheld, RegionalVisibilityReasonCodes.Daylight,
@@ -817,9 +872,10 @@ public sealed partial class VirtualSkyCameraModuleTests
         CameraModuleConfig profile,
         ICelestialCatalog catalog,
         DateTimeOffset captureUtc,
-        CancellationToken token)
+        CancellationToken token,
+        ICaptureProcessingFaultInjector? fault = null)
     {
-        using var provider = RegionalVisibilityProvider(root, clock, profile.DeploymentLocation!, catalog);
+        using var provider = RegionalVisibilityProvider(root, clock, profile.DeploymentLocation!, catalog, fault);
         var active = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(provider, profile).ConfigureAwait(false);
         var ingress = provider.GetRequiredService<RawCaptureIngress>();
         var module = new VirtualSkyCameraModule(deviceClock, catalog, new ProjectedSceneStore(),

@@ -409,7 +409,16 @@ internal sealed class RegionalStellarVisibilityCaptureProcessingStep(
             return null;
         }
 
-        var lease = await custody.OpenLinearAsync(linearProduct, TimeSpan.FromMinutes(2), cancellationToken).ConfigureAwait(false);
+        CenteredExposureInputLease? lease;
+        try
+        {
+            lease = await custody.OpenLinearAsync(linearProduct, TimeSpan.FromMinutes(2), cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException)
+        {
+            // Retained detections still supply local background for their own tiles.
+            return null;
+        }
         if (lease is null)
         {
             return null;
