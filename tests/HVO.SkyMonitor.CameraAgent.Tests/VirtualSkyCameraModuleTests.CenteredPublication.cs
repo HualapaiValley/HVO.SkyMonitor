@@ -381,7 +381,8 @@ public sealed partial class VirtualSkyCameraModuleTests
         var start = new DateTimeOffset(2026, 11, 20, 22, 30, 0, TimeSpan.Zero);
         var clock = new CenteredClock { UtcNow = start };
         var deviceClock = new ExposureTestTimeProvider(start, autoAdvance: true);
-        var profile = CenteredRuntimeProfile(root, start, format);
+        // The wide field and injected trail use calibrated pixel positions on the 224-square sensor.
+        var profile = CenteredRuntimeProfile(root, start, format, size: wideField || detectLateTrail ? 224 : 160);
         if (detectLateTrail)
             profile = AddCenteredTrailScenario(profile, start);
         var catalog = wideField ? CenteredRuntimeWideCatalog(start, profile) : CenteredRuntimeCatalog(start);
