@@ -131,9 +131,13 @@ public sealed class SiloPublicationOwnershipTests
 
         var payloadDirectory = Path.Combine(silo.RootPath, "payloads-v1");
         var partial = Path.Combine(payloadDirectory, $"{SiloFilePayloadSpool.TokenOf(extra.Sha256)}.{Guid.NewGuid():N}.tmp");
+        var metadataPartial = Path.Combine(silo.RootPath, SiloStateRoot.SpoolDirectoryName,
+            $"{SiloObjectSpool.NameOf(extra.Sha256)}.{Guid.NewGuid():N}.tmp");
         await File.WriteAllBytesAsync(partial, [1, 2, 3], token).ConfigureAwait(false);
+        await File.WriteAllBytesAsync(metadataPartial, [1, 2, 3], token).ConfigureAwait(false);
         await silo.RestartAsync().ConfigureAwait(false);
         Assert.IsFalse(File.Exists(partial));
+        Assert.IsFalse(File.Exists(metadataPartial));
         var resumed = await silo.Publisher.ResumeAsync(1, token).ConfigureAwait(false);
         Assert.AreEqual(SiloStagedState.Visible, resumed.Single().State);
         var reopened = await silo.Catalog.ReopenAsync(staged.GroupId, staged.RevisionId, token).ConfigureAwait(false);
