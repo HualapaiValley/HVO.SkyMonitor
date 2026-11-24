@@ -400,8 +400,14 @@ public sealed class CameraAgentLifecycleClientTests
         Assert.IsTrue(handler.RequestCount > 1, $"expected retries before the deadline, saw {handler.RequestCount} requests");
     }
 
+    // Unit checks the pause and drain outcome. PauseAndDrainDoesNotStackDeadlines
+    // checks the shared wall-clock budget in the Performance suite.
     [TestMethod]
-    public async Task PauseAndDrain_SharesOneDrainBudgetBetweenTheCommandAndTheBoundary()
+    [Timeout(30_000)]
+    public async Task PauseAndDrain_SharesOneDrainBudgetBetweenTheCommandAndTheBoundary() =>
+        _ = await VerifyPauseAndDrainBudgetAsync();
+
+    internal static async Task<TimeSpan> VerifyPauseAndDrainBudgetAsync()
     {
         var operationId = Guid.NewGuid();
         var budgets = new LifecycleBudgets(
@@ -426,8 +432,7 @@ public sealed class CameraAgentLifecycleClientTests
 
         stopwatch.Stop();
         StringAssert.Contains(exception.Message, "last observed capture control 'Initializing'", StringComparison.Ordinal);
-        // A stacked budget would poll for a further full drain deadline (about 3.5 s in total).
-        Assert.IsTrue(stopwatch.Elapsed < TimeSpan.FromSeconds(3), $"the boundary poll did not share the drain budget: {stopwatch.Elapsed}");
+        return stopwatch.Elapsed;
     }
 
     [TestMethod]
@@ -504,7 +509,10 @@ public sealed class CameraAgentLifecycleClientTests
     }
 
     [TestMethod]
-    public async Task Resume_ReportsAnUnacknowledgedCommandAsAnInstallerFailure()
+    public async Task Resume_ReportsAnUnacknowledgedCommandAsAnInstallerFailure() =>
+        _ = await VerifyUnacknowledgedResumeAsync();
+
+    internal static async Task<TimeSpan> VerifyUnacknowledgedResumeAsync()
     {
         // The read budget is deliberately far larger than the drain budget so a
         // resume that used the wrong one would exceed the elapsed-time bound.
@@ -518,12 +526,11 @@ public sealed class CameraAgentLifecycleClientTests
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
         var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
-            () => client.ResumeAsync(Guid.NewGuid(), "lifecycle-token", CancellationToken.None));
+            () => client.ResumeAsync(Guid.NewGuid(), "lifecycle-token", CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(15)));
 
         stopwatch.Stop();
         StringAssert.Contains(exception.Message, "did not acknowledge the lifecycle resume command within its budget", StringComparison.Ordinal);
-        // A resume must honour the configured drain budget rather than a fixed longer one.
-        Assert.IsTrue(stopwatch.Elapsed < TimeSpan.FromSeconds(5), $"the resume did not honour its budget: {stopwatch.Elapsed}");
+        return stopwatch.Elapsed;
     }
 
     [TestMethod]

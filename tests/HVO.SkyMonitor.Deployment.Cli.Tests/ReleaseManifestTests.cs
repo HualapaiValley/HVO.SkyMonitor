@@ -355,7 +355,10 @@ public sealed partial class ReleaseManifestTests
     }
 
     [TestMethod]
-    public async Task Parse_TheSizeLimitsWorthOfDistinctNotes_IsRefusedForItsCountBeforeAnyIsCompared()
+    public Task Parse_TheSizeLimitsWorthOfDistinctNotes_IsRefusedForItsCount() =>
+        VerifyTooManyNotesAsync(TimeSpan.FromMinutes(2));
+
+    internal static async Task VerifyTooManyNotesAsync(TimeSpan timeout)
     {
         // 25,000 distinct notes fit in the size limit. Checked against every earlier note they took about 312 million
         // comparisons, minutes of work.
@@ -363,7 +366,7 @@ public sealed partial class ReleaseManifestTests
         Assert.IsLessThan(ReleaseManifest.MaximumLength, json.Length);
 
         var exception = await Task.Run(() => Assert.ThrowsExactly<InstallerException>(() => ReleaseManifest.Parse(json)))
-            .WaitAsync(TimeSpan.FromSeconds(5));
+            .WaitAsync(timeout);
 
         Assert.AreEqual(
             $"The installer will not use release.json: it has more than {ReleaseManifest.MaximumUpgradeNotes} upgrade notes.",
@@ -371,7 +374,10 @@ public sealed partial class ReleaseManifestTests
     }
 
     [TestMethod]
-    public async Task Parse_TheLargestValidRelease_IsReadInLinearTime()
+    public Task Parse_TheLargestValidRelease_RetainsEveryNote() =>
+        VerifyLargestValidReleaseAsync(TimeSpan.FromMinutes(2));
+
+    internal static async Task VerifyLargestValidReleaseAsync(TimeSpan timeout)
     {
         // As many notes as the limit, each for a long pre-release that is costly to match, filling the size limit. Each
         // version is matched once and a repeated release is found in a set, so this reads in milliseconds; checking each
@@ -380,7 +386,7 @@ public sealed partial class ReleaseManifestTests
         var json = Notes(Enumerable.Range(0, ReleaseManifest.MaximumUpgradeNotes).Select(index => $"1.0.0-{prerelease}.{index}"));
         Assert.IsLessThan(ReleaseManifest.MaximumLength, json.Length);
 
-        var manifest = await Task.Run(() => ReleaseManifest.Parse(json)).WaitAsync(TimeSpan.FromSeconds(5));
+        var manifest = await Task.Run(() => ReleaseManifest.Parse(json)).WaitAsync(timeout);
 
         Assert.HasCount(ReleaseManifest.MaximumUpgradeNotes, manifest.UpgradeNotes);
     }

@@ -22,7 +22,8 @@ public sealed class MeasuredAstrometryResourceTests
         var covariances = f.Associations.Associations.Where(a => detections.Any(d => d.Index == a.DetectionIndex) &&
                 a.CovarianceXX is > 0 && a.CovarianceYY is > 0 && a.CovarianceXX * a.CovarianceYY - a.CovarianceXY * a.CovarianceXY > 0)
             .Select(a => new AstrometricPixelCovariance(a.DetectionIndex, a.CovarianceXX!.Value, a.CovarianceXY!.Value, a.CovarianceYY!.Value)).ToArray();
-        var solver = MeasuredAstrometryFixture.Options.Solver!;
+        var options = MeasuredAstrometryFixture.PerformanceOptions;
+        var solver = options.Solver!;
         var prior = AstrometricSolver.Solve(f.Context.Frame, f.Calibration, f.Catalog, detections, solver).Assessment;
         Assert.IsTrue(prior.HasMeasuredMapping, prior.Reason);
         var rows = new List<object>();
@@ -31,7 +32,7 @@ public sealed class MeasuredAstrometryResourceTests
         byte[]? payload = null;
         foreach (var warm in new[] { false, true })
         {
-            var request = f.Request(context: f.Context with { PreviousAccepted = warm ? prior : null });
+            var request = f.Request(context: f.Context with { PreviousAccepted = warm ? prior : null }, options: options);
             foreach (var recipe in new[] { false, true })
             {
                 async ValueTask<AstrometricFrameAssessment> Run()
