@@ -122,6 +122,7 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
     private int _failClosed;
     private bool _awaitingEvidenceRecovery;
     private bool _disposed;
+    private readonly FirstBootPauseIdentity? _firstBootPause;
 
     [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "The DI container owns the lifecycle intent store.")]
     private readonly CameraAgentControlStore? _lifecycleControls;
@@ -146,6 +147,7 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
         _lifecycleControls = lifecycleControls;
         var configured = options.Value;
         _pauseFreshOnStartup = configured.ProvisioningStartupGate.Enabled;
+        _firstBootPause = configured.FirstBootPause.Identity;
         _store = new SqliteCaptureControlStore(
             Path.Combine(Path.GetFullPath(configured.RawIngressRoot), "journal", "raw-ingress.db"),
             configured.RawIngressSqliteBusyTimeoutSeconds,
@@ -180,7 +182,7 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
                 await _lifecycleControls.ReadAsync(cancellationToken).ConfigureAwait(false);
             var evidenceReady = await _rawCaptureIngress.InitializeForOperationsAsync(cancellationToken).ConfigureAwait(false);
             if (!evidenceReady && Volatile.Read(ref _awaitingEvidenceRecovery)) return;
-            var recovered = await _store.InitializeAsync(_pauseFreshOnStartup, cancellationToken).ConfigureAwait(false);
+            var recovered = await _store.InitializeAsync(_pauseFreshOnStartup, cancellationToken, _firstBootPause).ConfigureAwait(false);
             Volatile.Write(ref _awaitingEvidenceRecovery, !evidenceReady);
             SetSnapshot(evidenceReady ? recovered : recovered with { State = CaptureAdmissionState.Unavailable, IsInitialized = false });
             if (evidenceReady && recovered.State == CaptureAdmissionState.Running)
@@ -351,6 +353,21 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
         return await _store.ReadRecentCommandsAsync(limit, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// The installer-owned first-boot pause of a Silo-layout instance (#1966), or null when none is configured. Read-only:
+    /// it reports whether the seeded pause exists, is still the latest accepted command, and whether its first resume
+    /// has been accepted.
+    /// </summary>
+    public async Task<FirstBootPauseStatus?> ReadFirstBootPauseAsync(CancellationToken cancellationToken)
+    {
+        if (_firstBootPause is not { } seed) return null;
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        return await _store.ReadFirstBootPauseAsync(seed, cancellationToken).ConfigureAwait(false);
+    }
+
+    public FirstBootPauseIdentity? FirstBootPause => _firstBootPause;
+
     /// <summary>Reads a completed, changed pause only while it remains the latest accepted capture command.</summary>
     public Task<long?> ReadCompletedPauseVersionAsync(string idempotencyKey, long expectedVersion, string actor,
         CancellationToken cancellationToken) => _store.ReadCompletedPauseVersionAsync(idempotencyKey, expectedVersion, actor, cancellationToken);
@@ -468,7 +485,7 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
                     expectedVersion,
                     actor,
                     reason,
-                    cancellationToken, requiredPause).ConfigureAwait(false);
+                    cancellationToken, requiredPause, _firstBootPause).ConfigureAwait(false);
             }
             catch
             {
@@ -746,6 +763,12 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
 
 internal sealed record CapturePauseOwnership(string IdempotencyKey, long? ExpectedVersion, string Actor, string? Reason = null);
 
+/// <summary>
+/// Read-only status of a Silo-layout instance's installer-owned first-boot pause (#1966). <see cref="InForce"/> means
+/// the seeded pause is still the latest accepted capture command, so only its first resume can lift it.
+/// </summary>
+public sealed record FirstBootPauseStatus(Guid Id, bool Seeded, bool InForce, bool Resumed, string State, long Version);
+
 internal enum CaptureControlTarget
 {
     Running,
@@ -771,12 +794,20 @@ internal sealed class SqliteCaptureControlStore(
 
     internal async Task<CaptureAdmissionSnapshot> InitializeAsync(
         bool pauseFreshOnStartup,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        FirstBootPauseIdentity? firstBootPause = null)
     {
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var transaction = BeginImmediate(connection);
         var snapshot = await ReadStateAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
         var now = UtcNow();
+        if (firstBootPause is not null && snapshot.State == CaptureAdmissionState.Running && snapshot.Version == 0)
+        {
+            // The raw-ingress schema transaction seeds the first-boot pause (#1966), so a configured instance whose
+            // committed state is still running at version 0 was created without it. Admission stays closed rather than
+            // pausing late over a state that was durably open.
+            throw new InvalidDataException("The first-boot pause is missing from a fresh capture control state.");
+        }
         if (snapshot.State == CaptureAdmissionState.PauseRequested)
         {
             snapshot = await UpdateStateAsync(
@@ -814,7 +845,8 @@ internal sealed class SqliteCaptureControlStore(
         string actor,
         string? reason,
         CancellationToken cancellationToken,
-        CapturePauseOwnership? requiredPause = null)
+        CapturePauseOwnership? requiredPause = null,
+        FirstBootPauseIdentity? firstBootPause = null)
     {
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var transaction = BeginImmediate(connection);
@@ -832,6 +864,38 @@ internal sealed class SqliteCaptureControlStore(
         if (expectedVersion.HasValue && expectedVersion.Value != current.Version)
         {
             throw new CaptureControlConflictException("Capture control version does not match the expected version.");
+        }
+
+        if (target == CaptureControlTarget.Running && firstBootPause is { } seed)
+        {
+            // Read under this write transaction. While the seeded pause is the latest accepted command, it is the only
+            // pause in force and only its own first resume may lift it; that resume then passes the owned-pause check
+            // below. Once any later command is accepted, including a no-op operator pause, the first resume is refused
+            // and the latest command's owner decides, so an intervening pause is never overwritten.
+            var seededPauseIsLatest = string.Equals(
+                await ReadLatestCommandKeyAsync(connection, transaction, cancellationToken).ConfigureAwait(false),
+                seed.PauseKey,
+                StringComparison.Ordinal);
+            var firstResume = string.Equals(actor, seed.Actor, StringComparison.Ordinal);
+            if (firstResume && !seededPauseIsLatest)
+                throw new CaptureControlConflictException("A later accepted capture command superseded the installer's first-boot pause.");
+            if (!firstResume && seededPauseIsLatest)
+                throw new CaptureControlConflictException("The installer's first-boot pause is in force; only its first resume can lift it.");
+            if (firstResume)
+            {
+                requiredPause = new CapturePauseOwnership(seed.PauseKey, 0, seed.Actor);
+            }
+            else if (current.State != CaptureAdmissionState.Running &&
+                     actor.StartsWith(InstallerLifecycleActorPrefix, StringComparison.Ordinal))
+            {
+                // Under a first-boot profile an installer resume never lifts a pause it does not own, whether or not a
+                // lifecycle receipt is active and whatever version it names: a completed, changed pause by the same
+                // installer owner must still be the latest accepted command at the current version, read in this write
+                // transaction. The owner is the installer operation, so the pause and the resume keep their own keys.
+                if (await ReadOwnedLatestPauseVersionAsync(connection, transaction, actor, cancellationToken).ConfigureAwait(false) !=
+                    current.Version)
+                    throw new CaptureControlConflictException("An installer resume can lift only its own pause while that pause is the latest accepted command.");
+            }
         }
 
         // Accepted no-op commands also supersede intent. Check command order under the same write transaction as resume.
@@ -914,6 +978,87 @@ internal sealed class SqliteCaptureControlStore(
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         return await ReadOwnedPauseVersionAsync(connection, null, new CapturePauseOwnership(idempotencyKey, expectedVersion, actor), cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Writes the first-boot pause inside the caller's schema-creation transaction: the control state becomes paused at
+    /// version 1 and a completed, changed pause owned by the first-boot identity at expected version 0 is recorded.
+    /// </summary>
+    internal static async Task SeedFirstBootPauseAsync(
+        SqliteConnection connection, SqliteTransaction transaction, FirstBootPauseIdentity seed, DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        var current = await ReadStateAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+        if (current.State != CaptureAdmissionState.Running || current.Version != 0)
+            throw new InvalidDataException("The first-boot pause can be seeded only into a new capture control state.");
+        _ = await UpdateStateAsync(connection, transaction, CaptureAdmissionState.Paused, 1, now, cancellationToken).ConfigureAwait(false);
+        await InsertCommandAsync(
+            connection, transaction, seed.PauseKey,
+            PayloadHash(CaptureControlTarget.Paused, 0, seed.Actor, FirstBootPauseIdentity.PauseReason),
+            CaptureControlTarget.Paused, 0, seed.Actor, FirstBootPauseIdentity.PauseReason,
+            "completed", CaptureAdmissionState.Paused, 1, true, now, now, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal async Task<FirstBootPauseStatus> ReadFirstBootPauseAsync(FirstBootPauseIdentity seed, CancellationToken cancellationToken)
+    {
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        var state = await ReadStateAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+        var latest = await ReadLatestCommandKeyAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT
+              EXISTS(SELECT 1 FROM capture_control_commands WHERE idempotency_key = $pause AND actor = $actor
+                       AND status = 'completed' AND changed = 1 AND result_state = 'paused'),
+              EXISTS(SELECT 1 FROM capture_control_commands WHERE idempotency_key = $resume AND actor = $actor
+                       AND status = 'completed' AND changed = 1 AND result_state = 'running');
+            """;
+        command.Parameters.AddWithValue("$pause", seed.PauseKey);
+        command.Parameters.AddWithValue("$resume", seed.ResumeKey);
+        command.Parameters.AddWithValue("$actor", seed.Actor);
+        bool seeded;
+        bool resumed;
+        using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+        {
+            _ = await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+            seeded = reader.GetInt64(0) != 0;
+            resumed = reader.GetInt64(1) != 0;
+        }
+        return new FirstBootPauseStatus(
+            seed.Id,
+            seeded,
+            seeded && string.Equals(latest, seed.PauseKey, StringComparison.Ordinal),
+            resumed,
+            StoreState(state.State),
+            state.Version);
+    }
+
+    private const string InstallerLifecycleActorPrefix = "installer-lifecycle:";
+
+    private static async Task<long?> ReadOwnedLatestPauseVersionAsync(SqliteConnection connection, SqliteTransaction transaction,
+        string actor, CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT result_version FROM capture_control_commands
+            WHERE actor = $actor
+              AND target_state = 'paused' AND result_state = 'paused' AND status = 'completed' AND changed = 1
+              AND rowid = (SELECT MAX(rowid) FROM capture_control_commands);
+            """;
+        command.Parameters.AddWithValue("$actor", actor);
+        var value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        return value is null or DBNull ? null : Convert.ToInt64(value, System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private static async Task<string?> ReadLatestCommandKeyAsync(SqliteConnection connection, SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT idempotency_key FROM capture_control_commands ORDER BY rowid DESC LIMIT 1;";
+        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) as string;
     }
 
     private static async Task<long?> ReadOwnedPauseVersionAsync(SqliteConnection connection, SqliteTransaction? transaction,

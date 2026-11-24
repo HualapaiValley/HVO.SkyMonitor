@@ -857,9 +857,12 @@ internal static class CatalogLifecycleManager
         string path,
         CancellationToken cancellationToken)
     {
-        var manifest = await CameraAgentLifecycleManager.ReadManifestAsync(path, cancellationToken).ConfigureAwait(false);
+        // Garbage collection counts every instance's catalog references, a Silo-layout instance's included (#1966).
+        var manifest = await CameraAgentLifecycleManager.ReadManifestAsync(path, cancellationToken, allowSiloLayout: true)
+            .ConfigureAwait(false);
         if (manifest.SchemaVersion != DeploymentSchemaVersions.InstanceManifest || manifest.Product != "HVO.SkyMonitor" ||
-            manifest.ComponentSchemaVersion != "cameraagent-install-v1" || manifest.Component != DeploymentComponent.CameraAgent ||
+            manifest.ComponentSchemaVersion is not ("cameraagent-install-v1" or SiloRuntimeProfile.ComponentSchemaVersion) ||
+            manifest.Component != DeploymentComponent.CameraAgent ||
             manifest.InstanceId == Guid.Empty || manifest.InstallationId == Guid.Empty || manifest.ApplicationIdentity == Guid.Empty)
             throw new InstallerException("An instance manifest is invalid or unsupported.");
         return manifest;

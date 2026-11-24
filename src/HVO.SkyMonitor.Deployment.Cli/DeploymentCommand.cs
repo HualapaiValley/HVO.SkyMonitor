@@ -103,6 +103,26 @@ internal sealed record CameraAgentStatePreflightRequest(
     }
 }
 
+/// <summary>The Silo-layout commands of #1966: the atomic first resume and the read-only runtime verification.</summary>
+internal enum SiloCommandKind
+{
+    FirstResume,
+    Verify
+}
+
+internal sealed record SiloCommandRequest(
+    SiloCommandKind Kind,
+    Guid? InstanceId,
+    string ProductRoot,
+    bool Json) : DeploymentCommand(Json)
+{
+    public void Validate()
+    {
+        if (InstanceId is null) throw new InstallUsageException("--instance-id is required.");
+        ProductRootAdmission.Validate(ProductRoot, ProductionProductRoot, AllowTestProductRoot);
+    }
+}
+
 internal sealed record CameraAgentStateResetRequest(
     Guid? InstanceId,
     Guid? ConfirmationInstanceId,

@@ -206,7 +206,9 @@ internal static partial class Program
                         ["manifestDigest"] = archive.ManifestDigest,
                         ["configDigest"] = archive.ConfigDigest
                     })])
-                }
+                },
+                // The stock Silo image a Silo-layout install runs (#1966): pinned upstream by digest, never an asset.
+                [SiloImagePin.ImageKey] = SiloImagePin.ReleaseEntry()
             },
             ["stateContracts"] = new JsonObject { [CameraAgentImageKey] = stateContracts },
             ["upgradeNotes"] = new JsonArray([.. notes.Select(static note => (JsonNode)new JsonObject

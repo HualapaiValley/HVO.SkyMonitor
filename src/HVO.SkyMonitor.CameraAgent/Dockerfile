@@ -14,7 +14,7 @@ ARG DOTNET_ASPNET_IMAGE=dotnet-aspnet
 ARG HVO_VERSION=""
 ARG HVO_SOURCE_REVISION=unknown
 FROM mcr.microsoft.com/dotnet/sdk:10.0.402@sha256:747cbade5bfd918a175ac32f8f1d931edec2c7d0d5397a3de72eaef1ac1f66d2 AS dotnet-sdk
-FROM mcr.microsoft.com/dotnet/aspnet:10.0.14@sha256:1a48394b6f29d3a32c79d9edecd4abda0ecbe8776d567dbfc4590ed6979c740c AS dotnet-aspnet
+FROM mcr.microsoft.com/dotnet/aspnet:10.0.15@sha256:aac50ceef10391e78a899e3d2ccd00bbafa2dcb56ccf4586cbccf00edb84fc21 AS dotnet-aspnet
 
 # Stage 1: Build
 FROM ${DOTNET_SDK_IMAGE} AS build
@@ -174,6 +174,7 @@ LABEL io.hvo.skymonitor.component="CameraAgent" \
       io.hvo.skymonitor.configuration-defaults="installer-defaults-2" \
       io.hvo.skymonitor.catalog-contract="hvo-approved-catalogs-v3" \
       io.hvo.skymonitor.replay-runner-contract="local-replay-runner-v1" \
+      io.hvo.skymonitor.first-boot-contract="cameraagent-first-boot-pause-v1" \
       io.hvo.skymonitor.state-contracts="{\"identity\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"rawIngress\":{\"writes\":17,\"reads\":{\"min\":13,\"max\":17}},\"artifactOutbox\":{\"writes\":2,\"reads\":{\"min\":2,\"max\":2}},\"fleetStatus\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"environmentalOutbox\":{\"writes\":5,\"reads\":{\"min\":3,\"max\":5}},\"executionEvidenceOutbox\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"timeLapses\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"nightlyProducts\":{\"writes\":3,\"reads\":{\"min\":2,\"max\":3}},\"localAutomations\":{\"writes\":4,\"reads\":{\"min\":3,\"max\":4}},\"orbitalElements\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"spaceWeather\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"calibrationFamilies\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}}}" \
       org.opencontainers.image.version="${HVO_VERSION}" \
       org.opencontainers.image.revision="${HVO_SOURCE_REVISION}" \

@@ -31,7 +31,7 @@ internal sealed partial class CameraAgentInstaller
         }
         var completed = state.Status == InstallationStatus.Completed;
         var manifest = await ReadRecordAsync(
-            paths.ManifestPath, () => ReadManifestAsync(paths.ManifestPath, cancellationToken)).ConfigureAwait(false);
+            paths.ManifestPath, () => ReadManifestAsync(paths.ManifestPath, cancellationToken, allowSiloLayout: true)).ConfigureAwait(false);
         var result = File.Exists(paths.ResultPath)
             ? await ReadRecordAsync(paths.ResultPath, () => ReadResultAsync(paths.ResultPath, cancellationToken)).ConfigureAwait(false)
             : null;
