@@ -534,8 +534,8 @@ rolling batch issues labeled `follow-up` and `low-batch`.
   source PR link and `file:line` in that item and link the batch from the
   source PR. Open a new batch only when there is no matching open batch or
   the matching batch already has seven items.
-- Pick up a batch at about six or seven items, or after about a week without
-  new items. Keep the scope within the LOW review tier. Deliver it on one
+- Pick up a batch at about six or seven items, or about a week after its first
+  item. Keep the scope within the LOW review tier. Deliver it on one
   branch in one PR that closes the batch issue, with the required LOW-tier
   review. Group single typo, font, and wording fixes to share a validation
   and merge cycle.

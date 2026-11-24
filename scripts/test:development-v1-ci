@@ -167,6 +167,25 @@ merge_group_trigger = (
 
 
 preflight_timeout = "    timeout-minutes: 6"
+changelog_error = "Preflight validates fragments and binds the PR limit to the checked-out merge parents"
+changelog_contract = """\
+env:
+  PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+run: |
+  args=(--check)
+  if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+    parents="$(git rev-list --parents -n 1 HEAD)" || parents=''
+    read -r merge first second extra <<< "$parents"
+    if [[ "$merge" == "$GITHUB_SHA" && -n "$first" && -n "$second" && "$second" == "$PR_HEAD_SHA" && -z "$extra" ]]; then
+      args+=(--base "$first")
+    else
+      echo 'Cannot bind the changelog fragment limit to the checked-out PR merge parents.' >&2
+      exit 1
+    fi
+  fi
+  ./scripts/release:changelog "${args[@]}"
+  ./scripts/test:changelog
+"""
 logichost_exclusions = (
     "&FullyQualifiedName!~HVO.SkyMonitor.LogicHost",
     "&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost",
@@ -378,12 +397,7 @@ def violations(short, full, queue=None, extra=None):
     require(base_images.strip() == "run: ./scripts/ci:base-images",
             "base-image check is unconditional and fail-closed")
     changelog = step(preflight, "Validate changelog fragments")
-    require('BASE_SHA: ${{ github.event.pull_request.base.sha }}' in changelog and
-            'if [[ "$GITHUB_EVENT_NAME" == pull_request ]]' in changelog and
-            'args+=(--base "${BASE_SHA:?Missing PR base SHA}")' in changelog and
-            './scripts/release:changelog "${args[@]}"' in changelog and
-            "./scripts/test:changelog" in changelog and "        if:" not in changelog,
-            "Preflight validates fragments and limits each PR against the exact base")
+    require(textwrap.dedent(changelog).strip() == changelog_contract.strip(), changelog_error)
     full_changelog = step(quality, "Validate changelog fragments")
     require("./scripts/release:changelog --check" in full_changelog and
             "./scripts/test:changelog" in full_changelog and "        if:" not in full_changelog,
@@ -650,7 +664,6 @@ mutations = (
         "scripts/test-categories/HVO.SkyMonitor.TestCategoryAudit.csproj", "missing.csproj")),
     ("lint destination removed", short, full.replace("./scripts/ci:shellcheck", ":")),
     ("control guard removed", short.replace("./scripts/test:ci-classification", ":"), full),
-    ("PR fragment limit removed", short.replace('args+=(--base "${BASE_SHA:?Missing PR base SHA}")', ":"), full),
     ("full fragment validation removed", short, full.replace("./scripts/release:changelog --check", ":")),
     ("evidence lost on failure", short.replace("if: always()", "if: success()"), full),
     ("qualification job on general pool", short, full.replace(
@@ -945,6 +958,19 @@ with tempfile.TemporaryDirectory(prefix="hvo-yaml-parser-") as directory:
 for name, candidate, qualification, *queue in mutations:
     if not violations(candidate, qualification, *queue):
         raise SystemExit(f"Mutation was not rejected: {name}")
+changelog = step(job(short, "preflight"), "Validate changelog fragments")
+for label, original, replacement in (
+    ("limit removed", 'args+=(--base "$first")', ":"),
+    ("stale event base", 'args+=(--base "$first")', 'args+=(--base "${{ github.event.pull_request.base.sha }}")'),
+    ("merge SHA unchecked", '"$merge" == "$GITHUB_SHA" && ', ""),
+    ("PR head unchecked", '"$second" == "$PR_HEAD_SHA" && ', ""),
+    ("extra parent allowed", ' && -z "$extra"', ""),
+    ("binding failure ignored", "exit 1", ":"),
+):
+    candidate = short.replace(changelog, changelog.replace(original, replacement), 1)
+    if candidate == short or changelog_error not in violations(candidate, full):
+        raise SystemExit(f"PR changelog mutation was not rejected: {label}")
+    print(f"Rejected PR changelog mutation: {label}")
 for exclusion in logichost_exclusions:
     for change, replacement in (("removed", ""), ("equality instead of substring", exclusion.replace("!~", "!=")),
                                 ("OR instead of AND", "|" + exclusion[1:])):

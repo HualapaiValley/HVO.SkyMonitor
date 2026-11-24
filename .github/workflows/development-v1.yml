@@ -47,11 +47,18 @@ jobs:
 
       - name: Validate changelog fragments
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           args=(--check)
           if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
-            args+=(--base "${BASE_SHA:?Missing PR base SHA}")
+            parents="$(git rev-list --parents -n 1 HEAD)" || parents=''
+            read -r merge first second extra <<< "$parents"
+            if [[ "$merge" == "$GITHUB_SHA" && -n "$first" && -n "$second" && "$second" == "$PR_HEAD_SHA" && -z "$extra" ]]; then
+              args+=(--base "$first")
+            else
+              echo 'Cannot bind the changelog fragment limit to the checked-out PR merge parents.' >&2
+              exit 1
+            fi
           fi
           ./scripts/release:changelog "${args[@]}"
           ./scripts/test:changelog
