@@ -24,10 +24,12 @@ import pathlib
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 
 try:
     import yaml
@@ -950,6 +952,18 @@ with tempfile.TemporaryDirectory(prefix="hvo-fast-workflow-") as directory:
     trusted.write_text('''#!/usr/bin/env bash
 if [[ "$1" == --verify-docs-restore ]]; then
     printf '%s' "$FAKE_PROOF"
+    if [[ -n "${FAKE_PROOF_WRITER_RECORD:-}" ]]; then
+        (
+            trap '' TERM
+            printf '%s\\n' "$BASHPID" > "$FAKE_PROOF_WRITER_RECORD"
+            while :; do
+                mkdir -p "$TMPDIR/nuget-scratch"
+                printf 'lock\\n' > "$TMPDIR/nuget-scratch/restore.lock"
+                sleep 0.02
+            done
+        ) </dev/null >/dev/null 2>&1 &
+        wait "$!"
+    fi
     if [[ -n "${FAKE_PROOF_DELAY:-}" ]]; then
         printf '%s\\n' "$TMPDIR" > "$FAKE_PROOF_SCRATCH_RECORD"
         touch "$TMPDIR/partial-restore-output"
@@ -1017,7 +1031,10 @@ exit "$FAKE_EXIT"
                                 capture_output=True, text=True)
         if result.returncode or f"run_full={expected}" not in output.read_text().splitlines():
             raise SystemExit(f"Restore certificate workflow case {proof!r}, {exit_code}: {output.read_text()} {result.stderr}")
-        elapsed = re.search(r"^restoreProofElapsedSeconds=(\d+)$", (evidence / "classification.md").read_text(), re.M)
+        proof_evidence = (evidence / "classification.md").read_text().splitlines()
+        if f"restoreProofExitCode={exit_code}" not in proof_evidence:
+            raise SystemExit(f"Restore proof exit status {exit_code} is missing from evidence")
+        elapsed = re.search(r"^restoreProofElapsedSeconds=(\d+)$", "\n".join(proof_evidence), re.M)
         if not elapsed:
             raise SystemExit("Restore proof duration is missing from evidence")
         expected_deadline = f"DEV_V1_DEADLINE_EPOCH={2000 + int(elapsed[1])}\n" if expected == "true" else ""
@@ -1035,13 +1052,60 @@ exit "$FAKE_EXIT"
                      FAKE_PROOF_SCRATCH_RECORD=str(scratch_record))
     result = subprocess.run(["bash", "-euo", "pipefail", "-c", fast_script.replace(" 30s bash ", " 1s bash ")],
                             cwd=fixture, env=timed_env, capture_output=True, text=True, timeout=8)
-    elapsed = re.search(r"^restoreProofElapsedSeconds=(\d+)$", (evidence / "classification.md").read_text(), re.M)
+    proof_evidence = (evidence / "classification.md").read_text()
+    elapsed = re.search(r"^restoreProofElapsedSeconds=(\d+)$", proof_evidence, re.M)
     if (result.returncode or "run_full=true" not in output.read_text().splitlines() or not elapsed or
-            int(elapsed[1]) < 1 or workload_env.read_text() != f"DEV_V1_DEADLINE_EPOCH={2000 + int(elapsed[1])}\n"):
+            "restoreProofExitCode=124" not in proof_evidence.splitlines() or int(elapsed[1]) < 1 or
+            workload_env.read_text() != f"DEV_V1_DEADLINE_EPOCH={2000 + int(elapsed[1])}\n"):
         raise SystemExit(f"Timed-out proof failed to preserve full workload: {output.read_text()} {result.stderr}")
     scratch = pathlib.Path(scratch_record.read_text().strip())
     if scratch.parent != runner_temp or scratch.exists():
         raise SystemExit("Timed-out proof scratch was not removed")
+
+    # The classifier shell exits on TERM while its writer ignores it. Inject
+    # the cleanup failure on every run instead of relying on a filesystem race.
+    writer_record = fixture / "proof-writer-pid"
+    cleanup_bin = fixture / "cleanup-bin"
+    cleanup_bin.mkdir()
+    fake_rm = cleanup_bin / "rm"
+    fake_rm.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "Directory not empty (fixture)" >&2\nexit 1\n')
+    fake_rm.chmod(0o700)
+
+    def writer_is_running(pid):
+        try:
+            state = pathlib.Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+        except FileNotFoundError:
+            return False
+        return state not in ("Z", "X")
+
+    output.write_text("")
+    workload_env.write_text("")
+    writer_env = dict(env, FAKE_PROOF="restore_imports_verified=true\n", FAKE_PROOF_EXIT="0",
+                      FAKE_PROOF_WRITER_RECORD=str(writer_record), PATH=f"{cleanup_bin}:{os.environ['PATH']}")
+    try:
+        result = subprocess.run(["bash", "-euo", "pipefail", "-c", fast_script.replace(" 30s bash ", " 1s bash ")],
+                                cwd=fixture, env=writer_env, capture_output=True, text=True, timeout=8)
+        proof_evidence = (evidence / "classification.md").read_text()
+        elapsed = re.search(r"^restoreProofElapsedSeconds=(\d+)$", proof_evidence, re.M)
+        if (result.returncode or "run_full=true" not in output.read_text().splitlines() or
+                "Directory not empty (fixture)" not in result.stderr or
+                "restoreProofExitCode=124" not in proof_evidence.splitlines() or not elapsed or int(elapsed[1]) < 1 or
+                workload_env.read_text() != f"DEV_V1_DEADLINE_EPOCH={2000 + int(elapsed[1])}\n"):
+            raise SystemExit(f"Lingering writer cleanup prevented full validation: {output.read_text()} {result.stderr}")
+        writer_pid = int(writer_record.read_text())
+        stopped_by = time.monotonic() + 1
+        while writer_is_running(writer_pid) and time.monotonic() < stopped_by:
+            time.sleep(0.01)
+        if writer_is_running(writer_pid):
+            raise SystemExit("A TERM-resistant proof writer survived the workflow decision")
+    finally:
+        if writer_record.exists():
+            writer_pid = int(writer_record.read_text())
+            if writer_is_running(writer_pid):
+                try:
+                    os.kill(writer_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
     output.write_text("")
     env.update(FAKE_PROOF="restore_imports_verified=true\n", FAKE_PROOF_EXIT="0",
                FAKE_MERGE_CONTENT="docs_fast_path=true\ndocs_fast_path_reason=safe\n")
@@ -1248,7 +1312,7 @@ exit "$FAKE_EXIT"
                 manifest["mergeSha"] != changed_merge or manifest["schema"] != "hvo-development-v1-ci-v6" or
                 (expected and manifest["sdkVersion"] is not None)):
             raise SystemExit(f"Invalid manifest evidence: {manifest}")
-    print("Fast workflow shell: 27 decision, binding and trusted-base cases; 2 manifest cases passed.")
+    print("Fast workflow shell: 28 decision, binding and trusted-base cases; 2 manifest cases passed.")
 
 # Exercise the real final promotion step with an offline gh substitute. Creating
 # a PR must be draft; refreshing one must preserve its state; API errors must fail.

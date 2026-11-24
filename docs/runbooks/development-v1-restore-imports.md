@@ -32,15 +32,20 @@ The proof runs one replay on a private snapshot of the committed base using
 the pinned SDK and the runner's normal NuGet sources and package cache. It
 compares the generated files, package sources and content with the reviewed
 certificate. The private snapshot keeps working-tree files and preexisting
-restore output out of the proof. Build and Unit gives the proof 30 seconds
-and up to five more seconds to terminate. On failure, it gives that elapsed
-time back to the full-validation workload budget within the 22-minute hard
-job timeout. Full validation also runs when a required SDK, package, import
-or proof is missing, unexpected or different.
+restore output out of the proof. GNU `timeout` runs the proof in its own process
+group and sends TERM after 30 seconds. If the monitored process is still
+running five seconds later, `timeout` sends KILL. When `timeout` returns,
+Build and Unit sends KILL to any remaining group members before attempting
+scratch cleanup. A cleanup error still allows the decision to complete.
+On proof failure, the job gives the elapsed time back to the full-validation
+workload budget within the 22-minute hard job timeout. Full validation also
+runs when a required SDK, package, import or proof is missing, unexpected or
+different.
 
 For the first ready docs-only PR after rollout, confirm `runFull=false` in
 the retained `classification.md` artifact. It records the exact endpoints,
-decision, and `restoreProofElapsedSeconds` when the proof runs.
+decision, `restoreProofExitCode`, and `restoreProofElapsedSeconds` when the
+proof is attempted.
 
 Hosted Preflight checks the committed certificate and source inventory and
 warns if that check fails. It can validate source binding without the SDK.
@@ -57,7 +62,8 @@ projects, inputs, packages or generated imports change.
 
 Any merged change to an audited build input makes the certificate stale.
 Project files, props and targets, package pins, `global.json`, and
-`.gitattributes` are all covered. Hosted Preflight resumes the O7-02 warning
+`.gitattributes` are all covered. Hosted Preflight displays
+`Documentation CI build inventory is stale or unsafe; full validation will run: …`
 and docs-only PRs run full validation until a HIGH-reviewed refresh lands.
 The [mandatory certificate-maintenance gate](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1996)
 tracks that refresh obligation.
