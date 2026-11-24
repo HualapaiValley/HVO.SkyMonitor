@@ -20,23 +20,44 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 public sealed partial class VirtualSkyCameraModuleTests
 {
     [TestMethod]
-    public Task CenteredViewReopensAcceptedReferenceResidualsAfterCropAndResize() =>
-        VerifyCenteredReferenceResidualsAsync(MeasuredAstrometryFixture.Options, TestContext);
+    public Task CenteredViewReopensAcceptedReferenceResidualsAfterCropAndResize()
+    {
+        const int size = CompactAstrometryField.Size;
+        const double focalLength = CompactAstrometryField.FocalLength;
+        var start = new DateTimeOffset(2026, 8, 25, 0, 0, 0, TimeSpan.Zero);
+        var end = start.AddSeconds(1);
+        var observer = new ObserverLocation(0, 0, 0);
+        var geometry = new ProjectionContext(ProjectionModel.EquidistantFisheye, size / 2d, size / 2d, focalLength, focalLength,
+            size, size, ProjectionAperture.Circular, CompactAstrometryField.ImageCircleRadius, 72, 243, 17);
+        var (raw, fitCatalog) = CreateAcceptedResidualField(geometry, observer, start.AddMilliseconds(500));
+        var catalog = new CameraAgentSkyMapProjectionTests.FixtureCatalog(fitCatalog.Stars,
+            fitCatalog.Metadata, fitCatalog.Provenance!.PreprocessingVersion);
+        // Use the Unit lane's runaway budgets for this compact field.
+        return VerifyCenteredReferenceResidualsAsync(raw, geometry, observer, start, end, "calibration-v1", fitCatalog,
+            catalog, MeasuredAstrometryFixture.Options, new(256, 256, 9, 13, 234, 230, 117, 115), TestContext);
+    }
 
     internal static async Task VerifyCenteredReferenceResidualsAsync(MeasuredAstrometryOptions recipe, TestContext testContext)
     {
         var fixture = await MeasuredAstrometryFixture.CreateAsync().ConfigureAwait(false);
-        var raw = fixture.Raw;
-        var start = fixture.Context.Frame.ExposureStartUtc;
-        var end = fixture.Context.Frame.ExposureEndUtc;
-        var observer = fixture.Context.Frame.Observer;
+        var context = fixture.Context;
+        var catalog = new CameraAgentSkyMapProjectionTests.FixtureCatalog(context.CatalogStars,
+            context.CatalogMetadata, context.CatalogPackage.PreprocessingVersion);
+        await VerifyCenteredReferenceResidualsAsync(fixture.Raw, context.Projection, context.Frame.Observer,
+            context.Frame.ExposureStartUtc, context.Frame.ExposureEndUtc, context.CalibrationVersion, fixture.Catalog,
+            catalog, recipe, new(512, 512, 9, 13, 490, 486, 245, 243), testContext).ConfigureAwait(false);
+    }
+
+    private static async Task VerifyCenteredReferenceResidualsAsync(ProcessingArtifact raw, ProjectionContext geometry,
+        ObserverLocation observer, DateTimeOffset start, DateTimeOffset end, string calibrationVersion,
+        AstrometricCatalogData fitCatalog, CameraAgentSkyMapProjectionTests.FixtureCatalog catalog,
+        MeasuredAstrometryOptions recipe, CenteredViewPreviewTransform expectedPreview, TestContext testContext)
+    {
         var location = DeploymentLocationSnapshot.Create("accepted-residual-fixture", 1, "virtual", null,
             DateTimeOffset.UnixEpoch, null, observer.LatitudeDegrees, observer.LongitudeDegrees, observer.ElevationMeters, "UTC");
-        var catalog = new CameraAgentSkyMapProjectionTests.FixtureCatalog(fixture.Context.CatalogStars,
-            fixture.Context.CatalogMetadata, fixture.Context.CatalogPackage.PreprocessingVersion);
         var solverCatalog = new Mock<IAstrometricCatalogSource>(MockBehavior.Strict);
         solverCatalog.Setup(source => source.ReadAsync(7, AstrometricCatalogData.MaximumEntries, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(fixture.Catalog);
+            .ReturnsAsync(fitCatalog);
         var clock = new CenteredClock { UtcNow = start };
         var token = testContext.CancellationToken;
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-centered-accepted-residuals");
@@ -51,7 +72,7 @@ public sealed partial class VirtualSkyCameraModuleTests
             using (var provider = MeasurementProvider(root, location, catalog, timeProvider: clock,
                 configureServices: services => services.AddSingleton(solverCatalog.Object)))
             {
-                var profile = AcceptedResidualProfile(root, fixture, location, recipe);
+                var profile = AcceptedResidualProfile(root, start, geometry, location, fitCatalog, calibrationVersion, recipe);
                 var active = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(provider, profile).ConfigureAwait(false);
                 var ingress = provider.GetRequiredService<RawCaptureIngress>();
                 var sceneResources = provider.GetRequiredService<CaptureProjectedSceneStager>().FrozenResources;
@@ -61,8 +82,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                 var setpoint = new CaptureSetpoint(exposureTime, 1, null, null);
                 var request = new CaptureRequest(start, TimeSpan.FromSeconds(2), CaptureMode.Still, setpoint);
                 var layout = SensorReadoutResolver.Resolve(active.Rig.Sensor, active.Rig.Readout!).Layout;
-                // Use the accepted durability fixture's pixels. Admission and the frozen graph bind them
-                // to a new capture and produce its own retained association, context and solution.
+                // Admission and the frozen graph produce the retained association, context and solution from these pixels.
                 var frame = new CameraFrame(start, layout.Width, layout.Height, layout.PixelFormat, raw.Payload,
                     new(exposureTime, 1, 5, SourceId: "accepted-residual-fixture"), layout.StrideBytes)
                 { Layout = layout };
@@ -115,9 +135,11 @@ public sealed partial class VirtualSkyCameraModuleTests
 
                 var initial = await provider.GetRequiredService<ICenteredViewProducer>().PublishSingleAsync(
                     stream, executionId, descriptor.Capture.CaptureSequence, linear,
-                    new(MaximumDimension: 245, Crop: new(9, 13, 490, 486), AllowRawFallback: false), token).ConfigureAwait(false);
+                    new(MaximumDimension: expectedPreview.PreviewWidth,
+                        Crop: new(expectedPreview.CropX, expectedPreview.CropY, expectedPreview.CropWidth, expectedPreview.CropHeight),
+                        AllowRawFallback: false), token).ConfigureAwait(false);
                 Assert.IsNotNull(initial);
-                Assert.AreEqual(new CenteredViewPreviewTransform(512, 512, 9, 13, 490, 486, 245, 243), initial.Base.Definition.Preview.Transform);
+                Assert.AreEqual(expectedPreview, initial.Base.Definition.Preview.Transform);
                 Assert.AreEqual(CenteredViewReadiness.Waiting, ReferenceResidual(initial).Readiness);
                 view = await DrainCenteredReferenceAsync(provider, exposure, token).ConfigureAwait(false);
                 Assert.AreEqual(initial.Base.BaseId, view.Base.BaseId);
@@ -139,7 +161,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                 Assert.IsNotNull(payload);
                 Assert.AreEqual(fit.SolutionIdentitySha256, payload.SourceIdentitySha256);
                 Assert.AreEqual(layer.Drawable.SourceProduct.ProductIdentitySha256, payload.ContentIdentitySha256);
-                Assert.AreEqual((245, 243), (payload.WidthPixels, payload.HeightPixels));
+                Assert.AreEqual((expectedPreview.PreviewWidth, expectedPreview.PreviewHeight), (payload.WidthPixels, payload.HeightPixels));
 
                 presentation = await ReadResidualPresentationAsync(provider, view, token).ConfigureAwait(false);
                 AssertResidualGeometry(fit.Diagnostics, payload, presentation);
@@ -173,15 +195,40 @@ public sealed partial class VirtualSkyCameraModuleTests
         }
     }
 
-    private static CameraModuleConfig AcceptedResidualProfile(string root, MeasuredAstrometryFixture fixture,
-        DeploymentLocationSnapshot location, MeasuredAstrometryOptions recipe)
+    private static (ProcessingArtifact Raw, AstrometricCatalogData Catalog) CreateAcceptedResidualField(
+        ProjectionContext geometry, ObserverLocation observer, DateTimeOffset midpoint)
     {
-        var context = fixture.Context;
-        var geometry = context.Projection;
-        var profile = CenteredRuntimeProfile(root, context.Frame.ExposureStartUtc, CameraPixelFormat.Mono16);
+        var stars = CompactAstrometryField.CreateStars(geometry, observer, midpoint);
+        var pixels = MeasuredStellarAssociationFixtures.Field(geometry.WidthPixels, geometry.HeightPixels);
+        var shifted = ProjectorFactory.Create(geometry with { RollDegrees = 17.04 });
+        for (var index = 0; index < stars.Length; index++)
+        {
+            var star = stars[index];
+            var ofDate = EquatorialPrecession.PrecessJ2000(new(star.RightAscensionHours, star.DeclinationDegrees), midpoint);
+            var direction = CoordinateTransforms.EquatorialToHorizontal(ofDate, midpoint,
+                observer.LatitudeDegrees, observer.LongitudeDegrees);
+            var point = shifted.Project(direction);
+            Assert.IsNotNull(point);
+            // One local offset survives the solver's correction for the global roll.
+            var center = index == 0 ? new PixelPoint(point.Value.X + .25, point.Value.Y - .15) : point.Value;
+            MeasuredStellarAssociationFixtures.AddGaussian(pixels, center, 1.15,
+                5000 * Math.Pow(10, -.4 * (star.Magnitude - 2)), geometry.WidthPixels);
+        }
+        MeasuredStellarAssociationFixtures.AddNoise(pixels, 1205, 4);
+        var raw = MeasuredStellarAssociationFixtures.RawArtifact(pixels, width: geometry.WidthPixels, height: geometry.HeightPixels);
+        var metadata = new CatalogMetadata("centered-residual-field", "1", new Uri("https://example.test/reference"),
+            MeasuredAstrometryFixture.Hash("centered-residual-field-v1"), "test-generated", "1");
+        var provenance = new AstrometricCatalogProvenance(metadata.Name, metadata.Version, "fixture", "unspecified");
+        return (raw, new(metadata, stars, true, 7, provenance: provenance));
+    }
+
+    private static CameraModuleConfig AcceptedResidualProfile(string root, DateTimeOffset start, ProjectionContext geometry,
+        DeploymentLocationSnapshot location, AstrometricCatalogData catalog, string calibrationVersion, MeasuredAstrometryOptions recipe)
+    {
+        var profile = CenteredRuntimeProfile(root, start, CameraPixelFormat.Mono16);
         var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
-        // Pin the full fixture field without embedding a catalog snapshot in the bounded graph options.
-        var catalogPin = new MeasuredAstrometryCatalogSelection(fixture.Catalog.IdentitySha256, fixture.Catalog.SelectionIdentitySha256, 7);
+        // Pin the fixture field without embedding a catalog snapshot in the bounded graph options.
+        var catalogPin = new MeasuredAstrometryCatalogSelection(catalog.IdentitySha256, catalog.SelectionIdentitySha256, 7);
         return profile with
         {
             DeploymentLocation = location,
@@ -198,7 +245,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                     ImageCircleRadiusPixels = geometry.ImageCircleRadiusPixels,
                     FocalLengthXPixels = geometry.FocalLengthXPixels,
                     FocalLengthYPixels = geometry.FocalLengthYPixels,
-                    CalibrationVersion = context.CalibrationVersion
+                    CalibrationVersion = calibrationVersion
                 },
                 Orientation = new(geometry.BoresightAltitudeDegrees, geometry.BoresightAzimuthDegrees, geometry.RollDegrees)
             },
@@ -254,7 +301,7 @@ public sealed partial class VirtualSkyCameraModuleTests
 
         static void AssertEndpoint(PixelPoint source, PixelPoint retained, XElement line, string endpoint)
         {
-            // Independent of the registered transform and mapping code. The 490x486 crop is halved.
+            // Independent of the registered transform and mapping code. Both crops are halved.
             var x = (source.X - 9) / 2;
             var y = (source.Y - 13) / 2;
             Assert.AreEqual(x, retained.X, .001);
