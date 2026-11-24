@@ -32,6 +32,8 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
     private static readonly FocusStarMeasurementOptions FocusOptions = new(
         ApertureRadiusPixels: 12, AnnulusInnerRadiusPixels: 15, AnnulusOuterRadiusPixels: 22,
         MinimumApertureRadiusPixels: 6);
+    private static readonly int FocusWindowRadius = (int)Math.Ceiling(FocusOptions.AnnulusOuterRadiusPixels) + 3;
+    private static readonly int FocusWindowDiameter = 2 * FocusWindowRadius + 1;
     private static readonly string FocusSettings = FocusStarMeasurer.SettingsIdentity(FocusOptions).ToUpperInvariant();
 
     public ProcessingRecipeDefinition Definition { get; } = new(
@@ -53,8 +55,8 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
 
     public JsonElement NormalizeOptions(JsonElement options)
     {
-        var (input, bayerCoreTrail) = ExposureMeasurementProducts.ReadParameters(options);
-        return ExposureMeasurementProducts.SerializeParameters(input, bayerCoreTrail);
+        var (input, policy) = ExposureMeasurementProducts.ReadParameters(options);
+        return ExposureMeasurementProducts.SerializeParameters(input, policy);
     }
 
     internal static ExposureMeasurementInputV1 Input(ProcessingRecipeIdentity recipe)
@@ -63,7 +65,7 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
     public ValueTask<ProcessingOutcome> ExecuteAsync(ProcessingExecutionRequest request,
         ProcessingRecipeIdentity identity, CancellationToken cancellationToken)
     {
-        var (input, bayerCoreTrail) = ExposureMeasurementProducts.ReadParameters(identity.Descriptor.Options.GetProperty("parameters"));
+        var (input, policy) = ExposureMeasurementProducts.ReadParameters(identity.Descriptor.Options.GetProperty("parameters"));
         var sources = request.Inputs;
         if (request.OutputVariant != ExposureMeasurementProducts.Variant || request.Annotation is not null ||
             request.AuxiliaryInputs is { Count: > 0 } ||
@@ -79,7 +81,7 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
         var rawBrightness = Brightness(raw, cancellationToken);
         var linearClipping = linear is null ? null : Brightness(linear, cancellationToken).SensorClipping;
         var (stars, hfd) = Measure(raw, linear, rawBrightness.SensorClipping, linearClipping,
-            input.ApertureProjection, bayerCoreTrail, cancellationToken);
+            input.ApertureProjection, policy, cancellationToken);
         var result = new ExposureMeasurementV1(ExposureMeasurementProducts.SchemaVersion,
             input, rawBrightness, null, linearClipping, stars, hfd);
         var payload = ExposureMeasurementProducts.Serialize(result);
@@ -158,7 +160,7 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
 
     private static (ExposureSourcesV1, ExposureHfdV1) Measure(ProcessingArtifact raw,
         ProcessingArtifact? linear, ExposureClippingV1 sensorClipping, ExposureClippingV1? outputClipping,
-        ProjectionContext? aperture, bool bayerCoreTrail,
+        ProjectionContext? aperture, ExposureFocusSamplingPolicy policy,
         CancellationToken cancellationToken)
     {
         if (sensorClipping.StoredWhite is not { } sensorWhite)
@@ -193,7 +195,7 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
         };
         var stars = new ExposureSourcesV1(status, reason, measured.CandidateCount, measured.AvailableBackgroundTileCount,
             measured.SettingsIdentitySha256.ToUpperInvariant(), pattern, measured.Detections, measured.Exclusions);
-        return (stars, MeasureFocus(stars, samples.Span, valid.Span, clipped, layout, cfa, bayerCoreTrail, cancellationToken));
+        return (stars, MeasureFocus(stars, samples.Span, valid.Span, clipped, layout, policy, cancellationToken));
     }
 
     private static (ReadOnlyMemory<double> Samples, bool[] Clipped, ReadOnlyMemory<bool> Valid) Prepare(
@@ -232,7 +234,7 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
     }
 
     private static ExposureHfdV1 MeasureFocus(ExposureSourcesV1 stars, ReadOnlySpan<double> pixels,
-        ReadOnlySpan<bool> valid, ReadOnlySpan<bool> clipped, FrameLayoutDescriptor layout, bool cfa, bool bayerCoreTrail,
+        ReadOnlySpan<bool> valid, ReadOnlySpan<bool> clipped, FrameLayoutDescriptor layout, ExposureFocusSamplingPolicy policy,
         CancellationToken cancellationToken)
     {
         if (FocusUnavailableReason(stars, layout) is { } unavailable)
@@ -240,29 +242,37 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
         if (stars.Detections.Count == 0)
             return new(stars.Status, stars.Reason, 0, null, null, 0, null, []);
 
+        var eligibleFirst = policy == ExposureFocusSamplingPolicy.EligibleFirst;
+        var cfa = layout.PixelFormat == CameraPixelFormat.BayerRggb16;
+        var bayerCoreTrail = cfa && policy != ExposureFocusSamplingPolicy.Brightest;
         var count = Math.Min(stars.Detections.Count, ExposureMeasurementProducts.MaximumHfdSamples);
-        var windowRadius = (int)Math.Ceiling(FocusOptions.AnnulusOuterRadiusPixels) + 3;
-        var diameter = 2 * windowRadius + 1;
+        var diameter = FocusWindowDiameter;
         var windowPixels = new double[diameter * diameter];
         var windowValid = new bool[windowPixels.Length];
         var windowClipped = new bool[windowPixels.Length];
         var results = new List<ExposureHfdSampleV1>(count);
         var widths = new List<double>(count);
-        foreach (var detection in stars.Detections.Take(count))
+        List<ExposureHfdSampleV1>? rejected = null;
+        // The detector already ranks by flux and breaks ties by peak position. Keep the brightest
+        // preflight rejections for spare record slots, and run at most count full focus measurements.
+        for (var index = 0; index < stars.Detections.Count && results.Count < count; index++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var rejection = FocusDetectionRejection(detection.Conditions);
-            var checkCore = bayerCoreTrail && rejection == TrailedSource;
-            if (rejection is not null && !checkCore)
+            var detection = stars.Detections[index];
+            var (rejection, checkCore) = FocusEligibility(detection, layout, bayerCoreTrail);
+            var x0 = (int)detection.Pixel.X - FocusWindowRadius;
+            var y0 = (int)detection.Pixel.Y - FocusWindowRadius;
+            var upper = checkCore
+                ? BayerCoreTrailUpperBound(pixels, valid, clipped, layout, x0, y0, detection)
+                : null;
+            if (checkCore && (upper is null || !IsRoundBayerCore(upper.Value)))
+                rejection = TrailedSource;
+
+            if (rejection is not null)
             {
-                results.Add(new(detection.Index, rejection, null));
-                continue;
-            }
-            var x0 = (int)detection.Pixel.X - windowRadius;
-            var y0 = (int)detection.Pixel.Y - windowRadius;
-            if (x0 < 0 || y0 < 0 || x0 + diameter > layout.Width || y0 + diameter > layout.Height)
-            {
-                results.Add(new(detection.Index, rejection ?? FocusStarReasonCodes.ApertureTruncated, null));
+                var destination = eligibleFirst ? rejected ??= new(count) : results;
+                if (destination.Count < count)
+                    destination.Add(new(detection.Index, rejection, null));
                 continue;
             }
             for (var y = 0; y < diameter; y++)
@@ -277,20 +287,11 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
                         : clipped[sourceStart + x];
             }
 
-            var upper = checkCore
-                ? BayerCoreTrailUpperBound(windowPixels, windowValid, windowClipped, diameter, x0, y0, detection)
-                : null;
-            if (checkCore && (upper is null || !IsRoundBayerCore(upper.Value)))
-            {
-                results.Add(new(detection.Index, TrailedSource, null));
-                continue;
-            }
-
             var focus = FocusStarMeasurer.Measure(windowPixels, windowValid, windowClipped,
                 diameter, diameter, detection.Pixel, x0, y0, FocusOptions, cancellationToken);
             if (focus.HalfFluxDiameterPixels is not > 0 || !focus.HasMeasurement)
             {
-                results.Add(new(detection.Index, rejection ?? focus.ReasonCode, null));
+                results.Add(new(detection.Index, checkCore ? TrailedSource : focus.ReasonCode, null));
                 continue;
             }
             var center = focus.Centroid!.Value;
@@ -298,7 +299,7 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
             var dy = center.Y - detection.Pixel.Y;
             if (dx * dx + dy * dy > 1)
             {
-                results.Add(new(detection.Index, rejection ?? "focus-centroid-mismatch", null));
+                results.Add(new(detection.Index, checkCore ? TrailedSource : "focus-centroid-mismatch", null));
                 continue;
             }
 
@@ -309,7 +310,12 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
             });
         }
 
-        var omitted = stars.Detections.Count - count;
+        if (rejected is not null && results.Count < count)
+        {
+            results.AddRange(rejected.Take(count - results.Count));
+            results.Sort(static (left, right) => left.DetectionIndex.CompareTo(right.DetectionIndex));
+        }
+        var omitted = stars.Detections.Count - results.Count;
         var (status, reason) = FocusDisposition(stars, widths.Count, omitted);
         return new(status, reason, widths.Count, widths.Count == 0 ? null : widths.Average(),
             ExposureMeasurementProducts.Median(widths), omitted, FocusSettings, results);
@@ -318,8 +324,23 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
     internal static bool IsRoundBayerCore(double upper)
         => double.IsFinite(upper) && upper >= 0 && upper < TrailDivisionPixels;
 
+    internal static (string? Rejection, bool CheckBayerCore) FocusEligibility(StellarDetection detection,
+        FrameLayoutDescriptor layout, bool bayerCoreTrail)
+    {
+        var rejection = FocusDetectionRejection(detection.Conditions);
+        var checkCore = bayerCoreTrail && rejection == TrailedSource;
+        if (rejection is not null && !checkCore)
+            return (rejection, false);
+
+        var x0 = (int)detection.Pixel.X - FocusWindowRadius;
+        var y0 = (int)detection.Pixel.Y - FocusWindowRadius;
+        return x0 < 0 || y0 < 0 || x0 + FocusWindowDiameter > layout.Width || y0 + FocusWindowDiameter > layout.Height
+            ? (rejection ?? FocusStarReasonCodes.ApertureTruncated, false)
+            : (null, checkCore);
+    }
+
     private static double? BayerCoreTrailUpperBound(ReadOnlySpan<double> pixels, ReadOnlySpan<bool> valid,
-        ReadOnlySpan<bool> clipped, int width, int originX, int originY, StellarDetection detection)
+        ReadOnlySpan<bool> clipped, FrameLayoutDescriptor layout, int originX, int originY, StellarDetection detection)
     {
         // The existing minimum focus aperture bounds this independent shape check. Squared signal
         // weights the star's core above noisy wings. Subtract the local noise variance so the
@@ -339,8 +360,8 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
                 var dx = x + 0.5 - cx;
                 var dy = y + 0.5 - cy;
                 if (dx * dx + dy * dy > radius * radius) continue;
-                var index = y * width + x;
-                if (!valid[index] || clipped[index]) return null;
+                var index = (originY + y) * layout.Width + originX + x;
+                if (!valid[index] || CfaNeighborClipped(clipped, originX + x, originY + y, layout)) return null;
                 var excess = pixels[index] - detection.Background;
                 var weight = excess * excess - noise;
                 mass += weight;
@@ -368,7 +389,7 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
                 var dx = x + 0.5 - cx;
                 var dy = y + 0.5 - cy;
                 if (dx * dx + dy * dy > radius * radius) continue;
-                var excess = pixels[y * width + x] - detection.Background;
+                var excess = pixels[(originY + y) * layout.Width + originX + x] - detection.Background;
                 dx -= mx;
                 dy -= my;
                 var q = dx * dx - dy * dy - delta;
