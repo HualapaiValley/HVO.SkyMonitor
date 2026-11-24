@@ -8,6 +8,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Silo;
 public sealed class SiloBoundedReadTests
 {
     private const string Key = "object";
+    private const long MetadataReadLimit = 64L * 1024 * 1024;
 
     [TestMethod]
     [DataRow(5L)]
@@ -26,16 +27,34 @@ public sealed class SiloBoundedReadTests
     }
 
     [TestMethod]
-    [DataRow(long.MaxValue)]
-    [DataRow(0L)]
-    public async Task InvalidMetadataBoundsAreRefusedBeforeReadingBytes(long bound)
+    public async Task InvalidMetadataBoundsAreRefusedBeforeStoreAccess()
+    {
+        var store = new SiloTestStore("local-silo", "instance-bucket") { Unreachable = true };
+
+        foreach (var bound in new[] { MetadataReadLimit + 1, long.MaxValue, 0L })
+        {
+            var read = () => SiloVerifier.ReadCurrentAsync(store, Key, bound, CancellationToken.None).AsTask();
+
+            var exception = await read.Should().ThrowAsync<ArgumentOutOfRangeException>(
+                "the limit {0} must be rejected before contacting the store", bound).ConfigureAwait(false);
+            exception.Which.ParamName.Should().Be("maximumBytes");
+        }
+    }
+
+    [TestMethod]
+    public async Task MetadataBoundsAtAndOneByteBelowTheCeilingAreAccepted()
     {
         var store = new SiloTestStore("local-silo", "instance-bucket");
-        store.Plant(Key, [1]);
-        var read = () => SiloVerifier.ReadCurrentAsync(store, Key, bound, CancellationToken.None).AsTask();
+        var version = store.Plant(Key, [1]);
 
-        (await read.Should().ThrowAsync<ArgumentOutOfRangeException>().ConfigureAwait(false)).Which.ParamName.Should().Be("maximumBytes");
-        store.BytesServed(Key).Should().Be(0);
+        foreach (var bound in new[] { MetadataReadLimit, MetadataReadLimit - 1 })
+        {
+            var result = await SiloVerifier.ReadCurrentAsync(store, Key, bound, CancellationToken.None).ConfigureAwait(false);
+
+            result.Should().NotBeNull("the limit {0} must allow the read", bound);
+            result!.Value.VersionId.Should().Be(version);
+            result.Value.Bytes.Should().Equal([1]);
+        }
     }
 
     [TestMethod]
