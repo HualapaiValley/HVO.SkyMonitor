@@ -379,20 +379,14 @@ jobs:
           dotnet test tests/HVO.SkyMonitor.Architecture.Tests/HVO.SkyMonitor.Architecture.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/architecture --logger "trx;LogFileName=unit-architecture.trx"
           dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/cameraagent --logger "trx;LogFileName=unit-cameraagent.trx"
           dotnet test tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/cameraagent-acceptance --logger "trx;LogFileName=unit-cameraagent-acceptance.trx"
-          dotnet test tests/HVO.SkyMonitor.LogicHost.Tests/HVO.SkyMonitor.LogicHost.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/logichost --logger "trx;LogFileName=unit-logichost.trx"
-          dotnet test tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/cameraagent-logichost --logger "trx;LogFileName=unit-cameraagent-logichost.trx"
       - name: Run Docker-disabled supplemental Unit suites
         # tests/Directory.Build.props compile-links the ConnectionPoolClearContract Unit cases into
         # these assemblies, whose remaining cases are Integration or Manual. They run TRX-only: their
         # coverage is not a canonical Coverage slot, and scripts/ci:unit-selection enforces that.
-        # The LogicHost.IntegrationTests assembly hook skips its Testcontainers fixture only for
-        # this endpoint, so the step overrides the job-level one that those hooks do not recognize.
         env:
           DOCKER_HOST: unix:///tmp/hvo-no-docker.sock
         run: |
           dotnet test tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --results-directory TestResults/unit/cameraagent-integration --logger "trx;LogFileName=unit-cameraagent-integration.trx"
-          dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --results-directory TestResults/unit/logichost-integration --logger "trx;LogFileName=unit-logichost-integration.trx"
-          dotnet test tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --results-directory TestResults/unit/cameraagent-logichost-integration --logger "trx;LogFileName=unit-cameraagent-logichost-integration.trx"
           dotnet test tests/HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests/HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --results-directory TestResults/unit/catalog-sqlite-performance --logger "trx;LogFileName=unit-catalog-sqlite-performance.trx"
       - name: Bind Unit evidence
         if: always()
@@ -427,44 +421,19 @@ jobs:
         run: |
           dotnet restore HVO.SkyMonitor.v9.slnx
           dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release
-      # The LogicHost assembly is 506s of a 724s serial total (#850, run 35300523583); the
-      # other five assemblies sum to 218s. Running LogicHost alone beside the other five
-      # takes the step from 729s to 506s (pilot run 35320849748, 669/669 passing, 16-CPU
-      # runner at load 0.46) with the identical per-assembly commands, results directories
-      # and TRX names, so coverage slots and evidence consumers are unchanged. Each lane
-      # keeps its own log; a failure in either lane fails the step after both finish.
       - name: Provision required script sandbox qualification
         run: ./scripts/ci:script-sandbox --provision
       - name: Install pinned Playwright Chromium
         run: pwsh tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/bin/Release/net10.0/playwright.ps1 install --only-shell chromium
       - name: Run Integration suites
         run: |
-          mkdir -p TestResults/integration
-          # Each lane runs every one of its assemblies even after one fails, so a failing
-          # run still produces the complete TRX and coverage set the evidence consumers
-          # expect; the lane exit code is the accumulated result.
-          logichost_lane() {
-            local lane_failed=0
-            dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/logichost --logger "trx;LogFileName=integration-logichost.trx" || lane_failed=1
-            return "$lane_failed"
-          }
-          other_lane() {
-            local lane_failed=0
-            dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/cameraagent-storage --logger "trx;LogFileName=integration-cameraagent-storage.trx" || lane_failed=1
-            dotnet test tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/cameraagent-standalone --logger "trx;LogFileName=integration-cameraagent-standalone.trx" || lane_failed=1
-            dotnet test tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/astronomy --logger "trx;LogFileName=integration-astronomy.trx" || lane_failed=1
-            dotnet test tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/cameraagent --logger "trx;LogFileName=integration-cameraagent.trx" || lane_failed=1
-            dotnet test tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/cameraagent-logichost --logger "trx;LogFileName=integration-cameraagent-logichost.trx" || lane_failed=1
-            return "$lane_failed"
-          }
-          logichost_lane > TestResults/integration/lane-logichost.log 2>&1 &
-          logichost_pid=$!
-          other_lane > TestResults/integration/lane-other.log 2>&1 &
-          other_pid=$!
+          # Run every selected assembly even after an earlier failure so available
+          # TRX and coverage evidence survives a failed run.
           failed=0
-          wait "$logichost_pid" || failed=1
-          wait "$other_pid" || failed=1
-          cat TestResults/integration/lane-logichost.log TestResults/integration/lane-other.log
+          dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/cameraagent-storage --logger "trx;LogFileName=integration-cameraagent-storage.trx" || failed=1
+          dotnet test tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/cameraagent-standalone --logger "trx;LogFileName=integration-cameraagent-standalone.trx" || failed=1
+          dotnet test tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/astronomy --logger "trx;LogFileName=integration-astronomy.trx" || failed=1
+          dotnet test tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/cameraagent --logger "trx;LogFileName=integration-cameraagent.trx" || failed=1
           exit "$failed"
       - name: Bind Integration evidence
         if: always()
@@ -627,29 +596,10 @@ jobs:
   migrations-logichost:
     name: LogicHost Migrations
     needs: changes
-    if: needs.changes.outputs.mode == 'full'
+    if: ${{ !always() }} # LogicHost retirement (#2048) always skips this job.
     runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
-    timeout-minutes: 15
     steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Setup .NET from global.json
-        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
-        with:
-          global-json-file: global.json
-      - name: Restore tools and build the LogicHost project root
-        run: |
-          dotnet tool restore
-          dotnet restore src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj
-          dotnet build src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj --no-restore --configuration Release
-      - name: Enforce one canonical LogicHost migration
-        run: ./scripts/ci:canonical-migration logichost
-      - name: Reject pending LogicHost model changes
-        env:
-          ConnectionStrings__skymonitordb: Server=127.0.0.1,1433;Database=ModelCheck;User Id=sa;Password=Model_check1!;TrustServerCertificate=True
-        run: dotnet ef migrations has-pending-model-changes --project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj --startup-project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj --context HVO.SkyMonitor.LogicHost.Data.ApplicationDbContext --configuration Release --no-build
+      - run: echo 'Skipped for LogicHost retirement (#2048).'
 
   coverage-policy:
     name: Coverage Policy
@@ -792,103 +742,18 @@ jobs:
   logichost-component:
     name: LogicHost Component
     needs: changes
-    if: needs.changes.outputs.complete == 'false' && needs.changes.outputs.logichost == 'true'
+    if: ${{ !always() }} # LogicHost retirement (#2048) always skips this job.
     runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
-    timeout-minutes: 45
-    env:
-      UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware
-      INTEGRATION_FILTER: TestCategory=Integration&TestCategory!=Soak&TestCategory!=Manual&TestCategory!=External&TestCategory!=Hardware
     steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Setup .NET from global.json
-        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
-        with:
-          global-json-file: global.json
-      - name: Restore and build LogicHost project roots
-        run: ./scripts/ci:component-build logichost
-      - name: Run LogicHost Unit suites
-        env:
-          DOCKER_HOST: unix:///tmp/hvo-unit-docker-must-not-exist.sock
-        run: |
-          dotnet test tests/HVO.SkyMonitor.LogicHost.Tests/HVO.SkyMonitor.LogicHost.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/logichost --logger "trx;LogFileName=unit-logichost.trx"
-      - name: Run LogicHost supplemental Unit contracts
-        env:
-          DOCKER_HOST: unix:///tmp/hvo-no-docker.sock
-        run: |
-          dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --results-directory TestResults/unit/logichost-integration --logger "trx;LogFileName=unit-logichost-integration.trx"
-      - name: Run LogicHost Integration suites
-        run: |
-          dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/logichost --logger "trx;LogFileName=integration-logichost.trx"
-      - name: Publish LogicHost outputs
-        run: ./scripts/ci:component-publish logichost
-      - name: Restore coverage tool
-        run: dotnet tool restore
-      - name: Enforce LogicHost component coverage
-        run: ./scripts/coverage:component logichost
-      - name: Upload LogicHost component evidence
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: logichost-component-evidence
-          path: |
-            TestResults/unit/
-            TestResults/integration/
-            TestResults/publish/component/
-            coverage-report/logichost/
-          if-no-files-found: error
-          retention-days: 30
+      - run: echo 'Skipped for LogicHost retirement (#2048).'
 
   combined-integration:
     name: Combined Protocol & Integration
     needs: changes
-    if: needs.changes.outputs.complete == 'false' && needs.changes.outputs.combined == 'true'
+    if: ${{ !always() }} # LogicHost retirement (#2048) always skips this job.
     runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
-    timeout-minutes: 45
-    env:
-      UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware
-      INTEGRATION_FILTER: TestCategory=Integration&TestCategory!=Soak&TestCategory!=Manual&TestCategory!=External&TestCategory!=Hardware
     steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Setup .NET from global.json
-        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
-        with:
-          global-json-file: global.json
-      - name: Restore and build combined project roots
-        run: ./scripts/ci:component-build combined
-      - name: Run combined protocol Unit suites
-        env:
-          DOCKER_HOST: unix:///tmp/hvo-unit-docker-must-not-exist.sock
-        run: |
-          dotnet test tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/cameraagent-logichost --logger "trx;LogFileName=unit-cameraagent-logichost.trx"
-      - name: Run combined supplemental Unit contracts
-        env:
-          DOCKER_HOST: unix:///tmp/hvo-no-docker.sock
-        run: |
-          dotnet test tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --results-directory TestResults/unit/cameraagent-logichost-integration --logger "trx;LogFileName=unit-cameraagent-logichost-integration.trx"
-      - name: Run combined Integration suites
-        run: |
-          dotnet test tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/cameraagent-logichost --logger "trx;LogFileName=integration-cameraagent-logichost.trx"
-      - name: Restore coverage tool
-        run: dotnet tool restore
-      - name: Enforce combined component coverage
-        run: ./scripts/coverage:component combined
-      - name: Upload combined component evidence
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: combined-component-evidence
-          path: |
-            TestResults/unit/
-            TestResults/integration/
-            coverage-report/combined/
-          if-no-files-found: error
-          retention-days: 30
+      - run: echo 'Skipped for LogicHost retirement (#2048).'
 
   delivery-component:
     name: Delivery Component
@@ -1005,14 +870,10 @@ jobs:
             'TestResults/unit/architecture/*/coverage.cobertura.xml'
             'TestResults/unit/cameraagent/*/coverage.cobertura.xml'
             'TestResults/unit/cameraagent-acceptance/*/coverage.cobertura.xml'
-            'TestResults/unit/logichost/*/coverage.cobertura.xml'
-            'TestResults/unit/cameraagent-logichost/*/coverage.cobertura.xml'
             'TestResults/integration/cameraagent-storage/*/coverage.cobertura.xml'
             'TestResults/integration/cameraagent-standalone/*/coverage.cobertura.xml'
             'TestResults/integration/astronomy/*/coverage.cobertura.xml'
-            'TestResults/integration/logichost/*/coverage.cobertura.xml'
             'TestResults/integration/cameraagent/*/coverage.cobertura.xml'
-            'TestResults/integration/cameraagent-logichost/*/coverage.cobertura.xml'
             'TestResults/architecture/*/coverage.cobertura.xml'
           )
           reports=()

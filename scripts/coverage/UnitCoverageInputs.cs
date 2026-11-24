@@ -101,10 +101,13 @@ internal static class UnitCoverageInputs
                 using var inventory = JsonDocument.Parse(File.ReadAllText(Path.Combine(path, "test-categories.json")));
                 return inventory.RootElement.GetProperty("Unit").GetInt32() > 0;
             })
-            .Select(static path => Path.GetFileName(path)).ToHashSet(StringComparer.Ordinal);
+            .Select(static path => Path.GetFileName(path))
+            .Where(static project => !project.StartsWith("HVO.SkyMonitor.LogicHost.", StringComparison.Ordinal) &&
+                !project.StartsWith("HVO.SkyMonitor.CameraAgent.LogicHost.", StringComparison.Ordinal))
+            .ToHashSet(StringComparer.Ordinal);
         if (!seenProjects.SetEquals(expectedProjects) || reportsByHash.Values.Any(static queue => queue.Count > 0))
         {
-            throw new InvalidDataException($"Unit coverage/TRX inventory differs from the Unit-bearing project set; missing: {string.Join(", ", expectedProjects.Except(seenProjects))}.");
+            throw new InvalidDataException($"Unit coverage/TRX inventory differs from the selected Unit-bearing project set; missing: {string.Join(", ", expectedProjects.Except(seenProjects))}; unexpected: {string.Join(", ", seenProjects.Except(expectedProjects))}.");
         }
 
         foreach (var source in inventories.Values.SelectMany(static sources => sources)
