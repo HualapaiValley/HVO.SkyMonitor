@@ -88,6 +88,39 @@ root. `/health` reports pressure as degraded and capacity-probe failure as
 unhealthy; transition logs record entry and recovery. This policy does not pause
 capture or discard accepted frames.
 
+## Centered-view journal
+
+The raw-root retention sweep prunes a centered view after the reference capture
+is eligible under the effective UTC-day cutoff, its raw payload and sidecar are
+absent, and its preview has left the processing store. The cutoff day is
+included. A retained raw file, raw hold, or preview keeps the view in the journal.
+
+An open live interval, retry-pending window, or saved selection keeps the whole
+base and all of its revisions. Saved selections have no automatic expiry and
+do not extend the retention policy for artifact bytes. Surviving recomputations
+keep their original base. An expired base needed to close a retained interval
+keeps its change and revision records. Its own expired cross-base intervals can
+be detached. The archive reads the last live revision from the ordered live
+changes, so detaching an interval preserves the last-live archive target.
+
+The sweep reads at most 512 base IDs at a time and commits at most 128 bases
+per SQLite write transaction. Between full read pages and after each write
+batch, it releases both lifecycle locks and pauses briefly so capture and other
+journal writers can proceed. It rechecks raw files and durable holds before
+pruning each batch. A paused or interrupted pass resumes by rechecking what
+remains, and completed publication checkpoints stay settled. Event 2547 reports
+how many bases were deleted. Journal failures are reported separately from file
+expiration as event 2546. Event 2548 counts expired bases skipped because their
+definitions lack a readable preview identity and identifies the first such base.
+Exact links to successfully pruned revisions return HTTP 404.
+
+SQLite reuses free journal pages on later writes. This sweep does not vacuum
+the journal or return the free pages to the filesystem. The shared journal
+adopts the retention indexes on startup. Use the paired pre-upgrade checkpoint
+when rolling back to a reader without those indexes in its schema allowlist.
+The [journal measurements](../validation/centered-view-retention-2000.md) record
+snapshot growth and steady-state and backlog sweep costs.
+
 ## Outage Recovery
 
 1. Restore LogicHost, bearer-token issuance, or network connectivity.
