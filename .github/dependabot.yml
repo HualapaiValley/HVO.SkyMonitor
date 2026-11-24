@@ -6,6 +6,19 @@ updates:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 10
+    # Hold the .NET 11 package line, including Serilog.AspNetCore, while the repository targets .NET 10.
+    # The upper bound keeps packages with independent version lines, such as Microsoft.NET.Test.Sdk, eligible.
+    # These ranges also block 11.0.x servicing, so raise or remove them during the .NET 11 upgrade.
+    ignore:
+      - dependency-name: "Microsoft.*"
+        versions:
+          - ">= 11.0.0, < 12.0.0"
+      - dependency-name: "System.*"
+        versions:
+          - ">= 11.0.0, < 12.0.0"
+      - dependency-name: "Serilog.AspNetCore"
+        versions:
+          - ">= 11.0.0, < 12.0.0"
     groups:
       dotnet-servicing:
         patterns:
@@ -66,6 +79,11 @@ updates:
         patterns:
           - "*"
     ignore:
+      # Dependabot compares the numeric part of tags such as 11.0-noble.
+      # This range also blocks 11.0.x servicing, so raise or remove it during the .NET 11 upgrade.
+      - dependency-name: "dotnet/*"
+        versions:
+          - ">= 11"
       # global.json pins the SDK exactly (rollForward: disable), so a new SDK tag is a coordinated manual
       # bump; Dependabot only refreshes the digest of the pinned SDK tag.
       - dependency-name: "dotnet/sdk"

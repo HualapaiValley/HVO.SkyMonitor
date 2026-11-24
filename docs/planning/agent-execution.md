@@ -430,18 +430,20 @@ dotnet format HVO.SkyMonitor.v9.slnx --no-restore --verify-no-changes
 ./scripts/test:pr-review-tools
 DOCKER_HOST=unix:///tmp/hvo-no-docker.sock \
 dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release \
-  --filter "TestCategory=Unit" \
-  --settings tests/coverage.runsettings \
+  --filter 'TestCategory=Unit&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost' \
+  -p:SkipLogicHostTests=true --settings tests/coverage.runsettings \
   --collect:"XPlat Code Coverage"
 dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release \
-  --filter "TestCategory=Integration" \
-  --settings tests/coverage.runsettings \
+  --filter 'TestCategory=Integration&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost' \
+  -p:SkipLogicHostTests=true --settings tests/coverage.runsettings \
   --collect:"XPlat Code Coverage"
 ```
 
 The positive Unit filter must pass with an invalid Docker endpoint. Integration
 is a separate required gate and requires Docker for the Testcontainers
-assemblies. This complete block is the tier C/M local candidate gate, not the
+assemblies. Both selections apply the
+[LogicHost retirement contract](../runbooks/ci-pipeline.md#logichost-test-retirement).
+This complete block is the tier C/M local candidate gate, not the
 default inner loop. Tier A/B uses its recorded focused/affected local evidence
 and relies on the target branch's protected CI before merge. Follow the correction
 rules in section 4 after review feedback.
