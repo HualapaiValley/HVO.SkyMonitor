@@ -1,4 +1,5 @@
 using System.Collections.Frozen;
+using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests;
@@ -8,18 +9,33 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Every test class in <c>HVO.SkyMonitor.CameraAgent.Tests</c> carries exactly one
+/// Every test class in <c>HVO.SkyMonitor.CameraAgent.Tests</c> carries exactly one class-level
 /// <see cref="TestPropertyAttribute"/> with name <see cref="PropertyName"/> (<c>"Area"</c>) and a value from
-/// <see cref="All"/>, so <c>dotnet test --filter "Area=&lt;name&gt;"</c> partitions the assembly cleanly for
+/// <see cref="All"/>, and no test method may declare a method-level <c>Area</c> trait (which would precede the
+/// class-level value in MSTest metadata and break VSTest <c>--filter "Area=&lt;name&gt;"</c> partitioning).
+/// This allows <c>dotnet test --filter "Area=&lt;name&gt;"</c> to partition the assembly cleanly for
 /// future class-time sharding and Area-based PR path filtering without modifying CI workflow filters yet.
 /// </para>
 /// <para>
-/// Areas align 1:1 with <c>src/HVO.SkyMonitor.CameraAgent.Common</c> domain folders (with dot-delimited sub-areas
-/// for <c>Capture/*</c> and <c>Modules/VirtualSky</c>), plus explicit areas for test classes outside
-/// <c>CameraAgent.Common</c>: <see cref="ModulesZwo"/> (<c>HVO.SkyMonitor.CameraAgent.Modules.Zwo</c>),
+/// Test classes are mapped by subject/SUT folder rather than a strict 1:1 mirror of every folder in
+/// <c>src/HVO.SkyMonitor.CameraAgent.Common</c>. Most classes match their test folder, with dot-delimited
+/// sub-areas for <c>Capture/*</c> and <c>Modules/VirtualSky</c>. Exceptions follow the SUT:
+/// <c>Contracts/</c>, root-level classes, and specific SUT-owned tests (such as
+/// <c>ProcessingGraphDeliveryServiceTests</c> → <see cref="CaptureProcessing"/> and
+/// <c>CameraModuleOwnershipTests</c> → <see cref="Capture"/>) map to their SUT's Area; domain health checks
+/// map to their domain Area; and host authentication, authorization, data, settings, and controllers map to
+/// <see cref="Hosting"/>. The <c>CameraAgent.Common</c> folders <c>DependencyInjection</c>, <c>Frames</c>,
+/// <c>Imaging</c>, <c>Logging</c>, <c>Modules</c> root/<c>NoOp</c>/<c>RandomImage</c>, and <c>Reflection</c>
+/// have no dedicated Area. Explicit areas cover test classes outside <c>CameraAgent.Common</c>:
+/// <see cref="ModulesZwo"/> (<c>HVO.SkyMonitor.CameraAgent.Modules.Zwo</c>),
 /// <see cref="Cli"/> (<c>HVO.SkyMonitor.CameraAgent.Cli</c>), <see cref="Endpoints"/>, <see cref="Hosting"/>,
-/// <see cref="Services"/>, and <see cref="Ui"/> (<c>HVO.SkyMonitor.CameraAgent</c>), and
+/// <see cref="Services"/>, and <see cref="Ui"/> (<c>HVO.SkyMonitor.CameraAgent</c>), plus
 /// <see cref="TestInfrastructure"/> (shared test contracts compile-linked into the test assembly).
+/// </para>
+/// <para>
+/// Enforced at test execution time via <c>ConnectionPoolClearContractTests.AssertAssemblySpecificContracts</c>
+/// (hooked in <c>ConnectionPoolClearContractTests.Area.cs</c> and invoked from
+/// <c>tests/TestSettings/ConnectionPoolClearContract.cs</c>).
 /// </para>
 /// </remarks>
 internal static class CameraAgentTestAreas
@@ -120,9 +136,27 @@ internal static class CameraAgentTestAreas
         Upload
     }.ToFrozenSet(StringComparer.Ordinal);
 
+    private const BindingFlags InspectedMethodFlags =
+        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static |
+        BindingFlags.FlattenHierarchy;
+
+    /// <summary>
+    /// Enforces the <c>Area</c> trait contract across all concrete <c>[TestClass]</c> types in
+    /// <paramref name="assembly"/>. Invoked via
+    /// <c>ConnectionPoolClearContractTests.AssertAssemblySpecificContracts</c>
+    /// (<c>ConnectionPoolClearContractTests.Area.cs</c>).
+    /// </summary>
     internal static void AssertEveryTestClassHasValidArea(Assembly assembly)
     {
         ArgumentNullException.ThrowIfNull(assembly);
+
+        var specimenViolations = new List<string>();
+        CollectMethodAreaViolations(typeof(MethodAreaSpecimen), specimenViolations);
+        Assert.AreEqual(
+            2,
+            specimenViolations.Count,
+            $"Method-level {PropertyName} specimen check expected 2 violations (declared exact-case and inherited wrong-case), " +
+            $"but found {specimenViolations.Count}: {string.Join("; ", specimenViolations)}");
 
         var testClasses = assembly
             .GetTypes()
@@ -139,6 +173,8 @@ internal static class CameraAgentTestAreas
 
         foreach (var type in testClasses)
         {
+            CollectMethodAreaViolations(type, violations);
+
             var properties = type.GetCustomAttributes<TestPropertyAttribute>(inherit: true).ToArray();
             var wrongCase = properties
                 .Where(static prop => !string.Equals(prop.Name, PropertyName, StringComparison.Ordinal) &&
@@ -185,5 +221,57 @@ internal static class CameraAgentTestAreas
             violations,
             $"CameraAgent.Tests {PropertyName} taxonomy violations ({violations.Count}):{Environment.NewLine}" +
             string.Join(Environment.NewLine, violations));
+    }
+
+    private static void CollectMethodAreaViolations(Type type, List<string> violations)
+    {
+        var methods = type
+            .GetMethods(InspectedMethodFlags)
+            .Where(static method => method.DeclaringType != typeof(object))
+            .OrderBy(static method => method.Name, StringComparer.Ordinal)
+            .ThenBy(static method => method.DeclaringType?.FullName, StringComparer.Ordinal);
+
+        foreach (var method in methods)
+        {
+            var methodAreaTraits = method
+                .GetCustomAttributes<TestPropertyAttribute>(inherit: true)
+                .Where(static prop => string.Equals(prop.Name, PropertyName, StringComparison.OrdinalIgnoreCase));
+
+            foreach (var trait in methodAreaTraits)
+            {
+                violations.Add(
+                    $"{type.FullName}.{method.Name}: method-level [TestProperty(\"{trait.Name}\", \"{trait.Value}\")] is forbidden; '{PropertyName}' must be declared at the class level only.");
+            }
+        }
+    }
+
+    // Non-[TestClass] specimen used to self-verify that method-level Area traits (declared and inherited,
+    // case-insensitively) are caught without altering MSTest discovery counts.
+    private abstract class MethodAreaSpecimenBase
+    {
+        [SuppressMessage(
+            "Usage",
+            "MSTEST0007:Use 'TestMethod' attribute",
+            Justification = "Compiled metadata specimen for method-level Area guard; intentionally not a [TestMethod] so MSTest discovery count is unchanged.")]
+        [TestProperty("area", Capture)]
+        public virtual void InheritedMethodWithWrongCaseArea()
+        {
+        }
+    }
+
+    [SuppressMessage(
+        "Performance",
+        "CA1812:Avoid uninstantiated internal classes",
+        Justification = "Compiled metadata specimen inspected via reflection; never instantiated.")]
+    private sealed class MethodAreaSpecimen : MethodAreaSpecimenBase
+    {
+        [SuppressMessage(
+            "Usage",
+            "MSTEST0007:Use 'TestMethod' attribute",
+            Justification = "Compiled metadata specimen for method-level Area guard; intentionally not a [TestMethod] so MSTest discovery count is unchanged.")]
+        [TestProperty(PropertyName, Capture)]
+        public static void DeclaredMethodWithArea()
+        {
+        }
     }
 }

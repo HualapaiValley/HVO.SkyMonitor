@@ -247,6 +247,13 @@ public sealed partial class ConnectionPoolClearContractTests
         AssertAssemblySpecificContracts();
     }
 
+    /// <summary>
+    /// Extension hook for assembly-specific test contract guards that run alongside the shared
+    /// connection-pool contract without changing discovered test counts. The C# compiler elides
+    /// this declaration and its call site in test assemblies without a partial implementation.
+    /// Currently implemented by <c>HVO.SkyMonitor.CameraAgent.Tests</c> in
+    /// <c>ConnectionPoolClearContractTests.Area.cs</c> to enforce the <c>Area</c> trait taxonomy.
+    /// </summary>
     static partial void AssertAssemblySpecificContracts();
 
     private static ScanResult Scan(Assembly assembly)
