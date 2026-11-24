@@ -40,7 +40,7 @@ internal sealed partial class CenteredMeasuredDeepSkyScheduler(IRawCaptureIngres
                 }
                 await RunOnceAsync(stoppingToken).ConfigureAwait(false);
             }
-            catch (Exception exception) when (exception is SqliteException or IOException)
+            catch (Exception exception) when (exception is SqliteException or IOException or UnauthorizedAccessException)
             {
                 ReadFailed(logger, exception);
             }

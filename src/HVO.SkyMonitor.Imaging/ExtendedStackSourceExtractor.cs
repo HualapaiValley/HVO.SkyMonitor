@@ -244,7 +244,7 @@ public static class ExtendedStackSourceExtractor
                 {
                     var source = (y - 1) * width + x - 1;
                     double value = luminance[source];
-                    var slots = value >= 0 && support[source] <= 31 ? support[source] : 0;
+                    var slots = double.IsFinite(value) && value >= 0 && support[source] <= 31 ? support[source] : 0;
                     value = slots == 0 ? 0 : value;
                     sum += value;
                     squares += value * value;
@@ -314,7 +314,8 @@ public static class ExtendedStackSourceExtractor
         {
             var x = (int)measuredStar.X;
             var y = (int)measuredStar.Y;
-            if (!IsSearchCenter(x, y) || !TryMeasure(x, y, out var aperture) ||
+            if (luminance.Length != (_stride - 1) * _height ||
+                !IsSearchCenter(x, y) || !TryMeasure(x, y, out var aperture) ||
                 ApertureNoise(x, y, aperture.Support) is not { } noise)
             {
                 return null;
