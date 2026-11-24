@@ -7,6 +7,12 @@
     <IsTestProject>false</IsTestProject>
   </PropertyGroup>
 
+  <!-- Path-filter Deployment.Cli.Tests by assembly ownership on non-deployment development/v1 PR runs (#2071). -->
+  <PropertyGroup Condition="'$(SkipDeploymentCliTests)' == 'true' And
+                            '$(MSBuildProjectName)' == 'HVO.SkyMonitor.Deployment.Cli.Tests'">
+    <IsTestProject>false</IsTestProject>
+  </PropertyGroup>
+
   <!--
     A build names the product version in Directory.Build.props or a pre-release of it (install contract section 1,
     #1310), so a release cannot ship a program that says another version: -p:Version must be X.Y.Z or X.Y.Z-<pre-release>,

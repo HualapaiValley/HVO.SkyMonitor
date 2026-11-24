@@ -8,7 +8,7 @@ using System.Xml.Linq;
 /// <summary>Checks input completeness against build metadata rather than other coverage inputs.</summary>
 internal static class UnitCoverageInputs
 {
-    internal static void Validate(string repositoryRoot, string resultsDirectory, string[] reports, IEnumerable<string> floorPaths)
+    internal static void Validate(string repositoryRoot, string resultsDirectory, string[] reports, IEnumerable<string> floorPaths, bool skipDeploymentCli = false)
     {
         ValidateCollectorSettings(repositoryRoot);
         var floors = floorPaths.ToHashSet(StringComparer.Ordinal);
@@ -106,8 +106,9 @@ internal static class UnitCoverageInputs
         }
 
         var expectedProjects = unitProjects
-            .Where(static project => !project.StartsWith("HVO.SkyMonitor.LogicHost.", StringComparison.Ordinal) &&
-                !project.StartsWith("HVO.SkyMonitor.CameraAgent.LogicHost.", StringComparison.Ordinal))
+            .Where(project => !project.StartsWith("HVO.SkyMonitor.LogicHost.", StringComparison.Ordinal) &&
+                !project.StartsWith("HVO.SkyMonitor.CameraAgent.LogicHost.", StringComparison.Ordinal) &&
+                (!skipDeploymentCli || !string.Equals(project, "HVO.SkyMonitor.Deployment.Cli.Tests", StringComparison.Ordinal)))
             .ToHashSet(StringComparer.Ordinal);
         if (!seenProjects.SetEquals(expectedProjects) || reportsByHash.Values.Any(static queue => queue.Count > 0))
         {

@@ -203,18 +203,29 @@ logichost_exclusions = (
     "&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost",
 )
 unit_filter = "TestCategory=Unit&TestCategory!=Performance" + "".join(logichost_exclusions)
+deployment_cli_skip_guard = (
+    'if [[ "$GITHUB_EVENT_NAME" == pull_request && "$WORKLOAD_OUTCOME" == success && '
+    '"$RUN_DEPLOYMENT_CLI" == false ]]; then'
+)
 unit_command = " \\\n".join((
     "            dotnet test HVO.SkyMonitor.v9.slnx",
     "              --no-build",
     "              --configuration Release",
-    f'              --filter "{unit_filter}"',
-    "              -p:SkipLogicHostTests=true",
+    '              --filter "$unit_filter"',
+    '              "${test_project_args[@]}"',
     '              --settings "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings"',
     '              --collect:"XPlat Code Coverage"',
     '              --results-directory "$DEV_V1_EVIDENCE_ROOT/unit"',
     "              --logger trx",
 ))
-unit_selection_error = "exact solution Unit command with Performance and both LogicHost exclusions"
+unit_selection_error = "exact solution Unit command with Performance, both LogicHost exclusions, and PR-only Deployment.Cli.Tests path-filter"
+directory_build_targets = (root / "Directory.Build.targets").read_text()
+skip_deployment_cli_target = (
+    "<PropertyGroup Condition=\"'$(SkipDeploymentCliTests)' == 'true' And\n"
+    "                            '$(MSBuildProjectName)' == 'HVO.SkyMonitor.Deployment.Cli.Tests'\">\n"
+    "    <IsTestProject>false</IsTestProject>\n"
+    "  </PropertyGroup>"
+)
 queue_permissions = "permissions:\n  contents: read\n  pull-requests: read\n  statuses: read\n"
 trusted_checkout = """        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -459,7 +470,26 @@ def violations(short, full, queue=None, extra=None):
     require("--configuration Release" in build and "-warnaserror" in build, "Release warnings")
     require("DOCKER_HOST: unix:///tmp/hvo-no-docker.sock" in build, "Docker-disabled Unit")
     unit = step(build, "Run Docker-disabled Unit selection")
-    require(unit.rstrip().endswith("\n" + unit_command), unit_selection_error)
+    unit_selection_block = "\n".join((
+        "          coverage_args=()",
+        f'          unit_filter="{unit_filter}"',
+        "          test_project_args=(-p:SkipLogicHostTests=true)",
+        f"          {deployment_cli_skip_guard}",
+        "            coverage_args+=(--skip-deployment-cli)",
+        '            unit_filter+="&FullyQualifiedName!~HVO.SkyMonitor.Deployment.Cli.Tests"',
+        "            test_project_args+=(-p:SkipDeploymentCliTests=true)",
+        "          fi",
+        '          ./scripts/coverage:development-v1 --settings "${coverage_args[@]}" "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings"',
+    ))
+    require(
+        "WORKLOAD_OUTCOME: ${{ steps.workload.outcome }}" in unit
+        and "RUN_DEPLOYMENT_CLI: ${{ steps.workload.outputs.run_deployment_cli }}" in unit
+        and unit_selection_block in unit
+        and unit.rstrip().endswith("\n" + unit_command),
+        unit_selection_error,
+    )
+    require(skip_deployment_cli_target in directory_build_targets,
+            "Directory.Build.targets scopes SkipDeploymentCliTests exclusively to HVO.SkyMonitor.Deployment.Cli.Tests")
     coverage = step(build, "Enforce canonical per-file coverage floors")
     policy = step(preflight, "Check coverage policy")
     require('        run: ./scripts/coverage:policy "$EVENT_NAME" "$BASE_REF"' in policy and
@@ -467,12 +497,24 @@ def violations(short, full, queue=None, extra=None):
             'BASE_REF: ${{ github.base_ref }}' in policy and '        if:' not in policy and
             'continue-on-error:' not in policy, "coverage policy runs on every v1 event")
     require(unit.splitlines().count(
-        '          ./scripts/coverage:development-v1 --settings "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings"'
+        '          ./scripts/coverage:development-v1 --settings "${coverage_args[@]}" "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings"'
     ) == 1, "Unit coverage settings generation")
+    coverage_skip_block = "\n".join((
+        "              coverage_args=()",
+        f"              {deployment_cli_skip_guard}",
+        "                coverage_args+=(--skip-deployment-cli)",
+        "              fi",
+    ))
+    require(
+        "WORKLOAD_OUTCOME: ${{ steps.workload.outcome }}" in coverage
+        and "RUN_DEPLOYMENT_CLI: ${{ steps.workload.outputs.run_deployment_cli }}" in coverage
+        and coverage_skip_block in coverage,
+        "coverage step skips Deployment.Cli.Tests only on verified PR path-filter",
+    )
     for command in (
         '              dotnet tool restore',
         '              ./scripts/test:coverage-development-v1',
-        '              ./scripts/coverage:development-v1 "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage"',
+        '              ./scripts/coverage:development-v1 "${coverage_args[@]}" "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage"',
     ):
         require(coverage.splitlines().count(command) == 1, f"per-file gate wiring: {command}")
     require('        id: coverage\n' in coverage and 'bash -euo pipefail -c' in coverage,
@@ -499,9 +541,14 @@ def violations(short, full, queue=None, extra=None):
                      'EVENT_NAME: ${{ github.event_name }}', 'Preflight dependency: success',
                      'git show "$base:scripts/ci:classify"', '"$second" == "$PR_HEAD_SHA"',
                      '"$merge_commit" == "$GITHUB_SHA"', 'docs-fast-only',
-                     '[[ "$EVENT_NAME" == pull_request ]]', 'run_full=true',
+                     '[[ "$EVENT_NAME" == pull_request ]]', 'run_full=true', 'run_deployment_cli=true',
                      'for endpoint in "$PR_HEAD_SHA" "$merge_commit"', '-n "$PR_HEAD_SHA"', '-n "$second"',
                      'if [[ "$eligible" == true ]]; then', 'classifier output missing or invalid',
+                     'bash "$classifier" pull_request "$base" "$endpoint" > "$component_output"',
+                     "grep '^complete='", "grep '^delivery='", "grep '^deployment='",
+                     '"$complete_val" != complete=false || "$delivery_val" != delivery=false || "$deployment_val" != deployment=false',
+                     'component classifier output missing or invalid',
+                     'run_deployment_cli=%s\\ndeployment_cli_reason=%s\\n',
                      'timeout --signal=TERM --kill-after=5s 30s bash "$classifier" --verify-docs-restore "$base"',
                      'printf \'restore_imports_verified=true\\n\' | cmp -s - "$proof"'):
         require(expected in fast, f"exact classification wiring: {expected}")
@@ -510,9 +557,9 @@ def violations(short, full, queue=None, extra=None):
             "if: env.MERGE_GROUP_RUN_ID == ''" in checkout and
             build.find(workload_step) < build.find("Setup .NET from global.json"),
             "event-specific checkout and classification order")
-    require('docsFastPath:$docsFastPath,docsFastPathReason:$docsFastPathReason,preflight:"success"' in build and
+    require('docsFastPath:$docsFastPath,docsFastPathReason:$docsFastPathReason,deploymentCliTestsIncluded:$deploymentCliTestsIncluded,deploymentCliTestsReason:$deploymentCliTestsReason,preflight:"success"' in build and
             'baseSha:$baseSha,prHeadSha:$prHeadSha,mergeSha:$headSha' in build,
-            "fast decision, commits and preflight in retained manifest")
+            "fast decision, Deployment.Cli.Tests decision, commits and preflight in retained manifest")
     require(0 <= build.find("- name: Run Docker-disabled Unit selection") <
             build.find("- name: Enforce canonical per-file coverage floors") <
             build.find("- name: Write evidence summary"), "coverage runs after Unit and before evidence")
@@ -637,7 +684,16 @@ mutations = (
     ("tip comparison omitted", short.replace('for endpoint in "$PR_HEAD_SHA" "$merge_commit"', 'for endpoint in "$merge_commit"'), full),
     ("merge parent not bound", short.replace('"$second" == "$PR_HEAD_SHA"', '"$second" == "$second"'), full),
     ("base classifier not trusted", short.replace('git show "$base:scripts/ci:classify"', 'git show "HEAD:scripts/ci:classify"'), full),
-    ("fast decision omitted from evidence", short.replace('docsFastPath:$docsFastPath,docsFastPathReason:$docsFastPathReason,preflight:"success"', ""), full),
+    ("fast decision omitted from evidence", short.replace('docsFastPath:$docsFastPath,docsFastPathReason:$docsFastPathReason,deploymentCliTestsIncluded:$deploymentCliTestsIncluded,deploymentCliTestsReason:$deploymentCliTestsReason,preflight:"success"', ""), full),
+    ("Deployment.Cli.Tests decision omitted from evidence", short.replace('deploymentCliTestsIncluded:$deploymentCliTestsIncluded,deploymentCliTestsReason:$deploymentCliTestsReason,', ""), full),
+    ("Deployment.Cli.Tests defaults to skip", short.replace("run_deployment_cli=true", "run_deployment_cli=false", 1), full),
+    ("Deployment.Cli.Tests skips on merge_group in unit step", short.replace(deployment_cli_skip_guard, 'if [[ "$WORKLOAD_OUTCOME" == success && "$RUN_DEPLOYMENT_CLI" == false ]]; then', 1), full),
+    ("Deployment.Cli.Tests skips on merge_group in coverage step", short.replace(f"              {deployment_cli_skip_guard}", '              if [[ "$WORKLOAD_OUTCOME" == success && "$RUN_DEPLOYMENT_CLI" == false ]]; then', 1), full),
+    ("Deployment.Cli.Tests skips on failed workload in unit step", short.replace(deployment_cli_skip_guard, 'if [[ "$GITHUB_EVENT_NAME" == pull_request && "$RUN_DEPLOYMENT_CLI" == false ]]; then', 1), full),
+    ("Deployment.Cli.Tests skips on missing output", short.replace('"$RUN_DEPLOYMENT_CLI" == false', '"$RUN_DEPLOYMENT_CLI" != true', 1), full),
+    ("Deployment.Cli.Tests omits deployment flag check", short.replace(' || "$deployment_val" != deployment=false', ''), full),
+    ("Deployment.Cli.Tests omits complete flag check", short.replace('"$complete_val" != complete=false || ', ''), full),
+    ("Deployment.Cli.Tests skips unconditionally", short.replace("test_project_args=(-p:SkipLogicHostTests=true)", "test_project_args=(-p:SkipLogicHostTests=true -p:SkipDeploymentCliTests=true)"), full),
     ("inflated summary hard timeout", short.replace("hardTimeoutSeconds:1320", "hardTimeoutSeconds:13200"), full),
     ("inflated workload budget", short.replace("started_at_epoch + 1080", "started_at_epoch + 10800"), full),
     ("inflated hard timeout", short.replace("timeout-minutes: 22", "timeout-minutes: 220"), full),
@@ -654,13 +710,13 @@ mutations = (
     ("base-image check gated", short.replace(
         "- name: Check Dockerfile base images", "- name: Check Dockerfile base images\n        if: false"), full),
     ("base-image failure masked", short.replace("run: ./scripts/ci:base-images", "run: ./scripts/ci:base-images || true"), full),
-    ("missing Unit filter", short.replace(f'--filter "{unit_filter}"', ""), full),
+    ("missing Unit filter", short.replace(f'unit_filter="{unit_filter}"', 'unit_filter=""'), full),
     ("missing Performance exclusion", short.replace("&TestCategory!=Performance", ""), full),
     ("coverage not collected", short.replace('--collect:"XPlat Code Coverage"', ""), full),
     ("coverage policy removed", short.replace('run: ./scripts/coverage:policy ', 'run: true '), full),
     ("coverage settings lost", short.replace('--settings "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings"', ""), full),
-    ("coverage gate removed", short.replace('./scripts/coverage:development-v1 "$DEV_V1_EVIDENCE_ROOT/unit"', 'true "$DEV_V1_EVIDENCE_ROOT/unit"'), full),
-    ("coverage failure masked", short.replace('./scripts/coverage:development-v1 "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage"', './scripts/coverage:development-v1 "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage" || true'), full),
+    ("coverage gate removed", short.replace('./scripts/coverage:development-v1 "${coverage_args[@]}" "$DEV_V1_EVIDENCE_ROOT/unit"', 'true "$DEV_V1_EVIDENCE_ROOT/unit"'), full),
+    ("coverage failure masked", short.replace('./scripts/coverage:development-v1 "${coverage_args[@]}" "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage"', './scripts/coverage:development-v1 "${coverage_args[@]}" "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage" || true'), full),
     ("coverage step conditional", short.replace(workload_condition, "if: false"), full),
     ("direct push eligible for reuse", short.replace(" && github.actor == 'github-merge-queue[bot]'", ""), full),
     ("queue run eligible for reuse", short.replace(queue_push_condition, "if: github.event_name == 'merge_group'"), full),
@@ -1488,19 +1544,122 @@ exit "$FAKE_EXIT"
                             env=dict(env, EVENT_NAME="push", MERGE_GROUP_RUN_ID="42", PR_HEAD_SHA=""),
                             capture_output=True, text=True)
     if (result.returncode or "run_full=false" not in output.read_text().splitlines() or
+            "run_deployment_cli=false" not in output.read_text().splitlines() or
             "mergeGroupRunId=42" not in (evidence / "classification.md").read_text().splitlines()):
         raise SystemExit(f"Verified merge-group push selected the wrong workload: {output.read_text()} {result.stderr}")
-    # Execute the actual manifest step for both fast paths and missing-output fallback.
+
+    # Issue #2071: Deployment.Cli.Tests path-filtering decisions using the real
+    # trusted base classifier against synthetic PR merges and non-PR events.
+    deploy_cases = 0
+    git("checkout", "-q", "--detach", real_base)
+    seed_files = (
+        ("src/HVO.SkyMonitor.CameraAgent/Components/Home.razor", "<p>home</p>\n"),
+        ("src/HVO.SkyMonitor.CameraAgent/Dockerfile", "FROM scratch\n"),
+        ("src/HVO.SkyMonitor.CameraAgent/Configuration/OwnerPasswordFileText.cs", "class P {}\n"),
+        ("src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj",
+         '<Project><ItemGroup><Compile Include="../HVO.SkyMonitor.CameraAgent/Configuration/OwnerPasswordFileText.cs" /></ItemGroup></Project>\n'),
+        ("src/HVO.SkyMonitor.Deployment.Cli/Program.cs", "class D {}\n"),
+        ("src/HVO.SkyMonitor.AgentCore/Contract.cs", "class C {}\n"),
+    )
+    for rel, body in seed_files:
+        target = fixture / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(body)
+    git("add", *(rel for rel, _ in seed_files))
+    git("commit", "-qm", "seed deployment path-filter base")
+    filter_base = git("rev-parse", "HEAD")
+
+    for label, edited_path, event_name, expected_deploy_cli in (
+        ("CameraAgent-only PR skips Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/Components/Home.razor", "pull_request", "false"),
+        ("CameraAgent-only merge_group always runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/Components/Home.razor", "merge_group", "true"),
+        ("CameraAgent-only push always runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/Components/Home.razor", "push", "true"),
+        ("CameraAgent Dockerfile PR runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/Dockerfile", "pull_request", "true"),
+        ("Linked CameraAgent source PR runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/Configuration/OwnerPasswordFileText.cs", "pull_request", "true"),
+        ("Deployment.Cli PR runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.Deployment.Cli/Program.cs", "pull_request", "true"),
+        ("Shared AgentCore PR runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.AgentCore/Contract.cs", "pull_request", "true"),
+        ("Classifier tamper PR runs Deployment.Cli.Tests", "scripts/ci:classify", "pull_request", "true"),
+    ):
+        git("checkout", "-q", "--detach", filter_base)
+        if edited_path == "scripts/ci:classify":
+            (fixture / edited_path).write_text('#!/usr/bin/env bash\nprintf "complete=false\\ndelivery=false\\ndeployment=false\\ndocs_fast_path=false\\ndocs_fast_path_reason=tampered\\n"\n')
+        else:
+            (fixture / edited_path).write_text("updated\n")
+        git("commit", "-qam", label)
+        case_head = git("rev-parse", "HEAD")
+        case_tree = git("rev-parse", "HEAD^{tree}")
+        case_merge = git("commit-tree", case_tree, "-p", filter_base, "-p", case_head, "-m", "merge " + label)
+        git("checkout", "-q", "--detach", case_merge)
+        output.write_text("")
+        case_env = dict(env, GITHUB_SHA=case_merge, EVENT_NAME=event_name,
+                        PR_HEAD_SHA=case_head if event_name == "pull_request" else "", MERGE_GROUP_RUN_ID="")
+        result = subprocess.run(["bash", "-euo", "pipefail", "-c", fast_script], cwd=fixture, env=case_env,
+                                capture_output=True, text=True)
+        lines = output.read_text().splitlines()
+        if result.returncode or "run_full=true" not in lines or f"run_deployment_cli={expected_deploy_cli}" not in lines:
+            raise SystemExit(f"Deployment.Cli path-filter case '{label}' failed: {lines} {result.stderr}")
+        deploy_cases += 1
+
+    # Endpoints disagree: PR tip is CameraAgent-only, but merge tree modifies Deployment.Cli.
+    git("checkout", "-q", "--detach", filter_base)
+    (fixture / "src/HVO.SkyMonitor.CameraAgent/Components/Home.razor").write_text("ca-only\n")
+    git("commit", "-qam", "ca-only tip")
+    ca_tip = git("rev-parse", "HEAD")
+    (fixture / "src/HVO.SkyMonitor.Deployment.Cli/Program.cs").write_text("merge-added-deploy\n")
+    git("add", "src/HVO.SkyMonitor.Deployment.Cli/Program.cs")
+    disagree_tree = git("write-tree")
+    disagree_merge = git("commit-tree", disagree_tree, "-p", filter_base, "-p", ca_tip, "-m", "disagree merge")
+    git("reset", "--hard", "-q", disagree_merge)
+    output.write_text("")
+    case_env = dict(env, GITHUB_SHA=disagree_merge, EVENT_NAME="pull_request", PR_HEAD_SHA=ca_tip, MERGE_GROUP_RUN_ID="")
+    result = subprocess.run(["bash", "-euo", "pipefail", "-c", fast_script], cwd=fixture, env=case_env,
+                            capture_output=True, text=True)
+    lines = output.read_text().splitlines()
+    if result.returncode or "run_full=true" not in lines or "run_deployment_cli=true" not in lines:
+        raise SystemExit(f"Disagreeing merge endpoint skipped Deployment.Cli.Tests: {lines} {result.stderr}")
+    deploy_cases += 1
+
+    # Malformed / non-boolean / missing / duplicate component classifier outputs fail closed to run_deployment_cli=true.
+    git("checkout", "-q", "--detach", merge)
+    for bad_label, bad_content, bad_exit in (
+        ("missing component flags", "docs_fast_path=false\ndocs_fast_path_reason=outside\n", "0"),
+        ("mixed case complete", "docs_fast_path=false\ndocs_fast_path_reason=outside\ncomplete=False\ndelivery=false\ndeployment=false\n", "0"),
+        ("duplicate delivery", "docs_fast_path=false\ndocs_fast_path_reason=outside\ncomplete=false\ndelivery=false\ndelivery=false\ndeployment=false\n", "0"),
+        ("non-zero after false", "docs_fast_path=false\ndocs_fast_path_reason=outside\ncomplete=false\ndelivery=false\ndeployment=false\n", "2"),
+    ):
+        output.write_text("")
+        bad_env = dict(env, GITHUB_SHA=merge, EVENT_NAME="pull_request", PR_HEAD_SHA=candidate, MERGE_GROUP_RUN_ID="",
+                       FAKE_CONTENT=bad_content, FAKE_EXIT=bad_exit)
+        result = subprocess.run(["bash", "-euo", "pipefail", "-c", fast_script], cwd=fixture, env=bad_env,
+                                capture_output=True, text=True)
+        lines = output.read_text().splitlines()
+        if result.returncode or "run_full=true" not in lines or "run_deployment_cli=true" not in lines:
+            raise SystemExit(f"Fail-closed component case '{bad_label}' skipped Deployment.Cli.Tests: {lines} {result.stderr}")
+        deploy_cases += 1
+
+    # Restore changed_merge for the manifest simulation below.
+    git("checkout", "-q", "--detach", changed_merge)
+    env.update(GITHUB_SHA=changed_merge)
+
+    # Execute the actual manifest step for fast paths, path-filtered PRs, full PRs, merge_group, and missing-output fallback.
     summary_step = step(job(short, "build-unit"), "Write evidence summary")
     summary_script = textwrap.dedent(summary_step.split("        run: |\n", 1)[1])
     (evidence / "unit").mkdir(exist_ok=True)
     (evidence / "timing").mkdir(exist_ok=True)
     summary = fixture / "step-summary.md"
-    for decision, outcome, group_id, expected in (("false", "success", "", True), ("", "failure", "", False),
-                                                   ("false", "success", "42", False)):
-        event, summary_base, summary_head = ("push", "", "") if group_id else ("pull_request", code_base, doc_head)
+    for decision, outcome, group_id, event_override, run_deploy_cli, expected_fast, expected_deploy in (
+        ("false", "success", "", None, "false", True, False),
+        ("", "failure", "", None, "", False, True),
+        ("false", "success", "42", None, "false", False, False),
+        ("true", "success", "", "pull_request", "false", False, False),
+        ("true", "success", "", "pull_request", "true", False, True),
+        ("true", "success", "", "merge_group", "false", False, True),
+    ):
+        event = event_override or ("push" if group_id else "pull_request")
+        summary_base, summary_head = ("", "") if group_id or event != "pull_request" else (code_base, doc_head)
         group_url = f"https://github.com/example/repo/actions/runs/{group_id}" if group_id else None
-        env.update(CLASSIFY_OUTCOME=outcome, RUN_FULL=decision, WORKLOAD_REASON="", MERGE_GROUP_RUN_ID=group_id,
+        env.update(CLASSIFY_OUTCOME=outcome, RUN_FULL=decision, WORKLOAD_REASON="",
+                   RUN_DEPLOYMENT_CLI=run_deploy_cli, DEPLOYMENT_CLI_REASON="",
+                   MERGE_GROUP_RUN_ID=group_id,
                    CLASSIFIED_BASE=summary_base, GITHUB_EVENT_NAME=event, PR_HEAD_SHA=summary_head,
                    GITHUB_SERVER_URL="https://github.com", GITHUB_REPOSITORY="example/repo", GITHUB_STEP_SUMMARY=str(summary),
                    RESTORE_OUTCOME="skipped", BUILD_OUTCOME="skipped", UNIT_OUTCOME="skipped",
@@ -1510,14 +1669,15 @@ exit "$FAKE_EXIT"
         if result.returncode:
             raise SystemExit(f"Manifest simulation failed: {result.stderr}")
         manifest = json.loads((evidence / "manifest.json").read_text())
-        if (manifest["docsFastPath"] is not expected or not manifest["docsFastPathReason"] or
+        if (manifest["docsFastPath"] is not expected_fast or not manifest["docsFastPathReason"] or
+                manifest["deploymentCliTestsIncluded"] is not expected_deploy or not manifest["deploymentCliTestsReason"] or
                 manifest["baseSha"] != summary_base or manifest["prHeadSha"] != summary_head or
                 manifest["mergeSha"] != changed_merge or manifest["schema"] != "hvo-development-v1-ci-v6" or
                 manifest["mergeGroupRunUrl"] != group_url or
                 (decision == "false" and (manifest["sdkVersion"] is not None or manifest["unitTrxCount"] != 0)) or
                 (group_url and (group_url not in summary.read_text() or changed_merge not in summary.read_text()))):
             raise SystemExit(f"Invalid manifest evidence: {manifest}")
-    print("Fast workflow shell: 29 decision, binding and trusted-base cases; 3 manifest cases passed.")
+    print(f"Fast workflow shell: 29 decision, binding and trusted-base cases; {deploy_cases} Deployment.Cli path-filter cases; 6 manifest cases passed.")
 
 # Exercise the real final promotion step with an offline gh substitute. Creating
 # a PR must be draft; refreshing one must preserve its state; API errors must fail.

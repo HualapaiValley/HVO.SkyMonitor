@@ -2313,6 +2313,34 @@ grep -Fxq '  workflow_call:' "$repo_root/.github/workflows/ci.yml" || {
   exit 1
 }
 
+# Development v1 Deployment.Cli.Tests path-filtering contract (#2071):
+# CameraAgent-only PRs select neither complete, delivery, nor deployment, so v1 PRs
+# can skip Deployment.Cli.Tests; deployment-contract paths under CameraAgent, sources
+# linked into Deployment.Cli(.Tests), shared libraries, build/workflow/coverage contracts,
+# and all merge_group/push events must keep Deployment.Cli.Tests selected.
+verify_component_plan "src/HVO.SkyMonitor.CameraAgent/Dockerfile"                       full true false false true false
+verify_component_plan "src/HVO.SkyMonitor.CameraAgent/cameraagent.sample.json"          full true false false true false
+verify_component_plan "src/HVO.SkyMonitor.CameraAgent/virtual-asi174.full.json"         full true false false true false
+verify_component_plan "src/HVO.SkyMonitor.CameraAgent/virtual-asi178mc.full.json"       full true false false true false
+verify_component_plan "src/HVO.SkyMonitor.CameraAgent/Configuration/OwnerPasswordFileText.cs" full false false false true true
+verify_component_plan "src/HVO.SkyMonitor.CameraAgent/Configuration/LocalIdentityOptions.cs"  full false false false true true
+verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Common/DeploymentLocation/RetainedIntegrityFormat.cs" full false false false true true
+verify_component_plan "Directory.Build.targets"                                         full false true true true true
+verify_component_plan ".github/workflows/development-v1.yml"                            full false true true true true
+verify_component_plan "scripts/coverage:development-v1"                                 full false true true true true
+verify_component_plan "scripts/coverage/Program.cs"                                     full false true true true true
+verify_component_plan "scripts/coverage/UnitCoverageInputs.cs"                          full false true true true true
+verify_component_plan "tests/unit-test-projects.json"                                   full false true true true true
+ca_only_base="$(git -C "$work_root" rev-parse HEAD)"
+update_file "src/HVO.SkyMonitor.CameraAgent/Components/Home.razor"
+ca_only_head="$(git -C "$work_root" rev-parse HEAD)"
+expect_plan full false pull_request "$ca_only_base" "$ca_only_head"
+expect_components false false true false pull_request "$ca_only_base" "$ca_only_head"
+expect_plan full true merge_group "$ca_only_base" "$ca_only_head"
+expect_components true true true true merge_group "$ca_only_base" "$ca_only_head"
+expect_plan full true push "$ca_only_base" "$ca_only_head"
+expect_components true true true true push "$ca_only_base" "$ca_only_head"
+
 printf 'Secret scan contract classification passed: %d cases.\n' "$secret_scan_contract_cases"
 printf 'Release script classification passed: %d cases.\n' "$release_scripts_cases"
 printf 'Catalog recipe classification passed: %d cases.\n' "$catalog_recipe_cases"

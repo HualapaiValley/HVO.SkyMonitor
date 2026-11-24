@@ -8,6 +8,18 @@ if (developmentV1)
     args = args[1..];
 }
 
+var skipDeploymentCli = args.Length > 0 && args[0] == "--skip-deployment-cli";
+if (skipDeploymentCli)
+{
+    if (!developmentV1)
+    {
+        Console.Error.WriteLine("--skip-deployment-cli is only supported with --development-v1.");
+        return 1;
+    }
+
+    args = args[1..];
+}
+
 var validateReportsOnly = args.Length > 0 && args[0] == "--validate-reports";
 if (validateReportsOnly)
 {
@@ -66,6 +78,11 @@ foreach (var (path, threshold) in thresholds.ToArray())
     else if (developmentV1)
     {
         reason = threshold.DevelopmentV1LocalOnlyReason;
+        if (reason is null && skipDeploymentCli &&
+            path.StartsWith("HVO.SkyMonitor.Deployment.Cli/", StringComparison.Ordinal))
+        {
+            reason = "Deployment.Cli.Tests path-filtered out on non-deployment development/v1 pull request";
+        }
     }
 
     if (reason is not null)
@@ -179,7 +196,7 @@ if (validateReportsOnly)
     {
         try
         {
-            UnitCoverageInputs.Validate(repositoryRoot, unitResultsDirectory, args.Skip(1).ToArray(), thresholds.Keys);
+            UnitCoverageInputs.Validate(repositoryRoot, unitResultsDirectory, args.Skip(1).ToArray(), thresholds.Keys, skipDeploymentCli);
         }
         catch (Exception exception) when (exception is InvalidDataException or IOException or System.Xml.XmlException or BadImageFormatException or JsonException)
         {
