@@ -13,6 +13,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Deployment;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Deployment")]
 public sealed class CameraAgentStateCompatibilityLabelTests
 {
     private const string MinimumCompatibleRevision = "ded7cadc6fe005f8bdda09387e1c3d1337f66e4e";

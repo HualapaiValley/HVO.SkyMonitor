@@ -7,6 +7,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Sqlite;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Sqlite")]
 public sealed class SqliteConnectionConfigurationInventoryTests
 {
     private const string SolutionFileName = "HVO.SkyMonitor.v9.slnx";

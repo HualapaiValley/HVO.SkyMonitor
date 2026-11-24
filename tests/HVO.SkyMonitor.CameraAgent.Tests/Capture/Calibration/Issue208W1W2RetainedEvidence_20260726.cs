@@ -24,6 +24,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Calibration;
 
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "Capture.Calibration")]
 [DoNotParallelize]
 [SuppressMessage("Performance", "CA1515:Consider making type internal",
     Justification = "MSTest requires public test classes.")]

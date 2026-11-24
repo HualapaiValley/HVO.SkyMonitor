@@ -26,6 +26,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "Modules.VirtualSky")]
 [DoNotParallelize]
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires a public test class.")]
 public sealed class Issue435ProjectedScenePerformanceTests
@@ -1042,6 +1043,7 @@ public sealed class Issue435ProjectedScenePerformanceTests
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Modules.VirtualSky")]
 public sealed class Issue435ProjectedScenePerformanceHarnessManifestTests
 {
     private static readonly string[] ExpectedPerformanceWorkloads =

@@ -11,6 +11,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Data;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Hosting")]
 public sealed class CameraAgentIdentitySeederTests
 {
     private const string ConfiguredEmail = "configured-owner@cameraagent.test";

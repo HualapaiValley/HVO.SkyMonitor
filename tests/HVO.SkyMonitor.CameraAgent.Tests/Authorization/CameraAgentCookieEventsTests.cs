@@ -8,6 +8,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Authorization;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Hosting")]
 public sealed class CameraAgentCookieEventsTests
 {
     [TestMethod]

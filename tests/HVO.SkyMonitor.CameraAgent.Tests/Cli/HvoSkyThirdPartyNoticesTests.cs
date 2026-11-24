@@ -11,6 +11,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Cli;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Cli")]
 public sealed class HvoSkyThirdPartyNoticesTests
 {
     private const string Client = "HVO.SkyMonitor.CameraAgent.Cli";

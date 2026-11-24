@@ -33,6 +33,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 /// </summary>
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "Ui")]
 public sealed class SatellitePlanningVirtualEvidenceTests
 {
     private const string OutputVariable = "HVO_SATELLITE_PLANNING_EVIDENCE_DIR";

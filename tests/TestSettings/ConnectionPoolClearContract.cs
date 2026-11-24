@@ -84,7 +84,7 @@ namespace HVO.SkyMonitor.TestSettings;
 /// </remarks>
 [TestClass]
 [TestCategory("Unit")]
-public sealed class ConnectionPoolClearContractTests
+public sealed partial class ConnectionPoolClearContractTests
 {
     private const string GlobalClearMethod = "ClearAllPools";
     private const string SqliteConnectionType = "Microsoft.Data.Sqlite.SqliteConnection";
@@ -243,7 +243,11 @@ public sealed class ConnectionPoolClearContractTests
             $"{LinkageHostProject} no longer compiles {LinkageFileName}, so nothing checks whether every test "
                 + "project still receives this contract. A project could then drop it silently, which is the "
                 + "defect this pair exists to make loud.");
+
+        AssertAssemblySpecificContracts();
     }
+
+    static partial void AssertAssemblySpecificContracts();
 
     private static ScanResult Scan(Assembly assembly)
     {

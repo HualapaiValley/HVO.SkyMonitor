@@ -9,6 +9,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Gallery;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Gallery")]
 public sealed class CameraAgentLayeredPresentationTests
 {
     private static readonly PresentationCompatibilityDescriptor Compatibility = new(

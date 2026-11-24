@@ -23,6 +23,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Services;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Services")]
 public sealed class CameraAgentOrbitalUiServiceTests : OrbitalStoreTestBase
 {
     private static readonly TimeSpan Floor = OrbitalElementsStoreTestData.Interval;
@@ -596,6 +597,7 @@ public sealed class CameraAgentOrbitalUiServiceTests : OrbitalStoreTestBase
 /// <summary>Operator text covers every reason code an orbital surface can show, and never echoes free text.</summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Services")]
 public sealed class OrbitalOperatorTextTests
 {
     private static readonly string[] Tones = ["success", "warning", "pending", "neutral", "failure"];

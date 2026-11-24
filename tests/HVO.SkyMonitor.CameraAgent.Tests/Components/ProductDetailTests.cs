@@ -11,6 +11,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Ui")]
 public sealed class ProductDetailTests
 {
     private static readonly Guid ArtifactId = Guid.Parse("01000000-0000-0000-0000-000000000201");
