@@ -155,6 +155,7 @@ internal sealed record CameraAgentProcessingExecutionDetailView(
 {
     public string? ManifestUnavailableReason { get; init; } = CameraAgentRunManifest.MissingReason;
     public ExposureMeasurementRunRead? ExposureMeasurement { get; init; }
+    public RegionalStellarVisibilityRunRead? RegionalStellarVisibility { get; init; }
 }
 
 /// <summary>A stored graph revision with its immutable definition and the plan it compiles to today.</summary>
@@ -248,7 +249,8 @@ internal sealed class CameraAgentProcessingGraphUiService(
     CaptureScheduleRuntimeCoordinator? scheduleRuntime,
     TimeProvider timeProvider,
     ILogger<CameraAgentProcessingGraphUiService> logger,
-    IExposureMeasurementRunReader? exposureMeasurementReader = null) : ICameraAgentProcessingGraphUiService
+    IExposureMeasurementRunReader? exposureMeasurementReader = null,
+    IRegionalStellarVisibilityRunReader? regionalVisibilityReader = null) : ICameraAgentProcessingGraphUiService
 {
     public IReadOnlyList<string> StepAliases => pipelineFactory.StableStepAliases
         .Where(static alias => !ExposureMeasurementProducts.IsSystemManagedStepAlias(alias)).ToArray();
@@ -281,7 +283,9 @@ internal sealed class CameraAgentProcessingGraphUiService(
             {
                 ManifestUnavailableReason = ManifestUnavailableReason(read),
                 ExposureMeasurement = exposureMeasurementReader is null ? null :
-                    await exposureMeasurementReader.ReadAsync(read.Detail, token).ConfigureAwait(false)
+                    await exposureMeasurementReader.ReadAsync(read.Detail, token).ConfigureAwait(false),
+                RegionalStellarVisibility = regionalVisibilityReader is null ? null :
+                    await regionalVisibilityReader.ReadAsync(read.Detail, token).ConfigureAwait(false)
             };
         }, "The execution could not be read.", cancellationToken, "The execution was not found.");
 

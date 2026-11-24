@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- Centered CameraAgent processing graphs can opt into regional stellar-visibility cloud evidence alongside clear-reference cloud assessment, retaining separate per-tile support, reasons, and geometry/focus confidence without reporting a cloud-cover percentage. #1925
+
 - The centered registration recipe aligns calibrated monochrome and linear RGB exposures on the center capture and records which exposures contributed to each pixel. #1169
 
 - Centered CameraAgent pipeline runs show per-exposure brightness, stellar centroids, and half-flux diameter in Operations. #1920

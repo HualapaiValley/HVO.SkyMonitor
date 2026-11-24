@@ -18,7 +18,8 @@ internal sealed class ExposureMeasurementGraphPlan : ICenteredExposureGraphExten
     {
         if (centered is null && !pipeline.Steps.Any(step => ExposureMeasurementProducts.IsSystemManagedStepAlias(step.Type) ||
             Matches(step.Type, ExposureAssociationProducts.StepAlias) ||
-            Matches(step.Type, ExposureAstrometryCaptureProcessingStep.CenteredAlias)))
+            Matches(step.Type, ExposureAstrometryCaptureProcessingStep.CenteredAlias) ||
+            Matches(step.Type, RegionalStellarVisibilityProducts.StepAlias)))
             return;
 
         var fixedSteps = pipeline.Steps.Where(step => Matches(step.Type, ExposureMeasurementProducts.StepAlias) ||
@@ -46,7 +47,9 @@ internal sealed class ExposureMeasurementGraphPlan : ICenteredExposureGraphExten
         const string prediction = ProjectedSceneCaptureProcessingStep.ExposurePredictionAlias;
         var producers = pipeline.Steps.Where(step => Matches(step.Type, prediction) || Matches(NodeId(step), prediction)).ToArray();
         var consumers = pipeline.Steps.Where(step => step.Enabled != false &&
-            (Matches(step.Type, ExposureAssociationProducts.StepAlias) || Matches(step.Type, ExposureAstrometryCaptureProcessingStep.CenteredAlias))).ToArray();
+            (Matches(step.Type, ExposureAssociationProducts.StepAlias) ||
+             Matches(step.Type, ExposureAstrometryCaptureProcessingStep.CenteredAlias) ||
+             Matches(step.Type, RegionalStellarVisibilityProducts.StepAlias))).ToArray();
         if (producers.Length == 0 && consumers.Length == 0)
             return;
         if (producers is [var producer] && MatchesGeneratedStep(producer, CreatePrediction(), PredictionDefaultOrder) &&
@@ -74,6 +77,13 @@ internal sealed class ExposureMeasurementGraphPlan : ICenteredExposureGraphExten
         IEnumerable<string> IndependentDependencies(CaptureProcessingStepConfig step) =>
             (step.DependsOn ?? []).Where(id => !sceneIds.Contains(id)).Concat(step.Enabled == false ? [] : [prediction]);
 
+        var astrometryNodeId = pipeline.Steps
+            .Where(static step => step.Enabled != false &&
+                (Matches(step.Type, MeasuredAstrometryCaptureProcessingStep.Alias) ||
+                 Matches(step.Type, ExposureAstrometryCaptureProcessingStep.CenteredAlias)))
+            .Select(NodeId)
+            .FirstOrDefault();
+
         var steps = pipeline.Steps.Select(step =>
         {
             if (step == calibration)
@@ -93,6 +103,22 @@ internal sealed class ExposureMeasurementGraphPlan : ICenteredExposureGraphExten
                     Publication = Durable
                 };
             }
+            if (Matches(step.Type, RegionalStellarVisibilityProducts.StepAlias))
+            {
+                IEnumerable<string> regionalDeps = step.Enabled == false
+                    ? (step.DependsOn ?? [])
+                    : IndependentDependencies(step)
+                        .Concat([RawInput, fixedStep])
+                        .Concat(astrometryNodeId is null ? [] : [astrometryNodeId])
+                        .Distinct(StringComparer.OrdinalIgnoreCase);
+                return step with
+                {
+                    Id = NodeId(step),
+                    Required = false,
+                    DependsOn = regionalDeps.ToArray(),
+                    Publication = Durable
+                };
+            }
             return Matches(step.Type, MeasuredAstrometryCaptureProcessingStep.Alias)
                 ? step with
                 {
@@ -104,7 +130,8 @@ internal sealed class ExposureMeasurementGraphPlan : ICenteredExposureGraphExten
                 : step;
         }).Append(CreateMeasurement(calibration is null ? null : NodeId(calibration)));
         if (pipeline.Steps.Any(step => step.Enabled != false && (Matches(step.Type, "MeasuredStellarAssociations") ||
-            Matches(step.Type, MeasuredAstrometryCaptureProcessingStep.Alias))))
+            Matches(step.Type, MeasuredAstrometryCaptureProcessingStep.Alias) ||
+            Matches(step.Type, RegionalStellarVisibilityProducts.StepAlias))))
             steps = steps.Append(CreatePrediction());
 
         return pipeline with { Steps = steps.ToArray() };
