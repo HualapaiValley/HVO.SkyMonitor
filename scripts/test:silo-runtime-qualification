@@ -23,7 +23,7 @@ command -v python3 >/dev/null || { printf 'python3 is required to create placeho
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 qualifier=$repo_root/scripts/qualify:silo-runtime
 temp=$(mktemp -d)
-sockets=$(mktemp -d /tmp/hvoqs.XXXXXX)
+sockets=$(mktemp -d "${TMPDIR:-/tmp}/hvoqs.XXXXXX")
 trap 'rm -rf -- "$temp" "$sockets"' EXIT
 
 block=$temp/containment.bash

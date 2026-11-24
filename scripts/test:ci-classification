@@ -1158,9 +1158,6 @@ for link_record in "${link_records[@]}"; do
   linked_source="${link_record#*|}"
   [[ -n "$including_project" && -n "$linked_source" ]] || continue
   [[ "$linked_source" != *.csproj ]] || continue
-  if printf '%s\n' "${retired_project_directories[@]##*/}" | grep -Fx -- "$including_project" >/dev/null; then
-    continue
-  fi
   # A wildcard include cannot name one repository path. Prove its directory
   # already fails closed instead of assuming it.
   if [[ "$linked_source" == *'*'* || "$linked_source" == *'?'* ]]; then

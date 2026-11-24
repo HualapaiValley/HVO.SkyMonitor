@@ -118,17 +118,15 @@ if PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" HVO_RUNTIME_DATA_ROO
 fi
 test "$(stat -c '%a' "$TEMP_DIR/runtime-root-writable/runtime")" = 777
 
-for writable_host in cameraagent; do
-    writable_host_root="$TEMP_DIR/$writable_host-parent-writable/runtime"
-    mkdir -p "$writable_host_root/$writable_host"
-    chmod 0700 "$TEMP_DIR/$writable_host-parent-writable" "$writable_host_root"
-    chmod 0777 "$writable_host_root/$writable_host"
-    if PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" HVO_RUNTIME_DATA_ROOT="$writable_host_root" \
-        "$REPO_ROOT/scripts/infra:start" cameraagent >/dev/null 2>&1; then
-        fail "Start accepted a group/world-writable $writable_host parent."
-    fi
-    test "$(stat -c '%a' "$writable_host_root/$writable_host")" = 777
-done
+writable_host_root="$TEMP_DIR/cameraagent-parent-writable/runtime"
+mkdir -p "$writable_host_root/cameraagent"
+chmod 0700 "$TEMP_DIR/cameraagent-parent-writable" "$writable_host_root"
+chmod 0777 "$writable_host_root/cameraagent"
+if PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" HVO_RUNTIME_DATA_ROOT="$writable_host_root" \
+    "$REPO_ROOT/scripts/infra:start" cameraagent >/dev/null 2>&1; then
+    fail 'Start accepted a group/world-writable CameraAgent parent.'
+fi
+test "$(stat -c '%a' "$writable_host_root/cameraagent")" = 777
 
 mkdir -p \
     "$RUNTIME_ROOT/logichost/dataprotection" \
