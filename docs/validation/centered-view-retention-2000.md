@@ -67,7 +67,7 @@ and verifies that the next batch preserves that view. The retention service
 releases its locks before the pause and takes them back in their usual order.
 
 Reproduce with the pinned SDK and a temporary directory on the test filesystem.
-Run the test under the shared heavy gate.
+Run the snapshot-growth and contention tests under the shared heavy gate.
 
 ```bash
 export TMPDIR="$(mktemp -d /tmp/cvr.XXXXXX)" MSBUILDDISABLENODEREUSE=1
@@ -76,6 +76,8 @@ gate=/tmp/hvo-heavy-gate.lock
 flock -o "$gate" dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj \
   -c Release --filter 'FullyQualifiedName~CenteredViewRetentionPrunesExpiredCaptureHistoryAndPreservesRetainedReferences' \
   --logger 'console;verbosity=detailed'
+flock -o "$gate" dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj \
+  -c Release --filter 'FullyQualifiedName~CenteredViewRetentionLetsACompetingIngressWriterCommitBetweenBatches'
 
 probe=tests/HVO.SkyMonitor.CameraAgent.Tests/Capture/Processing/centered_view_retention_probe.py
 flock -o "$gate" python3 "$probe" --bases 38400 --expired 1200 --definition-bytes 4800

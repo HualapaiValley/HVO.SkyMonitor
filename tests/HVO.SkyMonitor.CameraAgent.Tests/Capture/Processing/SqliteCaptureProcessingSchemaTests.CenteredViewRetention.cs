@@ -372,7 +372,11 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
             "The competing ingress writer must commit while another delete batch is still pending.");
         Assert.IsEmpty(log.Warnings);
         Assert.AreEqual(1L, await ScalarAsync(connection, "SELECT COUNT(*) FROM processing_centered_view_bases;")
-            .ConfigureAwait(false), "A raw payload restored during the lock handoff must keep its view.");
+            .ConfigureAwait(false));
+        using var survivor = connection.CreateCommand();
+        survivor.CommandText = "SELECT base_id FROM processing_centered_view_bases;";
+        Assert.AreEqual(lastBaseId, (string?)await survivor.ExecuteScalarAsync(token).ConfigureAwait(false),
+            "A raw payload restored during the lock handoff must keep its view.");
         Assert.AreEqual(0L, await ScalarAsync(connection, "SELECT COUNT(*) FROM pragma_foreign_key_check;").ConfigureAwait(false));
 
         async Task<long> WriteCaptureAsync()

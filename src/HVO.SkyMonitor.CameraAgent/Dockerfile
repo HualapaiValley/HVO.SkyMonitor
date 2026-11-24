@@ -147,8 +147,10 @@ COPY --from=build /app/replay-runner /app/replay-runner
 # Its change makes existing installers checkpoint the paired databases before store conversion;
 # rollback restores that checkpoint rather than handing converted stores to older readers.
 # This revision reads raw schema 17, processing schema 12 and the settled environmental schema 5.
-# The paired checkpoint also applies when the installed image already writes raw schema 17.
-# It preserves the previous reader's processing and environmental stores. Refs #1901, #1919, #1922, #1938.
+# The centered-view retention-index reader advances the boundary so the installer takes a paired
+# checkpoint even when the installed image already writes raw schema 17 and processing schema 12.
+# The checkpoint preserves the previous reader's processing and environmental stores.
+# Refs #1901, #1919, #1922, #1938, #2000.
 # The state-contracts label is the image's state contract (install contract section 6), which
 # release.json's stateContracts.cameraAgent repeats: for each SQLite store an instance keeps,
 # the schema this image writes and the schemas it reads. CameraAgentStateContractsLabelTests

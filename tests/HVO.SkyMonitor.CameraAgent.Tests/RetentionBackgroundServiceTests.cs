@@ -1443,7 +1443,7 @@ public sealed class RetentionBackgroundServiceTests
         public override DateTimeOffset GetUtcNow() => utcNow;
     }
 
-    private sealed class FixedCapacityProvider(double availablePercent) : IStorageCapacityProvider
+    internal sealed class FixedCapacityProvider(double availablePercent) : IStorageCapacityProvider
     {
         public StorageCapacity GetCapacity(string storageRoot)
             => new(1000, (long)(10 * availablePercent));
@@ -1505,7 +1505,7 @@ public sealed class RetentionBackgroundServiceTests
         public void Dispose() => _initializationLifecycleLockRequested.Dispose();
     }
 
-    private sealed class FixedRawIngressHolds(IReadOnlyList<RawIngressRetentionHold> holds) : IRawIngressRetentionHolds
+    internal sealed class FixedRawIngressHolds(IReadOnlyList<RawIngressRetentionHold> holds) : IRawIngressRetentionHolds
     {
         public ValueTask<IReadOnlyList<RawIngressRetentionHold>> GetRetentionHoldsAsync(
             string storageRoot,
@@ -1521,7 +1521,7 @@ public sealed class RetentionBackgroundServiceTests
             => ValueTask.FromResult(holds);
     }
 
-    private sealed class StubConfigurationAccessor : ICameraAgentConfigurationAccessor
+    internal sealed class StubConfigurationAccessor : ICameraAgentConfigurationAccessor
     {
         public bool IsConfigured => false;
 
@@ -1529,5 +1529,95 @@ public sealed class RetentionBackgroundServiceTests
 
         public ValueTask<CameraModuleConfig> WaitForConfigurationAsync(CancellationToken cancellationToken)
             => ValueTask.FromException<CameraModuleConfig>(new NotSupportedException());
+    }
+}
+
+[TestClass]
+[TestCategory("Unit")]
+public sealed class RetentionBackgroundServiceYieldTests
+{
+    [TestMethod]
+    [DataRow("delay", 1, 1)]
+    [DataRow("raw ingress", 0, 1)]
+    [DataRow("storage", 0, 0)]
+    public async Task ApplyRetentionAsync_CancellationDuringYieldReleasesBothLifecycleGates(
+        string stage, int rawCountBeforeCancellation, int storageCountBeforeCancellation)
+    {
+        using var hold = new Capture.MaintenanceHoldRoot();
+        using var cancellation = new CancellationTokenSource();
+        using var outbox = new SqliteArtifactOutbox();
+        var rawGate = RawIngressLifecycleLock.ForRoot(hold.Path);
+        var storageGate = StorageLifecycleLock.ForRoot(hold.Path);
+        var competingGate = stage switch
+        {
+            "raw ingress" => rawGate,
+            "storage" => storageGate,
+            _ => null
+        };
+        Task? competingWait = null;
+        var expiration = new YieldingProcessingExpiration(InterruptYieldAsync);
+        var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = hold.Path });
+        var config = RetentionBackgroundServiceTests.CreateConfig(hold.Path);
+        using var service = new RetentionBackgroundService(
+            new RetentionBackgroundServiceTests.StubConfigurationAccessor(), options, TimeProvider.System, outbox,
+            new RetentionBackgroundServiceTests.FixedCapacityProvider(50), new StoragePressureState(),
+            NullLogger<RetentionBackgroundService>.Instance, new RetentionBackgroundServiceTests.FixedRawIngressHolds([]),
+            expiration);
+
+        try
+        {
+            await Assert.ThrowsAsync<OperationCanceledException>(() =>
+                service.ApplyRetentionAsync(config, cancellation.Token)
+                    .WaitAsync(TimeSpan.FromSeconds(10))).ConfigureAwait(false);
+            Assert.IsTrue(cancellation.IsCancellationRequested);
+        }
+        finally
+        {
+            await cancellation.CancelAsync().ConfigureAwait(false);
+            if (competingWait is { IsCompletedSuccessfully: true })
+                competingGate!.Release();
+        }
+
+        Assert.AreEqual(1, rawGate.CurrentCount, "The sweep must release the raw-ingress gate.");
+        Assert.AreEqual(1, storageGate.CurrentCount, "The sweep must release the storage gate.");
+
+        async ValueTask InterruptYieldAsync(Func<TimeSpan, ValueTask> yieldLifecycleLocks)
+        {
+            Assert.AreEqual(0, rawGate.CurrentCount);
+            Assert.AreEqual(0, storageGate.CurrentCount);
+            // Queue the competing owner before the handoff. A zero delay makes the sweep
+            // run straight to the blocked gate before the callback returns.
+            competingWait = competingGate?.WaitAsync(cancellation.Token);
+            var yielding = yieldLifecycleLocks(competingGate is null ? Timeout.InfiniteTimeSpan : TimeSpan.Zero);
+            if (competingWait is not null)
+                await competingWait.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+            Assert.IsFalse(yielding.IsCompleted);
+            Assert.AreEqual(rawCountBeforeCancellation, rawGate.CurrentCount);
+            Assert.AreEqual(storageCountBeforeCancellation, storageGate.CurrentCount);
+            await cancellation.CancelAsync().ConfigureAwait(false);
+            await yielding.ConfigureAwait(false);
+        }
+    }
+
+    private sealed class YieldingProcessingExpiration(Func<Func<TimeSpan, ValueTask>, ValueTask> onYield) :
+        IProcessingRetentionHolds, IRawIngressLifecycleProcessingRetentionHolds, IProcessingOutputExpiration
+    {
+        public ValueTask<IReadOnlyList<ProcessingRetentionHold>> GetRetentionHoldsAsync(
+            string storageRoot, CancellationToken cancellationToken)
+            => GetRetentionHoldsUnderLifecycleLockAsync(storageRoot, cancellationToken);
+
+        public ValueTask<IReadOnlyList<ProcessingRetentionHold>> GetRetentionHoldsUnderLifecycleLockAsync(
+            string storageRoot, CancellationToken cancellationToken)
+            => ValueTask.FromResult<IReadOnlyList<ProcessingRetentionHold>>([]);
+
+        public async ValueTask<int> ExpireOutputsAsync(string storageRoot, DateTimeOffset committedBeforeUtc,
+            IReadOnlySet<string> heldAbsolutePaths, Func<TimeSpan, ValueTask>? yieldLifecycleLocks,
+            CancellationToken cancellationToken, CancellationToken interruptionToken)
+        {
+            Assert.IsNotNull(yieldLifecycleLocks);
+            await onYield(yieldLifecycleLocks).ConfigureAwait(false);
+            return 0;
+        }
     }
 }
