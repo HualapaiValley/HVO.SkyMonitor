@@ -37,8 +37,6 @@ jobs:
       complete: ${{ steps.classify.outputs.complete }}
       shared: ${{ steps.classify.outputs.shared }}
       cameraagent: ${{ steps.classify.outputs.cameraagent }}
-      logichost: ${{ steps.classify.outputs.logichost }}
-      combined: ${{ steps.classify.outputs.combined }}
       delivery: ${{ steps.classify.outputs.delivery }}
       catalog_recipe: ${{ steps.classify.outputs.catalog_recipe }}
     steps:
@@ -177,7 +175,6 @@ jobs:
           ./scripts/test:cameraagent-final-head-535
           ./scripts/test:record-cameraagent-final-head-535
           ./scripts/test:cameraagent-final-head-ci-import-535
-          ./scripts/test:cameraagent-final-head-components-535
           ./scripts/test:promotion-behind-check
           ./scripts/test:ci-artifact-provenance
           ./scripts/test:ci-shell-syntax
@@ -510,7 +507,6 @@ jobs:
       - name: Create retained publish manifests
         run: |
           (cd TestResults/publish/cameraagent && find . -type f -print0 | sort -z | xargs -0 sha256sum > ../cameraagent.sha256)
-          (cd TestResults/publish/logichost && find . -type f -print0 | sort -z | xargs -0 sha256sum > ../logichost.sha256)
           (cd TestResults/publish/installer/linux-x64 && find . -type f -print0 | sort -z | xargs -0 sha256sum > ../../installer-linux-x64.sha256)
           (cd TestResults/publish/installer/linux-arm64 && find . -type f -print0 | sort -z | xargs -0 sha256sum > ../../installer-linux-arm64.sha256)
           (cd TestResults/publish/replay-runner/linux-x64 && find . -type f -print0 | sort -z | xargs -0 sha256sum > ../../replay-runner-linux-x64.sha256)
@@ -520,18 +516,14 @@ jobs:
           cameraagent_files=$(find TestResults/publish/cameraagent -type f | wc -l)
           cameraagent_bytes=$(find TestResults/publish/cameraagent -type f -printf '%s\n' | awk '{total += $1} END {print total}')
           cameraagent_dependencies=$(find TestResults/publish/cameraagent -maxdepth 1 -type f -name '*.dll' | wc -l)
-          logichost_files=$(find TestResults/publish/logichost -type f | wc -l)
-          logichost_bytes=$(find TestResults/publish/logichost -type f -printf '%s\n' | awk '{total += $1} END {print total}')
-          logichost_dependencies=$(find TestResults/publish/logichost -maxdepth 1 -type f -name '*.dll' | wc -l)
           installer_x64_bytes=$(stat -c '%s' TestResults/publish/installer/linux-x64/hvo-sky-install)
           installer_arm64_bytes=$(stat -c '%s' TestResults/publish/installer/linux-arm64/hvo-sky-install)
           replay_runner_x64_bytes=$(find TestResults/publish/replay-runner/linux-x64 -type f -printf '%s\n' | awk '{total += $1} END {print total}')
           replay_runner_arm64_bytes=$(find TestResults/publish/replay-runner/linux-arm64 -type f -printf '%s\n' | awk '{total += $1} END {print total}')
           processing_runner_x64_bytes=$(find TestResults/publish/processing-runner/linux-x64 -type f -printf '%s\n' | awk '{total += $1} END {print total}')
           processing_runner_arm64_bytes=$(find TestResults/publish/processing-runner/linux-arm64 -type f -printf '%s\n' | awk '{total += $1} END {print total}')
-          printf 'CameraAgent files=%s bytes=%s dependencies=%s\nLogicHost files=%s bytes=%s dependencies=%s\nInstaller linux-x64 bytes=%s\nInstaller linux-arm64 bytes=%s\nReplayRunner linux-x64 bytes=%s\nReplayRunner linux-arm64 bytes=%s\nProcessingRunner linux-x64 bytes=%s\nProcessingRunner linux-arm64 bytes=%s\n' \
+          printf 'CameraAgent files=%s bytes=%s dependencies=%s\nInstaller linux-x64 bytes=%s\nInstaller linux-arm64 bytes=%s\nReplayRunner linux-x64 bytes=%s\nReplayRunner linux-arm64 bytes=%s\nProcessingRunner linux-x64 bytes=%s\nProcessingRunner linux-arm64 bytes=%s\n' \
             "$cameraagent_files" "$cameraagent_bytes" "$cameraagent_dependencies" \
-            "$logichost_files" "$logichost_bytes" "$logichost_dependencies" \
             "$installer_x64_bytes" "$installer_arm64_bytes" \
             "$replay_runner_x64_bytes" "$replay_runner_arm64_bytes" \
             "$processing_runner_x64_bytes" "$processing_runner_arm64_bytes" \
@@ -595,14 +587,6 @@ jobs:
         run: ./scripts/ci:canonical-migration cameraagent
       - name: Reject pending CameraAgent model changes
         run: dotnet ef migrations has-pending-model-changes --project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj --startup-project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj --context HVO.SkyMonitor.CameraAgent.Data.ApplicationDbContext --configuration Release --no-build
-
-  migrations-logichost:
-    name: LogicHost Migrations
-    needs: changes
-    if: ${{ !always() }} # LogicHost retirement (#2048) always skips this job.
-    runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
-    steps:
-      - run: echo 'Skipped for LogicHost retirement (#2048).'
 
   coverage-policy:
     name: Coverage Policy
@@ -741,22 +725,6 @@ jobs:
             coverage-report/cameraagent/
           if-no-files-found: error
           retention-days: 30
-
-  logichost-component:
-    name: LogicHost Component
-    needs: changes
-    if: ${{ !always() }} # LogicHost retirement (#2048) always skips this job.
-    runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
-    steps:
-      - run: echo 'Skipped for LogicHost retirement (#2048).'
-
-  combined-integration:
-    name: Combined Protocol & Integration
-    needs: changes
-    if: ${{ !always() }} # LogicHost retirement (#2048) always skips this job.
-    runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
-    steps:
-      - run: echo 'Skipped for LogicHost retirement (#2048).'
 
   delivery-component:
     name: Delivery Component
@@ -1012,7 +980,7 @@ jobs:
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    needs: [changes, quality, catalog-contracts, catalog-reproducibility, deployment-contracts, build, architecture, coverage-policy, migrations-cameraagent, migrations-logichost, unit, integration, coverage, shared-libraries, cameraagent-component, logichost-component, combined-integration, delivery-component]
+    needs: [changes, quality, catalog-contracts, catalog-reproducibility, deployment-contracts, build, architecture, coverage-policy, migrations-cameraagent, unit, integration, coverage, shared-libraries, cameraagent-component, delivery-component]
     steps:
       - name: Block merge while review is in progress
         if: github.event_name == 'pull_request' && github.event.pull_request.draft == true
@@ -1033,8 +1001,6 @@ jobs:
             complete=${{ needs.changes.outputs.complete }}
             shared=${{ needs.changes.outputs.shared }}
             cameraagent=${{ needs.changes.outputs.cameraagent }}
-            logichost=${{ needs.changes.outputs.logichost }}
-            combined=${{ needs.changes.outputs.combined }}
             delivery=${{ needs.changes.outputs.delivery }}
             deployment=${{ needs.changes.outputs.deployment }}
             catalog_recipe=${{ needs.changes.outputs.catalog_recipe }}
@@ -1048,13 +1014,10 @@ jobs:
             architecture=${{ needs.architecture.result }}
             coverage-policy=${{ needs.coverage-policy.result }}
             migrations-cameraagent=${{ needs.migrations-cameraagent.result }}
-            migrations-logichost=${{ needs.migrations-logichost.result }}
             unit=${{ needs.unit.result }}
             integration=${{ needs.integration.result }}
             coverage=${{ needs.coverage.result }}
             shared-libraries=${{ needs.shared-libraries.result }}
             cameraagent-component=${{ needs.cameraagent-component.result }}
-            logichost-component=${{ needs.logichost-component.result }}
-            combined-integration=${{ needs.combined-integration.result }}
             delivery-component=${{ needs.delivery-component.result }}
         run: ./scripts/ci:require "$EVENT_NAME" "$PLAN" "$RESULTS"

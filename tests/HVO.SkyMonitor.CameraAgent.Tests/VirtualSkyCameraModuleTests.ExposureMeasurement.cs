@@ -32,7 +32,7 @@ public sealed partial class VirtualSkyCameraModuleTests
 
     [TestMethod]
     [DataRow(CameraPixelFormat.Mono16, "None", true, 1, true,
-        DisplayName = "ExposureMeasurement_RejectsFitAndReplaysItsOriginalAssessmentAfterRestart")]
+        DisplayName = "ExposureMeasurement_ReplaysHistoricalMonoMeasurementAndRejectedFitAfterRestart")]
     [DataRow(CameraPixelFormat.BayerRggb16, "None", true, 1, false, true)]
     [DataRow(CameraPixelFormat.BayerRggb16, "None", true, 1, false, true, "star", false,
         FrameStoredCodeTransform.RightAlignedV1, 0, "", false, "2026-11-21T13:27:27.3434303+00:00",
@@ -89,6 +89,8 @@ public sealed partial class VirtualSkyCameraModuleTests
                 : DateTimeOffset.ParseExact(fixtureUtc, "O", CultureInfo.InvariantCulture);
             var verifyBayerReplay = format == CameraPixelFormat.BayerRggb16 &&
                 fixtureUtc == "2026-11-21T13:27:27.3434303+00:00";
+            var publishHistoricalMeasurement = format == CameraPixelFormat.Mono16 &&
+                fit && publicationFailures == 0 && !noPredictionCatalog;
             var profile = StoragePolicyRawIngressIntegrationTests.Profile(root);
             var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
             var camera = CreateConfig(format, 224, 224);
@@ -163,7 +165,9 @@ public sealed partial class VirtualSkyCameraModuleTests
             var publication = publicationFailures > 0 ? new MeasurementPublicationIo(publicationFailures) : null;
             var laneClock = publication is not null ? new ExposureTestTimeProvider(now.AddMinutes(1)) : null;
             using (var provider = MeasurementProvider(root, location, predictionCatalog, (ICaptureProcessingFaultInjector?)interruption ?? publication,
-                laneClock))
+                laneClock, publishHistoricalMeasurement
+                    ? static services => services.AddSingleton<IProcessingRecipeExecutor>(new HistoricalMonoMeasurementExecutor())
+                    : null))
             {
                 var active = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(provider, file).ConfigureAwait(false);
                 var operations = provider.GetRequiredService<IProcessingGraphOperations>();
@@ -515,6 +519,18 @@ public sealed partial class VirtualSkyCameraModuleTests
                     Assert.IsNotNull(published.Product);
                     Assert.AreEqual(artifactId, published.Product?.ArtifactId);
                     Assert.AreEqual(output.OutputIdentitySha256, published.Product?.OutputIdentitySha256);
+                    if (publishHistoricalMeasurement)
+                    {
+                        var stored = await provider.GetRequiredService<SqliteCaptureProcessingStore>()
+                            .ReadOutputByArtifactIdAsync(artifactId, CancellationToken.None).ConfigureAwait(false);
+                        Assert.IsNotNull(stored);
+                        var retained = Assert.ContainsSingle(await provider.GetRequiredService<CaptureProcessingPersistence>()
+                            .RestoreWindowInputsAsync([stored], CancellationToken.None).ConfigureAwait(false));
+                        Assert.IsNotNull(retained.RecipeDescriptor);
+                        var parameters = retained.RecipeDescriptor.Options.GetProperty("parameters");
+                        Assert.IsTrue(parameters.TryGetProperty("raw", out _), "The live fixture must retain the historical plain input.");
+                        Assert.IsFalse(parameters.TryGetProperty("hfdAllocation", out _));
+                    }
                     var notifications = await reader.ReadProductsAfterAsync(exposure.Camera, 0, 128, CancellationToken.None)
                         .ConfigureAwait(false);
                     Assert.AreEqual(published, Assert.ContainsSingle(notifications.Where(product => product.Slot == slot)));
@@ -1017,6 +1033,18 @@ public sealed partial class VirtualSkyCameraModuleTests
         update.CommandText = "UPDATE centered_exposure_runs SET snapshot_json = X'7B7D' WHERE run_id = $run;";
         update.Parameters.AddWithValue("$run", exposure.RunId.ToString("N"));
         Assert.AreEqual(1, await update.ExecuteNonQueryAsync().ConfigureAwait(false));
+    }
+
+    private sealed class HistoricalMonoMeasurementExecutor : IProcessingRecipeExecutor
+    {
+        private readonly ProcessingRecipeExecutor _executor = new();
+
+        public ValueTask<ProcessingOutcome> ExecuteAsync(ProcessingExecutionRequest request, CancellationToken cancellationToken = default)
+        {
+            if (request.RecipeName == BuiltInProcessingRecipes.ExposureMeasurement)
+                request = request with { Options = request.Options.GetProperty("input") };
+            return _executor.ExecuteAsync(request, cancellationToken);
+        }
     }
 
     private sealed class MeasurementPublicationIo(int failures) : ICaptureProcessingFaultInjector
