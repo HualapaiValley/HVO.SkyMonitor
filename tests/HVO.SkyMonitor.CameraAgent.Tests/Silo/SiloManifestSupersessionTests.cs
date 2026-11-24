@@ -12,6 +12,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Silo;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Silo")]
 public sealed class SiloManifestSupersessionTests
 {
     private static async Task CrashAsync(SiloHarness silo, SiloGroupDraft draft, SiloFaultPoint point)

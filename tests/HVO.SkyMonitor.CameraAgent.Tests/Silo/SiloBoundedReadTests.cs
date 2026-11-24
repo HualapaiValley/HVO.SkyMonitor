@@ -5,6 +5,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Silo;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Silo")]
 public sealed class SiloBoundedReadTests
 {
     private const string Key = "object";

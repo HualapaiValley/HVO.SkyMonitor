@@ -28,6 +28,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Services;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Services")]
 public sealed class NamedRigQuickEditServiceTests
 {
     private const string NothingStaged = "Nothing was staged; the active rig and schedule are unchanged.";

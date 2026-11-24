@@ -20,6 +20,7 @@ using Microsoft.Extensions.Options;
 namespace HVO.SkyMonitor.CameraAgent.Tests.TimeLapses;
 
 [TestClass]
+[TestProperty("Area", "TimeLapses")]
 [DoNotParallelize]
 [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "Focused MSTest methods.")]
 [SuppressMessage("Performance", "CA1861:Avoid constant arrays as arguments", Justification = "Focused expected values.")]

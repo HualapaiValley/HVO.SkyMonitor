@@ -443,8 +443,27 @@ internal sealed partial class InstallWizardSession
     // before any page is passed over: what cameraagent install refuses is a usage error (exit 2) before the wizard opens,
     // rather than a page that cannot be left or a value quietly replaced. Only the questions the wizard asks and the
     // command line left open are answered for the check, each with a stand-in that is never used.
+    /// <summary>
+    /// The Silo layout's options (#1966). The answers file has no member for them, so the install the wizard runs would
+    /// drop them and install a filesystem-layout instance; they are refused before the wizard opens instead.
+    /// </summary>
+    internal static readonly string[] SiloOptions =
+    [
+        "--storage-layout", "--silo-image-archive", "--silo-archive-endpoint", "--silo-archive-bucket", "--silo-archive-ca-file",
+        "--silo-archive-credential-file"
+    ];
+
     private void Validate(string[] args)
     {
+        var siloLayout = Given("--storage-layout") &&
+                         CommandLine.ParseStorageLayout(GivenValue("--storage-layout")) == CameraAgentStorageLayout.Silo;
+        if ((siloLayout ? "--storage-layout silo" : SiloOptions.Skip(1).FirstOrDefault(Given)) is { } silo)
+        {
+            throw new InstallUsageException(
+                $"The wizard does not ask {silo}: a Silo-layout install takes every answer on the command line. " +
+                "Give --friendly-name, --release (or --image-ref) and --catalog-bundle with it. Nothing was changed.");
+        }
+
         var probe = new List<string>(InstallWizardGate.InstallArguments(args));
         if (!Given("--friendly-name"))
         {

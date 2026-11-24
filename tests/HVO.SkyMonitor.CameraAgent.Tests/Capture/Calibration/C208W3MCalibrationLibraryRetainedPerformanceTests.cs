@@ -34,6 +34,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Calibration;
 
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "Capture.Calibration")]
 [DoNotParallelize]
 public sealed class C208W3MCalibrationLibraryRetainedPerformanceTests
 {

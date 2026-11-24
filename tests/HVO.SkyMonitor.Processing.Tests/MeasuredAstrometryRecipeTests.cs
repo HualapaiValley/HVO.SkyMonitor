@@ -289,7 +289,11 @@ public sealed class MeasuredAstrometryRecipeTests
     }
 
     [TestMethod]
-    public async Task CallerCancellationAndWorkBudgetsAreBoundedAndNeverReturnMapping()
+    [Timeout(60_000)]
+    public async Task CallerCancellationAndWorkBudgetRejectionNeverReturnMapping() =>
+        _ = await VerifyCallerCancellationAndWorkBudgetRejectionAsync().ConfigureAwait(false);
+
+    internal static async Task<(TimeSpan Cancellation, TimeSpan Rejection)> VerifyCallerCancellationAndWorkBudgetRejectionAsync()
     {
         var f = await Fixture.Value.ConfigureAwait(false);
         await Assert.ThrowsAsync<OperationCanceledException>(async () => await new ProcessingRecipeExecutor().ExecuteAsync(
@@ -299,15 +303,17 @@ public sealed class MeasuredAstrometryRecipeTests
         var cancellationTimer = Stopwatch.StartNew();
         await Assert.ThrowsAsync<OperationCanceledException>(async () => await new ProcessingRecipeExecutor().ExecuteAsync(
             f.Request(), cancel.Token).ConfigureAwait(false)).ConfigureAwait(false);
-        Assert.IsLessThan(3000, cancellationTimer.Elapsed.TotalMilliseconds);
+        var cancellationElapsed = cancellationTimer.Elapsed;
         var timer = Stopwatch.StartNew();
         var value = Solution(await new ProcessingRecipeExecutor().ExecuteAsync(f.Request(options: MeasuredAstrometryFixture.Options with
         { Solver = MeasuredAstrometryFixture.Options.Solver! with { ColdBudgetMilliseconds = .000001 } })).ConfigureAwait(false));
+        var rejectionElapsed = timer.Elapsed;
         Assert.AreEqual(AstrometricAssessmentStatus.BudgetExceeded, value.Assessment.Status);
-        Assert.IsLessThan(3000, timer.Elapsed.TotalMilliseconds); Assert.IsNull(value.Assessment.Parameters);
+        Assert.IsNull(value.Assessment.Parameters);
         value = Solution(await new ProcessingRecipeExecutor().ExecuteAsync(f.Request(options: MeasuredAstrometryFixture.Options with
         { MaximumExecutionMilliseconds = .000001 })).ConfigureAwait(false));
         Assert.AreEqual(AstrometricAssessmentStatus.BudgetExceeded, value.Assessment.Status); Assert.IsNull(value.Assessment.Parameters);
+        return (cancellationElapsed, rejectionElapsed);
     }
 
     [TestMethod]

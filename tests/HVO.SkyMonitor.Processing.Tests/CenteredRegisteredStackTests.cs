@@ -592,8 +592,17 @@ public sealed class CenteredRegisteredStackTests
         Assert.AreNotEqual(center.Pin.Linear,
             CenteredStackArtifactPin.FromHeader(linearHeader with { RecipeDescriptor = null }, center.Pin.Linear.PayloadSha256));
         Assert.AreNotEqual(center.Pin.Linear, CenteredStackArtifactPin.From(linear with { Payload = new byte[] { 1 } }));
+        var another = await BuildCapture(104, new byte[Width * height * 2], bayer: true, height: height,
+            measurementReason: "qualified-committed");
         var maskPin = CenteredStackValidityMask.PinAllValid(rawHeader, linearHeader);
+        var nextMaskPin = CenteredStackValidityMask.PinAllValid(CenteredStackArtifactHeader.FromArtifact(another.Raw),
+            CenteredStackArtifactHeader.FromArtifact(another.Qualified.Linear.Linear));
         Assert.AreEqual(center.Pin.ValidityMask, maskPin);
+        Assert.AreSame(maskPin.PayloadSha256, nextMaskPin.PayloadSha256, "Identical sample counts reuse the computed digest.");
+        Assert.AreEqual(another.Pin.ValidityMask, nextMaskPin);
+        Assert.AreNotEqual(maskPin.ArtifactId, nextMaskPin.ArtifactId);
+        Assert.ThrowsExactly<OperationCanceledException>(() => CenteredStackValidityMask.PinAllValid(rawHeader,
+            linearHeader, new CancellationToken(canceled: true)));
         var mask = CenteredStackValidityMask.OpenAllValid(rawHeader, linearHeader, maskPin, linear.CreatedUtc);
         Assert.AreEqual(maskPin, CenteredStackArtifactPin.From(mask));
         Assert.ThrowsExactly<InvalidDataException>(() => CenteredStackValidityMask.OpenAllValid(rawHeader,

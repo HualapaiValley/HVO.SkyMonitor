@@ -25,7 +25,12 @@ public sealed class ExposureMeasurementCorpusTests
             Assert.AreEqual(frame.GetProperty("rawSha256").GetString(), Convert.ToHexStringLower(SHA256.HashData(bytes)));
             var raw = CreateRaw(Layout(1936, 1216), bytes, frame.GetProperty("captureId").GetGuid());
             var linear = await Normalize(raw);
-            var result = await Run(raw, linear, Bind(raw, linear));
+            var input = Bind(raw, linear);
+            var result = await Run(raw, linear, input);
+            var historical = await Run(raw, linear, input, historicalFocus: true);
+            CollectionAssert.AreEqual(historical.Sources.Detections.ToArray(), result.Sources.Detections.ToArray());
+            Console.WriteLine(FormattableString.Invariant(
+                $"{frame.GetProperty("rawSha256").GetString()} | {result.Sources.Detections.Count} detections | HFD {historical.Hfd.ValidCount} to {result.Hfd.ValidCount} of {result.Hfd.Samples.Count} | {result.Hfd.OmittedCount} omitted"));
             var stats = result.RawBrightness!;
             Assert.AreEqual(frame.GetProperty("pixelCount").GetInt64(), stats.SampleCount);
             Assert.AreEqual(frame.GetProperty("minAdu").GetUInt16(), stats.Minimum);

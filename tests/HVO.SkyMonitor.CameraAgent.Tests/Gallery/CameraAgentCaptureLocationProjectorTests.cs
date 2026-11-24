@@ -8,6 +8,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Gallery;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Gallery")]
 public sealed class CameraAgentCaptureLocationProjectorTests
 {
     [TestMethod]

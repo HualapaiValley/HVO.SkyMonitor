@@ -14,6 +14,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Ui")]
 public sealed class SchedulePageTests
 {
     private static readonly string[] RawDependency = ["$raw"];

@@ -5,6 +5,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 /// <summary>#1383: the Current Sky layer-panel swatches show the colours the overlays are drawn in.</summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Ui")]
 public sealed partial class CurrentSkyLayerSwatchTests
 {
     [TestMethod]

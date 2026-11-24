@@ -17,6 +17,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Orbital;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Orbital")]
 public sealed class OrbitalElementsEndToEndTests : OrbitalStoreTestBase
 {
     private const int SixHours = 6 * 60 * 60;

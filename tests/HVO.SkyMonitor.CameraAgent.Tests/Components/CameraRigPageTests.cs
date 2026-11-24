@@ -19,6 +19,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Ui")]
 public sealed class CameraRigPageTests
 {
     private static readonly string[] SkyLightingLabels = ["Uniform daylight", "Realistic daylight", "No daylight"];

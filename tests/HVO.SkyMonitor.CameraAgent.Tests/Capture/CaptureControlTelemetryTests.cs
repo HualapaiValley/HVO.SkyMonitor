@@ -9,6 +9,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture")]
 [DoNotParallelize]
 public sealed class CaptureControlTelemetryTests
 {

@@ -32,6 +32,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Orbital;
 /// </summary>
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "Orbital")]
 [DoNotParallelize]
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : OrbitalStoreTestBase

@@ -95,20 +95,20 @@ if [[ -n "$classification_line" ]]; then
             --arg complete "${plan[complete]:-unknown}" \
             --arg shared "${plan[shared]:-unknown}" \
             --arg cameraagent "${plan[cameraagent]:-unknown}" \
-            --arg logichost "${plan[logichost]:-unknown}" \
-            --arg combined "${plan[combined]:-unknown}" \
+            --arg logichost "${plan[logichost]:-}" \
+            --arg combined "${plan[combined]:-}" \
             --arg delivery "${plan[delivery]:-unknown}" \
             --arg paths "${plan[paths]:-unknown}" \
             '{mode:$mode,deployment:$deployment,deploymentCatalog:$deployment_catalog,
               deploymentShards:$deployment_shards,deploymentInstaller:$deployment_installer,
-              complete:$complete,shared:$shared,
-              cameraagent:$cameraagent,logichost:$logichost,combined:$combined,
-              delivery:$delivery,pathCount:(if ($paths|test("^[0-9]+$")) then ($paths|tonumber) else null end)}')"
+              complete:$complete,shared:$shared,cameraagent:$cameraagent,delivery:$delivery,
+              pathCount:(if ($paths|test("^[0-9]+$")) then ($paths|tonumber) else null end)} +
+             ({logichost:$logichost,combined:$combined} | with_entries(select(.value != "")))')"
     fi
 fi
 
-# Display-name DAG from .github/workflows/ci.yml. This is intentionally explicit:
-# an unknown job is still reported, but no scheduling gap is invented for it.
+# Display-name dependencies for ci.yml, including jobs in historical runs.
+# Unknown jobs are still reported without a dependency readiness estimate.
 dependencies='{
   "Catalog Contracts":["Change Classification"],
   "Catalog Reproducibility":["Change Classification"],
@@ -156,13 +156,20 @@ report="$(jq -n \
     ($job.status == "completed" and epoch($job.completed_at) != null);
   def job_by_name($jobs; $name): [$jobs[] | select(.name == $name)][0] // null;
   ($run[0]) as $r | ($jobPayload[0].jobs) as $jobs |
+  ["LogicHost Migrations", "LogicHost Component", "Combined Protocol & Integration"] as $retired |
+  ($dependencies |
+    if ($plan | (.logichost != null or .combined != null)) or
+       any($jobs[]; .name as $name | $retired | index($name) != null)
+    then .
+    else .["Required CI"] -= $retired
+    end) as $runDependencies |
   ([ $jobs[] | select(.name == "Change Classification") ][0] // null) as $changes |
   ([ $jobs[] | select(.name == "Required CI") ][0] // null) as $required |
   (($changes != null and $changes.conclusion == "skipped") and
    ($required != null and $required.conclusion == "failure")) as $draftBlocked |
   ([ $jobs[] |
       . as $job |
-      ($dependencies[$job.name] // null) as $needs |
+      ($runDependencies[$job.name] // null) as $needs |
       (if $needs == null then [] else
          [$needs[] as $need |
            select(($addedLater | index($need)) == null or job_by_name($jobs; $need) != null) | $need]
@@ -185,7 +192,7 @@ report="$(jq -n \
     if ($name == null or ($seen|index($name)) != null) then []
     else (job_by_name($jobs; $name)) as $job |
       if $job == null then []
-      else ($dependencies[$name] // []) as $needs |
+      else ($runDependencies[$name] // []) as $needs |
         ([ $needs[] as $need | job_by_name($jobs; $need) |
            select(. != null and valid_job(.)) ] | sort_by(.completed_at) | last // null) as $parent |
         (if $parent == null then [] else controlling($parent.name; $seen + [$name]) end) + [$name]

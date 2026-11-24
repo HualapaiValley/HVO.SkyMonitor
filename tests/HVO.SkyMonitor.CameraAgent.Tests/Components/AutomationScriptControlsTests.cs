@@ -11,6 +11,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Ui")]
 [DoNotParallelize]
 public sealed class AutomationScriptControlsTests
 {

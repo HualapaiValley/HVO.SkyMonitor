@@ -44,7 +44,7 @@ public sealed partial class VirtualSkyCameraModuleTests
 
             var effective = initial.ActiveRevision.Profile.ApplyTo(baseline);
             var noon = new DateTimeOffset(2026, 1, 15, 19, 0, 0, TimeSpan.Zero);
-            var module = new VirtualSkyCameraModule(TimeProvider.System, CreateCanonicalStarCatalog(),
+            var module = new VirtualSkyCameraModule(new ExposureTestTimeProvider(noon, autoAdvance: true), CreateCanonicalStarCatalog(),
                 new ProjectedSceneStore(), StandardConstellationTopology.CreateD3Celestial(), new AstronomyEnginePlanetEphemeris());
             await using var moduleLifetime = module.ConfigureAwait(false);
             await module.InitializeAsync(effective, CancellationToken.None).ConfigureAwait(false);

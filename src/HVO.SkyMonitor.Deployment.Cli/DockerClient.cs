@@ -20,7 +20,7 @@ internal sealed record DockerHostCapabilities(
     int? CpuCount = null,
     long? MemoryBytes = null);
 
-internal sealed class DockerClient(IProcessRunner processRunner)
+internal sealed partial class DockerClient(IProcessRunner processRunner)
 {
     private string? endpoint;
 

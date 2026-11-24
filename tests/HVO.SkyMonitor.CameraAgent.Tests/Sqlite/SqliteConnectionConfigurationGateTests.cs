@@ -5,6 +5,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Sqlite;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Sqlite")]
 [DoNotParallelize]
 public sealed class SqliteConnectionConfigurationGateTests
 {

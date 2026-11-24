@@ -339,8 +339,12 @@ internal static class CameraAgentStateResetManager
             throw new InstallerException("The selected instance has no retained manifest.");
         }
         await using var stream = SafeFileSystem.OpenOwnerFileRead(path);
-        return await System.Text.Json.JsonSerializer.DeserializeAsync(
-                   stream, DeploymentJsonContext.Default.InstanceManifest, cancellationToken).ConfigureAwait(false)
-               ?? throw new InstallerException("The selected instance manifest is empty.");
+        var manifest = await System.Text.Json.JsonSerializer.DeserializeAsync(
+                           stream, DeploymentJsonContext.Default.InstanceManifest, cancellationToken).ConfigureAwait(false)
+                       ?? throw new InstallerException("The selected instance manifest is empty.");
+        // A Silo-layout instance's CameraAgent state is bound to its store; deleting it alone would orphan the bucket (#1966).
+        if (string.Equals(manifest.ComponentSchemaVersion, SiloRuntimeProfile.ComponentSchemaVersion, StringComparison.Ordinal))
+            throw InstallerException.Refused(CameraAgentLifecycleManager.SiloLayoutUnsupported);
+        return manifest;
     }
 }

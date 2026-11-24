@@ -23,6 +23,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Calibration;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture.Calibration")]
 [DoNotParallelize]
 public sealed class SqliteCalibrationFamilyStoreTests
 {

@@ -12,6 +12,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.SkyMap;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "SkyMap")]
 public sealed class CameraAgentSkyMapProjectionTests
 {
     private static readonly DateTimeOffset Instant = new(2026, 1, 15, 6, 30, 0, TimeSpan.Zero);
