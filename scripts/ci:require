@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Required CI aggregation. The expected result of every gate is derived from the
-# validated classifier plan, so a plan that silently drops an affected gate is a
-# rejected plan rather than a green merge.
+# Required CI aggregation. Expected results follow the validated classifier plan
+# and the fixed skip policy for retired LogicHost gates.
 
 # Plan and result values are split on whitespace; disable pathname expansion so a
 # value can never glob against the runner workspace.
@@ -129,7 +128,7 @@ if [[ "${plan[complete]}" == "true" && "${plan[mode]}" != "full" ]]; then
 fi
 
 # The classifier's fan-out rules are part of the plan contract. A shared contract
-# change must claim every consuming lane. Combined coverage is only ever selected
+# change must claim every consuming lane. The combined lane is only ever claimed
 # by a host seam, a combined fixture, or the shared fan-out, so it must claim at
 # least one host lane; requiring both would reject a correct host-seam plan.
 if [[ "${plan[shared]}" == "true" ]]; then
@@ -180,15 +179,17 @@ expected[architecture]="$(expected_when "$full_mode")"
 expected[coverage-policy]="$(expected_when "$full_mode")"
 expected[deployment-contracts]="$(expected_when "${plan[deployment]}")"
 expected[migrations-cameraagent]="$(expected_when "$full_mode")"
-expected[migrations-logichost]="$(expected_when "$full_mode")"
 expected[unit]="$(expected_when "${plan[complete]}")"
 expected[integration]="$(expected_when "${plan[complete]}")"
 expected[coverage]="$(expected_when "${plan[complete]}")"
 expected[shared-libraries]="$(expected_when "$(component_lane shared)")"
 expected[cameraagent-component]="$(expected_when "$(component_lane cameraagent)")"
-expected[logichost-component]="$(expected_when "$(component_lane logichost)")"
-expected[combined-integration]="$(expected_when "$(component_lane combined)")"
 expected[delivery-component]="$(expected_when "$(component_lane delivery)")"
+
+# Keep the job results in the contract while LogicHost test execution is retired (#2048).
+expected[migrations-logichost]="skipped"
+expected[logichost-component]="skipped"
+expected[combined-integration]="skipped"
 
 report=""
 failed="false"

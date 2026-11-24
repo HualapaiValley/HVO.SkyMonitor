@@ -197,14 +197,12 @@ internal static partial class CalendarEvidenceVocabulary
         SunriseReportingPeriod.CurrentVersion, ObservingDayCalendar.LegacyNoonVersion
     };
 
-    private static readonly Uri RelativeBase = new("http://evidence.local/");
-
     /// <summary>
     /// The product route a URL names, with only public components kept: dates that parse, product identities reduced
     /// to whether they are the expected product, and the product's own query keys with valid values. Any other path,
     /// query key, value, scheme or origin is replaced by a fixed marker.
     /// </summary>
-    internal static string RouteShape(string? value, Guid? expectedProduct)
+    internal static string RouteShape(string? value, Guid? expectedProduct, Uri appBaseAddress)
     {
         if (string.IsNullOrWhiteSpace(value))
         {
@@ -214,9 +212,13 @@ internal static partial class CalendarEvidenceVocabulary
         {
             return value;
         }
-        if (!Uri.TryCreate(RelativeBase, value, out var uri) || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        if (!Uri.TryCreate(appBaseAddress, value, out var uri) || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
         {
             return "[unparsed]";
+        }
+        if (!HasSameOrigin(appBaseAddress, uri))
+        {
+            return "[other-origin]";
         }
         var path = PathShape(uri.AbsolutePath, expectedProduct);
         if (path == "[other-route]")
@@ -253,6 +255,9 @@ internal static partial class CalendarEvidenceVocabulary
         }
         return parts.Count == 0 ? path : path + "?" + string.Join('&', parts);
     }
+
+    internal static bool HasSameOrigin(Uri appBaseAddress, Uri uri) =>
+        Uri.Compare(appBaseAddress, uri, UriComponents.SchemeAndServer, UriFormat.SafeUnescaped, StringComparison.OrdinalIgnoreCase) == 0;
 
     private static string PathShape(string path, Guid? expectedProduct)
     {
@@ -294,20 +299,20 @@ internal static partial class CalendarEvidenceVocabulary
     }
 
     /// <summary>Renders a collected element tree through the allowlist, or null when there is nothing to render.</summary>
-    internal static string? RenderMarkup(JsonElement node, Guid? expectedProduct, bool omitOtherProducts = false)
+    internal static string? RenderMarkup(JsonElement node, Guid? expectedProduct, Uri appBaseAddress, bool omitOtherProducts = false)
     {
         if (node.ValueKind != JsonValueKind.Object)
         {
             return null;
         }
         var builder = new StringBuilder();
-        Render(node, builder, expectedProduct, omitOtherProducts);
+        Render(node, builder, expectedProduct, appBaseAddress, omitOtherProducts);
         return builder.Length == 0 ? null
             : builder.Length > MarkupCharacters ? builder.ToString(0, MarkupCharacters) + "…[truncated]"
             : builder.ToString();
     }
 
-    private static void Render(JsonElement node, StringBuilder builder, Guid? expectedProduct, bool omitOtherProducts)
+    private static void Render(JsonElement node, StringBuilder builder, Guid? expectedProduct, Uri appBaseAddress, bool omitOtherProducts)
     {
         if (builder.Length > MarkupCharacters)
         {
@@ -333,7 +338,7 @@ internal static partial class CalendarEvidenceVocabulary
             foreach (var pair in raw.EnumerateArray())
             {
                 if (pair.ValueKind == JsonValueKind.Array && pair.GetArrayLength() == 2 &&
-                    Attribute(pair[0].GetString(), pair[1].GetString(), expectedProduct) is { } attribute)
+                    Attribute(pair[0].GetString(), pair[1].GetString(), expectedProduct, appBaseAddress) is { } attribute)
                 {
                     attributes.Add(attribute);
                 }
@@ -359,13 +364,13 @@ internal static partial class CalendarEvidenceVocabulary
         {
             foreach (var child in children.EnumerateArray())
             {
-                Render(child, builder, expectedProduct, omitOtherProducts);
+                Render(child, builder, expectedProduct, appBaseAddress, omitOtherProducts);
             }
         }
         builder.Append("</").Append(tag).Append('>');
     }
 
-    private static (string Name, string Value)? Attribute(string? name, string? value, Guid? expectedProduct)
+    private static (string Name, string Value)? Attribute(string? name, string? value, Guid? expectedProduct, Uri appBaseAddress)
     {
         if (name is null || value is null)
         {
@@ -385,7 +390,7 @@ internal static partial class CalendarEvidenceVocabulary
             "datetime" => DateOnly.TryParseExact(value, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out _) ? value : null,
             "loading" => value is "lazy" or "eager" ? value : null,
             "decoding" => value is "async" or "sync" or "auto" ? value : null,
-            "src" or "href" => RouteShape(value, expectedProduct),
+            "src" or "href" => RouteShape(value, expectedProduct, appBaseAddress),
             _ => null
         };
         return string.IsNullOrEmpty(kept) ? null : (name, kept);
@@ -466,6 +471,7 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
 
     private readonly IPage page;
     private readonly TestContext testContext;
+    private readonly Uri appBaseAddress;
     private readonly CalendarEvidenceStore store;
     private readonly TimeSpan budget;
     private readonly ServerLogEvidence? serverLog;
@@ -487,11 +493,12 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
     private bool detached;
 
     private CalendarDayPreviewEvidence(
-        IPage page, TestContext testContext, ServerLogEvidence? serverLog, DateOnly selectedDay, string previewPath, string rowLabel,
+        IPage page, TestContext testContext, Uri appBaseAddress, ServerLogEvidence? serverLog, DateOnly selectedDay, string previewPath, string rowLabel,
         CalendarEvidenceStore store, TimeSpan budget)
     {
         this.page = page;
         this.testContext = testContext;
+        this.appBaseAddress = appBaseAddress;
         this.store = store;
         this.budget = budget;
         this.serverLog = serverLog;
@@ -518,13 +525,14 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
     internal CalendarDayPreviewReport? LastReport { get; private set; }
 
     internal static CalendarDayPreviewEvidence Observe(
-        IPage page, TestContext testContext, DateOnly selectedDay, string previewPath, string rowLabel, ServerLogEvidence? serverLog = null,
+        IPage page, TestContext testContext, Uri appBaseAddress, DateOnly selectedDay, string previewPath, string rowLabel, ServerLogEvidence? serverLog = null,
         CalendarEvidenceStore? store = null, TimeSpan? budget = null)
     {
         ArgumentNullException.ThrowIfNull(page);
         ArgumentNullException.ThrowIfNull(testContext);
+        ArgumentNullException.ThrowIfNull(appBaseAddress);
         ArgumentException.ThrowIfNullOrWhiteSpace(previewPath);
-        return new CalendarDayPreviewEvidence(page, testContext, serverLog, selectedDay, previewPath, rowLabel,
+        return new CalendarDayPreviewEvidence(page, testContext, appBaseAddress, serverLog, selectedDay, previewPath, rowLabel,
             store ?? CalendarEvidenceStore.ForTestContext(testContext), budget ?? DefaultBudget);
     }
 
@@ -668,8 +676,9 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
     {
         var failureAt = clock.ElapsedMilliseconds;
         var step = Step;
-        var routeAtFailure = Route(page.Url);
-        var onDayAtFailure = IsSelectedDay(page.Url);
+        var urlAtFailure = page.Url;
+        var routeAtFailure = Route(urlAtFailure);
+        var onDayAtFailure = IsAppRoute(urlAtFailure, selectedDayPath);
         Record("failure", $"step={step} type={CalendarEvidenceVocabulary.TypeName(failure.GetType())}");
         var atFailure = await SnapshotAsync(token).ConfigureAwait(false);
         var probe = await ProbeAsync(token).ConfigureAwait(false);
@@ -689,20 +698,21 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
         {
             Record("settle", "preview image not visible within " + ((long)settleWindow.TotalMilliseconds).ToString(CultureInfo.InvariantCulture) + " ms");
         }
-        var routeAfterSettle = Route(page.Url);
-        var onDayAfterSettle = IsSelectedDay(page.Url);
+        var urlAfterSettle = page.Url;
+        var routeAfterSettle = Route(urlAfterSettle);
+        var onDayAfterSettle = IsAppRoute(urlAfterSettle, selectedDayPath);
         var afterSettle = await SnapshotAsync(token).ConfigureAwait(false);
 
         var observation = new CalendarDayPreviewObservation(
             onDayAtFailure,
             onDayAfterSettle,
-            atFailure.PreviewFailedMarker || afterSettle.PreviewFailedMarker,
+            (onDayAtFailure && atFailure.PreviewFailedMarker) || (onDayAfterSettle && afterSettle.PreviewFailedMarker),
             previewRequests.ToArray(),
             probe,
             ComposePageErrorSignals(eventSignals, atFailure, afterSettle),
-            atFailure.Image.Visible,
-            visibleAfterSettle,
-            afterSettle.DayLoading,
+            onDayAtFailure && atFailure.Image.Visible,
+            onDayAfterSettle ? visibleAfterSettle : null,
+            onDayAfterSettle && afterSettle.DayLoading,
             failure is AssertFailedException);
         return new CalendarDayPreviewReport(
             testContext.FullyQualifiedTestClassName ?? "unknown",
@@ -710,7 +720,7 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
             rowLabel,
             selectedDay,
             selectedDayPath,
-            CalendarEvidenceVocabulary.RouteShape(previewPath, expectedProduct),
+            Route(previewPath),
             step,
             CalendarEvidenceVocabulary.TypeName(failure.GetType()),
             TimeoutMilliseconds(failure.Message),
@@ -764,7 +774,7 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
         {
             var json = await Bounded(page.EvaluateAsync<JsonElement>(SnapshotScript, new { day = selectedDay }), BrowserCallTimeout, token)
                 .ConfigureAwait(false);
-            return PageSnapshot.From(json, expectedProduct);
+            return PageSnapshot.From(json, expectedProduct, appBaseAddress);
         }
         catch (Exception exception) when (!token.IsCancellationRequested && exception is not OutOfMemoryException)
         {
@@ -780,7 +790,7 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
         try
         {
             response = await Bounded(page.Context.APIRequest.GetAsync(
-                    new Uri(new Uri(page.Url), previewPath).AbsoluteUri,
+                    new Uri(appBaseAddress, previewPath).AbsoluteUri,
                     new() { MaxRedirects = 0, Timeout = (float)BrowserCallTimeout.TotalMilliseconds }),
                 BrowserCallTimeout + TimeSpan.FromSeconds(1), token).ConfigureAwait(false);
             var body = await Bounded(response.BodyAsync(), BrowserCallTimeout, token).ConfigureAwait(false);
@@ -806,13 +816,12 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
     private static string FileName(CalendarDayPreviewReport report) => string.Create(CultureInfo.InvariantCulture,
         $"{PlaywrightDiagnosticContext.SafeName(report.TestClass)}.{PlaywrightDiagnosticContext.SafeName(report.TestName)}.{report.Row}.{Guid.NewGuid():N}.evidence.json");
 
-    private string Route(string? url) => CalendarEvidenceVocabulary.RouteShape(url, expectedProduct);
+    private string Route(string url) => CalendarEvidenceVocabulary.RouteShape(url, expectedProduct, appBaseAddress);
 
-    private bool IsSelectedDay(string url) =>
-        Uri.TryCreate(url, UriKind.Absolute, out var uri) && string.Equals(uri.AbsolutePath, selectedDayPath, StringComparison.Ordinal);
-
-    private bool IsPreview(string url) =>
-        Uri.TryCreate(url, UriKind.Absolute, out var uri) && string.Equals(uri.AbsolutePath, previewPath, StringComparison.Ordinal);
+    private bool IsAppRoute(string url, string path) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var uri) &&
+        CalendarEvidenceVocabulary.HasSameOrigin(appBaseAddress, uri) &&
+        string.Equals(uri.AbsolutePath, path, StringComparison.Ordinal);
 
     private void Record(string kind, string detail)
     {
@@ -838,7 +847,7 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
     {
         try
         {
-            if (IsPreview(request.Url))
+            if (IsAppRoute(request.Url, previewPath))
             {
                 Record("preview-request", "method=" + BoundedMethod(request.Method));
             }
@@ -848,6 +857,7 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
             }
             else if (request.ResourceType is "fetch" or "xhr" &&
                      Uri.TryCreate(request.Url, UriKind.Absolute, out var uri) &&
+                     CalendarEvidenceVocabulary.HasSameOrigin(appBaseAddress, uri) &&
                      uri.AbsolutePath.StartsWith("/archive/", StringComparison.Ordinal))
             {
                 // Blazor enhanced navigation fetches the next page instead of navigating the document.
@@ -866,7 +876,7 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
     {
         try
         {
-            if (IsPreview(response.Url))
+            if (IsAppRoute(response.Url, previewPath))
             {
                 response.Headers.TryGetValue("content-type", out var contentType);
                 var bounded = BoundedContentType(contentType);
@@ -891,7 +901,7 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
         try
         {
             var failure = BoundedNetworkError(request.Failure);
-            if (IsPreview(request.Url))
+            if (IsAppRoute(request.Url, previewPath))
             {
                 previewRequests.Enqueue(new(Elapsed(), "failed", null, null, failure));
                 Record("preview-failed", failure);
@@ -1068,6 +1078,11 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
     /// </summary>
     private const string SnapshotScript = """
         ({ day }) => {
+          const resolveUrl = (value, element) => {
+            if (!value?.trim()) return value;
+            try { return new URL(value, element.baseURI).href; }
+            catch { return 'about:invalid'; }
+          };
           const collect = element => {
             if (!element) return null;
             let count = 0;
@@ -1083,7 +1098,11 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
                 const value = walk(child, depth + 1);
                 if (value !== null) children.push(value);
               }
-              return { t: node.localName, a: [...node.attributes].slice(0, 32).map(attribute => [attribute.name, attribute.value.slice(0, 300)]), c: children };
+              const attributes = [...node.attributes].slice(0, 32).map(({ name, value }) => {
+                const resolved = name === 'href' || name === 'src' ? resolveUrl(value, node) : value;
+                return [name, resolved?.slice(0, 300) ?? null];
+              });
+              return { t: node.localName, a: attributes, c: children };
             };
             return walk(element, 0);
           };
@@ -1116,7 +1135,7 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
               complete: image.complete,
               naturalWidth: image.naturalWidth,
               naturalHeight: image.naturalHeight,
-              src: image.getAttribute('src'),
+              src: resolveUrl(image.getAttribute('src'), image),
               currentSrc: image.currentSrc,
               loading: image.getAttribute('loading'),
               width: Math.round(rect.width),
@@ -1187,7 +1206,7 @@ internal sealed record PageSnapshot(
         }
     }
 
-    internal static PageSnapshot From(JsonElement json, Guid? expectedProduct)
+    internal static PageSnapshot From(JsonElement json, Guid? expectedProduct, Uri appBaseAddress)
     {
         var image = json.GetProperty("image");
         var imageState = image.GetProperty("present").GetBoolean()
@@ -1197,8 +1216,8 @@ internal sealed record PageSnapshot(
                 image.GetProperty("complete").GetBoolean(),
                 image.GetProperty("naturalWidth").GetInt32(),
                 image.GetProperty("naturalHeight").GetInt32(),
-                CalendarEvidenceVocabulary.RouteShape(OptionalString(image, "src"), expectedProduct),
-                CalendarEvidenceVocabulary.RouteShape(OptionalString(image, "currentSrc"), expectedProduct),
+                CalendarEvidenceVocabulary.RouteShape(OptionalString(image, "src"), expectedProduct, appBaseAddress),
+                CalendarEvidenceVocabulary.RouteShape(OptionalString(image, "currentSrc"), expectedProduct, appBaseAddress),
                 OptionalString(image, "loading") is { } loading ? CalendarEvidenceVocabulary.Allowed(loading, "lazy", "eager") : null,
                 image.GetProperty("width").GetInt32(),
                 image.GetProperty("height").GetInt32(),
@@ -1227,12 +1246,12 @@ internal sealed record PageSnapshot(
                 CalendarEvidenceVocabulary.NoticeTitle(notice.GetProperty("title").GetString())))],
             new Dictionary<string, string?>(StringComparer.Ordinal)
             {
-                ["calendarCell"] = CalendarEvidenceVocabulary.RenderMarkup(trees.GetProperty("calendarCell"), expectedProduct),
-                ["dayTile"] = CalendarEvidenceVocabulary.RenderMarkup(trees.GetProperty("dayTile"), expectedProduct),
-                ["dailyProducts"] = CalendarEvidenceVocabulary.RenderMarkup(trees.GetProperty("dailyProducts"), expectedProduct, omitOtherProducts: true)
+                ["calendarCell"] = CalendarEvidenceVocabulary.RenderMarkup(trees.GetProperty("calendarCell"), expectedProduct, appBaseAddress),
+                ["dayTile"] = CalendarEvidenceVocabulary.RenderMarkup(trees.GetProperty("dayTile"), expectedProduct, appBaseAddress),
+                ["dailyProducts"] = CalendarEvidenceVocabulary.RenderMarkup(trees.GetProperty("dailyProducts"), expectedProduct, appBaseAddress, omitOtherProducts: true)
             },
             [.. trees.GetProperty("pageStates").EnumerateArray()
-                .Select(state => CalendarEvidenceVocabulary.RenderMarkup(state, expectedProduct))
+                .Select(state => CalendarEvidenceVocabulary.RenderMarkup(state, expectedProduct, appBaseAddress))
                 .Where(static markup => markup is not null)
                 .Select(static markup => markup!)]);
     }

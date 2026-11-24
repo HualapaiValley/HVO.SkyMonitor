@@ -250,8 +250,10 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         """;
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
     private const string AstrometryLookupIndexSql = LegacyAstrometryJournalSchema.LookupIndexDefinition + ";";
+    private static string SchemaBeforeCenteredViewRetentionIndexesSql =>
+        SchemaSql.Replace(CenteredViewRetentionSchema.IndexSql, string.Empty, StringComparison.Ordinal);
     private static string SchemaBeforeAstrometryIndexSql =>
-        SchemaSql.Replace(AstrometryLookupIndexSql, string.Empty, StringComparison.Ordinal);
+        SchemaBeforeCenteredViewRetentionIndexesSql.Replace(AstrometryLookupIndexSql, string.Empty, StringComparison.Ordinal);
     private static readonly string ViewsBeforeRuntimeSchemaSql = SchemaBeforeAstrometryIndexSql
         .Replace("version = 12", "version = 11", StringComparison.Ordinal)
         .Replace("VALUES (1, 12)", "VALUES (1, 11)", StringComparison.Ordinal)
@@ -4451,6 +4453,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         CREATE UNIQUE INDEX ix_processing_graph_delivery_facts_settlement
             ON processing_graph_delivery_facts(proposal_id)
             WHERE fact_kind IN ('Accepted', 'Rejected', 'Expired');
-        """ + "\n" + CenteredWindowSchemaSql + "\n" + CenteredViewSchemaSql + "\n" + CenteredViewRuntimeSchemaSql;
+        """ + "\n" + CenteredWindowSchemaSql + "\n" + CenteredViewSchemaSql + "\n" + CenteredViewRuntimeSchemaSql
+        + "\n" + CenteredViewRetentionSchema.IndexSql;
 
 }

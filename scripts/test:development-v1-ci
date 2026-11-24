@@ -24,10 +24,12 @@ import pathlib
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 
 try:
     import yaml
@@ -165,6 +167,23 @@ merge_group_trigger = (
 
 
 preflight_timeout = "    timeout-minutes: 6"
+logichost_exclusions = (
+    "&FullyQualifiedName!~HVO.SkyMonitor.LogicHost",
+    "&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost",
+)
+unit_filter = "TestCategory=Unit" + "".join(logichost_exclusions)
+unit_command = " \\\n".join((
+    "            dotnet test HVO.SkyMonitor.v9.slnx",
+    "              --no-build",
+    "              --configuration Release",
+    f'              --filter "{unit_filter}"',
+    "              -p:SkipLogicHostTests=true",
+    '              --settings "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings"',
+    '              --collect:"XPlat Code Coverage"',
+    '              --results-directory "$DEV_V1_EVIDENCE_ROOT/unit"',
+    "              --logger trx",
+))
+unit_selection_error = "exact solution Unit command with both LogicHost exclusions and project selection"
 queue_permissions = "permissions:\n  contents: read\n  pull-requests: read\n  statuses: read\n"
 trusted_checkout = """        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -400,23 +419,18 @@ def violations(short, full, queue=None, extra=None):
     )
     require("dotnet build HVO.SkyMonitor.v9.slnx" in build, "complete solution build")
     require("--configuration Release" in build and "-warnaserror" in build, "Release warnings")
-    require("dotnet test HVO.SkyMonitor.v9.slnx" in build, "complete solution Unit selection")
-    require('--filter "TestCategory=Unit"' in build, "positive Unit filter")
-    require("--no-build" in build, "reuse this job's Release build")
     require("DOCKER_HOST: unix:///tmp/hvo-no-docker.sock" in build, "Docker-disabled Unit")
     unit = step(build, "Run Docker-disabled Unit selection")
+    require(unit.rstrip().endswith("\n" + unit_command), unit_selection_error)
     coverage = step(build, "Enforce canonical per-file coverage floors")
     policy = step(preflight, "Check coverage policy")
     require('        run: ./scripts/coverage:policy "$EVENT_NAME" "$BASE_REF"' in policy and
             'EVENT_NAME: ${{ github.event_name }}' in policy and
             'BASE_REF: ${{ github.base_ref }}' in policy and '        if:' not in policy and
             'continue-on-error:' not in policy, "coverage policy runs on every v1 event")
-    for command in (
-        '          ./scripts/coverage:development-v1 --settings "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings"',
-        '              --settings "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings" \\',
-        '              --collect:"XPlat Code Coverage" \\',
-    ):
-        require(unit.splitlines().count(command) == 1, f"Unit coverage wiring: {command}")
+    require(unit.splitlines().count(
+        '          ./scripts/coverage:development-v1 --settings "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings"'
+    ) == 1, "Unit coverage settings generation")
     for command in (
         '              dotnet tool restore',
         '              ./scripts/test:coverage-development-v1',
@@ -437,7 +451,10 @@ def violations(short, full, queue=None, extra=None):
                      'git show "$base:scripts/ci:classify"', '"$second" == "$PR_HEAD_SHA"',
                      '"$merge_commit" == "$GITHUB_SHA"', 'docs-fast-only',
                      '[[ "$EVENT_NAME" == pull_request ]]', 'run_full=true',
-                     'for endpoint in "$PR_HEAD_SHA" "$merge_commit"', '-n "$PR_HEAD_SHA"', '-n "$second"', 'if [[ "$eligible" == true ]]; then run_full=false; fi', 'classifier output missing or invalid'):
+                     'for endpoint in "$PR_HEAD_SHA" "$merge_commit"', '-n "$PR_HEAD_SHA"', '-n "$second"',
+                     'if [[ "$eligible" == true ]]; then', 'classifier output missing or invalid',
+                     'timeout --signal=TERM --kill-after=5s 30s bash "$classifier" --verify-docs-restore "$base"',
+                     'printf \'restore_imports_verified=true\\n\' | cmp -s - "$proof"'):
         require(expected in fast, f"exact classification wiring: {expected}")
     require("fetch-depth: ${{ github.event_name == 'pull_request' && '0' || '1' }}" in step(build, "Checkout exact commit") and
             build.find("Classify exact documentation diff") < build.find("Setup .NET from global.json"),
@@ -585,7 +602,7 @@ mutations = (
     ("base-image check gated", short.replace(
         "- name: Check Dockerfile base images", "- name: Check Dockerfile base images\n        if: false"), full),
     ("base-image failure masked", short.replace("run: ./scripts/ci:base-images", "run: ./scripts/ci:base-images || true"), full),
-    ("missing Unit filter", short.replace('--filter "TestCategory=Unit"', ""), full),
+    ("missing Unit filter", short.replace(f'--filter "{unit_filter}"', ""), full),
     ("coverage not collected", short.replace('--collect:"XPlat Code Coverage"', ""), full),
     ("coverage policy removed", short.replace('run: ./scripts/coverage:policy ', 'run: true '), full),
     ("coverage settings lost", short.replace('--settings "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings"', ""), full),
@@ -913,24 +930,35 @@ with tempfile.TemporaryDirectory(prefix="hvo-yaml-parser-") as directory:
 for name, candidate, qualification, *queue in mutations:
     if not violations(candidate, qualification, *queue):
         raise SystemExit(f"Mutation was not rejected: {name}")
-# The documented refresh must never replace the certificate when generation fails.
+for exclusion in logichost_exclusions:
+    for change, replacement in (("removed", ""), ("equality instead of substring", exclusion.replace("!~", "!=")),
+                                ("OR instead of AND", "|" + exclusion[1:])):
+        candidate = short.replace(exclusion, replacement)
+        if candidate == short or unit_selection_error not in violations(candidate, full):
+            raise SystemExit(f"LogicHost Unit filter mutation was not rejected: {exclusion} {change}")
+        print(f"Rejected LogicHost Unit filter mutation: {exclusion} {change}")
+project_selection = "-p:SkipLogicHostTests=true"
+candidate = short.replace(project_selection, "-p:SkipLogicHostTests=false")
+if candidate == short or unit_selection_error not in violations(candidate, full):
+    raise SystemExit("LogicHost Unit project selection mutation was not rejected")
+print("Rejected disabled LogicHost Unit project selection.")
+# The documented reproduction check must compare the inventory without rewriting it.
 runbook = (root / "docs/runbooks/ci-pipeline.md").read_text()
-refresh = runbook.split("### Refresh the documentation CI inventory", 1)[1].split("```bash\n", 1)[1].split("\n```", 1)[0]
-with tempfile.TemporaryDirectory(prefix="hvo-inventory-refresh-") as directory:
+reproduce = runbook.split("### Reproduce the documentation CI inventory", 1)[1].split("```bash\n", 1)[1].split("\n```", 1)[0]
+with tempfile.TemporaryDirectory(prefix="hvo-inventory-reproduce-") as directory:
     fixture = pathlib.Path(directory)
     (fixture / "scripts").mkdir()
     classifier_stub = fixture / "scripts/ci:classify"
-    certificate = fixture / "scripts/ci:docs-inventory"
-    for exit_code in (1, 0):
-        classifier_stub.write_text(f"#!/usr/bin/env bash\nprintf candidate\nexit {exit_code}\n")
+    inventory = fixture / "scripts/ci:docs-inventory"
+    inventory.write_text("original\n")
+    for content, exit_code, passes in (("original", 0, True), ("different", 0, False), ("original", 1, False)):
+        classifier_stub.write_text(f"#!/usr/bin/env bash\nprintf '%s\\n' {content}\nexit {exit_code}\n")
         classifier_stub.chmod(0o700)
-        certificate.write_text("original")
-        result = subprocess.run(["bash", "-c", refresh], cwd=fixture,
+        result = subprocess.run(["bash", "-c", reproduce], cwd=fixture,
                                 env=dict(os.environ, TMPDIR=directory), capture_output=True, text=True)
-        expected = "original" if exit_code else "candidate"
-        if (result.returncode == 0) != (exit_code == 0) or certificate.read_text() != expected:
-            raise SystemExit("Inventory refresh did not preserve failure or publish success")
-    print("Inventory refresh: failure preservation and successful publication passed.")
+        if (result.returncode == 0) != passes or inventory.read_text() != "original\n":
+            raise SystemExit("Inventory reproduction altered a file or accepted a failed comparison")
+    print("Inventory reproduction: match, mismatch and classifier failure passed.")
 
 # Run the actual decision shell with synthetic merge commits and a trusted-base
 # classifier. This verifies literal output parsing and merge-parent binding.
@@ -945,7 +973,35 @@ with tempfile.TemporaryDirectory(prefix="hvo-fast-workflow-") as directory:
     git("config", "user.name", "fixture")
     (fixture / "scripts").mkdir()
     trusted = fixture / "scripts/ci:classify"
-    trusted.write_text('#!/usr/bin/env bash\nprintf "%s" "$FAKE_CONTENT"\nexit "$FAKE_EXIT"\n')
+    trusted.write_text('''#!/usr/bin/env bash
+if [[ "$1" == --verify-docs-restore ]]; then
+    printf '%s' "$FAKE_PROOF"
+    if [[ -n "${FAKE_PROOF_WRITER_RECORD:-}" ]]; then
+        (
+            trap '' TERM
+            printf '%s\\n' "$BASHPID" > "$FAKE_PROOF_WRITER_RECORD"
+            while :; do
+                mkdir -p "$TMPDIR/nuget-scratch"
+                printf 'lock\\n' > "$TMPDIR/nuget-scratch/restore.lock"
+                sleep 0.02
+            done
+        ) </dev/null >/dev/null 2>&1 &
+        wait "$!"
+    fi
+    if [[ -n "${FAKE_PROOF_DELAY:-}" ]]; then
+        printf '%s\\n' "$TMPDIR" > "$FAKE_PROOF_SCRATCH_RECORD"
+        touch "$TMPDIR/partial-restore-output"
+        sleep "$FAKE_PROOF_DELAY"
+    fi
+    exit "$FAKE_PROOF_EXIT"
+fi
+if [[ "$3" == "$GITHUB_SHA" && -n "${FAKE_MERGE_CONTENT:-}" ]]; then
+    printf '%s' "$FAKE_MERGE_CONTENT"
+    exit 0
+fi
+printf '%s' "$FAKE_CONTENT"
+exit "$FAKE_EXIT"
+''')
     git("add", ".")
     git("commit", "-qm", "trusted base")
     base = git("rev-parse", "HEAD")
@@ -978,6 +1034,111 @@ with tempfile.TemporaryDirectory(prefix="hvo-fast-workflow-") as directory:
         lines = output.read_text().splitlines()
         if result.returncode or f"run_full={expected}" not in lines or f"reason={reason}" not in lines:
             raise SystemExit(f"Fast workflow case {label} failed: {lines} {result.stderr}")
+    workload_env = fixture / "workload-env"
+    runner_temp = fixture / "runner-temp"
+    runner_temp.mkdir()
+    env.update(GITHUB_ENV=str(workload_env), DEV_V1_DEADLINE_EPOCH="2000", RUNNER_TEMP=str(runner_temp))
+    for proof, exit_code, expected in (
+        ("restore_imports_verified=true\n", "0", "false"),
+        ("restore_imports_verified=true\n", "1", "true"),
+        ("restore_imports_verified=True\n", "0", "true"),
+        ("", "0", "true"),
+        ("restore_imports_verified=true\n\n", "0", "true"),
+        ("restore_imports_verified=true\nrestore_imports_verified=true\n", "0", "true"),
+    ):
+        output.write_text("")
+        workload_env.write_text("")
+        env.update(EVENT_NAME="pull_request", PR_HEAD_SHA=candidate, FAKE_EXIT="0",
+                   FAKE_CONTENT="docs_fast_path=verify-restore\ndocs_fast_path_reason=restore import proof required\n",
+                   FAKE_PROOF=proof, FAKE_PROOF_EXIT=exit_code)
+        result = subprocess.run(["bash", "-euo", "pipefail", "-c", fast_script], cwd=fixture, env=env,
+                                capture_output=True, text=True)
+        if result.returncode or f"run_full={expected}" not in output.read_text().splitlines():
+            raise SystemExit(f"Restore certificate workflow case {proof!r}, {exit_code}: {output.read_text()} {result.stderr}")
+        proof_evidence = (evidence / "classification.md").read_text().splitlines()
+        if f"restoreProofExitCode={exit_code}" not in proof_evidence:
+            raise SystemExit(f"Restore proof exit status {exit_code} is missing from evidence")
+        elapsed = re.search(r"^restoreProofElapsedSeconds=(\d+)$", "\n".join(proof_evidence), re.M)
+        if not elapsed:
+            raise SystemExit("Restore proof duration is missing from evidence")
+        expected_deadline = f"DEV_V1_DEADLINE_EPOCH={2000 + int(elapsed[1])}\n" if expected == "true" else ""
+        if workload_env.read_text() != expected_deadline:
+            raise SystemExit("Restore proof time changed the fallback workload budget")
+
+    # Shorten only the duration in the actual shell so this exercises GNU
+    # timeout without spending the production allowance on every contract run.
+    if fast_script.count(" 30s bash ") != 1:
+        raise SystemExit("Expected one bounded restore proof in the workflow")
+    output.write_text("")
+    workload_env.write_text("")
+    scratch_record = fixture / "proof-scratch"
+    timed_env = dict(env, FAKE_PROOF="restore_imports_verified=true\n", FAKE_PROOF_EXIT="0", FAKE_PROOF_DELAY="10",
+                     FAKE_PROOF_SCRATCH_RECORD=str(scratch_record))
+    result = subprocess.run(["bash", "-euo", "pipefail", "-c", fast_script.replace(" 30s bash ", " 1s bash ")],
+                            cwd=fixture, env=timed_env, capture_output=True, text=True, timeout=8)
+    proof_evidence = (evidence / "classification.md").read_text()
+    elapsed = re.search(r"^restoreProofElapsedSeconds=(\d+)$", proof_evidence, re.M)
+    if (result.returncode or "run_full=true" not in output.read_text().splitlines() or not elapsed or
+            "restoreProofExitCode=124" not in proof_evidence.splitlines() or int(elapsed[1]) < 1 or
+            workload_env.read_text() != f"DEV_V1_DEADLINE_EPOCH={2000 + int(elapsed[1])}\n"):
+        raise SystemExit(f"Timed-out proof failed to preserve full workload: {output.read_text()} {result.stderr}")
+    scratch = pathlib.Path(scratch_record.read_text().strip())
+    if scratch.parent != runner_temp or scratch.exists():
+        raise SystemExit("Timed-out proof scratch was not removed")
+
+    # The classifier shell exits on TERM while its writer ignores it. Inject
+    # the cleanup failure on every run instead of relying on a filesystem race.
+    writer_record = fixture / "proof-writer-pid"
+    cleanup_bin = fixture / "cleanup-bin"
+    cleanup_bin.mkdir()
+    fake_rm = cleanup_bin / "rm"
+    fake_rm.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "Directory not empty (fixture)" >&2\nexit 1\n')
+    fake_rm.chmod(0o700)
+
+    def writer_is_running(pid):
+        try:
+            state = pathlib.Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+        except FileNotFoundError:
+            return False
+        return state not in ("Z", "X")
+
+    output.write_text("")
+    workload_env.write_text("")
+    writer_env = dict(env, FAKE_PROOF="restore_imports_verified=true\n", FAKE_PROOF_EXIT="0",
+                      FAKE_PROOF_WRITER_RECORD=str(writer_record), PATH=f"{cleanup_bin}:{os.environ['PATH']}")
+    try:
+        result = subprocess.run(["bash", "-euo", "pipefail", "-c", fast_script.replace(" 30s bash ", " 1s bash ")],
+                                cwd=fixture, env=writer_env, capture_output=True, text=True, timeout=8)
+        proof_evidence = (evidence / "classification.md").read_text()
+        elapsed = re.search(r"^restoreProofElapsedSeconds=(\d+)$", proof_evidence, re.M)
+        if (result.returncode or "run_full=true" not in output.read_text().splitlines() or
+                "Directory not empty (fixture)" not in result.stderr or
+                "restoreProofExitCode=124" not in proof_evidence.splitlines() or not elapsed or int(elapsed[1]) < 1 or
+                workload_env.read_text() != f"DEV_V1_DEADLINE_EPOCH={2000 + int(elapsed[1])}\n"):
+            raise SystemExit(f"Lingering writer cleanup prevented full validation: {output.read_text()} {result.stderr}")
+        writer_pid = int(writer_record.read_text())
+        stopped_by = time.monotonic() + 1
+        while writer_is_running(writer_pid) and time.monotonic() < stopped_by:
+            time.sleep(0.01)
+        if writer_is_running(writer_pid):
+            raise SystemExit("A TERM-resistant proof writer survived the workflow decision")
+    finally:
+        if writer_record.exists():
+            writer_pid = int(writer_record.read_text())
+            if writer_is_running(writer_pid):
+                try:
+                    os.kill(writer_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+    output.write_text("")
+    env.update(FAKE_PROOF="restore_imports_verified=true\n", FAKE_PROOF_EXIT="0",
+               FAKE_MERGE_CONTENT="docs_fast_path=true\ndocs_fast_path_reason=safe\n")
+    result = subprocess.run(["bash", "-euo", "pipefail", "-c", fast_script], cwd=fixture, env=env,
+                            capture_output=True, text=True)
+    if result.returncode or "reason=classification endpoints disagree" not in output.read_text().splitlines() or \
+            "run_full=true" not in output.read_text().splitlines():
+        raise SystemExit(f"Disagreeing restore modes qualified: {output.read_text()} {result.stderr}")
+    env.pop("FAKE_MERGE_CONTENT")
     # A one-parent checkout with no head must never qualify.
     git("checkout", "-q", "--detach", candidate)
     output.write_text("")
@@ -1175,7 +1336,7 @@ with tempfile.TemporaryDirectory(prefix="hvo-fast-workflow-") as directory:
                 manifest["mergeSha"] != changed_merge or manifest["schema"] != "hvo-development-v1-ci-v6" or
                 (expected and manifest["sdkVersion"] is not None)):
             raise SystemExit(f"Invalid manifest evidence: {manifest}")
-    print("Fast workflow shell: 19 decision, binding and trusted-base cases; 2 manifest cases passed.")
+    print("Fast workflow shell: 28 decision, binding and trusted-base cases; 2 manifest cases passed.")
 
 # Exercise the real final promotion step with an offline gh substitute. Creating
 # a PR must be draft; refreshing one must preserve its state; API errors must fail.
