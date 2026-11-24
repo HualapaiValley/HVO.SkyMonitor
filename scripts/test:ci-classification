@@ -388,10 +388,14 @@ for name, original, replacement in (
 PY
 for certificate_case in builtin-sdk web-sdk external-sdk versioned-sdk multiple-sdks sdk-element nested-sdk \
   props-sdk explicit-sdk-import global-package package-download lowercase-package executable-certificate \
-  symlink-certificate stale-source-hash; do
+  symlink-certificate stale-source-hash mismatched-sdk-version missing-global-json missing-project-record \
+  extra-project-record missing-coverage-project-record; do
   git -C "$fast_root" reset -q --hard "$fast_base"
   mkdir -p "$fast_root/scripts/ci" "$fast_root/docs/runbooks"
   cp "$repo_root/scripts/ci/restore-imports.py" "$fast_root/scripts/ci/restore-imports.py"
+  if [[ "$certificate_case" != missing-global-json ]]; then
+    cp "$repo_root/global.json" "$fast_root/global.json"
+  fi
   project='<Project Sdk="Microsoft.NET.Sdk"><Import Project="shared.props" /></Project>'
   props='<Project><ItemGroup><PackageReference Include="Fixture" Version="1.0.0" /></ItemGroup></Project>'
   certificate_expected=false
@@ -408,12 +412,25 @@ for certificate_case in builtin-sdk web-sdk external-sdk versioned-sdk multiple-
     global-package) project='<Project><ItemGroup><GlobalPackageReference Include="Fixture" Version="1.0.0" /></ItemGroup></Project>' ;;
     package-download) project='<Project><ItemGroup><PackageDownload Include="Fixture" Version="[1.0.0]" /></ItemGroup></Project>' ;;
     lowercase-package) project='<Project><ItemGroup><packagereference Include="Fixture" Version="1.0.0" /></ItemGroup></Project>' ;;
+    missing-project-record)
+      mkdir -p "$fast_root/tests/Second"
+      printf '<Project Sdk="Microsoft.NET.Sdk" />\n' > "$fast_root/tests/Second/Second.csproj"
+      printf '<Solution><Project Path="tests/Example/Example.csproj" /><Project Path="tests/Second/Second.csproj" /></Solution>\n' > "$fast_root/HVO.SkyMonitor.v9.slnx"
+      ;;
+    missing-coverage-project-record)
+      mkdir -p "$fast_root/scripts/coverage"
+      printf '<Project Sdk="Microsoft.NET.Sdk" />\n' > "$fast_root/scripts/coverage/HVO.SkyMonitor.CoverageGate.csproj"
+      ;;
   esac
   printf '%s\n' "$project" > "$fast_root/tests/Example/Example.csproj"
   printf '%s\n' "$props" > "$fast_root/tests/Example/shared.props"
   printf 'original\n' > "$fast_root/docs/runbooks/certified.md"
   git -C "$fast_root" add . && git -C "$fast_root" commit -qm "$certificate_case sources"
-  git -C "$fast_root" ls-tree -rz HEAD -- HVO.SkyMonitor.v9.slnx tests/Example | python3 -I -c '
+  inventory_paths=(HVO.SkyMonitor.v9.slnx tests/Example)
+  [[ "$certificate_case" == missing-global-json ]] || inventory_paths+=(global.json)
+  [[ "$certificate_case" != missing-project-record ]] || inventory_paths+=(tests/Second)
+  [[ "$certificate_case" != missing-coverage-project-record ]] || inventory_paths+=(scripts/coverage/HVO.SkyMonitor.CoverageGate.csproj)
+  git -C "$fast_root" ls-tree -rz HEAD -- "${inventory_paths[@]}" | python3 -I -c '
 import sys
 entries = [entry.split(b"\t", 1) for entry in sys.stdin.buffer.read().split(b"\0") if entry]
 for metadata, path in sorted(entries, key=lambda entry: entry[1]):
@@ -427,17 +444,24 @@ import pathlib
 import sys
 
 root = pathlib.Path(sys.argv[1])
+case = sys.argv[3]
 source_hash = hashlib.sha256((root / "scripts/ci:docs-inventory").read_bytes()).hexdigest()
 digest = "0" * 64
 imports = {"sha256": digest, "imports": []}
+project_entry = {"graphSha256": digest, "sources": [], "props": imports, "targets": imports}
+projects = {"tests/Example/Example.csproj": project_entry}
+if case == "extra-project-record":
+    projects["tests/Extra/Extra.csproj"] = project_entry
 certificate = {
     "version": 1,
-    "sourceSha256": digest if sys.argv[3] == "stale-source-hash" else source_hash,
-    "sdk": {"version": "10.0.402", "platform": "linux-x64", "sha256": digest},
+    "sourceSha256": digest if case == "stale-source-hash" else source_hash,
+    "sdk": {
+        "version": "10.0.401" if case == "mismatched-sdk-version" else "10.0.402",
+        "platform": "linux-x64",
+        "sha256": digest,
+    },
     "packages": {},
-    "projects": {"tests/Example/Example.csproj": {
-        "graphSha256": digest, "sources": [], "props": imports, "targets": imports,
-    }},
+    "projects": projects,
 }
 (root / sys.argv[2]).write_text(json.dumps(certificate))
 PY
@@ -462,7 +486,18 @@ PY
       printf 'Mandatory docs certificate gate accepted invalid case: %s\n' "$certificate_case" >&2
       exit 1
     fi
-    grep -Fq '::error::Documentation CI build inventory is stale or unsafe;' "$fast_root/.git/cert-check-err"
+    case "$certificate_case" in
+      mismatched-sdk-version)
+        grep -Fxq '::error::Documentation CI build inventory is stale or unsafe; refresh scripts/ci:docs-inventory and scripts/ci:restore-import-certificate.json: restore import certificate SDK version differs from global.json' "$fast_root/.git/cert-check-err" ;;
+      missing-global-json)
+        grep -Fxq '::error::Documentation CI build inventory is stale or unsafe; refresh scripts/ci:docs-inventory and scripts/ci:restore-import-certificate.json: committed global.json SDK pin unavailable' "$fast_root/.git/cert-check-err" ;;
+      missing-project-record|extra-project-record|missing-coverage-project-record)
+        grep -Fxq '::error::Documentation CI build inventory is stale or unsafe; refresh scripts/ci:docs-inventory and scripts/ci:restore-import-certificate.json: restore import certificate project set differs from committed solution' "$fast_root/.git/cert-check-err" ;;
+      executable-certificate|symlink-certificate|stale-source-hash)
+        grep -Fq '::error::Documentation CI build inventory is stale or unsafe; refresh scripts/ci:docs-inventory and scripts/ci:restore-import-certificate.json:' "$fast_root/.git/cert-check-err" ;;
+      *)
+        grep -Fq '::error::Documentation CI build inventory is stale or unsafe; remove the unsafe input or update the audit policy under HIGH-tier review:' "$fast_root/.git/cert-check-err" ;;
+    esac
   fi
   printf 'changed\n' >> "$fast_root/docs/runbooks/certified.md"
   git -C "$fast_root" commit -qam 'certified docs edit'
@@ -524,6 +559,11 @@ PY_ENCODING
   fi
   if [[ "$encoding" == utf-8 ]]; then encoding_reason='escaped build input requires manual review'; else encoding_reason='build input is not UTF-8'; fi
   grep -Fxq "docs inventory audit: $encoding_reason" "$fast_root/.git/encoding-error"
+  if (cd "$fast_root" && "$classifier" --check-docs-inventory "$encoding_base") > "$fast_root/.git/encoding-check-out" 2> "$fast_root/.git/encoding-check-err"; then
+    printf 'Mandatory docs certificate gate accepted unsafe %s input.\n' "$encoding" >&2
+    exit 1
+  fi
+  grep -Fxq "::error::Documentation CI build inventory is stale or unsafe; remove the unsafe input or update the audit policy under HIGH-tier review: $encoding_reason" "$fast_root/.git/encoding-check-err"
   printf 'changed\n' >> "$fast_root/docs/runbooks/releases.md"
   git -C "$fast_root" commit -qam doc-change
   fast_reason 'project inventory unavailable' "$encoding_base" "$(git -C "$fast_root" rev-parse HEAD)"
@@ -617,7 +657,7 @@ if (cd "$fast_root" && "$classifier" --check-docs-inventory "$user_base") > "$fa
   printf 'Mandatory docs certificate gate accepted tracked .user input.\n' >&2
   exit 1
 fi
-grep -Fxq '::error::Documentation CI build inventory is stale or unsafe; refresh scripts/ci:docs-inventory and scripts/ci:restore-import-certificate.json: tracked automatic MSBuild input requires manual review' "$fast_root/.git/user-check-err"
+grep -Fxq '::error::Documentation CI build inventory is stale or unsafe; remove the unsafe input or update the audit policy under HIGH-tier review: tracked automatic MSBuild input requires manual review' "$fast_root/.git/user-check-err"
 printf 'Unsafe inventory mandatory gate passed.\n'
 printf 'change\n' >> "$fast_root/docs/runbooks/example.md"
 git -C "$fast_root" commit -qam docs-change
@@ -648,6 +688,11 @@ for alias_case in glob_file directory file_update; do
     printf 'Tracked alias %s was certified.\n' "$alias_case" >&2; exit 1
   fi
   grep -Fxq 'docs inventory audit: tracked symlink requires manual review' "$fast_root/.git/alias-error"
+  if (cd "$fast_root" && "$classifier" --check-docs-inventory "$alias_base") > "$fast_root/.git/alias-check-out" 2> "$fast_root/.git/alias-check-err"; then
+    printf 'Mandatory docs certificate gate accepted tracked alias %s.\n' "$alias_case" >&2
+    exit 1
+  fi
+  grep -Fxq '::error::Documentation CI build inventory is stale or unsafe; remove the unsafe input or update the audit policy under HIGH-tier review: tracked symlink requires manual review' "$fast_root/.git/alias-check-err"
   printf 'changed\n' >> "$fast_root/docs/runbooks/releases.md"
   git -C "$fast_root" commit -qam doc-change
   fast_reason 'project inventory unavailable' "$alias_base" "$(git -C "$fast_root" rev-parse HEAD)"

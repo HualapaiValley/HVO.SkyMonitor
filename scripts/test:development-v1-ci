@@ -420,8 +420,9 @@ def violations(short, full, queue=None, extra=None):
     require("if: needs.changes.outputs.mode == 'full'" in sdk_contracts and
             "          ./scripts/test:assemble-cameraagent-final-head-535\n" in sdk_contracts and
             "          ./scripts/test:ci-docs-restore-import\n" in sdk_contracts and
+            "          ./scripts/ci:classify --verify-docs-restore HEAD\n" in sdk_contracts and
             "continue-on-error:" not in sdk_contracts,
-            "full Quality runs the offline restore-imports proof in its SDK-capable lane")
+            "full Quality runs the offline restore-imports proof and real certificate replay in its SDK-capable lane")
     require("--warn-docs-inventory" not in short and "--warn-docs-inventory" not in full,
             "mandatory certificate maintenance gate must not fall back to a warning")
     changelog = step(preflight, "Validate changelog fragments")
@@ -681,6 +682,8 @@ mutations = (
         "./scripts/ci:classify --check-docs-inventory HEAD", ":")),
     ("full Quality restore-import proof removed", short, full.replace(
         "./scripts/test:ci-docs-restore-import", ":")),
+    ("full Quality real restore-import replay removed", short, full.replace(
+        "./scripts/ci:classify --verify-docs-restore HEAD", ":")),
     ("full Quality restore-import proof masked", short, full.replace(
         "- name: Run SDK-dependent contract checks", "- name: Run SDK-dependent contract checks\n        continue-on-error: true")),
     ("restore-import proof added to short v1 workflow", short + "\n          ./scripts/test:ci-docs-restore-import\n", full),

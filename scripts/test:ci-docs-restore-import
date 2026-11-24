@@ -147,7 +147,11 @@ PY
     exit 1
   fi
   [[ ! -s "$fixture/proof" ]]
-  grep -Fq 'docs inventory audit:' "$fixture/drift-error"
+  case "$drift" in
+    archive) grep -Fxq 'docs inventory audit: resolved package content or source differs' "$fixture/drift-error" ;;
+    sdk) grep -Fxq 'docs inventory audit: installed SDK differs from the restore import certificate' "$fixture/drift-error" ;;
+    *) grep -Fq 'docs inventory audit:' "$fixture/drift-error" ;;
+  esac
 done
 
 git -C "$fixture" reset -q --hard "$reviewed"
@@ -183,6 +187,6 @@ for drift in missing malformed config inventory; do
     printf 'Mandatory docs certificate gate accepted stale %s base.\n' "$drift" >&2
     exit 1
   fi
-  grep -Fq '::error::Documentation CI build inventory is stale or unsafe;' "$fixture/check-err"
+  grep -Fq '::error::Documentation CI build inventory is stale or unsafe; refresh scripts/ci:docs-inventory and scripts/ci:restore-import-certificate.json:' "$fixture/check-err"
 done
 printf 'Offline restore certificate passed: valid base, seven replay drift cases, missing dotnet and four mandatory-failure fallback cases.\n'

@@ -49,10 +49,20 @@ proof is attempted.
 
 Hosted Preflight runs `./scripts/ci:classify --check-docs-inventory HEAD` as a
 mandatory failing gate on every PR, push and merge group; full `CI / Quality`
-enforces the same check. It validates source binding, file modes, schema and
-audit rules without the SDK. Build and Unit also checks the observed SDK,
-package graph and generated imports before skipping the ordinary workload.
-Pushes and merge groups always run the full workload.
+enforces the same check. Without the SDK, it validates file modes, audit rules,
+source inventory bytes, certificate schema, `sourceSha256`, the committed
+`global.json` SDK version pin, and the committed restored project set (solution
+projects plus the coverage-gate project when present). SDK-backed full restore
+replay (`./scripts/ci:classify --verify-docs-restore`) additionally validates
+the observed Linux x64 SDK binary digest, package sources and archive/payload
+digests, and each project's resolved graph and generated `.nuget.g.props` and
+`.nuget.g.targets` imports. Build and Unit runs that replay against the trusted
+base before skipping the ordinary workload, and full-mode `CI / Quality` runs
+both `scripts/test:ci-docs-restore-import` and `./scripts/ci:classify
+--verify-docs-restore HEAD` under the pinned `.NET` SDK. Merge groups always
+run the full workload; pushes to `development/v1` also run the full workload
+unless Preflight verifies that a merge-queue-generated push matches an exact
+SHA that already passed the Development v1 merge-group workflow (Refs #2066).
 
 ## Refresh and review
 
@@ -63,11 +73,17 @@ projects, inputs, packages or generated imports change.
 
 Any change to an audited build input makes the certificate stale. Project
 files, props and targets, package pins, `global.json`, and `.gitattributes` are
-all covered. Hosted Preflight and full `CI / Quality` fail with
+all covered. For stale, drifted, or missing certificates, hosted Preflight and
+full `CI / Quality` fail with
 `::error::Documentation CI build inventory is stale or unsafe; refresh scripts/ci:docs-inventory and scripts/ci:restore-import-certificate.json: …`
-until the refresh is committed. Even when a base tree carries a stale, drifted
-or unsafe certificate, Build and Unit continues to fail closed and select full
-validation; it never produces a skipped-green required result (Refs #1996).
+until the refresh is committed. For unsafe build inputs (such as a tracked
+symlink, submodule, `.user`/`.rsp` file, or escaped XML), the check fails with
+`::error::Documentation CI build inventory is stale or unsafe; remove the unsafe input or update the audit policy under HIGH-tier review: …`
+because refreshing the certificate fails with the same audit error until the
+unsafe input is removed or the audit policy is changed under HIGH-tier review.
+Even when a base tree carries a stale, drifted or unsafe certificate, Build and
+Unit continues to fail closed and select full validation; it never produces a
+skipped-green required result (Refs #1996).
 
 From a clean candidate commit on Linux x64, use the pinned stable SDK and the
 same NuGet sources as Build and Unit. The published Linux x64 SDK distribution
@@ -104,7 +120,8 @@ Run `./scripts/ci:classify --check-docs-inventory HEAD`,
 `scripts/test:ci-docs-restore-import` under the SDK and lock above for the
 offline positive and negative proof. If the certificate cannot be reproduced,
 the Build and Unit artifact records the reason while full validation remains
-in effect. Full-mode `CI / Quality` runs `scripts/test:ci-docs-restore-import`
-automatically under its pinned `.NET` SDK (`Run SDK-dependent contract checks`,
-Refs #1996), so hosted Preflight stays SDK-free and the required Build and Unit
-workload keeps its existing scope and `1080s` budget.
+in effect. Full-mode `CI / Quality` runs `scripts/test:ci-docs-restore-import` and
+`./scripts/ci:classify --verify-docs-restore HEAD` automatically under its
+pinned `.NET` SDK (`Run SDK-dependent contract checks`, Refs #1996), so hosted
+Preflight stays SDK-free and the required Build and Unit workload keeps its
+existing scope and `1080s` budget.

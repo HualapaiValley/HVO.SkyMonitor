@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import posixpath
 import re
 import shutil
 import stat
@@ -75,32 +76,84 @@ def raise_walk_error(error):
     raise error
 
 
+def read_sdk_pin(data):
+    settings = parse(data)
+    require(type(settings) is dict and set(settings) == {"sdk"}, "unknown SDK resolver configuration")
+    version_pin = settings["sdk"]
+    require(type(version_pin) is dict, "unknown SDK resolver configuration")
+    version = version_pin.get("version")
+    require(type(version) is str and re.fullmatch(r"10\.0\.[0-9]+", version) and
+            version_pin.get("rollForward") == "disable" and
+            version_pin.get("allowPrerelease") is False, "SDK pin unavailable or unsupported")
+    return version
+
+
+def git_regular_blob(commit, path, missing_reason):
+    entry = subprocess.check_output(["git", "ls-tree", commit, "--", path])
+    require(entry.startswith((b"100644 blob ", b"100755 blob ")), missing_reason)
+    return subprocess.check_output(["git", "cat-file", "blob", f"{commit}:{path}"])
+
+
+def committed_expected_projects(commit):
+    solution_blob = git_regular_blob(commit, SOLUTION, "solution is unavailable or non-regular")
+    solution_root = ET.fromstring(solution_blob.decode("utf-8-sig"))
+    require(solution_root.tag == "Solution", "unknown solution format")
+    expected_projects = set()
+    for node in solution_root.iter("Project"):
+        value = node.attrib.get("Path", "").replace("\\", "/")
+        require(value and not value.startswith("/"), "unresolved solution project")
+        target = posixpath.normpath(value)
+        require(target != ".." and not target.startswith("../") and target not in expected_projects,
+                "solution project outside committed inventory")
+        expected_projects.add(target)
+    require(expected_projects, "solution has no projects")
+    coverage_entry = subprocess.check_output(["git", "ls-tree", commit, "--", COVERAGE_PROJECT])
+    if coverage_entry:
+        require(coverage_entry.startswith((b"100644 blob ", b"100755 blob ")), "non-regular build input")
+        expected_projects.add(COVERAGE_PROJECT)
+    return expected_projects
+
+
 def validate_certificate(commit, source_hash):
     blob = subprocess.check_output(["git", "cat-file", "blob", f"{commit}:{CERTIFICATE}"])
     manifest = parse(blob)
-    require(set(manifest) == {"version", "sourceSha256", "sdk", "packages", "projects"} and
+    require(type(manifest) is dict and
+            set(manifest) == {"version", "sourceSha256", "sdk", "packages", "projects"} and
             type(manifest["version"]) is int and manifest["version"] == 1, "invalid restore import certificate schema")
     require(manifest["sourceSha256"] == source_hash, "restore import certificate source inputs differ")
     sdk = manifest["sdk"]
-    require(set(sdk) == {"version", "platform", "sha256"} and
-            re.fullmatch(r"10\.0\.[0-9]+", sdk["version"]) and sdk["platform"] == "linux-x64" and
-            HEX.fullmatch(sdk["sha256"]), "invalid SDK certificate entry")
+    require(type(sdk) is dict and set(sdk) == {"version", "platform", "sha256"} and
+            type(sdk["version"]) is str and re.fullmatch(r"10\.0\.[0-9]+", sdk["version"]) and
+            sdk["platform"] == "linux-x64" and
+            type(sdk["sha256"]) is str and HEX.fullmatch(sdk["sha256"]), "invalid SDK certificate entry")
+    committed_sdk_version = read_sdk_pin(
+        git_regular_blob(commit, "global.json", "committed global.json SDK pin unavailable"))
+    require(sdk["version"] == committed_sdk_version,
+            "restore import certificate SDK version differs from global.json")
     require(type(manifest["packages"]) is dict and type(manifest["projects"]) is dict and
             manifest["projects"], "invalid restore import certificate records")
     for identity, package in manifest["packages"].items():
-        require(IDENTITY.fullmatch(identity) and set(package) == {"source", "archiveSha256", "payloadSha256"} and
-                type(package["source"]) is str and package["source"] and HEX.fullmatch(package["archiveSha256"]) and
-                HEX.fullmatch(package["payloadSha256"]), "invalid package certificate entry")
+        require(IDENTITY.fullmatch(identity) and type(package) is dict and
+                set(package) == {"source", "archiveSha256", "payloadSha256"} and
+                type(package["source"]) is str and package["source"] and
+                type(package["archiveSha256"]) is str and HEX.fullmatch(package["archiveSha256"]) and
+                type(package["payloadSha256"]) is str and HEX.fullmatch(package["payloadSha256"]),
+                "invalid package certificate entry")
     for path, project in manifest["projects"].items():
-        require("/" in path and path.endswith(".csproj") and
-                set(project) == {"graphSha256", "sources", "props", "targets"} and HEX.fullmatch(project["graphSha256"]) and
+        require("/" in path and path.endswith(".csproj") and type(project) is dict and
+                set(project) == {"graphSha256", "sources", "props", "targets"} and
+                type(project["graphSha256"]) is str and HEX.fullmatch(project["graphSha256"]) and
                 type(project["sources"]) is list and all(type(source) is str and source for source in project["sources"]),
                 "invalid project certificate entry")
         for kind in ("props", "targets"):
             imports = project[kind]
-            require(set(imports) == {"sha256", "imports"} and HEX.fullmatch(imports["sha256"]) and
+            require(type(imports) is dict and set(imports) == {"sha256", "imports"} and
+                    type(imports["sha256"]) is str and HEX.fullmatch(imports["sha256"]) and
                     type(imports["imports"]) is list and all(type(value) is str and value for value in imports["imports"]),
                     "invalid generated import certificate entry")
+    expected_projects = committed_expected_projects(commit)
+    require(set(manifest["projects"]) == expected_projects,
+            "restore import certificate project set differs from committed solution")
     return manifest
 
 
@@ -120,12 +173,7 @@ def check_ancestors(checkout):
 
 
 def sdk_command(checkout, env):
-    settings = parse((checkout / "global.json").read_bytes())
-    require(set(settings) == {"sdk"}, "unknown SDK resolver configuration")
-    version_pin = settings["sdk"]
-    version = version_pin["version"]
-    require(re.fullmatch(r"10\.0\.[0-9]+", version) and version_pin.get("rollForward") == "disable" and
-            version_pin.get("allowPrerelease") is False, "SDK pin unavailable or unsupported")
+    version = read_sdk_pin((checkout / "global.json").read_bytes())
     install_dir = env.get("DOTNET_INSTALL_DIR")
     candidate = str(Path(install_dir) / "dotnet") if install_dir else "dotnet"
     executable = shutil.which(candidate)
@@ -223,7 +271,8 @@ def collect_restore(checkout, expected):
     version = subprocess.check_output([dotnet, "--version"], cwd=checkout, env=env, timeout=15).decode().strip()
     require(version == sdk["version"], "executing SDK differs from the committed SDK pin")
     restore_targets = [SOLUTION]
-    expected_projects = {node.attrib["Path"].replace("\\", "/") for node in ET.parse(checkout / SOLUTION).iter("Project")}
+    expected_projects = {posixpath.normpath(node.attrib["Path"].replace("\\", "/"))
+                         for node in ET.parse(checkout / SOLUTION).iter("Project")}
     if (checkout / COVERAGE_PROJECT).is_file():
         restore_targets.append(COVERAGE_PROJECT)
         expected_projects.add(COVERAGE_PROJECT)
