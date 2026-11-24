@@ -35,6 +35,8 @@ starts with the work merged from 2026-10-16 onward. Pull requests record earlier
 
 ### Changed
 
+- SkyMonitor CI keeps functional tests on the merge path and reports tight timing and allocation checks in a separate Raspberry Pi 5 workflow. The Pi workflow flags timings more than 20% above a rolling baseline. #2060
+
 - SkyMonitor CI and the standard local validation commands now skip the retired LogicHost and combined CameraAgent–LogicHost test suites. The active CI inventory has 16,583 of 17,819 Unit cases and 916 of 1,540 Integration cases. #2048
 
 - The CameraAgent and LogicHost API reference pages have updated styling for request and response examples. #2032
@@ -70,6 +72,8 @@ starts with the work merged from 2026-10-16 onward. Pull requests record earlier
 - CameraAgent can stop its local automation worker repeatedly, including after disposal, while waiting for any active adapter to finish draining. #1932
 - CameraAgent shutdown releases its remaining services after a local automation task fails during cancellation. The stop still reports the original failure. #1936
 - CameraAgent can upgrade the beta astrometry journal to centered processing while retaining captures and indexed astrometry history. #1922
+
+- CameraAgent identifies the retained input that blocked centered registration, reports unavailable predecessor history on resumed runs, and keeps retention lookups fast as window history grows. #1961
 
 - CameraAgent refuses new legacy reference-astrometry presets while the active camera profile uses centered exposure (#1919).
 

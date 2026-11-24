@@ -9,6 +9,28 @@ output does not by itself authorize an extra full-workflow dispatch for a v1 PR.
 Whole-repository ShellCheck remains in Quality; exhaustive category discovery
 remains in Build. Both are intentionally absent from the short workflow.
 
+## Development v1 reviewed diff
+
+The `Merge queue reviewed head` workflow publishes the `hvo/reviewed-head`
+check on queue groups. It verifies the review fingerprint and clean merges
+using the protected branch checkout. The Ubuntu 24.04 hosted runner
+[image 20261122.23.1](https://github.com/actions/runner-images/blob/ubuntu24/20261122.23/images/ubuntu/Ubuntu2404-Readme.md)
+includes Git 2.56.1. The verifier reports the runtime Git version and requires
+Git 2.43 or newer for `merge-tree --write-tree` with `--attr-source`.
+
+```bash
+./scripts/test:ci-queue-reviewed-head
+```
+
+The suite uses isolated real Git repositories and simulated GitHub API pages.
+It checks the transition from exact-SHA statuses, base advances and clean
+syncs, and verifies rejection of changed files, conflicts, extra merge edits,
+bad approvals and incomplete history. Development v1 Preflight runs the suite
+through `scripts/test:development-v1-ci`, which also checks workflow identity,
+triggers and permissions. See the
+[queue runbook](development-v1-merge-queue.md#publish-review-approval) for
+Kepler's publication commands.
+
 ## Development v1 Per-file Coverage
 
 **Development v1 / Build and Unit** enforces the canonical risk-file line and
@@ -167,7 +189,7 @@ dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release --disab
 ./scripts/coverage:development-v1 --settings "$evidence_root/coverage.runsettings"
 DOCKER_HOST=unix:///tmp/hvo-no-docker.sock \
   dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release \
-    --filter 'TestCategory=Unit&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost' \
+    --filter 'TestCategory=Unit&TestCategory!=Performance&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost' \
     -p:SkipLogicHostTests=true --settings "$evidence_root/coverage.runsettings" \
     --collect:"XPlat Code Coverage" --results-directory "$evidence_root/unit" --logger trx
 ./scripts/test:coverage-development-v1
@@ -185,10 +207,10 @@ controls protect collection, enforcement, evidence, and existing PR/merge-group
 triggers. Coverage shares the existing 1080-second workload deadline and appears
 as a fourth timed stage in the `hvo-development-v1-ci-v6` evidence manifest;
 failed runs retain generated settings, raw/merged XML, report paths and timings.
-The existing Build and Unit check reports failure on non-draft PRs, v1 pushes and
-`merge_group/checks_requested`; drafts retain Preflight only. Required check names
-and ruleset 26838822 need no change. No new check, permission, catalog provision,
-Integration selection, workflow dispatch or repository setting is introduced.
+A coverage failure in the full workload fails Build and Unit on ready PRs,
+v1 pushes and `merge_group/checks_requested`. Drafts run Preflight only.
+Verified queue-generated pushes link to the coverage evidence from the successful
+merge-group run for their SHA. See [post-merge push validation](#development-v1-post-merge-pushes).
 
 Earlier independent review measured about 44.5 seconds added to Unit collection
 with SingleHit, with peak RSS increasing from about 0.8 GB to 2.6 GB and artifacts
@@ -212,7 +234,7 @@ contended sample is distinct from the local totals above. The 1,080 s budget,
 Roy selected additional or relocated self-hosted runner capacity in t421s2656.
 Atlas completed that work on 2026-11-12 at 9:04–9:05 AM PST: `gh-runner-05`
 and `gh-runner-06` each have 8 vCPU and are the only runners carrying
-`hvo-skymonitor-build`. Build and Unit selects exactly
+`hvo-skymonitor-build`. The full Build and Unit workload selects exactly
 `[self-hosted, linux, x64, hvo-skymonitor-build]`; runners 01–04 and other job
 selectors are unchanged. Capacity delivery is ready. Keep the 1,080 s soft
 budget and 22-minute hard timeout unchanged while collecting new timings.
@@ -226,7 +248,53 @@ itself prevent that timeout. Refs #1747.
 
 ## Development v1 documentation fast path
 
-A ready PR still runs the required Build and Unit job after successful hosted Preflight. Its full-history checkout verifies the merge parents and runs the first parent's `scripts/ci:classify` against both the PR head and checked-out merge tree. Both endpoints must pass the base-controlled source inventory audit. For SDK or package restore inputs, the job also requires a successful proof against the [reviewed restore-import certificate](development-v1-restore-imports.md). A missing result, mismatch or failed proof selects full validation. The artifact retains the exact path list, decision, reason and Preflight dependency. The narrow allowlist and exclusions are documented in [Development v1](../development-v1.md). Push and merge-group runs always perform full validation. Refs #1989 and #1995.
+A ready PR still runs the required Build and Unit job after successful hosted Preflight. Its full-history checkout verifies the merge parents and runs the first parent's `scripts/ci:classify` against both the PR head and checked-out merge tree. Both endpoints must pass the base-controlled source inventory audit. For SDK or package restore inputs, the job also requires a successful proof against the [reviewed restore-import certificate](development-v1-restore-imports.md). A missing result, mismatch or failed proof selects full validation. The artifact retains the exact path list, decision, reason and Preflight dependency. The narrow allowlist and exclusions are documented in [Development v1](../development-v1.md). Refs #1989 and #1995.
+
+## Development v1 post-merge pushes
+
+Preflight runs its normal checks on every `development/v1` push. For pushes
+from `github-merge-queue[bot]`, Preflight uses a read-only Actions token and a
+bounded, paginated lookup in `development-v1.yml`. It requires a completed
+`merge_group` run with `conclusion=success` for the `development/v1` queue and
+an exact match between the run's `head_sha` and the push's `github.sha`. The
+operated merge-commit queue has published identical SHAs on both events. A
+different SHA, missing result, malformed response or API error selects the
+full self-hosted workload, as does a direct push. Merge-group runs always
+execute the full workload.
+
+With a match, the same Build and Unit job runs on `ubuntu-latest` and records
+the successful queue run in its summary and `mergeGroupRunUrl` manifest
+field. It uploads `development-v1-<run-id>-<attempt>` with the decision and
+proof link. The linked queue run contains the restore, build, Unit TRX,
+coverage and timing evidence. Promotion still uses a successful push workflow
+run. The integration prerelease still requires that run and both named jobs
+to succeed. The self-hosted runner capacity report counts full workload jobs
+and excludes the hosted proof job. Refs #2060.
+
+## Workflow concurrency
+
+The heavy PR workflows cancel superseded runs for the same PR number. Their
+groups are scoped by workflow and event. Development v1 queue runs use a
+unique `github.run_id` and disable in-progress cancellation. A unique group
+also prevents GitHub from replacing a pending queue run. The separate
+reviewed-head workflow uses no concurrency group. Its runs can proceed
+independently. Refs #2060.
+
+| Workflow | Triggers | Concurrency |
+| --- | --- | --- |
+| `agentcontrol.yml` | Dispatch, with an optional PR input | Group by PR input or identity operation. Keep running work. |
+| `cameraagent-arm64.yml` | `main` push, schedule, manual and repository dispatch | One advisory group. Keep running work. |
+| `cameraagent-soak.yml` | Dispatch | One soak group. Keep running work. |
+| `ci-v2-baseline.yml` | Dispatch | No group. |
+| `ci.yml` | `main` and `release/**` PRs and pushes, call, dispatch | Group by workflow, event and PR number or ref. Cancel superseded runs. The queue guard uses run ID and disables cancellation if a queue trigger is added. |
+| `development-v1.yml` | `development/v1` PRs, pushes and merge groups | Cancel superseded PR runs by PR number and pushes by ref in separate groups. Each merge-group run has its own non-cancelling group. |
+| `merge-queue-reviewed-head.yml` | `development/v1` merge groups | No workflow or job group. |
+| `performance-pi5.yml` | `development/v1` push, schedule, dispatch | Separate Pi 5 group by ref. Cancel superseded runs. |
+| `prerelease.yml` | Integration prerelease tags | Group by tag ref. Keep running work. |
+| `promote-main.yml` | Schedule, dispatch | One promotion group. Keep running work. |
+| `release-image.yml` | Reusable workflow called by release and prerelease | No group of its own. |
+| `release.yml` | Final and release-candidate tags | Group by tag ref. Publish and Latest Image share a release-wide group. Keep running work. |
+| `stellarium.yml` | Schedule, dispatch | One oracle group. Keep running work. |
 
 ### Reproduce the documentation CI inventory
 
@@ -293,7 +361,7 @@ A green sync PR is integration evidence and does not replace promotion qualifica
 | **Catalog Reproducibility** | Full-mode hosted rebuild of the three catalog test fixtures and of the approved HYG 4.4 and OpenNGC catalogs from their pinned, verified inputs, under both SQLite `secure_delete` connection defaults. Runs when the classifier's `catalog_recipe` output selects it; otherwise its planned `skipped` result is required. |
 | **Quality** | The full-history [secret scan](#secret-scan), workflow lint, syntax and documentation audits, the Unit-selection completeness control, lightweight environment/classification contracts, and Compose validation run in every selected Quality job. Full mode also enforces formatting, package vulnerability/deprecation policy, and pinned .NET tools; manual dispatch additionally validates the historical Phase 14 acceptance inventory. Reduced mode does not restore or audit application packages it cannot affect. A 45-minute qualification job budget covers formatting, the complete control-contract batch, package audit and the manual historical acceptance gate. |
 | **Deployment Contracts** | Deployment-relevant pull requests run the coordinator watchdog/failure contracts and current campaign-shape contracts, plus only the affected exhaustive catalog, split-host, or installer suite selected by the classifier. Main/release/manual runs execute every exhaustive suite. Otherwise its planned `skipped` result is required. |
-| **Build** | Warning-clean solution Debug and Release builds plus complete, disjoint behavioral category discovery. The discovery audit checks Unit project membership against `tests/unit-test-projects.json` across the solution. Skipped only in classified reduced mode. |
+| **Build** | Warning-clean solution Debug and Release builds plus complete, disjoint behavioral category discovery. The discovery audit checks Unit project membership against `tests/unit-test-projects.json` across the solution, including for component plans. Skipped only in classified reduced mode. |
 | **Unit Tests** | Unit cases in the active assemblies with an intentionally invalid Docker endpoint. Two [supplemental Unit selections](#supplemental-unit-selections) write TRX only. The complete solution plan runs this job. Component plans run the selections in their active lanes. A 45-minute full-qualification job budget covers restore/build, the serial test/coverage selections and evidence upload. |
 | **Integration Tests** | The complete solution plan runs Integration cases across Astronomy and CameraAgent assemblies. The Integration step attempts every selected assembly and reports failure if any fail. Architecture & Publish runs the repository graph, provider-boundary and publish cases. |
 | **Architecture & Publish** | Both category selections of the architecture project cover Unit-category boundary cases, including the host `Dockerfile`, fault-matrix discovery, and CameraAgent event-ID uniqueness contracts, and Integration-category repository graph, provider-boundary, MSBuild and publish cases. Retains SHA-256 publish manifests for CameraAgent and for both runners and the installer on Linux x64 and ARM64. Runs for every full-mode head. |
@@ -896,6 +964,72 @@ or loses its Unit selection.
 
 `External` is implemented by the pinned, networkless Stellarium workflow rather than an empty MSTest check. The accelerated `Soak` case and real-duration soak are independently selectable in `.github/workflows/cameraagent-soak.yml`. The Hardware case remains separately selectable and is not published as a CI check until a suitable device runner exists.
 
+### Performance tests
+
+MSTest uses `[TestCategory("Performance")]` and VSTest selects it with
+`dotnet test --filter 'TestCategory=Performance'`. `TestCategory` is the
+MSTest filter property for the Performance category. Keep functional outcomes
+in Unit, with a generous runaway timeout when the test needs one. Put tight
+elapsed-time, allocation, and performance work limits in Performance cases.
+Keep deterministic deadlines, early rejection, lock ordering, and configured
+operation limits in the correctness cases that exercise those contracts.
+Build and Unit and the standard local Unit selection use
+`TestCategory=Unit&TestCategory!=Performance`.
+
+### Raspberry Pi 5 performance
+
+`.github/workflows/performance-pi5.yml` runs on pushes to `development/v1`,
+nightly at 09:00 UTC, and when manually dispatched on `development/v1`. It uses
+`[self-hosted, linux, arm64, pi5, hvo-skymonitor-arm64]` and verifies that the runner
+is a native ARM64 Raspberry Pi 5 before collecting samples. The advisory job
+has a 30-minute budget and runs independently of Required CI, pull-request
+checks, and the merge queue.
+
+The job pins .NET SDK `10.0.402` in setup-dotnet and `global.json`. It builds
+the Release solution and uses the live category audit matrix to select projects
+with Performance cases. It runs three Release trials per project, selecting
+only `TestCategory=Performance`, and takes the median TRX duration for each
+case. Every trial must pass the discovered number of cases with the same identities.
+A failed, skipped, missing, or duplicated case fails the measurement.
+
+The baseline is the median of the most recent five accepted run medians per
+case. A duration **more than 20%** above its previous median fails the Pi job.
+Exactly 20% is accepted. An entirely new baseline or a new test case seeds from
+the first clean Pi measurement. A failing run leaves the full previous history
+in place. The uploaded comparison JSON retains per-case timings and decisions
+or a failure summary for 30 days. When the TRX identifies a failed case, the
+summary includes its class, method, test ID, and outcome. Raw TRX files and
+full test logs, including build and discovery evidence, are written under
+`$RUNNER_TEMP`.
+
+New Pi performance runs cancel older runs on the same ref under
+`skymonitor-perf-${{ github.ref }}`. Native CameraAgent Evidence uses its own
+concurrency group and queues independently on the Pi. The workflow saves a new immutable GitHub
+Actions cache entry under `skymonitor-development-v1-pi5-performance-v1-` for
+each accepted run attempt. It restores the newest matching entry on
+`development/v1` and verifies each save by exact key. If the cache is empty or
+has been evicted, the next clean Pi run seeds it. The report's `baselineCache`
+records the matched key and restore step outcome. A successful restore step with
+a null key means a cache miss. A skipped restore means a requested reset. A
+matched key can accompany seeded cases when new tests are added. To recalibrate
+after a runner, SDK, or intentional workload change, dispatch **SkyMonitor Pi 5 Performance**
+on `development/v1` with `reset_baseline` enabled. A successful reset becomes
+the newest baseline. The next scheduled comparisons use that calibration.
+Local runs confirm execution and leave the GitHub cache alone.
+
+To reproduce the category with a warning-clean Release build already available,
+choose a fresh private results directory in `scratch` and run:
+
+```bash
+flock --close /tmp/hvo-heavy-gate.lock python3 scripts/ci/pi5_performance.py \
+  "$scratch/raw" "$scratch/baseline.json" "$scratch/comparison.json" --no-build
+python3 -B scripts/ci/test_pi5_performance.py
+```
+
+Phase 2 plans to shard `CameraAgent.Tests` into two or three jobs on
+`hvo-skymonitor-build` after Phase 1 merges and the third runner in that
+pool returns to service.
+
 ## LogicHost test retirement
 
 #2048 retired CI and local execution of the LogicHost and combined CameraAgent–LogicHost
@@ -908,7 +1042,7 @@ that contains their suites.
 Development v1 and the manually dispatched CI v2 baseline use this MSTest filter.
 
 ```text
-TestCategory=Unit&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost
+TestCategory=Unit&TestCategory!=Performance&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost
 ```
 
 The `-p:SkipLogicHostTests=true` argument and both name exclusions remain part
@@ -936,7 +1070,7 @@ dotnet format HVO.SkyMonitor.v9.slnx --no-restore --verify-no-changes
 dotnet run --project scripts/test-categories/HVO.SkyMonitor.TestCategoryAudit.csproj --configuration Release
 DOCKER_HOST=unix:///tmp/hvo-no-docker.sock \
   dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release \
-    --filter 'TestCategory=Unit&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost' \
+    --filter 'TestCategory=Unit&TestCategory!=Performance&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost' \
     -p:SkipLogicHostTests=true
 dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release \
   --filter 'TestCategory=Integration&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost' \
@@ -1311,7 +1445,7 @@ Reproduce one lane locally with the same scripts CI runs:
 ```bash
 dotnet tool restore
 ./scripts/ci:component-build cameraagent
-DOCKER_HOST=unix:///tmp/hvo-no-docker.sock dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter "TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/cameraagent --logger "trx;LogFileName=unit-cameraagent.trx"
+DOCKER_HOST=unix:///tmp/hvo-no-docker.sock dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter "TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware&TestCategory!=Performance" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/cameraagent --logger "trx;LogFileName=unit-cameraagent.trx"
 ./scripts/ci:component-publish cameraagent
 ./scripts/coverage:component cameraagent
 ```

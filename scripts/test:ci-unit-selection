@@ -52,6 +52,8 @@ expect_fail 'expected exactly 1' --workflow "$scratch/duplicate.yml"
 # shellcheck disable=SC2016
 mutate filter '/unit\/cameraagent-integration/ s#--filter "\$UNIT_FILTER"#--filter "TestCategory=Integration"#'
 expect_fail 'lacks --filter' --workflow "$scratch/filter.yml"
+mutate performance '/^  unit:/,/^  integration:/ s/&TestCategory!=Performance//'
+expect_fail 'the Unit job must use the positive Unit filter' --workflow "$scratch/performance.yml"
 mutate nobuild '/unit\/cameraagent-integration/ s# --no-build##'
 expect_fail 'lacks --no-build' --workflow "$scratch/nobuild.yml"
 
@@ -268,6 +270,9 @@ expect_fail 'unknown Unit project: HVO.SkyMonitor.New.Tests' --workflow "$workfl
 mkdir -p "$fixture/HVO.SkyMonitor.New.Tests"
 : > "$fixture/HVO.SkyMonitor.New.Tests/HVO.SkyMonitor.New.Tests.csproj"
 expect_fail 'tests/HVO.SkyMonitor.New.Tests/HVO.SkyMonitor.New.Tests.csproj owns Unit cases' --workflow "$workflow" --tests-root "$fixture"
+# A Performance-only project can exist without a Unit selection.
+cp "$inventory" "$fixture/unit-test-projects.json"
+expect_pass --workflow "$workflow" --tests-root "$fixture"
 jq 'map(select(. != "HVO.SkyMonitor.Astronomy.Tests"))' "$inventory" > "$fixture/unit-test-projects.json"
 expect_fail 'selects tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj, which owns no Unit cases' --workflow "$workflow" --tests-root "$fixture"
 
@@ -306,6 +311,8 @@ while IFS='|' read -r job component name slot; do
   done
   mutate "$component-envfilter" "$range { /^      UNIT_FILTER:/ s#TestCategory=Unit#TestCategory=Integration#; }"
   expect_fail "$job must use the complete positive Unit filter" --workflow "$scratch/$component-envfilter.yml"
+  mutate "$component-performance" "$range { /^      UNIT_FILTER:/ s/&TestCategory!=Performance//; }"
+  expect_fail "$job must use the complete positive Unit filter" --workflow "$scratch/$component-performance.yml"
   mutate "$component-build-binding" "$range { s#run: ./scripts/ci:component-build $component#run: ./scripts/ci:component-build delivery#; }"
   expect_fail "$job supplemental command must follow its component build" --workflow "$scratch/$component-build-binding.yml"
   # Remove each owned root from the actual build script, rather than from a

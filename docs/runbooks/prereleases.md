@@ -38,7 +38,8 @@ Only the owner pushes `v*` tags. Everything after the tag is the workflow's.
 
 1. Pick a commit on `development/v1` whose **Development v1** push run is green, with both **Development v1 /
    Preflight** and **Development v1 / Build and Unit** successful. The branch head is the usual choice. If its run
-   is still going, wait for it to finish.
+   is still going, wait for it to finish. For verified queue-generated pushes, Build and Unit links to the
+   successful merge-group run on the same SHA. See [post-merge push validation](ci-pipeline.md#development-v1-post-merge-pushes).
 2. Pick the version. `X.Y.Z` is the release the work is heading for, and `<n>` counts that release's pre-releases from
    1. A version is never reused, even after a failed run.
 3. Create an **annotated** tag on the commit, and push only that tag:

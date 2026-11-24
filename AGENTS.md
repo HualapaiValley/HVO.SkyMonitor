@@ -64,9 +64,11 @@ have follow-up tracking.
   `Development v1 / Preflight` and `Development v1 / Build and Unit`: lightweight
   control checks, one Release build, and Docker-disabled Unit selection for the
   active test projects. The ready-PR documentation fast path described in
-  `docs/development-v1.md` skips the solution build and Unit workload. Push and
-  merge-group workloads remain full. Full qualification in `ci.yml` belongs to
-  `main`/`release/**` and explicitly requested qualification. Do not dispatch it
+  `docs/development-v1.md` skips the solution build and Unit workload. Merge
+  groups and unverified pushes run the full workload. A queue-generated push
+  can reuse a passing merge-group result for the exact same SHA. Full
+  qualification in `ci.yml` belongs to `main`/`release/**` and explicitly
+  requested qualification. Do not dispatch it
   for an ordinary v1 PR merely because `scripts/ci:classify` reports `complete=true`, including
   on a base-sync delta. See `docs/development-v1.md` for this branch-specific
   contract, which takes precedence over generic protected-CI wording below.
@@ -92,7 +94,7 @@ have follow-up tracking.
   ./scripts/test:pr-review-tools
   DOCKER_HOST=unix:///tmp/hvo-no-docker.sock \
     dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release \
-      --filter 'TestCategory=Unit&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost' \
+      --filter 'TestCategory=Unit&TestCategory!=Performance&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost' \
       -p:SkipLogicHostTests=true --settings tests/coverage.runsettings --collect:"XPlat Code Coverage"
   dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release \
     --filter 'TestCategory=Integration&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost' \
@@ -276,8 +278,10 @@ have follow-up tracking.
 - Before a draft PR, complete the declared scope, local validation, and the
   original-requirement evidence mapping. Kepler creates the draft; draft checks
   pass on its exact head before independent formal review begins (Roy t594s3390).
-  Ready-state CI must not advance until formal review converges on the current
-  PR head and real merge/product conflicts are resolved, tested, and reviewed.
+  Ready-state CI requires formal review convergence and resolution, testing,
+  and review of any real merge/product conflicts. The queue may carry an already
+  published diff approval through a verified clean sync under
+  [Roy's recorded C4 decision](docs/development/policy/skymonitor.md#c4-policy-authorization).
   Target-tip movement alone requires no synchronization, re-testing, or new review.
 - Initial review covers the full merge-base-to-candidate diff and original
   requirements. Correction review covers the prior-reviewed-head delta and
@@ -291,11 +295,13 @@ have follow-up tracking.
   these profiles never reduce LOW's one Sol or HIGH's Sol-and-Opus requirement.
 - For the operated `development/v1` merge queue, Kepler revalidates the
   **CURRENT PR HEAD SHA**, complete requirement evidence, required formal
-  CLEAN reviews, passing required CI, and resolved conversations. Kepler alone
-  publishes `hvo/reviewed-head` on that exact head and then enqueues with
-  GraphQL `enqueuePullRequest`, checking the expected head. Under the queue,
-  `gh pr merge --merge` warns and does **not** enqueue. Coding threads stop at
-  handoff; they do not perform any of these PR/status/queue operations.
+  CLEAN reviews for its approved diff, passing required CI, and resolved
+  conversations. Kepler alone publishes `hvo/reviewed-head` on that exact head,
+  including for carries authorized by [Roy's C4 decision](docs/development/policy/skymonitor.md#c4-policy-authorization).
+  Kepler supersedes prior approvals when stamping a newly reviewed revision.
+  Kepler then enqueues with GraphQL `enqueuePullRequest`, checking the expected
+  head. Under the queue, `gh pr merge --merge` warns and does **not** enqueue.
+  Coding threads stop at handoff; they do not perform any of these PR/status/queue operations.
 - Direct merge and auto-merge are separate fallback routes, used only by Kepler
   when the queue is unavailable or an operator explicitly selects the fallback.
   They retain the same completeness, exact-candidate reviews, checks, and
@@ -311,12 +317,16 @@ have follow-up tracking.
   separately; this documentation changes no executable gate.
 - Actual CONFLICTING merges and real product conflicts still need resolution.
   Kepler keeps/returns the PR to draft and returns the work to its coding owner.
-  Preserve existing conflict resolutions and reviewed history. Any changed
-  candidate, including an integration merge, needs applicable local evidence
-  and the required tier's reviewers CLEAN on that SHA before Kepler advances it.
-  An unchanged-diff/base proof can inform review but cannot copy old reviews or
-  a reviewed-head status to a new candidate. Target-tip movement with an
-  unchanged PR head does not trigger this loop.
+  Preserve existing conflict resolutions and reviewed history. A candidate with
+  a PR edit or conflict resolution needs applicable local evidence and the
+  required tier's reviewers CLEAN on its new SHA before Kepler advances it.
+  For the operated queue, [Roy's C4 decision](docs/development/policy/skymonitor.md#c4-policy-authorization)
+  authorizes the [reviewed-diff proof](docs/development-v1.md#diff-bound-review-approval)
+  to carry a versioned approval through a verified clean merge-only sync from
+  `development/v1`. The formal reports remain tied to the reviewed SHA. Kepler
+  revalidates integration evidence, required CI and conversations on the current
+  PR head. Target-tip movement with an unchanged PR head does not trigger the
+  correction loop.
 - Performance-sensitive work requires reproducible baseline/after evidence for relevant I/O, CPU, allocations/working set, throughput, latency, and backlog. Unexplained regression blocks merge.
 - Validate produced outputs through checksums, numerical invariants, provenance, lineage, and durable state where applicable. Inspect logs, metrics, traces, and health behavior for host/worker changes.
 - If work stops or blocks, leave the resumable handoff required by the execution protocol and update the owning roadmap epic with the exact next action.

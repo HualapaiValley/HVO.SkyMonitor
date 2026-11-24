@@ -16,8 +16,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: development-v1-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: development-v1-${{ github.event_name }}-${{ github.event_name == 'merge_group' && github.run_id || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 env:
   DOTNET_NOLOGO: true
@@ -28,6 +28,11 @@ jobs:
     name: Development v1 / Preflight
     runs-on: ubuntu-24.04
     timeout-minutes: 6
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      merge_group_run_id: ${{ steps.merge-group.outputs.run_id }}
     steps:
       - name: Checkout exact commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -140,12 +145,26 @@ jobs:
         run: |
           ./scripts/test:release-scripts
 
+      - name: Find successful merge-group validation for the pushed SHA
+        id: merge-group
+        if: github.event_name == 'push' && github.ref == 'refs/heads/development/v1' && github.actor == 'github-merge-queue[bot]'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if run_id="$(./scripts/ci:merge-group-success "$GITHUB_REPOSITORY" "$GITHUB_SHA")" && [[ "$run_id" =~ ^[1-9][0-9]*$ ]]; then
+            printf 'run_id=%s\n' "$run_id" >> "$GITHUB_OUTPUT"
+          else
+            printf 'No verified merge-group run for %s. Running full Build and Unit.\n' "$GITHUB_SHA"
+          fi
+
   build-unit:
     name: Development v1 / Build and Unit
     needs: preflight
     if: github.event_name == 'push' || github.event_name == 'merge_group' || github.event.pull_request.draft == false
-    runs-on: [self-hosted, linux, x64, hvo-skymonitor-build]
+    runs-on: ${{ fromJSON(needs.preflight.outputs.merge_group_run_id != '' && '["ubuntu-latest"]' || '["self-hosted", "linux", "x64", "hvo-skymonitor-build"]') }}
     timeout-minutes: 22
+    env:
+      MERGE_GROUP_RUN_ID: ${{ needs.preflight.outputs.merge_group_run_id }}
     steps:
       - name: Record workload start
         run: |
@@ -160,13 +179,14 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Checkout exact commit
+        if: env.MERGE_GROUP_RUN_ID == ''
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: ${{ github.event_name == 'pull_request' && '0' || '1' }}
           persist-credentials: false
 
-      - name: Classify exact documentation diff
-        id: docs-classify
+      - name: Select Build and Unit workload
+        id: workload
         env:
           EVENT_NAME: ${{ github.event_name }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -180,7 +200,11 @@ jobs:
           merge="$GITHUB_SHA"
           printf 'Preflight dependency: success\n' > "$evidence"
           : > "$output"
-          if [[ "$EVENT_NAME" == pull_request ]]; then
+          if [[ -n "${MERGE_GROUP_RUN_ID:-}" ]]; then
+            run_full=false
+            reason='exact push SHA already passed merge-group validation'
+            printf 'mergeGroupRunId=%s\n' "$MERGE_GROUP_RUN_ID" >> "$evidence"
+          elif [[ "$EVENT_NAME" == pull_request ]]; then
             reason='merge binding unavailable or mismatched'
             parents="$(git rev-list --parents -n 1 HEAD)" || parents=''
             read -r merge_commit base second extra <<< "$parents"
@@ -250,13 +274,13 @@ jobs:
           cat "$evidence"
 
       - name: Setup .NET from global.json
-        if: ${{ steps.docs-classify.outcome != 'success' || steps.docs-classify.outputs.run_full != 'false' }}
+        if: ${{ steps.workload.outcome != 'success' || steps.workload.outputs.run_full != 'false' }}
         uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
 
       - name: Restore solution
-        if: ${{ steps.docs-classify.outcome != 'success' || steps.docs-classify.outputs.run_full != 'false' }}
+        if: ${{ steps.workload.outcome != 'success' || steps.workload.outputs.run_full != 'false' }}
         id: restore
         run: |
           remaining="$((DEV_V1_DEADLINE_EPOCH - $(date +%s)))"
@@ -266,7 +290,7 @@ jobs:
             dotnet restore HVO.SkyMonitor.v9.slnx
 
       - name: Build warning-clean Release solution
-        if: ${{ steps.docs-classify.outcome != 'success' || steps.docs-classify.outputs.run_full != 'false' }}
+        if: ${{ steps.workload.outcome != 'success' || steps.workload.outputs.run_full != 'false' }}
         id: build
         run: |
           remaining="$((DEV_V1_DEADLINE_EPOCH - $(date +%s)))"
@@ -282,7 +306,7 @@ jobs:
       # ci.yml's Quality and Build jobs on the main/release qualification path (#1142).
       # The terminal programs' render tests save each screen to HVO_TERMINAL_RENDERS_DIR (#1317), inside the evidence.
       - name: Run Docker-disabled Unit selection
-        if: ${{ steps.docs-classify.outcome != 'success' || steps.docs-classify.outputs.run_full != 'false' }}
+        if: ${{ steps.workload.outcome != 'success' || steps.workload.outputs.run_full != 'false' }}
         id: unit
         env:
           DOCKER_HOST: unix:///tmp/hvo-no-docker.sock
@@ -296,7 +320,7 @@ jobs:
             dotnet test HVO.SkyMonitor.v9.slnx \
               --no-build \
               --configuration Release \
-              --filter "TestCategory=Unit&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost" \
+              --filter "TestCategory=Unit&TestCategory!=Performance&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost" \
               -p:SkipLogicHostTests=true \
               --settings "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings" \
               --collect:"XPlat Code Coverage" \
@@ -304,7 +328,7 @@ jobs:
               --logger trx
 
       - name: Enforce canonical per-file coverage floors
-        if: ${{ steps.docs-classify.outcome != 'success' || steps.docs-classify.outputs.run_full != 'false' }}
+        if: ${{ steps.workload.outcome != 'success' || steps.workload.outputs.run_full != 'false' }}
         id: coverage
         run: |
           remaining="$((DEV_V1_DEADLINE_EPOCH - $(date +%s)))"
@@ -321,7 +345,7 @@ jobs:
 
       # Those screens drawn as SVG, as docs/images/terminal has them, and kept with the evidence below (#1317).
       - name: Draw terminal screenshots
-        if: ${{ !cancelled() && (steps.docs-classify.outcome != 'success' || steps.docs-classify.outputs.run_full != 'false') }}
+        if: ${{ !cancelled() && (steps.workload.outcome != 'success' || steps.workload.outputs.run_full != 'false') }}
         run: |
           mkdir -p "$DEV_V1_EVIDENCE_ROOT/terminal-renders"
           ./scripts/docs:terminal-screenshots --draw "$DEV_V1_EVIDENCE_ROOT/terminal-renders"
@@ -329,10 +353,10 @@ jobs:
       - name: Write evidence summary
         if: always()
         env:
-          CLASSIFY_OUTCOME: ${{ steps.docs-classify.outcome }}
-          RUN_FULL: ${{ steps.docs-classify.outputs.run_full }}
-          DOCS_FAST_PATH_REASON: ${{ steps.docs-classify.outputs.reason }}
-          CLASSIFIED_BASE: ${{ steps.docs-classify.outputs.base_sha }}
+          CLASSIFY_OUTCOME: ${{ steps.workload.outcome }}
+          RUN_FULL: ${{ steps.workload.outputs.run_full }}
+          WORKLOAD_REASON: ${{ steps.workload.outputs.reason }}
+          CLASSIFIED_BASE: ${{ steps.workload.outputs.base_sha }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           RESTORE_OUTCOME: ${{ steps.restore.outcome }}
           BUILD_OUTCOME: ${{ steps.build.outcome }}
@@ -354,10 +378,19 @@ jobs:
               '{name:$name,outcome:$outcome,elapsed:$elapsed,largestProcessRssKilobytes:($rss|if length==0 then null else tonumber end)}'
           }
           docs_fast_path=false
-          [[ "$CLASSIFY_OUTCOME" == success && "$RUN_FULL" == false ]] && docs_fast_path=true
-          reason="${DOCS_FAST_PATH_REASON:-classification unavailable; full validation required}"
-          sdk_version=""
-          [[ "$docs_fast_path" == true ]] || sdk_version="$(dotnet --version 2>/dev/null || true)"
+          reason="${WORKLOAD_REASON:-classification unavailable; full validation required}"
+          sdk_version=''
+          merge_group_run_url=''
+          if [[ "$CLASSIFY_OUTCOME" == success && "$RUN_FULL" == false ]]; then
+            if [[ -n "${MERGE_GROUP_RUN_ID:-}" ]]; then
+              merge_group_run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$MERGE_GROUP_RUN_ID"
+              printf 'Build and Unit reused [merge-group validation for %s](%s).\n' "$GITHUB_SHA" "$merge_group_run_url" >> "$GITHUB_STEP_SUMMARY"
+            else
+              docs_fast_path=true
+            fi
+          else
+            sdk_version="$(dotnet --version 2>/dev/null || true)"
+          fi
           completed_at="$(date +%s)"
           trx_count="$(find "$DEV_V1_EVIDENCE_ROOT/unit" -name '*.trx' -type f | wc -l)"
           jq -n \
@@ -366,6 +399,7 @@ jobs:
             --arg event "$GITHUB_EVENT_NAME" \
             --argjson docsFastPath "$docs_fast_path" \
             --arg docsFastPathReason "$reason" \
+            --arg mergeGroupRunUrl "$merge_group_run_url" \
             --arg baseSha "$CLASSIFIED_BASE" \
             --arg prHeadSha "$PR_HEAD_SHA" \
             --arg sdkVersion "$sdk_version" \
@@ -375,7 +409,7 @@ jobs:
             --argjson build "$(stage_json build "$BUILD_OUTCOME")" \
             --argjson unit "$(stage_json unit "$UNIT_OUTCOME")" \
             --argjson coverage "$(stage_json coverage "$COVERAGE_OUTCOME")" \
-            '{schema:$schema,profile:"development-v1",headSha:$headSha,event:$event,baseSha:$baseSha,prHeadSha:$prHeadSha,mergeSha:$headSha,docsFastPath:$docsFastPath,docsFastPathReason:$docsFastPathReason,preflight:"success",sdkVersion:($sdkVersion|if length==0 then null else . end),runnerElapsedThroughSummaryStartSeconds:$elapsed,targetSeconds:600,workloadBudgetSeconds:1080,hardTimeoutSeconds:1320,unitTrxCount:$trxCount,memoryMetric:"GNU time ru_maxrss: largest single process",stages:[$restore,$build,$unit,$coverage],qualificationWorkflow:"ci.yml",qualificationOnlyChecks:["whole-repository-shellcheck","exhaustive-test-category-discovery"]}' \
+            '{schema:$schema,profile:"development-v1",headSha:$headSha,event:$event,baseSha:$baseSha,prHeadSha:$prHeadSha,mergeSha:$headSha,docsFastPath:$docsFastPath,docsFastPathReason:$docsFastPathReason,preflight:"success",sdkVersion:($sdkVersion|if length==0 then null else . end),runnerElapsedThroughSummaryStartSeconds:$elapsed,targetSeconds:600,workloadBudgetSeconds:1080,hardTimeoutSeconds:1320,unitTrxCount:$trxCount,memoryMetric:"GNU time ru_maxrss: largest single process",stages:[$restore,$build,$unit,$coverage],qualificationWorkflow:"ci.yml",qualificationOnlyChecks:["whole-repository-shellcheck","exhaustive-test-category-discovery"],mergeGroupRunUrl:($mergeGroupRunUrl|if length==0 then null else . end)}' \
             > "$DEV_V1_EVIDENCE_ROOT/manifest.json"
           jq . "$DEV_V1_EVIDENCE_ROOT/manifest.json"
 

@@ -205,12 +205,13 @@ Kepler records the review and finding dispositions under the lifecycle skill.
 
 A PR is converged only when:
 
-- current head equals the latest reviewed head;
+- the current head equals the latest reviewed head or qualifies for the
+  [operated queue's verified clean-sync carry](../development-v1.md#diff-bound-review-approval);
 - every finding has a verified terminal disposition;
 - every finding thread is resolved;
 - deferred findings link to valid follow-up issues;
 - acceptance criteria are verified;
-- the required tier's reports are CLEAN on the current head and completeness is established.
+- the required tier's reports are CLEAN on the same reviewed SHA and completeness is established.
 
 Kepler records convergence before marking the PR ready, subject to the lifecycle skill.
 
@@ -232,7 +233,7 @@ Link the [generated discovery report or Unit evidence](ci-pipeline.md#categories
 when test counts are relevant to review.
 
 Merge when review is converged, all conversations and actual conflicts are resolved,
-the current head is reviewed, and required Development v1 checks pass. Follow
+and required Development v1 checks pass on the current head. Follow
 the repository lifecycle skill's finalization reservation and exact-head checks;
 the reservation does not change the branch's CI profile or require a full-matrix dispatch.
 
