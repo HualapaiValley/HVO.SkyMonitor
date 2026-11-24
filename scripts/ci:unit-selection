@@ -69,6 +69,10 @@ coverage_job="$(job_block coverage)"
 errors=0
 fail() { printf 'Unit selection: %s\n' "$1" >&2; errors=$((errors + 1)); }
 
+is_logichost_project() {
+  [[ "$1" == tests/HVO.SkyMonitor.LogicHost.*/* || "$1" == tests/HVO.SkyMonitor.CameraAgent.LogicHost.*/* ]]
+}
+
 # Split captured output without another input delivery (including a here-string
 # temporary file). Command substitutions already remove trailing newlines.
 split_lines() {
@@ -258,7 +262,9 @@ for inventory in "${inventories[@]}"; do
   fi
   split_lines projects "$project_text"
   ((${#projects[@]} == 1)) || { fail "inventory without exactly one project beside it: $inventory"; continue; }
-  expected["tests/$(basename "$dir")/${projects[0]}"]="$unit"
+  project="tests/$(basename "$dir")/${projects[0]}"
+  is_logichost_project "$project" && continue
+  expected["$project"]="$unit"
 done
 
 ((${#expected[@]} > 0)) || { printf 'Unit selection: no Unit-bearing inventory found under %s\n' "$tests_root" >&2; exit 1; }
@@ -328,10 +334,14 @@ done
 
 for command in "${commands[@]}"; do
   project="$(sed -nE 's#^[[:space:]]+dotnet test (tests/[^ ]+) .*#\1#p' <<<"$command")"
-  [[ -n "${expected[$project]:-}" ]] || fail "the Unit job selects $project, which owns no Unit cases"
+  if is_logichost_project "$project"; then
+    fail "the Unit job selects retired LogicHost project $project"
+  elif [[ -z "${expected[$project]:-}" ]]; then
+    fail "the Unit job selects $project, which owns no Unit cases"
+  fi
 done
 
-# These four compile-linked Unit-bearing assemblies supplement existing component
+# These compile-linked Unit-bearing assemblies supplement existing component
 # coverage runs. This is a selecting-command/build-plan contract, not a whole-job
 # YAML interpreter or proof of checkout, prerequisites or artifact publication.
 while IFS='|' read -r job component name slot; do
@@ -378,12 +388,10 @@ while IFS='|' read -r job component name slot; do
 done <<'COMPONENTS'
 shared-libraries|shared|HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests|catalog-sqlite-performance
 cameraagent-component|cameraagent|HVO.SkyMonitor.CameraAgent.IntegrationTests|cameraagent-integration
-logichost-component|logichost|HVO.SkyMonitor.LogicHost.IntegrationTests|logichost-integration
-combined-integration|combined|HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests|cameraagent-logichost-integration
 COMPONENTS
 
 if ((errors)); then
   printf 'Unit selection failed with %d error(s).\n' "$errors" >&2
   exit 1
 fi
-printf 'Unit selection passed: the full-qualification unit job lists one supported selecting command for each of %d Unit-bearing project(s) plus four component supplemental commands and their build roots (whole-job execution context and artifact publication are not asserted).\n' "${#expected[@]}"
+printf 'Unit selection passed: the full-qualification unit job lists one supported selecting command for each of %d active Unit-bearing project(s) plus two component supplemental commands and their build roots (whole-job execution context and artifact publication are not asserted).\n' "${#expected[@]}"

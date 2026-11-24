@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Negative controls for scripts/ci:unit-selection (issue #1255): the checked-in
-# workflow must pass, and each way of leaving a Unit-bearing project out of the
+# workflow must pass, and each way of leaving an active Unit-bearing project out of the
 # Unit job -- or of letting a supplemental run reach the canonical coverage
 # merge -- must fail, so the check cannot report success without selecting.
 # Issue #1261 adds focused component selection, build-root and TRX boundaries.
@@ -33,10 +33,16 @@ expect_pass
 expect_pass --workflow "$workflow" --tests-root "$repo_root/tests"
 
 # Removing any one Unit-bearing selection fails and names the project.
-for slot in cameraagent-integration logichost-integration cameraagent-logichost-integration \
-    catalog-sqlite-performance astronomy cameraagent-logichost; do
+for slot in cameraagent-integration catalog-sqlite-performance astronomy cameraagent; do
   mutate "drop-$slot" "/dotnet test .* --results-directory TestResults\/unit\/$slot --logger/d"
   expect_fail 'Unit job command(s) select it' --workflow "$scratch/drop-$slot.yml"
+done
+for name in LogicHost.Tests CameraAgent.LogicHost.Tests; do
+  mutate "retired-$name" "/^  unit:/,/^  integration:/ {
+    /dotnet test .* --results-directory TestResults\/unit\/cameraagent --logger/ { p; s#HVO.SkyMonitor.CameraAgent.Tests#HVO.SkyMonitor.$name#g; }
+  }"
+  expect_fail "the Unit job selects retired LogicHost project tests/HVO.SkyMonitor.$name/" \
+    --workflow "$scratch/retired-$name.yml"
 done
 
 # A duplicate selection, a non-positive filter and a non-Release/--no-build command all fail.
@@ -44,7 +50,7 @@ mutate duplicate '/--results-directory TestResults\/unit\/astronomy /{p}'
 expect_fail 'expected exactly 1' --workflow "$scratch/duplicate.yml"
 # The sed script matches the literal text "$UNIT_FILTER" in the workflow.
 # shellcheck disable=SC2016
-mutate filter '/unit\/logichost-integration/ s#--filter "\$UNIT_FILTER"#--filter "TestCategory=Integration"#'
+mutate filter '/unit\/cameraagent-integration/ s#--filter "\$UNIT_FILTER"#--filter "TestCategory=Integration"#'
 expect_fail 'lacks --filter' --workflow "$scratch/filter.yml"
 mutate nobuild '/unit\/cameraagent-integration/ s# --no-build##'
 expect_fail 'lacks --no-build' --workflow "$scratch/nobuild.yml"
@@ -231,7 +237,7 @@ cmp -s "$workflow" "$scratch/latesupplemental.yml" && { printf 'Mutation latesup
 expect_fail 'runs after the evidence is bound and uploaded' --workflow "$scratch/latesupplemental.yml"
 mutate settings '/unit\/catalog-sqlite-performance/ s#--logger#--settings tests/coverage.runsettings --logger#'
 expect_fail 'passes --settings' --workflow "$scratch/settings.yml"
-mutate sharedslot '/unit\/logichost-integration/ s#unit/logichost-integration#unit/cameraagent-integration#; /unit-logichost-integration.trx/ s#unit-logichost-integration.trx#unit-cameraagent-integration.trx#'
+mutate sharedslot '/unit\/catalog-sqlite-performance/ s#unit/catalog-sqlite-performance#unit/cameraagent-integration#; /unit-catalog-sqlite-performance.trx/ s#unit-catalog-sqlite-performance.trx#unit-cameraagent-integration.trx#'
 expect_fail 'share result slot cameraagent-integration' --workflow "$scratch/sharedslot.yml"
 mutate trxname '/unit\/catalog-sqlite-performance/ s#unit-catalog-sqlite-performance.trx#unit-other.trx#'
 expect_fail 'must write TRX unit-catalog-sqlite-performance.trx' --workflow "$scratch/trxname.yml"
@@ -306,8 +312,6 @@ while IFS='|' read -r job component name slot; do
 done <<'COMPONENTS'
 shared-libraries|shared|HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests|catalog-sqlite-performance
 cameraagent-component|cameraagent|HVO.SkyMonitor.CameraAgent.IntegrationTests|cameraagent-integration
-logichost-component|logichost|HVO.SkyMonitor.LogicHost.IntegrationTests|logichost-integration
-combined-integration|combined|HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests|cameraagent-logichost-integration
 COMPONENTS
 
 # Prove list mode describes the real restore/build invocations, with a dotnet
