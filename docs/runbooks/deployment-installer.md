@@ -2757,6 +2757,14 @@ confirmed commit observations after the upgrade. The exception names the
 changed processing objects and applies to a database recording processing
 schema 12. The frozen previous-release SQL image remains the same.
 
+**Centered-view journal retention (Ref #2000).** The candidate declares
+`ee848ab110e094ef888c1aca4225ea9c8be226f6` and installs six indexes in the shared
+raw journal at startup. Earlier processing-schema-12 readers validate the schema
+objects exactly. The changed minimum selects a paired checkpoint when upgrading
+from any of those readers, including private builds declaring `1c76d83224bacdcc129041c6d1779eb5f95716cb`.
+The raw and processing schema numbers stay at 17 and 12. Rollback to an older
+reader restores the state paired with that image.
+
 **Legacy migration rule, still enforced by current tests.** A CameraAgent schema change must stay readable by the previous release for one release: add
 first, remove in a later release. The unit test `PreviousReleaseStoreReadabilityTests` holds every CameraAgent SQLite
 store to it. `tests/fixtures/state-compatibility/previous-release/` freezes each of the previous release's stores as a
