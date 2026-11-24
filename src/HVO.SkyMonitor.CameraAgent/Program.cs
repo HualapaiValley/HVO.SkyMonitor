@@ -326,6 +326,7 @@ public class Program
         builder.Services.AddScoped<ICameraAgentNightlyProductUiService, CameraAgentNightlyProductUiService>();
         builder.Services.AddScoped<ICameraAgentSkyMapUiService, CameraAgentSkyMapUiService>();
         builder.Services.AddScoped<ICameraAgentProcessingGraphUiService, CameraAgentProcessingGraphUiService>();
+        builder.Services.AddScoped<CenteredPipelineUiService>();
         builder.Services.AddSingleton<ICameraAgentControlRestartWindow, CameraAgentControlRestartWindow>();
         builder.Services.AddScoped<ICameraAgentSystemUiService, CameraAgentSystemUiService>();
         builder.Services.AddScoped<ICameraAgentOrbitalUiService, CameraAgentOrbitalUiService>();

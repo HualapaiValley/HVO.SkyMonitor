@@ -11,7 +11,7 @@
 <PageTitle>Pipeline</PageTitle>
 
 <OperationsPageHeading Eyebrow="Processing / configured dependency graph" Title="Pipeline" HeadingId="pipeline-heading"
-                       Description="Inspect the configured steps, their dependencies and the effective graph CameraAgent compiled from them, and turn individual steps on or off.">
+                       Description="Inspect acquisition, measurements, and the dependency graph CameraAgent compiled from the selected revision.">
     <Actions>
         <button type="button" id="@FocusFallbackId" class="icon-button" aria-label="Refresh" title="Refresh" disabled="@(_loading || _busy)" @onclick="RefreshAsync">
             <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M15.5 7A6 6 0 1 0 16 11"></path><path d="M16 3.5V7h-3.5"></path></svg>
@@ -29,6 +29,11 @@
         <a id="pipeline-create-draft" class="button primary" href="/operations/pipeline/graphs/new" title="Start a named graph draft in the graph editor">Create draft</a>
     </Actions>
 </OperationsPageHeading>
+
+<nav class="pipeline-links" aria-label="Pipeline views">
+    <a href="/operations/pipeline" aria-current="page">Configured pipeline</a>
+    <a href="/operations/pipeline/running">Running pipeline</a>
+</nav>
 
 @if (_message is not null)
 {
@@ -69,7 +74,7 @@ else
     {
         <div class="ops-note-banner pipeline-named" role="note">
             <span class="status-icon warning" aria-hidden="true"></span>
-            <span><strong>Live processing runs a named graph.</strong> CameraAgent runs <a href="@($"/operations/pipeline/graphs/{Uri.EscapeDataString(named.RevisionId)}")">@named.Name @named.Revision</a> instead of this configured graph. This graph runs again when the registry returns to it; manage that under <a href="/operations/pipeline/graphs">Named graphs</a>.</span>
+            <span><strong>Live processing runs a named graph.</strong> Inspect <a href="@($"/operations/pipeline/graphs/{Uri.EscapeDataString(named.RevisionId)}")">@named.Name @named.Revision</a> (<code>@named.RevisionId</code>). The graph below belongs to the schedule. Manage selection under <a href="/operations/pipeline/graphs">Named graphs</a>.</span>
         </div>
     }
 
@@ -82,7 +87,19 @@ else
             </span>
         </div>
         <dl>
-            <div><dt>Schema</dt><dd>@plan.SchemaVersion</dd></div>
+            <div><dt>Graph schema</dt><dd>@plan.SchemaVersion</dd></div>
+            <div><dt>Execution model</dt><dd>@(revision.CenteredExecutionVersion ?? "Legacy")</dd></div>
+            <div><dt>Schedule revision shown</dt><dd><code>@revision.RevisionId</code></dd></div>
+            <div><dt>Selected graph revision</dt><dd>
+                @if (_registry is { ActiveRevisionId.Length: > 0 } registry)
+                {
+                    <a href="@($"/operations/pipeline/graphs/{Uri.EscapeDataString(registry.ActiveRevisionId)}")"><code>@registry.ActiveRevisionId</code></a>
+                }
+                else
+                {
+                    <span>Unavailable</span>
+                }
+            </dd></div>
             <div><dt>Dependency policy</dt><dd>@Policy(plan.DependencyPolicy)</dd></div>
             <div><dt>Last run</dt><dd>@LastRun()</dd></div>
             <div><dt>Draft</dt><dd>@(_pipeline.Pending is { } draft ? $"Revision {Revision(draft.RevisionNumber)}, not applied" : "None")</dd></div>
@@ -113,7 +130,7 @@ else
                 <button type="button" id="pipeline-source-raw" class="@SourceClass(RawKey, selectedKey)" style="grid-column:1;grid-row:1"
                         aria-pressed="@Pressed(RawKey, selectedKey)" title="Raw frame" @onclick="() => SelectStage(MeteorDetectionLane.RawFrameKey)">
                     <strong>Raw frame</strong>
-                    <small>Durable ingress</small>
+                    <small>Fixed acquisition</small>
                     @if (canvas.HasOutput(RawKey))
                     {
                         <i class="node-port out" aria-hidden="true"></i>
@@ -184,11 +201,11 @@ else
         <aside class="ops-pipeline-inspector" aria-live="polite" aria-labelledby="pipeline-step-title">
             @if (_selectedStage == MeteorDetectionLane.RawFrameKey)
             {
-                <p class="eyebrow">Source</p>
+                <p class="eyebrow">Fixed acquisition</p>
                 <h2 id="pipeline-step-title">Raw frame</h2>
-                <p>Each acquired frame is written to durable ingress first. The processing steps and the meteor detection lane read it independently, so neither waits for the other.</p>
+                <p>The camera captures an exposure, records its actual readout and settings, and commits the raw pixels and metadata to durable ingress. Processing and meteor detection can read that frame independently.</p>
                 <dl class="ops-node-facts">
-                    <div><dt>Feeds</dt><dd>@RawConsumers(placements, canvas)</dd></div>
+                    <div><dt>Feeds</dt><dd>@RawConsumers(plan, canvas)</dd></div>
                     <div><dt>Outputs</dt><dd>Raw frame</dd></div>
                 </dl>
             }
@@ -226,6 +243,7 @@ else
                     <div><dt>Step ID / registered type</dt><dd>@selected.Id / @selected.Alias</dd></div>
                     <div><dt>Inputs</dt><dd>@Inputs(plan, selected)</dd></div>
                     <div><dt>Outputs</dt><dd>@Outputs(plan, selected)</dd></div>
+                    <div><dt>Consumers</dt><dd>@Consumers(plan, selected.Id)</dd></div>
                     <div><dt>Options</dt><dd>@Options(selected.Options)</dd></div>
                     @if (Effective(plan, selected.Id)?.RecipeName is { Length: > 0 } recipe)
                     {

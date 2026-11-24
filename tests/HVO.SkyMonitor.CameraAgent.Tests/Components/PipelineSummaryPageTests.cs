@@ -170,9 +170,11 @@ public sealed class PipelineSummaryPageTests
             var fixedStep = projection.Active.Plan.EffectiveNodes.Single(node => node.Id == ExposureMeasurementProducts.StepAlias);
             CollectionAssert.AreEqual(new[] { RawInput, "linear" }, fixedStep.Dependencies!.ToArray());
             await cut.Find($".ops-pipeline-node.step[title='{ExposureMeasurementProducts.StepAlias}']").ClickAsync().ConfigureAwait(false);
-            Assert.Contains("Fixed step", cut.Find(".ops-pipeline-inspector").TextContent);
+            Assert.Contains("Fixed measurement", cut.Find(".ops-pipeline-inspector").TextContent);
             Assert.Contains("Raw frame", cut.Find(".ops-node-facts").TextContent);
             Assert.Contains("linear", cut.Find(".ops-node-facts").TextContent);
+            Assert.Contains("Consumers", cut.Find(".ops-node-facts").TextContent);
+            Assert.HasCount(1, cut.FindAll("a[href='/operations/pipeline/running']"));
             Assert.IsEmpty(cut.FindAll("#pipeline-step-toggle"));
 
             const string predictionAlias = ExposureCatalogPredictionProducts.StepAlias;

@@ -166,3 +166,32 @@ These scalar panels preserve association/label-policy settings, astrometry
 catalog/clock/prior/solver inputs, satellite catalog/work-bound/time settings and
 artifact-specific storage policies. Their richer editors and the remaining
 per-overlay styling remain outside this partial delivery. Refs #1386.
+
+## Inspect a centered pipeline
+
+Open **Operations → Pipeline → Configured pipeline** to inspect the selected
+schedule revision and graph revision. Select **Raw frame** or a fixed
+measurement to see its inputs, products and consumers. Disabled branches remain
+in the configured diagram. Draft validation and activation use the existing
+Schedule and Named graphs controls.
+
+Open **Running pipeline** to compare the last admitted capture with the issued
+display reference. The buffer occupancy is a live observation. After restart,
+the retained journal can still identify the earlier acquisition, holds and
+issued display while the current buffer is unavailable. Older profiles report
+that centered evidence is unavailable and link to the execution list.
+
+The centered slot table gives expected and available actual exposure times and
+the recorded registration outcome. Layer readiness counts contributors to the
+displayed base. For example, acquisition 105 can show reference 103 with satellite
+evidence **4/5 assessed** and source 105 **Waiting**. Expand the layer to find the
+source run. If current progress cannot be verified, the row shows **Unavailable**
+and the summary reports the known count. **Assessed Empty** records a completed
+assessment with zero results.
+
+The exact revision link, preview and overlay identify the immutable publication.
+From **Processing executions**, open the reference capture's run to see its
+retained display publications. When a late source belongs to overlapping windows,
+each compatible base can gain its own revision. The source mapping in each base
+identifies the coordinates used for that revision. An earlier revision link
+continues to show the earlier evidence.

@@ -11,6 +11,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
+using HVO.SkyMonitor.CameraAgent.Components.Operations;
 using HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
@@ -464,6 +465,14 @@ public sealed partial class VirtualSkyCameraModuleTests
                             disposition.Closure.Slots.Select(slot => $"{slot.Offset}: {slot.State} / {slot.Reason}"));
                         Assert.IsNotNull(disposition?.Publication, $"{disposition?.FailureReason} ({slots})");
                         Assert.AreEqual(expectedDisposition, disposition.Publication.StackDisposition, slots);
+                        var observedWindow = await provider.GetRequiredService<ICenteredWindowReader>()
+                            .ReadAsync(ids[index - 2], token).ConfigureAwait(false);
+                        Assert.IsNotNull(observedWindow);
+                        Assert.HasCount(5, observedWindow.Slots);
+                        Assert.AreEqual(disposition.Closure.Schedule.GenerationId, observedWindow.GenerationId);
+                        Assert.AreEqual(disposition.Closure.Center.Input?.Timing.ExposureStartedUtc, observedWindow.Slots[2].StartedUtc);
+                        if (!expectStack)
+                            Assert.Contains(slot => slot.RegistrationOutcome == CenteredRegistrationReason.RegistrationRejected, observedWindow.Slots);
                         if (recoverUnpublishedStack && index == 5)
                         {
                             unpublished = disposition;
@@ -821,15 +830,21 @@ public sealed partial class VirtualSkyCameraModuleTests
             Assert.IsNotNull(latest);
             var layer = latest.Revision.Layers.SingleOrDefault(item =>
                 item.Key.Kind == TransientTrailPresentation.LayerKind && item.Key.SourceCaptureId == sourceCaptureId);
+            var layerEvidence = CenteredPublicationEvidence.Layers(latest, live: true)
+                .Single(group => group.Kind == TransientTrailPresentation.LayerKind);
+            Assert.AreEqual(definition.Contributors.Count, layerEvidence.Sites.Count);
             if (member is null)
             {
                 Assert.IsNull(layer, "The measured 105 trail must not appear in a stack that rejected 105.");
+                Assert.IsFalse(layerEvidence.Sites.Any(site => site.Source?.Capture.CaptureId == sourceCaptureId));
                 continue;
             }
             Assert.AreEqual(trail.DetectorInput.Source.ObservationStartedUtc, member.Exposure.Input.Raw.Timing.ExposureStartedUtc);
             Assert.AreEqual(trail.DetectorInput.Source.ObservationEndedUtc, member.Exposure.Input.Raw.Timing.ExposureEndedUtc);
             Assert.AreNotEqual(archive.DefaultRevisionId, archive.LatestRevisionId);
             Assert.IsNotNull(layer);
+            Assert.AreEqual(layer.Readiness,
+                layerEvidence.Sites.Single(site => site.Source?.Capture.CaptureId == sourceCaptureId).Readiness);
             Assert.AreEqual(CenteredViewLayerScope.Contributor, layer.Key.Scope);
             Assert.IsNotNull(layer.Drawable);
             Assert.AreEqual(member.Exposure.ExposureStartedUtc,

@@ -16,6 +16,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - Centered CameraAgent pipeline runs show per-exposure brightness, stellar centroids, and half-flux diameter in Operations. #1920
 
+- CameraAgent Operations shows the configured pipeline, live capture buffer, issued display reference, and per-source overlay readiness with links to exact retained revisions. #1924
+
 - Opt-in VirtualSky profiles can render a checksum-pinned orbital pass through ordinary Mono16 or Bayer RGGB16 acquisition, with synthetic brightness controls and separate predicted and measured trail evidence. #1927
 
 - CameraAgent Current Sky shows the latest accepted retained measured pointing, rotation, local pixel scale and capture time, with previous-capture results kept separate from selected-image diagnostics. Virtual Sky can measure astrometry alongside its existing scene overlays. #1901

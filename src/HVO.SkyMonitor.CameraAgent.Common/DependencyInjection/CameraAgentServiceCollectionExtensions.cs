@@ -365,6 +365,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<ICenteredViewLayerProducer, CenteredViewLayerProducer>();
         services.AddSingleton<ICenteredViewPresentationReader, CenteredViewPresentationReader>();
         services.AddSingleton<ICenteredViewLookup, CenteredViewLookup>();
+        services.AddSingleton<ICenteredViewLayerProgressReader, CenteredViewLayerProgressReader>();
         services.AddSingleton<CenteredViewSourceLayers>();
         services.AddSingleton<CenteredViewPublicationWorker>();
         services.AddHostedService(provider => provider.GetRequiredService<CenteredViewPublicationWorker>());

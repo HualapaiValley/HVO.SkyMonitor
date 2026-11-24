@@ -10,7 +10,10 @@ internal sealed record CameraAgentPipelineRevisionPlan(
     long RevisionNumber,
     string ProfileSha256,
     bool CanToggle,
-    CaptureProcessingPlanPreview Plan);
+    CaptureProcessingPlanPreview Plan)
+{
+    internal string? CenteredExecutionVersion { get; init; }
+}
 
 internal sealed record CameraAgentPipelineOperatorState(
     CameraAgentPipelineRevisionPlan Active,
@@ -134,7 +137,10 @@ internal static class CameraAgentPipelineOperatorProjection
             revision.RevisionNumber,
             revision.ProfileSha256,
             LocalCaptureProfileContract.Validate(revision.Profile).IsValid,
-            PreviewConfiguredProfile(revision.Profile, currentConfiguration, pipelineFactory, graphs));
+            PreviewConfiguredProfile(revision.Profile, currentConfiguration, pipelineFactory, graphs))
+        {
+            CenteredExecutionVersion = revision.Profile.CenteredExposure?.ExecutionVersion
+        };
 
     private static CaptureProcessingPlanPreview PreviewConfiguredProfile(
         LocalCaptureProfileDefinition profile, CameraModuleConfig currentConfiguration,
