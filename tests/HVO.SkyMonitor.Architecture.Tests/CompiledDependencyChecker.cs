@@ -13,7 +13,7 @@ internal static class CompiledDependencyChecker
 {
     internal sealed record TypeName(string Assembly, string Namespace, string Name);
     internal sealed record OwnedType(TypeName Type, ImmutableHashSet<string> Documents);
-    internal sealed record Result(int TypesChecked, string[] Violations, OwnedType[] SelectedTypes);
+    internal sealed record Result(int TypesChecked, ImmutableArray<string> Violations, ImmutableArray<OwnedType> SelectedTypes);
 
     internal static bool SpaceWeather(TypeName type) => Subtree(type.Namespace, "HVO.SkyMonitor.Processing.SpaceWeather");
     internal static bool CaptureOrRecipe(TypeName type) => !SpaceWeather(type) &&
@@ -49,31 +49,86 @@ internal static class CompiledDependencyChecker
 
     internal static Result Check(string assemblyPath, Func<OwnedType, bool> select, Func<TypeName, bool> forbidden)
     {
-        using var stream = File.OpenRead(assemblyPath);
-        using var pe = new PEReader(stream);
-        var metadata = pe.GetMetadataReader();
-        var pdbPath = Path.ChangeExtension(assemblyPath, ".pdb");
-        if (!File.Exists(pdbPath))
-            throw new FileNotFoundException($"Portable PDB required for complete source ownership selection: {pdbPath}", pdbPath);
-        using var pdbStream = File.OpenRead(pdbPath);
-        using var pdbProvider = MetadataReaderProvider.FromPortablePdbStream(pdbStream);
-        var pdb = pdbProvider.GetMetadataReader();
-        var pdbId = new BlobContentId(pdb.DebugMetadataHeader!.Id);
-        if (!pe.ReadDebugDirectory().Any(entry => entry.Type == DebugDirectoryEntryType.CodeView
-            && pe.ReadCodeViewDebugDirectoryData(entry).Guid == pdbId.Guid && entry.Stamp == pdbId.Stamp))
-            throw new InvalidDataException($"Portable PDB does not match assembly: {pdbPath}");
-        var documents = new SourceDocuments(metadata, pdb);
-        var inspection = new Inspection(assemblyPath, pe, metadata, forbidden);
-        var selected = new List<OwnedType>();
-        foreach (var handle in metadata.TypeDefinitions)
-        {
-            var type = new OwnedType(inspection.Name(handle), documents.ForType(handle));
-            if (!select(type)) continue;
-            selected.Add(type);
-            inspection.Inspect(handle);
-        }
-        return new(selected.Count, [.. inspection.Violations], [.. selected]);
+        using var snapshot = AssemblySnapshot.Load(assemblyPath);
+        return snapshot.Check(select, forbidden);
     }
+
+    internal sealed class AssemblySnapshot : IDisposable
+    {
+        private readonly PEReader pe;
+        private readonly ImmutableArray<ScannedType> types;
+
+        private AssemblySnapshot(PEReader pe, ImmutableArray<ScannedType> types)
+        {
+            this.pe = pe;
+            this.types = types;
+        }
+
+        internal static AssemblySnapshot Load(string assemblyPath)
+        {
+            using var stream = File.OpenRead(assemblyPath);
+            var pe = new PEReader(stream, PEStreamOptions.PrefetchEntireImage | PEStreamOptions.LeaveOpen);
+            try
+            {
+                var metadata = pe.GetMetadataReader();
+                var pdbPath = Path.ChangeExtension(assemblyPath, ".pdb");
+                if (!File.Exists(pdbPath))
+                    throw new FileNotFoundException($"Portable PDB required for complete source ownership selection: {pdbPath}", pdbPath);
+                using var pdbStream = File.OpenRead(pdbPath);
+                using var pdbProvider = MetadataReaderProvider.FromPortablePdbStream(pdbStream);
+                var pdb = pdbProvider.GetMetadataReader();
+                var pdbId = new BlobContentId(pdb.DebugMetadataHeader!.Id);
+                if (!pe.ReadDebugDirectory().Any(entry => entry.Type == DebugDirectoryEntryType.CodeView
+                    && pe.ReadCodeViewDebugDirectoryData(entry).Guid == pdbId.Guid && entry.Stamp == pdbId.Stamp))
+                    throw new InvalidDataException($"Portable PDB does not match assembly: {pdbPath}");
+
+                var documents = new SourceDocuments(metadata, pdb);
+                var inspection = new Inspection(assemblyPath, pe, metadata);
+                var types = ImmutableArray.CreateBuilder<ScannedType>(metadata.TypeDefinitions.Count);
+                foreach (var handle in metadata.TypeDefinitions)
+                {
+                    var owner = new OwnedType(inspection.Name(handle), documents.ForType(handle));
+                    types.Add(new(owner, new Lazy<TypeDependencies>(() => inspection.Inspect(handle))));
+                }
+                return new AssemblySnapshot(pe, types.MoveToImmutable());
+            }
+            catch
+            {
+                pe.Dispose();
+                throw;
+            }
+        }
+
+        internal Result Check(Func<OwnedType, bool> select, Func<TypeName, bool> forbidden)
+        {
+            var selected = ImmutableArray.CreateBuilder<OwnedType>();
+            var violations = new SortedSet<string>(StringComparer.Ordinal);
+            foreach (var type in types)
+            {
+                if (!select(type.Owner)) continue;
+                selected.Add(type.Owner);
+
+                var source = type.Owner.Type;
+                var dependencies = type.Dependencies.Value;
+                foreach (var dependency in dependencies.Types)
+                    if (forbidden(dependency)) violations.Add($"{source.Namespace}.{source.Name} -> {dependency.Assembly}:{dependency.Namespace}.{dependency.Name}");
+                foreach (var name in dependencies.SerializedNames)
+                {
+                    if (forbidden(new("", name, ""))) violations.Add($"{source.Namespace}.{source.Name} attribute -> {name}");
+                    // Generic serialized names also embed their argument type names.
+                    foreach (var component in name.Split(['[', ']', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                        if (forbidden(new("", component, ""))) violations.Add($"{source.Namespace}.{source.Name} attribute -> {component}");
+                }
+            }
+            return new(selected.Count, [.. violations], selected.ToImmutable());
+        }
+
+        public void Dispose() => pe.Dispose();
+
+        private sealed record ScannedType(OwnedType Owner, Lazy<TypeDependencies> Dependencies);
+    }
+
+    private sealed record TypeDependencies(ImmutableArray<TypeName> Types, ImmutableArray<string> SerializedNames);
 
     private sealed class SourceDocuments(MetadataReader metadata, MetadataReader pdb)
     {
@@ -115,30 +170,42 @@ internal static class CompiledDependencyChecker
         private readonly string assemblyPath;
         private readonly PEReader pe;
         private readonly MetadataReader metadata;
-        private readonly Func<TypeName, bool> forbidden;
         private readonly string assembly;
         private readonly SignatureReferences provider;
-        private readonly HashSet<EntityHandle> seen = [];
-        private readonly Dictionary<TypeName, PrimitiveTypeCode> enumTypes = [];
-        private readonly Dictionary<ushort, OpCode> opcodes = typeof(OpCodes).GetFields(BindingFlags.Public | BindingFlags.Static)
+        private static readonly Dictionary<ushort, OpCode> Opcodes = typeof(OpCodes).GetFields(BindingFlags.Public | BindingFlags.Static)
             .Where(f => f.FieldType == typeof(OpCode)).Select(f => (OpCode)f.GetValue(null)!)
             .ToDictionary(op => unchecked((ushort)op.Value));
-        private TypeName source = new("", "", "");
-        internal SortedSet<string> Violations { get; } = new(StringComparer.Ordinal);
+        private readonly Lock inspectionLock = new();
+        private readonly HashSet<EntityHandle> seen = [];
+        private readonly Dictionary<EntityHandle, TypeName> names = [];
+        private readonly Dictionary<TypeName, PrimitiveTypeCode> enumTypes = [];
+        private readonly List<TypeName> dependencies = [];
 
-        internal Inspection(string assemblyPath, PEReader pe, MetadataReader metadata, Func<TypeName, bool> forbidden)
+        internal Inspection(string assemblyPath, PEReader pe, MetadataReader metadata)
         {
             this.assemblyPath = assemblyPath;
             this.pe = pe;
             this.metadata = metadata;
-            this.forbidden = forbidden;
             assembly = metadata.GetString(metadata.GetAssemblyDefinition().Name);
-            provider = new SignatureReferences(metadata, Visit, SerializedType, EnumUnderlying, SerializedEnumUnderlying);
+            provider = new SignatureReferences(metadata, Visit, EnumUnderlying, SerializedEnumUnderlying);
         }
-        internal void Inspect(TypeDefinitionHandle handle)
+
+        internal TypeDependencies Inspect(TypeDefinitionHandle handle)
         {
-            source = Name(handle);
-            seen.Clear();
+            // Keep the decoder and its enum/name caches local to this assembly.
+            // Different rules can initialize dependencies for different types.
+            lock (inspectionLock)
+            {
+                seen.Clear();
+                dependencies.Clear();
+                provider.ClearSerializedNames();
+                InspectType(handle);
+                return new([.. dependencies], [.. provider.SerializedNames]);
+            }
+        }
+
+        private void InspectType(TypeDefinitionHandle handle)
+        {
             var type = metadata.GetTypeDefinition(handle);
             Visit(type.BaseType);
             Attributes(type.GetCustomAttributes());
@@ -189,7 +256,7 @@ internal static class CompiledDependencyChecker
                 {
                     ushort opcode = il.ReadByte();
                     if (opcode == 0xfe) opcode = (ushort)(0xfe00 | il.ReadByte());
-                    switch (opcodes[opcode].OperandType)
+                    switch (Opcodes[opcode].OperandType)
                     {
                         case OperandType.InlineField:
                         case OperandType.InlineMethod:
@@ -213,7 +280,7 @@ internal static class CompiledDependencyChecker
                         case OperandType.ShortInlineI:
                         case OperandType.ShortInlineVar: il.Offset++; break;
                         case OperandType.InlineNone: break;
-                        default: throw new InvalidOperationException($"Unhandled IL operand {opcodes[opcode].OperandType}");
+                        default: throw new InvalidOperationException($"Unhandled IL operand {Opcodes[opcode].OperandType}");
                     }
                 }
             }
@@ -252,8 +319,7 @@ internal static class CompiledDependencyChecker
             {
                 case HandleKind.TypeDefinition:
                 case HandleKind.TypeReference:
-                    var dependency = Name(target);
-                    if (forbidden(dependency)) Violations.Add($"{source.Namespace}.{source.Name} -> {dependency.Assembly}:{dependency.Namespace}.{dependency.Name}");
+                    dependencies.Add(Name(target));
                     break;
                 case HandleKind.TypeSpecification:
                     metadata.GetTypeSpecification((TypeSpecificationHandle)target).DecodeSignature(provider!, null); break;
@@ -284,14 +350,6 @@ internal static class CompiledDependencyChecker
                     break;
             }
         }
-        private void SerializedType(string name)
-        {
-            if (forbidden(new("", name, ""))) Violations.Add($"{source.Namespace}.{source.Name} attribute -> {name}");
-            // Generic serialized names also embed their argument type names.
-            foreach (var component in name.Split(['[', ']', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-                if (forbidden(new("", component, ""))) Violations.Add($"{source.Namespace}.{source.Name} attribute -> {component}");
-        }
-
         private PrimitiveTypeCode SerializedEnumUnderlying(string serialized)
         {
             var parts = serialized.Split(',', 3, StringSplitOptions.TrimEntries);
@@ -377,6 +435,12 @@ internal static class CompiledDependencyChecker
 
         internal TypeName Name(EntityHandle handle)
         {
+            if (names.TryGetValue(handle, out var name)) return name;
+            return names[handle] = ReadName(handle);
+        }
+
+        private TypeName ReadName(EntityHandle handle)
+        {
             if (handle.Kind == HandleKind.TypeDefinition)
             {
                 var type = metadata.GetTypeDefinition((TypeDefinitionHandle)handle);
@@ -393,10 +457,12 @@ internal static class CompiledDependencyChecker
         }
     }
 
-    private sealed class SignatureReferences(MetadataReader metadata, Action<EntityHandle> visit, Action<string> serializedType, Func<EntityHandle, PrimitiveTypeCode> enumUnderlying, Func<string, PrimitiveTypeCode> serializedEnumUnderlying)
+    private sealed class SignatureReferences(MetadataReader metadata, Action<EntityHandle> visit, Func<EntityHandle, PrimitiveTypeCode> enumUnderlying, Func<string, PrimitiveTypeCode> serializedEnumUnderlying)
         : ISignatureTypeProvider<int, object?>, ICustomAttributeTypeProvider<int>
     {
         private readonly Dictionary<int, string> serializedNames = [];
+        internal IEnumerable<string> SerializedNames => serializedNames.Values;
+        internal void ClearSerializedNames() => serializedNames.Clear();
         public int GetTypeFromDefinition(MetadataReader reader, TypeDefinitionHandle handle, byte rawTypeKind) { visit(handle); return MetadataTokens.GetToken(handle); }
         public int GetTypeFromReference(MetadataReader reader, TypeReferenceHandle handle, byte rawTypeKind) { visit(handle); return MetadataTokens.GetToken(handle); }
         public int GetTypeFromSpecification(MetadataReader reader, object? genericContext, TypeSpecificationHandle handle, byte rawTypeKind) { visit(handle); return 0; }
@@ -422,7 +488,6 @@ internal static class CompiledDependencyChecker
         }
         public int GetTypeFromSerializedName(string name)
         {
-            serializedType(name);
             var id = -2 - serializedNames.Count;
             serializedNames.Add(id, name);
             return id;
