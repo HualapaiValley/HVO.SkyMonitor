@@ -35,12 +35,10 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
     private const string ConsoleSentinel = "CONSOLE_SENTINEL_1916";
     private static readonly string[] ExpectedPageErrorSignals = ["dom:nightly-products-unavailable", "script-error:TypeError"];
     private static readonly InducedNightlyDay NightlyDay = new();
-    private const string OpaqueOrigin = "http://opaque-host-1916.invalid";
-    private const string OpaquePreviewPath = "/api/v1/operations/still-products/00000000-0000-0000-0000-000000001916/preview";
 
     private static readonly string[] OpaqueSentinels =
     [
-        "opaque-host-1916", "OPAQUE_SEGMENT_1916", "OPAQUE_QUERYNAME_1916", "OPAQUE_VALUE_1916", "OPAQUE_MONTH_1916",
+        "OPAQUE_QUERYNAME_1916", "OPAQUE_VALUE_1916", "OPAQUE_MONTH_1916",
         "OPAQUE_INTERACTIVE_1916", "OPAQUE_NOTICE_CLASS_1916", "OPAQUE_NOTICE_TITLE_1916", "OPAQUE_NOTICE_MESSAGE_1916",
         "OPAQUE_ATTRIBUTE_1916", "OPAQUE_CLASS_1916", "OPAQUE_STATE_ATTR_1916", "OPAQUE_LABEL_1916", "OPAQUE_TITLE_1916",
         "OPAQUE_ID_1916", "OPAQUE_TEXT_1916", "OPAQUE_LINK_SEGMENT_1916", "OPAQUE_LINK_QUERYNAME_1916", "OPAQUE_IMAGE_SEGMENT_1916",
@@ -51,7 +49,7 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
     ];
 
     /// <summary>A product-shaped day page whose every free value is an opaque sentinel.</summary>
-    private const string OpaqueDayPage = """
+    private static string OpaqueDayPage(string appOrigin, string otherOrigin) => $$"""
         <!DOCTYPE html><html><body>
         <div class="app-frame" data-interactive="OPAQUE_INTERACTIVE_1916"><main><div class="content-container"><div class="day-page">
           <section class="page-state page-state--error OPAQUE_NOTICE_CLASS_1916" role="alert"><div><strong>OPAQUE_NOTICE_TITLE_1916</strong><p>OPAQUE_NOTICE_MESSAGE_1916</p></div></section>
@@ -60,11 +58,13 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
             <article class="product-slot OPAQUE_CLASS_1916" data-product-kind="daily summary" data-nightly-state="OPAQUE_STATE_ATTR_1916" aria-label="OPAQUE_LABEL_1916" title="OPAQUE_TITLE_1916" id="OPAQUE_ID_1916">
               <button type="button" class="product-slot__media"><span class="product-slot__failed"><i class="bi bi-image"></i>Preview unavailable</span></button>
               <h3>Daily summary</h3><p>OPAQUE_TEXT_1916</p>
-              <a href="/archive/day/OPAQUE_LINK_SEGMENT_1916?OPAQUE_LINK_QUERYNAME_1916=1">open</a>
+              <a href="{{otherOrigin}}/archive/day/OPAQUE_LINK_SEGMENT_1916?OPAQUE_LINK_QUERYNAME_1916=1">open</a>
               <img src="/api/v1/operations/still-products/OPAQUE_IMAGE_SEGMENT_1916/preview?OPAQUE_IMAGE_QUERYNAME_1916=1" alt="OPAQUE_ALT_1916" style="width:10px;height:10px">
               <opaque-element-1916>OPAQUE_CUSTOM_1916</opaque-element-1916>
               <!-- OPAQUE_COMMENT_1916 -->
             </article>
+            <a href="{{appOrigin}}/archive/day/OPAQUE_LINK_SEGMENT_1916?OPAQUE_LINK_QUERYNAME_1916=1">open</a>
+            <img src="{{appOrigin}}/api/v1/operations/still-products/OPAQUE_IMAGE_SEGMENT_1916/preview?OPAQUE_IMAGE_QUERYNAME_1916=1" loading="lazy" hidden>
           </section>
         </div></div></main></div>
         <dialog id="components-reconnect-modal" class="components-reconnect-show OPAQUE_RECONNECT_1916"></dialog>
@@ -148,6 +148,7 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
         Assert.AreEqual("/archive/calendar", report.UrlAfterSettle.Split('?')[0]);
         Assert.IsNotNull(report.AtFailure.Markup["calendarCell"], "the selected Calendar cell is retained");
         StringAssert.Contains(report.AtFailure.Markup["calendarCell"]!, "datetime=\"2026-10-01\"", StringComparison.Ordinal);
+        StringAssert.Contains(report.AtFailure.Markup["calendarCell"]!, "href=\"/archive/day/2026-10-01", StringComparison.Ordinal);
         Assert.IsNull(report.AtFailure.Markup["dayTile"]);
         Assert.IsEmpty(report.Observation.PreviewRequests, "the preview was never requested");
         Assert.IsTrue(report.Observation.Probe!.Available, "the product image itself is available");
@@ -254,50 +255,94 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
     [TestMethod]
     public async Task OpaqueValuesNeverReachRetainedEvidence()
     {
-        Assert.IsNotNull(browser);
-        await using var context = await browser.NewContextAsync(new() { ViewportSize = new() { Width = 1440, Height = 900 } });
-        var page = await context.NewPageAsync();
-        await page.RouteAsync(OpaqueOrigin + "/**", route => route.FulfillAsync(new() { Status = 200, ContentType = "text/html", Body = OpaqueDayPage }));
-        await page.GotoAsync(OpaqueOrigin + "/archive/day/OPAQUE_SEGMENT_1916?OPAQUE_QUERYNAME_1916=OPAQUE_VALUE_1916&month=OPAQUE_MONTH_1916");
-        var opaqueLog = new ServerLogEvidence();
-        opaqueLog.CreateLogger("OPAQUE_CATEGORY_1916").Log(LogLevel.Error, new EventId(7, "OPAQUE_EVENT_1916"), "OPAQUE_STATE_1916",
-            new InvalidOperationException("OPAQUE_EXCEPTION_1916"), static (state, _) => state);
-        var directory = Path.Combine(TestContext.ResultsDirectory ?? Path.GetTempPath(), "opaque-" + Guid.NewGuid().ToString("N"));
+        var directory = Path.Combine(TestContext.ResultsDirectory ?? Path.GetTempPath(),
+            "opaque-" + Guid.NewGuid().ToString("N"), CalendarDayPreviewEvidence.EvidenceDirectoryName);
         var attached = new List<string>();
         var lines = new List<string>();
-        using var evidence = CalendarDayPreviewEvidence.Observe(
-            page, TestContext, DailySummaryCalendarScenario.SelectedDay, OpaquePreviewPath, "opaque-1440x900",
-            opaqueLog, new CalendarEvidenceStore(directory, attached.Add, lines.Add));
+        await using var run = await InducedRun.StartAsync(TestContext, store: new CalendarEvidenceStore(directory, attached.Add, lines.Add));
+        var page = run.Page;
+        await page.Locator(".app-frame[data-interactive='true']").WaitForAsync();
+
+        // Use a second origin for the test page while keeping any request that bypasses browser routing on the fixture's loopback port.
+        var appAddress = host!.BaseAddress;
+        var appOrigin = appAddress.GetLeftPart(UriPartial.Authority);
+        var otherAddress = new UriBuilder(appAddress) { Host = "localhost" }.Uri;
+        var otherOrigin = otherAddress.GetLeftPart(UriPartial.Authority);
+        await page.RouteAsync(otherOrigin + "/**", route => route.FulfillAsync(new() { Status = 200, ContentType = "text/html", Body = OpaqueDayPage(appOrigin, otherOrigin) }));
+        await page.RouteAsync(otherOrigin + run.PreviewPath, route => route.FulfillAsync(new() { Status = 503 }));
+        await run.Evidence.BeforeDayLinkClickAsync();
+        await page.GotoAsync(otherOrigin + run.DayPath + "?OPAQUE_QUERYNAME_1916=OPAQUE_VALUE_1916&month=OPAQUE_MONTH_1916");
+        serverLog!.CreateLogger("OPAQUE_CATEGORY_1916").Log(LogLevel.Error, new EventId(7, "OPAQUE_EVENT_1916"), "OPAQUE_STATE_1916",
+            new InvalidOperationException("OPAQUE_EXCEPTION_1916"), static (state, _) => state);
         await page.EvaluateAsync("""
             () => {
                 console.error('OPAQUE_CONSOLE_1916');
                 setTimeout(() => { throw new TypeError('OPAQUE_ERROR_1916'); }, 0);
             }
             """);
-        await page.WaitForFunctionAsync("() => document.readyState === 'complete'");
-        await evidence.BeforeDayLinkClickAsync();
+        Assert.AreEqual(503, await page.EvaluateAsync<int>("async path => (await fetch(path)).status", run.PreviewPath));
 
-        var report = await evidence.RetainAsync(new TimeoutException(
-            "Timeout 30000ms exceeded.\nCall log:\n  - OPAQUE_FAILURE_LINE_1916 waiting for Locator(\"OPAQUE_SELECTOR_1916\")"),
-            TimeSpan.FromMilliseconds(300));
+        var failure = new TimeoutException(
+            "Timeout 30000ms exceeded.\nCall log:\n  - OPAQUE_FAILURE_LINE_1916 waiting for Locator(\"OPAQUE_SELECTOR_1916\")");
+        var settleWindow = TimeSpan.FromMilliseconds(300);
+        var report = await run.Evidence.RetainAsync(failure, settleWindow);
 
         Assert.IsNotNull(report);
+        Assert.IsTrue(report.Observation.Probe!.Available, "the authenticated re-read must reach the CameraAgent fixture");
+        Assert.IsFalse(report.Observation.OnSelectedDayAtFailure);
+        Assert.IsFalse(report.Observation.OnSelectedDayAfterSettle);
+        Assert.IsEmpty(report.Observation.PreviewRequests, "the foreign response belongs to a different origin");
+        Assert.AreEqual("[other-origin]", report.UrlAtFailure);
+        Assert.AreEqual("[other-origin]", report.UrlAfterSettle);
         Assert.HasCount(1, attached);
+        Assert.AreEqual(report.EvidencePath, attached[0]);
+        await run.AssertRetainedEvidenceAsync(report);
         var retained = await File.ReadAllTextAsync(report.EvidencePath!) + "\n" + string.Join('\n', lines);
+        Assert.DoesNotContain(otherAddress.Host, retained, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(appAddress.Host, retained, StringComparison.OrdinalIgnoreCase);
         foreach (var opaque in OpaqueSentinels)
         {
             Assert.DoesNotContain(opaque, retained, StringComparison.Ordinal, "an opaque value reached retained evidence");
         }
         // The cause evidence survives the allowlist.
-        CollectionAssert.Contains(report.Categories.ToArray(), Category.UnavailableProductImage);
+        CollectionAssert.Contains(report.Categories.ToArray(), Category.LostNavigation);
+        CollectionAssert.DoesNotContain(report.Categories.ToArray(), Category.UnavailableProductImage);
         CollectionAssert.Contains(report.Categories.ToArray(), Category.PageError);
         CollectionAssert.Contains(report.Observation.PageErrorSignals.ToArray(), "script-error:TypeError");
         CollectionAssert.Contains(report.Observation.PageErrorSignals.ToArray(), "dom:error-notice");
-        StringAssert.StartsWith(report.UrlAtFailure, "/archive/day/", StringComparison.Ordinal);
-        StringAssert.Contains(report.AtFailure.Markup["dayTile"]!, "product-slot__failed", StringComparison.Ordinal);
-        StringAssert.Contains(report.AtFailure.Markup["dayTile"]!, "Preview unavailable", StringComparison.Ordinal);
-        StringAssert.Contains(report.AtFailure.Markup["dayTile"]!, "data-product-kind=\"daily summary\"", StringComparison.Ordinal);
+        Assert.IsTrue(report.ServerLog.Any(static entry => entry.EventId == 7 && entry.Category == "other"));
+        Assert.IsTrue(report.AtFailure.PreviewFailedMarker);
+        Assert.IsFalse(report.Observation.PreviewFailedMarker);
+        Assert.AreEqual("[other-origin]", report.AtFailure.Image.Source);
+        Assert.AreEqual("[other-origin]", report.AtFailure.Image.CurrentSource);
+        var tileMarkup = report.AtFailure.Markup["dayTile"]!;
+        StringAssert.Contains(tileMarkup, "src=\"[other-origin]\"", StringComparison.Ordinal);
+        StringAssert.Contains(tileMarkup, "href=\"[other-origin]\"", StringComparison.Ordinal);
+        var productsMarkup = report.AtFailure.Markup["dailyProducts"]!;
+        StringAssert.Contains(productsMarkup, "href=\"/archive/day/{invalid-date}?[other-query]\"", StringComparison.Ordinal);
+        StringAssert.Contains(productsMarkup, "src=\"/api/v1/operations/still-products/{invalid-product}/preview?[other-query]\"", StringComparison.Ordinal);
+        StringAssert.Contains(report.AtFailure.Markup["calendarCell"]!, "href=\"[other-origin]\"", StringComparison.Ordinal);
+        StringAssert.Contains(tileMarkup, "product-slot__failed", StringComparison.Ordinal);
+        StringAssert.Contains(tileMarkup, "Preview unavailable", StringComparison.Ordinal);
+        StringAssert.Contains(tileMarkup, "data-product-kind=\"daily summary\"", StringComparison.Ordinal);
         StringAssert.Contains(report.AtFailure.Markup["calendarCell"]!, "data-nightly-state=\"Partial\"", StringComparison.Ordinal);
+
+        const string malformedUrl = "http://[::1";
+        await page.Locator("[data-product-kind='daily summary']").EvaluateAsync("""
+            (tile, url) => {
+                tile.querySelector('img').setAttribute('src', url);
+                tile.querySelector('a').setAttribute('href', url);
+            }
+            """, malformedUrl);
+
+        var malformedReport = await run.Evidence.RetainAsync(failure, settleWindow);
+
+        Assert.IsNotNull(malformedReport);
+        Assert.AreEqual("[unparsed]", malformedReport.AtFailure.Image.Source);
+        var malformedMarkup = malformedReport.AtFailure.Markup["dayTile"]!;
+        StringAssert.Contains(malformedMarkup, "src=\"[unparsed]\"", StringComparison.Ordinal);
+        StringAssert.Contains(malformedMarkup, "href=\"[unparsed]\"", StringComparison.Ordinal);
+        await run.AssertRetainedEvidenceAsync(malformedReport, malformedUrl);
     }
 
     [TestMethod]
@@ -477,7 +522,7 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
                 run.Cell = run.Page.Locator(".calendar-day").Filter(new() { Has = run.Page.Locator("time[datetime='2026-10-01']") });
                 await run.Cell.Locator(".calendar-products i[data-nightly-state='Partial']").Filter(new() { HasText = "D" }).WaitForAsync();
                 run.Evidence = CalendarDayPreviewEvidence.Observe(
-                    run.Page, testContext, DailySummaryCalendarScenario.SelectedDay, run.PreviewPath,
+                    run.Page, testContext, host.BaseAddress, DailySummaryCalendarScenario.SelectedDay, run.PreviewPath,
                     DailySummaryCalendarScenario.RowLabel(1440, 900, complete: false), serverLog, store, budget);
                 return run;
             }
