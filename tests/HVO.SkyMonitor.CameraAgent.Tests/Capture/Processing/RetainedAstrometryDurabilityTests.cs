@@ -541,9 +541,11 @@ public sealed partial class DurableCaptureProcessingTests
     private static async Task<AstrometryDurabilityFixture> CreateAstrometryDurabilityFixtureAsync(string root,
         string scenario = "accepted", bool hostCompatible = false, long captureSequence = 1,
         MeasuredAstrometryFixture? reference = null, (long Sequence, int Count)? prior = null,
-        Func<SqliteRawCaptureJournal, RawIngressJournalEntry, CaptureLoopSubmission, Task<RawIngressOutcome>>? commit = null)
+        Func<SqliteRawCaptureJournal, RawIngressJournalEntry, CaptureLoopSubmission, Task<RawIngressOutcome>>? commit = null,
+        MeasuredAstrometryOptions? recipe = null)
     {
         reference ??= await MeasuredAstrometryFixture.CreateAsync().ConfigureAwait(false);
+        recipe ??= MeasuredAstrometryFixture.Options;
         var bytes = reference.Raw.Payload.ToArray();
         if (scenario == "rejected")
         {
@@ -645,8 +647,7 @@ public sealed partial class DurableCaptureProcessingTests
             {
                 Catalog = new(reference.Context.CatalogMetadata, reference.Context.CatalogStars, reference.Context.CatalogPackage,
                 scenario != "unavailable", 7),
-                Recipe = MeasuredAstrometryFixture.Options with
-                { MaximumExecutionMilliseconds = scenario == "budget" ? .000001 : 20000 }
+                Recipe = scenario == "budget" ? recipe with { MaximumExecutionMilliseconds = .000001 } : recipe
             });
     }
 }

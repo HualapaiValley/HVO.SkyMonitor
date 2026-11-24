@@ -15,6 +15,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.SpaceWeather;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "SpaceWeather")]
 [DoNotParallelize]
 public sealed class SpaceWeatherTelemetryTests
 {

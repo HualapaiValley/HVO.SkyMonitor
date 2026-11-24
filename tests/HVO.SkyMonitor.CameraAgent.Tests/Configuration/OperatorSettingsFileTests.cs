@@ -11,6 +11,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Configuration;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Configuration")]
 public sealed class OperatorSettingsFileTests
 {
     private const string LimitKey = "CameraAgent:SkyMap:MaximumObjects";
@@ -341,6 +342,7 @@ public sealed class OperatorSettingsFileTests
 
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "Configuration")]
 public sealed class OperatorSettingsKernelFaultTests
 {
     [TestMethod]

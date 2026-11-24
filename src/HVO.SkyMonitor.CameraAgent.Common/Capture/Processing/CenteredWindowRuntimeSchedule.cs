@@ -152,8 +152,11 @@ internal static class CenteredWindowRuntimeSchedule
             }
             var pointBeforeRun = (saved is null && oldest is not null ? ProjectPastSlot(oldest, pastSlot) : null)
                 ?? start.AddTicks(-offset * interval.Ticks);
+            // The calendar can start partway through a run admitted by an earlier reader.
+            // Only the durable acquisition ordinal proves the predecessor predates the run.
+            var beforeRun = pastSlot <= 0 && attempt.Ordinal <= offset;
             priorTwo[offset - 1] = new(pointBeforeRun, oldest?.Cadence ?? cadence,
-                pastSlot <= 0 ? "before-run-start" : "calendar-predecessor-unavailable", oldest?.Integration ?? integration,
+                beforeRun ? "before-run-start" : "calendar-predecessor-unavailable", oldest?.Integration ?? integration,
                 oldest is null ? tolerance : SlotTolerance(oldest.Interval), oldest?.Continuous ?? continuous);
         }
 

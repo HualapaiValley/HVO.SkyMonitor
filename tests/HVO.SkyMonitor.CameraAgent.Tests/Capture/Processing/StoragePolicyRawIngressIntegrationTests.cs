@@ -18,6 +18,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
 [TestClass]
 [TestCategory("Integration")]
+[TestProperty("Area", "Capture.Processing")]
 [DoNotParallelize]
 public sealed partial class StoragePolicyRawIngressIntegrationTests
 {

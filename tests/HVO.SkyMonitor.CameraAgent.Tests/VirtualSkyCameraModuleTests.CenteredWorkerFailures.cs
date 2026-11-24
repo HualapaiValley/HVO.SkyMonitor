@@ -1,12 +1,15 @@
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests;
 
@@ -25,7 +28,9 @@ public sealed partial class VirtualSkyCameraModuleTests
         try
         {
             using var provider = CenteredRuntimeProvider(root, clock);
-            var (first, next) = await SeedCenteredWorkerWindowsAsync(provider, root, clock, token).ConfigureAwait(false);
+            var windows = await SeedCenteredWorkerWindowsAsync(provider, root, clock, windowCount: 2, token).ConfigureAwait(false);
+            var first = windows[0];
+            var next = windows[1];
             var coordinator = provider.GetRequiredService<CenteredWindowCoordinator>();
             await coordinator.CloseDueAsync(token).ConfigureAwait(false);
             var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
@@ -38,7 +43,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                 : new UnauthorizedAccessException("The worker cannot read the retained registration input.");
             var retained = provider.GetRequiredService<ICenteredWindowRegistrationSource>();
             var source = new CenteredRetainedInputFailure(retained, first.ReferenceCaptureId, failure);
-            var logger = new CenteredWorkerFailureLogger<CenteredWindowRegistrationWorker>(6192);
+            var logger = new CenteredWorkerFailureLogger<CenteredWindowRegistrationWorker>(invalidEvidence ? 6192 : 6193);
             var ingress = provider.GetRequiredService<RawCaptureIngress>();
             using var worker = new CenteredWindowRegistrationWorker(store, provider.GetRequiredService<CaptureProcessingPersistence>(),
                 provider.GetRequiredService<ICenteredWindowJournal>(), source, clock, logger, ingress);
@@ -52,6 +57,9 @@ public sealed partial class VirtualSkyCameraModuleTests
                 var reported = await logger.Failure.Task.WaitAsync(token).ConfigureAwait(false);
                 Assert.AreSame(failure, reported.Exception);
                 StringAssert.Contains(reported.Message, first.WindowIdentity, StringComparison.Ordinal);
+                if (!invalidEvidence)
+                    StringAssert.Contains(reported.Message, frozen.Closure.Center.Products!.RegistrationPin!.Raw.ArtifactId.ToString(),
+                        StringComparison.Ordinal);
                 Assert.IsFalse(host.Services.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping.IsCancellationRequested);
 
                 var failed = await store.ReadCenteredWindowDispositionAsync(first.WindowIdentity, token).ConfigureAwait(false);
@@ -73,9 +81,105 @@ public sealed partial class VirtualSkyCameraModuleTests
             Assert.IsNotNull(settled);
             Assert.AreEqual(frozen.Closure.Identity, settled.Closure.Identity);
             Assert.IsNull(settled.Publication);
-            Assert.AreEqual(invalidEvidence ? "registration.invalid-retained-evidence" : "registration-deadline-expired",
+            Assert.AreEqual(invalidEvidence ? "registration.invalid-retained-evidence" : "registration.retained-input-unreadable",
                 settled.FailureReason);
+            if (invalidEvidence)
+                Assert.IsNull(settled.InputFailure);
+            else
+                Assert.AreEqual(new CenteredRegistrationInputFailure(frozen.Closure.Center.Input!.Key,
+                    frozen.Closure.Center.Products!.RegistrationPin!.Raw, CenteredRegistrationInputFailureKind.ReadError), settled.InputFailure);
             Assert.AreEqual(0L, await ReadCenteredTestHoldCountAsync(root, first.ReferenceCaptureId, token).ConfigureAwait(false));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [DataRow("expiry")]
+    [DataRow("recovery")]
+    [DataRow("qualification")]
+    public async Task CenteredRegistrationReopensExactRetryInputAndEitherExpiresOrPublishes(string scenario)
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-centered-registration-retry");
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        var clock = new CenteredClock();
+        try
+        {
+            using var provider = CenteredRuntimeProvider(root, clock);
+            var windows = await SeedCenteredWorkerWindowsAsync(provider, root, clock, windowCount: 1, token).ConfigureAwait(false);
+            var first = windows.Single();
+            await provider.GetRequiredService<CenteredWindowCoordinator>().CloseDueAsync(token).ConfigureAwait(false);
+            var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
+            var frozen = await store.ReadCenteredWindowDispositionAsync(first.WindowIdentity, token).ConfigureAwait(false);
+            Assert.IsNotNull(frozen);
+            var pin = frozen.Closure.Center.Products!.RegistrationPin!;
+            var persistence = provider.GetRequiredService<CaptureProcessingPersistence>();
+            var journal = provider.GetRequiredService<ICenteredWindowJournal>();
+            var retained = provider.GetRequiredService<ICenteredWindowRegistrationSource>();
+            ICenteredWindowRegistrationSource unavailable = retained;
+            string? movedPayload = null;
+            if (scenario == "qualification")
+                unavailable = new CenteredQualificationUnavailable(retained, pin.Linear.ArtifactId);
+            else
+            {
+                var linear = await store.ReadOutputByArtifactIdAsync(pin.Linear.ArtifactId, token).ConfigureAwait(false);
+                Assert.IsNotNull(linear);
+                movedPayload = Path.Combine(root, linear.PayloadRelativePath);
+                File.Move(movedPayload, movedPayload + ".unavailable");
+            }
+            using (var worker = new CenteredWindowRegistrationWorker(store, persistence, journal, unavailable, clock,
+                NullLogger<CenteredWindowRegistrationWorker>.Instance))
+            {
+                await worker.RegisterPendingAsync(token).ConfigureAwait(false);
+            }
+
+            using var restarted = new SqliteCaptureProcessingStore(provider.GetRequiredService<IOptions<CameraAgentHostOptions>>(), clock);
+            var pending = await restarted.ReadCenteredWindowDispositionAsync(first.WindowIdentity, token).ConfigureAwait(false);
+            Assert.IsNotNull(pending);
+            Assert.IsFalse(pending.IsTerminal);
+            var failure = new CenteredRegistrationInputFailure(pin.Key, pin.Linear, CenteredRegistrationInputFailureKind.Unavailable);
+            Assert.AreEqual(failure, pending.InputFailure);
+            Assert.AreEqual(frozen.Closure.Identity, pending.Closure.Identity);
+            Assert.IsGreaterThan(0L, await ReadCenteredTestHoldCountAsync(root, pin.Key.CaptureId, token).ConfigureAwait(false));
+            var reader = new CenteredWindowReader(restarted);
+            Assert.IsNull((await reader.ReadAsync(pin.Key.CaptureId, token).ConfigureAwait(false))?.RegistrationInputFailure);
+
+            if (scenario == "recovery")
+            {
+                File.Move(movedPayload + ".unavailable", movedPayload!);
+                using var worker = new CenteredWindowRegistrationWorker(restarted, persistence, journal, retained, clock,
+                    NullLogger<CenteredWindowRegistrationWorker>.Instance);
+                await worker.RegisterPendingAsync(token).ConfigureAwait(false);
+            }
+            else
+            {
+                clock.UtcNow = pending.Closure.Schedule.RegistrationDeadlineUtc;
+                using var coordinator = new CenteredWindowCoordinator(restarted, journal, clock,
+                    NullLogger<CenteredWindowCoordinator>.Instance);
+                await coordinator.CloseDueAsync(token).ConfigureAwait(false);
+            }
+
+            var settled = await reader.ReadAsync(pin.Key.CaptureId, token).ConfigureAwait(false);
+            Assert.IsNotNull(settled);
+            Assert.IsTrue(settled.IsTerminal);
+            Assert.AreEqual(frozen.Closure.Identity, settled.ClosureIdentity);
+            if (scenario == "recovery")
+            {
+                Assert.IsNotNull(settled.EvidenceArtifactId);
+                Assert.IsNull(settled.FailureReason);
+                Assert.IsNull(settled.RegistrationInputFailure);
+            }
+            else
+            {
+                Assert.IsNull(settled.EvidenceArtifactId);
+                Assert.AreEqual("registration.retained-input-unreadable", settled.FailureReason);
+                Assert.AreEqual(failure, settled.RegistrationInputFailure);
+            }
+            Assert.AreEqual(0L, await ReadCenteredTestHoldCountAsync(root, pin.Key.CaptureId, token).ConfigureAwait(false));
         }
         finally
         {
@@ -96,7 +200,9 @@ public sealed partial class VirtualSkyCameraModuleTests
         {
             using var provider = CenteredRuntimeProvider(root, clock,
                 services => services.AddSingleton<ICaptureProcessingFaultInjector>(fault));
-            var (first, next) = await SeedCenteredWorkerWindowsAsync(provider, root, clock, token).ConfigureAwait(false);
+            var windows = await SeedCenteredWorkerWindowsAsync(provider, root, clock, windowCount: 2, token).ConfigureAwait(false);
+            var first = windows[0];
+            var next = windows[1];
             var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
             var journal = provider.GetRequiredService<ICenteredWindowJournal>();
             var logger = new CenteredWorkerFailureLogger<CenteredWindowCoordinator>(6191);
@@ -136,8 +242,8 @@ public sealed partial class VirtualSkyCameraModuleTests
         }
     }
 
-    private static async Task<(CenteredWindowSnapshot First, CenteredWindowSnapshot Next)> SeedCenteredWorkerWindowsAsync(
-        ServiceProvider provider, string root, CenteredClock clock, CancellationToken token)
+    private static async Task<List<CenteredWindowSnapshot>> SeedCenteredWorkerWindowsAsync(
+        ServiceProvider provider, string root, CenteredClock clock, int windowCount, CancellationToken token)
     {
         var start = clock.UtcNow;
         var profile = CenteredRuntimeProfile(root, start, CameraPixelFormat.Mono16);
@@ -149,10 +255,11 @@ public sealed partial class VirtualSkyCameraModuleTests
         await using var camera = module.ConfigureAwait(false);
         await module.InitializeAsync(active, token).ConfigureAwait(false);
         var reader = provider.GetRequiredService<ICenteredWindowReader>();
-        var windows = new List<CenteredWindowSnapshot>();
-        // Keep the two registration plans from sharing a retained exposure.
-        foreach (var scheduled in new[] { start, start.AddSeconds(12) })
+        var windows = new List<CenteredWindowSnapshot>(windowCount);
+        // Space captures so each registration plan owns its own retained exposure.
+        for (var index = 0; index < windowCount; index++)
         {
+            var scheduled = start.AddSeconds(index * 12);
             var attempt = await CaptureCenteredRuntimeAttemptAsync(ingress, module, deviceClock, clock, active, scheduled, 1, token)
                 .ConfigureAwait(false);
             var receipt = await ingress.AcceptCenteredAsync(active, attempt.Submission, attempt.Reservation, token).ConfigureAwait(false);
@@ -162,8 +269,8 @@ public sealed partial class VirtualSkyCameraModuleTests
             Assert.IsNull(window.ClosureIdentity);
             windows.Add(window);
         }
-        clock.UtcNow = windows[1].DeadlineUtc;
-        return (windows[0], windows[1]);
+        clock.UtcNow = windows[^1].DeadlineUtc;
+        return windows;
     }
 
     private static async Task<CenteredWindowDisposition> WaitForCenteredWorkerDispositionAsync(BackgroundService worker,
@@ -195,6 +302,21 @@ public sealed partial class VirtualSkyCameraModuleTests
             CancellationToken cancellationToken) => key.CaptureId == capture
                 ? ValueTask.FromException<ProcessingArtifact?>(failure)
                 : retained.ReadArtifactAsync(key, pin, cancellationToken);
+    }
+
+    private sealed class CenteredQualificationUnavailable(ICenteredWindowRegistrationSource retained, Guid artifactId)
+        : ICenteredWindowRegistrationSource
+    {
+        public ValueTask<CenteredStackQualifiedExposure?> ReadLinearAsync(ExposureKey key, ProcessingArtifact linear,
+            CancellationToken cancellationToken) => linear.ArtifactId == artifactId
+                ? ValueTask.FromResult<CenteredStackQualifiedExposure?>(null)
+                : retained.ReadLinearAsync(key, linear, cancellationToken);
+
+        public ValueTask<ExposureInputV1?> ReadExposureAsync(ExposureKey key, CancellationToken cancellationToken) =>
+            retained.ReadExposureAsync(key, cancellationToken);
+
+        public ValueTask<ProcessingArtifact?> ReadArtifactAsync(ExposureKey key, CenteredStackArtifactPin pin,
+            CancellationToken cancellationToken) => retained.ReadArtifactAsync(key, pin, cancellationToken);
     }
 
     private sealed class CenteredClosePermissionFailure : ICaptureProcessingFaultInjector

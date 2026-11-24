@@ -5,6 +5,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Orbital")]
 public sealed class OrbitalRefreshStatusTests
 {
     private static OrbitalRefreshStatus Status => new(OrbitalRefreshStatus.CurrentVersion,

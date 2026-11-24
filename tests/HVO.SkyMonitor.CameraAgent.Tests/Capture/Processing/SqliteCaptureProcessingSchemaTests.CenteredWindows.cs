@@ -11,6 +11,11 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
 public sealed partial class SqliteCaptureProcessingSchemaTests
 {
+    internal const string DropCenteredRegistrationStateSql = """
+        DROP TABLE processing_centered_registration_input_failures;
+        DROP INDEX ix_processing_centered_windows_publication_retention;
+        """;
+
     public TestContext TestContext { get; set; } = null!;
 
     [TestMethod]
@@ -73,6 +78,171 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
         Assert.AreEqual(1L, await ScalarAsync(verify, "SELECT COUNT(*) FROM processing_nodes WHERE node_id = 'historic-availability';")
             .ConfigureAwait(false));
         Assert.AreEqual(0L, await ScalarAsync(verify, "SELECT COUNT(*) FROM processing_centered_output_availability;").ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The legacy test schema is fixed.")]
+    public async Task CenteredOpenRunWithoutCalendarKeepsUnavailablePredecessorAfterSchema10Upgrade()
+    {
+        using var fixture = await SchemaFixture.CreateAsync().ConfigureAwait(false);
+        var token = TestContext.CancellationToken;
+        var camera = new CameraKey("legacy-agent", "legacy-camera");
+        var run = Guid.NewGuid();
+        using var connection = await fixture.OpenAsync().ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = SqliteCaptureProcessingStore.LegacySchema10BeforeAvailabilitySqlForTests;
+        await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+        command.CommandText = """
+            INSERT INTO centered_exposure_runs(run_id, agent_id, camera_id, snapshot_json, snapshot_sha256)
+            VALUES ($run, 'legacy-agent', 'legacy-camera', X'7B7D', 'legacy');
+            INSERT INTO centered_exposure_attempts(attempt_id, run_id, ordinal, status, reason)
+            VALUES ($old, $run, 1, 'expired', 'target-progress-unknown');
+            """;
+        command.Parameters.AddWithValue("$run", run.ToString("N"));
+        command.Parameters.AddWithValue("$old", Guid.NewGuid().ToString("N"));
+        await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+        using (var store = new SqliteCaptureProcessingStore(fixture.Options))
+            await store.InitializeAsync(token).ConfigureAwait(false);
+
+        for (var ordinal = 2; ordinal <= 3; ordinal++)
+        {
+            var current = new ExposureAttemptKey(camera, run, ordinal, Guid.NewGuid());
+            var start = Start.AddSeconds(ordinal * 2);
+            using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(token).ConfigureAwait(false);
+            await CenteredWindowRuntimeSchedule.TrackDispatchedAsync(transaction, current,
+                new(start, TimeSpan.FromSeconds(2), CaptureCadenceMode.MinimumStartInterval),
+                TimeSpan.FromMilliseconds(250), start, token).ConfigureAwait(false);
+            await transaction.CommitAsync(token).ConfigureAwait(false);
+        }
+
+        command.CommandText = """
+            SELECT json_extract(window.checkpoint_json, '$.projectedTimes[0].boundaryReason'),
+                   json_extract(window.checkpoint_json, '$.projectedTimes[1].boundaryReason')
+            FROM processing_centered_attempt_calendar calendar
+            JOIN processing_centered_windows window ON window.window_sha256 = calendar.window_sha256
+            WHERE calendar.run_id = $run ORDER BY calendar.slot;
+            """;
+        using var reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false);
+        Assert.IsTrue(await reader.ReadAsync(token).ConfigureAwait(false));
+        Assert.AreEqual("before-run-start", reader.GetString(0));
+        Assert.AreEqual("calendar-predecessor-unavailable", reader.GetString(1));
+        Assert.IsTrue(await reader.ReadAsync(token).ConfigureAwait(false));
+        Assert.AreEqual("calendar-predecessor-unavailable", reader.GetString(0));
+        Assert.IsTrue(await reader.IsDBNullAsync(1, token).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task CenteredPublicationRetentionSeeksByDeadline()
+    {
+        using var fixture = await SchemaFixture.CreateAsync(initializeProcessing: true).ConfigureAwait(false);
+        var token = TestContext.CancellationToken;
+        using var connection = await fixture.OpenAsync().ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            WITH RECURSIVE history(n) AS (VALUES(1) UNION ALL SELECT n + 1 FROM history WHERE n < 2003)
+            INSERT INTO processing_centered_windows(window_sha256, deadline_utc_ticks, registration_deadline_utc_ticks,
+                checkpoint_json, closure_json, publication_json, terminal)
+            SELECT printf('%064x', n), $centered_ticks - 1, $centered_ticks + (n > 2000), X'7B7D', X'7B7D',
+                CAST(json_object('registrationArtifactIds', json_array(printf('%032x', n))) AS BLOB), 1
+            FROM history;
+            INSERT INTO processing_centered_view_window_work(window_sha256, terminal_reason)
+                VALUES(printf('%064x', 2002), 'not-publishable');
+            INSERT INTO processing_centered_view_window_work(window_sha256, retry_utc)
+                VALUES(printf('%064x', 2003), $centered_ticks);
+            """;
+        command.Parameters.AddWithValue("$centered_ticks", Start.UtcTicks);
+        await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+        command.CommandText = "EXPLAIN QUERY PLAN " + SqliteCaptureProcessingStore.CenteredPublicationRetentionSql;
+        var plan = new List<string>();
+        using (var reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false))
+        {
+            while (await reader.ReadAsync(token).ConfigureAwait(false))
+                plan.Add(reader.GetString(3));
+        }
+        Assert.IsTrue(plan.Any(step => step.Contains("ix_processing_centered_windows_publication_retention (registration_deadline_utc_ticks>?)",
+            StringComparison.Ordinal)), string.Join(Environment.NewLine, plan));
+
+        command.CommandText = SqliteCaptureProcessingStore.CenteredPublicationRetentionSql;
+        var retained = new List<string>();
+        using (var reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false))
+        {
+            while (await reader.ReadAsync(token).ConfigureAwait(false))
+                retained.Add(reader.GetString(0));
+        }
+        Assert.HasCount(2, retained);
+        Assert.Contains("000000000000000000000000000007d1", retained);
+        Assert.Contains("000000000000000000000000000007d3", retained);
+        Assert.AreEqual(2003L, await ScalarAsync(connection, "SELECT COUNT(*) FROM processing_centered_windows;").ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task CenteredRegistrationSchema12AdoptionIsAtomicAndPreservesClosuresAndCustody()
+    {
+        using var fixture = await SchemaFixture.CreateAsync(initializeProcessing: true).ConfigureAwait(false);
+        var token = TestContext.CancellationToken;
+        var schedule = Schedule(4, 12);
+        var slots = ImmutableArray.Create(Exposure(101, 0), Exposure(102, 2), Exposure(103, 4), Empty(6), Empty(8));
+        var historical = Schedule(6, 14);
+        var historicalSlots = ImmutableArray.Create(slots[1], slots[2], Exposure(104, 6), Empty(8), Empty(10));
+        var journal = new CenteredJournalProbe(slots);
+        var clock = new CenteredTestClock { UtcNow = historical.DeadlineUtc };
+        var referenceId = slots[2].Input!.Key.CaptureId;
+        Assert.IsTrue(await TrackAsync(fixture, schedule, slots, 1, token).ConfigureAwait(false));
+        using var original = new SqliteCaptureProcessingStore(fixture.Options, clock);
+        var closed = await original.TryCloseCenteredWindowAsync(schedule.Identity, journal, token).ConfigureAwait(false);
+        Assert.IsNotNull(closed);
+        Assert.IsFalse(closed.IsTerminal);
+
+        Assert.IsTrue(await TrackAsync(fixture, historical, historicalSlots, 2, token).ConfigureAwait(false));
+        journal.Slots = historicalSlots;
+        var historicalClosure = await original.TryCloseCenteredWindowAsync(historical.Identity, journal, token).ConfigureAwait(false);
+        Assert.IsNotNull(historicalClosure);
+        var receipt = await original.FailCenteredRegistrationAsync(historicalClosure.Closure, "registration.historical-test",
+            journal, token).ConfigureAwait(false);
+        Assert.IsTrue(receipt.IsTerminal);
+        Assert.AreEqual(1L, await CountPinsAsync(fixture, referenceId).ConfigureAwait(false));
+
+        using var connection = await fixture.OpenAsync().ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = DropCenteredRegistrationStateSql;
+        await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+        var before = await ReadClosedStateAsync().ConfigureAwait(false);
+        using (var interrupted = new SqliteCaptureProcessingStore(fixture.Options, clock,
+            new ThrowOnceFaultInjector(CaptureProcessingFaultPoint.BeforeSchemaCommit)))
+        {
+            await Assert.ThrowsExactlyAsync<InjectedProcessingSchemaException>(async () =>
+                await interrupted.InitializeAsync(token).ConfigureAwait(false)).ConfigureAwait(false);
+        }
+        const string addedObjects = """
+            SELECT COUNT(*) FROM sqlite_schema WHERE name IN
+                ('processing_centered_registration_input_failures', 'ix_processing_centered_windows_publication_retention');
+            """;
+        Assert.AreEqual(0L, await ScalarAsync(connection, addedObjects).ConfigureAwait(false));
+        Assert.AreEqual(before, await ReadClosedStateAsync().ConfigureAwait(false));
+
+        var ingress = new SqliteRawCaptureJournal(fixture.DatabasePath, 1);
+        await ingress.InitializeAsync(token).ConfigureAwait(false);
+        using var reopened = new SqliteCaptureProcessingStore(fixture.Options, clock);
+        await reopened.InitializeAsync(token).ConfigureAwait(false);
+        Assert.AreEqual(2L, await ScalarAsync(connection, addedObjects).ConfigureAwait(false));
+        Assert.AreEqual(12L, await ScalarAsync(connection, "SELECT version FROM capture_processing_schema;").ConfigureAwait(false));
+        Assert.AreEqual(before, await ReadClosedStateAsync().ConfigureAwait(false));
+        var after = await reopened.ReadCenteredWindowByReferenceAsync(referenceId, token).ConfigureAwait(false);
+        Assert.AreEqual(closed.Closure.Identity, after?.Closure.Identity);
+        var historyAfter = await reopened.ReadCenteredWindowDispositionAsync(historical.Identity, token).ConfigureAwait(false);
+        Assert.IsNotNull(historyAfter);
+        Assert.AreEqual(receipt.Closure.Identity, historyAfter.Closure.Identity);
+        Assert.AreEqual(receipt.FailureReason, historyAfter.FailureReason);
+        Assert.AreEqual(1L, await CountPinsAsync(fixture, referenceId).ConfigureAwait(false));
+
+        async Task<string> ReadClosedStateAsync()
+        {
+            command.CommandText = """
+                SELECT group_concat(hex(closure_json) || '/' || COALESCE(failure_reason, ''), '|' ORDER BY window_sha256)
+                FROM processing_centered_windows;
+                """;
+            return (string)(await command.ExecuteScalarAsync(token).ConfigureAwait(false))!;
+        }
     }
 
     [TestMethod]

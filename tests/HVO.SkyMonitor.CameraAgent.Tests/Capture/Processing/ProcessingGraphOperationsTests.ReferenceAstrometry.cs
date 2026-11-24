@@ -891,6 +891,7 @@ public sealed partial class ProcessingGraphOperationsTests
 }
 
 [TestClass]
+[TestProperty("Area", "Capture.Processing")]
 public sealed class VerifiedReferenceAstrometryCatalogTests
 {
     [TestMethod]

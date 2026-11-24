@@ -4,6 +4,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Fleet;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Fleet")]
 public sealed class FleetRuntimeStateTests
 {
     [TestMethod]

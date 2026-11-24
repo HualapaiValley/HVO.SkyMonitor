@@ -18,6 +18,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Services;
 /// <summary>Unit composition of the real host authorization, UI adapter and planner over retained local test inputs.</summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Services")]
 public sealed class CameraAgentSatellitePlanningUiIntegrationTests
 {
     public TestContext TestContext { get; set; } = null!;

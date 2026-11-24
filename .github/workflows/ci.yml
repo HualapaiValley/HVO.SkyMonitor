@@ -15,8 +15,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'merge_group' && github.run_id || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 env:
   DOTNET_NOLOGO: true
@@ -37,8 +37,6 @@ jobs:
       complete: ${{ steps.classify.outputs.complete }}
       shared: ${{ steps.classify.outputs.shared }}
       cameraagent: ${{ steps.classify.outputs.cameraagent }}
-      logichost: ${{ steps.classify.outputs.logichost }}
-      combined: ${{ steps.classify.outputs.combined }}
       delivery: ${{ steps.classify.outputs.delivery }}
       catalog_recipe: ${{ steps.classify.outputs.catalog_recipe }}
     steps:
@@ -156,6 +154,10 @@ jobs:
           mapfile -d '' -t workflows < "$RUNNER_TEMP/actionlint-workflows.list"
           ((${#workflows[@]} > 0)) || { echo 'No workflow files found for actionlint.' >&2; exit 1; }
           /tmp/actionlint "${workflows[@]}"
+      - name: Validate changelog fragments
+        run: |
+          ./scripts/release:changelog --check
+          ./scripts/test:changelog
       - name: Run static and lightweight contract checks
         run: |
           ./scripts/ci:shell-syntax
@@ -177,7 +179,6 @@ jobs:
           ./scripts/test:cameraagent-final-head-535
           ./scripts/test:record-cameraagent-final-head-535
           ./scripts/test:cameraagent-final-head-ci-import-535
-          ./scripts/test:cameraagent-final-head-components-535
           ./scripts/test:promotion-behind-check
           ./scripts/test:ci-artifact-provenance
           ./scripts/test:ci-shell-syntax
@@ -266,6 +267,8 @@ jobs:
             scripts/test:deployment-installer-qualification \
             scripts/qualify:filesystem-object-store \
             scripts/test:filesystem-object-store-qualification \
+            scripts/qualify:silo-runtime \
+            scripts/test:silo-runtime-qualification \
             scripts/lib/deployment-installer-qualification.sh
           ./scripts/test:deployment-installer-qualification
       - name: Run exhaustive production catalog lifecycle
@@ -279,6 +282,7 @@ jobs:
           ./scripts/test:deployment-logichost-outage-contract
           ./scripts/test:deployment-normal-flow-contract
           ./scripts/test:filesystem-object-store-qualification
+          ./scripts/test:silo-runtime-qualification
       - name: Run exhaustive deployment contracts in parallel
         if: needs.changes.outputs.deployment_shards == 'true'
         run: ./scripts/test:deploy-environment --parallel
@@ -320,6 +324,8 @@ jobs:
         run: dotnet build HVO.SkyMonitor.v9.slnx --no-restore --no-incremental --configuration Release -warnaserror
       - name: Audit behavioral test categories
         run: dotnet run --project scripts/test-categories/HVO.SkyMonitor.TestCategoryAudit.csproj --configuration Release
+      - name: Test category discovery contracts
+        run: ./scripts/test:test-category-audit
 
   unit:
     name: Unit Tests
@@ -329,7 +335,7 @@ jobs:
     timeout-minutes: 45
     env:
       DOCKER_HOST: unix:///tmp/hvo-unit-docker-must-not-exist.sock
-      UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware
+      UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware&TestCategory!=Performance
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -469,7 +475,7 @@ jobs:
           dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release
       - name: Validate architecture unit contracts
         env:
-          UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware
+          UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware&TestCategory!=Performance
         run: dotnet test tests/HVO.SkyMonitor.Architecture.Tests/HVO.SkyMonitor.Architecture.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --results-directory TestResults/architecture-unit --logger "trx;LogFileName=architecture-unit.trx"
       - name: Validate architecture graph and publish outputs
         env:
@@ -507,7 +513,6 @@ jobs:
       - name: Create retained publish manifests
         run: |
           (cd TestResults/publish/cameraagent && find . -type f -print0 | sort -z | xargs -0 sha256sum > ../cameraagent.sha256)
-          (cd TestResults/publish/logichost && find . -type f -print0 | sort -z | xargs -0 sha256sum > ../logichost.sha256)
           (cd TestResults/publish/installer/linux-x64 && find . -type f -print0 | sort -z | xargs -0 sha256sum > ../../installer-linux-x64.sha256)
           (cd TestResults/publish/installer/linux-arm64 && find . -type f -print0 | sort -z | xargs -0 sha256sum > ../../installer-linux-arm64.sha256)
           (cd TestResults/publish/replay-runner/linux-x64 && find . -type f -print0 | sort -z | xargs -0 sha256sum > ../../replay-runner-linux-x64.sha256)
@@ -517,18 +522,14 @@ jobs:
           cameraagent_files=$(find TestResults/publish/cameraagent -type f | wc -l)
           cameraagent_bytes=$(find TestResults/publish/cameraagent -type f -printf '%s\n' | awk '{total += $1} END {print total}')
           cameraagent_dependencies=$(find TestResults/publish/cameraagent -maxdepth 1 -type f -name '*.dll' | wc -l)
-          logichost_files=$(find TestResults/publish/logichost -type f | wc -l)
-          logichost_bytes=$(find TestResults/publish/logichost -type f -printf '%s\n' | awk '{total += $1} END {print total}')
-          logichost_dependencies=$(find TestResults/publish/logichost -maxdepth 1 -type f -name '*.dll' | wc -l)
           installer_x64_bytes=$(stat -c '%s' TestResults/publish/installer/linux-x64/hvo-sky-install)
           installer_arm64_bytes=$(stat -c '%s' TestResults/publish/installer/linux-arm64/hvo-sky-install)
           replay_runner_x64_bytes=$(find TestResults/publish/replay-runner/linux-x64 -type f -printf '%s\n' | awk '{total += $1} END {print total}')
           replay_runner_arm64_bytes=$(find TestResults/publish/replay-runner/linux-arm64 -type f -printf '%s\n' | awk '{total += $1} END {print total}')
           processing_runner_x64_bytes=$(find TestResults/publish/processing-runner/linux-x64 -type f -printf '%s\n' | awk '{total += $1} END {print total}')
           processing_runner_arm64_bytes=$(find TestResults/publish/processing-runner/linux-arm64 -type f -printf '%s\n' | awk '{total += $1} END {print total}')
-          printf 'CameraAgent files=%s bytes=%s dependencies=%s\nLogicHost files=%s bytes=%s dependencies=%s\nInstaller linux-x64 bytes=%s\nInstaller linux-arm64 bytes=%s\nReplayRunner linux-x64 bytes=%s\nReplayRunner linux-arm64 bytes=%s\nProcessingRunner linux-x64 bytes=%s\nProcessingRunner linux-arm64 bytes=%s\n' \
+          printf 'CameraAgent files=%s bytes=%s dependencies=%s\nInstaller linux-x64 bytes=%s\nInstaller linux-arm64 bytes=%s\nReplayRunner linux-x64 bytes=%s\nReplayRunner linux-arm64 bytes=%s\nProcessingRunner linux-x64 bytes=%s\nProcessingRunner linux-arm64 bytes=%s\n' \
             "$cameraagent_files" "$cameraagent_bytes" "$cameraagent_dependencies" \
-            "$logichost_files" "$logichost_bytes" "$logichost_dependencies" \
             "$installer_x64_bytes" "$installer_arm64_bytes" \
             "$replay_runner_x64_bytes" "$replay_runner_arm64_bytes" \
             "$processing_runner_x64_bytes" "$processing_runner_arm64_bytes" \
@@ -593,14 +594,6 @@ jobs:
       - name: Reject pending CameraAgent model changes
         run: dotnet ef migrations has-pending-model-changes --project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj --startup-project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj --context HVO.SkyMonitor.CameraAgent.Data.ApplicationDbContext --configuration Release --no-build
 
-  migrations-logichost:
-    name: LogicHost Migrations
-    needs: changes
-    if: ${{ !always() }} # LogicHost retirement (#2048) always skips this job.
-    runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
-    steps:
-      - run: echo 'Skipped for LogicHost retirement (#2048).'
-
   coverage-policy:
     name: Coverage Policy
     needs: changes
@@ -626,7 +619,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
     timeout-minutes: 45
     env:
-      UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware
+      UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware&TestCategory!=Performance
       INTEGRATION_FILTER: TestCategory=Integration&TestCategory!=Soak&TestCategory!=Manual&TestCategory!=External&TestCategory!=Hardware
     steps:
       - name: Checkout
@@ -687,7 +680,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
     timeout-minutes: 45
     env:
-      UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware
+      UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware&TestCategory!=Performance
       INTEGRATION_FILTER: TestCategory=Integration&TestCategory!=Soak&TestCategory!=Manual&TestCategory!=External&TestCategory!=Hardware
     steps:
       - name: Checkout
@@ -739,22 +732,6 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  logichost-component:
-    name: LogicHost Component
-    needs: changes
-    if: ${{ !always() }} # LogicHost retirement (#2048) always skips this job.
-    runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
-    steps:
-      - run: echo 'Skipped for LogicHost retirement (#2048).'
-
-  combined-integration:
-    name: Combined Protocol & Integration
-    needs: changes
-    if: ${{ !always() }} # LogicHost retirement (#2048) always skips this job.
-    runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
-    steps:
-      - run: echo 'Skipped for LogicHost retirement (#2048).'
-
   delivery-component:
     name: Delivery Component
     needs: [changes, catalog-contracts]
@@ -762,7 +739,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
     timeout-minutes: 30
     env:
-      UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware
+      UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware&TestCategory!=Performance
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1009,7 +986,7 @@ jobs:
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    needs: [changes, quality, catalog-contracts, catalog-reproducibility, deployment-contracts, build, architecture, coverage-policy, migrations-cameraagent, migrations-logichost, unit, integration, coverage, shared-libraries, cameraagent-component, logichost-component, combined-integration, delivery-component]
+    needs: [changes, quality, catalog-contracts, catalog-reproducibility, deployment-contracts, build, architecture, coverage-policy, migrations-cameraagent, unit, integration, coverage, shared-libraries, cameraagent-component, delivery-component]
     steps:
       - name: Block merge while review is in progress
         if: github.event_name == 'pull_request' && github.event.pull_request.draft == true
@@ -1030,8 +1007,6 @@ jobs:
             complete=${{ needs.changes.outputs.complete }}
             shared=${{ needs.changes.outputs.shared }}
             cameraagent=${{ needs.changes.outputs.cameraagent }}
-            logichost=${{ needs.changes.outputs.logichost }}
-            combined=${{ needs.changes.outputs.combined }}
             delivery=${{ needs.changes.outputs.delivery }}
             deployment=${{ needs.changes.outputs.deployment }}
             catalog_recipe=${{ needs.changes.outputs.catalog_recipe }}
@@ -1045,13 +1020,10 @@ jobs:
             architecture=${{ needs.architecture.result }}
             coverage-policy=${{ needs.coverage-policy.result }}
             migrations-cameraagent=${{ needs.migrations-cameraagent.result }}
-            migrations-logichost=${{ needs.migrations-logichost.result }}
             unit=${{ needs.unit.result }}
             integration=${{ needs.integration.result }}
             coverage=${{ needs.coverage.result }}
             shared-libraries=${{ needs.shared-libraries.result }}
             cameraagent-component=${{ needs.cameraagent-component.result }}
-            logichost-component=${{ needs.logichost-component.result }}
-            combined-integration=${{ needs.combined-integration.result }}
             delivery-component=${{ needs.delivery-component.result }}
         run: ./scripts/ci:require "$EVENT_NAME" "$PLAN" "$RESULTS"

@@ -12,6 +12,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Ui")]
 public sealed class OrbitalDataStatusNoticeTests
 {
     private static readonly DateTimeOffset Now = TestOrbitalUiService.Now;

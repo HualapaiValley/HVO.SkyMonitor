@@ -147,6 +147,9 @@ internal sealed class CameraAgentLifecycleClient(
         var payload = new Dictionary<string, object>
         {
             ["operationId"] = commandId,
+            // The stable pause owner (#1966): a first-boot-profile CameraAgent lets a resume lift only the pause its own
+            // operation placed. Other CameraAgents ignore it and keep the command identity as the owner.
+            ["ownerOperationId"] = operationId,
             ["reason"] = $"transactional lifecycle operation {operationId:D} {action}"
         };
         if (expectedVersion is not null) payload["expectedVersion"] = expectedVersion.Value;

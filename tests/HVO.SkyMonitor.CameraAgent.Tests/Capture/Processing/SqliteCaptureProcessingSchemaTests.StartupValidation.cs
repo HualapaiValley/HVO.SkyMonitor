@@ -85,7 +85,7 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
         using (var connection = await fixture.OpenAsync().ConfigureAwait(false))
         using (var command = connection.CreateCommand())
         {
-            command.CommandText = "DROP INDEX ix_processing_outputs_astrometry_lookup;";
+            command.CommandText = DropCenteredRegistrationStateSql + "\nDROP INDEX ix_processing_outputs_astrometry_lookup;";
             await command.ExecuteNonQueryAsync(TestContext.CancellationToken).ConfigureAwait(false);
         }
         var recorder = new ValidationRecorder();

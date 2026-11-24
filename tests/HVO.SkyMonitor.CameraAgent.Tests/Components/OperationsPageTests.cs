@@ -12,6 +12,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Ui")]
 public sealed class OperationsPageTests
 {
     private static readonly string[] LoadedFacts = ["Not reported", "Schedule open", "Installed rig", "Available"];

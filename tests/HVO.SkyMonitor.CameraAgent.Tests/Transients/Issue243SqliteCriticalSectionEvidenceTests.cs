@@ -9,6 +9,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Transients;
 
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "Transients")]
 [DoNotParallelize]
 public sealed class Issue243SqliteCriticalSectionEvidenceTests
 {

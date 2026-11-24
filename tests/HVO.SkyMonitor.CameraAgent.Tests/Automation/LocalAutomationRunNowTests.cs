@@ -13,6 +13,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Automation;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Automation")]
 [DoNotParallelize]
 public sealed class LocalAutomationRunNowTests : IDisposable
 {

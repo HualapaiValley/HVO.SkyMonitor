@@ -15,6 +15,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 /// <summary>The generated products library that the Products page opens with, and the retained view beside it.</summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Ui")]
 public sealed class GeneratedProductsLibraryTests
 {
     private static readonly DateOnly Newest = NightlyProductFixture.ObservingDate;
