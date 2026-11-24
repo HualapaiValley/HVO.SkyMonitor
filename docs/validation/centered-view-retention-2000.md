@@ -101,6 +101,5 @@ a saved selection on a recomputed view whose expired parent must also survive.
 A revision-only pin would change that operator contract. #2000 has no separate
 expiry or byte budget for operator-saved views.
 
-Trail-work retention needs its own terminal-record lifetime and retry tests.
-Window publication retry and settlement remain with the existing workers.
-[#2037](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/2037)
+The trail-work follow-up defines the terminal record lifetime and covers retries
+and replay after expiration. [#2037](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/2037)

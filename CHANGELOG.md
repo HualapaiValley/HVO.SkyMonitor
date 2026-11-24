@@ -38,6 +38,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- CameraAgent prunes completed trail work for expired centered-view captures while preserving pending retries and the recorded outcomes needed by retained views. #2037
+
 - CameraAgent clears centered-view history after the reference capture's raw files and view preview expire. It releases the journal and lifecycle locks between batches so capture writers can commit. Open live intervals and saved selections keep their journal records, and retained views keep the true last-live revision. Exact archive links to pruned revisions return HTTP 404. #2000
 
 - CameraAgent Silo checkpoint retries read an occupied key only up to the configured limit plus one byte. #2001
