@@ -2,13 +2,13 @@
 set -euo pipefail
 
 # Prove the full-qualification Unit job lists every test project that owns Unit
-# cases (issue #1255), plus the four supplemental component selections (#1261).
+# cases (issue #1255), plus the two supplemental component selections (#1261).
 #
 # Bounded guarantee: for each inventory-derived Unit-bearing project, the full
 # `unit` job holds exactly one supported selecting command, whose arguments and
 # report boundaries (positive filter, TRX slot, coverage and Docker endpoint) are
 # checked, in a step of a closed grammar, ahead of the evidence bind and upload.
-# Component checks use that grammar for the four explicitly named supplemental
+# Component checks use that grammar for the two explicitly named supplemental
 # commands, with the same strict TRX-only arguments and their own build roots.
 # It is not proof of arbitrary shell execution, of whole-job artifact membership
 # or publication, of installed catalog availability, or of checkout trust: those
@@ -34,7 +34,7 @@ set -euo pipefail
 #
 # Every selecting command must sit in a step that always runs: an `if:` or
 # `continue-on-error:` on its step would let the list stay complete while the
-# selection never executes. Component checks below cover only their four named
+# selection never executes. Component checks below cover only their two named
 # supplemental selecting commands and the corresponding component build roots.
 #
 # Usage: scripts/ci:unit-selection [--workflow <path>] [--tests-root <dir>] [--component-build <path>]
@@ -68,6 +68,10 @@ unit_job="$(job_block unit)"
 coverage_job="$(job_block coverage)"
 errors=0
 fail() { printf 'Unit selection: %s\n' "$1" >&2; errors=$((errors + 1)); }
+
+is_logichost_project() {
+  [[ "$1" == tests/HVO.SkyMonitor.LogicHost.*/* || "$1" == tests/HVO.SkyMonitor.CameraAgent.LogicHost.*/* ]]
+}
 
 # Split captured output without another input delivery (including a here-string
 # temporary file). Command substitutions already remove trailing newlines.
@@ -258,7 +262,9 @@ for inventory in "${inventories[@]}"; do
   fi
   split_lines projects "$project_text"
   ((${#projects[@]} == 1)) || { fail "inventory without exactly one project beside it: $inventory"; continue; }
-  expected["tests/$(basename "$dir")/${projects[0]}"]="$unit"
+  project="tests/$(basename "$dir")/${projects[0]}"
+  is_logichost_project "$project" && continue
+  expected["$project"]="$unit"
 done
 
 ((${#expected[@]} > 0)) || { printf 'Unit selection: no Unit-bearing inventory found under %s\n' "$tests_root" >&2; exit 1; }
@@ -328,10 +334,14 @@ done
 
 for command in "${commands[@]}"; do
   project="$(sed -nE 's#^[[:space:]]+dotnet test (tests/[^ ]+) .*#\1#p' <<<"$command")"
-  [[ -n "${expected[$project]:-}" ]] || fail "the Unit job selects $project, which owns no Unit cases"
+  if is_logichost_project "$project"; then
+    fail "the Unit job selects retired LogicHost project $project"
+  elif [[ -z "${expected[$project]:-}" ]]; then
+    fail "the Unit job selects $project, which owns no Unit cases"
+  fi
 done
 
-# These four compile-linked Unit-bearing assemblies supplement existing component
+# These compile-linked Unit-bearing assemblies supplement existing component
 # coverage runs. This is a selecting-command/build-plan contract, not a whole-job
 # YAML interpreter or proof of checkout, prerequisites or artifact publication.
 while IFS='|' read -r job component name slot; do
@@ -378,12 +388,10 @@ while IFS='|' read -r job component name slot; do
 done <<'COMPONENTS'
 shared-libraries|shared|HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests|catalog-sqlite-performance
 cameraagent-component|cameraagent|HVO.SkyMonitor.CameraAgent.IntegrationTests|cameraagent-integration
-logichost-component|logichost|HVO.SkyMonitor.LogicHost.IntegrationTests|logichost-integration
-combined-integration|combined|HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests|cameraagent-logichost-integration
 COMPONENTS
 
 if ((errors)); then
   printf 'Unit selection failed with %d error(s).\n' "$errors" >&2
   exit 1
 fi
-printf 'Unit selection passed: the full-qualification unit job lists one supported selecting command for each of %d Unit-bearing project(s) plus four component supplemental commands and their build roots (whole-job execution context and artifact publication are not asserted).\n' "${#expected[@]}"
+printf 'Unit selection passed: the full-qualification unit job lists one supported selecting command for each of %d active Unit-bearing project(s) plus two component supplemental commands and their build roots (whole-job execution context and artifact publication are not asserted).\n' "${#expected[@]}"
