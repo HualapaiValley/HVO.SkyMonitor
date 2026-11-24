@@ -531,6 +531,12 @@ its schema in today, and what `io.hvo.skymonitor.state-contracts` and `stateCont
 
 The centered scheduling and storage stage uses minimum-compatible revision `1c76d83224bacdcc129041c6d1779eb5f95716cb` to select the paired checkpoint even when the installed image declares the same raw and environmental schema floors.
 
+The centered-view journal retention reader advances the minimum-compatible revision to
+`ee848ab110e094ef888c1aca4225ea9c8be226f6` (#2000). Its six indexes change the schema-12
+object set validated by older readers. The installer selects a paired checkpoint
+even for private schema-12 images carrying the previous minimum, with the raw
+and processing schema numbers still 17 and 12.
+
 The environmental v5 journal retains a settled held slot so reopening the same cadence does not acquire it again.
 The first released v5 reader validates the canonical shape before opening for writes. A private rehearsal v5
 journal without the settlement column is refused unchanged. Retain or archive that rehearsal state and restore

@@ -27,6 +27,8 @@ catalog_recipe="true"
 path_count=0
 docs_fast_path="false"
 docs_fast_path_reason="non-pull-request events require full validation"
+restore_certificate_path='scripts/ci:restore-import-certificate.json'
+docs_restore_required=false
 
 write_summary_header() {
   [[ -n "$summary_file" ]] || return 0
@@ -163,11 +165,12 @@ is_fast_doc_path() {
 # Certified inventory: the base-controlled manifest records every tracked
 # MSBuild definition, XML input and resolved explicit import, including modes
 # and blob identities. Changes disable the exemption until reviewed.
-fast_inventory_for_tree() {
-  python3 -I - "$1" <<'PY_AUDIT'
+audit_fast_inventory() {
+  python3 -I - "$1" "${2:-}" <<'PY_AUDIT'
 import os, posixpath, re, subprocess, sys, xml.etree.ElementTree as ET
 
 commit = sys.argv[1]
+restore_source = sys.argv[2] == "restore-source"
 def fail(message):
     print("docs inventory audit: " + message, file=sys.stderr)
     sys.exit(1)
@@ -209,6 +212,7 @@ try:
 except (ValueError, UnicodeError):
     fail("unreadable tree entry")
 
+restore_inputs = set()
 for name, (metadata, _) in entries.items():
     if metadata.startswith(b"120000 "):
         fail("tracked symlink requires manual review")
@@ -217,6 +221,10 @@ for name, (metadata, _) in entries.items():
     lower = name.lower()
     if lower.endswith((".user", ".rsp")) or posixpath.basename(lower).startswith("directory.solution."):
         fail("tracked automatic MSBuild input requires manual review")
+    if restore_source and (posixpath.basename(lower) in (
+        "global.json", "nuget.config", "packages.config", "packages.lock.json", ".gitattributes", "dotnet-tools.json"
+    )):
+        restore_inputs.add(name)
 
 # Certify the exact solution the workflow restores and builds. Unknown solution
 # syntax or project paths cannot establish the exemption.
@@ -240,7 +248,7 @@ for node in solution_root.iter():
 if not projects: fail("solution has no projects")
 pending = [(n, True) for n in projects]
 pending += [(n, n.lower().endswith(".csproj")) for n in entries if n.lower().endswith((".csproj", ".props", ".targets", ".xml"))]
-seen = {solution}
+seen = {solution} | restore_inputs
 visited = set()
 while pending:
     name, is_project = pending.pop()
@@ -256,17 +264,18 @@ while pending:
     if not meta.startswith(b"100644 blob ") and not meta.startswith(b"100755 blob "):
         fail("non-regular build input")
     root = read_xml(name)
-    # SDK resolution can itself add restore-time imports, even with no explicit
-    # PackageReference. No source-bound SDK/package import certificate exists.
-    sdk_uncertified = any(
-        (isinstance(node.tag, str) and node.tag.rsplit("}", 1)[-1].lower() == "sdk")
-        or any(key.rsplit("}", 1)[-1].lower() == "sdk" for key in node.attrib)
-        for node in root.iter())
+    sdk_uncertified = False
     for node in root.iter():
         tag = node.tag.rsplit("}", 1)[-1] if isinstance(node.tag, str) else ""
-        # Restore can import code from packages and their transitive dependencies.
-        # No source-bound package/import certificate exists in this repository.
-        if tag.lower() in ("packagereference", "globalpackagereference", "packagedownload"):
+        sdk_keys = [key for key in node.attrib if key.rsplit("}", 1)[-1].lower() == "sdk"]
+        if tag.lower() == "sdk" or sdk_keys:
+            # Only the pinned SDK's built-in project entry points are covered.
+            sdk_uncertified |= not (restore_source and is_project and node is root and
+                tag == "Project" and sdk_keys == ["Sdk"] and
+                node.attrib["Sdk"] in ("Microsoft.NET.Sdk", "Microsoft.NET.Sdk.Web"))
+        if tag.lower() in ("packagereference", "globalpackagereference", "packagedownload") and not (
+            restore_source and tag == "PackageReference"
+        ):
             fail("restore generated package imports are uncertified")
         for text in list(node.attrib.values()) + ([node.text] if node.text else []):
             norm = text.replace("\\", "/")
@@ -345,12 +354,35 @@ for name in sorted(seen, key=lambda n: entries[n][1]):
 PY_AUDIT
 }
 
+restore_tool_from_base() (
+  local command="$1" trust_sha="$2" source_hash="$3" tool
+  tool="$(mktemp)" || return 1
+  trap 'rm -f "$tool"' EXIT
+  git show "$trust_sha:scripts/ci/restore-imports.py" > "$tool" || return 1
+  python3 -I "$tool" "$command" "$trust_sha" "$source_hash"
+)
+
+fast_inventory_for_tree() {
+  local commit="$1" trust_sha="$2" entry inventory checksum
+  entry="$(git ls-tree "$trust_sha" -- "$restore_certificate_path")" || return 1
+  if [[ -z "$entry" ]]; then
+    audit_fast_inventory "$commit"
+    return $?
+  fi
+  [[ "$entry" == '100644 blob '* ]] || return 1
+  docs_restore_required=true
+  inventory="$(audit_fast_inventory "$commit" restore-source)" || return 1
+  checksum="$(printf '%s\n' "$inventory" | sha256sum)" || return 1
+  restore_tool_from_base check-source "$trust_sha" "${checksum%% *}" || return 1
+  printf '%s\n' "$inventory"
+}
+
 fast_doc_link_state() {
   local expected actual
   expected="$(mktemp)" || return 2
   actual="$(mktemp)" || { rm -f "$expected"; return 2; }
   if ! git show "$base_sha:scripts/ci:docs-inventory" > "$expected" ||
-     ! fast_inventory_for_tree "$head_sha" > "$actual"; then
+     ! fast_inventory_for_tree "$head_sha" "$base_sha" > "$actual"; then
     rm -f "$expected" "$actual"
     return 2
   fi
@@ -741,8 +773,24 @@ select_components() {
 }
 
 if [[ "$event_name" == "--print-docs-inventory" ]]; then
-  fast_inventory_for_tree "$base_sha"
+  fast_inventory_for_tree "$base_sha" "$base_sha"
   exit $?
+fi
+
+if [[ "$event_name" == "--print-docs-restore-source" ]]; then
+  audit_fast_inventory "$base_sha" restore-source
+  exit $?
+fi
+
+if [[ "$event_name" == "--verify-docs-restore" ]]; then
+  if inventory="$(fast_inventory_for_tree "$base_sha" "$base_sha")" &&
+     git show "$base_sha:scripts/ci:docs-inventory" | cmp -s <(printf '%s\n' "$inventory") - &&
+     checksum="$(printf '%s\n' "$inventory" | sha256sum)" &&
+     restore_tool_from_base verify "$base_sha" "${checksum%% *}"; then
+    printf 'restore_imports_verified=true\n'
+    exit 0
+  fi
+  exit 1
 fi
 
 if [[ "$event_name" == "--warn-docs-inventory" ]]; then
@@ -752,7 +800,7 @@ if [[ "$event_name" == "--warn-docs-inventory" ]]; then
   warn_reason=""
   if ! git show "$base_sha:scripts/ci:docs-inventory" > "$warn_expected" 2>/dev/null; then
     warn_reason="certificate unavailable"
-  elif ! fast_inventory_for_tree "$base_sha" > "$warn_actual" 2> "$warn_error"; then
+  elif ! fast_inventory_for_tree "$base_sha" "$base_sha" > "$warn_actual" 2> "$warn_error"; then
     warn_reason="$(sed -n 's/^docs inventory audit: //p' "$warn_error" | tail -n 1)"
     [[ "$warn_reason" =~ ^[a-zA-Z0-9\ .,/\-]+$ ]] || warn_reason="audit could not complete"
   elif ! cmp -s "$warn_expected" "$warn_actual"; then
@@ -851,8 +899,15 @@ except UnicodeError:
   done < "$fast_diff"
   [[ -z "$summary_file" ]] || printf '\nFast path paths examined: %s\n' "$fast_count" >> "$summary_file"
   if [[ "$fast_ok" == true && "$fast_count" -gt 0 ]]; then
-    docs_fast_path=true
-    docs_fast_path_reason="all exact base/head paths are safe documentation"
+    if [[ "$docs_restore_required" == true ]]; then
+      if [[ "$classification_scope" == docs-fast-only ]]; then
+        docs_fast_path=verify-restore
+      fi
+      docs_fast_path_reason="reviewed restore import proof required"
+    else
+      docs_fast_path=true
+      docs_fast_path_reason="all exact base/head paths are safe documentation"
+    fi
   fi
 fi
 
