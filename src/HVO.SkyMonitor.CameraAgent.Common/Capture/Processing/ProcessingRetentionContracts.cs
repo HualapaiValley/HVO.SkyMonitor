@@ -22,7 +22,16 @@ internal interface IProcessingOutputExpiration
         DateTimeOffset committedBeforeUtc,
         IReadOnlySet<string> heldAbsolutePaths,
         CancellationToken cancellationToken,
-        CancellationToken interruptionToken = default);
+        CancellationToken interruptionToken = default)
+        => ExpireOutputsAsync(storageRoot, committedBeforeUtc, heldAbsolutePaths, null, cancellationToken, interruptionToken);
+
+    ValueTask<int> ExpireOutputsAsync(
+        string storageRoot,
+        DateTimeOffset committedBeforeUtc,
+        IReadOnlySet<string> heldAbsolutePaths,
+        Func<TimeSpan, ValueTask>? yieldLifecycleLocks,
+        CancellationToken cancellationToken,
+        CancellationToken interruptionToken);
 }
 
 internal interface IAcceptanceRetentionControl : IProcessingRetentionHolds;
@@ -95,10 +104,11 @@ internal sealed class CompositeProcessingRetentionHolds(
         string storageRoot,
         DateTimeOffset committedBeforeUtc,
         IReadOnlySet<string> heldAbsolutePaths,
+        Func<TimeSpan, ValueTask>? yieldLifecycleLocks,
         CancellationToken cancellationToken,
-        CancellationToken interruptionToken = default)
+        CancellationToken interruptionToken)
     {
-        var deleted = await persistence.ExpireOutputsAsync(storageRoot, committedBeforeUtc, heldAbsolutePaths, cancellationToken, interruptionToken)
+        var deleted = await persistence.ExpireOutputsAsync(storageRoot, committedBeforeUtc, heldAbsolutePaths, yieldLifecycleLocks, cancellationToken, interruptionToken)
             .ConfigureAwait(false);
         if (satelliteWork is not null)
             await satelliteWork.ReconcileAsync(storageRoot, cancellationToken).ConfigureAwait(false);

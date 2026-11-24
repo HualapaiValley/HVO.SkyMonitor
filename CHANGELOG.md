@@ -32,6 +32,10 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Changed
 
+- SkyMonitor CI and the standard local validation commands now skip the retired LogicHost and combined CameraAgent–LogicHost test suites. The active CI inventory has 16,583 of 17,819 Unit cases and 916 of 1,540 Integration cases. #2048
+
+- The CameraAgent and LogicHost API reference pages have updated styling for request and response examples. #2032
+
 - Ordinary VirtualSky rendering defaults to 2,000 stellar candidates when the host and camera profile supply no explicit limit. The sky map keeps its own limit. #1901
 
 - CameraAgent capture processing checks the shared journal's integrity and foreign keys once per startup instead of three times, so processing and the Current Sky plate solution become available sooner after a restart with a long retained history. #1914
@@ -39,6 +43,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 ### Fixed
 
 - The CameraAgent virtual focuser returns a cancelled task for a pre-cancelled abort request and lets any active move continue. #1837
+
+- CameraAgent clears centered-view history after the reference capture's raw files and view preview expire. It releases the journal and lifecycle locks between batches so capture writers can commit. Open live intervals and saved selections keep their journal records, and retained views keep the true last-live revision. Exact archive links to pruned revisions return HTTP 404. #2000
 
 - CameraAgent rejects capture journal integrity damage committed between schema inspection and writable startup validation, preserving the journal and its write-ahead log on rejection. #2005
 
