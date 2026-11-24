@@ -55,25 +55,31 @@ zero, all 55 ordinary Bayer VirtualSky anchors had a valid HFD, and the flagged 
 
 ## Standalone memory envelope
 
-The local Linux x64 runs used the framework-dependent Release CameraAgent built from `8b6efe989`
-with SDK 10.0.402 and run on .NET 10.0.14. That commit contains the sampler and reader used by
-this report. The later retained-identity correction is specific to replay. Each run started with
-fresh identity, keys, configuration and ext4 storage. The host ran in a private network namespace
-with its HTTP listener on loopback, central integration off, and upload off. The process used the
-published runtime defaults for GC.
+The standalone installer defaults to 4 GiB and two CPUs when the operator supplies no
+resource overrides. That is the selected standalone envelope. The legacy installer envelope
+and the split-host Compose defaults are 1 GiB and one CPU.
+[Installer resource defaults](../../src/HVO.SkyMonitor.Deployment.Cli/CameraAgentContainerResources.cs) · [Split-host Compose defaults](../../deploy/split-host/compose.cameraagent.yml)
 
-The cgroup used the split-host CPU quota (`cpu.max` of `100000 100000`). The selected split-host
-memory setting is 1 GiB (`memory.max` of `1073741824` bytes). `memory.swap.max` was zero in all
-trials. Each run used a 156-second observation window followed by normal shutdown when the
-process was still running. GNU time and `/proc` supplied process RSS. The kernel's
+The local Linux x64 runs used framework-dependent Release CameraAgent builds with SDK
+10.0.402 and ran on .NET 10.0.14. The installer-limit run used `c44549965`. The earlier
+one-CPU runs used `8b6efe989`, which contains the sampler and reader used by this report.
+The retained-identity correction in the later build applies to archived replay. Each run
+started with fresh identity, keys, configuration and ext4 storage. CameraAgent ran in a
+private network namespace with its HTTP listener on loopback, central integration off,
+and upload off. The process used the published runtime defaults for GC.
+
+The installer-limit cgroup used `memory.max` of `4294967296` bytes and `cpu.max` of
+`200000 100000`. The earlier runs used `cpu.max` of `100000 100000`, with 1 GiB
+(`1073741824` bytes) for the legacy envelope and 2 GiB or 3 GiB for comparison.
+`memory.swap.max` was zero in all trials. Each trial used a 156-second observation window
+followed by normal shutdown. GNU time and `/proc` supplied process RSS. The kernel's
 `memory.peak` supplied the cgroup high-water mark, and headroom is
 `memory.max − memory.peak`. `memory.events` tracks encounters with the limit and OOM events.
-[Split-host settings](../../deploy/split-host/compose.cameraagent.yml)
 
 The disposable camera profile started from `virtual-asi178mc.full.json` with the centered
 execution profile enabled. It delivered 3096 × 2080, 14-bit RGGB in a 16-bit little-endian
 container, with native ROI, 1 × 1 binning, CFA origin `(0,0)` and stored black and white levels
-of 64 and 65,535. Both runs used ControlledNight, seed 2025, a virtual timeline beginning
+of 64 and 65,535. The runs used ControlledNight, seed 2025, a virtual timeline beginning
 2026-11-19 04:00 UTC, five-second exposures at gain 150 and a 20-second minimum start interval.
 The Production HYG 4.2 snapshot held 119,625 rows. Its database SHA-256 was
 `b51d18b722199e89aa8fe4622ebe507346c75effb375e546881452a263f0b9e2`.
@@ -179,27 +185,27 @@ All eight raw payload SHA-256 values matched by capture order across the limits.
 12,879,360 bytes, for 103,034,880 raw bytes per trial. The 1 GiB trial used the first-chance
 exception trace from the diagnostic. The higher limits used the published host directly.
 
-| Measurement | 1 GiB | 2 GiB | 3 GiB |
-| --- | ---: | ---: | ---: |
-| Peak process RSS via `VmHWM` | 1,097.9 MiB | 1,837.7 MiB | 1,860.7 MiB |
-| Peak cgroup charge | 1,024 MiB | 2,048 MiB | 2,111.6 MiB |
-| Highest sampled cgroup charge | 1,024.0 MiB | 2,047.4 MiB | 2,099.1 MiB |
-| Anonymous charge at that sample | 771.0 MiB | 1,613.1 MiB | 1,635.8 MiB |
-| File charge at that sample | 244.0 MiB | 417.9 MiB | 446.3 MiB |
-| Cgroup headroom at peak | 0 MiB | 0 MiB | 960.4 MiB |
-| Cgroup limit events through shutdown | 2,532 | 80 | 0 |
-| Kernel OOM events and kills | 0 / 0 | 0 / 0 | 0 / 0 |
-| Committed raw admissions / offered slots | 8 / 8 | 8 / 8 | 8 / 8 |
-| Missed admissions | 0 | 0 | 0 |
-| HFD measurements with 32 valid samples | 7 / 8 | 8 / 8 | 8 / 8 |
-| Registered stacks committed | 4 | 5 | 5 |
-| Registered stack views published | 3 | 4 | 5 |
-| Process user plus system CPU time | 63.34 s | 67.13 s | 44.78 s |
-| Cgroup write bytes | 414,175,232 | 475,017,216 | 475,963,392 |
-| Local state bytes at shutdown | 381,134,890 | 439,824,105 | 439,947,941 |
-| Inter-shutter interval | 20.010–20.017 s | 20.011–20.016 s | 20.010–20.017 s |
-| Shutter to durable raw ingress | 5.970–6.528 s | 5.904–6.369 s | 5.770–6.005 s |
-| Reference shutter to first stack view revision | 52.776–54.773 s | 52.553–54.648 s | 52.368–52.418 s |
+| Measurement | 1 GiB / 1 CPU | 2 GiB / 1 CPU | 3 GiB / 1 CPU | 4 GiB / 2 CPUs (installer default) |
+| --- | ---: | ---: | ---: | ---: |
+| Peak process RSS via `VmHWM` | 1,097.9 MiB | 1,837.7 MiB | 1,860.7 MiB | 1,297,240 KiB (1,266.8 MiB) |
+| Peak cgroup charge | 1,024 MiB | 2,048 MiB | 2,111.6 MiB | 1,677,578,240 bytes (1,599.9 MiB) |
+| Highest sampled cgroup charge | 1,024.0 MiB | 2,047.4 MiB | 2,099.1 MiB | 1,650,941,952 bytes (1,574.5 MiB) |
+| Anonymous charge at that sample | 771.0 MiB | 1,613.1 MiB | 1,635.8 MiB | 1,080,291,328 bytes (1,030.2 MiB) |
+| File charge at that sample | 244.0 MiB | 417.9 MiB | 446.3 MiB | 550,658,048 bytes (525.1 MiB) |
+| Cgroup headroom at peak | 0 MiB | 0 MiB | 960.4 MiB | 2,617,389,056 bytes (2,496.1 MiB) |
+| Cgroup limit events through shutdown | 2,532 | 80 | 0 | 0 |
+| Kernel OOM events and kills | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+| Committed raw admissions / offered slots | 8 / 8 | 8 / 8 | 8 / 8 | 8 / 8 |
+| Missed admissions | 0 | 0 | 0 | 0 |
+| HFD measurements with 32 valid samples | 7 / 8 | 8 / 8 | 8 / 8 | 8 / 8 |
+| Registered stacks committed | 4 | 5 | 5 | 5 |
+| Registered stack views published | 3 | 4 | 5 | 5 |
+| Process user plus system CPU time | 63.34 s | 67.13 s | 44.78 s | 46.16 s |
+| Cgroup write bytes | 414,175,232 | 475,017,216 | 475,963,392 | 475,955,200 |
+| Local state bytes at shutdown | 381,134,890 | 439,824,105 | 439,947,941 | 439,947,962 |
+| Inter-shutter interval | 20.010–20.017 s | 20.011–20.016 s | 20.010–20.017 s | 20.005–20.020 s |
+| Shutter to durable raw ingress | 5.970–6.528 s | 5.904–6.369 s | 5.770–6.005 s | 5.782–6.013 s |
+| Reference shutter to first stack view revision | 52.776–54.773 s | 52.553–54.648 s | 52.368–52.418 s | 51.088–53.139 s |
 
 At 1 GiB the worker committed four sets of registered 3096 × 2080 RGB and support planes and
 published three registered views with three or four contributors. First-chance traces captured
@@ -219,20 +225,28 @@ published their views. The stacks for reference captures 4, 5 and 6 each include
 contributors. There were zero registration or normalization execution failures. This trial
 left 960.4 MiB of cgroup headroom and recorded zero limit events.
 
+At the 4 GiB and two-CPU installer default, all eight standard lane executions, normalizations
+and HFD measurements completed. The exposures yielded 93–107 detections each, with 32 valid HFD
+samples per exposure.
+All five registered stacks published their views, with five verified contributors in each of
+the stacks for reference captures 4, 5 and 6. The journal recorded zero registration or
+normalization execution failures. The process exited cleanly.
+
 Each trial published eight single views. The startup shutter fell outside tolerance in each
 trial and still committed as a raw admission. At 1 GiB and 2 GiB the stack for reference capture 6
 committed its planes and receipt, with the view pending at shutdown. The startup replay ordering
 error also appeared at 2 GiB and 3 GiB. Capture, measurement and registration proceeded after raw
 ingress initialization.
 
-All three journals passed SQLite `quick_check`. Retained raw files and all available processing
+All four journals passed SQLite `quick_check`. Retained raw files and all available processing
 outputs matched their payload digests. The registered previews decoded as 2048 × 1375 JPEGs.
-The previews for reference captures 2 and 3 matched across all three limits. The five-contributor
-previews for captures 4 and 5 matched between 2 GiB and 3 GiB. The 3 GiB preview for reference
+The previews for reference captures 2 and 3 matched across all four limits. The five-contributor
+previews for captures 4 and 5 matched at 2 GiB, 3 GiB and 4 GiB. All eight single-view previews and
+all five registered previews matched between the 3 GiB and 4 GiB trials. The preview for reference
 capture 6 had SHA-256 `6d34417a1589cd6fb9a6569454f94877b6952dfc3949989c320b741c24ac1c1a`.
 
-The selected 1 GiB limit sustained raw admissions and some registered publication in this
-workload, with zero headroom and managed allocation failures. At 2 GiB the full registration
-path completed and the cgroup reached its limit. The 3 GiB result establishes measured
-headroom for this short standalone workload. Steady-state capacity over longer retention and
-other camera profiles remains unmeasured.
+The legacy 1 GiB and one-CPU envelope sustained raw admissions and some registered publication,
+with zero headroom and managed allocation failures. The installer default sustained capture,
+HFD measurement and registered publication with 2,496.1 MiB of cgroup headroom and zero missed
+admissions. The measured margin applies to this 156-second local workload. Steady-state
+capacity over longer retention and other camera profiles remains unmeasured.
