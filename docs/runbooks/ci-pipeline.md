@@ -20,7 +20,7 @@ reports belong to full qualification. Preflight also runs
 `scripts/coverage:policy`: PRs cannot lower any aggregate/component floor, remove
 a file floor, widen tolerance, or add an arbitrary v1 local-only path.
 
-The Docker-disabled Unit selection [skips the retired LogicHost projects](#logichost-test-retirement)
+The Docker-disabled Unit selection runs the [active CameraAgent and shared test projects](#logichost-test-retirement)
 and collects coverage once.
 `scripts/coverage:development-v1 --settings OUTPUT` copies
 `tests/coverage.runsettings`, derives its assembly Include filter from existing
@@ -294,7 +294,7 @@ A green sync PR is integration evidence and does not replace promotion qualifica
 | **Quality** | The full-history [secret scan](#secret-scan), workflow lint, syntax and documentation audits, the Unit-selection completeness control, lightweight environment/classification contracts, and Compose validation run in every selected Quality job. Full mode also enforces formatting, package vulnerability/deprecation policy, and pinned .NET tools; manual dispatch additionally validates the historical Phase 14 acceptance inventory. Reduced mode does not restore or audit application packages it cannot affect. A 45-minute qualification job budget covers formatting, the complete control-contract batch, package audit and the manual historical acceptance gate. |
 | **Deployment Contracts** | Deployment-relevant pull requests run the coordinator watchdog/failure contracts and current campaign-shape contracts, plus only the affected exhaustive catalog, split-host, or installer suite selected by the classifier. Main/release/manual runs execute every exhaustive suite. Otherwise its planned `skipped` result is required. |
 | **Build** | Warning-clean solution Debug and Release builds plus complete, disjoint behavioral category discovery. Never component-scoped, so no component plan can hide a warning or a category-count drift. Skipped only in classified reduced mode. |
-| **Unit Tests** | 16573 Unit cases across 17 active assemblies with an intentionally invalid Docker endpoint. Two [supplemental Unit selections](#supplemental-unit-selections) write TRX only. The complete solution plan runs this job. Component plans run the selections in their active lanes. |
+| **Unit Tests** | 16588 Unit cases across 17 active assemblies with an intentionally invalid Docker endpoint. Two [supplemental Unit selections](#supplemental-unit-selections) write TRX only. The complete solution plan runs this job. Component plans run the selections in their active lanes. |
 | **Integration Tests** | 916 Integration-category cases in the active inventory, including the 7 repository graph/provider-boundary/publish cases in Architecture & Publish. The complete solution plan runs the other 909 cases across Astronomy and three CameraAgent assemblies. The Integration step attempts all four assemblies and reports failure if any fail. |
 | **Architecture & Publish** | Both category selections of the architecture project, and membership is the project's own category discovery rather than any narrower reading of "boundary": the 34 Unit-category boundary cases, including the host `Dockerfile`, fault-matrix discovery, and CameraAgent event-ID uniqueness contracts, and the 7 Integration-category repository graph/provider-boundary/MSBuild/publish cases; plus retained host publish manifests and self-contained installer publishes with SHA-256 manifests for Linux x64 and ARM64. Never component-scoped, so no component plan can skip the architecture or host-publish boundary. |
 | **CameraAgent Migrations** | Exactly one canonical initial migration source for CameraAgent Identity plus zero pending CameraAgent EF model changes, built from the CameraAgent project root. Runs for every full-mode head. |
@@ -866,7 +866,7 @@ maintained in [`cameraagent-arm64-ci.md`](cameraagent-arm64-ci.md).
 
 ## Categories
 
-The category audit requires every discovered case to belong to exactly one primary behavioral category. Current declared inventory is `Unit=17809`, `Integration=1540`, `Manual=338`, `Soak=1`, `External=0`, and `Hardware=1`. Whole-solution discovery verifies those declarations.
+The category audit requires every discovered case to belong to exactly one primary behavioral category. Current declared inventory is `Unit=16588`, `Integration=916`, `Manual=274`, `Soak=1`, `External=0`, and `Hardware=1`. Whole-solution discovery verifies those declarations.
 
 These totals and the Unit/Integration rows in [Required Checks](#required-checks) are not hand-maintained pins: `./scripts/docs:audit-operations` sums the per-project inventories and fails when this runbook disagrees with them, while the Build check's category audit proves those inventories match actual discovery. Each test project owns its expected counts in `tests/<project>/test-categories.json`, a flat object with exactly the six categories as non-negative integers; the engine in `scripts/test-categories/Program.cs` owns no counts. A count change is therefore a change inside the owning project directory and selects that project's component lane, while editing the engine still selects the complete solution matrix. A project without an inventory, an inventory without a project, or a malformed, duplicate, unknown, or stale category all fail the audit. Update the owning inventory and this runbook in the same change.
 
@@ -874,10 +874,12 @@ These totals and the Unit/Integration rows in [Required Checks](#required-checks
 
 ## LogicHost test retirement
 
-#2048 retires execution of the two LogicHost and two combined CameraAgent–LogicHost
-test assemblies from CI and routine local validation. They remain in the solution
-build and the exhaustive category discovery audit. The audit counts the retained
-tests by discovery without running their test bodies.
+#2048 retired CI and local execution of the LogicHost and combined CameraAgent–LogicHost
+suites. #2050 removed the four test projects and their LogicHost fixture project
+from the solution. The fleet outbox test now lives in CameraAgent Tests. The
+active CameraAgent and Processing suites own the retained standalone and shared
+assertions. Historical LogicHost test commands require the revision that
+contains their suites.
 
 Development v1 and the manually dispatched CI v2 baseline use this MSTest filter.
 
@@ -885,18 +887,17 @@ Development v1 and the manually dispatched CI v2 baseline use this MSTest filter
 TestCategory=Unit&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost
 ```
 
-The `-p:SkipLogicHostTests=true` argument excludes the retired projects from
-VSTest before discovery. This also covers their tests with historical namespaces
-and the pool-clear contract compiled into multiple assemblies. Each active
-Unit assembly contributes one v1 coverage report. Preflight checks both name
-exclusions and the project selection.
+The `-p:SkipLogicHostTests=true` argument and both name exclusions remain part
+of the Preflight contract. Every active Unit assembly contributes one v1
+coverage report, and each active assembly still compiles and runs the shared
+connection-pool guard.
 
 Full qualification invokes the active Unit and Integration projects by path.
 `migrations-logichost`, `logichost-component`, and `combined-integration` are
 always skipped. Required CI expects those three results even when the classifier
 flags LogicHost or combined paths. The aggregate coverage merge consumes only
-the active report slots. The active inventory in the Required Checks table
-excludes the four retired projects.
+the active report slots. #2049 owns retirement of the skipped gates and their
+classifier lanes.
 
 ## Local Validation
 
@@ -1184,8 +1185,8 @@ sibling names such as `HVO.SkyMonitor.CameraAgent.Tests` and
 | --- | --- |
 | `shared` | `src/` and `tests/` project directories for `AgentCore`, `Astronomy`, `Imaging`, `Processing`, `ProcessingRunner`, `ProcessingRunner.Contracts`, `Catalog.Sqlite`, `Common`, `Fleet.Contracts`, and `TestSupport` |
 | `cameraagent` | `src/HVO.SkyMonitor.CameraAgent`, `CameraAgent.Cli`, `CameraAgent.Common`, `CameraAgent.Modules.Zwo`, `CameraAgent.Replay`, `CameraAgent.ReplayRunner`, and `tests/HVO.SkyMonitor.CameraAgent.{Tests,AcceptanceTests,IntegrationTests}` |
-| `logichost` | `src/HVO.SkyMonitor.LogicHost` and `tests/HVO.SkyMonitor.LogicHost.{Tests,IntegrationTests,TestInfrastructure}` |
-| `combined` | `tests/HVO.SkyMonitor.CameraAgent.LogicHost.{Tests,IntegrationTests}` |
+| `logichost` | `src/HVO.SkyMonitor.LogicHost`. The classifier still recognizes historical paths of the LogicHost suites. |
+| `combined` | Historical paths of the CameraAgent–LogicHost suites and host integration seams. |
 | `delivery` | `src/HVO.SkyMonitor.Deployment.*`, `tools/HVO.SkyMonitor.Deployment.ReleaseTool`, and `tests/HVO.SkyMonitor.Deployment.*.Tests` |
 
 Deployment inputs that are not project directories — `deploy/**`,
@@ -1222,10 +1223,8 @@ The classification rules applied to that map are:
   running a narrow plan.
 - Documentation-only pull requests stay in reduced mode only through the
   existing allowlist, and only while no allowlisted path is compiled, embedded,
-  or copied into a project. Seven allowlisted paths are included by project
-  files today — `THIRD-PARTY-NOTICES.md` and six `docs/validation/*.json`
-  signal manifests — and each leaves reduced mode for the complete matrix. The
-  remaining 234 allowlisted paths still classify reduced.
+  or copied into a project. For example, `THIRD-PARTY-NOTICES.md` and the
+  test inputs copied from `docs/validation/` select the complete matrix.
 
 Seam selection is an inverse allowlist. A host path is treated as an exported
 protocol or integration seam unless it is explicitly host-private, so a new host
@@ -1243,31 +1242,18 @@ Everything else inside a host project, including its project root files,
 `Middleware`, `Models`, `Capture`, `Environmental`, `Transients`, `Modules`,
 `Fleet`, `Upload`, `Deployment`, `DeploymentLocation`, `Operations`, `Options`,
 `RawIngress`, `Storage`, `Telemetry`, and `DependencyInjection`, adds the combined lane.
-The real evidence-exporter combined harness consumes `StoragePressureState`, so
-storage changes must reach that lane alongside CameraAgent coverage.
-
-The host-private set is not merely asserted. `scripts/test:ci-classification`
-extracts every `HVO.SkyMonitor.CameraAgent.Common.*` and
-`HVO.SkyMonitor.LogicHost.*` reference from the two combined test projects —
-plain, `global`, `static`, aliased, and fully qualified alike — and fails when
-any namespace those suites reference maps to a host-private directory, so the
-list cannot drift away from what the combined lane actually guards. The check
-covers the `HVO.SkyMonitor.CameraAgent`, `HVO.SkyMonitor.CameraAgent.Common`, and
-`HVO.SkyMonitor.LogicHost` namespace roots; a host-private file that contributes
-to a combined behavior through some other namespace, such as an ASP.NET routing
-extension, still needs a deliberate carve-out like `Components/Account/**`. A
-second cross-check covers the assembly-visibility graph: any file granting
-`InternalsVisibleTo` to a combined suite must select the combined lane, which is
-why `Properties/AssemblyInfo.cs` is carved out of the host-private set.
+`scripts/test:ci-classification` continues to verify the combined route for
+host files that grant `InternalsVisibleTo` to a retired suite while #2049
+removes the lane. Its source scan for namespace references runs when a combined
+suite project exists.
 
 Directory ownership is not the only way a source reaches a project. A file that
 another project compiles, embeds, or copies through a relative MSBuild item —
 `<Compile Include>`, `<None Include>` with `CopyToOutputDirectory`, and the rest —
 also selects the including project's component, wherever in the repository it
-lives. `tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/VirtualSkyPipelineTests.cs`
-therefore selects the combined lane because the combined integration project
-compiles it, and `THIRD-PARTY-NOTICES.md` and `docs/validation/*.json` leave
-reduced mode because shipping and test projects copy them.
+lives. For example, the active CameraAgent tests compile shared Processing test
+fixtures. `THIRD-PARTY-NOTICES.md` and `docs/validation/*.json` leave reduced mode
+because shipping and test projects copy them.
 
 Link derivation only ever **widens** a plan. A path outside every project
 directory still selects the complete matrix, because test code also reads

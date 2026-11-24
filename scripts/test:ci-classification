@@ -1153,6 +1153,13 @@ expect_combined_probe() {
   }
 }
 
+combined_test_roots=()
+for suite in Tests IntegrationTests; do
+  project="HVO.SkyMonitor.CameraAgent.LogicHost.$suite"
+  if [[ -f "$repo_root/tests/$project/$project.csproj" ]]; then
+    combined_test_roots+=("$repo_root/tests/$project")
+  fi
+done
 combined_namespace_count=0
 while IFS= read -r combined_namespace; do
   case "$combined_namespace" in
@@ -1174,13 +1181,14 @@ while IFS= read -r combined_namespace; do
   [[ -d "$repo_root/$seam_project/$seam_segment" ]] || continue
   ((combined_namespace_count += 1))
   expect_combined_probe "$seam_project/$seam_segment/CombinedSeamProbe.cs"
-done < <(grep -rhoE 'HVO\.SkyMonitor\.(CameraAgent(\.Common)?|LogicHost)\.[A-Za-z0-9_]+' \
-  --include='*.cs' \
-  "$repo_root/tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests" \
-  "$repo_root/tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests" \
-  | sort -u)
+done < <(
+  if (( ${#combined_test_roots[@]} > 0 )); then
+    grep -rhoE 'HVO\.SkyMonitor\.(CameraAgent(\.Common)?|LogicHost)\.[A-Za-z0-9_]+' \
+      --include='*.cs' "${combined_test_roots[@]}" | sort -u
+  fi
+)
 
-if (( combined_namespace_count == 0 )); then
+if (( ${#combined_test_roots[@]} > 0 && combined_namespace_count == 0 )); then
   printf 'No combined host namespace was discovered; the seam cross-check is not exercising anything.\n' >&2
   exit 1
 fi
@@ -1381,7 +1389,6 @@ complete_matrix_paths=(
   "tests/fixtures/frames/sample.bin"
   "tests/fixtures/catalog/hyg-v42-bright-stars.sqlite"
   "docs/validation/central-transient-fault-matrix.json"
-  "docs/validation/logichost-ui-runtime-signals.json"
   "tools/asi-capture/capture.sh"
   "docker/local/Dockerfile"
 )
@@ -1391,6 +1398,9 @@ for path in "${complete_matrix_paths[@]}"; do
   component_head="$(git -C "$work_root" rev-parse HEAD)"
   expect_components true true true true true true pull_request "$component_base" "$component_head"
 done
+
+# The retired UI suite was the only project that copied this historical input.
+verify_component_plan "docs/validation/logichost-ui-runtime-signals.json" reduced false false false false false false false
 
 # Host Dockerfiles and host configuration samples stay in their host lane while
 # still selecting the deployment contracts they can break.

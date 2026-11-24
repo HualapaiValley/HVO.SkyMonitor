@@ -293,7 +293,6 @@ architecture_project=tests/HVO.SkyMonitor.Architecture.Tests/HVO.SkyMonitor.Arch
 architecture_inventory="$(dirname "$architecture_project")/test-categories.json"
 category_rows=0
 category_unit=0; category_integration=0; category_manual=0; category_soak=0; category_external=0; category_hardware=0
-active_unit=0; active_integration=0
 active_unit_projects=0
 architecture_unit=0; architecture_integration=0
 while IFS= read -r inventory; do
@@ -322,16 +321,9 @@ while IFS= read -r inventory; do
     category_unit=$((category_unit + unit)); category_integration=$((category_integration + integration))
     category_manual=$((category_manual + manual)); category_soak=$((category_soak + soak))
     category_external=$((category_external + external)); category_hardware=$((category_hardware + hardware))
-    case "$(basename "$(dirname "$inventory")")" in
-        HVO.SkyMonitor.LogicHost.* | HVO.SkyMonitor.CameraAgent.LogicHost.*) ;;
-        *)
-            active_unit=$((active_unit + unit))
-            active_integration=$((active_integration + integration))
-            if ((unit > 0)); then
-                active_unit_projects=$((active_unit_projects + 1))
-            fi
-            ;;
-    esac
+    if ((unit > 0)); then
+        active_unit_projects=$((active_unit_projects + 1))
+    fi
     if [[ "$inventory" == "$architecture_inventory" ]]; then
         architecture_unit=$unit; architecture_integration=$integration; architecture_seen=1
     fi
@@ -345,7 +337,6 @@ fi
 # Every test project must own an inventory; a project added without one would
 # otherwise drop out of the runbook totals silently.
 while IFS= read -r csproj; do
-    [[ "$csproj" != */HVO.SkyMonitor.LogicHost.TestInfrastructure.csproj ]] || continue
     if [[ ! -f "$(dirname "$csproj")/test-categories.json" ]]; then
         printf 'Test project is missing its category inventory: %s\n' "$csproj" >&2
         exit 1
@@ -373,9 +364,9 @@ require_source_reference 'options.AddSigningCertificate(signing).AddEncryptionCe
 require_source_reference '"api.artifacts.read"' src/HVO.SkyMonitor.LogicHost/Program.cs
 require_source_reference '"api.owner.write"' src/HVO.SkyMonitor.LogicHost/Program.cs
 require_source_reference 'ArtifactManifestV2.CurrentSchemaVersion' src/HVO.SkyMonitor.LogicHost/Services/ArtifactIngestService.cs
-require_required_check_row '\*\*Unit Tests\*\*' "${active_unit} Unit cases across ${active_unit_projects} active assemblies"
-require_required_check_row '\*\*Integration Tests\*\*' "${active_integration} Integration-category cases"
-require_source_reference "The complete solution plan runs the other $((active_integration - architecture_integration)) cases" docs/runbooks/ci-pipeline.md
+require_required_check_row '\*\*Unit Tests\*\*' "${category_unit} Unit cases across ${active_unit_projects} active assemblies"
+require_required_check_row '\*\*Integration Tests\*\*' "${category_integration} Integration-category cases"
+require_source_reference "The complete solution plan runs the other $((category_integration - architecture_integration)) cases" docs/runbooks/ci-pipeline.md
 require_source_reference "Current declared inventory is \`Unit=${category_unit}\`, \`Integration=${category_integration}\`, \`Manual=${category_manual}\`, \`Soak=${category_soak}\`, \`External=${category_external}\`, and \`Hardware=${category_hardware}\`." docs/runbooks/ci-pipeline.md
 # Both halves of the architecture sentence are the architecture project's own
 # category discovery totals, so both are derived here. Pinned as the English word

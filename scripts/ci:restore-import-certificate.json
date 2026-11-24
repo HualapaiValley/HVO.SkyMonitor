@@ -65,11 +65,6 @@
       "payloadSha256": "c032aff0e65ef8d021b65df2114768d71243f43d002a7125c155b1b80315af46",
       "source": "https://api.nuget.org/v3/index.json"
     },
-    "bouncycastle.cryptography/2.7.0": {
-      "archiveSha256": "f091ffccab4d03993e660bace277659a79dee0972f54d7f1f4bd46d680966241",
-      "payloadSha256": "3bf88d723d3061ceacf755785d091a38f9265bd458207f620f01e9480aa0c604",
-      "source": "https://api.nuget.org/v3/index.json"
-    },
     "bunit/2.11.3": {
       "archiveSha256": "74d09439afe5a6c1acc1c9fae952de54c1432477e7227892f85a8bb334520c85",
       "payloadSha256": "fada30756a0f1be2f9b19e74c7d5c7224adcbec3a012cdfed7768336d640abc9",
@@ -85,11 +80,6 @@
       "payloadSha256": "dbb890c8762ee733514e967185fa5bb800ec924d4ad10bbce82a1df4667a1bbc",
       "source": "https://api.nuget.org/v3/index.json"
     },
-    "communitytoolkit.highperformance/8.4.0": {
-      "archiveSha256": "abd45966f2e5be4d6c5ee22be70741c724dff68d06da6936df1b4d1837fabc6b",
-      "payloadSha256": "1450c651df0f8b867914580eb27c7d26f548ef6c20b69e191948e0452f266a33",
-      "source": "https://api.nuget.org/v3/index.json"
-    },
     "cosinekitty.astronomyengine/2.1.19": {
       "archiveSha256": "f1f8abd17128aea9ade3c96019a6d78034fc37ba731c5726493760063e0c3557",
       "payloadSha256": "b82c2719a04d28a3d557ac82d64621edfef1f808f2bd6a0c4239faed98a9628d",
@@ -98,41 +88,6 @@
     "coverlet.collector/10.1.0": {
       "archiveSha256": "e466ffb46fcf15b88de183f214baccceccc624205c6ec6040848f90ecc962fcb",
       "payloadSha256": "52fcf5f50a84bebfd5856dc946c608e79f12a82b022f8f41dbcc1acb64a387f0",
-      "source": "https://api.nuget.org/v3/index.json"
-    },
-    "docker.dotnet.enhanced.handler.abstractions/4.3.3": {
-      "archiveSha256": "286762872aebf5168e46dbd07eda68406c0ef18349d48406e714cfdc386eaa56",
-      "payloadSha256": "6232c28f09675527eadc120e77d7f67a235bd9cd85391672219bc9fad500193c",
-      "source": "https://api.nuget.org/v3/index.json"
-    },
-    "docker.dotnet.enhanced.legacyhttp/4.3.3": {
-      "archiveSha256": "d355a635a667a842c13623e4994cb2af5ab4591e87e0c2e9d3785507c25778a5",
-      "payloadSha256": "fd19fcfb8b6f36f100169e062af4454ab6f8fb652bbdeba2633692f3365a13d4",
-      "source": "https://api.nuget.org/v3/index.json"
-    },
-    "docker.dotnet.enhanced.nativehttp/4.3.3": {
-      "archiveSha256": "685dbce2de92c58ba4255ea766fd5c7fcc4df0c537749c2ca848a132ab86b296",
-      "payloadSha256": "58bc730b32aac9fc32d0b5a944375438632841e5f5a8e6ab24bca6f087b68a99",
-      "source": "https://api.nuget.org/v3/index.json"
-    },
-    "docker.dotnet.enhanced.npipe/4.3.3": {
-      "archiveSha256": "22e97e93b831ee0737229111ed735c96e1c017a739aea22bc4db934cb196fa51",
-      "payloadSha256": "9ce3c0e094e772ff6521db028b9952d4530951c6f67e4282d1f5fb902975edab",
-      "source": "https://api.nuget.org/v3/index.json"
-    },
-    "docker.dotnet.enhanced.unix/4.3.3": {
-      "archiveSha256": "b5ea67b9ee1169c9e91844348e0422d9165d4c25cb4eca4e7a3ca4bfb1829462",
-      "payloadSha256": "d3278f3c070ea23c9b9dcc444acca13796008134d718802ca1285dba303b500f",
-      "source": "https://api.nuget.org/v3/index.json"
-    },
-    "docker.dotnet.enhanced.x509/4.3.3": {
-      "archiveSha256": "354506f643d65a56ac6682dd4f08f879dbc5869fe8e2a5631ea88c3a6c57b95b",
-      "payloadSha256": "e745b1fafdcd332df5d7ee8bd6610b9a55b49bf398d6eb7ae8cbe314056894e1",
-      "source": "https://api.nuget.org/v3/index.json"
-    },
-    "docker.dotnet.enhanced/4.3.3": {
-      "archiveSha256": "7b18fa69821683d72309eb59182683a1db09adc5e45a6e58ea2486c6136accf6",
-      "payloadSha256": "2ec33bae41f10f593169d42a7549efc46cd0a346b6e389e53b8a72b0a0926426",
       "source": "https://api.nuget.org/v3/index.json"
     },
     "fluentassertions/8.11.0": {
@@ -403,11 +358,6 @@
     "microsoft.entityframeworkcore.design/10.0.14": {
       "archiveSha256": "fcf1d301327f61abcb8794ab849de777b59272db5462c4d4e703956b689b3de6",
       "payloadSha256": "ea534078a215cf7f65aa561e5fcd226434a360e5bc124da3e1069246345bd480",
-      "source": "https://api.nuget.org/v3/index.json"
-    },
-    "microsoft.entityframeworkcore.inmemory/10.0.14": {
-      "archiveSha256": "7fb0ff105c8c0b49d459a1ebd9fe669c300497c6f96c7f82c8f6291f6949f80d",
-      "payloadSha256": "20caaf067153ca0d2df9ed6a93ff32ffb10c0a4ddc808116b43b1a2fb4081a0e",
       "source": "https://api.nuget.org/v3/index.json"
     },
     "microsoft.entityframeworkcore.relational/10.0.14": {
@@ -840,11 +790,6 @@
       "payloadSha256": "00c349c168e914ae013efb70095c33cc26a0abbd1143cdc6a436ab9358bf83dc",
       "source": "https://api.nuget.org/v3/index.json"
     },
-    "minio/7.0.0": {
-      "archiveSha256": "514e5fdf1db84ccf341364b93767c14b6e56e8aae84672eca9d8bde5f911c303",
-      "payloadSha256": "8275347b51f85f50024f56ff7f81f4c6efc4cf2ebd87e5bd9f30a4f358feaf30",
-      "source": "https://api.nuget.org/v3/index.json"
-    },
     "mono.cecil/0.11.6": {
       "archiveSha256": "d2a23832aaa948ba9a01acc42b5726e34c5f995958f1b30d45c0e7c70b3a72d5",
       "payloadSha256": "cac92818b966d35e54a8087dfd049c2d9c3d518b48a9684568c466f2a1beec75",
@@ -1040,11 +985,6 @@
       "payloadSha256": "9464392bd6c380f1750b6f6b7a6d72464f41073dec18436044ebf7a5e1153bce",
       "source": "https://api.nuget.org/v3/index.json"
     },
-    "sharpziplib/1.4.2": {
-      "archiveSha256": "fe0895aa2930a2b1b65caa9f37db8bca35125ebdf9cc1b99d855f6afc5ff5946",
-      "payloadSha256": "c72d35f68f3b186a56f554722aa7e23424df8a65be00d3f7039644e299a66a44",
-      "source": "https://api.nuget.org/v3/index.json"
-    },
     "skiasharp.nativeassets.linux.nodependencies/4.155.0": {
       "archiveSha256": "6372fc25265f3c354a59687d57486b9234e1969bbcd1ba951ab12505b791668d",
       "payloadSha256": "b0eadc1c05ff38a0358e05f56b38698af49822d6d538c98e21abd58da3cfb3f1",
@@ -1083,11 +1023,6 @@
     "sqlitepclraw.provider.e_sqlite3/2.1.13": {
       "archiveSha256": "513ef2ba5d01c14d1e8032d9d2ca2c8985df7ec7d351f0e40917476114ac1f9c",
       "payloadSha256": "799c1aee034b61731c14a5b46d16a1832eef58bd43656f08105acad6d06d1a42",
-      "source": "https://api.nuget.org/v3/index.json"
-    },
-    "ssh.net/2026.0.0": {
-      "archiveSha256": "b2515de616821198f5cf5530f5ea198912730bbe3504ef4c6aee00a661fecac2",
-      "payloadSha256": "c21866a8b9e316623876a677393bd75f2c4d022d8e271cd25baa2dd8b1cebeb4",
       "source": "https://api.nuget.org/v3/index.json"
     },
     "stackexchange.redis/3.4.31": {
@@ -1160,11 +1095,6 @@
       "payloadSha256": "b1e2a38c5ffd0af7e114b7cf92aa3f9eb576a3e8a3787009702f7e96a1a08bdf",
       "source": "https://api.nuget.org/v3/index.json"
     },
-    "system.diagnostics.eventlog/9.0.11": {
-      "archiveSha256": "b82ed8572d378952678b371a0b108de959f1f6bbffd601b796addc157692b146",
-      "payloadSha256": "acef0fa5cb42d4fb2c5a2a5e1cb349f6454744cb6aa84c3213ec8ddca102cb14",
-      "source": "https://api.nuget.org/v3/index.json"
-    },
     "system.identitymodel.tokens.jwt/7.7.1": {
       "archiveSha256": "e897e6b5d0a1cadef377f1ca23efd3d477327ac10fc7434d30eff3149ee55367",
       "payloadSha256": "1bb030fcade6f1f01faf154f033485d9ae64a29a9328505ae802e6cc365aa82e",
@@ -1188,11 +1118,6 @@
     "system.memory.data/8.0.1": {
       "archiveSha256": "7316192f44ebafa441a652a6102bfde0e46eca3ace33a241d03fc4c260528ac8",
       "payloadSha256": "b80fc68f83537bd6c299363f86aca317e7eab44b52333aba00f88d97faa7e187",
-      "source": "https://api.nuget.org/v3/index.json"
-    },
-    "system.reactive/6.0.1": {
-      "archiveSha256": "2e8e5432aa7c0ec6d5494c5ad94a42951d46a18cea410712c647f216a07f7784",
-      "payloadSha256": "624b422610b40f53620b26ab639119d5dd7fb324fd806a86643943f9d6e136c7",
       "source": "https://api.nuget.org/v3/index.json"
     },
     "system.security.cryptography.pkcs/10.0.14": {
@@ -1228,21 +1153,6 @@
     "testably.abstractions.filesystem.interface/10.3.0": {
       "archiveSha256": "b92cccb225c02992ba35bc176b9f7321b0a47c8f6ac2e5acae6e72a0bae178a5",
       "payloadSha256": "d9e3c2c608bdd4f95daf57d003b67da710e96e9e950e7edfa3569aae93ec7e5a",
-      "source": "https://api.nuget.org/v3/index.json"
-    },
-    "testcontainers.mssql/4.16.0": {
-      "archiveSha256": "951f7954e0dbe1d4818013438ea733597ac352d814f6c5bdca4169fd9d74a97b",
-      "payloadSha256": "d5858c2965ac0f52c2977b93743f96041a77d3c93a883bad9f43e1eb98e45c05",
-      "source": "https://api.nuget.org/v3/index.json"
-    },
-    "testcontainers.redis/4.16.0": {
-      "archiveSha256": "c7099f86bdff8a714ac312af2c62b8e41416193ef843a54a0bcff9184592290d",
-      "payloadSha256": "b2084be9c97b348a7090daff761c2cca2d4a38a851607acb8d58d88ec72fd9a7",
-      "source": "https://api.nuget.org/v3/index.json"
-    },
-    "testcontainers/4.16.0": {
-      "archiveSha256": "cab8cdb325a8229646cafa32f230deb4ef3813126e2683a103aafd7a96a1ce4a",
-      "payloadSha256": "497a2132a60ff5935753d8d7aa243b5238d5c756c6a66bdaa7992abc65333090",
       "source": "https://api.nuget.org/v3/index.json"
     },
     "textmatesharp.grammars/2.0.5": {
@@ -1864,99 +1774,6 @@
         "sha256": "344cd9187ff4aa4030ae35cafee687c13e1f0abceb935b8c1b57aea84c64fb4b"
       }
     },
-    "tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj": {
-      "graphSha256": "bbabad8096ee6a711aa1a92c3fa965dbc695983c936539517ab2eee40ad25ef6",
-      "props": {
-        "imports": [
-          "microsoft.entityframeworkcore/10.0.14/buildTransitive/net10.0/Microsoft.EntityFrameworkCore.props",
-          "mstest.analyzers/4.5.3/buildTransitive/MSTest.Analyzers.props",
-          "microsoft.testing.platform/2.5.3/buildTransitive/net9.0/Microsoft.Testing.Platform.props",
-          "microsoft.testing.platform.msbuild/2.5.3/buildTransitive/Microsoft.Testing.Platform.MSBuild.props",
-          "microsoft.testing.extensions.telemetry/2.5.3/buildTransitive/net9.0/Microsoft.Testing.Extensions.Telemetry.props",
-          "mstest.testadapter/4.5.3/buildTransitive/net9.0/MSTest.TestAdapter.props",
-          "microsoft.testplatform.testhost/18.10.2/build/net8.0/Microsoft.TestPlatform.TestHost.props",
-          "microsoft.testing.extensions.trxreport/2.5.3/buildTransitive/net9.0/Microsoft.Testing.Extensions.TrxReport.props",
-          "microsoft.testing.extensions.codecoverage/18.12.0/buildTransitive/net8.0/Microsoft.Testing.Extensions.CodeCoverage.props",
-          "microsoft.codecoverage/18.10.2/build/netstandard2.0/Microsoft.CodeCoverage.props",
-          "microsoft.net.test.sdk/18.10.2/build/net8.0/Microsoft.NET.Test.Sdk.props",
-          "microsoft.extensions.configuration.usersecrets/10.0.14/buildTransitive/net8.0/Microsoft.Extensions.Configuration.UserSecrets.props"
-        ],
-        "sha256": "47a0ee22e7522a9cfb981d05bf0b03b93ffc324082e497eb841986130b50ebcb"
-      },
-      "sources": [
-        "https://api.nuget.org/v3/index.json"
-      ],
-      "targets": {
-        "imports": [
-          "microsoft.extensions.logging.abstractions/10.0.14/buildTransitive/net8.0/Microsoft.Extensions.Logging.Abstractions.targets",
-          "sqlitepclraw.lib.e_sqlite3/3.53.3/buildTransitive/net9.0/SQLitePCLRaw.lib.e_sqlite3.targets",
-          "serilog/4.3.1/buildTransitive/Serilog.targets",
-          "microsoft.extensions.configuration.binder/10.0.14/buildTransitive/netstandard2.0/Microsoft.Extensions.Configuration.Binder.targets",
-          "microsoft.extensions.options/10.0.14/buildTransitive/net8.0/Microsoft.Extensions.Options.targets",
-          "mstest.analyzers/4.5.3/buildTransitive/MSTest.Analyzers.targets",
-          "mstest.testframework/4.5.3/buildTransitive/net9.0/MSTest.TestFramework.targets",
-          "microsoft.testing.platform/2.5.3/buildTransitive/net9.0/Microsoft.Testing.Platform.targets",
-          "microsoft.testing.platform.msbuild/2.5.3/buildTransitive/Microsoft.Testing.Platform.MSBuild.targets",
-          "mstest.testadapter/4.5.3/buildTransitive/net9.0/MSTest.TestAdapter.targets",
-          "microsoft.testplatform.testhost/18.10.2/build/net8.0/Microsoft.TestPlatform.TestHost.targets",
-          "microsoft.testing.extensions.codecoverage/18.12.0/buildTransitive/net8.0/Microsoft.Testing.Extensions.CodeCoverage.targets",
-          "microsoft.codecoverage/18.10.2/build/netstandard2.0/Microsoft.CodeCoverage.targets",
-          "microsoft.net.test.sdk/18.10.2/build/net8.0/Microsoft.NET.Test.Sdk.targets",
-          "microsoft.identity.client.nativeinterop/0.20.6/buildtransitive/netstandard2.0/Microsoft.Identity.Client.NativeInterop.targets",
-          "microsoft.extensions.configuration.usersecrets/10.0.14/buildTransitive/net8.0/Microsoft.Extensions.Configuration.UserSecrets.targets",
-          "microsoft.aspnetcore.mvc.testing/10.0.14/buildTransitive/net10.0/Microsoft.AspNetCore.Mvc.Testing.targets",
-          "asp.versioning.abstractions/10.2.1/buildTransitive/Asp.Versioning.Abstractions.targets",
-          "asp.versioning.http/10.2.1/buildTransitive/Asp.Versioning.Http.targets",
-          "coverlet.collector/10.1.0/build/net10.0/coverlet.collector.targets"
-        ],
-        "sha256": "82dd1d3b5aa2adbdfa971e2131f38eae23d92adef1f2befb71c5c7d8219e649e"
-      }
-    },
-    "tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests.csproj": {
-      "graphSha256": "7b08dea19f830872b78af0013b626b4fdb582bac837efaaf3a4379abcf0e1bc0",
-      "props": {
-        "imports": [
-          "microsoft.entityframeworkcore/10.0.14/buildTransitive/net10.0/Microsoft.EntityFrameworkCore.props",
-          "mstest.analyzers/4.5.3/buildTransitive/MSTest.Analyzers.props",
-          "microsoft.testing.platform/2.5.3/buildTransitive/net9.0/Microsoft.Testing.Platform.props",
-          "microsoft.testing.platform.msbuild/2.5.3/buildTransitive/Microsoft.Testing.Platform.MSBuild.props",
-          "microsoft.testing.extensions.telemetry/2.5.3/buildTransitive/net9.0/Microsoft.Testing.Extensions.Telemetry.props",
-          "mstest.testadapter/4.5.3/buildTransitive/net9.0/MSTest.TestAdapter.props",
-          "microsoft.testplatform.testhost/18.10.2/build/net8.0/Microsoft.TestPlatform.TestHost.props",
-          "microsoft.testing.extensions.trxreport/2.5.3/buildTransitive/net9.0/Microsoft.Testing.Extensions.TrxReport.props",
-          "microsoft.testing.extensions.codecoverage/18.12.0/buildTransitive/net8.0/Microsoft.Testing.Extensions.CodeCoverage.props",
-          "microsoft.codecoverage/18.10.2/build/netstandard2.0/Microsoft.CodeCoverage.props",
-          "microsoft.net.test.sdk/18.10.2/build/net8.0/Microsoft.NET.Test.Sdk.props"
-        ],
-        "sha256": "d2dc330474fe3ba15797541aac7e5c269a2d862687de88b6602c16905ef1aab5"
-      },
-      "sources": [
-        "https://api.nuget.org/v3/index.json"
-      ],
-      "targets": {
-        "imports": [
-          "microsoft.extensions.logging.abstractions/10.0.14/buildTransitive/net8.0/Microsoft.Extensions.Logging.Abstractions.targets",
-          "sqlitepclraw.lib.e_sqlite3/3.53.3/buildTransitive/net9.0/SQLitePCLRaw.lib.e_sqlite3.targets",
-          "serilog/4.3.1/buildTransitive/Serilog.targets",
-          "microsoft.extensions.configuration.binder/10.0.14/buildTransitive/netstandard2.0/Microsoft.Extensions.Configuration.Binder.targets",
-          "microsoft.extensions.options/10.0.14/buildTransitive/net8.0/Microsoft.Extensions.Options.targets",
-          "mstest.analyzers/4.5.3/buildTransitive/MSTest.Analyzers.targets",
-          "mstest.testframework/4.5.3/buildTransitive/net9.0/MSTest.TestFramework.targets",
-          "microsoft.testing.platform/2.5.3/buildTransitive/net9.0/Microsoft.Testing.Platform.targets",
-          "microsoft.testing.platform.msbuild/2.5.3/buildTransitive/Microsoft.Testing.Platform.MSBuild.targets",
-          "mstest.testadapter/4.5.3/buildTransitive/net9.0/MSTest.TestAdapter.targets",
-          "microsoft.testplatform.testhost/18.10.2/build/net8.0/Microsoft.TestPlatform.TestHost.targets",
-          "microsoft.testing.extensions.codecoverage/18.12.0/buildTransitive/net8.0/Microsoft.Testing.Extensions.CodeCoverage.targets",
-          "microsoft.codecoverage/18.10.2/build/netstandard2.0/Microsoft.CodeCoverage.targets",
-          "microsoft.net.test.sdk/18.10.2/build/net8.0/Microsoft.NET.Test.Sdk.targets",
-          "microsoft.identity.client.nativeinterop/0.20.6/buildtransitive/netstandard2.0/Microsoft.Identity.Client.NativeInterop.targets",
-          "asp.versioning.abstractions/10.2.1/buildTransitive/Asp.Versioning.Abstractions.targets",
-          "asp.versioning.http/10.2.1/buildTransitive/Asp.Versioning.Http.targets",
-          "coverlet.collector/10.1.0/build/net10.0/coverlet.collector.targets"
-        ],
-        "sha256": "000636f7a8c892ed75f1b2cf9a66e7ab0ddebcef29f320db65e8180727113cdf"
-      }
-    },
     "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj": {
       "graphSha256": "8ed51b170c88dd49f34790bdbafdde452b58c1b2c6c9cff7d7e6b1221f055f67",
       "props": {
@@ -2266,126 +2083,6 @@
         "sha256": "536047ff7d0bff72d738702f537c54ff4697b8806117bd56b1c5b71bca5bdec1"
       }
     },
-    "tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj": {
-      "graphSha256": "a5717f65fbf394e4ad0c10f2bc26c531d6ca99172f42f04a14209a200d98508a",
-      "props": {
-        "imports": [
-          "microsoft.entityframeworkcore/10.0.14/buildTransitive/net10.0/Microsoft.EntityFrameworkCore.props",
-          "mstest.analyzers/4.5.3/buildTransitive/MSTest.Analyzers.props",
-          "microsoft.testing.platform/2.5.3/buildTransitive/net9.0/Microsoft.Testing.Platform.props",
-          "microsoft.testing.platform.msbuild/2.5.3/buildTransitive/Microsoft.Testing.Platform.MSBuild.props",
-          "microsoft.testing.extensions.telemetry/2.5.3/buildTransitive/net9.0/Microsoft.Testing.Extensions.Telemetry.props",
-          "mstest.testadapter/4.5.3/buildTransitive/net9.0/MSTest.TestAdapter.props",
-          "microsoft.testplatform.testhost/18.10.2/build/net8.0/Microsoft.TestPlatform.TestHost.props",
-          "microsoft.testing.extensions.trxreport/2.5.3/buildTransitive/net9.0/Microsoft.Testing.Extensions.TrxReport.props",
-          "microsoft.testing.extensions.codecoverage/18.12.0/buildTransitive/net8.0/Microsoft.Testing.Extensions.CodeCoverage.props",
-          "microsoft.codecoverage/18.10.2/build/netstandard2.0/Microsoft.CodeCoverage.props",
-          "microsoft.net.test.sdk/18.10.2/build/net8.0/Microsoft.NET.Test.Sdk.props",
-          "microsoft.extensions.configuration.usersecrets/10.0.14/buildTransitive/net8.0/Microsoft.Extensions.Configuration.UserSecrets.props"
-        ],
-        "sha256": "47a0ee22e7522a9cfb981d05bf0b03b93ffc324082e497eb841986130b50ebcb"
-      },
-      "sources": [
-        "https://api.nuget.org/v3/index.json"
-      ],
-      "targets": {
-        "imports": [
-          "microsoft.extensions.logging.abstractions/10.0.14/buildTransitive/net8.0/Microsoft.Extensions.Logging.Abstractions.targets",
-          "sqlitepclraw.lib.e_sqlite3/3.53.3/buildTransitive/net9.0/SQLitePCLRaw.lib.e_sqlite3.targets",
-          "serilog/4.3.1/buildTransitive/Serilog.targets",
-          "microsoft.extensions.configuration.binder/10.0.14/buildTransitive/netstandard2.0/Microsoft.Extensions.Configuration.Binder.targets",
-          "microsoft.extensions.options/10.0.14/buildTransitive/net8.0/Microsoft.Extensions.Options.targets",
-          "mstest.analyzers/4.5.3/buildTransitive/MSTest.Analyzers.targets",
-          "mstest.testframework/4.5.3/buildTransitive/net9.0/MSTest.TestFramework.targets",
-          "microsoft.testing.platform/2.5.3/buildTransitive/net9.0/Microsoft.Testing.Platform.targets",
-          "microsoft.testing.platform.msbuild/2.5.3/buildTransitive/Microsoft.Testing.Platform.MSBuild.targets",
-          "mstest.testadapter/4.5.3/buildTransitive/net9.0/MSTest.TestAdapter.targets",
-          "microsoft.testplatform.testhost/18.10.2/build/net8.0/Microsoft.TestPlatform.TestHost.targets",
-          "microsoft.testing.extensions.codecoverage/18.12.0/buildTransitive/net8.0/Microsoft.Testing.Extensions.CodeCoverage.targets",
-          "microsoft.codecoverage/18.10.2/build/netstandard2.0/Microsoft.CodeCoverage.targets",
-          "microsoft.net.test.sdk/18.10.2/build/net8.0/Microsoft.NET.Test.Sdk.targets",
-          "microsoft.playwright/1.65.1/buildTransitive/Microsoft.Playwright.targets",
-          "microsoft.identity.client.nativeinterop/0.20.6/buildtransitive/netstandard2.0/Microsoft.Identity.Client.NativeInterop.targets",
-          "microsoft.extensions.configuration.usersecrets/10.0.14/buildTransitive/net8.0/Microsoft.Extensions.Configuration.UserSecrets.targets",
-          "microsoft.aspnetcore.mvc.testing/10.0.14/buildTransitive/net10.0/Microsoft.AspNetCore.Mvc.Testing.targets",
-          "asp.versioning.abstractions/10.2.1/buildTransitive/Asp.Versioning.Abstractions.targets",
-          "asp.versioning.http/10.2.1/buildTransitive/Asp.Versioning.Http.targets",
-          "coverlet.collector/10.1.0/build/net10.0/coverlet.collector.targets"
-        ],
-        "sha256": "17031f59e53ff27e4b5591c5065295bb1b8f9ea2fd8b986ef03255e319ef1ba0"
-      }
-    },
-    "tests/HVO.SkyMonitor.LogicHost.TestInfrastructure/HVO.SkyMonitor.LogicHost.TestInfrastructure.csproj": {
-      "graphSha256": "07c025704eb0f3d38ced795d811a0b166f5997fcd3a0c636cc9f97ea4182d442",
-      "props": {
-        "imports": [
-          "microsoft.entityframeworkcore/10.0.14/buildTransitive/net10.0/Microsoft.EntityFrameworkCore.props",
-          "microsoft.extensions.configuration.usersecrets/10.0.14/buildTransitive/net8.0/Microsoft.Extensions.Configuration.UserSecrets.props"
-        ],
-        "sha256": "aa0e4ff8da1ee4b9de7cd7614fc131f56989b7e8824c5da21a683f1f59df0c30"
-      },
-      "sources": [
-        "https://api.nuget.org/v3/index.json"
-      ],
-      "targets": {
-        "imports": [
-          "microsoft.extensions.logging.abstractions/10.0.14/buildTransitive/net8.0/Microsoft.Extensions.Logging.Abstractions.targets",
-          "sqlitepclraw.lib.e_sqlite3/3.53.3/buildTransitive/net9.0/SQLitePCLRaw.lib.e_sqlite3.targets",
-          "serilog/4.3.1/buildTransitive/Serilog.targets",
-          "microsoft.extensions.configuration.binder/10.0.14/buildTransitive/netstandard2.0/Microsoft.Extensions.Configuration.Binder.targets",
-          "microsoft.extensions.options/10.0.14/buildTransitive/net8.0/Microsoft.Extensions.Options.targets",
-          "microsoft.identity.client.nativeinterop/0.20.6/buildtransitive/netstandard2.0/Microsoft.Identity.Client.NativeInterop.targets",
-          "microsoft.extensions.configuration.usersecrets/10.0.14/buildTransitive/net8.0/Microsoft.Extensions.Configuration.UserSecrets.targets",
-          "microsoft.aspnetcore.mvc.testing/10.0.14/buildTransitive/net10.0/Microsoft.AspNetCore.Mvc.Testing.targets",
-          "asp.versioning.abstractions/10.2.1/buildTransitive/Asp.Versioning.Abstractions.targets",
-          "asp.versioning.http/10.2.1/buildTransitive/Asp.Versioning.Http.targets"
-        ],
-        "sha256": "dd07d5d23a0ef0f718a0d507b2098196c5956d23331637e5060c2acafe3c8743"
-      }
-    },
-    "tests/HVO.SkyMonitor.LogicHost.Tests/HVO.SkyMonitor.LogicHost.Tests.csproj": {
-      "graphSha256": "b014ab0b64025b177feff0283d5ca9ef555f68a8996de998b7fda757112cf812",
-      "props": {
-        "imports": [
-          "microsoft.entityframeworkcore/10.0.14/buildTransitive/net10.0/Microsoft.EntityFrameworkCore.props",
-          "mstest.analyzers/4.5.3/buildTransitive/MSTest.Analyzers.props",
-          "microsoft.testing.platform/2.5.3/buildTransitive/net9.0/Microsoft.Testing.Platform.props",
-          "microsoft.testing.platform.msbuild/2.5.3/buildTransitive/Microsoft.Testing.Platform.MSBuild.props",
-          "microsoft.testing.extensions.telemetry/2.5.3/buildTransitive/net9.0/Microsoft.Testing.Extensions.Telemetry.props",
-          "mstest.testadapter/4.5.3/buildTransitive/net9.0/MSTest.TestAdapter.props",
-          "microsoft.testplatform.testhost/18.10.2/build/net8.0/Microsoft.TestPlatform.TestHost.props",
-          "microsoft.testing.extensions.trxreport/2.5.3/buildTransitive/net9.0/Microsoft.Testing.Extensions.TrxReport.props",
-          "microsoft.testing.extensions.codecoverage/18.12.0/buildTransitive/net8.0/Microsoft.Testing.Extensions.CodeCoverage.props",
-          "microsoft.codecoverage/18.10.2/build/netstandard2.0/Microsoft.CodeCoverage.props",
-          "microsoft.net.test.sdk/18.10.2/build/net8.0/Microsoft.NET.Test.Sdk.props",
-          "microsoft.aspnetcore.components.webassembly.authentication/10.0.10/buildTransitive/Microsoft.AspNetCore.Components.WebAssembly.Authentication.props"
-        ],
-        "sha256": "8bda20f5c20aa86c9661353c981ab018678c09f74c1af24f96ad1286d8df553e"
-      },
-      "sources": [
-        "https://api.nuget.org/v3/index.json"
-      ],
-      "targets": {
-        "imports": [
-          "sqlitepclraw.lib.e_sqlite3/3.53.3/buildTransitive/net9.0/SQLitePCLRaw.lib.e_sqlite3.targets",
-          "serilog/4.3.1/buildTransitive/Serilog.targets",
-          "mstest.analyzers/4.5.3/buildTransitive/MSTest.Analyzers.targets",
-          "mstest.testframework/4.5.3/buildTransitive/net9.0/MSTest.TestFramework.targets",
-          "microsoft.testing.platform/2.5.3/buildTransitive/net9.0/Microsoft.Testing.Platform.targets",
-          "microsoft.testing.platform.msbuild/2.5.3/buildTransitive/Microsoft.Testing.Platform.MSBuild.targets",
-          "mstest.testadapter/4.5.3/buildTransitive/net9.0/MSTest.TestAdapter.targets",
-          "microsoft.testplatform.testhost/18.10.2/build/net8.0/Microsoft.TestPlatform.TestHost.targets",
-          "microsoft.testing.extensions.codecoverage/18.12.0/buildTransitive/net8.0/Microsoft.Testing.Extensions.CodeCoverage.targets",
-          "microsoft.codecoverage/18.10.2/build/netstandard2.0/Microsoft.CodeCoverage.targets",
-          "microsoft.net.test.sdk/18.10.2/build/net8.0/Microsoft.NET.Test.Sdk.targets",
-          "microsoft.identity.client.nativeinterop/0.20.6/buildtransitive/netstandard2.0/Microsoft.Identity.Client.NativeInterop.targets",
-          "asp.versioning.abstractions/10.2.1/buildTransitive/Asp.Versioning.Abstractions.targets",
-          "asp.versioning.http/10.2.1/buildTransitive/Asp.Versioning.Http.targets",
-          "coverlet.collector/10.1.0/build/net10.0/coverlet.collector.targets"
-        ],
-        "sha256": "6cf7cec3f23d266df7bb8f7cac7163262ea7bf0a63c3ed49b3496114a048d265"
-      }
-    },
     "tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj": {
       "graphSha256": "5f9a4e102f1d969a705630bbcefa2ef591200ebb72be46e26354753518927f50",
       "props": {
@@ -2573,6 +2270,6 @@
     "sha256": "4ef9f528ca027157ca455a5b7bd54deddaae38be12827581255c8204d23dd72f",
     "version": "10.0.402"
   },
-  "sourceSha256": "bcd289b3b802135d776287ced7d635d87e405faa76ef6b375e5e1d1e64248518",
+  "sourceSha256": "7bcefdd09b24462892fb7ab6777a99279a42318e48d1d767885bb68ba91c4b1f",
   "version": 1
 }
