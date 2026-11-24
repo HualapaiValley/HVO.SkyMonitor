@@ -581,7 +581,22 @@ public static class PresentationLayerProducers
         var validation = RegionalStellarVisibilityJson.Validate(assessment);
         if (!validation.IsValid) throw new ArgumentException("Regional stellar visibility assessment is invalid.", nameof(assessment));
         var count = checked(assessment.Grid.Columns * assessment.Grid.Rows);
-        var deficitBits = assessment.Mask?.DeficitBits.ToArray() ?? new byte[(count + 7) / 8];
+        byte[] deficitBits;
+        if (assessment.Mask is { } mask)
+        {
+            deficitBits = mask.DeficitBits.ToArray();
+        }
+        else
+        {
+            deficitBits = new byte[(count + 7) / 8];
+            for (var index = 0; index < assessment.Tiles.Count; index++)
+            {
+                if (assessment.Tiles[index].Status == RegionalVisibilityTileStatus.DetectionDeficit)
+                {
+                    deficitBits[index >> 3] |= (byte)(1 << (index & 7));
+                }
+            }
+        }
         var texts = includeSummaryLabel ? new[]
         {
             new PresentationTextBlockV1(PresentationTextAnchor.Point, new PixelPoint(3, 18),

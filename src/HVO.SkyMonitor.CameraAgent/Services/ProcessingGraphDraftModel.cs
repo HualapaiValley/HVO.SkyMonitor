@@ -72,6 +72,12 @@ internal sealed class ProcessingGraphDraftModel
         return model;
     }
 
+    private static readonly CaptureProcessingPublicationPolicy DurableLocalPublication =
+        new(CaptureProcessingPersistenceMode.DurableLocal);
+
+    public bool IsCenteredGraph => Nodes.Any(static node =>
+        string.Equals(node.Type, ExposureMeasurementProducts.StepAlias, StringComparison.OrdinalIgnoreCase));
+
     public void AddNode(string type)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(type);
@@ -80,7 +86,65 @@ internal sealed class ProcessingGraphDraftModel
         {
             id = string.Create(CultureInfo.InvariantCulture, $"{type}-{suffix}");
         }
-        Nodes.Add(new NodeRow { Id = id, Type = type, Required = true, Enabled = true, DependsOn = new HashSet<string>([RawInput], StringComparer.Ordinal) });
+        var row = new NodeRow { Id = id, Type = type, Required = true, Enabled = true, DependsOn = new HashSet<string>([RawInput], StringComparer.Ordinal) };
+        Nodes.Add(row);
+        EnsureRegionalVisibilityWiring(row);
+    }
+
+    public void EnsureRegionalVisibilityWiring(NodeRow node)
+    {
+        ArgumentNullException.ThrowIfNull(node);
+        if (!string.Equals(node.Type, RegionalStellarVisibilityProducts.StepAlias, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        node.Required = false;
+        node.Publication = DurableLocalPublication;
+        node.DependsOn.Add(RawInput);
+        if (!IsCenteredGraph)
+        {
+            return;
+        }
+
+        node.DependsOn.Add(ExposureMeasurementProducts.StepAlias);
+        if (!node.Enabled)
+        {
+            return;
+        }
+
+        const string predictionAlias = ExposureCatalogPredictionProducts.StepAlias;
+        if (!Nodes.Any(static existing =>
+                string.Equals(existing.Type, predictionAlias, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(existing.Id, predictionAlias, StringComparison.OrdinalIgnoreCase)))
+        {
+            var predictionStep = new CaptureProcessingStepConfig(
+                predictionAlias,
+                predictionAlias,
+                DependsOn: [RawInput],
+                Required: false,
+                Publication: DurableLocalPublication);
+            Nodes.Add(new NodeRow
+            {
+                Id = predictionAlias,
+                Type = predictionAlias,
+                Required = false,
+                Enabled = true,
+                DependsOn = new HashSet<string>([RawInput], StringComparer.Ordinal),
+                Publication = DurableLocalPublication,
+                SystemManagedStep = predictionStep
+            });
+        }
+
+        node.DependsOn.Add(predictionAlias);
+        var astrometryNode = Nodes.FirstOrDefault(static existing =>
+            existing.Enabled &&
+            (string.Equals(existing.Type, "MeasuredAstrometry", StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(existing.Type, "ExposureMeasuredAstrometry", StringComparison.OrdinalIgnoreCase)));
+        if (astrometryNode is not null && !string.IsNullOrWhiteSpace(astrometryNode.Id))
+        {
+            node.DependsOn.Add(astrometryNode.Id.Trim());
+        }
     }
 
     public void Remove(NodeRow node)
@@ -236,7 +300,7 @@ internal sealed class ProcessingGraphDraftModel
         public bool Enabled { get; set; } = true;
         public HashSet<string> DependsOn { get; set; } = new(StringComparer.Ordinal);
         public JsonElement? Options { get; init; }
-        public CaptureProcessingPublicationPolicy? Publication { get; init; }
+        public CaptureProcessingPublicationPolicy? Publication { get; set; }
         public bool HasOptions => Options is not null;
         public bool IsSystemManaged => ExposureMeasurementProducts.IsSystemManagedStepAlias(Type);
         public CaptureProcessingStepConfig? SystemManagedStep { get; init; }

@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
+using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.Imaging;
@@ -39,7 +40,8 @@ internal sealed class RegionalStellarVisibilityCaptureProcessingStep(
     SqliteCalibrationLibraryStore? calibrationLibrary = null,
     CameraAgentClearReferenceLoader? referenceLoader = null,
     IOptions<CameraAgentHostOptions>? hostOptions = null,
-    IServiceProvider? services = null)
+    IServiceProvider? services = null,
+    CenteredExposureInputCustody? custody = null)
     : ConfigurableCaptureProcessingStep<RegionalStellarVisibilityProcessingStepOptions>(metadata, options),
       ICaptureProcessingGraphStep, ICenteredRawPrimaryCaptureProcessingStep, IFrozenAuxiliaryInputCaptureProcessingStep
 {
@@ -47,6 +49,10 @@ internal sealed class RegionalStellarVisibilityCaptureProcessingStep(
     {
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
         Converters = { new JsonStringEnumConverter(namingPolicy: null, allowIntegerValues: false) }
+    };
+    private static readonly JsonSerializerOptions VirtualSkyOptionsJson = new(JsonSerializerDefaults.Web)
+    {
+        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
     };
 
     public bool Enabled => true;
@@ -198,8 +204,17 @@ internal sealed class RegionalStellarVisibilityCaptureProcessingStep(
             context.RecordCanonicalInput("horizon-visibility-eligibility", "1", horizonProfile.ComputeIdentitySha256());
         }
 
-        var defectMask = await TryLoadDefectMaskAsync(context, cancellationToken).ConfigureAwait(false);
-        var photometricProfile = ResolvePhotometricProfile(context, Options);
+        LinearExposureLookup? linear = null;
+        if (context.RawCapture?.Manifest is { CenteredExposure: not null } centeredManifest)
+        {
+            var key = CaptureExposureMeasurementReader.Key(centeredManifest);
+            linear = await productReader.ReadLinearAsync(key, cancellationToken).ConfigureAwait(false);
+        }
+
+        var defectMask = await TryLoadDefectMaskAsync(linear, descriptor.Layout, cancellationToken).ConfigureAwait(false);
+        var regionalBackground = await TryEstimateRegionalBackgroundAsync(
+            context, descriptor, linear, measurement, defectMask, cancellationToken).ConfigureAwait(false);
+        var (photometricProfile, responseMismatchReason) = ResolvePhotometricProfile(context, Options);
         var recipeOptions = Options.ToRecipeOptions(photometricProfile);
 
         var request = new RegionalStellarVisibilityRequest(
@@ -216,7 +231,9 @@ internal sealed class RegionalStellarVisibilityCaptureProcessingStep(
             acceptedMapping,
             horizonEvaluator,
             environment,
-            defectMask);
+            defectMask,
+            RegionalBackground: regionalBackground,
+            ResponseMismatchReason: responseMismatchReason);
 
         var outcome = RegionalStellarVisibilityProducts.Assess(request, OutputVariant, cancellationToken);
         var consumedProducts = new List<ProcessingProduct>(3);
@@ -229,43 +246,156 @@ internal sealed class RegionalStellarVisibilityCaptureProcessingStep(
         context.AddProcessingOutcome(outcome);
     }
 
-    private static RegionalVisibilityPhotometricProfileV1? ResolvePhotometricProfile(
+    private static (RegionalVisibilityPhotometricProfileV1? Profile, string? MismatchReason) ResolvePhotometricProfile(
         CaptureProcessingContext context,
         RegionalStellarVisibilityProcessingStepOptions options)
     {
+        var isVirtualSky = string.Equals(context.Config.Module.Type, "VirtualSky", StringComparison.OrdinalIgnoreCase);
+        VirtualSkyCameraModuleOptions? virtualOptions = null;
+        if (isVirtualSky)
+        {
+            try
+            {
+                virtualOptions = context.Config.ModuleOptions is { } serialized
+                    ? JsonSerializer.Deserialize<VirtualSkyCameraModuleOptions>(serialized.GetRawText(), VirtualSkyOptionsJson)
+                        ?? new VirtualSkyCameraModuleOptions()
+                    : new VirtualSkyCameraModuleOptions();
+            }
+            catch (Exception exception) when (exception is JsonException or ArgumentException)
+            {
+                return (null, RegionalVisibilityReasonCodes.ResponseBasisMismatch);
+            }
+        }
+
         if (options.PhotometricProfile is { } explicitProfile)
         {
-            return explicitProfile;
+            if (virtualOptions is not null)
+            {
+                var actualMagZero = virtualOptions.MagnitudeZeroElectronsPerSecond;
+                if (Math.Abs(explicitProfile.MagnitudeZeroElectronsPerSecond - actualMagZero) >
+                    Math.Max(1e-6, Math.Abs(actualMagZero) * 1e-6))
+                {
+                    return (explicitProfile, RegionalVisibilityReasonCodes.ResponseBasisMismatch);
+                }
+
+                if (virtualOptions.Asi676Enabled ||
+                    RegionalVisibilityPhotometricProfileV1.IsProvisionalOrUncalibratedStatus(
+                        context.Config.Rig.Sensor.SimulationResponse?.CalibrationStatus))
+                {
+                    return (explicitProfile, RegionalVisibilityReasonCodes.ResponseBasisMismatch);
+                }
+            }
+
+            return (explicitProfile, null);
         }
 
         if (context.Config.Rig.Sensor.SimulationResponse is { } simulationResponse)
         {
-            return new RegionalVisibilityPhotometricProfileV1(
-                ProfileName: simulationResponse.CompatibilityLabel,
-                MagnitudeZeroElectronsPerSecond: options.MagnitudeZeroElectronsPerSecond ?? 10_000d,
-                NominalPsfSigmaPixels: options.NominalPsfSigmaPixels ?? 1.0d,
-                DarkCurrentElectronsPerSecond: options.DarkCurrentElectronsPerSecond ?? 0.0d,
-                VignettingStrength: options.VignettingStrength ?? 0.0d,
-                SensorResponse: simulationResponse,
-                CalibrationStatus: simulationResponse.CalibrationStatus);
+            if (virtualOptions is not null)
+            {
+                var actualMagZero = virtualOptions.MagnitudeZeroElectronsPerSecond;
+                if (options.MagnitudeZeroElectronsPerSecond is { } requestedMagZero &&
+                    Math.Abs(requestedMagZero - actualMagZero) > Math.Max(1e-6, Math.Abs(actualMagZero) * 1e-6))
+                {
+                    return (null, RegionalVisibilityReasonCodes.ResponseBasisMismatch);
+                }
+
+                var actualDarkCurrent = virtualOptions.SyntheticCalibration is null
+                    ? virtualOptions.DarkCurrentElectronsPerSecond
+                    : 0.0d;
+                var actualVignetting = virtualOptions.SyntheticCalibration is null
+                    ? virtualOptions.VignettingStrength
+                    : 0.0d;
+
+                return (new RegionalVisibilityPhotometricProfileV1(
+                    ProfileName: simulationResponse.CompatibilityLabel,
+                    MagnitudeZeroElectronsPerSecond: actualMagZero,
+                    NominalPsfSigmaPixels: options.NominalPsfSigmaPixels ?? virtualOptions.PsfSigmaPixels,
+                    DarkCurrentElectronsPerSecond: options.DarkCurrentElectronsPerSecond ?? actualDarkCurrent,
+                    VignettingStrength: options.VignettingStrength ?? actualVignetting,
+                    SensorResponse: simulationResponse,
+                    CalibrationStatus: simulationResponse.CalibrationStatus), null);
+            }
+
+            if (options.MagnitudeZeroElectronsPerSecond is { } explicitMagZero)
+            {
+                return (new RegionalVisibilityPhotometricProfileV1(
+                    ProfileName: simulationResponse.CompatibilityLabel,
+                    MagnitudeZeroElectronsPerSecond: explicitMagZero,
+                    NominalPsfSigmaPixels: options.NominalPsfSigmaPixels ?? 1.0d,
+                    DarkCurrentElectronsPerSecond: options.DarkCurrentElectronsPerSecond ?? 0.0d,
+                    VignettingStrength: options.VignettingStrength ?? 0.0d,
+                    SensorResponse: simulationResponse,
+                    CalibrationStatus: simulationResponse.CalibrationStatus), null);
+            }
+
+            return (null, null);
         }
 
-        return null;
+        if (virtualOptions is { Asi676Enabled: true })
+        {
+            return (null, RegionalVisibilityReasonCodes.ResponseBasisMismatch);
+        }
+
+        return (null, null);
     }
 
-    private async ValueTask<RegionalVisibilityDefectMaskInput?> TryLoadDefectMaskAsync(
+    private async ValueTask<IReadOnlyList<RegionalVisibilityTileBackgroundV1>?> TryEstimateRegionalBackgroundAsync(
         CaptureProcessingContext context,
+        ReconstructionDescriptor descriptor,
+        LinearExposureLookup? linear,
+        ExposureMeasurementV1? measurement,
+        RegionalVisibilityDefectMaskInput? defectMask,
         CancellationToken cancellationToken)
     {
-        if (calibrationLibrary is null || referenceLoader is null || hostOptions is null ||
-            context.RawCapture?.Manifest is not { CenteredExposure: not null } manifest)
+        if (custody is null ||
+            linear?.Product is not { } linearProduct ||
+            linear.Disposition is not (LinearExposureDisposition.Calibrated or LinearExposureDisposition.QualifiedNormalizationOnly) ||
+            descriptor.Layout.PixelFormat is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16) ||
+            Options.GridColumns > descriptor.Layout.Width ||
+            Options.GridRows > descriptor.Layout.Height)
         {
             return null;
         }
 
-        var key = CaptureExposureMeasurementReader.Key(manifest);
-        var linear = await productReader.ReadLinearAsync(key, cancellationToken).ConfigureAwait(false);
-        if (linear?.Provenance is not { Disposition: LinearExposureDisposition.Calibrated } provenance ||
+        var lease = await custody.OpenLinearAsync(linearProduct, TimeSpan.FromMinutes(2), cancellationToken).ConfigureAwait(false);
+        if (lease is null)
+        {
+            return null;
+        }
+
+        await using var leaseLifetime = lease.ConfigureAwait(false);
+        if (lease.Input.Linear.Layout is not { } linearLayout)
+        {
+            return null;
+        }
+
+        await context.EnsureRawFrameAsync(cancellationToken).ConfigureAwait(false);
+        var rawBytes = context.Artifacts?.Raw.Frame.PixelData ?? ReadOnlyMemory<byte>.Empty;
+        if (rawBytes.Length < descriptor.Layout.ByteLength)
+        {
+            return null;
+        }
+
+        return RegionalStellarVisibilityProducts.EstimateRegionalBackgroundFromLinear(
+            linearLayout,
+            lease.Input.Linear.Payload,
+            descriptor.Layout,
+            rawBytes,
+            Options.GridColumns,
+            Options.GridRows,
+            measurement?.Input.ApertureProjection,
+            defectMask?.Frame,
+            cancellationToken);
+    }
+
+    private async ValueTask<RegionalVisibilityDefectMaskInput?> TryLoadDefectMaskAsync(
+        LinearExposureLookup? linear,
+        FrameLayoutDescriptor rawLayout,
+        CancellationToken cancellationToken)
+    {
+        if (calibrationLibrary is null || referenceLoader is null || hostOptions is null ||
+            linear?.Provenance is not { Disposition: LinearExposureDisposition.Calibrated } provenance ||
             provenance.CalibrationArtifactIds.Length != CalibrationReferenceKinds.All.Count ||
             provenance.CalibrationPayloadHashes.Length != CalibrationReferenceKinds.All.Count)
         {
@@ -288,49 +418,54 @@ internal sealed class RegionalStellarVisibilityCaptureProcessingStep(
 
         var defectArtifactId = provenance.CalibrationArtifactIds[defectIndex];
         var defectSha256 = provenance.CalibrationPayloadHashes[defectIndex];
-        var bundles = await calibrationLibrary.GetBundlesAsync(128, cancellationToken).ConfigureAwait(false);
-        var root = Path.GetFullPath(hostOptions.Value.RawIngressRoot);
-        foreach (var snapshot in bundles)
+        var match = await calibrationLibrary.FindMasterArtifactAsync(
+            defectArtifactId, CalibrationReferenceKinds.Defect, defectSha256, cancellationToken).ConfigureAwait(false);
+        if (match is null || string.IsNullOrWhiteSpace(match.ManifestRelativePath) ||
+            Path.IsPathRooted(match.ManifestRelativePath))
         {
-            var match = snapshot.Bundle.Artifacts.FirstOrDefault(artifact =>
-                artifact.Kind == CalibrationReferenceKinds.Defect &&
-                artifact.ArtifactId == defectArtifactId &&
-                string.Equals(artifact.PayloadSha256, defectSha256, StringComparison.OrdinalIgnoreCase));
-            if (match is null)
-            {
-                continue;
-            }
+            return null;
+        }
 
-            try
-            {
-                var manifestPath = Path.GetFullPath(Path.Combine(root, match.ManifestRelativePath));
-                var parsed = CaptureContractJson.ParseManifest(
-                    await File.ReadAllBytesAsync(manifestPath, cancellationToken).ConfigureAwait(false));
-                if (!parsed.IsValid || parsed.Document?.Manifest is not { } defectManifest)
-                {
-                    return null;
-                }
-
-                var artifact = await referenceLoader.LoadAsync(defectManifest, cancellationToken).ConfigureAwait(false);
-                if (artifact.ArtifactId != defectArtifactId ||
-                    artifact.Layout is not { } layout ||
-                    !string.Equals(PayloadChecksum.ComputeSha256(artifact.Payload.Span), defectSha256, StringComparison.OrdinalIgnoreCase))
-                {
-                    return null;
-                }
-
-                return new RegionalVisibilityDefectMaskInput(
-                    defectArtifactId,
-                    defectSha256,
-                    new Linear16Frame(layout.Width, layout.Height, layout.StrideBytes, layout.PixelFormat, artifact.Payload));
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
+        try
+        {
+            var root = Path.GetFullPath(hostOptions.Value.RawIngressRoot);
+            var rootWithSeparator = root.EndsWith(Path.DirectorySeparatorChar)
+                ? root
+                : root + Path.DirectorySeparatorChar;
+            var manifestPath = Path.GetFullPath(Path.Combine(root, match.ManifestRelativePath));
+            if (!manifestPath.StartsWith(rootWithSeparator, StringComparison.Ordinal))
             {
                 return null;
             }
-        }
 
-        return null;
+            var parsed = CaptureContractJson.ParseManifest(
+                await File.ReadAllBytesAsync(manifestPath, cancellationToken).ConfigureAwait(false));
+            if (!parsed.IsValid || parsed.Document?.Manifest is not { } defectManifest ||
+                defectManifest.Descriptor.Artifact.ArtifactId != defectArtifactId ||
+                !string.Equals(defectManifest.Descriptor.Artifact.ChecksumSha256, defectSha256, StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            var artifact = await referenceLoader.LoadAsync(defectManifest, cancellationToken).ConfigureAwait(false);
+            if (artifact.ArtifactId != defectArtifactId ||
+                artifact.Layout is not { } layout ||
+                layout.Width != rawLayout.Width ||
+                layout.Height != rawLayout.Height ||
+                !string.Equals(PayloadChecksum.ComputeSha256(artifact.Payload.Span), defectSha256, StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            return new RegionalVisibilityDefectMaskInput(
+                defectArtifactId,
+                defectSha256,
+                new Linear16Frame(layout.Width, layout.Height, layout.StrideBytes, layout.PixelFormat, artifact.Payload));
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            return null;
+        }
     }
 
     private static CloudAssessmentEnvironmentV1 ParseEnvironment(ProcessingAuxiliaryInput input)

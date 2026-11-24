@@ -2,6 +2,7 @@ using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
@@ -159,6 +160,7 @@ public sealed partial class VirtualSkyCameraModuleTests
     [DataRow(CameraPixelFormat.Mono16, "clear", DisplayName = "RegionalStellarVisibility_HeldOut_ClearMono16")]
     [DataRow(CameraPixelFormat.BayerRggb16, "clear", DisplayName = "RegionalStellarVisibility_HeldOut_ClearBayerRggb16")]
     [DataRow(CameraPixelFormat.Mono16, "patchy", DisplayName = "RegionalStellarVisibility_HeldOut_PatchyCloudMono16")]
+    [DataRow(CameraPixelFormat.BayerRggb16, "patchy", DisplayName = "RegionalStellarVisibility_HeldOut_PatchyCloudBayerRggb16")]
     [DataRow(CameraPixelFormat.Mono16, "overcast", DisplayName = "RegionalStellarVisibility_HeldOut_OvercastMono16")]
     public async Task RegionalStellarVisibility_HeldOutVirtualSky_ClearPatchyOvercastAndBayer(
         CameraPixelFormat format, string scenario)
@@ -296,6 +298,382 @@ public sealed partial class VirtualSkyCameraModuleTests
         }
     }
 
+    [TestMethod]
+    public async Task RegionalStellarVisibility_ReferenceCalibratedExposureResolvesDefectMaskByIdAndWithholdsWhenUnverifiable()
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-regvis-refcal");
+        var token = TestContext.CancellationToken;
+        var clock = new CenteredClock { UtcNow = RegionalNightUtc };
+        var deviceClock = new ExposureTestTimeProvider(RegionalNightUtc, autoAdvance: true);
+
+        try
+        {
+            var syntheticCalibration = new SyntheticCalibrationModelV1 { Gain = 1 };
+            var profile = CreateRegionalVisibilityProfile(
+                root,
+                RegionalNightUtc,
+                CameraPixelFormat.Mono16,
+                syntheticCalibration: syntheticCalibration);
+            var catalog = CreateRegionalVisibilityCatalog(RegionalNightUtc, profile, starsPerInnerTile: 4);
+
+            using var provider = RegionalVisibilityProvider(root, clock, profile.DeploymentLocation!, catalog);
+            var active = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(provider, profile).ConfigureAwait(false);
+            var ingress = provider.GetRequiredService<RawCaptureIngress>();
+            var module = new VirtualSkyCameraModule(deviceClock, catalog, new ProjectedSceneStore(),
+                stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
+            await using var camera = module.ConfigureAwait(false);
+            await module.InitializeAsync(active, token).ConfigureAwait(false);
+
+            var (receipt, _) = await CaptureAndAdmitRegionalAsync(
+                provider, ingress, module, deviceClock, clock, active, RegionalNightUtc, token).ConfigureAwait(false);
+            await ProcessCenteredRuntimeExposureAsync(provider, active, token).ConfigureAwait(false);
+
+            var operations = provider.GetRequiredService<IProcessingGraphOperations>();
+            var executionId = await operations.ReadLiveExecutionIdAsync(receipt.Manifest.Descriptor.Capture.CaptureId, token)
+                .ConfigureAwait(false);
+            Assert.IsNotNull(executionId);
+
+            var ui = RegionalVisibilityOperations(provider, operations);
+            var detail = await ui.GetExecutionDetailAsync(executionId.Value, token).ConfigureAwait(false);
+            Assert.IsTrue(detail.IsSuccess, detail.Message);
+            var assessment = detail.Value?.RegionalStellarVisibility?.Assessment;
+            Assert.IsNotNull(assessment, detail.Value?.RegionalStellarVisibility?.UnavailableReason);
+            Assert.AreEqual(RegionalVisibilityAssessmentStatus.Assessed, assessment.Status, string.Join(',', assessment.ReasonCodes));
+            Assert.AreEqual(ExposureCalibrationDisposition.ReferenceCalibrated, assessment.Conditions.CalibrationDisposition);
+            Assert.IsNotNull(assessment.Sources.DefectMaskArtifactId);
+            Assert.IsNotNull(assessment.Sources.DefectMaskSha256);
+            Assert.AreEqual(0, assessment.Grid.DeficitTileCount);
+            Assert.IsGreaterThan(0, assessment.Grid.ClearTileCount);
+
+            // Corrupt the pinned defect master payload right before step 30b runs on a second capture:
+            // Calibration and ExposureMeasurement succeed, then step 30b must fail-closed (withhold with DefectMaskUnavailable).
+            var defectArtifactId = assessment.Sources.DefectMaskArtifactId.Value;
+            var defectSha = assessment.Sources.DefectMaskSha256!;
+            var calibrationStore = provider.GetRequiredService<HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration.SqliteCalibrationLibraryStore>();
+            var defectEntry = await calibrationStore.FindMasterArtifactAsync(
+                defectArtifactId, CalibrationReferenceKinds.Defect, defectSha, token).ConfigureAwait(false);
+            Assert.IsNotNull(defectEntry);
+            var defectPayloadPath = Path.Combine(root, defectEntry.ManifestRelativePath[..^".json".Length] + ".bin");
+
+            var faultRoot = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-regvis-refcal-corrupt");
+            try
+            {
+                var corruptProfile = CreateRegionalVisibilityProfile(
+                    faultRoot,
+                    RegionalNightUtc,
+                    CameraPixelFormat.Mono16,
+                    syntheticCalibration: syntheticCalibration);
+                var corruptCatalog = CreateRegionalVisibilityCatalog(RegionalNightUtc, corruptProfile, starsPerInnerTile: 4);
+                var corruptFault = new CorruptDefectBeforeStep30bFault(faultRoot);
+                var corruptClock = new CenteredClock { UtcNow = RegionalNightUtc };
+                using var corruptProvider = RegionalVisibilityProvider(
+                    faultRoot, corruptClock, corruptProfile.DeploymentLocation!, corruptCatalog, corruptFault);
+                var corruptActive = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(corruptProvider, corruptProfile).ConfigureAwait(false);
+                var corruptIngress = corruptProvider.GetRequiredService<RawCaptureIngress>();
+                var corruptDeviceClock = new ExposureTestTimeProvider(RegionalNightUtc, autoAdvance: true);
+                var corruptModule = new VirtualSkyCameraModule(corruptDeviceClock, corruptCatalog, new ProjectedSceneStore(),
+                    stagingStore: corruptProvider.GetRequiredService<IProjectedSceneStagingStore>());
+                await using var corruptCamera = corruptModule.ConfigureAwait(false);
+                await corruptModule.InitializeAsync(corruptActive, token).ConfigureAwait(false);
+
+                var (corruptReceipt, _) = await CaptureAndAdmitRegionalAsync(
+                    corruptProvider, corruptIngress, corruptModule, corruptDeviceClock,
+                    corruptClock, corruptActive, RegionalNightUtc, token).ConfigureAwait(false);
+                await ProcessCenteredRuntimeExposureAsync(corruptProvider, corruptActive, token).ConfigureAwait(false);
+
+                Assert.IsTrue(corruptFault.Corrupted);
+                var corruptOps = corruptProvider.GetRequiredService<IProcessingGraphOperations>();
+                var corruptExecId = (await corruptOps.ReadLiveExecutionIdAsync(
+                    corruptReceipt.Manifest.Descriptor.Capture.CaptureId, token).ConfigureAwait(false))!.Value;
+                var corruptUi = RegionalVisibilityOperations(corruptProvider, corruptOps);
+                var corruptDetail = await corruptUi.GetExecutionDetailAsync(corruptExecId, token).ConfigureAwait(false);
+                Assert.IsTrue(corruptDetail.IsSuccess, corruptDetail.Message);
+                var withheldAssessment = corruptDetail.Value?.RegionalStellarVisibility?.Assessment;
+                Assert.IsNotNull(withheldAssessment, corruptDetail.Value?.RegionalStellarVisibility?.UnavailableReason);
+                Assert.AreEqual(RegionalVisibilityAssessmentStatus.Withheld, withheldAssessment.Status);
+                CollectionAssert.Contains(withheldAssessment.ReasonCodes.ToArray(), RegionalVisibilityReasonCodes.DefectMaskUnavailable);
+                Assert.AreEqual(0, withheldAssessment.Grid.DeficitTileCount);
+            }
+            finally
+            {
+                Directory.Delete(faultRoot, recursive: true);
+            }
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private sealed class CorruptDefectBeforeStep30bFault(string root) : ICaptureProcessingFaultInjector
+    {
+        public bool Corrupted { get; private set; }
+
+        public void Inject(CaptureProcessingFaultPoint point, string nodeId)
+        {
+            if (!Corrupted &&
+                string.Equals(nodeId, "regional-visibility", StringComparison.Ordinal) &&
+                point == CaptureProcessingFaultPoint.BeforeNodeExecution)
+            {
+                var defectFile = Directory.EnumerateFiles(Path.Combine(root, "calibration"), "defect.bin", SearchOption.AllDirectories)
+                    .Single();
+                var bytes = File.ReadAllBytes(defectFile);
+                bytes[0] ^= 0xFF;
+                File.WriteAllBytes(defectFile, bytes);
+                Corrupted = true;
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task RegionalStellarVisibility_VirtualSkyFallbackBindsRendererDefaultsAndRejectsMismatch()
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-regvis-vs-fallback");
+        var token = TestContext.CancellationToken;
+        var clock = new CenteredClock { UtcNow = RegionalNightUtc };
+        var deviceClock = new ExposureTestTimeProvider(RegionalNightUtc, autoAdvance: true);
+
+        try
+        {
+            // Omit explicit PhotometricProfile and use VirtualSky's default MagnitudeZeroElectronsPerSecond (1,000 e-/s).
+            // Mag 4.0 stars would appear expected-detectable under an erroneous 10,000 e-/s fallback, but are too faint at 1,000 e-/s.
+            var fallbackProfile = CreateRegionalVisibilityProfile(
+                root,
+                RegionalNightUtc,
+                CameraPixelFormat.Mono16,
+                omitExplicitPhotometricProfile: true,
+                magnitudeZeroElectronsPerSecond: null);
+            var faintCatalog = CreateRegionalVisibilityCatalog(RegionalNightUtc, fallbackProfile, starsPerInnerTile: 4, starMagnitude: 4.0);
+
+            var fallbackAssessment = await RunSingleRegionalVisibilityAsync(
+                root, clock, deviceClock, fallbackProfile, faintCatalog, RegionalNightUtc, token).ConfigureAwait(false);
+            Assert.AreEqual(RegionalVisibilityAssessmentStatus.InsufficientEvidence, fallbackAssessment.Status,
+                string.Join(',', fallbackAssessment.ReasonCodes));
+            Assert.AreEqual(0, fallbackAssessment.Grid.DeficitTileCount);
+            Assert.AreEqual(0, fallbackAssessment.Grid.TotalExpectedDetectableStars);
+
+            // Explicit PhotometricProfile whose MagnitudeZeroElectronsPerSecond disagrees with VirtualSky (14,000 vs 1,000) must withhold.
+            var mismatchRoot = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-regvis-vs-mismatch");
+            try
+            {
+                var mismatchProfile = CreateRegionalVisibilityProfile(
+                    mismatchRoot,
+                    RegionalNightUtc,
+                    CameraPixelFormat.Mono16,
+                    magnitudeZeroElectronsPerSecond: 1_000,
+                    photometricProfileMagnitudeZero: 14_000);
+                var brightCatalog = CreateRegionalVisibilityCatalog(RegionalNightUtc, mismatchProfile, starsPerInnerTile: 4, starMagnitude: 1.0);
+                var mismatchAssessment = await RunSingleRegionalVisibilityAsync(
+                    mismatchRoot, new CenteredClock { UtcNow = RegionalNightUtc },
+                    new ExposureTestTimeProvider(RegionalNightUtc, autoAdvance: true),
+                    mismatchProfile, brightCatalog, RegionalNightUtc, token).ConfigureAwait(false);
+                Assert.AreEqual(RegionalVisibilityAssessmentStatus.Withheld, mismatchAssessment.Status);
+                CollectionAssert.Contains(mismatchAssessment.ReasonCodes.ToArray(), RegionalVisibilityReasonCodes.ResponseBasisMismatch);
+                Assert.AreEqual(0, mismatchAssessment.Grid.DeficitTileCount);
+            }
+            finally
+            {
+                Directory.Delete(mismatchRoot, recursive: true);
+            }
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task RegionalStellarVisibility_RecentCaptureReplayReproducesExactOutputIdentity()
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-regvis-replay");
+        var token = TestContext.CancellationToken;
+        var clock = new CenteredClock { UtcNow = RegionalNightUtc };
+        var deviceClock = new ExposureTestTimeProvider(RegionalNightUtc, autoAdvance: true);
+
+        try
+        {
+            var profile = CreateRegionalVisibilityProfile(root, RegionalNightUtc, CameraPixelFormat.Mono16);
+            var catalog = CreateRegionalVisibilityCatalog(RegionalNightUtc, profile, starsPerInnerTile: 4);
+
+            using var provider = RegionalVisibilityProvider(root, clock, profile.DeploymentLocation!, catalog);
+            var active = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(provider, profile).ConfigureAwait(false);
+            var ingress = provider.GetRequiredService<RawCaptureIngress>();
+            var module = new VirtualSkyCameraModule(deviceClock, catalog, new ProjectedSceneStore(),
+                stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
+            await using var camera = module.ConfigureAwait(false);
+            await module.InitializeAsync(active, token).ConfigureAwait(false);
+
+            var (receipt, _) = await CaptureAndAdmitRegionalAsync(
+                provider, ingress, module, deviceClock, clock, active, RegionalNightUtc, token).ConfigureAwait(false);
+            await ProcessCenteredRuntimeExposureAsync(provider, active, token).ConfigureAwait(false);
+
+            var operations = provider.GetRequiredService<IProcessingGraphOperations>();
+            var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
+            var ui = RegionalVisibilityOperations(provider, operations);
+            var liveExecutionId = (await operations.ReadLiveExecutionIdAsync(
+                receipt.Manifest.Descriptor.Capture.CaptureId, token).ConfigureAwait(false))!.Value;
+            var liveDetail = (await operations.ReadExecutionDetailAsync(liveExecutionId, token).ConfigureAwait(false))!;
+            var liveUi = (await ui.GetExecutionDetailAsync(liveExecutionId, token).ConfigureAwait(false)).Value!;
+            var liveAssessment = liveUi.RegionalStellarVisibility!.Assessment!;
+            var liveNode = liveDetail.Nodes.Single(node => node.NodeId == "regional-visibility");
+            var liveOutput = Assert.ContainsSingle(liveNode.Outputs);
+
+            var requested = await operations.SubmitReplayAsync(
+                new(liveDetail.Execution.CaptureId, liveDetail.Execution.GraphRevisionId, liveDetail.Execution.PrimaryArtifactId),
+                "regional-visibility-recent-replay", "regional-vis-test", token).ConfigureAwait(false);
+            Assert.AreNotEqual(liveExecutionId, requested.Execution.ExecutionId);
+
+            var replayLease = await store.ClaimReplayAsync("regional-replay-worker", token).ConfigureAwait(false);
+            Assert.IsNotNull(replayLease);
+            var replayExecution = new ProcessingExecutionContext(
+                replayLease.Execution.ExecutionId, ProcessingGraphExecutionClass.Replay,
+                replayLease.Execution.GraphRevisionId, replayLease.Execution.LocalPlanIdentitySha256, false,
+                replayLease.WorkId, replayLease.LeaseToken, replayLease.LeaseOwner,
+                replayLease.Execution.DeadlineUtc, replayLease.ClaimCount);
+            var graph = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().CreateRetainedGraph(replayLease.Configuration);
+            try
+            {
+                var replayOutcome = await FrameProcessingWorker.ProcessGraphItemAsync(
+                    new(replayLease.Configuration, replayLease.Submission, replayLease.RawCapture,
+                        replayLease.WorkId, replayLease.LeaseToken, replayExecution),
+                    graph,
+                    provider.GetRequiredService<CaptureProcessingPersistence>(),
+                    provider.GetRequiredService<CaptureProcessingTelemetry>(),
+                    replayLease.Execution.AttemptCount,
+                    NullLogger.Instance,
+                    token,
+                    durableAttempt: replayLease.ClaimCount,
+                    frozenPlanSuperseded: !replayLease.Revision.IsCompiledBy(graph)).ConfigureAwait(false);
+                Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, replayOutcome.Outcome, replayOutcome.Reason);
+                var completed = await store.CompleteReplayAsync(replayLease, replayOutcome, token).ConfigureAwait(false);
+                Assert.AreEqual(ProcessingGraphExecutionStatus.Completed, completed.Status);
+            }
+            finally
+            {
+                graph.DisposeSteps();
+            }
+
+            var replayDetail = (await operations.ReadExecutionDetailAsync(requested.Execution.ExecutionId, token).ConfigureAwait(false))!;
+            var replayNode = replayDetail.Nodes.Single(node => node.NodeId == "regional-visibility");
+            Assert.AreEqual("Completed", replayNode.Status);
+            var replayOutput = Assert.ContainsSingle(replayNode.Outputs);
+            Assert.IsFalse(replayOutput.Published);
+            Assert.AreEqual(liveOutput.ArtifactId, replayOutput.ArtifactId);
+            Assert.AreEqual(liveOutput.OutputIdentitySha256, replayOutput.OutputIdentitySha256);
+            Assert.AreEqual(liveOutput.PayloadSha256, replayOutput.PayloadSha256);
+            CollectionAssert.AreEqual(liveOutput.SourceArtifactIds.ToArray(), replayOutput.SourceArtifactIds.ToArray());
+
+            var replayUi = await ui.GetExecutionDetailAsync(requested.Execution.ExecutionId, token).ConfigureAwait(false);
+            Assert.IsTrue(replayUi.IsSuccess, replayUi.Message);
+            var replayedAssessment = replayUi.Value?.RegionalStellarVisibility?.Assessment;
+            Assert.IsNotNull(replayedAssessment);
+            Assert.AreEqual(liveAssessment.AssessmentIdentitySha256, replayedAssessment.AssessmentIdentitySha256);
+            Assert.AreEqual(RegionalVisibilityAssessmentStatus.Assessed, replayedAssessment.Status);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task RegionalStellarVisibility_InterruptedPublicationRecoversWithoutAdvertisingUncommittedOutput()
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-regvis-interrupt");
+        var token = TestContext.CancellationToken;
+        var clock = new CenteredClock { UtcNow = RegionalNightUtc };
+        var deviceClock = new ExposureTestTimeProvider(RegionalNightUtc, autoAdvance: true);
+
+        try
+        {
+            var profile = CreateRegionalVisibilityProfile(root, RegionalNightUtc, CameraPixelFormat.Mono16);
+            var catalog = CreateRegionalVisibilityCatalog(RegionalNightUtc, profile, starsPerInnerTile: 4);
+            using var interruptionCts = new CancellationTokenSource();
+            var fault = new RegionalVisibilityCommitInterruption("regional-visibility", interruptionCts);
+
+            using var provider = RegionalVisibilityProvider(root, clock, profile.DeploymentLocation!, catalog, fault);
+            var active = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(provider, profile).ConfigureAwait(false);
+            var ingress = provider.GetRequiredService<RawCaptureIngress>();
+            var module = new VirtualSkyCameraModule(deviceClock, catalog, new ProjectedSceneStore(),
+                stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
+            await using var camera = module.ConfigureAwait(false);
+            await module.InitializeAsync(active, token).ConfigureAwait(false);
+
+            var (receipt, reservation) = await CaptureAndAdmitRegionalAsync(
+                provider, ingress, module, deviceClock, clock, active, RegionalNightUtc, token).ConfigureAwait(false);
+            var captureId = receipt.Manifest.Descriptor.Capture.CaptureId;
+            var exposure = new ExposureKey(reservation.Pending.Key.Camera, reservation.Pending.Key.RunId, captureId);
+
+            var laneStore = provider.GetRequiredService<ICaptureLaneStore>();
+            await laneStore.InitializeLanesAsync(token).ConfigureAwait(false);
+            var lane = provider.GetRequiredService<CaptureLanePolicy>().Definitions.Single(item => item.Name == "standard");
+            var lease = await laneStore.ClaimAsync(lane, "regvis-interrupt-first", active, token).ConfigureAwait(false);
+            Assert.IsNotNull(lease);
+            var executionId = lease.Context.Execution!.ExecutionId;
+            var regionalSlot = new ExposureProductSlot(
+                executionId, "regional-visibility",
+                RegionalStellarVisibilityProducts.SchemaVersion, RegionalStellarVisibilityProducts.Variant);
+            var handler = provider.GetRequiredService<StandardCaptureLaneHandler>();
+            var reader = provider.GetRequiredService<IExposureProductReader>();
+
+            await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+                await handler.HandleAsync(lease.Context, interruptionCts.Token).ConfigureAwait(false)).ConfigureAwait(false);
+
+            // An interrupted publication must NOT advertise an uncommitted regional assessment.
+            Assert.IsTrue(fault.InterruptedOnce);
+            Assert.IsNull(await reader.ReadProductAsync(exposure, regionalSlot, token).ConfigureAwait(false));
+            var operations = provider.GetRequiredService<IProcessingGraphOperations>();
+            var ui = RegionalVisibilityOperations(provider, operations);
+            var duringInterruption = await ui.GetExecutionDetailAsync(executionId, token).ConfigureAwait(false);
+            Assert.IsTrue(duringInterruption.IsSuccess, duringInterruption.Message);
+            Assert.IsNull(duringInterruption.Value?.RegionalStellarVisibility?.Assessment);
+
+            // Release lease and recover cleanly on retry.
+            await laneStore.ReleaseAsync(lease, token).ConfigureAwait(false);
+            lease = await laneStore.ClaimAsync(lane, "regvis-interrupt-retry", active, token).ConfigureAwait(false);
+            Assert.IsNotNull(lease);
+            Assert.AreEqual(executionId, lease.Context.Execution!.ExecutionId);
+
+            var recoveredOutcome = await handler.HandleAsync(lease.Context, token).ConfigureAwait(false);
+            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, recoveredOutcome.Outcome, recoveredOutcome.Reason);
+            await laneStore.CompleteAsync(lease, token).ConfigureAwait(false);
+
+            var recoveredProduct = await reader.ReadProductAsync(exposure, regionalSlot, token).ConfigureAwait(false);
+            Assert.IsNotNull(recoveredProduct);
+            Assert.AreEqual(ExposureProductAvailability.Available, recoveredProduct.Availability);
+
+            var afterRecovery = await ui.GetExecutionDetailAsync(executionId, token).ConfigureAwait(false);
+            Assert.IsTrue(afterRecovery.IsSuccess, afterRecovery.Message);
+            var recoveredAssessment = afterRecovery.Value?.RegionalStellarVisibility?.Assessment;
+            Assert.IsNotNull(recoveredAssessment, afterRecovery.Value?.RegionalStellarVisibility?.UnavailableReason);
+            Assert.AreEqual(RegionalVisibilityAssessmentStatus.Assessed, recoveredAssessment.Status);
+            Assert.AreEqual(0, recoveredAssessment.Grid.DeficitTileCount);
+            Assert.IsGreaterThan(0, recoveredAssessment.Grid.ClearTileCount);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private sealed class RegionalVisibilityCommitInterruption(string targetNodeId, CancellationTokenSource cancellation)
+        : ICaptureProcessingFaultInjector
+    {
+        public bool InterruptedOnce { get; private set; }
+
+        public void Inject(CaptureProcessingFaultPoint point, string nodeId)
+        {
+            if (!InterruptedOnce &&
+                string.Equals(nodeId, targetNodeId, StringComparison.Ordinal) &&
+                point == CaptureProcessingFaultPoint.AfterOutputsPublishedBeforeNodeCommit)
+            {
+                InterruptedOnce = true;
+                cancellation.Cancel();
+                cancellation.Token.ThrowIfCancellationRequested();
+            }
+        }
+    }
+
     private static async Task<RegionalStellarVisibilityV1> RunSingleRegionalVisibilityAsync(
         string root,
         CenteredClock clock,
@@ -330,7 +708,8 @@ public sealed partial class VirtualSkyCameraModuleTests
     }
 
     private static ServiceProvider RegionalVisibilityProvider(
-        string root, CenteredClock clock, DeploymentLocationSnapshot location, ICelestialCatalog catalog)
+        string root, CenteredClock clock, DeploymentLocationSnapshot location, ICelestialCatalog catalog,
+        ICaptureProcessingFaultInjector? fault = null)
         => CenteredRuntimeProvider(root, clock, services =>
         {
             services.AddLogging(logging => logging.AddConsole().SetMinimumLevel(LogLevel.Warning));
@@ -338,6 +717,10 @@ public sealed partial class VirtualSkyCameraModuleTests
             var locations = new Mock<IDeploymentLocationStore>();
             locations.Setup(store => store.Resolve(location.ToProvenance(), It.IsAny<DateTimeOffset?>())).Returns(location);
             services.AddSingleton(locations.Object);
+            if (fault is not null)
+            {
+                services.AddSingleton(fault);
+            }
         });
 
     private static async Task<(RawCaptureReceipt Receipt, CenteredExposureReservation Reservation)> CaptureAndAdmitRegionalAsync(
@@ -389,12 +772,16 @@ public sealed partial class VirtualSkyCameraModuleTests
         VirtualCloudScenarioDefinition? cloudScenario = null,
         double psfSigmaPixels = 1.1,
         string illuminationMode = "ControlledNight",
-        bool includeClearReferenceCloudAssessment = false)
+        bool includeClearReferenceCloudAssessment = false,
+        SyntheticCalibrationModelV1? syntheticCalibration = null,
+        bool omitExplicitPhotometricProfile = false,
+        double? magnitudeZeroElectronsPerSecond = 14_000,
+        double? photometricProfileMagnitudeZero = null)
     {
         var baseline = StoragePolicyRawIngressIntegrationTests.Profile(root);
         var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
         var camera = CreateConfig(format, 256, 256);
-        var readout = format switch
+        var readout = syntheticCalibration is not null ? null : format switch
         {
             CameraPixelFormat.Mono16 => new SensorReadoutProfile(new SensorCrop(0, 0, 256, 256), 1, 1, FrameBinningAlgorithm.IdentityV1,
                 CameraPixelFormat.Mono16, 12, 16, FrameSamplePacking.ByteAligned, FrameStoredCodeTransform.RightAlignedV1,
@@ -405,7 +792,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                 CfaPattern: ColorFilterArrayPattern.Rggb, CfaOriginX: 0, CfaOriginY: 0),
             _ => null
         };
-        var simResponse = format == CameraPixelFormat.Rgb24
+        var simResponse = format == CameraPixelFormat.Rgb24 || syntheticCalibration is not null
             ? null
             : new ConfiguredSensorResponseProfile(
                 ModelVersion: "virtual-regional-v1",
@@ -423,31 +810,39 @@ public sealed partial class VirtualSkyCameraModuleTests
                     ? new ConfiguredColorResponseProfile(0.85, 1.0, 0.78)
                     : null);
 
+        var calibrationOptions = syntheticCalibration is null
+            ? JsonSerializer.SerializeToElement(new { strategy = "None", outputVariant = "qualified-linear" })
+            : JsonSerializer.SerializeToElement(new { strategy = "SyntheticReferences", outputVariant = "qualified-linear", syntheticCalibration });
+        var profileMagZero = photometricProfileMagnitudeZero ?? magnitudeZeroElectronsPerSecond ?? 1_000;
+        var regionalOptions = new RegionalStellarVisibilityProcessingStepOptions
+        {
+            GridColumns = 4,
+            GridRows = 4,
+            MinimumExpectedStarsPerTile = 3,
+            MinimumMissingStarsForDeficit = 2,
+            EdgeMarginPixels = 4.0,
+            PhotometricProfile = omitExplicitPhotometricProfile
+                ? null
+                : new RegionalVisibilityPhotometricProfileV1(
+                    ProfileName: "virtual-regional-v1",
+                    MagnitudeZeroElectronsPerSecond: profileMagZero,
+                    NominalPsfSigmaPixels: 1.1,
+                    DarkCurrentElectronsPerSecond: syntheticCalibration is null ? 0.05 : 0.0,
+                    VignettingStrength: 0.0,
+                    ElectronsPerAduAtZeroGain: 1.0,
+                    GainControlDivisor: 100.0,
+                    ReadNoiseElectrons: 2.0,
+                    FullWellElectrons: 20_000,
+                    SensorResponse: simResponse)
+        };
+
         var steps = new List<CaptureProcessingStepConfig>
         {
             new("Calibration", "linear", DependsOn: ["$raw"], Required: false, Publication: durable,
-                Options: JsonSerializer.SerializeToElement(new { strategy = "None", outputVariant = "qualified-linear" })),
+                Options: calibrationOptions),
             new("ProjectedScene", "scene", DependsOn: ["$raw"], Required: false, Publication: durable),
             new(RegionalStellarVisibilityProducts.StepAlias, "regional-visibility", DependsOn: ["$raw"], Required: false, Publication: durable,
-                Options: JsonSerializer.SerializeToElement(new RegionalStellarVisibilityProcessingStepOptions
-                {
-                    GridColumns = 4,
-                    GridRows = 4,
-                    MinimumExpectedStarsPerTile = 3,
-                    MinimumMissingStarsForDeficit = 2,
-                    EdgeMarginPixels = 4.0,
-                    PhotometricProfile = new RegionalVisibilityPhotometricProfileV1(
-                        ProfileName: "virtual-regional-v1",
-                        MagnitudeZeroElectronsPerSecond: 14_000,
-                        NominalPsfSigmaPixels: 1.1,
-                        DarkCurrentElectronsPerSecond: 0.05,
-                        VignettingStrength: 0.0,
-                        ElectronsPerAduAtZeroGain: 1.0,
-                        GainControlDivisor: 100.0,
-                        ReadNoiseElectrons: 2.0,
-                        FullWellElectrons: 20_000,
-                        SensorResponse: simResponse)
-                })),
+                Options: JsonSerializer.SerializeToElement(regionalOptions)),
             new("Storage", "storage", DependsOn: ["$raw"], Options: JsonSerializer.SerializeToElement(
                 new FileStorageCaptureProcessingStepOptions
                 {
@@ -459,6 +854,25 @@ public sealed partial class VirtualSkyCameraModuleTests
         if (includeClearReferenceCloudAssessment)
         {
             steps.Add(new("CloudAssessment", "cloud", DependsOn: ["$raw"], Required: false, Publication: durable));
+        }
+
+        var moduleOptions = new Dictionary<string, object?>
+        {
+            ["seed"] = 1925,
+            ["fixedSceneUtc"] = startUtc,
+            ["illuminationMode"] = illuminationMode,
+            ["backgroundElectronsPerSecond"] = 25.0,
+            ["psfSigmaPixels"] = psfSigmaPixels,
+            ["psfRadiusPixels"] = Math.Max(4.5, psfSigmaPixels * 4.5),
+            ["vignettingStrength"] = 0.0,
+            ["darkCurrentElectronsPerSecond"] = syntheticCalibration is null ? 0.05 : 0.0,
+            ["asi178Sensor"] = new { enabled = false },
+            ["cloudScenario"] = cloudScenario,
+            ["syntheticCalibration"] = syntheticCalibration
+        };
+        if (magnitudeZeroElectronsPerSecond is { } magZero)
+        {
+            moduleOptions["magnitudeZeroElectronsPerSecond"] = magZero;
         }
 
         return camera with
@@ -474,18 +888,7 @@ public sealed partial class VirtualSkyCameraModuleTests
             DeploymentLocation = DeploymentLocationSnapshot.Create(
                 "regional-vis-test", 1, "virtual", null, DateTimeOffset.UnixEpoch, null,
                 35.347, -113.878, 1200, "America/Phoenix"),
-            Module = new("VirtualSky", JsonSerializer.SerializeToElement(new
-            {
-                seed = 1925,
-                fixedSceneUtc = startUtc,
-                illuminationMode,
-                backgroundElectronsPerSecond = 25.0,
-                magnitudeZeroElectronsPerSecond = 14_000,
-                psfSigmaPixels,
-                psfRadiusPixels = Math.Max(4.5, psfSigmaPixels * 4.5),
-                asi178Sensor = new { enabled = false },
-                cloudScenario
-            })),
+            Module = new("VirtualSky", JsonSerializer.SerializeToElement(moduleOptions)),
             CenteredExposure = new("regional-vis-cam", CenteredExposureProfile.CurrentExecutionVersion),
             Pipeline = baseline.Pipeline with { Steps = steps }
         };
@@ -543,7 +946,7 @@ public sealed partial class VirtualSkyCameraModuleTests
     }
 
     private static RegionalVisibilityTestCatalog CreateRegionalVisibilityCatalog(
-        DateTimeOffset utc, CameraModuleConfig profile, int starsPerInnerTile)
+        DateTimeOffset utc, CameraModuleConfig profile, int starsPerInnerTile, double starMagnitude = 1.4)
     {
         var projection = RigProjectionContextFactory.CreateNative(profile.Rig);
         var projector = ProjectorFactory.Create(projection);
@@ -584,7 +987,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                         horizontal.Value, utc, profile.Observatory.LatitudeDegrees, profile.Observatory.LongitudeDegrees);
                     var j2000 = EquatorialPrecession.PrecessToJ2000(ofDate, utc);
                     var id = $"regvis-star-{index++}";
-                    stars.Add(new CelestialCatalogObject(id, id, j2000.RightAscensionHours, j2000.DeclinationDegrees, 1.4, 0.65));
+                    stars.Add(new CelestialCatalogObject(id, id, j2000.RightAscensionHours, j2000.DeclinationDegrees, starMagnitude, 0.65));
                 }
             }
         }

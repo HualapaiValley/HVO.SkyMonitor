@@ -12,6 +12,12 @@ public sealed record RegionalVisibilityDefectMaskInput(
     string PayloadSha256,
     Linear16Frame Frame);
 
+/// <summary>Per-tile locally measured sky background and noise sigma in linear ADU.</summary>
+public sealed record RegionalVisibilityTileBackgroundV1(
+    bool Available,
+    double? BackgroundAdu,
+    double? NoiseSigmaAdu);
+
 /// <summary>All explicit inputs required to assess regional stellar visibility for one exposure (step 30b).</summary>
 public sealed record RegionalStellarVisibilityRequest(
     ProcessingArtifact Raw,
@@ -29,7 +35,9 @@ public sealed record RegionalStellarVisibilityRequest(
     CloudAssessmentEnvironmentV1? Environment = null,
     RegionalVisibilityDefectMaskInput? DefectMask = null,
     SolarDiskAppearance? MoonOverride = null,
-    double? SunAltitudeDegreesOverride = null);
+    double? SunAltitudeDegreesOverride = null,
+    IReadOnlyList<RegionalVisibilityTileBackgroundV1>? RegionalBackground = null,
+    string? ResponseMismatchReason = null);
 
 /// <summary>
 /// Host-neutral step 30b producer estimating regional cloud evidence from independent catalog star predictions
@@ -81,6 +89,11 @@ public static class RegionalStellarVisibilityProducts
         {
             return ProcessingOutcome.TerminalFailure("visibility.invalid-raw-input");
         }
+        if (rawLayout.Width < 1 || rawLayout.Height < 1 ||
+            options.GridColumns > rawLayout.Width || options.GridRows > rawLayout.Height)
+        {
+            return ProcessingOutcome.TerminalFailure("visibility.invalid-grid-dimensions");
+        }
 
         var sources = BuildSourceArtifactList(request);
         var sourceProvenance = new RegionalVisibilitySourceV1(
@@ -88,11 +101,11 @@ public static class RegionalStellarVisibilityProducts
             raw.ArtifactId,
             raw.DescriptorIdentitySha256.ToUpperInvariant(),
             request.MeasurementArtifact?.ArtifactId,
-            request.MeasurementArtifact?.ContentIdentitySha256?.ToUpperInvariant(),
+            ResolveContentSha256(request.MeasurementArtifact),
             request.PredictionArtifact?.ArtifactId,
-            request.PredictionArtifact?.ContentIdentitySha256?.ToUpperInvariant(),
+            ResolveContentSha256(request.PredictionArtifact),
             request.AstrometryArtifact?.ArtifactId,
-            request.AstrometryArtifact?.ContentIdentitySha256?.ToUpperInvariant(),
+            ResolveContentSha256(request.AstrometryArtifact),
             request.DefectMask?.ArtifactId,
             request.DefectMask?.PayloadSha256?.ToUpperInvariant());
 
@@ -178,11 +191,16 @@ public static class RegionalStellarVisibilityProducts
             null,
             false);
 
+        // Verify input provenance against the admitted raw capture/artifact before trusting measurement or prediction.
+        var measurement = VerifyMeasurementInput(raw, rawLayout, request.MeasurementArtifact, request.Measurement);
+        var (prediction, simulatorTruthRejected) = VerifyPredictionInput(
+            raw, rawLayout, request.PredictionArtifact, request.Prediction, measurement);
+
         // Compute Sun and Moon geometry when independent prediction supplies observer/time.
         double? sunAltitude = request.SunAltitudeDegreesOverride;
         CaptureSolarRegime? solarRegime = environment.SolarRegime;
         SolarDiskAppearance? moon = request.MoonOverride;
-        if (request.Prediction is { } predForAstro)
+        if (prediction is { } predForAstro)
         {
             var observer = new ObserverLocation(
                 predForAstro.Observer.LatitudeDegrees,
@@ -212,9 +230,17 @@ public static class RegionalStellarVisibilityProducts
 
             moon ??= SolarDiskEphemeris.Get(SolarSystemBody.Moon, predForAstro.EffectiveUtc, observer);
         }
+        else if (sunAltitude is not null && solarRegime is null)
+        {
+            solarRegime = sunAltitude >= 0
+                ? CaptureSolarRegime.Day
+                : sunAltitude > -18
+                    ? CaptureSolarRegime.Twilight
+                    : CaptureSolarRegime.Night;
+        }
 
         var moonInFov = false;
-        if (moon is { Direction.AltitudeDegrees: > 0 } aboveMoon && request.Prediction is { } predForMoon)
+        if (moon is { Direction.AltitudeDegrees: > 0 } aboveMoon && prediction is { } predForMoon)
         {
             var proj = ProjectedSceneJson.ToProjectionContext(predForMoon.Projection);
             var projector = ProjectorFactory.Create(proj);
@@ -226,10 +252,10 @@ public static class RegionalStellarVisibilityProducts
         }
 
         // Compute saturation fraction from saved step 4 brightness/clipping.
-        var saturatedFractionMillionths = ComputeSaturatedFractionMillionths(request.Measurement, rawLayout);
+        var saturatedFractionMillionths = ComputeSaturatedFractionMillionths(measurement, rawLayout);
 
         // Focus inspection from step 4c HFD + step 4b too-broad exclusions.
-        var (focusBasis, medianHfd, validFocusSamples, tooBroadCount) = EvaluateFocus(request.Measurement, options);
+        var (focusBasis, medianHfd, validFocusSamples, tooBroadCount) = EvaluateFocus(measurement, options);
 
         // Check structural prerequisites first.
         var unsupportedFormat = rawLayout.PixelFormat is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16);
@@ -243,7 +269,6 @@ public static class RegionalStellarVisibilityProducts
             AddUnique(withholdingReasons, RegionalVisibilityReasonCodes.ZeroExposure);
         }
 
-        var measurement = request.Measurement;
         var calibrationDisposition = measurement?.Input.Calibration;
         if (measurement is null)
         {
@@ -263,25 +288,36 @@ public static class RegionalStellarVisibilityProducts
             }
         }
 
-        var prediction = request.Prediction;
-        if (prediction is null)
+        // Verify optional/required defect mask against dimensions and checksum; require it for reference-calibrated exposures.
+        Linear16Frame? verifiedDefectMask = null;
+        if (request.DefectMask is { } defectInput)
         {
-            AddUnique(withholdingReasons, RegionalVisibilityReasonCodes.PredictionUnavailable);
+            if (defectInput.ArtifactId != Guid.Empty &&
+                defectInput.Frame.Width == width &&
+                defectInput.Frame.Height == height &&
+                ExposureMeasurementProducts.Same(
+                    PayloadChecksum.ComputeSha256(defectInput.Frame.PixelData.Span),
+                    defectInput.PayloadSha256))
+            {
+                verifiedDefectMask = defectInput.Frame;
+            }
+            else
+            {
+                AddUnique(withholdingReasons, RegionalVisibilityReasonCodes.DefectMaskUnavailable);
+            }
         }
-        else if (prediction.Kind != ProjectedSceneKind.Predicted)
+        else if (calibrationDisposition == ExposureCalibrationDisposition.ReferenceCalibrated)
+        {
+            AddUnique(withholdingReasons, RegionalVisibilityReasonCodes.DefectMaskUnavailable);
+        }
+
+        if (simulatorTruthRejected)
         {
             AddUnique(withholdingReasons, RegionalVisibilityReasonCodes.SimulatorTruthRejected);
         }
-        else if (measurement is not null)
+        else if (prediction is null)
         {
-            try
-            {
-                ExposureCatalogPredictionProducts.ValidateProjection(prediction, measurement.Input);
-            }
-            catch (InvalidDataException)
-            {
-                AddUnique(withholdingReasons, RegionalVisibilityReasonCodes.PredictionUnavailable);
-            }
+            AddUnique(withholdingReasons, RegionalVisibilityReasonCodes.PredictionUnavailable);
         }
 
         if (request.HorizonEvaluator is { IsCompatible: false })
@@ -289,15 +325,22 @@ public static class RegionalStellarVisibilityProducts
             AddUnique(withholdingReasons, RegionalVisibilityReasonCodes.HorizonIncompatible);
         }
 
-        // Resolve photometric response profile.
+        // Resolve photometric response profile bound to the actual admitted exposure layout.
+        var measuredLayout = measurement?.Input.Linear?.Layout ?? rawLayout;
         MonoSensorResponse? resolvedSensor = null;
         double redResp = 1, greenResp = 1, blueResp = 1;
         var profile = options.PhotometricProfile;
-        if (profile is null)
+        if (!string.IsNullOrWhiteSpace(request.ResponseMismatchReason))
+        {
+            AddUnique(withholdingReasons, RegionalVisibilityReasonCodes.KnownGlobal.Contains(request.ResponseMismatchReason)
+                ? request.ResponseMismatchReason
+                : RegionalVisibilityReasonCodes.ResponseBasisMismatch);
+        }
+        else if (profile is null)
         {
             AddUnique(withholdingReasons, RegionalVisibilityReasonCodes.MissingSensorResponse);
         }
-        else if (!profile.TryResolve(request.Gain, measurement?.Input.Linear?.Layout ?? rawLayout,
+        else if (!profile.TryResolve(request.Gain, rawLayout, measuredLayout,
             out resolvedSensor, out redResp, out greenResp, out blueResp, out var responseFailure))
         {
             AddUnique(withholdingReasons, responseFailure ?? RegionalVisibilityReasonCodes.ResponseBasisMismatch);
@@ -350,12 +393,20 @@ public static class RegionalStellarVisibilityProducts
             AddUnique(reasons, RegionalVisibilityReasonCodes.EnvironmentContradictory);
         }
 
-        // Compute measured sky background & noise in linear ADU and electron domain.
-        var measuredLayout = measurement?.Input.Linear?.Layout ?? rawLayout;
+        // Compute per-tile representative sky background & noise in linear ADU and electron domain.
         var storedScale = ComputeStoredCodeScale(measuredLayout);
         var electronsPerStoredAdu = resolvedSensor is not null ? resolvedSensor.ElectronsPerAdu / storedScale : (double?)null;
-        var (measuredBackgroundAdu, measuredNoiseSigmaAdu, backgroundElectronsPerSecond) =
-            EstimateSkyBackground(measurement, measuredLayout, resolvedSensor, storedScale, request.ExposureSeconds);
+        var regionalBackground = ResolveRegionalBackground(
+            measurement, measuredLayout, resolvedSensor, storedScale, request.ExposureSeconds,
+            options.GridColumns, options.GridRows, request.RegionalBackground);
+        var measuredBackgroundAdu = regionalBackground.SummaryBackgroundAdu;
+        var measuredNoiseSigmaAdu = regionalBackground.SummaryNoiseSigmaAdu;
+        var backgroundElectronsPerSecond = regionalBackground.SummaryBackgroundElectronsPerSec;
+        if (measurement is not null &&
+            (measurement.Sources.AvailableBackgroundTiles is <= 0 || !regionalBackground.HasAnyAvailableTile))
+        {
+            AddUnique(withholdingReasons, RegionalVisibilityReasonCodes.BackgroundNoiseUnavailable);
+        }
 
         var effectivePsfSigma = profile?.NominalPsfSigmaPixels;
         if (effectivePsfSigma is { } nominalSigma && focusBasis == RegionalVisibilityFocusBasis.Usable && medianHfd is { } hfd)
@@ -365,12 +416,17 @@ public static class RegionalStellarVisibilityProducts
         }
 
         // Determine geometry basis: accepted astrometry solve vs fixed geometry.
-        var acceptedSolve = request.AstrometrySolution is { Assessment.HasMeasuredMapping: true } &&
+        var acceptedSolve = request.AstrometryArtifact is not null &&
+            request.AstrometryArtifact.CaptureId == raw.CaptureId &&
+            request.AstrometrySolution is { Assessment.HasMeasuredMapping: true } &&
             request.AcceptedMapping is not null &&
             prediction is not null &&
             ExposureMeasurementProducts.Same(request.AstrometrySolution.SceneIdentitySha256, prediction.SceneIdentitySha256) &&
             request.AstrometrySolution.Assessment.Frame.CaptureId == raw.CaptureId &&
-            request.AstrometrySolution.Assessment.Frame.SourceArtifactId == raw.ArtifactId;
+            request.AstrometrySolution.Assessment.Frame.SourceArtifactId == raw.ArtifactId &&
+            ExposureMeasurementProducts.Same(
+                request.AstrometrySolution.Assessment.Frame.SourceDescriptorSha256,
+                raw.DescriptorIdentitySha256);
 
         var geometryBasis = withholdingReasons.Any(static code => code is RegionalVisibilityReasonCodes.PredictionUnavailable or RegionalVisibilityReasonCodes.SimulatorTruthRejected)
             ? RegionalVisibilityGeometryBasis.Unavailable
@@ -383,7 +439,7 @@ public static class RegionalStellarVisibilityProducts
         {
             var allReasons = withholdingReasons.Concat(reasons).Distinct(StringComparer.Ordinal).ToArray();
             var withheldTiles = CreateEmptyTiles(width, height, options, RegionalVisibilityTileStatus.InsufficientEvidence,
-                RegionalVisibilityReasonCodes.TileWithheld, prediction, request.HorizonEvaluator, request.DefectMask?.Frame, cancellationToken);
+                RegionalVisibilityReasonCodes.TileWithheld, prediction, request.HorizonEvaluator, verifiedDefectMask, cancellationToken);
             var withheldGrid = BuildGridSummary(options, withheldTiles);
             var withheldConditions = new RegionalVisibilityExposureConditionsV1(
                 Round(request.ExposureSeconds), Round(request.Gain), rawLayout.PixelFormat, width, height,
@@ -406,7 +462,7 @@ public static class RegionalStellarVisibilityProducts
             request, options, sourceProvenance, recipeIdentitySha256,
             measurement!, prediction!, measuredLayout, resolvedSensor!, storedScale, electronsPerStoredAdu!.Value,
             redResp, greenResp, blueResp, effectivePsfSigma!.Value,
-            measuredBackgroundAdu, measuredNoiseSigmaAdu, backgroundElectronsPerSecond!.Value,
+            regionalBackground, verifiedDefectMask,
             saturatedFractionMillionths, solarRegime, sunAltitude, environment, moon, moonInFov,
             focusBasis, medianHfd, validFocusSamples, tooBroadCount,
             acceptedSolve, geometryBasis, reasons, cancellationToken);
@@ -427,9 +483,8 @@ public static class RegionalStellarVisibilityProducts
         double greenResp,
         double blueResp,
         double effectivePsfSigma,
-        double? measuredBackgroundAdu,
-        double? measuredNoiseSigmaAdu,
-        double backgroundElectronsPerSecond,
+        ResolvedRegionalBackground regionalBackground,
+        Linear16Frame? defectMask,
         int saturatedFractionMillionths,
         CaptureSolarRegime? solarRegime,
         double? sunAltitude,
@@ -453,13 +508,15 @@ public static class RegionalStellarVisibilityProducts
         var projector = ProjectorFactory.Create(projection);
         var isBayer = measuredLayout.PixelFormat == CameraPixelFormat.BayerRggb16;
         var detectorOptions = MeasuredStellarAssociationRecipe.MeasurementOptions(measuredLayout.PixelFormat);
-        var defectMask = request.DefectMask?.Frame;
         var horizon = request.HorizonEvaluator;
         var excludedRegions = options.ExcludedRegions ?? [];
 
         var cols = options.GridColumns;
         var rows = options.GridRows;
         var tileCount = cols * rows;
+        var measuredBackgroundAdu = regionalBackground.SummaryBackgroundAdu;
+        var measuredNoiseSigmaAdu = regionalBackground.SummaryNoiseSigmaAdu;
+        var backgroundElectronsPerSecond = regionalBackground.SummaryBackgroundElectronsPerSec ?? 0d;
 
         // 1. Evaluate geometric mask support per tile.
         var tileSupport = EvaluateTileGeometry(width, height, cols, rows, aperture, projector, horizon, excludedRegions, defectMask, moon, options, cancellationToken);
@@ -511,14 +568,6 @@ public static class RegionalStellarVisibilityProducts
         var apertureFraction = 1.0 - Math.Exp(-(apertureRadius * apertureRadius) / (2.0 * effectivePsfSigma * effectivePsfSigma));
         // Central pixel peak fraction of a 2D Gaussian PSF.
         var peakFraction = Math.Min(1.0, 1.0 / (2.0 * Math.PI * effectivePsfSigma * effectivePsfSigma));
-        // Expected noise floor in ADU (never underestimate below measured noise sigma).
-        var modelPerPixelNoiseElectrons = Math.Sqrt(
-            (backgroundElectronsPerSecond + profile.DarkCurrentElectronsPerSecond) * request.ExposureSeconds +
-            sensor.ReadNoiseElectrons * sensor.ReadNoiseElectrons);
-        var modelNoiseAdu = modelPerPixelNoiseElectrons / electronsPerStoredAdu;
-        var effectiveNoiseAdu = measuredNoiseSigmaAdu is { } measNoise && measNoise > 0
-            ? Math.Max(modelNoiseAdu, measNoise)
-            : modelNoiseAdu;
         var bayerSnrPenalty = isBayer ? Math.Sqrt(BayerNoiseCorrelationFactor) : 1.0;
 
         var blackLevelStored = CenteredNormalizationLayout.CreateWorkingLayout(measuredLayout).BlackLevel ?? 0d;
@@ -526,7 +575,7 @@ public static class RegionalStellarVisibilityProducts
             ? (double)storedWhite : ushort.MaxValue;
         var maxChargeElectrons = Math.Min(sensor.FullWellElectrons, Math.Max(0, whiteLevelStored - blackLevelStored) * electronsPerStoredAdu);
 
-        // Classify each predicted star into expected detectable / marginal / masked-out.
+        // Classify each predicted star into expected detectable / marginal / masked-out using THAT tile's local background & noise.
         var tilePredicted = new int[tileCount];
         var tileExpected = new int[tileCount];
         var tileMarginal = new int[tileCount];
@@ -546,8 +595,9 @@ public static class RegionalStellarVisibilityProducts
             var tileIndex = TileIndexOf(pixel, width, height, cols, rows);
             tilePredicted[tileIndex]++;
 
-            // Geometric masks.
-            if (!aperture.ContainsWithMargin(pixel, options.EdgeMarginPixels) ||
+            // Geometric masks or missing local background/noise evidence for this tile.
+            if (!regionalBackground.TileAvailable[tileIndex] ||
+                !aperture.ContainsWithMargin(pixel, options.EdgeMarginPixels) ||
                 IsInsideExcludedRegion(pixel, width, height, excludedRegions) ||
                 IsDefectMasked(pixel, defectMask) ||
                 (horizon is not null && horizon.Evaluate(star.GeometricHorizontal) != HorizonObstructionEligibility.Clear) ||
@@ -558,13 +608,21 @@ public static class RegionalStellarVisibilityProducts
                 continue;
             }
 
-            // Photometric detectability at actual exposure, gain, sky background, vignetting, and CFA response.
+            // Photometric detectability at actual exposure, gain, local sky background/noise, vignetting, and CFA response.
             var vignette = 1.0 - profile.VignettingStrength * projection.NormalizedRadiusSquared(pixel.X, pixel.Y);
             if (vignette <= 0)
             {
                 tileMasked[tileIndex]++;
                 continue;
             }
+
+            var tileBgRate = regionalBackground.TileBackgroundElectronsPerSec[tileIndex];
+            var tileNoiseMeasuredAdu = regionalBackground.TileNoiseSigmaAdu[tileIndex];
+            var tileModelPerPixelNoiseElectrons = Math.Sqrt(
+                (tileBgRate + profile.DarkCurrentElectronsPerSecond) * request.ExposureSeconds +
+                sensor.ReadNoiseElectrons * sensor.ReadNoiseElectrons);
+            var tileModelNoiseAdu = tileModelPerPixelNoiseElectrons / electronsPerStoredAdu;
+            var tileEffectiveNoiseAdu = Math.Max(tileModelNoiseAdu, tileNoiseMeasuredAdu);
 
             var responseMultiplier = 1.0;
             if (isBayer)
@@ -579,7 +637,7 @@ public static class RegionalStellarVisibilityProducts
             var photometry = new StellarPhotometryModel(
                 profile.MagnitudeZeroElectronsPerSecond,
                 request.ExposureSeconds,
-                backgroundElectronsPerSecond,
+                tileBgRate,
                 sensor.ReadNoiseElectrons,
                 profile.DarkCurrentElectronsPerSecond,
                 apertureFraction,
@@ -588,7 +646,7 @@ public static class RegionalStellarVisibilityProducts
                 vignette);
 
             var predictedSignal = StellarVisibilityModel.Predict(star.Magnitude, photometry);
-            var effectiveBackgroundNoiseElectrons = effectiveNoiseAdu * electronsPerStoredAdu;
+            var effectiveBackgroundNoiseElectrons = tileEffectiveNoiseAdu * electronsPerStoredAdu;
             var totalVariance = Math.Max(
                 predictedSignal.NoiseVariance,
                 predictedSignal.SourceElectrons + aperturePixels * effectiveBackgroundNoiseElectrons * effectiveBackgroundNoiseElectrons);
@@ -600,10 +658,10 @@ public static class RegionalStellarVisibilityProducts
                 profile.MagnitudeZeroElectronsPerSecond * request.ExposureSeconds * responseMultiplier * vignette;
             var peakSourceElectrons = totalSourceElectrons * peakFraction;
             var peakExcessAdu = peakSourceElectrons / electronsPerStoredAdu;
-            var detectorPeakFloor = Math.Max(detectorOptions.MinimumPeakAboveBackground, detectorOptions.PeakSigma * effectiveNoiseAdu);
+            var detectorPeakFloor = Math.Max(detectorOptions.MinimumPeakAboveBackground, detectorOptions.PeakSigma * tileEffectiveNoiseAdu);
 
             // Check expected excessive saturation (bright star saturating > MaximumSaturatedSamples gets rejected by measurer).
-            var bgElectrons = (backgroundElectronsPerSecond * vignette + profile.DarkCurrentElectronsPerSecond) * request.ExposureSeconds;
+            var bgElectrons = (tileBgRate * vignette + profile.DarkCurrentElectronsPerSecond) * request.ExposureSeconds;
             if (maxChargeElectrons > bgElectrons && peakSourceElectrons > (maxChargeElectrons - bgElectrons))
             {
                 var saturationRadiusSq = 2.0 * effectivePsfSigma * effectivePsfSigma *
@@ -712,6 +770,7 @@ public static class RegionalStellarVisibilityProducts
         double? estimatedShiftPixels = null;
         double? estimatedRollDegrees = null;
         double? maxImpliedCornerShiftPixels = null;
+        double linearDistortionRate = 0;
         var globalPointingUncertain = false;
         var fixedGeometryUnverified = false;
         var centerX = projection.PrincipalPointX;
@@ -724,12 +783,34 @@ public static class RegionalStellarVisibilityProducts
         {
             if (matchedAnchors.Count >= 1)
             {
-                var (tx, ty, rollRad) = EstimateRigidOffset(matchedAnchors, centerX, centerY);
-                estimatedShiftPixels = Hypot(tx, ty);
-                estimatedRollDegrees = rollRad * (180.0 / Math.PI);
-                maxImpliedCornerShiftPixels = estimatedShiftPixels.Value + Math.Abs(rollRad) * maxFrameRadius;
+                var fit = EstimateSimilarityOffset(matchedAnchors, centerX, centerY);
+                estimatedShiftPixels = Hypot(fit.Tx, fit.Ty);
+                estimatedRollDegrees = fit.RollRadians * (180.0 / Math.PI);
+                var scale = 1.0 + fit.ScaleDelta;
+                linearDistortionRate = Hypot(scale * Math.Cos(fit.RollRadians) - 1.0, scale * Math.Sin(fit.RollRadians));
+                maxImpliedCornerShiftPixels = estimatedShiftPixels.Value + linearDistortionRate * maxFrameRadius;
 
                 if (estimatedShiftPixels.Value > options.MaximumPointingShiftPixels)
+                {
+                    globalPointingUncertain = true;
+                }
+
+                // Reject radial scale mismatch or unexplained rigid residuals under fixed geometry.
+                var hasRadialLeverage = (matchedAnchors.Count >= 3 || fit.RmsAnchorRadiusPixels >= 20.0) &&
+                    fit.RmsAnchorRadiusPixels >= 8.0;
+                var observedRadialShift = Math.Abs(fit.ScaleDelta) * fit.MaxAnchorRadiusPixels;
+                var impliedCornerScaleShift = Math.Abs(fit.ScaleDelta) * maxFrameRadius;
+                if (hasRadialLeverage &&
+                    observedRadialShift >= 0.35 &&
+                    Math.Abs(fit.ScaleDelta) >= 0.005 &&
+                    (impliedCornerScaleShift >= options.MatchRadiusPixels * options.MaximumImpliedRollShiftFraction ||
+                     Math.Abs(fit.ScaleDelta) >= 0.02))
+                {
+                    globalPointingUncertain = true;
+                }
+
+                if (matchedAnchors.Count >= 3 &&
+                    fit.RigidRmsPixels > Math.Min(options.MaximumPointingShiftPixels, options.MatchRadiusPixels * 0.45))
                 {
                     globalPointingUncertain = true;
                 }
@@ -799,11 +880,11 @@ public static class RegionalStellarVisibilityProducts
                     totalOffsetMatches++;
                 }
 
-                // Check implied rigid shift+roll at this unmatched star's radius from principal point!
-                if (estimatedShiftPixels is { } shift && estimatedRollDegrees is { } rollDeg)
+                // Check implied shift + roll + scale distortion at this unmatched star's radius from principal point!
+                if (estimatedShiftPixels is { } shift)
                 {
                     var starRadius = Hypot(pixel.X - centerX, pixel.Y - centerY);
-                    var impliedAtStar = shift + Math.Abs(rollDeg * (Math.PI / 180.0)) * starRadius;
+                    var impliedAtStar = shift + linearDistortionRate * starRadius;
                     if (impliedAtStar >= options.MatchRadiusPixels * options.MaximumImpliedRollShiftFraction)
                     {
                         tilePointingUncertain[tileIdx] = true;
@@ -812,10 +893,31 @@ public static class RegionalStellarVisibilityProducts
             }
         }
 
+        // Under fixed geometry, if an unmatched tile also has as many unassociated sharp stellar detections as missing stars,
+        // geometry cannot explain the observations in that tile (e.g. distortion/scale shift beyond OffsetSearchRadiusPixels).
+        var totalUnassociatedInUnmatchedTiles = 0;
+        if (!acceptedSolve)
+        {
+            for (var idx = 0; idx < tileCount; idx++)
+            {
+                var effectiveExp = Math.Max(0, tileExpected[idx] - tileMeasExcluded[idx]);
+                var missingInTile = effectiveExp - Math.Min(tileMatched[idx], effectiveExp);
+                if (missingInTile > 0 && tileUnassociated[idx] > 0)
+                {
+                    totalUnassociatedInUnmatchedTiles += tileUnassociated[idx];
+                    if (missingInTile >= options.MinimumMissingStarsForDeficit && tileUnassociated[idx] >= missingInTile)
+                    {
+                        tilePointingUncertain[idx] = true;
+                    }
+                }
+            }
+        }
+
         // If a substantial fraction of unmatched expected stars have nearby unexplained offset detections under fixed geometry,
-        // the pointing is shifted/rolled — withhold globally!
+        // the pointing is shifted/rolled/scaled — withhold globally!
         if (!acceptedSolve && totalUnmatchedExpected > 0 &&
             (totalOffsetMatches >= 2 && totalOffsetMatches * 2 >= totalUnmatchedExpected ||
+             totalUnassociatedInUnmatchedTiles >= 2 && totalUnassociatedInUnmatchedTiles >= totalUnmatchedExpected ||
              estimatedShiftPixels is { } gShift && gShift > options.MaximumPointingShiftPixels))
         {
             globalPointingUncertain = true;
@@ -886,6 +988,11 @@ public static class RegionalStellarVisibilityProducts
                 {
                     tileStatus = RegionalVisibilityTileStatus.Excluded;
                     tileReasons.Add(support.DominantExclusionReason);
+                }
+                else if (!regionalBackground.TileAvailable[idx])
+                {
+                    tileStatus = RegionalVisibilityTileStatus.InsufficientEvidence;
+                    tileReasons.Add(RegionalVisibilityReasonCodes.TileBackgroundUnavailable);
                 }
                 else if (!acceptedSolve && (tilePointingUncertain[idx] || (tileOffsetCandidates[idx] > 0 && missing > 0)))
                 {
@@ -1052,45 +1159,100 @@ public static class RegionalStellarVisibilityProducts
         return Math.Clamp((int)Math.Round(combined * OneMillion, MidpointRounding.AwayFromZero), 1, OneMillion);
     }
 
-    private static (double Tx, double Ty, double RollRadians) EstimateRigidOffset(
+    private readonly record struct SimilarityFit(
+        double Tx,
+        double Ty,
+        double RollRadians,
+        double ScaleDelta,
+        double RigidRmsPixels,
+        double RmsAnchorRadiusPixels,
+        double MaxAnchorRadiusPixels);
+
+    private static SimilarityFit EstimateSimilarityOffset(
         List<(PixelPoint Expected, PixelPoint Measured)> anchors,
         double centerX,
         double centerY)
     {
         var meanDx = anchors.Average(static a => a.Measured.X - a.Expected.X);
         var meanDy = anchors.Average(static a => a.Measured.Y - a.Expected.Y);
+        double sumRadSq = 0;
+        double maxRad = 0;
+        foreach (var (expected, _) in anchors)
+        {
+            var r = Hypot(expected.X - centerX, expected.Y - centerY);
+            sumRadSq += r * r;
+            if (r > maxRad) maxRad = r;
+        }
+        var rmsRad = Math.Sqrt(sumRadSq / anchors.Count);
         if (anchors.Count < 2)
         {
-            return (meanDx, meanDy, 0);
+            return new(meanDx, meanDy, 0, 0, 0, rmsRad, maxRad);
         }
 
-        // Fit small-angle 2D rotation around principal point using centered anchor residuals.
+        // Fit 2D similarity (translation, rotation, and radial scale) around the principal point using centered anchors.
         var meanExpX = anchors.Average(static a => a.Expected.X) - centerX;
         var meanExpY = anchors.Average(static a => a.Expected.Y) - centerY;
-        double num = 0, den = 0;
+        double cross = 0, dot = 0, den = 0;
         foreach (var (expected, measured) in anchors)
         {
             var rx = expected.X - centerX - meanExpX;
             var ry = expected.Y - centerY - meanExpY;
             var dx = (measured.X - expected.X) - meanDx;
             var dy = (measured.Y - expected.Y) - meanDy;
-            // Small rotation by theta: d(rx, ry) = (-ry * theta, rx * theta)
-            num += rx * dy - ry * dx;
+            cross += rx * dy - ry * dx;
+            dot += rx * dx + ry * dy;
             den += rx * rx + ry * ry;
         }
 
-        var rollRad = den > 1e-6 ? Math.Atan2(num, den) : 0;
-        // Recompute translation at principal point after removing rotation component.
+        double a = 1.0, b = 0.0;
+        if (den > 1e-6)
+        {
+            a = 1.0 + dot / den;
+            b = cross / den;
+        }
+        var scale = Hypot(a, b);
+        var scaleDelta = scale - 1.0;
+        var rollRad = Math.Atan2(b, a);
+
+        // Compute translation at principal point after removing similarity linear term.
         double txSum = 0, tySum = 0;
         foreach (var (expected, measured) in anchors)
         {
             var rx = expected.X - centerX;
             var ry = expected.Y - centerY;
-            txSum += (measured.X - expected.X) - (-ry * rollRad);
-            tySum += (measured.Y - expected.Y) - (rx * rollRad);
+            txSum += (measured.X - centerX) - (a * rx - b * ry);
+            tySum += (measured.Y - centerY) - (b * rx + a * ry);
         }
+        var tx = txSum / anchors.Count;
+        var ty = tySum / anchors.Count;
 
-        return (txSum / anchors.Count, tySum / anchors.Count, rollRad);
+        // Also compute rigid (translation + rotation only, scale = 1) RMS residual on the anchors.
+        var rigidCos = Math.Cos(rollRad);
+        var rigidSin = Math.Sin(rollRad);
+        double rigidTxSum = 0, rigidTySum = 0;
+        foreach (var (expected, measured) in anchors)
+        {
+            var rx = expected.X - centerX;
+            var ry = expected.Y - centerY;
+            rigidTxSum += (measured.X - centerX) - (rigidCos * rx - rigidSin * ry);
+            rigidTySum += (measured.Y - centerY) - (rigidSin * rx + rigidCos * ry);
+        }
+        var rigidTx = rigidTxSum / anchors.Count;
+        var rigidTy = rigidTySum / anchors.Count;
+        double rigidSqSum = 0;
+        foreach (var (expected, measured) in anchors)
+        {
+            var rx = expected.X - centerX;
+            var ry = expected.Y - centerY;
+            var predX = centerX + rigidTx + rigidCos * rx - rigidSin * ry;
+            var predY = centerY + rigidTy + rigidSin * rx + rigidCos * ry;
+            var ex = measured.X - predX;
+            var ey = measured.Y - predY;
+            rigidSqSum += ex * ex + ey * ey;
+        }
+        var rigidRms = Math.Sqrt(rigidSqSum / anchors.Count);
+
+        return new(tx, ty, rollRad, scaleDelta, rigidRms, rmsRad, maxRad);
     }
 
     private static (RegionalVisibilityFocusBasis Basis, double? MedianHfd, int ValidSamples, int TooBroadCount)
@@ -1124,57 +1286,348 @@ public static class RegionalStellarVisibilityProducts
         return (RegionalVisibilityFocusBasis.Unavailable, medianHfd, validCount, tooBroadCount);
     }
 
-    private static (double? BackgroundAdu, double? NoiseSigmaAdu, double? BackgroundElectronsPerSec)
-        EstimateSkyBackground(
-            ExposureMeasurementV1? measurement,
-            FrameLayoutDescriptor layout,
-            MonoSensorResponse? sensor,
-            double storedScale,
-            double exposureSeconds)
+    private sealed record ResolvedRegionalBackground(
+        bool[] TileAvailable,
+        double[] TileBackgroundAdu,
+        double[] TileNoiseSigmaAdu,
+        double[] TileBackgroundElectronsPerSec,
+        double? SummaryBackgroundAdu,
+        double? SummaryNoiseSigmaAdu,
+        double? SummaryBackgroundElectronsPerSec)
     {
+        public bool HasAnyAvailableTile => TileAvailable.Any(static available => available);
+    }
+
+    /// <summary>
+    /// Computes deterministic per-tile local sky background and noise sigma directly from a qualified linear frame,
+    /// matching StellarSourceMeasurer's clipped median and noise estimator while excluding saturated, out-of-aperture,
+    /// and defect-masked pixels.
+    /// </summary>
+    public static RegionalVisibilityTileBackgroundV1[] EstimateRegionalBackgroundFromLinear(
+        FrameLayoutDescriptor linearLayout,
+        ReadOnlyMemory<byte> linearPixels,
+        FrameLayoutDescriptor rawLayout,
+        ReadOnlyMemory<byte> rawPixels,
+        int gridColumns,
+        int gridRows,
+        ProjectionContext? aperture = null,
+        Linear16Frame? defectMask = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(linearLayout);
+        ArgumentNullException.ThrowIfNull(rawLayout);
+        var width = linearLayout.Width;
+        var height = linearLayout.Height;
+        var tileCount = checked(gridColumns * gridRows);
+        var unavailable = Enumerable.Repeat(new RegionalVisibilityTileBackgroundV1(false, null, null), tileCount).ToArray();
+        if (width < 1 || height < 1 || gridColumns < 1 || gridRows < 1 ||
+            gridColumns > width || gridRows > height ||
+            linearLayout.PixelFormat is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16) ||
+            rawLayout.Width != width || rawLayout.Height != height ||
+            linearPixels.Length < linearLayout.ByteLength || rawPixels.Length < rawLayout.ByteLength)
+        {
+            return unavailable;
+        }
+
+        if (!FrameWhiteThreshold.TryResolveStored(rawLayout, out var rawWhite, out _) ||
+            !FrameWhiteThreshold.TryResolveStored(linearLayout, out var linearWhite, out _))
+        {
+            return unavailable;
+        }
+
+        var count = checked(width * height);
+        var samples = new double[count];
+        var saturated = new bool[count];
+        var valid = new bool[count];
+        var rawBytes = rawPixels.Span;
+        var linearBytes = linearPixels.Span;
+        for (var y = 0; y < height; y++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var rawRow = rawBytes.Slice(y * rawLayout.StrideBytes, width * 2);
+            var linearRow = linearBytes.Slice(y * linearLayout.StrideBytes, width * 2);
+            for (var x = 0; x < width; x++)
+            {
+                var linearCode = ExposureSampleCodes.Read16(linearRow[(x * 2)..], linearLayout.ByteOrder);
+                var rawCode = ExposureSampleCodes.Read16(rawRow[(x * 2)..], rawLayout.ByteOrder);
+                var idx = y * width + x;
+                samples[idx] = linearCode;
+                saturated[idx] = rawCode >= rawWhite || linearCode >= linearWhite;
+                var inAperture = aperture?.ContainsSample(x + 0.5, y + 0.5) ?? true;
+                var isDefect = defectMask is not null && IsDefectMasked(new PixelPoint(x + 0.5, y + 0.5), defectMask);
+                valid[idx] = inAperture && !isDefect;
+            }
+        }
+
+        var isBayer = linearLayout.PixelFormat == CameraPixelFormat.BayerRggb16;
+        ReadOnlyMemory<double> luminanceSamples = samples;
+        ReadOnlyMemory<bool> luminanceValid = valid;
+        if (isBayer)
+        {
+            var pattern = ExposureMeasurementRecipe.LocalPattern(linearLayout);
+            if (pattern is null)
+            {
+                return unavailable;
+            }
+            var reconstructed = LinearBayerReconstruction.Reconstruct(samples, valid, width, height, pattern.Value, cancellationToken)
+                .ToLuminance(cancellationToken);
+            luminanceSamples = reconstructed.Pixels;
+            luminanceValid = reconstructed.ValidMask;
+        }
+
+        var lumSpan = luminanceSamples.Span;
+        var valSpan = luminanceValid.Span;
+        var results = new RegionalVisibilityTileBackgroundV1[tileCount];
+        var maxTileW = (width + gridColumns - 1) / gridColumns + 1;
+        var maxTileH = (height + gridRows - 1) / gridRows + 1;
+        var buffer = new double[maxTileW * maxTileH];
+        var differences = new double[maxTileW * maxTileH];
+        var deviations = new double[maxTileW * maxTileH];
+
+        for (var row = 0; row < gridRows; row++)
+        {
+            var y0 = (int)((long)row * height / gridRows);
+            var y1 = (int)((long)(row + 1) * height / gridRows);
+            for (var col = 0; col < gridColumns; col++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var x0 = (int)((long)col * width / gridColumns);
+                var x1 = (int)((long)(col + 1) * width / gridColumns);
+                var tilePixels = (x1 - x0) * (y1 - y0);
+                var minSamples = Math.Max(16, Math.Min(64, tilePixels / 4));
+                var sampleCount = 0;
+                var diffCount = 0;
+                for (var y = y0; y < y1; y++)
+                {
+                    for (var x = x0; x < x1; x++)
+                    {
+                        var idx = y * width + x;
+                        if (valSpan[idx] && !saturated[idx] && double.IsFinite(lumSpan[idx]))
+                        {
+                            buffer[sampleCount++] = lumSpan[idx];
+                            if (!isBayer && x + 1 < x1 && valSpan[idx + 1] && !saturated[idx + 1] && double.IsFinite(lumSpan[idx + 1]))
+                            {
+                                differences[diffCount++] = lumSpan[idx + 1] - lumSpan[idx];
+                            }
+                        }
+                    }
+                }
+
+                var tileIdx = row * gridColumns + col;
+                if (sampleCount < minSamples)
+                {
+                    results[tileIdx] = new(false, null, null);
+                    continue;
+                }
+
+                var (bg, noise) = ClippedMedianAndMad(buffer.AsSpan(0, sampleCount), deviations, 3.0);
+                if (!isBayer && diffCount >= minSamples / 2)
+                {
+                    noise = ClippedMedianAndMad(differences.AsSpan(0, diffCount), deviations, 3.0).Noise / Math.Sqrt(2.0);
+                }
+
+                results[tileIdx] = double.IsFinite(bg) && double.IsFinite(noise) && noise >= 0
+                    ? new(true, Round(bg), Round(noise))
+                    : new(false, null, null);
+            }
+        }
+
+        return results;
+    }
+
+    private static (double Median, double Noise) ClippedMedianAndMad(Span<double> samples, double[] deviations, double clipSigma)
+    {
+        var count = samples.Length;
+        var span = samples;
+        double median = 0;
+        double noise = 0;
+        for (var iteration = 0; iteration < 3; iteration++)
+        {
+            span.Sort();
+            median = span[count / 2];
+            for (var i = 0; i < count; i++)
+            {
+                deviations[i] = Math.Abs(span[i] - median);
+            }
+            var devSpan = deviations.AsSpan(0, count);
+            devSpan.Sort();
+            noise = 1.4826 * devSpan[count / 2];
+            if (noise <= 0)
+            {
+                break;
+            }
+            var limit = clipSigma * noise;
+            var kept = 0;
+            for (var i = 0; i < count; i++)
+            {
+                if (Math.Abs(span[i] - median) <= limit)
+                {
+                    span[kept++] = span[i];
+                }
+            }
+            if (kept == count || kept < 4)
+            {
+                break;
+            }
+            count = kept;
+            span = span[..count];
+        }
+
+        return (median, noise);
+    }
+
+    private static ResolvedRegionalBackground ResolveRegionalBackground(
+        ExposureMeasurementV1? measurement,
+        FrameLayoutDescriptor layout,
+        MonoSensorResponse? sensor,
+        double storedScale,
+        double exposureSeconds,
+        int cols,
+        int rows,
+        IReadOnlyList<RegionalVisibilityTileBackgroundV1>? suppliedRegional)
+    {
+        var tileCount = cols * rows;
+        var available = new bool[tileCount];
+        var bgAdu = new double[tileCount];
+        var noiseAdu = new double[tileCount];
+        var bgRate = new double[tileCount];
+
         if (measurement is null)
         {
-            return (null, null, null);
+            return new(available, bgAdu, noiseAdu, bgRate, null, null, null);
         }
 
+        var width = layout.Width;
+        var height = layout.Height;
         var workingBlack = CenteredNormalizationLayout.CreateWorkingLayout(layout).BlackLevel ?? 0d;
-        double? bgAdu = null;
-        double? noiseAdu = null;
 
-        if (measurement.Sources.Detections.Count > 0)
+        // Collect per-tile detection local background and noise measurements.
+        var detHasTile = new bool[tileCount];
+        var detTileBg = new double[tileCount];
+        var detTileNoise = new double[tileCount];
+        var allDetBgs = new List<double>();
+        var allDetNoises = new List<double>();
+        foreach (var detection in measurement.Sources.Detections)
         {
-            var bgs = measurement.Sources.Detections.Select(static d => d.Background).Where(double.IsFinite).Order().ToList();
-            var noises = measurement.Sources.Detections.Select(static d => d.NoiseSigma).Where(static n => double.IsFinite(n) && n >= 0).Order().ToList();
-            bgAdu = LowerQuartileOrMedian(bgs);
-            noiseAdu = LowerQuartileOrMedian(noises);
+            if (!double.IsFinite(detection.Background) || !double.IsFinite(detection.NoiseSigma) || detection.NoiseSigma < 0)
+            {
+                continue;
+            }
+            allDetBgs.Add(detection.Background);
+            allDetNoises.Add(detection.NoiseSigma);
+            if (!InsideBounds(detection.Pixel, width, height))
+            {
+                continue;
+            }
+            var t = TileIndexOf(detection.Pixel, width, height, cols, rows);
+            if (!detHasTile[t])
+            {
+                detHasTile[t] = true;
+                detTileBg[t] = detection.Background;
+                detTileNoise[t] = detection.NoiseSigma;
+            }
+            else
+            {
+                // Conservative local ceiling so a quiet part of a tile cannot hide high local noise in the same tile.
+                detTileBg[t] = Math.Max(detTileBg[t], detection.Background);
+                detTileNoise[t] = Math.Max(detTileNoise[t], detection.NoiseSigma);
+            }
         }
 
-        if (bgAdu is null && measurement.RawBrightness is { } brightness)
+        var hasSupplied = suppliedRegional is not null && suppliedRegional.Count == tileCount;
+        for (var t = 0; t < tileCount; t++)
         {
-            bgAdu = brightness.Mean;
+            if (hasSupplied && suppliedRegional![t] is { Available: true, BackgroundAdu: { } rBg, NoiseSigmaAdu: { } rNoise } &&
+                double.IsFinite(rBg) && double.IsFinite(rNoise) && rNoise >= 0)
+            {
+                available[t] = true;
+                bgAdu[t] = detHasTile[t] ? Math.Max(rBg, detTileBg[t]) : rBg;
+                noiseAdu[t] = detHasTile[t] ? Math.Max(rNoise, detTileNoise[t]) : rNoise;
+            }
+            else if (detHasTile[t])
+            {
+                available[t] = true;
+                bgAdu[t] = detTileBg[t];
+                noiseAdu[t] = detTileNoise[t];
+            }
         }
 
-        double? bgRate = null;
-        if (bgAdu is { } measuredBg && sensor is not null && exposureSeconds > 0)
+        // For detection-free tiles when no linear-image regional background was supplied (direct Assessments with detections
+        // in other tiles), inherit conservative local background/noise from adjacent tiles (never a frame-wide lower quartile).
+        if (!hasSupplied && allDetBgs.Count > 0 && allDetNoises.Count > 0)
         {
-            var electronsPerStoredAdu = sensor.ElectronsPerAdu / storedScale;
-            var excessAdu = Math.Max(0, measuredBg - workingBlack);
-            bgRate = excessAdu * electronsPerStoredAdu / exposureSeconds;
+            allDetBgs.Sort();
+            allDetNoises.Sort();
+            var fallbackBg = UpperQuartileOrMedian(allDetBgs);
+            var fallbackNoise = UpperQuartileOrMedian(allDetNoises);
+            var seeded = (bool[])available.Clone();
+            var seededBg = (double[])bgAdu.Clone();
+            var seededNoise = (double[])noiseAdu.Clone();
+            for (var row = 0; row < rows; row++)
+            {
+                for (var col = 0; col < cols; col++)
+                {
+                    var t = row * cols + col;
+                    if (seeded[t])
+                    {
+                        continue;
+                    }
+                    double? neighborBg = null;
+                    double? neighborNoise = null;
+                    for (var dy = -1; dy <= 1; dy++)
+                    {
+                        for (var dx = -1; dx <= 1; dx++)
+                        {
+                            if (dx == 0 && dy == 0) continue;
+                            var nx = col + dx;
+                            var ny = row + dy;
+                            if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) continue;
+                            var nt = ny * cols + nx;
+                            if (!seeded[nt]) continue;
+                            neighborBg = neighborBg is { } curBg ? Math.Max(curBg, seededBg[nt]) : seededBg[nt];
+                            neighborNoise = neighborNoise is { } curN ? Math.Max(curN, seededNoise[nt]) : seededNoise[nt];
+                        }
+                    }
+                    available[t] = true;
+                    bgAdu[t] = neighborBg ?? fallbackBg;
+                    noiseAdu[t] = neighborNoise ?? fallbackNoise;
+                }
+            }
         }
 
-        return (bgAdu, noiseAdu, bgRate);
+        var availableBgs = new List<double>();
+        var availableNoises = new List<double>();
+        var electronsPerStoredAdu = sensor is not null && exposureSeconds > 0
+            ? sensor.ElectronsPerAdu / storedScale
+            : (double?)null;
+
+        for (var t = 0; t < tileCount; t++)
+        {
+            if (!available[t])
+            {
+                continue;
+            }
+            availableBgs.Add(bgAdu[t]);
+            availableNoises.Add(noiseAdu[t]);
+            if (electronsPerStoredAdu is { } ePerAdu)
+            {
+                bgRate[t] = Math.Max(0, bgAdu[t] - workingBlack) * ePerAdu / exposureSeconds;
+            }
+        }
+
+        double? summaryBg = availableBgs.Count > 0 ? ExposureMeasurementProducts.Median(availableBgs) : null;
+        double? summaryNoise = availableNoises.Count > 0 ? ExposureMeasurementProducts.Median(availableNoises) : null;
+        double? summaryRate = summaryBg is { } sBg && electronsPerStoredAdu is { } sEPerAdu
+            ? Math.Max(0, sBg - workingBlack) * sEPerAdu / exposureSeconds
+            : null;
+
+        return new(available, bgAdu, noiseAdu, bgRate, summaryBg, summaryNoise, summaryRate);
     }
 
-    private static double? LowerQuartileOrMedian(List<double> sorted)
-    {
-        if (sorted.Count == 0)
-        {
-            return null;
-        }
-        return sorted.Count >= 4 ? sorted[sorted.Count / 4] : ExposureMeasurementProducts.Median(sorted);
-    }
+    private static double UpperQuartileOrMedian(List<double> sorted)
+        => sorted.Count >= 4 ? sorted[(sorted.Count * 3) / 4] : ExposureMeasurementProducts.Median(sorted)!.Value;
 
-    private static double ComputeStoredCodeScale(FrameLayoutDescriptor layout)
+    internal static double ComputeStoredCodeScale(FrameLayoutDescriptor layout)
     {
         if (layout.LevelCodeSpace != FrameLevelCodeSpace.NativeSample &&
             layout.StoredCodeTransform is not (FrameStoredCodeTransform.LeftShiftedV1 or FrameStoredCodeTransform.FullRangeScaledV1))
@@ -1604,6 +2057,115 @@ public static class RegionalStellarVisibilityProducts
         }
     }
 
+    private static ExposureMeasurementV1? VerifyMeasurementInput(
+        ProcessingArtifact raw,
+        FrameLayoutDescriptor rawLayout,
+        ProcessingArtifact? measurementArtifact,
+        ExposureMeasurementV1? measurement)
+    {
+        if (measurement is null || measurementArtifact is null)
+        {
+            return null;
+        }
+
+        var captureId = raw.CaptureId!.Value;
+        if (measurementArtifact.Role != FrameArtifactRole.Metadata ||
+            measurementArtifact.SchemaVersion != ExposureMeasurementProducts.SchemaVersion ||
+            measurementArtifact.CaptureId != captureId ||
+            measurementArtifact.SourceArtifactIds?.Contains(raw.ArtifactId) != true)
+        {
+            return null;
+        }
+
+        var rawSource = measurement.Input.Raw;
+        if (rawSource.CaptureId != captureId ||
+            rawSource.ArtifactId != raw.ArtifactId ||
+            !ExposureMeasurementProducts.Same(rawSource.DescriptorSha256, raw.DescriptorIdentitySha256) ||
+            rawSource.Layout != rawLayout)
+        {
+            return null;
+        }
+
+        if (measurement.Input.Linear is { } linearSource &&
+            (linearSource.CaptureId != captureId ||
+             linearSource.Layout.Width != rawLayout.Width ||
+             linearSource.Layout.Height != rawLayout.Height ||
+             linearSource.Layout.PixelFormat != rawLayout.PixelFormat))
+        {
+            return null;
+        }
+
+        return measurement;
+    }
+
+    private static (ProjectedSceneV1? Prediction, bool SimulatorTruthRejected) VerifyPredictionInput(
+        ProcessingArtifact raw,
+        FrameLayoutDescriptor rawLayout,
+        ProcessingArtifact? predictionArtifact,
+        ProjectedSceneV1? prediction,
+        ExposureMeasurementV1? verifiedMeasurement)
+    {
+        if (prediction is null || predictionArtifact is null)
+        {
+            return (null, false);
+        }
+
+        if (prediction.Kind != ProjectedSceneKind.Predicted)
+        {
+            return (null, true);
+        }
+
+        var captureId = raw.CaptureId!.Value;
+        if (predictionArtifact.Role != FrameArtifactRole.Metadata ||
+            !ProjectedSceneV1.IsSupportedSchemaVersion(predictionArtifact.SchemaVersion) ||
+            predictionArtifact.CaptureId != captureId ||
+            predictionArtifact.SourceArtifactIds?.Contains(raw.ArtifactId) != true)
+        {
+            return (null, false);
+        }
+
+        try
+        {
+            ProjectedSceneJson.Validate(prediction);
+            var computedIdentity = ProjectedSceneJson.ComputeIdentity(prediction);
+            if (!ExposureMeasurementProducts.Same(prediction.SceneIdentitySha256, computedIdentity) ||
+                !ExposureMeasurementProducts.Same(ResolveContentSha256(predictionArtifact), prediction.SceneIdentitySha256) ||
+                prediction.Source.CaptureId != captureId ||
+                prediction.Source.ArtifactId != raw.ArtifactId ||
+                !ExposureMeasurementProducts.Same(prediction.Source.ArtifactIdentitySha256, raw.DescriptorIdentitySha256) ||
+                prediction.ImageTransform != ProjectedSceneImageTransformV1.Identity(rawLayout.Width, rawLayout.Height))
+            {
+                return (null, false);
+            }
+
+            if (verifiedMeasurement is not null)
+            {
+                ExposureCatalogPredictionProducts.ValidateProjection(prediction, verifiedMeasurement.Input);
+            }
+
+            return (prediction, false);
+        }
+        catch (Exception exception) when (exception is InvalidDataException or ArgumentException)
+        {
+            return (null, false);
+        }
+    }
+
+    private static string? ResolveContentSha256(ProcessingArtifact? artifact)
+    {
+        if (artifact is null)
+        {
+            return null;
+        }
+        if (!string.IsNullOrWhiteSpace(artifact.ContentIdentitySha256))
+        {
+            return artifact.ContentIdentitySha256.ToUpperInvariant();
+        }
+        return artifact.Payload.Length > 0
+            ? ProcessingIdentity.ComputePayloadSha256(artifact.Payload).ToUpperInvariant()
+            : null;
+    }
+
     private static List<ProcessingArtifact> BuildSourceArtifactList(RegionalStellarVisibilityRequest request)
     {
         var list = new List<ProcessingArtifact>(4) { request.Raw };
@@ -1618,13 +2180,66 @@ public static class RegionalStellarVisibilityProducts
         RegionalStellarVisibilityOptions options,
         RegionalVisibilitySourceV1 sources)
     {
+        string? envContentSha = null;
+        if (request.Environment is { } env)
+        {
+            envContentSha = CaptureContractJson.ComputeCanonicalJsonSha256(JsonSerializer.SerializeToElement(new
+            {
+                env.SchemaVersion,
+                env.SolarRegime,
+                env.PrecipitationStatus,
+                env.PrecipitationObservationId,
+                env.PrecipitationContentSha256,
+                env.PrecipitationDetected,
+                env.InputIdentitySha256
+            }));
+        }
+
+        string? moonOverrideSha = null;
+        if (request.MoonOverride is { } moon)
+        {
+            moonOverrideSha = CaptureContractJson.ComputeCanonicalJsonSha256(JsonSerializer.SerializeToElement(new
+            {
+                moon.Body,
+                moon.Utc,
+                AltitudeDegrees = Round(moon.Direction.AltitudeDegrees),
+                AzimuthDegrees = Round(moon.Direction.AzimuthDegrees),
+                IlluminatedFraction = Round(moon.IlluminatedFraction),
+                AngularRadiusDegrees = Round(moon.AngularRadiusDegrees),
+                VisualMagnitude = Round(moon.VisualMagnitude),
+                BrightLimbAngleDegrees = Round(moon.BrightLimbAngleDegrees),
+                DistanceKilometers = Round(moon.DistanceKilometers)
+            }));
+        }
+
+        string? regionalBgSha = null;
+        if (request.RegionalBackground is { } regionalBg)
+        {
+            regionalBgSha = CaptureContractJson.ComputeCanonicalJsonSha256(JsonSerializer.SerializeToElement(
+                regionalBg.Select(static tile => new
+                {
+                    tile.Available,
+                    BackgroundAdu = Round(tile.BackgroundAdu),
+                    NoiseSigmaAdu = Round(tile.NoiseSigmaAdu)
+                }).ToArray()));
+        }
+
         var binding = new RegionalVisibilityRecipeBinding(
             options,
             sources,
             Round(request.ExposureSeconds),
             Round(request.Gain),
             request.HorizonEvaluator?.Profile.ComputeIdentitySha256(),
-            request.Environment?.InputIdentitySha256);
+            request.HorizonEvaluator?.IsCompatible,
+            request.Environment?.InputIdentitySha256,
+            envContentSha,
+            Round(request.SunAltitudeDegreesOverride),
+            moonOverrideSha,
+            request.AcceptedMapping is not null,
+            request.AstrometrySolution?.Assessment.CalibrationIdentitySha256,
+            request.AstrometrySolution?.SceneIdentitySha256,
+            regionalBgSha,
+            request.ResponseMismatchReason);
         return ProcessingIdentity.CreateRecipeIdentity(Definition, ProcessingRecipeSupport.Normalize(binding));
     }
 
@@ -1636,5 +2251,14 @@ public static class RegionalStellarVisibilityProducts
         double ExposureSeconds,
         double Gain,
         string? HorizonProfileIdentitySha256,
-        string? EnvironmentIdentitySha256);
+        bool? HorizonIsCompatible,
+        string? EnvironmentIdentitySha256,
+        string? EnvironmentContentSha256,
+        double? SunAltitudeDegreesOverride,
+        string? MoonOverrideContentSha256,
+        bool HasAcceptedMapping,
+        string? AcceptedMappingCalibrationSha256,
+        string? AcceptedMappingAssessmentSha256,
+        string? RegionalBackgroundSha256,
+        string? ResponseMismatchReason);
 }

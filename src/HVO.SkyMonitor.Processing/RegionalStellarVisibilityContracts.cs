@@ -47,6 +47,8 @@ public static class RegionalVisibilityReasonCodes
 {
     public const string UnsupportedFormat = "visibility.unsupported-format";
     public const string MissingLinearCalibration = "visibility.missing-linear-calibration";
+    public const string DefectMaskUnavailable = "visibility.defect-mask-unavailable";
+    public const string BackgroundNoiseUnavailable = "visibility.background-noise-unavailable";
     public const string MeasurementUnavailable = "visibility.measurement-unavailable";
     public const string PredictionUnavailable = "visibility.prediction-unavailable";
     public const string SimulatorTruthRejected = "visibility.simulator-truth-rejected";
@@ -84,11 +86,14 @@ public static class RegionalVisibilityReasonCodes
     public const string TilePointingUncertain = "tile.pointing-uncertain";
     public const string TileWithheld = "tile.withheld";
     public const string TileMarginalStarsExcluded = "tile.marginal-stars-excluded";
+    public const string TileBackgroundUnavailable = "tile.background-unavailable";
 
     public static IReadOnlySet<string> KnownGlobal { get; } = new HashSet<string>(StringComparer.Ordinal)
     {
         UnsupportedFormat,
         MissingLinearCalibration,
+        DefectMaskUnavailable,
+        BackgroundNoiseUnavailable,
         MeasurementUnavailable,
         PredictionUnavailable,
         SimulatorTruthRejected,
@@ -128,7 +133,8 @@ public static class RegionalVisibilityReasonCodes
         TileInsufficientExpectedStars,
         TilePointingUncertain,
         TileWithheld,
-        TileMarginalStarsExcluded
+        TileMarginalStarsExcluded,
+        TileBackgroundUnavailable
     };
 }
 
@@ -179,9 +185,16 @@ public sealed record RegionalVisibilityPhotometricProfileV1(
         }
     }
 
+    public static bool IsProvisionalOrUncalibratedStatus(string? status)
+        => !string.IsNullOrWhiteSpace(status) &&
+           (status.Contains("provisional", StringComparison.OrdinalIgnoreCase) ||
+            status.Contains("uncalibrated", StringComparison.OrdinalIgnoreCase) ||
+            status.Contains("uncharacterized", StringComparison.OrdinalIgnoreCase));
+
     internal bool TryResolve(
         double gainControl,
-        FrameLayoutDescriptor layout,
+        FrameLayoutDescriptor rawLayout,
+        FrameLayoutDescriptor measuredLayout,
         out MonoSensorResponse? response,
         out double red,
         out double green,
@@ -200,6 +213,14 @@ public sealed record RegionalVisibilityPhotometricProfileV1(
             return false;
         }
 
+        if (IsProvisionalOrUncalibratedStatus(CalibrationStatus) ||
+            IsProvisionalOrUncalibratedStatus(SensorResponse?.CalibrationStatus) ||
+            IsProvisionalOrUncalibratedStatus(SensorResponse?.ColorResponse?.Model))
+        {
+            failureReason = RegionalVisibilityReasonCodes.ResponseBasisMismatch;
+            return false;
+        }
+
         if (SensorResponse is { } configured)
         {
             if (gainControl < configured.MinimumGainControl || gainControl > configured.MaximumGainControl)
@@ -207,6 +228,48 @@ public sealed record RegionalVisibilityPhotometricProfileV1(
                 failureReason = RegionalVisibilityReasonCodes.ResponseBasisMismatch;
                 return false;
             }
+            if (configured.AdcBitDepth != rawLayout.SampleDepthBits ||
+                configured.AdcBitDepth != measuredLayout.SampleDepthBits)
+            {
+                failureReason = RegionalVisibilityReasonCodes.ResponseBasisMismatch;
+                return false;
+            }
+            if (rawLayout.PixelFormat == CameraPixelFormat.BayerRggb16 && configured.ColorResponse is null)
+            {
+                failureReason = RegionalVisibilityReasonCodes.ResponseBasisMismatch;
+                return false;
+            }
+            var rawScale = RegionalStellarVisibilityProducts.ComputeStoredCodeScale(rawLayout);
+            if (rawLayout.BlackLevel is { } rawBlack && double.IsFinite(rawBlack))
+            {
+                var nativeBlack = rawLayout.LevelCodeSpace == FrameLevelCodeSpace.StoredContainer && rawScale > 0
+                    ? rawBlack / rawScale
+                    : rawBlack;
+                if (Math.Abs(configured.BlackLevelAdu - nativeBlack) > 0.5)
+                {
+                    failureReason = RegionalVisibilityReasonCodes.ResponseBasisMismatch;
+                    return false;
+                }
+            }
+            else if (configured.BlackLevelAdu > 0.5)
+            {
+                failureReason = RegionalVisibilityReasonCodes.ResponseBasisMismatch;
+                return false;
+            }
+
+            if (rawLayout.WhiteLevel is { } rawWhite && double.IsFinite(rawWhite))
+            {
+                var nativeWhite = rawLayout.LevelCodeSpace == FrameLevelCodeSpace.StoredContainer && rawScale > 0
+                    ? rawWhite / rawScale
+                    : rawWhite;
+                var adcMax = (1 << configured.AdcBitDepth) - 1;
+                if (nativeWhite > adcMax + 0.5)
+                {
+                    failureReason = RegionalVisibilityReasonCodes.ResponseBasisMismatch;
+                    return false;
+                }
+            }
+
             response = ConfiguredSensorResponseResolver.Resolve(configured, gainControl);
             if (configured.ColorResponse is { } color)
             {
@@ -239,9 +302,9 @@ public sealed record RegionalVisibilityPhotometricProfileV1(
             return false;
         }
 
-        var adcBits = Math.Clamp(layout.SampleDepthBits, 1, 16);
+        var adcBits = Math.Clamp(measuredLayout.SampleDepthBits, 1, 16);
         var maxAdu = (1 << adcBits) - 1;
-        var black = layout.BlackLevel is { } declaredBlack && double.IsFinite(declaredBlack)
+        var black = measuredLayout.BlackLevel is { } declaredBlack && double.IsFinite(declaredBlack)
             ? Math.Clamp(declaredBlack, 0, maxAdu)
             : 0;
         response = new MonoSensorResponse

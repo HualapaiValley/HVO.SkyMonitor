@@ -52,8 +52,14 @@ internal sealed class ExposureMeasurementGraphPlan : ICenteredExposureGraphExten
              Matches(step.Type, RegionalStellarVisibilityProducts.StepAlias))).ToArray();
         if (producers.Length == 0 && consumers.Length == 0)
             return;
+        var regionalConsumers = consumers
+            .Where(static step => Matches(step.Type, RegionalStellarVisibilityProducts.StepAlias))
+            .ToArray();
         if (producers is [var producer] && MatchesGeneratedStep(producer, CreatePrediction(), PredictionDefaultOrder) &&
-            consumers.All(step => step.DependsOn?.Contains(prediction, StringComparer.OrdinalIgnoreCase) == true))
+            consumers.All(step => step.DependsOn?.Contains(prediction, StringComparer.OrdinalIgnoreCase) == true) &&
+            regionalConsumers.All(step => !step.Required && step.Publication == Durable &&
+                step.DependsOn?.Contains(RawInput, StringComparer.OrdinalIgnoreCase) == true &&
+                step.DependsOn?.Contains(ExposureMeasurementProducts.StepAlias, StringComparer.OrdinalIgnoreCase) == true))
             return;
 
         throw new ProcessingGraphStoreConflictException(

@@ -1,11 +1,25 @@
+using System.Security.Claims;
+using System.Text.Json;
 using Bunit;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Configuration;
+using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
+using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Components.Operations;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
+using HVO.SkyMonitor.Common.Security;
+using HVO.SkyMonitor.Processing;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Components;
+using Microsoft.AspNetCore.Components.Authorization;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
+using Moq;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
@@ -148,5 +162,169 @@ public sealed class ProcessingGraphEditorPageTests
         Assert.IsNotNull(cut.Find("g.diagram-node--disabled"));
         cut.FindAll("g[role='button']")[1].KeyDown(new Microsoft.AspNetCore.Components.Web.KeyboardEventArgs { Key = "Enter" });
         Assert.AreEqual("telemetry", selected);
+    }
+
+    [TestMethod]
+    public async Task CenteredGraphWithoutPredictionBranch_AddsRegionalVisibilitySavesAndReopensInRenderedEditor()
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-editor-regional-vis");
+        try
+        {
+            var baseline = StoragePolicyRawIngressIntegrationTests.Profile(root);
+            var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
+            var location = DeploymentLocationSnapshot.Create(
+                "editor-regional-test", 1, "virtual", null, DateTimeOffset.UnixEpoch, null,
+                35.347, -113.878, 1200, "America/Phoenix");
+            var profile = baseline with
+            {
+                DeploymentLocation = location,
+                Module = new("VirtualSky", JsonSerializer.SerializeToElement(new
+                {
+                    seed = 1925,
+                    illuminationMode = "ControlledNight",
+                    asi178Sensor = new { enabled = false }
+                })),
+                Rig = baseline.Rig with
+                {
+                    Sensor = baseline.Rig.Sensor with
+                    {
+                        WidthPixels = 256,
+                        HeightPixels = 256,
+                        ColorMode = SensorColorMode.Mono,
+                        PixelFormat = CameraPixelFormat.Mono16,
+                        ResponseMode = SensorResponseMode.Monochrome
+                    },
+                    Optics = baseline.Rig.Optics with
+                    {
+                        PrincipalPointX = 128,
+                        PrincipalPointY = 128,
+                        ImageCircleRadiusPixels = 122
+                    }
+                },
+                CenteredExposure = new("editor-cam", CenteredExposureProfile.CurrentExecutionVersion),
+                Pipeline = baseline.Pipeline with
+                {
+                    Steps =
+                    [
+                        new("Calibration", "linear", DependsOn: ["$raw"], Required: false, Publication: durable,
+                            Options: JsonSerializer.SerializeToElement(new { strategy = "None", outputVariant = "qualified-linear" })),
+                        new("ProjectedScene", "scene", DependsOn: ["$raw"], Required: false, Publication: durable),
+                        new("Storage", "storage", DependsOn: ["$raw"], Options: JsonSerializer.SerializeToElement(
+                            new FileStorageCaptureProcessingStepOptions
+                            {
+                                StorageRoot = Path.Combine(root, "storage"),
+                                QueueForUpload = false,
+                                UpdateLatestFrame = false
+                            }))
+                    ]
+                }
+            };
+
+            using var provider = ProcessingGraphOperationsTests.CreateProvider(root, configureServices: services =>
+            {
+                HVO.SkyMonitor.CameraAgent.Program.AddCameraModules(services);
+                services.AddSingleton<ICelestialCatalog>(new InMemoryCelestialCatalog([]));
+                var locations = new Mock<IDeploymentLocationStore>();
+                locations.Setup(store => store.Resolve(location.ToProvenance(), It.IsAny<DateTimeOffset?>())).Returns(location);
+                services.AddSingleton(locations.Object);
+            });
+            await StoragePolicyRawIngressIntegrationTests.InitializeAsync(provider, profile).ConfigureAwait(false);
+            var operations = provider.GetRequiredService<IProcessingGraphOperations>();
+            var registry = await operations.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false);
+            var initialPipeline = (await operations.ReadRevisionPipelineAsync(registry.ActiveRevisionId, CancellationToken.None).ConfigureAwait(false))!;
+            Assert.IsFalse(initialPipeline.Steps.Any(static s =>
+                string.Equals(s.Type, ExposureCatalogPredictionProducts.StepAlias, StringComparison.OrdinalIgnoreCase)));
+
+            var authentication = new Mock<AuthenticationStateProvider>();
+            authentication.Setup(service => service.GetAuthenticationStateAsync()).ReturnsAsync(
+                new AuthenticationState(new ClaimsPrincipal(new ClaimsIdentity(
+                [
+                    new Claim(ClaimTypes.NameIdentifier, "operator-1"),
+                    new Claim(CanonicalCredentialClaims.AccountTypeClaim, CanonicalCredentialClaims.UserAccountType)
+                ], IdentityConstants.ApplicationScheme))));
+            var authorization = new Mock<IAuthorizationService>();
+            authorization.Setup(service => service.AuthorizeAsync(It.IsAny<ClaimsPrincipal>(), It.IsAny<object?>(), It.IsAny<string>()))
+                .ReturnsAsync(AuthorizationResult.Success());
+            var uiService = new CameraAgentProcessingGraphUiService(
+                authentication.Object,
+                authorization.Object,
+                operations,
+                provider.GetRequiredService<ICaptureProcessingPipelineFactory>(),
+                provider.GetRequiredService<ICameraAgentConfigurationAccessor>(),
+                provider.GetRequiredService<CaptureScheduleRuntimeCoordinator>(),
+                TimeProvider.System,
+                NullLogger<CameraAgentProcessingGraphUiService>.Instance,
+                provider.GetRequiredService<IExposureMeasurementRunReader>(),
+                provider.GetRequiredService<IRegionalStellarVisibilityRunReader>());
+
+            // 1. Open the centered revision without a prediction branch, add RegionalStellarVisibility, configure, preview, and save.
+            string savedRevisionId;
+            using (var context = new BunitContext())
+            {
+                context.JSInterop.Mode = JSRuntimeMode.Loose;
+                context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(uiService);
+                var navigation = context.Services.GetRequiredService<NavigationManager>();
+                navigation.NavigateTo($"/operations/pipeline/graphs/new?from={Uri.EscapeDataString(registry.ActiveRevisionId)}");
+
+                var cut = context.Render<ProcessingGraphEditorPage>();
+                cut.WaitForElement(".node-row");
+
+                await cut.Find("select[aria-label='New node type']")
+                    .ChangeAsync(new ChangeEventArgs { Value = RegionalStellarVisibilityProducts.StepAlias }).ConfigureAwait(false);
+                await cut.FindAll("button").Single(static button => button.TextContent.Trim() == "Add node")
+                    .ClickAsync().ConfigureAwait(false);
+
+                var regionalRow = cut.Find($"li.node-row[data-node-alias='{RegionalStellarVisibilityProducts.StepAlias}']");
+                Assert.IsNotNull(regionalRow);
+                Assert.IsNotNull(cut.Find($"li.node-row[data-node-alias='{ExposureCatalogPredictionProducts.StepAlias}']"));
+
+                var gridColsInput = regionalRow.QuerySelector("input[id$='-gridColumns']")!;
+                await gridColsInput.ChangeAsync(new ChangeEventArgs { Value = "6" }).ConfigureAwait(false);
+
+                await cut.Find("form").SubmitAsync().ConfigureAwait(false);
+                cut.WaitForAssertion(() =>
+                {
+                    Assert.IsNotNull(cut.Find("svg[role='group']"));
+                    Assert.IsFalse(cut.Find("button.btn-primary").HasAttribute("disabled"));
+                });
+
+                await cut.Find("button.btn-primary").ClickAsync().ConfigureAwait(false);
+                cut.WaitForAssertion(() =>
+                    Assert.IsTrue(cut.Markup.Contains("saved as an immutable revision", StringComparison.Ordinal), cut.Markup));
+
+                var savedLink = cut.Find("a[href^='/operations/pipeline/graphs/']");
+                savedRevisionId = Uri.UnescapeDataString(savedLink.GetAttribute("href")!["/operations/pipeline/graphs/".Length..]);
+            }
+
+            // Verify persisted revision satisfies the production validator and carries durable optional regional wiring.
+            var savedPipeline = (await operations.ReadRevisionPipelineAsync(savedRevisionId, CancellationToken.None).ConfigureAwait(false))!;
+            var savedRegional = savedPipeline.Steps.Single(static s =>
+                string.Equals(s.Type, RegionalStellarVisibilityProducts.StepAlias, StringComparison.OrdinalIgnoreCase));
+            Assert.IsFalse(savedRegional.Required);
+            Assert.AreEqual(durable, savedRegional.Publication);
+            Assert.IsTrue(savedRegional.DependsOn!.Contains("$raw", StringComparer.OrdinalIgnoreCase));
+            Assert.IsTrue(savedRegional.DependsOn!.Contains(ExposureMeasurementProducts.StepAlias, StringComparer.OrdinalIgnoreCase));
+            Assert.IsTrue(savedRegional.DependsOn!.Contains(ExposureCatalogPredictionProducts.StepAlias, StringComparer.OrdinalIgnoreCase));
+            Assert.AreEqual(6, savedRegional.Options!.Value.GetProperty("gridColumns").GetInt32());
+
+            // 2. Reopen the saved draft in a fresh rendered ProcessingGraphEditorPage and verify round-trip fidelity.
+            using (var reopenContext = new BunitContext())
+            {
+                reopenContext.JSInterop.Mode = JSRuntimeMode.Loose;
+                reopenContext.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(uiService);
+                var navigation = reopenContext.Services.GetRequiredService<NavigationManager>();
+                navigation.NavigateTo($"/operations/pipeline/graphs/new?from={Uri.EscapeDataString(savedRevisionId)}");
+
+                var reopened = reopenContext.Render<ProcessingGraphEditorPage>();
+                reopened.WaitForElement($"li.node-row[data-node-alias='{RegionalStellarVisibilityProducts.StepAlias}']");
+                Assert.IsNotNull(reopened.Find($"li.node-row[data-node-alias='{ExposureCatalogPredictionProducts.StepAlias}']"));
+                var reopenedRegionalRow = reopened.Find($"li.node-row[data-node-alias='{RegionalStellarVisibilityProducts.StepAlias}']");
+                Assert.AreEqual("6", reopenedRegionalRow.QuerySelector("input[id$='-gridColumns']")!.GetAttribute("value"));
+            }
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
     }
 }
