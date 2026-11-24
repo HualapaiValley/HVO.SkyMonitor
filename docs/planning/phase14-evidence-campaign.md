@@ -9,12 +9,10 @@ campaigns, aggregation, and measured optimization. Issue #318 defines this
 contract. Neither issue reopens or claims the closed Virtual-First Platform
 Completion milestone, `GATE-P14`, or `DONE-007`.
 
-The deferred evidence campaign and its source/component importers are retained
-as historical reproducibility tooling and are not automatic gates. Manual CI
-retains the acceptance inventory contract. Pull-request Deployment Contracts
-retains separate capability-named tests for the current lightweight campaign
-orchestration behavior. Source/component imports run explicitly only when
-reproducing this closed evidence set.
+The historical revision contains the evidence campaign and its source and
+component importers. Its manual CI validated the acceptance inventory and its
+Deployment Contracts check exercised the campaign orchestration. Current CI
+qualifies the standalone application under the [CI runbook](../runbooks/ci-pipeline.md).
 
 The machine-readable definition is
 `deploy/split-host/acceptance/phase14-evidence-contract.json`. The existing

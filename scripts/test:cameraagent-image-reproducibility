@@ -238,7 +238,7 @@ class ImageReproducibility(unittest.TestCase):
             self.assertFalse(any('PublishReadyToRun' in a for a in args))
 
     def test_every_release_export_rewrites_layer_timestamps(self):
-        for name in ('scripts/release:assets', '.github/workflows/release-image.yml', 'scripts/deploy/images.sh',
+        for name in ('scripts/release:assets', '.github/workflows/release-image.yml',
                      'scripts/test:cameraagent-arm64-ci'):
             with self.subTest(path=name):
                 content = (ROOT / name).read_text()

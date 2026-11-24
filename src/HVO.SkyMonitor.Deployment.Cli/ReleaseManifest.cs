@@ -288,7 +288,7 @@ internal sealed partial record ReleaseManifest(string Version, IReadOnlyList<Upg
             {
                 throw Invalid($"offline archive {index} is not for one of the image's platforms, once");
             }
-            var name = OfflineArchive.NameFor(version, platform, CameraAgentImageName);
+            var name = OfflineArchive.NameFor(version, platform);
             if (Text(archive, "name") != name)
             {
                 throw Invalid($"offline archive {index} for {platform} is not named {name}");
@@ -508,9 +508,9 @@ internal sealed record OfflineArchive(
     string ManifestDigest,
     string ConfigDigest)
 {
-    /// <summary>The archive's name for a component, version and platform; existing callers default to CameraAgent.</summary>
-    public static string NameFor(string version, string platform, string imageName = ReleaseManifest.CameraAgentImageName)
-        => $"{imageName}-{version}-{platform.Replace('/', '-')}.oci.tar";
+    /// <summary>The CameraAgent archive's name for a version and platform.</summary>
+    public static string NameFor(string version, string platform)
+        => $"{ReleaseManifest.CameraAgentImageName}-{version}-{platform.Replace('/', '-')}.oci.tar";
 }
 
 /// <summary>A file a release has besides release.json and SHA256SUMS, with its size and SHA-256.</summary>

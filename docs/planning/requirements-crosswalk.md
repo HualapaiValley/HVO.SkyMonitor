@@ -11,6 +11,10 @@ order, aggregate phase status, and completion. The retained source in this table
 owns detailed subsystem behavior. GitHub issues own live issue/PR execution
 state and evidence.
 
+The central application and combined deployment requirements record retired
+scope under #1848 and #2061. The linked historical revisions retain their
+specifications and evidence.
+
 ## 1. Cross-Cutting Requirements
 
 | IDs | Requirement group | Owning source | Phase/issues |
@@ -99,7 +103,7 @@ state and evidence.
 | `EVENT-001`-`EVENT-010` | Scenario matrix, simulation stage, event separation, structured contracts, linear detection, severity, edge/central execution, persistence, and review/reconstruction | `docs/project-plan.md` phase 12 | #61-#65 and transient child issues |
 | `UI-001`-`UI-008` | Durable read models, authorization, local operations/gallery/config validation, central fleet/jobs/artifacts/weather/events, and audited mutation | `docs/project-plan.md` phase 13 | #106, #107 |
 | `UI-LOCAL-001`-`UI-LOCAL-008` | Authenticated image-led current view, independent image/system freshness, truthful stage availability, accessible large-image viewing, presentation-first capture detail, approachable bounded archive, responsive layouts, and separate technical operations | `docs/design/cameraagent-presentation/README.md`; `docs/roadmap.md` `RM-014`; epic #438 and its child acceptance criteria | #440, #443, #439, #442, #441 |
-| `CENTRAL-PRODUCT-001`-`CENTRAL-PRODUCT-008` | Immutable CameraAgent evidence import and reconciliation, protected observatory and logical-camera workspaces, independent signed LogicHost lifecycle distribution after object-storage disposition, and optional exact-digest two-host acceptance without making LogicHost part of CameraAgent correctness | `docs/roadmap.md` `RM-018`; `docs/runbooks/logichost-execution-evidence.md`; epic #531 and child acceptance criteria | #538, #539, #540, #541 |
+| `CENTRAL-PRODUCT-001`-`CENTRAL-PRODUCT-008` | Historical central evidence import and reconciliation, observatory and logical-camera workspaces, LogicHost distribution, and two-host compatibility | `docs/roadmap.md` `RM-018`; [retired execution-evidence runbook](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/66e6aa237b40c70342815af6e2511122daa56bb6/docs/runbooks/logichost-execution-evidence.md); epic #531 and child acceptance criteria | #538, #539, #540, #541 |
 | `E2E-001`-`E2E-007` | Real outbox two-host path through the supported object-store provider, complete feature flow, fault injection, output/state validation, observability review, separate long/external/hardware gates, and current-head database critical-section/access-plan disposition | `docs/project-plan.md` phase 14 | #243, #108, #506 |
 | `EVIDENCE-P14-001`-`EVIDENCE-P14-007` | Post-milestone scenario disposition, executable workload manifests, sanitized revision-bound imports, immutable artifact admissibility, explicit deferment/exclusion, aggregation, and measured optimization follow-ups | `docs/planning/phase14-evidence-campaign.md` | #305, #318 |
 | `STANDALONE-001`-`STANDALONE-003` | Full-catalog ASI676MC five-second calibrated standalone operation, real local UI/fault evidence, zero central attempts, and ASI174 Mono8 ROI/bin conformance | `docs/project-plan.md` phase 12A; course-correction plan | #211; epic #205 |

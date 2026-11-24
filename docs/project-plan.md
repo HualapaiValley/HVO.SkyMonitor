@@ -8,7 +8,6 @@ and split-host milestones record earlier delivery and qualification. The
 CameraAgent, Silo and reusable library boundaries apply to current changes.
 [Roadmap](roadmap.md).
 
-
 Status date: 2026-08-24
 
 This is the authoritative architecture, virtual-first requirements, phase-order,
@@ -177,13 +176,10 @@ AgentCore + Astronomy + Imaging + Processing + Fleet.Contracts + CameraAgent.Rep
 AgentCore + Processing --> ProcessingRunner.Contracts
 AgentCore + Processing + ProcessingRunner.Contracts --> ProcessingRunner
 
-AgentCore + Astronomy + Imaging + Processing + ProcessingRunner.Contracts + Fleet.Contracts
-  +--> LogicHost
-
 AgentCore --> CameraAgent.Modules.Zwo --> CameraAgent
 
-Common --------------------> CameraAgent and LogicHost only
-Catalog.Sqlite ------------> CameraAgent and LogicHost composition roots
+Common --------------------> CameraAgent
+Catalog.Sqlite ------------> CameraAgent composition root
 
 AgentCore + Catalog.Sqlite + Deployment.Contracts
   +--> Deployment.Cli

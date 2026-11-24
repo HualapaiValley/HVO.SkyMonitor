@@ -184,22 +184,20 @@ reference as an active owner. Phase 10 and issue-116 evidence generated before
 that change is not comparable for the P4 `RetentionReleased` field and must be
 regenerated from a clean candidate head; all such evidence lives under the
 ignored `TestResults/` tree, so no committed document changes.
-Processing runner evidence (#428): `ProcessingRunnerPerformanceEvidenceTests`
+Historical LogicHost processing runner evidence (#428). `ProcessingRunnerPerformanceEvidenceTests`
 (Manual, LogicHost integration project) records cold and warm start stages,
 registration and claim latency, input/product transfer bytes, and W1
 `encoded-preview` throughput in process versus through `processing-runner-v1`,
 plus the runner-placed backlog observed with no runner. Output is
 revision-scoped under `TestResults/processing-runner/<revision>/` and the
-runtime signals are pinned in
-`docs/validation/central-runner-runtime-signals.json`.
+runtime signals are in the [retired runner signal contract](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/66e6aa237b40c70342815af6e2511122daa56bb6/docs/validation/central-runner-runtime-signals.json).
 
-Fair scheduling evidence (#429): `ProcessingFairnessPerformanceEvidenceTests`
+Historical LogicHost fair scheduling evidence (#429). `ProcessingFairnessPerformanceEvidenceTests`
 (Manual, LogicHost integration project) drains deterministic 5-, 10-, and
 100-camera arrival streams under a per-observatory entitlement with concurrent
 claim loops and records Jain's fairness index, claim and queue latency,
 throughput, CPU, memory, and lease-loss recovery under
-`TestResults/processing-fairness/<revision>/`; signals are pinned in
-`docs/validation/central-fairness-runtime-signals.json`.
+`TestResults/processing-fairness/<revision>/`. See the [retired fairness signal contract](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/66e6aa237b40c70342815af6e2511122daa56bb6/docs/validation/central-fairness-runtime-signals.json).
 
 Execution-evidence export evidence (#537):
 `ExecutionEvidenceExportPerformanceTests` (Manual, CameraAgent test project)
