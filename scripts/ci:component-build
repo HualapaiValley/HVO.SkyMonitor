@@ -41,19 +41,6 @@ case "$component" in
       tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj
     )
     ;;
-  logichost)
-    projects=(
-      src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj
-      tests/HVO.SkyMonitor.LogicHost.Tests/HVO.SkyMonitor.LogicHost.Tests.csproj
-      tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj
-    )
-    ;;
-  combined)
-    projects=(
-      tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests.csproj
-      tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj
-    )
-    ;;
   delivery)
     projects=(
       src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj
@@ -62,7 +49,7 @@ case "$component" in
     )
     ;;
   *)
-    printf 'Usage: scripts/ci:component-build <shared|cameraagent|logichost|combined|delivery> [--list-projects]\n' >&2
+    printf 'Usage: scripts/ci:component-build <shared|cameraagent|delivery> [--list-projects]\n' >&2
     exit 2
     ;;
 esac

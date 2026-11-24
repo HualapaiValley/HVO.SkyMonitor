@@ -10,6 +10,7 @@ using Microsoft.Extensions.Options;
 namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 [TestClass]
+[TestProperty("Area", "Upload")]
 public sealed class ArtifactUploadClientTests
 {
     [TestMethod]

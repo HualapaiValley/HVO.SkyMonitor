@@ -18,6 +18,7 @@ using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
 [TestClass]
+[TestProperty("Area", "Capture.Processing")]
 [DoNotParallelize]
 public sealed class DerivedProductReconcilerTests
 {

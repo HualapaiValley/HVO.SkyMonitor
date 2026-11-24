@@ -11,6 +11,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Services;
 
 [TestClass]
 [TestCategory("Integration")]
+[TestProperty("Area", "Services")]
 public sealed class AutomationWizardIntegrationTests
 {
     [TestMethod]

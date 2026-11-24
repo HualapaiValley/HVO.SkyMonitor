@@ -348,6 +348,52 @@ public sealed class NightlyProductRecipeTests
     }
 
     [TestMethod]
+    [DataRow(false, CameraPixelFormat.Mono8)]
+    [DataRow(true, CameraPixelFormat.Mono8)]
+    [DataRow(false, CameraPixelFormat.Rgb24)]
+    [DataRow(true, CameraPixelFormat.Rgb24)]
+    public async Task EqualTimeSegmentAssemblyPreservesOriginalSourceOrder(bool planned, CameraPixelFormat format)
+    {
+        var layout = CreateLayout(2, 2);
+        if (format == CameraPixelFormat.Rgb24)
+        {
+            layout = layout with { PixelFormat = format, StrideBytes = 6, ByteLength = 12 };
+        }
+        var frames = Enumerable.Range(1, 4).Select(index =>
+        {
+            var pixels = Enumerable.Repeat((byte)(index * 20), layout.StrideBytes * layout.Height).ToArray();
+            return Preview(Guid.Parse($"40000000-0000-0000-0000-{index:D12}"), pixels, Origin) with { Layout = layout };
+        }).ToArray();
+        var segmentOptions = new KeogramRecipeOptions(MaximumGapSeconds: 90);
+        var options = planned
+            ? segmentOptions with { PlannedAxis = new(Origin, Origin.AddMinutes(2), TimeSpan.FromMinutes(1)) }
+            : segmentOptions;
+        var executor = new ProcessingRecipeExecutor();
+        var direct = await executor.ExecuteAsync(
+            KeogramRequest([frames[3], frames[1], frames[0], frames[2]], options)).ConfigureAwait(false);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, direct.Status, direct.ReasonCode);
+
+        var (first, firstAxis) = await ComposeSegmentAsync([frames[0], frames[2]], segmentOptions).ConfigureAwait(false);
+        var (second, secondAxis) = await ComposeSegmentAsync([frames[1], frames[3]], segmentOptions).ConfigureAwait(false);
+        // Segment IDs sort opposite to the order of their first original sources.
+        first = first with { ArtifactId = Guid.Parse("50000000-0000-0000-0000-000000000002") };
+        second = second with { ArtifactId = Guid.Parse("50000000-0000-0000-0000-000000000001") };
+        var request = AssemblyRequest([second, first], options,
+            new KeogramSegmentAxesV1(KeogramSegmentAxesV1.CurrentSchemaVersion,
+                [firstAxis with { ArtifactId = first.ArtifactId }, secondAxis with { ArtifactId = second.ArtifactId }]));
+
+        var composed = await executor.ExecuteAsync(request).ConfigureAwait(false);
+
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, composed.Status, composed.ReasonCode);
+        var expected = Assert.ContainsSingle(direct.Products);
+        var actual = Assert.ContainsSingle(composed.Products);
+        Assert.AreEqual(expected.Layout, actual.Layout);
+        Assert.AreEqual(expected.TotalIntegration, actual.TotalIntegration);
+        CollectionAssert.AreEqual(expected.Payload.ToArray(), actual.Payload.ToArray());
+        ProcessingRecipeTests.AssertProductMatchesContract(request, actual);
+    }
+
+    [TestMethod]
     public async Task KeogramAssemblyRequiresBoundSegmentAxesAndMatchingGeometry()
     {
         var frames = new[]

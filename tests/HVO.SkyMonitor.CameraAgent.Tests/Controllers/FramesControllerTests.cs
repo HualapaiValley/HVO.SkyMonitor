@@ -12,6 +12,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Controllers;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Hosting")]
 public class FramesControllerTests
 {
     [TestMethod]

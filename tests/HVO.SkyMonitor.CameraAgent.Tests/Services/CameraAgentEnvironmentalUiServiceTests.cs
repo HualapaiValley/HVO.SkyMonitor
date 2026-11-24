@@ -16,6 +16,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Services;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Services")]
 public sealed class CameraAgentEnvironmentalUiServiceTests
 {
     private const string Root = "/var/lib/hvo/test-ingress";

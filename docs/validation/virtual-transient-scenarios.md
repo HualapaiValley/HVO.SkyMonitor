@@ -90,7 +90,7 @@ inputs:
 | Saturation topology | `TransientDetectorInputTests.RggbSaturationMaskPreservesAnyPhotositeClippingHiddenByCellAverage`, temporal saturation-mask exclusion, and the fragmented-flare matrix case |
 | Mask integrity and bounds | temporal tamper, incomplete-mask, non-persistent-mask, and malformed-context tests |
 | Direct/reconstructed conformance | `LogicHostProcessingConformanceTests.EdgeAndCentralAdaptersProduceEquivalentCenteredTransientBackground` compares background pixels/masks/descriptors, extraction receipts/candidates, and assessment bytes |
-| Detector disabled | `TransientTemporalBackgroundTests.OffDoesNotConstructTemporalWindow` warms the call and measures zero current-thread bytes over 1,000 calls while retaining no window |
+| Detector disabled | `TransientTemporalBackgroundTests.OffDoesNotConstructTemporalWindow` verifies the disabled path retains no window. `TransientTemporalActivationPerformanceTests.DisabledActivationDoesNotAllocatePerCall` measures zero current-thread bytes over 1,000 warmed calls. |
 | Reprocessing | `TransientAssessmentTests.ReprocessingPreservesHistoryAndOnlySupersedesExplicitSameProducerAssessment` |
 
 Focused reproduction:
@@ -102,7 +102,7 @@ dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Te
 
 dotnet test tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj \
   --configuration Release \
-  --filter "FullyQualifiedName~TransientTemporalBackgroundTests.OffDoesNotConstructTemporalWindow"
+  --filter "FullyQualifiedName~TransientTemporalBackgroundTests.OffDoesNotConstructTemporalWindow|FullyQualifiedName~TransientTemporalActivationPerformanceTests.DisabledActivationDoesNotAllocatePerCall"
 
 dotnet test tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests.csproj \
   --configuration Release \

@@ -13,6 +13,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Endpoints")]
 public sealed class CameraAgentSkyMapEndpointsTests
 {
     private static readonly DateTimeOffset Now = new(2026, 9, 4, 12, 0, 0, TimeSpan.Zero);

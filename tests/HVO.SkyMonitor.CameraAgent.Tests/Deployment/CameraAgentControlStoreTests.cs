@@ -8,6 +8,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Deployment;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Deployment")]
 public sealed class CameraAgentControlStoreTests
 {
     private DirectoryInfo _root = null!;

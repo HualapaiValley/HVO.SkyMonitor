@@ -109,6 +109,13 @@ public sealed record ExposureMeasurementV1(
     public string HfdUnit { get; init; } = "delivered-image-pixels";
 }
 
+internal enum ExposureFocusSamplingPolicy
+{
+    Brightest,
+    BrightestWithBayerCoreCheck,
+    EligibleFirst
+}
+
 /// <summary>Constructs and reads the single versioned, source-bound exposure measurement product.</summary>
 public static class ExposureMeasurementProducts
 {
@@ -143,18 +150,29 @@ public static class ExposureMeasurementProducts
         var request = new ProcessingExecutionRequest(BuiltInProcessingRecipes.ExposureMeasurement, SerializeInput(input),
             ProcessingInputSelector.Raw(raw.Variant), linear is null ? [raw] : [raw, linear], Variant,
             InputArtifactId: raw.ArtifactId);
-        if (input.Linear?.Layout.PixelFormat != CameraPixelFormat.BayerRggb16)
+        var format = input.Linear?.Layout.PixelFormat;
+        if (format is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16))
             return request;
 
         if (retainedOutputIdentitySha256 is not null)
         {
-            var historicalRecipe = BuiltInProcessingRecipes.CreateExecutionIdentity(request.RecipeName, request.Options, request.Input);
-            var historicalOutput = ProcessingIdentity.CreateOutputIdentity(FrameArtifactRole.Metadata, Variant,
-                historicalRecipe.IdentitySha256, SourceIds(input));
-            if (Same(historicalOutput, retainedOutputIdentitySha256))
+            if (MatchesRetainedOutput(request, input, retainedOutputIdentitySha256))
                 return request;
+            if (format == CameraPixelFormat.BayerRggb16)
+            {
+                var priorBayer = request with { Options = SerializeParameters(input, ExposureFocusSamplingPolicy.BrightestWithBayerCoreCheck) };
+                if (MatchesRetainedOutput(priorBayer, input, retainedOutputIdentitySha256))
+                    return priorBayer;
+            }
         }
-        return request with { Options = SerializeParameters(input, bayerCoreTrail: true) };
+        return request with { Options = SerializeParameters(input, ExposureFocusSamplingPolicy.EligibleFirst) };
+    }
+
+    private static bool MatchesRetainedOutput(ProcessingExecutionRequest request, ExposureMeasurementInputV1 input, string retainedOutput)
+    {
+        var recipe = BuiltInProcessingRecipes.CreateExecutionIdentity(request.RecipeName, request.Options, request.Input);
+        return Same(ProcessingIdentity.CreateOutputIdentity(FrameArtifactRole.Metadata, Variant,
+            recipe.IdentitySha256, SourceIds(input)), retainedOutput);
     }
 
     /// <summary>Gets the admission lookup key. Consumers still verify the product against independent evidence.</summary>
@@ -220,24 +238,41 @@ public static class ExposureMeasurementProducts
     }
 
     private const string BayerCoreTrailPolicy = "noise-corrected-bayer-core-v1";
+    private const string EligibleFirstPolicy = "eligible-first-v1";
 
-    internal static JsonElement SerializeParameters(ExposureMeasurementInputV1 input, bool bayerCoreTrail)
-        => bayerCoreTrail
-            ? CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(new BayerFocusParameters(BayerCoreTrailPolicy, input), Json))
-            : SerializeInput(input);
+    internal static JsonElement SerializeParameters(ExposureMeasurementInputV1 input, ExposureFocusSamplingPolicy policy)
+        => policy switch
+        {
+            ExposureFocusSamplingPolicy.EligibleFirst =>
+                CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(new FocusAllocationParameters(EligibleFirstPolicy, input), Json)),
+            ExposureFocusSamplingPolicy.BrightestWithBayerCoreCheck =>
+                CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(new BayerFocusParameters(BayerCoreTrailPolicy, input), Json)),
+            _ => SerializeInput(input)
+        };
 
-    internal static (ExposureMeasurementInputV1 Input, bool BayerCoreTrail) ReadParameters(JsonElement options)
+    internal static (ExposureMeasurementInputV1 Input, ExposureFocusSamplingPolicy Policy) ReadParameters(JsonElement options)
     {
-        if (options.ValueKind != JsonValueKind.Object || !options.TryGetProperty("bayerFocus", out _))
-            return (ReadInput(options), false);
-        var parameters = options.Deserialize<BayerFocusParameters>(Json);
-        if (parameters is not { BayerFocus: BayerCoreTrailPolicy, Input.Linear.Layout.PixelFormat: CameraPixelFormat.BayerRggb16 })
-            throw Invalid("Bayer focus policy");
-        ValidateInput(parameters.Input);
-        return (parameters.Input, true);
+        if (options.ValueKind == JsonValueKind.Object && options.TryGetProperty("hfdAllocation", out _))
+        {
+            var parameters = options.Deserialize<FocusAllocationParameters>(Json);
+            if (parameters is not { HfdAllocation: EligibleFirstPolicy, Input.Linear.Layout.PixelFormat: CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16 })
+                throw Invalid("HFD allocation policy");
+            ValidateInput(parameters.Input);
+            return (parameters.Input, ExposureFocusSamplingPolicy.EligibleFirst);
+        }
+        if (options.ValueKind == JsonValueKind.Object && options.TryGetProperty("bayerFocus", out _))
+        {
+            var parameters = options.Deserialize<BayerFocusParameters>(Json);
+            if (parameters is not { BayerFocus: BayerCoreTrailPolicy, Input.Linear.Layout.PixelFormat: CameraPixelFormat.BayerRggb16 })
+                throw Invalid("Bayer focus policy");
+            ValidateInput(parameters.Input);
+            return (parameters.Input, ExposureFocusSamplingPolicy.BrightestWithBayerCoreCheck);
+        }
+        return (ReadInput(options), ExposureFocusSamplingPolicy.Brightest);
     }
 
     private sealed record BayerFocusParameters(string BayerFocus, ExposureMeasurementInputV1 Input);
+    private sealed record FocusAllocationParameters(string HfdAllocation, ExposureMeasurementInputV1 Input);
 
     internal static JsonElement SerializeInput(ExposureMeasurementInputV1 input)
         => CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(input, Json));
@@ -272,11 +307,11 @@ public static class ExposureMeasurementProducts
                 value.CoordinateConvention != CoordinateConvention || value.HfdUnit != "delivered-image-pixels" ||
                 !payload.Span.SequenceEqual(Serialize(value)))
                 throw Invalid("canonical payload");
-            var (input, bayerCoreTrail) = ReadParameters(parameters);
+            var (input, policy) = ReadParameters(parameters);
             VerifyBinding(value, input);
             if (!sourceIds.SequenceEqual(SourceIds(value.Input)))
                 throw Invalid("lineage");
-            ValidateResults(value, bayerCoreTrail);
+            ValidateResults(value, policy);
             return value;
         }
         catch (JsonException exception)
@@ -332,7 +367,7 @@ public static class ExposureMeasurementProducts
     private static bool IsSha256(string? value) => value is { Length: 64 } && value.All(Uri.IsHexDigit);
     private static InvalidDataException Invalid(string field) => new($"Invalid exposure measurement {field}.");
 
-    private static void ValidateResults(ExposureMeasurementV1 value, bool bayerCoreTrail)
+    private static void ValidateResults(ExposureMeasurementV1 value, ExposureFocusSamplingPolicy policy)
     {
         var sources = value.Sources;
         var hfd = value.Hfd;
@@ -388,11 +423,11 @@ public static class ExposureMeasurementProducts
                 !StellarExclusionReasons.All.Contains(item.ReasonCode) || item.SampleCount <= 0))
             throw Invalid("exclusion");
 
-        ValidateFocus(sources, hfd, measuredLayout, bayerCoreTrail);
+        ValidateFocus(sources, hfd, measuredLayout, policy);
     }
 
     private static void ValidateFocus(ExposureSourcesV1 sources, ExposureHfdV1 hfd, FrameLayoutDescriptor? layout,
-        bool bayerCoreTrail)
+        ExposureFocusSamplingPolicy policy)
     {
         if (ExposureMeasurementRecipe.FocusUnavailableReason(sources, layout) is { } unavailable)
         {
@@ -409,14 +444,27 @@ public static class ExposureMeasurementProducts
             (sampleCount == 0 ? hfd.SettingsSha256 is not null : !IsSha256(hfd.SettingsSha256)))
             throw Invalid("HFD accounting");
 
+        var eligibleFirst = policy == ExposureFocusSamplingPolicy.EligibleFirst;
+        var bayerCoreTrail = policy != ExposureFocusSamplingPolicy.Brightest && layout?.PixelFormat == CameraPixelFormat.BayerRggb16;
         var valid = new List<double>(sampleCount);
+        var lastIndex = -1;
+        var lastRejectedIndex = -1;
         for (var index = 0; index < sampleCount; index++)
         {
             var sample = hfd.Samples[index];
-            var rejection = ExposureMeasurementRecipe.FocusDetectionRejection(sources.Detections[index].Conditions);
-            if (sample is null || sample.DetectionIndex != index || string.IsNullOrWhiteSpace(sample.Reason) ||
+            if (sample is null || sample.DetectionIndex <= lastIndex || sample.DetectionIndex >= sources.Detections.Count ||
+                !eligibleFirst && sample.DetectionIndex != index || string.IsNullOrWhiteSpace(sample.Reason) ||
                 (sample.DiameterPixels is not null) != (sample.Reason == FocusStarReasonCodes.Valid))
                 throw Invalid("HFD sample");
+            lastIndex = sample.DetectionIndex;
+            var detection = sources.Detections[lastIndex];
+            var rejection = ExposureMeasurementRecipe.FocusDetectionRejection(detection.Conditions);
+            if (eligibleFirst && ExposureMeasurementRecipe.FocusEligibility(detection, layout!, bayerCoreTrail).Rejection is { } fixedRejection)
+            {
+                if (sample.Reason != fixedRejection)
+                    throw Invalid("HFD sample");
+                lastRejectedIndex = lastIndex;
+            }
             if (sample.BayerCoreTrailUpperPixels is { } upper)
             {
                 if (!bayerCoreTrail || rejection != ExposureMeasurementRecipe.TrailedSource ||
@@ -434,11 +482,32 @@ public static class ExposureMeasurementProducts
                 valid.Add(diameter);
             }
         }
+        if (eligibleFirst && omitted > 0)
+            ValidateFocusAllocation(sources.Detections, hfd.Samples, layout!, bayerCoreTrail, lastIndex, lastRejectedIndex);
         var (status, reason) = ExposureMeasurementRecipe.FocusDisposition(sources, valid.Count, omitted);
         if (hfd.Status != status || hfd.Reason != reason || hfd.ValidCount != valid.Count ||
             hfd.MeanPixels != (valid.Count == 0 ? null : valid.Average()) ||
             hfd.MedianPixels != Median(valid))
             throw Invalid("HFD summary");
+    }
+
+    private static void ValidateFocusAllocation(IReadOnlyList<StellarDetection> detections,
+        IReadOnlyList<ExposureHfdSampleV1> samples, FrameLayoutDescriptor layout, bool bayerCoreTrail,
+        int lastSelected, int lastRejected)
+    {
+        var selected = 0;
+        for (var index = 0; index < detections.Count && (index < lastSelected || lastRejected >= 0); index++)
+        {
+            if (selected < samples.Count && samples[selected].DetectionIndex == index)
+            {
+                selected++;
+                continue;
+            }
+            // An omitted source with definite eligibility outranks every fallback and any dimmer source.
+            // A Bayer trail flag needs pixel evidence, which the retained record only carries for valid samples.
+            if (index < lastRejected || ExposureMeasurementRecipe.FocusEligibility(detections[index], layout, bayerCoreTrail) is (null, false))
+                throw Invalid("HFD allocation");
+        }
     }
 
     internal static double? Median(List<double> samples)

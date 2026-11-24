@@ -10,6 +10,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture.Processing")]
 public sealed class CloudProfileAcceptanceTests
 {
     private static readonly string[] CloudInput = ["$raw"];

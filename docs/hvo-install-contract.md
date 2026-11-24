@@ -56,8 +56,8 @@ controller's verified Stop and idle-only redeploy, and CameraAgent's capture pau
 ## 3. Cutting a release
 
 1. A version-bump PR.
-2. A release PR. It renames `## [Unreleased]` in `CHANGELOG.md` (Keep a Changelog) to the version and adds a non-empty
-   `docs/upgrade-notes/X.Y.Z.md`.
+2. A release PR. Use `scripts/release:changelog` to assemble the pending fragments and any remaining Unreleased
+   entries into the version section in `CHANGELOG.md`. Add a non-empty `docs/upgrade-notes/X.Y.Z.md`.
 3. An annotated tag `vX.Y.Z` (or `vX.Y.Z-rc.<n>`) on the release branch. That is the default branch, except in
    SkyMonitor, whose default branch is the `development/v1` integration branch and whose release branch is `main`.
 
@@ -166,6 +166,14 @@ Every release carries assets with these names and kinds:
     only integration pre-releases, so this choice changes the product that has no released readers. A component's key
     also outlives a rename of its image.
   - **Today:** both products use these keys. SkyMonitor's `release.json` names `images.cameraAgent` (#1359, #1364).
+- **Upstream images** (#1966). `images.silo` names the stock Silo image a Silo-layout CameraAgent runs. HVO does not
+  build or convey it, so it differs from a component image:
+  - it has `"supplier": "upstream"`, the upstream `repository`, release `tag`, index `digest` and `reference`;
+  - `platforms[]` are objects with `platform`, `manifestDigest` and `configDigest`;
+  - it adds `revision`, `license` and `source`, and has no `offlineArchives`;
+  - the release tool writes it from the installer's own pin. A reader that does not use it ignores it, so earlier
+    installers read such a release unchanged;
+  - a Silo-layout install refuses a release that names no Silo image or another one, before changing anything.
 - **LogicHost reader-first preparation** (#1242). Schema 1 additionally supports `images.logicHost` and
   `componentMetadata.logicHost` for a local identity candidate. The bounded central declaration is repeated in the
   image's `io.hvo.skymonitor.logichost-release` label. The [candidate format](planning/logichost-offline-candidate.md)
@@ -521,13 +529,16 @@ its schema in today, and what `io.hvo.skymonitor.state-contracts` and `stateCont
 | `spaceWeather` | `raw/.space-weather/space-weather.db` | `PRAGMA user_version` | Writes 1, reads 1 to 1. Not snapshotted by a migrating upgrade (#1340): per-product Retry-After floors, backoff and provider/product halts must never be rewound |
 | `calibrationFamilies` | `raw/.calibration-families/calibration-families.db` | `PRAGMA user_version` | Writes 1, reads 1 to 1. Not snapshotted by a migrating upgrade (#1340): no earlier release opens it, and the snapshots and backups an earlier installer took must still verify (#1475) |
 
-The centered scheduling and storage stage uses minimum-compatible revision `1c76d83224bacdcc129041c6d1779eb5f95716cb` to select the paired checkpoint even when the installed image declares the same raw and environmental schema floors.
+The centered scheduling and storage stage used minimum-compatible revision
+`1c76d83224bacdcc129041c6d1779eb5f95716cb`. The registration retention and diagnostic
+reader used `19694b969ae1968254988eb641a9044fa6010bbc` (#1961). The centered-view journal
+retention reader used `ee848ab110e094ef888c1aca4225ea9c8be226f6` (#2000). Each change
+extends the schema-12 object set that earlier readers validate.
 
-The centered-view journal retention reader advances the minimum-compatible revision to
-`ee848ab110e094ef888c1aca4225ea9c8be226f6` (#2000). Its six indexes change the schema-12
-object set validated by older readers. The installer selects a paired checkpoint
-even for private schema-12 images carrying the previous minimum, with the raw
-and processing schema numbers still 17 and 12.
+The reader that combines both changes declares `ded7cadc6fe005f8bdda09387e1c3d1337f66e4e`.
+The installer selects a paired checkpoint when upgrading from either reader or
+an earlier private schema-12 image, including when the raw, processing, and
+environmental schema numbers are already 17, 12, and 5.
 
 The environmental v5 journal retains a settled held slot so reopening the same cadence does not acquire it again.
 The first released v5 reader validates the canonical shape before opening for writes. A private rehearsal v5
@@ -548,6 +559,42 @@ the verified paired v4 checkpoint before adopting the released reader.
   accepts: `io.hvo.skymonitor.catalog-contract` and `catalog-manifest-version`.
 - Every store's schema is declared from these markers (#1359, #1364). Deciding a migration by comparing the declared
   contracts is not done yet, as above.
+
+### SkyMonitor Silo layout (#1966)
+
+The CameraAgent Silo layout ([cutover contract](planning/cameraagent-silo-cutover.md)) is a clean-install layout with
+its own state contract, `cameraagent-silo-state-v1`. It is selected only by `cameraagent install --storage-layout silo`
+for a new instance and is never reached by conversion.
+
+- Its instance manifest declares component schema `cameraagent-silo-install-v1` and Compose template
+  `cameraagent-silo-compose-v1`. Every installer released before #1966 refuses that instance, and so does every operation
+  this release does not support for it: `upgrade`, `rollback`, `reinstall`, `backup`, `restore`, `reset-state` and the
+  catalog commands, before changing anything.
+- `uninstall`, `purge` and `status` admit the instance, as do the Silo commands `first-resume` and `silo-verify`.
+- The manifest records the pinned stock Silo image and the data root's filesystem and device. It also records the
+  bucket, store and binding identities, the writer key's ID and the exact versions and digests of the instance marker and
+  fence. It holds no secret.
+- The stock Silo image is pinned by release, index digest and each platform's manifest and config digests. The
+  installer and the release tool share that pin, and `release.json` names it as `images.silo` (section 4). HVO does not
+  ship the image. An offline site stages a `docker save --platform` archive of the pinned reference, which the installer
+  verifies blob for blob before loading. [The runbook](runbooks/cameraagent-silo-runtime.md) gives the licence
+  rationale, who provisions and verifies the image, and the offline route.
+- The CameraAgent image declares `io.hvo.skymonitor.first-boot-contract=cameraagent-first-boot-pause-v1`; a Silo-layout
+  install refuses an image without it.
+- The data-root filesystem must keep the larger of 10 GiB and 5 % free. `silo-verify` reports `ready`, `degraded` (only
+  the optional archive is unreachable) or `not-ready`. It exits 3 when not ready, and `first-resume` then refuses.
+- An optional archive store is verified read-only over HTTPS, chained to an operator authority for the endpoint's
+  name, with a signed versioning read. Plain HTTP is refused, and there is no lab exception. The manifest records its
+  endpoint, bucket, authority and server-certificate SHA-256 and access key ID, never the secret.
+- A re-run of a completed Silo-layout install with the same inputs verifies the instance and changes nothing. With
+  other inputs it refuses and names `silo-verify`; there is no in-place upgrade or reconfiguration in this release.
+- `silo-verify`, `first-resume` and a completed re-run verify the instance as it runs now. They correlate its records
+  before any authenticated call, require the running CameraAgent on its recorded image and this daemon's own platform
+  child of the Silo pin, and require the private network to hold only the instance's two containers. They read the
+  binding back from CameraAgent's own network namespace.
+- An interrupted Silo-layout install resumes from an owner-only, durable bootstrap intent and writer credential record.
+  It adopts only what this instance's own attempt created, and refuses any other or ambiguous state before the store
+  is touched.
 
 ### Copies of the small stores (RoofController policy; SkyMonitor legacy implementation)
 

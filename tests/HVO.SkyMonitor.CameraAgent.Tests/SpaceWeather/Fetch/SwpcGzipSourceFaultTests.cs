@@ -8,6 +8,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.SpaceWeather.Fetch;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "SpaceWeather")]
 public sealed class SwpcGzipSourceFaultTests
 {
     private static int Bound => SwpcSource.MaximumDecodedBytes(SwpcProduct.Scales) + 1;

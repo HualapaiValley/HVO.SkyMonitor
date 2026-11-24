@@ -12,6 +12,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Silo;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Silo")]
 public sealed class SiloCommitRetryTests
 {
     private static string RawKey(SiloGroupDraft draft) => SiloObjectNamespace.PayloadKey(SiloRetentionClass.Full, draft.Members[0].Sha256);

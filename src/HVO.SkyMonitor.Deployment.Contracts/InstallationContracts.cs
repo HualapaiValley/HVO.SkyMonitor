@@ -221,7 +221,51 @@ public sealed record InstanceManifest(
     LifecycleStateSnapshot? PreviousStateSnapshot = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] CatalogInstallationIdentity? DeepSkyCatalog = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] CatalogInstallationIdentity? PreviousDeepSkyCatalog = null,
-    bool HasPreviousDeepSkySelection = false);
+    bool HasPreviousDeepSkySelection = false,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] SiloInstallationIdentity? Silo = null);
+
+/// <summary>
+/// The stock Silo runtime a Silo-layout CameraAgent instance was installed with (#1966; CameraAgent Silo cutover
+/// contract sections 2, 4.2, 4.3 and 8.1). Present only on an instance whose manifest declares the Silo component
+/// schema; a filesystem-layout manifest never carries it. Holds no secret: the writer credential is named by its access
+/// key ID only, and the root credential is never recorded.
+/// </summary>
+public sealed record SiloInstallationIdentity(
+    string StateContract,
+    string ImageReference,
+    string ImageRelease,
+    string ImageIndexDigest,
+    string ImagePlatformDigest,
+    string ImageId,
+    string ImageRevision,
+    string DataRoot,
+    string DataRootFileSystem,
+    string DataRootDevice,
+    string StoreId,
+    string Bucket,
+    string StorageBindingId,
+    int WriterGeneration,
+    string WriterAccessKeyId,
+    string MarkerVersionId,
+    string MarkerSha256,
+    string FenceVersionId,
+    string FenceSha256,
+    Guid FirstBootPauseId,
+    bool DiskSyncOnWrite,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] SiloArchiveIdentity? Archive = null);
+
+/// <summary>
+/// The optional archive Silo a Silo-layout instance was configured with and verified read-only at install (#1966): its
+/// HTTPS endpoint and versioned bucket, the SHA-256 of the certificate-authority file it must chain to, the access key
+/// ID of its credential, and the server certificate seen. The credential secret is never recorded. Replication is #1969.
+/// </summary>
+public sealed record SiloArchiveIdentity(
+    string Endpoint,
+    string Bucket,
+    string AuthoritySha256,
+    string AccessKeyId,
+    string ServerCertificateSha256,
+    DateTimeOffset VerifiedUtc);
 
 public sealed record LifecycleOperationState(
     int SchemaVersion,

@@ -37,6 +37,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 /// </summary>
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "Capture")]
 [DoNotParallelize]
 public sealed class Issue1170ComposedPipelineEvidenceTests
 {

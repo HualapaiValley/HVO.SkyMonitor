@@ -19,6 +19,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture.Processing")]
 [DoNotParallelize]
 [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "Test await-using declarations have no synchronization-context dependency.")]
 public sealed class LocalReplayRunnerTests

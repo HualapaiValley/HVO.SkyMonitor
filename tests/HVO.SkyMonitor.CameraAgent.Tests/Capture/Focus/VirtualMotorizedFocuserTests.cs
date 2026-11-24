@@ -5,6 +5,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Focus;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture.Focus")]
 public sealed class VirtualMotorizedFocuserTests
 {
     private static readonly TimeSpan Interval = TimeSpan.FromMilliseconds(100);

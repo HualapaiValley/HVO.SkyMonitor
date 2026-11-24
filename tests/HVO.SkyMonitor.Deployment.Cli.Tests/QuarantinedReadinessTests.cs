@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using System.Threading.Channels;
 using HVO.SkyMonitor.Deployment;
 using HVO.SkyMonitor.Deployment.Contracts;
 
@@ -15,6 +16,11 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 public sealed partial class QuarantinedReadinessTests
 {
     private static readonly ApprovedCatalogContract Catalog = ProductionCatalog.Get(HygV42.CatalogId);
+    private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan HealthTimeout = TimeSpan.FromSeconds(3);
+
+    // Bound assertion failures if polling stops scheduling timers.
+    private static readonly TimeSpan TestWatchdog = TimeSpan.FromSeconds(10);
 
     [TestMethod]
     public void TryAccept_LaneQuarantineAndTerminalOutcome_IsReady()
@@ -58,37 +64,71 @@ public sealed partial class QuarantinedReadinessTests
     [TestMethod]
     public async Task WaitForHealth_QuarantineOnly503_SucceedsWhenAllowed()
     {
+        var clock = new HealthPollTimeProvider();
         using var handler = Script(Health(1, "terminal"));
-        var client = new OwnerBootstrapClient(new Uri("http://camera.invalid"), handler);
+        var client = CreateClient(handler, clock);
 
-        await client.WaitForHealthAsync(Catalog, CancellationToken.None, TimeSpan.FromSeconds(5), allowQuarantinedReadiness: true);
+        await client.WaitForHealthAsync(Catalog, CancellationToken.None, TimeSpan.FromSeconds(5), allowQuarantinedReadiness: true)
+            .WaitAsync(TestWatchdog);
 
         Assert.AreEqual(2, handler.RequestCount);
+
+        using var recovering = Script(Health(1, "terminal"), recoveredHealth: Health(0, null));
+        var wait = CreateClient(recovering, clock).WaitForHealthAsync(Catalog, CancellationToken.None, TimeSpan.FromSeconds(5));
+        var poll = await ExpectPollAsync(clock, recovering, requests: 2);
+        Assert.IsFalse(wait.IsCompleted);
+        clock.Advance(poll, PollInterval);
+        await wait.WaitAsync(TestWatchdog);
+        Assert.AreEqual(4, recovering.RequestCount);
     }
 
     [TestMethod]
     public async Task WaitForHealth_QuarantineOnly503_StillFailsWithoutTheFlag()
     {
+        var clock = new HealthPollTimeProvider();
         using var handler = Script(Health(1, "terminal"));
-        var client = new OwnerBootstrapClient(new Uri("http://camera.invalid"), handler);
+        var wait = CreateClient(handler, clock).WaitForHealthAsync(Catalog, CancellationToken.None, HealthTimeout);
 
-        var failure = await Assert.ThrowsExactlyAsync<InstallerException>(() =>
-            client.WaitForHealthAsync(Catalog, CancellationToken.None, TimeSpan.FromSeconds(3)));
+        var poll = await ExpectPollAsync(clock, handler, requests: 2);
+        var lastMillisecond = TimeSpan.FromMilliseconds(1);
+        clock.Advance(poll, PollInterval - lastMillisecond);
+        Assert.IsFalse(wait.IsCompleted);
+        Assert.AreEqual(2, handler.RequestCount);
+        clock.Advance(poll, lastMillisecond);
+
+        var retry = await ExpectPollAsync(clock, handler, requests: 4);
+        clock.Advance(retry, PollInterval);
+        var failure = await Assert.ThrowsExactlyAsync<InstallerException>(() => wait.WaitAsync(TestWatchdog));
 
         StringAssert.Contains(failure.Message, "did not become ready", StringComparison.Ordinal);
         Assert.IsGreaterThan(0, handler.RequestCount);
+        Assert.AreEqual(4, handler.RequestCount);
     }
 
     [TestMethod]
     public async Task WaitForHealth_AnotherUnhealthyCheck_FailsWithTheFlag()
     {
+        var clock = new HealthPollTimeProvider();
         using var handler = Script(Health(1, "terminal", "disk-pressure"));
-        var client = new OwnerBootstrapClient(new Uri("http://camera.invalid"), handler);
+        var client = CreateClient(handler, clock);
+        var wait = client.WaitForHealthAsync(Catalog, CancellationToken.None, HealthTimeout, allowQuarantinedReadiness: true);
 
-        var failure = await Assert.ThrowsExactlyAsync<InstallerException>(() =>
-            client.WaitForHealthAsync(Catalog, CancellationToken.None, TimeSpan.FromSeconds(3), allowQuarantinedReadiness: true));
+        var poll = await ExpectPollAsync(clock, handler, requests: 2);
+        clock.Advance(poll, HealthTimeout);
+        var failure = await Assert.ThrowsExactlyAsync<InstallerException>(() => wait.WaitAsync(TestWatchdog));
 
         StringAssert.Contains(failure.Message, "disk-pressure", StringComparison.Ordinal);
+        Assert.AreEqual(2, handler.RequestCount);
+
+        using var cancellation = new CancellationTokenSource();
+        var canceledWait = client.WaitForHealthAsync(Catalog, cancellation.Token, HealthTimeout, allowQuarantinedReadiness: true);
+        var pending = await ExpectPollAsync(clock, handler, requests: 4);
+        await cancellation.CancelAsync();
+
+        var canceled = await Assert.ThrowsAsync<OperationCanceledException>(() => canceledWait.WaitAsync(TestWatchdog));
+        Assert.AreEqual(cancellation.Token, canceled.CancellationToken);
+        clock.Advance(pending, PollInterval);
+        Assert.AreEqual(4, handler.RequestCount);
     }
 
     [TestMethod]
@@ -122,15 +162,83 @@ public sealed partial class QuarantinedReadinessTests
         StringAssert.Contains(unknown.Message, "'--allow-quarantined-readiness'", StringComparison.Ordinal);
     }
 
-    private static ScriptedHandler Script(string health)
-        => new((_, count, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+    private static OwnerBootstrapClient CreateClient(ScriptedHandler handler, TimeProvider clock)
+        => new(new Uri("http://camera.invalid"), handler, protectedReadTimeout: null, timeProvider: clock);
+
+    private static async Task<HealthPollTimeProvider.PollTimer> ExpectPollAsync(
+        HealthPollTimeProvider clock, ScriptedHandler handler, int requests)
+    {
+        var poll = await clock.NextPollAsync();
+        Assert.AreEqual(requests, handler.RequestCount);
+        Assert.AreEqual(PollInterval, poll.Due - clock.GetUtcNow());
+        return poll;
+    }
+
+    private static ScriptedHandler Script(string unavailableHealth, string? recoveredHealth = null)
+        => new((request, count, _) =>
         {
-            Content = new StringContent(
-                count % 2 == 1 ? """{"status":"Healthy"}""" : health,
-                Encoding.UTF8,
-                "application/json"),
-            StatusCode = count % 2 == 1 ? HttpStatusCode.OK : HttpStatusCode.ServiceUnavailable
-        }));
+            var isAlive = count % 2 == 1;
+            Assert.AreEqual(isAlive ? "/alive" : "/health", request.RequestUri!.AbsolutePath);
+            var recovered = count > 2 ? recoveredHealth : null;
+            var status = isAlive || recovered is not null ? HttpStatusCode.OK : HttpStatusCode.ServiceUnavailable;
+            var body = isAlive ? """{"status":"Healthy"}""" : recovered ?? unavailableHealth;
+            return Task.FromResult(new HttpResponseMessage(status)
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json")
+            });
+        });
+
+    private sealed class HealthPollTimeProvider : TimeProvider
+    {
+        private readonly Channel<PollTimer> _polls = Channel.CreateUnbounded<PollTimer>();
+        private long _elapsedTicks;
+
+        public override DateTimeOffset GetUtcNow() => DateTimeOffset.UnixEpoch.AddTicks(Interlocked.Read(ref _elapsedTicks));
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            Assert.AreEqual(Timeout.InfiniteTimeSpan, period);
+            var timer = new PollTimer(GetUtcNow() + dueTime, callback, state);
+            _polls.Writer.TryWrite(timer);
+            return timer;
+        }
+
+        public Task<PollTimer> NextPollAsync() => _polls.Reader.ReadAsync().AsTask().WaitAsync(TestWatchdog);
+
+        public void Advance(PollTimer timer, TimeSpan elapsed)
+        {
+            var now = DateTimeOffset.UnixEpoch.AddTicks(Interlocked.Add(ref _elapsedTicks, elapsed.Ticks));
+            if (now >= timer.Due)
+            {
+                timer.Fire();
+            }
+        }
+
+        public sealed class PollTimer(DateTimeOffset due, TimerCallback callback, object? state) : ITimer
+        {
+            private int _finished;
+
+            public DateTimeOffset Due { get; } = due;
+
+            public void Fire()
+            {
+                if (Interlocked.Exchange(ref _finished, 1) == 0)
+                {
+                    callback(state);
+                }
+            }
+
+            public bool Change(TimeSpan dueTime, TimeSpan period) => throw new NotSupportedException();
+
+            public void Dispose() => Interlocked.Exchange(ref _finished, 1);
+
+            public ValueTask DisposeAsync()
+            {
+                Dispose();
+                return ValueTask.CompletedTask;
+            }
+        }
+    }
 
     private static string Health(int laneQuarantine, string? processing, string? other = null)
     {

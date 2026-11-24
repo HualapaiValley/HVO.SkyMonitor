@@ -26,6 +26,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Environmental;
 
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "Environmental")]
 [DoNotParallelize]
 [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities",
     Justification = "The evidence harness executes only fixed SQL and fixed query-plan statements defined in this file.")]

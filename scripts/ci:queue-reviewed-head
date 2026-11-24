@@ -1,122 +1,454 @@
-#!/usr/bin/env bash
-# Merge-queue half of hvo/reviewed-head, for the live development/v1 merge queue.
-#
-# Run this script from a fresh trusted development/v1 checkout, never from the
-# queued tree. BASE_SHA is that checkout's HEAD. Walk the merge-commit first-parent
-# chain to the refreshed branch tip and require each second parent to be an open PR's exact current head
-# with newest hvo/reviewed-head=success from an allowed account. Fork PR heads are
-# valid; the base repository and branch must still match. Only merge commits are
-# supported, with at most 100 entries. Unknown topology/API responses fail closed.
-#
-# Trust boundary: the workflow itself still comes from the queued commit. Trusted
-# script checkout and local workflow contracts mitigate self-approval but cannot
-# stop a PR changing that workflow or adding a spoof producer. The durable fix is
-# an external GitHub App producer with a required pinned integration id; that is
-# a separate owner decision, not implemented here. Never run this job on PRs.
-#
-# The queue ruleset requires ALLGREEN and MERGE (every grouped PR must pass
-# required checks; merge-commit method). A success is a point-in-time read:
-# revoking review after it passes requires dequeueing the PR, not just a status
-# update. Re-entry must produce a new group and fresh checks.
-#
-# Inputs: REPOSITORY, HEAD_REF, GROUP_SHA, BASE_REF, BASE_SHA (trusted checkout),
-# ALLOWED_SETTERS (space-separated exact logins). Uses gh api with GH_TOKEN and jq.
-set -euo pipefail
+#!/usr/bin/env python3
+"""Verify development/v1 merge groups, or publish a reviewed diff as Kepler."""
+import argparse
+import base64
+import functools
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+from dataclasses import dataclass
 
-fail() { printf 'hvo/reviewed-head (merge queue): %s\n' "$*" >&2; exit 1; }
+CONTEXT = "hvo/reviewed-head"
+BASE_BRANCH = "development/v1"
+BASE_REF = "refs/heads/" + BASE_BRANCH
+REPOSITORY = "HualapaiValley/HVO.SkyMonitor"
+TRUSTED_SETTERS = {"RoySalisbury": 12501943}
+OID = r"[0-9a-f]{40}"
+VERSION = "hvo-diff-v1"
+STAMP = re.compile(rf"{VERSION}:({OID}):({OID}):([A-Za-z0-9_-]{{43}})")
 
-: "${REPOSITORY:?REPOSITORY is required}"
-: "${HEAD_REF:?HEAD_REF is required}"
-: "${GROUP_SHA:?GROUP_SHA is required}"
-: "${BASE_REF:?BASE_REF is required}"
-: "${BASE_SHA:?BASE_SHA is required}"
-: "${ALLOWED_SETTERS:?ALLOWED_SETTERS is required}"
-context="hvo/reviewed-head"
 
-[[ "$GROUP_SHA" =~ ^[0-9a-f]{40}$ ]] || fail "merge group SHA is not a full commit SHA: $GROUP_SHA"
-[[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || fail "trusted base SHA is not a full commit SHA: $BASE_SHA"
-[[ "$BASE_REF" == refs/heads/development/v1 ]] || fail "unexpected base ref: $BASE_REF"
-base_branch="${BASE_REF#refs/heads/}"
-queue_prefix="refs/heads/gh-readonly-queue/${base_branch}/pr-"
-[[ "$HEAD_REF" == "$queue_prefix"* ]] || fail "unexpected merge group ref: $HEAD_REF"
-suffix="${HEAD_REF#"$queue_prefix"}"
-[[ "$suffix" =~ ^([0-9]+)-[0-9a-f]{40}$ ]] || fail "cannot read the pull request number from $HEAD_REF"
-pr="${BASH_REMATCH[1]}"
-current="$GROUP_SHA"
-count=0
-declare -A seen=()
-refresh_base() {
-  BASE_SHA="$(gh api "repos/${REPOSITORY}/git/ref/heads/${base_branch}" --jq '.object.sha')" \
-    || fail "cannot refresh trusted base"
-  [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || fail "malformed refreshed base SHA"
-}
-while true; do
-  refresh_base
-  [[ "$current" != "$BASE_SHA" ]] || break
-  ((count < 100)) || fail "merge group exceeds 100 entries or does not reach the trusted base"
-  [[ -z "${seen[$current]+x}" ]] || fail "cycle in merge group chain"
-  seen[$current]=1
-  parents="$(gh api "repos/${REPOSITORY}/git/commits/${current}" --jq '.parents | map(.sha) | join(" ")')" \
-    || fail "cannot read merge group commit $current"
-  read -r -a parent_list <<< "$parents"
-  ((${#parent_list[@]} == 2)) || fail "merge group commit $current has ${#parent_list[@]} parents; only the merge-commit method is supported"
-  for parent in "${parent_list[@]}"; do
-    [[ "$parent" =~ ^[0-9a-f]{40}$ ]] || fail "malformed parent SHA on $current"
-  done
-  queued_head="${parent_list[1]}"
+class VerificationError(Exception):
+    pass
 
-  if ((count > 0)); then
-    # Earlier entries are absent from head_ref. Resolve by exact head, not commit
-    # membership: a commit can be associated with several unrelated or closed PRs.
-    matches="$(gh api --paginate "repos/${REPOSITORY}/commits/${queued_head}/pulls?per_page=100" \
-      --jq ".[] | select(.state == \"open\" and .base.ref == \"${base_branch}\" and .base.repo.full_name == \"${REPOSITORY}\" and .head.sha == \"${queued_head}\") | .number")" \
-      || fail "cannot resolve queued head $queued_head"
-    if [[ -z "$matches" ]]; then
-      # An earlier entry may have merged since the last branch-tip read.
-      refresh_base
-      [[ "$current" != "$BASE_SHA" ]] || break
-      fail "queued head $queued_head has no matching open PR"
-    fi
-    while IFS= read -r match; do
-      [[ "$match" =~ ^[1-9][0-9]*$ ]] || fail "malformed matching PR number"
-    done <<< "$matches"
-    # Fork PRs can share the same exact head and destination. Any match suffices;
-    # the status authority is the commit, and the selected PR is re-read below.
-    pr="${matches%%$'\n'*}"
-  fi
-  pull="$(gh api "repos/${REPOSITORY}/pulls/${pr}" --jq '[.state, .base.ref, .base.repo.full_name, .head.sha] | @tsv')" \
-    || fail "cannot read pull request #$pr"
-  IFS=$'\t' read -r pr_state pr_base pr_repo pr_head <<< "$pull"
-  if [[ "$pr_state" != "open" ]] && ((count > 0)); then
-    refresh_base
-    [[ "$current" != "$BASE_SHA" ]] || break
-  fi
-  [[ "$pr_state" == "open" ]] || fail "pull request #$pr is $pr_state"
-  [[ "$pr_base" == "$base_branch" && "$pr_repo" == "$REPOSITORY" ]] || fail "pull request #$pr targets $pr_repo/$pr_base, not $REPOSITORY/$base_branch"
-  [[ "$pr_head" == "$queued_head" ]] || fail "pull request #$pr head $pr_head is not the queued head $queued_head"
 
-  # Consume all pages before choosing the numeric newest id. sed consumes the
-  # whole sorted stream (head could SIGPIPE on a long history under pipefail).
-  latest="$(gh api --paginate "repos/${REPOSITORY}/commits/${pr_head}/statuses?per_page=100" \
-    --jq "if type != \"array\" then error(\"expected status array\") else . end |
-      if all(.[]; (.id | type == \"number\") and (.id > 0) and (.id == (.id | floor)) and
-        (.context | type == \"string\") and (.state | type == \"string\"))
-      then .[] | select(.context == \"${context}\") | [.id, .state, .creator.login] | @tsv
-      else error(\"malformed status\") end" \
-    | sort -t $'\t' -k1,1nr | sed -n '1p')" || fail "cannot read commit statuses on $pr_head"
-  [[ -n "$latest" ]] || fail "pull request #$pr head $pr_head has no $context status"
-  IFS=$'\t' read -r _ state creator <<< "$latest"
-  [[ "$state" == "success" ]] || fail "newest $context on $pr_head is $state"
-  allowed="false"
-  for login in $ALLOWED_SETTERS; do
-    [[ "$creator" == "$login" ]] && allowed="true"
-  done
-  [[ "$allowed" == "true" ]] || fail "newest $context on $pr_head was published by $creator, who is not allowed"
+def require(condition, message):
+    if not condition:
+        raise VerificationError(message)
 
-  printf 'hvo/reviewed-head (merge queue): #%s head %s carries %s=success from %s\n' \
-    "$pr" "$pr_head" "$context" "$creator"
-  count=$((count + 1))
-  current="${parent_list[0]}"
-done
-((count > 0)) || fail "merge group contains no queued PRs"
-printf 'hvo/reviewed-head (merge queue): verified %s entries to trusted base %s for group %s\n' "$count" "$BASE_SHA" "$GROUP_SHA"
+
+def oid(value, label):
+    require(isinstance(value, str) and re.fullmatch(OID, value), f"invalid {label}")
+    return value
+
+
+def pr_number(value):
+    require(type(value) is int and value > 0, "invalid pull request number")
+    return value
+
+
+def command(args, *, env=None, data=None, discard=False):
+    return subprocess.run(
+        args, input=data, env=env, check=True,
+        stdout=subprocess.DEVNULL if discard else subprocess.PIPE,
+    ).stdout
+
+
+class Git:
+    def __init__(self):
+        self.env = dict(
+            os.environ, GIT_NO_REPLACE_OBJECTS="1", GIT_GRAFT_FILE="",
+            GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_ATTR_NOSYSTEM="1",
+            GIT_NO_LAZY_FETCH="1", GIT_TERMINAL_PROMPT="0",
+        )
+        version = self.read("--version")
+        match = re.match(r"git version (\d+)\.(\d+)", version)
+        require(match and tuple(map(int, match.groups())) >= (2, 43),
+                f"Git 2.43 or newer is required for clean-merge verification, found {version}")
+        print(version, flush=True)
+
+    def run(self, *args, data=None, discard=False):
+        return command(
+            ["git", "-c", "core.commitGraph=false", *args],
+            env=self.env, data=data, discard=discard,
+        )
+
+    def read(self, *args):
+        return self.run(*args).decode("ascii").strip()
+
+    def fetch(self, ref, expected, *, unshallow=False):
+        flags = ["--unshallow"] if unshallow else []
+        self.run(
+            "-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential",
+            "fetch", "--no-tags", "--no-recurse-submodules", "--no-auto-gc", "--refmap=",
+            *flags, "origin", ref,
+        )
+        require(self.commit("FETCH_HEAD") == expected, f"{ref} moved during the fetch")
+
+    def shallow(self):
+        return self.read("rev-parse", "--is-shallow-repository") != "false"
+
+    def require_full_history(self):
+        require(not self.shallow(), "shallow Git history")
+        # A normal fetch supplies the objects needed for offline tree verification.
+        result = subprocess.run(
+            ["git", "config", "--get-regexp", r"^(extensions\.partialclone|remote\..*\.promisor)$"],
+            env=self.env, stdout=subprocess.DEVNULL,
+        )
+        require(result.returncode == 1, "partial Git history or unreadable repository config")
+
+    def commit(self, name):
+        return oid(self.read("rev-parse", "--verify", f"{name}^{{commit}}"), f"commit {name}")
+
+    @functools.cache
+    def parents(self, commit):
+        return self.read("rev-list", "--max-count=1", "--parents", commit).split()[1:]
+
+    @functools.cache
+    def merge_base(self, left, right):
+        bases = self.read("merge-base", "--all", left, right).split()
+        require(len(bases) == 1, f"ambiguous merge base for {left} and {right}")
+        return oid(bases[0], "merge base")
+
+    @functools.cache
+    def mainline(self, tip):
+        return set(self.read("rev-list", "--first-parent", tip).splitlines())
+
+    @functools.cache
+    def tree(self, commit):
+        tree = oid(self.read("rev-parse", "--verify", f"{commit}^{{tree}}"), f"tree for {commit}")
+        self.run("rev-list", "--objects", "--no-object-names", "--missing=error", tree, discard=True)
+        return tree
+
+    @functools.cached_property
+    def empty_attributes(self):
+        # The trusted checkout owns .git/info/attributes. Even local overrides
+        # there would outrank the empty tree used to suppress merge drivers.
+        attributes = os.fsdecode(self.run("rev-parse", "--git-path", "info/attributes").rstrip(b"\n"))
+        require(not os.path.lexists(attributes), "local Git attribute overrides are present")
+        return oid(self.run("hash-object", "-w", "-t", "tree", "--stdin", data=b"").decode().strip(),
+                   "empty attribute tree")
+
+    def clean_merge(self, left, right):
+        base = self.merge_base(left, right)
+        for commit in (base, left, right):
+            self.tree(commit)
+        try:
+            tree = self.read(
+                f"--attr-source={self.empty_attributes}",
+                "-c", "core.attributesFile=/dev/null", "-c", "merge.default=text",
+                "-c", "merge.renormalize=false", "-c", "merge.renames=true",
+                "merge-tree", "--write-tree", "--no-messages", left, right,
+            )
+        except subprocess.CalledProcessError as error:
+            raise VerificationError(f"cannot reproduce a clean merge of {left} and {right}") from error
+        return oid(tree, "clean merge tree")
+
+    def require_merge_tree(self, commit, left, right):
+        require(self.tree(commit) == self.clean_merge(left, right),
+                f"{commit} differs from the clean merge of {left} and {right}")
+
+    def sync_parent(self, head, tip):
+        parents = self.parents(head)
+        require(len(parents) == 2, f"{head} is not a merge-only base sync")
+        previous, upstream = parents
+        require(upstream in self.mainline(tip) and self.merge_base(previous, upstream) != upstream,
+                f"second parent of {head} does not advance the protected base")
+        self.require_merge_tree(head, previous, upstream)
+        return previous
+
+
+class GitHub:
+    def __init__(self, repo, setters):
+        require(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo), "invalid GitHub repository")
+        require(setters and setters <= TRUSTED_SETTERS.keys(), "invalid authorized status publishers")
+        self.repo = repo
+        self.setters = setters
+
+    def api(self, path, *flags):
+        try:
+            return json.loads(command(["gh", "api", "--hostname", "github.com", path, *flags]))
+        except (subprocess.CalledProcessError, ValueError) as error:
+            raise VerificationError(f"cannot read GitHub API response for {path}") from error
+
+    def records(self, path, *, paginated=False):
+        path = f"repos/{self.repo}/{path}"
+        if not paginated:
+            return self.api(path)
+        pages = self.api(path + "?per_page=100", "--paginate", "--slurp")
+        require(isinstance(pages, list) and pages and all(isinstance(page, list) for page in pages),
+                f"malformed paginated GitHub response for {path}")
+        for page in pages:
+            for record in page:
+                require(isinstance(record, dict), f"malformed record for {path}")
+        return [record for page in pages for record in page]
+
+    def base_tip(self):
+        target = self.records(f"git/ref/heads/{BASE_BRANCH}")["object"]
+        require(target["type"] == "commit", "protected base ref is not a commit")
+        return oid(target["sha"], "refreshed base SHA")
+
+    def targets_base(self, pull):
+        return pull["base"]["ref"] == BASE_BRANCH and pull["base"]["repo"]["full_name"] == self.repo
+
+    def pull(self, pr):
+        pull = self.records(f"pulls/{pr}")
+        require(pr_number(pull["number"]) == pr, f"mismatched pull request number for #{pr}")
+        require(self.targets_base(pull), f"pull request #{pr} targets a different repository or branch")
+        oid(pull["head"]["sha"], f"pull request #{pr} head")
+        require(pull["state"] in ("open", "closed"), f"invalid state for pull request #{pr}")
+        return pull
+
+    def matches(self, head):
+        records = self.records(f"commits/{head}/pulls", paginated=True)
+        return {pr_number(pull["number"]) for pull in records
+                if pull["state"] == "open" and self.targets_base(pull) and pull["head"]["sha"] == head}
+
+    def is_authorized(self, actor):
+        return (isinstance(actor, dict) and isinstance(actor.get("login"), str)
+                and actor["login"] in self.setters and type(actor.get("id")) is int
+                and actor["id"] == TRUSTED_SETTERS[actor["login"]])
+
+    def latest_status(self, head, *, require_success=True):
+        statuses = self.records(f"commits/{head}/statuses", paginated=True)
+        seen = set()
+        matching = []
+        for status in statuses:
+            id_ = status["id"]
+            require(type(id_) is int and id_ > 0 and isinstance(status["context"], str)
+                    and status["state"] in ("success", "failure", "pending", "error"),
+                    f"malformed commit status on {head}")
+            require(id_ not in seen, f"duplicate commit status ID {id_} on {head}")
+            seen.add(id_)
+            if status["context"].casefold() == CONTEXT:
+                matching.append(status)
+        if not matching:
+            return None
+        latest = max(matching, key=lambda status: status["id"])
+        require(latest["context"] == CONTEXT, f"newest status on {head} has a noncanonical {CONTEXT} context")
+        if require_success:
+            require(latest["state"] == "success", f"newest {CONTEXT} on {head} is {latest['state']}")
+        require(self.is_authorized(latest["creator"]),
+                f"newest {CONTEXT} on {head} has an unauthorized publisher")
+        return latest
+
+    def publish(self, head, description, *, state="success"):
+        command(["gh", "api", "--hostname", "github.com", "--method", "POST",
+                 f"repos/{self.repo}/statuses/{head}", "-f", f"state={state}",
+                 "-f", f"context={CONTEXT}", "-f", f"description={description}"], discard=True)
+
+
+@dataclass(frozen=True)
+class Approval:
+    reviewed: str
+    base: str
+    digest: str
+
+    @property
+    def description(self):
+        return f"{VERSION}:{self.reviewed}:{self.base}:{self.digest}"
+
+    @classmethod
+    def parse(cls, status):
+        description = status["description"]
+        require(description is None or (
+            isinstance(description, str) and len(description) <= 140
+            and (not description or description.isprintable())
+        ), "malformed reviewed-head description")
+        # Extra text around a versioned stamp must never turn it into a legacy approval.
+        if not description or "hvo-diff" not in description.casefold():
+            return None
+        match = STAMP.fullmatch(description)
+        require(match, "unknown or malformed reviewed diff fingerprint")
+        return cls(*match.groups())
+
+    @classmethod
+    def calculate(cls, git, repo, pr, reviewed, base):
+        diff = git.run(
+            "diff-tree", "--no-commit-id", "-r", "--raw", "-z", "--no-renames", "--no-abbrev",
+            "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", "-O/dev/null",
+            git.tree(base), git.tree(reviewed), "--",
+        )
+        scope = f"{VERSION}\0{repo.lower()}\0{BASE_REF}\0{pr}\0".encode("ascii")
+        digest = base64.urlsafe_b64encode(hashlib.sha256(scope + diff).digest()).decode().rstrip("=")
+        return cls(reviewed, base, digest)
+
+
+def verify_approval(git, api, pr, head, tip, *, reviewed=None):
+    current = head
+    approval = None
+    while True:
+        status = api.latest_status(current)
+        if status is None:
+            # Only stamp --carry has an explicit reviewed SHA before reading the head.
+            require(reviewed is not None, f"queued PR head {head} has no authorized {CONTEXT} status")
+            require(current != reviewed, f"reviewed ancestor {current} has no {CONTEXT} status")
+        else:
+            candidate = Approval.parse(status)
+            if candidate is None:
+                require(reviewed is None,
+                        "legacy approval is valid only on the exact PR head")
+                return head, None
+            require(reviewed is None or reviewed == candidate.reviewed, "approval names a different reviewed head")
+            require(approval is None or approval == candidate, f"reviewed diff approval changed at {current}")
+            reviewed, approval = candidate.reviewed, candidate
+            if current == reviewed:
+                break
+        current = git.sync_parent(current, tip)
+
+    # The origin must still carry the latest success with its own versioned
+    # record. A copied status is only a pointer, including on intermediate syncs.
+    origin = candidate
+    common = git.merge_base(tip, origin.reviewed)
+    require(git.merge_base(common, origin.base) == origin.base,
+            "stamped merge base is outside the protected and reviewed history")
+    require(origin == Approval.calculate(git, api.repo, pr, origin.reviewed, origin.base),
+            f"reviewed diff fingerprint does not match pull request #{pr}")
+    return current, origin
+
+
+def plan_supersessions(git, api, pr, head, previous_heads):
+    heads = {oid(value, "superseded head SHA") for value in previous_heads}
+    require(head not in heads, "cannot supersede the head being stamped")
+    pending = []
+    checked = set()
+    for previous in sorted(heads):
+        status = api.latest_status(previous, require_success=False)
+        require(status is not None, f"prior head {previous} has no {CONTEXT} status")
+        if status["state"] in ("failure", "error"):
+            continue  # An interrupted publication can resume after a completed revocation.
+        require(status["state"] == "success", f"prior {CONTEXT} on {previous} is {status['state']}")
+        approval = Approval.parse(status)
+        if approval is not None:
+            require(approval.reviewed in heads, f"include reviewed head {approval.reviewed} in --supersede")
+            if approval not in checked:
+                try:
+                    git.commit(approval.reviewed)
+                except subprocess.CalledProcessError:
+                    git.fetch(approval.reviewed, approval.reviewed)
+                require(approval == Approval.calculate(git, api.repo, pr, approval.reviewed, approval.base),
+                        f"prior approval on {previous} does not match pull request #{pr}")
+                checked.add(approval)
+        pending.append(previous)
+    return pending
+
+
+def prepare_checkout(git, api):
+    # Old queue callers checked out depth one. Fetch the trusted history
+    # explicitly so in-flight workflows can also run the new verifier.
+    if git.shallow():
+        git.fetch(BASE_REF, api.base_tip(), unshallow=True)
+    git.require_full_history()
+
+
+def verify_queue():
+    def setting(name):
+        value = os.environ.get(name)
+        require(value, f"{name} is required")
+        return value
+
+    api = GitHub(setting("REPOSITORY"), set(setting("ALLOWED_SETTERS").split()))
+    group = oid(setting("GROUP_SHA"), "merge group SHA")
+    checkout = oid(setting("BASE_SHA"), "trusted checkout SHA")
+    require(setting("BASE_REF") == BASE_REF, "unexpected merge group base ref")
+    queue_ref = setting("HEAD_REF")
+    match = re.fullmatch(rf"refs/heads/gh-readonly-queue/{BASE_BRANCH}/pr-([1-9][0-9]*)-{OID}", queue_ref)
+    require(match, "unexpected merge group head ref")
+    pr = int(match[1])
+    git = Git()
+    require(git.commit("HEAD") == checkout, "trusted checkout SHA does not match HEAD")
+    prepare_checkout(git, api)
+    git.fetch(queue_ref, group)
+
+    def trusted_tip():
+        tip = api.base_tip()
+        require(git.merge_base(checkout, tip) == checkout, "protected base moved off trusted history")
+        return tip
+
+    current, count = group, 0
+    while current != (tip := trusted_tip()):
+        require(count < 100, "merge group exceeds 100 entries or does not reach the protected base")
+        parents = git.parents(current)
+        require(len(parents) == 2 and parents[0] != parents[1],
+                f"unsupported queue topology at {current}; only the merge-commit method is supported")
+        parent, head = parents
+        if count:
+            matches = api.matches(head)
+            if not matches and current == trusted_tip():
+                break  # An earlier entry merged while its PR was being resolved.
+            require(len(matches) == 1, f"expected one open PR for queued head {head}, found {len(matches)}")
+            pr = matches.pop()
+        pull = api.pull(pr)
+        if count and pull["state"] == "closed" and current == trusted_tip():
+            break
+        require(pull["state"] == "open", f"pull request #{pr} is closed")
+        require(pull["head"]["sha"] == head, f"pull request #{pr} head is not its queued second parent")
+        git.require_merge_tree(current, parent, head)
+        reviewed, _ = verify_approval(git, api, pr, head, tip)
+        print(f"#{pr} queued head {head} verified against approval on {reviewed}")
+        current, count = parent, count + 1
+
+    require(count > 0, "merge group contains no queued PRs")
+    print(f"Verified {count} entries to protected base {current} for merge group {group}")
+
+
+def publish_approval(args):
+    api = GitHub(args.repo, set(TRUSTED_SETTERS))
+    pr = pr_number(args.pr)
+    reviewed = oid(args.reviewed, "reviewed head SHA")
+    require(not (args.carry and args.supersede), "--supersede requires --reviewed-base")
+    require(api.is_authorized(api.api("user")),
+            "gh is authenticated as an unauthorized status publisher")
+    pull = api.pull(pr)
+    require(pull["state"] == "open", f"pull request #{pr} is closed")
+    head = pull["head"]["sha"]
+    git = Git()
+    prepare_checkout(git, api)
+    tip = api.base_tip()
+    git.fetch(BASE_REF, tip)
+    git.fetch(f"refs/pull/{pr}/head", head)
+    git.clean_merge(tip, head)
+    if args.carry:
+        require(head != reviewed, "carry requires a changed PR head")
+        _, approval = verify_approval(git, api, pr, head, tip, reviewed=reviewed)
+    else:
+        base = oid(args.reviewed_base, "reviewed merge base SHA")
+        require(head == reviewed, "the PR head has changed since review")
+        require(base == git.merge_base(tip, head), "the reviewed merge base does not match the PR")
+        approval = Approval.calculate(git, api.repo, pr, reviewed, base)
+
+    def require_current_head():
+        current = api.pull(pr)
+        require(current["state"] == "open" and current["head"]["sha"] == head,
+                "the PR moved during approval verification")
+
+    previous_heads = plan_supersessions(git, api, pr, head, args.supersede)
+    require_current_head()
+    for previous in previous_heads:
+        api.publish(previous, f"Superseded by {head}", state="failure")
+        print(f"Superseded {CONTEXT} on #{pr} head {previous}")
+    if previous_heads:
+        require_current_head()
+    api.publish(head, approval.description)
+    print(f"Published {CONTEXT}=success on #{pr} head {head} for reviewed diff {approval.digest}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    stamp = parser.add_subparsers(dest="mode").add_parser("stamp", help="publish a verified status as Kepler")
+    stamp.add_argument("pr", type=int)
+    stamp.add_argument("reviewed", metavar="REVIEWED_HEAD")
+    stamp.add_argument("--repo", default=REPOSITORY)
+    stamp.add_argument("--supersede", metavar="PRIOR_SHA", action="append", default=[],
+                       help="revoke a previous stamp from this PR's ledger before a fresh stamp; repeat for each SHA")
+    mode = stamp.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--reviewed-base", metavar="REVIEWED_MERGE_BASE")
+    mode.add_argument("--carry", action="store_true")
+    args = parser.parse_args()
+    try:
+        if args.mode == "stamp":
+            publish_approval(args)
+        else:
+            verify_queue()
+    except (VerificationError, subprocess.CalledProcessError, OSError, TypeError,
+            ValueError, AttributeError, KeyError) as error:
+        print(f"{CONTEXT}: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

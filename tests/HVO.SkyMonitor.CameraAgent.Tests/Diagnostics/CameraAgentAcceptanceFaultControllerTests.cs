@@ -7,6 +7,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Diagnostics;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Diagnostics")]
 public sealed class CameraAgentAcceptanceFaultControllerTests
 {
     [TestMethod]

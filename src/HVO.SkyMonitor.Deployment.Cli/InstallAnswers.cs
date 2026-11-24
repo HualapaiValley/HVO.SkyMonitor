@@ -42,6 +42,12 @@ internal sealed record InstallAnswers
     public bool? GeneratePassword { get; init; }
     public bool? NoDownload { get; init; }
     public CameraAgentReplayProfile? ReplayProfile { get; init; }
+    public CameraAgentStorageLayout? StorageLayout { get; init; }
+    public string? SiloImageArchive { get; init; }
+    public string? SiloArchiveEndpoint { get; init; }
+    public string? SiloArchiveBucket { get; init; }
+    public string? SiloArchiveCaFile { get; init; }
+    public string? SiloArchiveCredentialFile { get; init; }
     public string? IlluminationMode { get; init; }
     public decimal? Cpus { get; init; }
     public string? Memory { get; init; }
@@ -136,6 +142,12 @@ internal sealed record InstallAnswers
         GeneratePassword = GeneratePassword ?? false,
         NoDownload = NoDownload ?? false,
         ReplayProfile = ReplayProfile ?? CameraAgentReplayProfile.InProcess,
+        StorageLayout = StorageLayout ?? CameraAgentStorageLayout.Filesystem,
+        SiloImageArchive = SiloImageArchive,
+        SiloArchiveEndpoint = SiloArchiveEndpoint,
+        SiloArchiveBucket = SiloArchiveBucket,
+        SiloArchiveCaFile = SiloArchiveCaFile,
+        SiloArchiveCredentialFile = SiloArchiveCredentialFile,
         IlluminationMode = IlluminationMode,
         Cpus = Cpus,
         Memory = Memory

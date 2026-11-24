@@ -17,6 +17,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Ui")]
 public sealed class ObservatoryLocationPageTests
 {
     private const string OwnerId = "7d3c1f0e-4b2a-4c8d-9e1f-2a3b4c5d6e7f";
