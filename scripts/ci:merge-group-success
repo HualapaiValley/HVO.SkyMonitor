@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Print the ID of a successful Development v1 merge-group run for the exact SHA, if one exists.
+set -euo pipefail
+
+repository="$1"
+sha="$2"
+[[ "$sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
+workflow=development-v1.yml
+
+# Check the exit status of the complete paginated read before using any result.
+pages="$(timeout --kill-after=5s 20s gh api --method GET --paginate --slurp \
+    "repos/$repository/actions/workflows/$workflow/runs" \
+    -f event=merge_group -f head_sha="$sha" -F per_page=100)"
+jq -rs --arg sha "$sha" --arg path ".github/workflows/$workflow" '
+    if length != 1 or (.[0] | type != "array" or length == 0 or
+        any(.[]; type != "object" or (.workflow_runs | type != "array") or
+            any(.workflow_runs[]; type != "object"))) then
+        error("Invalid Development v1 workflow runs response")
+    else
+        [.[0][].workflow_runs[]
+         | select(.head_sha == $sha and .event == "merge_group" and .status == "completed" and
+                  .conclusion == "success" and .path == $path and
+                  (.head_branch | strings | startswith("gh-readonly-queue/development/v1/")))
+         | .id | select(type == "number" and . > 0 and floor == .)] | max // empty
+    end
+' <<< "$pages"

@@ -102,7 +102,7 @@ import sys
 import textwrap
 
 workflow = pathlib.Path(sys.argv[1]).read_text()
-step = workflow.split("      - name: Classify exact documentation diff\n", 1)[1].split("\n      - name:", 1)[0]
+step = workflow.split("      - name: Select Build and Unit workload\n", 1)[1].split("\n      - name:", 1)[0]
 pathlib.Path(sys.argv[2]).write_text(textwrap.dedent(step.split("        run: |\n", 1)[1]))
 PY
 mkdir -p "$fixture/evidence"

@@ -4,9 +4,10 @@ This file records the changes to HVO.SkyMonitor that operators and users notice.
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-`[Unreleased]` records the work merged to `development/v1` since the last release. A release renames `[Unreleased]`
-to its version and adds `docs/upgrade-notes/X.Y.Z.md` (install contract section 3). 0.9.0, the first release, starts
-with the work merged from 2026-10-16 onward; earlier development is recorded in its pull requests.
+Each operator-visible pull request adds one [changelog fragment](changelog.d/README.md).
+The release PR assembles the fragments and remaining Unreleased entries into the
+new version section and adds `docs/upgrade-notes/X.Y.Z.md`. 0.9.0, the first release,
+starts with the work merged from 2026-10-16 onward. Pull requests record earlier development.
 
 ## [Unreleased]
 
@@ -14,7 +15,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - `hvo-sky-install cameraagent install --storage-layout silo` installs a new CameraAgent instance with a pinned stock Silo store on local ext4. The store is private to the instance and bound to it, and capture starts paused until `hvo-sky-install cameraagent first-resume` releases it once the install has completed. The interactive wizard does not ask for the Silo layout; give its options on the command line. `cameraagent silo-verify` checks the store, data-root headroom and the optional archive read-only and reports `ready`, `degraded` or `not-ready`. Other lifecycle commands refuse such an instance. `release.json` names the pinned upstream Silo image as `images.silo`. An offline host stages it with `--silo-image-archive`, verified before loading, and `--silo-archive-*` verifies an optional archive store over HTTPS. See `docs/runbooks/cameraagent-silo-runtime.md`. #1966
 
-- The opt-in centered CameraAgent profile uses registered stacks where compatible exposures overlap. Retained evidence shows which calibrated monochrome or linear RGB exposures contributed to each pixel. #1169, #1957
+- The centered registration recipe aligns calibrated monochrome and linear RGB exposures on the center capture and records which exposures contributed to each pixel. #1169
 
 - Centered CameraAgent pipeline runs show per-exposure brightness, stellar centroids, and half-flux diameter in Operations. #1920
 
@@ -33,6 +34,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 - Release tooling can check local LogicHost identity candidates against their archive bytes, checksums and central compatibility declarations without loading or installing them. Refs #1242
 
 ### Changed
+
+- SkyMonitor CI keeps functional tests on the merge path and reports tight timing and allocation checks in a separate Raspberry Pi 5 workflow. The Pi workflow flags timings more than 20% above a rolling baseline. #2060
 
 - SkyMonitor CI and the standard local validation commands now skip the retired LogicHost and combined CameraAgent–LogicHost test suites. The active CI inventory has 16,583 of 17,819 Unit cases and 916 of 1,540 Integration cases. #2048
 
@@ -68,9 +71,9 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - CameraAgent can stop its local automation worker repeatedly, including after disposal, while waiting for any active adapter to finish draining. #1932
 - CameraAgent shutdown releases its remaining services after a local automation task fails during cancellation. The stop still reports the original failure. #1936
-- CameraAgent logs a failing local automation cancellation callback and finishes disposing its services when disposal starts before shutdown. #1985
-- Stopping a single CameraAgent automation script waits for the script to finish draining before reporting a cancellation callback failure. #1986
 - CameraAgent can upgrade the beta astrometry journal to centered processing while retaining captures and indexed astrometry history. #1922
+
+- CameraAgent identifies the retained input that blocked centered registration, reports unavailable predecessor history on resumed runs, and keeps retention lookups fast as window history grows. #1961
 
 - CameraAgent refuses new legacy reference-astrometry presets while the active camera profile uses centered exposure (#1919).
 

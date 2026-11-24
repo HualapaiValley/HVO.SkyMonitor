@@ -56,8 +56,8 @@ controller's verified Stop and idle-only redeploy, and CameraAgent's capture pau
 ## 3. Cutting a release
 
 1. A version-bump PR.
-2. A release PR. It renames `## [Unreleased]` in `CHANGELOG.md` (Keep a Changelog) to the version and adds a non-empty
-   `docs/upgrade-notes/X.Y.Z.md`.
+2. A release PR. Use `scripts/release:changelog` to assemble the pending fragments and any remaining Unreleased
+   entries into the version section in `CHANGELOG.md`. Add a non-empty `docs/upgrade-notes/X.Y.Z.md`.
 3. An annotated tag `vX.Y.Z` (or `vX.Y.Z-rc.<n>`) on the release branch. That is the default branch, except in
    SkyMonitor, whose default branch is the `development/v1` integration branch and whose release branch is `main`.
 
@@ -529,13 +529,16 @@ its schema in today, and what `io.hvo.skymonitor.state-contracts` and `stateCont
 | `spaceWeather` | `raw/.space-weather/space-weather.db` | `PRAGMA user_version` | Writes 1, reads 1 to 1. Not snapshotted by a migrating upgrade (#1340): per-product Retry-After floors, backoff and provider/product halts must never be rewound |
 | `calibrationFamilies` | `raw/.calibration-families/calibration-families.db` | `PRAGMA user_version` | Writes 1, reads 1 to 1. Not snapshotted by a migrating upgrade (#1340): no earlier release opens it, and the snapshots and backups an earlier installer took must still verify (#1475) |
 
-The centered scheduling and storage stage uses minimum-compatible revision `1c76d83224bacdcc129041c6d1779eb5f95716cb` to select the paired checkpoint even when the installed image declares the same raw and environmental schema floors.
+The centered scheduling and storage stage used minimum-compatible revision
+`1c76d83224bacdcc129041c6d1779eb5f95716cb`. The registration retention and diagnostic
+reader used `19694b969ae1968254988eb641a9044fa6010bbc` (#1961). The centered-view journal
+retention reader used `ee848ab110e094ef888c1aca4225ea9c8be226f6` (#2000). Each change
+extends the schema-12 object set that earlier readers validate.
 
-The centered-view journal retention reader advances the minimum-compatible revision to
-`ee848ab110e094ef888c1aca4225ea9c8be226f6` (#2000). Its six indexes change the schema-12
-object set validated by older readers. The installer selects a paired checkpoint
-even for private schema-12 images carrying the previous minimum, with the raw
-and processing schema numbers still 17 and 12.
+The reader that combines both changes declares `ded7cadc6fe005f8bdda09387e1c3d1337f66e4e`.
+The installer selects a paired checkpoint when upgrading from either reader or
+an earlier private schema-12 image, including when the raw, processing, and
+environmental schema numbers are already 17, 12, and 5.
 
 The environmental v5 journal retains a settled held slot so reopening the same cadence does not acquire it again.
 The first released v5 reader validates the canonical shape before opening for writes. A private rehearsal v5

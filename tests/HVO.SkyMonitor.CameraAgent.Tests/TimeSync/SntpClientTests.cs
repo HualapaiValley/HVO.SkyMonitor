@@ -127,7 +127,11 @@ public sealed class SntpClientTests
     }
 
     [TestMethod]
-    public async Task QueryAsync_WhenTheServerNeverAnswers_TimesOutWithinTheBoundAsync()
+    [Timeout(30_000)]
+    public async Task QueryAsync_WhenTheServerNeverAnswers_TimesOutAsync() =>
+        _ = await VerifyUnansweredQueryAsync().ConfigureAwait(false);
+
+    internal static async Task<TimeSpan> VerifyUnansweredQueryAsync()
     {
         using var server = new FakeTimeServer(static _ => null);
         var client = new SntpClient(TimeProvider.System);
@@ -137,8 +141,8 @@ public sealed class SntpClientTests
             .ConfigureAwait(false);
 
         Assert.AreEqual(TimeServerResult.Failed(server.Address, SntpFailure.Timeout), result);
-        Assert.IsLessThan(Timeout, TimeProvider.System.GetElapsedTime(started));
         Assert.AreEqual(1, server.Requests);
+        return TimeProvider.System.GetElapsedTime(started);
     }
 
     [TestMethod]
@@ -228,4 +232,15 @@ public sealed class SntpClientTests
 
         public override long GetTimestamp() => 0;
     }
+}
+
+[TestClass]
+[TestCategory("Performance")]
+[DoNotParallelize]
+public sealed class SntpClientPerformanceTests
+{
+    [TestMethod]
+    [Timeout(30_000)]
+    public async Task UnansweredQueryReturnsWithinFiveSeconds() =>
+        Assert.IsLessThan(TimeSpan.FromSeconds(5), await SntpClientTests.VerifyUnansweredQueryAsync().ConfigureAwait(false));
 }

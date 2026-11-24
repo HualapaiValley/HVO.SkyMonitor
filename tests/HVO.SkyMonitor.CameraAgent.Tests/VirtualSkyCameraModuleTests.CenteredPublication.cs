@@ -381,7 +381,8 @@ public sealed partial class VirtualSkyCameraModuleTests
         var start = new DateTimeOffset(2026, 11, 20, 22, 30, 0, TimeSpan.Zero);
         var clock = new CenteredClock { UtcNow = start };
         var deviceClock = new ExposureTestTimeProvider(start, autoAdvance: true);
-        var profile = CenteredRuntimeProfile(root, start, format);
+        // The wide field and injected trail use calibrated pixel positions on the 224-square sensor.
+        var profile = CenteredRuntimeProfile(root, start, format, size: wideField || detectLateTrail ? 224 : 160);
         if (detectLateTrail)
             profile = AddCenteredTrailScenario(profile, start);
         var catalog = wideField ? CenteredRuntimeWideCatalog(start, profile) : CenteredRuntimeCatalog(start);
@@ -547,7 +548,8 @@ public sealed partial class VirtualSkyCameraModuleTests
                 await prior.OpenAsync(token).ConfigureAwait(false);
                 using var command = prior.CreateCommand();
                 // Retain real windows and views under all three pre-index schema-12 layouts.
-                command.CommandText = "DROP INDEX ix_processing_outputs_astrometry_lookup;\n" +
+                command.CommandText = SqliteCaptureProcessingSchemaTests.DropCenteredRegistrationStateSql +
+                    "\nDROP INDEX ix_processing_outputs_astrometry_lookup;\n" +
                     (hasTrustedCutoff ? string.Empty : format == CameraPixelFormat.Mono16
                         ? "DROP TABLE processing_centered_output_availability;"
                         : "DROP INDEX ix_processing_centered_output_availability_cutoff;\n" +
