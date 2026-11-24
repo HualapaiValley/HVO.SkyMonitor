@@ -153,9 +153,7 @@ static Dictionary<string, IReadOnlyDictionary<string, int>?> LoadInventories(str
     const string inventoryFileName = "test-categories.json";
     var inventories = new Dictionary<string, IReadOnlyDictionary<string, int>?>(StringComparer.Ordinal);
     var testsRoot = Path.Combine(root, "tests");
-    var projectFiles = Directory.EnumerateFiles(testsRoot, "*.csproj", SearchOption.AllDirectories)
-        .Where(static path => !path.EndsWith("/HVO.SkyMonitor.LogicHost.TestInfrastructure.csproj", StringComparison.Ordinal))
-        .ToArray();
+    var projectFiles = Directory.EnumerateFiles(testsRoot, "*.csproj", SearchOption.AllDirectories);
     var projectsByDirectory = projectFiles
         .GroupBy(static path => Path.GetDirectoryName(path)!, StringComparer.Ordinal)
         .ToDictionary(static group => group.Key, static group => group.ToArray(), StringComparer.Ordinal);
