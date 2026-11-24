@@ -11,6 +11,7 @@ namespace HVO.SkyMonitor.IntegrationTests;
 
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "Fleet")]
 [DoNotParallelize]
 public sealed class FleetStatusPerformanceTests
 {

@@ -512,11 +512,33 @@ Kepler draft -> draft checks pass on exact head -> required formal CLEAN reviews
 
 Queue eligibility belongs to the CURRENT PR HEAD SHA. Being behind the target
 tip or its age alone does not require synchronization, re-testing, new review,
-or block submission/resubmission. Roy's stricter latest-base submission policy
-remains deferred. Real merge/product conflicts still require resolution,
-affected local evidence, and the required reviews on the changed candidate.
+or block submission/resubmission. Sync a `development/v1` PR with
+`git merge --no-ff origin/development/v1` only to resolve a real merge or product
+conflict. Validate and review the resulting head. The merge queue tests the
+combined tree.
 Draft pushes do not advance protected CI. Kepler operates the queue and any
 explicit fallback using the lifecycle skill; coding threads never finalize.
+
+### Rolling Low batches
+
+During branch and draft review, fix inexpensive Low findings when practical.
+After Ready, build or test breaks, High or Medium correctness findings, and
+missed acceptance criteria require correction. Kepler records post-Ready Low
+findings, including style, documentation polish, and other improvements, in
+rolling batch issues labeled `follow-up` and `low-batch`.
+
+- Group findings by category and area. Example titles are
+  `Low batch: docs/typos (CameraAgent)`, `Low batch: tests hygiene`,
+  `Low batch: logging/naming`, and `Low batch: UI text/fonts`.
+- Append one `- [ ]` item per finding to a matching open batch. Record the
+  source PR link and `file:line` in that item and link the batch from the
+  source PR. Open a new batch only when there is no matching open batch or
+  the matching batch already has seven items.
+- Pick up a batch at about six or seven items, or about a week after its first
+  item. Keep the scope within the LOW review tier. Deliver it on one
+  branch in one PR that closes the batch issue, with the required LOW-tier
+  review. Group single typo, font, and wording fixes to share a validation
+  and merge cycle.
 
 ## 10. Non-Green Recovery
 

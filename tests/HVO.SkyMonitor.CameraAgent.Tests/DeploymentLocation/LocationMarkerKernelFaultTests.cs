@@ -2,6 +2,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.DeploymentLocation;
 
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "DeploymentLocation")]
 public sealed class LocationMarkerKernelFaultTests
 {
     [TestMethod]

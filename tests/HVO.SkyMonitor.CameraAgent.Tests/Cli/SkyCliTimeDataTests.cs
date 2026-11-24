@@ -6,6 +6,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Cli;
 /// <summary><c>time-data</c> against the fake API, served from the product's own status record.</summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Cli")]
 public sealed class SkyCliTimeDataTests
 {
     private const string Route = "/api/v1/operations/time-data";

@@ -53,9 +53,10 @@ availability waivers, elapsed time, and correction caps cannot replace the
 required Sol/Opus CLEAN reports. An unavailable required reviewer means BLOCKED.
 
 Only High and Medium review findings block (Critical is treated as High).
-Lows become follow-up issues through Kepler and do not force another correction
-round. The coding handoff supplies the Low finding and follow-up text; Kepler
-records its issue link. Incompleteness and missing required evidence always
+Kepler tracks Lows through linked follow-ups and uses
+[rolling Low batches](../../../docs/planning/agent-execution.md#rolling-low-batches)
+after Ready. The coding handoff supplies the Low finding and follow-up text.
+Incompleteness and missing required evidence always
 block, are at least Medium, and are never Low or eligible for deferral. CLEAN
 means complete scope and no unresolved High/Medium findings; it does not waive
 required tests or CI.
@@ -409,9 +410,10 @@ then affected local tests and independent verification. Missing in-scope
 behavior/evidence is at least Medium and never Low. Return to IMPLEMENTATION;
 Kepler keeps/returns the PR to draft and blocks CI/queue advancement.
 
-Lows become follow-up issues through Kepler, without another correction round
-solely for the Low. Supply source evidence, expected/observed behavior, residual
-risk, and follow-up acceptance in the handoff; Kepler records the issue link.
+Kepler tracks Lows through linked follow-ups. After Ready, use the
+[rolling Low-batch policy](../../../docs/planning/agent-execution.md#rolling-low-batches).
+Supply source evidence, expected and observed behavior, residual risk, and
+follow-up acceptance in the handoff. Kepler records the batch issue link.
 Only Low findings may receive `verified deferred` disposition. A deferred item
 that violates current acceptance or fails required CI is a High/Medium blocker,
 not an eligible Low.

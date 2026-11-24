@@ -16,14 +16,9 @@ set -euo pipefail
 # supplemental TRX publication, catalog availability or checkout trust (see the
 # Supplemental Unit selections section of docs/runbooks/ci-pipeline.md).
 #
-# Each test project declares its cases in tests/<project>/test-categories.json,
-# and tests/Directory.Build.props compile-links shared contract tests into
-# projects whose name does not say "Tests", so a project can own Unit cases
-# while looking like an Integration-only assembly. The Unit job in
-# .github/workflows/ci.yml is a hand-written list; that list silently omitted
-# four such assemblies (16 cases) until this check existed. Deriving the
-# expectation from the inventories keeps it attached to what the repository
-# contains instead of to someone remembering to extend the list.
+# tests/unit-test-projects.json declares Unit membership independently of the
+# workflow commands. Full CI compares it to VSTest discovery, including projects
+# that compile-link shared Unit cases alongside their Integration tests.
 #
 # A project whose command collects coverage must be a canonical slot of the
 # Coverage job, and a command without --collect is a supplemental run that must
@@ -120,7 +115,7 @@ optional_grep() {
   return 2
 }
 
-declare -a export_lines=() commands=() coverage_slots=() inventories=() projects=()
+declare -a export_lines=() commands=() coverage_slots=() projects=()
 
 [[ -n "$unit_job" ]] || { printf 'Unit selection: the unit job is missing from %s\n' "$workflow" >&2; exit 1; }
 [[ -n "$coverage_job" ]] || { printf 'Unit selection: the coverage job is missing from %s\n' "$workflow" >&2; exit 1; }
@@ -247,24 +242,21 @@ coverage_text="$(optional_grep "$coverage_job" -oE "TestResults/unit/[a-z0-9-]+/
 split_lines coverage_slots "$coverage_text"
 
 declare -A expected=()
-if ! inventory_text="$(find "$tests_root" -mindepth 2 -maxdepth 2 -name test-categories.json | sort)"; then
-  fail 'could not inspect inventory paths'
+if ! inventory_text="$(jq -ser '
+  select(length == 1) | .[0]
+  | select(type == "array" and length > 0 and length == (unique | length))
+  | select(all(.[]; type == "string" and test("\\A[A-Za-z0-9]+(\\.[A-Za-z0-9]+)+\\z")))
+  | .[]
+' "$tests_root/unit-test-projects.json")"; then
+  fail 'invalid Unit project membership in unit-test-projects.json'
   exit 1
 fi
-split_lines inventories "$inventory_text"
-for inventory in "${inventories[@]}"; do
-  unit="$(jq -r '.Unit' "$inventory")"
-  ((unit > 0)) || continue
-  dir="$(dirname "$inventory")"
-  if ! project_text="$(find "$dir" -maxdepth 1 -name '*.csproj' -printf '%f\n')"; then
-    fail 'could not inspect project paths'
-    exit 1
-  fi
-  split_lines projects "$project_text"
-  ((${#projects[@]} == 1)) || { fail "inventory without exactly one project beside it: $inventory"; continue; }
-  project="tests/$(basename "$dir")/${projects[0]}"
+split_lines projects "$inventory_text"
+for name in "${projects[@]}"; do
+  [[ -f "$tests_root/$name/$name.csproj" ]] || { fail "unknown Unit project: $name"; continue; }
+  project="tests/$name/$name.csproj"
   is_logichost_project "$project" && continue
-  expected["$project"]="$unit"
+  expected["$project"]=1
 done
 
 ((${#expected[@]} > 0)) || { printf 'Unit selection: no Unit-bearing inventory found under %s\n' "$tests_root" >&2; exit 1; }
@@ -276,7 +268,7 @@ for project in "${!expected[@]}"; do
     [[ "$command" == *"dotnet test $project "* ]] && matches+=("$command")
   done
   if ((${#matches[@]} != 1)); then
-    fail "$project owns ${expected[$project]} Unit case(s) but ${#matches[@]} Unit job command(s) select it (expected exactly 1)"
+    fail "$project owns Unit cases but ${#matches[@]} Unit job command(s) select it (expected exactly 1)"
     continue
   fi
   command="${matches[0]}"

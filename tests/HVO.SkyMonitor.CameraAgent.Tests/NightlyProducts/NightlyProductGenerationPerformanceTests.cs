@@ -40,6 +40,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.NightlyProducts;
 /// </summary>
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "NightlyProducts")]
 [DoNotParallelize]
 [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "Focused MSTest methods do not require context-free continuations.")]
 public sealed class NightlyProductGenerationPerformanceTests

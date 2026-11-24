@@ -20,6 +20,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Services;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Services")]
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 public sealed class CameraAgentExecutionEvidenceTransportTests
 {

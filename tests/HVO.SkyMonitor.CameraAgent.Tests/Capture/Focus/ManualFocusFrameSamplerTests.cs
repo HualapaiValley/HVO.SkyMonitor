@@ -7,6 +7,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Focus;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture.Focus")]
 public sealed class ManualFocusFrameSamplerTests
 {
     private static readonly bool[] ShallowClipping = [false, true, false, false, false, false, false, false];

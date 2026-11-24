@@ -6,6 +6,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Scheduling;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Scheduling")]
 public sealed class CaptureScheduleEngineTests
 {
     private static readonly ObservatoryLocation Observer = new(35.347, -113.878, 1000, "America/Phoenix");

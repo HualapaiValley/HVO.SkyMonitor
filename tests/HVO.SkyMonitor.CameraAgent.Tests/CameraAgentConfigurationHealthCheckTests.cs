@@ -6,6 +6,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Hosting")]
 public sealed class CameraAgentConfigurationHealthCheckTests
 {
     [TestMethod]

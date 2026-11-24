@@ -14,6 +14,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Focus;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture.Focus")]
 public sealed class ManualFocusSessionCoordinatorTests
 {
     private static readonly ManualFocusPreviewSettings Gain20 = new(TimeSpan.FromSeconds(1), 20);

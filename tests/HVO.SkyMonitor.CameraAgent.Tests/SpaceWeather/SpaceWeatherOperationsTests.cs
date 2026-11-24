@@ -8,6 +8,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.SpaceWeather;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "SpaceWeather")]
 public sealed class SpaceWeatherOperationsTests
 {
     [TestMethod]

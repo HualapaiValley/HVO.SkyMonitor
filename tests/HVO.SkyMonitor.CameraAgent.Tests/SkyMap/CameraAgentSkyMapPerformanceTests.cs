@@ -10,6 +10,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.SkyMap;
 /// </summary>
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "SkyMap")]
 [DoNotParallelize]
 public sealed class CameraAgentSkyMapPerformanceTests
 {

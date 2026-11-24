@@ -52,7 +52,7 @@ more expensive. All other collector settings, including canonical test-assembly,
 TestSupport, migration, build-output and attribute exclusions remain intact.
 This avoids instrumenting host assemblies whose coverage is not measured by this
 profile. The generated settings are retained with the raw reports. The merge
-requires one GUID-directory report per active Unit-bearing project's category inventory;
+requires one GUID-directory report per active project in `tests/unit-test-projects.json`;
 it excludes TRX attachment copies and never searches outside the fresh run root.
 Every input is parsed and checked before ReportGenerator runs: that tool can log
 a malformed input, omit it and still exit zero. Raw records must occupy the
@@ -361,19 +361,19 @@ A green sync PR is integration evidence and does not replace promotion qualifica
 | **Catalog Reproducibility** | Full-mode hosted rebuild of the three catalog test fixtures and of the approved HYG 4.4 and OpenNGC catalogs from their pinned, verified inputs, under both SQLite `secure_delete` connection defaults. Runs when the classifier's `catalog_recipe` output selects it; otherwise its planned `skipped` result is required. |
 | **Quality** | The full-history [secret scan](#secret-scan), workflow lint, syntax and documentation audits, the Unit-selection completeness control, lightweight environment/classification contracts, and Compose validation run in every selected Quality job. Full mode also enforces formatting, package vulnerability/deprecation policy, and pinned .NET tools; manual dispatch additionally validates the historical Phase 14 acceptance inventory. Reduced mode does not restore or audit application packages it cannot affect. A 45-minute qualification job budget covers formatting, the complete control-contract batch, package audit and the manual historical acceptance gate. |
 | **Deployment Contracts** | Deployment-relevant pull requests run the coordinator watchdog/failure contracts and current campaign-shape contracts, plus only the affected exhaustive catalog, split-host, or installer suite selected by the classifier. Main/release/manual runs execute every exhaustive suite. Otherwise its planned `skipped` result is required. |
-| **Build** | Warning-clean solution Debug and Release builds plus complete, disjoint behavioral category discovery. Never component-scoped, so no component plan can hide a warning or a category-count drift. Skipped only in classified reduced mode. |
-| **Unit Tests** | 17070 Unit cases across 17 active assemblies with an intentionally invalid Docker endpoint. Two [supplemental Unit selections](#supplemental-unit-selections) write TRX only. The complete solution plan runs this job. Component plans run the selections in their active lanes. A 45-minute full-qualification job budget covers restore/build, the serial test/coverage selections and evidence upload. |
-| **Integration Tests** | 918 Integration-category cases in the active inventory, including the 7 repository graph/provider-boundary/publish cases in Architecture & Publish. The complete solution plan runs the other 911 cases across Astronomy and three CameraAgent assemblies. The Integration step attempts all four assemblies and reports failure if any fail. |
-| **Architecture & Publish** | Both category selections of the architecture project cover the 34 Unit-category boundary cases, including the host `Dockerfile`, fault-matrix discovery, and CameraAgent event-ID uniqueness contracts, and the 7 Integration-category repository graph/provider-boundary/MSBuild/publish cases. Retains SHA-256 publish manifests for CameraAgent and for both runners and the installer on Linux x64 and ARM64. Runs for every full-mode head. |
+| **Build** | Warning-clean solution Debug and Release builds plus complete, disjoint behavioral category discovery. The discovery audit checks Unit project membership against `tests/unit-test-projects.json` across the solution, including for component plans. Skipped only in classified reduced mode. |
+| **Unit Tests** | Unit cases in the active assemblies with an intentionally invalid Docker endpoint. Two [supplemental Unit selections](#supplemental-unit-selections) write TRX only. The complete solution plan runs this job. Component plans run the selections in their active lanes. A 45-minute full-qualification job budget covers restore/build, the serial test/coverage selections and evidence upload. |
+| **Integration Tests** | The complete solution plan runs Integration cases across Astronomy and CameraAgent assemblies. The Integration step attempts every selected assembly and reports failure if any fail. Architecture & Publish runs the repository graph, provider-boundary and publish cases. |
+| **Architecture & Publish** | Both category selections of the architecture project cover Unit-category boundary cases, including the host `Dockerfile`, fault-matrix discovery, and CameraAgent event-ID uniqueness contracts, and Integration-category repository graph, provider-boundary, MSBuild and publish cases. Retains SHA-256 publish manifests for CameraAgent and for both runners and the installer on Linux x64 and ARM64. Runs for every full-mode head. |
 | **CameraAgent Migrations** | Exactly one canonical initial migration source for CameraAgent Identity plus zero pending CameraAgent EF model changes, built from the CameraAgent project root. Runs for every full-mode head. |
 | **Coverage Policy** | Schema validation of every aggregate and component coverage baseline plus rejection of any pull request that lowers a baseline rate, raises its tolerance, or drops a baseline file floor relative to the merge target. Runs for every full-mode head. |
 | **Shared Libraries** | Component lane. Project-root restore/build of the shared test and runner project roots, the shared Unit and Integration selections, a `linux-x64` ProcessingRunner publish with a checksum manifest, and the shared component coverage baseline over 10 slots. |
 | **CameraAgent Component** | Component lane. Project-root restore/build of the CameraAgent host, runner, and test project roots, the CameraAgent Unit and Integration selections, CameraAgent and `linux-x64` ReplayRunner publishes with checksum manifests and an opposite-host assembly check, and the CameraAgent component coverage baseline over 5 slots. |
 | **Delivery Component** | Component lane. Project-root restore/build of the deployment CLI project root and the deployment CLI/distribution test roots, which also build the deployment contracts and release-tool projects they reference, against the exact production catalog contract; a `linux-x64` installer publish with a checksum manifest; and the delivery component coverage baseline over 2 slots. |
-| **Coverage** | Aggregate rollup for the complete solution plan: exact source-path and branch merge of 19 expected reports, checked-in aggregate non-regression, and risk-file floors. The Coverlet 10.0.1 baseline is 84.3690% line and 66.3253% branch coverage. Component plans enforce their own baselines inside their lanes instead. |
+| **Coverage** | Aggregate rollup for the complete solution plan: exact source-path and branch merge of the configured report slots, checked-in aggregate non-regression, and risk-file floors. The Coverlet 10.0.1 baseline is 84.3690% line and 66.3253% branch coverage. Component plans enforce their own baselines inside their lanes instead. |
 | **Required CI** | Validates the classifier plan and checks each job result on the current head. A missing, unexpected, or mismatched result fails the check. |
 
-Each test invocation owns a category/project-specific result directory and TRX name. Coverage rejects any report count other than the expected 19, preventing missing or overwritten evidence.
+Each test invocation owns a category/project-specific result directory and TRX name. Coverage requires exactly one report from each configured slot to detect missing or overwritten evidence.
 
 Change Classification, Catalog Contracts, Catalog Reproducibility, Quality,
 Coverage Policy, and Required CI run on pinned `ubuntu-24.04` hosted runners. Deployment Contracts, Build, Unit
@@ -399,7 +399,8 @@ Preflight** runs it after the secret scanner contract, reading the same classifi
 output selects it. On a PR that output is `true` when the change touches `scripts/release:assets`,
 `scripts/release:check-image-labels`, `scripts/release:push-image`, `scripts/release:prerelease-gate`,
 `scripts/release:prerelease-check`, `scripts/release:publish-prerelease`, the final-release scripts
-(`scripts/release:version`, `scripts/release:notes`, `scripts/release:gate`, `scripts/release:check-environment`,
+(`scripts/release:version`, `scripts/release:notes`, `scripts/release:changelog`,
+`scripts/release:gate`, `scripts/release:check-environment`,
 `scripts/release:publish` and `scripts/release:tag-latest`, #1310), `scripts/test:release-install`,
 `scripts/test:release-scripts`, the libraries those scripts source (`scripts/lib/deployment-installer-qualification.sh`,
 `scripts/lib/github-api.sh` and `scripts/lib/releases.sh`), `src/HVO.SkyMonitor.Deployment.Cli/install.sh`,
@@ -941,9 +942,25 @@ maintained in [`cameraagent-arm64-ci.md`](cameraagent-arm64-ci.md).
 
 ## Categories
 
-The category audit requires every discovered case to belong to exactly one primary behavioral category. Current declared inventory is `Unit=17070`, `Integration=918`, `Manual=274`, `Soak=1`, `External=0`, `Hardware=1`, and `Performance=49`. Whole-solution discovery verifies those declarations.
+The full CI Build summary publishes **Discovered test cases** with counts by
+assembly and category and an aggregate row. It reads VSTest discovery from the
+Release binaries. The audit requires complete discovery and exactly one known
+category per case, including support for `Performance`. It also checks that
+test projects are in the solution and that `tests/unit-test-projects.json`
+matches the projects that actually discover Unit cases. Use literal category
+attributes and `DataRow` for parameterized coverage.
 
-`./scripts/docs:audit-operations` sums the per-project inventories and checks this section and the Unit/Integration rows in [Required Checks](#required-checks). The Build check compares those inventories with actual discovery. Each project owns its counts in `tests/<project>/test-categories.json`, a flat object with seven required keys and non-negative integers. A count change in the owning project directory selects that project's component lane. Editing the category audit engine selects the complete solution matrix. The audit rejects missing, orphaned, malformed, duplicate, unknown, and stale entries. Update the owning inventory and this runbook together.
+After building the Release solution, generate the report locally.
+
+```bash
+dotnet run --project scripts/test-categories/HVO.SkyMonitor.TestCategoryAudit.csproj --configuration Release
+```
+
+Pass `-- --emit-matrix` for TSV output. For the Development v1 check, use the
+Unit TRX in the run's evidence artifact for executed counts. For review,
+reference the generated report or the relevant TRX and retain the selected
+checks' results. Add or remove a project from the membership file when it gains
+or loses its Unit selection.
 
 `External` is implemented by the pinned, networkless Stellarium workflow rather than an empty MSTest check. The accelerated `Soak` case and real-duration soak are independently selectable in `.github/workflows/cameraagent-soak.yml`. The Hardware case remains separately selectable and is not published as a CI check until a suitable device runner exists.
 
@@ -968,10 +985,11 @@ is a native ARM64 Raspberry Pi 5 before collecting samples. The advisory job
 has a 30-minute budget and runs independently of Required CI, pull-request
 checks, and the merge queue.
 
-The job pins .NET SDK `10.0.402` in setup-dotnet and `global.json` and runs the
-inventory-bearing projects serially, selecting only `TestCategory=Performance`. It runs three
-Release trials per project and takes the median TRX duration for each case.
-Every trial must pass the declared number of cases with the same identities.
+The job pins .NET SDK `10.0.402` in setup-dotnet and `global.json`. It builds
+the Release solution and uses the live category audit matrix to select projects
+with Performance cases. It runs three Release trials per project, selecting
+only `TestCategory=Performance`, and takes the median TRX duration for each
+case. Every trial must pass the discovered number of cases with the same identities.
 A failed, skipped, missing, or duplicated case fails the measurement.
 
 The baseline is the median of the most recent five accepted run medians per
@@ -981,7 +999,8 @@ the first clean Pi measurement. A failing run leaves the full previous history
 in place. The uploaded comparison JSON retains per-case timings and decisions
 or a failure summary for 30 days. When the TRX identifies a failed case, the
 summary includes its class, method, test ID, and outcome. Raw TRX files and
-full test logs are written under `$RUNNER_TEMP`.
+full test logs, including build and discovery evidence, are written under
+`$RUNNER_TEMP`.
 
 New Pi performance runs cancel older runs on the same ref under
 `skymonitor-perf-${{ github.ref }}`. Native CameraAgent Evidence uses its own
@@ -1034,7 +1053,7 @@ connection-pool guard.
 Full qualification invokes the active Unit and Integration projects by path.
 #2049 removes the retired LogicHost migration, LogicHost component, and combined
 integration jobs from full qualification and Required CI. The aggregate coverage
-merge consumes the same 19 active report slots. Architecture & Publish validates
+merge consumes the configured report slots. Architecture & Publish validates
 the retained project graph and publishes CameraAgent, both runners, and the
 installer. The retained split-host deployment fixtures, including the LogicHost
 outage contract, still run through Deployment Contracts.
@@ -1150,7 +1169,7 @@ review: a base-sync review verifies that the merge preserved both sides'
 behaviour, which is the wrong instrument for a classifier lane that each side
 satisfied separately and their union does not.
 
-Use a fresh result root for every collection. Before merging, require exactly one report from each of the 19 category/project slots as shown in `.github/workflows/ci.yml`; never merge every historical GUID directory under a reused result root. Merge those 19 explicit reports once with the pinned ReportGenerator tool, then enforce and publish that same canonical result:
+Use a fresh result root for every collection. Before merging, require exactly one report from each configured category/project slot as shown in `.github/workflows/ci.yml`; never merge every historical GUID directory under a reused result root. Merge those explicit reports once with the pinned ReportGenerator tool, then enforce and publish that same canonical result:
 
 ```bash
 patterns=(
@@ -1210,13 +1229,18 @@ correction-cap, finalization-lock, and merge procedure is defined by
 `.agents/skills/pr-lifecycle/SKILL.md`.
 
 Open implementation PRs as drafts and keep them draft while review corrections
-converge and the target branch is finally synchronized, with required base-sync
-review if the target advanced or recorded unchanged-base proof otherwise.
+converge. For `development/v1`, synchronize only to resolve an actual conflict
+and obtain the required review on the resulting head. The merge queue validates
+the combined tree. After Ready, correct build or test breaks, High or Medium
+correctness findings, and missed acceptance criteria. Kepler uses
+[rolling Low batches](../planning/agent-execution.md#rolling-low-batches) for
+post-Ready follow-ups. For `main` and `release/**`, follow the
+protected target branch's synchronization requirements.
 Draft PR events skip the expensive CI plan and publish an intentionally failing
 `Required CI`, so branch protection remains fail-closed; returning a PR to draft
 also cancels its superseded in-progress run. Only the PR holding the
-repository-wide finalization lock may perform final synchronization, transition
-to ready, run protected CI, and merge. Marking that final reviewed head ready
+repository-wide finalization lock may perform synchronization when required,
+transition to ready, run protected CI, and merge. Marking that final reviewed head ready
 triggers the classifier-selected CI plan, and a successful `Required CI` on that
 exact head and current target base satisfies the gate. A diagnosed
 infrastructure failure may rerun the same unchanged SHA. Stale, canceled,
@@ -1240,7 +1264,8 @@ changed path is an added or modified member of this allowlist:
 - `.devcontainer/**`
 - `.vscode/**`
 - `.github/prompts/**`
-- `README.md`, `AGENTS.md`, `CLAUDE.md`, `CHANGELOG.md`, and `THIRD-PARTY-NOTICES.md`
+- `README.md`, `CONTRIBUTING.md`, `AGENTS.md`, `CLAUDE.md`, `CHANGELOG.md`, and `THIRD-PARTY-NOTICES.md`
+- Valid changelog fragment paths and `changelog.d/README.md`
 - `.github/copilot-instructions.md` and `.github/pull_request_template.md`
 - `tools/asi-capture/README.md`
 - one-level `src/*/README.md` and `tests/*/README.md`
@@ -1479,9 +1504,9 @@ The supplemental step uses the positive Unit filter with
 When `complete=false`, the Shared Libraries and CameraAgent jobs run the
 corresponding supplemental selection before uploading their component evidence.
 
-`./scripts/ci:unit-selection` derives the expectation from the inventories instead of from this list: every active `tests/<project>/test-categories.json` with `Unit > 0` must be selected by exactly one Unit-job `dotnet test` command that uses `--no-build`, Release, `--filter "$UNIT_FILTER"` and a TRX logger `unit-<slot>.trx` under its own `TestResults/unit/<slot>`; the command's step must match a closed grammar (a `- name:` opening line, an optional `env:` mapping holding only `DOCKER_HOST`, one `run: |` block of `dotnet test tests/<project>.csproj` lines that use only `--no-build`, `--configuration Release`, `--filter "$UNIT_FILTER"`, `--settings`, `--collect`, `--results-directory` and the TRX `--logger`) so an `if:` or `continue-on-error:` key in any spelling, a reindented step, a heredoc or shell operator, a step-level `UNIT_FILTER` override, or an option such as `--list-tests` that stops a line executing the cases is rejected, as is anything around the step that changes what it runs (workflow or job `defaults:` or `shell:`, workflow or job env beyond `DOTNET_*` and `DOCKER_HOST`/`UNIT_FILTER`, an earlier step exporting through `GITHUB_ENV` or `GITHUB_PATH` other than the catalog bundle path, a selection placed after `Bind Unit evidence`/`Upload Unit evidence`, or an upload path other than `TestResults/unit/`), a command that selects a retired project or one owning no Unit cases, a slot shared by two commands, a slot that is a canonical Coverage slot without collecting coverage, and supplemental coverage collection or `--settings`, or a supplemental step without the Docker-disabled endpoint, all fail. Job-level `env:` and workflow-level `env:` must hold only plain single-line `KEY: value` entries (a quoted key, a flow mapping or a folded continuation under `UNIT_FILTER` is rejected), and a `defaults` key in any spelling is rejected anywhere in the workflow and a `shell` key anywhere in the Unit job.
+`./scripts/ci:unit-selection` uses the membership declared in `tests/unit-test-projects.json`. Every active project in that file must be selected by exactly one Unit-job `dotnet test` command that uses `--no-build`, Release, `--filter "$UNIT_FILTER"` and a TRX logger `unit-<slot>.trx` under its own `TestResults/unit/<slot>`; the command's step must match a closed grammar (a `- name:` opening line, an optional `env:` mapping holding only `DOCKER_HOST`, one `run: |` block of `dotnet test tests/<project>.csproj` lines that use only `--no-build`, `--configuration Release`, `--filter "$UNIT_FILTER"`, `--settings`, `--collect`, `--results-directory` and the TRX `--logger`) so an `if:` or `continue-on-error:` key in any spelling, a reindented step, a heredoc or shell operator, a step-level `UNIT_FILTER` override, or an option such as `--list-tests` that stops a line executing the cases is rejected, as is anything around the step that changes what it runs (workflow or job `defaults:` or `shell:`, workflow or job env beyond `DOTNET_*` and `DOCKER_HOST`/`UNIT_FILTER`, an earlier step exporting through `GITHUB_ENV` or `GITHUB_PATH` other than the catalog bundle path, a selection placed after `Bind Unit evidence`/`Upload Unit evidence`, or an upload path other than `TestResults/unit/`), a command that selects a retired project or one owning no Unit cases, a slot shared by two commands, a slot that is a canonical Coverage slot without collecting coverage, and supplemental coverage collection or `--settings`, or a supplemental step without the Docker-disabled endpoint, all fail. Job-level `env:` and workflow-level `env:` must hold only plain single-line `KEY: value` entries (a quoted key, a flow mapping or a folded continuation under `UNIT_FILTER` is rejected), and a `defaults` key in any spelling is rejected anywhere in the workflow and a `shell` key anywhere in the Unit job.
 
-Bounded guarantee: the control proves that, for each active inventory-derived Unit-bearing project, the full `unit` job holds one supported selecting command whose arguments and report boundaries (positive filter, TRX slot, coverage, Docker endpoint) are checked, ahead of the evidence bind and upload. It is not proof of arbitrary future shell execution, of whole-job artifact membership or publication (an upload condition, a cleanup step, a second upload), of installed catalog availability, or of checkout trust (a `ref:` input). #1265 accepts the following bounded gaps with the existing workflow-review control, rather than adding a whole-job parser or changing the workflow:
+Bounded guarantee: the control proves that, for each active project listed in `tests/unit-test-projects.json`, the full `unit` job holds one supported selecting command whose arguments and report boundaries (positive filter, TRX slot, coverage, Docker endpoint) are checked, ahead of the evidence bind and upload. It is not proof of arbitrary future shell execution, of whole-job artifact membership or publication (an upload condition, a cleanup step, a second upload), of installed catalog availability, or of checkout trust (a `ref:` input). #1265 accepts the following bounded gaps with the existing workflow-review control, rather than adding a whole-job parser or changing the workflow:
 
 - **Publication and supplemental TRX membership.** Review must keep the effective upload condition and inputs valid for every qualification event, include both supplemental TRX directories in the actual `unit-test-evidence` upload, and reject TRX-deleting steps between selection and publication or later uploads that overwrite that artifact. Finding `path: TestResults/unit/` somewhere in the job does not prove those effective inputs. Canonical Coverage slot checks catch lost canonical reports; **Required CI alone does not prove supplemental TRX membership in the uploaded artifact**.
 - **Catalog prerequisite.** Review must preserve the required-and-executing restore, missing-bundle failure and `HVO_PRODUCTION_CATALOG_BUNDLE` export before the affected full-qualification Unit selections, including on pull requests. Removing the export or making the restore conditional can make the catalog-dependent subset Inconclusive instead of executing; it does not affect every selection equally. The selection guard does not prove bundle availability. The separate `development/v1` Unit selection runs without this bundle.
@@ -1501,7 +1526,7 @@ Quality runs it beside `./scripts/test:ci-unit-selection`, whose negative contro
 ## Failure Triage
 
 - Formatting or package failures name the command, package, version, project, and reviewed allowlist status.
-- Category failures name uncategorized, multiply categorized, unknown, or count-drifted tests.
+- Category failures name uncategorized, multiply categorized or unknown tests, incomplete discovery, or invalid Unit project membership.
 - Migration failures identify the host context with pending model changes.
 - Coverage failures name exact source paths, covered/valid counts, observed rates, and required floors.
 - Integration failures retain separate project/category TRX and Cobertura evidence for 30 days.

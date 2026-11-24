@@ -24,6 +24,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 /// </summary>
 [TestClass]
 [TestCategory("Integration")]
+[TestProperty("Area", "Capture.Processing")]
 [DoNotParallelize]
 public sealed class EdgeUpgradeLaneTests
 {

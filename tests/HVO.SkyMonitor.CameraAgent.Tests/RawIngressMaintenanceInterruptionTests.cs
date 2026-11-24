@@ -12,6 +12,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "RawIngress")]
 [DoNotParallelize]
 public sealed class RawIngressMaintenanceInterruptionTests
 {

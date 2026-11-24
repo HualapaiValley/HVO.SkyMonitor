@@ -50,6 +50,24 @@ jobs:
           fi
           git diff --check "$BASE_SHA" "$HEAD_SHA"
 
+      - name: Validate changelog fragments
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          args=(--check)
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            parents="$(git rev-list --parents -n 1 HEAD)" || parents=''
+            read -r merge first second extra <<< "$parents"
+            if [[ "$merge" == "$GITHUB_SHA" && -n "$first" && -n "$second" && "$second" == "$PR_HEAD_SHA" && -z "$extra" ]]; then
+              args+=(--base "$first")
+            else
+              echo 'Cannot bind the changelog fragment limit to the checked-out PR merge parents.' >&2
+              exit 1
+            fi
+          fi
+          ./scripts/release:changelog "${args[@]}"
+          ./scripts/test:changelog
+
       - name: Lint workflows
         run: |
           curl -fsSL -o "$RUNNER_TEMP/actionlint.tar.gz" \

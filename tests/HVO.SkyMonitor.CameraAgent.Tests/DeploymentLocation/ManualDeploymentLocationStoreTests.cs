@@ -20,6 +20,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.DeploymentLocation;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "DeploymentLocation")]
 [DoNotParallelize]
 public sealed class ManualDeploymentLocationStoreTests
 {
