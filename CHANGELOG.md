@@ -40,6 +40,10 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - CameraAgent capture processing checks the shared journal's integrity and foreign keys once per startup instead of three times, so processing and the Current Sky plate solution become available sooner after a restart with a long retained history. #1914
 
+### Removed
+
+- Full qualification drops the retired LogicHost and combined jobs and stops publishing LogicHost artifacts. Required CI reports the result of the active checks. #2049
+
 ### Fixed
 
 - Centered CameraAgent half-flux diameter measurements give eligible stars first use of the 32-sample limit. #1954

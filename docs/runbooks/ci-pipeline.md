@@ -296,17 +296,14 @@ A green sync PR is integration evidence and does not replace promotion qualifica
 | **Build** | Warning-clean solution Debug and Release builds plus complete, disjoint behavioral category discovery. Never component-scoped, so no component plan can hide a warning or a category-count drift. Skipped only in classified reduced mode. |
 | **Unit Tests** | 16583 Unit cases across 17 active assemblies with an intentionally invalid Docker endpoint. Two [supplemental Unit selections](#supplemental-unit-selections) write TRX only. The complete solution plan runs this job. Component plans run the selections in their active lanes. A 45-minute full-qualification job budget covers restore/build, the serial test/coverage selections and evidence upload. |
 | **Integration Tests** | 916 Integration-category cases in the active inventory, including the 7 repository graph/provider-boundary/publish cases in Architecture & Publish. The complete solution plan runs the other 909 cases across Astronomy and three CameraAgent assemblies. The Integration step attempts all four assemblies and reports failure if any fail. |
-| **Architecture & Publish** | Both category selections of the architecture project, and membership is the project's own category discovery rather than any narrower reading of "boundary": the 34 Unit-category boundary cases, including the host `Dockerfile`, fault-matrix discovery, and CameraAgent event-ID uniqueness contracts, and the 7 Integration-category repository graph/provider-boundary/MSBuild/publish cases; plus retained host publish manifests and self-contained installer publishes with SHA-256 manifests for Linux x64 and ARM64. Never component-scoped, so no component plan can skip the architecture or host-publish boundary. |
+| **Architecture & Publish** | Both category selections of the architecture project cover the 34 Unit-category boundary cases, including the host `Dockerfile`, fault-matrix discovery, and CameraAgent event-ID uniqueness contracts, and the 7 Integration-category repository graph/provider-boundary/MSBuild/publish cases. Retains SHA-256 publish manifests for CameraAgent and for both runners and the installer on Linux x64 and ARM64. Runs for every full-mode head. |
 | **CameraAgent Migrations** | Exactly one canonical initial migration source for CameraAgent Identity plus zero pending CameraAgent EF model changes, built from the CameraAgent project root. Runs for every full-mode head. |
-| **LogicHost Migrations** | Always skipped for LogicHost retirement (#2048). Required CI expects the named job to report `skipped`. |
 | **Coverage Policy** | Schema validation of every aggregate and component coverage baseline plus rejection of any pull request that lowers a baseline rate, raises its tolerance, or drops a baseline file floor relative to the merge target. Runs for every full-mode head. |
 | **Shared Libraries** | Component lane. Project-root restore/build of the shared test and runner project roots, the shared Unit and Integration selections, a `linux-x64` ProcessingRunner publish with a checksum manifest, and the shared component coverage baseline over 10 slots. |
 | **CameraAgent Component** | Component lane. Project-root restore/build of the CameraAgent host, runner, and test project roots, the CameraAgent Unit and Integration selections, CameraAgent and `linux-x64` ReplayRunner publishes with checksum manifests and an opposite-host assembly check, and the CameraAgent component coverage baseline over 5 slots. |
-| **LogicHost Component** | Always skipped for LogicHost retirement (#2048). Required CI expects the named job to report `skipped`. |
-| **Combined Protocol & Integration** | Always skipped for LogicHost retirement (#2048). Required CI expects the named job to report `skipped`. |
 | **Delivery Component** | Component lane. Project-root restore/build of the deployment CLI project root and the deployment CLI/distribution test roots, which also build the deployment contracts and release-tool projects they reference, against the exact production catalog contract; a `linux-x64` installer publish with a checksum manifest; and the delivery component coverage baseline over 2 slots. |
 | **Coverage** | Aggregate rollup for the complete solution plan: exact source-path and branch merge of 19 expected reports, checked-in aggregate non-regression, and risk-file floors. The Coverlet 10.0.1 baseline is 84.3690% line and 66.3253% branch coverage. Component plans enforce their own baselines inside their lanes instead. |
-| **Required CI** | One current-head aggregate that validates the classifier plan and checks each result. It requires `skipped` for the three retired jobs and evaluates the remaining jobs against the plan. A missing or mismatched result fails the check. |
+| **Required CI** | Validates the classifier plan and checks each job result on the current head. A missing, unexpected, or mismatched result fails the check. |
 
 Each test invocation owns a category/project-specific result directory and TRX name. Coverage rejects any report count other than the expected 19, preventing missing or overwritten evidence.
 
@@ -902,11 +899,12 @@ Unit assembly contributes one v1 coverage report. Preflight checks both name
 exclusions and the project selection.
 
 Full qualification invokes the active Unit and Integration projects by path.
-`migrations-logichost`, `logichost-component`, and `combined-integration` are
-always skipped. Required CI expects those three results even when the classifier
-flags LogicHost or combined paths. The aggregate coverage merge consumes only
-the active report slots. The active inventory in the Required Checks table
-excludes the four retired projects.
+#2049 removes the retired LogicHost migration, LogicHost component, and combined
+integration jobs from full qualification and Required CI. The aggregate coverage
+merge consumes the same 19 active report slots. Architecture & Publish validates
+the retained project graph and publishes CameraAgent, both runners, and the
+installer. The retained split-host deployment fixtures, including the LogicHost
+outage contract, still run through Deployment Contracts.
 
 ## Local Validation
 
@@ -1002,11 +1000,10 @@ not current protected gates. Run them only when changing or reproducing that
 closed evidence campaign.
 
 Run the path-classification, component-plan, and aggregate-protection contract
-tests when changing CI orchestration, the component map, the seam rule, or the
-reduced-mode allowlist. They cover representative shared-only, CameraAgent-only,
-LogicHost-only, combined, delivery, documentation-only, and CI-change diffs,
-`Required CI` failure aggregation and cancellation, and the complete fallback
-matrix:
+tests when changing CI orchestration, the component map, or the reduced-mode
+allowlist. They cover active component diffs, direct changes to retained LogicHost
+projects, documentation-only and CI changes, and `Required CI` failures and
+cancellations.
 
 ```bash
 bash ./scripts/test:ci-classification
@@ -1166,151 +1163,72 @@ job that is `skipped` when the plan expected `success`, so neither a stale plan
 nor an edited job condition can turn an unselected lane into a silent pass.
 
 Pushes to `main` or `release/**` and manual dispatches always use the complete
-solution matrix and exhaustive deployment contracts.
+solution matrix and exhaustive deployment contracts. The classifier and Required
+CI contract apply the same complete plan to merge-group events.
 
 ## Component Selection
 
-Full mode uses the classifier's `complete` flag to select the
-solution-wide Unit Tests, Integration Tests, and aggregate Coverage jobs;
-`shared`, `cameraagent`, and `delivery` select the active component lanes
-when `complete` is `false`. The `logichost` and `combined` flags
-still describe affected projects. The corresponding jobs report
-[intentional skips](#logichost-test-retirement).
+Full mode uses the classifier's `complete` flag to select the solution-wide
+Unit Tests, Integration Tests, and aggregate Coverage jobs. When `complete` is
+`false`, the `shared`, `cameraagent`, and `delivery` flags select the
+component jobs.
 
-Five gates run for every full-mode
-head: **Catalog Contracts** (the exact production catalog bundle both the Unit
-job and the Delivery lane consume), **Build** (warning-clean solution builds and
-the behavioral category audit), **Architecture & Publish** (repository graph,
-provider boundary, host publish evidence, and both category selections of the
-architecture project), **Coverage Policy** (baseline non-regression), and
-**CameraAgent Migrations**. **Quality** runs in every mode and keeps the package
-vulnerability/deprecation audit on every full-mode head.
+Five gates run for every full-mode head. **Catalog Contracts** builds the
+production catalog bundle for Unit Tests and Delivery Component. **Build**
+enforces warning-clean solution builds and the category audit. **Architecture &
+Publish** checks the project graph, provider boundaries, and active publish
+outputs. **Coverage Policy** enforces baseline non-regression. **CameraAgent
+Migrations** verifies the CameraAgent migration. **Quality** runs in every mode
+and audits packages on every full-mode head.
 
-The closed component map is keyed on the exact project directory segment, so
-sibling names such as `HVO.SkyMonitor.CameraAgent.Tests` and
-`HVO.SkyMonitor.CameraAgent.LogicHost.Tests` can never match by prefix:
+Classification matches exact project directory names.
 
 | Component | Owned paths |
 | --- | --- |
-| `shared` | `src/` and `tests/` project directories for `AgentCore`, `Astronomy`, `Imaging`, `Processing`, `ProcessingRunner`, `ProcessingRunner.Contracts`, `Catalog.Sqlite`, `Common`, `Fleet.Contracts`, and `TestSupport` |
+| `shared` | `src/` and `tests/` project directories for `AgentCore`, `Astronomy`, `Catalog.Sqlite`, `Common`, `Fleet.Contracts`, `Imaging`, `Processing`, `ProcessingRunner`, `ProcessingRunner.Contracts`, `Storage.FileSystem`, `TestSupport`, and `Video.FFmpeg` |
 | `cameraagent` | `src/HVO.SkyMonitor.CameraAgent`, `CameraAgent.Cli`, `CameraAgent.Common`, `CameraAgent.Modules.Zwo`, `CameraAgent.Replay`, `CameraAgent.ReplayRunner`, and `tests/HVO.SkyMonitor.CameraAgent.{Tests,AcceptanceTests,IntegrationTests}` |
-| `logichost` | `src/HVO.SkyMonitor.LogicHost` and `tests/HVO.SkyMonitor.LogicHost.{Tests,IntegrationTests,TestInfrastructure}` |
-| `combined` | `tests/HVO.SkyMonitor.CameraAgent.LogicHost.{Tests,IntegrationTests}` |
-| `delivery` | `src/HVO.SkyMonitor.Deployment.*`, `tools/HVO.SkyMonitor.Deployment.ReleaseTool`, and `tests/HVO.SkyMonitor.Deployment.*.Tests` |
+| `delivery` | `src/HVO.SkyMonitor.Deployment.{Cli,Contracts}`, `src/HVO.SkyMonitor.TerminalUi`, `tools/HVO.SkyMonitor.Deployment.ReleaseTool`, and `tests/HVO.SkyMonitor.Deployment.{Cli,Distribution}.Tests` |
 
-Deployment inputs that are not project directories — `deploy/**`,
-`docker-compose.apps.yml`, `.env.template`, `scripts/deploy*`,
-`scripts/catalog*`,
-`scripts/infra:operation-lock`, `scripts/test:deploy*`,
-`scripts/test:deployment-*`, the HYG v42 attribution and license inputs, and
-`tests/fixtures/catalog/hyg-v42-bright-stars.sqlite` — are deliberately **not**
-mapped to the delivery component. Test code reads several of them from the
-repository root at run time, which no project file records: for example
-`SqlOperationsIssue255Tests` and `DatabaseInitializationAcceptanceTests` read and
-assert `deploy/sql/*.sql`, and seven test projects across every component load
-the catalog fixture. Narrowing them would silently drop the suites that assert
-them, so they keep their independent deployment-contract selection and otherwise
-select the complete matrix, exactly as before component scoping.
+A shared change selects all three lanes. CameraAgent and delivery changes
+select their own lanes. The complete matrix is the fallback for paths outside
+the component map, including retained LogicHost projects, unknown projects,
+and CI, package, toolchain, and architecture inputs. Deployment assets such as
+`deploy/**` and `scripts/deploy/**` also use the complete fallback. Their
+independent deployment selection keeps exercising the contracts that consume
+those files.
 
-The classification rules applied to that map are:
+A relative MSBuild item that compiles, embeds, or copies a file can widen the
+plan to cover its consuming projects. An active but unclassified consumer also
+selects the complete matrix. Links into the retained LogicHost projects have
+no component lane to add. For example, changing
+`tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/VirtualSkyPipelineTests.cs`
+selects the CameraAgent lane even though the retained combined Integration
+project also compiles it.
 
-- A shared contract change selects `shared` plus every consuming lane:
-  `cameraagent`, `logichost`, `combined`, and `delivery`. Delivery is included
-  because `HVO.SkyMonitor.Deployment.Cli` and the release tool consume
-  `AgentCore` and `Catalog.Sqlite`.
-- A CameraAgent change selects `cameraagent`, and adds `combined` when the path
-  can change an exported protocol or integration seam.
-- A LogicHost change selects `logichost`, and adds `combined` under the same
-  seam rule.
-- A combined fixture change selects `combined` plus both host lanes.
-- A delivery change selects `delivery`; deployment-contract selection stays
-  independent and still runs the Deployment Contracts gate.
-- CI, coverage, package, architecture, classifier, toolchain, and solution
-  inputs select the complete matrix, and so does any path outside every
-  component boundary. **The default is the complete matrix**, so a new
-  top-level directory or a new project fails closed rather than silently
-  running a narrow plan.
-- Documentation-only pull requests stay in reduced mode only through the
-  existing allowlist, and only while no allowlisted path is compiled, embedded,
-  or copied into a project. Seven allowlisted paths are included by project
-  files today — `THIRD-PARTY-NOTICES.md` and six `docs/validation/*.json`
-  signal manifests — and each leaves reduced mode for the complete matrix. The
-  remaining 234 allowlisted paths still classify reduced.
-
-Seam selection is an inverse allowlist. A host path is treated as an exported
-protocol or integration seam unless it is explicitly host-private, so a new host
-directory fails closed into combined coverage. The host-private set is:
-
-- `src/HVO.SkyMonitor.CameraAgent/{Components,Properties,wwwroot}/**`, except `Components/Account/**`, which wires the identity endpoints the combined suite exercises, and `Properties/AssemblyInfo.cs`, whose `InternalsVisibleTo` grants are what let the combined suites compile
-- `src/HVO.SkyMonitor.CameraAgent.Common/{Background,Diagnostics,Frames,Gallery,Imaging,Logging,Properties,Reflection,Scheduling,SkyMap}/**`, except `Properties/AssemblyInfo.cs`, whose `InternalsVisibleTo` grant is what lets `CameraAgent.LogicHost.Tests` compile
-- `src/HVO.SkyMonitor.CameraAgent.{Modules.Zwo,Replay,ReplayRunner}/**`
-- `src/HVO.SkyMonitor.LogicHost/{Components,Properties,wwwroot}/**`, with the same `Components/Account/**` and `Properties/AssemblyInfo.cs` exceptions
-- every `tests/**` path except `tests/HVO.SkyMonitor.LogicHost.TestInfrastructure/**`, which is the non-test fixture project both the LogicHost and combined suites compose
-
-Everything else inside a host project, including its project root files,
-`Configuration`, `Controllers`, `Endpoints`, `Http`, `Authentication`,
-`Authorization`, `Security`, `Services`, `Data`, `Hosting`, `Infrastructure`,
-`Middleware`, `Models`, `Capture`, `Environmental`, `Transients`, `Modules`,
-`Fleet`, `Upload`, `Deployment`, `DeploymentLocation`, `Operations`, `Options`,
-`RawIngress`, `Storage`, `Telemetry`, and `DependencyInjection`, adds the combined lane.
-The real evidence-exporter combined harness consumes `StoragePressureState`, so
-storage changes must reach that lane alongside CameraAgent coverage.
-
-The host-private set is not merely asserted. `scripts/test:ci-classification`
-extracts every `HVO.SkyMonitor.CameraAgent.Common.*` and
-`HVO.SkyMonitor.LogicHost.*` reference from the two combined test projects —
-plain, `global`, `static`, aliased, and fully qualified alike — and fails when
-any namespace those suites reference maps to a host-private directory, so the
-list cannot drift away from what the combined lane actually guards. The check
-covers the `HVO.SkyMonitor.CameraAgent`, `HVO.SkyMonitor.CameraAgent.Common`, and
-`HVO.SkyMonitor.LogicHost` namespace roots; a host-private file that contributes
-to a combined behavior through some other namespace, such as an ASP.NET routing
-extension, still needs a deliberate carve-out like `Components/Account/**`. A
-second cross-check covers the assembly-visibility graph: any file granting
-`InternalsVisibleTo` to a combined suite must select the combined lane, which is
-why `Properties/AssemblyInfo.cs` is carved out of the host-private set.
-
-Directory ownership is not the only way a source reaches a project. A file that
-another project compiles, embeds, or copies through a relative MSBuild item —
-`<Compile Include>`, `<None Include>` with `CopyToOutputDirectory`, and the rest —
-also selects the including project's component, wherever in the repository it
-lives. `tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/VirtualSkyPipelineTests.cs`
-therefore selects the combined lane because the combined integration project
-compiles it, and `THIRD-PARTY-NOTICES.md` and `docs/validation/*.json` leave
-reduced mode because shipping and test projects copy them.
-
-Link derivation only ever **widens** a plan. A path outside every project
-directory still selects the complete matrix, because test code also reads
-repository-root files at run time in ways no project file records. The
-classifier derives links from the checked-out project files rather than a list,
-and skips project references, which the component map already models, and
-wildcard includes, whose directories the contract test proves already select the
-complete matrix. `scripts/test:ci-classification` copies the real project files
-into its fixture repository and asserts that every resolvable link selects at
-least what a file in the including project selects.
+An otherwise allowlisted path still leaves reduced mode when a project
+includes it. Files outside project directories use the complete matrix because
+tests can read repository-root inputs at runtime. The classifier derives
+relative item links from the checked-out project files. The classification
+contract tests verify that existing links cover their consuming projects and
+that wildcard include directories use the complete fallback.
 
 ### Exact Affected-Gate Selection
 
 Every full-mode row below additionally runs the five never-component-scoped
 gates: Catalog Contracts, Build, Architecture & Publish, Coverage Policy,
-and CameraAgent Migrations. Quality runs in every mode. The Lanes column
-lists classifier flags. LogicHost and combined jobs are always skipped.
+and CameraAgent Migrations. Quality runs in every mode.
 
 | Change | Complete | Lanes | Deployment Contracts |
 | --- | --- | --- | --- |
 | Allowlisted documentation only | no | none | no — and every full-mode gate above is skipped too; only Quality and Required CI run |
-| Shared library or shared test | no | shared, cameraagent, logichost, combined, delivery | no |
-| CameraAgent UI, imaging, `Modules.Zwo`, storage, gallery, scheduling, or replay code | no | cameraagent | no |
-| CameraAgent seam (`Capture`, `Environmental`, `Transients`, `Modules`, `Fleet`, `Upload`, controllers, identity, configuration) | no | cameraagent, combined | no |
-| LogicHost UI code | no | logichost | no |
-| LogicHost seam (controllers, services, data, infrastructure) | no | logichost, combined | no |
-| `tests/HVO.SkyMonitor.LogicHost.TestInfrastructure/**` | no | logichost, combined | no |
-| Combined fixture or combined suite | no | cameraagent, logichost, combined | no |
+| Shared library or shared test | no | shared, cameraagent, delivery | no |
+| CameraAgent code or tests | no | cameraagent | no |
+| Retained LogicHost host or test project | yes | every lane claimed by the complete matrix | yes for the LogicHost Dockerfile |
 | `src/HVO.SkyMonitor.Deployment.*`, `src/HVO.SkyMonitor.TerminalUi`, the release tool, its release-validation shell/JQ helpers, or their tests | no for project paths; yes for repository-root scripts | delivery for project paths; complete for repository-root scripts | yes — release validation selects the installer suite |
 | `deploy/**`, `scripts/deploy*`, `scripts/catalog*`, or the other non-project deployment inputs | yes | every lane claimed by the complete matrix | yes |
 | `THIRD-PARTY-NOTICES.md` or a `docs/validation/*.json` a project copies | yes | every lane claimed by the complete matrix | no |
-| `docs/catalog/hyg-v42-attribution.md` or `hyg-v42-license.md` | no | delivery | no |
-| CameraAgent or LogicHost `Dockerfile` or host configuration sample | no | that host, combined | yes |
+| HYG v42 or v44 attribution or license input | yes | every lane claimed by the complete matrix | no |
+| CameraAgent `Dockerfile` or selected configuration sample | no | cameraagent | yes |
 | CI, classifier, coverage, package, toolchain, solution, or architecture-test input | yes | every lane claimed by the complete matrix | yes for the deployment-contract inputs; the rest run every other gate |
 | `tests/fixtures/**`, including the shared HYG v42 catalog fixture | yes | every lane claimed by the complete matrix | yes for the HYG v42 fixture |
 | Deleted, renamed, type-changed, missing, empty, or unclassifiable path | yes | every lane claimed by the complete matrix | yes |
@@ -1396,9 +1314,8 @@ The CameraAgent and delivery lanes measure their own assemblies.
 `scripts/coverage:component` passes `HVO.SkyMonitor.CameraAgent` and
 `HVO.SkyMonitor.CameraAgent.*` for CameraAgent, and `HVO.SkyMonitor.Deployment.*`
 and `HVO.SkyMonitor.TerminalUi` for delivery, as ReportGenerator assembly filters.
-The Shared Libraries lane and aggregate rollup measure shared code. The retained
-LogicHost and combined component baselines are checked by Coverage Policy, and
-their coverage reports are outside the active qualification set (#2048).
+The Shared Libraries lane and aggregate rollup measure shared code. Coverage
+Policy checks the aggregate and the three active component baselines.
 
 A lane merges fewer reports than the aggregate rollup, so its measured rates are
 its own. To keep component gating from relaxing risk coverage, `Coverage Policy`

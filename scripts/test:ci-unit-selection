@@ -323,7 +323,7 @@ set -euo pipefail
 printf '%s\n' "$*" >> "$HVO_COMPONENT_BUILD_LOG"
 DOTNET
 chmod +x "$scratch/bin/dotnet"
-for component in shared cameraagent logichost combined delivery; do
+for component in shared cameraagent delivery; do
   "$repo_root/scripts/ci:component-build" "$component" --list-projects > "$scratch/plan"
   awk '{ print "restore " $0 }' "$scratch/plan" > "$scratch/expected"
   awk '{ print "build " $0 " --no-restore --configuration Release -warnaserror" }' "$scratch/plan" >> "$scratch/expected"
@@ -333,4 +333,4 @@ for component in shared cameraagent logichost combined delivery; do
   cmp "$scratch/expected" "$scratch/actual"
 done
 
-printf 'CI Unit selection contract passed (full job, two supplemental component selections/build roots, 2 multiline key controls, clean export absence, and 17 input-inspection failure controls).\n'
+printf 'CI Unit selection contract passed (full job, two supplemental component selections/build roots, three component build plans, 2 multiline key controls, clean export absence, and 17 input-inspection failure controls).\n'
