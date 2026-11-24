@@ -268,6 +268,10 @@ if result.returncode != 0:
 shutil.copy2(assembly_output / f"{assembly_name}.dll", assembly_output / "Fixture.Tests.dll")
 shutil.copy2(assembly_output / f"{assembly_name}.deps.json", assembly_output / "Fixture.Tests.deps.json")
 (inventory_repo / "tests/Fixture.Tests/test-categories.json").write_text('{"Unit":1}')
+for retired_project in ("HVO.SkyMonitor.LogicHost.Tests", "HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests"):
+    retired_inventory = inventory_repo / "tests" / retired_project / "test-categories.json"
+    retired_inventory.parent.mkdir()
+    retired_inventory.write_text('{"Unit":4}')
 shutil.copy2(root / "tests/coverage.runsettings", inventory_repo / "tests/coverage.runsettings")
 fixture_scripts = inventory_repo / "scripts"
 fixture_scripts.mkdir()

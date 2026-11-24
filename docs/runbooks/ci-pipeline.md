@@ -14,13 +14,14 @@ remains in Build. Both are intentionally absent from the short workflow.
 **Development v1 / Build and Unit** enforces the canonical risk-file line and
 branch floors from `scripts/coverage/baseline.json`, using the same pinned
 ReportGenerator merge and `scripts/coverage/Program.cs` evaluator as the local
-canonical gate. The inputs differ: v1 includes ProcessingRunner.Tests and four
-supplemental Unit projects, with no Integration slots; it does not reproduce the
-canonical slot set. No threshold is copied into the workflow. Preflight also runs
+canonical gate. V1 collects from ProcessingRunner.Tests and the two active
+supplemental Unit projects as well as the regular Unit projects. Integration
+reports belong to full qualification. Preflight also runs
 `scripts/coverage:policy`: PRs cannot lower any aggregate/component floor, remove
 a file floor, widen tolerance, or add an arbitrary v1 local-only path.
 
-The existing complete Docker-disabled Unit selection collects coverage once.
+The Docker-disabled Unit selection [skips the retired LogicHost projects](#logichost-test-retirement)
+and collects coverage once.
 `scripts/coverage:development-v1 --settings OUTPUT` copies
 `tests/coverage.runsettings`, derives its assembly Include filter from existing
 canonical floor paths, and sets `SingleHit=true`. Floors measure whether each
@@ -29,7 +30,7 @@ more expensive. All other collector settings, including canonical test-assembly,
 TestSupport, migration, build-output and attribute exclusions remain intact.
 This avoids instrumenting host assemblies whose coverage is not measured by this
 profile. The generated settings are retained with the raw reports. The merge
-requires one GUID-directory report per Unit-bearing project's category inventory;
+requires one GUID-directory report per active Unit-bearing project's category inventory;
 it excludes TRX attachment copies and never searches outside the fresh run root.
 Every input is parsed and checked before ReportGenerator runs: that tool can log
 a malformed input, omit it and still exit zero. Raw records must occupy the
@@ -120,11 +121,10 @@ The following scope limits leave every numeric floor unchanged:
 
 - Full-suite aggregate floors and additional/higher component file floors remain
   local/full-qualification checks, calibrated to their exact coverage slot sets.
-  Shared coverage includes Astronomy Integration tests; the CameraAgent,
-  LogicHost and combined lanes include their owning Integration suites. Delivery
-  uses Unit tests with the production catalog bundle provisioned. V1 supplies
-  neither those complete slot sets nor the catalog prerequisite and claims no
-  aggregate qualification from its partial assembly coverage.
+  Shared coverage includes Astronomy Integration tests, and CameraAgent
+  coverage includes its own Integration suites. Delivery uses Unit tests with
+  the production catalog bundle provisioned. The v1 assembly coverage provides
+  per-file evidence from the Docker-disabled Unit selection.
 - ReleaseTool `Program.cs` remains local/full-qualification-only because v1 does
   not provision `HVO_PRODUCTION_CATALOG_BUNDLE` for its catalog-gated Unit tests.
   Its `developmentV1LocalOnlyReason` lives beside its unchanged 50% line/35%
@@ -165,7 +165,11 @@ dotnet tool restore
 dotnet restore HVO.SkyMonitor.v9.slnx --disable-build-servers
 dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release --disable-build-servers -p:UseSharedCompilation=false -warnaserror
 ./scripts/coverage:development-v1 --settings "$evidence_root/coverage.runsettings"
-DOCKER_HOST=unix:///tmp/hvo-no-docker.sock dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release --filter "TestCategory=Unit" --settings "$evidence_root/coverage.runsettings" --collect:"XPlat Code Coverage" --results-directory "$evidence_root/unit" --logger trx
+DOCKER_HOST=unix:///tmp/hvo-no-docker.sock \
+  dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release \
+    --filter 'TestCategory=Unit&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost' \
+    -p:SkipLogicHostTests=true --settings "$evidence_root/coverage.runsettings" \
+    --collect:"XPlat Code Coverage" --results-directory "$evidence_root/unit" --logger trx
 ./scripts/test:coverage-development-v1
 ./scripts/coverage:development-v1 "$evidence_root/unit" "$evidence_root/coverage"
 BASH
@@ -290,26 +294,26 @@ A green sync PR is integration evidence and does not replace promotion qualifica
 | **Quality** | The full-history [secret scan](#secret-scan), workflow lint, syntax and documentation audits, the Unit-selection completeness control, lightweight environment/classification contracts, and Compose validation run in every selected Quality job. Full mode also enforces formatting, package vulnerability/deprecation policy, and pinned .NET tools; manual dispatch additionally validates the historical Phase 14 acceptance inventory. Reduced mode does not restore or audit application packages it cannot affect. A 45-minute qualification job budget covers formatting, the complete control-contract batch, package audit and the manual historical acceptance gate. |
 | **Deployment Contracts** | Deployment-relevant pull requests run the coordinator watchdog/failure contracts and current campaign-shape contracts, plus only the affected exhaustive catalog, split-host, or installer suite selected by the classifier. Main/release/manual runs execute every exhaustive suite. Otherwise its planned `skipped` result is required. |
 | **Build** | Warning-clean solution Debug and Release builds plus complete, disjoint behavioral category discovery. Never component-scoped, so no component plan can hide a warning or a category-count drift. Skipped only in classified reduced mode. |
-| **Unit Tests** | 17832 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths, plus four TRX-only supplemental runs (see [Supplemental Unit selections](#supplemental-unit-selections)) so every project that owns Unit cases is executed. Runs only for the complete solution plan; component plans run their own per-project commands inside their selected lanes including each lane’s owned supplemental Unit selection (#1261). A 45-minute full-qualification job budget covers restore/build, the serial test/coverage selections and evidence upload. |
-| **Integration Tests** | 1540 Integration-category cases across SQLite, filesystem object storage, SQL Server, Redis, Mailpit, forwarded-header, host integration, and the 7 repository graph/provider-boundary/publish cases in Architecture & Publish. LogicHost coverage includes clean/current-layout initialization, idempotency, schema, locking, and permission behavior. Runs only for the complete solution plan; component plans run the same per-project commands inside their selected lanes. The LogicHost assembly runs in its own lane beside the other five assemblies because it is the measured controlling path (#850); commands, results directories and TRX names are unchanged. |
+| **Unit Tests** | 16596 Unit cases across 17 active assemblies with an intentionally invalid Docker endpoint. Two [supplemental Unit selections](#supplemental-unit-selections) write TRX only. The complete solution plan runs this job. Component plans run the selections in their active lanes. A 45-minute full-qualification job budget covers restore/build, the serial test/coverage selections and evidence upload. |
+| **Integration Tests** | 916 Integration-category cases in the active inventory, including the 7 repository graph/provider-boundary/publish cases in Architecture & Publish. The complete solution plan runs the other 909 cases across Astronomy and three CameraAgent assemblies. The Integration step attempts all four assemblies and reports failure if any fail. |
 | **Architecture & Publish** | Both category selections of the architecture project, and membership is the project's own category discovery rather than any narrower reading of "boundary": the 34 Unit-category boundary cases, including the host `Dockerfile`, fault-matrix discovery, and CameraAgent event-ID uniqueness contracts, and the 7 Integration-category repository graph/provider-boundary/MSBuild/publish cases; plus retained host publish manifests and self-contained installer publishes with SHA-256 manifests for Linux x64 and ARM64. Never component-scoped, so no component plan can skip the architecture or host-publish boundary. |
 | **CameraAgent Migrations** | Exactly one canonical initial migration source for CameraAgent Identity plus zero pending CameraAgent EF model changes, built from the CameraAgent project root. Runs for every full-mode head. |
-| **LogicHost Migrations** | Exactly one canonical initial migration source for LogicHost plus zero pending LogicHost EF model changes, built from the LogicHost project root. Runs for every full-mode head. Unreleased legacy-schema convergence is not supported by either host. |
+| **LogicHost Migrations** | Always skipped for LogicHost retirement (#2048). Required CI expects the named job to report `skipped`. |
 | **Coverage Policy** | Schema validation of every aggregate and component coverage baseline plus rejection of any pull request that lowers a baseline rate, raises its tolerance, or drops a baseline file floor relative to the merge target. Runs for every full-mode head. |
 | **Shared Libraries** | Component lane. Project-root restore/build of the shared test and runner project roots, the shared Unit and Integration selections, a `linux-x64` ProcessingRunner publish with a checksum manifest, and the shared component coverage baseline over 10 slots. |
 | **CameraAgent Component** | Component lane. Project-root restore/build of the CameraAgent host, runner, and test project roots, the CameraAgent Unit and Integration selections, CameraAgent and `linux-x64` ReplayRunner publishes with checksum manifests and an opposite-host assembly check, and the CameraAgent component coverage baseline over 5 slots. |
-| **LogicHost Component** | Component lane. Project-root restore/build of the LogicHost host and test project roots, the LogicHost Unit and Integration selections, the LogicHost publish with checksum manifest and an opposite-host assembly check, and the LogicHost component coverage baseline over 2 slots. |
-| **Combined Protocol & Integration** | Component lane. Project-root restore/build and execution of the only suites allowed to compose both hosts, covering registration, identity, artifact transfer, fleet contracts, and other cross-host behavior, plus the combined component coverage baseline over 2 slots. |
+| **LogicHost Component** | Always skipped for LogicHost retirement (#2048). Required CI expects the named job to report `skipped`. |
+| **Combined Protocol & Integration** | Always skipped for LogicHost retirement (#2048). Required CI expects the named job to report `skipped`. |
 | **Delivery Component** | Component lane. Project-root restore/build of the deployment CLI project root and the deployment CLI/distribution test roots, which also build the deployment contracts and release-tool projects they reference, against the exact production catalog contract; a `linux-x64` installer publish with a checksum manifest; and the delivery component coverage baseline over 2 slots. |
-| **Coverage** | Aggregate rollup for the complete solution plan: exact source-path and branch merge of 23 expected reports, checked-in aggregate non-regression, and risk-file floors. The Coverlet 10.0.1 baseline is 84.3690% line and 66.3253% branch coverage. Component plans enforce their own baselines inside their lanes instead. |
-| **Required CI** | One current-head aggregate whose expected job results are derived from the validated classifier plan. It fails when any expected check fails, times out, is canceled, is missing, is unexpectedly skipped, or is unexpectedly run, and it rejects the plan itself when the plan is incomplete, self-inconsistent, or invalid for the event. |
+| **Coverage** | Aggregate rollup for the complete solution plan: exact source-path and branch merge of 19 expected reports, checked-in aggregate non-regression, and risk-file floors. The Coverlet 10.0.1 baseline is 84.3690% line and 66.3253% branch coverage. Component plans enforce their own baselines inside their lanes instead. |
+| **Required CI** | One current-head aggregate that validates the classifier plan and checks each result. It requires `skipped` for the three retired jobs and evaluates the remaining jobs against the plan. A missing or mismatched result fails the check. |
 
-Each test invocation owns a category/project-specific result directory and TRX name. Coverage rejects any report count other than the expected 23, preventing missing or overwritten evidence.
+Each test invocation owns a category/project-specific result directory and TRX name. Coverage rejects any report count other than the expected 19, preventing missing or overwritten evidence.
 
 Change Classification, Catalog Contracts, Catalog Reproducibility, Quality,
 Coverage Policy, and Required CI run on pinned `ubuntu-24.04` hosted runners. Deployment Contracts, Build, Unit
-Tests, Integration Tests, Architecture & Publish, both migration checks, every
-component lane, Coverage, and Coverage Badges remain on the labeled self-hosted
+Tests, Integration Tests, Architecture & Publish, CameraAgent Migrations, active
+component lanes, Coverage, and Coverage Badges run on the labeled self-hosted
 runners and also require `hvo-qualification`. Two x64 runners stay without that
 label so ready `development/v1` checks are not queued behind a qualification
 fan-out; see `docs/runbooks/ci-runner-capacity.md`. This allocation keeps the long
@@ -675,6 +679,16 @@ advisory build passes resolved native references through the same arguments.
   requires that SDK exactly (`rollForward: disable`), so a new SDK is a manual
   change to `global.json`, every SDK-bearing Dockerfile, and the other SDK pins
   together.
+- The `ignore` entries block Dependabot proposals for .NET 11 versions of
+  `Microsoft.*`, `System.*`, and `Serilog.AspNetCore` NuGet packages
+  (`>= 11.0.0, < 12.0.0`) and for `dotnet/*` image tags at .NET 11 and later
+  (`>= 11`). Dependabot compares the numeric part of tags such as `11.0-noble`.
+  During the .NET 11 upgrade, raise the ranges to the next major or remove the
+  holds and update the regression test so 11.0.x servicing is eligible.
+  `scripts/test:ci-base-images` requires the holds to start one major above the
+  SDK in `global.json` and the NuGet range to span one major. If the repository
+  stays on .NET 10 when .NET 12 ships, extend the NuGet range and update the
+  regression test in the same change.
 - `devcontainers/base` receives reviewed stable patch/minor tag updates within
   major `3` and digest refreshes, staying on Ubuntu `24.04`. Dependabot ignores
   major updates; `ci:base-images` also checks the complete `3.x.y-ubuntu24.04`
@@ -868,6 +882,32 @@ These totals and the Unit/Integration rows in [Required Checks](#required-checks
 
 `External` is implemented by the pinned, networkless Stellarium workflow rather than an empty MSTest check. The accelerated `Soak` case and real-duration soak are independently selectable in `.github/workflows/cameraagent-soak.yml`. The Hardware case remains separately selectable and is not published as a CI check until a suitable device runner exists.
 
+## LogicHost test retirement
+
+#2048 retires execution of the two LogicHost and two combined CameraAgent–LogicHost
+test assemblies from CI and routine local validation. They remain in the solution
+build and the exhaustive category discovery audit. The audit counts the retained
+tests by discovery without running their test bodies.
+
+Development v1 and the manually dispatched CI v2 baseline use this MSTest filter.
+
+```text
+TestCategory=Unit&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost
+```
+
+The `-p:SkipLogicHostTests=true` argument excludes the retired projects from
+VSTest before discovery. This also covers their tests with historical namespaces
+and the pool-clear contract compiled into multiple assemblies. Each active
+Unit assembly contributes one v1 coverage report. Preflight checks both name
+exclusions and the project selection.
+
+Full qualification invokes the active Unit and Integration projects by path.
+`migrations-logichost`, `logichost-component`, and `combined-integration` are
+always skipped. Required CI expects those three results even when the classifier
+flags LogicHost or combined paths. The aggregate coverage merge consumes only
+the active report slots. The active inventory in the Required Checks table
+excludes the four retired projects.
+
 ## Local Validation
 
 ```bash
@@ -878,8 +918,13 @@ dotnet build HVO.SkyMonitor.v9.slnx --no-restore --no-incremental --configuratio
 dotnet format HVO.SkyMonitor.v9.slnx --no-restore --verify-no-changes
 ./scripts/package:audit
 dotnet run --project scripts/test-categories/HVO.SkyMonitor.TestCategoryAudit.csproj --configuration Release
-DOCKER_HOST=unix:///tmp/hvo-no-docker.sock dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release --filter "TestCategory=Unit"
-dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release --filter "TestCategory=Integration"
+DOCKER_HOST=unix:///tmp/hvo-no-docker.sock \
+  dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release \
+    --filter 'TestCategory=Unit&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost' \
+    -p:SkipLogicHostTests=true
+dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release \
+  --filter 'TestCategory=Integration&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost' \
+  -p:SkipLogicHostTests=true
 ```
 
 Use the exact per-project commands in `.github/workflows/ci.yml` when producing
@@ -975,7 +1020,7 @@ review: a base-sync review verifies that the merge preserved both sides'
 behaviour, which is the wrong instrument for a classifier lane that each side
 satisfied separately and their union does not.
 
-Use a fresh result root for every collection. Before merging, require exactly one report from each of the 23 category/project slots as shown in `.github/workflows/ci.yml`; never merge every historical GUID directory under a reused result root. Merge those 23 explicit reports once with the pinned ReportGenerator tool, then enforce and publish that same canonical result:
+Use a fresh result root for every collection. Before merging, require exactly one report from each of the 19 category/project slots as shown in `.github/workflows/ci.yml`; never merge every historical GUID directory under a reused result root. Merge those 19 explicit reports once with the pinned ReportGenerator tool, then enforce and publish that same canonical result:
 
 ```bash
 patterns=(
@@ -993,14 +1038,10 @@ patterns=(
   'TestResults/unit/architecture/*/coverage.cobertura.xml'
   'TestResults/unit/cameraagent/*/coverage.cobertura.xml'
   'TestResults/unit/cameraagent-acceptance/*/coverage.cobertura.xml'
-  'TestResults/unit/logichost/*/coverage.cobertura.xml'
-  'TestResults/unit/cameraagent-logichost/*/coverage.cobertura.xml'
   'TestResults/integration/cameraagent-storage/*/coverage.cobertura.xml'
   'TestResults/integration/cameraagent-standalone/*/coverage.cobertura.xml'
   'TestResults/integration/astronomy/*/coverage.cobertura.xml'
-  'TestResults/integration/logichost/*/coverage.cobertura.xml'
   'TestResults/integration/cameraagent/*/coverage.cobertura.xml'
-  'TestResults/integration/cameraagent-logichost/*/coverage.cobertura.xml'
   'TestResults/architecture/*/coverage.cobertura.xml'
 )
 reports=()
@@ -1016,16 +1057,15 @@ dotnet reportgenerator "-reports:$(IFS=';'; echo "${reports[*]}")" -targetdir:co
 ./scripts/coverage:enforce --merged coverage-report/Cobertura.xml
 ```
 
-Pending-model checks use the pinned `dotnet-ef` tool:
+The CameraAgent pending-model check uses the pinned `dotnet-ef` tool.
 
 ```bash
 dotnet ef migrations has-pending-model-changes --project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj --startup-project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj --context HVO.SkyMonitor.CameraAgent.Data.ApplicationDbContext --configuration Release --no-build
-ConnectionStrings__skymonitordb="Server=127.0.0.1,1433;Database=ModelCheck;User Id=sa;Password=Model_check1!;TrustServerCertificate=True" dotnet ef migrations has-pending-model-changes --project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj --startup-project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj --context HVO.SkyMonitor.LogicHost.Data.ApplicationDbContext --configuration Release --no-build
 ```
 
-Each split migration job first requires exactly one non-designer timestamped
-migration source file in its own EF context, through
-`./scripts/ci:canonical-migration <cameraagent|logichost>`. A model change replaces that canonical migration
+The CameraAgent migration job first requires exactly one non-designer timestamped
+migration source file in its EF context using
+`./scripts/ci:canonical-migration cameraagent`. A model change replaces that canonical migration
 and snapshot; adding a second migration fails CI during the pre-release period.
 
 ## Protection And Review
@@ -1083,8 +1123,8 @@ contain secrets. It does not set up .NET, restore/format the solution, build
 catalog artifacts, or run the package audit for paths excluded from
 application/package behavior. It
 intentionally skips Catalog Contracts, Catalog Reproducibility, Build, Unit Tests, Integration Tests,
-Architecture & Publish, Coverage Policy, both migration checks, every component
-lane, and Coverage. Reduced mode is the only plan in which the never-component-scoped
+Architecture & Publish, Coverage Policy, CameraAgent Migrations, the active
+component lanes, and Coverage. Reduced mode is the only plan in which the never-component-scoped
 gates do not run, because no executable contract is affected. Documentation-only reduced pull requests also skip
 Deployment Contracts. `Required CI` accepts those skipped results only when
 classification and Quality succeeded, the deployment plan is explicitly `false`,
@@ -1130,24 +1170,20 @@ solution matrix and exhaustive deployment contracts.
 
 ## Component Selection
 
-Full mode is refined by six further classifier outputs. `complete` selects the
+Full mode uses the classifier's `complete` flag to select the
 solution-wide Unit Tests, Integration Tests, and aggregate Coverage jobs;
-`shared`, `cameraagent`, `logichost`, `combined`, and `delivery` select the
-component lanes. A lane runs only when `complete` is `false`, so the complete
-matrix and the lanes never duplicate the same evidence, and `Required CI`
-derives each job's expected result from that plan rather than from a hard-coded
-list.
+`shared`, `cameraagent`, and `delivery` select the active component lanes
+when `complete` is `false`. The `logichost` and `combined` flags
+still describe affected projects. The corresponding jobs report
+[intentional skips](#logichost-test-retirement).
 
-Six gates are deliberately never component-scoped and run for every full-mode
+Five gates run for every full-mode
 head: **Catalog Contracts** (the exact production catalog bundle both the Unit
 job and the Delivery lane consume), **Build** (warning-clean solution builds and
 the behavioral category audit), **Architecture & Publish** (repository graph,
 provider boundary, host publish evidence, and both category selections of the
-architecture project), **Coverage Policy** (baseline non-regression), and both
-**CameraAgent Migrations** and **LogicHost Migrations**. The migration gate is
-split per host so each failure is attributable to one EF context, but neither
-half is component-selected: a delivery-only or documentation-adjacent plan still
-runs both. **Quality** already runs in every mode and keeps the package
+architecture project), **Coverage Policy** (baseline non-regression), and
+**CameraAgent Migrations**. **Quality** runs in every mode and keeps the package
 vulnerability/deprecation audit on every full-mode head.
 
 The closed component map is keyed on the exact project directory segment, so
@@ -1255,10 +1291,10 @@ least what a file in the including project selects.
 
 ### Exact Affected-Gate Selection
 
-Every full-mode row below additionally runs the six never-component-scoped
+Every full-mode row below additionally runs the five never-component-scoped
 gates: Catalog Contracts, Build, Architecture & Publish, Coverage Policy,
-CameraAgent Migrations, and LogicHost Migrations. Quality runs in every mode,
-including reduced. The table records only what varies.
+and CameraAgent Migrations. Quality runs in every mode. The Lanes column
+lists classifier flags. LogicHost and combined jobs are always skipped.
 
 | Change | Complete | Lanes | Deployment Contracts |
 | --- | --- | --- | --- |
@@ -1281,8 +1317,7 @@ including reduced. The table records only what varies.
 | Push to `main`/`release/**` or manual dispatch | yes | every lane claimed by the complete matrix | yes |
 
 The complete matrix additionally runs Unit Tests, Integration Tests, and the
-aggregate Coverage rollup, which every component plan skips in favour of its
-lanes.
+aggregate Coverage rollup. Component plans run the applicable active lanes.
 
 [Catalog Reproducibility](#catalog-reproducibility) is selected independently of
 those columns: a change under `scripts/catalog/**` or `tests/fixtures/catalog/**`
@@ -1345,12 +1380,10 @@ Use the exact per-project `dotnet test` invocations in `.github/workflows/ci.yml
 for the remaining slots of the selected lane; `scripts/coverage:component
 --list-slots <component>` prints the exact result directories a lane must
 produce, and the lane fails when a slot is missing, duplicated, or borrowed from
-an unselected lane. The split migration checks and the coverage policy have
-direct local equivalents:
+an unselected lane. The CameraAgent migration and coverage policy checks have direct local equivalents.
 
 ```bash
 ./scripts/ci:canonical-migration cameraagent
-./scripts/ci:canonical-migration logichost
 ./scripts/coverage:policy pull_request main
 ```
 
@@ -1359,24 +1392,13 @@ Component baselines live beside the aggregate baseline as
 rate over the files its lane measures plus its own critical-file floors, so a
 regression in one component cannot be masked by another component's coverage.
 
-The CameraAgent, LogicHost and delivery lanes measure only the assemblies they
-own, as the classifier's project lists assign them: `HVO.SkyMonitor.CameraAgent`
-and `HVO.SkyMonitor.CameraAgent.*`, `HVO.SkyMonitor.LogicHost`, and
-`HVO.SkyMonitor.Deployment.*` with `HVO.SkyMonitor.TerminalUi`.
-`scripts/coverage:component` passes each lane's set to ReportGenerator as
-`-assemblyfilters`. Coverlet instruments every HVO assembly in a test project's
-output, including the shared assemblies a host references, so without the
-filter shared code the host's tests never call would count against the host's
-floor. #1408's orbital contracts took the LogicHost lane below its floor that
-way (#1420). Shared code is measured by the shared lane and the aggregate
-rollup, with one gap: the `ProcessingRunner` and `ProcessingRunner.Contracts`
-files LogicHost's tests reach are not in the shared lane, because the
-ProcessingRunner suite is not a coverage slot (below). The aggregate rollup
-still measures both, and the combined lane measures the contracts. The shared
-and combined lanes keep every assembly their reports carry: the shared suites
-reference only shared assemblies, and the combined baseline floors the shared
-contracts both hosts compose. A filter that drops a floored file, or leaves a
-report with no classes, fails the lane rather than passing it.
+The CameraAgent and delivery lanes measure their own assemblies.
+`scripts/coverage:component` passes `HVO.SkyMonitor.CameraAgent` and
+`HVO.SkyMonitor.CameraAgent.*` for CameraAgent, and `HVO.SkyMonitor.Deployment.*`
+and `HVO.SkyMonitor.TerminalUi` for delivery, as ReportGenerator assembly filters.
+The Shared Libraries lane and aggregate rollup measure shared code. The retained
+LogicHost and combined component baselines are checked by Coverage Policy, and
+their coverage reports are outside the active qualification set (#2048).
 
 A lane merges fewer reports than the aggregate rollup, so its measured rates are
 its own. To keep component gating from relaxing risk coverage, `Coverage Policy`
@@ -1395,30 +1417,31 @@ gate; only its coverage report is discarded, exactly as the Unit job does today.
 
 ## Supplemental Unit selections
 
-`tests/Directory.Build.props` compile-links `TestSettings/ConnectionPoolClearContract.cs` into every test project, so each assembly checks its own pool-clear usage. In four assemblies whose remaining cases are Integration or Manual, those four contract cases are the only Unit cases, and the Unit job once omitted the assemblies because their names do not read as Unit projects (#1255):
+`tests/Directory.Build.props` compile-links `TestSettings/ConnectionPoolClearContract.cs` into every test project, so each assembly checks its own pool-clear usage. The Unit job runs the pool-clear contracts separately in the active assemblies listed below (#1255).
 
 | Project | Results directory |
 | --- | --- |
 | `HVO.SkyMonitor.CameraAgent.IntegrationTests` | `TestResults/unit/cameraagent-integration` |
-| `HVO.SkyMonitor.LogicHost.IntegrationTests` | `TestResults/unit/logichost-integration` |
-| `HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests` | `TestResults/unit/cameraagent-logichost-integration` |
 | `HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests` | `TestResults/unit/catalog-sqlite-performance` |
 
-The Unit job runs them in a separate step with the same positive Unit filter, with a TRX logger and no coverage collection. The step sets `DOCKER_HOST=unix:///tmp/hvo-no-docker.sock` instead of the job's endpoint because the `LogicHost.IntegrationTests` assembly hook skips its Testcontainers fixture only for that value; under the job endpoint it would start SQL Server and Redis containers on any host with a reachable Docker daemon. They are deliberately not canonical coverage slots: the aggregate rollup's exact-path slot list is unchanged, so no duplicate or incompatible Cobertura report reaches the canonical merge, and the retained `unit-test-evidence` artifact gains only their TRX files.
+The supplemental step uses the positive Unit filter with
+`DOCKER_HOST=unix:///tmp/hvo-no-docker.sock`. These two selections write TRX to
+`unit-test-evidence` and contribute no reports to the coverage merge.
 
-When the classifier returns `complete=false`, each owning component lane also runs its four compile-linked Unit cases: shared uses Catalog.Sqlite.PerformanceTests, CameraAgent uses CameraAgent.IntegrationTests, LogicHost uses LogicHost.IntegrationTests, and combined uses CameraAgent.LogicHost.IntegrationTests. Delivery owns none. These separate steps use the exact Docker-disabled endpoint and TRX-only slots listed above, before the existing component upload; Integration, canonical coverage slots, thresholds and artifact roots are unchanged. The shared component build now includes the Catalog performance test root; the other three assemblies were already lane build roots.
+When `complete=false`, the Shared Libraries and CameraAgent jobs run the
+corresponding supplemental selection before uploading their component evidence.
 
-`./scripts/ci:unit-selection` derives the expectation from the inventories instead of from this list: every `tests/<project>/test-categories.json` with `Unit > 0` must be selected by exactly one Unit-job `dotnet test` command that uses `--no-build`, Release, `--filter "$UNIT_FILTER"` and a TRX logger `unit-<slot>.trx` under its own `TestResults/unit/<slot>`; the command's step must match a closed grammar (a `- name:` opening line, an optional `env:` mapping holding only `DOCKER_HOST`, one `run: |` block of `dotnet test tests/<project>.csproj` lines that use only `--no-build`, `--configuration Release`, `--filter "$UNIT_FILTER"`, `--settings`, `--collect`, `--results-directory` and the TRX `--logger`) so an `if:` or `continue-on-error:` key in any spelling, a reindented step, a heredoc or shell operator, a step-level `UNIT_FILTER` override, or an option such as `--list-tests` that stops a line executing the cases is rejected, as is anything around the step that changes what it runs (workflow or job `defaults:` or `shell:`, workflow or job env beyond `DOTNET_*` and `DOCKER_HOST`/`UNIT_FILTER`, an earlier step exporting through `GITHUB_ENV` or `GITHUB_PATH` other than the catalog bundle path, a selection placed after `Bind Unit evidence`/`Upload Unit evidence`, or an upload path other than `TestResults/unit/`), a command that selects a project owning no Unit cases, a slot shared by two commands, a slot that is a canonical Coverage slot without collecting coverage, and supplemental coverage collection or `--settings`, or a supplemental step without the Docker-disabled endpoint, all fail. Job-level `env:` and workflow-level `env:` must hold only plain single-line `KEY: value` entries (a quoted key, a flow mapping or a folded continuation under `UNIT_FILTER` is rejected), and a `defaults` key in any spelling is rejected anywhere in the workflow and a `shell` key anywhere in the Unit job.
+`./scripts/ci:unit-selection` derives the expectation from the inventories instead of from this list: every active `tests/<project>/test-categories.json` with `Unit > 0` must be selected by exactly one Unit-job `dotnet test` command that uses `--no-build`, Release, `--filter "$UNIT_FILTER"` and a TRX logger `unit-<slot>.trx` under its own `TestResults/unit/<slot>`; the command's step must match a closed grammar (a `- name:` opening line, an optional `env:` mapping holding only `DOCKER_HOST`, one `run: |` block of `dotnet test tests/<project>.csproj` lines that use only `--no-build`, `--configuration Release`, `--filter "$UNIT_FILTER"`, `--settings`, `--collect`, `--results-directory` and the TRX `--logger`) so an `if:` or `continue-on-error:` key in any spelling, a reindented step, a heredoc or shell operator, a step-level `UNIT_FILTER` override, or an option such as `--list-tests` that stops a line executing the cases is rejected, as is anything around the step that changes what it runs (workflow or job `defaults:` or `shell:`, workflow or job env beyond `DOTNET_*` and `DOCKER_HOST`/`UNIT_FILTER`, an earlier step exporting through `GITHUB_ENV` or `GITHUB_PATH` other than the catalog bundle path, a selection placed after `Bind Unit evidence`/`Upload Unit evidence`, or an upload path other than `TestResults/unit/`), a command that selects a retired project or one owning no Unit cases, a slot shared by two commands, a slot that is a canonical Coverage slot without collecting coverage, and supplemental coverage collection or `--settings`, or a supplemental step without the Docker-disabled endpoint, all fail. Job-level `env:` and workflow-level `env:` must hold only plain single-line `KEY: value` entries (a quoted key, a flow mapping or a folded continuation under `UNIT_FILTER` is rejected), and a `defaults` key in any spelling is rejected anywhere in the workflow and a `shell` key anywhere in the Unit job.
 
-Bounded guarantee: the control proves that, for each inventory-derived Unit-bearing project, the full `unit` job holds one supported selecting command whose arguments and report boundaries (positive filter, TRX slot, coverage, Docker endpoint) are checked, ahead of the evidence bind and upload. It is not proof of arbitrary future shell execution, of whole-job artifact membership or publication (an upload condition, a cleanup step, a second upload), of installed catalog availability, or of checkout trust (a `ref:` input). #1265 accepts the following bounded gaps with the existing workflow-review control, rather than adding a whole-job parser or changing the workflow:
+Bounded guarantee: the control proves that, for each active inventory-derived Unit-bearing project, the full `unit` job holds one supported selecting command whose arguments and report boundaries (positive filter, TRX slot, coverage, Docker endpoint) are checked, ahead of the evidence bind and upload. It is not proof of arbitrary future shell execution, of whole-job artifact membership or publication (an upload condition, a cleanup step, a second upload), of installed catalog availability, or of checkout trust (a `ref:` input). #1265 accepts the following bounded gaps with the existing workflow-review control, rather than adding a whole-job parser or changing the workflow:
 
-- **Publication and supplemental TRX membership.** Review must keep the effective upload condition and inputs valid for every qualification event, include all four supplemental TRX directories in the actual `unit-test-evidence` upload, and reject TRX-deleting steps between selection and publication or later uploads that overwrite that artifact. Finding `path: TestResults/unit/` somewhere in the job does not prove those effective inputs. Canonical Coverage slot checks catch lost canonical reports; **Required CI alone does not prove supplemental TRX membership in the uploaded artifact**.
-- **Catalog prerequisite.** Review must preserve the required-and-executing restore, missing-bundle failure and `HVO_PRODUCTION_CATALOG_BUNDLE` export before the affected full-qualification Unit selections, including on pull requests. Removing the export or making the restore conditional can make the catalog-dependent subset Inconclusive instead of executing; it does not affect every selection equally. The selection guard does not prove bundle availability. The separate `development/v1` profile intentionally runs Unit without this bundle and is unchanged.
+- **Publication and supplemental TRX membership.** Review must keep the effective upload condition and inputs valid for every qualification event, include both supplemental TRX directories in the actual `unit-test-evidence` upload, and reject TRX-deleting steps between selection and publication or later uploads that overwrite that artifact. Finding `path: TestResults/unit/` somewhere in the job does not prove those effective inputs. Canonical Coverage slot checks catch lost canonical reports; **Required CI alone does not prove supplemental TRX membership in the uploaded artifact**.
+- **Catalog prerequisite.** Review must preserve the required-and-executing restore, missing-bundle failure and `HVO_PRODUCTION_CATALOG_BUNDLE` export before the affected full-qualification Unit selections, including on pull requests. Removing the export or making the restore conditional can make the catalog-dependent subset Inconclusive instead of executing; it does not affect every selection equally. The selection guard does not prove bundle availability. The separate `development/v1` Unit selection runs without this bundle.
 - **Checkout trust.** Review must keep the Unit checkout on the revision validated by Quality, without a source or `ref:` override that builds another revision and omits newly added or changed Unit cases. The selection guard does not prove checkout identity.
 
 Required CI and artifact-provenance checks remain required controls. They do not extend the selection guard's bounded claim into proof of the accepted gaps above. Changes to checkout, catalog preparation, evidence binding or upload therefore retain these explicit review responsibilities. The inherited-defaults/shell inspection rejects failed reads and matches optional keys in memory, so an input-delivery failure cannot count as clean key absence.
 
-For those four component supplements, the same control checks exactly one supported TRX-only selecting command with the complete positive Unit filter, Release/`--no-build`, its distinct result directory and TRX name, the exact `unix:///tmp/hvo-no-docker.sock` endpoint and the closed step grammar. It checks that the command follows the named component build and precedes the named component upload, and that `scripts/ci:component-build <component> --list-projects` includes the owned assembly. List mode reads the same root array used by restore/build; a recorder control proves the real invocations agree. These are bounded selection/build-plan/report checks, not whole-job checkout, prerequisite or publication assurance; #1265 records the accepted full-job gaps above.
+For both component supplements, the same control checks exactly one supported TRX-only selecting command with the complete positive Unit filter, Release/`--no-build`, its distinct result directory and TRX name, the exact `unix:///tmp/hvo-no-docker.sock` endpoint and the closed step grammar. It checks that the command follows the named component build and precedes the named component upload, and that `scripts/ci:component-build <component> --list-projects` includes the owned assembly. List mode reads the same root array used by restore/build; a recorder control proves the real invocations agree. These are bounded selection/build-plan/report checks, not whole-job checkout, prerequisite or publication assurance; #1265 records the accepted full-job gaps above.
 
 Quality runs it beside `./scripts/test:ci-unit-selection`, whose negative controls prove that each way of dropping a selection fails. Both are Docker-free and need no build:
 
@@ -1436,12 +1459,10 @@ Quality runs it beside `./scripts/test:ci-unit-selection`, whose negative contro
 - Integration failures retain separate project/category TRX and Cobertura evidence for 30 days.
 - Deployment failures identify the failed shard in coordinator output; inspect the retained shard log and status marker before rerunning only that shard locally.
 
-### Exact scoped delivery-proposal read (#1270)
+### Historical delivery-proposal read qualification (#1270)
 
-The dedicated `ProcessingGraphProposalReadServiceTests` Unit cases and
-`ProcessingGraphProposalReadTests` Integration cases own this read slice.
-Discover actual categories from the built Release assemblies before changing
-`test-categories.json`; the inventories are counts of discovered cases.
+These were the focused commands for the delivered LogicHost read slice in #1270.
+Both suites were retired from CI and routine local validation in #2048.
 
 ```bash
 DOCKER_HOST=unix:///tmp/hvo-no-docker.sock dotnet test tests/HVO.SkyMonitor.LogicHost.Tests/HVO.SkyMonitor.LogicHost.Tests.csproj --no-build --configuration Release --filter "FullyQualifiedName~ProcessingGraphProposalReadServiceTests"

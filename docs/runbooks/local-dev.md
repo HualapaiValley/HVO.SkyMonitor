@@ -115,13 +115,18 @@ CameraAgent's local email sender does not deliver recovery links.
 ## Testing
 
 Use the exact SDK and canonical commands from the
-[CI pipeline runbook](ci-pipeline.md). Fast selections are:
+[CI pipeline runbook](ci-pipeline.md). Both selections follow the
+[LogicHost retirement contract](ci-pipeline.md#logichost-test-retirement).
 
 ```bash
 DOCKER_HOST=unix:///tmp/hvo-no-docker.sock \
-  dotnet test HVO.SkyMonitor.v9.slnx --filter 'TestCategory=Unit'
+  dotnet test HVO.SkyMonitor.v9.slnx \
+    --filter 'TestCategory=Unit&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost' \
+    -p:SkipLogicHostTests=true
 
-dotnet test HVO.SkyMonitor.v9.slnx --filter 'TestCategory=Integration'
+dotnet test HVO.SkyMonitor.v9.slnx \
+  --filter 'TestCategory=Integration&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost' \
+  -p:SkipLogicHostTests=true
 ```
 
 Integration selection requires Docker. Manual and Soak remain opt-in; External
