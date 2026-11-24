@@ -44,24 +44,52 @@ internal sealed partial class SqliteCaptureProcessingStore
     private static readonly Lazy<Dictionary<string, string>> LegacySchema12WithAvailabilityDefinitions =
         new(() => CreateSchemaDefinitions(SchemaBeforeAstrometryIndexSql.Replace(CenteredAvailabilityCutoffIndex,
             LegacyCenteredAvailabilityCutoffIndex, StringComparison.Ordinal)));
+    private const string CenteredViewWindowWorkTable = "processing_centered_view_window_work";
+    private const string CenteredViewWindowDueIndex = "ix_processing_centered_view_window_due";
     private static readonly Lazy<Dictionary<string, string>> LegacySchema12BeforeRegistrationStateDefinitions =
         new(() => CreateSchemaDefinitions(SchemaBeforeRegistrationStateSql));
     private static readonly Lazy<Dictionary<string, string>> LegacySchema12BeforeViewRetentionDefinitions =
         new(() => CreateSchemaDefinitions(SchemaBeforeCenteredViewRetentionIndexesSql));
+    private static readonly Lazy<Dictionary<string, string>> LegacySchema12BeforeWindowWorkQueueDefinitions =
+        new(() => CreateSchemaDefinitions(SchemaBeforeWindowWorkQueueSql));
 
     internal static string LegacySchema10BeforeAvailabilitySqlForTests => LegacySchema10BeforeAvailabilitySql;
     internal const string LegacyCenteredAvailabilityCutoffIndexForTests = LegacyCenteredAvailabilityCutoffIndex;
+    internal const string LegacyCenteredViewWindowWorkSchemaSqlForTests = LegacyCenteredViewWindowWorkSchemaSql;
 
     private static bool IsEarlierCenteredAvailabilitySchema(Dictionary<string, string> actual)
         => MatchesSchemaDefinitions(actual, actual.ContainsKey(CenteredAvailabilityTable)
             ? LegacySchema12WithAvailabilityDefinitions.Value : LegacySchema12BeforeAvailabilityDefinitions.Value);
 
     private static bool IsEarlierCenteredSchema(Dictionary<string, string> actual)
-        => BeforeViewRetentionIndexes(actual) is { } earlier &&
-           (MatchesSchemaDefinitions(earlier, LegacySchema12BeforeRegistrationStateDefinitions.Value) ||
+        => BeforeWindowWorkQueue(actual) is { } withoutWindowQueue &&
+           BeforeViewRetentionIndexes(withoutWindowQueue) is { } earlier &&
+           (MatchesSchemaDefinitions(withoutWindowQueue, LegacySchema12BeforeWindowWorkQueueDefinitions.Value) ||
+            MatchesSchemaDefinitions(earlier, LegacySchema12BeforeRegistrationStateDefinitions.Value) ||
             MatchesSchemaDefinitions(earlier, LegacySchema12BeforeViewRetentionDefinitions.Value) ||
             MatchesSchemaDefinitions(earlier, PreAstrometrySchema12Definitions.Value) ||
             IsEarlierCenteredAvailabilitySchema(earlier));
+
+    private static Dictionary<string, string>? BeforeWindowWorkQueue(Dictionary<string, string> actual)
+    {
+        var hasDueIndex = actual.ContainsKey(CenteredViewWindowDueIndex);
+        var hasNewTable = actual.TryGetValue(CenteredViewWindowWorkTable, out var table) &&
+            table == CanonicalSchemaDefinitions.Value[CenteredViewWindowWorkTable];
+        if (!hasDueIndex && !hasNewTable)
+            return actual;
+
+        // The window work queue table shape and due index move together. A partial or altered state fails closed.
+        if (!hasDueIndex || !hasNewTable ||
+            actual[CenteredViewWindowDueIndex] != CanonicalSchemaDefinitions.Value[CenteredViewWindowDueIndex])
+            return null;
+
+        var legacy = new Dictionary<string, string>(actual, StringComparer.Ordinal)
+        {
+            [CenteredViewWindowWorkTable] = LegacySchema12BeforeWindowWorkQueueDefinitions.Value[CenteredViewWindowWorkTable]
+        };
+        legacy.Remove(CenteredViewWindowDueIndex);
+        return legacy;
+    }
 
     private static Dictionary<string, string>? BeforeViewRetentionIndexes(Dictionary<string, string> actual)
     {
@@ -88,9 +116,9 @@ internal sealed partial class SqliteCaptureProcessingStore
                 """
                 SELECT COUNT(*) FROM sqlite_schema
                 WHERE name IN ('ix_processing_outputs_astrometry_lookup', 'ix_processing_centered_view_changes_base',
-                    'processing_centered_registration_input_failures');
+                    'processing_centered_registration_input_failures', 'ix_processing_centered_view_window_due');
                 """,
-                cancellationToken).ConfigureAwait(false) == 3)
+                cancellationToken).ConfigureAwait(false) == 4)
             return;
 
 #pragma warning disable CA1849 // Microsoft.Data.Sqlite exposes immediate transactions only through the synchronous overload.
@@ -103,7 +131,9 @@ internal sealed partial class SqliteCaptureProcessingStore
             throw new InvalidDataException("The earlier centered processing schema is not canonical.");
 
         _faultInjector.Inject(CaptureProcessingFaultPoint.AfterSchemaTransactionBegan, "schema");
-        if (BeforeViewRetentionIndexes(actual) is { } earlier && IsEarlierCenteredAvailabilitySchema(earlier))
+        if (BeforeWindowWorkQueue(actual) is { } withoutWindowQueue &&
+            BeforeViewRetentionIndexes(withoutWindowQueue) is { } earlier &&
+            IsEarlierCenteredAvailabilitySchema(earlier))
             await AdoptCenteredAvailabilityHistoryAsync(transaction, actual.ContainsKey(CenteredAvailabilityTable), cancellationToken)
                 .ConfigureAwait(false);
         if (!actual.ContainsKey(LegacyAstrometryJournalSchema.LookupIndexName))
@@ -118,9 +148,28 @@ internal sealed partial class SqliteCaptureProcessingStore
             indexes.CommandText = CenteredViewRetentionSchema.IndexSql;
             await indexes.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
+        if (!actual.ContainsKey(CenteredViewWindowDueIndex))
+            await AdoptCenteredViewWindowWorkQueueAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
         await ValidateSchemaAsync(connection, cancellationToken, transaction).ConfigureAwait(false);
         _faultInjector.Inject(CaptureProcessingFaultPoint.BeforeSchemaCommit, "schema");
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async ValueTask AdoptCenteredViewWindowWorkQueueAsync(
+        SqliteConnection connection, SqliteTransaction transaction, CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            DROP INDEX ix_processing_centered_view_window_live_base;
+            ALTER TABLE processing_centered_view_window_work RENAME TO processing_centered_view_window_work_legacy;
+            """ + "\n" + CenteredViewWindowWorkSchemaSql + "\n" + """
+            INSERT INTO processing_centered_view_window_work(window_sha256, live_base_id, retry_utc, terminal_reason, retry_count)
+            SELECT window_sha256, live_base_id, retry_utc, terminal_reason, 0
+            FROM processing_centered_view_window_work_legacy;
+            DROP TABLE processing_centered_view_window_work_legacy;
+            """ + "\n" + BackfillPendingWindowWorkSql;
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities",

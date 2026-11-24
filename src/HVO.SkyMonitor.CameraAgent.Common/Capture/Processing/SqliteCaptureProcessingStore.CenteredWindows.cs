@@ -91,6 +91,12 @@ internal interface ICenteredWindowJournal
 
 internal sealed partial class SqliteCaptureProcessingStore
 {
+    private const string EnqueueTerminalWindowWorkSql = """
+        INSERT OR IGNORE INTO processing_centered_view_window_work(window_sha256, retry_utc)
+        SELECT window_sha256, 0 FROM processing_centered_windows
+        WHERE window_sha256 = $window AND terminal = 1 AND reference_capture_id IS NOT NULL;
+        """;
+
     private const string InvalidCheckpoint = "invalid-window-checkpoint";
     private const string CapacityExhausted = "window-capacity-exhausted";
     private const string RegistrationDeadlineExpired = "registration-deadline-expired";
@@ -309,7 +315,7 @@ internal sealed partial class SqliteCaptureProcessingStore
             SET closure_json = $closure, reference_capture_id = COALESCE(reference_capture_id, $reference),
                 terminal = $terminal, failure_reason = $failure
             WHERE window_sha256 = $window AND closure_json IS NULL;
-            """;
+            """ + "\n" + EnqueueTerminalWindowWorkSql;
         command.Parameters.AddWithValue("$closure", JsonSerializer.SerializeToUtf8Bytes(closure, SerializerOptions));
         command.Parameters.AddWithValue("$reference", (object?)closure.Center.Input?.Key.CaptureId.ToString("N") ?? DBNull.Value);
         command.Parameters.AddWithValue("$terminal", closure.CanRegister && failure is null ? 0 : 1);
@@ -329,7 +335,7 @@ internal sealed partial class SqliteCaptureProcessingStore
                 AND EXISTS (SELECT 1 FROM processing_centered_windows WHERE window_sha256 = $window AND terminal = 0);
             UPDATE processing_centered_windows SET closure_json = NULL, failure_reason = $failure, terminal = 1
             WHERE window_sha256 = $window AND terminal = 0;
-            """;
+            """ + "\n" + EnqueueTerminalWindowWorkSql;
         command.Parameters.AddWithValue("$failure", InvalidCheckpoint);
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         await journal.ReleaseWindowInputsAsync(transaction, identity, cancellationToken).ConfigureAwait(false);
@@ -395,7 +401,7 @@ internal sealed partial class SqliteCaptureProcessingStore
             WHERE window_sha256 = $window AND terminal = 0;
             DELETE FROM processing_centered_registration_input_failures
             WHERE window_sha256 = $window AND $retain_input_failure = 0;
-            """;
+            """ + "\n" + EnqueueTerminalWindowWorkSql;
         command.Parameters.AddWithValue("$reason", reason);
         command.Parameters.AddWithValue("$retain_input_failure", inputFailure is not null);
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
@@ -459,7 +465,7 @@ internal sealed partial class SqliteCaptureProcessingStore
             UPDATE processing_centered_windows SET publication_json = $publication, terminal = 1
             WHERE window_sha256 = $window AND terminal = 0;
             DELETE FROM processing_centered_registration_input_failures WHERE window_sha256 = $window;
-            """;
+            """ + "\n" + EnqueueTerminalWindowWorkSql;
         command.Parameters.AddWithValue("$publication", bytes);
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         await journal.ReleaseWindowInputsAsync(transaction, identity, cancellationToken).ConfigureAwait(false);

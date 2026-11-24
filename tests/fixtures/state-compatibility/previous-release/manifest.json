@@ -137,6 +137,7 @@
         "index:ix_processing_centered_view_single",
         "index:ix_processing_centered_view_trail_capture",
         "index:ix_processing_centered_view_trail_due",
+        "index:ix_processing_centered_view_window_due",
         "index:ix_processing_centered_view_window_live_base",
         "table:processing_centered_attempt_calendar",
         "table:processing_centered_output_availability",

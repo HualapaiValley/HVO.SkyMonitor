@@ -2,6 +2,7 @@ using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -173,6 +174,216 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
         Assert.Contains("000000000000000000000000000007d1", retained);
         Assert.Contains("000000000000000000000000000007d3", retained);
         Assert.AreEqual(2003L, await ScalarAsync(connection, "SELECT COUNT(*) FROM processing_centered_windows;").ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task CenteredDueWindowPollingStaysBoundedAsRetainedHistoryGrows()
+    {
+        using var fixture = await SchemaFixture.CreateAsync(initializeProcessing: true).ConfigureAwait(false);
+        var token = TestContext.CancellationToken;
+        var clock = new CenteredTestClock { UtcNow = Start };
+        using var store = new SqliteCaptureProcessingStore(fixture.Options, clock);
+        var views = new SqliteCenteredViews(store, clock, NullLogger<SqliteCenteredViews>.Instance);
+        using var connection = await fixture.OpenAsync().ConfigureAwait(false);
+
+        await SeedCompletedWindowsAsync(connection, 1, 1_000, Start.UtcTicks, token).ConfigureAwait(false);
+        var plan = await ExplainDueWindowQueryPlanAsync(connection, Start.UtcTicks, 8, token).ConfigureAwait(false);
+        Assert.IsTrue(plan.Any(step => step.Contains("ix_processing_centered_view_window_due", StringComparison.Ordinal)),
+            string.Join(Environment.NewLine, plan));
+        Assert.IsFalse(plan.Any(step => step.Contains("ix_processing_centered_windows_reference", StringComparison.Ordinal) ||
+            step.Contains("SCAN processing_centered_windows", StringComparison.Ordinal)),
+            string.Join(Environment.NewLine, plan));
+        Assert.IsEmpty(await views.ReadDueWindowPublicationsAsync(8, token).ConfigureAwait(false));
+        var stepsAt1000 = MeasureDueWindowVmSteps(connection, Start.UtcTicks, 8);
+
+        await SeedCompletedWindowsAsync(connection, 1_001, 10_000, Start.UtcTicks, token).ConfigureAwait(false);
+        using (var future = connection.CreateCommand())
+        {
+            future.CommandText = """
+                WITH RECURSIVE retry_rows(n) AS (VALUES(10001) UNION ALL SELECT n + 1 FROM retry_rows WHERE n < 10050)
+                INSERT INTO processing_centered_windows(window_sha256, deadline_utc_ticks, registration_deadline_utc_ticks,
+                    checkpoint_json, reference_capture_id, closure_json, terminal)
+                SELECT printf('%064x', n), $deadline + n, $deadline + n + 1000, X'7B7D', printf('%032x', n), X'7B7D', 1
+                FROM retry_rows;
+                WITH RECURSIVE retry_rows(n) AS (VALUES(10001) UNION ALL SELECT n + 1 FROM retry_rows WHERE n < 10050)
+                INSERT INTO processing_centered_view_window_work(window_sha256, retry_utc, retry_count)
+                SELECT printf('%064x', n), $future_retry + n, 1
+                FROM retry_rows;
+                """;
+            future.Parameters.AddWithValue("$deadline", Start.UtcTicks);
+            future.Parameters.AddWithValue("$future_retry", Start.AddSeconds(15).UtcTicks);
+            await future.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+        }
+        Assert.IsEmpty(await views.ReadDueWindowPublicationsAsync(8, token).ConfigureAwait(false));
+        var stepsAt10000 = MeasureDueWindowVmSteps(connection, Start.UtcTicks, 8);
+        TestContext.WriteLine($"Idle due-window poll VM steps: 1,000 completed={stepsAt1000}, 10,000 completed + 50 future retries={stepsAt10000}.");
+        Assert.IsLessThan(200, stepsAt1000, $"Expected O(1) idle poll at 1,000 windows, observed {stepsAt1000} VM steps.");
+        Assert.IsLessThan(200, stepsAt10000, $"Expected O(1) idle poll at 10,000 windows, observed {stepsAt10000} VM steps.");
+        Assert.IsLessThanOrEqualTo(stepsAt1000 + 25, stepsAt10000,
+            $"Idle poll VM steps grew with retained history: 1,000={stepsAt1000}, 10,000={stepsAt10000}.");
+
+        // Enqueue 10 due windows (mix of newly terminal retry_utc=0 and due retries) out of deadline order.
+        using (var dueCommand = connection.CreateCommand())
+        {
+            dueCommand.CommandText = """
+                WITH RECURSIVE due_rows(n) AS (VALUES(1) UNION ALL SELECT n + 1 FROM due_rows WHERE n < 10)
+                INSERT INTO processing_centered_windows(window_sha256, deadline_utc_ticks, registration_deadline_utc_ticks,
+                    checkpoint_json, reference_capture_id, closure_json, terminal)
+                SELECT printf('%064x', 20000 + n), $base_deadline + (11 - n) * 100, $base_deadline + 5000,
+                    X'7B7D', printf('%032x', 20000 + n), X'7B7D', 1
+                FROM due_rows;
+                WITH RECURSIVE due_rows(n) AS (VALUES(1) UNION ALL SELECT n + 1 FROM due_rows WHERE n < 10)
+                INSERT INTO processing_centered_view_window_work(window_sha256, retry_utc, retry_count)
+                SELECT printf('%064x', 20000 + n), CASE WHEN n % 2 = 0 THEN 0 ELSE $now - n END, CASE WHEN n % 2 = 0 THEN 0 ELSE 1 END
+                FROM due_rows;
+                """;
+            dueCommand.Parameters.AddWithValue("$base_deadline", Start.UtcTicks);
+            dueCommand.Parameters.AddWithValue("$now", Start.UtcTicks);
+            await dueCommand.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+        }
+        var expectedOrder = Enumerable.Range(1, 10)
+            .OrderBy(n => 11 - n)
+            .Take(8)
+            .Select(n => FormattableString.Invariant($"{20000 + n:x64}"))
+            .ToArray();
+        var due = await views.ReadDueWindowPublicationsAsync(8, token).ConfigureAwait(false);
+        CollectionAssert.AreEqual(expectedOrder, due.ToArray());
+
+        static async Task SeedCompletedWindowsAsync(SqliteConnection db, int from, int to, long ticks, CancellationToken ct)
+        {
+            using var insert = db.CreateCommand();
+            insert.CommandText = """
+                WITH RECURSIVE history(n) AS (VALUES($from) UNION ALL SELECT n + 1 FROM history WHERE n < $to)
+                INSERT INTO processing_centered_windows(window_sha256, deadline_utc_ticks, registration_deadline_utc_ticks,
+                    checkpoint_json, reference_capture_id, closure_json, terminal)
+                SELECT printf('%064x', n), $ticks + n, $ticks + n + 1000, X'7B7D', printf('%032x', n), X'7B7D', 1
+                FROM history;
+                WITH RECURSIVE history(n) AS (VALUES($from) UNION ALL SELECT n + 1 FROM history WHERE n < $to)
+                INSERT INTO processing_centered_view_window_work(window_sha256, retry_utc, terminal_reason)
+                SELECT printf('%064x', n), NULL, NULL
+                FROM history;
+                """;
+            insert.Parameters.AddWithValue("$from", from);
+            insert.Parameters.AddWithValue("$to", to);
+            insert.Parameters.AddWithValue("$ticks", ticks);
+            await insert.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        }
+
+        static async Task<List<string>> ExplainDueWindowQueryPlanAsync(SqliteConnection db, long nowTicks, int limit, CancellationToken ct)
+        {
+            using var explain = db.CreateCommand();
+            explain.CommandText = "EXPLAIN QUERY PLAN " + SqliteCenteredViews.DueWindowPublicationsSql;
+            explain.Parameters.AddWithValue("$now", nowTicks);
+            explain.Parameters.AddWithValue("$limit", limit);
+            var steps = new List<string>();
+            using var reader = await explain.ExecuteReaderAsync(ct).ConfigureAwait(false);
+            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+                steps.Add(reader.GetString(3));
+            return steps;
+        }
+
+        static int MeasureDueWindowVmSteps(SqliteConnection db, long nowTicks, int limit)
+        {
+            Assert.AreEqual(SQLitePCL.raw.SQLITE_OK,
+                SQLitePCL.raw.sqlite3_prepare_v2(db.Handle, SqliteCenteredViews.DueWindowPublicationsSql, out var stmt));
+            try
+            {
+                var nowIndex = SQLitePCL.raw.sqlite3_bind_parameter_index(stmt, "$now");
+                var limitIndex = SQLitePCL.raw.sqlite3_bind_parameter_index(stmt, "$limit");
+                Assert.AreEqual(SQLitePCL.raw.SQLITE_OK, SQLitePCL.raw.sqlite3_bind_int64(stmt, nowIndex, nowTicks));
+                Assert.AreEqual(SQLitePCL.raw.SQLITE_OK, SQLitePCL.raw.sqlite3_bind_int64(stmt, limitIndex, limit));
+                var rows = 0;
+                int rc;
+                while ((rc = SQLitePCL.raw.sqlite3_step(stmt)) == SQLitePCL.raw.SQLITE_ROW)
+                    rows++;
+                Assert.AreEqual(SQLitePCL.raw.SQLITE_DONE, rc);
+                Assert.AreEqual(0, rows);
+                return SQLitePCL.raw.sqlite3_stmt_status(stmt, SQLitePCL.raw.SQLITE_STMTSTATUS_VM_STEP, 0);
+            }
+            finally
+            {
+                SQLitePCL.raw.sqlite3_finalize(stmt);
+            }
+        }
+    }
+
+    [TestMethod]
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The legacy window-work test DDL is a fixed store constant.")]
+    public async Task CenteredWindowWorkQueueSchema12AdoptionIsAtomicAndBackfillsUnqueuedTerminalWindows()
+    {
+        using var fixture = await SchemaFixture.CreateAsync(initializeProcessing: true).ConfigureAwait(false);
+        var token = TestContext.CancellationToken;
+        var clock = new CenteredTestClock { UtcNow = Start };
+        var completedId = new string('1', 64);
+        var retryingId = new string('2', 64);
+        var unqueuedId = new string('3', 64);
+        var missingRefId = new string('4', 64);
+        var retryTicks = Start.AddSeconds(10).UtcTicks;
+
+        using var connection = await fixture.OpenAsync().ConfigureAwait(false);
+        using (var setup = connection.CreateCommand())
+        {
+            setup.CommandText = """
+                DROP INDEX ix_processing_centered_view_window_due;
+                DROP INDEX ix_processing_centered_view_window_live_base;
+                DROP TABLE processing_centered_view_window_work;
+                """ + "\n" + SqliteCaptureProcessingStore.LegacyCenteredViewWindowWorkSchemaSqlForTests + """
+                INSERT INTO processing_centered_windows(window_sha256, deadline_utc_ticks, registration_deadline_utc_ticks,
+                    checkpoint_json, reference_capture_id, closure_json, terminal)
+                VALUES
+                    ($completed, $t1, $t2, X'7B7D', '11111111111111111111111111111111', X'7B7D', 1),
+                    ($retrying,  $t1, $t2, X'7B7D', '22222222222222222222222222222222', X'7B7D', 1),
+                    ($unqueued,  $t1, $t2, X'7B7D', '33333333333333333333333333333333', X'7B7D', 1),
+                    ($no_ref,    $t1, $t2, X'7B7D', NULL,                               X'7B7D', 1);
+                INSERT INTO processing_centered_view_window_work(window_sha256, live_base_id, retry_utc, terminal_reason)
+                VALUES
+                    ($completed, NULL, NULL, 'centered.window-evidence-rejected'),
+                    ($retrying,  NULL, $retry_ticks, NULL);
+                """;
+            setup.Parameters.AddWithValue("$completed", completedId);
+            setup.Parameters.AddWithValue("$retrying", retryingId);
+            setup.Parameters.AddWithValue("$unqueued", unqueuedId);
+            setup.Parameters.AddWithValue("$no_ref", missingRefId);
+            setup.Parameters.AddWithValue("$t1", Start.UtcTicks);
+            setup.Parameters.AddWithValue("$t2", Start.AddSeconds(30).UtcTicks);
+            setup.Parameters.AddWithValue("$retry_ticks", retryTicks);
+            await setup.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+        }
+
+        using (var interrupted = new SqliteCaptureProcessingStore(fixture.Options, clock,
+            new ThrowOnceFaultInjector(CaptureProcessingFaultPoint.BeforeSchemaCommit)))
+        {
+            await Assert.ThrowsExactlyAsync<InjectedProcessingSchemaException>(async () =>
+                await interrupted.InitializeAsync(token).ConfigureAwait(false)).ConfigureAwait(false);
+        }
+        Assert.AreEqual(0L, await ScalarAsync(connection,
+            "SELECT COUNT(*) FROM sqlite_schema WHERE name = 'ix_processing_centered_view_window_due';").ConfigureAwait(false));
+        Assert.AreEqual(2L, await ScalarAsync(connection,
+            "SELECT COUNT(*) FROM processing_centered_view_window_work;").ConfigureAwait(false));
+
+        await new SqliteRawCaptureJournal(fixture.DatabasePath, 1).InitializeAsync(token).ConfigureAwait(false);
+        using var reopened = new SqliteCaptureProcessingStore(fixture.Options, clock);
+        await reopened.InitializeAsync(token).ConfigureAwait(false);
+        Assert.AreEqual(1L, await ScalarAsync(connection,
+            "SELECT COUNT(*) FROM sqlite_schema WHERE name = 'ix_processing_centered_view_window_due';").ConfigureAwait(false));
+        Assert.AreEqual(3L, await ScalarAsync(connection,
+            "SELECT COUNT(*) FROM processing_centered_view_window_work;").ConfigureAwait(false));
+        var views = new SqliteCenteredViews(reopened, clock, NullLogger<SqliteCenteredViews>.Instance);
+        CollectionAssert.AreEqual(new[] { unqueuedId }, (await views.ReadDueWindowPublicationsAsync(8, token).ConfigureAwait(false)).ToArray());
+
+        clock.UtcNow = Start.AddSeconds(10);
+        CollectionAssert.AreEquivalent(new[] { unqueuedId, retryingId },
+            (await views.ReadDueWindowPublicationsAsync(8, token).ConfigureAwait(false)).ToArray());
+        Assert.AreEqual("centered.window-evidence-rejected",
+            await ScalarObjectAsync(connection, "SELECT terminal_reason FROM processing_centered_view_window_work WHERE window_sha256 = '" + completedId + "';")
+                .ConfigureAwait(false));
+
+        static async Task<object?> ScalarObjectAsync(SqliteConnection db, string sql)
+        {
+            using var cmd = db.CreateCommand();
+            cmd.CommandText = sql;
+            return await cmd.ExecuteScalarAsync().ConfigureAwait(false);
+        }
     }
 
     [TestMethod]

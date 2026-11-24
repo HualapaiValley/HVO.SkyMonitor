@@ -60,7 +60,7 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
         Assert.AreEqual(1L, await ScalarAsync(
             connection,
             "SELECT COUNT(*) FROM processing_nodes WHERE node_id = 'retained-wal';").ConfigureAwait(false));
-        Assert.AreEqual(90L, await ScalarAsync(connection, """
+        Assert.AreEqual(91L, await ScalarAsync(connection, """
             SELECT COUNT(*) FROM sqlite_schema
             WHERE name = 'capture_processing_schema'
                OR name LIKE 'processing_%'

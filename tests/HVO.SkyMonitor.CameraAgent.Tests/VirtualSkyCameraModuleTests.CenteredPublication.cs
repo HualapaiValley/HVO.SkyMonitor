@@ -852,4 +852,254 @@ public sealed partial class VirtualSkyCameraModuleTests
         Assert.AreEqual(issued104.Interval,
             (await views.ReadLastLiveAsync(issued104.View.Base.Definition.Stream.Camera, token).ConfigureAwait(false))?.Interval);
     }
+
+    [TestMethod]
+    public async Task CenteredWindowPublicationTerminatesImmediatelyWhenOversizedRawPreventsCenterSingle()
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-centered-window-oversized-raw");
+        var token = TestContext.CancellationToken;
+        var start = new DateTimeOffset(2026, 11, 20, 22, 30, 0, TimeSpan.Zero);
+        var clock = new CenteredClock { UtcNow = start };
+        var deviceClock = new ExposureTestTimeProvider(start, autoAdvance: true);
+        var profile = CenteredRawOnlyProfile(root, start);
+        try
+        {
+            string blockedWindowId;
+            Guid blockedCaptureId;
+            // Set MaximumPreviewSourceBytes below the 224x224x2 (100,352-byte) raw frame while linear never qualifies.
+            using (var provider = CenteredRuntimeProvider(root, clock, maximumPreviewSourceBytes: 1024))
+            {
+                var active = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(provider, profile).ConfigureAwait(false);
+                var schedule = await ReadCenteredPublicationScheduleAsync(provider, token).ConfigureAwait(false);
+                var ingress = provider.GetRequiredService<RawCaptureIngress>();
+                var device = new VirtualSkyCameraModule(deviceClock, CenteredRuntimeCatalog(start), new ProjectedSceneStore(),
+                    stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
+                await using var camera = device.ConfigureAwait(false);
+                await device.InitializeAsync(active, token).ConfigureAwait(false);
+                var singles = provider.GetRequiredService<CenteredViewPublicationWorker>();
+                var windows = provider.GetRequiredService<CenteredViewWindowPublicationWorker>();
+                var coordinator = provider.GetRequiredService<CenteredWindowCoordinator>();
+                var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
+                var views = provider.GetRequiredService<SqliteCenteredViews>();
+
+                Guid reference4 = default;
+                CameraKey key = default!;
+                CenteredViewStream? stream = null;
+                for (var ordinal = 1; ordinal <= 4; ordinal++)
+                {
+                    var captured = await CaptureCenteredRuntimeAttemptAsync(ingress, device, deviceClock, clock, active,
+                        start.AddSeconds((ordinal - 1) * 2), 1, token, schedule: schedule).ConfigureAwait(false);
+                    var receipt = await ingress.AcceptCenteredAsync(active, captured.Submission, captured.Reservation, token)
+                        .ConfigureAwait(false);
+                    key = captured.Reservation.Pending.Key.Camera;
+                    stream = CenteredViewLookup.ResolveStream(await ingress.ReadCurrentAsync(key, token).ConfigureAwait(false));
+                    Assert.IsNotNull(stream);
+                    reference4 = receipt.Manifest.Descriptor.Capture.CaptureId;
+                    await singles.DrainCameraAsync(key, stream, CancellationToken.None, token).ConfigureAwait(false);
+                }
+                blockedCaptureId = reference4;
+                Assert.IsEmpty(await views.ReadArchiveAsync(blockedCaptureId, token).ConfigureAwait(false),
+                    "Non-qualifying linear plus oversized raw must leave no Single base.");
+
+                var window = await provider.GetRequiredService<ICenteredWindowReader>().ReadAsync(blockedCaptureId, token)
+                    .ConfigureAwait(false);
+                Assert.IsNotNull(window);
+                blockedWindowId = window.WindowIdentity;
+                clock.UtcNow = window.DeadlineUtc.AddMilliseconds(1);
+                await coordinator.CloseDueAsync(token).ConfigureAwait(false);
+                CollectionAssert.Contains((await views.ReadDueWindowPublicationsAsync(8, token).ConfigureAwait(false)).ToArray(),
+                    blockedWindowId);
+
+                await windows.PublishReadyAsync(token).ConfigureAwait(false);
+                CollectionAssert.DoesNotContain((await views.ReadDueWindowPublicationsAsync(8, token).ConfigureAwait(false)).ToArray(),
+                    blockedWindowId);
+
+                clock.UtcNow = clock.UtcNow.AddMinutes(5);
+                CollectionAssert.DoesNotContain((await views.ReadDueWindowPublicationsAsync(8, token).ConfigureAwait(false)).ToArray(),
+                    blockedWindowId);
+
+                using var connection = await store.OpenCenteredViewsAsync(token).ConfigureAwait(false);
+                using var command = connection.CreateCommand();
+                command.CommandText = """
+                    SELECT live_base_id, retry_utc, terminal_reason, retry_count
+                    FROM processing_centered_view_window_work WHERE window_sha256 = $window;
+                    """;
+                command.Parameters.AddWithValue("$window", blockedWindowId);
+                using var reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false);
+                Assert.IsTrue(await reader.ReadAsync(token).ConfigureAwait(false));
+                Assert.IsTrue(await reader.IsDBNullAsync(0, token).ConfigureAwait(false));
+                Assert.IsTrue(await reader.IsDBNullAsync(1, token).ConfigureAwait(false));
+                Assert.AreEqual(CenteredViewWindowPublicationWorker.MissingCenterSingleTerminalReason, reader.GetString(2));
+                Assert.AreEqual(0L, reader.GetInt64(3));
+            }
+
+            // Reopen with normal preview byte limits and verify the terminalized window stays out of the queue.
+            using var reopened = CenteredRuntimeProvider(root, clock);
+            await reopened.GetRequiredService<RawCaptureIngress>().InitializeAsync(token).ConfigureAwait(false);
+            var reopenedViews = reopened.GetRequiredService<SqliteCenteredViews>();
+            CollectionAssert.DoesNotContain((await reopenedViews.ReadDueWindowPublicationsAsync(8, token).ConfigureAwait(false)).ToArray(),
+                blockedWindowId);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task CenteredWindowPublicationRetriesDelayedSingleThenBoundsUnresolvedCenterRetriesAcrossRestart()
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-centered-window-retry-bound");
+        var token = TestContext.CancellationToken;
+        var start = new DateTimeOffset(2026, 11, 20, 22, 30, 0, TimeSpan.Zero);
+        var clock = new CenteredClock { UtcNow = start };
+        var deviceClock = new ExposureTestTimeProvider(start, autoAdvance: true);
+        var profile = CenteredRawOnlyProfile(root, start);
+        try
+        {
+            string delayedWindowId;
+            Guid delayedCaptureId;
+            string stuckWindowId;
+            using (var provider = CenteredRuntimeProvider(root, clock))
+            {
+                var active = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(provider, profile).ConfigureAwait(false);
+                var schedule = await ReadCenteredPublicationScheduleAsync(provider, token).ConfigureAwait(false);
+                var ingress = provider.GetRequiredService<RawCaptureIngress>();
+                var device = new VirtualSkyCameraModule(deviceClock, CenteredRuntimeCatalog(start), new ProjectedSceneStore(),
+                    stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
+                await using var camera = device.ConfigureAwait(false);
+                await device.InitializeAsync(active, token).ConfigureAwait(false);
+                var singles = provider.GetRequiredService<CenteredViewPublicationWorker>();
+                var windows = provider.GetRequiredService<CenteredViewWindowPublicationWorker>();
+                var coordinator = provider.GetRequiredService<CenteredWindowCoordinator>();
+                var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
+                var views = provider.GetRequiredService<SqliteCenteredViews>();
+
+                CameraKey key = default!;
+                CenteredViewStream? stream = null;
+                Guid capture4 = default;
+                Guid capture5 = default;
+                for (var ordinal = 1; ordinal <= 5; ordinal++)
+                {
+                    var captured = await CaptureCenteredRuntimeAttemptAsync(ingress, device, deviceClock, clock, active,
+                        start.AddSeconds((ordinal - 1) * 2), 1, token, schedule: schedule).ConfigureAwait(false);
+                    var receipt = await ingress.AcceptCenteredAsync(active, captured.Submission, captured.Reservation, token)
+                        .ConfigureAwait(false);
+                    key = captured.Reservation.Pending.Key.Camera;
+                    stream = CenteredViewLookup.ResolveStream(await ingress.ReadCurrentAsync(key, token).ConfigureAwait(false));
+                    Assert.IsNotNull(stream);
+                    if (ordinal == 4)
+                        capture4 = receipt.Manifest.Descriptor.Capture.CaptureId;
+                    else if (ordinal == 5)
+                        capture5 = receipt.Manifest.Descriptor.Capture.CaptureId;
+                    if (ordinal <= 3)
+                        await singles.DrainCameraAsync(key, stream, CancellationToken.None, token).ConfigureAwait(false);
+                }
+                delayedCaptureId = capture4;
+
+                // Close window 4 BEFORE its center single publishes (normal delayed publication).
+                var reader = provider.GetRequiredService<ICenteredWindowReader>();
+                var window4 = await reader.ReadAsync(delayedCaptureId, token).ConfigureAwait(false);
+                var window5 = await reader.ReadAsync(capture5, token).ConfigureAwait(false);
+                Assert.IsNotNull(window4);
+                Assert.IsNotNull(window5);
+                delayedWindowId = window4.WindowIdentity;
+                stuckWindowId = window5.WindowIdentity;
+                clock.UtcNow = window4.DeadlineUtc.AddMilliseconds(1);
+                await coordinator.CloseDueAsync(token).ConfigureAwait(false);
+
+                await windows.PublishReadyAsync(token).ConfigureAwait(false);
+                Assert.IsEmpty(await views.ReadDueWindowPublicationsAsync(8, token).ConfigureAwait(false),
+                    "Window 4 should wait for its retry delay before polling again.");
+
+                // Publish only the delayed center single for window 4 (leaving window 5's center single unpublished),
+                // then advance past the retry delay and verify window 4 publishes normally.
+                var products = provider.GetRequiredService<IExposureProductReader>();
+                var producer = provider.GetRequiredService<ICenteredViewProducer>();
+                var linear4 = await products.ReadLinearAsync(new ExposureKey(key, stream!.RunId, delayedCaptureId), token)
+                    .ConfigureAwait(false);
+                Assert.IsNotNull(linear4);
+                var execution4 = ProcessingGraphOperationsCoordinator.GetLiveExecutionId(delayedCaptureId, stream.GenerationId);
+                var delayedSingleView = await producer.PublishSingleAsync(stream, execution4,
+                    linear4.Exposure.Raw.Capture.CaptureSequence, linear4, new(), token).ConfigureAwait(false);
+                Assert.IsNotNull(delayedSingleView);
+                var delayedSingle = delayedSingleView.Base;
+
+                clock.UtcNow = clock.UtcNow.Add(CenteredViewWindowPublicationWorker.RetryDelay);
+                await windows.PublishReadyAsync(token).ConfigureAwait(false);
+
+                using (var connection = await store.OpenCenteredViewsAsync(token).ConfigureAwait(false))
+                using (var cmd = connection.CreateCommand())
+                {
+                    cmd.CommandText = """
+                        SELECT live_base_id, retry_utc, terminal_reason, retry_count
+                        FROM processing_centered_view_window_work WHERE window_sha256 = $window;
+                        """;
+                    cmd.Parameters.AddWithValue("$window", delayedWindowId);
+                    using var workReader = await cmd.ExecuteReaderAsync(token).ConfigureAwait(false);
+                    Assert.IsTrue(await workReader.ReadAsync(token).ConfigureAwait(false));
+                    Assert.AreEqual(delayedSingle.BaseId, workReader.GetString(0));
+                    Assert.IsTrue(await workReader.IsDBNullAsync(1, token).ConfigureAwait(false));
+                    Assert.IsTrue(await workReader.IsDBNullAsync(2, token).ConfigureAwait(false));
+                    Assert.AreEqual(1L, workReader.GetInt64(3));
+                }
+
+                // Close window 5 while its center single remains unpublished, then retry across a restart.
+                if (clock.UtcNow <= window5.DeadlineUtc)
+                    clock.UtcNow = window5.DeadlineUtc.AddMilliseconds(1);
+                await coordinator.CloseDueAsync(token).ConfigureAwait(false);
+
+                const int attemptsBeforeRestart = 3;
+                for (var attempt = 1; attempt <= attemptsBeforeRestart; attempt++)
+                {
+                    CollectionAssert.Contains((await views.ReadDueWindowPublicationsAsync(8, token).ConfigureAwait(false)).ToArray(),
+                        stuckWindowId);
+                    await windows.PublishReadyAsync(token).ConfigureAwait(false);
+                    clock.UtcNow = clock.UtcNow.Add(CenteredViewWindowPublicationWorker.RetryDelay);
+                }
+            }
+
+            // Reopen after restart and confirm durable retry_count finishes bounding retries instead of resetting.
+            using var reopened = CenteredRuntimeProvider(root, clock);
+            await reopened.GetRequiredService<RawCaptureIngress>().InitializeAsync(token).ConfigureAwait(false);
+            var reopenedViews = reopened.GetRequiredService<SqliteCenteredViews>();
+            var reopenedWindows = reopened.GetRequiredService<CenteredViewWindowPublicationWorker>();
+            var reopenedStore = reopened.GetRequiredService<SqliteCaptureProcessingStore>();
+
+            for (var attempt = 4; attempt <= CenteredViewWindowPublicationWorker.MaximumMissingCenterRetries; attempt++)
+            {
+                CollectionAssert.Contains((await reopenedViews.ReadDueWindowPublicationsAsync(8, token).ConfigureAwait(false)).ToArray(),
+                    stuckWindowId);
+                await reopenedWindows.PublishReadyAsync(token).ConfigureAwait(false);
+                clock.UtcNow = clock.UtcNow.Add(CenteredViewWindowPublicationWorker.RetryDelay);
+            }
+
+            // Once the bound is exhausted, the window is permanently terminal and never re-queued.
+            CollectionAssert.DoesNotContain((await reopenedViews.ReadDueWindowPublicationsAsync(8, token).ConfigureAwait(false)).ToArray(),
+                stuckWindowId);
+            clock.UtcNow = clock.UtcNow.AddHours(1);
+            CollectionAssert.DoesNotContain((await reopenedViews.ReadDueWindowPublicationsAsync(8, token).ConfigureAwait(false)).ToArray(),
+                stuckWindowId);
+
+            using (var connection = await reopenedStore.OpenCenteredViewsAsync(token).ConfigureAwait(false))
+            using (var cmd = connection.CreateCommand())
+            {
+                cmd.CommandText = """
+                    SELECT live_base_id, retry_utc, terminal_reason, retry_count
+                    FROM processing_centered_view_window_work WHERE window_sha256 = $window;
+                    """;
+                cmd.Parameters.AddWithValue("$window", stuckWindowId);
+                using var reader = await cmd.ExecuteReaderAsync(token).ConfigureAwait(false);
+                Assert.IsTrue(await reader.ReadAsync(token).ConfigureAwait(false));
+                Assert.IsTrue(await reader.IsDBNullAsync(0, token).ConfigureAwait(false));
+                Assert.IsTrue(await reader.IsDBNullAsync(1, token).ConfigureAwait(false));
+                Assert.AreEqual(CenteredViewWindowPublicationWorker.MissingCenterSingleTerminalReason, reader.GetString(2));
+                Assert.AreEqual((long)CenteredViewWindowPublicationWorker.MaximumMissingCenterRetries, reader.GetInt64(3));
+            }
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
 }
