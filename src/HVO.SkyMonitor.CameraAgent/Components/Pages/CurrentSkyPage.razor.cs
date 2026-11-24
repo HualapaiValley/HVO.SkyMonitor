@@ -376,7 +376,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
                         ResetLayers(displayCaptureId, cancellationToken);
                         _showingBaseOnlyForMismatch = baseOnly;
                         _lastCaptureChangeTimestamp = started;
-                        if (!baseOnly && layers is not null && displayCaptureId is { } shownCaptureId)
+                        if (layers is not null && displayCaptureId is { } shownCaptureId)
                             ApplyLayerResult(shownCaptureId, Volatile.Read(ref _layerGeneration), layers);
                     }
                     var combinedId = _facts?.CombinedLineage?.ArtifactId;
@@ -707,7 +707,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
             return;
         }
         if (generation != _layerGeneration || _runCaptureId != captureId || _disposeStarted != 0 || _accessDenied ||
-            _layerCancellation?.IsCancellationRequested != false) return;
+            _layerCancellation is not { IsCancellationRequested: false } layerLifetime) return;
         // Keep the actual displayed base and controls frozen, including terminal absence/failure.
         // Retain one completed result, not a waiting task or its timeout/cancellation resources.
         if (_viewerOpen)
@@ -720,16 +720,15 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
             OperatorUiResult<CameraAgentLayeredPresentation>.Failure(OperatorUiResultKind.Unavailable,
                 "Selected measured evidence is temporarily unavailable.");
         _layerLoading = false;
-        if (_showingBaseOnlyForMismatch)
+        var value = result.IsSuccess && result.Value?.CaptureId == captureId ? result.Value : null;
+        if (_showingBaseOnlyForMismatch && value is not null && LayersMatchDisplay(_presentation, value))
         {
-            if (!result.IsSuccess || result.Value is not { } compatible || !LayersMatchDisplay(_presentation, compatible)) return;
             _showingBaseOnlyForMismatch = false;
             _gaveDisplayMismatchOneRefresh = false;
         }
-        if (result.IsSuccess && result.Value is { } value && value.CaptureId == captureId)
+        if (!_showingBaseOnlyForMismatch && value is not null)
         {
             _layers = value;
-            if (value.Astrometry is { } astrometry) ApplyAstrometry(captureId, astrometry);
             _layersNotRetained = false;
             _layerMessage = null;
             _selectedLayers = RememberedSelection(value);
@@ -737,14 +736,17 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
             _bindGeneration++;
             _bindLayers = true;
         }
-        else
+        else if (!_showingBaseOnlyForMismatch)
         {
             _layersNotRetained = result.Kind == OperatorUiResultKind.NotFound;
             _layerMessage = result.Message ?? "Structured layers are unavailable for this capture.";
         }
-        if (_astrometry?.Solution is null && result.Value?.Astrometry is null && !_astrometryLoading &&
-            _layerCancellation is { } astrometryCancellation)
-            _ = LoadAstrometryAsync(captureId, generation, astrometryCancellation.Token);
+
+        // A retained assessment describes the selected capture independently of its display geometry.
+        if (value?.Astrometry is { } astrometry && (!_showingBaseOnlyForMismatch || astrometry.Solution is not null))
+            ApplyAstrometry(captureId, astrometry);
+        else
+            _ = LoadAstrometryAsync(captureId, generation, layerLifetime.Token);
         StateHasChanged();
     }
 
