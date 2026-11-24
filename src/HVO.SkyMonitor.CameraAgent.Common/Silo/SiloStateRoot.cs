@@ -19,6 +19,7 @@ internal sealed class SiloStateRoot : IDisposable
     public const string PublicationDatabaseFileName = "publication-state.db";
     public const string IndexDatabaseFileName = "catalog-index.db";
     public const string SpoolDirectoryName = "spool";
+    private const int MaximumStartupMetadataPartials = 256;
 
     private FileStream? _lock;
 
@@ -54,7 +55,13 @@ internal sealed class SiloStateRoot : IDisposable
         }
         try
         {
-            AtomicPublisher.EnsureDirectory(root, root.Resolve(SpoolDirectoryName));
+            var directory = root.Resolve(SpoolDirectoryName);
+            AtomicPublisher.EnsureDirectory(root, directory);
+            // The process lock is held and no metadata writer has started.
+            if (AtomicPublisher.CleanupTemporaries(root, directory, MaximumStartupMetadataPartials) > 0)
+            {
+                DurableSync.Directory(directory);
+            }
             return new SiloStateRoot(root, lockStream);
         }
         catch
@@ -128,17 +135,6 @@ internal sealed class SiloObjectSpool(PhysicalRoot root, string directoryName)
             ? Directory.EnumerateFiles(directory, "*" + Suffix).Select(Path.GetFileName).OfType<string>()
                 .Order(StringComparer.Ordinal).ToArray()
             : [];
-    }
-
-    public int CleanupPartials(int limit)
-    {
-        var directory = root.Resolve(directoryName);
-        var removed = AtomicPublisher.CleanupTemporaries(root, directory, limit);
-        if (removed > 0)
-        {
-            DurableSync.Directory(directory);
-        }
-        return removed;
     }
 
     private string Relative(string name)

@@ -565,7 +565,7 @@ internal sealed class SiloPublisher(
         await journal.ExclusiveAsync(async () =>
         {
             var referenced = await state.ReferencedSpoolNamesAsync(cancellationToken).ConfigureAwait(false);
-            var removed = spool.CleanupPartials(SweepBatch);
+            var removed = 0;
             foreach (var name in spool.Names().Where(name => !referenced.Contains(name)))
             {
                 spool.Delete(name);
