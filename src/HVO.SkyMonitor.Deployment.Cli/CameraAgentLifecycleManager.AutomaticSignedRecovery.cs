@@ -28,11 +28,11 @@ internal sealed partial class CameraAgentLifecycleManager
     private static bool IsValidSignedRecoveryJournal(LifecycleOperationState operation)
     {
         if (operation is not
-        {
-            SchemaVersion: SignedRecoveryJournalVersion, Kind: LifecycleOperationKind.Upgrade,
-            SignedReleaseChecksumsSha256: not null, LeavePausedOriginalSnapshot: null,
-            LeavePausedOriginalRestorePlanId: null
-        }) return false;
+            {
+                SchemaVersion: SignedRecoveryJournalVersion, Kind: LifecycleOperationKind.Upgrade,
+                SignedReleaseChecksumsSha256: not null, LeavePausedOriginalSnapshot: null,
+                LeavePausedOriginalRestorePlanId: null
+            }) return false;
         return operation.Phase switch
         {
             LifecycleOperationPhase.RecoveryAdmissionPreserved => IsAdmissionPreserved(operation),

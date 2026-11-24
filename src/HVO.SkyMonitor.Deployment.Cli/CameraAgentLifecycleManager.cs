@@ -2287,9 +2287,12 @@ internal sealed partial class CameraAgentLifecycleManager
             throw InstallerException.Refused("Leave-paused requires an already-restored interrupted upgrade or its own committed retry.");
         }
         if (request is { Resume: true, Release: not null } && kind == LifecycleOperationKind.Upgrade &&
-            existing is { Kind: LifecycleOperationKind.Upgrade, SchemaVersion: DeploymentSchemaVersions.LifecycleOperation,
+            existing is
+            {
+                Kind: LifecycleOperationKind.Upgrade, SchemaVersion: DeploymentSchemaVersions.LifecycleOperation,
                 Phase: LifecycleOperationPhase.Restoring, MutationStarted: true, StateSnapshotRestoredUtc: not null,
-                SignedReleaseChecksumsSha256: null, SignedRecoveryPauseCommandId: null })
+                SignedReleaseChecksumsSha256: null, SignedRecoveryPauseCommandId: null
+            })
             throw InstallerException.Refused("The legacy signed journal has no installer-owned retry pause. Use the exact signed restore-only or leave-paused recovery request.");
         // Abort settles the retained journal itself, but admission still needs its recorded restart boundary.
         if (request.Abort)

@@ -146,8 +146,10 @@ internal sealed partial class CameraAgentLifecycleManager
             var boundary = ToBoundary(await lifecycle.ReadContinuityAsync(lifecycleToken, cancellationToken).ConfigureAwait(false));
             await PreserveRecoveryAdmissionAsync(paths, operation, boundary, RecoveryAdmissionPreserved, cancellationToken).ConfigureAwait(false);
         }
-        return Result(operation.Kind, RecoveryAdmissionPreserved, operation.OperationId, paths, manifest, manifest.DockerDaemon, true, true)
-            with { PreservedAdmission = admission };
+        return Result(operation.Kind, RecoveryAdmissionPreserved, operation.OperationId, paths, manifest, manifest.DockerDaemon, true, true) with
+        {
+            PreservedAdmission = admission
+        };
     }
 
     private static void EnsureUnchangedPausedBoundary(LifecycleContinuityBoundary original, LifecycleContinuity current)
