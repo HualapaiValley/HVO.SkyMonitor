@@ -275,7 +275,8 @@ public static class MeasuredAstrometryJson
         var qualified = MeasuredAstrometryRecipe.Qualified(measured);
         var r = solution.Residuals;
         if (qualified.Length > AstrometricCatalogData.MaximumEntries)
-            return !solution.Assessment.HasMeasuredMapping && r.QualifiedCount == 0 && r.ReasonCode == "measured-entry-bound";
+            return !solution.Assessment.HasMeasuredMapping && r.QualifiedCount == 0 &&
+                r.ReasonCode == MeasuredAstrometryAssessmentReasonCodes.MeasuredEntryBound;
         var retained = r.FittingDetectionIndexes.Concat(r.VerificationDetectionIndexes).Concat(r.OutlierDetectionIndexes).Order();
         var byIndex = qualified.ToDictionary(a => a.DetectionIndex);
         return qualified.Select(a => a.DetectionIndex).Order().SequenceEqual(retained) &&

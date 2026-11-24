@@ -1,6 +1,9 @@
+using System.Collections.Frozen;
 using System.Globalization;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
+using HVO.SkyMonitor.CameraAgent.Common.OrbitalPlanning;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.Processing;
@@ -14,6 +17,15 @@ public sealed partial class CenteredPublicationEvidence : SiteTimeComponent
     [Parameter] public bool ShowArchiveLink { get; set; } = true;
     [Parameter] public bool Live { get; set; }
     [Parameter] public IReadOnlySet<CenteredViewLayerKey>? PendingLayers { get; set; }
+
+    private static readonly FrozenSet<string> SatelliteReasonCodes = Enum.GetNames<CaptureSatelliteReason>()
+        .Concat(Enum.GetNames<OrbitalSnapshotUnavailableReason>())
+        .Concat(Enum.GetNames<OrbitalPredictionReason>())
+        .Concat(Enum.GetNames<OrbitalPredictionReason>().Select(static reason => CaptureSatelliteProducts.PresentationWithheldPrefix + reason))
+        .Concat(Enum.GetNames<CameraAgentOrbitalTimeDataProblem>()
+            .Where(static reason => reason != nameof(CameraAgentOrbitalTimeDataProblem.None))
+            .Select(static reason => CaptureSatelliteProducts.TimeInputsUnavailablePrefix + reason))
+        .ToFrozenSet(StringComparer.Ordinal);
 
     private IReadOnlyList<LayerGroup> _layers = [];
 
@@ -32,8 +44,23 @@ public sealed partial class CenteredPublicationEvidence : SiteTimeComponent
 
     internal static string? Reason(string? value)
     {
-        // Only known producer codes bypass free-text redaction. Any detail after the code stays private.
-        var code = value?.Split('/', 2)[0].Trim();
+        // Layer evidence carries an exact status code. A path appended to one still goes through redaction.
+        var code = value?.Trim();
+        if (code is not null && (SatelliteReasonCodes.Contains(code) || code is
+            ExposureMeasurementSourceReasonCodes.LinearInputUnavailable or ExposureMeasurementSourceReasonCodes.UnsupportedLinearLayout or
+            ExposureMeasurementSourceReasonCodes.IncompatibleLinearOrientation or ExposureMeasurementSourceReasonCodes.UnqualifiedCfaPhase or
+            ExposureMeasurementSourceReasonCodes.CandidateBudgetExceeded or ExposureMeasurementSourceReasonCodes.InsufficientBackground or
+            ExposureMeasurementSourceReasonCodes.AllCandidatesRejected or ExposureMeasurementSourceReasonCodes.NoCandidates or
+            AstrometricSolverReasonCodes.CatalogIncomplete or AstrometricSolverReasonCodes.CatalogSelectionUnsupported or
+            AstrometricSolverReasonCodes.CoordinateModelUnsupported or AstrometricSolverReasonCodes.InsufficientDetections or
+            AstrometricSolverReasonCodes.WarmContextIncompatible or AstrometricSolverReasonCodes.Accepted or AstrometricSolverReasonCodes.Ambiguous or
+            AstrometricSolverReasonCodes.ResourceLimit or AstrometricSolverReasonCodes.AcquisitionOrQualityFailed or AstrometricSolverReasonCodes.TimeBudget or
+            MeasuredAstrometryAssessmentReasonCodes.ExecutionBudget or MeasuredAstrometryAssessmentReasonCodes.MeasurementIncomplete or
+            MeasuredAstrometryAssessmentReasonCodes.MeasuredEntryBound or MeasuredAstrometryAssessmentReasonCodes.CatalogCorrespondenceMismatch))
+            return code;
+
+        // Existing structured reasons may carry a slash-delimited detail. Render only their known code.
+        code = code?.Split('/', 2)[0].TrimEnd();
         return code switch
         {
             "centered.awaiting-product" => "Awaiting source product at publication",

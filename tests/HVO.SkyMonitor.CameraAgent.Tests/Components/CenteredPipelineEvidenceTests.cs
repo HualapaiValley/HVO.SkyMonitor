@@ -1,9 +1,14 @@
+using System.Reflection;
 using System.Text.Json;
 using Bunit;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.OrbitalPlanning;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Components.Operations;
 using HVO.SkyMonitor.CameraAgent.Services;
@@ -122,6 +127,166 @@ public sealed class CenteredPipelineEvidenceTests
         Assert.AreEqual(code, CenteredPublicationEvidence.Reason(code));
         Assert.AreEqual(code, CenteredPublicationEvidence.Reason($"{code}/var/lib/hvo/raw"));
     }
+
+    [TestMethod]
+    [DataRow(nameof(CaptureSatelliteReason.NamedPassPredictionLineageUnavailable))]
+    [DataRow(nameof(CaptureSatelliteReason.NamedPassPredictionTimingUnavailable))]
+    [DataRow(nameof(CaptureSatelliteReason.NamedPassPredictionTimingMismatch))]
+    [DataRow(nameof(CaptureSatelliteReason.NamedPassPredictionInputsMismatch))]
+    [DataRow(nameof(CaptureSatelliteReason.TimeAvailabilityUnknown))]
+    [DataRow(nameof(CaptureSatelliteReason.TimeNotOriginallyAvailable))]
+    [DataRow(nameof(CaptureSatelliteReason.ReadoutGeometryUnavailable))]
+    [DataRow(nameof(CaptureSatelliteReason.CaptureLocationUnavailable))]
+    [DataRow(nameof(CaptureSatelliteReason.PinnedSnapshotUnavailable))]
+    [DataRow(nameof(CaptureSatelliteReason.PinnedTimeInputsUnavailable))]
+    [DataRow(nameof(CaptureSatelliteReason.TimeCoverageUnavailable))]
+    [DataRow(nameof(CaptureSatelliteReason.ExposureWindowBudget))]
+    [DataRow(nameof(CaptureSatelliteReason.CaptureReadoutProfileMismatch))]
+    [DataRow(nameof(CaptureSatelliteReason.SnapshotNotOriginallyAvailable))]
+    [DataRow(nameof(CaptureSatelliteReason.SelectionCandidateBudget))]
+    [DataRow(nameof(CaptureSatelliteReason.PinnedRecordSelectionMismatch))]
+    [DataRow(nameof(CaptureSatelliteReason.SnapshotRetiredBeforePin))]
+    [DataRow(nameof(CaptureSatelliteReason.NoExposureSegments))]
+    [DataRow(nameof(OrbitalSnapshotUnavailableReason.InvalidIdentity))]
+    [DataRow(nameof(OrbitalSnapshotUnavailableReason.NotConfigured))]
+    [DataRow(nameof(OrbitalSnapshotUnavailableReason.NoActiveSnapshot))]
+    [DataRow(nameof(OrbitalSnapshotUnavailableReason.UnknownIdentity))]
+    [DataRow(nameof(OrbitalSnapshotUnavailableReason.Retired))]
+    [DataRow(nameof(OrbitalSnapshotUnavailableReason.IntegrityFailure))]
+    [DataRow(nameof(OrbitalSnapshotUnavailableReason.StorageUnavailable))]
+    [DataRow(nameof(OrbitalPredictionReason.None))]
+    [DataRow(nameof(OrbitalPredictionReason.ObjectMissing))]
+    [DataRow(nameof(OrbitalPredictionReason.SelectionWithheld))]
+    [DataRow(nameof(OrbitalPredictionReason.PropagationFailure))]
+    [DataRow(nameof(OrbitalPredictionReason.InvalidGeometry))]
+    [DataRow(nameof(OrbitalPredictionReason.MissingEarthOrientation))]
+    [DataRow(nameof(OrbitalPredictionReason.UnsupportedLeapCrossing))]
+    [DataRow(nameof(OrbitalPredictionReason.EvaluationBudget))]
+    [DataRow(nameof(OrbitalPredictionReason.SampleBudget))]
+    [DataRow(nameof(OrbitalPredictionReason.ResultBudget))]
+    [DataRow(nameof(OrbitalPredictionReason.Deadline))]
+    [DataRow(nameof(OrbitalPredictionReason.IncompleteInterval))]
+    [DataRow(CaptureSatelliteProducts.TimeInputsUnavailablePrefix + nameof(CameraAgentOrbitalTimeDataProblem.Disabled))]
+    [DataRow(CaptureSatelliteProducts.TimeInputsUnavailablePrefix + nameof(CameraAgentOrbitalTimeDataProblem.OverrideIncomplete))]
+    [DataRow(CaptureSatelliteProducts.TimeInputsUnavailablePrefix + nameof(CameraAgentOrbitalTimeDataProblem.OverrideInvalid))]
+    [DataRow(CaptureSatelliteProducts.TimeInputsUnavailablePrefix + nameof(CameraAgentOrbitalTimeDataProblem.BundledInvalid))]
+    [DataRow(CaptureSatelliteProducts.PresentationWithheldPrefix + nameof(OrbitalPredictionReason.None))]
+    [DataRow(CaptureSatelliteProducts.PresentationWithheldPrefix + nameof(OrbitalPredictionReason.ObjectMissing))]
+    [DataRow(CaptureSatelliteProducts.PresentationWithheldPrefix + nameof(OrbitalPredictionReason.SelectionWithheld))]
+    [DataRow(CaptureSatelliteProducts.PresentationWithheldPrefix + nameof(OrbitalPredictionReason.PropagationFailure))]
+    [DataRow(CaptureSatelliteProducts.PresentationWithheldPrefix + nameof(OrbitalPredictionReason.InvalidGeometry))]
+    [DataRow(CaptureSatelliteProducts.PresentationWithheldPrefix + nameof(OrbitalPredictionReason.MissingEarthOrientation))]
+    [DataRow(CaptureSatelliteProducts.PresentationWithheldPrefix + nameof(OrbitalPredictionReason.UnsupportedLeapCrossing))]
+    [DataRow(CaptureSatelliteProducts.PresentationWithheldPrefix + nameof(OrbitalPredictionReason.EvaluationBudget))]
+    [DataRow(CaptureSatelliteProducts.PresentationWithheldPrefix + nameof(OrbitalPredictionReason.SampleBudget))]
+    [DataRow(CaptureSatelliteProducts.PresentationWithheldPrefix + nameof(OrbitalPredictionReason.ResultBudget))]
+    [DataRow(CaptureSatelliteProducts.PresentationWithheldPrefix + nameof(OrbitalPredictionReason.Deadline))]
+    [DataRow(CaptureSatelliteProducts.PresentationWithheldPrefix + nameof(OrbitalPredictionReason.IncompleteInterval))]
+    [DataRow(ExposureMeasurementSourceReasonCodes.LinearInputUnavailable)]
+    [DataRow(ExposureMeasurementSourceReasonCodes.UnsupportedLinearLayout)]
+    [DataRow(ExposureMeasurementSourceReasonCodes.IncompatibleLinearOrientation)]
+    [DataRow(ExposureMeasurementSourceReasonCodes.UnqualifiedCfaPhase)]
+    [DataRow(ExposureMeasurementSourceReasonCodes.CandidateBudgetExceeded)]
+    [DataRow(ExposureMeasurementSourceReasonCodes.InsufficientBackground)]
+    [DataRow(ExposureMeasurementSourceReasonCodes.AllCandidatesRejected)]
+    [DataRow(ExposureMeasurementSourceReasonCodes.NoCandidates)]
+    [DataRow(AstrometricSolverReasonCodes.CatalogIncomplete)]
+    [DataRow(AstrometricSolverReasonCodes.CatalogSelectionUnsupported)]
+    [DataRow(AstrometricSolverReasonCodes.CoordinateModelUnsupported)]
+    [DataRow(AstrometricSolverReasonCodes.InsufficientDetections)]
+    [DataRow(AstrometricSolverReasonCodes.WarmContextIncompatible)]
+    [DataRow(AstrometricSolverReasonCodes.Accepted)]
+    [DataRow(AstrometricSolverReasonCodes.Ambiguous)]
+    [DataRow(AstrometricSolverReasonCodes.ResourceLimit)]
+    [DataRow(AstrometricSolverReasonCodes.AcquisitionOrQualityFailed)]
+    [DataRow(AstrometricSolverReasonCodes.TimeBudget)]
+    [DataRow(MeasuredAstrometryAssessmentReasonCodes.ExecutionBudget)]
+    [DataRow(MeasuredAstrometryAssessmentReasonCodes.MeasurementIncomplete)]
+    [DataRow(MeasuredAstrometryAssessmentReasonCodes.MeasuredEntryBound)]
+    [DataRow(MeasuredAstrometryAssessmentReasonCodes.CatalogCorrespondenceMismatch)]
+    public void PublicationShowsExactLayerReasonAndWithholdsPaths(string code)
+    {
+        Assert.AreEqual(code, CenteredPublicationEvidence.Reason(code));
+        Assert.AreEqual("Withheld", CenteredPublicationEvidence.Reason($"{code}/private"));
+    }
+
+    [TestMethod]
+    [DataRow(Satellites, CenteredViewLayerScope.Contributor, nameof(CaptureSatelliteReason.CaptureLocationUnavailable))]
+    [DataRow("measured-source-markers", CenteredViewLayerScope.Reference, ExposureMeasurementSourceReasonCodes.CandidateBudgetExceeded)]
+    [DataRow(AstrometricDiagnosticPresentation.ResidualsLayer, CenteredViewLayerScope.Reference, AstrometricSolverReasonCodes.AcquisitionOrQualityFailed)]
+    public void PublicationRendersLayerReasonInEvidenceCell(string kind, CenteredViewLayerScope scope, string code)
+    {
+        var reference = Exposures(false)[2];
+        var layer = new CenteredViewLayer(new(kind, scope, reference.Capture.CaptureId), 1, Artifact(),
+            reference.ExposureEndedUtc, CenteredViewReadiness.Incompatible, code, null);
+        var view = View(reference, [reference], [layer]);
+        using var context = new BunitContext();
+
+        var cut = context.Render<CenteredPublicationEvidence>(parameters => parameters.Add(component => component.View, view));
+
+        var row = cut.Find($"[data-layer-kind='{kind}'] tbody tr");
+        Assert.AreEqual("Incompatible", row.Children[1].TextContent);
+        Assert.Contains(code, row.Children[3].TextContent);
+        Assert.DoesNotContain("Withheld", row.Children[3].TextContent);
+    }
+
+    [TestMethod]
+    public void PublicationReasonsCoverDeclaredProducerCodes()
+    {
+        var layerCodes = ProducerReasonConstants(typeof(ExposureMeasurementSourceReasonCodes),
+                typeof(AstrometricSolverReasonCodes), typeof(MeasuredAstrometryAssessmentReasonCodes))
+            .Concat(Enum.GetNames<CaptureSatelliteReason>())
+            .Concat(Enum.GetNames<OrbitalSnapshotUnavailableReason>())
+            .Concat(Enum.GetNames<OrbitalPredictionReason>())
+            .Concat(Enum.GetValues<OrbitalPredictionReason>().Select(static reason => $"PresentationWithheld:{reason}"))
+            .Concat(Enum.GetValues<CameraAgentOrbitalTimeDataProblem>()
+                .Where(static problem => problem != CameraAgentOrbitalTimeDataProblem.None)
+                .Select(static problem => $"TimeInputsUnavailable:{problem}"));
+
+        foreach (var code in layerCodes)
+        {
+            Assert.AreEqual(code, CenteredPublicationEvidence.Reason(code), $"Layer producer reason {code}");
+            Assert.AreEqual("Withheld", CenteredPublicationEvidence.Reason($"{code}/private"), $"Path after {code}");
+        }
+
+        // Nightly keogram failures, calibration import and acquisition failures, and per-input
+        // normalization exclusions belong to their own evidence, outside these Operations fields.
+        var dottedCodes = ProducerReasonConstants(typeof(FrameWhiteThreshold), typeof(CloudAssessmentReasonCodes))
+            .Concat(ProducerReasonConstants(typeof(ProcessingReasonCodes))
+                .Where(static code => !code.Contains("keogram-", StringComparison.Ordinal)))
+            .Concat(ProducerReasonConstants(typeof(CenteredRegisteredStackRecipe))
+                .Where(static code => code.StartsWith("registration.", StringComparison.Ordinal)))
+            .Concat(ProducerReasonConstants(typeof(CalibrationLibraryReasonCodes)).Where(static code => code is not (
+                CalibrationLibraryReasonCodes.InvalidJson or CalibrationLibraryReasonCodes.PayloadTooLarge or
+                CalibrationLibraryReasonCodes.UnsupportedSchema or CalibrationLibraryReasonCodes.InvalidBundle or
+                CalibrationLibraryReasonCodes.Ambiguous or CalibrationLibraryReasonCodes.PublicationConflict or
+                CalibrationLibraryReasonCodes.AcquisitionFailure or CalibrationLibraryReasonCodes.MasterBuildFailure)))
+            .Concat(ProducerReasonConstants(typeof(CalibrationFamilyReasonCodes)).Where(static code =>
+                code.StartsWith("calibration.family.master-", StringComparison.Ordinal) ||
+                code is CalibrationFamilyReasonCodes.InvalidFamily or CalibrationFamilyReasonCodes.IdentityMismatch))
+            .Concat(ProducerReasonConstants(typeof(GainNormalizationReasonCodes)).Where(static code => code is not (
+                GainNormalizationReasonCodes.GainOutOfRange or GainNormalizationReasonCodes.MixedResponse or
+                GainNormalizationReasonCodes.MixedConversionRegime or GainNormalizationReasonCodes.CoefficientRatioExceeded or
+                GainNormalizationReasonCodes.InvalidContract or GainNormalizationReasonCodes.UnsupportedSchema or
+                GainNormalizationReasonCodes.NonCanonicalJson)))
+            .Concat([
+                ProcessingPlanSupersededException.ExecutionReason,
+                ActiveCalibrationFamilySelector.NoActiveFamily,
+                NormalizationPlanFreezer.NoEligibleInput,
+                NormalizationPlanFreezer.NonRightAlignedResponse,
+                NormalizationPlanFreezer.WindowIncomplete,
+                CalibrationFamilyActivationReasonCodes.IdentityMismatch,
+                CalibrationFamilyActivationReasonCodes.AcquisitionModelMismatch
+            ]);
+
+        foreach (var code in dottedCodes)
+            Assert.AreEqual(code, CenteredPublicationEvidence.Reason(code), $"Structured producer reason {code}");
+    }
+
+    private static IEnumerable<string> ProducerReasonConstants(params Type[] types) =>
+        types.SelectMany(static type => type.GetFields(BindingFlags.Public | BindingFlags.Static))
+            .Where(static field => field.IsLiteral && field.FieldType == typeof(string))
+            .Select(static field => (string)field.GetRawConstantValue()!);
 
     [TestMethod]
     public void LiveReadinessDistinguishesMissingProgressDisabledAndAssessedEmpty()

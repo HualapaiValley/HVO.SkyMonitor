@@ -1,5 +1,20 @@
 namespace HVO.SkyMonitor.Astronomy;
 
+/// <summary>Reason codes written into astrometric assessments by the solver.</summary>
+public static class AstrometricSolverReasonCodes
+{
+    public const string CatalogIncomplete = "catalog-incomplete";
+    public const string CatalogSelectionUnsupported = "catalog-selection-unsupported";
+    public const string CoordinateModelUnsupported = "coordinate-model-unsupported";
+    public const string InsufficientDetections = "insufficient-detections";
+    public const string WarmContextIncompatible = "warm-context-incompatible";
+    public const string Accepted = "accepted";
+    public const string Ambiguous = "ambiguous";
+    public const string ResourceLimit = "resource-limit";
+    public const string AcquisitionOrQualityFailed = "acquisition-or-quality-failed";
+    public const string TimeBudget = "time-budget";
+}
+
 /// <summary>Host-neutral, bounded measured astrometry. This API proposes evidence and never mutates last-good state.</summary>
 public static class AstrometricSolver
 {
@@ -45,11 +60,19 @@ public static class AstrometricSolver
         var control = new AstrometricWorkControl(previous is null ? options.ColdBudgetMilliseconds : options.WarmBudgetMilliseconds, cancellationToken);
         AstrometricSolveResult Failure(AstrometricAssessmentStatus status, string code, string reason) =>
             Create(frame, calibration, catalog, options, mode, status, code, reason, null, null, [], new(control.ElapsedMilliseconds, 0, 0, 0, 0, 0, status == AstrometricAssessmentStatus.BudgetExceeded), previous?.IdentitySha256);
-        if (!catalog.IsCompleteForRequestedMagnitude || catalog.CompletenessMagnitudeLimit < options.MaximumCatalogMagnitude) return Failure(AstrometricAssessmentStatus.Unavailable, "catalog-incomplete", "Catalog source does not declare complete coverage through the requested magnitude ceiling; no fit was attempted.");
+        if (!catalog.IsCompleteForRequestedMagnitude || catalog.CompletenessMagnitudeLimit < options.MaximumCatalogMagnitude)
+            return Failure(AstrometricAssessmentStatus.Unavailable, AstrometricSolverReasonCodes.CatalogIncomplete,
+                "Catalog source does not declare complete coverage through the requested magnitude ceiling; no fit was attempted.");
         // Selections beyond the legacy bound are solved only under the profile that declares them.
-        if (catalog.Stars.Count > options.CatalogEntryBound) return Failure(AstrometricAssessmentStatus.Unavailable, "catalog-selection-unsupported", $"Catalog selection exceeds the {options.CatalogEntryBound}-entry bound of the requested selection profile; no fit was attempted.");
-        if (catalog.CoordinateModel != AstrometricConventions.CoordinateModel) return Failure(AstrometricAssessmentStatus.Unavailable, "coordinate-model-unsupported", "Only explicitly declared fixed-position J2000 precession is supported.");
-        if (copy.Length < 12) return Failure(AstrometricAssessmentStatus.Rejected, "insufficient-detections", "At least12 measured sources are required.");
+        if (catalog.Stars.Count > options.CatalogEntryBound)
+            return Failure(AstrometricAssessmentStatus.Unavailable, AstrometricSolverReasonCodes.CatalogSelectionUnsupported,
+                $"Catalog selection exceeds the {options.CatalogEntryBound}-entry bound of the requested selection profile; no fit was attempted.");
+        if (catalog.CoordinateModel != AstrometricConventions.CoordinateModel)
+            return Failure(AstrometricAssessmentStatus.Unavailable, AstrometricSolverReasonCodes.CoordinateModelUnsupported,
+                "Only explicitly declared fixed-position J2000 precession is supported.");
+        if (copy.Length < 12)
+            return Failure(AstrometricAssessmentStatus.Rejected, AstrometricSolverReasonCodes.InsufficientDetections,
+                "At least12 measured sources are required.");
         if (previous is not null)
         {
             AstrometricEvidenceJson.Validate(previous);
@@ -58,7 +81,8 @@ public static class AstrometricSolver
                 previous.SolverVersion != AstrometricConventions.SolverVersion || previous.Frame.Observer != frame.Observer ||
                 previous.Frame.ObserverIdentitySha256 != frame.ObserverIdentitySha256 || previous.Frame.MidpointUtc > frame.MidpointUtc ||
                 (frame.MidpointUtc - previous.Frame.MidpointUtc).TotalSeconds > options.MaximumWarmAgeSeconds)
-                return Failure(AstrometricAssessmentStatus.Rejected, "warm-context-incompatible", "Warm prior is rejected, stale, or belongs to different calibration/catalog/settings/observer evidence; reacquire explicitly.");
+                return Failure(AstrometricAssessmentStatus.Rejected, AstrometricSolverReasonCodes.WarmContextIncompatible,
+                    "Warm prior is rejected, stale, or belongs to different calibration/catalog/settings/observer evidence; reacquire explicitly.");
         }
         try
         {
@@ -81,7 +105,7 @@ public static class AstrometricSolver
             // A deep selection can verify more stars than an assessment retains; report that bound rather than fail validation.
             if (core.Accepted && core.Quality is { } evidence &&
                 AstrometricEvidenceJson.ExceedsEvidenceBound(evidence.ExpectedFittingStars, evidence.FittingStars, evidence.VerificationStars))
-                return Create(frame, calibration, catalog, options, mode, AstrometricAssessmentStatus.BudgetExceeded, "resource-limit",
+                return Create(frame, calibration, catalog, options, mode, AstrometricAssessmentStatus.BudgetExceeded, AstrometricSolverReasonCodes.ResourceLimit,
                     $"Accepted evidence exceeds the {AstrometricEvidenceJson.MaximumEvidenceStars}-star assessment bound; no proposed mapping replaces last-good evidence.",
                     null, null, [], new(control.ElapsedMilliseconds, core.CatalogIndexStars, core.CatalogTriangles, core.ImageTriangles, core.Hypotheses, core.DistinctCandidates, true),
                     previous?.IdentitySha256);
@@ -97,13 +121,16 @@ public static class AstrometricSolver
             var associations = core.Associations.Select(a => new AstrometricAssociation(a.CatalogId, a.DetectionIndex, a.ResidualPixels, a.Verification)).OrderBy(a => a.CatalogId, StringComparer.Ordinal).ToArray();
             var limit = core.BudgetExhausted || core.Reason.Contains("limit", StringComparison.OrdinalIgnoreCase) || core.Reason.Contains("bound", StringComparison.OrdinalIgnoreCase) && !core.Accepted;
             var status = core.Accepted ? AstrometricAssessmentStatus.Accepted : limit ? AstrometricAssessmentStatus.BudgetExceeded : AstrometricAssessmentStatus.Rejected;
-            var reasonCode = core.Accepted ? "accepted" : core.Reason.StartsWith("Ambiguous", StringComparison.Ordinal) ? "ambiguous" : limit ? "resource-limit" : "acquisition-or-quality-failed";
+            var reasonCode = core.Accepted ? AstrometricSolverReasonCodes.Accepted :
+                core.Reason.StartsWith("Ambiguous", StringComparison.Ordinal) ? AstrometricSolverReasonCodes.Ambiguous :
+                limit ? AstrometricSolverReasonCodes.ResourceLimit : AstrometricSolverReasonCodes.AcquisitionOrQualityFailed;
             return Create(frame, calibration, catalog, options, mode, status, reasonCode, core.Reason, parameters, quality, associations,
                 new(control.ElapsedMilliseconds, core.CatalogIndexStars, core.CatalogTriangles, core.ImageTriangles, core.Hypotheses, core.DistinctCandidates, limit), previous?.IdentitySha256);
         }
         catch (TimeoutException)
         {
-            return Failure(AstrometricAssessmentStatus.BudgetExceeded, "time-budget", "Cooperative numerical-work budget exceeded; no proposed mapping replaces last-good evidence.");
+            return Failure(AstrometricAssessmentStatus.BudgetExceeded, AstrometricSolverReasonCodes.TimeBudget,
+                "Cooperative numerical-work budget exceeded; no proposed mapping replaces last-good evidence.");
         }
     }
     private static AstrometricSolveResult Create(AstrometricFrameContext frame, AstrometricCalibration calibration,
