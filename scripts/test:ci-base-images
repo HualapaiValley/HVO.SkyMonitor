@@ -325,7 +325,11 @@ FROM build AS final
         config = (ROOT / ".github/dependabot.yml").read_text()
         entries = re.split(r'^  - package-ecosystem: ', config, flags=re.M)[1:]
         holds = (
-            ("nuget", ("Microsoft.*", "System.*"), f">= {next_major}.0.0, < {next_major + 1}.0.0"),
+            (
+                "nuget",
+                ("Microsoft.*", "System.*", "Serilog.AspNetCore"),
+                f">= {next_major}.0.0, < {next_major + 1}.0.0",
+            ),
             ("docker", ("dotnet/*",), f">= {next_major}"),
         )
         for ecosystem, names, version_range in holds:
