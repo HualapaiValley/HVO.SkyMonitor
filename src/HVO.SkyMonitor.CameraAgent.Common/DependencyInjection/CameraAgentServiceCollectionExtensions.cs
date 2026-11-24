@@ -60,6 +60,9 @@ public static class CameraAgentServiceCollectionExtensions
             .Bind(configuration.GetSection("CameraAgent"))
             .Configure(options => options.SpaceWeather.BindProducts(configuration))
             .ValidateDataAnnotations()
+            .Validate(options => string.IsNullOrEmpty(configuration["CameraAgent:Silo:StateContract"]) ||
+                options.CentralIntegration.Mode == CentralIntegrationMode.Disabled,
+                "The Silo storage layout requires disabled central integration.")
             .ValidateOnStart();
 
         services.AddSingleton<ICameraAgentConfigurationAccessor, CameraAgentConfigurationAccessor>();

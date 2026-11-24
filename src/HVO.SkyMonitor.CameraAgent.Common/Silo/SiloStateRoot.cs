@@ -130,6 +130,17 @@ internal sealed class SiloObjectSpool(PhysicalRoot root, string directoryName)
             : [];
     }
 
+    public int CleanupPartials(int limit)
+    {
+        var directory = root.Resolve(directoryName);
+        var removed = AtomicPublisher.CleanupTemporaries(root, directory, limit);
+        if (removed > 0)
+        {
+            DurableSync.Directory(directory);
+        }
+        return removed;
+    }
+
     private string Relative(string name)
     {
         if (!name.EndsWith(Suffix, StringComparison.Ordinal) || !SiloHash.IsValid(name[..^Suffix.Length]))

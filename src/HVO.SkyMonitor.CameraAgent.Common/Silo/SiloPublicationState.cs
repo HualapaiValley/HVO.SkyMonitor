@@ -44,9 +44,14 @@ internal sealed record SiloDraftMember(
 /// </summary>
 internal interface ISiloPayloadSpool
 {
+    ValueTask StageAsync(SiloDraftMember member, Func<SiloDraftMember, CancellationToken, ValueTask<Stream>> open,
+        CancellationToken cancellationToken);
+
     ValueTask<Stream> OpenAsync(string sourceToken, CancellationToken cancellationToken);
 
     ValueTask ReleaseAsync(string sourceToken, CancellationToken cancellationToken);
+
+    ValueTask ReconcileAsync(IReadOnlySet<string> claimedTokens, CancellationToken cancellationToken);
 }
 
 /// <summary>Publication states (#1965 5.3). Only <see cref="Visible"/> is browsable.</summary>
@@ -637,9 +642,10 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
     /// <summary>Visible or abandoned groups that still have members whose spooled bytes were not released.</summary>
     public ValueTask<IReadOnlyList<(string GroupId, string RevisionId)>> ListUnreleasedAsync(int limit, CancellationToken cancellationToken) =>
         ListGroupsAsync("""
-            SELECT g.group_id, g.revision_id FROM staged_groups g
+            SELECT g.group_id, g.revision_id
+            FROM (SELECT DISTINCT group_id, revision_id FROM staged_members WHERE released = 0) pending
+            JOIN staged_groups g USING (group_id, revision_id)
             WHERE g.state IN ('visible', 'abandoned')
-                AND EXISTS (SELECT 1 FROM staged_members m WHERE m.group_id = g.group_id AND m.revision_id = g.revision_id AND m.released = 0)
             ORDER BY g.updated_unix_ms, g.group_id, g.revision_id LIMIT $limit;
             """, limit, cancellationToken);
 
@@ -880,6 +886,32 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
         await ExecuteAsync(connection, null, """
             UPDATE staged_members SET released = 1 WHERE group_id = $group AND revision_id = $revision AND ordinal = $ordinal;
             """, cancellationToken, ("$group", groupId), ("$revision", revisionId), ("$ordinal", ordinal)).ConfigureAwait(false);
+    }
+
+    /// <summary>Whether another unsettled release still owns these staged bytes. Only unreleased rows are searched.</summary>
+    public async ValueTask<bool> HasOtherPayloadOwnerAsync(
+        string groupId, string revisionId, SiloStagedMember member, CancellationToken cancellationToken)
+    {
+        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        using var command = CreateCommand(connection, null, """
+            SELECT 1 FROM staged_members
+            WHERE released = 0 AND source_token = $token AND (group_id, revision_id, ordinal) <> ($group, $revision, $ordinal)
+            LIMIT 1;
+            """, ("$token", member.Draft.SourceToken), ("$group", groupId), ("$revision", revisionId), ("$ordinal", member.Ordinal));
+        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not null;
+    }
+
+    public async ValueTask<IReadOnlySet<string>> ListClaimedPayloadTokensAsync(CancellationToken cancellationToken)
+    {
+        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        using var command = CreateCommand(connection, null, "SELECT DISTINCT source_token FROM staged_members WHERE released = 0;");
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        var tokens = new HashSet<string>(StringComparer.Ordinal);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            tokens.Add(reader.GetString(0));
+        }
+        return tokens;
     }
 
     /// <summary>
