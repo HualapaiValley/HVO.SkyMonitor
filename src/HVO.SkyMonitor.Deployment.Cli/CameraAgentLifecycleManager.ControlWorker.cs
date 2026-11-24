@@ -65,7 +65,7 @@ internal sealed partial class CameraAgentLifecycleManager
                     .ConfigureAwait(false)) return;
         }
         throw InstallerException.Refused("Settle installer runtime control with lifecycle-worker while CameraAgent is reachable. " +
-            "If CameraAgent is down, use uninstall then restore/reinstall, or rollback subject to its recovery preconditions. " +
+            "If CameraAgent is down, use uninstall then restore/reinstall. " +
             "Retain both journals and refused evidence for reconciliation; do not edit them.");
     }
 

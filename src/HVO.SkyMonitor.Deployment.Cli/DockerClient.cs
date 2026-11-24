@@ -26,6 +26,8 @@ internal sealed class DockerClient(IProcessRunner processRunner)
 
     internal sealed record ContainerRuntimeIdentity(bool Exists, bool Running, bool Healthy, string? ImageId)
     {
+        internal string? ContainerId { get; init; }
+
         // Ephemeral Docker observation: only an explicit failed /alive check proves a running host unavailable.
         internal string? LivenessStatus { get; init; }
 
@@ -803,6 +805,7 @@ internal sealed class DockerClient(IProcessRunner processRunner)
             healthy,
             container.GetProperty("Image").GetString())
         {
+            ContainerId = container.TryGetProperty("Id", out var id) ? id.GetString() : null,
             Limits = container.TryGetProperty("HostConfig", out var host) ? ReadLimits(host) : null,
             LivenessStatus = state.TryGetProperty("Health", out var observedHealth)
                 ? observedHealth.GetProperty("Status").GetString() : null
@@ -812,9 +815,7 @@ internal sealed class DockerClient(IProcessRunner processRunner)
     /// <summary>Probe the fixed container-local liveness endpoint; cached Docker health never proves current unreachability.</summary>
     internal async Task<bool> IsContainerAliveNowAsync(string containerName, CancellationToken cancellationToken)
     {
-        var probe = await RunDockerRawAsync(["exec", containerName, "curl", "--noproxy", "*", "--silent", "--show-error",
-            "--max-time", "5", "--output", "/dev/null", "--write-out", "%{http_code}", "http://127.0.0.1:8080/alive"],
-            cancellationToken).ConfigureAwait(false);
+        var probe = await ProbeContainerHttpAsync(containerName, "/alive", cancellationToken).ConfigureAwait(false);
         var status = probe.StandardOutput.Trim();
         // Any HTTP reply proves reachability, including authentication/readiness refusals. Only curl's explicit
         // connection failure or bounded no-response timeout can authorize the offline recovery exception.
@@ -823,6 +824,35 @@ internal sealed class DockerClient(IProcessRunner processRunner)
         if (status == "000" && probe.ExitCode is 7 or 28) return false;
         throw new InstallerException("The current CameraAgent liveness probe could not establish reachability; retain pending control evidence.");
     }
+
+    internal async Task<int?> ReadApplicationHealthAsync(string? containerId, CancellationToken cancellationToken)
+    {
+        // Pin the observation to the inspected container, even if Compose reuses its name during a concurrent restart.
+        if (containerId is not { Length: 64 } || !containerId.All(char.IsAsciiHexDigit)) return null;
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(7));
+        try
+        {
+            var probe = await ProbeContainerHttpAsync(containerId, "/health", deadline.Token).ConfigureAwait(false);
+            return probe.ExitCode == 0 &&
+                   int.TryParse(probe.StandardOutput.Trim(), System.Globalization.NumberStyles.None,
+                       System.Globalization.CultureInfo.InvariantCulture, out var status) && status is >= 100 and <= 599
+                ? status : null;
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return null;
+        }
+        catch (Exception exception) when (exception is InstallerException or IOException)
+        {
+            return null;
+        }
+    }
+
+    private Task<ProcessResult> ProbeContainerHttpAsync(string container, string path, CancellationToken cancellationToken)
+        => RunDockerRawAsync(["exec", container, "curl", "--noproxy", "*", "--silent", "--show-error",
+            "--max-time", "5", "--output", "/dev/null", "--write-out", "%{http_code}", $"http://127.0.0.1:8080{path}"],
+            cancellationToken);
 
     public async Task EnsureNoInstanceReferencesAsync(
         Guid instanceId,

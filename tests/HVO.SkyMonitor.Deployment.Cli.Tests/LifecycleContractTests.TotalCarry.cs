@@ -9,87 +9,13 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 /// Correction round 4 of #1314 (PR #1340): carrying counters is best effort and total. Every carry is planned and proved
 /// on a scratch copy of the target store before any store is replaced, and a floor or store that cannot be carried, for
 /// any reason, is put back as the snapshot recorded it and named on standard error, so a value a candidate or a snapshot
-/// holds never stops a restore. R17 is a rollback restoring its own snapshot of values the installer cannot interpret;
+/// holds never stops a restore.
 /// R18 a state token at the edge of what a carry can write and verify; R19 an automation ID the target's CHECK refuses;
 /// R20 a store in a UTF-16 encoding; and a fault at each carry step.
 /// </summary>
 public sealed partial class LifecycleContractTests
 {
     private const string FleetStore = "raw/.fleet/fleet-status.db";
-
-    [TestMethod]
-    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    [DataRow("blob-revision")]
-    [DataRow("text-version")]
-    [DataRow("utf16-store")]
-    public async Task RollbackAsync_FailedRollbackRestoresItsOwnSnapshotWhoseValuesTheInstallerCannotInterpret(string shape)
-    {
-        using var fixture = await UpgradedReleaseFixtureAsync(shape);
-        using var error = new StringWriter();
-
-        // The rollback's image fails its verification, so recovery puts the rollback's own snapshot of the upgraded
-        // release back.
-        await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            fixture.Request(LifecycleOperationKind.Rollback), fixture.Runner, _ => new FakeLifecycleClient(),
-            _ => new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true },
-            fixture.Uid, fixture.Gid, CancellationToken.None, error: error));
-
-        Assert.AreEqual(CandidateImageId, fixture.Runner.ActiveImageId);
-        Assert.IsTrue(fixture.Runner.Running);
-        AssertUpgradedReleaseStores(fixture.Paths, shape);
-        AssertSaidWhatItCouldNotCarry(error.ToString(), shape);
-    }
-
-    [TestMethod]
-    [DoNotParallelize]
-    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    [DataRow("blob-revision")]
-    [DataRow("text-version")]
-    [DataRow("utf16-store")]
-    public async Task RollbackAsync_InterruptedRollbackResumesOntoItsOwnSnapshotWhoseValuesTheInstallerCannotInterpret(string shape)
-    {
-        using var fixture = await UpgradedReleaseFixtureAsync(shape);
-        using var captured = new TemporaryDirectory();
-        var images = new List<CrashImage>();
-        CaptureCrashImages(fixture, captured.Path, images);
-        try
-        {
-            Assert.AreEqual("completed", (await CameraAgentLifecycleManager.ExecuteAsync(
-                fixture.Request(LifecycleOperationKind.Rollback), fixture.Runner, _ => new FakeLifecycleClient(),
-                _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None,
-                error: TextWriter.Null)).Outcome);
-        }
-        finally
-        {
-            ResetCrashHooks();
-        }
-        // Power is lost once the retained snapshot is back, before the rollback's image starts.
-        RestoreCrashImage(fixture, images.First(static image => image.Step == "journal:RetainedStateApplied"));
-        var ownRestored = false;
-        CameraAgentStateSnapshot.StepCompleted = step =>
-        {
-            if (step != "restore-directories-synced" || ownRestored) return;
-            ownRestored = true;
-            AssertUpgradedReleaseStores(fixture.Paths, shape);
-        };
-        using var error = new StringWriter();
-        LifecycleResult result;
-        try
-        {
-            result = await CameraAgentLifecycleManager.ExecuteAsync(
-                fixture.Request(LifecycleOperationKind.Rollback) with { Resume = true }, fixture.Runner, _ => new FakeLifecycleClient(),
-                _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None, error: error);
-        }
-        finally
-        {
-            ResetCrashHooks();
-        }
-
-        Assert.IsTrue(ownRestored, "The resume never put the rollback's own snapshot back.");
-        Assert.AreEqual("completed", result.Outcome);
-        Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
-        AssertSaidWhatItCouldNotCarry(error.ToString(), shape);
-    }
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
@@ -261,78 +187,6 @@ public sealed partial class LifecycleContractTests
     /// installer cannot interpret: an automation revision stored as a blob, a definition version stored as text, or the
     /// fleet store rewritten in UTF-16.
     /// </summary>
-    private static async Task<LifecycleFixture> UpgradedReleaseFixtureAsync(string shape)
-    {
-        var fixture = await MigratingFixtureAsync();
-        SeedStores(fixture.Paths);
-        SeedCounters(fixture.Paths, captureSequence: 5, fleetNextSequence: 10);
-        var automation = CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, AutomationStore);
-        ExecuteSql(automation, FixtureDump(AutomationStore));
-        SaveDefinition(automation, "kept", 1);
-        await UpgradeAndCommitAsync(fixture);
-        switch (shape)
-        {
-            case "blob-revision":
-                ExecuteSql(automation, RelaxedRevisionsTable +
-                    "INSERT INTO automation_definition_revisions(definition_id, version, revision_sha256, definition_json, removed, recorded_unix_ms, actor) " +
-                    $"VALUES('kept', 2, '{new string('d', 64)}', CAST('{{\"definitionId\":\"kept\",\"edit\":2}}' AS BLOB), 0, 0, 'owner');" +
-                    "UPDATE automation_definitions SET version = 2 WHERE definition_id = 'kept';");
-                break;
-            case "text-version":
-                ExecuteSql(automation,
-                    "CREATE TABLE d2(definition_id TEXT PRIMARY KEY, name TEXT, enabled INTEGER, task_kind TEXT, task_target TEXT, trigger_kind TEXT," +
-                    " trigger_interval INTEGER, trigger_epoch_unix_ms INTEGER, version, revision_sha256 TEXT, updated_unix_ms INTEGER, actor TEXT," +
-                    " reason TEXT, source_window_json TEXT);" +
-                    "INSERT INTO d2 SELECT definition_id, name, enabled, task_kind, task_target, trigger_kind, trigger_interval, trigger_epoch_unix_ms," +
-                    " 'two', revision_sha256, updated_unix_ms, actor, reason, source_window_json FROM automation_definitions;" +
-                    "DROP TABLE automation_definitions; ALTER TABLE d2 RENAME TO automation_definitions;");
-                break;
-            default:
-                RewriteFleetStore(fixture.Paths, "UTF-16le", nextSequence: 15);
-                break;
-        }
-        return fixture;
-    }
-
-    /// <summary>The upgraded release's own stores, as its snapshot holds them, are back.</summary>
-    private static void AssertUpgradedReleaseStores(InstallationPaths paths, string shape)
-    {
-        switch (shape)
-        {
-            case "blob-revision":
-                Assert.AreEqual(1, ReadCounter(paths, AutomationStore,
-                    "SELECT COUNT(*) FROM automation_definition_revisions WHERE definition_id = 'kept' AND typeof(definition_json) = 'blob';"));
-                break;
-            case "text-version":
-                Assert.AreEqual(1, ReadCounter(paths, AutomationStore, "SELECT COUNT(*) FROM automation_definitions WHERE version = 'two';"));
-                break;
-            default:
-                Assert.AreEqual("UTF-16le", DatabaseEncoding(CameraAgentStateSnapshot.StorePath(paths.StateRoot, FleetStore)));
-                Assert.AreEqual(15, ReadCounter(paths, FleetStore, "SELECT next_sequence FROM fleet_status_metadata WHERE metadata_key = 1;"));
-                break;
-        }
-    }
-
-    /// <summary>
-    /// A blob revision is never needed for the carry, so nothing is reported for it; a version or store the installer
-    /// cannot read is put back without its counters and named.
-    /// </summary>
-    private static void AssertSaidWhatItCouldNotCarry(string error, string shape)
-    {
-        switch (shape)
-        {
-            case "blob-revision":
-                return;
-            case "text-version":
-                StringAssert.Contains(error, $"could not carry the automation-definition-version counter of '{AutomationStore}' with key \"kept\"", StringComparison.Ordinal);
-                break;
-            default:
-                StringAssert.Contains(error, $"could not carry the fleet-report-sequence counter of '{FleetStore}' with key \"1\"", StringComparison.Ordinal);
-                StringAssert.Contains(error, "is encoded as UTF-16le, not UTF-8", StringComparison.Ordinal);
-                break;
-        }
-    }
-
     /// <summary>The automation revision table rebuilt without its STRICT types and CHECKs, as a later release might.</summary>
     private const string RelaxedRevisionsTable =
         "CREATE TABLE r2(sequence INTEGER PRIMARY KEY AUTOINCREMENT, definition_id TEXT NOT NULL, version INTEGER NOT NULL," +
@@ -342,7 +196,6 @@ public sealed partial class LifecycleContractTests
         " FROM automation_definition_revisions;" +
         "DROP TABLE automation_definition_revisions; ALTER TABLE r2 RENAME TO automation_definition_revisions;";
 
-    /// <summary>Replaces the fleet store with one in <paramref name="encoding"/>, holding the same schema and one row.</summary>
     private static void RewriteFleetStore(InstallationPaths paths, string encoding, long nextSequence)
     {
         var path = CameraAgentStateSnapshot.StorePath(paths.StateRoot, FleetStore);

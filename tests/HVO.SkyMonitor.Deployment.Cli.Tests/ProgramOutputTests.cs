@@ -110,7 +110,7 @@ public sealed class ProgramOutputTests
           cameraagent preflight          Check, changing nothing, that an instance's state can run its image or --image-ref.
           cameraagent reset-state        Delete an uninstalled instance's local runtime state, keeping its configuration.
           cameraagent upgrade            Move an instance to a release's image (--release) or an immutable one (--image-ref).
-          cameraagent rollback           Return an instance to the image it ran before its last upgrade.
+          cameraagent rollback           Show upgrade recovery guidance or settle a committed legacy rollback with --resume.
           cameraagent reinstall          Start an uninstalled instance again from the state it kept.
           cameraagent uninstall          Remove an instance's containers, keeping its state for cameraagent reinstall.
           cameraagent purge              Remove an uninstalled instance and everything it keeps.

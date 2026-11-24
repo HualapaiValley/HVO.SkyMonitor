@@ -223,7 +223,7 @@ HVO.RoofController#127):
 | --- | --- |
 | *(none)* / `install` | Install; interactive on a terminal, otherwise from flags or `--answers` |
 | `upgrade [--version V]` | Upgrade to the latest release or to `V` (section 6) |
-| `rollback` | RoofController: return to the release recorded as previous. SkyMonitor target: recover the pending upgrade's paired checkpoint; no arbitrary downgrade or post-commit grace period (section 6) |
+| `rollback` | RoofController returns to the release recorded as previous. CameraAgent gives recovery guidance. Its upgrade command owns pending checkpoint recovery (section 6). |
 | `backup` / `restore FILE` | A self-verifying archive of the product's own data, with a manifest, that only its owner can read (below) |
 | `uninstall [--purge --confirm HOST --backup\|--no-backup]` | Remove what was installed; `--purge` also removes data |
 | `status` | What is installed here, its versions and health |
@@ -363,6 +363,11 @@ This phase ends the automatic rollback window at commit. Retention for diagnosis
 There is no daily/periodic snapshot command, arbitrary downgrade command, repeated previous-image toggle or
 last-checkpoint grace period. Explicit `backup` / `restore` remains separate; a full recovery archive is not an
 automatic prerequisite for every upgrade.
+
+CameraAgent's legacy manual rollback and its plan refuse a new operation and direct the operator to the original
+pending-upgrade recovery procedure, a supported forward repair, or explicit backup and restore as applicable.
+Installer status reports process liveness and application readiness separately.
+[CameraAgent lifecycle runbook](runbooks/deployment-installer.md#cameraagent-lifecycle)
 
 **CameraAgent protected or operator-managed.** If qualified capability is unavailable or checkpoint creation or
 verification fails, clearly warn before candidate mutation that this upgrade is **unprotected** and backup/manual

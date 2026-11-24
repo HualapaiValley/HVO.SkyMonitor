@@ -173,6 +173,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 - Incomplete CameraAgent backups can be resumed or abandoned without restoring instance data. Abort retains restart protection when partial deletion fails, refuses already-published archives even before the journal advances, and keeps the journal until cleanup and restart succeed. Host-limit admission and retained warnings still precede mutation; an archive is committed only when its checksum verifies. #1700
 
 - CameraAgent satellite capture accepts real capture-cycle evidence that omits null solar regime and metering facts, and an owner can acknowledge a processing-lane quarantine of a still-valid raw capture so admission and health recover without rewriting that capture. #1388
+- CameraAgent's installer refuses manual rollback after upgrade commit to preserve captured work. Installer status reports Docker liveness and application readiness separately, including HTTP 503 for a quarantined required lane. #1945
+
 
 ### Security
 

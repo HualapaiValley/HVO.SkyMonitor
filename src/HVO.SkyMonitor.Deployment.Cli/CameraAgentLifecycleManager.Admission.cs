@@ -50,8 +50,7 @@ internal sealed partial class CameraAgentLifecycleManager
             {
                 _ = UpgradeNotes.Plan(
                     await UpgradeNotes.InstalledVersionAsync(paths, manifest.Image, cancellationToken).ConfigureAwait(false),
-                    targetRelease,
-                    manifest.InstanceId);
+                    targetRelease);
             }
         }
         if (kind == LifecycleOperationKind.Reinstall && manifest.LifecycleCondition != InstanceLifecycleCondition.Uninstalled &&

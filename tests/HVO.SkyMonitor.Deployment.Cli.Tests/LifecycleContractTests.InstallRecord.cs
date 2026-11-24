@@ -13,7 +13,7 @@ public sealed partial class LifecycleContractTests
 {
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task UpgradeThenRollback_SettleTheInstallRecordEntryEachTime()
+    public async Task ManualRollbackRefusalPreservesTheCommittedInstallRecord()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed, installedImage: CurrentStateContract);
         fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
@@ -24,11 +24,12 @@ public sealed partial class LifecycleContractTests
             UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => new FakeLifecycleClient(),
             _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None);
         var upgraded = (await InstallRecordStore.ReadAsync(location, CancellationToken.None))!.Instances.Single();
-        await CameraAgentLifecycleManager.ExecuteAsync(
-            fixture.Request(LifecycleOperationKind.Rollback), fixture.Runner, _ => new FakeLifecycleClient(),
-            _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None,
-            error: TextWriter.Null);
-        var rolledBack = (await InstallRecordStore.ReadAsync(location, CancellationToken.None))!.Instances.Single();
+        var beforeRefusal = await File.ReadAllBytesAsync(location.Path);
+        var refusal = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Rollback), fixture.Runner, null, null,
+            fixture.Uid, fixture.Gid, CancellationToken.None));
+        Assert.IsTrue(refusal.IsRefusal);
+        CollectionAssert.AreEqual(beforeRefusal, await File.ReadAllBytesAsync(location.Path));
 
         Assert.AreEqual(Path.Combine(fixture.Root, "operations", "install.json"), location.Path);
         Assert.AreEqual(fixture.InstanceId, upgraded.InstanceId);
@@ -37,9 +38,6 @@ public sealed partial class LifecycleContractTests
         Assert.AreEqual(InstanceLifecycleCondition.Installed, upgraded.Condition);
         // An image given by --image-ref names no release, so no version is recorded for it.
         Assert.IsNull(upgraded.Version);
-        Assert.AreEqual(fixture.Manifest.Image.ImageId, rolledBack.ImageId);
-        Assert.AreEqual(CandidateImageId, rolledBack.PreviousImageId);
-        Assert.IsNull(rolledBack.PreviousVersion);
     }
 
     [TestMethod]

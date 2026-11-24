@@ -61,12 +61,10 @@ checks its device/inode after rename, with recorded old/new intent making interr
 
 Release installs also publish the matching `hvo-sky` runtime client ([hvo-sky.md](hvo-sky.md)). Each instance retains
 verified command files by image ID in `state/deployment/programs/`, with its authoritative `path-programs.json` and
-image-bound program records. Rollback restores those files, retaining the replaced version as `.previous`.
-`--image-ref` installs without release metadata do not install commands. A rollback to an image with no retained
-program set (including an installation from before PATH publication) removes this installer's runtime client and
-keeps the durable maintenance installer; it does not assume an unverified manual copy belongs to the old release.
-The install record projects the commands' paths, versions, SHA-256 and previous SHA-256; it is not their authority.
-Where instances share a command path, the last install, upgrade or rollback publishes that path's version.
+image-bound program records. The replaced version is kept as `.previous`. `--image-ref` installs without release
+metadata do not install commands. The install record summarizes each program's path, release, and SHA-256 for
+both copies. Where instances share a command path, the last install, upgrade, or recovery settlement publishes
+that path's version.
 
 A preserved-instance uninstall removes the runtime client when no other installed instance uses it, and keeps the
 installer for `reinstall`. Reinstall republishes the retained client. Purge removes the last owner's installer copies
@@ -103,7 +101,7 @@ runbook describes the installer as it behaves today.
 | `install.sh` entry point with `--check`, `--from DIR`, and `--install-docker` and the like | [`install.sh`](#installsh) checks the host, then verifies the release's installer and small files and starts it, online or with `--from DIR`; it gives `cameraagent install` and `upgrade` the release and the catalog. With no arguments it runs `cameraagent install`. It installs no Docker and changes no boot setting; it names the remedy. The installer itself still needs a command | [#1311](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1311) |
 | Command words `install`, `upgrade`, `rollback`, `uninstall`, `status` | Instance commands are grouped under `cameraagent` (`cameraagent install`, `cameraagent upgrade`, ...), because one host holds several instances and the catalogs beside them; `status` is top level | Recorded for contract draft 4 |
 | Settings catalogue served by the API | CameraAgent serves the [operator settings catalogue and group writes](../contracts/cameraagent-operator-settings-v1.md) through its operations API; the owner creates API keys for non-browser clients | [#1316](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1316) |
-| Upgrade-time checkpoint recovery only, complete DB/file/config/identity/key coverage and durable CameraAgent protected/unprotected disposition (contract section 6) | The installer selects SQLite copies using boundary labels and supports later rollback; neither complete instance protection nor the new admission/decision boundary is qualified ([CameraAgent Lifecycle](#cameraagent-lifecycle)) | [#1606](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1606) contract; [#1607](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1607) CameraAgent qualification; #1318 is prior delivery history |
+| Upgrade-time checkpoint recovery only, complete DB/file/config/identity/key coverage and durable CameraAgent protected/unprotected disposition (contract section 6) | The installer checkpoints selected SQLite stores at declared boundaries and refuses new manual rollbacks. Full instance protection and writer fencing remain separate qualification work. [CameraAgent Lifecycle](#cameraagent-lifecycle) | [#1606](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1606) contract; [#1607](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1607) CameraAgent qualification; #1318 is prior delivery history |
 
 ## install.sh
 
@@ -233,7 +231,7 @@ Every command ends with one of these codes:
 | `0` | Done. With `--plan`, the plan can be carried out | An install, a re-run with nothing to change, `status`, `--help` |
 | `1` | A step failed. Re-running the same command continues, with `--resume` where the message says so | Docker or CameraAgent did not respond, a verification failed, an install record that could not be written |
 | `2` | The command line or the answers file is invalid, or a question had no one to answer it | An unknown option, an answers file with an unknown member, a missing `--friendly-name` without a terminal |
-| `3` | Refused, and nothing was changed | Unmet [host prerequisites](#host-prerequisites), including an upgrade on a host that cannot enforce the container limits, a host policy that cannot be trusted, running as root, a re-run that describes a different instance, an incompatible preflight, a [release](#release-install) the installer will not use or whose image is not the release's, an upgrade to the image already active or to an older release, a rollback with no previous image |
+| `3` | Refused, and nothing was changed | Unmet [host prerequisites](#host-prerequisites), including an upgrade on a host that cannot enforce the container limits, a host policy that cannot be trusted, running as root, a re-run that describes a different instance, an incompatible preflight, a [release](#release-install) the installer will not use or whose image is not the release's, an upgrade to the image already active or to an older release, a fresh manual rollback |
 | `130` | Interrupted by Ctrl+C or SIGTERM | |
 
 With `--json`, a failure or refusal writes one JSON object to standard error:
@@ -256,9 +254,9 @@ there is never journaled:
 - An install decides the host, the release, the answers against the installed
   instance, the catalog bundle and the persisted state before it prepares anything.
 - A lifecycle command decides, before it takes a lock or writes its journal, the
-  instance's condition, a rollback with no previous image, an older release, an
+  instance's condition, a fresh manual rollback, an older release, an
   unfinished operation that demands `--resume`, the purge gates, for an upgrade, a
-  rollback or a backup that starts the instance the [container limits the host can enforce](#upgrade-rollback-and-the-hosts-limits),
+  legacy rollback settlement or a backup that starts the instance the [container limits the host can enforce](#upgrade-rollback-and-the-hosts-limits),
   and for an upgrade whose candidate is known without importing it (the image Docker
   holds, or a release's image read from its archive or registry), the already-active
   and state-contract checks and the state preflight. A registry release image is
@@ -279,7 +277,7 @@ the locks that already exist. One read needs scratch space: the state preflight 
 a database it catches with an uncommitted transaction (a hot rollback journal)
 through a private temporary copy in `TMPDIR`, because SQLite cannot read such a
 database safely in place, and removes the copy when it is done. `--dry-run` is its older name and does the
-same. Install, its re-run, `cameraagent upgrade`, `rollback`, `reinstall`, `uninstall`
+same. Install, its re-run, `cameraagent upgrade`, `reinstall`, `uninstall`
 and `purge` report a plan; `reset-state` and the catalog commands report their
 existing dry-run output.
 
@@ -789,20 +787,14 @@ RoofController behaves the same way (HVO.RoofController#151).
   the host cannot bound. Recover an interrupted upgrade with
   [`--restore-only`](#restore-only-after-an-interrupted-upgrade), or fix the host and
   resume. There is no override.
-- **A rollback goes ahead**, because it is the recovery path. So does its
-  `--resume`, and `upgrade --restore-only`. Before anything changes, each one prints
-  a loud warning on standard error that starts
-  `WARNING: THE ROLLBACK GOES AHEAD, BUT DOCKER HERE CANNOT ENFORCE` (for
-  `--restore-only`, `WARNING: THE RESTORE-ONLY RECOVERY GOES AHEAD`) and names each
-  limit Docker cannot enforce, what that means for CameraAgent, and the remedy. It also
-  writes the warning, stamped with the time, to the operation's install log,
-  `<product-root>/operations/lifecycle/<operation>/install.log`, beside its other
-  retained records. A `--plan` prints the warning and writes nothing. With `--json`
-  the result's `warnings` carry it, one entry per limit, and standard error does not.
-- **Every limit Docker can enforce is kept, at every start.** Each container
-  start of a rollback, of its `--resume` (including the restart of the image an
-  interrupted rollback was leaving), of a failed candidate's recovery and of
-  `upgrade --restore-only` gives Docker the model as Docker here can run it. Docker
+- **`upgrade --restore-only` can proceed on hosts with reduced enforcement.** Before
+  changing the instance, it prints `WARNING: THE RESTORE-ONLY RECOVERY GOES AHEAD`
+  on standard error and names each limit Docker cannot enforce, what that means for
+  CameraAgent, and the remedy. It records the warning in the operation's install log,
+  `<product-root>/operations/lifecycle/<operation>/install.log`. With `--json`
+  the result's `warnings` carry it, one entry per limit.
+- **Every limit Docker can enforce is kept at a recovery start.** Recovery from
+  a failed candidate and `upgrade --restore-only` give Docker a model it can run. Docker
   drops a memory or PIDs limit it cannot enforce, with its own warning, and applies
   the rest, so those are given as recorded. Docker refuses to create a container
   with a CPU limit on a host without CPU quota support, so there the start uses a
@@ -814,11 +806,9 @@ RoofController behaves the same way (HVO.RoofController#151).
   are never changed this way: they keep every limit the instance records, under the
   identity the manifest authenticates, so the next start on a host that enforces
   them, such as the next upgrade, gives them all.
-- **A rollback is still refused** for a CPU limit Docker enforces on a host with
-  fewer CPUs, because Docker refuses to create that container. Its other guards,
-  the instance's state, identity and journal, are unchanged. `upgrade --restore-only`
-  is never refused by the host's limits; its own guards are unchanged too.
-- **A backup that starts the instance goes ahead as a rollback does** (#1353). It
+- **`rollback --resume` can settle a committed legacy rollback.** Host-limit
+  checks still apply to that settlement.
+- **A backup that starts the instance can proceed with reduced host enforcement** (#1353). It
   changes no image, but a backup of a running instance stops it and starts it again,
   so it warns first, `WARNING: THE BACKUP GOES AHEAD, BUT DOCKER HERE CANNOT ENFORCE`,
   writes the install log and the result's `warnings` the same way, and makes that
@@ -895,12 +885,9 @@ installer default:
 
 - **Upgrade** keeps every limit the operator set and moves every other limit to
   the upgrading installer's default.
-- **Rollback** runs the previous image with the Compose model retained from
-  before the upgrade, authenticated against its recorded identity, and gives it
-  the limits the instance records. A rollback never returns an instance to limits
-  it has left. On a host that cannot enforce a CPU limit it starts the image
-  without the CPU limits and with the rest, and keeps them all recorded
-  ([Upgrade, rollback and the host's limits](#upgrade-rollback-and-the-hosts-limits)).
+- **Pending upgrade recovery** uses the predecessor's recorded Compose model and
+  keeps its container limits. The recovery start applies the limits Docker can enforce.
+  [Upgrade, rollback and the host's limits](#upgrade-rollback-and-the-hosts-limits)
 - **Reinstall** keeps the recorded limits.
 - **A re-run** of a completed install changes them (contract section 7). A limit
   given on the re-run replaces the recorded one and counts as set by the operator; a
@@ -1106,9 +1093,8 @@ the image has been prepared and accepted, and a refused install or upgrade leave
 none behind. An upgrade to an image no release names withdraws it. The record of
 the image the instance ran before is kept beside it, in
 `image-distribution.records.json`, which holds both records and is written
-atomically. A rollback restores the record of the image it returns to, including
-when the rollback is resumed, so an upgrade after it is still refused when it would
-go back. An upgrade reads the version to show the right upgrade notes and to refuse
+atomically. Recovery and settlement keep the record for the image that runs.
+An upgrade reads the version to show the right upgrade notes and to refuse
 an older target (see [Upgrade notes and older targets](#upgrade-notes-and-older-targets)).
 
 An upgrade accepts the same options. It selects the platform from the architecture recorded for the instance's Docker
@@ -1389,8 +1375,7 @@ themselves. They prevent an earlier frozen plan from running even when its
 recipe identity is unchanged. Later implementation version bumps use the same
 supersession and recovery paths.
 
-Rollback continues to use the retained previous image identity and never
-consults a release train.
+Pending upgrade recovery uses the recorded predecessor image identity.
 
 ### Archived replay across a lifecycle transition
 
@@ -1453,12 +1438,10 @@ selects again. A refusal at that point leaves the original catalog mounted.
 
 Three paths stay outside the check:
 
-- **An image change after a catalog change.** Image upgrade and image rollback
-  keep the current catalog, and the CLI cannot read a declaration from an
-  image that is not running yet. Rolling back or downgrading to an image that
-  predates the declaration after a catalog transition can therefore run replay
-  accepted under the earlier catalog against the current one. Before such an
-  image change, let pending archived replay finish or cancel it.
+- **An image change after a catalog change.** Image upgrade keeps the current
+  catalog. Before changing to an image that predates the declaration, let pending
+  archived replay finish or cancel it. That image could run replay accepted under
+  the earlier catalog against the current one.
 - **A selection interrupted by an older CLI on an older image.** Resuming it
   with this CLI restores the original catalog, restarting the older image on
   it, and only then refuses. Replay that image accepted under the interrupted
@@ -2104,17 +2087,23 @@ instance identity back to healthy. Take an instance backup first if the deleted 
 
 ## CameraAgent Lifecycle
 
-**Implementation status, #1606 (2026-10-23).** The commands, database snapshot
-rules, post-upgrade rollback and previous-release readability tests documented
-in this section describe the current implementation. The
-[approved SkyMonitor target](../hvo-install-contract.md#skymonitor-approved-target-upgrade-time-checkpoint-recovery)
-supersedes their policy: rollback recovers only a pending upgrade's exact
-checkpoint and matching image/config/catalog, before new work is admitted.
-There is no arbitrary downgrade, post-commit grace period or periodic snapshot
-feature in that target. The existing CLI has not changed with this contract PR;
-do not infer that it implements complete instance checkpoints or durable
-protected/unprotected selection. In particular, capture drain alone does not
-prove that every config/identity/provider/maintenance writer is fenced.
+Checkpoint recovery is available while the upgrade is pending. It uses the exact
+checkpoint and its matching image, configuration, and catalog selection while
+capture admission is still closed. Upgrade commit ends this recovery window.
+[Approved SkyMonitor contract](../hvo-install-contract.md#skymonitor-approved-target-upgrade-time-checkpoint-recovery)
+
+`cameraagent rollback` and `cameraagent rollback --plan` exit `3` and give recovery
+guidance before touching the instance. The refusal applies even when capture is idle
+or the installer has retained a predecessor image and checkpoint. After commit, keep
+the captures and records and use a supported forward repair or the explicit
+[backup and restore procedure](#backup-and-restore). During a pending upgrade, use
+the recovery procedure for the original request and operation ID.
+[Restore Only After an Interrupted Upgrade](#restore-only-after-an-interrupted-upgrade)
+
+For an older installer that already committed a legacy rollback, `rollback --resume`
+can verify and settle that exact journal and finish reopening admission. An interrupted
+legacy rollback before commit requires transaction-aware support. Keep the journals,
+stores, and retained checkpoint for recovery.
 
 `CameraAgentStateSnapshot` currently uses SQLite online backup copies for a
 selected store list, plus checksummed manifests, sidecar-safe restore and durable
@@ -2140,14 +2129,23 @@ without accepting an operator password file. Image references must be immutable 
 hvo-sky-install status --instance-id <uuid> --json
 hvo-sky-install cameraagent upgrade --instance-id <uuid> \
   --image-ref <repository@sha256:digest>
-hvo-sky-install cameraagent rollback --instance-id <uuid>
 hvo-sky-install cameraagent uninstall --instance-id <uuid>
 hvo-sky-install cameraagent reinstall --instance-id <uuid>
 hvo-sky-install cameraagent backup --instance-id <uuid>
 hvo-sky-install cameraagent restore <archive> --instance-id <uuid>
 ```
 
-`--allow-quarantined-readiness` on `backup`, `upgrade`, and `rollback` requires explicit per-cause health evidence
+`status --instance-id <uuid>` reports Docker's running state as `running` and
+its latest CameraAgent `/alive` probe as `alive`. The installer probes `/health`
+inside the selected running container and reports its HTTP code in
+`healthStatusCode`. A response of HTTP 503, including a quarantined required
+lane, gives `healthy: false` even with `alive: true`. A ready application
+returns HTTP 200. A required local replay runner must also be ready.
+Unavailable readiness observations are reported as unknown. Completed
+lifecycle commands that leave a running instance also report current readiness,
+including when the operator allowed quarantine for the transition.
+
+`--allow-quarantined-readiness` on `backup`, `upgrade`, and legacy settlement requires explicit per-cause health evidence
 that the only unhealthy lane is the required `standard` processing lane, with a quarantine and no required-lane
 pressure or operational failure. An unhealthy processing check must identify the same durable lane quarantine;
 aggregate quarantine counts or a bare `terminal` reason alone are insufficient. Catalog identity, installation
@@ -2423,12 +2421,11 @@ A snapshot whose manifest cannot be read, or that belongs to another instance, i
 
 ### Swap upgrade and database snapshots
 
-An upgrade or rollback never copies bulk capture data. Frames, `state/raw`, `state/archive` and derived products
+An upgrade and its automatic recovery leave bulk capture data in place. Frames, `state/raw`, `state/archive` and derived products
 stay where they are (install contract section 6):
 
 1. The previous image is kept. Capture is paused and drained, and the instance is stopped.
-2. Only when a migration is declared (above), or when a rollback undoes a migrating upgrade, the small SQLite
-   databases are snapshotted: the Identity database, the raw-ingress journal, the fleet, environment, evidence,
+2. When a migration is declared, the small SQLite databases are snapshotted: the Identity database, the raw-ingress journal, the fleet, environment, evidence,
    time-lapse, nightly-product and automation stores, and the artifact outbox of every storage root. Each is copied
    with the SQLite online backup API into `<product-root>/operations/lifecycle/<operation>/state-snapshots/<snapshot>/`,
    and each copy must pass `PRAGMA integrity_check` and match its source's user version, schema and per-table row
@@ -2484,11 +2481,10 @@ Every value a restore reads from a store the replaced release wrote is checked b
   and well-formed JSON text. Any other shape, and any failure of any kind while reading, makes that store's counters
   unreadable.
 
-A rollback reads the stores the release it undoes wrote in the same way: an unreadable journal narrows the rollback's
-own snapshot to the configured roots and the stores the retained snapshot records, and the restore that follows says
-so. Every store a rollback replaces is in its own snapshot, so rolling forward again brings each back. An upgrade still refuses an unreadable
-journal before anything changes, because the installed release wrote it. The audit of every value read on a recovery
-or restore path is in the #1314 correction-round-3 ledger.
+Recovery reads the stores the candidate wrote using the same checks. An unreadable
+journal narrows the inventory to the configured roots and the stores the
+checkpoint records. The restore reports that limitation. Forward upgrade preflight
+refuses an unreadable installed journal before mutation.
 
 **Retention and cleanup are held for the whole swap.** CameraAgent deletes frames, archived and derived products,
 and unowned projected-scene stages only while capture admission is running. The installer pauses admission durably
@@ -2658,19 +2654,11 @@ with the reason (`CameraAgentStateCountersAuditTests`). A new one fails until it
 another matter: an API key or session revoked after the snapshot comes back with the Identity database. This is
 covered by the restore warning ("accounts recorded since then"); revoke them again after a rollback.
 
-A failed candidate is restored while capture is still paused, so only what the candidate itself wrote is lost. A
-committed migrating upgrade records its snapshot in `instance-manifest.json` as `previousStateSnapshot`. A later
-`rollback` verifies that snapshot, runs the state preflight against its copies rather than the migrated stores,
-shows the warning before it pauses anything, snapshots the current databases, and then puts the retained snapshot
-back before the previous image starts. A rollback whose image fails restores the databases it replaced. The rollback
-records its own snapshot as `previousStateSnapshot`, so rolling back again returns to the upgraded release with the
-state it had. A tampered or missing retained snapshot refuses the rollback before anything changes. A pure swap
-records no snapshot, and its rollback is a pure swap too. A [state reset](#cameraagent-state-reset) leaves the manifest,
-and this reference, in place. No lifecycle operation can run on the reset instance, because its installation result is
-withdrawn, until the documented `install` rebuilds the manifest, and that rebuild omits `previousStateSnapshot`. A
-rollback after a reset and reinstall is therefore a pure swap to the previous image onto the reinstalled databases. It
-never brings back the databases from before the reset, and it shows no restore warning. The installer campaign runs this
-sequence against a real container.
+A failed candidate is restored while capture is paused. A committed migration may
+retain its checkpoint as `previousStateSnapshot` in `instance-manifest.json` for
+diagnosis. The manual entry point refuses new rollbacks regardless of whether that
+reference exists. A [state reset](#cameraagent-state-reset) retains the manifest
+until install rebuilds it and clears the checkpoint reference.
 
 **Every step resumes after a crash or power loss.** The journal records `stateSnapshotRequired` and the reason
 (`stateMigration`) before the drain, the snapshot reference (`stateSnapshot`) once every copy and the manifest are
@@ -2689,17 +2677,14 @@ directory above it, up to the product root:
 
 A power loss can therefore never leave a reference, or a completion record, to a file whose directory entry was lost.
 
-An interrupted operation whose snapshot is recorded but not yet restored recovers onto that snapshot, whatever the
-candidate left behind. Every recovery authenticates that snapshot before it changes any container: `--resume` of an
-upgrade or a rollback (a rollback previews its retained snapshot for the preflight but still restores its own first),
-`--restore-only`, and the automatic recovery of a failed candidate, which leaves the candidate running rather than
-stopping it to find the snapshot damaged. `--restore-only` serves upgrades only and refuses a rollback before anything
-changes. `--resume` and `--restore-only` then check the original image's state boundaries against the snapshot
-copies, not the live stores, so a candidate that left a newer or unreadable journal cannot block its own recovery. `--resume` stops whatever is running, restores the snapshot, starts the
-previous image with capture still paused, and retries. It never restores again after the previous image has started on
-restored stores, so it cannot overwrite what that image has captured since. `--restore-only` restores the same way
-(below) and then resumes capture instead of retrying. A retry takes a new snapshot. Snapshots are kept with their
-operation and are not deleted automatically.
+An interrupted upgrade whose snapshot is recorded but awaiting restore recovers onto that
+snapshot. Automatic recovery, `upgrade --resume`, and `upgrade --restore-only`
+authenticate the snapshot before they change any container. The resumed upgrade
+and restore-only check the original image's state boundaries against the snapshot
+copies. `--resume` restores, starts the predecessor with capture still paused,
+and retries with a new snapshot. If the predecessor has already started on
+restored stores, the installer preserves work since restoration.
+`--restore-only` settles recovery and can reopen capture. The operation keeps its snapshots.
 
 **Processing manifest ledgers (Refs #1766).** Processing schema 8 upgrades atomically to
 schema 9 at startup. Optional input/output counts move out of the frozen-plan BLOB
@@ -2801,8 +2786,7 @@ anything, including before the lifecycle journal, it does two things:
 
 - It prints the upgrade notes of every release after the installed version, up to the release the target belongs to.
   A release candidate shows its release's notes. `--dry-run` shows them too.
-- It refuses a target older than the installed version, says that an upgrade never goes back, and names
-  `hvo-sky-install cameraagent rollback --instance-id <uuid>`.
+- It refuses a target older than the installed version and points to the pending-upgrade and post-commit recovery procedures.
 
 Upgrade-note text follows one terminal-safety rule. CRLF becomes LF; LF and TAB are retained, so tabs keep their
 existing terminal spacing behavior. All other Unicode controls (Cc), all format characters (Cf), line and paragraph
@@ -2838,7 +2822,7 @@ recorded, and cannot apply the older-target refusal.
 An upgrade from `--release` reads the notes from the release's `release.json`, and records the installed release
 version once the upgrade completes (see [Release Install](#release-install)). An upgrade from `--image-ref` has no
 `release.json`, so it shows no notes, withdraws the release record, and leaves the next upgrade without an installed
-version. A rollback restores the record of the image it returns to, so the older-target refusal applies again.
+version. If an upgrade fails before commit, the prior release record continues to describe the restored image.
 
 ### Restore Only After an Interrupted Upgrade
 
@@ -3003,7 +2987,7 @@ capture as a healthy upgrade. Persistent failure stays unhealthy. Repair through
 an authorized procedure and restart normally after retries are exhausted; do not
 delete evidence or reset trust. Dependencies that are merely pending remain degraded. The installer's
 normal health wait can reach the recent-ready host while qualification continues.
-An upgrade, rollback or backup attempted before full qualification still refuses
+An upgrade or backup attempted before full qualification still refuses
 within its original verification budget. If background work exceeds 120 seconds,
 wait for it to finish before retrying; repeated HTTP timeouts do not restart it.
 Complete metadata discovery, row authentication and full scrubbing remain linear
@@ -3131,7 +3115,7 @@ If the bytes cannot be repaired through an authorized workflow, retain the
 refusal and seek an explicit disposition decision from Kepler/Roy. Starting the
 host/recovery UI is not proof that protected lifecycle verification will pass.
 
-Upgrade and rollback compare the current installation's complete identity before
+Upgrade compares the current installation's complete identity before
 image mutation; running backup compares it before pause/stop. Stopped backup stays
 offline, and plans perform no protected read. Old installers receive the faster
 endpoint from a new agent without a wire change. New installers retain the finite
@@ -3395,13 +3379,15 @@ capability, image, and constrained-container checks.
 The campaign additionally proves the state preflight, the operator-confirmed CameraAgent-only reset, and the
 reset-then-reinstall convergence against a real image and a real product root.
 
-It then proves the migration assertion against two variants of the installed image that differ from it only in
-added labels. An upgrade to the variant that declares the same state boundaries completes without
-`--migration-backward-compatible`. The variant that declares a different `minimum-compatible-revision` is refused
-without it, leaving the instance, its manifest, and its running image unchanged and the refusal journalled as
-terminal, and the same upgrade then completes with it. A run with `HVO_INSTALLER_BASELINE_REVISION` skips this
-step, because its baseline image may predate the boundary labels, and keeps the assertion on its own baseline
-upgrade.
+The default campaign runs on a disposable VirtualSky instance. An unchanged
+boundary exercises the pure swap. A changed boundary with a failed readiness
+endpoint exercises recovery of the verified checkpoint and matching predecessor.
+The campaign checks the earlier exposure, waits for a new exposure to complete
+standard processing, and requires three application HTTP 200 observations.
+A successful migration then admits a capture beyond the checkpoint. Both manual
+rollback and its plan must refuse and preserve the running container, the payload,
+its completion record, and the installer receipts. A run with
+`HVO_INSTALLER_BASELINE_REVISION` exercises the separate owner-recovery scenario below.
 
 Run the disposable installer contract against the current image with
 `./scripts/test:deployment-installer`. It runs `backup` and `restore` as the instance's service account, the user
@@ -3424,7 +3410,7 @@ upgrade, authenticates the mounted owner-only socket, and resumes the same
 recovery operation without restarting the CameraAgent process. It rejects the
 prior durable password and authenticated session, verifies the
 replacement-password gate, hard-restarts and replays recovery idempotently,
-verifies capture control remains running, and rolls back while preserving
+verifies capture control remains running, and checks that manual rollback refusal preserves
 installation, configuration, catalog, and recovered Identity state. The exact
 production catalog bundle remains required through
 `HVO_PRODUCTION_CATALOG_BUNDLE`.

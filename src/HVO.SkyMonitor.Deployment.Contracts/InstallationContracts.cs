@@ -384,6 +384,14 @@ public sealed record LifecycleResult(
     string? ResumeCommand,
     DateTimeOffset CompletedUtc)
 {
+    /// <summary>The latest Docker liveness observation for the CameraAgent process, when available.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? Alive { get; init; }
+
+    /// <summary>The HTTP response from the CameraAgent application's readiness endpoint, when observed.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? HealthStatusCode { get; init; }
+
     /// <summary>
     /// The upgrade notes an upgrade showed before it started, when its source provided a release.json. Omitted
     /// otherwise, so every other lifecycle result is unchanged.

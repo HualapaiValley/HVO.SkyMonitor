@@ -84,7 +84,7 @@ public sealed partial class LifecycleContractTests
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     [DataRow(false)]
     [DataRow(true)]
-    public async Task UpgradeAsync_TargetReleaseOlderThanInstalled_IsRefusedBeforeTheJournalAndPointsToRollback(bool json)
+    public async Task UpgradeAsync_TargetReleaseOlderThanInstalled_IsRefusedWithRecoveryGuidanceBeforeTheJournal(bool json)
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
         await RecordInstalledReleaseAsync(fixture, "1.3.0");
@@ -100,8 +100,8 @@ public sealed partial class LifecycleContractTests
             fixture.Uid, fixture.Gid, CancellationToken.None, output: output, error: error));
 
         Assert.AreEqual(
-            "1.3.0 is installed, which is newer than the upgrade target 1.2.0; an upgrade never goes back. " +
-            $"To return to the previous image, run 'hvo-sky-install cameraagent rollback --instance-id {fixture.InstanceId:D}'.",
+            "1.3.0 is installed, which is newer than the upgrade target 1.2.0. " +
+            CameraAgentLifecycleManager.ManualRollbackGuidance,
             exception.Message);
         // Nothing was journaled, shown, paused or changed, so no refused operation is left to settle or resume.
         Assert.IsFalse(File.Exists(fixture.Paths.LifecycleStatePath));
@@ -297,9 +297,9 @@ public sealed partial class LifecycleContractTests
     /// </summary>
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    [DataRow(false, DisplayName = "rollback")]
-    [DataRow(true, DisplayName = "rollback resumed after its settlement was lost")]
-    public async Task UpgradeAsync_OlderTargetAfterARollback_IsStillRefused(bool interrupted)
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task UpgradeAsync_OlderTargetAfterManualRollbackRefusal_IsStillRefused(bool plan)
     {
         using var fixture = await LifecycleFixture.CreateAsync(
             InstanceLifecycleCondition.Installed,
@@ -314,27 +314,11 @@ public sealed partial class LifecycleContractTests
             fixture.Runner, _ => new FakeLifecycleClient(), _ => owner, fixture.Uid, fixture.Gid, CancellationToken.None);
         Assert.AreEqual("completed", upgraded.Outcome);
         Assert.AreEqual("1.3.0", await InstalledVersionAsync(fixture));
-        var deployment = fixture.Paths.DeploymentStateRoot;
-        var upgradedRecords = await Snapshot(deployment);
-
-        var rollback = fixture.Request(LifecycleOperationKind.Rollback);
-        if (interrupted)
-        {
-            await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-                rollback, fixture.Runner, _ => new FakeLifecycleClient { RejectNextResume = true }, _ => owner,
-                fixture.Uid, fixture.Gid, CancellationToken.None));
-            var retained = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
-            Assert.AreEqual(LifecycleOperationPhase.Committed, retained!.Phase);
-            // The commit is durable but the records are as the upgrade left them, as if the settlement never ran.
-            await Restore(deployment, upgradedRecords);
-            Assert.AreEqual("1.3.0", await RecordedVersionAsync(fixture));
-            rollback = rollback with { Resume = true };
-        }
-        var rolledBack = await CameraAgentLifecycleManager.ExecuteAsync(
-            rollback, fixture.Runner, _ => new FakeLifecycleClient(), _ => owner, fixture.Uid, fixture.Gid, CancellationToken.None);
-        Assert.AreEqual("completed", rolledBack.Outcome);
-        Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
-        Assert.AreEqual("1.2.0", await InstalledVersionAsync(fixture), "the rollback did not restore the installed release");
+        var refusal = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Rollback) with { DryRun = plan }, fixture.Runner,
+            null, null, fixture.Uid, fixture.Gid, CancellationToken.None));
+        Assert.IsTrue(refusal.IsRefusal);
+        Assert.AreEqual("1.3.0", await InstalledVersionAsync(fixture));
 
         var platform = $"linux/{fixture.Manifest.DockerDaemon.Architecture}";
         using var older = ReleaseFixture.Create(fixture.Root, version: "1.1.0", platforms: [platform]);
@@ -344,12 +328,11 @@ public sealed partial class LifecycleContractTests
             fixture.Runner, _ => new FakeLifecycleClient(), _ => owner, fixture.Uid, fixture.Gid, CancellationToken.None));
 
         Assert.AreEqual(
-            "1.2.0 is installed, which is newer than the upgrade target 1.1.0; an upgrade never goes back. " +
-            $"To return to the previous image, run 'hvo-sky-install cameraagent rollback --instance-id {fixture.InstanceId:D}'.",
+            "1.3.0 is installed, which is newer than the upgrade target 1.1.0. " +
+            CameraAgentLifecycleManager.ManualRollbackGuidance,
             exception.Message);
         Assert.AreEqual(journalBefore, await File.ReadAllTextAsync(fixture.Paths.LifecycleStatePath));
-        Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
-        Assert.AreNotEqual(newerImageId, fixture.Runner.ActiveImageId);
+        Assert.AreEqual(newerImageId, fixture.Runner.ActiveImageId);
     }
 
     /// <summary>The installed version an upgrade would read now: the current record's, for the image the manifest runs.</summary>
@@ -360,38 +343,6 @@ public sealed partial class LifecycleContractTests
     }
 
     /// <summary>The version the current record names, whichever image it describes.</summary>
-    private static async Task<string?> RecordedVersionAsync(LifecycleFixture fixture)
-    {
-        using var record = JsonDocument.Parse(await File.ReadAllBytesAsync(
-            Path.Combine(fixture.Paths.DeploymentStateRoot, AcquiredImage.EvidenceFileName)));
-        return record.RootElement.GetProperty("releaseVersion").GetString();
-    }
-
-    private static async Task<Dictionary<string, byte[]>> Snapshot(string folder)
-    {
-        var files = new Dictionary<string, byte[]>(StringComparer.Ordinal);
-        foreach (var path in Directory.EnumerateFiles(folder, "image-distribution*"))
-        {
-            files[Path.GetFileName(path)] = await File.ReadAllBytesAsync(path);
-        }
-        return files;
-    }
-
-    private static async Task Restore(string folder, Dictionary<string, byte[]> files)
-    {
-        foreach (var path in Directory.EnumerateFiles(folder, "image-distribution*"))
-        {
-            File.Delete(path);
-        }
-        foreach (var (name, bytes) in files)
-        {
-            var path = Path.Combine(folder, name);
-            await File.WriteAllBytesAsync(path, bytes);
-            // The installer reads its evidence only as owner-private files.
-            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-        }
-    }
-
     private static Task RecordInstalledReleaseAsync(LifecycleFixture fixture, string version, string? imageId = null)
         => SafeFileSystem.WriteJsonAtomicAsync(
             Path.Combine(fixture.Paths.DeploymentStateRoot, AcquiredImage.EvidenceFileName),
