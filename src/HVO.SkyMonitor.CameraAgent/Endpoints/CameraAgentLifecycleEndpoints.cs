@@ -19,6 +19,8 @@ internal static class CameraAgentLifecycleEndpoints
         group.MapGet("/state", ReadStateAsync);
         group.MapPost("/pause", PauseAsync);
         group.MapPost("/resume", ResumeAsync);
+        group.MapGet("/first-boot", ReadFirstBootAsync);
+        group.MapPost("/first-resume", FirstResumeAsync);
         return endpoints;
     }
 
@@ -81,12 +83,18 @@ internal static class CameraAgentLifecycleEndpoints
             context.Response.Headers.RetryAfter = InitializationRetryAfterSeconds.ToString(CultureInfo.InvariantCulture);
             return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
         }
+        // Under a Silo-layout first-boot profile (#1966) the pause owner is the installer operation the request names,
+        // so a pause and its resume share one owner although each command keeps its own idempotency key. Without that
+        // profile the owner stays the command identity, exactly as before.
+        var owner = coordinator.FirstBootPause is not null && request.OwnerOperationId is { } stable && stable != Guid.Empty
+            ? stable
+            : request.OperationId;
         try
         {
             return Results.Ok(await command(
                 $"lifecycle:{request.OperationId:D}:{action}",
                 request.ExpectedVersion,
-                $"installer-lifecycle:{request.OperationId:D}",
+                $"installer-lifecycle:{owner:D}",
                 request.Reason,
                 cancellationToken).ConfigureAwait(false));
         }
@@ -100,6 +108,69 @@ internal static class CameraAgentLifecycleEndpoints
         }
     }
 
+    /// <summary>
+    /// The installer-owned first-boot pause of a Silo-layout instance (#1966). 404 when the instance has none, so a
+    /// filesystem-layout instance reports that it was never seeded rather than an empty status.
+    /// </summary>
+    private static async Task<IResult> ReadFirstBootAsync(
+        HttpContext context,
+        IConfiguration configuration,
+        CaptureAdmissionCoordinator coordinator,
+        CancellationToken cancellationToken)
+    {
+        if (!IsAuthorized(context, configuration)) return Results.Unauthorized();
+        if (coordinator.FirstBootPause is null) return Results.NotFound();
+        if (!coordinator.Snapshot.IsInitialized)
+        {
+            context.Response.Headers.RetryAfter = InitializationRetryAfterSeconds.ToString(CultureInfo.InvariantCulture);
+            return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+        }
+        return Results.Ok(await coordinator.ReadFirstBootPauseAsync(cancellationToken).ConfigureAwait(false));
+    }
+
+    /// <summary>
+    /// The atomic first resume (#1966, cutover contract 8.1): accepted only while the seeded first-boot pause is the
+    /// latest accepted command at the expected version, checked inside the resume's write transaction. A retry of an
+    /// accepted first resume replays its result.
+    /// </summary>
+    private static async Task<IResult> FirstResumeAsync(
+        FirstResumeRequest request,
+        HttpContext context,
+        IConfiguration configuration,
+        CaptureAdmissionCoordinator coordinator,
+        CancellationToken cancellationToken)
+    {
+        if (!IsAuthorized(context, configuration)) return Results.Unauthorized();
+        if (coordinator.FirstBootPause is not { } seed) return Results.NotFound();
+        if (request.FirstBootId != seed.Id || request.ExpectedVersion < 1) return Results.BadRequest();
+        if (!coordinator.Snapshot.IsInitialized)
+        {
+            context.Response.Headers.RetryAfter = InitializationRetryAfterSeconds.ToString(CultureInfo.InvariantCulture);
+            return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+        }
+        try
+        {
+            return Results.Ok(await coordinator.ResumeAsync(
+                seed.ResumeKey,
+                request.ExpectedVersion,
+                seed.Actor,
+                FirstBootPauseIdentity.ResumeReason,
+                cancellationToken).ConfigureAwait(false));
+        }
+        catch (CaptureControlValidationException)
+        {
+            return Results.BadRequest();
+        }
+        catch (CaptureControlConflictException exception)
+        {
+            return Results.Conflict(new FirstResumeRefusal(exception.Message));
+        }
+    }
+
+    private sealed record FirstResumeRequest(Guid FirstBootId, long ExpectedVersion);
+
+    private sealed record FirstResumeRefusal(string Reason);
+
     internal static bool IsAuthorized(HttpContext context, IConfiguration configuration)
     {
         var expected = configuration["LifecycleControl:Token"];
@@ -110,7 +181,8 @@ internal static class CameraAgentLifecycleEndpoints
                    SHA256.HashData(Encoding.UTF8.GetBytes(supplied)));
     }
 
-    private sealed record LifecycleControlRequest(Guid OperationId, long? ExpectedVersion = null, string? Reason = null);
+    private sealed record LifecycleControlRequest(
+        Guid OperationId, long? ExpectedVersion = null, string? Reason = null, Guid? OwnerOperationId = null);
 
     private sealed record LifecycleStateResponse(
         OperationsSection<OperationsCaptureControlState> CaptureControl,

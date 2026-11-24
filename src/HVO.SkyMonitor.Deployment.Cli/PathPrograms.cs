@@ -232,7 +232,8 @@ internal static partial class PathPrograms
             if (root == paths.InstanceRoot || !Guid.TryParseExact(Path.GetFileName(root), "D", out var id)) continue;
             var other = InstallationPaths.Create(paths.ProductRoot, id, ProductionCatalog.DefaultCatalogId);
             if (!File.Exists(other.ManifestPath)) continue;
-            var manifest = await CameraAgentLifecycleManager.ReadManifestAsync(other.ManifestPath, cancellationToken).ConfigureAwait(false);
+            var manifest = await CameraAgentLifecycleManager.ReadManifestAsync(other.ManifestPath, cancellationToken, allowSiloLayout: true)
+                .ConfigureAwait(false);
             if (!includeUninstalled && manifest.LifecycleCondition != InstanceLifecycleCondition.Installed) continue;
             var record = await ReadSetAsync(CurrentRecord(other), locations: null, cancellationToken).ConfigureAwait(false);
             if (record?.Programs.Any(program => program.Target == target) == true) return true;

@@ -35,7 +35,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 
 [TestClass]
 [TestCategory("Unit")]
-public sealed class CameraAgentLifecycleEndpointsTests
+public sealed partial class CameraAgentLifecycleEndpointsTests
 {
     [TestMethod]
     [DataRow(null, false)]
