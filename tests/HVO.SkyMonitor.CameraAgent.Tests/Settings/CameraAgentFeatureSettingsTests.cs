@@ -6,6 +6,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Settings;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Hosting")]
 public sealed class CameraAgentFeatureSettingsTests
 {
     [TestMethod]

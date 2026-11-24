@@ -18,6 +18,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Orbital;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Orbital")]
 public sealed class OrbitalElementsCompositionTests : OrbitalStoreTestBase
 {
     private static readonly string[] OnlyLifetimeWrapper = ["LifetimeTrackingHttpMessageHandler"];

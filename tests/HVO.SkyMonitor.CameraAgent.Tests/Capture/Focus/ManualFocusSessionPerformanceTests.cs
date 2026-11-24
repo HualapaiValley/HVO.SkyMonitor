@@ -2,6 +2,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Focus;
 
 [TestClass]
 [TestCategory("Performance")]
+[TestProperty("Area", "Capture.Focus")]
 [DoNotParallelize]
 public sealed class ManualFocusSessionPerformanceTests
 {

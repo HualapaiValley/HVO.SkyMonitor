@@ -16,6 +16,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Transients;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Transients")]
 [DoNotParallelize]
 public sealed class Issue247TransientCandidateReservationIndependentReviewTests
 {

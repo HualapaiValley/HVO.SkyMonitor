@@ -20,6 +20,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Evidence;
 /// </remarks>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Evidence")]
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 public sealed class ExecutionEvidenceFrozenPlanTieTests
 {
@@ -81,6 +82,7 @@ public sealed class ExecutionEvidenceFrozenPlanTieTests
 /// <summary>Framing invariants for the bounded evidence batch a submission carries.</summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Evidence")]
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 public sealed class ExecutionEvidenceBatchCodecTests
 {

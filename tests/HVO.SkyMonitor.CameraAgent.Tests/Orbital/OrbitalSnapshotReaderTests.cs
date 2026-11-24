@@ -11,6 +11,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Orbital;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Orbital")]
 public sealed class OrbitalSnapshotReaderTests : OrbitalStoreTestBase
 {
     private static readonly string?[] MalformedIdentities =

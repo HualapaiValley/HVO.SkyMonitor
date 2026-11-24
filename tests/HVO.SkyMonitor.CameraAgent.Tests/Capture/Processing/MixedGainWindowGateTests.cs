@@ -15,6 +15,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture.Processing")]
 public sealed class MixedGainWindowGateTests
 {
     private static readonly string FamilySha256 = new('A', 64);

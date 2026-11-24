@@ -16,6 +16,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Transients;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Transients")]
 public sealed class TransientCandidateDeliveryServiceTests
 {
     [TestMethod]

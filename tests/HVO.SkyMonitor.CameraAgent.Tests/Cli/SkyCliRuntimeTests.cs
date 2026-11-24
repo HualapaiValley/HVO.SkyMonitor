@@ -6,6 +6,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Cli;
 /// <summary><c>restart</c>, <c>rig show|stage|apply</c> and <c>schedule show|stage|apply</c> against the fake API.</summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Cli")]
 [UnsupportedOSPlatform("windows")]
 public sealed class SkyCliRuntimeTests
 {

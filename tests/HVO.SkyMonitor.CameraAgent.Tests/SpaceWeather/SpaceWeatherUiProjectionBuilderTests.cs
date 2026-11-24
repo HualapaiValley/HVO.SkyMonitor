@@ -14,6 +14,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.SpaceWeather;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "SpaceWeather")]
 public sealed class SpaceWeatherUiProjectionBuilderTests
 {
     private static readonly string[] OrdinalOrder = ["WARK05/1", "WARK05/10", "WARK05/2"];

@@ -4,6 +4,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Automation;
 
 [TestClass]
 [TestCategory("Integration")]
+[TestProperty("Area", "Automation")]
 [DoNotParallelize]
 public sealed class CustomScriptMissedOccurrencesIntegrationTests
 {

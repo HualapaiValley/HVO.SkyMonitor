@@ -314,6 +314,7 @@ public sealed partial class VirtualSkyCameraModuleTests
 
 [TestClass]
 [TestCategory("Performance")]
+[TestProperty("Area", "Modules.VirtualSky")]
 [DoNotParallelize]
 public sealed class VirtualSkyCameraPerformanceTests
 {

@@ -11,6 +11,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Settings;
 /// <summary>The settings service's values, sources and version-checked writes against real stores.</summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Hosting")]
 public sealed class CameraAgentSettingsServiceTests
 {
     private const string MaximumObjects = "skyMap.maximumObjects";

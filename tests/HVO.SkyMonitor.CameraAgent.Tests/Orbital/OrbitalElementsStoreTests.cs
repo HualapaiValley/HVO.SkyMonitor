@@ -213,6 +213,7 @@ public abstract class OrbitalStoreTestBase
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Orbital")]
 public sealed class OrbitalElementsStoreTests : OrbitalStoreTestBase
 {
     private static readonly string[] Tables =

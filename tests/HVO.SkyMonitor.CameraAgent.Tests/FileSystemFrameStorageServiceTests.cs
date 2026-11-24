@@ -9,6 +9,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 [TestClass]
 [TestCategory("Integration")]
+[TestProperty("Area", "Storage")]
 public sealed class FileSystemFrameStorageServiceTests
 {
     [TestMethod]

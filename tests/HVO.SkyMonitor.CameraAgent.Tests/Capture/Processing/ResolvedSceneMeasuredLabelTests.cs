@@ -14,6 +14,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 /// <summary>Declared synthetic raw pixels traverse the scene producer, CameraAgent measurement step and final annotation.</summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture.Processing")]
 public sealed class ResolvedSceneMeasuredLabelTests
 {
     [TestMethod]
