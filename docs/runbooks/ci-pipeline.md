@@ -20,7 +20,7 @@ reports belong to full qualification. Preflight also runs
 `scripts/coverage:policy`: PRs cannot lower any aggregate/component floor, remove
 a file floor, widen tolerance, or add an arbitrary v1 local-only path.
 
-The Docker-disabled Unit selection [skips the retired LogicHost projects](#logichost-test-retirement)
+The Docker-disabled Unit selection runs the [active CameraAgent and shared test projects](#logichost-test-retirement)
 and collects coverage once.
 `scripts/coverage:development-v1 --settings OUTPUT` copies
 `tests/coverage.runsettings`, derives its assembly Include filter from existing
@@ -294,7 +294,7 @@ A green sync PR is integration evidence and does not replace promotion qualifica
 | **Quality** | The full-history [secret scan](#secret-scan), workflow lint, syntax and documentation audits, the Unit-selection completeness control, lightweight environment/classification contracts, and Compose validation run in every selected Quality job. Full mode also enforces formatting, package vulnerability/deprecation policy, and pinned .NET tools; manual dispatch additionally validates the historical Phase 14 acceptance inventory. Reduced mode does not restore or audit application packages it cannot affect. A 45-minute qualification job budget covers formatting, the complete control-contract batch, package audit and the manual historical acceptance gate. |
 | **Deployment Contracts** | Deployment-relevant pull requests run the coordinator watchdog/failure contracts and current campaign-shape contracts, plus only the affected exhaustive catalog, split-host, or installer suite selected by the classifier. Main/release/manual runs execute every exhaustive suite. Otherwise its planned `skipped` result is required. |
 | **Build** | Warning-clean solution Debug and Release builds plus complete, disjoint behavioral category discovery. Never component-scoped, so no component plan can hide a warning or a category-count drift. Skipped only in classified reduced mode. |
-| **Unit Tests** | 16626 Unit cases across 17 active assemblies with an intentionally invalid Docker endpoint. Two [supplemental Unit selections](#supplemental-unit-selections) write TRX only. The complete solution plan runs this job. Component plans run the selections in their active lanes. A 45-minute full-qualification job budget covers restore/build, the serial test/coverage selections and evidence upload. |
+| **Unit Tests** | 16652 Unit cases across 17 active assemblies with an intentionally invalid Docker endpoint. Two [supplemental Unit selections](#supplemental-unit-selections) write TRX only. The complete solution plan runs this job. Component plans run the selections in their active lanes. A 45-minute full-qualification job budget covers restore/build, the serial test/coverage selections and evidence upload. |
 | **Integration Tests** | 916 Integration-category cases in the active inventory, including the 7 repository graph/provider-boundary/publish cases in Architecture & Publish. The complete solution plan runs the other 909 cases across Astronomy and three CameraAgent assemblies. The Integration step attempts all four assemblies and reports failure if any fail. |
 | **Architecture & Publish** | Both category selections of the architecture project cover the 34 Unit-category boundary cases, including the host `Dockerfile`, fault-matrix discovery, and CameraAgent event-ID uniqueness contracts, and the 7 Integration-category repository graph/provider-boundary/MSBuild/publish cases. Retains SHA-256 publish manifests for CameraAgent and for both runners and the installer on Linux x64 and ARM64. Runs for every full-mode head. |
 | **CameraAgent Migrations** | Exactly one canonical initial migration source for CameraAgent Identity plus zero pending CameraAgent EF model changes, built from the CameraAgent project root. Runs for every full-mode head. |
@@ -873,7 +873,7 @@ maintained in [`cameraagent-arm64-ci.md`](cameraagent-arm64-ci.md).
 
 ## Categories
 
-The category audit requires every discovered case to belong to exactly one primary behavioral category. Current declared inventory is `Unit=17862`, `Integration=1540`, `Manual=338`, `Soak=1`, `External=0`, and `Hardware=1`. Whole-solution discovery verifies those declarations.
+The category audit requires every discovered case to belong to exactly one primary behavioral category. Current declared inventory is `Unit=16652`, `Integration=916`, `Manual=274`, `Soak=1`, `External=0`, and `Hardware=1`. Whole-solution discovery verifies those declarations.
 
 These totals and the Unit/Integration rows in [Required Checks](#required-checks) are not hand-maintained pins: `./scripts/docs:audit-operations` sums the per-project inventories and fails when this runbook disagrees with them, while the Build check's category audit proves those inventories match actual discovery. Each test project owns its expected counts in `tests/<project>/test-categories.json`, a flat object with exactly the six categories as non-negative integers; the engine in `scripts/test-categories/Program.cs` owns no counts. A count change is therefore a change inside the owning project directory and selects that project's component lane, while editing the engine still selects the complete solution matrix. A project without an inventory, an inventory without a project, or a malformed, duplicate, unknown, or stale category all fail the audit. Update the owning inventory and this runbook in the same change.
 
@@ -881,10 +881,12 @@ These totals and the Unit/Integration rows in [Required Checks](#required-checks
 
 ## LogicHost test retirement
 
-#2048 retires execution of the two LogicHost and two combined CameraAgent–LogicHost
-test assemblies from CI and routine local validation. They remain in the solution
-build and the exhaustive category discovery audit. The audit counts the retained
-tests by discovery without running their test bodies.
+#2048 retired CI and local execution of the LogicHost and combined CameraAgent–LogicHost
+suites. #2050 removed the four test projects and their LogicHost fixture project
+from the solution. The fleet outbox test now lives in CameraAgent Tests. The
+active CameraAgent, Imaging, and Processing suites own the retained standalone
+and shared assertions. Historical LogicHost test commands require the revision
+that contains their suites.
 
 Development v1 and the manually dispatched CI v2 baseline use this MSTest filter.
 
@@ -892,11 +894,10 @@ Development v1 and the manually dispatched CI v2 baseline use this MSTest filter
 TestCategory=Unit&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost
 ```
 
-The `-p:SkipLogicHostTests=true` argument excludes the retired projects from
-VSTest before discovery. This also covers their tests with historical namespaces
-and the pool-clear contract compiled into multiple assemblies. Each active
-Unit assembly contributes one v1 coverage report. Preflight checks both name
-exclusions and the project selection.
+The `-p:SkipLogicHostTests=true` argument and both name exclusions remain part
+of the Preflight contract. Every active Unit assembly contributes one v1
+coverage report, and each active assembly still compiles and runs the shared
+connection-pool guard.
 
 Full qualification invokes the active Unit and Integration projects by path.
 #2049 removes the retired LogicHost migration, LogicHost component, and combined
@@ -1001,8 +1002,8 @@ closed evidence campaign.
 
 Run the path-classification, component-plan, and aggregate-protection contract
 tests when changing CI orchestration, the component map, or the reduced-mode
-allowlist. They cover active component diffs, direct changes to retained LogicHost
-projects, documentation-only and CI changes, and `Required CI` failures and
+allowlist. They cover active component diffs, changes to the retained LogicHost
+project, documentation-only and CI changes, and `Required CI` failures and
 cancellations.
 
 ```bash
@@ -1191,7 +1192,7 @@ Classification matches exact project directory names.
 
 A shared change selects all three lanes. CameraAgent and delivery changes
 select their own lanes. The complete matrix is the fallback for paths outside
-the component map, including retained LogicHost projects, unknown projects,
+the component map, including the retained LogicHost project, unknown projects,
 and CI, package, toolchain, and architecture inputs. Deployment assets such as
 `deploy/**` and `scripts/deploy/**` also use the complete fallback. Their
 independent deployment selection keeps exercising the contracts that consume
@@ -1199,11 +1200,9 @@ those files.
 
 A relative MSBuild item that compiles, embeds, or copies a file can widen the
 plan to cover its consuming projects. An active but unclassified consumer also
-selects the complete matrix. Links into the retained LogicHost projects have
-no component lane to add. For example, changing
-`tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/VirtualSkyPipelineTests.cs`
-selects the CameraAgent lane even though the retained combined Integration
-project also compiles it.
+selects the complete matrix. For example, changing
+`src/HVO.SkyMonitor.Deployment.Cli/OwnerRecoveryClient.cs` selects the delivery
+and CameraAgent lanes because CameraAgent Acceptance Tests also compile it.
 
 An otherwise allowlisted path still leaves reduced mode when a project
 includes it. Files outside project directories use the complete matrix because
@@ -1223,7 +1222,7 @@ and CameraAgent Migrations. Quality runs in every mode.
 | Allowlisted documentation only | no | none | no — and every full-mode gate above is skipped too; only Quality and Required CI run |
 | Shared library or shared test | no | shared, cameraagent, delivery | no |
 | CameraAgent code or tests | no | cameraagent | no |
-| Retained LogicHost host or test project | yes | every lane claimed by the complete matrix | yes for the LogicHost Dockerfile |
+| Retained LogicHost host project | yes | every lane claimed by the complete matrix | yes for the LogicHost Dockerfile |
 | `src/HVO.SkyMonitor.Deployment.*`, `src/HVO.SkyMonitor.TerminalUi`, the release tool, its release-validation shell/JQ helpers, or their tests | no for project paths; yes for repository-root scripts | delivery for project paths; complete for repository-root scripts | yes — release validation selects the installer suite |
 | `deploy/**`, `scripts/deploy*`, `scripts/catalog*`, or the other non-project deployment inputs | yes | every lane claimed by the complete matrix | yes |
 | `THIRD-PARTY-NOTICES.md` or a `docs/validation/*.json` a project copies | yes | every lane claimed by the complete matrix | no |

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.Imaging;
@@ -328,6 +329,64 @@ public sealed class CameraAgentProcessingConformanceTests
         Assert.AreEqual(FrameByteOrder.NotApplicable, projectedPreview.Layout!.ByteOrder);
         Assert.IsNull(projectedPreview.Layout.BlackLevel);
         Assert.AreEqual(byte.MaxValue, projectedPreview.Layout.WhiteLevel);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    [DataRow(BuiltInProcessingRecipes.EncodedPreview)]
+    [DataRow(BuiltInProcessingRecipes.Annotation)]
+    public async Task CaptureAndDescriptorIdentityDoNotEnterCentralIdentities(string recipeName)
+    {
+        var descriptor = ProcessingConformanceFixture.CreateDescriptor();
+        var frame = new CameraFrame(
+            descriptor.Timing.ExposureStartedUtc,
+            descriptor.Layout.Width,
+            descriptor.Layout.Height,
+            descriptor.Layout.PixelFormat,
+            ProcessingConformanceFixture.Payload,
+            new FrameMetadata(descriptor.Controls.EffectiveExposure, descriptor.Controls.EffectiveGain, 0));
+        var raw = new FrameArtifact(descriptor.Artifact.ArtifactId, FrameArtifactRole.Raw, frame);
+        var input = CameraAgentRecipeExecutionAdapter.CreateArtifact(
+            ProcessingConformanceFixture.CameraConfig, raw, "source", reconstructionDescriptor: descriptor);
+        Assert.AreEqual(descriptor.Capture.CaptureId, input.CaptureId);
+        Assert.AreEqual(CaptureContractJson.ComputeDescriptorSha256(descriptor), input.DescriptorIdentitySha256);
+
+        var preview = ProcessingConformanceFixture.CreateRequest(input);
+        var request = recipeName == BuiltInProcessingRecipes.Annotation
+            ? preview with
+            {
+                RecipeName = recipeName,
+                Options = JsonSerializer.SerializeToElement(new AnnotationRecipeOptions(OutputEncoding: "Packed")),
+                Annotation = new ProcessingAnnotationInput(
+                    [new ProjectedAnnotationObject("fixture", "Fixture", new PixelPoint(1, 1), true, true)],
+                    [],
+                    new PreviewTransform(1, 1),
+                    null,
+                    new string('A', 64))
+            }
+            : preview;
+        var cleared = request with
+        {
+            Inputs = [input with { CaptureId = null, DescriptorIdentitySha256 = null }]
+        };
+        var adapter = new CameraAgentRecipeExecutionAdapter(new ProcessingRecipeExecutor());
+
+        var withFields = await adapter.ExecuteAsync(request, CancellationToken.None).ConfigureAwait(false);
+        var withoutFields = await adapter.ExecuteAsync(cleared, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, withFields.Status, withFields.ReasonCode);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, withoutFields.Status, withoutFields.ReasonCode);
+        var actual = Assert.ContainsSingle(withFields.Products);
+        var expected = Assert.ContainsSingle(withoutFields.Products);
+        var identity = BuiltInProcessingRecipes.CreateExecutionIdentity(
+            recipeName, request.Options, request.Input, request.Annotation);
+        Assert.AreEqual(identity.IdentitySha256, actual.Recipe.IdentitySha256);
+        Assert.AreEqual(expected.Recipe.IdentitySha256, actual.Recipe.IdentitySha256);
+        Assert.AreEqual(expected.Recipe.Descriptor.OptionsSha256, actual.Recipe.Descriptor.OptionsSha256);
+        Assert.AreEqual(expected.OutputIdentitySha256, actual.OutputIdentitySha256);
+        Assert.AreEqual(expected.ChecksumSha256, actual.ChecksumSha256);
+        CollectionAssert.AreEqual(expected.Payload.ToArray(), actual.Payload.ToArray());
+        CollectionAssert.AreEqual(expected.SourceArtifactIds.ToArray(), actual.SourceArtifactIds.ToArray());
     }
 
     private static ReconstructionDescriptor CreateRawDescriptor(Dictionary<string, string> extra)
