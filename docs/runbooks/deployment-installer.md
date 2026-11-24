@@ -2885,8 +2885,10 @@ authorized recovery. The stock installer refuses the in-flight journal.
 After a quiet failure, the successor verifies the predecessor, the available
 checkpoints, Fleet absence and current admission. It records terminal
 `restored-predecessor-admission-preserved` with no admission command. Use the
-compatible successor installer for later lifecycle operations and the
-predecessor's ordinary owner controls for capture admission. If startup or verification
+compatible successor installer for later lifecycle operations and its
+`lifecycle-worker` for Drain and scheduled Restart. The predecessor's ordinary
+owner controls remain available for capture admission. Stock RC2 cannot read
+the successor's leave-paused journal. If startup or verification
 was interrupted after the restart was recorded, rerun the exact successor
 `--resume --leave-paused` request to finish verification and settlement. An exact
 replay of terminal failure reports the current admission without retrying the
@@ -3034,9 +3036,11 @@ authorized recovery.
 
 If an authorized checkpoint replacement is interrupted, the exact successor
 retry reuses the recorded plan and counter floors while the verified writers
-remain stopped. If a Paused receipt became durable before the first drain
-observation was recorded, recovery can prove that receipt from the raw journal
-without issuing another Pause.
+remain stopped. If no checkpoint was needed and the candidate is still running,
+the exact retry verifies and stops the candidate and its replay runner before
+restarting the predecessor on the retained stores. If a Paused receipt became
+durable before the first drain observation was recorded, recovery can prove
+that receipt from the raw journal without issuing another Pause.
 
 After the predecessor is healthy, automatic recovery resumes only a pause it
 still owns. An authenticated 404 or 405 from the atomic-resume capability probe
@@ -3045,7 +3049,9 @@ The owner can use ordinary capture controls on the paused predecessor. A pause
 that was never established or was superseded by an owner command settles as
 `restored-predecessor-admission-preserved`, keeping the current admission.
 Both dispositions are terminal and allow later lifecycle commands with the
-compatible successor installer. Authentication, transport or incomplete
+compatible successor installer, including Drain and scheduled Restart through
+its `lifecycle-worker`. Stock RC2 cannot read the successor's automatic recovery
+journal. Authentication, transport or incomplete
 verification leaves settlement pending for the exact request and installer.
 
 The protected installation-verification GET used by both the pre-mutation owner

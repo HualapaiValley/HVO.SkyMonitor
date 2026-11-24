@@ -46,7 +46,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - CameraAgent image upgrades allow five minutes for application startup verification and give automatic recovery a separate verification window after restarting the predecessor. Signed restore-only can reopen the original capture admission after an interrupted offline release upgrade when the checkpoint is already restored and the predecessor supports authenticated, operation-owned resume. #1955
 
-- RC2 archive recovery can use a separately authorized installer to complete an interrupted, already-restored upgrade while preserving capture admission and reporting the latest owner command. A failed retry restarts the verified predecessor when its stores are safe. Signed recovery preserves later Fleet records and capture evidence, and settles with admission preserved when atomic resume is unavailable or the installer no longer owns the pause. #1955
+- RC2 archive recovery can use a separately authorized installer to complete an interrupted, already-restored upgrade while preserving capture admission and reporting the latest owner command. A failed retry restarts the verified predecessor when its stores are safe. Signed recovery preserves later Fleet records and capture evidence, and settles with admission preserved when atomic resume is unavailable or the installer no longer owns the pause. The compatible successor worker can then accept Drain and scheduled Restart. #1955
 
 - New centered CameraAgent graphs retain faint stars in reference-calibrated VirtualSky exposures by subtracting the synthetic bias pedestal once. #1920
 

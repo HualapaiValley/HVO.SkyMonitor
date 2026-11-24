@@ -693,6 +693,7 @@ internal sealed class DockerClient(IProcessRunner processRunner)
                         imageIdentity,
                         uid,
                         gid,
+                        requireReadiness: true,
                         cancellationToken).ConfigureAwait(false);
                 }
                 return;
@@ -707,12 +708,13 @@ internal sealed class DockerClient(IProcessRunner processRunner)
         }
     }
 
-    private async Task VerifyReplayRunnerAsync(
+    internal async Task VerifyReplayRunnerAsync(
         ComposeFiles compose,
         InstallationPaths paths,
         ImageInstallationIdentity imageIdentity,
         uint uid,
         uint gid,
+        bool requireReadiness,
         CancellationToken cancellationToken)
     {
         var deadline = DateTimeOffset.UtcNow + TimeSpan.FromMinutes(2);
@@ -731,8 +733,8 @@ internal sealed class DockerClient(IProcessRunner processRunner)
             var expectedInstance = paths.InstanceRoot.Split(Path.DirectorySeparatorChar).Last();
             var checks = new Dictionary<string, bool>(StringComparer.Ordinal)
             {
-                ["runner-running"] = state.GetProperty("Running").GetBoolean(),
-                ["runner-healthy"] = state.TryGetProperty("Health", out var health) &&
+                ["runner-running"] = !requireReadiness || state.GetProperty("Running").GetBoolean(),
+                ["runner-healthy"] = !requireReadiness || state.TryGetProperty("Health", out var health) &&
                                      health.GetProperty("Status").GetString() == "healthy",
                 ["runner-image"] = container.GetProperty("Image").GetString() == imageIdentity.ImageId,
                 ["runner-user"] = config.GetProperty("User").GetString() == $"{uid}:{gid}",

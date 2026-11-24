@@ -730,7 +730,7 @@ internal sealed partial class CameraAgentLifecycleManager
                     uid, gid, cancellationToken)
                     .ConfigureAwait(false);
             }
-            if (IsQuietPausedRecovery(operation) || IsAwaitingPausedRecovery(operation) || IsAdmissionPreserved(operation))
+            if (IsQuietPausedRecovery(operation) || IsAwaitingPausedRecovery(operation) || IsLeavePausedAdmissionPreserved(operation))
                 return await SettlePausedPredecessorAsync(paths, manifest, installationResult, operation, docker, compose,
                     owner, lifecycleClientFactory, lifecycleControlToken, verificationToken, hostLimits, uid, gid, cancellationToken)
                     .ConfigureAwait(false);
@@ -794,6 +794,11 @@ internal sealed partial class CameraAgentLifecycleManager
                     OwnerRecoverySocket.RemoveStoppedSocket(paths, uid, gid);
                     operation = await RestoreStateSnapshotAsync(paths, manifest, operation, interrupted, request.Json, error,
                         cancellationToken, signedStoppedProof: true).ConfigureAwait(false);
+                }
+                else
+                {
+                    await StopSignedCandidateWithoutCheckpointAsync(paths, manifest, operation, docker, previous, cancellationToken)
+                        .ConfigureAwait(false);
                 }
                 await RestoreRecoveryRecordsAsync(paths, compose, previous, original, operationRoot, cancellationToken)
                     .ConfigureAwait(false);
@@ -1500,6 +1505,13 @@ internal sealed partial class CameraAgentLifecycleManager
                     if (signedCheckpoint is not null)
                         await ProveStoppedSignedRestoreAsync(paths, manifest, operation, signedCheckpoint, docker, compose,
                             operationRoot, recovery.Token).ConfigureAwait(false);
+                    else if (automaticSignedRecovery)
+                    {
+                        var previous = compose with { ComposeFile = previousComposePath, EnvironmentFile = previousEnvironmentPath };
+                        await ValidateComposeAuthorityAsync(docker, previous, manifest, recovery.Token).ConfigureAwait(false);
+                        await StopSignedCandidateWithoutCheckpointAsync(paths, manifest, operation, docker, previous, recovery.Token)
+                            .ConfigureAwait(false);
+                    }
                     if (mutationStarted)
                     {
                         SafeFileSystem.WriteTextAtomic(compose.ComposeFile, originalCompose);
@@ -1526,7 +1538,7 @@ internal sealed partial class CameraAgentLifecycleManager
                         await CameraAgentStateSnapshot.VerifyAsync(paths, manifest.InstanceId, pending, recovery.Token).ConfigureAwait(false);
                     }
                     EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(recovery.Token).ConfigureAwait(false));
-                    if (signedCheckpoint is null && failedPhase is (LifecycleOperationPhase.Mutating or LifecycleOperationPhase.CandidateVerified))
+                    if (!automaticSignedRecovery && failedPhase is (LifecycleOperationPhase.Mutating or LifecycleOperationPhase.CandidateVerified))
                     {
                         await docker.ComposeAsync(compose.ComposeFile, compose.EnvironmentFile, compose.ProjectName,
                             ["stop"], recovery.Token).ConfigureAwait(false);
@@ -1578,6 +1590,8 @@ internal sealed partial class CameraAgentLifecycleManager
                 }
                 catch (Exception recoveryException)
                 {
+                    if (recoveryException is InstallerException { IsSignedRecoveryHeld: true })
+                        throw new InstallerException($"Candidate failed. {Redaction.SafeDiagnostic(recoveryException.Message)}", exception);
                     if (IsPendingSignedAutomaticRecovery(operation))
                         throw new InstallerException(
                             $"Candidate failed. Automatic signed predecessor recovery remains pending: {Redaction.SafeDiagnostic(recoveryException.Message)}",
@@ -2273,7 +2287,7 @@ internal sealed partial class CameraAgentLifecycleManager
                 existing.OperationId != request.RecoveryOperationId || existing.RequestSha256 != request.ComputeRequestSha256())
                 throw InstallerException.Refused("Leave-paused requires the exact retained upgrade operation and original request.");
             if (existing.Phase == LifecycleOperationPhase.Completed || IsArmedPausedRetry(existing) || IsQuietPausedRecovery(existing) ||
-                IsAwaitingPausedRecovery(existing) || IsAdmissionPreserved(existing) ||
+                IsAwaitingPausedRecovery(existing) || IsLeavePausedAdmissionPreserved(existing) ||
                 existing.SchemaVersion == LeavePausedJournalVersion && existing.Phase == LifecycleOperationPhase.Committed ||
                 existing.SchemaVersion == DeploymentSchemaVersions.LifecycleOperation && existing is
                 {

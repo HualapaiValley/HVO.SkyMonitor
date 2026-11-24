@@ -155,6 +155,8 @@ public sealed partial class LifecycleContractTests
 
         var failure = await Assert.ThrowsExactlyAsync<InstallerException>(() => RunAsync(resume: false));
         StringAssert.Contains(failure.Message, "changed Fleet records or metadata", StringComparison.Ordinal);
+        StringAssert.Contains(failure.Message, "Automatic signed recovery is held", StringComparison.Ordinal);
+        Assert.IsFalse(failure.Message.Contains("remains pending", StringComparison.Ordinal));
         var held = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
         Assert.AreEqual(3, held.SchemaVersion);
         Assert.IsTrue(held.MutationStarted);
@@ -284,11 +286,16 @@ public sealed partial class LifecycleContractTests
             fixture.Request(LifecycleOperationKind.Backup) with { DryRun = true }, fixture.Paths,
             LifecycleOperationKind.Backup, fixture.Manifest, CancellationToken.None);
         Assert.AreEqual(LifecycleOperationPhase.Planned, next.Phase);
+        using var lease = await CameraAgentLifecycleManager.AcquireControlDeploymentAsync(fixture.Paths, CancellationToken.None,
+            settleCommittedRecovery: true, returnedProcess: _ => throw new AssertFailedException("Settled recovery requires no process probe."));
     }
 
-    private static async Task<LifecycleFixture> AutomaticSignedFixtureAsync(bool fleetConfigured = true)
+    private static async Task<LifecycleFixture> AutomaticSignedFixtureAsync(bool fleetConfigured = true, bool localRunner = false)
     {
-        var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed, recoveryState: true,
+        var replayProfile = localRunner
+            ? HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner
+            : HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess;
+        var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed, replayProfile, recoveryState: true,
             installedImage: static image => CurrentStateContract(image) with { RawIngressSchema = "15" });
         fixture.Runner.CandidateRawIngressSchema = "15";
         fixture.Runner.CandidateLabels["io.hvo.skymonitor.minimum-compatible-revision"] = new string('6', 40);
@@ -316,6 +323,7 @@ public sealed partial class LifecycleContractTests
         public bool SupportsOwnedResume { get; set; }
         public bool LoseAcknowledgement { get; init; }
         public Action? AfterPauseAccepted { get; set; }
+        public Action? BeforeConfirmDrained { get; set; }
         public Action? BeforeCommittedResume { get; set; }
         public int CommittedCapabilityChecks { get; private set; }
         public int PauseRequests { get; private set; }
@@ -336,7 +344,10 @@ public sealed partial class LifecycleContractTests
         }
 
         public Task<LifecycleContinuity> ConfirmDrainedAsync(string verificationToken, CancellationToken cancellationToken)
-            => ReadContinuityAsync(verificationToken, cancellationToken);
+        {
+            BeforeConfirmDrained?.Invoke();
+            return ReadContinuityAsync(verificationToken, cancellationToken);
+        }
 
         public Task<LifecycleContinuity> ReadContinuityAsync(string verificationToken, CancellationToken cancellationToken)
         {

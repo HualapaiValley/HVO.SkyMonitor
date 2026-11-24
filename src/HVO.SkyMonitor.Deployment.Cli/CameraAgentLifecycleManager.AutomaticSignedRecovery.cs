@@ -105,6 +105,47 @@ internal sealed partial class CameraAgentLifecycleManager
         await docker.VerifyRecoveryContainerAsync(compose, paths, manifest, cancellationToken).ConfigureAwait(false);
     }
 
+    private static async Task StopSignedCandidateWithoutCheckpointAsync(
+        InstallationPaths paths, InstanceManifest manifest, LifecycleOperationState operation,
+        DockerClient docker, ComposeFiles previous, CancellationToken cancellationToken)
+    {
+        EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
+        var runtime = await docker.InspectContainerAsync(previous.ContainerName, cancellationToken).ConfigureAwait(false);
+        var runnerName = previous.ReplayRunnerContainerName;
+        var runner = runnerName is null ? null : await docker.InspectContainerAsync(runnerName, cancellationToken).ConfigureAwait(false);
+        var stopRequired = runtime.Running && runtime.ImageId != manifest.Image.ImageId ||
+            runner is { Running: true } && (!runtime.Running || runner.ImageId != manifest.Image.ImageId);
+        if (runtime.Running && !stopRequired) return;
+
+        if (runtime.Exists)
+        {
+            var image = RequireRecoveryImage(runtime);
+            await docker.VerifyContainerOwnershipAsync(previous, paths, image, manifest.RuntimeUid, manifest.RuntimeGid, cancellationToken)
+                .ConfigureAwait(false);
+            await docker.VerifyRecoveryContainerAsync(previous, paths, manifest, cancellationToken).ConfigureAwait(false);
+        }
+        if (runner is { Running: true })
+            await docker.VerifyReplayRunnerAsync(previous, paths, RequireRecoveryImage(runner), manifest.RuntimeUid, manifest.RuntimeGid,
+                requireReadiness: false, cancellationToken).ConfigureAwait(false);
+        if (stopRequired)
+        {
+            await docker.ComposeAsync(previous.ComposeFile, previous.EnvironmentFile, previous.ProjectName, ["stop"], cancellationToken)
+                .ConfigureAwait(false);
+            var stopped = await docker.InspectContainerAsync(previous.ContainerName, cancellationToken).ConfigureAwait(false);
+            if (stopped.Running || stopped.Exists != runtime.Exists || stopped.ImageId != runtime.ImageId ||
+                runnerName is not null && (await docker.InspectContainerAsync(runnerName, cancellationToken).ConfigureAwait(false)).Running)
+                throw InstallerException.Refused("The exact signed candidate and its writers could not be proved stopped.");
+        }
+        OwnerRecoverySocket.RemoveStoppedSocket(paths, manifest.RuntimeUid, manifest.RuntimeGid);
+
+        ImageInstallationIdentity RequireRecoveryImage(DockerClient.ContainerRuntimeIdentity observed)
+        {
+            if (observed.ImageId == manifest.Image.ImageId) return manifest.Image;
+            if (operation.CandidateImage is { } candidate && observed.ImageId == candidate.ImageId) return candidate;
+            throw InstallerException.Refused("Signed recovery could not identify the exact candidate or predecessor runtime.");
+        }
+    }
+
     private static void VerifyAutomaticRecoveryRelease(LifecycleOperationState operation, AcquiredImage release)
     {
         if (release.VerifiedRelease.ChecksumsSha256 !=
@@ -198,7 +239,7 @@ internal sealed partial class CameraAgentLifecycleManager
                 FailureCode = SignedAutomaticRestoreHeld,
                 FailureMessage = Redaction.SafeDiagnostic(exception.Message)
             }, cancellationToken).ConfigureAwait(false);
-            throw InstallerException.Refused($"Automatic signed recovery is held. Preserve the retained stores and checkpoints. {Redaction.SafeDiagnostic(exception.Message)}");
+            throw InstallerException.SignedRecoveryHeld(exception);
         }
     }
 
@@ -269,11 +310,11 @@ internal sealed partial class CameraAgentLifecycleManager
         // A cancellation can occur after the durable Pause but before the drain observation is journaled.
         if (operation.PreMutationContinuity is null && before.CaptureState == "Paused")
         {
-            var drained = ToBoundary(await lifecycle.ConfirmDrainedAsync(lifecycleControlToken, cancellationToken).ConfigureAwait(false));
-            if (await ReadAutomaticRecoveryPauseAsync(paths, operation.OperationId, drained, cancellationToken).ConfigureAwait(false) is { } recoveredPause)
+            before = ToBoundary(await lifecycle.ConfirmDrainedAsync(lifecycleControlToken, cancellationToken).ConfigureAwait(false));
+            if (await ReadAutomaticRecoveryPauseAsync(paths, operation.OperationId, before, cancellationToken).ConfigureAwait(false) is { } recoveredPause)
                 operation = await RecordAsync(paths, operation with
                 {
-                    PreMutationContinuity = drained,
+                    PreMutationContinuity = before,
                     SignedRecoveryPauseCommandId = recoveredPause
                 }, cancellationToken).ConfigureAwait(false);
         }

@@ -26,8 +26,11 @@ internal sealed partial class CameraAgentLifecycleManager
            original.OperationId == state.OperationId && original.SnapshotId == state.LeavePausedOriginalRestorePlanId &&
            state.SignedReleaseChecksumsSha256 == PublishedRc2ChecksumsSha256 &&
            (state is { SchemaVersion: LeavePausedJournalVersion, MutationStarted: true, Status: not InstallationStatus.Completed } ||
-            IsAdmissionPreserved(state) ||
+            IsLeavePausedAdmissionPreserved(state) ||
             state is { SchemaVersion: DeploymentSchemaVersions.LifecycleOperation, Phase: LifecycleOperationPhase.Completed });
+
+    private static bool IsLeavePausedAdmissionPreserved(LifecycleOperationState operation)
+        => operation.SchemaVersion == LeavePausedJournalVersion && IsAdmissionPreserved(operation);
 
     // This is the cut immediately after arming, before the phase that precedes candidate startup.
     private static bool IsArmedPausedRetry(LifecycleOperationState state)
@@ -141,7 +144,7 @@ internal sealed partial class CameraAgentLifecycleManager
         await VerifyRunningPausedFleetAsync(paths, owner, cancellationToken).ConfigureAwait(false);
         var lifecycle = CreateLifecycleClient(installation.Url, lifecycleClientFactory);
         var admission = await ObserveAdmissionAsync(paths, lifecycle, lifecycleToken, cancellationToken).ConfigureAwait(false);
-        if (!IsAdmissionPreserved(operation))
+        if (!IsLeavePausedAdmissionPreserved(operation))
         {
             var boundary = ToBoundary(await lifecycle.ReadContinuityAsync(lifecycleToken, cancellationToken).ConfigureAwait(false));
             await PreserveRecoveryAdmissionAsync(paths, operation, boundary, RecoveryAdmissionPreserved, cancellationToken).ConfigureAwait(false);

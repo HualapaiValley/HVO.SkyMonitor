@@ -6,9 +6,11 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 public sealed partial class LifecycleContractTests
 {
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
     [DoNotParallelize]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task AutomaticSignedRecovery_DoesNotDispatchAnotherPauseAfterCancellationFollowingAcceptance()
+    public async Task AutomaticSignedRecovery_DoesNotDispatchAnotherPauseAfterCancellationFollowingAcceptance(bool advanceCaptureSequence)
     {
         using var fixture = await AutomaticSignedFixtureAsync();
         using var release = CandidateRelease(fixture, out _);
@@ -41,16 +43,93 @@ public sealed partial class LifecycleContractTests
         Assert.IsNull(pending.PreMutationContinuity);
         Assert.IsNull(pending.SignedRecoveryPauseCommandId);
         Assert.AreEqual("Paused", lifecycle.ReadBoundary().CaptureState);
+        Assert.AreEqual(0L, lifecycle.ReadBoundary().CaptureSequence);
+        if (advanceCaptureSequence)
+        {
+            lifecycle.BeforeConfirmDrained = () =>
+            {
+                ExecuteSql(RawIngressPath(fixture.Paths), "INSERT INTO raw_capture_sequences VALUES('fixture-owner-camera', 7);");
+                lifecycle.BeforeConfirmDrained = null;
+            };
+        }
 
         var replay = await CameraAgentLifecycleManager.ExecuteAsync(request with { Resume = true }, fixture.Runner,
             _ => lifecycle, _ => owner, fixture.Uid, fixture.Gid, CancellationToken.None, error: TextWriter.Null);
         Assert.AreEqual("restored-previous-healthy-admission-resumed", replay.Outcome);
         var settled = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
         Assert.AreEqual(lifecycle.PauseCommandId, settled.SignedRecoveryPauseCommandId);
+        Assert.AreEqual(advanceCaptureSequence ? 7L : 0L, settled.PreMutationContinuity!.CaptureSequence);
         Assert.AreEqual(1, lifecycle.PauseRequests);
         Assert.HasCount(1, lifecycle.OwnedRequests);
         Assert.AreEqual(0, lifecycle.GenericResumeCalls);
         Assert.AreEqual("Running", lifecycle.ReadBoundary().CaptureState);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    [DoNotParallelize]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task AutomaticSignedRecovery_StopsAnInterruptedNonMigratingCandidateBeforeRestartingThePredecessor(
+        bool localRunner)
+    {
+        using var fixture = await AutomaticSignedFixtureAsync(localRunner: localRunner);
+        fixture.Runner.CandidateLabels["io.hvo.skymonitor.minimum-compatible-revision"] = fixture.Manifest.Image.MinimumCompatibleRevision;
+        using var release = CandidateRelease(fixture, out var candidate);
+        var lifecycle = new AutomaticSignedLifecycleClient(fixture.Paths) { SupportsOwnedResume = true };
+        var owner = new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true };
+        var fleet = Path.Combine(fixture.Paths.StateRoot, "raw", ".fleet", "fleet-status.db");
+        fixture.Runner.OnComposeUp = image =>
+        {
+            if (image == candidate)
+                ExecuteSql(fleet, "INSERT INTO fleet_status_records VALUES(1, 1); UPDATE fleet_status_metadata SET next_sequence = 2;");
+        };
+        var request = fixture.Request(LifecycleOperationKind.Upgrade) with { Release = release.Folder };
+        Task<LifecycleResult> RunAsync(bool resume) => CameraAgentLifecycleManager.ExecuteAsync(
+            request with { Resume = resume }, fixture.Runner, _ => lifecycle, _ => owner,
+            fixture.Uid, fixture.Gid, CancellationToken.None, error: TextWriter.Null);
+        const string cut = "Interrupted before stopping a non-migrating candidate.";
+        CameraAgentLifecycleManager.JournalRecorded = state =>
+        {
+            if (state.FailureCode == "signed-upgrade-recovery-preparing") throw new IOException(cut);
+        };
+        try
+        {
+            var failure = await Assert.ThrowsExactlyAsync<InstallerException>(() => RunAsync(resume: false));
+            StringAssert.Contains(failure.Message, cut, StringComparison.Ordinal);
+        }
+        finally
+        {
+            ResetCrashHooks();
+        }
+
+        var pending = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
+        Assert.AreEqual("signed-upgrade-recovery-preparing", pending.FailureCode);
+        Assert.IsFalse(pending.StateSnapshotRequired);
+        Assert.IsNull(pending.StateSnapshot);
+        Assert.AreEqual(candidate, fixture.Runner.ActiveImageId);
+        Assert.IsTrue(fixture.Runner.Running);
+        var journal = await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath);
+        var fleetBytes = await File.ReadAllBytesAsync(fleet);
+        var starts = fixture.Runner.ComposeUpCount;
+        var stops = fixture.Runner.ComposeStopCount;
+
+        fixture.Runner.OmitOwnershipLabel = true;
+        var refused = await Assert.ThrowsExactlyAsync<InstallerException>(() => RunAsync(resume: true));
+        StringAssert.Contains(refused.Message, "ownership", StringComparison.Ordinal);
+        CollectionAssert.AreEqual(journal, await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath));
+        Assert.AreEqual(stops, fixture.Runner.ComposeStopCount);
+        Assert.AreEqual(starts, fixture.Runner.ComposeUpCount);
+        fixture.Runner.OmitOwnershipLabel = false;
+
+        var recovered = await RunAsync(resume: true);
+        Assert.AreEqual("restored-previous-healthy-admission-resumed", recovered.Outcome);
+        Assert.AreEqual(stops + 1, fixture.Runner.ComposeStopCount);
+        Assert.AreEqual(starts + 1, fixture.Runner.ComposeUpCount);
+        Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
+        Assert.AreEqual(1, lifecycle.PauseRequests);
+        Assert.HasCount(1, lifecycle.OwnedRequests);
+        CollectionAssert.AreEqual(fleetBytes, await File.ReadAllBytesAsync(fleet));
     }
 
     [TestMethod]

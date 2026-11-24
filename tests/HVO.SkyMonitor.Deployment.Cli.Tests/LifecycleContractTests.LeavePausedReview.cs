@@ -14,6 +14,7 @@ public sealed partial class LifecycleContractTests
     [DataRow("compose-failure")]
     [DataRow("quiet-candidate-failure")]
     [DataRow("changed-candidate-hold")]
+    [DataRow("schema3-refused")]
     [DoNotParallelize]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task LeavePausedReview_ExactUpgradePreservesAdmissionAcrossFailureAndReplay(string scenario)
@@ -42,6 +43,26 @@ public sealed partial class LifecycleContractTests
         var original = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
         Assert.AreEqual(LifecycleOperationPhase.RecoveryAdmissionPreserved, original.Phase);
         Assert.IsNotNull(original.StateSnapshotRestoredUtc);
+        if (scenario == "schema3-refused")
+        {
+            var before = await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath);
+            var startsBefore = fixture.Runner.ComposeUpCount;
+            var stopsBefore = fixture.Runner.ComposeStopCount;
+            var invalid = request with { Resume = true, LeavePaused = true, RecoveryOperationId = original.OperationId };
+            var refusal = await Assert.ThrowsExactlyAsync<InstallerException>(() => RunAsync(invalid));
+            Assert.IsTrue(refusal.IsRefusal);
+            StringAssert.Contains(refusal.Message, "Leave-paused requires an already-restored interrupted upgrade", StringComparison.Ordinal);
+            await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.RecordAsync(fixture.Paths, original with
+            {
+                LeavePausedOriginalSnapshot = original.StateSnapshot,
+                LeavePausedOriginalRestorePlanId = original.StateSnapshot!.SnapshotId
+            }, CancellationToken.None));
+            CollectionAssert.AreEqual(before, await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath));
+            Assert.AreEqual(startsBefore, fixture.Runner.ComposeUpCount);
+            Assert.AreEqual(stopsBefore, fixture.Runner.ComposeStopCount);
+            Assert.IsEmpty(lifecycle.OwnedRequests);
+            return;
+        }
         var legacy = await CameraAgentLifecycleManager.RecordAsync(fixture.Paths, original with
         {
             SchemaVersion = 1,
