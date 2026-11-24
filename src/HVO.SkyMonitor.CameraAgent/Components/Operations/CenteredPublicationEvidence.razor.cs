@@ -51,14 +51,83 @@ public sealed partial class CenteredPublicationEvidence : SiteTimeComponent
             "runtime.no-centered-run" => "No centered acquisition run recorded",
             "runtime.journal-not-ready" => "Acquisition journal is initializing",
             "calendar-predecessor-unavailable" or "exposure-start-outside-tolerance" or "processing-deadline-expired" or
-            "invalid-window-checkpoint" or "window-capacity-exhausted" or "registration-deadline-expired" or
-            "registration.invalid-retained-evidence" or "registration.legacy-window-pins-unavailable" or
-            "registration.recipe-identity-mismatch" or "registration.reference-input-unavailable" or
-            "schedule-admission-interrupted" or "schedule.start-window-closed" or "window.input-custody-unavailable" or
-            "window.registration-pixel-limit" or "linear.calibration-master-evidence-missing" or "linear.exact-product-unavailable" or
-            "linear.explicit-no-correction" or "linear.no-configured-step" or "linear.original-provenance-mismatch" or
-            "linear.unqualified-output" or "linear.unsupported-or-unverified-layout" or "product.configured-output-not-retained" or
+            "invalid-window-checkpoint" or "window-capacity-exhausted" or "schedule-admission-interrupted" or
+            "schedule.start-window-closed" or "metering.source-evidence-unavailable" or "window.input-custody-unavailable" or
+            "window.registration-pixel-limit" => code,
+
+            "registration-deadline-expired" or "registration.failed" or "registration.invalid-retained-evidence" or
+            "registration.legacy-window-pins-unavailable" or "registration.recipe-identity-mismatch" or
+            "registration.reference-input-unavailable" or CenteredRegisteredStackRecipe.InvalidPlan or
+            CenteredRegisteredStackRecipe.ReferenceUnavailable or CenteredRegisteredStackRecipe.ResourceLimit or
+            CenteredRegisteredStackRecipe.RetainedInputsUnavailable => code,
+
+            "linear.calibration-master-evidence-missing" or "linear.exact-product-unavailable" or "linear.execution-expired" or
+            "linear.explicit-no-correction" or "linear.invalid-levels" or "linear.no-configured-step" or "linear.no-output" or
+            "linear.original-provenance-mismatch" or "linear.plan-did-not-produce" or "linear.unqualified-output" or
+            "linear.unsupported-or-unverified-layout" or FrameWhiteThreshold.OpaqueAdcReason or FrameWhiteThreshold.UnavailableReason or
+            "product.availability-visibility-unproven" or "product.configured-output-not-retained" or
             "product.retained-output-unavailable" or "product.settlement-identity-missing" => code,
+
+            // The retained linear disposition can carry the live execution or node's failure reason.
+            "processing.dependency-retry" or "processing.dependency-unavailable" or
+            "processing.evidence-expired" or "processing.evidence-invalid" or "processing.execution-terminal" or
+            "processing.live-deadline" or "processing.live-expired" or "processing.live-maximum-age" or
+            "processing.optional-degraded" or "processing.optional-exhausted" or "processing.output-unavailable" or
+            "processing.plan-superseded" or "processing.post-commit-incomplete" or "processing.retryable" or
+            "processing.skipped" or "processing.step-exception" or "processing.storage-policy-mismatch" or
+            "processing.storage-policy-mismatch-scene-unavailable" or "processing.terminal" => code,
+
+            ProcessingReasonCodes.ExecutionFailed or ProcessingReasonCodes.UnknownRecipe or ProcessingReasonCodes.InvalidOptions or
+            ProcessingReasonCodes.InvalidInput or ProcessingReasonCodes.InvalidSelector or ProcessingReasonCodes.MissingInput or
+            ProcessingReasonCodes.AmbiguousInput or ProcessingReasonCodes.UnsupportedFormat or ProcessingReasonCodes.InvalidLayout or
+            ProcessingReasonCodes.IncompatibleInput or ProcessingReasonCodes.InvalidLineage or ProcessingReasonCodes.MissingAnnotation or
+            ProcessingReasonCodes.InvalidAnnotation or ProcessingReasonCodes.MissingProjectedScene or ProcessingReasonCodes.InvalidProjectedScene or
+            ProcessingReasonCodes.ProjectedSceneSourceMismatch or ProcessingReasonCodes.ProjectedSceneDescriptorMismatch or
+            ProcessingReasonCodes.ProjectedSceneDimensionMismatch or ProcessingReasonCodes.UnsupportedMeasurementInput or
+            ProcessingReasonCodes.InvalidMeasuredStellarAssociations or ProcessingReasonCodes.MeasuredStellarAssociationsSourceMismatch or
+            ProcessingReasonCodes.EnvironmentAssociationPending => code,
+
+            ProcessingReasonCodes.MissingCalibrationProfile or ProcessingReasonCodes.MissingCalibrationReference or
+            ProcessingReasonCodes.AmbiguousCalibrationReference or ProcessingReasonCodes.InvalidCalibrationProfile or
+            ProcessingReasonCodes.StaleCalibrationProfile or ProcessingReasonCodes.CalibrationReferenceChecksumMismatch or
+            ProcessingReasonCodes.CalibrationReferenceLayoutMismatch or ProcessingReasonCodes.CalibrationReferenceConditionsMismatch or
+            ProcessingReasonCodes.InvalidCalibrationFlat or ProcessingReasonCodes.UnrepairableCalibrationDefect or
+            CalibrationLibraryReasonCodes.Missing or CalibrationLibraryReasonCodes.Inactive or CalibrationLibraryReasonCodes.Incomplete or
+            CalibrationLibraryReasonCodes.Corrupt or CalibrationLibraryReasonCodes.Stale or CalibrationLibraryReasonCodes.IncompatibleIdentity or
+            CalibrationLibraryReasonCodes.IncompatibleReadout or CalibrationLibraryReasonCodes.IncompatibleCodeSpace or
+            CalibrationLibraryReasonCodes.IncompatibleConditions or CalibrationLibraryReasonCodes.IncompatibleExposure => code,
+
+            "scene.frozen-input-unavailable" or "scene.frozen-prediction-input-unavailable" or
+            "association.exposure-or-scene-binding-mismatch" or "association.independent-prediction-producer-mismatch" or
+            "association.independent-prediction-unavailable" or "association.measurement-unavailable" or
+            "astrometry.capture-cadence" or "astrometry.catalog-lineage-mismatch" or "astrometry.catalog-selection-mismatch" or
+            "astrometry.centered-measurement-required" or "astrometry.crossed-scene-dependencies" or
+            "astrometry.frozen-evidence-invalid" or "astrometry.frozen-evidence-unavailable" or "astrometry.inputs-required" or
+            "astrometry.invalid-context" or "astrometry.invalid-input" or "astrometry.invalid-measured-input" or "astrometry.raw-required" or
+            "astrometry.scene-mismatch" or "astrometry.scene-time-calibration-mismatch" or "astrometry.source-lineage-mismatch" or
+            "astrometry.unsupported-measurement" => code,
+
+            CloudAssessmentReasonCodes.MissingClearReference or CloudAssessmentReasonCodes.IncompatibleClearReference or
+            CloudAssessmentReasonCodes.MissingCalibration or CloudAssessmentReasonCodes.InsufficientValidSupport or
+            CloudAssessmentReasonCodes.SaturationContamination or CloudAssessmentReasonCodes.PrecipitationContamination or
+            CloudAssessmentReasonCodes.Daylight or CloudAssessmentReasonCodes.Twilight or CloudAssessmentReasonCodes.EnvironmentMissing or
+            CloudAssessmentReasonCodes.EnvironmentStale or CloudAssessmentReasonCodes.EnvironmentContradictory => code,
+
+            ProcessingReasonCodes.InvalidCalibrationBias or ProcessingReasonCodes.InvalidCalibrationDark or
+            ProcessingReasonCodes.InvalidNormalizationPlan or ProcessingReasonCodes.MissingNormalizationPlan or
+            ProcessingReasonCodes.NormalizationPlanInputMismatch or ProcessingReasonCodes.NormalizationPrimaryExcluded or
+            ProcessingReasonCodes.OutputBackedWindow or "normalization.plan.no-active-family" or "normalization.plan.no-eligible-input" or
+            "normalization.plan.non-right-aligned-response" or "normalization.plan.window-incomplete" or
+            "calibration.family.activation.identity-mismatch" or "calibration.family.activation.acquisition-model-mismatch" or
+            CalibrationFamilyReasonCodes.InvalidFamily or CalibrationFamilyReasonCodes.IdentityMismatch or
+            CalibrationFamilyReasonCodes.MasterMissing or CalibrationFamilyReasonCodes.MasterUnpublished or
+            CalibrationFamilyReasonCodes.MasterMismatch or CalibrationFamilyReasonCodes.MasterStale or
+            CalibrationFamilyReasonCodes.MasterUnreadable or CalibrationFamilyReasonCodes.MasterCorrupt or
+            GainNormalizationReasonCodes.PhysicalResponseNotEnabled or GainNormalizationReasonCodes.UnsupportedResponseSource or
+            GainNormalizationReasonCodes.MissingResponse or GainNormalizationReasonCodes.InvalidResponse or
+            GainNormalizationReasonCodes.UnsupportedCodeMapping or GainNormalizationReasonCodes.InvalidCoefficient or
+            GainNormalizationReasonCodes.ProvenanceNotPermitted or GainNormalizationReasonCodes.ReferenceGainOutOfRange => code,
+
             _ => CameraAgentReplayUiService.Sanitize(value)
         };
     }

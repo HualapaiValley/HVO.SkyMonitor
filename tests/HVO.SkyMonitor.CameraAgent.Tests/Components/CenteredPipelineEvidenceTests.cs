@@ -80,12 +80,48 @@ public sealed class CenteredPipelineEvidenceTests
     [DataRow("linear.no-configured-step", "linear.no-configured-step")]
     [DataRow("calendar-predecessor-unavailable", "calendar-predecessor-unavailable")]
     [DataRow("centered.product-failed/var/lib/hvo/raw", "Source production failed")]
+    [DataRow("linear.not-a-real-producer-code", "Withheld")]
+    [DataRow("registration.resource-limit.extra", "Withheld")]
+    [DataRow("registration.unknown/var/lib/hvo/raw", "Withheld")]
     [DataRow("/var/lib/hvo/raw", "Withheld")]
     [DataRow("ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "Withheld")]
     [DataRow("Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.AAAAAAAAA", "Withheld")]
     [DataRow("password=test-credential-for-redaction", "Withheld")]
     public void PublicationReasonsPreserveKnownCodesAndWithholdSensitiveDetails(string value, string expected)
         => Assert.AreEqual(expected, CenteredPublicationEvidence.Reason(value));
+
+    [TestMethod]
+    [DataRow(CenteredRegisteredStackRecipe.ResourceLimit)]
+    [DataRow(CenteredRegisteredStackRecipe.InvalidPlan)]
+    [DataRow(CenteredRegisteredStackRecipe.ReferenceUnavailable)]
+    [DataRow(CenteredRegisteredStackRecipe.RetainedInputsUnavailable)]
+    [DataRow("registration.failed")]
+    [DataRow(ProcessingReasonCodes.ExecutionFailed)]
+    [DataRow(ProcessingReasonCodes.InvalidInput)]
+    [DataRow(ProcessingReasonCodes.InvalidLineage)]
+    [DataRow("processing.live-deadline")]
+    [DataRow("processing.live-maximum-age")]
+    [DataRow("processing.plan-superseded")]
+    [DataRow("processing.storage-policy-mismatch-scene-unavailable")]
+    [DataRow("metering.source-evidence-unavailable")]
+    [DataRow("linear.plan-did-not-produce")]
+    [DataRow("linear.execution-expired")]
+    [DataRow("linear.invalid-levels")]
+    [DataRow("linear.no-output")]
+    [DataRow(FrameWhiteThreshold.UnavailableReason)]
+    [DataRow(FrameWhiteThreshold.OpaqueAdcReason)]
+    [DataRow("product.availability-visibility-unproven")]
+    [DataRow(ProcessingReasonCodes.CalibrationReferenceConditionsMismatch)]
+    [DataRow(CalibrationLibraryReasonCodes.IncompatibleCodeSpace)]
+    [DataRow("astrometry.scene-time-calibration-mismatch")]
+    [DataRow(CloudAssessmentReasonCodes.InsufficientValidSupport)]
+    [DataRow("normalization.plan.non-right-aligned-response")]
+    [DataRow(GainNormalizationReasonCodes.PhysicalResponseNotEnabled)]
+    public void PublicationReasonsShowProducerCodeAndRemovePrivateDetail(string code)
+    {
+        Assert.AreEqual(code, CenteredPublicationEvidence.Reason(code));
+        Assert.AreEqual(code, CenteredPublicationEvidence.Reason($"{code}/var/lib/hvo/raw"));
+    }
 
     [TestMethod]
     public void LiveReadinessDistinguishesMissingProgressDisabledAndAssessedEmpty()
@@ -158,6 +194,17 @@ public sealed class CenteredPipelineEvidenceTests
         Assert.Contains("Unsettled", window.TextContent);
         Assert.Contains("Outside Run", window.TextContent);
 
+        var failed = startup with
+        {
+            IsTerminal = true,
+            EvidenceCutoffUtc = Start.AddSeconds(15),
+            FailureReason = CenteredRegisteredStackRecipe.ResourceLimit
+        };
+        cut.Render(parameters => parameters.Add(component => component.Snapshot, snapshot with { Window = failed }));
+        var failedWindow = cut.Find("[aria-label='Centered window']");
+        Assert.Contains("Registration failed", failedWindow.TextContent);
+        Assert.Contains(CenteredRegisteredStackRecipe.ResourceLimit, failedWindow.TextContent);
+
         var partial = View(reference, [captures[0], reference], [], captures[..5]);
         cut.Render(parameters => parameters.Add(component => component.Snapshot, snapshot with { Display = Current(partial), Window = null }));
         Assert.Contains("2/5 window slots contributed", cut.Markup);
@@ -210,7 +257,11 @@ public sealed class CenteredPipelineEvidenceTests
                     Kind = CenteredViewKind.Single,
                     ClosedWindow = null,
                     Window = null,
-                    Preview = view.Base.Definition.Preview with { Source = CenteredViewImageSource.RawFallback },
+                    Preview = view.Base.Definition.Preview with
+                    {
+                        Source = CenteredViewImageSource.RawFallback,
+                        QualificationReason = FrameWhiteThreshold.OpaqueAdcReason
+                    },
                     Contributors = [new(reference, nameof(CenteredRegistrationMethod.ReferenceIdentity), default)]
                 }
             },
@@ -219,6 +270,7 @@ public sealed class CenteredPipelineEvidenceTests
         using var context = new BunitContext();
         var cut = context.Render<CenteredPublicationEvidence>(parameters => parameters.Add(component => component.View, view));
         Assert.Contains("Raw Fallback", cut.Markup);
+        Assert.Contains(FrameWhiteThreshold.OpaqueAdcReason, cut.Find(".publication-facts").TextContent);
         Assert.Contains("Linear product unavailable", cut.Markup);
         Assert.DoesNotContain("Source to reference mapping", cut.Markup);
         Assert.IsNull(CenteredPipelinePublications.ExposureEndToPublication(view));
