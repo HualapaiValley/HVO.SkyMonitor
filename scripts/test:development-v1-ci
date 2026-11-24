@@ -200,6 +200,7 @@ queue_permissions = "permissions:\n  contents: read\n  pull-requests: read\n  st
 trusted_checkout = """        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: refs/heads/development/v1
+          fetch-depth: 0
           persist-credentials: false"""
 queue_execution = """        env:
           GH_TOKEN: ${{ github.token }}
@@ -356,7 +357,7 @@ def violations(short, full, queue=None, extra=None):
             "queue exact read-only permissions without job overrides")
     require(step(queue, "Checkout trusted development base").strip() == trusted_checkout.strip(),
             "queue trusted branch checkout with credentials disabled")
-    require(step(queue, "Require the reviewed-head status on the queued pull request head").strip() ==
+    require(step(queue, "Verify reviewed diffs and clean queue merges").strip() ==
             queue_execution.strip(), "queue exact environment and trusted-base execution")
     require(len(re.findall(r"^      - ", queue, re.M)) == 2 and
             re.findall(r"^  ([\w-]+):$", jobs_section(queue), re.M) == ["reviewed-head"],
@@ -714,6 +715,7 @@ queue_mutations = [
     ("job permissions override", queue_gate.replace("    runs-on:", "    permissions: write-all\n    runs-on:")),
     ("credentials persisted", queue_gate.replace("persist-credentials: false", "persist-credentials: true")),
     ("credential setting removed", queue_gate.replace("          persist-credentials: false\n", "")),
+    ("queue checkout shallow", queue_gate.replace("fetch-depth: 0", "fetch-depth: 1")),
     ("queued checkout", queue_gate.replace("ref: refs/heads/development/v1", "ref: ${{ github.event.merge_group.head_sha }}")),
     ("base_sha checkout", queue_gate.replace("ref: refs/heads/development/v1", "ref: ${{ github.event.merge_group.base_sha }}")),
     ("checkout failure ignored", queue_gate.replace("        with:", "        continue-on-error: true\n        with:")),
