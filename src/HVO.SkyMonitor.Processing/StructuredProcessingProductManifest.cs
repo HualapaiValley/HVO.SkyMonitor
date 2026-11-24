@@ -121,6 +121,7 @@ public static class StructuredProcessingProductContracts
             (MeasuredAstrometryJson.ContextMediaType, MeasuredAstrometryContextV1.CurrentSchemaVersion) => true,
             (MeasuredStellarAssociationsMediaType, MeasuredStellarAssociationsV1.CurrentSchemaVersion) => true,
             (ExposureMeasurementProducts.MediaType, ExposureMeasurementProducts.SchemaVersion) => true,
+            (MeasuredDeepSkyStackV1.MediaType, MeasuredDeepSkyStackV1.CurrentSchemaVersion) => true,
             (PresentationLayerPayloadJson.MediaType, PresentationLayerPayloadV1.CurrentSchemaVersion) => true,
             (PresentationLayerPayloadJson.MediaType, PresentationLayerPayloadV1.SceneStyleSchemaVersion) => true,
             (PresentationLayerPayloadJson.MediaType, PresentationLayerPayloadV1.RichTextSchemaVersion) => true,
@@ -149,7 +150,7 @@ public static class StructuredProcessingProductContracts
     public static bool IsSupportedMediaType(string mediaType)
         => mediaType is MeasuredAstrometryJson.MediaType or MeasuredAstrometryJson.ContextMediaType or ProjectedSceneMediaType or CloudAssessmentMediaType or MeasuredStellarAssociationsMediaType or
             PresentationLayerPayloadJson.MediaType or PresentationProcessingProducts.ManifestMediaType or
-            PresentationMetadataFactsProductV1.MediaType or ExposureMeasurementProducts.MediaType;
+            PresentationMetadataFactsProductV1.MediaType or ExposureMeasurementProducts.MediaType or MeasuredDeepSkyStackV1.MediaType;
 }
 
 /// <summary>Versioned envelope for ordinary outbox delivery of one structured product.</summary>

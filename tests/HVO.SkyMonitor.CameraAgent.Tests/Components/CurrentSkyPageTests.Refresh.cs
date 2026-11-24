@@ -499,7 +499,7 @@ public sealed partial class CurrentSkyPageTests
     }
 
     [TestMethod]
-    public async Task DeepSkyVisibilityIsIndependentOfStarAnnotations()
+    public async Task ExpectedAndMeasuredDeepSkyVisibilityAreIndependentOfStarAnnotations()
     {
         using var context = new BunitContext();
         var service = Configure(context);
@@ -509,8 +509,13 @@ public sealed partial class CurrentSkyPageTests
             var layers = Layered(id, new string('D', 64));
             return ValueTask.FromResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(layers with
             {
-                Layers = [layers.Layers[0], new(new string('E', 64), "scene-deep-sky", "hvo-layer-1", 22, true, 1_000_000, "renderer-v1", "style-v1")],
-                Svg = System.Text.Encoding.UTF8.GetBytes("""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 480"><g id="hvo-layer-0"></g><g id="hvo-layer-1"></g></svg>""")
+                Layers =
+                [
+                    layers.Layers[0],
+                    new(new string('E', 64), "scene-deep-sky", "hvo-layer-1", 22, true, 1_000_000, "renderer-v1", "style-v1"),
+                    new(new string('F', 64), "measured-deep-sky", "hvo-layer-2", 65, false, 1_000_000, "renderer-v1", "style-v1")
+                ],
+                Svg = System.Text.Encoding.UTF8.GetBytes("""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 480"><g id="hvo-layer-0"></g><g id="hvo-layer-1"></g><g id="hvo-layer-2"></g></svg>""")
             }));
         };
         var module = context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js");
@@ -519,16 +524,21 @@ public sealed partial class CurrentSkyPageTests
         module.SetupVoid("writeLayerVisibility", _ => true).SetVoidResult();
         var cut = context.Render<CurrentSkyPage>();
         cut.WaitForAssertion(() => Assert.IsFalse(cut.Find(".restore-layers").HasAttribute("disabled")));
+        Assert.IsFalse(cut.Find("input[data-layer-target='hvo-layer-2']").HasAttribute("checked"));
         await cut.Find("input[data-layer-target='hvo-layer-1']").ChangeAsync(false).ConfigureAwait(false);
+        await cut.Find("input[data-layer-target='hvo-layer-2']").ChangeAsync(true).ConfigureAwait(false);
         Assert.IsTrue(cut.Find("input[data-layer-target='hvo-layer-0']").HasAttribute("checked"));
+        Assert.IsFalse(cut.Find("input[data-layer-target='hvo-layer-1']").HasAttribute("checked"));
+        Assert.IsTrue(cut.Find("input[data-layer-target='hvo-layer-2']").HasAttribute("checked"));
         StringAssert.Contains(cut.Markup, "Deep-sky catalog", StringComparison.Ordinal);
         StringAssert.Contains(cut.Markup, "not measured associations", StringComparison.Ordinal);
         cut.WaitForAssertion(() =>
         {
-            var arguments = module.Invocations["writeLayerVisibility"].Single().Arguments;
+            var arguments = module.Invocations["writeLayerVisibility"][^1].Arguments;
             Assert.AreEqual(LayerVisibilityKey, arguments[0]);
             using var saved = System.Text.Json.JsonDocument.Parse((string)arguments[1]!);
             Assert.IsFalse(saved.RootElement.GetProperty("scene-deep-sky").GetBoolean());
+            Assert.IsTrue(saved.RootElement.GetProperty("measured-deep-sky").GetBoolean());
             Assert.IsTrue(saved.RootElement.GetProperty("scene-annotation").GetBoolean());
         });
     }

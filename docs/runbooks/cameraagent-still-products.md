@@ -6,6 +6,29 @@ neutral; CameraAgent owns source admission, publication, catalog and automation
 adoption. Video encoding, custom scripts, the general wizard and archive page
 adoption retain their separate issues.
 
+## Optional measured deep-sky assessment
+
+For centered capture, enable **Assess measured deep sky on centered stacks** in
+the active pipeline's **Projected scene query** settings. This setting defaults
+to off. Admission freezes the graph selection and the installed OpenNGC snapshot
+identity for the run. Profile changes affect subsequent admissions. Each retained
+assessment identifies its catalog, frozen stack and analysis recipe.
+
+On startup, assessment follows recent and new revisions and checks older
+revisions in separate bounded pages. It settles previously admitted work against
+its original run. A missing snapshot at admission or incompatible retained input
+has an explicit disposition. Archive views and their saved layer selections stay
+available by revision.
+
+The expected OpenNGC layer is separately selectable. A measured control appears
+on the stack revision only when a qualified identification fits the preview.
+The exact revision exposes the assessment artifact under the measured layer's
+evidence pin. Use the artifact content endpoint to inspect a retained result,
+including explicit insufficient evidence and assessed-empty dispositions.
+Absolute association needs an independently accepted map on the actual reference
+exposure. The default astrometry stride attempts a fit on every 60th capture,
+so many references have no accepted map.
+
 ## Source configuration and preset identity
 
 The configured `Preview` graph alias can produce an absolute fixed transfer:
