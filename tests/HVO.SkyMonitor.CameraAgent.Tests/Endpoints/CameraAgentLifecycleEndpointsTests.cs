@@ -220,7 +220,7 @@ public sealed class CameraAgentLifecycleEndpointsTests
             {
                 if (committed)
                 {
-                    var disposition = await client.SettleCommittedOwnedUpgradeAsync(
+                    var disposition = await client.TryResumeOwnedUpgradeAsync(
                         operationId, pauseCommandId, commandId, 2, "exact-token", cancellationToken).ConfigureAwait(false);
                     Assert.IsTrue(disposition.Supported);
                     Assert.IsNull(disposition.Receipt);
@@ -243,7 +243,7 @@ public sealed class CameraAgentLifecycleEndpointsTests
             {
                 if (committed)
                 {
-                    var disposition = await transport.SettleCommittedOwnedUpgradeAsync(
+                    var disposition = await transport.TryResumeOwnedUpgradeAsync(
                         operationId, pauseCommandId, id, 2, token, cancellationToken).ConfigureAwait(false);
                     return disposition.Receipt ?? throw new AssertFailedException("Expected the committed resume receipt.");
                 }
@@ -277,7 +277,7 @@ public sealed class CameraAgentLifecycleEndpointsTests
             await ResumeAsync(client, commandId, "exact-token").ConfigureAwait(false);
             if (committed)
             {
-                var differentRequest = await client.SettleCommittedOwnedUpgradeAsync(operationId, pauseCommandId, Guid.NewGuid(),
+                var differentRequest = await client.TryResumeOwnedUpgradeAsync(operationId, pauseCommandId, Guid.NewGuid(),
                     2, "exact-token", cancellationToken).ConfigureAwait(false);
                 Assert.IsTrue(differentRequest.Supported);
                 Assert.IsNull(differentRequest.Receipt);

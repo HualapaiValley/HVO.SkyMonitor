@@ -2884,9 +2884,9 @@ authorized recovery. The stock installer refuses the in-flight journal.
 
 After a quiet failure, the successor verifies the predecessor, the available
 checkpoints, Fleet absence and current admission. It records terminal
-`restored-predecessor-admission-preserved` with no admission command. Ordinary
-lifecycle operations can proceed, and the owner can change capture admission
-using the predecessor's usual controls. If predecessor startup or verification
+`restored-predecessor-admission-preserved` with no admission command. Use the
+compatible successor installer for later lifecycle operations and the
+predecessor's ordinary owner controls for capture admission. If startup or verification
 was interrupted after the restart was recorded, rerun the exact successor
 `--resume --leave-paused` request to finish verification and settlement. An exact
 replay of terminal failure reports the current admission without retrying the
@@ -3044,9 +3044,9 @@ settles as `restored-predecessor-admission-preserved-unsupported-atomic-resume`.
 The owner can use ordinary capture controls on the paused predecessor. A pause
 that was never established or was superseded by an owner command settles as
 `restored-predecessor-admission-preserved`, keeping the current admission.
-Both dispositions are terminal and allow later lifecycle commands. Authentication,
-transport or incomplete verification leaves settlement pending for the exact
-request and installer.
+Both dispositions are terminal and allow later lifecycle commands with the
+compatible successor installer. Authentication, transport or incomplete
+verification leaves settlement pending for the exact request and installer.
 
 The protected installation-verification GET used by both the pre-mutation owner
 state read and full installation identity verification has one finite **120-second
