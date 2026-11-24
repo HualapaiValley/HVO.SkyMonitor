@@ -38,6 +38,10 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - CameraAgent capture processing checks the shared journal's integrity and foreign keys once per startup instead of three times, so processing and the Current Sky plate solution become available sooner after a restart with a long retained history. #1914
 
+### Removed
+
+- Full qualification drops the retired LogicHost and combined jobs and stops publishing LogicHost artifacts. Required CI reports the result of the active checks. #2049
+
 ### Fixed
 
 - CameraAgent rejects capture journal integrity damage committed between schema inspection and writable startup validation, preserving the journal and its write-ahead log on rejection. #2005
