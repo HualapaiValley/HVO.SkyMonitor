@@ -12,7 +12,8 @@ internal enum CaptureProcessingFaultPoint
     AfterAstrometryAssessmentLookup,
     AfterArchiveCopyStaged,
     AfterArchiveCopyCommittedBeforeReceipt,
-    BeforeDatabaseValidation
+    BeforeDatabaseValidation,
+    AfterCenteredViewPruneBatchCommit
 }
 
 internal interface ICaptureProcessingFaultInjector
