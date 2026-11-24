@@ -70,7 +70,7 @@ internal sealed partial class SqliteCaptureProcessingStore
     {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = CenteredViewSchemaSql + "\n" + CenteredViewRuntimeSchemaSql;
+        command.CommandText = CenteredViewSchemaSql + "\n" + CenteredViewRuntimeSchemaSql + "\n" + CenteredViewRetentionSchema.IndexSql;
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -79,7 +79,7 @@ internal sealed partial class SqliteCaptureProcessingStore
     {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = CenteredViewRuntimeSchemaSql;
+        command.CommandText = CenteredViewRuntimeSchemaSql + "\n" + CenteredViewRetentionSchema.IndexSql;
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 

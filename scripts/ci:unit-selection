@@ -2,13 +2,13 @@
 set -euo pipefail
 
 # Prove the full-qualification Unit job lists every test project that owns Unit
-# cases (issue #1255), plus the four supplemental component selections (#1261).
+# cases (issue #1255), plus the two supplemental component selections (#1261).
 #
 # Bounded guarantee: for each inventory-derived Unit-bearing project, the full
 # `unit` job holds exactly one supported selecting command, whose arguments and
 # report boundaries (positive filter, TRX slot, coverage and Docker endpoint) are
 # checked, in a step of a closed grammar, ahead of the evidence bind and upload.
-# Component checks use that grammar for the four explicitly named supplemental
+# Component checks use that grammar for the two explicitly named supplemental
 # commands, with the same strict TRX-only arguments and their own build roots.
 # It is not proof of arbitrary shell execution, of whole-job artifact membership
 # or publication, of installed catalog availability, or of checkout trust: those
@@ -34,7 +34,7 @@ set -euo pipefail
 #
 # Every selecting command must sit in a step that always runs: an `if:` or
 # `continue-on-error:` on its step would let the list stay complete while the
-# selection never executes. Component checks below cover only their four named
+# selection never executes. Component checks below cover only their two named
 # supplemental selecting commands and the corresponding component build roots.
 #
 # Usage: scripts/ci:unit-selection [--workflow <path>] [--tests-root <dir>] [--component-build <path>]

@@ -443,7 +443,8 @@ The positive Unit filter must pass with an invalid Docker endpoint. Integration
 is a separate required gate and requires Docker for the Testcontainers
 assemblies. Both selections apply the
 [LogicHost retirement contract](../runbooks/ci-pipeline.md#logichost-test-retirement).
-This complete block is the tier C/M local candidate gate. Tier A/B uses its recorded focused/affected local evidence
+This complete block is the tier C/M local candidate gate, not the
+default inner loop. Tier A/B uses its recorded focused/affected local evidence
 and relies on the target branch's protected CI before merge. Follow the correction
 rules in section 4 after review feedback.
 

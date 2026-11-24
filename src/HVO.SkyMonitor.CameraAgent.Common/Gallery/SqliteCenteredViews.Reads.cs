@@ -75,8 +75,8 @@ internal sealed partial class SqliteCenteredViews
                  WHERE r.base_id = b.base_id ORDER BY change_order LIMIT 1),
                 (SELECT revision_id FROM processing_centered_view_revisions r
                  WHERE r.base_id = b.base_id ORDER BY change_order DESC LIMIT 1),
-                (SELECT revision_id FROM processing_centered_view_intervals i
-                 WHERE i.base_id = b.base_id ORDER BY started_order DESC LIMIT 1)
+                (SELECT revision_id FROM processing_centered_view_changes c
+                 WHERE c.base_id = b.base_id AND c.selected_live = 1 ORDER BY change_order DESC LIMIT 1)
             FROM processing_centered_view_bases b
             WHERE b.reference_id = $reference AND ($stream IS NULL OR b.stream_id = $stream)
             ORDER BY b.kind, b.recomputed_from IS NOT NULL, b.registered_utc, b.base_id;

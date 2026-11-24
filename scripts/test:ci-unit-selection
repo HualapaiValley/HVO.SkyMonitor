@@ -333,4 +333,4 @@ for component in shared cameraagent logichost combined delivery; do
   cmp "$scratch/expected" "$scratch/actual"
 done
 
-printf 'CI Unit selection contract passed (full job, four supplemental component selections/build roots, 2 multiline key controls, clean export absence, and 17 input-inspection failure controls).\n'
+printf 'CI Unit selection contract passed (full job, two supplemental component selections/build roots, 2 multiline key controls, clean export absence, and 17 input-inspection failure controls).\n'
