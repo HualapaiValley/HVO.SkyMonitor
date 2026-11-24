@@ -260,11 +260,11 @@ public sealed class CenteredPipelineEvidenceTests
             [new(producer, CaptureSatelliteLayerProcessingStep.Alias, "1", ProcessingOperationKind.Transform, true,
                 ProcessingGraphNodeFailurePolicy.Optional, 0, JsonSerializer.SerializeToElement(new { }), [], [], [output], null, [], [])]);
         var pipeline = CapturePipelineConfig.Empty;
+        var pipelineJson = JsonSerializer.SerializeToUtf8Bytes(CaptureContractJson.SerializeToElement(pipeline));
         var revision = new ProcessingGraphRevisionSnapshot(
             new(Stream.GenerationId, graph.Name, graph.Revision, ProcessingGraphRevisionLifecycle.Validated,
                 ProcessingGraphJson.ComputeDefinitionIdentity(graph), Checksum, Checksum, Start, Start, null, null),
-            pipeline, JsonSerializer.SerializeToUtf8Bytes(pipeline, JsonSerializerOptions.Web), ProcessingGraphJson.SerializeCanonical(graph),
-            "{}"u8.ToArray(), []);
+            pipeline, pipelineJson, ProcessingGraphJson.SerializeCanonical(graph), "{}"u8.ToArray(), []);
         var token = TestContext.CancellationToken;
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-centered-layer-progress");
         try
