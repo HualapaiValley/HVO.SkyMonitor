@@ -12,7 +12,7 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
-public sealed class ReleaseManifestTests
+public sealed partial class ReleaseManifestTests
 {
     private const string ArchiveName = "skymonitor-cameraagent-1.2.0-linux-arm64.oci.tar";
     private const string ImageName = ReleaseManifest.CameraAgentImageName;

@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- `hvo-sky-install cameraagent install --storage-layout silo` installs a new CameraAgent instance with a pinned stock Silo store on local ext4. The store is private to the instance and bound to it, and capture starts paused until `hvo-sky-install cameraagent first-resume` releases it once the install has completed. The interactive wizard does not ask for the Silo layout; give its options on the command line. `cameraagent silo-verify` checks the store, data-root headroom and the optional archive read-only and reports `ready`, `degraded` or `not-ready`. Other lifecycle commands refuse such an instance. `release.json` names the pinned upstream Silo image as `images.silo`. An offline host stages it with `--silo-image-archive`, verified before loading, and `--silo-archive-*` verifies an optional archive store over HTTPS. See `docs/runbooks/cameraagent-silo-runtime.md`. #1966
+
 - The centered registration recipe aligns calibrated monochrome and linear RGB exposures on the center capture and records which exposures contributed to each pixel. #1169
 
 - Centered CameraAgent pipeline runs show per-exposure brightness, stellar centroids, and half-flux diameter in Operations. #1920

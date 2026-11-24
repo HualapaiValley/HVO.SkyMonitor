@@ -294,8 +294,8 @@ A green sync PR is integration evidence and does not replace promotion qualifica
 | **Quality** | The full-history [secret scan](#secret-scan), workflow lint, syntax and documentation audits, the Unit-selection completeness control, lightweight environment/classification contracts, and Compose validation run in every selected Quality job. Full mode also enforces formatting, package vulnerability/deprecation policy, and pinned .NET tools; manual dispatch additionally validates the historical Phase 14 acceptance inventory. Reduced mode does not restore or audit application packages it cannot affect. A 45-minute qualification job budget covers formatting, the complete control-contract batch, package audit and the manual historical acceptance gate. |
 | **Deployment Contracts** | Deployment-relevant pull requests run the coordinator watchdog/failure contracts and current campaign-shape contracts, plus only the affected exhaustive catalog, split-host, or installer suite selected by the classifier. Main/release/manual runs execute every exhaustive suite. Otherwise its planned `skipped` result is required. |
 | **Build** | Warning-clean solution Debug and Release builds plus complete, disjoint behavioral category discovery. Never component-scoped, so no component plan can hide a warning or a category-count drift. Skipped only in classified reduced mode. |
-| **Unit Tests** | 16608 Unit cases across 17 active assemblies with an intentionally invalid Docker endpoint. Two [supplemental Unit selections](#supplemental-unit-selections) write TRX only. The complete solution plan runs this job. Component plans run the selections in their active lanes. A 45-minute full-qualification job budget covers restore/build, the serial test/coverage selections and evidence upload. |
-| **Integration Tests** | 916 Integration-category cases in the active inventory, including the 7 repository graph/provider-boundary/publish cases in Architecture & Publish. The complete solution plan runs the other 909 cases across Astronomy and three CameraAgent assemblies. The Integration step attempts all four assemblies and reports failure if any fail. |
+| **Unit Tests** | 17055 Unit cases across 17 active assemblies with an intentionally invalid Docker endpoint. Two [supplemental Unit selections](#supplemental-unit-selections) write TRX only. The complete solution plan runs this job. Component plans run the selections in their active lanes. A 45-minute full-qualification job budget covers restore/build, the serial test/coverage selections and evidence upload. |
+| **Integration Tests** | 918 Integration-category cases in the active inventory, including the 7 repository graph/provider-boundary/publish cases in Architecture & Publish. The complete solution plan runs the other 911 cases across Astronomy and three CameraAgent assemblies. The Integration step attempts all four assemblies and reports failure if any fail. |
 | **Architecture & Publish** | Both category selections of the architecture project cover the 34 Unit-category boundary cases, including the host `Dockerfile`, fault-matrix discovery, and CameraAgent event-ID uniqueness contracts, and the 7 Integration-category repository graph/provider-boundary/MSBuild/publish cases. Retains SHA-256 publish manifests for CameraAgent and for both runners and the installer on Linux x64 and ARM64. Runs for every full-mode head. |
 | **CameraAgent Migrations** | Exactly one canonical initial migration source for CameraAgent Identity plus zero pending CameraAgent EF model changes, built from the CameraAgent project root. Runs for every full-mode head. |
 | **Coverage Policy** | Schema validation of every aggregate and component coverage baseline plus rejection of any pull request that lowers a baseline rate, raises its tolerance, or drops a baseline file floor relative to the merge target. Runs for every full-mode head. |
@@ -873,7 +873,7 @@ maintained in [`cameraagent-arm64-ci.md`](cameraagent-arm64-ci.md).
 
 ## Categories
 
-The category audit requires every discovered case to belong to exactly one primary behavioral category. Current declared inventory is `Unit=16608`, `Integration=916`, `Manual=274`, `Soak=1`, `External=0`, `Hardware=1`, and `Performance=49`. Whole-solution discovery verifies those declarations.
+The category audit requires every discovered case to belong to exactly one primary behavioral category. Current declared inventory is `Unit=17055`, `Integration=918`, `Manual=274`, `Soak=1`, `External=0`, `Hardware=1`, and `Performance=49`. Whole-solution discovery verifies those declarations.
 
 `./scripts/docs:audit-operations` sums the per-project inventories and checks this section and the Unit/Integration rows in [Required Checks](#required-checks). The Build check compares those inventories with actual discovery. Each project owns its counts in `tests/<project>/test-categories.json`, a flat object with seven required keys and non-negative integers. A count change in the owning project directory selects that project's component lane. Editing the category audit engine selects the complete solution matrix. The audit rejects missing, orphaned, malformed, duplicate, unknown, and stale entries. Update the owning inventory and this runbook together.
 
@@ -894,13 +894,14 @@ Build and Unit and the standard local Unit selection use
 ### Raspberry Pi 5 performance
 
 `.github/workflows/performance-pi5.yml` runs on pushes to `development/v1`,
-nightly at 09:17 UTC, and when manually dispatched on `development/v1`. It uses
-`[self-hosted, linux, ARM64, hvo-skymonitor-arm64]` and verifies that the runner
-is a native ARM64 Raspberry Pi 5 before collecting samples. This advisory job
-runs independently of Required CI, pull-request checks, and the merge queue.
+nightly at 09:00 UTC, and when manually dispatched on `development/v1`. It uses
+`[self-hosted, linux, arm64, pi5, hvo-skymonitor-arm64]` and verifies that the runner
+is a native ARM64 Raspberry Pi 5 before collecting samples. The advisory job
+has a 30-minute budget and runs independently of Required CI, pull-request
+checks, and the merge queue.
 
-The job uses the .NET SDK in `global.json` and runs the inventory-bearing
-projects serially, selecting only `TestCategory=Performance`. It runs three
+The job pins .NET SDK `10.0.402` in setup-dotnet and `global.json` and runs the
+inventory-bearing projects serially, selecting only `TestCategory=Performance`. It runs three
 Release trials per project and takes the median TRX duration for each case.
 Every trial must pass the declared number of cases with the same identities.
 A failed, skipped, missing, or duplicated case fails the measurement.
@@ -912,16 +913,17 @@ the first clean Pi measurement. A failing run leaves the full previous history
 in place. The comparison artifact records per-case timings and the decision
 for 30 days. Raw TRX and test logs stay in the runner's temporary workspace.
 
-The workflow serializes baseline updates and saves a new immutable GitHub
+New Pi performance runs cancel older runs on the same ref under
+`skymonitor-perf-${{ github.ref }}`. Native CameraAgent Evidence uses its own
+concurrency group and queues independently on the Pi. The workflow saves a new immutable GitHub
 Actions cache entry under `skymonitor-development-v1-pi5-performance-v1-` for
 each accepted run attempt. It restores the newest matching entry on
 `development/v1` and verifies each save by exact key. If the cache is empty or
 has been evicted, the next clean Pi run seeds it. To recalibrate after a runner,
 SDK, or intentional workload change, dispatch **SkyMonitor Pi 5 Performance**
 on `development/v1` with `reset_baseline` enabled. A successful reset becomes
-the newest baseline. Use a quiet Pi and inspect the next scheduled comparisons
-to confirm the new calibration. Local runs confirm execution and do not feed the
-cache.
+the newest baseline. The next scheduled comparisons use that calibration.
+Local runs confirm execution and leave the GitHub cache alone.
 
 To reproduce the category with a warning-clean Release build already available,
 choose a fresh private results directory in `scratch` and run:
@@ -931,6 +933,10 @@ flock --close /tmp/hvo-heavy-gate.lock python3 scripts/ci/pi5_performance.py \
   "$scratch/raw" "$scratch/baseline.json" "$scratch/comparison.json" --no-build
 python3 -B scripts/ci/test_pi5_performance.py
 ```
+
+Phase 2 plans to shard `CameraAgent.Tests` into two or three jobs on
+`hvo-skymonitor-build` after Phase 1 merges and the third runner in that
+pool returns to service.
 
 ## LogicHost test retirement
 

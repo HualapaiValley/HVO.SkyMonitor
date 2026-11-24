@@ -672,6 +672,9 @@ public sealed class CameraAgentLifecycleClientTests
         // rather than a capture-control version.
         Assert.AreNotEqual(operationId, commandId);
         Assert.AreNotEqual(Guid.Empty, commandId);
+        // Every command also names its operation as the stable pause owner (#1966), so a first-boot-profile
+        // CameraAgent lets the operation's resume lift exactly the pause that operation placed.
+        Assert.AreEqual(operationId, payload.RootElement.GetProperty("ownerOperationId").GetGuid());
         Assert.IsFalse(payload.RootElement.TryGetProperty("expectedVersion", out _));
         StringAssert.Contains(payload.RootElement.GetProperty("reason").GetString(), operationId.ToString("D"), StringComparison.Ordinal);
         return commandId;

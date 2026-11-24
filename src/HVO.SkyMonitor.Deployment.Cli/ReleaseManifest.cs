@@ -87,6 +87,15 @@ internal sealed partial record ReleaseManifest(string Version, IReadOnlyList<Upg
     /// <summary>The central image, populated only by the explicit LogicHost reader.</summary>
     public ReleaseImage? LogicHost { get; init; }
 
+    /// <summary>
+    /// Whether the release names a stock Silo image (<c>images.silo</c>, #1966), and whether that entry is exactly the pin
+    /// this installer qualifies (<see cref="SiloImagePin"/>). Reading never fails on the entry, so an installer reads a
+    /// later release that pins another Silo; only a Silo-layout install acts on the answer.
+    /// </summary>
+    public bool NamesSiloImage { get; init; }
+
+    public bool SiloImageMatchesPin { get; init; }
+
     /// <summary>The release's files besides release.json and SHA256SUMS, each with its size and SHA-256.</summary>
     public IReadOnlyList<ReleaseAsset> Assets { get; init; } = [];
 
@@ -178,6 +187,10 @@ internal sealed partial record ReleaseManifest(string Version, IReadOnlyList<Upg
             }
             var assets = ReadAssets(root);
             var image = ReadComponentImage(root, version, assets, imageKey, imageName);
+            var silo = root.TryGetProperty("images", out var allImages) && allImages.ValueKind == JsonValueKind.Object &&
+                       allImages.TryGetProperty(SiloImagePin.ImageKey, out var siloEntry)
+                ? siloEntry
+                : (JsonElement?)null;
             return new ReleaseManifest(version, ReadUpgradeNotes(root))
             {
                 Tag = $"v{version}",
@@ -186,6 +199,8 @@ internal sealed partial record ReleaseManifest(string Version, IReadOnlyList<Upg
                 Created = created,
                 CameraAgent = imageKey == CameraAgentImageKey ? image : null,
                 LogicHost = imageKey == LogicHostImageKey ? image : null,
+                NamesSiloImage = silo is not null,
+                SiloImageMatchesPin = silo is { } entry && SiloImagePin.Matches(entry),
                 Assets = assets
             };
         }

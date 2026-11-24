@@ -1415,11 +1415,15 @@ def pi5_contract(workflow):
     return (
         set(triggers) == {"push", "schedule", "workflow_dispatch"}
         and triggers["push"] == {"branches": ["development/v1"]}
-        and len(triggers["schedule"]) == 1
-        and re.fullmatch(r"\d{1,2} \d{1,2} \* \* \*", triggers["schedule"][0]["cron"]) is not None
+        and triggers["schedule"] == [{"cron": "0 9 * * *"}]
+        and config["concurrency"] == {"group": "skymonitor-perf-${{ github.ref }}", "cancel-in-progress": "true"}
         and set(config["jobs"]) == {"performance"}
         and performance["if"] == "github.ref == 'refs/heads/development/v1'"
-        and performance["runs-on"] == ["self-hosted", "linux", "ARM64", "hvo-skymonitor-arm64"]
+        and performance["runs-on"] == ["self-hosted", "linux", "arm64", "pi5", "hvo-skymonitor-arm64"]
+        and performance["timeout-minutes"] == "30"
+        and steps["Setup .NET from global.json"]["with"] == {
+            "dotnet-version": "10.0.402", "global-json-file": "global.json"
+        }
         and "needs" not in performance and "continue-on-error" not in performance
         and "ci/pi5_performance.py" in run["run"]
         and "continue-on-error" not in run and "if" not in run
@@ -1434,13 +1438,19 @@ for original, replacement in (
     ("on:\n", "on:\n  pull_request:\n"),
     ("on:\n", "on:\n  merge_group:\n"),
     ("development/v1]", "main]"),
+    ("0 9 * * *", "17 9 * * *"),
+    ("skymonitor-perf-", "cameraagent-arm64-advisory-"),
+    ("cancel-in-progress: true", "cancel-in-progress: false"),
+    ("timeout-minutes: 30", "timeout-minutes: 45"),
+    ("10.0.402", "10.0.403"),
+    ("arm64, pi5,", "arm64,"),
     ("hvo-skymonitor-arm64", "hvo-skymonitor"),
     ("- name: Run and compare Performance cases", "- name: Run and compare Performance cases\n        continue-on-error: true"),
     ("- name: Save accepted Pi baseline", "- name: Save accepted Pi baseline\n        if: always()"),
 ):
     if pi5_contract(pi5.replace(original, replacement, 1)):
         raise SystemExit(f"Pi 5 Performance mutation passed: {replacement}")
-print("Pi 5 Performance workflow contract and six mutation controls passed.")
+print("Pi 5 Performance workflow contract and 12 mutation controls passed.")
 PY
 
 # Keep the cheap image and runtime-directory fixtures on the Preflight contract path.
