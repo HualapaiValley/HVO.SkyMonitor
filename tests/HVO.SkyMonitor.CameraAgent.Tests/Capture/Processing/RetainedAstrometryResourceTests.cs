@@ -9,6 +9,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.Processing.Tests;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
@@ -33,7 +34,8 @@ public sealed partial class DurableCaptureProcessingTests
             {
                 var root = Path.Combine(evidenceRoot, $"{(enabled ? "enabled" : "baseline")}-{index}");
                 Directory.CreateDirectory(root);
-                var f = await CreateAstrometryDurabilityFixtureAsync(root).ConfigureAwait(false);
+                var f = await CreateAstrometryDurabilityFixtureAsync(root, recipe: MeasuredAstrometryFixture.PerformanceOptions)
+                    .ConfigureAwait(false);
                 using var telemetry = new CaptureProcessingTelemetry();
                 using var store = new SqliteCaptureProcessingStore(f.Fixture.Options);
                 using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);

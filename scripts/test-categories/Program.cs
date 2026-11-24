@@ -9,7 +9,7 @@ using System.Text.RegularExpressions;
 // tests/ and compares every actual case against every inventory, so ownership moved without any
 // narrowing of what is audited: a missing, malformed, duplicate, unknown, or stale inventory fails.
 var root = FindRepositoryRoot();
-var categories = new[] { "Unit", "Integration", "Manual", "Soak", "External", "Hardware" };
+var categories = new[] { "Unit", "Integration", "Manual", "Soak", "External", "Hardware", "Performance" };
 var failures = new List<string>();
 var expected = LoadInventories(root, categories, failures);
 

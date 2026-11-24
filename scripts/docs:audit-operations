@@ -286,20 +286,21 @@ fi
 # The runbook's category totals are derived from the per-project category
 # inventories rather than pinned as literals, so editing an inventory without the
 # runbook fails here. Each test project owns tests/<project>/test-categories.json
-# (#853): a flat JSON object with exactly the six known categories, each a
+# (#853): a flat JSON object with exactly the seven known categories, each a
 # non-negative integer. The audit engine validates the same shape against real
 # discovery; this reads the same files so the two totals cannot disagree.
 architecture_project=tests/HVO.SkyMonitor.Architecture.Tests/HVO.SkyMonitor.Architecture.Tests.csproj
 architecture_inventory="$(dirname "$architecture_project")/test-categories.json"
 category_rows=0
 category_unit=0; category_integration=0; category_manual=0; category_soak=0; category_external=0; category_hardware=0
+category_performance=0
 active_unit_projects=0
 architecture_unit=0; architecture_integration=0
 while IFS= read -r inventory; do
     [[ -n "$inventory" ]] || continue
     if ! jq --exit-status '
         type == "object"
-        and (keys | sort) == ["External", "Hardware", "Integration", "Manual", "Soak", "Unit"]
+        and (keys | sort) == ["External", "Hardware", "Integration", "Manual", "Performance", "Soak", "Unit"]
         and all(.[]; type == "number" and . == floor and . >= 0)' "$inventory" > /dev/null 2>&1; then
         printf 'Malformed category inventory: %s\n' "$inventory" >&2
         exit 1
@@ -307,8 +308,8 @@ while IFS= read -r inventory; do
     # jq collapses a duplicated key to its last value at parse time, so neither
     # `keys` nor `tostream` can see the duplicate the audit engine rejects. Only
     # the parser-level `--stream` mode emits one leaf event per key occurrence in
-    # the source text, so counting those against the six distinct keys catches it.
-    if [[ "$(jq --stream -c 'select(length == 2) | .[0][0]' "$inventory" | wc -l)" -ne 6 ]]; then
+    # the source text, so counting those against the seven distinct keys catches it.
+    if [[ "$(jq --stream -c 'select(length == 2) | .[0][0]' "$inventory" | wc -l)" -ne 7 ]]; then
         printf 'Duplicate category key in inventory: %s\n' "$inventory" >&2
         exit 1
     fi
@@ -316,11 +317,12 @@ while IFS= read -r inventory; do
         printf 'Category inventory has no test project beside it: %s\n' "$inventory" >&2
         exit 1
     fi
-    read -r unit integration manual soak external hardware < <(jq -r '[.Unit, .Integration, .Manual, .Soak, .External, .Hardware] | @sh' "$inventory" | tr -d "'")
+    read -r unit integration manual soak external hardware performance < <(jq -r '[.Unit, .Integration, .Manual, .Soak, .External, .Hardware, .Performance] | @sh' "$inventory" | tr -d "'")
     category_rows=$((category_rows + 1))
     category_unit=$((category_unit + unit)); category_integration=$((category_integration + integration))
     category_manual=$((category_manual + manual)); category_soak=$((category_soak + soak))
     category_external=$((category_external + external)); category_hardware=$((category_hardware + hardware))
+    category_performance=$((category_performance + performance))
     if ((unit > 0)); then
         active_unit_projects=$((active_unit_projects + 1))
     fi
@@ -342,8 +344,7 @@ while IFS= read -r csproj; do
         exit 1
     fi
 done < <(find tests -name '*.csproj' -not -path '*/bin/*' -not -path '*/obj/*' | sort)
-category_totals="$category_rows $category_unit $category_integration $category_manual $category_soak $category_external $category_hardware $architecture_unit $architecture_integration"
-read -r category_rows category_unit category_integration category_manual category_soak category_external category_hardware architecture_unit architecture_integration <<< "$category_totals"
+category_totals="$category_rows $category_unit $category_integration $category_manual $category_soak $category_external $category_hardware $category_performance $architecture_unit $architecture_integration"
 if [[ ! "$category_rows" =~ ^[1-9][0-9]*$ || ! "$category_unit" =~ ^[1-9][0-9]*$ || ! "$category_integration" =~ ^[1-9][0-9]*$ ||
       ! "$architecture_unit" =~ ^[1-9][0-9]*$ || ! "$architecture_integration" =~ ^[1-9][0-9]*$ ]]; then
     printf 'Derived implausible test category totals from the category inventories: %s\n' "$category_totals" >&2
@@ -367,7 +368,7 @@ require_source_reference 'ArtifactManifestV2.CurrentSchemaVersion' src/HVO.SkyMo
 require_required_check_row '\*\*Unit Tests\*\*' "${category_unit} Unit cases across ${active_unit_projects} active assemblies"
 require_required_check_row '\*\*Integration Tests\*\*' "${category_integration} Integration-category cases"
 require_source_reference "The complete solution plan runs the other $((category_integration - architecture_integration)) cases" docs/runbooks/ci-pipeline.md
-require_source_reference "Current declared inventory is \`Unit=${category_unit}\`, \`Integration=${category_integration}\`, \`Manual=${category_manual}\`, \`Soak=${category_soak}\`, \`External=${category_external}\`, and \`Hardware=${category_hardware}\`." docs/runbooks/ci-pipeline.md
+require_source_reference "Current declared inventory is \`Unit=${category_unit}\`, \`Integration=${category_integration}\`, \`Manual=${category_manual}\`, \`Soak=${category_soak}\`, \`External=${category_external}\`, \`Hardware=${category_hardware}\`, and \`Performance=${category_performance}\`." docs/runbooks/ci-pipeline.md
 # Both halves of the architecture sentence are the architecture project's own
 # category discovery totals, so both are derived here. Pinned as the English word
 # "seven", the first of these asserted that the document said seven and never that

@@ -69,7 +69,7 @@ trap cleanup EXIT
 for project in "${render_projects[@]}"; do
   HVO_TERMINAL_RENDERS_DIR="$work" DOCKER_HOST=unix:///tmp/hvo-no-docker.sock \
     dotnet test "$repo_root/$project" --configuration Release \
-      --filter "TestCategory=Unit&FullyQualifiedName~RenderTests"
+      --filter "TestCategory=Unit&TestCategory!=Performance&FullyQualifiedName~RenderTests"
 done
 draw "$work"
 

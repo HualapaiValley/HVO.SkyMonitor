@@ -70,7 +70,7 @@ jobs:
             dotnet test HVO.SkyMonitor.v9.slnx \
               --no-build \
               --configuration Release \
-              --filter "TestCategory=Unit&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost" \
+              --filter "TestCategory=Unit&TestCategory!=Performance&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost" \
               -p:SkipLogicHostTests=true \
               --results-directory "$CI_V2_EVIDENCE_ROOT/unit" \
               --logger trx

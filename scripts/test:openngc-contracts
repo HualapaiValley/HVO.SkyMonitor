@@ -34,7 +34,7 @@ run_contracts() {
 
     DOCKER_HOST="unix://$results/docker-must-not-exist.sock" \
         dotnet test "tests/$project/$project.csproj" --configuration Release -warnaserror \
-        --filter "TestCategory=Unit&($filter)" \
+        --filter "TestCategory=Unit&TestCategory!=Performance&($filter)" \
         --results-directory "$results" --logger "trx;LogFileName=$trx_name"
     trx_assert_executed_and_passed "$trx" "$project" || return 1
     trx_assert_counters_executed_and_passed "$trx" "$project" || return 1
