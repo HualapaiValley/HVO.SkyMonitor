@@ -359,13 +359,22 @@ if [[ -n "$baseline_revision" ]]; then
   test "$(owner_status_code "$owner_ready_password_path" baseline-owner-ready-rerun)" = 200
   test "$(jq -er '.state' "$root/baseline-owner-ready-rerun-status.json")" = owner-ready
 
+  # Exercise a missing recovery transport on an image whose persisted state the candidate can upgrade.
+  withheld_owner_socket="$root/baseline-owner.sock"
+  if [[ -S "$owner_socket_path" ]]; then
+    mv -- "$owner_socket_path" "$withheld_owner_socket"
+  fi
+  test ! -e "$owner_socket_path"
   if "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent recover-owner \
     --instance-id "$instance_id" \
     --product-root "$root/product" \
     --generate-password \
     --json >"$root/baseline-recovery.json" 2>"$root/baseline-recovery-error.json"; then
-    printf 'Pre-support CameraAgent unexpectedly accepted owner recovery.\n' >&2
+    printf 'CameraAgent unexpectedly accepted owner recovery with its socket unavailable.\n' >&2
     exit 1
+  fi
+  if [[ -S "$withheld_owner_socket" ]]; then
+    mv -- "$withheld_owner_socket" "$owner_socket_path"
   fi
   test ! -s "$root/baseline-recovery.json"
   test "$(jq -er '.errorCode' "$root/baseline-recovery-error.json")" = recovery-unsupported

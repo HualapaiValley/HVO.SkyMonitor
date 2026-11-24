@@ -3396,21 +3396,22 @@ Run the disposable installer contract against the current image with
 `./scripts/test:deployment-installer`. It runs `backup` and `restore` as the instance's service account, the user
 running the campaign, with no `sudo`. Its last step purges the instance, installs it again with another owner, and
 restores the earlier backup over it, so the real CameraAgent startup seeder proves the live owner settings win. To
-validate an owner-recovery image
-transition, use a clean committed worktree with an ancestor pre-support commit
-available locally:
+validate an owner-recovery image transition, use a clean committed worktree with
+an ancestor commit whose state is compatible with the candidate image:
 
 ```bash
-HVO_INSTALLER_BASELINE_REVISION=<pre-support-commit> \
+HVO_INSTALLER_BASELINE_REVISION=<compatible-ancestor-commit> \
   ./scripts/test:deployment-installer
 ```
 
 The extended path builds the baseline image and candidate image/CLI from exact
 Git archives, completes the initial password replacement to establish an
 owner-ready baseline, verifies a completed installer rerun preserves that state,
-proves unsupported recovery retains resumable state, performs an image-only
-upgrade, authenticates the mounted owner-only socket, and resumes the same
-recovery operation without restarting the CameraAgent process. It rejects the
+and temporarily moves the baseline's socket aside if present. It verifies that
+an unavailable recovery transport retains resumable state, restores the socket
+if it was moved, performs an image-only upgrade, and resumes the same
+operation through the candidate's authenticated owner-only socket. It completes
+recovery without restarting the CameraAgent process, rejects the
 prior durable password and authenticated session, verifies the
 replacement-password gate, hard-restarts and replays recovery idempotently,
 verifies capture control remains running, and checks that manual rollback refusal preserves
