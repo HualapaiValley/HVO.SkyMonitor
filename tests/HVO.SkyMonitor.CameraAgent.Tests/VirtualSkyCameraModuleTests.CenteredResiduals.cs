@@ -32,9 +32,9 @@ public sealed partial class VirtualSkyCameraModuleTests
         var (raw, fitCatalog) = CreateAcceptedResidualField(geometry, observer, start.AddMilliseconds(500));
         var catalog = new CameraAgentSkyMapProjectionTests.FixtureCatalog(fitCatalog.Stars,
             fitCatalog.Metadata, fitCatalog.Provenance!.PreprocessingVersion);
-        // Keep the original 15 s cold, 3 s warm and 20 s recipe budgets for this compact field.
+        // Use the Unit lane's runaway budgets for this compact field.
         return VerifyCenteredReferenceResidualsAsync(raw, geometry, observer, start, end, "calibration-v1", fitCatalog,
-            catalog, MeasuredAstrometryFixture.PerformanceOptions, new(256, 256, 9, 13, 234, 230, 117, 115), TestContext);
+            catalog, MeasuredAstrometryFixture.Options, new(256, 256, 9, 13, 234, 230, 117, 115), TestContext);
     }
 
     internal static async Task VerifyCenteredReferenceResidualsAsync(MeasuredAstrometryOptions recipe, TestContext testContext)
