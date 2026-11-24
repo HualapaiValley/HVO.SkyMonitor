@@ -453,6 +453,17 @@ PY
   fi
   git -C "$fast_root" commit -qm "$certificate_case certificate"
   certificate_base="$(git -C "$fast_root" rev-parse HEAD)"
+  if [[ "$certificate_expected" == verify-restore ]]; then
+    (cd "$fast_root" && "$classifier" --check-docs-inventory "$certificate_base") > "$fast_root/.git/cert-check-out" 2> "$fast_root/.git/cert-check-err"
+    grep -Fxq 'Documentation CI build inventory is current and audited.' "$fast_root/.git/cert-check-out"
+    [[ ! -s "$fast_root/.git/cert-check-err" ]]
+  else
+    if (cd "$fast_root" && "$classifier" --check-docs-inventory "$certificate_base") > "$fast_root/.git/cert-check-out" 2> "$fast_root/.git/cert-check-err"; then
+      printf 'Mandatory docs certificate gate accepted invalid case: %s\n' "$certificate_case" >&2
+      exit 1
+    fi
+    grep -Fq '::error::Documentation CI build inventory is stale or unsafe;' "$fast_root/.git/cert-check-err"
+  fi
   printf 'changed\n' >> "$fast_root/docs/runbooks/certified.md"
   git -C "$fast_root" commit -qam 'certified docs edit'
   [[ "$(git -C "$fast_root" diff --name-only "$certificate_base" HEAD)" == docs/runbooks/certified.md ]]
@@ -602,9 +613,12 @@ printf '<None Include="../../docs/runbooks/example.md" />\n' > "$fast_root/tests
 git -C "$fast_root" add -f tests/Example/Example.csproj.user
 git -C "$fast_root" add docs/runbooks/example.md && git -C "$fast_root" commit -qm user-input
 user_base="$(git -C "$fast_root" rev-parse HEAD)"
-warning_output="$(cd "$fast_root" && "$classifier" --warn-docs-inventory "$user_base")"
-grep -Fxq '::warning::Documentation CI build inventory is stale or unsafe; full validation will run: tracked automatic MSBuild input requires manual review' <<< "$warning_output"
-printf 'Stale inventory warning passed.\n'
+if (cd "$fast_root" && "$classifier" --check-docs-inventory "$user_base") > "$fast_root/.git/user-check-out" 2> "$fast_root/.git/user-check-err"; then
+  printf 'Mandatory docs certificate gate accepted tracked .user input.\n' >&2
+  exit 1
+fi
+grep -Fxq '::error::Documentation CI build inventory is stale or unsafe; refresh scripts/ci:docs-inventory and scripts/ci:restore-import-certificate.json: tracked automatic MSBuild input requires manual review' "$fast_root/.git/user-check-err"
+printf 'Unsafe inventory mandatory gate passed.\n'
 printf 'change\n' >> "$fast_root/docs/runbooks/example.md"
 git -C "$fast_root" commit -qam docs-change
 fast_reason 'project inventory unavailable' "$user_base" "$(git -C "$fast_root" rev-parse HEAD)"
@@ -711,11 +725,70 @@ grep -Fq 'docs/second.md' "$evidence_file"
 grep -Fq 'Fast path paths examined: 2' "$evidence_file"
 ! grep -Fq 'Mode: **' "$evidence_file"
 ((fast_cases += 1))
-# Canary the real committed inventory without changing any ref. A changed or
-# absent certificate must select full validation, never fail the PR by itself.
+# Mandatory certificate-maintenance gate controls: clean pass, stale/drifted/
+# missing/executable/verifier-absent failures, invalid arguments, and fail-closed
+# classification preservation on every failure mode.
+(cd "$fast_root" && "$classifier" --check-docs-inventory "$fast_base") > "$fast_root/.git/check-clean-out" 2> "$fast_root/.git/check-clean-err"
+grep -Fxq 'Documentation CI build inventory is current and audited.' "$fast_root/.git/check-clean-out"
+[[ ! -s "$fast_root/.git/check-clean-err" ]]
+for bad_args in '' 'nonexistent-ref-1996' "$fast_base extra-arg"; do
+  # shellcheck disable=SC2086 # Intentionally split argument fixtures.
+  if (cd "$fast_root" && "$classifier" --check-docs-inventory $bad_args) > "$fast_root/.git/check-arg-out" 2> "$fast_root/.git/check-arg-err"; then
+    printf 'Mandatory docs certificate gate accepted invalid arguments: %s\n' "$bad_args" >&2
+    exit 1
+  fi
+  grep -Fq '::error::Documentation CI build inventory check failed: commit unavailable' "$fast_root/.git/check-arg-err"
+done
+for maintenance_case in missing executable stale-input drifted-inventory missing-verifier; do
+  git -C "$fast_root" reset -q --hard "$fast_base"
+  mkdir -p "$fast_root/docs/runbooks"
+  printf 'text\n' > "$fast_root/docs/runbooks/maintenance.md"
+  case "$maintenance_case" in
+    missing)
+      git -C "$fast_root" rm -q scripts/ci:docs-inventory
+      expected_check_reason='certificate unavailable'
+      expected_fast_reason='project inventory unavailable'
+      ;;
+    executable)
+      chmod +x "$fast_root/scripts/ci:docs-inventory"
+      git -C "$fast_root" update-index --chmod=+x -- scripts/ci:docs-inventory
+      expected_check_reason='certificate must be a regular non-executable file'
+      expected_fast_reason='project inventory unavailable'
+      ;;
+    stale-input)
+      printf '<!-- updated project -->\n<None Include="../../docs/contracts/linked.md" />\n' > "$fast_root/tests/Example/Example.csproj"
+      expected_check_reason='certificate differs from the audited inputs'
+      expected_fast_reason='project inventory differs from certified baseline'
+      ;;
+    drifted-inventory)
+      printf '100644 blob 0000000000000000000000000000000000000000 b'\''drifted.csproj'\''\n' >> "$fast_root/scripts/ci:docs-inventory"
+      expected_check_reason='certificate differs from the audited inputs'
+      expected_fast_reason='project inventory differs from certified baseline'
+      ;;
+    missing-verifier)
+      printf '{"version":1}\n' > "$fast_root/scripts/ci:restore-import-certificate.json"
+      git -C "$fast_root" add scripts/ci:restore-import-certificate.json
+      expected_check_reason='restore import verifier unavailable'
+      expected_fast_reason='project inventory unavailable'
+      ;;
+  esac
+  git -C "$fast_root" add -A && git -C "$fast_root" commit -qm "maintenance-$maintenance_case"
+  maintenance_base="$(git -C "$fast_root" rev-parse HEAD)"
+  if (cd "$fast_root" && "$classifier" --check-docs-inventory "$maintenance_base") > "$fast_root/.git/check-fail-out" 2> "$fast_root/.git/check-fail-err"; then
+    printf 'Mandatory docs certificate gate accepted %s.\n' "$maintenance_case" >&2
+    exit 1
+  fi
+  grep -Fxq "::error::Documentation CI build inventory is stale or unsafe; refresh scripts/ci:docs-inventory and scripts/ci:restore-import-certificate.json: $expected_check_reason" "$fast_root/.git/check-fail-err"
+  printf 'changed\n' >> "$fast_root/docs/runbooks/maintenance.md"
+  git -C "$fast_root" commit -qam "docs-after-$maintenance_case"
+  fast_reason "$expected_fast_reason" "$maintenance_base" "$(git -C "$fast_root" rev-parse HEAD)"
+done
+printf 'Mandatory docs certificate maintenance gate controls passed.\n'
+# Canary the real committed inventory without changing any ref. The mandatory
+# gate must pass on committed HEAD and qualify the canary as expected.
 (
 real_base="$(git -C "$repo_root" rev-parse HEAD)"
-(cd "$repo_root" && "$classifier" --warn-docs-inventory "$real_base")
+(cd "$repo_root" && "$classifier" --check-docs-inventory "$real_base")
 mkdir -p "$fast_root/.git/canary-objects"
 canary_source_objects="$(git -C "$repo_root" rev-parse --path-format=absolute --git-path objects)"
 export GIT_OBJECT_DIRECTORY="$fast_root/.git/canary-objects"
@@ -727,21 +800,16 @@ GIT_INDEX_FILE="$canary_index" git -C "$repo_root" update-index --add --cacheinf
 canary_tree="$(GIT_INDEX_FILE="$canary_index" git -C "$repo_root" write-tree)"
 canary_head="$(printf 'CI inventory canary\n' | git -C "$repo_root" -c user.name='CI fixture' -c user.email=fixture@example.invalid commit-tree "$canary_tree" -p "$real_base")"
 printf '%s\n' "$canary_head" > "$fast_root/.git/canary-commit"
-if git -C "$repo_root" show "$real_base:scripts/ci:docs-inventory" > "$fast_root/.git/certified" 2>/dev/null; then
-  if (cd "$repo_root" && "$classifier" --print-docs-inventory "$real_base") > "$fast_root/.git/actual" && cmp -s "$fast_root/.git/certified" "$fast_root/.git/actual"; then
-    canary_expected=true
-    if git -C "$repo_root" cat-file -e "$real_base:scripts/ci:restore-import-certificate.json"; then
-      canary_expected=verify-restore
-    fi
-  else
-    canary_expected=false
-  fi
-  canary_output="$(cd "$repo_root" && "$classifier" pull_request "$real_base" "$canary_head" docs-fast-only)"
-  grep -Fxq "docs_fast_path=$canary_expected" <<< "$canary_output" || { printf 'Real inventory canary failed: %s\n' "$canary_output" >&2; exit 1; }
-  printf 'Real inventory canary passed: expected %s.\n' "$canary_expected"
-else
-  printf 'Real inventory canary skipped: certificate not in committed HEAD.\n'
+git -C "$repo_root" show "$real_base:scripts/ci:docs-inventory" > "$fast_root/.git/certified"
+(cd "$repo_root" && "$classifier" --print-docs-inventory "$real_base") > "$fast_root/.git/actual"
+cmp -s "$fast_root/.git/certified" "$fast_root/.git/actual" || { printf 'Real inventory differs from committed certificate.\n' >&2; exit 1; }
+canary_expected=true
+if git -C "$repo_root" cat-file -e "$real_base:scripts/ci:restore-import-certificate.json"; then
+  canary_expected=verify-restore
 fi
+canary_output="$(cd "$repo_root" && "$classifier" pull_request "$real_base" "$canary_head" docs-fast-only)"
+grep -Fxq "docs_fast_path=$canary_expected" <<< "$canary_output" || { printf 'Real inventory canary failed: %s\n' "$canary_output" >&2; exit 1; }
+printf 'Real inventory canary passed: expected %s.\n' "$canary_expected"
 )
 canary_commit="$(cat "$fast_root/.git/canary-commit")"
 if git -C "$repo_root" cat-file -e "$canary_commit^{commit}" 2>/dev/null; then
@@ -789,6 +857,14 @@ expect_components true true true true workflow_dispatch "$base_sha" "$head_sha"
 expect_components true true true true merge_group "$base_sha" "$head_sha"
 expect_suites true true true push "$base_sha" "$head_sha"
 expect_suites true true true workflow_dispatch "$base_sha" "$head_sha"
+# Restore-import verifier and offline proof changes must select full mode so
+# Quality's SDK-dependent contract checks run them automatically in CI (#1996).
+for restore_contract_path in scripts/ci/restore-imports.py scripts/test:ci-docs-restore-import; do
+  restore_contract_base="$(git -C "$work_root" rev-parse HEAD)"
+  commit_file "$restore_contract_path"
+  restore_contract_head="$(git -C "$work_root" rev-parse HEAD)"
+  expect_plan full false pull_request "$restore_contract_base" "$restore_contract_head"
+done
 summary_file="$work_root/.git/classification-summary.md"
 (cd "$work_root" && GITHUB_STEP_SUMMARY="$summary_file" "$classifier" pull_request "$base_sha" "$head_sha" >/dev/null)
 grep -Fq 'Mode: **reduced**' "$summary_file"

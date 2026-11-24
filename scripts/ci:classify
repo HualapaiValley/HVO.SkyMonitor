@@ -359,7 +359,10 @@ restore_tool_from_base() (
   local command="$1" trust_sha="$2" source_hash="$3" tool
   tool="$(mktemp)" || return 1
   trap 'rm -f "$tool"' EXIT
-  git show "$trust_sha:scripts/ci/restore-imports.py" > "$tool" || return 1
+  if ! git show "$trust_sha:scripts/ci/restore-imports.py" > "$tool" 2>/dev/null; then
+    printf 'docs inventory audit: restore import verifier unavailable\n' >&2
+    return 1
+  fi
   python3 -I "$tool" "$command" "$trust_sha" "$source_hash"
 )
 
@@ -370,7 +373,10 @@ fast_inventory_for_tree() {
     audit_fast_inventory "$commit"
     return $?
   fi
-  [[ "$entry" == '100644 blob '* ]] || return 1
+  if [[ "$entry" != '100644 blob '* ]]; then
+    printf 'docs inventory audit: restore import certificate must be a regular non-executable file\n' >&2
+    return 1
+  fi
   docs_restore_required=true
   inventory="$(audit_fast_inventory "$commit" restore-source)" || return 1
   checksum="$(printf '%s\n' "$inventory" | sha256sum)" || return 1
@@ -379,10 +385,12 @@ fast_inventory_for_tree() {
 }
 
 fast_doc_link_state() {
-  local expected actual
+  local expected actual expected_entry
   expected="$(mktemp)" || return 2
   actual="$(mktemp)" || { rm -f "$expected"; return 2; }
-  if ! git show "$base_sha:scripts/ci:docs-inventory" > "$expected" ||
+  expected_entry="$(git ls-tree "$base_sha" -- scripts/ci:docs-inventory 2>/dev/null)" || { rm -f "$expected" "$actual"; return 2; }
+  if [[ "$expected_entry" != '100644 blob '* ]] ||
+     ! git show "$base_sha:scripts/ci:docs-inventory" > "$expected" ||
      ! fast_inventory_for_tree "$head_sha" "$base_sha" > "$actual"; then
     rm -f "$expected" "$actual"
     return 2
@@ -692,7 +700,9 @@ if [[ "$event_name" == "--print-docs-restore-source" ]]; then
 fi
 
 if [[ "$event_name" == "--verify-docs-restore" ]]; then
-  if inventory="$(fast_inventory_for_tree "$base_sha" "$base_sha")" &&
+  if verify_entry="$(git ls-tree "$base_sha" -- scripts/ci:docs-inventory 2>/dev/null)" &&
+     [[ "$verify_entry" == '100644 blob '* ]] &&
+     inventory="$(fast_inventory_for_tree "$base_sha" "$base_sha")" &&
      git show "$base_sha:scripts/ci:docs-inventory" | cmp -s <(printf '%s\n' "$inventory") - &&
      checksum="$(printf '%s\n' "$inventory" | sha256sum)" &&
      restore_tool_from_base verify "$base_sha" "${checksum%% *}"; then
@@ -702,23 +712,33 @@ if [[ "$event_name" == "--verify-docs-restore" ]]; then
   exit 1
 fi
 
-if [[ "$event_name" == "--warn-docs-inventory" ]]; then
-  warn_expected="$(mktemp)" || { printf '::warning::Documentation CI inventory check could not run.\n'; exit 0; }
-  warn_actual="$(mktemp)" || { rm -f "$warn_expected"; printf '::warning::Documentation CI inventory check could not run.\n'; exit 0; }
-  warn_error="$(mktemp)" || { rm -f "$warn_expected" "$warn_actual"; printf '::warning::Documentation CI inventory check could not run.\n'; exit 0; }
-  warn_reason=""
-  if ! git show "$base_sha:scripts/ci:docs-inventory" > "$warn_expected" 2>/dev/null; then
-    warn_reason="certificate unavailable"
-  elif ! fast_inventory_for_tree "$base_sha" "$base_sha" > "$warn_actual" 2> "$warn_error"; then
-    warn_reason="$(sed -n 's/^docs inventory audit: //p' "$warn_error" | tail -n 1)"
-    [[ "$warn_reason" =~ ^[a-zA-Z0-9\ .,/\-]+$ ]] || warn_reason="audit could not complete"
-  elif ! cmp -s "$warn_expected" "$warn_actual"; then
-    warn_reason="certificate differs from the audited inputs"
+if [[ "$event_name" == "--check-docs-inventory" ]]; then
+  if [[ "$#" -ne 2 || -z "$base_sha" ]] || ! git cat-file -e "${base_sha}^{commit}" 2>/dev/null; then
+    printf '::error::Documentation CI build inventory check failed: commit unavailable\n' >&2
+    exit 1
   fi
-  if [[ -n "$warn_reason" ]]; then
-    printf '::warning::Documentation CI build inventory is stale or unsafe; full validation will run: %s\n' "$warn_reason"
+  check_expected="$(mktemp)" || { printf '::error::Documentation CI build inventory check could not run.\n' >&2; exit 1; }
+  check_actual="$(mktemp)" || { rm -f "$check_expected"; printf '::error::Documentation CI build inventory check could not run.\n' >&2; exit 1; }
+  check_error="$(mktemp)" || { rm -f "$check_expected" "$check_actual"; printf '::error::Documentation CI build inventory check could not run.\n' >&2; exit 1; }
+  trap 'rm -f "$check_expected" "$check_actual" "$check_error"' EXIT
+  check_reason=""
+  if ! check_entry="$(git ls-tree "$base_sha" -- scripts/ci:docs-inventory 2>/dev/null)" || [[ -z "$check_entry" ]]; then
+    check_reason="certificate unavailable"
+  elif [[ "$check_entry" != '100644 blob '* ]]; then
+    check_reason="certificate must be a regular non-executable file"
+  elif ! git show "$base_sha:scripts/ci:docs-inventory" > "$check_expected" 2>/dev/null; then
+    check_reason="certificate unavailable"
+  elif ! fast_inventory_for_tree "$base_sha" "$base_sha" > "$check_actual" 2> "$check_error"; then
+    check_reason="$(sed -n 's/^docs inventory audit: //p' "$check_error" | tail -n 1)"
+    [[ "$check_reason" =~ ^[a-zA-Z0-9\ .,/\-]+$ ]] || check_reason="audit could not complete"
+  elif ! cmp -s "$check_expected" "$check_actual"; then
+    check_reason="certificate differs from the audited inputs"
   fi
-  rm -f "$warn_expected" "$warn_actual" "$warn_error"
+  if [[ -n "$check_reason" ]]; then
+    printf '::error::Documentation CI build inventory is stale or unsafe; refresh scripts/ci:docs-inventory and scripts/ci:restore-import-certificate.json: %s\n' "$check_reason" >&2
+    exit 1
+  fi
+  printf 'Documentation CI build inventory is current and audited.\n'
   exit 0
 fi
 

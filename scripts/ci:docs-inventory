@@ -55,6 +55,6 @@
 100644 blob 86b444189705d3043896674c8e5c42325214104f b'tests/fixtures/horizons/.gitattributes'
 100644 blob c3a69745d6e4bf6a6c8c68c7dc3f53b2c45a8b42 b'tests/fixtures/orbital/pass-arc-v1/.gitattributes'
 100644 blob cb7981fc8e3efa0a00d4b92d74bd24d46f158d42 b'tests/fixtures/processing/.gitattributes'
-100644 blob daecd9e2535804d58502ea09797adc55da83ba61 b'tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj'
+100644 blob 5ba1c6631869b94c5e3bd734504f49826cfc9d33 b'tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj'
 100644 blob 16412ff0324b8fb552933018b8d93e7b3241a2f5 b'tools/HVO.SkyMonitor.TimeLapseBenchmark/HVO.SkyMonitor.TimeLapseBenchmark.csproj'
 100644 blob 16412ff0324b8fb552933018b8d93e7b3241a2f5 b'tools/HVO.SkyMonitor.VirtualSkyPoc/HVO.SkyMonitor.VirtualSkyPoc.csproj'

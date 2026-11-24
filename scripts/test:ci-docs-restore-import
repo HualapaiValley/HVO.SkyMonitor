@@ -87,7 +87,7 @@ run_fresh python3 -I scripts/ci/restore-imports.py capture HEAD "${source_hash%%
 git -C "$fixture" add -- "$certificate" scripts/ci:docs-inventory
 git -C "$fixture" commit -qm 'certify the benign restore graph'
 reviewed="$(git -C "$fixture" rev-parse HEAD)"
-[[ -z "$(classify --warn-docs-inventory "$reviewed")" ]]
+grep -Fxq 'Documentation CI build inventory is current and audited.' <<< "$(classify --check-docs-inventory "$reviewed")"
 printf 'safe edit\n' >> "$fixture/docs/runbooks/releases.md"
 git -C "$fixture" commit -qam 'safe certified documentation edit'
 doc="$(git -C "$fixture" rev-parse HEAD)"
@@ -166,18 +166,23 @@ fi
 [[ ! -s "$fixture/proof" ]]
 grep -Fq 'resolved package content or source differs' "$fixture/drift-error"
 
-for drift in missing malformed config; do
+for drift in missing malformed config inventory; do
   git -C "$fixture" reset -q --hard "$reviewed"
   case "$drift" in
     missing) git -C "$fixture" rm -q -- "$certificate" ;;
     malformed) printf '{"version":1}\n' > "$fixture/$certificate" ;;
     config) printf '\n<!-- changed NuGet configuration -->\n' >> "$fixture/NuGet.Config" ;;
+    inventory) printf "100644 blob 0000000000000000000000000000000000000000 b'drifted.csproj'\n" >> "$fixture/scripts/ci:docs-inventory" ;;
   esac
   git -C "$fixture" commit -qam "invalidate $drift"
   stale="$(git -C "$fixture" rev-parse HEAD)"
   printf 'safe edit\n' >> "$fixture/docs/runbooks/releases.md"
   git -C "$fixture" commit -qam 'doc edit against stale base'
   grep -Fxq 'docs_fast_path=false' <<< "$(classify pull_request "$stale" HEAD docs-fast-only)"
-  grep -Fq 'full validation will run' <<< "$(classify --warn-docs-inventory "$stale")"
+  if classify --check-docs-inventory "$stale" > "$fixture/check-out" 2> "$fixture/check-err"; then
+    printf 'Mandatory docs certificate gate accepted stale %s base.\n' "$drift" >&2
+    exit 1
+  fi
+  grep -Fq '::error::Documentation CI build inventory is stale or unsafe;' "$fixture/check-err"
 done
-printf 'Offline restore certificate passed: valid base, seven replay drift cases, missing dotnet and three static fallback cases.\n'
+printf 'Offline restore certificate passed: valid base, seven replay drift cases, missing dotnet and four mandatory-failure fallback cases.\n'

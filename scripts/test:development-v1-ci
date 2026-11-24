@@ -409,6 +409,21 @@ def violations(short, full, queue=None, extra=None):
     base_images = step(preflight, "Check Dockerfile base images")
     require(base_images.strip() == "run: ./scripts/ci:base-images",
             "base-image check is unconditional and fail-closed")
+    docs_cert = step(preflight, "Check documentation fast-path certificate")
+    require(docs_cert.strip() == "run: ./scripts/ci:classify --check-docs-inventory HEAD",
+            "Preflight documentation fast-path certificate gate is unconditional and fail-closed")
+    full_static = step(quality, "Run static and lightweight contract checks")
+    require("          ./scripts/ci:classify --check-docs-inventory HEAD\n" in full_static and
+            "        if:" not in full_static and "continue-on-error:" not in full_static,
+            "full Quality enforces the documentation fast-path certificate gate")
+    sdk_contracts = step(quality, "Run SDK-dependent contract checks")
+    require("if: needs.changes.outputs.mode == 'full'" in sdk_contracts and
+            "          ./scripts/test:assemble-cameraagent-final-head-535\n" in sdk_contracts and
+            "          ./scripts/test:ci-docs-restore-import\n" in sdk_contracts and
+            "continue-on-error:" not in sdk_contracts,
+            "full Quality runs the offline restore-imports proof in its SDK-capable lane")
+    require("--warn-docs-inventory" not in short and "--warn-docs-inventory" not in full,
+            "mandatory certificate maintenance gate must not fall back to a warning")
     changelog = step(preflight, "Validate changelog fragments")
     require(textwrap.dedent(changelog).strip() == changelog_contract.strip(), changelog_error)
     full_changelog = step(quality, "Validate changelog fragments")
@@ -529,6 +544,7 @@ def violations(short, full, queue=None, extra=None):
     require(build.count("if: always()") == 2, "failure evidence summary and upload")
     require("hvo-development-v1-ci-v6" in build, "versioned short-profile evidence")
     for heavy in ("./scripts/ci:shellcheck", "./scripts/test:ci-shellcheck",
+                  "./scripts/test:ci-docs-restore-import",
                   "scripts/test-categories/HVO.SkyMonitor.TestCategoryAudit.csproj",
                   "TestCategory=Integration", "gh workflow run ci.yml"):
         require(heavy not in short, f"qualification work in short run: {heavy}")
@@ -654,6 +670,20 @@ mutations = (
     ("base-image check gated", short.replace(
         "- name: Check Dockerfile base images", "- name: Check Dockerfile base images\n        if: false"), full),
     ("base-image failure masked", short.replace("run: ./scripts/ci:base-images", "run: ./scripts/ci:base-images || true"), full),
+    ("Preflight docs cert gate removed", short.replace("run: ./scripts/ci:classify --check-docs-inventory HEAD", "run: true"), full),
+    ("Preflight docs cert gate gated", short.replace(
+        "- name: Check documentation fast-path certificate", "- name: Check documentation fast-path certificate\n        if: false"), full),
+    ("Preflight docs cert gate masked", short.replace(
+        "run: ./scripts/ci:classify --check-docs-inventory HEAD", "run: ./scripts/ci:classify --check-docs-inventory HEAD || true"), full),
+    ("Preflight docs cert gate weakened to warning", short.replace(
+        "--check-docs-inventory", "--warn-docs-inventory"), full),
+    ("full Quality docs cert gate removed", short, full.replace(
+        "./scripts/ci:classify --check-docs-inventory HEAD", ":")),
+    ("full Quality restore-import proof removed", short, full.replace(
+        "./scripts/test:ci-docs-restore-import", ":")),
+    ("full Quality restore-import proof masked", short, full.replace(
+        "- name: Run SDK-dependent contract checks", "- name: Run SDK-dependent contract checks\n        continue-on-error: true")),
+    ("restore-import proof added to short v1 workflow", short + "\n          ./scripts/test:ci-docs-restore-import\n", full),
     ("missing Unit filter", short.replace(f'--filter "{unit_filter}"', ""), full),
     ("missing Performance exclusion", short.replace("&TestCategory!=Performance", ""), full),
     ("coverage not collected", short.replace('--collect:"XPlat Code Coverage"', ""), full),
