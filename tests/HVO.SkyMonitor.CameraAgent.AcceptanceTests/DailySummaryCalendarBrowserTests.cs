@@ -69,7 +69,7 @@ public sealed class DailySummaryCalendarBrowserTests
         // #1916: a failure from the day link click through the preview identity retains credential-free evidence of
         // navigation, the day card, browser and circuit signals and the preview outcome, then rethrows unchanged.
         using var evidence = CalendarDayPreviewEvidence.Observe(
-            page, TestContext, DailySummaryCalendarScenario.SelectedDay, NightlyProductLinks.Preview(product.ProductId),
+            page, TestContext, host.BaseAddress, DailySummaryCalendarScenario.SelectedDay, NightlyProductLinks.Preview(product.ProductId),
             DailySummaryCalendarScenario.RowLabel(width, height, complete), serverLog);
         await DailySummaryCalendarScenario.OpenDailySummaryFromCalendarAsync(
             page, cell, evidence, complete ? "available" : "partial", NightlyProductLinks.Preview(product.ProductId));
