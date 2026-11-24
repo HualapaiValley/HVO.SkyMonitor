@@ -1182,14 +1182,13 @@ public sealed class ArchitectureBoundaryTests
             .Select(project => project.AssemblyName)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var hostName in new[] { CameraAgent, LogicHost, CameraAgentReplayRunner, ProcessingRunner })
+        foreach (var hostName in new[] { CameraAgent, CameraAgentReplayRunner, ProcessingRunner })
         {
             var output = string.IsNullOrWhiteSpace(evidenceRoot)
                 ? Path.Combine(Path.GetTempPath(), $"skymonitor-architecture-{hostName}-{Guid.NewGuid():N}")
                 : hostName switch
                 {
                     CameraAgent => Path.Combine(evidenceRoot, "cameraagent"),
-                    LogicHost => Path.Combine(evidenceRoot, "logichost"),
                     ProcessingRunner => Path.Combine(evidenceRoot, "processing-runner", "linux-x64"),
                     _ => Path.Combine(evidenceRoot, "replay-runner", "linux-x64")
                 };

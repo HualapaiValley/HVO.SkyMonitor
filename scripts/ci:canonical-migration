@@ -1,22 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Enforce exactly one canonical non-designer migration source for one EF context.
-# The check is per host so a CameraAgent-only or LogicHost-only plan still runs
-# the migration gate that its change can affect.
+# Enforce exactly one canonical non-designer migration source for CameraAgent.
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
 host="${1:-}"
-case "$host" in
-  cameraagent) directory="src/HVO.SkyMonitor.CameraAgent/Data/Migrations" ;;
-  logichost) directory="src/HVO.SkyMonitor.LogicHost/Data/Migrations" ;;
-  *)
-    printf 'Usage: scripts/ci:canonical-migration <cameraagent|logichost>\n' >&2
-    exit 2
-    ;;
-esac
+if [[ "$host" != cameraagent ]]; then
+  printf 'Usage: scripts/ci:canonical-migration cameraagent\n' >&2
+  exit 2
+fi
+directory="src/HVO.SkyMonitor.CameraAgent/Data/Migrations"
 
 shopt -s nullglob
 migrations=()

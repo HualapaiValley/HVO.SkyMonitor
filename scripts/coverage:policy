@@ -120,7 +120,6 @@ component_of() {
   case "$1" in
     tools/* | HVO.SkyMonitor.Deployment.*) printf 'delivery\n' ;;
     HVO.SkyMonitor.CameraAgent*) printf 'cameraagent\n' ;;
-    HVO.SkyMonitor.LogicHost*) printf 'logichost\n' ;;
     *) printf 'shared\n' ;;
   esac
 }
