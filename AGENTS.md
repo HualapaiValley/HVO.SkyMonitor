@@ -63,9 +63,11 @@ have follow-up tracking.
   `Development v1 / Preflight` and `Development v1 / Build and Unit`: lightweight
   control checks, one Release build, and Docker-disabled Unit selection for the
   active test projects. The ready-PR documentation fast path described in
-  `docs/development-v1.md` skips the solution build and Unit workload. Push and
-  merge-group workloads remain full. Full qualification in `ci.yml` belongs to
-  `main`/`release/**` and explicitly requested qualification. Do not dispatch it
+  `docs/development-v1.md` skips the solution build and Unit workload. Merge
+  groups and unverified pushes run the full workload. A queue-generated push
+  can reuse a passing merge-group result for the exact same SHA. Full
+  qualification in `ci.yml` belongs to `main`/`release/**` and explicitly
+  requested qualification. Do not dispatch it
   for an ordinary v1 PR merely because `scripts/ci:classify` reports `complete=true`, including
   on a base-sync delta. See `docs/development-v1.md` for this branch-specific
   contract, which takes precedence over generic protected-CI wording below.

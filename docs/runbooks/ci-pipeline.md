@@ -185,10 +185,10 @@ controls protect collection, enforcement, evidence, and existing PR/merge-group
 triggers. Coverage shares the existing 1080-second workload deadline and appears
 as a fourth timed stage in the `hvo-development-v1-ci-v6` evidence manifest;
 failed runs retain generated settings, raw/merged XML, report paths and timings.
-The existing Build and Unit check reports failure on non-draft PRs, v1 pushes and
-`merge_group/checks_requested`; drafts retain Preflight only. Required check names
-and ruleset 26838822 need no change. No new check, permission, catalog provision,
-Integration selection, workflow dispatch or repository setting is introduced.
+A coverage failure in the full workload fails Build and Unit on ready PRs,
+v1 pushes and `merge_group/checks_requested`. Drafts run Preflight only.
+Verified queue-generated pushes link to the coverage evidence from the successful
+merge-group run for their SHA. See [post-merge push validation](#development-v1-post-merge-pushes).
 
 Earlier independent review measured about 44.5 seconds added to Unit collection
 with SingleHit, with peak RSS increasing from about 0.8 GB to 2.6 GB and artifacts
@@ -212,7 +212,7 @@ contended sample is distinct from the local totals above. The 1,080 s budget,
 Roy selected additional or relocated self-hosted runner capacity in t421s2656.
 Atlas completed that work on 2026-11-12 at 9:04–9:05 AM PST: `gh-runner-05`
 and `gh-runner-06` each have 8 vCPU and are the only runners carrying
-`hvo-skymonitor-build`. Build and Unit selects exactly
+`hvo-skymonitor-build`. The full Build and Unit workload selects exactly
 `[self-hosted, linux, x64, hvo-skymonitor-build]`; runners 01–04 and other job
 selectors are unchanged. Capacity delivery is ready. Keep the 1,080 s soft
 budget and 22-minute hard timeout unchanged while collecting new timings.
@@ -226,7 +226,53 @@ itself prevent that timeout. Refs #1747.
 
 ## Development v1 documentation fast path
 
-A ready PR still runs the required Build and Unit job after successful hosted Preflight. Its full-history checkout verifies the merge parents and runs the first parent's `scripts/ci:classify` against both the PR head and checked-out merge tree. Both endpoints must pass the base-controlled source inventory audit. For SDK or package restore inputs, the job also requires a successful proof against the [reviewed restore-import certificate](development-v1-restore-imports.md). A missing result, mismatch or failed proof selects full validation. The artifact retains the exact path list, decision, reason and Preflight dependency. The narrow allowlist and exclusions are documented in [Development v1](../development-v1.md). Push and merge-group runs always perform full validation. Refs #1989 and #1995.
+A ready PR still runs the required Build and Unit job after successful hosted Preflight. Its full-history checkout verifies the merge parents and runs the first parent's `scripts/ci:classify` against both the PR head and checked-out merge tree. Both endpoints must pass the base-controlled source inventory audit. For SDK or package restore inputs, the job also requires a successful proof against the [reviewed restore-import certificate](development-v1-restore-imports.md). A missing result, mismatch or failed proof selects full validation. The artifact retains the exact path list, decision, reason and Preflight dependency. The narrow allowlist and exclusions are documented in [Development v1](../development-v1.md). Refs #1989 and #1995.
+
+## Development v1 post-merge pushes
+
+Preflight runs its normal checks on every `development/v1` push. For pushes
+from `github-merge-queue[bot]`, Preflight uses a read-only Actions token and a
+bounded, paginated lookup in `development-v1.yml`. It requires a completed
+`merge_group` run with `conclusion=success` for the `development/v1` queue and
+an exact match between the run's `head_sha` and the push's `github.sha`. The
+operated merge-commit queue has published identical SHAs on both events. A
+different SHA, missing result, malformed response or API error selects the
+full self-hosted workload, as does a direct push. Merge-group runs always
+execute the full workload.
+
+With a match, the same Build and Unit job runs on `ubuntu-24.04` and records
+the successful queue run in its summary and `mergeGroupRunUrl` manifest
+field. It uploads `development-v1-<run-id>-<attempt>` with the decision and
+proof link. The linked queue run contains the restore, build, Unit TRX,
+coverage and timing evidence. Promotion still uses a successful push workflow
+run. The integration prerelease still requires that run and both named jobs
+to succeed. The self-hosted runner capacity report counts full workload jobs
+and excludes the hosted proof job. Refs #2060.
+
+## Workflow concurrency
+
+The heavy PR workflows cancel superseded runs for the same PR number. Their
+groups are scoped by workflow and event. Development v1 queue runs use a
+unique `github.run_id` and disable in-progress cancellation. A unique group
+also prevents GitHub from replacing a pending queue run. The separate
+reviewed-head workflow uses no concurrency group. Its runs can proceed
+independently. Refs #2060.
+
+| Workflow | Triggers | Concurrency |
+| --- | --- | --- |
+| `agentcontrol.yml` | Dispatch, with an optional PR input | Group by PR input or identity operation. Keep running work. |
+| `cameraagent-arm64.yml` | `main` push, schedule, manual and repository dispatch | One advisory group. Keep running work. |
+| `cameraagent-soak.yml` | Dispatch | One soak group. Keep running work. |
+| `ci-v2-baseline.yml` | Dispatch | No group. |
+| `ci.yml` | `main` and `release/**` PRs and pushes, call, dispatch | Group by workflow, event and PR number or ref. Cancel superseded runs. The queue guard uses run ID and disables cancellation if a queue trigger is added. |
+| `development-v1.yml` | `development/v1` PRs, pushes and merge groups | Cancel superseded PR runs by PR number and pushes by ref in separate groups. Each merge-group run has its own non-cancelling group. |
+| `merge-queue-reviewed-head.yml` | `development/v1` merge groups | No workflow or job group. |
+| `performance-pi5.yml` | `development/v1` push, schedule, dispatch | Separate Pi 5 group by ref. Cancel superseded runs. |
+| `prerelease.yml` | Integration prerelease tags | Group by tag ref. Keep running work. |
+| `promote-main.yml` | Schedule, dispatch | One promotion group. Keep running work. |
+| `release-image.yml` | Reusable workflow called by release and prerelease | No group of its own. |
+| `release.yml` | Final and release-candidate tags | Group by tag ref. Publish and Latest Image share a release-wide group. Keep running work. |
+| `stellarium.yml` | Schedule, dispatch | One oracle group. Keep running work. |
 
 ### Reproduce the documentation CI inventory
 
