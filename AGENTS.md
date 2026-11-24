@@ -61,11 +61,12 @@ have follow-up tracking.
 - Select the protected CI profile by the PR's **target branch** before applying
   the risk-tier ladder. For `development/v1`, the merge checks are
   `Development v1 / Preflight` and `Development v1 / Build and Unit`: lightweight
-  control checks, one Release build, and the complete Docker-disabled Unit
-  selection, except for the positively classified ready-PR documentation path
-  described in `docs/development-v1.md`. Push and merge-group workloads remain full. Full qualification in `ci.yml` belongs to `main`/`release/**`
-  and explicitly requested qualification. Do not dispatch it for an ordinary
-  v1 PR merely because `scripts/ci:classify` reports `complete=true`, including
+  control checks, one Release build, and Docker-disabled Unit selection for the
+  active test projects. The ready-PR documentation fast path described in
+  `docs/development-v1.md` skips the solution build and Unit workload. Push and
+  merge-group workloads remain full. Full qualification in `ci.yml` belongs to
+  `main`/`release/**` and explicitly requested qualification. Do not dispatch it
+  for an ordinary v1 PR merely because `scripts/ci:classify` reports `complete=true`, including
   on a base-sync delta. See `docs/development-v1.md` for this branch-specific
   contract, which takes precedence over generic protected-CI wording below.
 - Risk-tier local validation and explicit issue acceptance still apply.
@@ -88,8 +89,13 @@ have follow-up tracking.
   ./scripts/test:ci-classification
   ./scripts/test:coordination-guard
   ./scripts/test:pr-review-tools
-  DOCKER_HOST=unix:///tmp/hvo-no-docker.sock dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release --filter "TestCategory=Unit" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage"
-  dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release --filter "TestCategory=Integration" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage"
+  DOCKER_HOST=unix:///tmp/hvo-no-docker.sock \
+    dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release \
+      --filter 'TestCategory=Unit&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost' \
+      -p:SkipLogicHostTests=true --settings tests/coverage.runsettings --collect:"XPlat Code Coverage"
+  dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release \
+    --filter 'TestCategory=Integration&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost' \
+    -p:SkipLogicHostTests=true --settings tests/coverage.runsettings --collect:"XPlat Code Coverage"
   ```
 - `scripts/test:ci-classification`, `scripts/test:coordination-guard` and
   `scripts/test:pr-review-tools` are the CI-control guards, and
