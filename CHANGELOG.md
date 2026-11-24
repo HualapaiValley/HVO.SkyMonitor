@@ -32,6 +32,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Changed
 
+- The shipped CameraAgent `appsettings.json` defaults `CentralIntegration:Mode` to `Disabled` and omits the previous `SkyMonitor:BaseUrl` default of `http://logichost:8080`. Enabling central integration requires explicit service addresses. #2061
+
 - SkyMonitor CI and the standard local validation commands now skip the retired LogicHost and combined CameraAgent–LogicHost test suites. The active CI inventory has 16,583 of 17,819 Unit cases and 916 of 1,540 Integration cases. #2048
 
 - The CameraAgent API reference pages have updated styling for request and response examples. #2032

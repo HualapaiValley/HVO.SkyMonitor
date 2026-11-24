@@ -70,8 +70,6 @@ dotnet_diagnostic.CA1308.severity = none
 [src/HVO.SkyMonitor.Common/Security/SignedTickets/SignedTicketOptions.cs]
 dotnet_diagnostic.CA1819.severity = none
 
-# DiagnosticsController creates MinioClient in factory method; disposal is caller's responsibility
-# CA2000 flagged but this is intentional design - client is returned for caller to manage lifecycle
 # Terminal.Gui views are owned by the view they are added to, which disposes its subviews when it is disposed; the
 # wizard and hvo-sky's interface dispose their windows (#1317). CA2000 and CA2213 cannot see that ownership.
 [{src/HVO.SkyMonitor.TerminalUi/**.cs,src/HVO.SkyMonitor.Deployment.Cli/Wizard/**.cs,src/HVO.SkyMonitor.CameraAgent.Cli/Ui/**.cs}]

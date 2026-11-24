@@ -63,6 +63,4 @@
     <InternalsVisibleTo Include="HVO.SkyMonitor.Deployment.Cli.Tests" />
     <InternalsVisibleTo Include="HVO.SkyMonitor.CameraAgent.Tests" />
   </ItemGroup>
-  <ItemGroup>
-  </ItemGroup>
 </Project>

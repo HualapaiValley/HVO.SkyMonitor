@@ -172,7 +172,7 @@ the originally correlated target.
 
 ### CameraAgent API keys
 
-CameraAgent keys are local to one CameraAgent and separate from LogicHost keys.
+Each key belongs to the CameraAgent instance that issued it.
 
 1. Sign in to CameraAgent as the site owner and open `/Account/Manage/ApiKeys`.
 2. Choose `Read` unless the client changes settings or runs operations, then

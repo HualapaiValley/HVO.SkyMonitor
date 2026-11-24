@@ -395,14 +395,19 @@ counter carry and store exclusions below are baseline behavior, not qualificatio
 
 ### SkyMonitor qualification and adoption
 
-[#1607](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1607) evaluates CameraAgent. Credit existing
-evidence and time-box the first probe to roughly 60–90 minutes. Measure setup, dependencies, operating steps,
-failure modes, test upkeep, and end-to-end upgrade and recovery time.
+[#1607](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1607) evaluates CameraAgent. The study must credit
+existing evidence, time-box the first study/probe to roughly 60–90 minutes, test the most promising alternative
+first and stop early without a credible net benefit. Keeping the current mechanism is success. Measure setup,
+dependencies, operating steps, failure modes, test upkeep and end-to-end upgrade/recovery time. Snapshot creation
+speed alone is insufficient. No backend/layout change is required by this contract.
 
-**Ordering gate (owner clarification, 2026-10-23).** Record the applicable keep/change outcome before overlapping
-persistent-layout, recovery, or substantial forward migration work. Affected stories cite #1607, the recorded decision,
-and supported forward inputs. This applies to the overlapping parts of CameraAgent #1059/#1060/#1300. Follow
-the [execution protocol](planning/agent-execution.md#skymonitor-recovery-ordering-gate).
+**Ordering gate (owner clarification, 2026-10-23).** The study may be scheduled now or later, but its recorded
+keep/change outcome must precede overlapping persistent-layout/recovery work or a substantial forward migration.
+Affected implementation stories cite #1607, the recorded decision, and their declared supported forward inputs
+before committing to that path. An evidence-backed keep-current result clears the gate without a new filesystem,
+framework or implementation PR. Apply this to the overlapping parts of CameraAgent #1059/#1060/#1300. Unrelated
+features, clean-install preparation, release verification and strict existing-behavior #893 CLI parity remain
+independent. Follow the selection check in the [execution protocol](planning/agent-execution.md#skymonitor-recovery-ordering-gate).
 
 **Explicit forward-only conversions.** A separately declared larger DB/file/schema conversion may be forward-only;
 its size alone does not require a reverse migration, old-binary/new-schema compatibility or a new rollback

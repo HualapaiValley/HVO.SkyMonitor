@@ -92,10 +92,10 @@ have follow-up tracking.
   DOCKER_HOST=unix:///tmp/hvo-no-docker.sock \
     dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release \
       --filter 'TestCategory=Unit' \
-       --settings tests/coverage.runsettings --collect:"XPlat Code Coverage"
+      --settings tests/coverage.runsettings --collect:"XPlat Code Coverage"
   dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release \
     --filter 'TestCategory=Integration' \
-     --settings tests/coverage.runsettings --collect:"XPlat Code Coverage"
+    --settings tests/coverage.runsettings --collect:"XPlat Code Coverage"
   ```
 - `scripts/test:ci-classification`, `scripts/test:coordination-guard` and
   `scripts/test:pr-review-tools` are the CI-control guards, and
