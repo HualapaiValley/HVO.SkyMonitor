@@ -390,15 +390,10 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             }
             var currentSchemaRestart = !initializeSchema && !migrateSchema5 && !migrateSchema6 && !migrateSchema7 &&
                 !migrateSchema8 && !migrateSchema9 && !migrateSchema10 && !migrateSchema11;
+            using var connection = await OpenUnconfiguredAsync(disableCheckpointOnClose: currentSchemaRestart, cancellationToken)
+                .ConfigureAwait(false);
             if (currentSchemaRestart)
-            {
-                // A current-schema restart checks the whole database once (#1914), without reusing inspection's
-                // snapshot: integrity_check here, foreign_key_check as the writable handle's first statement below.
-                await CheckRestartIntegrityAsync(cancellationToken).ConfigureAwait(false);
-            }
-            using var connection = await OpenUnconfiguredAsync(cancellationToken).ConfigureAwait(false);
-            if (currentSchemaRestart)
-                await CheckRestartForeignKeysAsync(connection, cancellationToken).ConfigureAwait(false);
+                await CheckRestartDatabaseAsync(connection, cancellationToken).ConfigureAwait(false);
             if (initializeSchema)
             {
 #pragma warning disable CA1849 // Microsoft.Data.Sqlite exposes immediate transactions only through the synchronous overload.
@@ -3291,9 +3286,9 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
     }
 
     /// <summary>
-    /// Validates the shared journal for capture processing. <paramref name="verifyDatabase"/> also runs the
-    /// whole-database checks (<see cref="ValidateDatabaseAsync"/>); a caller may omit them only when this
-    /// initialization checks the same view itself.
+    /// Validates the shared journal's canonical schema. With <paramref name="verifyDatabase"/> enabled,
+    /// <see cref="CheckDatabaseAsync"/> also runs the whole-database checks on the supplied connection.
+    /// Current-schema restart runs those checks separately on its writable connection.
     /// </summary>
     private async ValueTask ValidateSchemaAsync(
         SqliteConnection connection,
@@ -3331,35 +3326,16 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
     }
 
     /// <summary>
-    /// A current-schema restart's single whole-database check, first half: <c>integrity_check</c>, on its own
-    /// read-only, unpooled connection that never checkpoints, so a rejected restart cannot checkpoint or remove the
-    /// retained WAL.
+    /// A current-schema restart checks the whole database once (#1914). The writable handle runs
+    /// <c>integrity_check</c> and then <c>foreign_key_check</c> as its first two statements. Each statement
+    /// takes its own snapshot. Checkpoint-on-close stays disabled until initialization succeeds.
     /// </summary>
-    private async ValueTask CheckRestartIntegrityAsync(CancellationToken cancellationToken)
+    private async ValueTask CheckRestartDatabaseAsync(SqliteConnection writable, CancellationToken cancellationToken)
     {
-        try
-        {
-            using var connection = await OpenReadOnlyWithoutCheckpointAsync(cancellationToken).ConfigureAwait(false);
-            await CheckIntegrityAsync(connection, "restart", null, cancellationToken).ConfigureAwait(false);
-        }
-        catch (SqliteException exception)
-        {
-            throw FailClosed(exception, cancellationToken);
-        }
-    }
-
-    /// <summary>
-    /// Second half: <c>foreign_key_check</c> as the writable handle's first statement, so it sees every commit made
-    /// before the handle that initialization continues with was opened. Checkpoint-on-close stays disabled on that
-    /// pooled handle until initialization succeeds, so a rejected restart still cannot checkpoint the retained WAL.
-    /// </summary>
-    private async ValueTask CheckRestartForeignKeysAsync(SqliteConnection writable, CancellationToken cancellationToken)
-    {
-        SetCheckpointOnClose(writable, enabled: false);
         _faultInjector.Inject(CaptureProcessingFaultPoint.BeforeDatabaseValidation, "restart/writable-open");
         try
         {
-            await CheckForeignKeysAsync(writable, "restart", null, cancellationToken).ConfigureAwait(false);
+            await CheckDatabaseAsync(writable, "restart", null, cancellationToken).ConfigureAwait(false);
         }
         catch (SqliteException exception)
         {
@@ -3387,7 +3363,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         }
     }
 
-    /// <summary>A read-only, unpooled connection that never checkpoints, for inspection and validation.</summary>
+    /// <summary>A read-only, unpooled connection for schema inspection. It never checkpoints.</summary>
     private async ValueTask<SqliteConnection> OpenReadOnlyWithoutCheckpointAsync(CancellationToken cancellationToken)
     {
         EnsureDatabaseFilesArePhysical();
@@ -3999,7 +3975,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
 
     private async ValueTask<SqliteConnection> OpenAsync(CancellationToken cancellationToken)
     {
-        var connection = await OpenUnconfiguredAsync(cancellationToken).ConfigureAwait(false);
+        var connection = await OpenUnconfiguredAsync(disableCheckpointOnClose: false, cancellationToken).ConfigureAwait(false);
         try
         {
             await ConfigureConnectionAsync(connection, cancellationToken).ConfigureAwait(false);
@@ -4012,7 +3988,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         }
     }
 
-    private async ValueTask<SqliteConnection> OpenUnconfiguredAsync(CancellationToken cancellationToken)
+    private async ValueTask<SqliteConnection> OpenUnconfiguredAsync(bool disableCheckpointOnClose, CancellationToken cancellationToken)
     {
         EnsureDatabaseFilesArePhysical();
         // Every processing connection uses its own page cache. With a shared cache the availability reader's
@@ -4020,9 +3996,10 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         // ("database table is locked") instead of coexisting with it under WAL, which stalled capture admission (#698).
         // Private caches are still pooled, as the raw journal and lane store pooling the same file already are: an
         // unpooled open re-read and re-parsed the whole schema before its first PRAGMA, which was the largest single
-        // CPU cost per frame (#1170). Pooled reuse carries no state between callers: the gallery rank function is
-        // re-registered per open, the window-candidate temp table is emptied before each use, and the migration temp
-        // tables are created and dropped inside the migration transaction.
+        // CPU cost per frame (#1170). The gallery rank function is re-registered per open, the window-candidate
+        // temp table is emptied before each use, and the migration temp tables are created and dropped inside the
+        // migration transaction. The native checkpoint-on-close flag survives pool reuse. A rejected restart can
+        // return a handle with the flag disabled. A successful restart using that handle restores it.
         var connection = new SqliteConnection(new SqliteConnectionStringBuilder
         {
             DataSource = _databasePath,
@@ -4034,6 +4011,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         try
         {
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            if (disableCheckpointOnClose)
+                SetCheckpointOnClose(connection, enabled: false);
             EnsureDatabaseFilesArePhysical();
             return connection;
         }
