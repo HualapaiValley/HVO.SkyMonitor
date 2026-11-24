@@ -528,6 +528,7 @@ public sealed partial class CurrentSkyPageTests
         Assert.IsFalse(measured.HasAttribute("checked"));
         Assert.IsFalse(measured.HasAttribute("disabled"));
         StringAssert.Contains(measured.ParentElement!.TextContent, "Measured deep-sky associations", StringComparison.Ordinal);
+        Assert.IsFalse(cut.Find("[aria-label='Measured layers']").TextContent.Contains("measured product not produced", StringComparison.Ordinal));
         Assert.IsFalse(cut.Find("[aria-label='Sky context layers'] input[data-layer-target='hvo-layer-1']").HasAttribute("disabled"));
         await cut.Find("input[data-layer-target='hvo-layer-1']").ChangeAsync(false).ConfigureAwait(false);
         await cut.Find("input[data-layer-target='hvo-layer-2']").ChangeAsync(true).ConfigureAwait(false);
