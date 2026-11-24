@@ -40,6 +40,10 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - CameraAgent capture processing checks the shared journal's integrity and foreign keys once per startup instead of three times, so processing and the Current Sky plate solution become available sooner after a restart with a long retained history. #1914
 
+### Removed
+
+- Removed the five retired LogicHost and combined test projects from SkyMonitor's solution. Standalone CameraAgent and shared tests cover the retained contracts. #2050
+
 ### Fixed
 
 - CameraAgent clears centered-view history after the reference capture's raw files and view preview expire. It releases the journal and lifecycle locks between batches so capture writers can commit. Open live intervals and saved selections keep their journal records, and retained views keep the true last-live revision. Exact archive links to pruned revisions return HTTP 404. #2000
@@ -179,10 +183,6 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 - Incomplete CameraAgent backups can be resumed or abandoned without restoring instance data. Abort retains restart protection when partial deletion fails, refuses already-published archives even before the journal advances, and keeps the journal until cleanup and restart succeed. Host-limit admission and retained warnings still precede mutation; an archive is committed only when its checksum verifies. #1700
 
 - CameraAgent satellite capture accepts real capture-cycle evidence that omits null solar regime and metering facts, and an owner can acknowledge a processing-lane quarantine of a still-valid raw capture so admission and health recover without rewriting that capture. #1388
-
-### Removed
-
-- Removed the five retired LogicHost and combined test projects from SkyMonitor's solution. Standalone CameraAgent and shared tests cover the retained contracts. #2050
 
 ### Security
 
