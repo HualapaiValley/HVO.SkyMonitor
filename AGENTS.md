@@ -91,7 +91,7 @@ have follow-up tracking.
   ./scripts/test:pr-review-tools
   DOCKER_HOST=unix:///tmp/hvo-no-docker.sock \
     dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release \
-      --filter 'TestCategory=Unit&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost' \
+      --filter 'TestCategory=Unit&TestCategory!=Performance&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost' \
       -p:SkipLogicHostTests=true --settings tests/coverage.runsettings --collect:"XPlat Code Coverage"
   dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release \
     --filter 'TestCategory=Integration&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost' \

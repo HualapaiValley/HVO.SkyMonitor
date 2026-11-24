@@ -415,7 +415,7 @@ readonly CLI_TESTS="$REPO_ROOT/tests/HVO.SkyMonitor.Deployment.Cli.Tests/HVO.Sky
 # stays strict for every test that should run on ARM64 Linux. The category audit owns the
 # Unit count and still sees it; the obsolete macOS advisory job is retired. If a second OS-conditioned
 # test appears, add it here with its commit, not a broader pattern.
-unit_filter='TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware&FullyQualifiedName!=HVO.SkyMonitor.CameraAgent.Tests.ZwoAsiCameraModuleTests.InitializeOnMacOsRejectsBeforeRuntimeAccess'
+unit_filter='TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware&TestCategory!=Performance&FullyQualifiedName!=HVO.SkyMonitor.CameraAgent.Tests.ZwoAsiCameraModuleTests.InitializeOnMacOsRejectsBeforeRuntimeAccess'
 # The cross-lineage catalog transition added in e44804d5 needs the HYG 4.4 bundle as well as the
 # 4.2 bundle. The 4.4 bundle is retained as local evidence until its publication is approved, so
 # this workflow restores only 4.2, the test records Inconclusive, and the gate below failed every

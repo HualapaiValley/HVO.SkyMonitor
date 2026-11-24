@@ -167,7 +167,7 @@ dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release --disab
 ./scripts/coverage:development-v1 --settings "$evidence_root/coverage.runsettings"
 DOCKER_HOST=unix:///tmp/hvo-no-docker.sock \
   dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release \
-    --filter 'TestCategory=Unit&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost' \
+    --filter 'TestCategory=Unit&TestCategory!=Performance&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost' \
     -p:SkipLogicHostTests=true --settings "$evidence_root/coverage.runsettings" \
     --collect:"XPlat Code Coverage" --results-directory "$evidence_root/unit" --logger trx
 ./scripts/test:coverage-development-v1
@@ -294,7 +294,7 @@ A green sync PR is integration evidence and does not replace promotion qualifica
 | **Quality** | The full-history [secret scan](#secret-scan), workflow lint, syntax and documentation audits, the Unit-selection completeness control, lightweight environment/classification contracts, and Compose validation run in every selected Quality job. Full mode also enforces formatting, package vulnerability/deprecation policy, and pinned .NET tools; manual dispatch additionally validates the historical Phase 14 acceptance inventory. Reduced mode does not restore or audit application packages it cannot affect. A 45-minute qualification job budget covers formatting, the complete control-contract batch, package audit and the manual historical acceptance gate. |
 | **Deployment Contracts** | Deployment-relevant pull requests run the coordinator watchdog/failure contracts and current campaign-shape contracts, plus only the affected exhaustive catalog, split-host, or installer suite selected by the classifier. Main/release/manual runs execute every exhaustive suite. Otherwise its planned `skipped` result is required. |
 | **Build** | Warning-clean solution Debug and Release builds plus complete, disjoint behavioral category discovery. Never component-scoped, so no component plan can hide a warning or a category-count drift. Skipped only in classified reduced mode. |
-| **Unit Tests** | 16609 Unit cases across 17 active assemblies with an intentionally invalid Docker endpoint. Two [supplemental Unit selections](#supplemental-unit-selections) write TRX only. The complete solution plan runs this job. Component plans run the selections in their active lanes. A 45-minute full-qualification job budget covers restore/build, the serial test/coverage selections and evidence upload. |
+| **Unit Tests** | 16608 Unit cases across 17 active assemblies with an intentionally invalid Docker endpoint. Two [supplemental Unit selections](#supplemental-unit-selections) write TRX only. The complete solution plan runs this job. Component plans run the selections in their active lanes. A 45-minute full-qualification job budget covers restore/build, the serial test/coverage selections and evidence upload. |
 | **Integration Tests** | 916 Integration-category cases in the active inventory, including the 7 repository graph/provider-boundary/publish cases in Architecture & Publish. The complete solution plan runs the other 909 cases across Astronomy and three CameraAgent assemblies. The Integration step attempts all four assemblies and reports failure if any fail. |
 | **Architecture & Publish** | Both category selections of the architecture project cover the 34 Unit-category boundary cases, including the host `Dockerfile`, fault-matrix discovery, and CameraAgent event-ID uniqueness contracts, and the 7 Integration-category repository graph/provider-boundary/MSBuild/publish cases. Retains SHA-256 publish manifests for CameraAgent and for both runners and the installer on Linux x64 and ARM64. Runs for every full-mode head. |
 | **CameraAgent Migrations** | Exactly one canonical initial migration source for CameraAgent Identity plus zero pending CameraAgent EF model changes, built from the CameraAgent project root. Runs for every full-mode head. |
@@ -873,11 +873,64 @@ maintained in [`cameraagent-arm64-ci.md`](cameraagent-arm64-ci.md).
 
 ## Categories
 
-The category audit requires every discovered case to belong to exactly one primary behavioral category. Current declared inventory is `Unit=16609`, `Integration=916`, `Manual=274`, `Soak=1`, `External=0`, and `Hardware=1`. Whole-solution discovery verifies those declarations.
+The category audit requires every discovered case to belong to exactly one primary behavioral category. Current declared inventory is `Unit=16608`, `Integration=916`, `Manual=274`, `Soak=1`, `External=0`, `Hardware=1`, and `Performance=49`. Whole-solution discovery verifies those declarations.
 
-These totals and the Unit/Integration rows in [Required Checks](#required-checks) are not hand-maintained pins: `./scripts/docs:audit-operations` sums the per-project inventories and fails when this runbook disagrees with them, while the Build check's category audit proves those inventories match actual discovery. Each test project owns its expected counts in `tests/<project>/test-categories.json`, a flat object with exactly the six categories as non-negative integers; the engine in `scripts/test-categories/Program.cs` owns no counts. A count change is therefore a change inside the owning project directory and selects that project's component lane, while editing the engine still selects the complete solution matrix. A project without an inventory, an inventory without a project, or a malformed, duplicate, unknown, or stale category all fail the audit. Update the owning inventory and this runbook in the same change.
+`./scripts/docs:audit-operations` sums the per-project inventories and checks this section and the Unit/Integration rows in [Required Checks](#required-checks). The Build check compares those inventories with actual discovery. Each project owns its counts in `tests/<project>/test-categories.json`, a flat object with seven required keys and non-negative integers. A count change in the owning project directory selects that project's component lane. Editing the category audit engine selects the complete solution matrix. The audit rejects missing, orphaned, malformed, duplicate, unknown, and stale entries. Update the owning inventory and this runbook together.
 
 `External` is implemented by the pinned, networkless Stellarium workflow rather than an empty MSTest check. The accelerated `Soak` case and real-duration soak are independently selectable in `.github/workflows/cameraagent-soak.yml`. The Hardware case remains separately selectable and is not published as a CI check until a suitable device runner exists.
+
+### Performance tests
+
+MSTest uses `[TestCategory("Performance")]` and VSTest selects it with
+`dotnet test --filter 'TestCategory=Performance'`. `TestCategory` is the
+MSTest filter property for the Performance category. Keep functional outcomes
+in Unit, with a generous runaway timeout when the test needs one. Put tight
+elapsed-time, allocation, and performance work limits in Performance cases.
+Keep deterministic deadlines, early rejection, lock ordering, and configured
+operation limits in the correctness cases that exercise those contracts.
+Build and Unit and the standard local Unit selection use
+`TestCategory=Unit&TestCategory!=Performance`.
+
+### Raspberry Pi 5 performance
+
+`.github/workflows/performance-pi5.yml` runs on pushes to `development/v1`,
+nightly at 09:17 UTC, and when manually dispatched on `development/v1`. It uses
+`[self-hosted, linux, ARM64, hvo-skymonitor-arm64]` and verifies that the runner
+is a native ARM64 Raspberry Pi 5 before collecting samples. This advisory job
+runs independently of Required CI, pull-request checks, and the merge queue.
+
+The job uses the .NET SDK in `global.json` and runs the inventory-bearing
+projects serially, selecting only `TestCategory=Performance`. It runs three
+Release trials per project and takes the median TRX duration for each case.
+Every trial must pass the declared number of cases with the same identities.
+A failed, skipped, missing, or duplicated case fails the measurement.
+
+The baseline is the median of the most recent five accepted run medians per
+case. A duration **more than 20%** above its previous median fails the Pi job.
+Exactly 20% is accepted. An entirely new baseline or a new test case seeds from
+the first clean Pi measurement. A failing run leaves the full previous history
+in place. The comparison artifact records per-case timings and the decision
+for 30 days. Raw TRX and test logs stay in the runner's temporary workspace.
+
+The workflow serializes baseline updates and saves a new immutable GitHub
+Actions cache entry under `skymonitor-development-v1-pi5-performance-v1-` for
+each accepted run attempt. It restores the newest matching entry on
+`development/v1` and verifies each save by exact key. If the cache is empty or
+has been evicted, the next clean Pi run seeds it. To recalibrate after a runner,
+SDK, or intentional workload change, dispatch **SkyMonitor Pi 5 Performance**
+on `development/v1` with `reset_baseline` enabled. A successful reset becomes
+the newest baseline. Use a quiet Pi and inspect the next scheduled comparisons
+to confirm the new calibration. Local runs confirm execution and do not feed the
+cache.
+
+To reproduce the category with a warning-clean Release build already available,
+choose a fresh private results directory in `scratch` and run:
+
+```bash
+flock --close /tmp/hvo-heavy-gate.lock python3 scripts/ci/pi5_performance.py \
+  "$scratch/raw" "$scratch/baseline.json" "$scratch/comparison.json" --no-build
+python3 -B scripts/ci/test_pi5_performance.py
+```
 
 ## LogicHost test retirement
 
@@ -891,7 +944,7 @@ that contains their suites.
 Development v1 and the manually dispatched CI v2 baseline use this MSTest filter.
 
 ```text
-TestCategory=Unit&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost
+TestCategory=Unit&TestCategory!=Performance&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost
 ```
 
 The `-p:SkipLogicHostTests=true` argument and both name exclusions remain part
@@ -919,7 +972,7 @@ dotnet format HVO.SkyMonitor.v9.slnx --no-restore --verify-no-changes
 dotnet run --project scripts/test-categories/HVO.SkyMonitor.TestCategoryAudit.csproj --configuration Release
 DOCKER_HOST=unix:///tmp/hvo-no-docker.sock \
   dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release \
-    --filter 'TestCategory=Unit&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost' \
+    --filter 'TestCategory=Unit&TestCategory!=Performance&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost' \
     -p:SkipLogicHostTests=true
 dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release \
   --filter 'TestCategory=Integration&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost' \
@@ -1288,7 +1341,7 @@ Reproduce one lane locally with the same scripts CI runs:
 ```bash
 dotnet tool restore
 ./scripts/ci:component-build cameraagent
-DOCKER_HOST=unix:///tmp/hvo-no-docker.sock dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter "TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/cameraagent --logger "trx;LogFileName=unit-cameraagent.trx"
+DOCKER_HOST=unix:///tmp/hvo-no-docker.sock dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter "TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware&TestCategory!=Performance" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/cameraagent --logger "trx;LogFileName=unit-cameraagent.trx"
 ./scripts/ci:component-publish cameraagent
 ./scripts/coverage:component cameraagent
 ```

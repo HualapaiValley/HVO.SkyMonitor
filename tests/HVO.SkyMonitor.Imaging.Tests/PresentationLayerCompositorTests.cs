@@ -97,13 +97,16 @@ public sealed class PresentationLayerCompositorTests
     }
 
     [TestMethod]
-    public void CompositionBudgetsRejectBeforeOutputAllocationAndAdmitFullResolutionW6()
+    public void CompositionBudgetsRejectOversizedWorkAndAdmitFullResolutionW6() =>
+        _ = VerifyCompositionBudgets();
+
+    internal static (long Oversized, long TooManyLayers) VerifyCompositionBudgets()
     {
         var oversized = new ImageLayout(16384, 16384, CameraPixelFormat.Mono8, 16384);
         var start = GC.GetAllocatedBytesForCurrentThread();
         var error = Assert.ThrowsExactly<ArgumentException>(() => PresentationLayerCompositor.CompositeDisplay(oversized, ReadOnlyMemory<byte>.Empty, []));
+        var oversizedAllocation = GC.GetAllocatedBytesForCurrentThread() - start;
         StringAssert.Contains(error.Message, "pixel budget", StringComparison.Ordinal);
-        Assert.IsLessThan(1_000_000L, GC.GetAllocatedBytesForCurrentThread() - start);
 
         const int size = 3552;
         var layout = new ImageLayout(size, size, CameraPixelFormat.Mono8, size);
@@ -115,7 +118,7 @@ public sealed class PresentationLayerCompositorTests
         Assert.AreEqual(CameraPixelFormat.Rgb24, accepted.Layout.PixelFormat);
         start = GC.GetAllocatedBytesForCurrentThread();
         Assert.ThrowsExactly<ArgumentException>(() => PresentationLayerCompositor.CompositeDisplay(layout, source, Enumerable.Repeat(layer, 11).ToArray()));
-        Assert.IsLessThan(1_000_000L, GC.GetAllocatedBytesForCurrentThread() - start, "Rejected stack must not allocate its 38MB output.");
+        return (oversizedAllocation, GC.GetAllocatedBytesForCurrentThread() - start);
     }
 
     [TestMethod]
@@ -323,7 +326,10 @@ public sealed class PresentationLayerCompositorTests
     [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
-    public void CancellationAtEndOfAdmissionPreventsOutputAllocationAndCopy(bool promoteToRgb)
+    public void CancellationAtEndOfAdmissionLeavesSourceIntact(bool promoteToRgb) =>
+        _ = VerifyCancellationAtEndOfAdmission(promoteToRgb);
+
+    internal static long VerifyCancellationAtEndOfAdmission(bool promoteToRgb)
     {
         const int size = 2048;
         var layout = new ImageLayout(size, size, CameraPixelFormat.Mono8, size);
@@ -343,8 +349,8 @@ public sealed class PresentationLayerCompositorTests
         var allocationDelta = GC.GetAllocatedBytesForCurrentThread() - allocated;
 
         Assert.AreEqual(cancellation.Token, exception.CancellationToken);
-        Assert.IsLessThan(1_000_000L, allocationDelta, "Admission cancellation must precede the 4/12 MiB output allocation and any base copy.");
         CollectionAssert.AreEqual(checksum, SHA256.HashData(source));
+        return allocationDelta;
     }
 
     [TestMethod]

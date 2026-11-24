@@ -1,0 +1,87 @@
+name: SkyMonitor Pi 5 Performance
+
+on:
+  push:
+    branches: [development/v1]
+  schedule:
+    - cron: '17 9 * * *'
+  workflow_dispatch:
+    inputs:
+      reset_baseline:
+        description: Start a new rolling baseline from this run
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: skymonitor-pi5-performance
+  cancel-in-progress: false
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  MSBUILDDISABLENODEREUSE: 1
+  DOCKER_HOST: unix:///tmp/hvo-no-docker.sock
+  BASELINE_PATH: TestResults/pi5-performance/baseline.json
+  BASELINE_PREFIX: skymonitor-development-v1-pi5-performance-v1-
+
+jobs:
+  performance:
+    name: Pi 5 Performance
+    if: github.ref == 'refs/heads/development/v1'
+    runs-on: [self-hosted, linux, ARM64, hvo-skymonitor-arm64]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Setup .NET from global.json
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          global-json-file: global.json
+      - name: Verify Raspberry Pi 5 hardware
+        shell: bash
+        run: |
+          if [[ "$(uname -m)" != aarch64 || ! -r /proc/device-tree/model ]] ||
+             [[ "$(tr -d '\000' </proc/device-tree/model)" != "Raspberry Pi 5"* ]]; then
+            echo "::error::The performance baseline requires a Raspberry Pi 5 running native ARM64."
+            exit 1
+          fi
+      - name: Restore last accepted Pi baseline
+        if: ${{ !inputs.reset_baseline }}
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ env.BASELINE_PATH }}
+          key: ${{ env.BASELINE_PREFIX }}${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ${{ env.BASELINE_PREFIX }}
+      - name: Run and compare Performance cases
+        id: measure
+        shell: bash
+        run: |
+          flock --close /tmp/hvo-heavy-gate.lock python3 scripts/ci/pi5_performance.py \
+            "$RUNNER_TEMP/pi5-performance-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            "$BASELINE_PATH" TestResults/pi5-performance/comparison.json
+      - name: Upload timing comparison
+        if: ${{ !cancelled() && (steps.measure.outcome == 'success' || steps.measure.outcome == 'failure') }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: pi5-performance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: TestResults/pi5-performance/comparison.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Save accepted Pi baseline
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ env.BASELINE_PATH }}
+          key: ${{ env.BASELINE_PREFIX }}${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Verify baseline save
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ env.BASELINE_PATH }}
+          key: ${{ env.BASELINE_PREFIX }}${{ github.run_id }}-${{ github.run_attempt }}
+          lookup-only: true
+          fail-on-cache-miss: true

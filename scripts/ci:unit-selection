@@ -127,7 +127,7 @@ declare -a export_lines=() commands=() coverage_slots=() inventories=() projects
 
 grep -qxF '      DOCKER_HOST: unix:///tmp/hvo-unit-docker-must-not-exist.sock' <<<"$unit_job" ||
   fail 'the Unit job must run with the intentionally invalid Docker endpoint'
-grep -qxF '      UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware' <<<"$unit_job" ||
+grep -qxF '      UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware&TestCategory!=Performance' <<<"$unit_job" ||
   fail 'the Unit job must use the positive Unit filter'
 
 # Anything that changes how the Unit job's steps execute is part of the selection: a
@@ -348,7 +348,7 @@ while IFS='|' read -r job component name slot; do
   unit_job="$(job_block "$job")" # step_of reads the current job.
   project="tests/$name/$name.csproj"
   [[ -n "${expected[$project]:-}" ]] || fail "$job supplemental project owns no Unit cases: $project"
-  grep -qxF '      UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware' <<<"$unit_job" ||
+  grep -qxF '      UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware&TestCategory!=Performance' <<<"$unit_job" ||
     fail "$job must use the complete positive Unit filter"
   component_env="$(mapping_keys '^    env:[[:space:]]*$' '      ' <<<"$unit_job" | sort | paste -sd, -)"
   [[ "$component_env" == 'INTEGRATION_FILTER,UNIT_FILTER' ]] ||

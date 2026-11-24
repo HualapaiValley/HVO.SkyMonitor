@@ -20,7 +20,10 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 public sealed partial class VirtualSkyCameraModuleTests
 {
     [TestMethod]
-    public async Task CenteredViewReopensAcceptedReferenceResidualsAfterCropAndResize()
+    public Task CenteredViewReopensAcceptedReferenceResidualsAfterCropAndResize() =>
+        VerifyCenteredReferenceResidualsAsync(MeasuredAstrometryFixture.Options, TestContext);
+
+    internal static async Task VerifyCenteredReferenceResidualsAsync(MeasuredAstrometryOptions recipe, TestContext testContext)
     {
         var fixture = await MeasuredAstrometryFixture.CreateAsync().ConfigureAwait(false);
         var raw = fixture.Raw;
@@ -35,7 +38,7 @@ public sealed partial class VirtualSkyCameraModuleTests
         solverCatalog.Setup(source => source.ReadAsync(7, AstrometricCatalogData.MaximumEntries, It.IsAny<CancellationToken>()))
             .ReturnsAsync(fixture.Catalog);
         var clock = new CenteredClock { UtcNow = start };
-        var token = TestContext.CancellationToken;
+        var token = testContext.CancellationToken;
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-centered-accepted-residuals");
 
         try
@@ -48,7 +51,7 @@ public sealed partial class VirtualSkyCameraModuleTests
             using (var provider = MeasurementProvider(root, location, catalog, timeProvider: clock,
                 configureServices: services => services.AddSingleton(solverCatalog.Object)))
             {
-                var profile = AcceptedResidualProfile(root, fixture, location);
+                var profile = AcceptedResidualProfile(root, fixture, location, recipe);
                 var active = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(provider, profile).ConfigureAwait(false);
                 var ingress = provider.GetRequiredService<RawCaptureIngress>();
                 var sceneResources = provider.GetRequiredService<CaptureProjectedSceneStager>().FrozenResources;
@@ -162,7 +165,7 @@ public sealed partial class VirtualSkyCameraModuleTests
             Assert.AreEqual(presentation.PresentationIdentitySha256, rendered.PresentationIdentitySha256);
             Assert.AreEqual(presentation.SvgChecksumSha256, rendered.SvgChecksumSha256);
             CollectionAssert.AreEqual(presentation.Svg.ToArray(), rendered.Svg.ToArray());
-            TestContext.WriteLine($"fit={fitPin.ArtifactId} base={archived.Base.BaseId} revision={archived.LatestRevisionId} svg={rendered.SvgChecksumSha256}");
+            testContext.WriteLine($"fit={fitPin.ArtifactId} base={archived.Base.BaseId} revision={archived.LatestRevisionId} svg={rendered.SvgChecksumSha256}");
         }
         finally
         {
@@ -171,7 +174,7 @@ public sealed partial class VirtualSkyCameraModuleTests
     }
 
     private static CameraModuleConfig AcceptedResidualProfile(string root, MeasuredAstrometryFixture fixture,
-        DeploymentLocationSnapshot location)
+        DeploymentLocationSnapshot location, MeasuredAstrometryOptions recipe)
     {
         var context = fixture.Context;
         var geometry = context.Projection;
@@ -207,7 +210,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                     new("MeasuredAstrometry", "fit", DependsOn: ["scene", "associated"], Required: false, Publication: durable,
                         Options: JsonSerializer.SerializeToElement(new MeasuredAstrometryCaptureOptions
                         {
-                            CatalogSelection = catalogPin, Recipe = MeasuredAstrometryFixture.Options
+                            CatalogSelection = catalogPin, Recipe = recipe
                         }))
                 ]
             }
@@ -260,4 +263,16 @@ public sealed partial class VirtualSkyCameraModuleTests
             Assert.AreEqual(y, double.Parse(line.Attribute("y" + endpoint)!.Value, CultureInfo.InvariantCulture), .001);
         }
     }
+}
+
+[TestClass]
+[TestCategory("Performance")]
+[DoNotParallelize]
+public sealed class VirtualSkyCameraPerformanceTests
+{
+    public TestContext TestContext { get; set; } = null!;
+
+    [TestMethod]
+    public Task CenteredViewReopensAcceptedReferenceResidualsWithinAstrometryBudget() =>
+        VirtualSkyCameraModuleTests.VerifyCenteredReferenceResidualsAsync(MeasuredAstrometryFixture.PerformanceOptions, TestContext);
 }
