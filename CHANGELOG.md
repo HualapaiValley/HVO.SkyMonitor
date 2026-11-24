@@ -190,6 +190,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Security
 
+- Move the CameraAgent and LogicHost runtime images to ASP.NET Core 10.0.15, a security release. #2053
+
 - CameraAgent enforces antiforgery validation on session automation save, removal, backfill and retry commands, and reports rejected tokens with a safe reason code and diagnostic log. Refs #1768
 
 - Move the CameraAgent and LogicHost runtime images to ASP.NET Core 10.0.14, a security release addressing CVE-2026-111497, CVE-2026-70197, CVE-2026-102870 and CVE-2026-114148. SDK 10.0.402 and its bundled .NET runtime remain at 10.0.13. #1667
