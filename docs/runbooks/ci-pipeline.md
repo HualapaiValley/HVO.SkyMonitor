@@ -9,6 +9,28 @@ output does not by itself authorize an extra full-workflow dispatch for a v1 PR.
 Whole-repository ShellCheck remains in Quality; exhaustive category discovery
 remains in Build. Both are intentionally absent from the short workflow.
 
+## Development v1 reviewed diff
+
+The `Merge queue reviewed head` workflow publishes the `hvo/reviewed-head`
+check on queue groups. It verifies the review fingerprint and clean merges
+using the protected branch checkout. The Ubuntu 24.04 hosted runner
+[image 20261122.23.1](https://github.com/actions/runner-images/blob/ubuntu24/20261122.23/images/ubuntu/Ubuntu2404-Readme.md)
+includes Git 2.56.1. The verifier reports the runtime Git version and requires
+Git 2.43 or newer for `merge-tree --write-tree` with `--attr-source`.
+
+```bash
+./scripts/test:ci-queue-reviewed-head
+```
+
+The suite uses isolated real Git repositories and simulated GitHub API pages.
+It checks the transition from exact-SHA statuses, base advances and clean
+syncs, and verifies rejection of changed files, conflicts, extra merge edits,
+bad approvals and incomplete history. Development v1 Preflight runs the suite
+through `scripts/test:development-v1-ci`, which also checks workflow identity,
+triggers and permissions. See the
+[queue runbook](development-v1-merge-queue.md#publish-review-approval) for
+Kepler's publication commands.
+
 ## Development v1 Per-file Coverage
 
 **Development v1 / Build and Unit** enforces the canonical risk-file line and

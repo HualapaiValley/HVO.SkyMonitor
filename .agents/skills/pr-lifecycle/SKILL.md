@@ -427,10 +427,12 @@ implementation/test/review loop; never deem the third head approved, defer a
 High/Medium, waive a required reviewer, or advance while incomplete. Low
 follow-ups do not need to wait for that budget.
 
-Convergence requires complete original-source evidence and required
-formal CLEAN reports from the named tier reviewers on the CURRENT PR HEAD SHA,
-verified disposition of every High/Medium finding, and Low follow-up tracking.
-Kepler separately validates required CI and conversations before the gate/queue.
+Convergence requires complete original-source evidence and required formal
+CLEAN reports from the named tier reviewers on the same reviewed SHA, verified
+disposition of every High/Medium finding, and Low follow-up tracking. The
+current PR head must be the reviewed head or qualify under the clean-sync
+proof below. Kepler validates required CI and conversations on the current
+head before the gate and queue.
 
 ## Merge-Queue Head Identity
 
@@ -443,11 +445,13 @@ stricter latest-base pre-submit policy: monitor merge queue and CI first; adopt
 stricter policy only if evidence shows a need and Roy authorizes it. This rule
 governs any synchronization language elsewhere in the lifecycle procedure.
 
-Actual CONFLICTING merges and real product conflicts still require resolution.
-New commits on the PR require applicable local evidence and independent review,
-including base-sync review when integration changes the head. Queue CI validates
-the combined group separately. This does not authorize queue cutover, change
-queue gates, or substitute group CI for completeness or required reviews.
+PR edits and actual merge/product conflicts require applicable local evidence
+and independent review on the new candidate. The operated queue can carry an
+existing versioned approval through a
+[verified clean merge-only sync](../../../docs/development-v1.md#diff-bound-review-approval)
+from `development/v1`. Keep the formal reports and completeness evidence
+bound to the originally reviewed SHA and validate applicable integration
+evidence on the current head. Queue CI validates the combined group separately.
 
 ## Kepler's Operated Merge-Queue Route
 
@@ -464,13 +468,14 @@ does not replace this operated route or authorize a coding thread to finalize.
    use Preflight and Build and Unit, not an unsolicited full qualification run.
 3. Immediately before publishing the gate, Kepler re-reads the **CURRENT PR HEAD
    SHA** and verifies complete original-requirement evidence, required
-   formal CLEAN reports (LOW: Sol; HIGH: Sol and Opus, all on that head), passing
+   formal CLEAN reports (LOW: Sol; HIGH: Sol and Opus, all on the reviewed SHA), passing
    required CI, resolved conversations, and no actual merge/product conflict.
-   A changed head returns to the appropriate implementation/test/review loop;
-   target-tip movement or age alone does not invalidate unchanged-head reviews.
+   A changed head needs the clean-sync proof above or the applicable
+   implementation, test and review loop.
 4. Kepler alone sets `hvo/reviewed-head=success` on exactly the revalidated head.
-   This is an operator commit status, not proof that GitHub natively assessed
-   issue completeness. Never copy it from another candidate or queue commit.
+   Use the [reviewed-diff stamp command](../../../docs/runbooks/development-v1-merge-queue.md#publish-review-approval)
+   to bind the original review or publish a verified carry reference on a
+   cleanly synced head. Kepler records issue completeness in the PR ledger.
 5. Kepler revalidates the head and enqueues with GraphQL `enqueuePullRequest`,
    binding `expectedHeadOid` to that head. An example mutation for Kepler is:
 
@@ -483,9 +488,10 @@ does not replace this operated route or authorize a coding thread to finalize.
    ```
 
 6. Kepler verifies the returned queue entry and monitors queue integration CI
-   and merge. A conflict, failed required check, changed head, or blocking
-   finding goes back to the owner through Kepler; queue/group CI cannot replace
-   completeness or reviews. Preserve existing conflict resolutions.
+   and merge. A conflict, failed required check, new PR edit, or blocking
+   finding goes back to the owner through Kepler. A clean sync requires
+   revalidation and admission on its current head. Preserve existing conflict
+   resolutions.
 
 Under the operated queue, **`gh pr merge --merge` warns and does NOT enqueue**.
 It is not the queue-admission command; use the GraphQL mutation. Do not silently
@@ -674,11 +680,11 @@ corrections and local evidence, then stop at handoff.
   unchanged successful local gates.
 - On a target that requires it (`development/v1`), Kepler publishes
   `hvo/reviewed-head` on exactly that head before merging, whichever route is
-  used. Never publish it on a head that review did not converge on, or before
-  fresh required checks have passed.
-- Kepler merges only when the current head has all required tier-specific
-  CLEAN reports, the PR has no unresolved merge or product conflicts, applicable
-  required head/queue checks are green, and actionable conversations are resolved.
+  used. Require fresh current-head checks and review convergence or the
+  operated queue's verified clean-sync carry.
+- Kepler merges only when the approved diff has all required tier-specific
+  CLEAN reports, merge and product conflicts are resolved, required current-head
+  and applicable queue checks are green, and actionable conversations are resolved.
 - After merge, confirm closure only for fully resolved issues. For a partial
   slice, record what shipped and keep its incomplete parent issue open. Update
   the owning roadmap epic when applicable, and synchronize local `main`.

@@ -32,12 +32,14 @@ remain authoritative. This adoption targets `development/v1`, not promotion.
 Draft PRs run hosted Preflight, including the secret scan; formal PR review follows
 successful draft Preflight. Ready PRs run Preflight and, after it succeeds,
 Build and Unit on self-hosted Linux x64. A `merge_group` runs both checks and
-`merge-queue-reviewed-head.yml`; the latter checks each queued PR head for a
-successful `hvo/reviewed-head` status authored by exactly `RoySalisbury`.
+`merge-queue-reviewed-head.yml`. The latter verifies the approved PR diff, any
+clean merge-only sync from the protected branch, and the queue merge trees.
+It requires a successful `hvo/reviewed-head` status from `RoySalisbury`.
 
 The status is a queue-entry and merge gate, not an admission gate for draft or
 ready CI. After reviews converge, threads are resolved, and applicable ready-head
-checks pass, Kepler publishes it on the exact reviewed head and enqueues via
+checks pass, Kepler [publishes the verified status](../../runbooks/development-v1-merge-queue.md#publish-review-approval)
+on the current head and enqueues via
 GraphQL `enqueuePullRequest` with that expected head. `gh pr merge --merge`
 does not enqueue under the queue. Queue CI tests the integration candidate.
 The target-specific checks and full-qualification distinction remain in

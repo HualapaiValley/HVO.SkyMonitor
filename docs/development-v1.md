@@ -93,20 +93,55 @@ the queued PR and entries ahead of it. Preflight has six minutes for all events;
 
 The queue's temporary commit has no operator review status. The
 `merge-queue-reviewed-head.yml` job checks out the **fresh `development/v1` tip**
-and runs that trusted copy of `scripts/ci:queue-reviewed-head`. A missing checkout
-or script fails the job; it never falls back to the queued tree. The gate
-therefore always runs the script as it stands on the trusted branch.
-The gate refreshes the destination tip through the read-only ref API on each
-iteration and walks first parents from the group SHA to that tip, requiring
-exactly two parents per entry (at most 100). Every second parent must equal an
-open PR's current head targeting this repository's `development/v1`; fork PRs are
-supported using statuses in the base repository. One or more matching PR
-associations are accepted for earlier entries with a shared head. An earlier
-entry merging during traversal stops the walk at the refreshed trusted tip. Each head's numeric newest
-`hvo/reviewed-head` status, across all API pages, must be `success` from exactly
-`RoySalisbury`. Unsupported topology, no matching PR association, a changed PR head,
-an unreadable page, or a base that advanced beyond the group fails closed.
-On PRs, `hvo/reviewed-head` remains the operator's commit status.
+and runs that trusted copy of `scripts/ci:queue-reviewed-head`. It fetches the
+GitHub queue ref as objects and verifies that it still points to the event SHA.
+The gate refreshes the destination tip through the read-only ref API and walks
+the group's first parents to that tip. It requires exactly two parents per entry,
+with a limit of 100 entries. Each second parent must equal an open PR's current
+head targeting this repository's `development/v1`. Earlier entries require a
+unique matching PR association so the approval can be checked for that PR.
+An earlier entry landing during traversal can become the trusted stopping point.
+Fork PRs use commit statuses in the base repository.
+
+### Diff-bound review approval
+
+Kepler publishes a versioned `hvo/reviewed-head` commit status after the
+[required review and current-head checks](runbooks/development-v1-merge-queue.md#publish-review-approval).
+Its description is `hvo-diff-v1:<reviewed-head>:<reviewed-merge-base>:<digest>`.
+The digest is SHA-256 encoded as unpadded base64url. It covers the repository,
+destination ref, PR number and the NUL-delimited raw Git tree diff from the
+unique reviewed merge base to the reviewed head. Raw records include paths,
+modes and full object IDs. A rename appears as a removal and an addition.
+Whitespace, binaries, executable-bit changes and empty files all affect the
+digest.
+
+- **Base advance with the PR untouched.** The approval carries through when
+  Git reproduces the queue entry's merge tree cleanly.
+- **Clean merge-only sync.** Every intervening first-parent merge must have
+  merged a forward commit on the protected branch's first-parent history.
+  The verifier recreates each sync with Git's standard three-way merge and
+  compares the entire tree. This also covers non-overlapping changes to the
+  same file, where base edits may move a reviewed hunk or change its blob ID.
+  The verifier recomputes the original diff at the recorded merge base.
+- **Changed PR content or uncertain history.** Extra changes anywhere in a
+  merge tree, conflict resolution, rewritten PR history, ambiguous merge
+  bases, missing history or objects, and unreadable API data fail closed.
+  The verifier uses Git 2.43 or newer and disables repository merge
+  attributes when reproducing merges so an automatic conflict driver
+  cannot attest a conflict as clean.
+- **Approval authority.** The verifier selects the numeric newest matching
+  status across all API pages and requires `success` from GitHub account
+  `RoySalisbury` (ID `12501943`). A carried status points to the original
+  reviewed commit, whose own status must still be current and valid. PR
+  comments provide no gate input. Malformed or unknown `hvo-diff` versions
+  and digests for another PR or diff fail closed.
+
+Existing unversioned success statuses from the authorized account work on the
+exact PR head, including after a clean base advance with the PR untouched. A
+head-changing sync requires a verified versioned status on the reviewed
+ancestor. GitHub still requires a status on the current PR head for admission.
+Kepler can publish a verified carry with the
+[stamp command](runbooks/development-v1-merge-queue.md#publish-review-approval).
 
 The [published webhook schema](https://github.com/octokit/webhooks/blob/main/payload-schemas/api.github.com/merge_group/checks_requested.schema.json)
 describes `base_sha` only as “the SHA of the merge group's parent commit”; it does
@@ -115,8 +150,9 @@ not establish that a grouped parent excludes earlier queued entries. GitHub's
 explicitly includes changes ahead of a PR. We therefore do **not** treat event
 `base_sha` as a trust root. The supported topology assumes GitHub's MERGE mode
 forms a two-parent chain ending at the actual destination tip, and verifies that
-chain at runtime, on every live group. Offline two- and three-entry fixtures
-cover this assumption, and a group of any other shape fails closed. A group whose chain does not reach the refreshed destination tip must be rebuilt.
+chain at runtime, on every live group. Offline real-Git two- and three-entry
+fixtures cover this assumption, and a group of any other shape fails closed.
+A group whose chain does not reach the refreshed destination tip must be rebuilt.
 A main-to-development/v1 back-merge cannot be an earlier non-head entry unless
 GitHub associates its exact head with an open PR on this destination; it fails
 closed when that association is absent. Use a single-entry group or rebuild the group.
@@ -125,7 +161,9 @@ Changes to the workflow/script environment interface require two phases: first
 land a trusted-base script that accepts both the old and new inputs without
 weakening validation; then change the queued workflow caller. Retire the old
 interface only after groups using it have drained. A caller-only change cannot
-assume its matching script has reached the trusted branch.
+assume its matching script has reached the trusted branch. The diff verifier
+uses the existing inputs and can fetch complete history for older callers
+with depth-one checkouts.
 
 The [settings snapshot and cutover/rollback checklist](runbooks/development-v1-merge-queue.md)
 record the operated policy. The required `hvo/reviewed-head` source stays **any

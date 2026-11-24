@@ -269,8 +269,9 @@ have follow-up tracking.
 - Before a draft PR, complete the declared scope, local validation, and the
   original-requirement evidence mapping. Kepler creates the draft; draft checks
   pass on its exact head before independent formal review begins (Roy t594s3390).
-  Ready-state CI must not advance until formal review converges on the current
-  PR head and real merge/product conflicts are resolved, tested, and reviewed.
+  Ready-state CI requires formal review convergence and resolution, testing,
+  and review of any real merge/product conflicts. The queue's verified
+  clean-base-sync path may carry an already published diff approval.
   Target-tip movement alone requires no synchronization, re-testing, or new review.
 - Initial review covers the full merge-base-to-candidate diff and original
   requirements. Correction review covers the prior-reviewed-head delta and
@@ -284,7 +285,7 @@ have follow-up tracking.
   these profiles never reduce LOW's one Sol or HIGH's Sol-and-Opus requirement.
 - For the operated `development/v1` merge queue, Kepler revalidates the
   **CURRENT PR HEAD SHA**, complete requirement evidence, required formal
-  CLEAN reviews, passing required CI, and resolved conversations. Kepler alone
+  CLEAN reviews for its approved diff, passing required CI, and resolved conversations. Kepler alone
   publishes `hvo/reviewed-head` on that exact head and then enqueues with
   GraphQL `enqueuePullRequest`, checking the expected head. Under the queue,
   `gh pr merge --merge` warns and does **not** enqueue. Coding threads stop at
@@ -304,12 +305,16 @@ have follow-up tracking.
   separately; this documentation changes no executable gate.
 - Actual CONFLICTING merges and real product conflicts still need resolution.
   Kepler keeps/returns the PR to draft and returns the work to its coding owner.
-  Preserve existing conflict resolutions and reviewed history. Any changed
-  candidate, including an integration merge, needs applicable local evidence
-  and the required tier's reviewers CLEAN on that SHA before Kepler advances it.
-  An unchanged-diff/base proof can inform review but cannot copy old reviews or
-  a reviewed-head status to a new candidate. Target-tip movement with an
-  unchanged PR head does not trigger this loop.
+  Preserve existing conflict resolutions and reviewed history. A candidate with
+  a PR edit or conflict resolution needs applicable local evidence and the
+  required tier's reviewers CLEAN on its new SHA before Kepler advances it.
+  For the operated queue, the
+  [reviewed-diff proof](docs/development-v1.md#diff-bound-review-approval)
+  can carry a versioned approval through a verified clean merge-only sync from
+  `development/v1`. The formal reports remain tied to the reviewed SHA. Kepler
+  revalidates integration evidence, required CI and conversations on the current
+  PR head. Target-tip movement with an unchanged PR head does not trigger the
+  correction loop.
 - Performance-sensitive work requires reproducible baseline/after evidence for relevant I/O, CPU, allocations/working set, throughput, latency, and backlog. Unexplained regression blocks merge.
 - Validate produced outputs through checksums, numerical invariants, provenance, lineage, and durable state where applicable. Inspect logs, metrics, traces, and health behavior for host/worker changes.
 - If work stops or blocks, leave the resumable handoff required by the execution protocol and update the owning roadmap epic with the exact next action.
