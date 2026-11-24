@@ -183,7 +183,6 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 - CameraAgent satellite capture accepts real capture-cycle evidence that omits null solar regime and metering facts, and an owner can acknowledge a processing-lane quarantine of a still-valid raw capture so admission and health recover without rewriting that capture. #1388
 - CameraAgent's installer refuses manual rollback after upgrade commit to preserve captured work. Installer status reports Docker liveness and application readiness separately, including HTTP 503 for a quarantined required lane. #1945
 
-
 ### Security
 
 - CameraAgent enforces antiforgery validation on session automation save, removal, backfill and retry commands, and reports rejected tokens with a safe reason code and diagnostic log. Refs #1768

@@ -286,14 +286,8 @@ public sealed partial class LifecycleContractTests
         };
 
     /// <summary>
-    /// Keeps the release record an install or upgrade from a release keeps, naming <paramref name="version"/> for
-    /// <paramref name="imageId"/> (the running image by default).
-    /// </summary>
-    /// <summary>
-    /// The installed version follows the image the instance runs across a rollback: install 1.2.0, upgrade to 1.3.0, roll
-    /// back, and the record of 1.2.0 kept beside the rolled-back image is current again, so an upgrade to 1.1.0 is still
-    /// refused as going back. <paramref name="interrupted"/> loses the rollback's settlement after its commit, as a crash
-    /// would, and <c>--resume</c> restores the record.
+    /// After the upgrade to 1.3.0 commits, refusing a manual rollback plan or execution preserves the installed
+    /// version and image. A subsequent upgrade request for 1.1.0 still receives the older-target refusal.
     /// </summary>
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
@@ -342,7 +336,7 @@ public sealed partial class LifecycleContractTests
         return await UpgradeNotes.InstalledVersionAsync(fixture.Paths, manifest.Image, CancellationToken.None);
     }
 
-    /// <summary>The version the current record names, whichever image it describes.</summary>
+    /// <summary>Writes release evidence for <paramref name="version"/> and <paramref name="imageId"/>, defaulting to the running image.</summary>
     private static Task RecordInstalledReleaseAsync(LifecycleFixture fixture, string version, string? imageId = null)
         => SafeFileSystem.WriteJsonAtomicAsync(
             Path.Combine(fixture.Paths.DeploymentStateRoot, AcquiredImage.EvidenceFileName),

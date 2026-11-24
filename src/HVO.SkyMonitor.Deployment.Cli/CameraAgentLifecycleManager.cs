@@ -29,12 +29,11 @@ internal sealed partial class CameraAgentLifecycleManager
         var result = await ExecuteCoreAsync(request, processRunner, lifecycleClientFactory, ownerClientFactory,
             uid, gid, output, error, cancellationToken).ConfigureAwait(false);
         if (result.Plan is null || request.InstanceId is not { } id ||
-            request.Operation is not (LifecycleOperationKind.Upgrade or LifecycleOperationKind.Rollback or
+            request.Operation is not (LifecycleOperationKind.Upgrade or
                 LifecycleOperationKind.Uninstall or LifecycleOperationKind.Reinstall or LifecycleOperationKind.Purge)) return result;
         var paths = InstallationPaths.Create(request.ProductRoot, id, ProductionCatalog.DefaultCatalogId);
         var manifest = await ReadManifestAsync(paths.ManifestPath, cancellationToken).ConfigureAwait(false);
-        var imageId = request.Operation == LifecycleOperationKind.Rollback ? manifest.PreviousImage!.ImageId : manifest.Image.ImageId;
-        var programs = await PathPrograms.PlanAsync(paths, request.ProductionProductRoot, request.Release, imageId,
+        var programs = await PathPrograms.PlanAsync(paths, request.ProductionProductRoot, request.Release, manifest.Image.ImageId,
             request.Operation, cancellationToken).ConfigureAwait(false);
         return programs.Count == 0 ? result : result with { Plan = DeploymentPlan.Of([.. result.Plan.Items, .. programs]) };
     }

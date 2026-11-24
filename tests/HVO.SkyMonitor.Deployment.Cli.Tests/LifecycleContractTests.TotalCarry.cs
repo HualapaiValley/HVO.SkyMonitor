@@ -182,11 +182,6 @@ public sealed partial class LifecycleContractTests
         }
     }
 
-    /// <summary>
-    /// A committed migrating upgrade whose release then left a store the rollback's own snapshot will hold in a shape the
-    /// installer cannot interpret: an automation revision stored as a blob, a definition version stored as text, or the
-    /// fleet store rewritten in UTF-16.
-    /// </summary>
     /// <summary>The automation revision table rebuilt without its STRICT types and CHECKs, as a later release might.</summary>
     private const string RelaxedRevisionsTable =
         "CREATE TABLE r2(sequence INTEGER PRIMARY KEY AUTOINCREMENT, definition_id TEXT NOT NULL, version INTEGER NOT NULL," +
@@ -196,6 +191,7 @@ public sealed partial class LifecycleContractTests
         " FROM automation_definition_revisions;" +
         "DROP TABLE automation_definition_revisions; ALTER TABLE r2 RENAME TO automation_definition_revisions;";
 
+    /// <summary>Replaces the fleet store with one in <paramref name="encoding"/>, holding the same schema and one row.</summary>
     private static void RewriteFleetStore(InstallationPaths paths, string encoding, long nextSequence)
     {
         var path = CameraAgentStateSnapshot.StorePath(paths.StateRoot, FleetStore);
