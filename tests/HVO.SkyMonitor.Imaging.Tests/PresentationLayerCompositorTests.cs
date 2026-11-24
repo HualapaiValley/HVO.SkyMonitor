@@ -80,6 +80,23 @@ public sealed class PresentationLayerCompositorTests
     }
 
     [TestMethod]
+    [DataRow(PresentationLayerCompositor.PreviousAlgorithmVersion,
+        PresentationLayerCompositor.PreviousAlgorithmVersion, PresentationLayerCompositor.PreviousAlgorithmVersion)]
+    [DataRow(PresentationLayerCompositor.SemanticAlgorithmVersion,
+        PresentationLayerCompositor.PreviousAlgorithmVersion, PresentationLayerCompositor.SemanticAlgorithmVersion)]
+    [DataRow(PresentationLayerCompositor.AlgorithmVersion,
+        PresentationLayerCompositor.SemanticAlgorithmVersion, PresentationLayerCompositor.AlgorithmVersion)]
+    [DataRow(PresentationLayerCompositor.RichTextAlgorithmVersion,
+        PresentationLayerCompositor.AlgorithmVersion, PresentationLayerCompositor.RichTextAlgorithmVersion)]
+    [DataRow(PresentationLayerCompositor.SceneStyleAlgorithmVersion,
+        PresentationLayerCompositor.RichTextAlgorithmVersion, PresentationLayerCompositor.SceneStyleAlgorithmVersion)]
+    public void SelectAlgorithmVersionUsesLayerVersionPrecedence(string expected, string first, string second)
+    {
+        Assert.AreEqual(expected, PresentationLayerCompositor.SelectAlgorithmVersion([first, second]));
+        Assert.AreEqual(expected, PresentationLayerCompositor.SelectAlgorithmVersion([second, first]));
+    }
+
+    [TestMethod]
     public void CompositionBudgetsRejectBeforeOutputAllocationAndAdmitFullResolutionW6()
     {
         var oversized = new ImageLayout(16384, 16384, CameraPixelFormat.Mono8, 16384);
