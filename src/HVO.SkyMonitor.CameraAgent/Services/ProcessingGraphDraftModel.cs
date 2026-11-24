@@ -20,6 +20,7 @@ internal sealed class ProcessingGraphDraftModel
     public string? SourceRevisionId { get; private set; }
     private string? _initialDefinition;
     private CapturePipelineConfig? _sourcePipeline;
+    private bool _reordered;
 
     public bool HasGraphChanges(CapturePipelineConfig pipeline)
         => _initialDefinition is null || _initialDefinition != JsonSerializer.Serialize(pipeline);
@@ -61,6 +62,7 @@ internal sealed class ProcessingGraphDraftModel
                 DependsOn = new HashSet<string>(step.DependsOn ?? [], StringComparer.Ordinal),
                 Options = step.Options,
                 Publication = step.Publication,
+                SourceStep = step,
                 SystemManagedStep = ExposureMeasurementProducts.IsSystemManagedStepAlias(step.Type) ? step : null
             });
         }
@@ -94,7 +96,7 @@ internal sealed class ProcessingGraphDraftModel
     public void EnsureRegionalVisibilityWiring(NodeRow node)
     {
         ArgumentNullException.ThrowIfNull(node);
-        if (!string.Equals(node.Type, RegionalStellarVisibilityProducts.StepAlias, StringComparison.OrdinalIgnoreCase))
+        if (!IsRegionalVisibility(node))
         {
             return;
         }
@@ -110,6 +112,7 @@ internal sealed class ProcessingGraphDraftModel
         node.DependsOn.Add(ExposureMeasurementProducts.StepAlias);
         if (!node.Enabled)
         {
+            RemoveUnusedCatalogPrediction();
             return;
         }
 
@@ -157,7 +160,31 @@ internal sealed class ProcessingGraphDraftModel
         {
             other.DependsOn.Remove(node.Id);
         }
+        if (IsRegionalVisibility(node))
+        {
+            RemoveUnusedCatalogPrediction();
+        }
     }
+
+    private void RemoveUnusedCatalogPrediction()
+    {
+        const string prediction = ExposureCatalogPredictionProducts.StepAlias;
+        if (Nodes.Any(static node => node.Enabled &&
+            node.DependsOn.Contains(prediction, StringComparer.OrdinalIgnoreCase)))
+        {
+            return;
+        }
+
+        Nodes.RemoveAll(static node => string.Equals(node.Type, prediction, StringComparison.OrdinalIgnoreCase));
+        foreach (var other in Nodes)
+        {
+            other.DependsOn.RemoveWhere(static dependency =>
+                string.Equals(dependency, prediction, StringComparison.OrdinalIgnoreCase));
+        }
+    }
+
+    private static bool IsRegionalVisibility(NodeRow node)
+        => string.Equals(node.Type, RegionalStellarVisibilityProducts.StepAlias, StringComparison.OrdinalIgnoreCase);
 
     public void Move(NodeRow node, int delta)
     {
@@ -170,6 +197,7 @@ internal sealed class ProcessingGraphDraftModel
         }
         Nodes.RemoveAt(index);
         Nodes.Insert(target, node);
+        _reordered = true;
         // A node that moved above one of its inputs can no longer name it; drop the edge visibly.
         node.DependsOn.IntersectWith(EligibleDependencies(node));
     }
@@ -253,35 +281,50 @@ internal sealed class ProcessingGraphDraftModel
             // Options and enable edits keep omitted order/id members and dependency ordering intact.
             pipeline = source with
             {
-                Steps = source.Steps.Select((step, index) => Nodes[index].SystemManagedStep ?? (step with
-                {
-                    Options = Nodes[index].BuildOptions(),
-                    Enabled = Nodes[index].Enabled == (step.Enabled ?? true) ? step.Enabled : Nodes[index].Enabled
-                })).ToArray()
+                Steps = source.Steps.Select((step, index) => Nodes[index].SystemManagedStep ?? UpdateSourceStep(step, Nodes[index])).ToArray()
             };
             return true;
         }
-        var steps = Nodes.Select((node, index) => node.SystemManagedStep ?? new CaptureProcessingStepConfig(
-            node.Type.Trim(),
-            node.Id.Trim(),
-            (index + 1) * 10,
-            node.BuildOptions(),
-            node.DependsOn.OrderBy(static dependency => dependency, StringComparer.Ordinal).ToArray(),
-            node.Required,
-            node.Enabled ? null : false,
-            node.Publication)).ToArray();
+        var steps = Nodes.Select((node, index) =>
+        {
+            if (node.SystemManagedStep is { } managed)
+                return managed;
+            if (!_reordered && node.SourceStep is { } original && MatchesSourceStep(node, original))
+                return UpdateSourceStep(original, node);
+
+            // Structural edits keep retained priorities. Only a deliberate move renumbers the list.
+            var order = !_reordered && (node.SourceStep is not null || IsRegionalVisibility(node))
+                ? node.SourceStep?.Order : (index + 1) * 10;
+            return new CaptureProcessingStepConfig(
+                node.Type.Trim(),
+                node.Id.Trim(),
+                order,
+                node.BuildOptions(),
+                node.DependsOn.OrderBy(static dependency => dependency, StringComparer.Ordinal).ToArray(),
+                node.Required,
+                node.Enabled ? null : false,
+                node.Publication);
+        }).ToArray();
         pipeline = new CapturePipelineConfig(steps, SchemaVersion, DependencyPolicy);
         return true;
     }
 
     private bool StructureMatchesSource(CapturePipelineConfig source)
-        => Nodes.Count == source.Steps.Count && Nodes.Select((node, index) =>
+        => Nodes.Count == source.Steps.Count &&
+            Nodes.Select((node, index) => MatchesSourceStep(node, source.Steps[index])).All(static same => same);
+
+    private static bool MatchesSourceStep(NodeRow node, CaptureProcessingStepConfig step)
+        => node.Id == (string.IsNullOrWhiteSpace(step.Id) ? step.Type : step.Id.Trim()) &&
+            node.Type == step.Type && node.Required == step.Required &&
+            node.DependsOn.SetEquals(step.DependsOn ?? []);
+
+    private static CaptureProcessingStepConfig UpdateSourceStep(CaptureProcessingStepConfig step, NodeRow node)
+        => step with
         {
-            var step = source.Steps[index];
-            return node.Id == (string.IsNullOrWhiteSpace(step.Id) ? step.Type : step.Id.Trim()) &&
-                node.Type == step.Type && node.Required == step.Required &&
-                node.DependsOn.SetEquals(step.DependsOn ?? []);
-        }).All(static same => same);
+            Options = node.BuildOptions(),
+            Enabled = node.Enabled == (step.Enabled ?? true) ? step.Enabled : node.Enabled,
+            Publication = node.Publication
+        };
 
     internal sealed class NodeRow
     {
@@ -303,6 +346,7 @@ internal sealed class ProcessingGraphDraftModel
         public CaptureProcessingPublicationPolicy? Publication { get; set; }
         public bool HasOptions => Options is not null;
         public bool IsSystemManaged => ExposureMeasurementProducts.IsSystemManagedStepAlias(Type);
+        public CaptureProcessingStepConfig? SourceStep { get; init; }
         public CaptureProcessingStepConfig? SystemManagedStep { get; init; }
         private ProcessingNodeOptionsForm? _optionsForm;
         public ProcessingNodeOptionsForm? OptionsForm

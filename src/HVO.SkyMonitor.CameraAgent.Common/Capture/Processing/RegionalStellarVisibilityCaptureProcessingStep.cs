@@ -9,14 +9,17 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
-using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
 /// <summary>Operator/caller read of the retained step 30b regional stellar visibility assessment for one execution.</summary>
 public sealed record RegionalStellarVisibilityRunRead(
     RegionalStellarVisibilityV1? Assessment,
-    string? UnavailableReason);
+    string? UnavailableReason)
+{
+    public const string FrozenEnvironmentMissing = "visibility.frozen-environment-missing";
+    public const string FrozenEnvironmentAltered = "visibility.frozen-environment-altered";
+}
 
 /// <summary>Reads and verifies the retained regional stellar visibility product bound to one execution.</summary>
 public interface IRegionalStellarVisibilityRunReader
@@ -39,7 +42,6 @@ internal sealed class RegionalStellarVisibilityCaptureProcessingStep(
     CameraAgentCloudEnvironment? cloudEnvironment = null,
     SqliteCalibrationLibraryStore? calibrationLibrary = null,
     CameraAgentClearReferenceLoader? referenceLoader = null,
-    IOptions<CameraAgentHostOptions>? hostOptions = null,
     IServiceProvider? services = null,
     CenteredExposureInputCustody? custody = null)
     : ConfigurableCaptureProcessingStep<RegionalStellarVisibilityProcessingStepOptions>(metadata, options),
@@ -176,21 +178,36 @@ internal sealed class RegionalStellarVisibilityCaptureProcessingStep(
         }
 
         CloudAssessmentEnvironmentV1 environment;
-        if (cloudEnvironment is null)
+        ProcessingAuxiliaryInput envInput;
+        if (context.IsReplayExecution)
         {
-            environment = ParseEnvironment(CameraAgentCloudEnvironment.CreateMissingInput(context));
+            var (frozen, failure) = ReadFrozenEnvironment(context, rawArtifact);
+            if (frozen is null)
+            {
+                context.AddProcessingOutcome(ProcessingOutcome.TerminalFailure(failure!));
+                return;
+            }
+
+            environment = frozen;
+            envInput = CameraAgentCloudEnvironment.CreateInput(environment);
         }
         else
         {
-            var envInput = await cloudEnvironment.CreateInputAsync(context, cancellationToken).ConfigureAwait(false);
-            if (envInput is null)
+            var liveInput = cloudEnvironment is null
+                ? CameraAgentCloudEnvironment.CreateMissingInput(context)
+                : await cloudEnvironment.CreateInputAsync(context, cancellationToken).ConfigureAwait(false);
+            if (liveInput is null)
             {
                 context.AddProcessingOutcome(ProcessingOutcome.RetryableFailure(
                     ProcessingReasonCodes.EnvironmentAssociationPending));
                 return;
             }
-            environment = ParseEnvironment(envInput);
+
+            envInput = liveInput;
+            environment = JsonSerializer.Deserialize<CloudAssessmentEnvironmentV1>(envInput.Payload.Span, EnvironmentJson)
+                ?? throw new InvalidDataException("Invalid cloud environment auxiliary input.");
         }
+        context.RecordCanonicalInput(envInput.Name, CloudAssessmentEnvironmentV1.CurrentSchemaVersion, envInput.IdentitySha256!);
 
         HorizonObstructionEvaluator? horizonEvaluator = null;
         if (context.Config.Rig.HorizonObstruction is { } horizonProfile)
@@ -214,7 +231,7 @@ internal sealed class RegionalStellarVisibilityCaptureProcessingStep(
         var defectMask = await TryLoadDefectMaskAsync(linear, descriptor.Layout, cancellationToken).ConfigureAwait(false);
         var regionalBackground = await TryEstimateRegionalBackgroundAsync(
             context, descriptor, linear, measurement, defectMask, cancellationToken).ConfigureAwait(false);
-        var (photometricProfile, responseMismatchReason) = ResolvePhotometricProfile(context, Options);
+        var (photometricProfile, responseMismatchReason) = ResolvePhotometricProfile(context, descriptor.Layout, Options);
         var recipeOptions = Options.ToRecipeOptions(photometricProfile);
 
         var request = new RegionalStellarVisibilityRequest(
@@ -246,8 +263,39 @@ internal sealed class RegionalStellarVisibilityCaptureProcessingStep(
         context.AddProcessingOutcome(outcome);
     }
 
+    private static (CloudAssessmentEnvironmentV1? Environment, string? Failure) ReadFrozenEnvironment(
+        CaptureProcessingContext context,
+        ProcessingArtifact raw)
+    {
+        if (context.FrozenAuxiliaryInputFailure == FrozenAuxiliaryInputFailure.Altered)
+        {
+            return (null, RegionalStellarVisibilityRunRead.FrozenEnvironmentAltered);
+        }
+
+        var inputs = context.GetFrozenAuxiliaryInputs();
+        if (context.FrozenAuxiliaryInputFailure == FrozenAuxiliaryInputFailure.Missing || inputs.Count == 0)
+        {
+            return (null, RegionalStellarVisibilityRunRead.FrozenEnvironmentMissing);
+        }
+        if (inputs is not [var retained])
+        {
+            return (null, RegionalStellarVisibilityRunRead.FrozenEnvironmentAltered);
+        }
+
+        try
+        {
+            var environment = RegionalStellarVisibilityProducts.ReadRetainedEnvironment(retained, raw);
+            return (environment, environment is null ? RegionalStellarVisibilityRunRead.FrozenEnvironmentMissing : null);
+        }
+        catch (Exception exception) when (exception is InvalidDataException or JsonException or ArgumentException)
+        {
+            return (null, RegionalStellarVisibilityRunRead.FrozenEnvironmentAltered);
+        }
+    }
+
     private static (RegionalVisibilityPhotometricProfileV1? Profile, string? MismatchReason) ResolvePhotometricProfile(
         CaptureProcessingContext context,
+        FrameLayoutDescriptor rawLayout,
         RegionalStellarVisibilityProcessingStepOptions options)
     {
         var isVirtualSky = string.Equals(context.Config.Module.Type, "VirtualSky", StringComparison.OrdinalIgnoreCase);
@@ -280,7 +328,10 @@ internal sealed class RegionalStellarVisibilityCaptureProcessingStep(
 
                 if (virtualOptions.Asi676Enabled ||
                     RegionalVisibilityPhotometricProfileV1.IsProvisionalOrUncalibratedStatus(
-                        context.Config.Rig.Sensor.SimulationResponse?.CalibrationStatus))
+                        context.Config.Rig.Sensor.SimulationResponse?.CalibrationStatus) ||
+                    rawLayout.PixelFormat == CameraPixelFormat.BayerRggb16 &&
+                    explicitProfile.ResolveBayerChannelResponse() !=
+                        VirtualSkyCameraModule.ResolveBayerChannelResponse(context.Config.Rig.Sensor, virtualOptions))
                 {
                     return (explicitProfile, RegionalVisibilityReasonCodes.ResponseBasisMismatch);
                 }
@@ -394,7 +445,7 @@ internal sealed class RegionalStellarVisibilityCaptureProcessingStep(
         FrameLayoutDescriptor rawLayout,
         CancellationToken cancellationToken)
     {
-        if (calibrationLibrary is null || referenceLoader is null || hostOptions is null ||
+        if (calibrationLibrary is null || referenceLoader is null ||
             linear?.Provenance is not { Disposition: LinearExposureDisposition.Calibrated } provenance ||
             provenance.CalibrationArtifactIds.Length != CalibrationReferenceKinds.All.Count ||
             provenance.CalibrationPayloadHashes.Length != CalibrationReferenceKinds.All.Count)
@@ -420,34 +471,14 @@ internal sealed class RegionalStellarVisibilityCaptureProcessingStep(
         var defectSha256 = provenance.CalibrationPayloadHashes[defectIndex];
         var match = await calibrationLibrary.FindMasterArtifactAsync(
             defectArtifactId, CalibrationReferenceKinds.Defect, defectSha256, cancellationToken).ConfigureAwait(false);
-        if (match is null || string.IsNullOrWhiteSpace(match.ManifestRelativePath) ||
-            Path.IsPathRooted(match.ManifestRelativePath))
+        if (match is null)
         {
             return null;
         }
 
         try
         {
-            var root = Path.GetFullPath(hostOptions.Value.RawIngressRoot);
-            var rootWithSeparator = root.EndsWith(Path.DirectorySeparatorChar)
-                ? root
-                : root + Path.DirectorySeparatorChar;
-            var manifestPath = Path.GetFullPath(Path.Combine(root, match.ManifestRelativePath));
-            if (!manifestPath.StartsWith(rootWithSeparator, StringComparison.Ordinal))
-            {
-                return null;
-            }
-
-            var parsed = CaptureContractJson.ParseManifest(
-                await File.ReadAllBytesAsync(manifestPath, cancellationToken).ConfigureAwait(false));
-            if (!parsed.IsValid || parsed.Document?.Manifest is not { } defectManifest ||
-                defectManifest.Descriptor.Artifact.ArtifactId != defectArtifactId ||
-                !string.Equals(defectManifest.Descriptor.Artifact.ChecksumSha256, defectSha256, StringComparison.OrdinalIgnoreCase))
-            {
-                return null;
-            }
-
-            var artifact = await referenceLoader.LoadAsync(defectManifest, cancellationToken).ConfigureAwait(false);
+            var artifact = await referenceLoader.LoadAsync(match.ManifestRelativePath, cancellationToken).ConfigureAwait(false);
             if (artifact.ArtifactId != defectArtifactId ||
                 artifact.Layout is not { } layout ||
                 layout.Width != rawLayout.Width ||
@@ -468,12 +499,6 @@ internal sealed class RegionalStellarVisibilityCaptureProcessingStep(
         }
     }
 
-    private static CloudAssessmentEnvironmentV1 ParseEnvironment(ProcessingAuxiliaryInput input)
-    {
-        var parsed = JsonSerializer.Deserialize<CloudAssessmentEnvironmentV1>(input.Payload.Span, EnvironmentJson)
-            ?? throw new InvalidDataException("Invalid cloud environment auxiliary input.");
-        return parsed with { InputIdentitySha256 = input.IdentitySha256 };
-    }
 }
 
 /// <summary>Configuration options for step 30b regional stellar visibility.</summary>

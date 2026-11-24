@@ -209,7 +209,7 @@ public sealed class ProcessingGraphEditorPageTests
                         new("Calibration", "linear", DependsOn: ["$raw"], Required: false, Publication: durable,
                             Options: JsonSerializer.SerializeToElement(new { strategy = "None", outputVariant = "qualified-linear" })),
                         new("ProjectedScene", "scene", DependsOn: ["$raw"], Required: false, Publication: durable),
-                        new("Storage", "storage", DependsOn: ["$raw"], Options: JsonSerializer.SerializeToElement(
+                        new("Storage", "storage", Order: 75, DependsOn: ["$raw"], Options: JsonSerializer.SerializeToElement(
                             new FileStorageCaptureProcessingStepOptions
                             {
                                 StorageRoot = Path.Combine(root, "storage"),
@@ -306,6 +306,9 @@ public sealed class ProcessingGraphEditorPageTests
             Assert.IsTrue(savedRegional.DependsOn!.Contains(ExposureMeasurementProducts.StepAlias, StringComparer.OrdinalIgnoreCase));
             Assert.IsTrue(savedRegional.DependsOn!.Contains(ExposureCatalogPredictionProducts.StepAlias, StringComparer.OrdinalIgnoreCase));
             Assert.AreEqual(6, savedRegional.Options!.Value.GetProperty("gridColumns").GetInt32());
+            Assert.AreEqual(
+                JsonSerializer.Serialize(initialPipeline.Steps.Single(static step => step.Id == "storage")),
+                JsonSerializer.Serialize(savedPipeline.Steps.Single(static step => step.Id == "storage")));
 
             // 2. Reopen the saved draft in a fresh rendered ProcessingGraphEditorPage and verify round-trip fidelity.
             using (var reopenContext = new BunitContext())

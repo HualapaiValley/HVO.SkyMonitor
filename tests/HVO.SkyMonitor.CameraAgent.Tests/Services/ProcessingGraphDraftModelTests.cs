@@ -1,6 +1,7 @@
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Services;
 
@@ -129,6 +130,44 @@ public sealed class ProcessingGraphDraftModelTests
         CollectionAssert.Contains(model.RenderableDependencies(model.Nodes[1]).ToArray(), "telemetry");
         Assert.IsFalse(model.TryBuild(out _, out var errors));
         CollectionAssert.Contains(errors.ToArray(), "Node 'preview' depends on 'telemetry', which is not the raw input or a node above it.");
+    }
+
+    [TestMethod]
+    public void RegionalVisibilityEditsPreserveRetainedStepSettingsAndPruneUnusedPrediction()
+    {
+        var storage = new CaptureProcessingStepConfig("Storage", "archive", Order: 75,
+            Options: JsonSerializer.SerializeToElement(new { queueForUpload = false, futureOption = 7 }),
+            DependsOn: ["$raw"], Enabled: true, Publication: new(CaptureProcessingPersistenceMode.DurableLocal));
+        var measurement = new CaptureProcessingStepConfig(ExposureMeasurementProducts.StepAlias,
+            ExposureMeasurementProducts.StepAlias, Order: 4, DependsOn: ["$raw"], Required: false);
+        var original = new CapturePipelineConfig([measurement, storage]);
+        var draft = ProcessingGraphDraftModel.FromPipeline(original, "retained", "regional", "2");
+        draft.AddNode(RegionalStellarVisibilityProducts.StepAlias);
+        Assert.IsTrue(draft.TryBuild(out var added, out var errors), string.Join(" ", errors));
+        Assert.AreEqual(storage, added.Steps.Single(step => step.Id == storage.Id));
+        Assert.AreEqual(measurement, added.Steps.Single(step => step.Id == measurement.Id));
+        Assert.HasCount(1, added.Steps.Where(static step => step.Type == ExposureCatalogPredictionProducts.StepAlias).ToArray());
+
+        // Disable the last consumer on a freshly reopened revision.
+        draft = ProcessingGraphDraftModel.FromPipeline(added, "retained-regional", "regional", "3");
+        var regional = draft.Nodes.Single(static row => row.Type == RegionalStellarVisibilityProducts.StepAlias);
+        regional.Enabled = false;
+        draft.EnsureRegionalVisibilityWiring(regional);
+        Assert.IsTrue(draft.TryBuild(out var disabled, out errors), string.Join(" ", errors));
+        Assert.IsFalse(draft.Nodes.Any(static row => row.Type == ExposureCatalogPredictionProducts.StepAlias));
+        Assert.IsFalse(regional.DependsOn.Contains(ExposureCatalogPredictionProducts.StepAlias));
+        Assert.AreEqual(storage, disabled.Steps.Single(step => step.Id == storage.Id));
+
+        regional.Enabled = true;
+        draft.EnsureRegionalVisibilityWiring(regional);
+        draft.AddNode(RegionalStellarVisibilityProducts.StepAlias);
+        var otherConsumer = draft.Nodes.Single(row => row.Type == RegionalStellarVisibilityProducts.StepAlias && row != regional);
+        draft.Remove(regional);
+        Assert.IsTrue(draft.Nodes.Any(static row => row.Type == ExposureCatalogPredictionProducts.StepAlias));
+        draft.Remove(otherConsumer);
+        Assert.IsFalse(draft.Nodes.Any(static row => row.Type == ExposureCatalogPredictionProducts.StepAlias));
+        Assert.IsTrue(draft.TryBuild(out var removed, out errors), string.Join(" ", errors));
+        Assert.AreEqual(JsonSerializer.Serialize(original), JsonSerializer.Serialize(removed));
     }
 
     [TestMethod]

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.Imaging;
 
 namespace HVO.SkyMonitor.Processing;
@@ -83,6 +84,7 @@ public static class RegionalVisibilityReasonCodes
     public const string TileDefectMasked = "tile.defect-masked";
     public const string TileMoonGlareExcluded = "tile.moon-glare-excluded";
     public const string TileInsufficientExpectedStars = "tile.insufficient-expected-stars";
+    public const string TileInsufficientMissingStars = "tile.insufficient-missing-stars";
     public const string TilePointingUncertain = "tile.pointing-uncertain";
     public const string TileWithheld = "tile.withheld";
     public const string TileMarginalStarsExcluded = "tile.marginal-stars-excluded";
@@ -131,6 +133,7 @@ public static class RegionalVisibilityReasonCodes
         TileDefectMasked,
         TileMoonGlareExcluded,
         TileInsufficientExpectedStars,
+        TileInsufficientMissingStars,
         TilePointingUncertain,
         TileWithheld,
         TileMarginalStarsExcluded,
@@ -191,6 +194,11 @@ public sealed record RegionalVisibilityPhotometricProfileV1(
             status.Contains("uncalibrated", StringComparison.OrdinalIgnoreCase) ||
             status.Contains("uncharacterized", StringComparison.OrdinalIgnoreCase));
 
+    public RgbChannelSettings ResolveBayerChannelResponse()
+        => SensorResponse?.ColorResponse is { } configured
+            ? new(configured.Red, configured.Green, configured.Blue)
+            : new(ChannelResponseRed, ChannelResponseGreen, ChannelResponseBlue);
+
     internal bool TryResolve(
         double gainControl,
         FrameLayoutDescriptor rawLayout,
@@ -202,9 +210,7 @@ public sealed record RegionalVisibilityPhotometricProfileV1(
         out string? failureReason)
     {
         response = null;
-        red = ChannelResponseRed;
-        green = ChannelResponseGreen;
-        blue = ChannelResponseBlue;
+        (red, green, blue) = ResolveBayerChannelResponse();
         failureReason = null;
 
         if (!double.IsFinite(gainControl) || gainControl < 0)
@@ -271,12 +277,6 @@ public sealed record RegionalVisibilityPhotometricProfileV1(
             }
 
             response = ConfiguredSensorResponseResolver.Resolve(configured, gainControl);
-            if (configured.ColorResponse is { } color)
-            {
-                red = color.Red;
-                green = color.Green;
-                blue = color.Blue;
-            }
             return true;
         }
 
@@ -463,7 +463,8 @@ public sealed record RegionalVisibilityGridV1(
     [property: JsonRequired] int TotalMaskedOutStars,
     [property: JsonRequired] int TotalUnassociatedMeasuredStars,
     [property: JsonRequired] int DeficitVisibilityThresholdMillionths,
-    [property: JsonRequired] int MinimumExpectedStarsPerTile);
+    [property: JsonRequired] int MinimumExpectedStarsPerTile,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? MinimumMissingStarsForDeficit = null);
 
 /// <summary>Per-tile expected-vs-measured stellar visibility support and explicit reason codes.</summary>
 public sealed record RegionalVisibilityTileV1(
@@ -484,7 +485,39 @@ public sealed record RegionalVisibilityTileV1(
     [property: JsonRequired] int UnassociatedMeasuredCount,
     [property: JsonRequired] int OffsetCandidateCount,
     [property: JsonRequired] int? VisibilityRatioMillionths,
-    [property: JsonRequired] IReadOnlyList<string> ReasonCodes);
+    [property: JsonRequired] IReadOnlyList<string> ReasonCodes)
+{
+    internal static int? ComputeVisibilityRatio(int matched, int expected)
+        => expected > 0 ? (int)(((long)matched * 1_000_000 + expected / 2) / expected) : null;
+}
+
+internal readonly record struct RegionalVisibilityPartition(int Width, int Height, int Columns, int Rows)
+{
+    public (int X0, int Y0, int X1, int Y1) Bounds(int column, int row)
+        => (Boundary(column, Width, Columns), Boundary(row, Height, Rows),
+            Boundary(column + 1, Width, Columns), Boundary(row + 1, Height, Rows));
+
+    // Callers have already checked that the point is within the delivered image.
+    public int IndexOf(PixelPoint point)
+        => FindCell(point.Y, Height, Rows) * Columns + FindCell(point.X, Width, Columns);
+
+    private static int FindCell(double coordinate, int length, int cells)
+    {
+        var lower = 0;
+        var upper = cells;
+        while (upper - lower > 1)
+        {
+            var middle = (lower + upper) / 2;
+            if (coordinate < Boundary(middle, length, cells))
+                upper = middle;
+            else
+                lower = middle;
+        }
+        return lower;
+    }
+
+    private static int Boundary(int index, int length, int cells) => (int)((long)index * length / cells);
+}
 
 /// <summary>Compact row-major tile masks distinguishing assessed tiles from detection-deficit tiles.</summary>
 public sealed record RegionalVisibilityMaskV1(
@@ -550,6 +583,7 @@ public static class RegionalStellarVisibilityJson
     private const string InvalidContract = "visibility.invalid-contract";
     private const string InvalidJson = "visibility.invalid-json";
     private const string UnsupportedSchema = "visibility.unsupported-schema";
+    internal const string PolicyAlgorithm = "regional-stellar-visibility-policy";
     private static readonly JsonSerializerOptions SerializerOptions = CreateSerializerOptions();
 
     public static string ComputeIdentitySha256(RegionalStellarVisibilityV1 assessment)
@@ -648,9 +682,32 @@ public static class RegionalStellarVisibilityJson
             }
         }
 
+        if (assessment.Conditions is not { } conditions ||
+            !double.IsFinite(conditions.ExposureSeconds) || conditions.ExposureSeconds < 0 ||
+            !double.IsFinite(conditions.Gain) || conditions.Gain < 0 ||
+            !Enum.IsDefined(conditions.PixelFormat) ||
+            conditions.WidthPixels < 1 || conditions.HeightPixels < 1 ||
+            !Millionths(conditions.SaturatedFractionMillionths) ||
+            !Enum.IsDefined(conditions.PrecipitationStatus) ||
+            conditions.ValidFocusSampleCount < 0 || conditions.TooBroadExclusionCount < 0 ||
+            conditions.FixedGeometryAnchorCount < 0)
+        {
+            return Invalid(InvalidContract, nameof(assessment.Conditions));
+        }
+
+        if (!Sha256(assessment.RecipeIdentitySha256) || assessment.Algorithms is null ||
+            assessment.Algorithms.Count == 0 || assessment.Algorithms.Any(static algorithm =>
+                algorithm is null || string.IsNullOrWhiteSpace(algorithm.Name) || string.IsNullOrWhiteSpace(algorithm.Version)))
+        {
+            return Invalid(InvalidContract, "provenance");
+        }
+        var legacyPolicy = assessment.Algorithms.Any(static algorithm =>
+            algorithm is { Name: PolicyAlgorithm, Version: "v1" });
+
         var grid = assessment.Grid;
         if (grid is null || grid.Columns is < 1 or > RegionalStellarVisibilityOptions.MaximumGridDimension ||
             grid.Rows is < 1 or > RegionalStellarVisibilityOptions.MaximumGridDimension ||
+            grid.Columns > conditions.WidthPixels || grid.Rows > conditions.HeightPixels ||
             grid.TotalTileCount != grid.Columns * grid.Rows ||
             grid.TotalTileCount > RegionalStellarVisibilityOptions.MaximumTileCount ||
             grid.ExcludedTileCount < 0 || grid.InsufficientEvidenceTileCount < 0 ||
@@ -658,7 +715,10 @@ public static class RegionalStellarVisibilityJson
             grid.AssessedTileCount != grid.ClearTileCount + grid.DeficitTileCount ||
             grid.ExcludedTileCount + grid.InsufficientEvidenceTileCount + grid.AssessedTileCount != grid.TotalTileCount ||
             grid.DeficitVisibilityThresholdMillionths is <= 0 or >= OneMillion ||
-            grid.MinimumExpectedStarsPerTile < 1 ||
+            grid.MinimumExpectedStarsPerTile is < 1 or > 1000 ||
+            (grid.MinimumMissingStarsForDeficit is { } minimumMissing
+                ? minimumMissing < 1 || minimumMissing > grid.MinimumExpectedStarsPerTile
+                : !legacyPolicy) ||
             grid.TotalExpectedDetectableStars < 0 || grid.TotalMatchedMeasuredStars < 0 ||
             grid.TotalMatchedMeasuredStars > grid.TotalExpectedDetectableStars ||
             grid.TotalMarginalStars < 0 || grid.TotalMaskedOutStars < 0 || grid.TotalUnassociatedMeasuredStars < 0)
@@ -677,19 +737,22 @@ public static class RegionalStellarVisibilityJson
             return Invalid(InvalidContract, nameof(assessment.Tiles));
         }
 
+        var partition = new RegionalVisibilityPartition(conditions.WidthPixels, conditions.HeightPixels, grid.Columns, grid.Rows);
         int excluded = 0, insufficient = 0, clear = 0, deficit = 0;
-        int totalExpected = 0, totalMatched = 0, totalMarginal = 0, totalMasked = 0, totalUnassociated = 0;
+        long totalExpected = 0, totalMatched = 0, totalMarginal = 0, totalMasked = 0, totalUnassociated = 0;
         for (var index = 0; index < assessment.Tiles.Count; index++)
         {
+            var column = index % grid.Columns;
+            var row = index / grid.Columns;
+            var (x0, y0, x1, y1) = partition.Bounds(column, row);
             var tile = assessment.Tiles[index];
-            if (tile is null || tile.Column != index % grid.Columns || tile.Row != index / grid.Columns ||
-                tile.X < 0 || tile.Y < 0 || tile.Width < 1 || tile.Height < 1 ||
+            if (tile is null || tile.Column != column || tile.Row != row ||
+                tile.X != x0 || tile.Y != y0 || tile.Width != x1 - x0 || tile.Height != y1 - y0 ||
                 !Enum.IsDefined(tile.Status) || !Millionths(tile.SupportedAreaFractionMillionths) ||
                 tile.PredictedStarCount < 0 || tile.ExpectedDetectableCount < 0 || tile.MarginalStarCount < 0 ||
                 tile.MaskedOutStarCount < 0 || tile.MatchedMeasuredCount < 0 || tile.MeasurementExcludedCount < 0 ||
                 tile.UnassociatedMeasuredCount < 0 || tile.OffsetCandidateCount < 0 ||
                 tile.MatchedMeasuredCount > tile.ExpectedDetectableCount ||
-                tile.VisibilityRatioMillionths is { } ratio && !Millionths(ratio) ||
                 tile.ReasonCodes is null || tile.ReasonCodes.Count == 0 ||
                 tile.ReasonCodes.Any(code => !RegionalVisibilityReasonCodes.KnownTile.Contains(code)) ||
                 tile.ReasonCodes.Distinct(StringComparer.Ordinal).Count() != tile.ReasonCodes.Count)
@@ -697,8 +760,20 @@ public static class RegionalStellarVisibilityJson
                 return Invalid(InvalidContract, $"tiles[{index}]");
             }
 
+            var ratio = RegionalVisibilityTileV1.ComputeVisibilityRatio(tile.MatchedMeasuredCount, tile.ExpectedDetectableCount);
+            if (tile.VisibilityRatioMillionths != ratio &&
+                !(legacyPolicy && assessment.Status == RegionalVisibilityAssessmentStatus.Withheld &&
+                  tile.VisibilityRatioMillionths is null))
+            {
+                return Invalid(InvalidContract, $"tiles[{index}]");
+            }
+
             if (tile.Status is RegionalVisibilityTileStatus.Clear or RegionalVisibilityTileStatus.DetectionDeficit &&
-                (tile.ExpectedDetectableCount < grid.MinimumExpectedStarsPerTile || tile.VisibilityRatioMillionths is null))
+                (tile.ExpectedDetectableCount < grid.MinimumExpectedStarsPerTile ||
+                 (tile.Status == RegionalVisibilityTileStatus.Clear
+                    ? ratio < grid.DeficitVisibilityThresholdMillionths
+                    : ratio >= grid.DeficitVisibilityThresholdMillionths ||
+                      tile.ExpectedDetectableCount - tile.MatchedMeasuredCount < (grid.MinimumMissingStarsForDeficit ?? 1))))
             {
                 return Invalid(InvalidContract, $"tiles[{index}]");
             }
@@ -745,26 +820,6 @@ public static class RegionalStellarVisibilityJson
             assessment.Sources.DefectMaskSha256 is not null && !Sha256(assessment.Sources.DefectMaskSha256))
         {
             return Invalid(InvalidContract, nameof(assessment.Sources));
-        }
-
-        if (assessment.Conditions is null ||
-            !double.IsFinite(assessment.Conditions.ExposureSeconds) || assessment.Conditions.ExposureSeconds < 0 ||
-            !double.IsFinite(assessment.Conditions.Gain) || assessment.Conditions.Gain < 0 ||
-            !Enum.IsDefined(assessment.Conditions.PixelFormat) ||
-            assessment.Conditions.WidthPixels < 1 || assessment.Conditions.HeightPixels < 1 ||
-            !Millionths(assessment.Conditions.SaturatedFractionMillionths) ||
-            !Enum.IsDefined(assessment.Conditions.PrecipitationStatus) ||
-            assessment.Conditions.ValidFocusSampleCount < 0 || assessment.Conditions.TooBroadExclusionCount < 0 ||
-            assessment.Conditions.FixedGeometryAnchorCount < 0)
-        {
-            return Invalid(InvalidContract, nameof(assessment.Conditions));
-        }
-
-        if (!Sha256(assessment.RecipeIdentitySha256) || assessment.Algorithms is null ||
-            assessment.Algorithms.Count == 0 || assessment.Algorithms.Any(static algorithm =>
-                algorithm is null || string.IsNullOrWhiteSpace(algorithm.Name) || string.IsNullOrWhiteSpace(algorithm.Version)))
-        {
-            return Invalid(InvalidContract, "provenance");
         }
 
         return RegionalVisibilityValidationResult.Success;

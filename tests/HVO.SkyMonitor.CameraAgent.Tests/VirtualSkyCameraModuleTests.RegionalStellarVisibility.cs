@@ -6,8 +6,10 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
+using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Services;
@@ -19,6 +21,7 @@ using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Moq;
 using System.Security.Claims;
 
@@ -171,9 +174,12 @@ public sealed partial class VirtualSkyCameraModuleTests
         var deviceClock = new ExposureTestTimeProvider(RegionalNightUtc, autoAdvance: true);
 
         var profile = CreateRegionalVisibilityProfile(root, RegionalNightUtc, format);
+        (int Column, int Row)[] clearTiles = [];
+        (int Column, int Row)[] opaqueTiles = [];
         if (scenario == "patchy")
         {
-            var patchy = FindHeldOutPatchyCloudScenario(profile, RegionalNightUtc);
+            VirtualCloudScenarioDefinition patchy;
+            (patchy, clearTiles, opaqueTiles) = FindHeldOutPatchyCloudScenario(profile, RegionalNightUtc);
             profile = CreateRegionalVisibilityProfile(root, RegionalNightUtc, format, cloudScenario: patchy);
         }
         else if (scenario == "overcast")
@@ -195,7 +201,8 @@ public sealed partial class VirtualSkyCameraModuleTests
 
         try
         {
-            var catalog = CreateRegionalVisibilityCatalog(RegionalNightUtc, profile, starsPerInnerTile: 4);
+            var testTiles = scenario == "patchy" ? clearTiles.Concat(opaqueTiles).ToHashSet() : null;
+            var catalog = CreateRegionalVisibilityCatalog(RegionalNightUtc, profile, starsPerInnerTile: 4, tiles: testTiles);
             var assessment = await RunSingleRegionalVisibilityAsync(root, clock, deviceClock, profile, catalog, RegionalNightUtc, token)
                 .ConfigureAwait(false);
 
@@ -227,14 +234,17 @@ public sealed partial class VirtualSkyCameraModuleTests
                     Assert.IsGreaterThanOrEqualTo(4, assessment.Grid.ClearTileCount);
                     break;
                 case "patchy":
-                    Assert.IsGreaterThan(0, assessment.Grid.DeficitTileCount);
-                    Assert.IsGreaterThan(0, assessment.Grid.ClearTileCount);
+                    CollectionAssert.AreEquivalent(opaqueTiles, Coordinates(RegionalVisibilityTileStatus.DetectionDeficit));
+                    CollectionAssert.AreEquivalent(clearTiles, Coordinates(RegionalVisibilityTileStatus.Clear));
                     break;
                 case "overcast":
                     Assert.IsGreaterThanOrEqualTo(4, assessment.Grid.DeficitTileCount);
                     Assert.AreEqual(0, assessment.Grid.ClearTileCount);
                     break;
             }
+
+            (int Column, int Row)[] Coordinates(RegionalVisibilityTileStatus status)
+                => assessment.Tiles.Where(tile => tile.Status == status).Select(static tile => (tile.Column, tile.Row)).ToArray();
         }
         finally
         {
@@ -299,7 +309,10 @@ public sealed partial class VirtualSkyCameraModuleTests
     }
 
     [TestMethod]
-    public async Task RegionalStellarVisibility_ReferenceCalibratedExposureResolvesDefectMaskByIdAndWithholdsWhenUnverifiable()
+    [DataRow(false, DisplayName = "RegionalStellarVisibility_WithholdsWhenDefectMaskPayloadIsCorrupt")]
+    [DataRow(true, DisplayName = "RegionalStellarVisibility_WithholdsWhenDefectMaskManifestIsASymlink")]
+    public async Task RegionalStellarVisibility_ReferenceCalibratedExposureResolvesDefectMaskByIdAndWithholdsWhenUnverifiable(
+        bool linkManifest)
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-regvis-refcal");
         var token = TestContext.CancellationToken;
@@ -353,8 +366,6 @@ public sealed partial class VirtualSkyCameraModuleTests
             var defectEntry = await calibrationStore.FindMasterArtifactAsync(
                 defectArtifactId, CalibrationReferenceKinds.Defect, defectSha, token).ConfigureAwait(false);
             Assert.IsNotNull(defectEntry);
-            var defectPayloadPath = Path.Combine(root, defectEntry.ManifestRelativePath[..^".json".Length] + ".bin");
-
             var faultRoot = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-regvis-refcal-corrupt");
             try
             {
@@ -364,7 +375,8 @@ public sealed partial class VirtualSkyCameraModuleTests
                     CameraPixelFormat.Mono16,
                     syntheticCalibration: syntheticCalibration);
                 var corruptCatalog = CreateRegionalVisibilityCatalog(RegionalNightUtc, corruptProfile, starsPerInnerTile: 4);
-                var corruptFault = new CorruptDefectBeforeStep30bFault(faultRoot);
+                var corruptFault = new UnverifiableDefectBeforeStep30bFault(
+                    faultRoot, linkManifest ? Path.Combine(root, "external-defect.json") : null);
                 var corruptClock = new CenteredClock { UtcNow = RegionalNightUtc };
                 using var corruptProvider = RegionalVisibilityProvider(
                     faultRoot, corruptClock, corruptProfile.DeploymentLocation!, corruptCatalog, corruptFault);
@@ -381,7 +393,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                     corruptClock, corruptActive, RegionalNightUtc, token).ConfigureAwait(false);
                 await ProcessCenteredRuntimeExposureAsync(corruptProvider, corruptActive, token).ConfigureAwait(false);
 
-                Assert.IsTrue(corruptFault.Corrupted);
+                Assert.IsTrue(corruptFault.Injected);
                 var corruptOps = corruptProvider.GetRequiredService<IProcessingGraphOperations>();
                 var corruptExecId = (await corruptOps.ReadLiveExecutionIdAsync(
                     corruptReceipt.Manifest.Descriptor.Capture.CaptureId, token).ConfigureAwait(false))!.Value;
@@ -405,23 +417,60 @@ public sealed partial class VirtualSkyCameraModuleTests
         }
     }
 
-    private sealed class CorruptDefectBeforeStep30bFault(string root) : ICaptureProcessingFaultInjector
+    private sealed class UnverifiableDefectBeforeStep30bFault(string root, string? externalManifest) : ICaptureProcessingFaultInjector
     {
-        public bool Corrupted { get; private set; }
+        public bool Injected { get; private set; }
 
         public void Inject(CaptureProcessingFaultPoint point, string nodeId)
         {
-            if (!Corrupted &&
+            if (!Injected &&
                 string.Equals(nodeId, "regional-visibility", StringComparison.Ordinal) &&
                 point == CaptureProcessingFaultPoint.BeforeNodeExecution)
             {
                 var defectFile = Directory.EnumerateFiles(Path.Combine(root, "calibration"), "defect.bin", SearchOption.AllDirectories)
                     .Single();
-                var bytes = File.ReadAllBytes(defectFile);
-                bytes[0] ^= 0xFF;
-                File.WriteAllBytes(defectFile, bytes);
-                Corrupted = true;
+                if (externalManifest is not null)
+                {
+                    var manifest = Path.ChangeExtension(defectFile, ".json");
+                    File.Move(manifest, externalManifest);
+                    File.CreateSymbolicLink(manifest, externalManifest);
+                }
+                else
+                {
+                    var bytes = File.ReadAllBytes(defectFile);
+                    bytes[0] ^= 0xFF;
+                    File.WriteAllBytes(defectFile, bytes);
+                }
+                Injected = true;
             }
+        }
+    }
+
+    [TestMethod]
+    public async Task RegionalStellarVisibility_VirtualSkyRejectsMismatchedBayerChannelResponseAtMatchingMagnitudeZero()
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-regvis-bayer-response");
+        var token = TestContext.CancellationToken;
+        try
+        {
+            var profile = CreateRegionalVisibilityProfile(root, RegionalNightUtc, CameraPixelFormat.BayerRggb16,
+                photometricProfileColorResponse: new ConfiguredColorResponseProfile(5.0, 5.0, 5.0));
+            var catalog = CreateRegionalVisibilityCatalog(RegionalNightUtc, profile, starsPerInnerTile: 4);
+            var assessment = await RunSingleRegionalVisibilityAsync(
+                root, new CenteredClock { UtcNow = RegionalNightUtc },
+                new ExposureTestTimeProvider(RegionalNightUtc, autoAdvance: true), profile, catalog, RegionalNightUtc, token)
+                .ConfigureAwait(false);
+
+            Assert.AreEqual(RegionalVisibilityAssessmentStatus.Withheld, assessment.Status);
+            CollectionAssert.Contains(assessment.ReasonCodes.ToArray(), RegionalVisibilityReasonCodes.ResponseBasisMismatch);
+            Assert.AreEqual(RegionalVisibilityTileStatus.InsufficientEvidence,
+                assessment.Tiles.Single(static tile => tile.Column == 1 && tile.Row == 1).Status);
+            Assert.AreEqual(0, assessment.Grid.AssessedTileCount);
+            Assert.AreEqual(0, assessment.Grid.TotalExpectedDetectableStars);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
         }
     }
 
@@ -483,7 +532,11 @@ public sealed partial class VirtualSkyCameraModuleTests
     }
 
     [TestMethod]
-    public async Task RegionalStellarVisibility_RecentCaptureReplayReproducesExactOutputIdentity()
+    [DataRow("exact")]
+    [DataRow("rain-source-disabled")]
+    [DataRow("missing")]
+    [DataRow("altered")]
+    public async Task RegionalStellarVisibility_RecentCaptureReplayUsesFrozenEnvironment(string scenario)
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-regvis-replay");
         var token = TestContext.CancellationToken;
@@ -494,8 +547,28 @@ public sealed partial class VirtualSkyCameraModuleTests
         {
             var profile = CreateRegionalVisibilityProfile(root, RegionalNightUtc, CameraPixelFormat.Mono16);
             var catalog = CreateRegionalVisibilityCatalog(RegionalNightUtc, profile, starsPerInnerTile: 4);
+            var hasRain = scenario == "rain-source-disabled";
+            var sources = new List<EnvironmentalSourceConfiguration>();
+            if (hasRain)
+            {
+                sources.Add(new()
+                {
+                    Id = "rain-state",
+                    Type = "VirtualEnvironment",
+                    Kind = EnvironmentalObservationKind.RainState,
+                    Triggers = [EnvironmentalAcquisitionTrigger.Periodic]
+                });
+            }
+            var weatherOptions = Options.Create(new CameraAgentHostOptions
+            {
+                RawIngressRoot = root,
+                EnvironmentalAcquisition = new() { Enabled = true, Sources = sources }
+            });
+            using var weatherOutbox = new SqliteEnvironmentalObservationOutbox();
+            var associations = new EnvironmentalAssociationService(weatherOutbox, weatherOutbox, weatherOptions, clock);
+            var environment = new CameraAgentCloudEnvironment(associations, weatherOutbox, weatherOptions);
 
-            using var provider = RegionalVisibilityProvider(root, clock, profile.DeploymentLocation!, catalog);
+            using var provider = RegionalVisibilityProvider(root, clock, profile.DeploymentLocation!, catalog, environment: environment);
             var active = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(provider, profile).ConfigureAwait(false);
             var ingress = provider.GetRequiredService<RawCaptureIngress>();
             var module = new VirtualSkyCameraModule(deviceClock, catalog, new ProjectedSceneStore(),
@@ -505,6 +578,24 @@ public sealed partial class VirtualSkyCameraModuleTests
 
             var (receipt, _) = await CaptureAndAdmitRegionalAsync(
                 provider, ingress, module, deviceClock, clock, active, RegionalNightUtc, token).ConfigureAwait(false);
+            var rainObservationId = Guid.NewGuid();
+            if (hasRain)
+            {
+                var descriptor = receipt.Manifest.Descriptor;
+                var start = descriptor.Timing.ExposureStartedUtc;
+                var end = descriptor.Timing.ExposureEndedUtc;
+                var parameters = JsonSerializer.SerializeToElement(new { });
+                var fact = new EnvironmentalObservationFactV1(
+                    EnvironmentalObservationSchemaVersions.V1, rainObservationId,
+                    new("test-provider", "rain-state", "1.0.0", EnvironmentalObservationSourceKind.Measured,
+                        new(new("fixture", "1.0.0"), parameters, CaptureContractJson.ComputeCanonicalJsonSha256(parameters))),
+                    start, null, null, start.AddMinutes(-1), end.AddMinutes(1), end,
+                    new(EnvironmentalObservationKind.RainState, EnvironmentalObservationUnit.Boolean, null, true,
+                        EnvironmentalObservationQuality.Good), []);
+                await weatherOutbox.CommitLocalAsync(root, fact, token).ConfigureAwait(false);
+                await associations.AssociateAsync(descriptor.Capture.CaptureId, descriptor.Capture.CaptureSequence,
+                    start, end, descriptor.Capture.RigId, [EnvironmentalObservationKind.RainState], token).ConfigureAwait(false);
+            }
             await ProcessCenteredRuntimeExposureAsync(provider, active, token).ConfigureAwait(false);
 
             var operations = provider.GetRequiredService<IProcessingGraphOperations>();
@@ -517,11 +608,45 @@ public sealed partial class VirtualSkyCameraModuleTests
             var liveAssessment = liveUi.RegionalStellarVisibility!.Assessment!;
             var liveNode = liveDetail.Nodes.Single(node => node.NodeId == "regional-visibility");
             var liveOutput = Assert.ContainsSingle(liveNode.Outputs);
+            if (hasRain)
+            {
+                Assert.AreEqual(EnvironmentalObservationMatchStatus.Fresh, liveAssessment.Conditions.PrecipitationStatus);
+                Assert.IsTrue(liveAssessment.Conditions.PrecipitationDetected);
+                CollectionAssert.Contains(liveAssessment.ReasonCodes.ToArray(), RegionalVisibilityReasonCodes.PrecipitationContaminated);
+                var retained = await provider.GetRequiredService<CaptureProcessingPersistence>()
+                    .RestoreRegionalVisibilityAsync(liveOutput.ArtifactId, token).ConfigureAwait(false);
+                Assert.AreEqual(rainObservationId, retained.RecipeDescriptor!.Options
+                    .GetProperty("environment").GetProperty("precipitationObservationId").GetGuid());
+                sources.Clear();
+            }
 
             var requested = await operations.SubmitReplayAsync(
                 new(liveDetail.Execution.CaptureId, liveDetail.Execution.GraphRevisionId, liveDetail.Execution.PrimaryArtifactId),
                 "regional-visibility-recent-replay", "regional-vis-test", token).ConfigureAwait(false);
             Assert.AreNotEqual(liveExecutionId, requested.Execution.ExecutionId);
+
+            var frozenFailure = scenario switch
+            {
+                "missing" => RegionalStellarVisibilityRunRead.FrozenEnvironmentMissing,
+                "altered" => RegionalStellarVisibilityRunRead.FrozenEnvironmentAltered,
+                _ => null
+            };
+            if (frozenFailure is not null)
+            {
+                var original = await store.ReadOutputByArtifactIdAsync(liveOutput.ArtifactId, token).ConfigureAwait(false);
+                Assert.IsNotNull(original);
+                var payloadPath = Path.Combine(root, original.PayloadRelativePath);
+                if (scenario == "missing")
+                {
+                    File.Move(payloadPath, payloadPath + ".moved");
+                }
+                else
+                {
+                    var payload = await File.ReadAllBytesAsync(payloadPath, token).ConfigureAwait(false);
+                    payload[0] ^= 1;
+                    await File.WriteAllBytesAsync(payloadPath, payload, token).ConfigureAwait(false);
+                }
+            }
 
             var replayLease = await store.ClaimReplayAsync("regional-replay-worker", token).ConfigureAwait(false);
             Assert.IsNotNull(replayLease);
@@ -555,6 +680,16 @@ public sealed partial class VirtualSkyCameraModuleTests
 
             var replayDetail = (await operations.ReadExecutionDetailAsync(requested.Execution.ExecutionId, token).ConfigureAwait(false))!;
             var replayNode = replayDetail.Nodes.Single(node => node.NodeId == "regional-visibility");
+            var replayUi = await ui.GetExecutionDetailAsync(requested.Execution.ExecutionId, token).ConfigureAwait(false);
+            Assert.IsTrue(replayUi.IsSuccess, replayUi.Message);
+            if (frozenFailure is not null)
+            {
+                Assert.AreEqual(frozenFailure, replayNode.Reason);
+                Assert.IsEmpty(replayNode.Outputs);
+                Assert.AreEqual(frozenFailure, replayUi.Value?.RegionalStellarVisibility?.UnavailableReason);
+                return;
+            }
+
             Assert.AreEqual("Completed", replayNode.Status);
             var replayOutput = Assert.ContainsSingle(replayNode.Outputs);
             Assert.IsFalse(replayOutput.Published);
@@ -563,12 +698,13 @@ public sealed partial class VirtualSkyCameraModuleTests
             Assert.AreEqual(liveOutput.PayloadSha256, replayOutput.PayloadSha256);
             CollectionAssert.AreEqual(liveOutput.SourceArtifactIds.ToArray(), replayOutput.SourceArtifactIds.ToArray());
 
-            var replayUi = await ui.GetExecutionDetailAsync(requested.Execution.ExecutionId, token).ConfigureAwait(false);
-            Assert.IsTrue(replayUi.IsSuccess, replayUi.Message);
             var replayedAssessment = replayUi.Value?.RegionalStellarVisibility?.Assessment;
             Assert.IsNotNull(replayedAssessment);
             Assert.AreEqual(liveAssessment.AssessmentIdentitySha256, replayedAssessment.AssessmentIdentitySha256);
-            Assert.AreEqual(RegionalVisibilityAssessmentStatus.Assessed, replayedAssessment.Status);
+            Assert.AreEqual(hasRain ? RegionalVisibilityAssessmentStatus.Withheld : RegionalVisibilityAssessmentStatus.Assessed,
+                replayedAssessment.Status);
+            Assert.AreEqual(liveAssessment.Conditions.PrecipitationStatus, replayedAssessment.Conditions.PrecipitationStatus);
+            Assert.AreEqual(hasRain, replayedAssessment.Conditions.PrecipitationDetected);
         }
         finally
         {
@@ -709,7 +845,7 @@ public sealed partial class VirtualSkyCameraModuleTests
 
     private static ServiceProvider RegionalVisibilityProvider(
         string root, CenteredClock clock, DeploymentLocationSnapshot location, ICelestialCatalog catalog,
-        ICaptureProcessingFaultInjector? fault = null)
+        ICaptureProcessingFaultInjector? fault = null, CameraAgentCloudEnvironment? environment = null)
         => CenteredRuntimeProvider(root, clock, services =>
         {
             services.AddLogging(logging => logging.AddConsole().SetMinimumLevel(LogLevel.Warning));
@@ -720,6 +856,10 @@ public sealed partial class VirtualSkyCameraModuleTests
             if (fault is not null)
             {
                 services.AddSingleton(fault);
+            }
+            if (environment is not null)
+            {
+                services.AddSingleton(environment);
             }
         });
 
@@ -776,7 +916,8 @@ public sealed partial class VirtualSkyCameraModuleTests
         SyntheticCalibrationModelV1? syntheticCalibration = null,
         bool omitExplicitPhotometricProfile = false,
         double? magnitudeZeroElectronsPerSecond = 14_000,
-        double? photometricProfileMagnitudeZero = null)
+        double? photometricProfileMagnitudeZero = null,
+        ConfiguredColorResponseProfile? photometricProfileColorResponse = null)
     {
         var baseline = StoragePolicyRawIngressIntegrationTests.Profile(root);
         var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
@@ -833,7 +974,9 @@ public sealed partial class VirtualSkyCameraModuleTests
                     GainControlDivisor: 100.0,
                     ReadNoiseElectrons: 2.0,
                     FullWellElectrons: 20_000,
-                    SensorResponse: simResponse)
+                    SensorResponse: simResponse is not null && photometricProfileColorResponse is not null
+                        ? simResponse with { ColorResponse = photometricProfileColorResponse }
+                        : simResponse)
         };
 
         var steps = new List<CaptureProcessingStepConfig>
@@ -894,7 +1037,8 @@ public sealed partial class VirtualSkyCameraModuleTests
         };
     }
 
-    private static VirtualCloudScenarioDefinition FindHeldOutPatchyCloudScenario(
+    private static (VirtualCloudScenarioDefinition Scenario, (int Column, int Row)[] Clear, (int Column, int Row)[] Opaque)
+        FindHeldOutPatchyCloudScenario(
         CameraModuleConfig profile, DateTimeOffset utc)
     {
         var projection = RigProjectionContextFactory.CreateNative(profile.Rig);
@@ -918,8 +1062,8 @@ public sealed partial class VirtualSkyCameraModuleTests
                 Keyframes = [new VirtualCloudKeyframe { OffsetSeconds = 0, Coverage = 0.50, MaximumOpacity = 0.99, ScatterFraction = 0.95 }]
             };
             var field = new VirtualCloudField(candidate);
-            var clearTiles = 0;
-            var opaqueTiles = 0;
+            var clearTiles = new List<(int, int)>();
+            var opaqueTiles = new List<(int, int)>();
             foreach (var (col, row) in innerTiles)
             {
                 var allClear = true;
@@ -933,12 +1077,12 @@ public sealed partial class VirtualSkyCameraModuleTests
                     if (tx < 0.95) allClear = false;
                     if (tx > 0.05) allOpaque = false;
                 }
-                if (allClear) clearTiles++;
-                if (allOpaque) opaqueTiles++;
+                if (allClear) clearTiles.Add((col, row));
+                if (allOpaque) opaqueTiles.Add((col, row));
             }
-            if (clearTiles >= 1 && opaqueTiles >= 1)
+            if (clearTiles.Count >= 1 && opaqueTiles.Count >= 1)
             {
-                return candidate;
+                return (candidate, clearTiles.ToArray(), opaqueTiles.ToArray());
             }
         }
 
@@ -946,7 +1090,8 @@ public sealed partial class VirtualSkyCameraModuleTests
     }
 
     private static RegionalVisibilityTestCatalog CreateRegionalVisibilityCatalog(
-        DateTimeOffset utc, CameraModuleConfig profile, int starsPerInnerTile, double starMagnitude = 1.4)
+        DateTimeOffset utc, CameraModuleConfig profile, int starsPerInnerTile, double starMagnitude = 1.4,
+        HashSet<(int Column, int Row)>? tiles = null)
     {
         var projection = RigProjectionContextFactory.CreateNative(profile.Rig);
         var projector = ProjectorFactory.Create(projection);
@@ -963,6 +1108,10 @@ public sealed partial class VirtualSkyCameraModuleTests
         {
             for (var col = 0; col < cols; col++)
             {
+                if (tiles is not null && !tiles.Contains((col, row)))
+                {
+                    continue;
+                }
                 for (var s = 0; s < starsPerInnerTile; s++)
                 {
                     var sc = s % subCols;

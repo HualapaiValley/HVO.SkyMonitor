@@ -124,7 +124,8 @@ public sealed class RegionalStellarVisibilityTests
         // Patchy cloud: drop measured detections in tile (2,1) and sparse tile (0,1).
         // Tile (2,1) must become DetectionDeficit, while sparse tile (0,1) stays InsufficientEvidence!
         var patchyField = BuildSyntheticField(rig, NightUtc, stars, dropTile: (col, row) => (col == 2 && row == 1) || (col == 0 && row == 1));
-        var patchy = AssessWith(patchyField, options, defectMask: defectMask);
+        var darkRegionalBg = Enumerable.Repeat(new RegionalVisibilityTileBackgroundV1(true, 100.0, 5.0), 16).ToArray();
+        var patchy = AssessWith(patchyField, options, defectMask: defectMask, regionalBackground: darkRegionalBg);
 
         Assert.AreEqual(RegionalVisibilityAssessmentStatus.Assessed, patchy.Status);
         Assert.AreEqual(1, patchy.Grid.DeficitTileCount);
@@ -141,11 +142,96 @@ public sealed class RegionalStellarVisibilityTests
 
         // Short exposure drops fainter stars below detectability instead of counting them as missing.
         var shortExposureField = BuildSyntheticField(rig, NightUtc, StarsInTile(rig, NightUtc, 4, 4, 1, 1, 4, 5.2), dropTile: (_, _) => true);
-        var darkRegionalBg = Enumerable.Repeat(new RegionalVisibilityTileBackgroundV1(true, 100.0, 5.0), 16).ToArray();
         var shortExposure = AssessWith(shortExposureField, options, exposureSeconds: 0.05, regionalBackground: darkRegionalBg);
         Assert.AreEqual(RegionalVisibilityAssessmentStatus.InsufficientEvidence, shortExposure.Status);
         Assert.AreEqual(0, shortExposure.Grid.DeficitTileCount);
         Assert.AreEqual(0, Tile(shortExposure, 1, 1).ExpectedDetectableCount);
+    }
+
+    [TestMethod]
+    public void DetectionFreeTileRequiresItsOwnBackgroundWhenLinearFrameIsUnavailable()
+    {
+        var rig = CreateRig(256, 256, CameraPixelFormat.Mono16);
+        var field = BuildSyntheticField(rig, NightUtc, CreateGridStars(rig, NightUtc, 4, 4, 4, 1.2),
+            dropTile: (column, row) => column == 1 && row == 1);
+        var options = new RegionalStellarVisibilityOptions(EdgeMarginPixels: 4.0, PhotometricProfile: DefaultMonoProfile());
+        var background = Enumerable.Repeat(new RegionalVisibilityTileBackgroundV1(true, 100, 5), 16).ToArray();
+        var verified = AssessWith(field, options, regionalBackground: background);
+        Assert.AreEqual(RegionalVisibilityTileStatus.DetectionDeficit, Tile(verified, 1, 1).Status);
+        Assert.AreEqual(4, Tile(verified, 1, 1).ExpectedDetectableCount);
+
+        background[5] = new(false, null, null);
+        var unreadableTile = AssessWith(field, options, regionalBackground: background);
+        var unreadableFrame = AssessWith(field, options);
+        foreach (var assessment in new[] { unreadableTile, unreadableFrame })
+        {
+            var tile = Tile(assessment, 1, 1);
+            Assert.AreEqual(RegionalVisibilityTileStatus.InsufficientEvidence, tile.Status);
+            CollectionAssert.Contains(tile.ReasonCodes.ToArray(), RegionalVisibilityReasonCodes.TileBackgroundUnavailable);
+            Assert.AreEqual(0, tile.ExpectedDetectableCount);
+            Assert.AreEqual(RegionalVisibilityTileStatus.Clear, Tile(assessment, 2, 1).Status);
+            Assert.AreEqual(0, assessment.Grid.DeficitTileCount);
+        }
+    }
+
+    [TestMethod]
+    [DataRow(3, 600_000, 1, 333_333)]
+    [DataRow(2, 900_000, 2, 666_667)]
+    public void RatioBelowDeficitThresholdWithTooFewMissingStarsIsInsufficient(
+        int minimumMissing, int threshold, int measuredCount, int ratio)
+    {
+        var rig = CreateRig(256, 256, CameraPixelFormat.Mono16);
+        var target = StarsInTile(rig, NightUtc, 4, 4, 1, 1, 3, 1.2);
+        var anchors = StarsInTile(rig, NightUtc, 4, 4, 2, 2, 4, 1.2);
+        var field = BuildSyntheticFieldFromExplicitDetections(rig, NightUtc, [.. target, .. anchors],
+            target.Take(measuredCount).Concat(anchors).Select(static star => star.Pixel).ToArray());
+        var assessment = AssessWith(field, new RegionalStellarVisibilityOptions(
+            MinimumExpectedStarsPerTile: 3, MinimumMissingStarsForDeficit: minimumMissing,
+            DeficitVisibilityThresholdMillionths: threshold, EdgeMarginPixels: 4.0, PhotometricProfile: DefaultMonoProfile()));
+
+        var tile = Tile(assessment, 1, 1);
+        Assert.AreEqual(3, tile.ExpectedDetectableCount);
+        Assert.AreEqual(measuredCount, tile.MatchedMeasuredCount);
+        Assert.AreEqual(ratio, tile.VisibilityRatioMillionths);
+        Assert.AreEqual(RegionalVisibilityTileStatus.InsufficientEvidence, tile.Status);
+        CollectionAssert.Contains(tile.ReasonCodes.ToArray(), RegionalVisibilityReasonCodes.TileInsufficientMissingStars);
+        Assert.AreEqual(RegionalVisibilityTileStatus.Clear, Tile(assessment, 2, 2).Status);
+
+        var tampered = assessment.Tiles.ToArray();
+        tampered[5] = tile with { Status = RegionalVisibilityTileStatus.Clear };
+        Assert.AreEqual("tiles[5]", RegionalStellarVisibilityJson.Validate(assessment with { Tiles = tampered }).FieldPath);
+        tampered[5] = tile with { Status = RegionalVisibilityTileStatus.DetectionDeficit };
+        Assert.AreEqual("tiles[5]", RegionalStellarVisibilityJson.Validate(assessment with { Tiles = tampered }).FieldPath);
+    }
+
+    [TestMethod]
+    public void FractionalStarPositionsUseTheRetainedIntegerTileBounds()
+    {
+        var rig = CreateRig(256, 256, CameraPixelFormat.Mono16);
+        var projector = ProjectorFactory.Create(RigProjectionContextFactory.CreateNative(rig));
+        var pixel = new PixelPoint(85.2, 85.2);
+        var horizontal = projector.Unproject(pixel)!.Value;
+        var equatorial = CoordinateTransforms.HorizontalToEquatorial(
+            horizontal, NightUtc, Observatory.LatitudeDegrees, Observatory.LongitudeDegrees);
+        var field = BuildSyntheticField(rig, NightUtc, [new("boundary", equatorial, horizontal, pixel, 1.2, 0.65)], dropTile: null);
+        var result = AssessWith(field, new RegionalStellarVisibilityOptions(
+            GridColumns: 3, GridRows: 3, MinimumExpectedStarsPerTile: 1, MinimumMissingStarsForDeficit: 1,
+            EdgeMarginPixels: 4.0, PhotometricProfile: DefaultMonoProfile()));
+
+        var tile = Tile(result, 1, 1);
+        Assert.AreEqual((85, 85, 85, 85), (tile.X, tile.Y, tile.Width, tile.Height));
+        Assert.AreEqual(1, tile.PredictedStarCount);
+        Assert.AreEqual(1, tile.MatchedMeasuredCount);
+        Assert.AreEqual(RegionalVisibilityTileStatus.Clear, tile.Status);
+        Assert.AreEqual(0, Tile(result, 0, 0).PredictedStarCount);
+
+        var tampered = result.Tiles.ToArray();
+        tampered[4] = tile with { Width = 172 };
+        Assert.AreEqual("tiles[4]", RegionalStellarVisibilityJson.Validate(result with { Tiles = tampered }).FieldPath);
+        tampered[4] = tile with { VisibilityRatioMillionths = 0 };
+        Assert.AreEqual("tiles[4]", RegionalStellarVisibilityJson.Validate(result with { Tiles = tampered }).FieldPath);
+        tampered[4] = tile with { Status = RegionalVisibilityTileStatus.DetectionDeficit };
+        Assert.AreEqual("tiles[4]", RegionalStellarVisibilityJson.Validate(result with { Tiles = tampered }).FieldPath);
     }
 
     [TestMethod]
@@ -632,13 +718,43 @@ public sealed class RegionalStellarVisibilityTests
     }
 
     [TestMethod]
+    public void OutputIdentityBindsVerifiedDetectionsAndExactSolarOverride()
+    {
+        var rig = CreateRig(256, 256, CameraPixelFormat.Mono16);
+        var field = BuildSyntheticField(rig, NightUtc, CreateGridStars(rig, NightUtc, 4, 4, 4, 1.2), dropTile: null);
+        var request = new RegionalStellarVisibilityRequest(
+            field.Raw, field.MeasurementArtifact, field.Measurement, field.PredictionArtifact, field.Prediction, 2.0, 1.0,
+            new(EdgeMarginPixels: 4.0, PhotometricProfile: DefaultMonoProfile()),
+            SunAltitudeDegreesOverride: -18.0000001,
+            RegionalBackground: Enumerable.Repeat(new RegionalVisibilityTileBackgroundV1(true, 100, 5), 16).ToArray());
+
+        var night = RegionalStellarVisibilityProducts.Assess(request).Products.Single();
+        Assert.AreEqual(RegionalVisibilityTileStatus.Clear, Tile(RegionalStellarVisibilityProducts.Read(night), 1, 1).Status);
+
+        var changedDetections = field.Measurement.Sources.Detections.Where(static detection =>
+            detection.Pixel.X is < 64 or >= 128 || detection.Pixel.Y is < 64 or >= 128).ToArray();
+        var conflictingMeasurement = field.Measurement with
+        {
+            Sources = field.Measurement.Sources with { Detections = changedDetections }
+        };
+        var mismatched = RegionalStellarVisibilityProducts.Assess(request with { Measurement = conflictingMeasurement }).Products.Single();
+        AssertWithheld(RegionalStellarVisibilityProducts.Read(mismatched), RegionalVisibilityReasonCodes.MeasurementUnavailable);
+        Assert.AreNotEqual(night.OutputIdentitySha256, mismatched.OutputIdentitySha256);
+
+        var twilight = RegionalStellarVisibilityProducts.Assess(request with { SunAltitudeDegreesOverride = -17.9999999 }).Products.Single();
+        AssertWithheld(RegionalStellarVisibilityProducts.Read(twilight), RegionalVisibilityReasonCodes.Twilight);
+        Assert.AreNotEqual(night.OutputIdentitySha256, twilight.OutputIdentitySha256);
+    }
+
+    [TestMethod]
     public void AssessIncludeMaskFalseDerivesOverlayBitsAndRejectsGridExceedingImageDimensions()
     {
         var rig = CreateRig(256, 256, CameraPixelFormat.Mono16);
         var field = BuildSyntheticField(rig, NightUtc, CreateGridStars(rig, NightUtc, 4, 4, 4, 1.0),
             dropTile: (col, row) => col == 1 && row == 1);
         var assessedNoMask = AssessWith(field, new RegionalStellarVisibilityOptions(
-            EdgeMarginPixels: 4.0, IncludeMask: false, PhotometricProfile: DefaultMonoProfile()));
+            EdgeMarginPixels: 4.0, IncludeMask: false, PhotometricProfile: DefaultMonoProfile()),
+            regionalBackground: Enumerable.Repeat(new RegionalVisibilityTileBackgroundV1(true, 100, 5), 16).ToArray());
 
         Assert.AreEqual(RegionalVisibilityAssessmentStatus.Assessed, assessedNoMask.Status);
         Assert.IsNull(assessedNoMask.Mask);
