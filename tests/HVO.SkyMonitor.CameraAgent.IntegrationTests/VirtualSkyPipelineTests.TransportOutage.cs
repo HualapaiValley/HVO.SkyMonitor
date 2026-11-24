@@ -1,4 +1,3 @@
-#if !COMBINED_INTEGRATION_TESTS
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using HVO.SkyMonitor.AgentCore;
@@ -465,4 +464,3 @@ public sealed partial class VirtualSkyPipelineTests
             => throw new HttpRequestException("Injected Central transport outage.");
     }
 }
-#endif

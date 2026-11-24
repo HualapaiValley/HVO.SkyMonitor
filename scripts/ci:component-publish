@@ -5,13 +5,21 @@ set -euo pipefail
 # a checksum manifest so a component lane produces its own delivery evidence.
 # Architecture & Publish stays the owner of the exhaustive both-architecture
 # publish matrix and runs for every full-mode head, so each lane publishes one
-# runtime identifier only. The `combined` lane ships nothing and has no arm.
+# runtime identifier only.
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
 component="${1:-}"
 evidence_root="TestResults/publish/component"
+
+case "$component" in
+  shared | cameraagent | delivery) ;;
+  *)
+    printf 'Usage: scripts/ci:component-publish <shared|cameraagent|delivery>\n' >&2
+    exit 2
+    ;;
+esac
 
 publish_project() {
   local project="$1" name="$2" runtime="${3:-}"
@@ -47,11 +55,6 @@ case "$component" in
     test ! -e "$evidence_root/cameraagent/HVO.SkyMonitor.LogicHost.dll"
     test -x "$evidence_root/replay-runner-linux-x64/HVO.SkyMonitor.CameraAgent.ReplayRunner"
     ;;
-  logichost)
-    publish_project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj logichost
-    test -f "$evidence_root/logichost/HVO.SkyMonitor.LogicHost.dll"
-    test ! -e "$evidence_root/logichost/HVO.SkyMonitor.CameraAgent.dll"
-    ;;
   delivery)
     publish_project src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj installer-linux-x64 linux-x64
     test -x "$evidence_root/installer-linux-x64/HVO.SkyMonitor.Deployment.Cli"
@@ -63,10 +66,6 @@ case "$component" in
       printf 'Installer --version printed %s, not %s.\n' "$actual_version" "$expected_version" >&2
       exit 1
     fi
-    ;;
-  *)
-    printf 'Usage: scripts/ci:component-publish <shared|cameraagent|logichost|delivery>\n' >&2
-    exit 2
     ;;
 esac
 
