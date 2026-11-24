@@ -226,8 +226,9 @@ as HIGH. HIGH concerns override LOW categories. Apply this at each formal
 review stage after draft checks pass on the exact head; profiles and the A/B/C/M validation ladder do not replace reviewers.
 Humans/bots, an availability waiver, elapsed time, or the legacy correction cap
 cannot substitute for the required named CLEAN reports. Only High/Medium
-review findings block; Critical is High. Lows become follow-up issues through
-Kepler. Incompleteness or missing required evidence is always at least Medium,
+review findings block; Critical is High. Kepler tracks Lows through follow-ups
+and uses [rolling Low batches](../planning/agent-execution.md#rolling-low-batches)
+after Ready. Incompleteness or missing required evidence is always at least Medium,
 never Low or deferrable. Required tests and CI remain separate gates.
 
 1. The owner reads the original GitHub issue, all discussion and acceptance
@@ -283,10 +284,12 @@ required formal reviews after draft checks pass on the exact head, and marks
 ready only after convergence. After fresh
 required CI, Kepler revalidates the **CURRENT PR HEAD SHA**, completeness,
 required formal CLEAN reports (LOW: Sol; HIGH: Sol and Opus on that SHA),
-passing required checks, and resolved conversations. Kepler alone publishes
-`hvo/reviewed-head` on that exact head, then calls GraphQL `enqueuePullRequest`
+passing required checks, and resolved conversations. An existing diff approval
+may carry through a verified clean merge-only sync from `development/v1`.
+Kepler alone [publishes the verified status](development-v1-merge-queue.md#publish-review-approval)
+on the current head, then calls GraphQL `enqueuePullRequest`
 with `expectedHeadOid` bound to it and verifies queue admission. Queue CI tests
-combined integration. Actual conflicts or changed heads require the applicable
+combined integration. Actual conflicts or PR edits require the applicable
 implementation/tests/reviews before Kepler advances them.
 
 Under the operated queue, `gh pr merge --merge` warns and **does not enqueue**.

@@ -7,6 +7,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Fleet;
 
 [TestClass]
 [TestCategory("Integration")]
+[TestProperty("Area", "Fleet")]
 public sealed class SqliteFleetStatusOutboxTests
 {
     private string? _root;

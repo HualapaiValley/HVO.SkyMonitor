@@ -11,6 +11,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "Capture.Calibration")]
 [DoNotParallelize]
 public sealed class SyntheticCalibrationPerformanceTests
 {

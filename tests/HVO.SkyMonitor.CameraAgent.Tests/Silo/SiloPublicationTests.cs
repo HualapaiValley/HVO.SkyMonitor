@@ -10,6 +10,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Silo;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Silo")]
 public sealed class SiloPublicationTests
 {
     private static readonly DateTimeOffset Day = SiloHarness.Start;

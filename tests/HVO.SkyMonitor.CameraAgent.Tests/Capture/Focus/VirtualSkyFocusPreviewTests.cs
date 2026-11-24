@@ -15,6 +15,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Focus;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture.Focus")]
 public sealed class VirtualSkyFocusPreviewTests
 {
     // HFD of a pixel-integrated Gaussian: 2 * sqrt(2 ln 2) * sqrt(sigma^2 + 1/12).

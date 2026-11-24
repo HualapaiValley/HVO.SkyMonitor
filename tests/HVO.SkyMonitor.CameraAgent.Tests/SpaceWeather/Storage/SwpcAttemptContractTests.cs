@@ -10,6 +10,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.SpaceWeather.Storage;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "SpaceWeather")]
 public sealed class SwpcAttemptContractTests
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "swpc-contract-" + Guid.NewGuid().ToString("N"));

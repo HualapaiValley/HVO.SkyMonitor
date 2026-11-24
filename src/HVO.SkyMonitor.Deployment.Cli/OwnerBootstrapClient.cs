@@ -50,8 +50,9 @@ internal sealed record InstallationVerificationExpectation(
 
 internal sealed class OwnerBootstrapClient(
     Uri baseAddress,
-    HttpMessageHandler? handler = null,
-    TimeSpan? protectedReadTimeout = null) : IOwnerBootstrapClient
+    HttpMessageHandler? handler,
+    TimeSpan? protectedReadTimeout,
+    TimeProvider timeProvider) : IOwnerBootstrapClient
 {
     internal static readonly TimeSpan ProtectedReadTimeout = TimeSpan.FromSeconds(120);
     internal const string VerificationStateHeader = "X-HVO-Installation-Verification";
@@ -67,6 +68,15 @@ internal sealed class OwnerBootstrapClient(
         "name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"",
         RegexOptions.CultureInvariant | RegexOptions.Compiled,
         TimeSpan.FromSeconds(1));
+
+    // The native startup acceptance test also activates this constructor via reflection.
+    public OwnerBootstrapClient(
+        Uri baseAddress,
+        HttpMessageHandler? handler = null,
+        TimeSpan? protectedReadTimeout = null)
+        : this(baseAddress, handler, protectedReadTimeout, TimeProvider.System)
+    {
+    }
 
     public async Task VerifyFleetDisabledAsync(CancellationToken cancellationToken)
     {
@@ -115,8 +125,9 @@ internal sealed class OwnerBootstrapClient(
         ArgumentNullException.ThrowIfNull(expectedCatalog);
         cancellationToken.ThrowIfCancellationRequested();
         var budget = timeout ?? TimeSpan.FromMinutes(3);
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        deadline.CancelAfter(budget);
+        using var deadline = new CancellationTokenSource(budget, timeProvider);
+        using var probeCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, deadline.Token);
+        var probeToken = probeCancellation.Token;
         using var ownedHandler = handler is null
             ? new HttpClientHandler
             {
@@ -136,20 +147,20 @@ internal sealed class OwnerBootstrapClient(
         {
             while (true)
             {
-                deadline.Token.ThrowIfCancellationRequested();
+                probeToken.ThrowIfCancellationRequested();
                 try
                 {
-                    using var alive = await client.GetAsync(new Uri("/alive", UriKind.Relative), deadline.Token).ConfigureAwait(false);
-                    using var health = await client.GetAsync(new Uri("/health", UriKind.Relative), deadline.Token).ConfigureAwait(false);
-                    latest = await health.Content.ReadAsStringAsync(deadline.Token).ConfigureAwait(false);
-                    deadline.Token.ThrowIfCancellationRequested();
+                    using var alive = await client.GetAsync(new Uri("/alive", UriKind.Relative), probeToken).ConfigureAwait(false);
+                    using var health = await client.GetAsync(new Uri("/health", UriKind.Relative), probeToken).ConfigureAwait(false);
+                    latest = await health.Content.ReadAsStringAsync(probeToken).ConfigureAwait(false);
+                    probeToken.ThrowIfCancellationRequested();
                     if (alive.IsSuccessStatusCode && health.IsSuccessStatusCode)
                     {
                         using var document = JsonDocument.Parse(latest);
                         if (document.RootElement.GetProperty("status").GetString() is "Healthy" or "Degraded" &&
                             QuarantinedReadiness.CatalogMatches(document.RootElement, expectedCatalog))
                         {
-                            deadline.Token.ThrowIfCancellationRequested();
+                            probeToken.ThrowIfCancellationRequested();
                             return;
                         }
                         latest = "CameraAgent readiness report or catalog identity does not match the instance.";
@@ -160,13 +171,13 @@ internal sealed class OwnerBootstrapClient(
                         using var document = JsonDocument.Parse(latest);
                         if (QuarantinedReadiness.TryAccept(document.RootElement, expectedCatalog, out var reason))
                         {
-                            deadline.Token.ThrowIfCancellationRequested();
+                            probeToken.ThrowIfCancellationRequested();
                             return;
                         }
                         latest = reason;
                     }
                 }
-                catch (OperationCanceledException) when (!deadline.IsCancellationRequested)
+                catch (OperationCanceledException) when (!probeToken.IsCancellationRequested)
                 {
                     latest = "A CameraAgent health probe timed out.";
                 }
@@ -174,11 +185,12 @@ internal sealed class OwnerBootstrapClient(
                 {
                     latest = exception.Message;
                 }
-                await Task.Delay(TimeSpan.FromSeconds(2), deadline.Token).ConfigureAwait(false);
+                await Task.Delay(TimeSpan.FromSeconds(2), timeProvider, probeToken).ConfigureAwait(false);
             }
         }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && deadline.IsCancellationRequested)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested || deadline.IsCancellationRequested)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             throw new InstallerException(
                 $"CameraAgent health did not become ready within {budget.TotalSeconds:g} seconds: {Redaction.SafeDiagnostic(latest ?? "No complete health report was received.")}");
         }

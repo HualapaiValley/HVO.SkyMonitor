@@ -7,6 +7,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Focus;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture.Focus")]
 public sealed class ManualFocusSessionStoreTests
 {
     private static readonly DateTimeOffset SavedAt = new(2026, 10, 2, 14, 0, 0, TimeSpan.Zero);

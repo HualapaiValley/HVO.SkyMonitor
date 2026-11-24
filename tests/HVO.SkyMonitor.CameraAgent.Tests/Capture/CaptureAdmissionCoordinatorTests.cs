@@ -14,6 +14,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture")]
 [DoNotParallelize]
 [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Test helpers receive only constant SQL from this test class.")]
 public sealed partial class CaptureAdmissionCoordinatorTests

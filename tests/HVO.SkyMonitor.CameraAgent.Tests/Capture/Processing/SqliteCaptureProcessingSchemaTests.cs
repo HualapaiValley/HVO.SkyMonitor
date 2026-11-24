@@ -12,6 +12,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture.Processing")]
 [DoNotParallelize]
 public sealed partial class SqliteCaptureProcessingSchemaTests
 {
@@ -60,7 +61,7 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
         Assert.AreEqual(1L, await ScalarAsync(
             connection,
             "SELECT COUNT(*) FROM processing_nodes WHERE node_id = 'retained-wal';").ConfigureAwait(false));
-        Assert.AreEqual(88L, await ScalarAsync(connection, """
+        Assert.AreEqual(90L, await ScalarAsync(connection, """
             SELECT COUNT(*) FROM sqlite_schema
             WHERE name = 'capture_processing_schema'
                OR name LIKE 'processing_%'

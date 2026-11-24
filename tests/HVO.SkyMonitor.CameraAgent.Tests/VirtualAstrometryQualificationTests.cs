@@ -12,6 +12,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 /// <summary>Explicit actual-module evidence; unavailable full-snapshot inputs fail rather than skip.</summary>
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "Modules.VirtualSky")]
 [DoNotParallelize]
 public sealed class VirtualAstrometryQualificationTests
 {

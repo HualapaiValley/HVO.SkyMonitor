@@ -18,6 +18,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.TimeLapses;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "TimeLapses")]
 [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "Focused MSTest methods.")]
 public sealed class SqliteTimeLapseStoreTests
 {

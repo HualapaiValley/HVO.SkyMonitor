@@ -9,6 +9,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Telemetry")]
 public sealed class BoundedRuntimeSnapshotTests
 {
     [TestMethod]

@@ -10,6 +10,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.SpaceWeather.Fetch;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "SpaceWeather")]
 public sealed class SwpcClientTests
 {
     [TestMethod]

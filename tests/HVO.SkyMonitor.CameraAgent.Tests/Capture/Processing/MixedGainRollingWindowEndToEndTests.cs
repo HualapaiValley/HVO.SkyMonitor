@@ -25,6 +25,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 /// acquisitions (#1524).
 /// </summary>
 [TestClass]
+[TestProperty("Area", "Capture.Processing")]
 public sealed partial class MixedGainRollingWindowEndToEndTests
 {
     public TestContext TestContext { get; set; } = null!;

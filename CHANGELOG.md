@@ -4,9 +4,10 @@ This file records the changes to HVO.SkyMonitor that operators and users notice.
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-`[Unreleased]` records the work merged to `development/v1` since the last release. A release renames `[Unreleased]`
-to its version and adds `docs/upgrade-notes/X.Y.Z.md` (install contract section 3). 0.9.0, the first release, starts
-with the work merged from 2026-10-16 onward; earlier development is recorded in its pull requests.
+Each operator-visible pull request adds one [changelog fragment](changelog.d/README.md).
+The release PR assembles the fragments and remaining Unreleased entries into the
+new version section and adds `docs/upgrade-notes/X.Y.Z.md`. 0.9.0, the first release,
+starts with the work merged from 2026-10-16 onward. Pull requests record earlier development.
 
 ## [Unreleased]
 
@@ -33,6 +34,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 - Release tooling can check local LogicHost identity candidates against their archive bytes, checksums and central compatibility declarations without loading or installing them. Refs #1242
 
 ### Changed
+
+- SkyMonitor CI keeps functional tests on the merge path and reports tight timing and allocation checks in a separate Raspberry Pi 5 workflow. The Pi workflow flags timings more than 20% above a rolling baseline. #2060
 
 - SkyMonitor CI and the standard local validation commands now skip the retired LogicHost and combined CameraAgent–LogicHost test suites. The active CI inventory has 16,583 of 17,819 Unit cases and 916 of 1,540 Integration cases. #2048
 
@@ -62,10 +65,6 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - CameraAgent Silo rejects invalid metadata read limits before accessing storage. #2003
 
-- CameraAgent image upgrades allow five minutes for application startup verification and give automatic recovery a separate verification window after restarting the predecessor. Signed restore-only can reopen the original capture admission after an interrupted offline release upgrade when the checkpoint is already restored and the predecessor supports authenticated, operation-owned resume. #1955
-
-- RC2 archive recovery can use a separately authorized installer to complete an interrupted, already-restored upgrade while preserving capture admission and reporting the latest owner command. A failed retry restarts the verified predecessor when its stores are safe. Signed recovery preserves later Fleet records and capture evidence, and settles with admission preserved when atomic resume is unavailable or the installer no longer owns the pause. The compatible successor worker can then accept Drain and scheduled Restart. #1955
-
 - New centered CameraAgent graphs retain faint stars in reference-calibrated VirtualSky exposures by subtracting the synthetic bias pedestal once. #1920
 
 - CameraAgent opens retained file-only archive products through the local archive API and rejects incompatible centered profiles before activation. #1919
@@ -73,6 +72,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 - CameraAgent can stop its local automation worker repeatedly, including after disposal, while waiting for any active adapter to finish draining. #1932
 - CameraAgent shutdown releases its remaining services after a local automation task fails during cancellation. The stop still reports the original failure. #1936
 - CameraAgent can upgrade the beta astrometry journal to centered processing while retaining captures and indexed astrometry history. #1922
+
+- CameraAgent identifies the retained input that blocked centered registration, reports unavailable predecessor history on resumed runs, and keeps retention lookups fast as window history grows. #1961
 
 - CameraAgent refuses new legacy reference-astrometry presets while the active camera profile uses centered exposure (#1919).
 

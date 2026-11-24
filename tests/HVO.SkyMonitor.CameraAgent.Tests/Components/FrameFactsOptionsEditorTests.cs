@@ -15,6 +15,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Ui")]
 public sealed class FrameFactsOptionsEditorTests
 {
     private static readonly JsonSerializerOptions SnapshotJson = new(JsonSerializerDefaults.Web);

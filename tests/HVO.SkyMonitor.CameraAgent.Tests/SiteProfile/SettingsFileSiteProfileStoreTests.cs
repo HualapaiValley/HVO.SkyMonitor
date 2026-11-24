@@ -16,6 +16,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.SiteProfile;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "SiteProfile")]
 [DoNotParallelize]
 public sealed class SettingsFileSiteProfileStoreTests
 {

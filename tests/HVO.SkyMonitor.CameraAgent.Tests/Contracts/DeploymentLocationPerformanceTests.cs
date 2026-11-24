@@ -14,6 +14,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "DeploymentLocation")]
 [DoNotParallelize]
 [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "The manual evidence harness owns its single-threaded measurement flow.")]
 public sealed class DeploymentLocationPerformanceTests

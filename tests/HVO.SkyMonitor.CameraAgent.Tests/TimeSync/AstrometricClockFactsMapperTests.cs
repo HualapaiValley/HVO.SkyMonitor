@@ -5,6 +5,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.TimeSync;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "TimeSync")]
 public sealed class AstrometricClockFactsMapperTests
 {
     private static readonly DateTimeOffset Midpoint = new(2026, 1, 15, 8, 0, 0, TimeSpan.Zero);

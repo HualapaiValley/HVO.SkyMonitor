@@ -102,11 +102,7 @@ public sealed partial class LifecycleContractTests
         StringAssert.StartsWith(uncut, expected, StringComparison.Ordinal);
     }
 
-    // Compare growth on the same machine instead of imposing an x64 wall-clock budget on the Pi.
-    // Five times the input may take at most ten times the time plus 100 ms scheduling noise;
-    // quadratic growth would take 25 times. Warm both paths and use medians to limit JIT/GC noise.
     [TestMethod]
-    [DoNotParallelize]
     [Timeout(120_000)]
     [DataRow("token=\"password=\" x ", "token=<redacted>…")]
     [DataRow("api_key=db_password\t\"a b\" ", "api_key=<redacted>…")]
@@ -114,10 +110,21 @@ public sealed partial class LifecycleContractTests
     [DataRow("see\u001b[1mSecretKey x ", "seeSecretKey <redacted>…")]
     [DataRow("token=\"password=\" mysecret ", "token=<redacted>…")]
     [DataRow("api_key=SecretKey\t\"a b\" ", "api_key=<redacted>…")]
-    public void Diagnostic1523_NewPassesAreLinear(string unit, string expected)
+    public void Diagnostic1523_NewPassesRedactLargeDiagnostics(string unit, string expected)
     {
-        var small = string.Concat(Enumerable.Repeat(unit, 10_000));
-        var large = string.Concat(Enumerable.Repeat(unit, 50_000));
+        var (small, large) = Diagnostic1523Inputs(unit);
+        Assert.AreEqual(expected, Redaction.Redact(small));
+        Assert.AreEqual(expected, Redaction.Redact(large));
+        Assert.AreEqual(expected, Redaction.SafeDiagnostic(small));
+        Assert.AreEqual(expected, Redaction.SafeDiagnostic(large));
+    }
+
+    internal static (string Small, string Large) Diagnostic1523Inputs(string unit) =>
+        (string.Concat(Enumerable.Repeat(unit, 10_000)), string.Concat(Enumerable.Repeat(unit, 50_000)));
+
+    internal static void VerifyDiagnostic1523Growth(string unit, string expected)
+    {
+        var (small, large) = Diagnostic1523Inputs(unit);
         VerifyGrowth(Redaction.Redact, nameof(Redaction.Redact));
         VerifyGrowth(Redaction.SafeDiagnostic, nameof(Redaction.SafeDiagnostic));
 
@@ -480,4 +487,20 @@ public sealed partial class LifecycleContractTests
         Assert.IsGreaterThan(0, swept, $"No messages swept in {file}.");
         Assert.IsEmpty(changed, string.Join(Environment.NewLine, changed));
     }
+}
+
+public sealed partial class LifecycleRedactionPerformanceTests
+{
+    // Five times the input may take at most ten times the time plus 100 ms
+    // of scheduling noise. Warm both paths and use medians to limit JIT/GC noise.
+    [TestMethod]
+    [Timeout(120_000)]
+    [DataRow("token=\"password=\" x ", "token=<redacted>…")]
+    [DataRow("api_key=db_password\t\"a b\" ", "api_key=<redacted>…")]
+    [DataRow("ObjectStorage__SecretKey x ", "ObjectStorage__SecretKey <redacted>…")]
+    [DataRow("see\u001b[1mSecretKey x ", "seeSecretKey <redacted>…")]
+    [DataRow("token=\"password=\" mysecret ", "token=<redacted>…")]
+    [DataRow("api_key=SecretKey\t\"a b\" ", "api_key=<redacted>…")]
+    public void Diagnostic1523_NewPassesAreLinear(string unit, string expected) =>
+        LifecycleContractTests.VerifyDiagnostic1523Growth(unit, expected);
 }

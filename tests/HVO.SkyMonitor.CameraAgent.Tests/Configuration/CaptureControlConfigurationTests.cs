@@ -12,6 +12,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Configuration;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Configuration")]
 public sealed class CaptureControlConfigurationTests
 {
     [TestMethod]

@@ -21,6 +21,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.OrbitalPlanning;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "OrbitalPlanning")]
 public sealed class CameraAgentTimeDataRefreshTests
 {
     /// <summary>The committed bundled pair, parsed with the product parser.</summary>

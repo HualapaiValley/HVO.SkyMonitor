@@ -9,6 +9,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture.Processing")]
 public sealed class AnnotationProjectionOverlayTests
 {
     private static readonly ProjectionContext Projection = new(ProjectionModel.EquidistantFisheye, 500, 400, 200, 200,
