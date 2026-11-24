@@ -524,7 +524,11 @@ public sealed partial class CurrentSkyPageTests
         module.SetupVoid("writeLayerVisibility", _ => true).SetVoidResult();
         var cut = context.Render<CurrentSkyPage>();
         cut.WaitForAssertion(() => Assert.IsFalse(cut.Find(".restore-layers").HasAttribute("disabled")));
-        Assert.IsFalse(cut.Find("input[data-layer-target='hvo-layer-2']").HasAttribute("checked"));
+        var measured = cut.Find("[aria-label='Measured layers'] input[data-layer-target='hvo-layer-2']");
+        Assert.IsFalse(measured.HasAttribute("checked"));
+        Assert.IsFalse(measured.HasAttribute("disabled"));
+        StringAssert.Contains(measured.ParentElement!.TextContent, "Measured deep-sky associations", StringComparison.Ordinal);
+        Assert.IsFalse(cut.Find("[aria-label='Sky context layers'] input[data-layer-target='hvo-layer-1']").HasAttribute("disabled"));
         await cut.Find("input[data-layer-target='hvo-layer-1']").ChangeAsync(false).ConfigureAwait(false);
         await cut.Find("input[data-layer-target='hvo-layer-2']").ChangeAsync(true).ConfigureAwait(false);
         Assert.IsTrue(cut.Find("input[data-layer-target='hvo-layer-0']").HasAttribute("checked"));
