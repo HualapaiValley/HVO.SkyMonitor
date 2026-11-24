@@ -172,7 +172,7 @@ queue_push_condition = (
 )
 build_runner = (
     "    runs-on: ${{ fromJSON(needs.preflight.outputs.merge_group_run_id != '' && "
-    "'[\"ubuntu-latest\"]' || '[\"self-hosted\", \"linux\", \"x64\", \"hvo-skymonitor-build\"]') }}"
+    "'[\"ubuntu-24.04\"]' || '[\"self-hosted\", \"linux\", \"x64\", \"hvo-skymonitor-build\"]') }}"
 )
 workload_step = "Select Build and Unit workload"
 workload_condition = "if: ${{ steps.workload.outcome != 'success' || steps.workload.outputs.run_full != 'false' }}"

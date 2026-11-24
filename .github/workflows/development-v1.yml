@@ -161,7 +161,7 @@ jobs:
     name: Development v1 / Build and Unit
     needs: preflight
     if: github.event_name == 'push' || github.event_name == 'merge_group' || github.event.pull_request.draft == false
-    runs-on: ${{ fromJSON(needs.preflight.outputs.merge_group_run_id != '' && '["ubuntu-latest"]' || '["self-hosted", "linux", "x64", "hvo-skymonitor-build"]') }}
+    runs-on: ${{ fromJSON(needs.preflight.outputs.merge_group_run_id != '' && '["ubuntu-24.04"]' || '["self-hosted", "linux", "x64", "hvo-skymonitor-build"]') }}
     timeout-minutes: 22
     env:
       MERGE_GROUP_RUN_ID: ${{ needs.preflight.outputs.merge_group_run_id }}

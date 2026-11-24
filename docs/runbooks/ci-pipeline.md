@@ -262,7 +262,7 @@ different SHA, missing result, malformed response or API error selects the
 full self-hosted workload, as does a direct push. Merge-group runs always
 execute the full workload.
 
-With a match, the same Build and Unit job runs on `ubuntu-latest` and records
+With a match, the same Build and Unit job runs on `ubuntu-24.04` and records
 the successful queue run in its summary and `mergeGroupRunUrl` manifest
 field. It uploads `development-v1-<run-id>-<attempt>` with the decision and
 proof link. The linked queue run contains the restore, build, Unit TRX,
