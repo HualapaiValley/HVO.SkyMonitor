@@ -1108,8 +1108,8 @@ public sealed partial class ArchitectureBoundaryTests
                 "<Project Sdk=\"Microsoft.NET.Sdk\"><Import Project=\"references.props\" />" +
                 "<ItemGroup Condition=\"'$(Configuration)' == 'Debug'\"><ProjectReference Include=\"DebugOnly.csproj\" /></ItemGroup></Project>");
 
-            var releaseEvaluation = RepositoryGraph.EvaluateProject(sourceProject, "Release");
-            var debugEvaluation = RepositoryGraph.EvaluateProject(sourceProject, "Debug");
+            var releaseEvaluation = RepositoryGraph.EvaluateProjectAsync(sourceProject, "Release").GetAwaiter().GetResult();
+            var debugEvaluation = RepositoryGraph.EvaluateProjectAsync(sourceProject, "Debug").GetAwaiter().GetResult();
 
             Assert.ContainsSingle(releaseEvaluation.ProjectReferencePaths, Path.GetFullPath(importedProject));
             CollectionAssert.AreEquivalent(
@@ -1479,14 +1479,21 @@ public sealed partial class ArchitectureBoundaryTests
                 static path => Path.GetFileNameWithoutExtension(path)!,
                 StringComparer.Ordinal);
             var projects = new Dictionary<string, ProjectInfo>(StringComparer.Ordinal);
+            using var workers = new SemaphoreSlim(Math.Clamp(Environment.ProcessorCount, 1, 8));
+            var pendingProjects = projectPaths.Select(path => (
+                Path: path,
+                Evaluations: SupportedConfigurations.Select(configuration => EvaluateWithWorkerAsync(path, configuration)).ToArray()))
+                .ToArray();
 
-            foreach (var path in projectPaths)
+            // Evaluation runs no targets. Wait for every worker, then surface results and failures in project and configuration order.
+            Task.WhenAll(pendingProjects.SelectMany(project => project.Evaluations).Cast<Task>())
+                .ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing).GetAwaiter().GetResult();
+
+            foreach (var (path, pendingEvaluations) in pendingProjects)
             {
                 var name = Path.GetFileNameWithoutExtension(path)!;
                 var relativePath = Path.GetRelativePath(root, path);
-                var evaluations = SupportedConfigurations
-                    .Select(configuration => EvaluateProject(path, configuration))
-                    .ToArray();
+                var evaluations = pendingEvaluations.Select(task => task.GetAwaiter().GetResult()).ToArray();
                 var evaluation = evaluations[^1];
                 var kind = relativePath.StartsWith($"src{Path.DirectorySeparatorChar}", StringComparison.Ordinal) && name != TestSupport
                     ? ProjectKind.Production
@@ -1510,6 +1517,19 @@ public sealed partial class ArchitectureBoundaryTests
             }
 
             return new RepositoryGraph(root, projects);
+
+            async Task<ProjectEvaluation> EvaluateWithWorkerAsync(string path, string configuration)
+            {
+                await workers.WaitAsync().ConfigureAwait(false);
+                try
+                {
+                    return await EvaluateProjectAsync(path, configuration).ConfigureAwait(false);
+                }
+                finally
+                {
+                    workers.Release();
+                }
+            }
         }
 
         public string[] ValidateProductionReferences(
@@ -1657,7 +1677,7 @@ public sealed partial class ArchitectureBoundaryTests
             }
         }
 
-        internal static ProjectEvaluation EvaluateProject(string projectPath, string configuration)
+        internal static async Task<ProjectEvaluation> EvaluateProjectAsync(string projectPath, string configuration)
         {
             using var process = new Process
             {
@@ -1672,14 +1692,19 @@ public sealed partial class ArchitectureBoundaryTests
             process.StartInfo.ArgumentList.Add("msbuild");
             process.StartInfo.ArgumentList.Add(projectPath);
             process.StartInfo.ArgumentList.Add("-nologo");
+            process.StartInfo.ArgumentList.Add("-nodeReuse:false");
             process.StartInfo.ArgumentList.Add($"-property:Configuration={configuration}");
             process.StartInfo.ArgumentList.Add("-getProperty:AssemblyName,TargetPath");
             process.StartInfo.ArgumentList.Add("-getItem:ProjectReference,PackageReference,FrameworkReference");
+            process.StartInfo.Environment["MSBUILDDISABLENODEREUSE"] = "1";
 
             process.Start();
-            var output = process.StandardOutput.ReadToEnd();
-            var error = process.StandardError.ReadToEnd();
-            process.WaitForExit();
+            // Drain both pipes concurrently so a failing process can write its full diagnostics.
+            var outputTask = process.StandardOutput.ReadToEndAsync();
+            var errorTask = process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync().ConfigureAwait(false);
+            var output = await outputTask.ConfigureAwait(false);
+            var error = await errorTask.ConfigureAwait(false);
             if (process.ExitCode != 0)
             {
                 throw new InvalidOperationException(
