@@ -9,6 +9,7 @@ using Microsoft.Extensions.Options;
 namespace HVO.SkyMonitor.CameraAgent.Tests.Silo;
 
 [TestClass]
+[TestProperty("Area", "Silo")]
 public sealed class SiloPublicationOwnershipTests
 {
     public TestContext TestContext { get; set; } = null!;

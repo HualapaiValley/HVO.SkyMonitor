@@ -8,6 +8,7 @@ using Moq;
 namespace HVO.SkyMonitor.CameraAgent.Tests.Silo;
 
 [TestClass]
+[TestProperty("Area", "Silo")]
 public sealed class SiloS3ObjectStoreTests
 {
     private static readonly SiloStoreDescriptor Descriptor = new("local-silo", "fixture-bucket",
