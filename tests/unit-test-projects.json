@@ -1,0 +1,19 @@
+[
+  "HVO.SkyMonitor.AgentCore.Tests",
+  "HVO.SkyMonitor.Architecture.Tests",
+  "HVO.SkyMonitor.Astronomy.Tests",
+  "HVO.SkyMonitor.CameraAgent.AcceptanceTests",
+  "HVO.SkyMonitor.CameraAgent.IntegrationTests",
+  "HVO.SkyMonitor.CameraAgent.Tests",
+  "HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests",
+  "HVO.SkyMonitor.Catalog.Sqlite.Tests",
+  "HVO.SkyMonitor.Common.Tests",
+  "HVO.SkyMonitor.Deployment.Cli.Tests",
+  "HVO.SkyMonitor.Deployment.Distribution.Tests",
+  "HVO.SkyMonitor.Fleet.Contracts.Tests",
+  "HVO.SkyMonitor.Imaging.Tests",
+  "HVO.SkyMonitor.Processing.Tests",
+  "HVO.SkyMonitor.ProcessingRunner.Tests",
+  "HVO.SkyMonitor.Storage.FileSystem.Tests",
+  "HVO.SkyMonitor.TestSupport.Tests"
+]

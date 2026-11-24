@@ -94,14 +94,18 @@ internal static class UnitCoverageInputs
             ValidateReportSources(report, expected, repositoryRoot, floors, lineInventory);
         }
 
-        var expectedProjects = Directory.GetDirectories(Path.Combine(repositoryRoot, "tests"))
-            .Where(static path => File.Exists(Path.Combine(path, "test-categories.json")))
-            .Where(static path =>
-            {
-                using var inventory = JsonDocument.Parse(File.ReadAllText(Path.Combine(path, "test-categories.json")));
-                return inventory.RootElement.GetProperty("Unit").GetInt32() > 0;
-            })
-            .Select(static path => Path.GetFileName(path))
+        var unitProjects = JsonSerializer.Deserialize<string[]>(
+            File.ReadAllText(Path.Combine(repositoryRoot, "tests", "unit-test-projects.json")));
+        if (unitProjects is not { Length: > 0 } ||
+            unitProjects.Distinct(StringComparer.Ordinal).Count() != unitProjects.Length ||
+            unitProjects.Any(project => string.IsNullOrEmpty(project) ||
+                !Path.GetFileName(project).Equals(project, StringComparison.Ordinal) ||
+                !File.Exists(Path.Combine(repositoryRoot, "tests", project, project + ".csproj"))))
+        {
+            throw new InvalidDataException("Invalid Unit project membership in tests/unit-test-projects.json.");
+        }
+
+        var expectedProjects = unitProjects
             .Where(static project => !project.StartsWith("HVO.SkyMonitor.LogicHost.", StringComparison.Ordinal) &&
                 !project.StartsWith("HVO.SkyMonitor.CameraAgent.LogicHost.", StringComparison.Ordinal))
             .ToHashSet(StringComparer.Ordinal);

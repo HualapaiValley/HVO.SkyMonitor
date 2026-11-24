@@ -108,7 +108,10 @@ public sealed partial class CameraAgentProcessingGraphOperationsEndpointsTests
     }
 
     [TestMethod]
-    public void ByteLimitIsDecidedOnBothSidesOfTheLimitWithoutSerializingThePayload()
+    public void ByteLimitIsDecidedOnBothSidesOfTheLimitWithoutSerializingThePayload() =>
+        VerifyByteLimit(verifyAllocations: false);
+
+    internal static void VerifyByteLimit(bool verifyAllocations)
     {
         var detail = ManifestDetail();
         var node = detail.Nodes[0];
@@ -183,7 +186,12 @@ public sealed partial class CameraAgentProcessingGraphOperationsEndpointsTests
         Assert.AreEqual(ProcessingRunManifestBounds.MaximumBytes, CameraAgentRunManifest.EncodedLength(cases[2].Detail));
         Assert.AreEqual(ProcessingRunManifestBounds.MaximumBytes + 1L, CameraAgentRunManifest.EncodedLength(cases[3].Detail));
 
-        // Nor is anything the size of the payload allocated on the way.
+        if (!verifyAllocations)
+        {
+            return;
+        }
+
+        // The Performance case checks that no allocation is large enough to hold the payload.
         foreach (var (name, candidate, _) in cases.Skip(1))
         {
             var payloadLength = CameraAgentRunManifest.Encode(candidate).LongLength;
@@ -491,4 +499,14 @@ public sealed partial class CameraAgentProcessingGraphOperationsEndpointsTests
 
     private static TEnum Longest<TEnum>() where TEnum : struct, Enum
         => Enum.GetValues<TEnum>().MaxBy(static value => value.ToString().Length);
+}
+
+[TestClass]
+[TestCategory("Performance")]
+[DoNotParallelize]
+public sealed class ManifestAvailabilityPerformanceTests
+{
+    [TestMethod]
+    public void AvailabilityDoesNotAllocateRoomForTheManifest() =>
+        CameraAgentProcessingGraphOperationsEndpointsTests.VerifyByteLimit(verifyAllocations: true);
 }

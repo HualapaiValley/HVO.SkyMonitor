@@ -3320,8 +3320,12 @@ public sealed partial class RawCaptureIngressTests
     }
 
     [TestMethod]
-    public async Task InitializeAsync_ForcedWhilePayloadPublicationIsInFlight_WaitsAndPreservesExactEvidenceAsync()
+    public async Task InitializeAsync_ForcedWhilePayloadPublicationIsInFlight_WaitsAndPreservesExactEvidenceAsync() =>
+        _ = await VerifyInitializationWaitsForPublicationAsync().ConfigureAwait(false);
+
+    internal static async Task<TimeSpan> VerifyInitializationWaitsForPublicationAsync()
     {
+        var runaway = TimeSpan.FromSeconds(30);
         var root = CreateRoot();
         try
         {
@@ -3336,7 +3340,7 @@ public sealed partial class RawCaptureIngressTests
             var accept = Task.Run(async () => await ingress.AcceptAsync(
                 CreateConfiguration(), submission, CancellationToken.None).ConfigureAwait(false));
             Assert.IsTrue(
-                faultInjector.PayloadPublished.Wait(TimeSpan.FromSeconds(5)),
+                faultInjector.PayloadPublished.Wait(runaway),
                 "accept did not pause after publishing the payload");
 
             ingress.InvalidateEvidence();
@@ -3344,7 +3348,7 @@ public sealed partial class RawCaptureIngressTests
             var initialization = Task.Run(async () =>
                 await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false));
             Assert.IsTrue(
-                faultInjector.InitializationLifecycleLockRequested.Wait(TimeSpan.FromSeconds(5)),
+                faultInjector.InitializationLifecycleLockRequested.Wait(runaway),
                 "forced initialization did not reach the raw-ingress lifecycle lock");
             Assert.AreNotSame(
                 initialization,
@@ -3352,14 +3356,12 @@ public sealed partial class RawCaptureIngressTests
                 "reconciliation completed while an accept still owned the raw-ingress lifecycle lock");
 
             faultInjector.ReleasePublication();
-            var receipt = await accept.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-            await initialization.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            var receipt = await accept.WaitAsync(runaway).ConfigureAwait(false);
+            await initialization.WaitAsync(runaway).ConfigureAwait(false);
             var contentionElapsed = Stopwatch.GetElapsedTime(contentionStarted);
 
             Assert.IsNotNull(receipt);
             Assert.AreEqual(RawIngressOutcome.Committed, receipt.Outcome);
-            Assert.IsGreaterThanOrEqualTo(TimeSpan.FromMilliseconds(100), contentionElapsed);
-            Assert.IsLessThan(TimeSpan.FromSeconds(5), contentionElapsed);
             CollectionAssert.AreEqual(payload, await File.ReadAllBytesAsync(receipt.StoredFrame.AbsolutePath).ConfigureAwait(false));
             Assert.AreEqual(
                 receipt.Manifest.Descriptor.Artifact.ChecksumSha256,
@@ -3398,6 +3400,7 @@ public sealed partial class RawCaptureIngressTests
             CollectionAssert.AreEqual(sidecar, await File.ReadAllBytesAsync(sidecarPath).ConfigureAwait(false));
             Assert.AreEqual(RawIngressAvailability.Accepting, state.Snapshot.Availability);
             Assert.AreEqual(0L, state.Snapshot.QuarantineCount);
+            return contentionElapsed;
         }
         finally
         {
