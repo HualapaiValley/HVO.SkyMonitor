@@ -17,6 +17,8 @@ public sealed class EnvironmentalObservationPublisher(
     EnvironmentalAcquisitionTelemetry? acquisitionTelemetry = null)
     : IEnvironmentalObservationPublisher, IEnvironmentalHeldPollPublisher
 {
+    bool IEnvironmentalHeldPollPublisher.SupportsHeldPollSettlement => outbox is SqliteEnvironmentalObservationOutbox;
+
     public async ValueTask<EnvironmentalObservationPublishResult> PublishAsync(
         EnvironmentalObservationFactV1 fact,
         CancellationToken cancellationToken = default)
@@ -42,7 +44,8 @@ public sealed class EnvironmentalObservationPublisher(
         {
             var root = options.Value.RawIngressRoot;
             committed = poll is { } held
-                ? await ((SqliteEnvironmentalObservationOutbox)localStore)
+                ? await (localStore as SqliteEnvironmentalObservationOutbox ?? throw new InvalidOperationException(
+                        "The configured environmental outbox does not support atomic settlement of held environmental polls."))
                     .CommitHeldPollAsync(root, fact, held, cancellationToken).ConfigureAwait(false)
                 : await localStore.CommitLocalAsync(root, fact, cancellationToken).ConfigureAwait(false);
         }
