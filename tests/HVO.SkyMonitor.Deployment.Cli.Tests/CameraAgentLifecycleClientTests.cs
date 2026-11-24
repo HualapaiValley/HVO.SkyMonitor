@@ -611,7 +611,7 @@ public sealed class CameraAgentLifecycleClientTests
         });
         var client = new CameraAgentLifecycleClient(BaseAddress, handler, FastBudgets);
         Task<(bool Supported, LifecycleResumeReceipt? Receipt)> SettleAsync()
-            => client.SettleCommittedOwnedUpgradeAsync(operation, pause, resume, 2, "lifecycle-token", CancellationToken.None);
+            => client.TryResumeOwnedUpgradeAsync(operation, pause, resume, 2, "lifecycle-token", CancellationToken.None);
         if (capability == 401 || commandStatus == 403)
         {
             await Assert.ThrowsExactlyAsync<InstallerException>(SettleAsync);

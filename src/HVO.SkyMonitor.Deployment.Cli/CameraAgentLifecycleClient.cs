@@ -18,7 +18,7 @@ internal interface ICameraAgentLifecycleClient
     Task<LifecycleResumeReceipt> ResumeOwnedUpgradeAsync(Guid operationId, Guid pauseCommandId, Guid commandId,
         long expectedVersion, string verificationToken, CancellationToken cancellationToken)
         => throw new InstallerException("The predecessor lacks atomic signed restore-only admission.");
-    Task<(bool Supported, LifecycleResumeReceipt? Receipt)> SettleCommittedOwnedUpgradeAsync(Guid operationId, Guid pauseCommandId, Guid commandId,
+    Task<(bool Supported, LifecycleResumeReceipt? Receipt)> TryResumeOwnedUpgradeAsync(Guid operationId, Guid pauseCommandId, Guid commandId,
         long expectedVersion, string verificationToken, CancellationToken cancellationToken)
         => throw new InstallerException("The candidate's atomic owned resume capability could not be verified.");
 }
@@ -164,7 +164,7 @@ internal sealed class CameraAgentLifecycleClient(
         }
     }
 
-    public async Task<(bool Supported, LifecycleResumeReceipt? Receipt)> SettleCommittedOwnedUpgradeAsync(Guid operationId, Guid pauseCommandId, Guid commandId,
+    public async Task<(bool Supported, LifecycleResumeReceipt? Receipt)> TryResumeOwnedUpgradeAsync(Guid operationId, Guid pauseCommandId, Guid commandId,
         long expectedVersion, string verificationToken, CancellationToken cancellationToken)
     {
         var capability = await ReadOwnedUpgradeResumeCapabilityAsync(verificationToken, cancellationToken).ConfigureAwait(false);

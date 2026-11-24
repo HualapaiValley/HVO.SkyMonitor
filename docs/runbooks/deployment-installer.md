@@ -2698,8 +2698,9 @@ directory above it, up to the product root:
 
 A power loss can therefore never leave a reference, or a completion record, to a file whose directory entry was lost.
 
-An interrupted operation whose snapshot is recorded but not yet restored recovers onto that snapshot, whatever the
-candidate left behind. Every recovery authenticates that snapshot before it changes any container: `--resume` of an
+For operator-image operations, an interrupted operation whose snapshot is recorded but not yet restored recovers onto
+that snapshot. The signed upgrade replacement guard is described under [recovery](#restore-only-after-an-interrupted-upgrade).
+Every recovery authenticates the snapshot before it changes any container: `--resume` of an
 upgrade or a rollback (a rollback previews its retained snapshot for the preflight but still restores its own first),
 `--restore-only`, and the automatic recovery of a failed candidate, which leaves the candidate running rather than
 stopping it to find the snapshot damaged. `--restore-only` serves upgrades only and refuses a rollback before anything
@@ -2871,14 +2872,25 @@ the original and retry checkpoints and reports current admission.
 
 While completion is in progress, the fenced journal requires the same successor
 and disposition. The initial fence can be replayed if the original predecessor,
-restored checkpoint and pause still verify. After candidate startup, failed
-recovery replaces stores only if the stopped candidate's latest command,
-capture boundary and Identity store still match the retry checkpoint. A later
-owner command, new captures, credential changes or an unprovable boundary hold
-recovery with its stores and checkpoints preserved. A verified quiet predecessor
-restore leaves admission paused. An exact retry can report that state when the
-running predecessor and both checkpoints still verify. Ambiguous recovery
-continues to hold. The stock installer refuses the in-flight journal.
+restored checkpoint and pause still verify. Ordinary `--resume` cannot claim
+the legacy pause and leaves the original journal available for this command.
+If failure occurs before the candidate starts, the installer restarts the
+predecessor on the unchanged stores. After candidate startup, failed recovery
+replaces stores only if the stopped candidate's latest command, capture boundary
+and Identity store still match the retry checkpoint. A later owner command,
+new captures, credential changes or an unprovable boundary hold recovery with
+its stores and checkpoints preserved. Retain that evidence for separately
+authorized recovery. The stock installer refuses the in-flight journal.
+
+After a quiet failure, the successor verifies the predecessor, the available
+checkpoints, Fleet absence and current admission. It records terminal
+`restored-predecessor-admission-preserved` with no admission command. Ordinary
+lifecycle operations can proceed, and the owner can change capture admission
+using the predecessor's usual controls. If predecessor startup or verification
+was interrupted after the restart was recorded, rerun the exact successor
+`--resume --leave-paused` request to finish verification and settlement. An exact
+replay of terminal failure reports the current admission without retrying the
+candidate.
 
 Stock maintenance may prune the original working checkpoint after completion.
 An exact replay then refuses because the original proof is missing. A separately
@@ -3006,7 +3018,35 @@ protected identity and Docker checks.
 Automatic recovery has four minutes for its diagnostic, checkpoint and restart
 work. After the predecessor starts, recovery gets a separate eleven-minute
 ceiling for readiness, identity and container verification, and admission
-settlement. A timeout leaves the retained operation for recovery.
+settlement. A timeout leaves the retained operation for recovery. Use the exact
+signed request and the compatible successor installer with `--resume` to
+finish a pending automatic recovery.
+
+Before automatic signed recovery replaces a checkpoint, the installer verifies
+that the candidate and its writers are stopped. Changes to capture commands,
+raw capture progress, Fleet reports or Fleet metadata hold replacement. The
+Fleet allocation counter can advance independently and is carried forward.
+Signed restore-only compares raw capture progress against the authenticated
+checkpoint independently of Fleet, and verifies the persisted Fleet schema
+marker when the checkpoint includes that store. A held journal uses a version
+that stock RC2 refuses. Keep the retained stores and checkpoint for separately
+authorized recovery.
+
+If an authorized checkpoint replacement is interrupted, the exact successor
+retry reuses the recorded plan and counter floors while the verified writers
+remain stopped. If a Paused receipt became durable before the first drain
+observation was recorded, recovery can prove that receipt from the raw journal
+without issuing another Pause.
+
+After the predecessor is healthy, automatic recovery resumes only a pause it
+still owns. An authenticated 404 or 405 from the atomic-resume capability probe
+settles as `restored-predecessor-admission-preserved-unsupported-atomic-resume`.
+The owner can use ordinary capture controls on the paused predecessor. A pause
+that was never established or was superseded by an owner command settles as
+`restored-predecessor-admission-preserved`, keeping the current admission.
+Both dispositions are terminal and allow later lifecycle commands. Authentication,
+transport or incomplete verification leaves settlement pending for the exact
+request and installer.
 
 The protected installation-verification GET used by both the pre-mutation owner
 state read and full installation identity verification has one finite **120-second

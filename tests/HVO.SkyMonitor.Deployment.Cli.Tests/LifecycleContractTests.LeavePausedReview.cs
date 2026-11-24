@@ -8,6 +8,190 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 public sealed partial class LifecycleContractTests
 {
     [TestMethod]
+    [DataRow("success")]
+    [DataRow("armed-replay")]
+    [DataRow("snapshot-failure")]
+    [DataRow("compose-failure")]
+    [DataRow("quiet-candidate-failure")]
+    [DataRow("changed-candidate-hold")]
+    [DoNotParallelize]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task LeavePausedReview_ExactUpgradePreservesAdmissionAcrossFailureAndReplay(string scenario)
+    {
+        using var fixture = await AutomaticSignedFixtureAsync(fleetConfigured: false);
+        ExecuteSql(CameraAgentStateLayout.IdentityDatabasePath(fixture.Paths.StateRoot),
+            "CREATE TABLE AspNetUsers(Id TEXT PRIMARY KEY); INSERT INTO AspNetUsers VALUES('fixture-owner');");
+        using var release = CandidateRelease(fixture, out var candidate, version: "0.9.1-rc.2");
+        var lifecycle = new AutomaticSignedLifecycleClient(fixture.Paths);
+        var owner = new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true, FleetDisabled = true };
+        var request = fixture.Request(LifecycleOperationKind.Upgrade) with { Release = release.Folder };
+        var verifiedImage = (await ReleaseAcquirer.AcquireImageAsync(release.Folder, null,
+            fixture.Manifest.DockerDaemon.Architecture, CancellationToken.None))!;
+        var anchoredImage = verifiedImage with
+        {
+            VerifiedRelease = verifiedImage.VerifiedRelease with
+            {
+                ChecksumsSha256 = "d4826ad6f732ea9fe1bdc3fb0edc76f348b6ddceb2a825ee5f75e71373a374ec"
+            }
+        };
+        Task<LifecycleResult> RunAsync(LifecycleRequest command) => CameraAgentLifecycleManager.ExecuteAsync(
+            command, fixture.Runner, _ => lifecycle, _ => owner, fixture.Uid, fixture.Gid, CancellationToken.None,
+            error: TextWriter.Null, acquireReleaseImage: (_, _, _, _) => Task.FromResult<AcquiredImage?>(anchoredImage));
+
+        await Assert.ThrowsExactlyAsync<InstallerException>(() => RunAsync(request));
+        var original = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
+        Assert.AreEqual(LifecycleOperationPhase.RecoveryAdmissionPreserved, original.Phase);
+        Assert.IsNotNull(original.StateSnapshotRestoredUtc);
+        var legacy = await CameraAgentLifecycleManager.RecordAsync(fixture.Paths, original with
+        {
+            SchemaVersion = 1,
+            Phase = LifecycleOperationPhase.Restoring,
+            Status = InstallationStatus.Running,
+            MutationStarted = true,
+            FailureCode = "lifecycle-failed",
+            SignedReleaseChecksumsSha256 = null,
+            SignedRecoveryPauseCommandId = null,
+            PostMutationContinuity = null
+        }, CancellationToken.None);
+        var raw = RawIngressPath(fixture.Paths);
+        var originalRaw = await File.ReadAllBytesAsync(raw);
+        var legacyBytes = await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath);
+        var starts = fixture.Runner.ComposeUpCount;
+        var stops = fixture.Runner.ComposeStopCount;
+        var refused = await Assert.ThrowsExactlyAsync<InstallerException>(() => RunAsync(request with { Resume = true }));
+        StringAssert.Contains(refused.Message, "no installer-owned retry pause", StringComparison.Ordinal);
+        CollectionAssert.AreEqual(legacyBytes, await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath));
+        Assert.AreEqual(starts, fixture.Runner.ComposeUpCount);
+        Assert.AreEqual(stops, fixture.Runner.ComposeStopCount);
+
+        var retry = request with { Resume = true, LeavePaused = true, RecoveryOperationId = legacy.OperationId };
+        var candidateStarts = 0;
+        byte[]? changed = null;
+        fixture.Runner.OnComposeUp = image =>
+        {
+            if (image != candidate) return;
+            candidateStarts++;
+            if (scenario == "changed-candidate-hold")
+            {
+                lifecycle.AcceptOwnerCommand("paused", "owner-pauses-after-candidate-start", changed: false);
+                changed = File.ReadAllBytes(raw);
+            }
+            owner.RejectNextVerification = scenario is "quiet-candidate-failure" or "changed-candidate-hold";
+        };
+        if (scenario == "armed-replay")
+        {
+            CameraAgentLifecycleManager.JournalRecorded = state =>
+            {
+                if (state.SchemaVersion == 2 && state.Phase == LifecycleOperationPhase.Restoring)
+                    throw new InstallerException("Interrupted after arming the leave-paused fence.");
+            };
+            try
+            {
+                await Assert.ThrowsExactlyAsync<InstallerException>(() => RunAsync(retry));
+            }
+            finally
+            {
+                ResetCrashHooks();
+            }
+            var armed = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
+            Assert.AreEqual(2, armed.SchemaVersion);
+            Assert.AreEqual(legacy.StateSnapshot, armed.LeavePausedOriginalSnapshot);
+            Assert.AreEqual(starts, fixture.Runner.ComposeUpCount);
+            Assert.AreEqual(stops, fixture.Runner.ComposeStopCount);
+            CollectionAssert.AreEqual(originalRaw, await File.ReadAllBytesAsync(raw));
+        }
+        if (scenario == "snapshot-failure")
+        {
+            CameraAgentStateSnapshot.StepCompleted = step =>
+            {
+                if (step.StartsWith("snapshot:", StringComparison.Ordinal))
+                    throw new IOException("Interrupted before recording the retry checkpoint.");
+            };
+        }
+        if (scenario == "compose-failure") fixture.Runner.RejectComposeUp = image => image == candidate;
+
+        try
+        {
+            if (scenario is "success" or "armed-replay")
+            {
+                var completed = await RunAsync(retry);
+                Assert.AreEqual("completed-admission-preserved", completed.Outcome);
+                Assert.AreEqual(candidate, completed.Image!.ImageId);
+                Assert.AreEqual("Paused", completed.PreservedAdmission!.State);
+                Assert.AreEqual(1, candidateStarts);
+                var settled = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
+                Assert.AreEqual(LifecycleOperationPhase.Completed, settled.Phase);
+                Assert.AreEqual(legacy.StateSnapshot, settled.LeavePausedOriginalSnapshot);
+                Assert.AreNotEqual(legacy.StateSnapshot, settled.StateSnapshot);
+                var journal = await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath);
+                starts = fixture.Runner.ComposeUpCount;
+                stops = fixture.Runner.ComposeStopCount;
+                lifecycle.AcceptOwnerCommand("running", "owner-resumes-after-completion", changed: true);
+                var replayed = await RunAsync(retry);
+                Assert.AreEqual("completed-admission-preserved", replayed.Outcome);
+                Assert.AreEqual("Running", replayed.PreservedAdmission!.State);
+                Assert.AreEqual(starts, fixture.Runner.ComposeUpCount);
+                Assert.AreEqual(stops, fixture.Runner.ComposeStopCount);
+                CollectionAssert.AreEqual(journal, await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath));
+            }
+            else
+            {
+                var failure = await Assert.ThrowsExactlyAsync<InstallerException>(() => RunAsync(retry));
+                var afterFailure = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
+                Assert.AreEqual(legacy.StateSnapshot, afterFailure.LeavePausedOriginalSnapshot);
+                Assert.AreEqual(scenario is "quiet-candidate-failure" or "changed-candidate-hold" ? 1 : 0, candidateStarts);
+                var journal = await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath);
+                starts = fixture.Runner.ComposeUpCount;
+                stops = fixture.Runner.ComposeStopCount;
+                if (scenario == "changed-candidate-hold")
+                {
+                    StringAssert.Contains(failure.Message, "recovery is held", StringComparison.Ordinal);
+                    Assert.IsTrue(afterFailure.MutationStarted);
+                    Assert.IsFalse(fixture.Runner.Running);
+                    Assert.AreEqual(candidate, fixture.Runner.ActiveImageId);
+                    Assert.IsNull(afterFailure.StateSnapshotRestoredUtc);
+                    CollectionAssert.AreEqual(changed!, await File.ReadAllBytesAsync(raw));
+                    await Assert.ThrowsExactlyAsync<InstallerException>(() => RunAsync(retry));
+                }
+                else
+                {
+                    Assert.AreEqual(LifecycleOperationPhase.RecoveryAdmissionPreserved, afterFailure.Phase, failure.Message);
+                    Assert.IsFalse(afterFailure.MutationStarted);
+                    Assert.IsTrue(fixture.Runner.Running);
+                    Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
+                    if (scenario == "quiet-candidate-failure")
+                        Assert.IsNotNull(afterFailure.StateRestorePlan);
+                    if (scenario == "compose-failure")
+                    {
+                        Assert.IsNotNull(afterFailure.StateSnapshot);
+                        Assert.IsNull(afterFailure.StateRestorePlan);
+                        Assert.IsNull(afterFailure.StateSnapshotRestoredUtc);
+                    }
+                    if (scenario != "quiet-candidate-failure")
+                        CollectionAssert.AreEqual(originalRaw, await File.ReadAllBytesAsync(raw));
+                    Assert.AreEqual(1, ReadCounter(fixture.Paths, "raw/journal/raw-ingress.db",
+                        "SELECT COUNT(*) FROM capture_control_commands WHERE target_state = 'paused' AND changed = 1;"));
+                    var replayed = await RunAsync(retry);
+                    Assert.AreEqual("restored-predecessor-admission-preserved", replayed.Outcome);
+                    Assert.AreEqual("Paused", replayed.PreservedAdmission!.State);
+                    await AssertLaterLifecycleAdmittedAsync(fixture);
+                }
+                Assert.AreEqual(starts, fixture.Runner.ComposeUpCount);
+                Assert.AreEqual(stops, fixture.Runner.ComposeStopCount);
+                CollectionAssert.AreEqual(journal, await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath));
+            }
+        }
+        finally
+        {
+            ResetCrashHooks();
+        }
+        _ = await CameraAgentStateSnapshot.VerifyAsync(fixture.Paths, fixture.InstanceId, legacy.StateSnapshot!, CancellationToken.None);
+        Assert.AreEqual(1, lifecycle.PauseRequests, "Only original upgrade dispatched a Pause.");
+        Assert.AreEqual(0, lifecycle.GenericResumeCalls);
+        Assert.IsEmpty(lifecycle.OwnedRequests);
+    }
+
+    [TestMethod]
     [DoNotParallelize]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     [DataRow(false)]

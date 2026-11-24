@@ -85,7 +85,10 @@ public sealed partial class LifecycleContractTests
             owner.RejectNextVerification = true;
         };
 
-        await Assert.ThrowsExactlyAsync<InstallerException>(() => RunAsync(resume: true));
+        if (accepted)
+            await Assert.ThrowsExactlyAsync<InstallerException>(() => RunAsync(resume: true));
+        else
+            Assert.AreEqual("restored-predecessor-admission-preserved", (await RunAsync(resume: true)).Outcome);
 
         var final = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
         Assert.AreEqual(accepted ? 1 : 0, candidateStarts);
@@ -102,6 +105,9 @@ public sealed partial class LifecycleContractTests
         }
         else
         {
+            Assert.AreEqual(LifecycleOperationPhase.RecoveryAdmissionPreserved, final.Phase);
+            Assert.IsFalse(final.MutationStarted);
+            await AssertLaterLifecycleAdmittedAsync(fixture);
             CollectionAssert.AreEqual(before, await File.ReadAllBytesAsync(raw));
             Assert.AreEqual(boundary, lifecycle.ReadBoundary());
             Assert.AreEqual(stopped, fixture.Runner.ComposeStopCount);

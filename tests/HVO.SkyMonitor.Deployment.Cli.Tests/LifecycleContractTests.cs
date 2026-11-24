@@ -3191,6 +3191,7 @@ public sealed partial class LifecycleContractTests
 
         public string? ActiveImageId => activeImageId;
         public bool Running => running;
+        public Predicate<string>? RejectComposeUp { get; set; }
         /// <summary>Runs after each Compose <c>up</c>, with the image it started, as that image's own startup would.</summary>
         public Action<string>? OnComposeUp { get; set; }
         /// <summary>What a host restart after a power loss brings back: the last container, running unless it was stopped.</summary>
@@ -3512,12 +3513,15 @@ public sealed partial class LifecycleContractTests
                         return Task.FromResult(new ProcessResult(1, string.Empty,
                             "Error response from daemon: NanoCPUs can not be set, as your kernel does not support CPU CFS scheduler or the cgroup is not mounted"));
                     }
+                    var environmentPath = arguments[arguments.ToList().IndexOf("--env-file") + 1];
+                    var image = File.ReadLines(environmentPath)
+                        .Single(line => line.StartsWith("CAMERAAGENT_IMAGE=", StringComparison.Ordinal))["CAMERAAGENT_IMAGE=".Length..];
+                    if (RejectComposeUp?.Invoke(image) == true)
+                        return Task.FromResult(new ProcessResult(1, string.Empty, "simulated Compose start failure"));
                     StartedModels.Add(model);
                     ComposeUpCount++;
                     Events.Add("compose-up");
-                    var environmentPath = arguments[arguments.ToList().IndexOf("--env-file") + 1];
-                    activeImageId = File.ReadLines(environmentPath)
-                        .Single(line => line.StartsWith("CAMERAAGENT_IMAGE=", StringComparison.Ordinal))["CAMERAAGENT_IMAGE=".Length..];
+                    activeImageId = image;
                     running = true;
                     OnComposeUp?.Invoke(activeImageId);
                 }
@@ -3782,6 +3786,7 @@ public sealed partial class LifecycleContractTests
     {
         public Action<InstallationVerificationExpectation>? InspectVerification { get; init; }
         public Func<TimeSpan?, CancellationToken, Task>? WaitForHealth { get; init; }
+        public bool FleetDisabled { get; init; }
         public bool RejectNextVerification { get; set; }
         public string CurrentOwnerBootstrapState { get; set; } = "owner-password-change-required";
         public Queue<string> VerificationStates { get; } = new();
@@ -3809,6 +3814,8 @@ public sealed partial class LifecycleContractTests
         }
         public Task<string> ReadStateAsync(string ownerEmail, string password, CancellationToken cancellationToken)
             => Task.FromResult("owner-password-change-required");
+        public Task VerifyFleetDisabledAsync(CancellationToken cancellationToken)
+            => FleetDisabled ? Task.CompletedTask : throw new InstallerException("Fleet is enabled in the fixture.");
         public Task<string> ReadInstallationStateAsync(string verificationToken, CancellationToken cancellationToken)
             => Task.FromResult(CurrentOwnerBootstrapState);
         public Task<string> ReadInstallationStateAsync(

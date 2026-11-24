@@ -644,12 +644,15 @@ internal static partial class CameraAgentStateSnapshot
                 EnsureRegularStore(path, store.RelativePath);
                 List<string> retainedObjects;
                 long? retainedProcessingVersion = null;
+                long? retainedFleetVersion = null;
                 using (var checkpoint = CameraAgentStatePreflight.ReadOnlyDatabase.Open(SnapshotFile(snapshotRoot, store)))
                 {
                     var (_, objects, tables) = ReadSchema(checkpoint.Connection);
                     retainedObjects = objects;
                     if (tables.Contains("capture_processing_schema", StringComparer.Ordinal))
                         retainedProcessingVersion = ReadCaptureProcessingSchema(checkpoint.Connection);
+                    if (tables.Contains("fleet_status_metadata", StringComparer.Ordinal))
+                        retainedFleetVersion = ReadFleetSchema(checkpoint.Connection);
                 }
                 using (var database = CameraAgentStatePreflight.ReadOnlyDatabase.Open(path))
                 {
@@ -658,7 +661,8 @@ internal static partial class CameraAgentStateSnapshot
                     // while requiring the original schema objects and version markers to agree with the checkpoint.
                     if (userVersion == store.UserVersion &&
                         currentObjects.ToHashSet(StringComparer.Ordinal).IsSupersetOf(retainedObjects) &&
-                        (retainedProcessingVersion is null || retainedProcessingVersion == ReadCaptureProcessingSchema(database.Connection)))
+                        (retainedProcessingVersion is null || retainedProcessingVersion == ReadCaptureProcessingSchema(database.Connection)) &&
+                        (retainedFleetVersion is null || retainedFleetVersion == ReadFleetSchema(database.Connection)))
                         continue;
                 }
             }
@@ -677,6 +681,15 @@ internal static partial class CameraAgentStateSnapshot
         return command.ExecuteScalar() is long version && version > 0
             ? version
             : throw new InstallerException("Signed restore-only could not prove the capture-processing schema version.");
+    }
+
+    private static long ReadFleetSchema(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT schema_version FROM fleet_status_metadata WHERE metadata_key = 1;";
+        return command.ExecuteScalar() is long version && version > 0
+            ? version
+            : throw new InstallerException("Signed restore-only could not prove the Fleet schema version.");
     }
 
     private static async Task<string> CopySyncedAsync(string source, string destination, CancellationToken cancellationToken)

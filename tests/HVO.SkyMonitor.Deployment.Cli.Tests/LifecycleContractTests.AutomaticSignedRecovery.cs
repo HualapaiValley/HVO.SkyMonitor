@@ -9,6 +9,7 @@ public sealed partial class LifecycleContractTests
     [TestMethod]
     [DataRow("quiet")]
     [DataRow("later-pause")]
+    [DataRow("later-resume")]
     [DataRow("lost-ack")]
     [DataRow("legacy-endpoint")]
     [DataRow("unowned-pause")]
@@ -26,7 +27,9 @@ public sealed partial class LifecycleContractTests
         // Fleet can advance while admission is paused. A capture boundary need not equal that independent high-water.
         fixture.Runner.OnComposeUp = image =>
         {
-            if (image == candidate) AdvanceFleet(fixture.Paths, toNextSequence: 7);
+            if (image == candidate)
+                ExecuteSql(Path.Combine(fixture.Paths.StateRoot, "raw", ".fleet", "fleet-status.db"),
+                    "UPDATE fleet_status_metadata SET next_sequence = 7;");
         };
 
         var waiting = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -61,6 +64,7 @@ public sealed partial class LifecycleContractTests
             Assert.AreEqual(0, lifecycle.OwnedRequests.Count);
             Assert.AreEqual(0, lifecycle.GenericResumeCalls);
             if (scenario == "later-pause") lifecycle.AcceptOwnerCommand("paused", "owner-no-op", changed: false);
+            if (scenario == "later-resume") lifecycle.AcceptOwnerCommand("running", "owner-resume", changed: true);
         }
         finally
         {
@@ -73,9 +77,19 @@ public sealed partial class LifecycleContractTests
         Assert.IsTrue(fixture.Runner.Running);
         Assert.AreEqual(0, lifecycle.GenericResumeCalls);
         Assert.AreEqual(7, ReadCounter(fixture.Paths, "raw/.fleet/fleet-status.db", "SELECT next_sequence FROM fleet_status_metadata;"));
-        Assert.AreEqual(scenario == "quiet" ? LifecycleOperationPhase.Restored : LifecycleOperationPhase.Restoring, settled.Phase);
-        Assert.AreEqual(scenario != "quiet", settled.MutationStarted);
-        Assert.HasCount(scenario is "legacy-endpoint" or "unowned-pause" ? 0 : 1, lifecycle.OwnedRequests);
+        var expectedPhase = scenario switch
+        {
+            "quiet" => LifecycleOperationPhase.Restored,
+            "lost-ack" => LifecycleOperationPhase.Restoring,
+            _ => LifecycleOperationPhase.RecoveryAdmissionPreserved
+        };
+        Assert.AreEqual(expectedPhase, settled.Phase);
+        Assert.AreEqual(scenario == "lost-ack", settled.MutationStarted);
+        Assert.HasCount(scenario is "quiet" or "lost-ack" or "later-pause" ? 1 : 0, lifecycle.OwnedRequests);
+        if (scenario == "legacy-endpoint")
+            Assert.AreEqual("restored-predecessor-admission-preserved-unsupported-atomic-resume", settled.FailureCode);
+        if (expectedPhase == LifecycleOperationPhase.RecoveryAdmissionPreserved)
+            await AssertLaterLifecycleAdmittedAsync(fixture);
         if (scenario == "later-pause")
         {
             Assert.AreEqual("Paused", lifecycle.ReadBoundary().CaptureState);
@@ -83,7 +97,7 @@ public sealed partial class LifecycleContractTests
             Assert.AreEqual(1, ReadCounter(fixture.Paths, "raw/journal/raw-ingress.db",
                 "SELECT COUNT(*) FROM capture_control_commands WHERE idempotency_key = 'owner-no-op' AND changed = 0;"));
             await Assert.ThrowsExactlyAsync<InstallerException>(() => RunAsync(request with { Resume = true }));
-            Assert.AreEqual(lifecycle.OwnedRequests[0], lifecycle.OwnedRequests[1]);
+            Assert.HasCount(1, lifecycle.OwnedRequests);
             Assert.AreEqual("Paused", lifecycle.ReadBoundary().CaptureState);
         }
         else if (scenario == "lost-ack")
@@ -103,8 +117,58 @@ public sealed partial class LifecycleContractTests
         }
         else
         {
-            Assert.AreEqual(scenario == "quiet" ? "Running" : "Paused", lifecycle.ReadBoundary().CaptureState);
+            Assert.AreEqual(scenario is "quiet" or "later-resume" ? "Running" : "Paused", lifecycle.ReadBoundary().CaptureState);
         }
+        Assert.AreEqual(0, lifecycle.GenericResumeCalls);
+    }
+
+    [TestMethod]
+    [DataRow("insert")]
+    [DataRow("edit")]
+    [DataRow("delete")]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task AutomaticSignedRecovery_HoldsFleetRecordChangesEvenWhenCaptureDidNotAdvance(string change)
+    {
+        using var fixture = await AutomaticSignedFixtureAsync();
+        using var release = CandidateRelease(fixture, out var candidate);
+        var lifecycle = new AutomaticSignedLifecycleClient(fixture.Paths) { SupportsOwnedResume = true };
+        var owner = new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true };
+        var fleet = Path.Combine(fixture.Paths.StateRoot, "raw", ".fleet", "fleet-status.db");
+        ExecuteSql(fleet, "INSERT INTO fleet_status_records VALUES(1, 1); UPDATE fleet_status_metadata SET next_sequence = 2;");
+        byte[]? changed = null;
+        fixture.Runner.OnComposeUp = image =>
+        {
+            if (image != candidate) return;
+            ExecuteSql(fleet, change switch
+            {
+                "insert" => "INSERT INTO fleet_status_records VALUES(2, 2); UPDATE fleet_status_metadata SET next_sequence = 3;",
+                "edit" => "UPDATE fleet_status_records SET sequence = 2;",
+                "delete" => "DELETE FROM fleet_status_records;",
+                _ => throw new AssertFailedException("Unexpected Fleet change.")
+            });
+            changed = File.ReadAllBytes(fleet);
+        };
+        var request = fixture.Request(LifecycleOperationKind.Upgrade) with { Release = release.Folder };
+        Task<LifecycleResult> RunAsync(bool resume) => CameraAgentLifecycleManager.ExecuteAsync(
+            request with { Resume = resume }, fixture.Runner, _ => lifecycle, _ => owner,
+            fixture.Uid, fixture.Gid, CancellationToken.None, error: TextWriter.Null);
+
+        var failure = await Assert.ThrowsExactlyAsync<InstallerException>(() => RunAsync(resume: false));
+        StringAssert.Contains(failure.Message, "changed Fleet records or metadata", StringComparison.Ordinal);
+        var held = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
+        Assert.AreEqual(3, held.SchemaVersion);
+        Assert.IsTrue(held.MutationStarted);
+        Assert.IsNull(held.StateRestorePlan);
+        Assert.IsNull(held.StateSnapshotRestoredUtc);
+        Assert.AreEqual(candidate, fixture.Runner.ActiveImageId);
+        Assert.IsFalse(fixture.Runner.Running);
+        _ = await CameraAgentStateSnapshot.VerifyAsync(fixture.Paths, fixture.InstanceId, held.StateSnapshot!, CancellationToken.None);
+        var journal = await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath);
+        var refused = await Assert.ThrowsExactlyAsync<InstallerException>(() => RunAsync(resume: true));
+        StringAssert.Contains(refused.Message, "Automatic signed recovery is held", StringComparison.Ordinal);
+        CollectionAssert.AreEqual(journal, await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath));
+        CollectionAssert.AreEqual(changed!, await File.ReadAllBytesAsync(fleet));
+        Assert.IsEmpty(lifecycle.OwnedRequests);
         Assert.AreEqual(0, lifecycle.GenericResumeCalls);
     }
 
@@ -185,6 +249,7 @@ public sealed partial class LifecycleContractTests
         Assert.AreEqual(candidate, fixture.Runner.ActiveImageId);
         Assert.IsFalse(fixture.Runner.Running);
         Assert.IsTrue(held.MutationStarted);
+        Assert.AreEqual(3, held.SchemaVersion, "A stock schema-1 installer must reject a held operation.");
         Assert.AreEqual(checkpoint, held.StateSnapshot);
         Assert.IsNull(held.StateSnapshotRestoredUtc);
         Assert.IsNull(held.StateRestorePlan);
@@ -213,7 +278,15 @@ public sealed partial class LifecycleContractTests
         CollectionAssert.AreEqual(acceptedCapture!, await File.ReadAllBytesAsync(raw));
     }
 
-    private static async Task<LifecycleFixture> AutomaticSignedFixtureAsync()
+    private static async Task AssertLaterLifecycleAdmittedAsync(LifecycleFixture fixture)
+    {
+        var next = await CameraAgentLifecycleManager.BeginAsync(
+            fixture.Request(LifecycleOperationKind.Backup) with { DryRun = true }, fixture.Paths,
+            LifecycleOperationKind.Backup, fixture.Manifest, CancellationToken.None);
+        Assert.AreEqual(LifecycleOperationPhase.Planned, next.Phase);
+    }
+
+    private static async Task<LifecycleFixture> AutomaticSignedFixtureAsync(bool fleetConfigured = true)
     {
         var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed, recoveryState: true,
             installedImage: static image => CurrentStateContract(image) with { RawIngressSchema = "15" });
@@ -223,11 +296,12 @@ public sealed partial class LifecycleContractTests
         ExecuteSql(RawIngressPath(fixture.Paths),
             "INSERT INTO capture_control_state(state_key, state, version, updated_unix_ms) VALUES(1, 'running', 3, 0);");
         WriteIdentityLineage(fixture.Paths);
+        if (!fleetConfigured) return fixture;
         var fleet = CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, "raw/.fleet/fleet-status.db");
         SafeFileSystem.CreateOwnerDirectory(Path.GetDirectoryName(fleet)!);
         ExecuteSql(fleet, """
-            CREATE TABLE fleet_status_metadata(metadata_key INTEGER PRIMARY KEY, next_sequence INTEGER NOT NULL);
-            INSERT INTO fleet_status_metadata VALUES(1, 1);
+            CREATE TABLE fleet_status_metadata(metadata_key INTEGER PRIMARY KEY, next_sequence INTEGER NOT NULL, schema_version INTEGER NOT NULL);
+            INSERT INTO fleet_status_metadata VALUES(1, 1, 1);
             CREATE TABLE fleet_status_records(record_id INTEGER PRIMARY KEY, sequence INTEGER NOT NULL);
             """);
         return fixture;
@@ -288,7 +362,7 @@ public sealed partial class LifecycleContractTests
             => await TryOwnedResumeAsync(operationId, pauseCommandId, commandId, expectedVersion, verificationToken, cancellationToken)
                 ?? throw new InstallerException("The atomic owned resume rejected a later accepted capture command.");
 
-        public async Task<(bool Supported, LifecycleResumeReceipt? Receipt)> SettleCommittedOwnedUpgradeAsync(Guid operationId, Guid pauseCommandId, Guid commandId,
+        public async Task<(bool Supported, LifecycleResumeReceipt? Receipt)> TryResumeOwnedUpgradeAsync(Guid operationId, Guid pauseCommandId, Guid commandId,
             long expectedVersion, string verificationToken, CancellationToken cancellationToken)
         {
             Assert.AreEqual("lifecycle-token", verificationToken);

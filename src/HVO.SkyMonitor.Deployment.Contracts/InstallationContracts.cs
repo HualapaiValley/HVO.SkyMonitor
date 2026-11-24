@@ -112,7 +112,9 @@ public enum LifecycleOperationPhase
     /// <summary>The operation's verified snapshot of the instance's small SQLite databases is recorded.</summary>
     StateSnapshotRecorded,
     /// <summary>A rollback has put back the database snapshot retained by the upgrade it undoes.</summary>
-    RetainedStateApplied
+    RetainedStateApplied,
+    /// <summary>The verified predecessor is running and the installer left capture admission to the owner.</summary>
+    RecoveryAdmissionPreserved
 }
 
 public sealed record ApplicationIdentityBinding(
@@ -264,6 +266,9 @@ public sealed record LifecycleOperationState(
 {
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? SignedRetryAdmissionOutcome { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Guid? AuthorizedSignedRestoreSnapshotId { get; init; }
 }
 
 public sealed record LifecycleAdmissionObservation(

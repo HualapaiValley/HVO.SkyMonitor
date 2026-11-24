@@ -9,7 +9,7 @@ internal sealed partial class CameraAgentLifecycleManager
     // release.json and assets when recovering that journal. Successor upgrades retain their own checksum identity.
     private const string PublishedRc2ChecksumsSha256 = "d4826ad6f732ea9fe1bdc3fb0edc76f348b6ddceb2a825ee5f75e71373a374ec";
 
-    private static async Task<(Guid PauseCommandId, StateSnapshotManifest Checkpoint)> VerifySignedRestoreOnlyAsync(
+    private static async Task<(Guid PauseCommandId, StateSnapshotManifest Checkpoint, RawCaptureProgress Capture)> VerifySignedRestoreOnlyAsync(
         InstallationPaths paths,
         InstanceManifest manifest,
         LifecycleOperationState operation,
@@ -49,7 +49,8 @@ internal sealed partial class CameraAgentLifecycleManager
         var checkpoint = CameraAgentStateSnapshot.PreflightView(paths, snapshot, verified);
         var pauseCommandId = await ReadSignedPauseOwnerAsync(checkpoint.RawIngressDatabasePath, operation.OperationId, boundary, cancellationToken)
             .ConfigureAwait(false);
-        return (pauseCommandId, verified);
+        var capture = await ReadDurableAdmissionAsync(checkpoint.RawIngressDatabasePath, cancellationToken).ConfigureAwait(false);
+        return (pauseCommandId, verified, capture.Progress);
     }
 
     private static void VerifyCompletedRestorePlan(

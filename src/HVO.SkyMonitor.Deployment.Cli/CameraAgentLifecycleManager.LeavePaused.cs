@@ -15,6 +15,7 @@ internal sealed partial class CameraAgentLifecycleManager
 {
     // Published RC2 refuses a lifecycle journal of this version before dispatching any command.
     private const int LeavePausedJournalVersion = 2;
+    private const string LeavePausedRecoveryPending = "leave-paused-predecessor-restart-pending";
     private const string FleetStorePath = "raw/.fleet/fleet-status.db";
 
     private static bool ValidLifecycleJournalVersion(LifecycleOperationState state)
@@ -25,6 +26,7 @@ internal sealed partial class CameraAgentLifecycleManager
            original.OperationId == state.OperationId && original.SnapshotId == state.LeavePausedOriginalRestorePlanId &&
            state.SignedReleaseChecksumsSha256 == PublishedRc2ChecksumsSha256 &&
            (state is { SchemaVersion: LeavePausedJournalVersion, MutationStarted: true, Status: not InstallationStatus.Completed } ||
+            IsAdmissionPreserved(state) ||
             state is { SchemaVersion: DeploymentSchemaVersions.LifecycleOperation, Phase: LifecycleOperationPhase.Completed });
 
     // This is the cut immediately after arming, before the phase that precedes candidate startup.
@@ -43,6 +45,13 @@ internal sealed partial class CameraAgentLifecycleManager
             SchemaVersion: LeavePausedJournalVersion, Phase: LifecycleOperationPhase.Restoring, Status: InstallationStatus.Failed,
             FailureCode: "leave-paused-predecessor-restored", StateSnapshot: not null, StateSnapshotRestoredUtc: not null
         } && state.StateSnapshot != state.LeavePausedOriginalSnapshot && state.StateRestorePlan?.SnapshotId == state.StateSnapshot.SnapshotId;
+
+    private static bool IsAwaitingPausedRecovery(LifecycleOperationState operation)
+        => operation is
+        {
+            SchemaVersion: LeavePausedJournalVersion, Phase: LifecycleOperationPhase.Restoring,
+            Status: InstallationStatus.Failed, FailureCode: LeavePausedRecoveryPending, MutationStarted: true
+        };
 
     private static string LeavePausedReceiptPath(InstallationPaths paths, Guid operationId)
         => Path.Combine(paths.OperationsRoot, "lifecycle", operationId.ToString("D"), "leave-paused-receipt.json");
@@ -104,26 +113,41 @@ internal sealed partial class CameraAgentLifecycleManager
             .ConfigureAwait(false);
     }
 
-    private static async Task<LifecycleResult> ObserveQuietPausedRecoveryAsync(
+    private static async Task<LifecycleResult> SettlePausedPredecessorAsync(
         InstallationPaths paths, InstanceManifest manifest, InstallationResult installation, LifecycleOperationState operation,
-        LifecycleResult proof, Func<Uri, ICameraAgentLifecycleClient>? lifecycleClientFactory, string token,
-        CancellationToken cancellationToken)
+        DockerClient docker, ComposeFiles compose, IOwnerBootstrapClient owner,
+        Func<Uri, ICameraAgentLifecycleClient>? lifecycleClientFactory, string lifecycleToken, string verificationToken,
+        HostPrerequisiteReport? hostLimits, uint uid, uint gid, CancellationToken cancellationToken)
     {
-        var original = operation.LeavePausedOriginalSnapshot!;
-        var retry = operation.StateSnapshot!;
-        if (original.SnapshotId == retry.SnapshotId || original.ManifestSha256 == retry.ManifestSha256)
-            throw InstallerException.Refused("The held recovery does not contain distinct checkpoint evidence.");
-        await VerifyPausedCheckpointAsync(paths, manifest.InstanceId, original, manifest.Image, null, cancellationToken)
-            .ConfigureAwait(false);
-        var retained = await VerifyPausedStoresAsync(paths, manifest, operation, retry, cancellationToken).ConfigureAwait(false);
+        var operationRoot = Path.Combine(paths.OperationsRoot, "lifecycle", operation.OperationId.ToString("D"));
+        var original = await ReadRecoverySnapshotAsync(paths, operation, Path.Combine(operationRoot, "previous-instance-manifest.json"),
+            Path.Combine(operationRoot, "previous-installation-result.json"), cancellationToken).ConfigureAwait(false);
+        if (original.Manifest != manifest || original.Result != installation)
+            throw InstallerException.Refused("Leave-paused recovery requires the unchanged predecessor records.");
+        await VerifyPausedCheckpointAsync(paths, manifest.InstanceId, operation.LeavePausedOriginalSnapshot!, manifest.Image,
+            null, cancellationToken).ConfigureAwait(false);
+        if (operation.StateSnapshot is { } retry && retry != operation.LeavePausedOriginalSnapshot)
+            await VerifyPausedCheckpointAsync(paths, manifest.InstanceId, retry, manifest.Image,
+                operation.StateSnapshotRestoredUtc is not null ? operation.StateRestorePlan : null, cancellationToken).ConfigureAwait(false);
+
+        await ValidateComposeAuthorityAsync(docker, compose, manifest, cancellationToken).ConfigureAwait(false);
+        if (IsAwaitingPausedRecovery(operation))
+            await StartPendingSignedPredecessorAsync(paths, manifest, operation, docker, compose, hostLimits,
+                operationRoot, cancellationToken).ConfigureAwait(false);
+        var expectedOwner = operation.ExpectedOwnerBootstrapState ?? installation.OwnerBootstrapState;
+        await VerifyCandidateAsync(owner, docker, compose, paths, manifest, installation, manifest.Image, verificationToken,
+            uid, gid, cancellationToken, expectedOwner, expectedOwner == "owner-password-change-required",
+            readinessTimeout: ImageChangeReadinessTimeout).ConfigureAwait(false);
+        await VerifyRunningPausedFleetAsync(paths, owner, cancellationToken).ConfigureAwait(false);
         var lifecycle = CreateLifecycleClient(installation.Url, lifecycleClientFactory);
-        var admission = await ObserveAdmissionAsync(paths, lifecycle, token, cancellationToken).ConfigureAwait(false);
-        if (admission.State != "Paused" || admission.Version != operation.PreMutationContinuity!.CaptureVersion ||
-            admission.CaptureSequence != operation.PreMutationContinuity.CaptureSequence ||
-            admission.LatestCommandOrder != retained.Latest.Order ||
-            admission.LatestCommandKeySha256 != ComposeDeployment.ComputeSha256(retained.Latest.IdempotencyKey))
-            throw InstallerException.Refused("The verified predecessor is running but its admission changed. The recovery remains held.");
-        return proof with { Outcome = "restored-predecessor-admission-preserved", PreservedAdmission = admission };
+        var admission = await ObserveAdmissionAsync(paths, lifecycle, lifecycleToken, cancellationToken).ConfigureAwait(false);
+        if (!IsAdmissionPreserved(operation))
+        {
+            var boundary = ToBoundary(await lifecycle.ReadContinuityAsync(lifecycleToken, cancellationToken).ConfigureAwait(false));
+            await PreserveRecoveryAdmissionAsync(paths, operation, boundary, RecoveryAdmissionPreserved, cancellationToken).ConfigureAwait(false);
+        }
+        return Result(operation.Kind, RecoveryAdmissionPreserved, operation.OperationId, paths, manifest, manifest.DockerDaemon, true, true)
+            with { PreservedAdmission = admission };
     }
 
     private static void EnsureUnchangedPausedBoundary(LifecycleContinuityBoundary original, LifecycleContinuity current)
@@ -241,8 +265,9 @@ internal sealed partial class CameraAgentLifecycleManager
     private static async Task RecoverPausedUpgradeFailureAsync(
         LifecycleRequest request, InstallationPaths paths, InstanceManifest manifest, InstallationResult installation,
         LifecycleOperationState operation, DockerClient docker, ComposeFiles compose, ComposeFiles candidateCompose,
-        IOwnerBootstrapClient owner, string verificationToken, string expectedOwnerState, bool allowOwnerStateProgression,
-        HostPrerequisiteReport? hostLimits, string operationRoot, TextWriter error, uint uid, uint gid, Exception failure)
+        IOwnerBootstrapClient owner, Func<Uri, ICameraAgentLifecycleClient>? lifecycleClientFactory,
+        string lifecycleToken, string verificationToken, HostPrerequisiteReport? hostLimits, string operationRoot,
+        TextWriter error, uint uid, uint gid, Exception failure)
     {
         using var preparation = new CancellationTokenSource(ImageRecoveryPreparationTimeout);
         var token = preparation.Token;
@@ -256,52 +281,63 @@ internal sealed partial class CameraAgentLifecycleManager
         }, token).ConfigureAwait(false);
         try
         {
-            var retry = operation.StateSnapshot;
-            if (failedPhase is not (LifecycleOperationPhase.Mutating or LifecycleOperationPhase.CandidateVerified) ||
-                retry is null || retry == operation.LeavePausedOriginalSnapshot || operation.StateSnapshotRestoredUtc is not null)
-                throw new InstallerException("A started candidate and its own unrestored retry checkpoint could not be proved.");
-            await VerifyPausedCommitEvidenceAsync(paths, manifest, operation, token).ConfigureAwait(false);
-
             EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(token).ConfigureAwait(false));
-            await docker.VerifyContainerOwnershipAsync(candidateCompose, paths, operation.CandidateImage!, uid, gid, token).ConfigureAwait(false);
-            await docker.VerifyRecoveryContainerAsync(candidateCompose, paths, manifest, token).ConfigureAwait(false);
-            var running = await docker.InspectContainerAsync(candidateCompose.ContainerName, token).ConfigureAwait(false);
-            if (!running.Exists || running.ImageId != operation.CandidateImage!.ImageId)
-                throw new InstallerException("Recovery could not identify the exact candidate before stopping it.");
-            await docker.ComposeAsync(candidateCompose.ComposeFile, candidateCompose.EnvironmentFile, candidateCompose.ProjectName,
-                ["stop"], token).ConfigureAwait(false);
-            var stopped = await docker.InspectContainerAsync(candidateCompose.ContainerName, token).ConfigureAwait(false);
-            if (!stopped.Exists || stopped.Running || stopped.ImageId != operation.CandidateImage!.ImageId ||
-                candidateCompose.ReplayRunnerContainerName is { } runner &&
-                    (await docker.InspectContainerAsync(runner, token).ConfigureAwait(false)).Running)
-                throw new InstallerException("The exact candidate and its writers could not be proved stopped.");
+            var runtime = await docker.InspectContainerAsync(candidateCompose.ContainerName, token).ConfigureAwait(false);
+            var candidateMayHaveRun = failedPhase is LifecycleOperationPhase.Mutating or LifecycleOperationPhase.CandidateVerified;
+            var originalStillSelected = runtime.Exists && runtime.ImageId == manifest.Image.ImageId;
+            var needsRestore = candidateMayHaveRun && (!originalStillSelected || failedPhase == LifecycleOperationPhase.CandidateVerified);
+            var previous = compose with
+            {
+                ComposeFile = Path.Combine(operationRoot, "previous-compose.yml"),
+                EnvironmentFile = Path.Combine(operationRoot, "previous.env")
+            };
+            await ValidateComposeAuthorityAsync(docker, previous, manifest, token).ConfigureAwait(false);
+            if (needsRestore)
+            {
+                var retry = operation.StateSnapshot;
+                if (retry is null || retry == operation.LeavePausedOriginalSnapshot || operation.StateSnapshotRestoredUtc is not null ||
+                    runtime.Exists && runtime.ImageId != operation.CandidateImage!.ImageId)
+                    throw new InstallerException("The candidate and its own unrestored checkpoint could not be proved.");
+                await VerifyPausedCommitEvidenceAsync(paths, manifest, operation, token).ConfigureAwait(false);
+                if (runtime.Exists)
+                {
+                    await docker.VerifyContainerOwnershipAsync(candidateCompose, paths, operation.CandidateImage!, uid, gid, token).ConfigureAwait(false);
+                    await docker.VerifyRecoveryContainerAsync(candidateCompose, paths, manifest, token).ConfigureAwait(false);
+                    await docker.ComposeAsync(candidateCompose.ComposeFile, candidateCompose.EnvironmentFile, candidateCompose.ProjectName,
+                        ["stop"], token).ConfigureAwait(false);
+                }
+                var stopped = await docker.InspectContainerAsync(candidateCompose.ContainerName, token).ConfigureAwait(false);
+                if (stopped.Running || stopped.Exists && stopped.ImageId != operation.CandidateImage!.ImageId ||
+                    candidateCompose.ReplayRunnerContainerName is { } runner &&
+                        (await docker.InspectContainerAsync(runner, token).ConfigureAwait(false)).Running)
+                    throw new InstallerException("The candidate and its writers could not be proved stopped.");
+                await VerifyPausedStoresAsync(paths, manifest, operation, retry, token).ConfigureAwait(false);
+                OwnerRecoverySocket.RemoveStoppedSocket(paths, uid, gid);
+                operation = await RestoreStateSnapshotAsync(paths, manifest, operation, retry, request.Json, error, token).ConfigureAwait(false);
+            }
+            else if (runtime.Exists)
+            {
+                if (!originalStillSelected)
+                    throw new InstallerException("The predecessor could not be identified before restart.");
+                await docker.VerifyContainerOwnershipAsync(previous, paths, manifest.Image, uid, gid, token).ConfigureAwait(false);
+                await docker.VerifyRecoveryContainerAsync(previous, paths, manifest, token).ConfigureAwait(false);
+            }
 
-            await VerifyPausedStoresAsync(paths, manifest, operation, retry, token).ConfigureAwait(false);
-
-            // There is no application writer between this proof and replacement. If any earlier check fails, nothing is restored.
-            var previousManifest = Path.Combine(operationRoot, "previous-instance-manifest.json");
-            var previousResult = Path.Combine(operationRoot, "previous-installation-result.json");
-            var original = await ReadRecoverySnapshotAsync(paths, operation, previousManifest, previousResult, token).ConfigureAwait(false);
-            SafeFileSystem.WriteTextAtomic(compose.ComposeFile, await ReadRecoveryTextAsync(Path.Combine(operationRoot, "previous-compose.yml"), token).ConfigureAwait(false));
-            SafeFileSystem.WriteTextAtomic(compose.EnvironmentFile, await ReadRecoveryTextAsync(Path.Combine(operationRoot, "previous.env"), token).ConfigureAwait(false));
-            SafeFileSystem.FlushDirectoryChain(Path.GetDirectoryName(compose.ComposeFile)!, paths.ProductRoot);
-            await WriteRecoverySnapshotAsync(paths, original.Manifest, original.Result, token).ConfigureAwait(false);
-            RestorePausedUpgradeRollbackHistory(paths, operationRoot);
-            OwnerRecoverySocket.RemoveStoppedSocket(paths, uid, gid);
-            operation = await RestoreStateSnapshotAsync(paths, manifest, operation, retry, request.Json, error, token).ConfigureAwait(false);
-            await StartOnThisHostAsync(docker, compose, hostLimits, operationRoot, token).ConfigureAwait(false);
+            var original = await ReadRecoverySnapshotAsync(paths, operation,
+                Path.Combine(operationRoot, "previous-instance-manifest.json"), Path.Combine(operationRoot, "previous-installation-result.json"),
+                token).ConfigureAwait(false);
+            await RestoreRecoveryRecordsAsync(paths, compose, previous, original, operationRoot, token).ConfigureAwait(false);
+            operation = await RecordAsync(paths, operation with { FailureCode = LeavePausedRecoveryPending }, token).ConfigureAwait(false);
             using var settlement = new CancellationTokenSource(ImageRecoverySettlementTimeout);
-            await VerifyCandidateAsync(owner, docker, compose, paths, manifest, installation, manifest.Image, verificationToken,
-                uid, gid, settlement.Token, expectedOwnerState, allowOwnerStateProgression, readinessTimeout: ImageChangeReadinessTimeout)
-                .ConfigureAwait(false);
-            await VerifyRunningPausedFleetAsync(paths, owner, settlement.Token).ConfigureAwait(false);
-            await RecordAsync(paths, operation with { FailureCode = "leave-paused-predecessor-restored" }, settlement.Token).ConfigureAwait(false);
+            await SettlePausedPredecessorAsync(paths, manifest, installation, operation, docker, compose, owner, lifecycleClientFactory,
+                lifecycleToken, verificationToken, hostLimits, uid, gid, settlement.Token).ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
-            throw new InstallerException(
-                $"Leave-paused recovery is held. Preserve the retained stores and both checkpoints. {Redaction.SafeDiagnostic(exception.Message)}",
-                failure);
+            var resolution = IsAwaitingPausedRecovery(operation)
+                ? "The verified predecessor restart remains pending. Rerun the exact leave-paused request."
+                : "Leave-paused recovery is held. Preserve the retained stores and both checkpoints.";
+            throw new InstallerException($"{resolution} {Redaction.SafeDiagnostic(exception.Message)}", failure);
         }
     }
 
@@ -325,8 +361,12 @@ internal sealed partial class CameraAgentLifecycleManager
         string PayloadSha256, long ResultVersion, long CompletedUnixMs, bool Changed);
 
     private sealed record DurableAdmission(
-        string State, long Version, long CaptureSequence, string AgentSequences,
-        long AssignmentCount, long CaptureCount, DurablePauseCommand Latest);
+        string State, long Version, RawCaptureProgress Progress, DurablePauseCommand Latest)
+    {
+        public long CaptureSequence => Progress.Sequence;
+    }
+
+    private sealed record RawCaptureProgress(long Sequence, string AgentSequences, long AssignmentCount, long CaptureCount);
 
     private static Task<DurableAdmission> ReadLiveAdmissionAsync(InstallationPaths paths, CancellationToken cancellationToken)
     {
@@ -410,8 +450,8 @@ internal sealed partial class CameraAgentLifecycleManager
             var last = new DurablePauseCommand(reader.GetInt64(2), reader.GetString(3), reader.GetString(4), reader.GetString(5),
                 reader.GetString(6), reader.GetInt64(7), reader.GetInt64(8), reader.GetBoolean(15));
             var rawSequence = Math.Max(reader.GetInt64(9), Math.Max(reader.GetInt64(10), reader.GetInt64(11)));
-            return new DurableAdmission(reader.GetString(0), reader.GetInt64(1), rawSequence,
-                reader.GetString(14), reader.GetInt64(12), reader.GetInt64(13), last);
+            var progress = new RawCaptureProgress(rawSequence, reader.GetString(14), reader.GetInt64(12), reader.GetInt64(13));
+            return new DurableAdmission(reader.GetString(0), reader.GetInt64(1), progress, last);
         }
         catch (SqliteException exception)
         {
@@ -419,21 +459,25 @@ internal sealed partial class CameraAgentLifecycleManager
         }
     }
 
-    internal static async Task<string> ReadIdentityFingerprintAsync(string path, CancellationToken cancellationToken)
+    internal static Task<string> ReadIdentityFingerprintAsync(string path, CancellationToken cancellationToken)
+        => ReadStoreFingerprintAsync(path, "Identity", "AspNetUsers", cancellationToken);
+
+    private static async Task<string> ReadStoreFingerprintAsync(
+        string path, string store, string requiredTable, CancellationToken cancellationToken)
     {
         try
         {
             SafeFileSystem.EnsureSafeExistingAncestors(Path.GetDirectoryName(path)!);
-            RequireIdentityFile(NativeLinux.TryGetNodeIdentity(path));
+            RequireStoreFile(NativeLinux.TryGetNodeIdentity(path));
             foreach (var suffix in new[] { "-wal", "-shm", "-journal" })
                 if (NativeLinux.TryGetNodeIdentity(path + suffix) is { } sidecar)
-                    RequireIdentityFile(sidecar);
+                    RequireStoreFile(sidecar);
             using var database = CameraAgentStatePreflight.ReadOnlyDatabase.Open(path);
             using (var check = database.Connection.CreateCommand())
             {
                 check.CommandText = "PRAGMA quick_check(1);";
                 if (await check.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not "ok")
-                    throw new InstallerException("The retained Identity store could not be authenticated.");
+                    throw new InstallerException($"The retained {store} store could not be authenticated.");
             }
             using var fingerprint = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
             var tables = new List<string>();
@@ -449,8 +493,8 @@ internal sealed partial class CameraAgentLifecycleManager
                     Add("schema", reader.GetString(1));
                 }
             }
-            if (!tables.Contains("AspNetUsers", StringComparer.Ordinal))
-                throw new InstallerException("The checkpoint or retained Identity store is uninitialized.");
+            if (!tables.Contains(requiredTable, StringComparer.Ordinal))
+                throw new InstallerException($"The checkpoint or retained {store} store is uninitialized.");
             foreach (var table in tables)
             {
                 using var query = database.Connection.CreateCommand();
@@ -461,7 +505,14 @@ internal sealed partial class CameraAgentLifecycleManager
                 Add("read", table);
                 await using var rows = await query.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
                 while (await rows.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    Add("row", "");
                     for (var column = 0; column < rows.FieldCount; column++)
+                    {
+                        // The paired restore already carries the allocation high-water mark. All other Fleet
+                        // changes, including edits to or removal of existing reports, must inhibit replacement.
+                        if (store == "Fleet" && table == "fleet_status_metadata" && rows.GetName(column) == "next_sequence")
+                            continue;
                         switch (rows.GetValue(column))
                         {
                             case DBNull: Add("null", ""); break;
@@ -469,8 +520,10 @@ internal sealed partial class CameraAgentLifecycleManager
                             case long value: Add("integer", value.ToString(CultureInfo.InvariantCulture)); break;
                             case double value: Add("real", value.ToString("R", CultureInfo.InvariantCulture)); break;
                             case byte[] value: Add("blob", Convert.ToBase64String(value)); break;
-                            default: throw new InstallerException("The retained Identity store could not be authenticated.");
+                            default: throw new InstallerException($"The retained {store} store could not be authenticated.");
                         }
+                    }
+                }
             }
             return Convert.ToHexStringLower(fingerprint.GetHashAndReset());
 
@@ -483,13 +536,13 @@ internal sealed partial class CameraAgentLifecycleManager
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or SqliteException)
         {
-            throw new InstallerException("The checkpoint or retained Identity store could not be authenticated. Recovery remains held.", exception);
+            throw new InstallerException($"The checkpoint or retained {store} store could not be authenticated. Recovery remains held.", exception);
         }
 
-        static void RequireIdentityFile(UnixNodeIdentity? identity)
+        void RequireStoreFile(UnixNodeIdentity? identity)
         {
             if (identity is not { Type: NativeLinux.RegularFileNodeType, LinkCount: 1 } node || node.Uid != NativeLinux.getuid())
-                throw new InstallerException("The checkpoint or retained Identity file could not be authenticated. Recovery remains held.");
+                throw new InstallerException($"The checkpoint or retained {store} file could not be authenticated. Recovery remains held.");
         }
     }
 }

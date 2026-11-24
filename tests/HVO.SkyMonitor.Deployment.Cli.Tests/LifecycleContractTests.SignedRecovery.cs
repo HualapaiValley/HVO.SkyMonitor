@@ -43,6 +43,67 @@ public sealed partial class LifecycleContractTests
     }
 
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task SignedRestoreOnly_DistinguishesFleetProgressFromRawCaptureProgress(bool laterCapture)
+    {
+        using var fixture = await AutomaticSignedFixtureAsync();
+        using var release = CandidateRelease(fixture, out var candidate);
+        var lifecycle = new AutomaticSignedLifecycleClient(fixture.Paths);
+        var owner = new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true };
+        var fleet = "raw/.fleet/fleet-status.db";
+        var sql = "INSERT INTO fleet_status_records VALUES(1, 6); UPDATE fleet_status_metadata SET next_sequence = 7;";
+        var fleetFile = Path.Combine(fixture.Paths.StateRoot, fleet);
+        if (laterCapture) ExecuteSql(fleetFile, sql);
+        var request = fixture.Request(LifecycleOperationKind.Upgrade) with { Release = release.Folder };
+        Task<LifecycleResult> RunAsync(LifecycleRequest command) => CameraAgentLifecycleManager.ExecuteAsync(
+            command, fixture.Runner, _ => lifecycle, _ => owner, fixture.Uid, fixture.Gid, CancellationToken.None,
+            error: TextWriter.Null);
+
+        await Assert.ThrowsExactlyAsync<InstallerException>(() => RunAsync(request));
+        var operation = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
+        Assert.AreEqual(LifecycleOperationPhase.RecoveryAdmissionPreserved, operation.Phase);
+        Assert.AreEqual(candidate, operation.CandidateImage!.ImageId);
+        // Model an interrupted ordinary recovery whose checkpoint is restored and predecessor is ready.
+        await CameraAgentLifecycleManager.RecordAsync(fixture.Paths, operation with
+        {
+            SchemaVersion = 1,
+            Phase = LifecycleOperationPhase.Restoring,
+            Status = InstallationStatus.Running,
+            MutationStarted = true
+        }, CancellationToken.None);
+        lifecycle.SupportsOwnedResume = true;
+        if (laterCapture)
+            ExecuteSql(RawIngressPath(fixture.Paths), "INSERT INTO raw_capture_sequences VALUES('fixture-owner-camera', 1);");
+        else
+            ExecuteSql(fleetFile, sql);
+        Assert.AreEqual(6, lifecycle.ReadBoundary().CaptureSequence);
+        var restore = request with { Resume = true, RestoreOnly = true, RecoveryOperationId = operation.OperationId };
+        var before = await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath);
+        var starts = fixture.Runner.ComposeUpCount;
+
+        if (laterCapture)
+        {
+            var failure = await Assert.ThrowsExactlyAsync<InstallerException>(() => RunAsync(restore));
+            StringAssert.Contains(failure.Message, "raw capture progress", StringComparison.Ordinal);
+            CollectionAssert.AreEqual(before, await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath));
+            Assert.IsEmpty(lifecycle.OwnedRequests);
+            Assert.AreEqual("Paused", lifecycle.ReadBoundary().CaptureState);
+        }
+        else
+        {
+            Assert.AreEqual("restored-previous-healthy-admission-resumed", (await RunAsync(restore)).Outcome);
+            Assert.AreEqual("Running", lifecycle.ReadBoundary().CaptureState);
+            Assert.AreEqual(1, ReadCounter(fixture.Paths, fleet, "SELECT COUNT(*) FROM fleet_status_records WHERE sequence = 6;"));
+            Assert.HasCount(1, lifecycle.OwnedRequests);
+        }
+        Assert.AreEqual(starts, fixture.Runner.ComposeUpCount);
+        Assert.AreEqual(1, lifecycle.PauseRequests);
+        Assert.AreEqual(0, lifecycle.GenericResumeCalls);
+    }
+
+    [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     [DataRow("coherent-release-edit", "original release manifest and checksums")]
     [DataRow("missing-historical-anchor", "original release manifest and checksums")]
@@ -61,13 +122,15 @@ public sealed partial class LifecycleContractTests
     [DataRow("different-live-schema", "live schema differs from the checkpoint")]
     [DataRow("different-processing-marker", "live schema differs from the checkpoint")]
     [DataRow("new-acquisition", "operation boundary")]
+    [DataRow("different-fleet-marker", "live schema differs from the checkpoint")]
     [DataRow("candidate-runtime", "original image running and healthy")]
     [DataRow("missing-lock", "original deployment locks")]
     public async Task SignedRestoreOnly_RefusesBeforeRecoveryMutation(string fault, string message)
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed, recoveryState: true);
         using var release = ReleaseFixture.Create();
-        var request = await PrepareSignedRecoveryAsync(fixture, release, "index", foreignPause: fault == "foreign-snapshot-pause");
+        var request = await PrepareSignedRecoveryAsync(fixture, release, "index", foreignPause: fault == "foreign-snapshot-pause",
+            withFleet: fault == "different-fleet-marker");
         var lifecycle = new FakeLifecycleClient();
         var operation = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
         var snapshot = operation.StateSnapshot!;
@@ -136,7 +199,12 @@ public sealed partial class LifecycleContractTests
                 await ModifyLiveSchemaAsync(fixture.Paths, "UPDATE capture_processing_schema SET version = 10;");
                 break;
             case "new-acquisition":
-                lifecycle.RecoveryContinuity = lifecycle.RecoveryContinuity with { CaptureSequence = operation.PreMutationContinuity!.CaptureSequence + 1 };
+                // A higher Fleet sequence can hide this raw reservation in the legacy combined wire field.
+                await ModifyLiveSchemaAsync(fixture.Paths, "INSERT INTO raw_capture_assignments(capture_sequence) VALUES(1);");
+                break;
+            case "different-fleet-marker":
+                ExecuteSql(Path.Combine(fixture.Paths.StateRoot, "raw", ".fleet", "fleet-status.db"),
+                    "UPDATE fleet_status_metadata SET schema_version = 2;");
                 break;
             case "candidate-runtime":
                 fixture.Runner.UseCandidateRuntime();
@@ -225,7 +293,7 @@ public sealed partial class LifecycleContractTests
     }
 
     private static async Task<LifecycleRequest> PrepareSignedRecoveryAsync(LifecycleFixture fixture, ReleaseFixture release,
-        string digestKind, bool foreignPause = false)
+        string digestKind, bool foreignPause = false, bool withFleet = false)
     {
         var legacy = await fixture.PrepareRestoreAsync();
         var operation = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
@@ -262,6 +330,12 @@ public sealed partial class LifecycleContractTests
         using var productLock = OperationLock.Acquire(Path.Combine(fixture.Paths.OperationsRoot, "deployment.lock"));
         using var instanceLock = OperationLock.Acquire(Path.Combine(fixture.Paths.InstanceRoot, ".deployment.lock"));
         await WritePauseReceiptAsync(fixture.Paths, operation, foreignPause);
+        if (withFleet)
+        {
+            var fleet = Path.Combine(fixture.Paths.StateRoot, "raw", ".fleet", "fleet-status.db");
+            SafeFileSystem.CreateOwnerDirectory(Path.GetDirectoryName(fleet)!);
+            ExecuteSql(fleet, "CREATE TABLE fleet_status_metadata(metadata_key INTEGER PRIMARY KEY, schema_version INTEGER); INSERT INTO fleet_status_metadata VALUES(1,1);");
+        }
         var snapshot = await CameraAgentStateSnapshot.CreateAsync(fixture.Paths, fixture.InstanceId, operation.OperationId,
             fixture.Manifest.Image, CameraAgentStateLayout.SqliteStores, CancellationToken.None);
         await CameraAgentLifecycleManager.RecordAsync(fixture.Paths, operation with
@@ -290,15 +364,21 @@ public sealed partial class LifecycleContractTests
                 CREATE TABLE capture_control_commands(
                   idempotency_key TEXT, actor TEXT, reason TEXT, target_state TEXT, expected_version INTEGER,
                   status TEXT, result_state TEXT, result_version INTEGER, changed INTEGER,
-                  requested_unix_ms INTEGER, completed_unix_ms INTEGER);
+                  requested_unix_ms INTEGER, completed_unix_ms INTEGER, payload_sha256 TEXT DEFAULT 'fixture');
+                CREATE TABLE capture_control_state(state_key INTEGER, state TEXT, version INTEGER);
+                CREATE TABLE raw_capture_sequences(agent_id TEXT, last_sequence INTEGER);
+                CREATE TABLE raw_capture_assignments(capture_sequence INTEGER);
+                CREATE TABLE raw_captures(capture_sequence INTEGER);
                 CREATE TABLE capture_processing_schema(schema_key INTEGER, version INTEGER);
                 INSERT INTO capture_processing_schema VALUES(1, 9);
                 """;
             await execute.ExecuteNonQueryAsync();
         }
         execute.CommandText = """
-            INSERT INTO capture_control_commands
+            INSERT INTO capture_control_commands(idempotency_key, actor, reason, target_state, expected_version,
+                status, result_state, result_version, changed, requested_unix_ms, completed_unix_ms)
             VALUES($key, $actor, $reason, 'paused', NULL, 'completed', 'paused', $version, 1, $time, $time);
+            INSERT INTO capture_control_state SELECT 1, 'paused', $version WHERE NOT EXISTS(SELECT 1 FROM capture_control_state);
             """;
         var command = Guid.NewGuid();
         execute.Parameters.AddWithValue("$key", $"lifecycle:{command:D}:pause");
