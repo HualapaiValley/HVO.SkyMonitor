@@ -87,11 +87,10 @@ column change, so any column change bumps the schema version (currently 4). Star
 migrates the supported schema-3 predecessor by adding the retained script-stop audit table;
 other older schemas are refused. Startup verifies the version, the exact schema object
 count, and `PRAGMA integrity_check`, and refuses a newer, drifted, or corrupt database.
-The image declares writes 4 and reads 3 to 4. For the current image's
-`minimum-compatible-revision`, see the centered scheduling and storage boundary
-in the [install contract](../hvo-install-contract.md#6-upgrade-and-rollback).
-That boundary covers raw schema 17, processing schema 12, and settled
-environmental schema 5.
+The image declares writes 4 and reads 3 to 4. The current image's
+`minimum-compatible-revision` covers raw schema 17, processing schema 12, and
+settled environmental schema 5. The install contract describes the reader
+boundary and when it selects a paired checkpoint. [Install contract](../hvo-install-contract.md#6-upgrade-and-rollback)
 
 The combined beta (`0.9.1-rc.2`) declared
 `e7b9af4b98d1521c3939ef5925608a3663c63302` as its minimum, covering the processing
