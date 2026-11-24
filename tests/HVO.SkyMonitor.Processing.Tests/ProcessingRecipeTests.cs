@@ -18,6 +18,25 @@ public sealed class ProcessingRecipeTests
 
     [TestMethod]
     [TestCategory("Unit")]
+    [DataRow(BuiltInProcessingRecipes.JpegEncoding, """{"maximumDimension":0}""")]
+    [DataRow(BuiltInProcessingRecipes.FixedPreview, """{"blackLevel":100,"whiteLevel":90}""")]
+    [DataRow(BuiltInProcessingRecipes.Keogram, """{"maximumColumnCount":0}""")]
+    [DataRow(BuiltInProcessingRecipes.StarTrail, """{"maximumFrameCount":0}""")]
+    public async Task RejectsInvalidFrozenRecipeOptions(string recipe, string options)
+    {
+        var input = CreateArtifact(FrameArtifactRole.Raw, "source", CameraPixelFormat.Mono16, 2, 2,
+            [0, 0, 0, 64, 0, 128, 255, 255]);
+        var request = Request(recipe, Json(options), ProcessingInputSelector.Raw("source"), [input], "rejected");
+
+        var outcome = await new ProcessingRecipeExecutor().ExecuteAsync(request).ConfigureAwait(false);
+
+        Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, outcome.Status);
+        Assert.AreEqual(ProcessingReasonCodes.InvalidOptions, outcome.ReasonCode);
+        Assert.IsEmpty(outcome.Products);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
     public void PublicApiContainsNoHostInfrastructureOrDisposableImageTypes()
     {
         var forbidden = new[]

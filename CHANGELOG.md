@@ -44,6 +44,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - Full qualification drops the retired LogicHost and combined jobs and stops publishing LogicHost artifacts. Required CI reports the result of the active checks. #2049
 
+- Removed the five retired LogicHost and combined test projects from SkyMonitor's solution. Standalone CameraAgent and shared tests cover the retained contracts. #2050
+
 ### Fixed
 
 - Centered CameraAgent half-flux diameter measurements give eligible stars first use of the 32-sample limit. #1954
