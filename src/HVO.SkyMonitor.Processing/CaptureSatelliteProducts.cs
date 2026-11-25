@@ -134,16 +134,24 @@ public static class CaptureSatelliteProducts
     }
 
     /// <summary>Executes only the supplied pinned inputs. Hosts preserve the first completed bytes before publication.</summary>
-    public static async ValueTask<ProcessingProduct?> PredictAsync(CaptureSatelliteInputV1 input, ProcessingArtifact raw,
+    public static ValueTask<ProcessingProduct?> PredictAsync(CaptureSatelliteInputV1 input, ProcessingArtifact raw,
         string outputVariant, CancellationToken cancellationToken, TimeProvider? clock = null,
-        OrbitalSnapshotReadResult? exactSnapshot = null)
+        OrbitalSnapshotReadResult? exactSnapshot = null) =>
+        PredictAsync(input, raw, outputVariant,
+            static (recipe, request, token) => new ProcessingRecipeExecutor([recipe]).ExecuteAsync(request, token),
+            cancellationToken, clock, exactSnapshot);
+
+    internal static async ValueTask<ProcessingProduct?> PredictAsync(CaptureSatelliteInputV1 input, ProcessingArtifact raw,
+        string outputVariant,
+        Func<IProcessingRecipe, ProcessingExecutionRequest, CancellationToken, ValueTask<ProcessingOutcome>> execute,
+        CancellationToken cancellationToken, TimeProvider? clock = null, OrbitalSnapshotReadResult? exactSnapshot = null)
     {
         ArgumentNullException.ThrowIfNull(input);
         ArgumentNullException.ThrowIfNull(raw);
         Validate(input);
         if (input.Plan is null) return null;
         var recipe = new CaptureOrbitalPredictionRecipe(Restore(input, exactSnapshot), RestoreTime(input), clock);
-        var outcome = await new ProcessingRecipeExecutor([recipe]).ExecuteAsync(new(
+        var outcome = await execute(recipe, new(
             CaptureOrbitalPredictionRecipe.Name, JsonSerializer.SerializeToElement(new { }),
             ProcessingInputSelector.Raw(raw.Variant), [raw], outputVariant, InputArtifactId: raw.ArtifactId),
             cancellationToken).ConfigureAwait(false);

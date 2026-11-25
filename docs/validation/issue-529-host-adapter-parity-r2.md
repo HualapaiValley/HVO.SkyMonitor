@@ -139,3 +139,34 @@ Independent Sol **and** Opus deep CLEAN reports on that same candidate remain
 required. Max routes both through the Hub; no local or duplicate reviewer is
 launched. No push, PR, infrastructure, deployment, hardware or branch deletion
 is authorized. The retained #529 claim continues through the review handoff.
+
+## Final mutation counter provenance correction — #1839
+
+The mutation described above was run for candidate
+`5283c395cba19744373a1df5f0eee9da61ba6f62`. Its immutable evidence archive lives
+outside Git and retains SHA-256
+`4eb948f7519b6946c9eca4082631fc3e94603a6f3d35565e37fba6856d6a641f`.
+The archived `final-mutation.py` populated
+`final-mutation-control.json.counters` from the earlier
+`mutation-binding-red/mutation.trx` (SHA-256
+`6365c5934129d838f978b1e6bca8aa570a4b0e76f33fe50d69b6e267580968af`).
+Those generated counters belong to the earlier run.
+
+The [append-only #529 correction](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/529#issuecomment-6866590776)
+records the independent Sol, Opus and coordinator reads of the actual final
+`t3-ddd27ea6-r2/final-mutation-binding-red/mutation.trx` (SHA-256
+`2b4c7758374c99a1699868017fd791aef0e550bb2756d1bd637c6e1dd86301bc`).
+That TRX recorded six executed, six failed and zero skipped. Every failure
+reported `Assert.AreEqual(descriptor.Artifact.CreatedUtc, source.CreatedUtc)`.
+The original and restored source both had SHA-256
+`d1abb3ff9e81aeb77ed8dabeb2951ff949082e12b5b46c55deea0d5b1b26a0f6`,
+and both restored nominal runs passed all six cases. This correction records
+those verified results and keeps the original packet intact.
+
+For future reuse, bind the runner's selected final TRX path to the counter
+reader. Require the exact final archive member, verify its expected SHA-256
+before parsing, and record the member path and digest alongside the counters.
+Reject a substituted path or digest even when the two runs have identical
+counts. When using a fresh run, bind the reader to the runner's designated
+output and capture its digest from that run. The archived script and raw TRXs
+are external to Git, so this erratum is the repository record of the correction.

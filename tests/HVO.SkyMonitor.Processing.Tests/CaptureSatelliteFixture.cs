@@ -14,7 +14,7 @@ internal sealed class CaptureSatelliteFixture
     internal CaptureOrbitalPredictionInput Input { get; }
     internal CaptureSatelliteInputV1 Evidence { get; }
 
-    internal CaptureSatelliteFixture(string? horizon = null)
+    internal CaptureSatelliteFixture(string? horizon = null, string rawVariant = "raw")
     {
         var root = Path.Combine(AppContext.BaseDirectory, "Fixtures", "Nominal");
         var track = OrbitalPredictionJson.ParseTrack(File.ReadAllBytes(Path.Combine(root, "iss", "track-03.json")));
@@ -59,7 +59,7 @@ internal sealed class CaptureSatelliteFixture
             new(TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5), 1, 1, null, null, null, null),
             new(Profile(CameraRigProfileIdentity.ComputeSha256(rig)), Profile(new('A', 64)), Profile(new('B', 64)),
                 Profile(new('C', 64)), Profile(new('D', 64))), layout,
-            new(Guid.Parse("16410000-0000-0000-0000-000000000002"), FrameArtifactRole.Raw, "StandaloneFixture", "raw",
+            new(Guid.Parse("16410000-0000-0000-0000-000000000002"), FrameArtifactRole.Raw, "StandaloneFixture", rawVariant,
                 end.AddMilliseconds(20), [], recipe, "application/octet-stream", ProcessingIdentity.ComputePayloadSha256(payload)))
         { Location = Configuration.DeploymentLocation.ToProvenance() };
         var geometry = track.Geometry with
@@ -73,7 +73,7 @@ internal sealed class CaptureSatelliteFixture
             new(CaptureOrbitalAssessmentMode.OriginalAvailability, Descriptor.Timing.DurableIngressUtc,
                 Descriptor.Timing.DurableIngressUtc, track.RequestedInterval.StartUtc.AddDays(-1)),
             OrbitalSnapshotReadResult.Available(Snapshot), new([new("celestrak:gp:active", 0)]), [track.Lineage.ObjectIdentity], rig.HorizonObstruction is null ? null : rig);
-        Raw = new(Descriptor.Artifact.ArtifactId, FrameArtifactRole.Raw, "raw", ProcessingIdentity.CreateRecipeIdentity(recipe).IdentitySha256,
+        Raw = new(Descriptor.Artifact.ArtifactId, FrameArtifactRole.Raw, rawVariant, ProcessingIdentity.CreateRecipeIdentity(recipe).IdentitySha256,
             Descriptor.Artifact.MediaType, layout, payload, Descriptor.Artifact.CreatedUtc, TimeSpan.FromSeconds(5),
             new(Descriptor.Profiles.Rig.Sha256, Descriptor.Profiles.Rig.Sha256, Descriptor.Profiles.Calibration.Sha256,
                 Descriptor.Profiles.Mask.Sha256, Descriptor.Profiles.Sensor.Sha256, "fixture", Descriptor.Profiles.Processing.Sha256), 1,
