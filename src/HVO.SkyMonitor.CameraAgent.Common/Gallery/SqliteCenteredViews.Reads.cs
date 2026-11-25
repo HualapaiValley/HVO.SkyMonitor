@@ -64,36 +64,40 @@ internal sealed partial class SqliteCenteredViews
         Guid referenceCaptureId, CancellationToken cancellationToken) =>
         ReadReferenceBasesAsync(null, referenceCaptureId, cancellationToken);
 
+    internal const string ArchiveBasesByReferenceSql = """
+        SELECT b.base_id, b.definition, b.registered_utc,
+            (SELECT revision_id FROM processing_centered_view_revisions r
+             WHERE r.base_id = b.base_id ORDER BY change_order LIMIT 1),
+            (SELECT revision_id FROM processing_centered_view_revisions r
+             WHERE r.base_id = b.base_id ORDER BY change_order DESC LIMIT 1),
+            (SELECT revision_id FROM processing_centered_view_changes c
+             WHERE c.base_id = b.base_id AND c.selected_live = 1 ORDER BY change_order DESC LIMIT 1)
+        FROM processing_centered_view_bases b
+        WHERE b.reference_id = $reference
+        ORDER BY b.kind, b.recomputed_from IS NOT NULL, b.registered_utc, b.base_id;
+        """;
+
+    internal const string ArchiveBasesByStreamAndReferenceSql = """
+        SELECT b.base_id, b.definition, b.registered_utc,
+            (SELECT revision_id FROM processing_centered_view_revisions r
+             WHERE r.base_id = b.base_id ORDER BY change_order LIMIT 1),
+            (SELECT revision_id FROM processing_centered_view_revisions r
+             WHERE r.base_id = b.base_id ORDER BY change_order DESC LIMIT 1),
+            (SELECT revision_id FROM processing_centered_view_changes c
+             WHERE c.base_id = b.base_id AND c.selected_live = 1 ORDER BY change_order DESC LIMIT 1)
+        FROM processing_centered_view_bases b
+        WHERE b.stream_id = $stream AND b.reference_id = $reference
+        ORDER BY b.kind, b.recomputed_from IS NOT NULL, b.registered_utc, b.base_id;
+        """;
+
     private async ValueTask<IReadOnlyList<CenteredViewArchiveBase>> ReadReferenceBasesAsync(
         string? streamId, Guid referenceCaptureId, CancellationToken cancellationToken)
     {
         ArgumentOutOfRangeException.ThrowIfEqual(referenceCaptureId, Guid.Empty);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = streamId is null
-            ? CreateCommand(connection, null, """
-                SELECT b.base_id, b.definition, b.registered_utc,
-                    (SELECT revision_id FROM processing_centered_view_revisions r
-                     WHERE r.base_id = b.base_id ORDER BY change_order LIMIT 1),
-                    (SELECT revision_id FROM processing_centered_view_revisions r
-                     WHERE r.base_id = b.base_id ORDER BY change_order DESC LIMIT 1),
-                    (SELECT revision_id FROM processing_centered_view_changes c
-                     WHERE c.base_id = b.base_id AND c.selected_live = 1 ORDER BY change_order DESC LIMIT 1)
-                FROM processing_centered_view_bases b
-                WHERE b.reference_id = $reference
-                ORDER BY b.kind, b.recomputed_from IS NOT NULL, b.registered_utc, b.base_id;
-                """, ("$reference", referenceCaptureId))
-            : CreateCommand(connection, null, """
-                SELECT b.base_id, b.definition, b.registered_utc,
-                    (SELECT revision_id FROM processing_centered_view_revisions r
-                     WHERE r.base_id = b.base_id ORDER BY change_order LIMIT 1),
-                    (SELECT revision_id FROM processing_centered_view_revisions r
-                     WHERE r.base_id = b.base_id ORDER BY change_order DESC LIMIT 1),
-                    (SELECT revision_id FROM processing_centered_view_changes c
-                     WHERE c.base_id = b.base_id AND c.selected_live = 1 ORDER BY change_order DESC LIMIT 1)
-                FROM processing_centered_view_bases b
-                WHERE b.stream_id = $stream AND b.reference_id = $reference
-                ORDER BY b.kind, b.recomputed_from IS NOT NULL, b.registered_utc, b.base_id;
-                """, ("$stream", streamId), ("$reference", referenceCaptureId));
+            ? CreateCommand(connection, null, ArchiveBasesByReferenceSql, ("$reference", referenceCaptureId))
+            : CreateCommand(connection, null, ArchiveBasesByStreamAndReferenceSql, ("$stream", streamId), ("$reference", referenceCaptureId));
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         var values = new List<CenteredViewArchiveBase>();
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))

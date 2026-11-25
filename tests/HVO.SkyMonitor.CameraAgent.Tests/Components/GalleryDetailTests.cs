@@ -881,6 +881,54 @@ public sealed class GalleryDetailTests
         }
     }
 
+    [TestMethod]
+    public void DetailHandlesMalformedSelectionQueryParameterWithExplicitUnavailableNotice()
+    {
+        using var context = new BunitContext();
+        ConfigureGraphService(context);
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        var capture = OperatorUiTestData.Capture();
+        CameraAgentCenteredArchiveRequest? observed = null;
+        var service = new TestOperatorUiService
+        {
+            CenteredDetailViewHandler = (id, request, _) =>
+            {
+                Assert.AreEqual(capture.CaptureId, id);
+                observed = request;
+                var archive = new CameraAgentCenteredArchiveView(
+                    id,
+                    [],
+                    null,
+                    null,
+                    CameraAgentLayeredPresentationStatus.NotRetained,
+                    null,
+                    null,
+                    "The requested saved personal selection is invalid.",
+                    null);
+                return ValueTask.FromResult(OperatorUiResult<CameraAgentCaptureDetailView>.Success(
+                    new(capture, new(CameraAgentPresentationStage.Raw, OperatorUiTestData.CurrentImage().Stages))
+                    {
+                        CenteredArchive = archive
+                    }));
+            }
+        };
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
+        var navigation = context.Services.GetRequiredService<NavigationManager>();
+        navigation.NavigateTo($"/gallery/{capture.CaptureId:D}?selection=not-a-guid");
+
+        var cut = context.Render<GalleryDetail>(parameters =>
+            parameters.Add(page => page.CaptureId, capture.CaptureId));
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.IsNotNull(observed);
+            Assert.IsTrue(observed!.HasExplicitTarget);
+            Assert.AreEqual(Guid.Empty, observed.SelectionId);
+            StringAssert.Contains(cut.Find(".centered-selection-error").TextContent, "saved personal selection is invalid", StringComparison.Ordinal);
+            Assert.IsEmpty(cut.FindAll(".sky-layer-workspace"));
+        });
+    }
+
     private sealed class NoPollingTimeProvider : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => OperatorUiTestData.Now;

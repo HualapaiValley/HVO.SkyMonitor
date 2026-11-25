@@ -330,6 +330,13 @@ internal interface ICameraAgentOperatorUiService
         CancellationToken cancellationToken)
         => GetCurrentSkyViewAsync(cancellationToken);
 
+    ValueTask<OperatorUiResult<CameraAgentCenteredPresentationRead>> GetCenteredPresentationAsync(
+        string baseId,
+        string revisionId,
+        CancellationToken cancellationToken)
+        => ValueTask.FromResult(OperatorUiResult<CameraAgentCenteredPresentationRead>.Success(
+            new(CameraAgentLayeredPresentationStatus.NotRetained, null, null)));
+
     ValueTask<OperatorUiResult<CenteredViewSavedSelection>> SaveCenteredViewSelectionAsync(
         Guid referenceCaptureId,
         string baseId,

@@ -148,15 +148,22 @@ public sealed partial class CameraAgentOperatorUiServiceTests
             centeredViewPublisher: views,
             centeredViewPresentation: presentationReader);
 
-        // 1. Live Current Sky MUST still display 104 — late trail on 103 CANNOT replace 104!
+        // 1. Live Current Sky MUST still display 104 immediately without awaiting optional overlays,
+        //    and late trail on 103 CANNOT replace 104!
         var live = await service.GetCurrentSkyViewAsync(CenteredLiveMode.Centered, token).ConfigureAwait(false);
         Assert.IsTrue(live.IsSuccess);
         Assert.IsNotNull(live.Value?.Centered?.View);
         Assert.AreEqual(stack104.Base.BaseId, live.Value.Centered.View.Base.BaseId);
         Assert.AreEqual(input104.Key.CaptureId, live.Value.Centered.View.Base.Definition.Reference.Capture.CaptureId);
         Assert.IsFalse(live.Value.ProcessingPending);
-        Assert.AreEqual(CameraAgentLayeredPresentationStatus.Found, live.Value.Centered.PresentationStatus);
-        Assert.IsNotNull(live.Value.Centered.Presentation);
+        Assert.IsTrue(live.Value.Centered.PresentationDeferred);
+        Assert.IsNull(live.Value.Centered.Presentation);
+
+        var liveOverlays = await service.GetCenteredPresentationAsync(
+            live.Value.Centered.View.Base.BaseId, live.Value.Centered.View.Revision.RevisionId, token).ConfigureAwait(false);
+        Assert.IsTrue(liveOverlays.IsSuccess);
+        Assert.AreEqual(CameraAgentLayeredPresentationStatus.Found, liveOverlays.Value!.Status);
+        Assert.IsNotNull(liveOverlays.Value.Presentation);
 
         // 2. Archive reopen of 103 offers Single and Stack, defaults to last published-live revision, and distinctly labels later enrichment!
         var archiveDefault = await service.GetCaptureDetailViewAsync(input103.Key.CaptureId, null, token).ConfigureAwait(false);
@@ -409,18 +416,63 @@ public sealed partial class CameraAgentOperatorUiServiceTests
             centeredViewPublisher: views,
             centeredViewPresentation: throwingReader.Object);
 
+        // Live ready base returns immediately without invoking optional overlay I/O, and async overlay failure degrades cleanly!
         var live = await service.GetCurrentSkyViewAsync(CenteredLiveMode.Centered, token).ConfigureAwait(false);
         Assert.IsTrue(live.IsSuccess);
         Assert.IsNotNull(live.Value?.Centered?.View);
         Assert.IsNotNull(live.Value.Centered.PreviewUrl);
         Assert.IsNull(live.Value.Centered.Presentation);
-        Assert.AreEqual(CameraAgentLayeredPresentationStatus.Unavailable, live.Value.Centered.PresentationStatus);
+        Assert.IsTrue(live.Value.Centered.PresentationDeferred);
+
+        var liveOverlayFailure = await service.GetCenteredPresentationAsync(
+            live.Value.Centered.View.Base.BaseId, live.Value.Centered.View.Revision.RevisionId, token).ConfigureAwait(false);
+        Assert.IsTrue(liveOverlayFailure.IsSuccess);
+        Assert.IsNull(liveOverlayFailure.Value!.Presentation);
+        Assert.AreEqual(CameraAgentLayeredPresentationStatus.Unavailable, liveOverlayFailure.Value.Status);
 
         var archive = await service.GetCaptureDetailViewAsync(input.Key.CaptureId, null, token).ConfigureAwait(false);
         Assert.IsTrue(archive.IsSuccess);
         Assert.IsNotNull(archive.Value?.CenteredArchive?.SelectedView);
         Assert.IsNotNull(archive.Value.CenteredArchive.PreviewUrl);
         Assert.IsNull(archive.Value.CenteredArchive.Presentation);
+
+        // Sol H1: Holding optional overlay I/O on a TaskCompletionSource NEVER blocks ready-base delivery!
+        var blockedOverlayGate = new TaskCompletionSource<CameraAgentLayeredPresentationResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var overlayReadStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var blockingReader = new Mock<ICenteredViewPresentationReader>(MockBehavior.Strict);
+        blockingReader.Setup(r => r.ReadAsync(enriched.Base.BaseId, enriched.Revision.RevisionId, It.IsAny<CancellationToken>()))
+            .Returns(() =>
+            {
+                overlayReadStarted.TrySetResult();
+                return new ValueTask<CameraAgentLayeredPresentationResult>(blockedOverlayGate.Task);
+            });
+        var decoupledService = CreateService(
+            new CountingAuthenticationStateProvider(principal),
+            authorization.Object,
+            gallery: gallery.Object,
+            presentations: presentations.Object,
+            centeredViewLookup: lookup.Object,
+            centeredViewIndex: views,
+            centeredViewPublisher: views,
+            centeredViewPresentation: blockingReader.Object);
+
+        var readyBase = await decoupledService.GetCurrentSkyViewAsync(CenteredLiveMode.Centered, token).ConfigureAwait(false);
+        Assert.IsTrue(readyBase.IsSuccess);
+        Assert.IsNotNull(readyBase.Value?.Centered?.View);
+        Assert.AreEqual(enriched.Base.BaseId, readyBase.Value.Centered.View.Base.BaseId);
+        Assert.IsTrue(readyBase.Value.Centered.PresentationDeferred);
+        Assert.IsFalse(overlayReadStarted.Task.IsCompleted, "Ready-base delivery must not await optional overlay I/O.");
+
+        var asyncOverlayTask = decoupledService.GetCenteredPresentationAsync(
+            enriched.Base.BaseId, enriched.Revision.RevisionId, token).AsTask();
+        await overlayReadStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        Assert.IsFalse(asyncOverlayTask.IsCompleted);
+        blockedOverlayGate.SetResult(partial);
+        var attached = await asyncOverlayTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        Assert.IsTrue(attached.IsSuccess);
+        Assert.AreEqual(CameraAgentLayeredPresentationStatus.Found, attached.Value!.Status);
+        Assert.IsNotNull(attached.Value.Presentation);
+        Assert.HasCount(1, attached.Value.Presentation.Layers);
     }
 
     [TestMethod]
@@ -623,13 +675,15 @@ public sealed partial class CameraAgentOperatorUiServiceTests
         Assert.AreEqual(pin.ArtifactId, exact.Value!.ArtifactId);
         astrometryService.Verify(a => a.GetExactAsync(captureId, pin, It.IsAny<CancellationToken>()), Times.Once);
 
-        // Freshness grading by display age vs cadence (>2x Delayed, >6x Stale)
+        // Freshness grading by display age vs cadence:
+        // (c) Single view thresholds unchanged (>2x Delayed, >6x Stale)
         var startedUtc = OperatorUiTestData.Now;
         var descriptor = ArtifactManifestFixture.CreateManifest(CameraPixelFormat.Mono8, 64, 48, 64, new byte[64 * 48]).Descriptor;
         descriptor = descriptor with
         {
             Capture = descriptor.Capture with { AgentId = "agent-test", CaptureId = captureId, CaptureSequence = 103 },
-            Timing = descriptor.Timing with { ExposureStartedUtc = startedUtc, ExposureEndedUtc = startedUtc.AddSeconds(1) }
+            Timing = descriptor.Timing with { ExposureStartedUtc = startedUtc, ExposureEndedUtc = startedUtc.AddSeconds(20) },
+            Controls = descriptor.Controls with { EffectiveExposure = TimeSpan.FromSeconds(20) }
         };
         var stream = new CenteredViewStream(new("agent-test", "camera-1"), Guid.NewGuid(), "gen-fresh");
         var compat = new PresentationCompatibilityDescriptor(64, 48, new string('B', 64), new string('C', 64));
@@ -645,20 +699,59 @@ public sealed partial class CameraAgentOperatorUiServiceTests
             "Skia JPEG", "jpeg-v1", new(64, 48, 0, 0, 64, 48, 64, 48));
         var def = new CenteredViewBaseDefinition(stream, exp, 103, CenteredViewKind.Single, exp.Linear!, preview,
             [new(exp, "ReferenceIdentity", JsonSerializer.SerializeToElement(new { }))], null);
-        var view = new CenteredView(
+        var singleView = new CenteredView(
             new(SqliteCenteredViews.BaseIdentity(def), def, startedUtc),
             new(new string('1', 64), SqliteCenteredViews.BaseIdentity(def), 1, startedUtc,
                 LayeredPresentationJson.CreateManifest(preview.Product, null, []), []));
-        var cadence = TimeSpan.FromSeconds(10);
+        var singleCadence = TimeSpan.FromSeconds(10);
 
         Assert.AreEqual(CameraAgentPresentationImageFreshness.Current,
-            CameraAgentOperatorUiService.ComputeCenteredFreshness(view, false, CenteredViewLiveState.Ready, startedUtc.AddSeconds(15), cadence));
+            CameraAgentOperatorUiService.ComputeCenteredFreshness(singleView, false, CenteredViewLiveState.Ready, startedUtc.AddSeconds(15), singleCadence));
         Assert.AreEqual(CameraAgentPresentationImageFreshness.Delayed,
-            CameraAgentOperatorUiService.ComputeCenteredFreshness(view, false, CenteredViewLiveState.Ready, startedUtc.AddSeconds(25), cadence));
+            CameraAgentOperatorUiService.ComputeCenteredFreshness(singleView, false, CenteredViewLiveState.Ready, startedUtc.AddSeconds(25), singleCadence));
         Assert.AreEqual(CameraAgentPresentationImageFreshness.Stale,
-            CameraAgentOperatorUiService.ComputeCenteredFreshness(view, false, CenteredViewLiveState.Ready, startedUtc.AddSeconds(65), cadence));
+            CameraAgentOperatorUiService.ComputeCenteredFreshness(singleView, false, CenteredViewLiveState.Ready, startedUtc.AddSeconds(65), singleCadence));
         Assert.AreEqual(CameraAgentPresentationImageFreshness.Historical,
-            CameraAgentOperatorUiService.ComputeCenteredFreshness(view, true, CenteredViewLiveState.Warming, startedUtc.AddSeconds(5), cadence));
+            CameraAgentOperatorUiService.ComputeCenteredFreshness(singleView, true, CenteredViewLiveState.Warming, startedUtc.AddSeconds(5), singleCadence));
+
+        // (a) Healthy live Stack (30s interval + 20s exposure + 5s grace => 85s closure lag):
+        //     earliest possible close (80s / 85s) AND just before next advance (114s / 115s) MUST stay Current!
+        // (b) Stack past delayed threshold (> 85 + 60 = 145s) => Delayed; past stale threshold (> 85 + 180 = 265s) => Stale!
+        var stackDef = def with
+        {
+            Kind = CenteredViewKind.Stack,
+            ClosedWindow = new CenteredViewArtifact(Guid.NewGuid(), new string('7', 64), new string('8', 64))
+        };
+        var stackView = new CenteredView(
+            new(SqliteCenteredViews.BaseIdentity(stackDef), stackDef, startedUtc),
+            new(new string('2', 64), SqliteCenteredViews.BaseIdentity(stackDef), 2, startedUtc,
+                LayeredPresentationJson.CreateManifest(preview.Product, null, []), []));
+        var stackCadence = TimeSpan.FromSeconds(30);
+
+        Assert.AreEqual(CameraAgentPresentationImageFreshness.Current,
+            CameraAgentOperatorUiService.ComputeCenteredFreshness(stackView, false, CenteredViewLiveState.Ready, startedUtc.AddSeconds(80), stackCadence));
+        Assert.AreEqual(CameraAgentPresentationImageFreshness.Current,
+            CameraAgentOperatorUiService.ComputeCenteredFreshness(stackView, false, CenteredViewLiveState.Ready, startedUtc.AddSeconds(85), stackCadence));
+        Assert.AreEqual(CameraAgentPresentationImageFreshness.Current,
+            CameraAgentOperatorUiService.ComputeCenteredFreshness(stackView, false, CenteredViewLiveState.Ready, startedUtc.AddSeconds(114), stackCadence));
+        Assert.AreEqual(CameraAgentPresentationImageFreshness.Current,
+            CameraAgentOperatorUiService.ComputeCenteredFreshness(stackView, false, CenteredViewLiveState.Ready, startedUtc.AddSeconds(145), stackCadence));
+        Assert.AreEqual(CameraAgentPresentationImageFreshness.Delayed,
+            CameraAgentOperatorUiService.ComputeCenteredFreshness(stackView, false, CenteredViewLiveState.Ready, startedUtc.AddSeconds(146), stackCadence));
+        Assert.AreEqual(CameraAgentPresentationImageFreshness.Stale,
+            CameraAgentOperatorUiService.ComputeCenteredFreshness(stackView, false, CenteredViewLiveState.Ready, startedUtc.AddSeconds(266), stackCadence));
+
+        // Shared interval resolution falls back cleanly to facts when scheduleRuntime is absent
+        var factCapture = OperatorUiTestData.Capture(captureId) with
+        {
+            Detail = OperatorUiTestData.Capture(captureId).Detail! with
+            {
+                CaptureProfile = new CameraAgentCaptureProfileFacts(3.75, 2.8, 180, "Equidistant", TimeSpan.FromSeconds(30), CaptureCadenceMode.MinimumStartInterval)
+            }
+        };
+        var facts = CameraAgentCurrentSkyFactsProjector.Project(factCapture, ObservingDayCalendar.Utc);
+        Assert.AreEqual(TimeSpan.FromSeconds(30), CameraAgentOperatorUiService.ResolveCenteredExpectedCaptureInterval(null, facts));
+        Assert.IsNull(CameraAgentOperatorUiService.ResolveCenteredExpectedCaptureInterval(null, null));
     }
 
     [TestMethod]
@@ -670,21 +763,29 @@ public sealed partial class CameraAgentOperatorUiServiceTests
 
         using (var command = connection.CreateCommand())
         {
-            command.CommandText = "EXPLAIN QUERY PLAN SELECT base_id FROM processing_centered_view_bases b WHERE b.reference_id = $reference;";
+            command.CommandText = "EXPLAIN QUERY PLAN " + SqliteCenteredViews.ArchiveBasesByReferenceSql;
             command.Parameters.AddWithValue("$reference", Guid.NewGuid());
-            await AssertUsesIndexAsync(command, "ix_processing_centered_view_archive_reference").ConfigureAwait(false);
+            await AssertUsesIndexesWithoutScanAsync(
+                command,
+                "ix_processing_centered_view_archive_reference",
+                "ix_processing_centered_view_revision_order",
+                "ix_processing_centered_view_changes_base").ConfigureAwait(false);
         }
         using (var command = connection.CreateCommand())
         {
-            command.CommandText = "EXPLAIN QUERY PLAN SELECT base_id FROM processing_centered_view_bases b WHERE b.stream_id = $stream AND b.reference_id = $reference;";
+            command.CommandText = "EXPLAIN QUERY PLAN " + SqliteCenteredViews.ArchiveBasesByStreamAndReferenceSql;
             command.Parameters.AddWithValue("$stream", new string('A', 64));
             command.Parameters.AddWithValue("$reference", Guid.NewGuid());
-            await AssertUsesIndexAsync(command, "ix_processing_centered_view_reference").ConfigureAwait(false);
+            await AssertUsesIndexesWithoutScanAsync(
+                command,
+                "ix_processing_centered_view_reference",
+                "ix_processing_centered_view_revision_order",
+                "ix_processing_centered_view_changes_base").ConfigureAwait(false);
         }
 
-        static async Task AssertUsesIndexAsync(
+        static async Task AssertUsesIndexesWithoutScanAsync(
             Microsoft.Data.Sqlite.SqliteCommand command,
-            string expectedIndex)
+            params string[] expectedIndexes)
         {
             using var reader = await command.ExecuteReaderAsync(CancellationToken.None).ConfigureAwait(false);
             var details = new List<string>();
@@ -694,8 +795,11 @@ public sealed partial class CameraAgentOperatorUiServiceTests
             }
             var joined = string.Join(" | ", details);
             StringAssert.Contains(joined, "SEARCH", StringComparison.Ordinal);
-            StringAssert.Contains(joined, expectedIndex, StringComparison.Ordinal);
-            Assert.IsFalse(joined.Contains("SCAN b", StringComparison.Ordinal), $"Unexpected full table scan: {joined}");
+            foreach (var expectedIndex in expectedIndexes)
+            {
+                StringAssert.Contains(joined, expectedIndex, StringComparison.Ordinal);
+            }
+            Assert.IsFalse(joined.Contains("SCAN", StringComparison.Ordinal), $"Unexpected full table scan in query plan: {joined}");
         }
     }
 

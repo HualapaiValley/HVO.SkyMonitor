@@ -104,6 +104,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
     // the archived view. A kind not seen yet follows its profile default.
     private readonly Dictionary<string, bool> _layerVisibility = new(StringComparer.Ordinal);
     private bool _layerVisibilityRead;
+    private string? _layerVisibilityScopeKey;
 
     private enum CaptureChange
     {
@@ -185,7 +186,9 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         await WarmInteropModuleAsync();
-        if (firstRender || (IsCenteredLive && !_layerVisibilityRead && EffectiveLayerVisibilityKey is not null))
+        var modeKnown = IsArchived || !_initialLoading || _presentation is not null ||
+            _centeredDisplay is not null || _centeredLiveContext is not null;
+        if (modeKnown && !_layerVisibilityRead && EffectiveLayerVisibilityKey is not null)
         {
             await LoadLayerVisibilityAsync();
         }
@@ -403,10 +406,18 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
                 }
                 else if (result.IsSuccess && result.Value is not null)
                 {
+                    CancelCenteredPresentationLoad();
                     _centeredLiveContext = null;
                     _centeredDisplay = null;
                     _centeredAstrometryEvidence = null;
                     _centeredAstrometryEvidenceSet = false;
+                    if (_layerVisibilityScopeKey is not null &&
+                        !string.Equals(_layerVisibilityScopeKey, LayerVisibilityKey, StringComparison.Ordinal))
+                    {
+                        _layerVisibility.Clear();
+                        _layerVisibilityRead = false;
+                        _layerVisibilityScopeKey = LayerVisibilityKey;
+                    }
                     var wasLayered = ShowLayeredHero;
                     var previousBaseUrl = ProcessedBaseSlot?.PreviewUrl;
                     _presentation = result.Value.Presentation;
@@ -623,6 +634,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         _deferredLayers = null;
         _accessDenied = true;
         UnsubscribeCenteredPublisher();
+        CancelCenteredPresentationLoad();
         _centeredLiveContext = null;
         _centeredDisplay = null;
         _centeredArchive = null;
@@ -959,6 +971,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         // meanwhile is not. Also ignore if we switched to archive or an incompatible centered base while awaiting.
         if (_layerVisibilityRead || _disposeStarted != 0 || IsCenteredArchived || !string.Equals(EffectiveLayerVisibilityKey, key, StringComparison.Ordinal)) return;
         _layerVisibilityRead = true;
+        _layerVisibilityScopeKey = key;
         var remembered = ParseLayerVisibility(stored);
         foreach (var (kind, visible) in remembered) _layerVisibility[kind] = visible;
         if (remembered.Length == 0 || _layers is null || HasActiveSavedSelection) return;
@@ -973,6 +986,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
     {
         _layerVisibilityRead = true;
         if (IsCenteredArchived || EffectiveLayerVisibilityKey is not { } key) return;
+        _layerVisibilityScopeKey = key;
         try
         {
             if (await GetLayerModuleAsync() is { } module)
@@ -1025,7 +1039,9 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
             ? "Waiting for ready base"
             : ShowCenteredLayeredHero
                 ? $"{SelectedLayerCount} selected"
-                : "Overlays unavailable for this base"
+                : _centeredPresentationLoading || _centeredDisplay.PresentationDeferred
+                    ? "Loading overlays"
+                    : "Overlays unavailable for this base"
         : _layers is null || _presentation?.DisplayCapture?.CaptureId != _layers.CaptureId
             ? "Not retained for this capture"
             : ShowLayeredHero
@@ -1493,6 +1509,10 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
                 if (_layers?.Astrometry is { Solution: null }) await RefreshMeasuredEvidenceAsync();
                 else TryLoadLayers(_runCaptureId);
             }
+            else if (IsCenteredArchived && _centeredDisplay is { View: { } archivedView })
+            {
+                RetryCenteredAstrometryIfTransient(archivedView);
+            }
             Interlocked.Exchange(ref _manualRefreshRequested, 1);
             await RequestRefreshAsync(_lifetime.Token);
             await InvokeAsync(() =>
@@ -1714,6 +1734,15 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         UnsubscribeCenteredPublisher();
+        Interlocked.Increment(ref _centeredPresentationGeneration);
+        _centeredPresentationLoading = false;
+        _centeredPresentationInFlight = null;
+        if (_centeredPresentationCancellation is not null)
+        {
+            await _centeredPresentationCancellation.CancelAsync().ConfigureAwait(false);
+            _centeredPresentationCancellation.Dispose();
+            _centeredPresentationCancellation = null;
+        }
         if (_lifetime is null || Interlocked.Exchange(ref _disposeStarted, 1) != 0)
         {
             return;

@@ -46,17 +46,27 @@ public sealed partial class GalleryDetail : SiteTimeComponent, IAsyncDisposable
     public string? LegacyRevisionId { get; set; }
 
     [Parameter, SupplyParameterFromQuery(Name = "selection")]
-    public Guid? SelectionId { get; set; }
+    public string? SelectionId { get; set; }
 
     private string? EffectiveBaseId => !string.IsNullOrWhiteSpace(BaseId) ? BaseId : LegacyBaseId;
     private string? EffectiveRevisionId => !string.IsNullOrWhiteSpace(RevisionId) ? RevisionId : LegacyRevisionId;
 
-    private CameraAgentCenteredArchiveRequest? BuildCenteredArchiveRequest() =>
-        !string.IsNullOrWhiteSpace(EffectiveBaseId) ||
-        !string.IsNullOrWhiteSpace(EffectiveRevisionId) ||
-        SelectionId is not null
-            ? new CameraAgentCenteredArchiveRequest(EffectiveBaseId, EffectiveRevisionId, SelectionId)
+    private CameraAgentCenteredArchiveRequest? BuildCenteredArchiveRequest()
+    {
+        Guid? parsedSelection = null;
+        if (!string.IsNullOrWhiteSpace(SelectionId))
+        {
+            parsedSelection = Guid.TryParse(SelectionId.Trim(), out var parsed)
+                ? parsed
+                : Guid.Empty;
+        }
+
+        return !string.IsNullOrWhiteSpace(EffectiveBaseId) ||
+            !string.IsNullOrWhiteSpace(EffectiveRevisionId) ||
+            parsedSelection is not null
+            ? new CameraAgentCenteredArchiveRequest(EffectiveBaseId, EffectiveRevisionId, parsedSelection)
             : null;
+    }
 
     private string BackUrl
     {

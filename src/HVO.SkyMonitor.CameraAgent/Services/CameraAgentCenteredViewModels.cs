@@ -57,6 +57,11 @@ public sealed record CameraAgentCenteredArchiveView(
     string? SelectionError,
     Uri? PreviewUrl);
 
+internal sealed record CameraAgentCenteredPresentationRead(
+    CameraAgentLayeredPresentationStatus Status,
+    CameraAgentLayeredPresentation? Presentation,
+    string? Reason);
+
 internal sealed record CameraAgentCenteredLiveView(
     CenteredViewLiveContext Context,
     CenteredLiveMode Mode,
@@ -66,7 +71,11 @@ internal sealed record CameraAgentCenteredLiveView(
     CameraAgentLayeredPresentationStatus PresentationStatus,
     string? PresentationReason,
     bool RetainedFromPriorRun,
-    Uri? PreviewUrl);
+    Uri? PreviewUrl)
+{
+    public bool PresentationDeferred { get; init; }
+    public TimeSpan? ExpectedCaptureInterval { get; init; }
+}
 
 internal static class CameraAgentCenteredViewProjection
 {

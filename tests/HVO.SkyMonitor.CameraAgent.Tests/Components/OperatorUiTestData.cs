@@ -289,6 +289,7 @@ internal sealed class TestOperatorUiService : ICameraAgentOperatorUiService, ICa
     }
     internal Func<CancellationToken, ValueTask<OperatorUiResult<CameraAgentCurrentSkyView>>>? CurrentSkyHandler { get; set; }
     internal Func<CenteredLiveMode, CancellationToken, ValueTask<OperatorUiResult<CameraAgentCurrentSkyView>>>? CenteredCurrentSkyHandler { get; set; }
+    internal Func<string, string, CancellationToken, ValueTask<OperatorUiResult<CameraAgentCenteredPresentationRead>>>? CenteredPresentationHandler { get; set; }
     internal Func<Guid, CameraAgentCenteredArchiveRequest?, CancellationToken, ValueTask<OperatorUiResult<CameraAgentCaptureDetailView>>>? CenteredDetailViewHandler { get; set; }
     internal Func<Guid, string, string, IReadOnlyList<string>, CancellationToken, ValueTask<OperatorUiResult<CenteredViewSavedSelection>>>? SaveCenteredSelectionHandler { get; set; }
     internal Func<CameraAgentGalleryCalendarQuery, CancellationToken, ValueTask<OperatorUiResult<CameraAgentGalleryCalendar>>> CalendarHandler { get; set; } =
@@ -306,6 +307,15 @@ internal sealed class TestOperatorUiService : ICameraAgentOperatorUiService, ICa
         => CenteredCurrentSkyHandler is not null
             ? CenteredCurrentSkyHandler(mode, cancellationToken)
             : GetCurrentSkyViewAsync(cancellationToken);
+
+    public ValueTask<OperatorUiResult<CameraAgentCenteredPresentationRead>> GetCenteredPresentationAsync(
+        string baseId,
+        string revisionId,
+        CancellationToken cancellationToken)
+        => CenteredPresentationHandler is not null
+            ? CenteredPresentationHandler(baseId, revisionId, cancellationToken)
+            : ValueTask.FromResult(OperatorUiResult<CameraAgentCenteredPresentationRead>.Success(
+                new(CameraAgentLayeredPresentationStatus.NotRetained, null, null)));
 
     public ValueTask<OperatorUiResult<CameraAgentCaptureDetailView>> GetCaptureDetailViewAsync(
         Guid captureId,

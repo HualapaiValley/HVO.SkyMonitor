@@ -10,6 +10,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
+using HVO.SkyMonitor.Common.Configuration;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.TestSupport;
@@ -94,11 +95,12 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         }
 
         var now = DateTimeOffset.UtcNow;
-        var raw101 = await AddCenteredRawAsync(host.Root, journal, layout, pixels, now.AddSeconds(-10), token).ConfigureAwait(false);
-        var raw102 = await AddCenteredRawAsync(host.Root, journal, layout, pixels, now.AddSeconds(-8), token).ConfigureAwait(false);
-        var raw103 = await AddCenteredRawAsync(host.Root, journal, layout, pixels, now.AddSeconds(-6), token).ConfigureAwait(false);
-        var raw104 = await AddCenteredRawAsync(host.Root, journal, layout, pixels, now.AddSeconds(-4), token).ConfigureAwait(false);
-        var raw105 = await AddCenteredRawAsync(host.Root, journal, layout, pixels, now.AddSeconds(-2), token).ConfigureAwait(false);
+        var raw101 = await AddCenteredRawAsync(host.Root, journal, layout, pixels, now.AddSeconds(-12), token).ConfigureAwait(false);
+        var raw102 = await AddCenteredRawAsync(host.Root, journal, layout, pixels, now.AddSeconds(-10), token).ConfigureAwait(false);
+        var raw103 = await AddCenteredRawAsync(host.Root, journal, layout, pixels, now.AddSeconds(-8), token).ConfigureAwait(false);
+        var raw104 = await AddCenteredRawAsync(host.Root, journal, layout, pixels, now.AddSeconds(-6), token).ConfigureAwait(false);
+        var raw105 = await AddCenteredRawAsync(host.Root, journal, layout, pixels, now.AddSeconds(-4), token).ConfigureAwait(false);
+        var raw106 = await AddCenteredRawAsync(host.Root, journal, layout, pixels, now.AddSeconds(-2), token).ConfigureAwait(false);
 
         var stream = new CenteredViewStream(new(raw101.Capture.AgentId, "camera-1"), Guid.NewGuid(), "gen-1923-browser");
         controlledLookup.Stream = stream;
@@ -112,6 +114,7 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         var input103 = Input(raw103);
         var input104 = Input(raw104);
         var input105 = Input(raw105);
+        var input106 = Input(raw106);
 
         // Publish Single 101 and select live (Warming)
         var single101 = await producer.PublishSingleAsync(stream, Guid.NewGuid(), input101.Raw.Capture.CaptureSequence,
@@ -122,156 +125,247 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
 
         await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
         await using var diagnostics = new PlaywrightDiagnostics(browser, TestContext);
-        await using var context = await diagnostics.NewContextAsync(new()
-        {
-            BaseURL = host.BaseAddress.ToString(),
-            ColorScheme = ColorScheme.Dark,
-            ViewportSize = new() { Width = 1440, Height = 1000 }
-        }).ConfigureAwait(false);
-        var page = await context.NewPageAsync().ConfigureAwait(false);
-        await LoginAsync(page, CameraAgentKestrelFixture.OwnerEmail, CameraAgentKestrelFixture.OwnerPassword).ConfigureAwait(false);
-        await page.GotoAsync("/").ConfigureAwait(false);
-        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
+        string savedHref;
+        string stack103LastLiveRevId;
+        string stack103EnrichedRevId;
+        CenteredView stack103;
+        CenteredView stack104;
 
-        // 1. Single 101 displays immediately with verified natural dimensions
-        await page.Locator($"[data-centered-reference='#{raw101.Capture.CaptureSequence}']")
-            .WaitForAsync().ConfigureAwait(false);
-        await page.Locator(".sky-layer-canvas--verified").WaitForAsync().ConfigureAwait(false);
-        Assert.IsTrue(await page.EvaluateAsync<bool>(
-            $"() => {{ const img = document.querySelector('.sky-layer-canvas > img'); return !!img && img.complete && img.naturalWidth === {width} && img.naturalHeight === {height}; }}")
-            .ConfigureAwait(false));
-
-        // 2. Warm-up publisher wakes advance ready singles 102 and 103 immediately without 15s refresh throttle!
-        var single102 = await producer.PublishSingleAsync(stream, Guid.NewGuid(), input102.Raw.Capture.CaptureSequence,
-            new(input102, LinearExposureDisposition.Unsupported, 1, null, null, "raw-fallback"), new(), token).ConfigureAwait(false);
-        Assert.IsNotNull(single102);
-        controlledLookup.SetLive(stream, input102.Raw, CenteredViewLiveState.Warming);
-        Assert.IsNotNull(await views.SelectLiveAsync(stream, single102.Base.BaseId, token).ConfigureAwait(false));
-        await page.Locator($"[data-centered-reference='#{raw102.Capture.CaptureSequence}']")
-            .WaitForAsync().ConfigureAwait(false);
-
-        var single103 = await producer.PublishSingleAsync(stream, Guid.NewGuid(), input103.Raw.Capture.CaptureSequence,
-            new(input103, LinearExposureDisposition.Unsupported, 1, null, null, "raw-fallback"), new(), token).ConfigureAwait(false);
-        Assert.IsNotNull(single103);
-        controlledLookup.SetLive(stream, input103.Raw, CenteredViewLiveState.Warming);
-        Assert.IsNotNull(await views.SelectLiveAsync(stream, single103.Base.BaseId, token).ConfigureAwait(false));
-        await page.Locator($"[data-centered-reference='#{raw103.Capture.CaptureSequence}']")
-            .WaitForAsync().ConfigureAwait(false);
-
-        // 3. Switch in-place to registered stack 103, then publish overlay-only revision on SAME base
-        var exp103 = single103.Base.Definition.Reference with { Linear = new(Guid.NewGuid(), new string('A', 64), new string('B', 64)) };
-        var exp104 = new CenteredViewExposure(input104, Guid.NewGuid(), new(Guid.NewGuid(), new string('C', 64), new string('D', 64)));
-        var exp105 = new CenteredViewExposure(input105, Guid.NewGuid(), new(Guid.NewGuid(), new string('E', 64), new string('F', 64)));
-
-        var stack103 = await RegisterStackAsync(exp103, exp105).ConfigureAwait(false);
-        var stack104 = await RegisterStackAsync(exp104, exp105).ConfigureAwait(false);
-
-        controlledLookup.SetLive(stream, input105.Raw, CenteredViewLiveState.Ready);
-        Assert.IsNotNull(await views.SelectLiveAsync(stream, stack103.Base.BaseId, token).ConfigureAwait(false));
-        await page.Locator($".sky-layer-workspace[data-centered-base='{stack103.Base.BaseId}']").WaitForAsync().ConfigureAwait(false);
-        await page.Locator(".sky-layer-canvas--verified").WaitForAsync().ConfigureAwait(false);
-
-        // Pin the exact DOM <img> node and its src before overlay-only revision arrives!
-        var baseImgSrc = await page.EvaluateAsync<string?>(
-            "() => { const img = document.querySelector('.sky-layer-canvas > img'); window.__hvoBaseImg = img; return img?.getAttribute('src') ?? null; }")
-            .ConfigureAwait(false);
-        Assert.IsNotNull(baseImgSrc);
-        StringAssert.Contains(baseImgSrc, stack103.Base.BaseId, StringComparison.Ordinal);
-        Assert.IsFalse(baseImgSrc.Contains(stack103.Revision.RevisionId, StringComparison.Ordinal));
-
-        // Publish star-annotations optional layer on stack103 -> SVG updates WITHOUT remounting <img> or changing src!
-        await PublishLayerAsync(input103, stack103.Base.BaseId, CenteredViewLayerScope.Reference, "star-annotations", 20, true, 1).ConfigureAwait(false);
-        var starCheckbox = page.Locator(".centered-layer-controls [data-layer-kind='star-annotations'] input:not(:disabled)");
-        await starCheckbox.WaitForAsync().ConfigureAwait(false);
-        await page.Locator(".sky-layer-canvas--verified").WaitForAsync().ConfigureAwait(false);
-        Assert.IsTrue(await page.EvaluateAsync<bool>(
-            "() => window.__hvoBaseImg === document.querySelector('.sky-layer-canvas > img')").ConfigureAwait(false),
-            "Overlay-only revision must not remount the base <img> element.");
-        Assert.AreEqual(baseImgSrc,
-            await page.Locator(".sky-layer-canvas > img").GetAttributeAsync("src").ConfigureAwait(false));
-
-        // Interactive overlay toggle hides/shows the SVG group in-browser
-        Assert.IsTrue(await starCheckbox.IsCheckedAsync().ConfigureAwait(false));
-        await starCheckbox.UncheckAsync().ConfigureAwait(false);
-        Assert.AreEqual("none", await page.EvaluateAsync<string>(
-            "() => document.querySelector(\".sky-layer-overlay svg g[data-layer-kind='star-annotations']\")?.style.display ?? ''")
-            .ConfigureAwait(false));
-
-        // 4. Advance live to stack104; late trail on 105 enriches 103 in archive WITHOUT replacing live 104!
-        Assert.IsNotNull(await views.SelectLiveAsync(stream, stack104.Base.BaseId, token).ConfigureAwait(false));
-        await page.Locator("button.refresh-link").ClickAsync().ConfigureAwait(false);
-        await page.Locator($".sky-layer-workspace[data-centered-base='{stack104.Base.BaseId}']").WaitForAsync().ConfigureAwait(false);
-
-        await PublishContributorTrailAsync(input105).ConfigureAwait(false);
-        await page.Locator("button.refresh-link").ClickAsync().ConfigureAwait(false);
-        await page.Locator($".sky-layer-workspace[data-centered-base='{stack104.Base.BaseId}']").WaitForAsync().ConfigureAwait(false);
-        Assert.AreEqual($"#{raw104.Capture.CaptureSequence}",
-            await page.Locator("[data-centered-reference]").InnerTextAsync().ConfigureAwait(false));
-
-        // 5. Archive reopen of capture 103: conflicting browser localStorage must NOT override archive visibility!
-        await page.EvaluateAsync("() => { localStorage.setItem('hvo.archivedCapture.layerVisibility.v1:/', JSON.stringify({ 'star-annotations': false })); }")
-            .ConfigureAwait(false);
-        await page.GotoAsync($"/gallery/{raw103.Capture.CaptureId:D}").ConfigureAwait(false);
-        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
-        await page.Locator(".centered-archive-bases a").First.WaitForAsync().ConfigureAwait(false);
-        Assert.AreEqual(2, await page.Locator(".centered-archive-bases a").CountAsync().ConfigureAwait(false));
-        // Default opens last-live stack 103 with star-annotations ON (archive default, ignoring conflicting localStorage)
-        var archiveStarToggle = page.Locator(".centered-layer-controls [data-layer-kind='star-annotations'] input:not(:disabled)");
-        await archiveStarToggle.WaitForAsync().ConfigureAwait(false);
-        Assert.IsTrue(await archiveStarToggle.IsCheckedAsync().ConfigureAwait(false));
-
-        // Later archive enrichment revision is distinctly labelled and clickable
-        var enrichmentLink = page.Locator(".centered-archive-revisions a[data-revision-role='LaterArchiveEnrichment']");
-        await enrichmentLink.WaitForAsync().ConfigureAwait(false);
-        await enrichmentLink.ClickAsync().ConfigureAwait(false);
-        await page.Locator(".centered-layer-controls [data-layer-kind='MeasuredTransientTrails'] input:not(:disabled)").WaitForAsync().ConfigureAwait(false);
-
-        // Turn off star-annotations, save personal view selection, and reopen in a FRESH context with conflicting localStorage!
-        await page.Locator(".centered-layer-controls [data-layer-kind='star-annotations'] input:not(:disabled)").UncheckAsync().ConfigureAwait(false);
-        await page.Locator(".save-centered-selection").ClickAsync().ConfigureAwait(false);
-        var savedHref = await page.Locator(".centered-save-result a").GetAttributeAsync("href").ConfigureAwait(false);
-        Assert.IsNotNull(savedHref);
-        StringAssert.Contains(savedHref, "?selection=", StringComparison.Ordinal);
-
-        await using (var freshContext = await diagnostics.NewContextAsync(new()
+        await using (var context = await diagnostics.NewContextAsync(new()
         {
             BaseURL = host.BaseAddress.ToString(),
             ColorScheme = ColorScheme.Dark,
             ViewportSize = new() { Width = 1440, Height = 1000 }
         }).ConfigureAwait(false))
         {
-            var freshPage = await freshContext.NewPageAsync().ConfigureAwait(false);
-            await LoginAsync(freshPage, CameraAgentKestrelFixture.OwnerEmail, CameraAgentKestrelFixture.OwnerPassword).ConfigureAwait(false);
-            await freshPage.EvaluateAsync("() => { localStorage.setItem('hvo.archivedCapture.layerVisibility.v1:/', JSON.stringify({ 'star-annotations': true, 'MeasuredTransientTrails': false })); }")
+            var page = await context.NewPageAsync().ConfigureAwait(false);
+            await LoginAsync(page, CameraAgentKestrelFixture.OwnerEmail, CameraAgentKestrelFixture.OwnerPassword).ConfigureAwait(false);
+            await page.GotoAsync("/").ConfigureAwait(false);
+            await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
+
+            // 1. Single 101 displays immediately with verified natural dimensions
+            await page.Locator($"[data-centered-reference='#{raw101.Capture.CaptureSequence}']")
+                .WaitForAsync().ConfigureAwait(false);
+            await page.Locator(".sky-layer-canvas--verified").WaitForAsync().ConfigureAwait(false);
+            Assert.IsTrue(await page.EvaluateAsync<bool>(
+                $"() => {{ const img = document.querySelector('.sky-layer-canvas > img'); return !!img && img.complete && img.naturalWidth === {width} && img.naturalHeight === {height}; }}")
+                .ConfigureAwait(false));
+
+            // 2. Warm-up publisher wakes advance ready singles 102 and 103 immediately without 15s refresh throttle!
+            var single102 = await producer.PublishSingleAsync(stream, Guid.NewGuid(), input102.Raw.Capture.CaptureSequence,
+                new(input102, LinearExposureDisposition.Unsupported, 1, null, null, "raw-fallback"), new(), token).ConfigureAwait(false);
+            Assert.IsNotNull(single102);
+            controlledLookup.SetLive(stream, input102.Raw, CenteredViewLiveState.Warming);
+            Assert.IsNotNull(await views.SelectLiveAsync(stream, single102.Base.BaseId, token).ConfigureAwait(false));
+            await page.Locator($"[data-centered-reference='#{raw102.Capture.CaptureSequence}']")
+                .WaitForAsync().ConfigureAwait(false);
+
+            var single103 = await producer.PublishSingleAsync(stream, Guid.NewGuid(), input103.Raw.Capture.CaptureSequence,
+                new(input103, LinearExposureDisposition.Unsupported, 1, null, null, "raw-fallback"), new(), token).ConfigureAwait(false);
+            Assert.IsNotNull(single103);
+            controlledLookup.SetLive(stream, input103.Raw, CenteredViewLiveState.Warming);
+            Assert.IsNotNull(await views.SelectLiveAsync(stream, single103.Base.BaseId, token).ConfigureAwait(false));
+            await page.Locator($"[data-centered-reference='#{raw103.Capture.CaptureSequence}']")
+                .WaitForAsync().ConfigureAwait(false);
+
+            // 3. Frame 104 arrives -> hold single 103 while acquisition head moves to 104 and state is Building stack!
+            controlledLookup.SetLive(stream, input104.Raw, CenteredViewLiveState.Building);
+            await page.Locator("button.refresh-link").ClickAsync().ConfigureAwait(false);
+            await page.Locator($"[data-centered-head='#{raw104.Capture.CaptureSequence}']").WaitForAsync().ConfigureAwait(false);
+            Assert.AreEqual($"#{raw103.Capture.CaptureSequence}",
+                await page.Locator("[data-centered-reference]").InnerTextAsync().ConfigureAwait(false));
+            Assert.AreEqual("Building stack",
+                await page.Locator("[data-centered-state]").GetAttributeAsync("data-centered-state").ConfigureAwait(false));
+            Assert.AreEqual("1 frame (single)",
+                await page.Locator("[data-centered-contributors]").InnerTextAsync().ConfigureAwait(false));
+
+            // 4. Frame 105 arrives -> switch in-place to 5-frame registered stack centered on 103, then publish overlay-only revision on SAME base
+            var exp101 = single101.Base.Definition.Reference with { Linear = new(Guid.NewGuid(), new string('1', 64), new string('2', 64)) };
+            var exp102 = single102.Base.Definition.Reference with { Linear = new(Guid.NewGuid(), new string('3', 64), new string('4', 64)) };
+            var exp103 = single103.Base.Definition.Reference with { Linear = new(Guid.NewGuid(), new string('A', 64), new string('B', 64)) };
+            var exp104 = new CenteredViewExposure(input104, Guid.NewGuid(), new(Guid.NewGuid(), new string('C', 64), new string('D', 64)));
+            var exp105 = new CenteredViewExposure(input105, Guid.NewGuid(), new(Guid.NewGuid(), new string('E', 64), new string('F', 64)));
+            var exp106 = new CenteredViewExposure(input106, Guid.NewGuid(), new(Guid.NewGuid(), new string('9', 64), new string('0', 64)));
+
+            stack103 = await RegisterStackAsync(exp103, [exp101, exp102, exp103, exp104, exp105]).ConfigureAwait(false);
+            stack104 = await RegisterStackAsync(exp104, [exp102, exp103, exp104, exp105, exp106]).ConfigureAwait(false);
+
+            controlledLookup.SetLive(stream, input105.Raw, CenteredViewLiveState.Ready);
+            Assert.IsNotNull(await views.SelectLiveAsync(stream, stack103.Base.BaseId, token).ConfigureAwait(false));
+            await page.Locator($".sky-layer-workspace[data-centered-base='{stack103.Base.BaseId}']").WaitForAsync().ConfigureAwait(false);
+            await page.Locator(".sky-layer-canvas--verified").WaitForAsync().ConfigureAwait(false);
+            Assert.AreEqual($"#{raw103.Capture.CaptureSequence}",
+                await page.Locator("[data-centered-reference]").InnerTextAsync().ConfigureAwait(false));
+            Assert.AreEqual($"#{raw105.Capture.CaptureSequence}",
+                await page.Locator("[data-centered-head]").InnerTextAsync().ConfigureAwait(false));
+            Assert.AreEqual("5 frames",
+                await page.Locator("[data-centered-contributors]").InnerTextAsync().ConfigureAwait(false));
+            Assert.AreEqual("Ready",
+                await page.Locator("[data-centered-state]").GetAttributeAsync("data-centered-state").ConfigureAwait(false));
+
+            // Pin the exact DOM <img> node and its src before overlay-only revision arrives!
+            var baseImgSrc = await page.EvaluateAsync<string?>(
+                "() => { const img = document.querySelector('.sky-layer-canvas > img'); window.__hvoBaseImg = img; return img?.getAttribute('src') ?? null; }")
                 .ConfigureAwait(false);
-            await freshPage.GotoAsync(savedHref).ConfigureAwait(false);
-            await WaitForInteractiveShellAsync(freshPage).ConfigureAwait(false);
-            await freshPage.Locator(".centered-saved-selection").WaitForAsync().ConfigureAwait(false);
-            await freshPage.Locator(".sky-layer-canvas--verified").WaitForAsync().ConfigureAwait(false);
-            Assert.IsFalse(await freshPage.Locator(".centered-layer-controls [data-layer-kind='star-annotations'] input").IsCheckedAsync().ConfigureAwait(false));
-            Assert.IsTrue(await freshPage.Locator(".centered-layer-controls [data-layer-kind='MeasuredTransientTrails'] input").IsCheckedAsync().ConfigureAwait(false));
+            Assert.IsNotNull(baseImgSrc);
+            StringAssert.Contains(baseImgSrc, stack103.Base.BaseId, StringComparison.Ordinal);
+            Assert.IsFalse(baseImgSrc.Contains(stack103.Revision.RevisionId, StringComparison.Ordinal));
+
+            // Publish star-annotations optional layer on stack103 -> SVG updates WITHOUT remounting <img> or changing src!
+            var stack103WithStars = await PublishLayerAsync(input103, stack103.Base.BaseId, CenteredViewLayerScope.Reference, "star-annotations", 20, true, 1).ConfigureAwait(false);
+            Assert.IsNotNull(stack103WithStars);
+            stack103LastLiveRevId = stack103WithStars.Revision.RevisionId;
+            var starCheckbox = page.Locator(".centered-layer-controls [data-layer-kind='star-annotations'] input:not(:disabled)");
+            await starCheckbox.WaitForAsync().ConfigureAwait(false);
+            await page.Locator(".sky-layer-canvas--verified").WaitForAsync().ConfigureAwait(false);
+            Assert.IsTrue(await page.EvaluateAsync<bool>(
+                "() => window.__hvoBaseImg === document.querySelector('.sky-layer-canvas > img')").ConfigureAwait(false),
+                "Overlay-only revision must not remount the base <img> element.");
+            Assert.AreEqual(baseImgSrc,
+                await page.Locator(".sky-layer-canvas > img").GetAttributeAsync("src").ConfigureAwait(false));
+
+            // Interactive overlay toggle hides/shows the SVG group in-browser
+            Assert.IsTrue(await starCheckbox.IsCheckedAsync().ConfigureAwait(false));
+            await starCheckbox.UncheckAsync().ConfigureAwait(false);
+            Assert.AreEqual("none", await page.EvaluateAsync<string>(
+                "() => document.querySelector(\".sky-layer-overlay svg g[data-layer-kind='star-annotations']\")?.style.display ?? ''")
+                .ConfigureAwait(false));
+
+            // 5. Frame 106 arrives -> advance live to 5-frame stack104; late trail on 105 enriches 103 in archive WITHOUT replacing live 104!
+            controlledLookup.SetLive(stream, input106.Raw, CenteredViewLiveState.Ready);
+            Assert.IsNotNull(await views.SelectLiveAsync(stream, stack104.Base.BaseId, token).ConfigureAwait(false));
+            await page.Locator("button.refresh-link").ClickAsync().ConfigureAwait(false);
+            await page.Locator($".sky-layer-workspace[data-centered-base='{stack104.Base.BaseId}']").WaitForAsync().ConfigureAwait(false);
+            Assert.AreEqual($"#{raw104.Capture.CaptureSequence}",
+                await page.Locator("[data-centered-reference]").InnerTextAsync().ConfigureAwait(false));
+            Assert.AreEqual($"#{raw106.Capture.CaptureSequence}",
+                await page.Locator("[data-centered-head]").InnerTextAsync().ConfigureAwait(false));
+            Assert.AreEqual("5 frames",
+                await page.Locator("[data-centered-contributors]").InnerTextAsync().ConfigureAwait(false));
+
+            await PublishContributorTrailAsync(input105).ConfigureAwait(false);
+            await page.Locator("button.refresh-link").ClickAsync().ConfigureAwait(false);
+            await page.Locator($".sky-layer-workspace[data-centered-base='{stack104.Base.BaseId}']").WaitForAsync().ConfigureAwait(false);
+            Assert.AreEqual($"#{raw104.Capture.CaptureSequence}",
+                await page.Locator("[data-centered-reference]").InnerTextAsync().ConfigureAwait(false));
+
+            // 6. Archive reopen of capture 103: conflicting browser localStorage must NOT override archive visibility!
+            await page.EvaluateAsync("() => { localStorage.setItem('hvo.archivedCapture.layerVisibility.v1:/', JSON.stringify({ 'star-annotations': false })); }")
+                .ConfigureAwait(false);
+            await page.GotoAsync($"/gallery/{raw103.Capture.CaptureId:D}").ConfigureAwait(false);
+            await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
+            await page.Locator(".centered-archive-bases a").First.WaitForAsync().ConfigureAwait(false);
+            Assert.AreEqual(2, await page.Locator(".centered-archive-bases a").CountAsync().ConfigureAwait(false));
+            var archiveStarToggle = page.Locator(".centered-layer-controls [data-layer-kind='star-annotations'] input:not(:disabled)");
+            await archiveStarToggle.WaitForAsync().ConfigureAwait(false);
+            Assert.IsTrue(await archiveStarToggle.IsCheckedAsync().ConfigureAwait(false));
+            Assert.AreEqual(stack103LastLiveRevId,
+                await page.Locator(".sky-layer-workspace").GetAttributeAsync("data-centered-revision").ConfigureAwait(false));
+
+            // Later archive enrichment revision is distinctly labelled and clickable
+            var enrichmentLink = page.Locator(".centered-archive-revisions a[data-revision-role='LaterArchiveEnrichment']");
+            await enrichmentLink.WaitForAsync().ConfigureAwait(false);
+            stack103EnrichedRevId = await enrichmentLink.GetAttributeAsync("data-revision-id").ConfigureAwait(false)
+                ?? throw new AssertFailedException("Expected enriched revision id.");
+            await enrichmentLink.ClickAsync().ConfigureAwait(false);
+            await page.Locator(".centered-layer-controls [data-layer-kind='MeasuredTransientTrails'] input:not(:disabled)").WaitForAsync().ConfigureAwait(false);
+
+            // Turn off star-annotations, save personal view selection
+            await page.Locator(".centered-layer-controls [data-layer-kind='star-annotations'] input:not(:disabled)").UncheckAsync().ConfigureAwait(false);
+            await page.Locator(".save-centered-selection").ClickAsync().ConfigureAwait(false);
+            savedHref = await page.Locator(".centered-save-result a").GetAttributeAsync("href").ConfigureAwait(false)
+                ?? throw new AssertFailedException("Expected saved personal selection href.");
+            StringAssert.Contains(savedHref, "?selection=", StringComparison.Ordinal);
         }
 
-        // 6. Explicit mismatched target fails closed without substituting another base
-        await page.GotoAsync($"/gallery/{raw103.Capture.CaptureId:D}?base={stack104.Base.BaseId}&revision={stack104.Revision.RevisionId}")
-            .ConfigureAwait(false);
-        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
-        await page.Locator(".centered-selection-error").WaitForAsync().ConfigureAwait(false);
-        Assert.AreEqual(0, await page.Locator(".sky-layer-workspace").CountAsync().ConfigureAwait(false));
+        // 7. Mutate site/default settings on disk AND restart the Kestrel host!
+        //    Verify exact archive & saved-selection reopen across host restart and site/default preference changes!
+        await host.RunWithHostStoppedAsync(async root =>
+        {
+            var settingsJson = JsonSerializer.Serialize(new
+            {
+                CameraAgent = new
+                {
+                    CurrentSky = new { RefreshSeconds = 60 }
+                }
+            });
+            await File.WriteAllTextAsync(Path.Combine(root, DeploymentLocalSettings.FileName), settingsJson, token)
+                .ConfigureAwait(false);
+        }).ConfigureAwait(false);
+
+        await using (var restartedContext = await diagnostics.NewContextAsync(new()
+        {
+            BaseURL = host.BaseAddress.ToString(),
+            ColorScheme = ColorScheme.Dark,
+            ViewportSize = new() { Width = 1440, Height = 1000 }
+        }).ConfigureAwait(false))
+        {
+            var restartedPage = await restartedContext.NewPageAsync().ConfigureAwait(false);
+            await LoginAsync(restartedPage, CameraAgentKestrelFixture.OwnerEmail, CameraAgentKestrelFixture.OwnerPassword).ConfigureAwait(false);
+            // Seed conflicting browser default preferences for BOTH archive and live keys
+            await restartedPage.EvaluateAsync(
+                "() => { localStorage.setItem('hvo.archivedCapture.layerVisibility.v1:/', JSON.stringify({ 'star-annotations': true, 'MeasuredTransientTrails': false })); localStorage.setItem('hvo.currentSky.layerVisibility.v1:/', JSON.stringify({ 'star-annotations': true, 'MeasuredTransientTrails': false })); }")
+                .ConfigureAwait(false);
+
+            // Reopen saved personal selection after restart -> exact pinned base, revision, and saved layers!
+            await restartedPage.GotoAsync(savedHref).ConfigureAwait(false);
+            await WaitForInteractiveShellAsync(restartedPage).ConfigureAwait(false);
+            await restartedPage.Locator(".centered-saved-selection").WaitForAsync().ConfigureAwait(false);
+            await restartedPage.Locator(".sky-layer-canvas--verified").WaitForAsync().ConfigureAwait(false);
+            Assert.AreEqual(stack103.Base.BaseId,
+                await restartedPage.Locator(".sky-layer-workspace").GetAttributeAsync("data-centered-base").ConfigureAwait(false));
+            Assert.AreEqual(stack103EnrichedRevId,
+                await restartedPage.Locator(".sky-layer-workspace").GetAttributeAsync("data-centered-revision").ConfigureAwait(false));
+            Assert.IsFalse(await restartedPage.Locator(".centered-layer-controls [data-layer-kind='star-annotations'] input").IsCheckedAsync().ConfigureAwait(false));
+            Assert.IsTrue(await restartedPage.Locator(".centered-layer-controls [data-layer-kind='MeasuredTransientTrails'] input").IsCheckedAsync().ConfigureAwait(false));
+
+            // Plain archive reopen after restart -> exact last-live base/revision without drifting to browser prefs!
+            await restartedPage.GotoAsync($"/gallery/{raw103.Capture.CaptureId:D}").ConfigureAwait(false);
+            await WaitForInteractiveShellAsync(restartedPage).ConfigureAwait(false);
+            await restartedPage.Locator(".sky-layer-canvas--verified").WaitForAsync().ConfigureAwait(false);
+            Assert.AreEqual(stack103.Base.BaseId,
+                await restartedPage.Locator(".sky-layer-workspace").GetAttributeAsync("data-centered-base").ConfigureAwait(false));
+            Assert.AreEqual(stack103LastLiveRevId,
+                await restartedPage.Locator(".sky-layer-workspace").GetAttributeAsync("data-centered-revision").ConfigureAwait(false));
+            Assert.IsTrue(await restartedPage.Locator(".centered-layer-controls [data-layer-kind='star-annotations'] input").IsCheckedAsync().ConfigureAwait(false));
+
+            // Explicit mismatched target fails closed without substituting another base
+            await restartedPage.GotoAsync($"/gallery/{raw103.Capture.CaptureId:D}?base={stack104.Base.BaseId}&revision={stack104.Revision.RevisionId}")
+                .ConfigureAwait(false);
+            await WaitForInteractiveShellAsync(restartedPage).ConfigureAwait(false);
+            await restartedPage.Locator(".centered-selection-error").WaitForAsync().ConfigureAwait(false);
+            Assert.AreEqual(0, await restartedPage.Locator(".sky-layer-workspace").CountAsync().ConfigureAwait(false));
+
+            // Malformed ?selection=not-a-guid displays explicit unavailable notice without crashing Blazor
+            await restartedPage.GotoAsync($"/gallery/{raw103.Capture.CaptureId:D}?selection=not-a-guid")
+                .ConfigureAwait(false);
+            await WaitForInteractiveShellAsync(restartedPage).ConfigureAwait(false);
+            await restartedPage.Locator(".centered-selection-error").WaitForAsync().ConfigureAwait(false);
+            Assert.AreEqual(0, await restartedPage.Locator(".sky-layer-workspace").CountAsync().ConfigureAwait(false));
+        }
 
         await diagnostics.CompleteAsync().ConfigureAwait(false);
         _ = publisher;
 
-        async ValueTask<CenteredView> RegisterStackAsync(CenteredViewExposure reference, CenteredViewExposure contributor)
+        async ValueTask<CenteredView> RegisterStackAsync(CenteredViewExposure reference, IReadOnlyList<CenteredViewExposure> contributors)
         {
-            var sourceEvidence = new CenteredStackSourceEvidence(2, contributor.Capture.CaptureId,
-                CenteredRegistrationReason.Contributed, CenteredRegistrationMethod.VerifiedCentroidSimilarity,
-                new ImageSimilarity(1, 0, 1.0, -1.0), 100);
-            CenteredViewContributor[] members =
-            [
-                new(reference, nameof(CenteredRegistrationMethod.ReferenceIdentity), JsonSerializer.SerializeToElement(new { })),
-                new(contributor, nameof(CenteredRegistrationMethod.VerifiedCentroidSimilarity), JsonSerializer.SerializeToElement(sourceEvidence, CenteredAcceptanceJson))
-            ];
+            var members = new CenteredViewContributor[contributors.Count];
+            for (var index = 0; index < contributors.Count; index++)
+            {
+                var contributor = contributors[index];
+                if (contributor.Capture.CaptureId == reference.Capture.CaptureId)
+                {
+                    members[index] = new(contributor, nameof(CenteredRegistrationMethod.ReferenceIdentity), JsonSerializer.SerializeToElement(new { }));
+                }
+                else
+                {
+                    var sourceEvidence = new CenteredStackSourceEvidence(index, contributor.Capture.CaptureId,
+                        CenteredRegistrationReason.Contributed, CenteredRegistrationMethod.VerifiedCentroidSimilarity,
+                        new ImageSimilarity(1, 0, 1.0, -1.0), 100);
+                    members[index] = new(contributor, nameof(CenteredRegistrationMethod.VerifiedCentroidSimilarity),
+                        JsonSerializer.SerializeToElement(sourceEvidence, CenteredAcceptanceJson));
+                }
+            }
             var rawArtifact = new ProcessingArtifact(reference.Input.Raw.Artifact.ArtifactId, FrameArtifactRole.Calibrated,
                 reference.Input.Raw.Artifact.Variant, new string('1', 64), reference.Input.Raw.Artifact.MediaType,
                 layout, pixels, reference.ExposureStartedUtc, reference.Input.Raw.Controls.EffectiveExposure,
@@ -289,7 +383,7 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
                 [], token).ConfigureAwait(false);
         }
 
-        async ValueTask PublishLayerAsync(ExposureInputV1 source, string baseId, CenteredViewLayerScope scope, string kind, int zOrder, bool enabledByDefault, long order)
+        async ValueTask<CenteredView?> PublishLayerAsync(ExposureInputV1 source, string baseId, CenteredViewLayerScope scope, string kind, int zOrder, bool enabledByDefault, long order)
         {
             var rawPin = source.Raw.Artifact;
             var sourceArtifact = new ProcessingArtifact(rawPin.ArtifactId, FrameArtifactRole.Raw, rawPin.Variant,
@@ -307,7 +401,7 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
             var productRef = new ExposureProductRef(source.Key, slot, ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256),
                 product.OutputIdentitySha256, product.ChecksumSha256, payload.ContentIdentitySha256);
             var lookup = new ExposureProductLookup(source.Key, slot, ExposureProductAvailability.Available, order, productRef, null);
-            await layerProducer.PublishAsync(baseId, scope, lookup, new(kind, zOrder, enabledByDefault),
+            return await layerProducer.PublishAsync(baseId, scope, lookup, new(kind, zOrder, enabledByDefault),
                 source.Raw.Timing.ExposureEndedUtc, cancellationToken: token).ConfigureAwait(false);
         }
 

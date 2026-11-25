@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
+using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.Processing;
 using Microsoft.AspNetCore.WebUtilities;
@@ -23,7 +24,8 @@ public sealed partial class CurrentSkyPage
         string? PresentationReason,
         Uri? PreviewUrl,
         CenteredLiveMode Mode,
-        bool RetainedFromPriorRun);
+        bool RetainedFromPriorRun,
+        bool PresentationDeferred = false);
 
     private sealed record CenteredLayerRow(
         CenteredViewLayer Layer,
@@ -48,6 +50,10 @@ public sealed partial class CurrentSkyPage
     private bool _centeredPublisherSubscribed;
     private CenteredViewArtifact? _centeredAstrometryEvidence;
     private bool _centeredAstrometryEvidenceSet;
+    private long _centeredPresentationGeneration;
+    private CancellationTokenSource? _centeredPresentationCancellation;
+    private bool _centeredPresentationLoading;
+    private (string BaseId, string RevisionId)? _centeredPresentationInFlight;
 
     private bool IsCenteredLive => !IsArchived && (_centeredLiveContext is not null || _centeredDisplay is not null);
     private bool IsCenteredArchived => IsArchived && _centeredArchive is not null;
@@ -59,13 +65,29 @@ public sealed partial class CurrentSkyPage
         saved.RevisionId == view.Revision.RevisionId;
 
     private bool ShowCenteredLayeredHero =>
-        IsCenteredMode &&
-        !_layerImageFailed &&
-        _centeredDisplay is { Presentation: { } presentation } centered &&
-        _layers is { } layers &&
-        ReferenceEquals(layers, presentation) &&
-        CameraAgentCenteredViewProjection.IsPresentationCompatible(centered.View, layers) &&
-        centered.PreviewUrl is not null;
+        CanShowCenteredLayeredHero(
+            IsCenteredMode,
+            _layerImageFailed,
+            _centeredDisplay?.View,
+            _centeredDisplay?.Presentation,
+            _layers,
+            _centeredDisplay?.PreviewUrl);
+
+    internal static bool CanShowCenteredLayeredHero(
+        bool isCenteredMode,
+        bool layerImageFailed,
+        CenteredView? view,
+        CameraAgentLayeredPresentation? displayPresentation,
+        CameraAgentLayeredPresentation? activeLayers,
+        Uri? previewUrl) =>
+        isCenteredMode &&
+        !layerImageFailed &&
+        view is not null &&
+        displayPresentation is not null &&
+        activeLayers is not null &&
+        ReferenceEquals(activeLayers, displayPresentation) &&
+        CameraAgentCenteredViewProjection.IsPresentationCompatible(view, activeLayers) &&
+        previewUrl is not null;
 
     private string? CenteredBasePreviewUrl =>
         _centeredDisplay?.PreviewUrl?.OriginalString is { } url
@@ -209,6 +231,10 @@ public sealed partial class CurrentSkyPage
             {
                 return "Showing ready centered base while overlay registration verifies.";
             }
+            if (_centeredPresentationLoading || centered.PresentationDeferred)
+            {
+                return "Showing ready centered base while optional overlays load.";
+            }
             return centered.PresentationReason ?? "Showing ready centered base without interactive overlays.";
         }
     }
@@ -271,6 +297,7 @@ public sealed partial class CurrentSkyPage
 
     private void ApplyCenteredArchive(CameraAgentCaptureDetailView archive)
     {
+        CancelCenteredPresentationLoad();
         _centeredArchive = archive.CenteredArchive;
         _centeredLiveContext = null;
         _centeredSaveMessage = null;
@@ -308,7 +335,8 @@ public sealed partial class CurrentSkyPage
             centered.PresentationReason,
             centered.PreviewUrl,
             CenteredLiveMode.Centered,
-            RetainedFromPriorRun: false);
+            RetainedFromPriorRun: false,
+            PresentationDeferred: false);
 
         ApplyCenteredDisplayCore(
             nextDisplay,
@@ -350,6 +378,10 @@ public sealed partial class CurrentSkyPage
                         observed)
                     : view.Presentation.System;
                 var sameBase = incoming.View?.Base.BaseId == previous.View.Base.BaseId;
+                var resolvedInterval = incoming.ExpectedCaptureInterval ??
+                    CameraAgentOperatorUiService.ResolveCenteredExpectedCaptureInterval(
+                        Services.GetService(typeof(CaptureScheduleRuntimeCoordinator)) as CaptureScheduleRuntimeCoordinator,
+                        _facts);
                 var retainedFreshness = sameBase
                     ? view.Presentation.ImageFreshness
                     : CameraAgentOperatorUiService.ComputeCenteredFreshness(
@@ -357,7 +389,7 @@ public sealed partial class CurrentSkyPage
                         previous.RetainedFromPriorRun,
                         incoming.Context.State,
                         observed,
-                        _facts?.CaptureProfile?.EffectiveInterval);
+                        resolvedInterval);
                 var retainedHistorical = sameBase
                     ? view.Presentation.IsHistoricalFallback
                     : previous.RetainedFromPriorRun;
@@ -370,6 +402,18 @@ public sealed partial class CurrentSkyPage
                     LatestCapture = view.Presentation.LatestCapture,
                     DisplayCapture = displayCapture
                 };
+                RetryCenteredAstrometryIfTransient(previous.View);
+                if (incoming.View is { } sameView &&
+                    sameView.Base.BaseId == previous.View.Base.BaseId &&
+                    sameView.Revision.RevisionId == previous.View.Revision.RevisionId &&
+                    incoming.PresentationDeferred &&
+                    !_viewerOpen &&
+                    (manual ||
+                     previous.Presentation is null ||
+                     previous.Presentation.Layers.Count < previous.View.Revision.Manifest.Layers.Count))
+                {
+                    StartCenteredPresentationLoad(sameView, preserveDisplayedWorkspace: false, cancellationToken);
+                }
             }
             else
             {
@@ -389,11 +433,13 @@ public sealed partial class CurrentSkyPage
             incoming.PresentationReason,
             incoming.PreviewUrl,
             incoming.Mode,
-            incoming.RetainedFromPriorRun);
+            incoming.RetainedFromPriorRun,
+            incoming.PresentationDeferred);
 
         var referenceCaptureId = nextView.Base.Definition.Reference.Capture.CaptureId;
         var referenceChanged = _runCaptureId != referenceCaptureId;
         var baseChanged = previous?.View.Base.BaseId != nextView.Base.BaseId;
+        var revisionChanged = previous?.View.Revision.RevisionId != nextView.Revision.RevisionId;
 
         _presentation = view.Presentation;
         _facts = view.Facts;
@@ -422,12 +468,26 @@ public sealed partial class CurrentSkyPage
             _centeredSavedUrl = null;
         }
 
+        // On an overlay-only revision for the SAME displayed base, keep the verified base <img>
+        // mounted while fetching the new revision's optional overlays asynchronously so the base
+        // image never remounts or flickers.
+        if (!baseChanged && revisionChanged && incoming.PresentationDeferred && previous is { Presentation: not null })
+        {
+            StartCenteredPresentationLoad(nextView, preserveDisplayedWorkspace: true, cancellationToken);
+            return;
+        }
+
         ApplyCenteredDisplayCore(
             nextDisplay,
             previous?.View.Base,
             explicitSavedSelection: null,
             captureChanged: referenceChanged,
             cancellationToken: cancellationToken);
+
+        if (incoming.PresentationDeferred)
+        {
+            StartCenteredPresentationLoad(nextView, preserveDisplayedWorkspace: false, cancellationToken);
+        }
     }
 
     private void ApplyCenteredDisplayCore(
@@ -435,11 +495,30 @@ public sealed partial class CurrentSkyPage
         CenteredViewBase? previousBase,
         CenteredViewSavedSelection? explicitSavedSelection,
         bool captureChanged,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool cancelPendingPresentation = true)
     {
+        if (cancelPendingPresentation)
+        {
+            CancelCenteredPresentationLoad();
+        }
+
         var baseChanged = previousBase?.BaseId != nextDisplay.View.Base.BaseId;
         var revisionChanged = _centeredDisplay?.View.Revision.RevisionId != nextDisplay.View.Revision.RevisionId;
         var referenceCaptureId = nextDisplay.View.Base.Definition.Reference.Capture.CaptureId;
+
+        if (!IsCenteredArchived)
+        {
+            var nextScopeKey = $"{LayerVisibilityKey}:centered:{CenteredVisibilityScopeKey(nextDisplay.View.Base)}";
+            var incompatibleBase = previousBase is not null &&
+                !CameraAgentCenteredViewProjection.IsVisibilityCarryOverCompatible(previousBase, nextDisplay.View.Base);
+            if (incompatibleBase || !string.Equals(_layerVisibilityScopeKey, nextScopeKey, StringComparison.Ordinal))
+            {
+                _layerVisibility.Clear();
+                _layerVisibilityRead = false;
+                _layerVisibilityScopeKey = nextScopeKey;
+            }
+        }
 
         if (captureChanged)
         {
@@ -455,11 +534,12 @@ public sealed partial class CurrentSkyPage
         if (nextDisplay.Presentation is { } presentation &&
             CameraAgentCenteredViewProjection.IsPresentationCompatible(nextDisplay.View, presentation))
         {
+            var presentationChanged = !CenteredPresentationsMatch(_layers, presentation);
             _layers = presentation;
             _layerMessage = null;
             _layerImageFailed = false;
             _selectedLayers = ResolveCenteredSelectedLayers(nextDisplay.View, presentation, previousBase, explicitSavedSelection);
-            if (baseChanged || revisionChanged || !_layerInteractive)
+            if (baseChanged || revisionChanged || presentationChanged || !_layerInteractive)
             {
                 _layerInteractive = false;
                 _bindGeneration++;
@@ -472,14 +552,17 @@ public sealed partial class CurrentSkyPage
             _selectedLayers = new(StringComparer.Ordinal);
             _layerInteractive = false;
             _bindLayers = false;
-            _layerMessage = nextDisplay.PresentationReason ??
-                (nextDisplay.PresentationStatus == CameraAgentLayeredPresentationStatus.NotRetained
-                    ? null
-                    : "Centered overlays are unavailable for this base. Showing the verified base image.");
+            _layerMessage = nextDisplay.PresentationDeferred
+                ? null
+                : nextDisplay.PresentationReason ??
+                  (nextDisplay.PresentationStatus == CameraAgentLayeredPresentationStatus.NotRetained
+                      ? null
+                      : "Centered overlays are unavailable for this base. Showing the verified base image.");
         }
 
         var astrometryPin = FindCenteredAstrometryEvidence(nextDisplay.View);
-        if (captureChanged || !_centeredAstrometryEvidenceSet || _centeredAstrometryEvidence != astrometryPin)
+        var retryTransient = astrometryPin is not null && IsTransientCenteredAstrometryFailure(_astrometry);
+        if (captureChanged || !_centeredAstrometryEvidenceSet || _centeredAstrometryEvidence != astrometryPin || retryTransient)
         {
             _centeredAstrometryEvidence = astrometryPin;
             _centeredAstrometryEvidenceSet = true;
@@ -493,6 +576,240 @@ public sealed partial class CurrentSkyPage
                 _astrometry = new(referenceCaptureId, "NotRetained", "centered-evidence-not-pinned");
             }
         }
+    }
+
+    private void CancelCenteredPresentationLoad()
+    {
+        Interlocked.Increment(ref _centeredPresentationGeneration);
+        _centeredPresentationLoading = false;
+        _centeredPresentationInFlight = null;
+        var previous = Interlocked.Exchange(ref _centeredPresentationCancellation, null);
+        if (previous is not null)
+        {
+            previous.Cancel();
+            previous.Dispose();
+        }
+    }
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed", Justification = "The background optional overlay read captures the token and validates exact generation and (BaseId, RevisionId) before applying.")]
+    private void StartCenteredPresentationLoad(
+        CenteredView targetView,
+        bool preserveDisplayedWorkspace,
+        CancellationToken cancellationToken)
+    {
+        if (IsArchived || _accessDenied || _disposeStarted != 0 || cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+        var targetKey = (targetView.Base.BaseId, targetView.Revision.RevisionId);
+        if (_centeredPresentationLoading && _centeredPresentationInFlight == targetKey)
+        {
+            return;
+        }
+
+        CancelCenteredPresentationLoad();
+        var generation = Interlocked.Increment(ref _centeredPresentationGeneration);
+        var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        _centeredPresentationCancellation = linked;
+        _centeredPresentationLoading = true;
+        _centeredPresentationInFlight = targetKey;
+        _ = LoadCenteredPresentationAsync(targetView, generation, preserveDisplayedWorkspace, linked.Token);
+    }
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Optional centered overlay reads must never block or fail the displayed ready base.")]
+    private async Task LoadCenteredPresentationAsync(
+        CenteredView targetView,
+        long generation,
+        bool preserveDisplayedWorkspace,
+        CancellationToken cancellationToken)
+    {
+        OperatorUiResult<CameraAgentCenteredPresentationRead> result;
+        try
+        {
+            using var deadline = new CancellationTokenSource(RefreshTimeout, TimeProvider);
+            using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, deadline.Token);
+            result = await OperatorService.GetCenteredPresentationAsync(
+                targetView.Base.BaseId,
+                targetView.Revision.RevisionId,
+                bounded.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+        catch (Exception)
+        {
+            result = OperatorUiResult<CameraAgentCenteredPresentationRead>.Success(
+                new(CameraAgentLayeredPresentationStatus.Unavailable, null,
+                    "Centered overlays are temporarily unavailable. Showing the verified base image."));
+        }
+
+        if (Volatile.Read(ref _disposeStarted) != 0)
+        {
+            return;
+        }
+
+        await InvokeAsync(() => ApplyCenteredPresentationResult(targetView, generation, preserveDisplayedWorkspace, result, cancellationToken))
+            .ConfigureAwait(false);
+    }
+
+    private void ApplyCenteredPresentationResult(
+        CenteredView targetView,
+        long generation,
+        bool preserveDisplayedWorkspace,
+        OperatorUiResult<CameraAgentCenteredPresentationRead> result,
+        CancellationToken cancellationToken)
+    {
+        if (result.Kind == OperatorUiResultKind.Unauthorized)
+        {
+            if (!_accessDenied)
+            {
+                RevokeAccess();
+            }
+            return;
+        }
+
+        if (generation != Volatile.Read(ref _centeredPresentationGeneration) ||
+            _disposeStarted != 0 ||
+            _accessDenied ||
+            IsArchived ||
+            cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+
+        _centeredPresentationLoading = false;
+        _centeredPresentationInFlight = null;
+
+        if (_viewerOpen || _centeredDisplay is not { } current)
+        {
+            StateHasChanged();
+            return;
+        }
+
+        if (!string.Equals(current.View.Base.BaseId, targetView.Base.BaseId, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        if (preserveDisplayedWorkspace)
+        {
+            if (targetView.Revision.Order < current.View.Revision.Order)
+            {
+                return;
+            }
+        }
+        else if (!string.Equals(current.View.Revision.RevisionId, targetView.Revision.RevisionId, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        CameraAgentLayeredPresentation? validated = null;
+        var status = CameraAgentLayeredPresentationStatus.Unavailable;
+        string? reason = "Centered overlays are temporarily unavailable. Showing the verified base image.";
+
+        if (result.IsSuccess && result.Value is { } read)
+        {
+            if (read.Status == CameraAgentLayeredPresentationStatus.Found &&
+                CameraAgentCenteredViewProjection.IsPresentationCompatible(targetView, read.Presentation))
+            {
+                validated = read.Presentation;
+                status = CameraAgentLayeredPresentationStatus.Found;
+                reason = read.Reason;
+            }
+            else if (read.Status == CameraAgentLayeredPresentationStatus.Found)
+            {
+                status = CameraAgentLayeredPresentationStatus.Malformed;
+                reason = "The centered overlay presentation does not match the exact base preview.";
+            }
+            else
+            {
+                status = read.Status;
+                reason = read.Reason;
+            }
+        }
+
+        var revisionAdvanced = !string.Equals(current.View.Revision.RevisionId, targetView.Revision.RevisionId, StringComparison.Ordinal);
+        var presentationChanged = !CenteredPresentationsMatch(current.Presentation, validated) ||
+            current.PresentationStatus != status ||
+            !string.Equals(current.PresentationReason, reason, StringComparison.Ordinal) ||
+            current.PresentationDeferred;
+
+        if (revisionAdvanced || presentationChanged)
+        {
+            var nextDisplay = current with
+            {
+                View = targetView,
+                Presentation = validated,
+                PresentationStatus = status,
+                PresentationReason = reason,
+                PresentationDeferred = false
+            };
+            ApplyCenteredDisplayCore(
+                nextDisplay,
+                current.View.Base,
+                explicitSavedSelection: null,
+                captureChanged: false,
+                cancellationToken: _lifetime!.Token,
+                cancelPendingPresentation: false);
+        }
+
+        StateHasChanged();
+    }
+
+    private static bool IsTransientCenteredAstrometryFailure(CameraAgentRetainedAstrometry? astrometry) =>
+        astrometry is { Solution: null, Availability: "Unavailable" } &&
+        astrometry.Reason is "read-capacity" or "retained-read-unavailable" or "retained-evidence-temporarily-unavailable";
+
+    private void RetryCenteredAstrometryIfTransient(CenteredView view)
+    {
+        if (_accessDenied || _disposeStarted != 0 || _astrometryLoading)
+        {
+            return;
+        }
+        var astrometryPin = FindCenteredAstrometryEvidence(view);
+        if (astrometryPin is null ||
+            _centeredAstrometryEvidence != astrometryPin ||
+            !IsTransientCenteredAstrometryFailure(_astrometry) ||
+            _layerCancellation is not { IsCancellationRequested: false } astrometryCancellation)
+        {
+            return;
+        }
+
+        ClearAstrometry();
+        _ = LoadAstrometryAsync(
+            view.Base.Definition.Reference.Capture.CaptureId,
+            Volatile.Read(ref _layerGeneration),
+            astrometryCancellation.Token,
+            astrometryPin);
+    }
+
+    private static bool CenteredPresentationsMatch(
+        CameraAgentLayeredPresentation? current,
+        CameraAgentLayeredPresentation? incoming)
+    {
+        if (ReferenceEquals(current, incoming))
+        {
+            return true;
+        }
+        if (current is null || incoming is null)
+        {
+            return false;
+        }
+        if (!string.Equals(current.PresentationIdentitySha256, incoming.PresentationIdentitySha256, StringComparison.Ordinal) ||
+            !string.Equals(current.ManifestIdentitySha256, incoming.ManifestIdentitySha256, StringComparison.Ordinal) ||
+            current.Layers.Count != incoming.Layers.Count)
+        {
+            return false;
+        }
+        for (var i = 0; i < current.Layers.Count; i++)
+        {
+            if (!string.Equals(current.Layers[i].IdentitySha256, incoming.Layers[i].IdentitySha256, StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static CenteredViewArtifact? FindCenteredAstrometryEvidence(CenteredView view)
@@ -551,9 +868,18 @@ public sealed partial class CurrentSkyPage
             }
             if (next.Base.BaseId == currentView.Base.BaseId)
             {
-                return next.Revision.Order > currentView.Revision.Order
-                    ? CenteredUpdateAction.SwapInPlace
-                    : CenteredUpdateAction.NoOp;
+                if (next.Revision.Order > currentView.Revision.Order)
+                {
+                    return CenteredUpdateAction.SwapInPlace;
+                }
+                if (next.Revision.Order == currentView.Revision.Order &&
+                    !incoming.PresentationDeferred &&
+                    incoming.Presentation is not null &&
+                    !CenteredPresentationsMatch(current.Presentation, incoming.Presentation))
+                {
+                    return CenteredUpdateAction.SwapInPlace;
+                }
+                return CenteredUpdateAction.NoOp;
             }
             return next.Base.RegisteredUtc > currentView.Base.RegisteredUtc
                 ? CenteredUpdateAction.Advance
@@ -584,9 +910,19 @@ public sealed partial class CurrentSkyPage
                 {
                     return CenteredUpdateAction.SwapInPlace;
                 }
-                return current.Presentation is null && incoming.Presentation is not null
-                    ? CenteredUpdateAction.SwapInPlace
-                    : CenteredUpdateAction.NoOp;
+                if (!incoming.PresentationDeferred &&
+                    incoming.Presentation is not null &&
+                    !CenteredPresentationsMatch(current.Presentation, incoming.Presentation))
+                {
+                    return CenteredUpdateAction.SwapInPlace;
+                }
+                if (!incoming.PresentationDeferred &&
+                    current.Presentation is null &&
+                    incoming.PresentationStatus != current.PresentationStatus)
+                {
+                    return CenteredUpdateAction.SwapInPlace;
+                }
+                return CenteredUpdateAction.NoOp;
             }
 
             return incoming.Mode == CenteredLiveMode.Centered &&
@@ -815,10 +1151,13 @@ public sealed partial class CurrentSkyPage
                 ? FormattableString.Invariant($"{baseLabel} · #{contributorSeq}")
                 : baseLabel;
 
+            var presentationFailed = !_centeredPresentationLoading &&
+                !_centeredDisplay.PresentationDeferred &&
+                _layers is null;
             var degradedOnRead = presentationLayer is null &&
                 layer.Drawable is not null &&
                 layer.Readiness is CenteredViewReadiness.Ready or CenteredViewReadiness.Partial &&
-                _layers is not null;
+                (_layers is not null || presentationFailed);
 
             var (readinessLabel, readinessCode) = degradedOnRead
                 ? ("Unavailable", "Unavailable")
