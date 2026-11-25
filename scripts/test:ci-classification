@@ -16,6 +16,7 @@ declare -a parallel_status=()
 declare -A active_idx_to_pid=()
 
 collect_descendants() {
+  local IFS=$' \t\n'
   local parent_pid="$1" task_children child_pid
   local -a direct_children=()
   if [[ -d "/proc/$parent_pid/task" ]]; then
@@ -43,6 +44,7 @@ collect_descendants() {
 }
 
 cleanup() {
+  local IFS=$' \t\n'
   local idx pid desc_out deadline any_alive
   local -a active_indices=("${!active_idx_to_pid[@]}")
   local -a active_pids=() all_descendants=() pid_descs=()
@@ -103,12 +105,62 @@ parallel_done_fifo="$parallel_dir/done.fifo"
 mkfifo "$parallel_done_fifo"
 exec 3<>"$parallel_done_fifo"
 
-reap_one_parallel_job() {
-  local done_idx="" pid="" status=0
-  if ! IFS= read -r -u 3 done_idx; then
-    printf 'Parallel worker completion channel closed unexpectedly.\n' >&2
-    exit 1
+is_worker_dead() {
+  local pid="$1" stat_line="" proc_state=""
+  if ! kill -0 "$pid" 2>/dev/null; then
+    return 0
   fi
+  if [[ -r "/proc/$pid/stat" ]]; then
+    IFS= read -r stat_line < "/proc/$pid/stat" 2>/dev/null || return 0
+    proc_state="${stat_line##*) }"
+    proc_state="${proc_state%% *}"
+    if [[ "$proc_state" == Z || "$proc_state" == X ]]; then
+      return 0
+    fi
+  fi
+  return 1
+}
+
+reap_one_parallel_job() {
+  local done_idx="" pid="" status=0 read_rc=0 active_idx="" active_pid=""
+  local -a active_indices=()
+  while true; do
+    read_rc=0
+    done_idx=""
+    IFS= read -r -t 1 -u 3 done_idx || read_rc=$?
+    if (( read_rc == 0 )); then
+      break
+    fi
+    if (( read_rc <= 128 )); then
+      printf 'Parallel worker completion channel closed unexpectedly (read exit %d).\n' "$read_rc" >&2
+      exit 1
+    fi
+    active_indices=("${!active_idx_to_pid[@]}")
+    if (( ${#active_indices[@]} == 0 )); then
+      printf 'Parallel worker reaper waited with no active workers.\n' >&2
+      exit 1
+    fi
+    for active_idx in "${active_indices[@]}"; do
+      active_pid="${active_idx_to_pid[$active_idx]}"
+      if is_worker_dead "$active_pid"; then
+        if read -r -t 0 -u 3; then
+          continue 2
+        fi
+        status=0
+        wait "$active_pid" || status=$?
+        printf 'Parallel test group %s (idx %s, pid %s) exited abnormally (exit %d) without reporting completion.\n' \
+          "${parallel_names[$active_idx]}" "$active_idx" "$active_pid" "$status" >&2
+        if [[ -s "${parallel_outs[$active_idx]}" ]]; then
+          cat "${parallel_outs[$active_idx]}" >&2
+        fi
+        if [[ -s "${parallel_errs[$active_idx]}" ]]; then
+          cat "${parallel_errs[$active_idx]}" >&2
+        fi
+        unset 'active_idx_to_pid[$active_idx]'
+        exit 1
+      fi
+    done
+  done
   if [[ -z "$done_idx" || -z "${active_idx_to_pid[$done_idx]+x}" ]]; then
     printf 'Parallel worker completion channel reported invalid dispatch index: %s\n' "$done_idx" >&2
     exit 1
@@ -282,9 +334,15 @@ seed_commit_files() {
   shift
   (( $# > 0 )) || return 0
   local start_sha path content="seeded fixture base"$'\n' byte_len new_sha
-  start_sha="$(git -C "$repo" rev-parse HEAD)"
-  byte_len="$(LC_ALL=C printf '%s' "$content" | wc -c)"
-  {
+  if ! start_sha="$(git -C "$repo" rev-parse HEAD)" || [[ -z "$start_sha" ]]; then
+    printf 'seed_commit_files failed to resolve HEAD in %s\n' "$repo" >&2
+    return 1
+  fi
+  if ! byte_len="$(LC_ALL=C printf '%s' "$content" | wc -c)" || [[ ! "$byte_len" =~ ^[0-9]+$ ]]; then
+    printf 'seed_commit_files failed to compute fixture byte length.\n' >&2
+    return 1
+  fi
+  if ! {
     printf 'commit refs/heads/fast-seed\n'
     printf 'mark :1\n'
     printf 'committer CI Classification Test <ci-classification@example.invalid> 1700000000 +0000\n'
@@ -295,10 +353,25 @@ seed_commit_files() {
       printf 'data %d\n%s\n' "$byte_len" "$content"
     done
     printf 'done\n'
-  } | git -C "$repo" fast-import --quiet
-  new_sha="$(git -C "$repo" rev-parse refs/heads/fast-seed)"
-  git -C "$repo" update-ref HEAD "$new_sha"
-  git -C "$repo" branch -q -D fast-seed
+  } | git -C "$repo" fast-import --quiet; then
+    git -C "$repo" branch -q -D fast-seed 2>/dev/null || true
+    printf 'seed_commit_files fast-import failed in %s\n' "$repo" >&2
+    return 1
+  fi
+  if ! new_sha="$(git -C "$repo" rev-parse refs/heads/fast-seed)" || [[ -z "$new_sha" ]]; then
+    git -C "$repo" branch -q -D fast-seed 2>/dev/null || true
+    printf 'seed_commit_files failed to resolve refs/heads/fast-seed in %s\n' "$repo" >&2
+    return 1
+  fi
+  if ! git -C "$repo" update-ref HEAD "$new_sha"; then
+    git -C "$repo" branch -q -D fast-seed 2>/dev/null || true
+    printf 'seed_commit_files update-ref HEAD failed in %s\n' "$repo" >&2
+    return 1
+  fi
+  if ! git -C "$repo" branch -q -D fast-seed; then
+    printf 'seed_commit_files failed to delete temporary branch fast-seed in %s\n' "$repo" >&2
+    return 1
+  fi
 }
 
 # Build a chain of single-file commits in one git fast-import pass.
@@ -312,15 +385,18 @@ batch_commit_files() {
   fi
   local start_sha spec path content mark=0 byte_len rev_out idx
   local -a spec_paths=() shas=()
-  start_sha="$(git -C "$repo" rev-parse HEAD)"
+  if ! start_sha="$(git -C "$repo" rev-parse HEAD)" || [[ -z "$start_sha" ]]; then
+    printf 'batch_commit_files failed to resolve HEAD in %s\n' "$repo" >&2
+    return 1
+  fi
   for spec in "$@"; do
     spec_paths+=("${spec%%|*}")
   done
-  {
+  if ! {
     for spec in "$@"; do
       path="${spec%%|*}"
       content="${spec#*|}"
-      byte_len="$(LC_ALL=C printf '%s' "$content" | wc -c)"
+      byte_len="$(LC_ALL=C printf '%s' "$content" | wc -c)" || exit 1
       ((mark += 1))
       printf 'commit refs/heads/fast-batch\n'
       printf 'mark :%d\n' "$mark"
@@ -333,8 +409,16 @@ batch_commit_files() {
       printf 'data %d\n%s\n' "$byte_len" "$content"
     done
     printf 'done\n'
-  } | git -C "$repo" fast-import --quiet
-  rev_out="$(git -C "$repo" rev-list --reverse "${start_sha}..refs/heads/fast-batch")"
+  } | git -C "$repo" fast-import --quiet; then
+    git -C "$repo" branch -q -D fast-batch 2>/dev/null || true
+    printf 'batch_commit_files fast-import failed in %s\n' "$repo" >&2
+    return 1
+  fi
+  if ! rev_out="$(git -C "$repo" rev-list --reverse "${start_sha}..refs/heads/fast-batch")"; then
+    git -C "$repo" branch -q -D fast-batch 2>/dev/null || true
+    printf 'batch_commit_files rev-list failed in %s\n' "$repo" >&2
+    return 1
+  fi
   if [[ -n "$rev_out" ]]; then
     mapfile -t shas <<< "$rev_out"
   fi
@@ -343,19 +427,32 @@ batch_commit_files() {
     printf 'batch_commit_files produced %d commits for %d specs in %s\n' "${#shas[@]}" "$#" "$repo" >&2
     return 1
   fi
-  local prev="$start_sha" sha
+  local prev="$start_sha" sha diff_rc=0
   for ((idx = 0; idx < ${#shas[@]}; idx++)); do
     sha="${shas[$idx]}"
-    if git -C "$repo" diff --quiet "$prev" "$sha"; then
+    diff_rc=0
+    git -C "$repo" diff --quiet "$prev" "$sha" || diff_rc=$?
+    if (( diff_rc == 0 )); then
       git -C "$repo" branch -q -D fast-batch 2>/dev/null || true
       printf 'batch_commit_files produced a no-op commit for %s (%s..%s)\n' "${spec_paths[$idx]}" "$prev" "$sha" >&2
+      return 1
+    elif (( diff_rc != 1 )); then
+      git -C "$repo" branch -q -D fast-batch 2>/dev/null || true
+      printf 'batch_commit_files diff failed (exit %d) for %s (%s..%s)\n' "$diff_rc" "${spec_paths[$idx]}" "$prev" "$sha" >&2
       return 1
     fi
     printf '%s %s\n' "$prev" "$sha"
     prev="$sha"
   done
-  git -C "$repo" update-ref HEAD "$prev"
-  git -C "$repo" branch -q -D fast-batch
+  if ! git -C "$repo" update-ref HEAD "$prev"; then
+    git -C "$repo" branch -q -D fast-batch 2>/dev/null || true
+    printf 'batch_commit_files update-ref HEAD failed in %s\n' "$repo" >&2
+    return 1
+  fi
+  if ! git -C "$repo" branch -q -D fast-batch; then
+    printf 'batch_commit_files failed to delete temporary branch fast-batch in %s\n' "$repo" >&2
+    return 1
+  fi
 }
 
 # Populate caller's array variable with "<base_sha> <head_sha>" pairs from batch_commit_files.
@@ -380,6 +477,15 @@ batch_commit_pairs() {
   fi
 }
 
+assert_diff_status() {
+  local repo="$1" base="$2" head="$3" expected_status="$4" path="$5" actual_status
+  actual_status="$(git -C "$repo" diff --name-status --no-renames "$base" "$head")"
+  if [[ "$actual_status" != "$expected_status"$'\t'"$path" ]]; then
+    printf 'Expected diff status %s for %s, received %s\n' "$expected_status" "$path" "$actual_status" >&2
+    exit 1
+  fi
+}
+
 # Verify a batch of component plan rows ("path|mode|deployment|complete|shared|cameraagent|delivery[|status]")
 # using one fast-import pass and one classifier invocation per row.
 verify_component_plan_batch() {
@@ -387,7 +493,7 @@ verify_component_plan_batch() {
   shift
   local -a rows=("$@") specs=() pairs=()
   local i path expected_mode expected_deployment expected_complete expected_shared expected_cameraagent expected_delivery expected_status
-  local base head output actual_status
+  local base head output
   for ((i = 0; i < ${#rows[@]}; i++)); do
     IFS='|' read -r path _ <<< "${rows[$i]}"
     specs+=("$path|classification fixture $i"$'\n')
@@ -398,11 +504,7 @@ verify_component_plan_batch() {
     IFS='|' read -r path expected_mode expected_deployment expected_complete expected_shared expected_cameraagent expected_delivery expected_status <<< "${rows[$i]}"
     read -r base head <<< "${pairs[$i]}"
     if [[ -n "$expected_status" ]]; then
-      actual_status="$(git -C "$repo" diff --name-status "$base" "$head")"
-      if [[ "$actual_status" != "$expected_status"$'\t'"$path" ]]; then
-        printf 'Expected diff status %s for %s, received %s\n' "$expected_status" "$path" "$actual_status" >&2
-        exit 1
-      fi
+      assert_diff_status "$repo" "$base" "$head" "$expected_status" "$path"
     fi
     output="$(classify_in_repo "$repo" pull_request "$base" "$head")"
     assert_plan_output "$output" "$expected_mode" "$expected_deployment"
@@ -544,6 +646,59 @@ done < <(cd "$repo_root" && git ls-files '*/*/*.csproj')
 
 mapfile -t repo_project_directories < <(cd "$repo_root" && git ls-files 'src/*/*.csproj' 'tests/*/*.csproj' 'tools/*/*.csproj' \
   | while IFS= read -r project; do dirname "$project"; done | sort -u)
+
+# Precompute sequential A/M diff status for every link probe so sharded link
+# workers preserve exact M-status parity with the sequential baseline regardless
+# of max_jobs and assert exact diff status on every probe commit.
+declare -a link_expected_wildcard_status=()
+declare -a link_expected_owner_status=()
+declare -a link_expected_linked_status=()
+declare -A link_seen_paths=()
+for path in \
+  "${allowlisted_paths[@]}" \
+  "deploy/split-host/camera-modules/allsky01.virtual-asi676mc.full.json" \
+  "tests/fixtures/catalog/hyg-v42-bright-stars.sqlite" \
+  "tests/fixtures/catalog/SHA256SUMS-v44-openngc" \
+  "tests/fixtures/catalog/hyg-v44-openngc-subset.sqlite" \
+  "src/HVO.SkyMonitor.Deployment.Cli/ReleaseManifest.cs" \
+  "tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/VirtualSkyPipelineTests.cs"; do
+  link_seen_paths["$path"]=1
+done
+for ((i = 0; i < ${#link_records[@]}; i++)); do
+  link_expected_wildcard_status+=("")
+  link_expected_owner_status+=("")
+  link_expected_linked_status+=("")
+  link_record="${link_records[$i]}"
+  including_project="${link_record%%|*}"
+  linked_source="${link_record#*|}"
+  [[ -n "$including_project" && -n "$linked_source" ]] || continue
+  [[ "$linked_source" != *.csproj ]] || continue
+  if [[ "$linked_source" == *'*'* || "$linked_source" == *'?'* ]]; then
+    probe_path="$(dirname "$linked_source")/WildcardProbe.cs"
+    if [[ -n "${link_seen_paths[$probe_path]+x}" ]]; then
+      link_expected_wildcard_status[i]="M"
+    else
+      link_expected_wildcard_status[i]="A"
+      link_seen_paths["$probe_path"]=1
+    fi
+  else
+    if (( ${csproj_count_by_project[$including_project]:-0} == 1 )); then
+      owner_probe="${csproj_dir_by_project[$including_project]}/LinkOwnerProbe.cs"
+      if [[ -n "${link_seen_paths[$owner_probe]+x}" ]]; then
+        link_expected_owner_status[i]="M"
+      else
+        link_expected_owner_status[i]="A"
+        link_seen_paths["$owner_probe"]=1
+      fi
+    fi
+    if [[ -n "${link_seen_paths[$linked_source]+x}" ]]; then
+      link_expected_linked_status[i]="M"
+    else
+      link_expected_linked_status[i]="A"
+      link_seen_paths["$linked_source"]=1
+    fi
+  fi
+done
 
 # ==============================================================================
 # Fast-path test group functions (isolated per-group repos)
@@ -1524,8 +1679,13 @@ EOF
   (cd "$repo" && GITHUB_STEP_SUMMARY="$evidence_file" "$classifier" pull_request "$fast_base" HEAD docs-fast-only >/dev/null)
   grep -Fq 'docs/second.md' "$evidence_file"
   grep -Fq 'Fast path paths examined: 2' "$evidence_file"
-  if grep -Fq 'Mode: **' "$evidence_file"; then
+  local mode_grep_rc=0
+  grep -Fq 'Mode: **' "$evidence_file" || mode_grep_rc=$?
+  if (( mode_grep_rc == 0 )); then
     printf 'Docs-fast-only summary unexpectedly included Mode output:\n%s\n' "$(cat "$evidence_file")" >&2
+    exit 1
+  elif (( mode_grep_rc != 1 )); then
+    printf 'Docs-fast-only summary check failed to inspect %s (grep exit %d).\n' "$evidence_file" "$mode_grep_rc" >&2
     exit 1
   fi
   ((fast_cases += 1))
@@ -1991,7 +2151,7 @@ run_work_components_pre_csproj() {
     "src/HVO.SkyMonitor.Processing/Recipe.cs|full|false|false|true|true|true"
     "src/HVO.SkyMonitor.ProcessingRunner/Program.cs|full|false|false|true|true|true"
     "src/HVO.SkyMonitor.ProcessingRunner.Contracts/Contract.cs|full|false|false|true|true|true"
-    "src/HVO.SkyMonitor.Catalog.Sqlite/Catalog.cs|full|false|false|true|true|true"
+    "src/HVO.SkyMonitor.Catalog.Sqlite/Catalog.cs|full|false|false|true|true|true|M"
     "src/HVO.SkyMonitor.Storage.FileSystem/PhysicalRoot.cs|full|false|false|true|true|true"
     "tests/HVO.SkyMonitor.Storage.FileSystem.Tests/RootTests.cs|full|false|false|true|true|true"
     "src/HVO.SkyMonitor.Common/Security/ApiKey.cs|full|false|false|true|true|true"
@@ -2027,7 +2187,7 @@ run_work_components_pre_csproj() {
     "src/HVO.SkyMonitor.CameraAgent.Common/Modules/VirtualSky/Sky.cs|full|false|false|false|true|false"
     "src/HVO.SkyMonitor.Deployment.Contracts/Installation.cs|full|true|false|false|false|true"
     "tests/HVO.SkyMonitor.Deployment.Cli.Tests/InstallerTests.cs|full|true|false|false|false|true"
-    "tools/HVO.SkyMonitor.Deployment.ReleaseTool/Program.cs|full|true|false|false|false|true"
+    "tools/HVO.SkyMonitor.Deployment.ReleaseTool/Program.cs|full|true|false|false|false|true|M"
     "src/HVO.SkyMonitor.TerminalUi/HvoTheme.cs|full|true|false|false|false|true"
     "deploy/split-host/compose.cameraagent.yml|full|true|true|true|true|true"
     "deploy/split-host/camera-modules/allsky01.virtual-asi676mc.full.json|full|true|true|true|true|true"
@@ -2038,30 +2198,33 @@ run_work_components_pre_csproj() {
   )
   verify_component_plan_batch "$repo" "${component_rows[@]}"
 
-  local -a installer_paths=(
-    "scripts/release:cameraagent-publish"
-    "scripts/release:check-cameraagent-publish"
-    "scripts/cameraagent-release.targets"
-    "scripts/test:cameraagent-r2r"
-    "scripts/release:gate"
-    "scripts/release:publish"
-    "scripts/release:assets"
-    "scripts/release:push-image"
-    "scripts/release:prerelease-gate"
-    "scripts/release:publish-prerelease"
-    "scripts/test:release-install"
-    "scripts/test:release-scripts"
-    "scripts/lib/releases.sh"
-    "src/HVO.SkyMonitor.TerminalUi/TerminalText.cs"
+  local -a installer_rows=(
+    "scripts/release:cameraagent-publish|M"
+    "scripts/release:check-cameraagent-publish|M"
+    "scripts/cameraagent-release.targets|M"
+    "scripts/test:cameraagent-r2r|M"
+    "scripts/release:gate|M"
+    "scripts/release:publish|M"
+    "scripts/release:assets|M"
+    "scripts/release:push-image|A"
+    "scripts/release:prerelease-gate|M"
+    "scripts/release:publish-prerelease|M"
+    "scripts/test:release-install|M"
+    "scripts/test:release-scripts|M"
+    "scripts/lib/releases.sh|M"
+    "src/HVO.SkyMonitor.TerminalUi/TerminalText.cs|A"
   )
   local -a specs=() pairs=()
-  local i base head output
-  for ((i = 0; i < ${#installer_paths[@]}; i++)); do
-    specs+=("${installer_paths[$i]}|installer fixture $i"$'\n')
+  local i path expected_status base head output
+  for ((i = 0; i < ${#installer_rows[@]}; i++)); do
+    IFS='|' read -r path _ <<< "${installer_rows[$i]}"
+    specs+=("$path|installer fixture $i"$'\n')
   done
-  batch_commit_pairs pairs "$repo" "${#installer_paths[@]}" "${specs[@]}"
-  for ((i = 0; i < ${#installer_paths[@]}; i++)); do
+  batch_commit_pairs pairs "$repo" "${#installer_rows[@]}" "${specs[@]}"
+  for ((i = 0; i < ${#installer_rows[@]}; i++)); do
+    IFS='|' read -r path expected_status <<< "${installer_rows[$i]}"
     read -r base head <<< "${pairs[$i]}"
+    assert_diff_status "$repo" "$base" "$head" "$expected_status" "$path"
     output="$(classify_in_repo "$repo" pull_request "$base" "$head")"
     assert_plan_output "$output" full true
     assert_suites_output "$output" false true
@@ -2073,11 +2236,18 @@ run_work_links_shard() {
   local repo="$work_root.links.$shard_id"
   cp -a "$work_root_csproj" "$repo"
   local link_probe_index=0 i link_record including_project linked_source including_directory
-  local -a specs=() kinds=() meta_including=() meta_linked=() pairs=()
+  local wildcard_probe owner_probe exp_status allow_path
+  local -a specs=() spec_paths=() spec_statuses=() shard_seeds=()
+  local -a kinds=() meta_including=() meta_linked=() pairs=()
+  local -A shard_seen=()
+  for allow_path in "${allowlisted_paths[@]}"; do
+    shard_seen["$allow_path"]=1
+  done
 
   if (( shard_id == 0 )); then
     verify_component_plan_batch "$repo" \
-      "tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/VirtualSkyPipelineTests.cs|full|false|false|false|true|false"
+      "tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/VirtualSkyPipelineTests.cs|full|false|false|false|true|false|A"
+    shard_seen["tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/VirtualSkyPipelineTests.cs"]=1
   fi
 
   for ((i = shard_id; i < ${#link_records[@]}; i += total_shards)); do
@@ -2088,7 +2258,15 @@ run_work_links_shard() {
     [[ "$linked_source" != *.csproj ]] || continue
     if [[ "$linked_source" == *'*'* || "$linked_source" == *'?'* ]]; then
       ((link_probe_index += 1))
-      specs+=("$(dirname "$linked_source")/WildcardProbe.cs|link classification fixture wildcard-$shard_id-$link_probe_index"$'\n')
+      wildcard_probe="$(dirname "$linked_source")/WildcardProbe.cs"
+      exp_status="${link_expected_wildcard_status[$i]}"
+      if [[ "$exp_status" == M && -z "${shard_seen[$wildcard_probe]+x}" ]]; then
+        shard_seeds+=("$wildcard_probe")
+      fi
+      shard_seen["$wildcard_probe"]=1
+      specs+=("$wildcard_probe|link classification fixture wildcard-$shard_id-$link_probe_index"$'\n')
+      spec_paths+=("$wildcard_probe")
+      spec_statuses+=("$exp_status")
       kinds+=("wildcard")
       meta_including+=("$including_project")
       meta_linked+=("$linked_source")
@@ -2105,12 +2283,33 @@ run_work_links_shard() {
       exit 1
     fi
     including_directory="${csproj_dir_by_project[$including_project]}"
-    specs+=("$including_directory/LinkOwnerProbe.cs|link classification fixture owner-$shard_id-$link_probe_index"$'\n')
+    owner_probe="$including_directory/LinkOwnerProbe.cs"
+    exp_status="${link_expected_owner_status[$i]}"
+    if [[ "$exp_status" == M && -z "${shard_seen[$owner_probe]+x}" ]]; then
+      shard_seeds+=("$owner_probe")
+    fi
+    shard_seen["$owner_probe"]=1
+    specs+=("$owner_probe|link classification fixture owner-$shard_id-$link_probe_index"$'\n')
+    spec_paths+=("$owner_probe")
+    spec_statuses+=("$exp_status")
+
+    exp_status="${link_expected_linked_status[$i]}"
+    if [[ "$exp_status" == M && -z "${shard_seen[$linked_source]+x}" ]]; then
+      shard_seeds+=("$linked_source")
+    fi
+    shard_seen["$linked_source"]=1
     specs+=("$linked_source|link classification fixture linked-$shard_id-$link_probe_index"$'\n')
+    spec_paths+=("$linked_source")
+    spec_statuses+=("$exp_status")
+
     kinds+=("pair")
     meta_including+=("$including_project")
     meta_linked+=("$linked_source")
   done
+
+  if (( ${#shard_seeds[@]} > 0 )); then
+    seed_commit_files "$repo" "${shard_seeds[@]}"
+  fi
 
   if (( ${#specs[@]} > 0 )); then
     batch_commit_pairs pairs "$repo" "${#specs[@]}" "${specs[@]}"
@@ -2121,6 +2320,7 @@ run_work_links_shard() {
       linked_source="${meta_linked[$i]}"
       if [[ "$kind" == wildcard ]]; then
         read -r base head <<< "${pairs[$pair_idx]}"
+        assert_diff_status "$repo" "$base" "$head" "${spec_statuses[$pair_idx]}" "${spec_paths[$pair_idx]}"
         ((pair_idx += 1))
         wildcard_flags="$(classify_in_repo "$repo" pull_request "$base" "$head" | grep -E '^(complete|shared|cameraagent|delivery)=')"
         grep -Fxq 'complete=true' <<< "$wildcard_flags" || {
@@ -2130,9 +2330,11 @@ run_work_links_shard() {
         }
       else
         read -r base head <<< "${pairs[$pair_idx]}"
+        assert_diff_status "$repo" "$base" "$head" "${spec_statuses[$pair_idx]}" "${spec_paths[$pair_idx]}"
         ((pair_idx += 1))
         including_flags="$(classify_in_repo "$repo" pull_request "$base" "$head" | grep -E '^(complete|shared|cameraagent|delivery)=')"
         read -r base head <<< "${pairs[$pair_idx]}"
+        assert_diff_status "$repo" "$base" "$head" "${spec_statuses[$pair_idx]}" "${spec_paths[$pair_idx]}"
         ((pair_idx += 1))
         linked_flags="$(classify_in_repo "$repo" pull_request "$base" "$head" | grep -E '^(complete|shared|cameraagent|delivery)=')"
         while IFS= read -r flag; do
@@ -2218,51 +2420,55 @@ run_work_projdirs_and_complete() {
     "changelog.d/camera-setup.fixed.md|reduced|false|false|false|false|false|A" \
     "changelog.d/123.unknown.md|full|false|true|true|true|true|A"
 
-  local -a complete_matrix_paths=(
-    ".github/workflows/ci.yml"
-    ".github/workflows/release.yml"
-    ".github/workflows/prerelease.yml"
-    ".github/workflows/release-image.yml"
-    "scripts/ci:classify"
-    "scripts/ci:require"
-    "scripts/ci:component-build"
-    "scripts/test:ci-classification"
-    "scripts/coverage:enforce"
-    "scripts/coverage:component"
-    "scripts/coverage:policy"
-    "scripts/coverage/baseline.json"
-    "scripts/coverage/Program.cs"
-    "scripts/test-categories/Program.cs"
-    "scripts/test:test-category-audit"
-    "scripts/package:audit"
-    "scripts/package-audit/allowlist.json"
-    "tests/coverage.runsettings"
-    "tests/unit-test-projects.json"
-    "tests/HVO.SkyMonitor.Architecture.Tests/ArchitectureBoundaryTests.cs"
-    "Directory.Build.props"
-    "Directory.Packages.props"
-    "dotnet-tools.json"
-    "global.json"
-    ".editorconfig"
-    "HVO.SkyMonitor.v9.slnx"
-    ".dockerignore"
-    ".agents/skills/pr-lifecycle/scripts/helper.sh"
-    "unknown/example.txt"
-    "src/Example/Program.cs"
-    "tests/Example.Tests/ExampleTests.cs"
-    "tests/fixtures/frames/sample.bin"
-    "tests/fixtures/catalog/hyg-v42-bright-stars.sqlite"
-    "docs/validation/cameraagent-transient-fault-matrix.json"
-    "tools/asi-capture/capture.sh"
-    "docker/local/Dockerfile"
+  local -a complete_matrix_rows=(
+    ".github/workflows/ci.yml|M"
+    ".github/workflows/release.yml|M"
+    ".github/workflows/prerelease.yml|M"
+    ".github/workflows/release-image.yml|M"
+    "scripts/ci:classify|M"
+    "scripts/ci:require|M"
+    "scripts/ci:component-build|A"
+    "scripts/test:ci-classification|M"
+    "scripts/coverage:enforce|A"
+    "scripts/coverage:component|A"
+    "scripts/coverage:policy|A"
+    "scripts/coverage/baseline.json|A"
+    "scripts/coverage/Program.cs|A"
+    "scripts/test-categories/Program.cs|A"
+    "scripts/test:test-category-audit|A"
+    "scripts/package:audit|A"
+    "scripts/package-audit/allowlist.json|A"
+    "tests/coverage.runsettings|A"
+    "tests/unit-test-projects.json|A"
+    "tests/HVO.SkyMonitor.Architecture.Tests/ArchitectureBoundaryTests.cs|A"
+    "Directory.Build.props|M"
+    "Directory.Packages.props|A"
+    "dotnet-tools.json|A"
+    "global.json|A"
+    ".editorconfig|A"
+    "HVO.SkyMonitor.v9.slnx|A"
+    ".dockerignore|A"
+    ".agents/skills/pr-lifecycle/scripts/helper.sh|A"
+    "unknown/example.txt|A"
+    "src/Example/Program.cs|A"
+    "tests/Example.Tests/ExampleTests.cs|A"
+    "tests/fixtures/frames/sample.bin|A"
+    "tests/fixtures/catalog/hyg-v42-bright-stars.sqlite|M"
+    "docs/validation/cameraagent-transient-fault-matrix.json|M"
+    "tools/asi-capture/capture.sh|A"
+    "docker/local/Dockerfile|A"
   )
   local -a cm_specs=() cm_pairs=()
-  for ((i = 0; i < ${#complete_matrix_paths[@]}; i++)); do
-    cm_specs+=("${complete_matrix_paths[$i]}|complete matrix fixture $i"$'\n')
+  local cm_path cm_status
+  for ((i = 0; i < ${#complete_matrix_rows[@]}; i++)); do
+    IFS='|' read -r cm_path _ <<< "${complete_matrix_rows[$i]}"
+    cm_specs+=("$cm_path|complete matrix fixture $i"$'\n')
   done
-  batch_commit_pairs cm_pairs "$repo" "${#complete_matrix_paths[@]}" "${cm_specs[@]}"
-  for ((i = 0; i < ${#complete_matrix_paths[@]}; i++)); do
+  batch_commit_pairs cm_pairs "$repo" "${#complete_matrix_rows[@]}" "${cm_specs[@]}"
+  for ((i = 0; i < ${#complete_matrix_rows[@]}; i++)); do
+    IFS='|' read -r cm_path cm_status <<< "${complete_matrix_rows[$i]}"
     read -r base head <<< "${cm_pairs[$i]}"
+    assert_diff_status "$repo" "$base" "$head" "$cm_status" "$cm_path"
     probe_output="$(classify_in_repo "$repo" pull_request "$base" "$head")"
     assert_components_output "$probe_output" true true true true
   done
@@ -2341,31 +2547,35 @@ run_work_deploy_fallback_cli() {
   assert_components_output "$output" true true true true
 
   # Deployment paths.
-  local -a deployment_paths=(
-    ".env.template"
-    "docker-compose.apps.yml"
-    "scripts/test:deployment-installer"
-    "scripts/test:deployment-installer-qualification"
-    "scripts/qualify:silo-runtime"
-    "scripts/test:silo-runtime-qualification"
-    "scripts/catalog:install"
-    "scripts/infra:operation-lock"
-    "deploy/acceptance/cameraagent-dual-standalone-smoke/compose.yml"
-    "deploy/hvo-docker/README.md"
-    "deploy/hvo-docker/docker-compose.shared-services.yml"
-    "tests/fixtures/catalog/hyg-v42-bright-stars.sqlite"
-    "src/HVO.SkyMonitor.Deployment.Cli/Program.cs"
-    "tests/HVO.SkyMonitor.Deployment.Distribution.Tests/ReleaseAssetsToolTests.cs"
-    "src/HVO.SkyMonitor.CameraAgent/virtual-asi174.full.json"
-    "src/HVO.SkyMonitor.CameraAgent/virtual-asi178mc.full.json"
+  local -a deployment_rows=(
+    ".env.template|A"
+    "docker-compose.apps.yml|A"
+    "scripts/test:deployment-installer|A"
+    "scripts/test:deployment-installer-qualification|A"
+    "scripts/qualify:silo-runtime|A"
+    "scripts/test:silo-runtime-qualification|A"
+    "scripts/catalog:install|M"
+    "scripts/infra:operation-lock|A"
+    "deploy/acceptance/cameraagent-dual-standalone-smoke/compose.yml|A"
+    "deploy/hvo-docker/README.md|A"
+    "deploy/hvo-docker/docker-compose.shared-services.yml|A"
+    "tests/fixtures/catalog/hyg-v42-bright-stars.sqlite|M"
+    "src/HVO.SkyMonitor.Deployment.Cli/Program.cs|A"
+    "tests/HVO.SkyMonitor.Deployment.Distribution.Tests/ReleaseAssetsToolTests.cs|A"
+    "src/HVO.SkyMonitor.CameraAgent/virtual-asi174.full.json|M"
+    "src/HVO.SkyMonitor.CameraAgent/virtual-asi178mc.full.json|M"
   )
   local -a dep_specs=() dep_pairs=()
-  for ((i = 0; i < ${#deployment_paths[@]}; i++)); do
-    dep_specs+=("${deployment_paths[$i]}|deployment fixture $i"$'\n')
+  local dep_path dep_status
+  for ((i = 0; i < ${#deployment_rows[@]}; i++)); do
+    IFS='|' read -r dep_path _ <<< "${deployment_rows[$i]}"
+    dep_specs+=("$dep_path|deployment fixture $i"$'\n')
   done
-  batch_commit_pairs dep_pairs "$repo" "${#deployment_paths[@]}" "${dep_specs[@]}"
-  for ((i = 0; i < ${#deployment_paths[@]}; i++)); do
+  batch_commit_pairs dep_pairs "$repo" "${#deployment_rows[@]}" "${dep_specs[@]}"
+  for ((i = 0; i < ${#deployment_rows[@]}; i++)); do
+    IFS='|' read -r dep_path dep_status <<< "${deployment_rows[$i]}"
     read -r base head <<< "${dep_pairs[$i]}"
+    assert_diff_status "$repo" "$base" "$head" "$dep_status" "$dep_path"
     output="$(classify_in_repo "$repo" pull_request "$base" "$head")"
     assert_plan_output "$output" full true
   done
@@ -2396,6 +2606,7 @@ run_work_deploy_fallback_cli() {
   for ((i = 0; i < ${#targeted_rows[@]}; i++)); do
     IFS='|' read -r tpath tcat tinst <<< "${targeted_rows[$i]}"
     read -r base head <<< "${tgt_pairs[$((i * 2 + 1))]}"
+    assert_diff_status "$repo" "$base" "$head" M "$tpath"
     output="$(classify_in_repo "$repo" pull_request "$base" "$head")"
     assert_plan_output "$output" full true
     assert_suites_output "$output" "$tcat" "$tinst"
