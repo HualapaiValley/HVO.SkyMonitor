@@ -546,9 +546,12 @@ def violations(short, full, queue=None, extra=None):
                      "grep '^complete='", "grep '^delivery='", "grep '^deployment='",
                      '"$complete_val" != complete=false || "$delivery_val" != delivery=false || "$deployment_val" != deployment=false',
                      'component classifier output missing or invalid',
-                     'active canonical coverage floor or baseline requires Deployment.Cli.Tests',
+                     'active Deployment.Cli canonical coverage floor requires Deployment.Cli.Tests',
+                     'coverage baseline or policy validation failed; Deployment.Cli.Tests required',
                      'object_pairs_hook=reject_duplicate_keys',
+                     'or "\\0" in relpath or "\\\\" in relpath or "\\n" in relpath or "\\r" in relpath',
                      '["git", "--literal-pathspecs", "ls-tree", "-t", "-z", base, "--", *relpaths]',
+                     'if out and not out.endswith(b"\\0"):',
                      'return entry is not None and entry[0] in ("100644", "100755") and entry[1] == "blob"',
                      'aggregate = data.get("aggregate")',
                      'if not isinstance(files, dict) or not files:',
@@ -559,6 +562,7 @@ def violations(short, full, queue=None, extra=None):
                      'if path != local_only_allowlist or not isinstance(local_only_reason, str) or not local_only_reason.strip():',
                      'if path not in retired:',
                      'elif not is_regular_blob_entry(entry):',
+                     'if path.startswith(prefixes):',
                      'if measurable_floors == 0:',
                      'run_deployment_cli=%s\\ndeployment_cli_reason=%s\\n',
                      'timeout --signal=TERM --kill-after=5s 30s bash "$classifier" --verify-docs-restore "$base"',
@@ -754,7 +758,11 @@ mutations = (
     ("Deployment.Cli.Tests skips on missing output", short.replace('"$RUN_DEPLOYMENT_CLI" == false', '"$RUN_DEPLOYMENT_CLI" != true', 1), full),
     ("Deployment.Cli.Tests omits deployment flag check", short.replace(' || "$deployment_val" != deployment=false', ''), full),
     ("Deployment.Cli.Tests omits complete flag check", short.replace('"$complete_val" != complete=false || ', ''), full),
-    ("Deployment.Cli.Tests omits active coverage floor fail-closed check", short.replace("active canonical coverage floor or baseline requires Deployment.Cli.Tests", "waived"), full),
+    ("Deployment.Cli.Tests omits active coverage floor fail-closed check", short.replace("active Deployment.Cli canonical coverage floor requires Deployment.Cli.Tests", "waived"), full),
+    ("Deployment.Cli.Tests omits coverage baseline validation fail-closed check", short.replace("coverage baseline or policy validation failed; Deployment.Cli.Tests required", "waived"), full),
+    ("Deployment.Cli.Tests omits Deployment.Cli prefix ownership check", short.replace("if path.startswith(prefixes):", "if False:"), full),
+    ("Deployment.Cli.Tests allows embedded newlines in coverage paths", short.replace(' or "\\n" in relpath or "\\r" in relpath', ''), full),
+    ("Deployment.Cli.Tests allows unterminated ls-tree -z output", short.replace('if out and not out.endswith(b"\\0"):', 'if False:'), full),
     ("Deployment.Cli.Tests omits aggregate coverage schema check", short.replace('aggregate = data.get("aggregate")', 'aggregate = {"line": 0.8, "branch": 0.6, "tolerancePercentagePoints": 0.01}'), full),
     ("Deployment.Cli.Tests omits floor ratio validation", short.replace('if not is_ratio(floor.get("line")) or not is_ratio(floor.get("branch")):', 'if False:'), full),
     ("Deployment.Cli.Tests omits local-only allowlist check", short.replace('if path != local_only_allowlist or not isinstance(local_only_reason, str) or not local_only_reason.strip():', 'if not isinstance(local_only_reason, str) or not local_only_reason.strip():'), full),
@@ -1709,7 +1717,7 @@ exit "$FAKE_EXIT"
         "line": 0.80, "branch": 0.70, "developmentV1LocalOnlyReason": True
     }
     active_deploy_baseline = json.loads(real_coverage_baseline)
-    active_deploy_baseline["files"]["HVO.SkyMonitor.Deployment.Cli/Program.cs"] = {"line": 0.80, "branch": 0.70}
+    active_deploy_baseline["files"]["HVO.SkyMonitor.Deployment.Cli/CommandLine.cs"] = {"line": 0.80, "branch": 0.60}
 
     # Sol M1: single-fault malformed coverage baseline/policy inputs that scripts/coverage:policy rejects
     # must ALSO fail closed in the workload selector rather than selecting run_deployment_cli=false.
@@ -1731,8 +1739,8 @@ exit "$FAKE_EXIT"
     baseline_negative_floor_ratio["files"]["HVO.SkyMonitor.Astronomy/CameraGeometry.cs"]["branch"] = -0.01
     baseline_nan_floor_ratio = real_coverage_baseline.replace("0.843690", "NaN", 1)
     baseline_unauthorized_local_only_deploy = json.loads(real_coverage_baseline)
-    baseline_unauthorized_local_only_deploy["files"]["HVO.SkyMonitor.Deployment.Cli/Program.cs"] = {
-        "line": 0.80, "branch": 0.70, "developmentV1LocalOnlyReason": "unauthorized local-only exemption on live Deployment.Cli floor"
+    baseline_unauthorized_local_only_deploy["files"]["HVO.SkyMonitor.Deployment.Cli/CommandLine.cs"] = {
+        "line": 0.80, "branch": 0.60, "developmentV1LocalOnlyReason": "unauthorized local-only exemption on live Deployment.Cli floor"
     }
     baseline_null_local_only_allowlisted = json.loads(real_coverage_baseline)
     baseline_null_local_only_allowlisted["files"]["tools/HVO.SkyMonitor.Deployment.ReleaseTool/Program.cs"]["developmentV1LocalOnlyReason"] = None
@@ -1760,14 +1768,26 @@ exit "$FAKE_EXIT"
     del shared_missing_below_aggregate_reason["files"]["HVO.SkyMonitor.AgentCore/ArtifactManifestV2.cs"]["belowAggregateReason"]
     shared_weaker_non_escape_floor = json.loads(real_component_baselines["shared"])
     shared_weaker_non_escape_floor["files"]["HVO.SkyMonitor.Astronomy/CameraGeometry.cs"]["line"] = 0.50
-    baseline_duplicate_floor_key = real_coverage_baseline.replace(
-        '"HVO.SkyMonitor.Astronomy/CameraGeometry.cs": { "line": 0.95, "branch": 0.90 },',
-        '"HVO.SkyMonitor.Astronomy/CameraGeometry.cs": { "line": 0.95, "branch": 0.90 },\n'
-        '    "HVO.SkyMonitor.Astronomy/CameraGeometry.cs": { "line": 0.95, "branch": 0.90 },',
-        1,
+
+    def duplicate_floor_key_json(raw_text, floor_key, label):
+        parsed = json.loads(raw_text)
+        if floor_key not in parsed.get("files", {}):
+            raise SystemExit(f"Duplicate floor key fixture missing {floor_key} in {label}")
+        floor_json = json.dumps(parsed["files"][floor_key])
+        pattern = re.compile(rf'({re.escape(json.dumps(floor_key))}\s*:\s*\{{)')
+        mutated, count = pattern.subn(
+            lambda match: f'{json.dumps(floor_key)}: {floor_json},\n    {match.group(1)}',
+            raw_text,
+            count=1,
+        )
+        if count != 1 or mutated == raw_text:
+            raise SystemExit(f"Duplicate floor key fixture did not mutate {label}")
+        json.loads(mutated)
+        return mutated
+
+    baseline_duplicate_floor_key = duplicate_floor_key_json(
+        real_coverage_baseline, "HVO.SkyMonitor.Astronomy/CameraGeometry.cs", "baseline.json"
     )
-    if baseline_duplicate_floor_key == real_coverage_baseline:
-        raise SystemExit("Duplicate baseline floor key fixture did not mutate baseline.json")
     policy_duplicate_key = (
         '{\n'
         '  "retiredSourcePaths": [],\n'
@@ -1778,42 +1798,40 @@ exit "$FAKE_EXIT"
         '  ]\n'
         '}\n'
     )
-    shared_duplicate_floor_key = real_component_baselines["shared"].replace(
-        '"HVO.SkyMonitor.Astronomy/CameraGeometry.cs": {',
-        '"HVO.SkyMonitor.Astronomy/CameraGeometry.cs": { "line": 0.95, "branch": 0.90 },\n'
-        '    "HVO.SkyMonitor.Astronomy/CameraGeometry.cs": {',
-        1,
+    shared_duplicate_floor_key = duplicate_floor_key_json(
+        real_component_baselines["shared"], "HVO.SkyMonitor.Astronomy/CameraGeometry.cs", "baseline.shared.json"
     )
-    if shared_duplicate_floor_key == real_component_baselines["shared"]:
-        raise SystemExit("Duplicate shared baseline floor key fixture did not mutate baseline.shared.json")
 
-    for floor_label, baseline_override, policy_override in (
-        ("active Deployment.Cli floor on base prevents skip", json.dumps(active_deploy_baseline), None),
-        ("missing coverage baseline on base fails closed", False, None),
-        ("baseline missing files key fails closed", malformed_baseline_missing_files, None),
-        ("baseline non-object files list fails closed", malformed_baseline_list_files, None),
-        ("baseline non-object entry in files fails closed", malformed_baseline_non_object_entry, None),
-        ("policy retiredSourcePaths object fails closed", json.dumps(baseline_with_missing_deploy_floor), malformed_policy_dict_retired),
-        ("blank developmentV1LocalOnlyReason fails closed", json.dumps(baseline_with_blank_local_only), None),
-        ("non-string developmentV1LocalOnlyReason fails closed", json.dumps(baseline_with_non_string_local_only), None),
-        ("missing aggregate fails closed", json.dumps(baseline_missing_aggregate), None),
-        ("non-positive aggregate line ratio fails closed", json.dumps(baseline_zero_aggregate_line), None),
-        ("out-of-range aggregate tolerancePercentagePoints fails closed", json.dumps(baseline_out_of_range_aggregate_tol), None),
-        ("missing floor ratio fails closed", json.dumps(baseline_missing_floor_ratio), None),
-        ("string non-numeric floor ratio fails closed", json.dumps(baseline_string_floor_ratio), None),
-        ("boolean non-numeric floor ratio fails closed", json.dumps(baseline_bool_floor_ratio), None),
-        ("out-of-range floor ratio above 1 fails closed", json.dumps(baseline_gt1_floor_ratio), None),
-        ("out-of-range negative floor ratio fails closed", json.dumps(baseline_negative_floor_ratio), None),
-        ("non-finite NaN ratio fails closed", baseline_nan_floor_ratio, None),
-        ("unauthorized developmentV1LocalOnlyReason on live Deployment.Cli floor fails closed", json.dumps(baseline_unauthorized_local_only_deploy), None),
-        ("null developmentV1LocalOnlyReason on allowlisted ReleaseTool fails closed", json.dumps(baseline_null_local_only_allowlisted), None),
-        ("blank developmentV1LocalOnlyReason on allowlisted ReleaseTool fails closed", json.dumps(baseline_blank_local_only_allowlisted), None),
-        ("unauthorized retiredSourcePaths addition in policy fails closed", json.dumps(baseline_with_missing_deploy_floor), json.dumps(policy_unauthorized_retired)),
-        ("missing pinned retired floor in baseline fails closed", json.dumps(baseline_missing_pinned_retired), None),
-        ("missing non-retired shared source path floor in baseline fails closed", json.dumps(baseline_missing_non_retired_shared), None),
-        ("removed required ArtifactManifestV2.cs canonical floor fails closed", json.dumps(baseline_missing_artifact_manifest_v2), None),
-        ("duplicate floor key in baseline.json fails closed", baseline_duplicate_floor_key, None),
-        ("duplicate key in policy.json fails closed", None, policy_duplicate_key),
+    deploy_floor_active_reason = "deployment_cli_reason=active Deployment.Cli canonical coverage floor requires Deployment.Cli.Tests"
+    deploy_floor_invalid_reason = "deployment_cli_reason=coverage baseline or policy validation failed; Deployment.Cli.Tests required"
+
+    for floor_label, baseline_override, policy_override, expected_reason in (
+        ("active Deployment.Cli floor on base prevents skip", json.dumps(active_deploy_baseline), None, deploy_floor_active_reason),
+        ("missing coverage baseline on base fails closed", False, None, deploy_floor_invalid_reason),
+        ("baseline missing files key fails closed", malformed_baseline_missing_files, None, deploy_floor_invalid_reason),
+        ("baseline non-object files list fails closed", malformed_baseline_list_files, None, deploy_floor_invalid_reason),
+        ("baseline non-object entry in files fails closed", malformed_baseline_non_object_entry, None, deploy_floor_invalid_reason),
+        ("policy retiredSourcePaths object fails closed", json.dumps(baseline_with_missing_deploy_floor), malformed_policy_dict_retired, deploy_floor_invalid_reason),
+        ("blank developmentV1LocalOnlyReason fails closed", json.dumps(baseline_with_blank_local_only), None, deploy_floor_invalid_reason),
+        ("non-string developmentV1LocalOnlyReason fails closed", json.dumps(baseline_with_non_string_local_only), None, deploy_floor_invalid_reason),
+        ("missing aggregate fails closed", json.dumps(baseline_missing_aggregate), None, deploy_floor_invalid_reason),
+        ("non-positive aggregate line ratio fails closed", json.dumps(baseline_zero_aggregate_line), None, deploy_floor_invalid_reason),
+        ("out-of-range aggregate tolerancePercentagePoints fails closed", json.dumps(baseline_out_of_range_aggregate_tol), None, deploy_floor_invalid_reason),
+        ("missing floor ratio fails closed", json.dumps(baseline_missing_floor_ratio), None, deploy_floor_invalid_reason),
+        ("string non-numeric floor ratio fails closed", json.dumps(baseline_string_floor_ratio), None, deploy_floor_invalid_reason),
+        ("boolean non-numeric floor ratio fails closed", json.dumps(baseline_bool_floor_ratio), None, deploy_floor_invalid_reason),
+        ("out-of-range floor ratio above 1 fails closed", json.dumps(baseline_gt1_floor_ratio), None, deploy_floor_invalid_reason),
+        ("out-of-range negative floor ratio fails closed", json.dumps(baseline_negative_floor_ratio), None, deploy_floor_invalid_reason),
+        ("non-finite NaN ratio fails closed", baseline_nan_floor_ratio, None, deploy_floor_invalid_reason),
+        ("unauthorized developmentV1LocalOnlyReason on live Deployment.Cli floor fails closed", json.dumps(baseline_unauthorized_local_only_deploy), None, deploy_floor_invalid_reason),
+        ("null developmentV1LocalOnlyReason on allowlisted ReleaseTool fails closed", json.dumps(baseline_null_local_only_allowlisted), None, deploy_floor_invalid_reason),
+        ("blank developmentV1LocalOnlyReason on allowlisted ReleaseTool fails closed", json.dumps(baseline_blank_local_only_allowlisted), None, deploy_floor_invalid_reason),
+        ("unauthorized retiredSourcePaths addition in policy fails closed", json.dumps(baseline_with_missing_deploy_floor), json.dumps(policy_unauthorized_retired), deploy_floor_invalid_reason),
+        ("missing pinned retired floor in baseline fails closed", json.dumps(baseline_missing_pinned_retired), None, deploy_floor_invalid_reason),
+        ("missing non-retired shared source path floor in baseline fails closed", json.dumps(baseline_missing_non_retired_shared), None, deploy_floor_invalid_reason),
+        ("removed required ArtifactManifestV2.cs canonical floor fails closed", json.dumps(baseline_missing_artifact_manifest_v2), None, deploy_floor_invalid_reason),
+        ("duplicate floor key in baseline.json fails closed", baseline_duplicate_floor_key, None, deploy_floor_invalid_reason),
+        ("duplicate key in policy.json fails closed", None, policy_duplicate_key, deploy_floor_invalid_reason),
     ):
         git("checkout", "-q", "--detach", filter_base)
         if baseline_override is False:
@@ -1838,12 +1856,13 @@ exit "$FAKE_EXIT"
                                 capture_output=True, text=True)
         lines = output.read_text().splitlines()
         if (result.returncode or "run_full=true" not in lines or "run_deployment_cli=true" not in lines or
-                "deployment_cli_reason=active canonical coverage floor or baseline requires Deployment.Cli.Tests" not in lines):
+                expected_reason not in lines):
             raise SystemExit(f"Coverage floor fail-closed case '{floor_label}' failed: {lines} {result.stderr}")
         deploy_cases += 1
 
-    # Additional delta3 M1/M2/M3 probes exercising component baselines, deleted non-retired
-    # source files (shared and allowlisted local-only), and exact Git 120000 symlink entries.
+    # Additional delta3/delta4 probes exercising component baselines, deleted non-retired
+    # source files (shared and allowlisted local-only), exact Git 120000 symlink entries,
+    # and tracked coverage paths containing embedded newline/CR characters.
     def run_synthetic_tree_case(case_label, mutator):
         git("checkout", "-f", "-q", "--detach", filter_base)
         mutator()
@@ -1864,7 +1883,7 @@ exit "$FAKE_EXIT"
                                 capture_output=True, text=True)
         lines = output.read_text().splitlines()
         if (result.returncode or "run_full=true" not in lines or "run_deployment_cli=true" not in lines or
-                "deployment_cli_reason=active canonical coverage floor or baseline requires Deployment.Cli.Tests" not in lines):
+                deploy_floor_invalid_reason not in lines):
             raise SystemExit(f"Coverage tree parity case '{case_label}' failed: {lines} {result.stderr}")
 
     def stage_blob(mode, relpath, content):
@@ -1873,6 +1892,15 @@ exit "$FAKE_EXIT"
             cwd=fixture, input=content, text=True, check=True, capture_output=True,
         ).stdout.strip()
         git("update-index", "--add", "--cacheinfo", f"{mode},{blob_oid},{relpath}")
+
+    def stage_tracked_newline_floor(rel_floor_path):
+        mutated_baseline = json.loads(real_coverage_baseline)
+        mutated_baseline["files"][rel_floor_path] = {"line": 0.90, "branch": 0.80}
+        mutated_shared = json.loads(real_component_baselines["shared"])
+        mutated_shared["files"][rel_floor_path] = {"line": 0.90, "branch": 0.80}
+        stage_blob("100644", f"src/{rel_floor_path}", "// tracked embedded newline path\n")
+        stage_blob("100644", "scripts/coverage/baseline.json", json.dumps(mutated_baseline))
+        stage_blob("100644", "scripts/coverage/baseline.shared.json", json.dumps(mutated_shared))
 
     for tree_label, mutator in (
         (
@@ -1926,9 +1954,69 @@ exit "$FAKE_EXIT"
             "git symlink (120000) retired Deployment.Cli source file fails closed",
             lambda: stage_blob("120000", "src/HVO.SkyMonitor.Deployment.Cli/DistributionCatalogAcquirer.cs", "Program.cs"),
         ),
+        (
+            "tracked coverage path with embedded LF newline fails closed for coverage:policy parity",
+            lambda: stage_tracked_newline_floor("HVO.SkyMonitor.Astronomy/Line\nBreak.cs"),
+        ),
+        (
+            "tracked coverage path with embedded CR newline fails closed for coverage:policy parity",
+            lambda: stage_tracked_newline_floor("HVO.SkyMonitor.Astronomy/Return\rBreak.cs"),
+        ),
     ):
         run_synthetic_tree_case(tree_label, mutator)
         deploy_cases += 1
+    git("checkout", "-f", "-q", "--detach", filter_base)
+
+    # Delta4 Sol L1: fault-inject an unterminated (missing trailing NUL) git ls-tree -z
+    # response on a valid CameraAgent-only PR and confirm the selector fails closed.
+    (fixture / "src/HVO.SkyMonitor.CameraAgent/Components/Home.razor").write_text("ca-only-ls-tree-fault\n")
+    git("commit", "-qam", "ca-only ls-tree fault probe")
+    ls_tree_head = git("rev-parse", "HEAD")
+    ls_tree_tree = git("rev-parse", "HEAD^{tree}")
+    ls_tree_merge = git("commit-tree", ls_tree_tree, "-p", filter_base, "-p", ls_tree_head, "-m", "merge ls-tree fault probe")
+    git("checkout", "-q", "--detach", ls_tree_merge)
+    real_git_bin = shutil.which("git")
+    if not real_git_bin:
+        raise SystemExit("Unable to locate git binary for ls-tree fault injection")
+    ls_tree_fault_bin = fixture / "ls-tree-fault-bin"
+    ls_tree_fault_bin.mkdir()
+    fake_git = ls_tree_fault_bin / "git"
+    fake_git.write_text(f"""#!/usr/bin/env python3
+import os, subprocess, sys
+proc = subprocess.run([{real_git_bin!r}, *sys.argv[1:]], stdout=subprocess.PIPE)
+out = proc.stdout
+mode = os.environ.get("HVO_TEST_TRUNCATE_LS_TREE", "none")
+if "ls-tree" in sys.argv[1:] and out:
+    if mode == "strip_nul" and out.endswith(b"\\0"):
+        out = out[:-1]
+    elif mode == "trailing_unterminated":
+        out = out + b"100644 blob 0000000000000000000000000000000000000000\\tpartial/truncated.cs"
+sys.stdout.buffer.write(out)
+sys.exit(proc.returncode)
+""")
+    fake_git.chmod(0o700)
+    for truncate_mode, expect_deploy, expect_reason in (
+        ("none", "false", None),
+        ("strip_nul", "true", deploy_floor_invalid_reason),
+        ("trailing_unterminated", "true", deploy_floor_invalid_reason),
+    ):
+        output.write_text("")
+        fault_env = dict(
+            env,
+            PATH=f"{ls_tree_fault_bin}:{os.environ['PATH']}",
+            HVO_TEST_TRUNCATE_LS_TREE=truncate_mode,
+            GITHUB_SHA=ls_tree_merge,
+            EVENT_NAME="pull_request",
+            PR_HEAD_SHA=ls_tree_head,
+            MERGE_GROUP_RUN_ID="",
+        )
+        result = subprocess.run(["bash", "-euo", "pipefail", "-c", fast_script], cwd=fixture, env=fault_env,
+                                capture_output=True, text=True)
+        lines = output.read_text().splitlines()
+        if (result.returncode or "run_full=true" not in lines or f"run_deployment_cli={expect_deploy}" not in lines or
+                (expect_reason is not None and expect_reason not in lines)):
+            raise SystemExit(f"ls-tree trailing-NUL fault case (mode={truncate_mode}) failed: {lines} {result.stderr}")
+    deploy_cases += 2
     git("checkout", "-f", "-q", "--detach", filter_base)
 
     # Sol M2: merge_group ALWAYS forces run_full=true and run_deployment_cli=true even if MERGE_GROUP_RUN_ID is non-empty.

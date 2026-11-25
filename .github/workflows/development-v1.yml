@@ -312,7 +312,8 @@ jobs:
                     fi
                   done
                   if [[ "$deploy_cli_skip_eligible" == true ]]; then
-                    if ! python3 - "$base" <<'PY_DEPLOY_FLOORS'
+                    deploy_floor_rc=0
+                    python3 - "$base" <<'PY_DEPLOY_FLOORS' || deploy_floor_rc=$?
           import json, math, subprocess, sys
           base = sys.argv[1]
           prefixes = ("HVO.SkyMonitor.Deployment.Cli/", "HVO.SkyMonitor.Deployment.Contracts/", "HVO.SkyMonitor.TerminalUi/")
@@ -340,7 +341,8 @@ jobs:
                   return False
               return (0 < value <= 1) if positive else (0 <= value <= 1)
           def is_valid_relpath(relpath):
-              if not isinstance(relpath, str) or not relpath or relpath != relpath.strip() or "\0" in relpath or "\\" in relpath:
+              if (not isinstance(relpath, str) or not relpath or relpath != relpath.strip()
+                      or "\0" in relpath or "\\" in relpath or "\n" in relpath or "\r" in relpath):
                   return False
               parts = relpath.split("/")
               return len(parts) >= 2 and not any(part in ("", ".", "..") for part in parts)
@@ -351,10 +353,12 @@ jobs:
               out = subprocess.check_output(
                   ["git", "--literal-pathspecs", "ls-tree", "-t", "-z", base, "--", *relpaths]
               )
+              if out and not out.endswith(b"\0"):
+                  raise ValueError("unterminated git ls-tree -z output")
               entries = {}
-              for raw in out.split(b"\0"):
+              for raw in out.split(b"\0")[:-1]:
                   if not raw:
-                      continue
+                      raise ValueError("empty git ls-tree -z record")
                   meta, raw_path = raw.split(b"\t", 1)
                   entry_path = raw_path.decode("utf-8", "surrogateescape")
                   if entry_path not in wanted:
@@ -482,9 +486,12 @@ jobs:
           if measurable_floors == 0:
               sys.exit(2)
           PY_DEPLOY_FLOORS
-                    then
+                    if [[ "$deploy_floor_rc" -eq 1 ]]; then
                       deploy_cli_skip_eligible=false
-                      deployment_cli_reason='active canonical coverage floor or baseline requires Deployment.Cli.Tests'
+                      deployment_cli_reason='active Deployment.Cli canonical coverage floor requires Deployment.Cli.Tests'
+                    elif [[ "$deploy_floor_rc" -ne 0 ]]; then
+                      deploy_cli_skip_eligible=false
+                      deployment_cli_reason='coverage baseline or policy validation failed; Deployment.Cli.Tests required'
                     fi
                   fi
                   if [[ "$deploy_cli_skip_eligible" == true ]]; then
