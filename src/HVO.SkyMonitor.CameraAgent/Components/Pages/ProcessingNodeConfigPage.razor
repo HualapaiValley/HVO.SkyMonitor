@@ -130,7 +130,7 @@
                     {
                         <ProcessingNodeOptionsEditor IdPrefix="@($"node-options-{_nodeIndex}")" Form="optionsForm" Changed="FormChanged"
                             NodeEnabled="@(_model.SchemaVersion == CapturePipelineSchemaVersions.ExplicitV2 ? _node.Enabled : null)"
-                            NodeEnabledChanged="value => { _node.Enabled = value; _model.EnsureRegionalVisibilityWiring(_node); }"
+                            NodeEnabledChanged="OnNodeEnabledChanged"
                             ShowResetToDefaults="true" />
                     }
                 </fieldset>

@@ -141,10 +141,13 @@ internal sealed class ProcessingGraphDraftModel
         }
 
         node.DependsOn.Add(predictionAlias);
-        var astrometryNode = Nodes.FirstOrDefault(static existing =>
-            existing.Enabled &&
-            (string.Equals(existing.Type, "MeasuredAstrometry", StringComparison.OrdinalIgnoreCase) ||
-             string.Equals(existing.Type, "ExposureMeasuredAstrometry", StringComparison.OrdinalIgnoreCase)));
+        var nodeIndex = Nodes.IndexOf(node);
+        var astrometryNode = Nodes
+            .Where((_, position) => position < nodeIndex)
+            .FirstOrDefault(static existing =>
+                existing.Enabled &&
+                (string.Equals(existing.Type, "MeasuredAstrometry", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(existing.Type, "ExposureMeasuredAstrometry", StringComparison.OrdinalIgnoreCase)));
         if (astrometryNode is not null && !string.IsNullOrWhiteSpace(astrometryNode.Id))
         {
             node.DependsOn.Add(astrometryNode.Id.Trim());

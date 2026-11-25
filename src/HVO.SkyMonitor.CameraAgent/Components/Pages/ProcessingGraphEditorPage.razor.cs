@@ -228,6 +228,16 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
         FormChanged();
     }
 
+    private void NodeEnabledChanged(ProcessingGraphDraftModel.NodeRow node, bool value)
+    {
+        if (node.Enabled == value)
+        {
+            return;
+        }
+        node.Enabled = value;
+        NodeConfigurationChanged(node);
+    }
+
     private void NodeConfigurationChanged(ProcessingGraphDraftModel.NodeRow node)
     {
         _model.EnsureRegionalVisibilityWiring(node);

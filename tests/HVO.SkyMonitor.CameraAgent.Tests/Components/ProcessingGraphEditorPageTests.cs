@@ -522,6 +522,188 @@ public sealed class ProcessingGraphEditorPageTests
         }
     }
 
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public void GraphEditorRegionalVisibilityResetDoesNotAddUnselectedSolveDependencyAndAllowsPreviewAndSave(bool solveBeforeRegional)
+    {
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
+        var measurement = new CaptureProcessingStepConfig(
+            ExposureMeasurementProducts.StepAlias, ExposureMeasurementProducts.StepAlias, 4, null, ["$raw"], Required: false, Enabled: true, Publication: durable);
+        var prediction = new CaptureProcessingStepConfig(
+            ExposureCatalogPredictionProducts.StepAlias, ExposureCatalogPredictionProducts.StepAlias, 5, null, ["$raw"], Required: false, Enabled: true, Publication: durable);
+        var regional = new CaptureProcessingStepConfig(
+            RegionalStellarVisibilityProducts.StepAlias, "regional", 30,
+            JsonDocument.Parse("""{ "gridColumns": 6 }""").RootElement.Clone(),
+            ["$raw", ExposureMeasurementProducts.StepAlias, ExposureCatalogPredictionProducts.StepAlias],
+            Required: false, Enabled: true, Publication: durable);
+        var solve = new CaptureProcessingStepConfig(
+            CaptureAnalysisOptionDescriptors.CenteredAstrometryAlias, "solve", solveBeforeRegional ? 20 : 40,
+            null, ["$raw", ExposureMeasurementProducts.StepAlias], Required: false, Enabled: true, Publication: durable);
+        CaptureProcessingStepConfig[] steps = solveBeforeRegional
+            ? [measurement, prediction, solve, regional]
+            : [measurement, prediction, regional, solve];
+        var service = CreateEditorService(new CapturePipelineConfig(steps));
+        context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(service);
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/pipeline/graphs/new?from=rev-active");
+
+        var cut = context.Render<ProcessingGraphEditorPage>();
+        var regionalRow = cut.WaitForElement($"li.node-row[data-node-alias='{RegionalStellarVisibilityProducts.StepAlias}']");
+        Assert.AreEqual("6", regionalRow.QuerySelector("input[id$='-gridColumns']")!.GetAttribute("value"));
+
+        regionalRow.QuerySelector("button[id$='-reset-defaults']")!.Click();
+        regionalRow = cut.Find($"li.node-row[data-node-alias='{RegionalStellarVisibilityProducts.StepAlias}']");
+        Assert.AreEqual("4", regionalRow.QuerySelector("input[id$='-gridColumns']")!.GetAttribute("value"));
+
+        cut.Find("form").Submit();
+        Assert.IsEmpty(cut.FindAll(".editor-banner--error[role='alert']"),
+            "Resetting regional options in the graph editor must not add an invalid or unselected dependency.");
+        cut.WaitForAssertion(() => Assert.IsNotNull(cut.Find("svg[role='group']")));
+        Assert.IsFalse(cut.Find(".editor-actions button.btn-primary").HasAttribute("disabled"));
+        cut.Find(".editor-actions button.btn-primary").Click();
+
+        var savedStep = service.Created.Single().Pipeline.Steps.Single(static step => step.Id == "regional");
+        Assert.AreNotEqual(false, savedStep.Enabled);
+        Assert.AreEqual(4, savedStep.Options!.Value.GetProperty("gridColumns").GetInt32());
+        Assert.IsFalse(savedStep.DependsOn!.Contains("solve", StringComparer.Ordinal),
+            "Resetting options on an already-enabled regional node must not add the unselected solve dependency.");
+        Assert.IsTrue(savedStep.DependsOn!.Contains(ExposureCatalogPredictionProducts.StepAlias, StringComparer.Ordinal));
+    }
+
+    [TestMethod]
+    public void GraphEditorRegionalVisibilityToggleDisabledRemovesUnusedPredictionAndReEnableWiresItBack()
+    {
+        var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
+        var enabledPipeline = new CapturePipelineConfig(
+        [
+            new(ExposureMeasurementProducts.StepAlias, ExposureMeasurementProducts.StepAlias, 4, null, ["$raw"], Required: false, Enabled: true, Publication: durable),
+            new(ExposureCatalogPredictionProducts.StepAlias, ExposureCatalogPredictionProducts.StepAlias, 5, null, ["$raw"], Required: false, Enabled: true, Publication: durable),
+            new(RegionalStellarVisibilityProducts.StepAlias, "regional", 30, null,
+                ["$raw", ExposureMeasurementProducts.StepAlias, ExposureCatalogPredictionProducts.StepAlias],
+                Required: false, Enabled: true, Publication: durable)
+        ]);
+
+        // 1. Disabling via the options editor toggle (ProcessingGraphEditorPage.razor:119) prunes unused ExposureCatalogPrediction.
+        CapturePipelineConfig disabledPipeline;
+        using (var disableContext = new BunitContext())
+        {
+            disableContext.JSInterop.Mode = JSRuntimeMode.Loose;
+            var service = CreateEditorService(enabledPipeline);
+            disableContext.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(service);
+            disableContext.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/pipeline/graphs/new?from=rev-active");
+
+            var cut = disableContext.Render<ProcessingGraphEditorPage>();
+            cut.WaitForElement($"li.node-row[data-node-alias='{ExposureCatalogPredictionProducts.StepAlias}']");
+            cut.Find($"li.node-row[data-node-alias='{RegionalStellarVisibilityProducts.StepAlias}'] input[id$='-enabled']").Change(false);
+
+            Assert.IsEmpty(cut.FindAll($"li.node-row[data-node-alias='{ExposureCatalogPredictionProducts.StepAlias}']"),
+                "Disabling the last regional consumer must remove the unused ExposureCatalogPrediction row.");
+
+            cut.Find("form").Submit();
+            Assert.IsEmpty(cut.FindAll(".editor-banner--error[role='alert']"));
+            Assert.IsFalse(cut.Find(".editor-actions button.btn-primary").HasAttribute("disabled"));
+            cut.Find(".editor-actions button.btn-primary").Click();
+
+            disabledPipeline = service.Created.Single().Pipeline;
+            Assert.IsFalse(disabledPipeline.Steps.Any(static step =>
+                string.Equals(step.Type, ExposureCatalogPredictionProducts.StepAlias, StringComparison.OrdinalIgnoreCase)));
+            var savedRegional = disabledPipeline.Steps.Single(static step => step.Id == "regional");
+            Assert.AreEqual(false, savedRegional.Enabled);
+            Assert.IsFalse(savedRegional.DependsOn!.Contains(ExposureCatalogPredictionProducts.StepAlias, StringComparer.Ordinal));
+        }
+
+        // 2. Re-enabling via the options editor toggle wires ExposureCatalogPrediction back cleanly.
+        using (var enableContext = new BunitContext())
+        {
+            enableContext.JSInterop.Mode = JSRuntimeMode.Loose;
+            var service = CreateEditorService(disabledPipeline);
+            enableContext.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(service);
+            enableContext.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/pipeline/graphs/new?from=rev-active");
+
+            var cut = enableContext.Render<ProcessingGraphEditorPage>();
+            cut.WaitForElement($"li.node-row[data-node-alias='{RegionalStellarVisibilityProducts.StepAlias}']");
+            Assert.IsEmpty(cut.FindAll($"li.node-row[data-node-alias='{ExposureCatalogPredictionProducts.StepAlias}']"));
+
+            cut.Find($"li.node-row[data-node-alias='{RegionalStellarVisibilityProducts.StepAlias}'] input[id$='-enabled']").Change(true);
+            Assert.IsNotEmpty(cut.FindAll($"li.node-row[data-node-alias='{ExposureCatalogPredictionProducts.StepAlias}']"),
+                "Re-enabling the regional consumer must wire ExposureCatalogPrediction back.");
+
+            cut.Find("form").Submit();
+            Assert.IsEmpty(cut.FindAll(".editor-banner--error[role='alert']"));
+            Assert.IsFalse(cut.Find(".editor-actions button.btn-primary").HasAttribute("disabled"));
+            cut.Find(".editor-actions button.btn-primary").Click();
+
+            var reEnabledPipeline = service.Created.Single().Pipeline;
+            Assert.IsTrue(reEnabledPipeline.Steps.Any(static step =>
+                string.Equals(step.Type, ExposureCatalogPredictionProducts.StepAlias, StringComparison.OrdinalIgnoreCase)));
+            var savedRegional = reEnabledPipeline.Steps.Single(static step => step.Id == "regional");
+            Assert.AreNotEqual(false, savedRegional.Enabled);
+            Assert.IsTrue(savedRegional.DependsOn!.Contains(ExposureCatalogPredictionProducts.StepAlias, StringComparer.Ordinal));
+        }
+    }
+
+    [TestMethod]
+    public void GraphEditorRegionalVisibilitySectionDeepLinkShowsAnchorWhenPresentAndNoteRoleWhenAbsent()
+    {
+        using (var presentContext = new BunitContext())
+        {
+            presentContext.JSInterop.Mode = JSRuntimeMode.Loose;
+            presentContext.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(CreateEditorService(
+                new CapturePipelineConfig([new(RegionalStellarVisibilityProducts.StepAlias, "regional", 30, null, ["$raw"], Required: false, Enabled: true)])));
+            presentContext.Services.GetRequiredService<NavigationManager>()
+                .NavigateTo("/operations/pipeline/graphs/new?section=regional-stellar-visibility#regional-stellar-visibility");
+
+            var present = presentContext.Render<ProcessingGraphEditorPage>();
+            present.WaitForElement("#regional-stellar-visibility");
+            Assert.IsFalse(present.FindAll("p[role='note']").Any(static notice =>
+                notice.TextContent.Contains("no regional stellar visibility node", StringComparison.Ordinal)));
+        }
+
+        using (var absentContext = new BunitContext())
+        {
+            absentContext.JSInterop.Mode = JSRuntimeMode.Loose;
+            absentContext.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(CreateEditorService(
+                new CapturePipelineConfig([new("Preview", "preview", 10, null, ["$raw"], Enabled: true)])));
+            absentContext.Services.GetRequiredService<NavigationManager>()
+                .NavigateTo("/operations/pipeline/graphs/new?section=regional-stellar-visibility#regional-stellar-visibility");
+
+            var absent = absentContext.Render<ProcessingGraphEditorPage>();
+            absent.WaitForElement(".node-row");
+            Assert.IsEmpty(absent.FindAll("#regional-stellar-visibility"));
+            Assert.IsTrue(
+                absent.FindAll("p[role='note']").Any(static notice =>
+                    notice.TextContent.Contains("This graph has no regional stellar visibility node.", StringComparison.Ordinal)),
+                "Expected regional stellar visibility missing-node notice with role='note'.");
+            Assert.IsFalse(
+                absent.FindAll("p[role='status']").Any(static notice =>
+                    notice.TextContent.Contains("This graph has no regional stellar visibility node.", StringComparison.Ordinal)),
+                "Regional stellar visibility missing-node notice must use role='note', not role='status'.");
+        }
+    }
+
+    private static ProcessingExecutionPagesTests.GraphUiService CreateEditorService(CapturePipelineConfig pipeline)
+    {
+        var registry = ProcessingGraphPagesTests.Registry();
+        return new ProcessingExecutionPagesTests.GraphUiService
+        {
+            Registry = registry,
+            StepAliases = pipeline.Steps.Select(static step => step.Type).Distinct(StringComparer.Ordinal).ToArray(),
+            RevisionDetail = new(registry.Revisions[0], pipeline, null, null),
+            Preview = candidate =>
+            {
+                var nodes = candidate.Steps.Select(static step =>
+                    new CaptureProcessingPlanNode(step.Id!, step.Type, step.Enabled ?? true, step.Required, step.Order, null, step.DependsOn, null, null, null)).ToArray();
+                return OperatorUiResult<CaptureProcessingPlanPreview>.Success(
+                    new(candidate.SchemaVersion, candidate.DependencyPolicy, new string('D', 64), new string('E', 64), nodes, nodes));
+            },
+            Create = command => OperatorUiResult<ProcessingGraphRevisionState>.Success(
+                new("rev-new", command.Name, command.Revision, ProcessingGraphRevisionLifecycle.Draft,
+                    new string('N', 64), new string('S', 64), new string('L', 64), DateTimeOffset.UtcNow, null, null, null))
+        };
+    }
+
     private sealed class StubAuthProvider(ClaimsPrincipal principal) : AuthenticationStateProvider
     {
         public override Task<AuthenticationState> GetAuthenticationStateAsync() => Task.FromResult(new AuthenticationState(principal));

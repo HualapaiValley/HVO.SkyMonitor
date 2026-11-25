@@ -81,7 +81,7 @@
                                     <label>Identifier<input class="form-control" aria-label="Node identifier" @bind="node.Id" @bind:after="FormChanged" /></label>
                                     <label>Type<select class="form-select" aria-label="Node type" @bind="node.Type" @bind:after="() => NodeConfigurationChanged(node)">@if (!GraphService.StepAliases.Contains(node.Type, StringComparer.Ordinal)) { <option value="@node.Type">@node.Type</option> }@foreach (var alias in GraphService.StepAliases) { <option value="@alias">@alias</option> }</select></label>
                                     <label class="check"><input type="checkbox" @bind="node.Required" @bind:after="FormChanged" /> Required</label>
-                                    <label class="check"><input type="checkbox" @bind="node.Enabled" @bind:after="() => NodeConfigurationChanged(node)" /> Enabled</label>
+                                    <label class="check"><input type="checkbox" checked="@node.Enabled" @onchange="args => NodeEnabledChanged(node, args.Value is true)" /> Enabled</label>
                                     <span class="node-row__actions">
                                         <button type="button" class="btn btn-sm btn-outline-light" aria-label="Move @node.Id up" disabled="@(index == 0)" @onclick="() => Move(node, -1)">Move up</button>
                                         <button type="button" class="btn btn-sm btn-outline-light" aria-label="Move @node.Id down" disabled="@(index == _model.Nodes.Count - 1)" @onclick="() => Move(node, 1)">Move down</button>
@@ -116,7 +116,7 @@
                                         {
                                             <ProcessingNodeOptionsEditor IdPrefix="@($"node-options-{index}")" Form="optionsForm" Changed="FormChanged"
                                                 NodeEnabled="@(_model.SchemaVersion == CapturePipelineSchemaVersions.ExplicitV2 ? node.Enabled : null)"
-                                                NodeEnabledChanged="value => { node.Enabled = value; NodeConfigurationChanged(node); }"
+                                                NodeEnabledChanged="value => NodeEnabledChanged(node, value)"
                                                 ShowResetToDefaults="true"
                                                 DeepSkyAnchorId="@DeepSkyOptionsAnchor(node)" />
                                         }

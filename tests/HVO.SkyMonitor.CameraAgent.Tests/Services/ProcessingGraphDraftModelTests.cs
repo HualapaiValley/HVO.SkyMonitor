@@ -172,6 +172,31 @@ public sealed class ProcessingGraphDraftModelTests
     }
 
     [TestMethod]
+    public void EnsureRegionalVisibilityWiringDoesNotAddLaterIneligibleAstrometryDependency()
+    {
+        var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
+        var original = new CapturePipelineConfig(
+        [
+            new(ExposureMeasurementProducts.StepAlias, ExposureMeasurementProducts.StepAlias, Order: 4, DependsOn: ["$raw"], Required: false, Enabled: true, Publication: durable),
+            new(RegionalStellarVisibilityProducts.StepAlias, "regional", Order: 30, DependsOn: ["$raw", ExposureMeasurementProducts.StepAlias], Required: false, Enabled: false, Publication: durable),
+            new(CaptureAnalysisOptionDescriptors.CenteredAstrometryAlias, "solve", Order: 40, DependsOn: ["$raw", ExposureMeasurementProducts.StepAlias], Required: false, Enabled: true, Publication: durable)
+        ]);
+
+        var draft = ProcessingGraphDraftModel.FromPipeline(original, "retained", "regional", "2");
+        var regional = draft.Nodes.Single(static row => row.Id == "regional");
+        regional.Enabled = true;
+        draft.EnsureRegionalVisibilityWiring(regional);
+
+        Assert.IsFalse(regional.DependsOn.Contains("solve"),
+            "EnsureRegionalVisibilityWiring must not wire a later astrometry node that is ineligible as a predecessor.");
+        Assert.IsTrue(regional.DependsOn.Contains(ExposureCatalogPredictionProducts.StepAlias));
+        Assert.IsTrue(draft.TryBuild(out var rebuilt, out var errors), string.Join(" ", errors));
+        var rebuiltRegional = rebuilt.Steps.Single(static step => step.Id == "regional");
+        Assert.IsFalse(rebuiltRegional.DependsOn!.Contains("solve", StringComparer.Ordinal));
+        Assert.IsTrue(rebuiltRegional.DependsOn!.Contains(ExposureCatalogPredictionProducts.StepAlias, StringComparer.Ordinal));
+    }
+
+    [TestMethod]
     public void FromPipeline_CarriesSchemaAndDependencyPolicyIntoTheBuiltDraft()
     {
         var legacy = new CapturePipelineConfig(

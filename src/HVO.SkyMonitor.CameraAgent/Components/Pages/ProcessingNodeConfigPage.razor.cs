@@ -204,6 +204,16 @@ public sealed partial class ProcessingNodeConfigPage : ComponentBase, IDisposabl
         }
     }
 
+    private void OnNodeEnabledChanged(bool value)
+    {
+        if (_node is null || _node.Enabled == value)
+        {
+            return;
+        }
+        _node.Enabled = value;
+        _model.EnsureRegionalVisibilityWiring(_node);
+    }
+
     private void FormChanged()
     {
         _draftGeneration++;

@@ -921,6 +921,133 @@ public sealed class ProcessingNodeConfigPageTests
         Assert.AreEqual("[1e+02]", repaired.GetProperty("future").GetRawText());
     }
 
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public void DedicatedPageRegionalVisibilityResetDoesNotAddUnselectedSolveDependencyAndAllowsPreviewAndSave(bool solveBeforeRegional)
+    {
+        using var context = new BunitContext();
+        var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
+        var measurement = new CaptureProcessingStepConfig(
+            ExposureMeasurementProducts.StepAlias, ExposureMeasurementProducts.StepAlias, 4, null, ["$raw"], Required: false, Enabled: true, Publication: durable);
+        var prediction = new CaptureProcessingStepConfig(
+            ExposureCatalogPredictionProducts.StepAlias, ExposureCatalogPredictionProducts.StepAlias, 5, null, ["$raw"], Required: false, Enabled: true, Publication: durable);
+        var regional = new CaptureProcessingStepConfig(
+            RegionalStellarVisibilityProducts.StepAlias, "regional", 30,
+            JsonDocument.Parse("""{ "gridColumns": 6 }""").RootElement.Clone(),
+            ["$raw", ExposureMeasurementProducts.StepAlias, ExposureCatalogPredictionProducts.StepAlias],
+            Required: false, Enabled: true, Publication: durable);
+        var solve = new CaptureProcessingStepConfig(
+            CaptureAnalysisOptionDescriptors.CenteredAstrometryAlias, "solve", solveBeforeRegional ? 20 : 40,
+            null, ["$raw", ExposureMeasurementProducts.StepAlias], Required: false, Enabled: true, Publication: durable);
+        CaptureProcessingStepConfig[] steps = solveBeforeRegional
+            ? [measurement, prediction, solve, regional]
+            : [measurement, prediction, regional, solve];
+        var regionalIndex = solveBeforeRegional ? 3 : 2;
+        var service = Configure(context, new CapturePipelineConfig(steps));
+
+        var cut = context.Render<ProcessingNodeConfigPage>(parameters => parameters
+            .Add(static page => page.RevisionId, "rev-active")
+            .Add(static page => page.NodeId, "regional"));
+
+        var gridColumnsId = $"#node-options-{regionalIndex}-gridColumns";
+        var resetButtonId = $"#node-options-{regionalIndex}-reset-defaults";
+        cut.WaitForElement(gridColumnsId);
+        Assert.AreEqual("6", cut.Find(gridColumnsId).GetAttribute("value"));
+        Assert.IsFalse(cut.Find(resetButtonId).HasAttribute("disabled"));
+
+        // Resetting options on an already-enabled regional node must not rerun wiring or add unselected solve.
+        cut.Find(resetButtonId).Click();
+        Assert.AreEqual("4", cut.Find(gridColumnsId).GetAttribute("value"));
+        Assert.IsTrue(cut.Find(resetButtonId).HasAttribute("disabled"));
+
+        cut.Find("form").Submit();
+        Assert.IsEmpty(cut.FindAll(".config-banner--error[role='alert']"),
+            "Resetting regional options must not introduce an invalid or unselected dependency that blocks preview.");
+        Assert.IsFalse(cut.Find("button.btn-primary").HasAttribute("disabled"));
+        cut.Find("button.btn-primary").Click();
+
+        var savedStep = service.Created.Single().Pipeline.Steps.Single(static step => step.Id == "regional");
+        Assert.AreNotEqual(false, savedStep.Enabled);
+        Assert.AreEqual(4, savedStep.Options!.Value.GetProperty("gridColumns").GetInt32());
+        Assert.IsFalse(savedStep.DependsOn!.Contains("solve", StringComparer.Ordinal),
+            "Resetting options on an already-enabled regional node must not add the unselected solve dependency.");
+        Assert.IsTrue(savedStep.DependsOn!.Contains(ExposureCatalogPredictionProducts.StepAlias, StringComparer.Ordinal));
+    }
+
+    [TestMethod]
+    public void DedicatedPageRegionalVisibilityToggleDisabledRemovesUnusedPredictionAndReEnableWiresItBack()
+    {
+        var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
+        var enabledPipeline = new CapturePipelineConfig(
+        [
+            new(ExposureMeasurementProducts.StepAlias, ExposureMeasurementProducts.StepAlias, 4, null, ["$raw"], Required: false, Enabled: true, Publication: durable),
+            new(ExposureCatalogPredictionProducts.StepAlias, ExposureCatalogPredictionProducts.StepAlias, 5, null, ["$raw"], Required: false, Enabled: true, Publication: durable),
+            new(RegionalStellarVisibilityProducts.StepAlias, "regional", 30, null,
+                ["$raw", ExposureMeasurementProducts.StepAlias, ExposureCatalogPredictionProducts.StepAlias],
+                Required: false, Enabled: true, Publication: durable)
+        ]);
+
+        // 1. Disabling the regional node removes the unused auto-added ExposureCatalogPrediction step and dependency.
+        CapturePipelineConfig disabledPipeline;
+        using (var disableContext = new BunitContext())
+        {
+            var service = Configure(disableContext, enabledPipeline);
+            var cut = disableContext.Render<ProcessingNodeConfigPage>(parameters => parameters
+                .Add(static page => page.RevisionId, "rev-active")
+                .Add(static page => page.NodeId, "regional"));
+            cut.WaitForElement("#node-options-2-enabled");
+            Assert.IsTrue(cut.FindAll(".node-switcher__item").Any(static item =>
+                item.TextContent.Contains(ExposureCatalogPredictionProducts.StepAlias, StringComparison.Ordinal)));
+
+            cut.Find("#node-options-2-enabled").Change(false);
+            Assert.IsFalse(cut.FindAll(".node-switcher__item").Any(static item =>
+                item.TextContent.Contains(ExposureCatalogPredictionProducts.StepAlias, StringComparison.Ordinal)),
+                "Disabling the last regional consumer must prune the unused ExposureCatalogPrediction step.");
+
+            cut.Find("form").Submit();
+            Assert.IsEmpty(cut.FindAll(".config-banner--error[role='alert']"));
+            Assert.IsFalse(cut.Find("button.btn-primary").HasAttribute("disabled"));
+            cut.Find("button.btn-primary").Click();
+
+            disabledPipeline = service.Created.Single().Pipeline;
+            Assert.IsFalse(disabledPipeline.Steps.Any(static step =>
+                string.Equals(step.Type, ExposureCatalogPredictionProducts.StepAlias, StringComparison.OrdinalIgnoreCase)));
+            var savedRegional = disabledPipeline.Steps.Single(static step => step.Id == "regional");
+            Assert.AreEqual(false, savedRegional.Enabled);
+            Assert.IsFalse(savedRegional.DependsOn!.Contains(ExposureCatalogPredictionProducts.StepAlias, StringComparer.Ordinal));
+        }
+
+        // 2. Re-enabling the regional node wires ExposureCatalogPrediction back cleanly.
+        using (var enableContext = new BunitContext())
+        {
+            var service = Configure(enableContext, disabledPipeline);
+            var cut = enableContext.Render<ProcessingNodeConfigPage>(parameters => parameters
+                .Add(static page => page.RevisionId, "rev-active")
+                .Add(static page => page.NodeId, "regional"));
+            cut.WaitForElement("#node-options-1-enabled");
+            Assert.IsFalse(cut.FindAll(".node-switcher__item").Any(static item =>
+                item.TextContent.Contains(ExposureCatalogPredictionProducts.StepAlias, StringComparison.Ordinal)));
+
+            cut.Find("#node-options-1-enabled").Change(true);
+            Assert.IsTrue(cut.FindAll(".node-switcher__item").Any(static item =>
+                item.TextContent.Contains(ExposureCatalogPredictionProducts.StepAlias, StringComparison.Ordinal)),
+                "Re-enabling the regional consumer must wire ExposureCatalogPrediction back.");
+
+            cut.Find("form").Submit();
+            Assert.IsEmpty(cut.FindAll(".config-banner--error[role='alert']"));
+            Assert.IsFalse(cut.Find("button.btn-primary").HasAttribute("disabled"));
+            cut.Find("button.btn-primary").Click();
+
+            var reEnabledPipeline = service.Created.Single().Pipeline;
+            Assert.IsTrue(reEnabledPipeline.Steps.Any(static step =>
+                string.Equals(step.Type, ExposureCatalogPredictionProducts.StepAlias, StringComparison.OrdinalIgnoreCase)));
+            var savedRegional = reEnabledPipeline.Steps.Single(static step => step.Id == "regional");
+            Assert.AreNotEqual(false, savedRegional.Enabled);
+            Assert.IsTrue(savedRegional.DependsOn!.Contains(ExposureCatalogPredictionProducts.StepAlias, StringComparer.Ordinal));
+        }
+    }
+
     private static ProcessingExecutionPagesTests.GraphUiService Configure(BunitContext context, CapturePipelineConfig pipeline)
     {
         context.JSInterop.Mode = JSRuntimeMode.Loose;

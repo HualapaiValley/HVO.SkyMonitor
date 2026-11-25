@@ -26,7 +26,11 @@ public sealed partial class ProcessingNodeOptionsEditor : ComponentBase
         Form.ResetAllToDefaults();
         if (NodeEnabled.HasValue && Form.Descriptor.Find("enabled") is { } enabledOption)
         {
-            await NodeEnabledChanged.InvokeAsync(enabledOption.DefaultValue.AsToggle()).ConfigureAwait(false);
+            var defaultEnabled = enabledOption.DefaultValue.AsToggle();
+            if (NodeEnabled.Value != defaultEnabled)
+            {
+                await NodeEnabledChanged.InvokeAsync(defaultEnabled).ConfigureAwait(false);
+            }
         }
         await Changed.InvokeAsync().ConfigureAwait(false);
     }
@@ -35,7 +39,10 @@ public sealed partial class ProcessingNodeOptionsEditor : ComponentBase
     {
         if (key == "enabled" && NodeEnabled.HasValue)
         {
-            await NodeEnabledChanged.InvokeAsync(value).ConfigureAwait(false);
+            if (NodeEnabled.Value != value)
+            {
+                await NodeEnabledChanged.InvokeAsync(value).ConfigureAwait(false);
+            }
             await Changed.InvokeAsync().ConfigureAwait(false);
         }
         else
