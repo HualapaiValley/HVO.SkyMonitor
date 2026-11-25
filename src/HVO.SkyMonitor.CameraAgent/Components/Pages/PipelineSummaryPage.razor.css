@@ -89,3 +89,16 @@ dialog.action-dialog.pipeline-dialog { width: min(calc(100% - 2rem), 34rem); }
     dialog.action-dialog.pipeline-dialog { width: calc(100% - 1rem); }
     .ops-pipeline-canvas { padding: .75rem; }
 }
+.ops-pipeline-node.fixed {
+    border-width: 2px;
+}
+
+.pipeline-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .5rem 1rem;
+}
+
+.pipeline-links [aria-current="page"] {
+    font-weight: 650;
+}

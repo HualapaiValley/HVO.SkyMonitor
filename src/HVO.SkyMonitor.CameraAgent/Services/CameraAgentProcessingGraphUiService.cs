@@ -155,6 +155,7 @@ internal sealed record CameraAgentProcessingExecutionDetailView(
 {
     public string? ManifestUnavailableReason { get; init; } = CameraAgentRunManifest.MissingReason;
     public ExposureMeasurementRunRead? ExposureMeasurement { get; init; }
+    public CenteredPipelineRunPublications? CenteredPublications { get; init; }
     public RegionalStellarVisibilityRunRead? RegionalStellarVisibility { get; init; }
 }
 
@@ -250,7 +251,8 @@ internal sealed class CameraAgentProcessingGraphUiService(
     TimeProvider timeProvider,
     ILogger<CameraAgentProcessingGraphUiService> logger,
     IExposureMeasurementRunReader? exposureMeasurementReader = null,
-    IRegionalStellarVisibilityRunReader? regionalVisibilityReader = null) : ICameraAgentProcessingGraphUiService
+    IRegionalStellarVisibilityRunReader? regionalVisibilityReader = null,
+    CenteredPipelineUiService? centeredPipeline = null) : ICameraAgentProcessingGraphUiService
 {
     public IReadOnlyList<string> StepAliases => pipelineFactory.StableStepAliases
         .Where(static alias => !ExposureMeasurementProducts.IsSystemManagedStepAlias(alias)).ToArray();
@@ -286,6 +288,8 @@ internal sealed class CameraAgentProcessingGraphUiService(
                 ManifestUnavailableReason = ManifestUnavailableReason(read),
                 ExposureMeasurement = exposureMeasurementReader is null ? null :
                     await exposureMeasurementReader.ReadAsync(read.Detail, token).ConfigureAwait(false),
+                CenteredPublications = centeredPipeline is null ? null :
+                    await centeredPipeline.ReadRunAsync(read.Detail.Execution, token).ConfigureAwait(false),
                 RegionalStellarVisibility = regionalVisibility is null ? null : regionalVisibility with
                 {
                     UnavailableReason = regionalVisibility.UnavailableReason switch

@@ -1,0 +1,34 @@
+.publication-facts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr));
+    gap: .75rem 1.25rem;
+}
+
+.publication-facts dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
+.publication-table {
+    overflow-x: auto;
+}
+
+.publication-table table {
+    width: 100%;
+}
+
+.publication-table :is(th, td) {
+    padding: .5rem .75rem;
+    vertical-align: top;
+    text-align: left;
+}
+
+.publication-table pre {
+    max-width: 28rem;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.publication-layer {
+    margin-block: .5rem;
+}

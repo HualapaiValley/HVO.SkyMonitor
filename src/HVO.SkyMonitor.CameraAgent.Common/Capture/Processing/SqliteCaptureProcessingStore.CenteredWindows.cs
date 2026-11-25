@@ -89,6 +89,17 @@ internal interface ICenteredWindowJournal
         CancellationToken cancellationToken);
 }
 
+/// <summary>
+/// Terminal failure codes assigned by the centered-window store.
+/// </summary>
+public static class CenteredWindowFailureReasonCodes
+{
+    public const string InvalidCheckpoint = "invalid-window-checkpoint";
+    public const string CapacityExhausted = "window-capacity-exhausted";
+    public const string RegistrationDeadlineExpired = "registration-deadline-expired";
+    public const string RetainedInputUnreadable = "registration.retained-input-unreadable";
+}
+
 internal sealed partial class SqliteCaptureProcessingStore
 {
     private const string EnqueueTerminalWindowWorkSql = """
@@ -97,10 +108,6 @@ internal sealed partial class SqliteCaptureProcessingStore
         WHERE window_sha256 = $window AND terminal = 1 AND closure_json IS NOT NULL AND reference_capture_id IS NOT NULL;
         """;
 
-    private const string InvalidCheckpoint = "invalid-window-checkpoint";
-    private const string CapacityExhausted = "window-capacity-exhausted";
-    private const string RegistrationDeadlineExpired = "registration-deadline-expired";
-    private const string RetainedInputUnreadable = "registration.retained-input-unreadable";
     private const string CenteredRegistrationStateSchemaSql = """
         CREATE INDEX ix_processing_centered_windows_publication_retention
             ON processing_centered_windows(registration_deadline_utc_ticks)
@@ -227,7 +234,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         command.Parameters.AddWithValue("$deadline", schedule.DeadlineUtc.UtcTicks);
         command.Parameters.AddWithValue("$registrationDeadline", schedule.RegistrationDeadlineUtc.UtcTicks);
         command.Parameters.AddWithValue("$checkpoint", JsonSerializer.SerializeToUtf8Bytes(checkpoint, SerializerOptions));
-        command.Parameters.AddWithValue("$reason", CapacityExhausted);
+        command.Parameters.AddWithValue("$reason", CenteredWindowFailureReasonCodes.CapacityExhausted);
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -277,8 +284,8 @@ internal sealed partial class SqliteCaptureProcessingStore
         if (row.Disposition is { } previous)
         {
             return !previous.IsTerminal && now >= previous.Closure.Schedule.RegistrationDeadlineUtc
-                ? await SettleCenteredRegistrationFailureAsync(transaction, previous, RegistrationDeadlineExpired,
-                    journal, cancellationToken).ConfigureAwait(false)
+                ? await SettleCenteredRegistrationFailureAsync(transaction, previous,
+                    CenteredWindowFailureReasonCodes.RegistrationDeadlineExpired, journal, cancellationToken).ConfigureAwait(false)
                 : previous;
         }
 
@@ -302,7 +309,7 @@ internal sealed partial class SqliteCaptureProcessingStore
             return null;
 
         if (closure.CanRegister && now >= closure.Schedule.RegistrationDeadlineUtc)
-            failure = RegistrationDeadlineExpired;
+            failure = CenteredWindowFailureReasonCodes.RegistrationDeadlineExpired;
 
         if (closure.CanRegister && failure is null)
             await journal.PinClosedInputsAsync(transaction, closure, cancellationToken).ConfigureAwait(false);
@@ -336,7 +343,7 @@ internal sealed partial class SqliteCaptureProcessingStore
             UPDATE processing_centered_windows SET closure_json = NULL, failure_reason = $failure, terminal = 1
             WHERE window_sha256 = $window AND terminal = 0;
             """;
-        command.Parameters.AddWithValue("$failure", InvalidCheckpoint);
+        command.Parameters.AddWithValue("$failure", CenteredWindowFailureReasonCodes.InvalidCheckpoint);
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         await journal.ReleaseWindowInputsAsync(transaction, identity, cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -392,9 +399,9 @@ internal sealed partial class SqliteCaptureProcessingStore
         CancellationToken cancellationToken)
     {
         var closure = current.Closure;
-        var inputFailure = reason == RegistrationDeadlineExpired ? current.InputFailure : null;
+        var inputFailure = reason == CenteredWindowFailureReasonCodes.RegistrationDeadlineExpired ? current.InputFailure : null;
         if (inputFailure is not null)
-            reason = RetainedInputUnreadable;
+            reason = CenteredWindowFailureReasonCodes.RetainedInputUnreadable;
         using var command = CreateCenteredCommand(transaction, closure.Schedule.Identity);
         command.CommandText = """
             UPDATE processing_centered_windows SET failure_reason = $reason, terminal = 1
@@ -440,8 +447,8 @@ internal sealed partial class SqliteCaptureProcessingStore
         if (row.Disposition.IsTerminal)
             return row.Disposition;
         if (_timeProvider.GetUtcNow() >= closure.Schedule.RegistrationDeadlineUtc)
-            return await SettleCenteredRegistrationFailureAsync(transaction, row.Disposition, RegistrationDeadlineExpired,
-                journal, cancellationToken).ConfigureAwait(false);
+            return await SettleCenteredRegistrationFailureAsync(transaction, row.Disposition,
+                CenteredWindowFailureReasonCodes.RegistrationDeadlineExpired, journal, cancellationToken).ConfigureAwait(false);
         if (closure.Identity != result.Closure.Identity ||
             !outputs.Select(output => output.ArtifactId).SequenceEqual(publication.RegistrationArtifactIds))
             throw new InvalidDataException("Registration products do not belong to the frozen live window.");
@@ -592,7 +599,7 @@ internal sealed partial class SqliteCaptureProcessingStore
             {
                 identity = reader.GetString(0);
                 var reason = ReadCenteredFailure(reader, 2);
-                if (reason is InvalidCheckpoint or CapacityExhausted)
+                if (reason is CenteredWindowFailureReasonCodes.InvalidCheckpoint or CenteredWindowFailureReasonCodes.CapacityExhausted)
                 {
                     return new(null, null, new(identity, new(reader.GetString(3), reader.GetString(4)),
                         Guid.ParseExact(reader.GetString(5), "N"), new(reader.GetInt64(1), TimeSpan.Zero), reason));
