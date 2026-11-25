@@ -22,6 +22,7 @@ public sealed class VirtualMotorizedFocuser : IMotorizedFocuser
     private readonly object _sync = new();
     private readonly int _stepsPerInterval;
     private readonly long _intervalTicks;
+    private readonly Action? _cancellationCallbackStarted;
     private int _position;
     private int _opticalPosition;
     private int _play;
@@ -31,6 +32,11 @@ public sealed class VirtualMotorizedFocuser : IMotorizedFocuser
     private Move? _move;
 
     public VirtualMotorizedFocuser(VirtualMotorizedFocuserOptions options)
+        : this(options, cancellationCallbackStarted: null)
+    {
+    }
+
+    internal VirtualMotorizedFocuser(VirtualMotorizedFocuserOptions options, Action? cancellationCallbackStarted)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentOutOfRangeException.ThrowIfNegative(options.MinimumPosition);
@@ -51,6 +57,7 @@ public sealed class VirtualMotorizedFocuser : IMotorizedFocuser
         _temperature = options.TemperatureCelsius;
         _stepsPerInterval = options.StepsPerInterval;
         _intervalTicks = interval.Ticks;
+        _cancellationCallbackStarted = cancellationCallbackStarted;
     }
 
     public MotorizedFocuserCapabilities Capabilities { get; }
@@ -107,7 +114,10 @@ public sealed class VirtualMotorizedFocuser : IMotorizedFocuser
     {
         lock (_sync)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return Task.FromCanceled<MotorizedFocuserState>(cancellationToken);
+            }
             Finish(MotorizedFocuserMoveOutcome.Aborted);
             return Task.FromResult(Snapshot());
         }
@@ -210,6 +220,8 @@ public sealed class VirtualMotorizedFocuser : IMotorizedFocuser
 
     private void Cancel(Move move, CancellationToken cancellationToken)
     {
+        // Tests can pause the in-flight callback before it takes the state lock.
+        _cancellationCallbackStarted?.Invoke();
         lock (_sync)
         {
             if (ReferenceEquals(_move, move))

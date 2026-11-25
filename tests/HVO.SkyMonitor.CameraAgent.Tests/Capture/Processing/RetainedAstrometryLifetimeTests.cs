@@ -187,7 +187,7 @@ public sealed partial class DurableCaptureProcessingTests
                     }
                 });
 
-            using var reader = new CameraAgentRetainedAstrometryService(store, intercepted.Object);
+            using var reader = CreateUnpooledAstrometryReader(store, intercepted.Object);
             ICameraAgentRetainedAstrometryService service = reader;
             if (identityMode == "warm")
                 Assert.AreEqual(expectedNewest, (await service.ReadLatestAcceptedAsync(token).ConfigureAwait(false)).Summary);

@@ -201,7 +201,7 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
         {
             return null;
         }
-        var role = entry.Slug is "calibration" or "cloud-assessment" or "weather-cloud-overlay" ? "note" : "status";
+        var role = entry.Slug is "calibration" or "cloud-assessment" or "regional-stellar-visibility" or "weather-cloud-overlay" ? "note" : "status";
         return (entry.MissingNodeMessage, role);
     }
 
@@ -225,6 +225,12 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
             return;
         }
         _model.AddNode(_newType);
+        FormChanged();
+    }
+
+    private void NodeConfigurationChanged(ProcessingGraphDraftModel.NodeRow node)
+    {
+        _model.EnsureRegionalVisibilityWiring(node);
         FormChanged();
     }
 

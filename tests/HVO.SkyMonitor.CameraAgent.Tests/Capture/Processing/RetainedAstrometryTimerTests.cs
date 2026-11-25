@@ -53,7 +53,7 @@ public sealed partial class DurableCaptureProcessingTests
                     }
                     return await artifacts.OpenContentAsync(id, cancellation).ConfigureAwait(false);
                 });
-            using var reader = new CameraAgentRetainedAstrometryService(store, wrapper.Object);
+            using var reader = CreateUnpooledAstrometryReader(store, wrapper.Object);
             var layers = new CameraAgentLayeredPresentationService(store, artifacts, persistence: persistence, astrometry: reader);
             var service = CameraAgentOperatorUiServiceTests.CreateAuthorizedRetainedAstrometryService(reader, layers);
 

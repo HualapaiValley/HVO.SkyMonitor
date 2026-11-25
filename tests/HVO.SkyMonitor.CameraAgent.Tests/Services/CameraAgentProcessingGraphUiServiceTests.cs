@@ -12,6 +12,7 @@ using HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Tests.Components;
 using HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 using HVO.SkyMonitor.Common.Security;
+using HVO.SkyMonitor.Processing;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.Extensions.DependencyInjection;
@@ -276,6 +277,39 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
         Assert.AreEqual("custom-assessment", found.Value.Nodes[0].OutputContracts.Single().Variant);
         Assert.AreEqual(OperatorUiResultKind.NotFound, missing.Kind);
         Assert.AreEqual("The execution was not found.", missing.Message);
+    }
+
+    [TestMethod]
+    [DataRow("Cannot read /private/sentinel-capture.json", false)]
+    [DataRow("Cannot read abcdefghijklmnopqrstuvwxyz012345", true)]
+    public async Task GetExecutionDetailSanitizesUnavailableRegionalVisibility(string privateReason, bool executionFailure)
+    {
+        var execution = ProcessingExecutionPagesTests.Execution(
+            Guid.NewGuid(), ProcessingGraphExecutionClass.Live, ProcessingGraphExecutionStatus.Failed) with
+        {
+            FailureReason = executionFailure ? privateReason : null
+        };
+        var node = new ProcessingGraphExecutionNodeState("regional-visibility", false, new string('A', 64),
+            "TerminalFailure", executionFailure ? null : privateReason, 1, Now, Now, [], [], [])
+        {
+            OutputContracts = [new(FrameArtifactRole.Metadata, RegionalStellarVisibilityProducts.Variant,
+                ProcessingProductKind.Metadata, RegionalStellarVisibilityProducts.Definition,
+                SchemaVersion: RegionalStellarVisibilityProducts.SchemaVersion)]
+        };
+        var detail = new ProcessingGraphExecutionDetail(execution, [node]);
+        var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
+        operations.Setup(value => value.ReadExecutionDetailWithRunManifestAsync(execution.ExecutionId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ProcessingGraphExecutionDetailWithRunManifest(detail, null));
+        var service = CreateService(operations.Object, authorized: true, regionalReader: new CaptureRegionalStellarVisibilityReader(null!));
+
+        var result = await service.GetExecutionDetailAsync(execution.ExecutionId, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.IsTrue(result.IsSuccess, result.Message);
+        var regional = result.Value?.RegionalStellarVisibility;
+        Assert.IsNotNull(regional);
+        Assert.IsNull(regional.Assessment);
+        Assert.AreEqual(CameraAgentReplayUiService.Sanitize(privateReason), regional.UnavailableReason);
+        Assert.IsFalse(JsonSerializer.Serialize(result.Value).Contains(privateReason, StringComparison.Ordinal));
     }
 
     [TestMethod]
@@ -854,7 +888,7 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
     }
 
     private static CameraAgentProcessingGraphUiService CreateService(IProcessingGraphOperations operations, bool authorized,
-        ICaptureProcessingPipelineFactory? factory = null, bool centered = false)
+        ICaptureProcessingPipelineFactory? factory = null, bool centered = false, IRegionalStellarVisibilityRunReader? regionalReader = null)
     {
         var user = new ClaimsPrincipal(new ClaimsIdentity(
         [
@@ -880,7 +914,8 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
             accessor,
             null,
             new ProcessingExecutionPagesTests.FixedTimeProvider(Now),
-            NullLogger<CameraAgentProcessingGraphUiService>.Instance);
+            NullLogger<CameraAgentProcessingGraphUiService>.Instance,
+            regionalVisibilityReader: regionalReader);
     }
 
     private sealed class StubAuthenticationStateProvider(ClaimsPrincipal principal) : AuthenticationStateProvider

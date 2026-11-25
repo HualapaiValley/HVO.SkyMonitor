@@ -27,6 +27,9 @@
     <Using Include="Microsoft.Extensions.DependencyInjection" />
     <EmbeddedResource Include="..\..\src\HVO.SkyMonitor.CameraAgent\appsettings.json"
                       LogicalName="HVO.SkyMonitor.Deployment.Cli.Tests.CameraAgentAppsettings.json" />
+    <!-- Runtime inputs read by HvoDarkPaletteTests and SiloReplacementRunbookTests; declaring them here keeps scripts/ci:classify linked-project detection in sync (#2071). -->
+    <None Include="..\..\src\HVO.SkyMonitor.CameraAgent\wwwroot\css\themes\hvo-dark.css" Link="Shared/hvo-dark.css" />
+    <None Include="..\..\docs\runbooks\cameraagent-silo-runtime.md" Link="Shared/cameraagent-silo-runtime.md" />
   </ItemGroup>
   <ItemGroup>
     <None Include="../fixtures/state-compatibility/automation-schema*-image-labels.json" Link="Fixtures/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />

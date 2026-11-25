@@ -108,6 +108,7 @@ public static class PresentationLayerProducers
     public const double ResolvedFootprintPaddingPixels = AnnotationRenderer.ResolvedFootprintPaddingPixels;
     public const string MetadataProducerVersion = "metadata-corner-presentation-v6-original-colours";
     public const string CloudProducerVersion = "cloud-presentation-v5-original-colours";
+    public const string RegionalVisibilityProducerVersion = "regional-stellar-visibility-presentation-v1";
 
     /// <summary>Creates one combined typed scene payload without reading or copying base pixels.</summary>
     public static PresentationLayerPayloadV1 FromProjectedScene(
@@ -578,5 +579,55 @@ public static class PresentationLayerProducers
                 tileMask: new(assessment.Grid.Columns, assessment.Grid.Rows, PresentationTileMaskV1.RowMajorLsbFirst,
                     bits, lineThickness, color ?? new PresentationColor(255, 64, 32))),
             PresentationLayerPayloadJson.Create(sourceIdentity, widthPixels, heightPixels, textBlocks: texts));
+    }
+
+    /// <summary>Creates a reference-exposure overlay payload for step 30b regional stellar visibility without reporting a cloud-cover percentage.</summary>
+    public static PresentationLayerPayloadV1 FromRegionalStellarVisibility(
+        RegionalStellarVisibilityV1 assessment, int widthPixels, int heightPixels, bool includeSummaryLabel = true,
+        int lineThickness = 2, PresentationColor? deficitColor = null)
+    {
+        ArgumentNullException.ThrowIfNull(assessment);
+        var validation = RegionalStellarVisibilityJson.Validate(assessment);
+        if (!validation.IsValid) throw new ArgumentException("Regional stellar visibility assessment is invalid.", nameof(assessment));
+        var count = checked(assessment.Grid.Columns * assessment.Grid.Rows);
+        byte[] deficitBits;
+        if (assessment.Mask is { } mask)
+        {
+            deficitBits = mask.DeficitBits.ToArray();
+        }
+        else
+        {
+            deficitBits = new byte[(count + 7) / 8];
+            for (var index = 0; index < assessment.Tiles.Count; index++)
+            {
+                if (assessment.Tiles[index].Status == RegionalVisibilityTileStatus.DetectionDeficit)
+                {
+                    deficitBits[index >> 3] |= (byte)(1 << (index & 7));
+                }
+            }
+        }
+        var texts = includeSummaryLabel ? new[]
+        {
+            new PresentationTextBlockV1(PresentationTextAnchor.Point, new PixelPoint(3, 18),
+                new ReadOnlyCollection<string>(
+                [
+                    assessment.Status == RegionalVisibilityAssessmentStatus.Assessed
+                        ? string.Create(CultureInfo.InvariantCulture,
+                            $"Star visibility: {assessment.Grid.DeficitTileCount}/{assessment.Grid.AssessedTileCount} deficit tiles")
+                        : string.Create(CultureInfo.InvariantCulture,
+                            $"Star visibility: {assessment.Status}"),
+                    string.Create(CultureInfo.InvariantCulture,
+                        $"Geometry {assessment.GeometryBasis} / Focus {assessment.FocusBasis}")
+                ]), 1, 0, 2, new PresentationColor(255, 224, 128))
+        } : [];
+        return PresentationLayerPayloadJson.Create(
+            assessment.AssessmentIdentitySha256,
+            widthPixels,
+            heightPixels,
+            textBlocks: texts,
+            tileMask: assessment.Status == RegionalVisibilityAssessmentStatus.Assessed
+                ? new(assessment.Grid.Columns, assessment.Grid.Rows, PresentationTileMaskV1.RowMajorLsbFirst,
+                    deficitBits, lineThickness, deficitColor ?? new PresentationColor(255, 192, 64))
+                : null);
     }
 }

@@ -78,6 +78,15 @@ search that uses its 250 million spatial probe budget, yields
 for that neighbor. The verified plate-pair path does not use this relative-fit
 limit.
 
+The [registration review](https://github.com/HualapaiValley/HVO.SkyMonitor/pull/1956#issuecomment-7068066333)
+records x64 measurements from source `8ea3dd1f` for one neighbor comparison.
+At 92 points per side the relative fit took 3,760 ms and returned `Verified`.
+At 192 points per side it took 6,389 ms and returned
+`AmbiguityCheckLimitExceeded`. Four comparisons at the latter observed cost
+would take about 25.6 seconds in a five-slot window. Use the readings as
+historical scheduling evidence. The review records the machine architecture
+and gives no timing guarantee for the current fit or for another machine.
+
 ## Result and limits
 
 The result is an arithmetic mean in the qualified input's **stored linear

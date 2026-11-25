@@ -965,6 +965,50 @@ public sealed partial class SqliteCalibrationLibraryStore(
         return persisted?.Snapshot;
     }
 
+    public async Task<CalibrationLibraryArtifactV1?> FindMasterArtifactAsync(
+        Guid artifactId,
+        string referenceKind,
+        string payloadSha256,
+        CancellationToken cancellationToken)
+    {
+        if (artifactId == Guid.Empty || string.IsNullOrWhiteSpace(referenceKind) || string.IsNullOrWhiteSpace(payloadSha256))
+        {
+            return null;
+        }
+        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var transaction = BeginRead(connection);
+        string? bundleId;
+        using (var command = connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText = """
+                SELECT bundle_id FROM calibration_library_artifacts
+                WHERE artifact_id = $artifact AND role = 'master' AND reference_kind = $kind;
+                """;
+            command.Parameters.AddWithValue("$artifact", artifactId.ToString("N"));
+            command.Parameters.AddWithValue("$kind", referenceKind);
+            bundleId = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) as string;
+        }
+        if (bundleId is null)
+        {
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return null;
+        }
+        var persisted = await ReadBundleAsync(connection, transaction, bundleId, cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        if (persisted is null ||
+            !string.Equals(persisted.Snapshot.PublicationState, "published", StringComparison.Ordinal))
+        {
+            return null;
+        }
+        return persisted.Snapshot.Bundle.Artifacts.FirstOrDefault(artifact =>
+            artifact.Role == CalibrationLibraryArtifactRoles.Master &&
+            artifact.ArtifactId == artifactId &&
+            string.Equals(artifact.Kind, referenceKind, StringComparison.Ordinal) &&
+            string.Equals(artifact.PayloadSha256, payloadSha256, StringComparison.OrdinalIgnoreCase));
+    }
+
     public async Task<CalibrationLibraryBundlePage> GetBundlePageAsync(
         int pageSize,
         CalibrationLibraryBundleCursor? cursor,
