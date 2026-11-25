@@ -109,15 +109,16 @@ internal static class CalendarDayPreviewClassifier
             return true;
         }
         var requests = observation.PreviewRequests;
-        if (requests.Any(static request => request.Status >= 400 ||
-                                           (request.Status is >= 200 and < 300 && !IsImageContentType(request.ContentType))))
+        if (requests.Any(static request => request.Outcome == "response" &&
+                                           (request.Status is >= 300 and not 304 ||
+                                            (request.Status is >= 200 and < 300 && !IsImageContentType(request.ContentType)))))
         {
             return true;
         }
         // Replacing a prerendered image with its interactive copy aborts the first request. Only a failure without any
         // successful image response shows that the browser could not obtain the preview.
         return requests.Any(static request => request.Outcome == "failed") &&
-               !requests.Any(static request => request.Status is >= 200 and < 300);
+               !requests.Any(static request => request.Status is >= 200 and < 300 or 304);
     }
 
     internal static bool IsImageContentType(string? contentType) =>
@@ -490,6 +491,7 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
     private long? clickAtMilliseconds;
     private string interactiveAtClick = "not-recorded";
     private string routeAtClick = "not-recorded";
+    private string? calendarCellAtClick;
     private bool detached;
 
     private CalendarDayPreviewEvidence(
@@ -536,7 +538,7 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
             store ?? CalendarEvidenceStore.ForTestContext(testContext), budget ?? DefaultBudget);
     }
 
-    /// <summary>Records the route and whether the shell had become interactive immediately before the day link click.</summary>
+    /// <summary>Records the route, selected Calendar cell and shell interactivity immediately before the day link click.</summary>
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
         Justification = "Recording pre-click state is diagnostic and must never change the outcome of the click under test.")]
     internal async Task BeforeDayLinkClickAsync()
@@ -545,10 +547,9 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
         routeAtClick = Route(page.Url);
         try
         {
-            var raw = await Bounded(page.EvaluateAsync<string>(
-                    "() => document.querySelector('.app-frame')?.getAttribute('data-interactive') ?? 'absent'"),
-                BrowserCallTimeout, CancellationToken.None).ConfigureAwait(false);
-            interactiveAtClick = CalendarEvidenceVocabulary.Allowed(raw, "true", "false", "absent");
+            var snapshot = await SnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+            interactiveAtClick = snapshot.Interactive;
+            calendarCellAtClick = snapshot.Markup["calendarCell"];
         }
         catch (Exception)
         {
@@ -728,6 +729,7 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
             observation,
             interactiveAtClick,
             routeAtClick,
+            calendarCellAtClick,
             routeAtFailure,
             routeAfterSettle,
             clickAtMilliseconds,
@@ -823,6 +825,18 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
         CalendarEvidenceVocabulary.HasSameOrigin(appBaseAddress, uri) &&
         string.Equals(uri.AbsolutePath, path, StringComparison.Ordinal);
 
+    private bool IsPreviewRequest(IRequest request)
+    {
+        for (IRequest? hop = request; hop is not null; hop = hop.RedirectedFrom)
+        {
+            if (IsAppRoute(hop.Url, previewPath))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private void Record(string kind, string detail)
     {
         var sequence = Interlocked.Increment(ref timelineCount);
@@ -847,8 +861,9 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
     {
         try
         {
-            if (IsAppRoute(request.Url, previewPath))
+            if (IsPreviewRequest(request))
             {
+                previewRequests.Enqueue(new(Elapsed(), "requested", null, null, null));
                 Record("preview-request", "method=" + BoundedMethod(request.Method));
             }
             else if (request.IsNavigationRequest && request.Frame == page.MainFrame)
@@ -876,12 +891,15 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
     {
         try
         {
-            if (IsAppRoute(response.Url, previewPath))
+            if (IsPreviewRequest(response.Request))
             {
                 response.Headers.TryGetValue("content-type", out var contentType);
                 var bounded = BoundedContentType(contentType);
-                previewRequests.Enqueue(new(Elapsed(), "response", response.Status, bounded, null));
-                Record("preview-response", string.Create(CultureInfo.InvariantCulture, $"status={response.Status} type={bounded}"));
+                // A redirect is an intermediate outcome. Keep its status without retaining Location or either URL.
+                var redirected = response.Status is 301 or 302 or 303 or 307 or 308 && response.Headers.ContainsKey("location");
+                previewRequests.Enqueue(new(Elapsed(), redirected ? "redirected" : "response", response.Status, bounded, null));
+                Record(redirected ? "preview-redirect" : "preview-response",
+                    string.Create(CultureInfo.InvariantCulture, $"status={response.Status} type={bounded}"));
             }
             else if (response.Request.IsNavigationRequest && response.Request.Frame == page.MainFrame)
             {
@@ -901,7 +919,7 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
         try
         {
             var failure = BoundedNetworkError(request.Failure);
-            if (IsAppRoute(request.Url, previewPath))
+            if (IsPreviewRequest(request))
             {
                 previewRequests.Enqueue(new(Elapsed(), "failed", null, null, failure));
                 Record("preview-failed", failure);
@@ -1278,6 +1296,7 @@ internal sealed record CalendarDayPreviewReport(
     CalendarDayPreviewObservation Observation,
     string InteractiveAtClick,
     string UrlAtClick,
+    string? CalendarCellAtClick,
     string UrlAtFailure,
     string UrlAfterSettle,
     long? ClickAtMilliseconds,
@@ -1294,9 +1313,12 @@ internal sealed record CalendarDayPreviewReport(
     {
         var previews = Observation.PreviewRequests.Count == 0
             ? "none"
-            : string.Join(", ", Observation.PreviewRequests.Select(static request => request.Outcome == "failed"
-                ? FormattableString.Invariant($"+{request.AtMilliseconds}ms failed {request.Failure}")
-                : FormattableString.Invariant($"+{request.AtMilliseconds}ms {request.Status} {request.ContentType}")));
+            : string.Join(", ", Observation.PreviewRequests.Select(static request => request.Outcome switch
+            {
+                "requested" => FormattableString.Invariant($"+{request.AtMilliseconds}ms requested"),
+                "failed" => FormattableString.Invariant($"+{request.AtMilliseconds}ms failed {request.Failure}"),
+                _ => FormattableString.Invariant($"+{request.AtMilliseconds}ms {request.Outcome} {request.Status} {request.ContentType}")
+            }));
         var probe = Observation.Probe is { } value
             ? value.Error is null ? FormattableString.Invariant($"{value.Status} {value.ContentType} {value.Bytes}B image={value.ImageSignature}") : "error " + value.Error
             : "none";
@@ -1347,6 +1369,7 @@ internal sealed record CalendarDayPreviewReport(
             writer.WriteStartObject("navigation");
             writer.WriteString("interactiveAtClick", InteractiveAtClick);
             writer.WriteString("routeAtClick", UrlAtClick);
+            writer.WriteString("calendarCellAtClick", CalendarCellAtClick);
             writer.WriteString("routeAtFailure", UrlAtFailure);
             writer.WriteString("routeAfterSettle", UrlAfterSettle);
             writer.WriteBoolean("onSelectedDayAtFailure", Observation.OnSelectedDayAtFailure);
