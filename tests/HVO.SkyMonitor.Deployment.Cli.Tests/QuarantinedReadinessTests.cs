@@ -188,6 +188,7 @@ public sealed partial class QuarantinedReadinessTests
         if (cancel)
         {
             await caller.CancelAsync();
+            Assert.IsTrue(probeToken.IsCancellationRequested, "Caller cancellation must cancel the in-flight probe.");
             var canceled = await Assert.ThrowsAsync<OperationCanceledException>(() => pending.WaitAsync(TestWatchdog));
             Assert.AreEqual(caller.Token, canceled.CancellationToken);
         }
@@ -198,12 +199,12 @@ public sealed partial class QuarantinedReadinessTests
             Assert.IsFalse(probeToken.IsCancellationRequested);
             Assert.IsFalse(pending.IsCompleted);
             clock.Advance(deadline, lastMillisecond);
+            Assert.IsTrue(probeToken.IsCancellationRequested, "The readiness deadline must cancel the in-flight probe.");
 
             var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => pending.WaitAsync(TestWatchdog));
             StringAssert.Contains(exception.Message, "did not become ready within", StringComparison.Ordinal);
         }
 
-        Assert.IsTrue(probeToken.IsCancellationRequested);
         Assert.AreEqual(1, handler.RequestCount);
     }
 
