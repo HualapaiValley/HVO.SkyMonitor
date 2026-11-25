@@ -182,11 +182,29 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         try
         {
             await _processingStore.InitializeAsync(cancellationToken).ConfigureAwait(false);
-            var (evidence, archive) = await ReadEvidenceAsync(artifactId, replayExecutionId, forPreview, history, cancellationToken)
+            var evidence = await ReadJournalEvidenceAsync(artifactId, replayExecutionId, history, cancellationToken)
                 .ConfigureAwait(false);
-            if (evidence.Status != CameraAgentArtifactReadStatus.Found && archive is null)
+            IndexedArchiveFrame? archive = null;
+            if (evidence.Status != CameraAgentArtifactReadStatus.Found)
             {
-                return new(evidence.Status);
+                if (evidence.Status != CameraAgentArtifactReadStatus.NotFound ||
+                    replayExecutionId is not null ||
+                    forPreview ||
+                    _localArchive is null)
+                {
+                    return new(evidence.Status);
+                }
+
+                // Release the root lifecycle gate before scanning separate legacy archive indexes so
+                // slow archive disk I/O on a lookup miss never stalls concurrent committed preview reads.
+                lifecycleGateHeld = false;
+                lifecycleGate.Release();
+                archive = await FindLocalArchiveAsync(lifecycleGate, artifactId, history, cancellationToken)
+                    .ConfigureAwait(false);
+                if (archive is null)
+                {
+                    return new(CameraAgentArtifactReadStatus.NotFound);
+                }
             }
 
             var row = evidence.Row;
@@ -272,8 +290,11 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
             // Both immutable inode handles and file identities are now pinned; release the root
             // lifecycle lock before reading sidecar/payload bytes and computing SHA-256 so
             // concurrent preview and overlay reads never serialize on file I/O or hashing.
-            lifecycleGateHeld = false;
-            lifecycleGate.Release();
+            if (lifecycleGateHeld)
+            {
+                lifecycleGateHeld = false;
+                lifecycleGate.Release();
+            }
 
             if (sidecarStream is not null)
             {
@@ -1045,11 +1066,52 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
            string.Equals(schema, DurableEncodedProductManifestV2.CurrentSchemaVersion, StringComparison.Ordinal) ||
            string.Equals(schema, DurableTypedMetadataProductManifestV3.CurrentSchemaVersion, StringComparison.Ordinal);
 
-    private async ValueTask<(ArtifactEvidenceLookup Evidence, IndexedArchiveFrame? Archive)> ReadEvidenceAsync(
+    private ValueTask<ArtifactEvidenceLookup> ReadJournalEvidenceAsync(
         Guid artifactId,
         Guid? replayExecutionId,
-        bool forPreview,
         RetainedHistoryRead? history,
+        CancellationToken cancellationToken) =>
+        ExecuteWithJournalConnectionAsync(
+            history,
+            (connection, token) => replayExecutionId is { } executionId
+                ? FindReplayOutputEvidenceAsync(connection, executionId, artifactId, token)
+                : FindEvidenceAsync(connection, artifactId, token),
+            cancellationToken);
+
+    private async ValueTask<IndexedArchiveFrame?> FindLocalArchiveAsync(
+        SemaphoreSlim lifecycleGate,
+        Guid artifactId,
+        RetainedHistoryRead? history,
+        CancellationToken cancellationToken)
+    {
+        await foreach (var candidate in _localArchive!.FindCandidatesAsync(artifactId, cancellationToken).ConfigureAwait(false))
+        {
+            await StorageLifecycleLock.WaitAsync(lifecycleGate, "artifact-archive-authority", _logger, cancellationToken)
+                .ConfigureAwait(false);
+            bool shadowed;
+            try
+            {
+                shadowed = await ExecuteWithJournalConnectionAsync(
+                    history,
+                    (connection, token) => LocalArchiveReader.IsShadowedByJournalAsync(connection, candidate, token),
+                    cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                lifecycleGate.Release();
+            }
+
+            if (!shadowed)
+            {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    private async ValueTask<TResult> ExecuteWithJournalConnectionAsync<TResult>(
+        RetainedHistoryRead? history,
+        Func<SqliteConnection, CancellationToken, ValueTask<TResult>> query,
         CancellationToken cancellationToken)
     {
         var (connection, openedIdentity) = history?.Take() ?? default;
@@ -1068,13 +1130,7 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
             }
             connection ??= await OpenReadOnlyAsync(cancellationToken).ConfigureAwait(false);
 
-            var evidence = replayExecutionId is { } executionId
-                ? await FindReplayOutputEvidenceAsync(connection, executionId, artifactId, cancellationToken).ConfigureAwait(false)
-                : await FindEvidenceAsync(connection, artifactId, cancellationToken).ConfigureAwait(false);
-            var archive = evidence.Status == CameraAgentArtifactReadStatus.NotFound &&
-                replayExecutionId is null && !forPreview && _localArchive is not null
-                ? await _localArchive.FindAsync(connection, artifactId, cancellationToken).ConfigureAwait(false)
-                : null;
+            var result = await query(connection, cancellationToken).ConfigureAwait(false);
 
             cancellationToken.ThrowIfCancellationRequested();
             if (identity is { } generation)
@@ -1087,7 +1143,7 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
                 connection = null;
                 history!.Return(returned, generation);
             }
-            return (evidence, archive);
+            return result;
         }
         finally
         {

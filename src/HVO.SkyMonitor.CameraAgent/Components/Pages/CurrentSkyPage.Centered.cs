@@ -50,10 +50,17 @@ public sealed partial class CurrentSkyPage
     private bool _centeredPublisherSubscribed;
     private CenteredViewArtifact? _centeredAstrometryEvidence;
     private bool _centeredAstrometryEvidenceSet;
+    private sealed record DeferredCenteredPresentation(
+        CenteredView TargetView,
+        long Generation,
+        bool PreserveDisplayedWorkspace,
+        OperatorUiResult<CameraAgentCenteredPresentationRead> Result);
+
     private long _centeredPresentationGeneration;
     private CancellationTokenSource? _centeredPresentationCancellation;
     private bool _centeredPresentationLoading;
     private (string BaseId, string RevisionId)? _centeredPresentationInFlight;
+    private DeferredCenteredPresentation? _deferredCenteredPresentation;
 
     private bool IsCenteredLive => !IsArchived && (_centeredLiveContext is not null || _centeredDisplay is not null);
     private bool IsCenteredArchived => IsArchived && _centeredArchive is not null;
@@ -408,17 +415,21 @@ public sealed partial class CurrentSkyPage
                     DisplayCapture = displayCapture
                 };
                 RetryCenteredAstrometryIfTransient(previous.View);
-                if (incoming.View is { } sameView &&
+                var sameRevisionTarget = incoming.View is { } sameView &&
                     sameView.Base.BaseId == previous.View.Base.BaseId &&
-                    sameView.Revision.RevisionId == previous.View.Revision.RevisionId &&
-                    incoming.PresentationDeferred &&
+                    sameView.Revision.RevisionId == previous.View.Revision.RevisionId
+                        ? sameView
+                        : _livePaused && (previous.PresentationDeferred || manual)
+                            ? previous.View
+                            : null;
+                if (sameRevisionTarget is not null &&
+                    (incoming.PresentationDeferred || previous.PresentationDeferred) &&
                     !_viewerOpen &&
-                    !_livePaused &&
                     (manual ||
                      previous.Presentation is null ||
                      previous.Presentation.Layers.Count < previous.View.Revision.Manifest.Layers.Count))
                 {
-                    StartCenteredPresentationLoad(sameView, preserveDisplayedWorkspace: false, cancellationToken);
+                    StartCenteredPresentationLoad(sameRevisionTarget, preserveDisplayedWorkspace: false, cancellationToken);
                 }
             }
             else
@@ -589,6 +600,7 @@ public sealed partial class CurrentSkyPage
         Interlocked.Increment(ref _centeredPresentationGeneration);
         _centeredPresentationLoading = false;
         _centeredPresentationInFlight = null;
+        _deferredCenteredPresentation = null;
         var previous = Interlocked.Exchange(ref _centeredPresentationCancellation, null);
         if (previous is not null)
         {
@@ -706,7 +718,14 @@ public sealed partial class CurrentSkyPage
         _centeredPresentationLoading = false;
         _centeredPresentationInFlight = null;
 
-        if (_viewerOpen || _centeredDisplay is not { } current)
+        if (_viewerOpen)
+        {
+            _deferredCenteredPresentation = new(targetView, generation, preserveDisplayedWorkspace, result);
+            StateHasChanged();
+            return;
+        }
+
+        if (_centeredDisplay is not { } current)
         {
             StateHasChanged();
             return;
@@ -1040,7 +1059,14 @@ public sealed partial class CurrentSkyPage
         _livePaused = !_livePaused;
         if (_livePaused)
         {
-            CancelCenteredPresentationLoad();
+            // Keep an in-flight overlay load for the exact currently displayed revision so a paused
+            // frame finishes loading its own overlays, while cancelling any load targeting a newer revision.
+            var loadingDifferentRevision = _centeredDisplay is not { View: { } displayed } ||
+                _centeredPresentationInFlight != (displayed.Base.BaseId, displayed.Revision.RevisionId);
+            if (loadingDifferentRevision)
+            {
+                CancelCenteredPresentationLoad();
+            }
             StateHasChanged();
             return;
         }

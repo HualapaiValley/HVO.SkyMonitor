@@ -613,24 +613,81 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
 
         // Ordinary VirtualSky capture (with all real background workers running!) advances naturally
-        // through Current Sky to a verified centered 5-frame registered stack in Ready state!
-        await page.Locator("[data-centered-reference^='#']").WaitForAsync(new() { Timeout = 30_000 }).ConfigureAwait(false);
-        await page.Locator("[data-centered-state='Ready']").WaitForAsync(new() { Timeout = 45_000 }).ConfigureAwait(false);
-        await page.Locator("[data-centered-contributors='5']").WaitForAsync(new() { Timeout = 45_000 }).ConfigureAwait(false);
+        // across at least two distinct live references (R1 -> R2, R2 != R1) without depending on a
+        // racy contributors=5 wall-clock window, then reopens the exact advanced live view in the archive.
+        var referenceLocator = page.Locator("[data-centered-reference^='#']");
+        await referenceLocator.WaitForAsync(new() { Timeout = 30_000 }).ConfigureAwait(false);
         await page.Locator(".sky-layer-canvas--verified").WaitForAsync(new() { Timeout = 30_000 }).ConfigureAwait(false);
+        var firstReference = await referenceLocator.GetAttributeAsync("data-centered-reference").ConfigureAwait(false);
+        var firstBaseId = await page.Locator(".sky-layer-workspace").GetAttributeAsync("data-centered-base").ConfigureAwait(false);
+        Assert.IsFalse(string.IsNullOrWhiteSpace(firstReference));
+        Assert.IsFalse(string.IsNullOrWhiteSpace(firstBaseId));
+        var firstSequence = long.Parse(firstReference.AsSpan(1), System.Globalization.CultureInfo.InvariantCulture);
 
-        var displayedBaseId = await page.Locator(".sky-layer-workspace").GetAttributeAsync("data-centered-base").ConfigureAwait(false);
-        var displayedRevisionId = await page.Locator(".sky-layer-workspace").GetAttributeAsync("data-centered-revision").ConfigureAwait(false);
+        await page.WaitForFunctionAsync(
+            """
+            (firstRef) => {
+                const refEl = document.querySelector('[data-centered-reference]');
+                const ws = document.querySelector('.sky-layer-workspace');
+                const canvas = document.querySelector('.sky-layer-canvas--verified');
+                const img = document.querySelector('.sky-layer-canvas > img');
+                const detail = document.querySelector('.figure-actions a');
+                if (!refEl || !ws || !canvas || !img || !img.complete || !detail) return false;
+                const refAttr = refEl.getAttribute('data-centered-reference');
+                const baseId = ws.getAttribute('data-centered-base');
+                const revisionId = ws.getAttribute('data-centered-revision');
+                const href = detail.getAttribute('href') ?? '';
+                return !!refAttr && refAttr.startsWith('#') && refAttr !== firstRef &&
+                    !!baseId && !!revisionId &&
+                    href.includes(`base=${baseId}`) && href.includes(`revision=${revisionId}`);
+            }
+            """,
+            firstReference,
+            new PageWaitForFunctionOptions { Timeout = 45_000 }).ConfigureAwait(false);
+
+        // Sample the advanced live frame atomically in one JS turn so live progression cannot skew
+        // the displayed base/revision against the archive link href.
+        var advanced = await page.EvaluateAsync<JsonElement>(
+            """
+            () => {
+                const refEl = document.querySelector('[data-centered-reference]');
+                const ws = document.querySelector('.sky-layer-workspace');
+                const img = document.querySelector('.sky-layer-canvas > img');
+                const detail = document.querySelector('.figure-actions a');
+                return {
+                    reference: refEl?.getAttribute('data-centered-reference') ?? null,
+                    baseId: ws?.getAttribute('data-centered-base') ?? null,
+                    revisionId: ws?.getAttribute('data-centered-revision') ?? null,
+                    detailHref: detail?.getAttribute('href') ?? null,
+                    complete: !!img && img.complete,
+                    naturalWidth: img?.naturalWidth ?? 0,
+                    naturalHeight: img?.naturalHeight ?? 0
+                };
+            }
+            """).ConfigureAwait(false);
+
+        var secondReference = advanced.GetProperty("reference").GetString();
+        var displayedBaseId = advanced.GetProperty("baseId").GetString();
+        var displayedRevisionId = advanced.GetProperty("revisionId").GetString();
+        var detailHref = advanced.GetProperty("detailHref").GetString()
+            ?? throw new AssertFailedException("Expected capture details href.");
+
+        Assert.IsFalse(string.IsNullOrWhiteSpace(secondReference));
+        Assert.AreNotEqual(firstReference, secondReference,
+            $"Expected ordinary VirtualSky {pixelFormat} live view to advance past {firstReference}.");
+        var secondSequence = long.Parse(secondReference.AsSpan(1), System.Globalization.CultureInfo.InvariantCulture);
+        Assert.IsGreaterThan(firstSequence, secondSequence,
+            $"Expected ordinary VirtualSky {pixelFormat} sequence to advance ({firstReference} -> {secondReference}).");
         Assert.IsFalse(string.IsNullOrWhiteSpace(displayedBaseId));
+        Assert.AreNotEqual(firstBaseId, displayedBaseId);
         Assert.IsFalse(string.IsNullOrWhiteSpace(displayedRevisionId));
-        Assert.IsTrue(await page.EvaluateAsync<bool>(
-            $"() => {{ const img = document.querySelector('.sky-layer-canvas > img'); return !!img && img.complete && img.naturalWidth === {width} && img.naturalHeight === {height}; }}")
-            .ConfigureAwait(false),
+        Assert.IsTrue(
+            advanced.GetProperty("complete").GetBoolean() &&
+            advanced.GetProperty("naturalWidth").GetInt32() == width &&
+            advanced.GetProperty("naturalHeight").GetInt32() == height,
             $"Expected ordinary VirtualSky {pixelFormat} centered base to render at exact {width}x{height} natural dimensions.");
 
-        // Reopen the exact live view in the archive through the "Open capture details" link!
-        var detailHref = await page.Locator(".figure-actions a").GetAttributeAsync("href").ConfigureAwait(false)
-            ?? throw new AssertFailedException("Expected capture details href.");
+        // Reopen the exact advanced live view in the archive through the "Open capture details" link!
         StringAssert.Contains(detailHref, "/gallery/", StringComparison.Ordinal);
         StringAssert.Contains(detailHref, $"base={displayedBaseId}", StringComparison.Ordinal);
         StringAssert.Contains(detailHref, $"revision={displayedRevisionId}", StringComparison.Ordinal);

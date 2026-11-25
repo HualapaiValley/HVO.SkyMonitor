@@ -40,17 +40,26 @@ public static class CenteredViewLinks
 internal sealed class CenteredViewPresentationReader : ICenteredViewPresentationReader
 {
     internal static readonly TimeSpan DefaultOptionalLayerReadTimeout = TimeSpan.FromSeconds(2);
+    internal const int DefaultMaximumConcurrentLayerReads = 4;
 
     private readonly ICenteredViewReadIndex _index;
     private readonly ICameraAgentArtifactService _artifacts;
     private readonly TimeProvider _timeProvider;
     private readonly TimeSpan _optionalLayerReadTimeout;
+    private readonly int _maximumConcurrentLayerReads;
+    private readonly int _maximumSourcePayloadBytes;
 
     public CenteredViewPresentationReader(
         ICenteredViewReadIndex index,
         ICameraAgentArtifactService artifacts,
         TimeProvider? timeProvider = null)
-        : this(index, artifacts, timeProvider ?? TimeProvider.System, DefaultOptionalLayerReadTimeout)
+        : this(
+            index,
+            artifacts,
+            timeProvider ?? TimeProvider.System,
+            DefaultOptionalLayerReadTimeout,
+            DefaultMaximumConcurrentLayerReads,
+            CameraAgentLayeredPresentationService.MaximumSourcePayloadBytes)
     {
     }
 
@@ -58,12 +67,18 @@ internal sealed class CenteredViewPresentationReader : ICenteredViewPresentation
         ICenteredViewReadIndex index,
         ICameraAgentArtifactService artifacts,
         TimeProvider timeProvider,
-        TimeSpan optionalLayerReadTimeout)
+        TimeSpan optionalLayerReadTimeout,
+        int maximumConcurrentLayerReads = DefaultMaximumConcurrentLayerReads,
+        int maximumSourcePayloadBytes = CameraAgentLayeredPresentationService.MaximumSourcePayloadBytes)
     {
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(maximumConcurrentLayerReads, 0);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(maximumSourcePayloadBytes, 0);
         _index = index;
         _artifacts = artifacts;
         _timeProvider = timeProvider;
         _optionalLayerReadTimeout = optionalLayerReadTimeout;
+        _maximumConcurrentLayerReads = maximumConcurrentLayerReads;
+        _maximumSourcePayloadBytes = maximumSourcePayloadBytes;
     }
 
     public async ValueTask<CameraAgentArtifactContentResult> OpenPreviewAsync(
@@ -107,37 +122,50 @@ internal sealed class CenteredViewPresentationReader : ICenteredViewPresentation
                     ? CameraAgentLayeredPresentationStatus.Malformed : CameraAgentLayeredPresentationStatus.Unavailable);
             await previewContent.DisposeAsync().ConfigureAwait(false);
 
-            var budget = CameraAgentLayeredPresentationService.MaximumSourcePayloadBytes;
             var referenceCaptureId = view.Base.Definition.Reference.Capture.CaptureId;
             var validLayers = new List<PresentationLayerV1>(manifest.Layers.Count);
             var payloads = new List<PresentationLayerPayloadV1>(manifest.Layers.Count);
             if (manifest.Layers.Count > 0)
             {
-                var layerTasks = new Task<(PresentationLayerPayloadV1? Payload, int ConsumedBytes)>[manifest.Layers.Count];
-                for (var index = 0; index < manifest.Layers.Count; index++)
+                var budget = new PayloadBudget(_maximumSourcePayloadBytes);
+                var results = new PresentationLayerPayloadV1?[manifest.Layers.Count];
+                var workerCount = Math.Min(manifest.Layers.Count, _maximumConcurrentLayerReads);
+                var nextIndex = -1;
+                var workers = new Task[workerCount];
+                for (var worker = 0; worker < workerCount; worker++)
                 {
-                    var layer = manifest.Layers[index];
-                    layerTasks[index] = Task.Run(
-                        () => TryReadOptionalLayerAsync(
-                            layer,
-                            manifest,
-                            referenceCaptureId,
-                            CameraAgentLayeredPresentationService.MaximumSourcePayloadBytes,
-                            cancellationToken).AsTask(),
-                        CancellationToken.None);
+                    workers[worker] = RunLayerWorkerAsync();
                 }
 
-                var results = await Task.WhenAll(layerTasks).ConfigureAwait(false);
+                await Task.WhenAll(workers).ConfigureAwait(false);
+
                 for (var index = 0; index < results.Length; index++)
                 {
-                    var (payload, consumedBytes) = results[index];
-                    if (payload is null || consumedBytes > budget)
+                    if (results[index] is not { } payload)
                     {
                         continue;
                     }
-                    budget -= consumedBytes;
                     validLayers.Add(manifest.Layers[index]);
                     payloads.Add(payload);
+                }
+
+                async Task RunLayerWorkerAsync()
+                {
+                    while (true)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var index = Interlocked.Increment(ref nextIndex);
+                        if (index >= manifest.Layers.Count)
+                        {
+                            return;
+                        }
+                        results[index] = await TryReadOptionalLayerAsync(
+                            manifest.Layers[index],
+                            manifest,
+                            referenceCaptureId,
+                            budget,
+                            cancellationToken).ConfigureAwait(false);
+                    }
                 }
             }
 
@@ -164,23 +192,30 @@ internal sealed class CenteredViewPresentationReader : ICenteredViewPresentation
         }
     }
 
-    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed", Justification = "Timed-out optional layer open is detached with best-effort stream disposal so healthy sibling layers are never blocked.")]
-    private async ValueTask<(PresentationLayerPayloadV1? Payload, int ConsumedBytes)> TryReadOptionalLayerAsync(
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed", Justification = "Timed-out optional layer opens and reads are detached with best-effort stream disposal so healthy sibling layers are never blocked.")]
+    private async ValueTask<PresentationLayerPayloadV1?> TryReadOptionalLayerAsync(
         PresentationLayerV1 layer,
         OverlayManifestV1 manifest,
         Guid referenceCaptureId,
-        int maximumBytes,
+        PayloadBudget budget,
         CancellationToken cancellationToken)
     {
         using var layerDeadline = new CancellationTokenSource(_optionalLayerReadTimeout, _timeProvider);
         using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, layerDeadline.Token);
         var layerToken = bounded.Token;
+        CameraAgentArtifactContentStream? content = null;
+        var reservedBytes = 0;
+        var committed = false;
         try
         {
             if (layer.CoordinateSpace != PresentationCoordinateSpace.ScenePixels)
-                return (null, 0);
+                return null;
 
-            var openTask = _artifacts.OpenContentAsync(layer.SourceProduct.ArtifactId, layerToken).AsTask();
+            // Offload invoking OpenContentAsync onto the thread pool so even a synchronous stall
+            // before returning a Task is bounded by layerToken and never blocks healthy siblings.
+            var openTask = Task.Run(
+                () => _artifacts.OpenContentAsync(layer.SourceProduct.ArtifactId, layerToken).AsTask(),
+                CancellationToken.None);
             CameraAgentArtifactContentResult opened;
             try
             {
@@ -191,25 +226,47 @@ internal sealed class CenteredViewPresentationReader : ICenteredViewPresentation
                 _ = DisposeLateOpenedContentAsync(openTask);
                 throw;
             }
-            if (opened.Content is not { } content || opened.Status != CameraAgentArtifactReadStatus.Found)
-                return (null, 0);
-            await using var lease = content.ConfigureAwait(false);
+            if (opened.Content is not { } openedContent || opened.Status != CameraAgentArtifactReadStatus.Found)
+                return null;
+            content = openedContent;
             if (content.MediaType != layer.SourceProduct.MediaType || content.Role != FrameArtifactRole.Metadata ||
                 content.CaptureId != referenceCaptureId)
-                return (null, 0);
-            if (content.ByteLength is < 1 or > PresentationLayerPayloadJson.MaximumPayloadBytes || content.ByteLength > maximumBytes)
-                return (null, 0);
-            var bytes = new byte[checked((int)content.ByteLength)];
-            await content.ReadExactlyAsync(bytes, layerToken).AsTask().WaitAsync(layerToken).ConfigureAwait(false);
+                return null;
+            if (content.ByteLength is < 1 or > PresentationLayerPayloadJson.MaximumPayloadBytes)
+                return null;
+            var byteLength = checked((int)content.ByteLength);
+            if (!budget.TryReserve(byteLength))
+                return null;
+            reservedBytes = byteLength;
+
+            var bytes = new byte[byteLength];
+            var stream = content;
+            var readTask = Task.Run(
+                () => stream.ReadExactlyAsync(bytes, layerToken).AsTask(),
+                CancellationToken.None);
+            try
+            {
+                await readTask.WaitAsync(layerToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                var detachedStream = content;
+                var detachedBytes = reservedBytes;
+                content = null;
+                reservedBytes = 0;
+                _ = DisposeAfterReadAsync(readTask, detachedStream, budget, detachedBytes);
+                throw;
+            }
             var payload = PresentationLayerPayloadJson.Parse(bytes).Payload;
             if (payload is null || payload.ContentIdentitySha256 != layer.SourceProduct.ProductIdentitySha256 ||
                 payload.WidthPixels != manifest.BaseProduct.Compatibility.WidthPixels ||
                 payload.HeightPixels != manifest.BaseProduct.Compatibility.HeightPixels)
-                return (null, 0);
+                return null;
             payload.ValidateStructure();
             if (!SceneStylePresentation.MatchesRetainedLayer(payload, layer))
-                return (null, 0);
-            return (payload, bytes.Length);
+                return null;
+            committed = true;
+            return payload;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -217,11 +274,22 @@ internal sealed class CenteredViewPresentationReader : ICenteredViewPresentation
         }
         catch (OperationCanceledException)
         {
-            return (null, 0);
+            return null;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or EndOfStreamException or InvalidDataException or JsonException)
         {
-            return (null, 0);
+            return null;
+        }
+        finally
+        {
+            if (content is not null)
+            {
+                await content.DisposeAsync().ConfigureAwait(false);
+            }
+            if (!committed && reservedBytes > 0)
+            {
+                budget.Release(reservedBytes);
+            }
         }
     }
 
@@ -239,6 +307,67 @@ internal sealed class CenteredViewPresentationReader : ICenteredViewPresentation
         catch (Exception)
         {
             // Timed-out optional layer open already degraded cleanly.
+        }
+    }
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Best-effort disposal and budget release after a timed-out layer read must never surface unobserved task exceptions.")]
+    private static async Task DisposeAfterReadAsync(
+        Task readTask,
+        CameraAgentArtifactContentStream content,
+        PayloadBudget budget,
+        int reservedBytes)
+    {
+        try
+        {
+            await readTask.ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // Timed-out optional layer read already degraded cleanly.
+        }
+        finally
+        {
+            try
+            {
+                await content.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+            }
+            budget.Release(reservedBytes);
+        }
+    }
+
+    private sealed class PayloadBudget(int maximumBytes)
+    {
+        private int _remaining = maximumBytes;
+
+        public bool TryReserve(int bytes)
+        {
+            if (bytes <= 0)
+            {
+                return false;
+            }
+            while (true)
+            {
+                var current = Volatile.Read(ref _remaining);
+                if (bytes > current)
+                {
+                    return false;
+                }
+                if (Interlocked.CompareExchange(ref _remaining, current - bytes, current) == current)
+                {
+                    return true;
+                }
+            }
+        }
+
+        public void Release(int bytes)
+        {
+            if (bytes > 0)
+            {
+                Interlocked.Add(ref _remaining, bytes);
+            }
         }
     }
 

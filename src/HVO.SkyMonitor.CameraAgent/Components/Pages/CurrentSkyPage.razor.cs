@@ -1586,6 +1586,24 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
                 var validated = await ValidateMeasuredLayersAsync(result.CaptureId, result.Result, bounded.Token);
                 ApplyLayerResult(result.CaptureId, result.Generation, validated);
             }
+            var pendingCentered = _deferredCenteredPresentation;
+            _deferredCenteredPresentation = null;
+            if (pendingCentered is { } centeredPending)
+            {
+                ApplyCenteredPresentationResult(
+                    centeredPending.TargetView,
+                    centeredPending.Generation,
+                    centeredPending.PreserveDisplayedWorkspace,
+                    centeredPending.Result,
+                    _lifetime?.Token ?? CancellationToken.None);
+            }
+            else if (IsCenteredArchived &&
+                     _centeredDisplay is { View: { } archivedView, PresentationDeferred: true } &&
+                     !_centeredPresentationLoading &&
+                     _lifetime is { IsCancellationRequested: false } lifetime)
+            {
+                StartCenteredPresentationLoad(archivedView, preserveDisplayedWorkspace: false, lifetime.Token);
+            }
             if (_disposeStarted == 0) StateHasChanged();
         });
     }
@@ -1743,6 +1761,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         Interlocked.Increment(ref _centeredPresentationGeneration);
         _centeredPresentationLoading = false;
         _centeredPresentationInFlight = null;
+        _deferredCenteredPresentation = null;
         var centeredCancellation = Interlocked.Exchange(ref _centeredPresentationCancellation, null);
         if (centeredCancellation is not null)
         {
