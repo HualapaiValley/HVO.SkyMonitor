@@ -168,6 +168,13 @@ public sealed partial class CameraAgentArtifactServiceTests
             single.Base.BaseId, single.Revision.RevisionId) + "/preview?inline=true",
             UriKind.Relative), token).ConfigureAwait(false);
         Assert.AreEqual(single.Base.Definition.Preview.PayloadSha256, PayloadChecksum.ComputeSha256(bytes));
+        var baseScopedBytes = await client.GetByteArrayAsync(new Uri(CenteredViewLinks.Base(input103.Key.CaptureId,
+            single.Base.BaseId) + "/preview?inline=true",
+            UriKind.Relative), token).ConfigureAwait(false);
+        Assert.AreEqual(single.Base.Definition.Preview.PayloadSha256, PayloadChecksum.ComputeSha256(baseScopedBytes));
+        using var wrongBaseRef = await client.GetAsync(new Uri(CenteredViewLinks.Base(input104.Key.CaptureId,
+            single.Base.BaseId) + "/preview?inline=true", UriKind.Relative), token).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.NotFound, wrongBaseRef.StatusCode);
         var decoded = JpegImageCodec.DecodeJpeg(bytes, token);
         AssertChannel(decoded, 27, 22, 0);
         AssertChannel(decoded, 126, 40, 2);

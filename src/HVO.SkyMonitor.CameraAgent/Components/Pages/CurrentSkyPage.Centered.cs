@@ -46,6 +46,8 @@ public sealed partial class CurrentSkyPage
     private string? _centeredSavedUrl;
     private ICenteredViewPublisher? _centeredPublisher;
     private bool _centeredPublisherSubscribed;
+    private CenteredViewArtifact? _centeredAstrometryEvidence;
+    private bool _centeredAstrometryEvidenceSet;
 
     private bool IsCenteredLive => !IsArchived && (_centeredLiveContext is not null || _centeredDisplay is not null);
     private bool IsCenteredArchived => IsArchived && _centeredArchive is not null;
@@ -60,7 +62,9 @@ public sealed partial class CurrentSkyPage
         IsCenteredMode &&
         !_layerImageFailed &&
         _centeredDisplay is { Presentation: { } presentation } centered &&
-        CameraAgentCenteredViewProjection.IsPresentationCompatible(centered.View, presentation) &&
+        _layers is { } layers &&
+        ReferenceEquals(layers, presentation) &&
+        CameraAgentCenteredViewProjection.IsPresentationCompatible(centered.View, layers) &&
         centered.PreviewUrl is not null;
 
     private string? CenteredBasePreviewUrl =>
@@ -86,7 +90,7 @@ public sealed partial class CurrentSkyPage
 
     private string LayerWorkspaceKey =>
         _centeredDisplay is { View: { } view }
-            ? FormattableString.Invariant($"{view.Base.BaseId}:{view.Revision.RevisionId}")
+            ? view.Base.BaseId
             : _layers?.CaptureId.ToString("D") ?? string.Empty;
 
     private string LayerImageKey =>
@@ -245,7 +249,11 @@ public sealed partial class CurrentSkyPage
         {
             return;
         }
-        _ = InvokeCenteredWakeRefreshAsync(lifetime.Token);
+        var token = lifetime.Token;
+        ThreadPool.UnsafeQueueUserWorkItem(
+            static state => _ = state.Page.InvokeCenteredWakeRefreshAsync(state.Token),
+            (Page: this, Token: token),
+            preferLocal: false);
     }
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Publisher wakeup hints are best-effort; periodic polling remains authoritative.")]
@@ -279,7 +287,10 @@ public sealed partial class CurrentSkyPage
         if (centered.SelectedView is not { } selected)
         {
             _centeredDisplay = null;
+            _centeredAstrometryEvidence = null;
+            _centeredAstrometryEvidenceSet = false;
             _layers = null;
+            ClearAstrometry();
             _selectedLayers = new(StringComparer.Ordinal);
             _layerInteractive = false;
             _layerImageFailed = false;
@@ -338,9 +349,23 @@ public sealed partial class CurrentSkyPage
                         "Live view updates are paused; retaining the last displayed view and its age.",
                         observed)
                     : view.Presentation.System;
+                var sameBase = incoming.View?.Base.BaseId == previous.View.Base.BaseId;
+                var retainedFreshness = sameBase
+                    ? view.Presentation.ImageFreshness
+                    : CameraAgentOperatorUiService.ComputeCenteredFreshness(
+                        previous.View,
+                        previous.RetainedFromPriorRun,
+                        incoming.Context.State,
+                        observed,
+                        _facts?.CaptureProfile?.EffectiveInterval);
+                var retainedHistorical = sameBase
+                    ? view.Presentation.IsHistoricalFallback
+                    : previous.RetainedFromPriorRun;
                 _presentation = (_presentation ?? view.Presentation) with
                 {
                     ObservedUtc = observed,
+                    ImageFreshness = retainedFreshness,
+                    IsHistoricalFallback = retainedHistorical,
                     System = retainedSystem,
                     LatestCapture = view.Presentation.LatestCapture,
                     DisplayCapture = displayCapture
@@ -419,6 +444,8 @@ public sealed partial class CurrentSkyPage
         if (captureChanged)
         {
             ResetLayers(referenceCaptureId, cancellationToken, discardDisplayedEvidence: true);
+            _centeredAstrometryEvidence = null;
+            _centeredAstrometryEvidenceSet = false;
         }
 
         _centeredDisplay = nextDisplay;
@@ -451,10 +478,41 @@ public sealed partial class CurrentSkyPage
                     : "Centered overlays are unavailable for this base. Showing the verified base image.");
         }
 
-        if (_astrometry?.Solution is null && !_astrometryLoading && _layerCancellation is { IsCancellationRequested: false } astrometryCancellation)
+        var astrometryPin = FindCenteredAstrometryEvidence(nextDisplay.View);
+        if (captureChanged || !_centeredAstrometryEvidenceSet || _centeredAstrometryEvidence != astrometryPin)
         {
-            _ = LoadAstrometryAsync(referenceCaptureId, Volatile.Read(ref _layerGeneration), astrometryCancellation.Token);
+            _centeredAstrometryEvidence = astrometryPin;
+            _centeredAstrometryEvidenceSet = true;
+            ClearAstrometry();
+            if (astrometryPin is not null && _layerCancellation is { IsCancellationRequested: false } astrometryCancellation)
+            {
+                _ = LoadAstrometryAsync(referenceCaptureId, Volatile.Read(ref _layerGeneration), astrometryCancellation.Token, astrometryPin);
+            }
+            else if (astrometryPin is null)
+            {
+                _astrometry = new(referenceCaptureId, "NotRetained", "centered-evidence-not-pinned");
+            }
         }
+    }
+
+    private static CenteredViewArtifact? FindCenteredAstrometryEvidence(CenteredView view)
+    {
+        var referenceCaptureId = view.Base.Definition.Reference.Capture.CaptureId;
+        return view.Revision.Layers
+            .FirstOrDefault(layer =>
+                layer.Key.Scope == CenteredViewLayerScope.Reference &&
+                layer.Key.SourceCaptureId == referenceCaptureId &&
+                layer.Key.Kind is AstrometricDiagnosticPresentation.ResidualsLayer or AstrometricDiagnosticPresentation.AssociationsLayer &&
+                layer.Evidence is not null)
+            ?.Evidence;
+    }
+
+    private static string CenteredVisibilityScopeKey(CenteredViewBase viewBase)
+    {
+        var camera = viewBase.Definition.Stream.Camera;
+        var compat = viewBase.Definition.Preview.Product.Compatibility;
+        return FormattableString.Invariant(
+            $"{camera.AgentId}:{camera.CameraId}:{compat.WidthPixels}x{compat.HeightPixels}:{compat.LayoutIdentitySha256}:{compat.CoordinateIdentitySha256}");
     }
 
     private CenteredUpdateAction ClassifyCenteredUpdate(
@@ -537,7 +595,8 @@ public sealed partial class CurrentSkyPage
                 : CenteredUpdateAction.Hold;
         }
 
-        if (incoming.Mode == CenteredLiveMode.Single)
+        if (incoming.Mode == CenteredLiveMode.Single ||
+            next.Base.Definition.Kind == CenteredViewKind.Single)
         {
             return CenteredUpdateAction.Advance;
         }
@@ -568,10 +627,20 @@ public sealed partial class CurrentSkyPage
                 .ToHashSet(StringComparer.Ordinal);
         }
 
+        if (IsCenteredArchived)
+        {
+            return presentation.Layers
+                .Where(static layer => layer.EnabledByDefault)
+                .Select(static layer => layer.IdentitySha256)
+                .ToHashSet(StringComparer.Ordinal);
+        }
+
         var compatibleBase = previousBase is null ||
             CameraAgentCenteredViewProjection.IsVisibilityCarryOverCompatible(previousBase, view.Base);
         if (!compatibleBase)
         {
+            _layerVisibility.Clear();
+            _layerVisibilityRead = false;
             return presentation.Layers
                 .Where(static layer => layer.EnabledByDefault)
                 .Select(static layer => layer.IdentitySha256)
@@ -746,18 +815,27 @@ public sealed partial class CurrentSkyPage
                 ? FormattableString.Invariant($"{baseLabel} · #{contributorSeq}")
                 : baseLabel;
 
-            var (readinessLabel, readinessCode) = layer.Readiness switch
-            {
-                CenteredViewReadiness.Ready => ("Ready", "Ready"),
-                CenteredViewReadiness.Partial => ("Partial", "Partial"),
-                CenteredViewReadiness.Waiting => ("Pending", "Pending"),
-                CenteredViewReadiness.AssessedEmpty => ("No detection", "NoDetection"),
-                CenteredViewReadiness.Incompatible => ("Incompatible", "Incompatible"),
-                CenteredViewReadiness.NotConfigured => ("Disabled", "Disabled"),
-                _ => ("Unavailable", "Unavailable")
-            };
+            var degradedOnRead = presentationLayer is null &&
+                layer.Drawable is not null &&
+                layer.Readiness is CenteredViewReadiness.Ready or CenteredViewReadiness.Partial &&
+                _layers is not null;
 
-            var description = DescribeCenteredLayerReadiness(layer, presentationLayer, readinessLabel);
+            var (readinessLabel, readinessCode) = degradedOnRead
+                ? ("Unavailable", "Unavailable")
+                : layer.Readiness switch
+                {
+                    CenteredViewReadiness.Ready => ("Ready", "Ready"),
+                    CenteredViewReadiness.Partial => ("Partial", "Partial"),
+                    CenteredViewReadiness.Waiting => ("Pending", "Pending"),
+                    CenteredViewReadiness.AssessedEmpty => ("No detection", "NoDetection"),
+                    CenteredViewReadiness.Incompatible => ("Incompatible", "Incompatible"),
+                    CenteredViewReadiness.NotConfigured => ("Disabled", "Disabled"),
+                    _ => ("Unavailable", "Unavailable")
+                };
+
+            var description = degradedOnRead
+                ? "Overlay unavailable · showing the verified base image"
+                : DescribeCenteredLayerReadiness(layer, presentationLayer, readinessLabel);
             rows.Add(new CenteredLayerRow(
                 layer,
                 presentationLayer,

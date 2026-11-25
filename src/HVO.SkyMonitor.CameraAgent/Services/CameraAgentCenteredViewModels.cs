@@ -84,17 +84,15 @@ internal static class CameraAgentCenteredViewProjection
 
     internal static Uri BoundPreviewUrl(CenteredView view) =>
         new(
-            CenteredViewLinks.Revision(
+            CenteredViewLinks.Base(
                 view.Base.Definition.Reference.Capture.CaptureId,
-                view.Base.BaseId,
-                view.Revision.RevisionId) + "/preview?inline=true",
+                view.Base.BaseId) + "/preview?inline=true",
             UriKind.Relative);
 
     internal static string BoundPreviewDownloadUrl(CenteredView view) =>
-        CenteredViewLinks.Revision(
+        CenteredViewLinks.Base(
             view.Base.Definition.Reference.Capture.CaptureId,
-            view.Base.BaseId,
-            view.Revision.RevisionId) + "/preview";
+            view.Base.BaseId) + "/preview";
 
     internal static IReadOnlyList<CameraAgentCenteredArchiveRevisionEntry> ClassifyRevisions(
         CenteredViewArchiveBase archiveBase,
@@ -124,7 +122,8 @@ internal static class CameraAgentCenteredViewProjection
                 string.Equals(revision.RevisionId, archiveBase.LastLiveRevisionId, StringComparison.Ordinal);
             var selectedLive = liveRevisionIds.Contains(revision.RevisionId);
             var isLaterEnrichment = !selectedLive &&
-                (lastLiveOrder is { } cutoff ? revision.Order > cutoff : !isInitial);
+                lastLiveOrder is { } cutoff &&
+                revision.Order > cutoff;
             var role = isLaterEnrichment
                 ? CenteredArchiveRevisionRole.LaterArchiveEnrichment
                 : isLastLive
@@ -141,6 +140,8 @@ internal static class CameraAgentCenteredViewProjection
                     FormattableString.Invariant($"Later archive enrichment (rev #{revision.Order}, not shown live)"),
                 CenteredArchiveRevisionRole.Initial =>
                     FormattableString.Invariant($"Initial published base (rev #{revision.Order})"),
+                _ when archiveBase.LastLiveRevisionId is null =>
+                    FormattableString.Invariant($"Archive revision (rev #{revision.Order}, not shown live)"),
                 _ => FormattableString.Invariant($"Earlier revision (rev #{revision.Order})")
             };
 

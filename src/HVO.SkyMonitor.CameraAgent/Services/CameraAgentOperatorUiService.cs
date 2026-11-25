@@ -297,6 +297,10 @@ internal interface ICameraAgentOperatorUiService
     ValueTask<OperatorUiResult<CameraAgentRetainedAstrometry>> GetRetainedAstrometryAsync(Guid captureId, CancellationToken cancellationToken)
         => ValueTask.FromResult(OperatorUiResult<CameraAgentRetainedAstrometry>.Success(new(captureId, "NotRetained", "assessment-not-retained")));
 
+    ValueTask<OperatorUiResult<CameraAgentRetainedAstrometry>> GetRetainedAstrometryAsync(
+        Guid captureId, CenteredViewArtifact? evidence, CancellationToken cancellationToken)
+        => GetRetainedAstrometryAsync(captureId, cancellationToken);
+
     ValueTask<OperatorUiResult<CameraAgentAstrometryPublicationState>> ReadAstrometryPublicationStateAsync(
         CameraAgentAstrometryAssessmentIdentity identity, CancellationToken cancellationToken)
         => ValueTask.FromResult(OperatorUiResult<CameraAgentAstrometryPublicationState>.Success(CameraAgentAstrometryPublicationState.Indeterminate));
@@ -1303,15 +1307,22 @@ internal sealed partial class CameraAgentOperatorUiService(
             : new(OperatorUiResultKind.Unavailable, read, "The latest accepted measured result is temporarily unavailable.");
     }
 
+    public ValueTask<OperatorUiResult<CameraAgentRetainedAstrometry>> GetRetainedAstrometryAsync(Guid captureId, CancellationToken cancellationToken)
+        => GetRetainedAstrometryAsync(captureId, evidence: null, cancellationToken);
+
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The authenticated read returns only fixed failure states.")]
-    public async ValueTask<OperatorUiResult<CameraAgentRetainedAstrometry>> GetRetainedAstrometryAsync(Guid captureId, CancellationToken cancellationToken)
+    public async ValueTask<OperatorUiResult<CameraAgentRetainedAstrometry>> GetRetainedAstrometryAsync(
+        Guid captureId, CenteredViewArtifact? evidence, CancellationToken cancellationToken)
     {
         if (!await IsAuthorizedAsync(CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false))
             return Denied<CameraAgentRetainedAstrometry>();
         try
         {
-            var value = retainedAstrometry is null ? new CameraAgentRetainedAstrometry(captureId, "NotRetained", "assessment-not-retained")
-                : await retainedAstrometry.GetAsync(captureId, cancellationToken).ConfigureAwait(false);
+            var value = retainedAstrometry is null
+                ? new CameraAgentRetainedAstrometry(captureId, "NotRetained", "assessment-not-retained")
+                : evidence is not null
+                    ? await retainedAstrometry.GetExactAsync(captureId, evidence, cancellationToken).ConfigureAwait(false)
+                    : await retainedAstrometry.GetAsync(captureId, cancellationToken).ConfigureAwait(false);
             return value.CaptureId == captureId
                 ? OperatorUiResult<CameraAgentRetainedAstrometry>.Success(value)
                 : Unavailable<CameraAgentRetainedAstrometry>("The retained assessment identity does not match this capture.");

@@ -9,7 +9,7 @@ namespace HVO.SkyMonitor.CameraAgent.Services;
 
 internal sealed partial class CameraAgentOperatorUiService
 {
-    private const int MaximumArchiveRevisionsPerBase = 128;
+    private const int ArchiveRevisionPageSize = 128;
 
     private async ValueTask<ClaimsPrincipal?> GetAuthorizedReadPrincipalAsync()
     {
@@ -93,21 +93,8 @@ internal sealed partial class CameraAgentOperatorUiService
             if (view is not null)
             {
                 previewUrl = CameraAgentCenteredViewProjection.BoundPreviewUrl(view);
-                var rendered = await centeredViewPresentation!
-                    .ReadAsync(view.Base.BaseId, view.Revision.RevisionId, cancellationToken)
-                    .ConfigureAwait(false);
-                presentationStatus = rendered.Status;
-                presentationReason = rendered.Reason;
-                if (rendered.Status == CameraAgentLayeredPresentationStatus.Found &&
-                    CameraAgentCenteredViewProjection.IsPresentationCompatible(view, rendered.Presentation))
-                {
-                    presentation = rendered.Presentation;
-                }
-                else if (rendered.Status == CameraAgentLayeredPresentationStatus.Found)
-                {
-                    presentationStatus = CameraAgentLayeredPresentationStatus.Malformed;
-                    presentationReason = "The centered overlay presentation does not match the exact base preview.";
-                }
+                (presentation, presentationStatus, presentationReason) = await TryReadCenteredPresentationAsync(
+                    view, cancellationToken).ConfigureAwait(false);
             }
 
             var observedUtc = timeProvider.GetUtcNow().ToUniversalTime();
@@ -122,14 +109,25 @@ internal sealed partial class CameraAgentOperatorUiService
             var latestCapture = context.AdmissionHead is { } head
                 ? head with { AgeSeconds = Math.Max(0, (long)(observedUtc - head.ExposureStartedUtc).TotalSeconds) }
                 : displayCapture;
+
+            CameraAgentCurrentSkyFacts? facts = null;
+            string? factsUnavailableReason = null;
+            if (displayCapture is not null)
+            {
+                (facts, factsUnavailableReason) = await ReadCachedFactsAsync(
+                    displayCapture.CaptureId,
+                    combinedArtifactId: null,
+                    cancellationToken).ConfigureAwait(false);
+            }
+
             var system = ProjectCenteredSystemStatus(context, observedUtc);
-            var freshness = view is null
-                ? CameraAgentPresentationImageFreshness.Empty
-                : retainedFromPriorRun
-                    ? CameraAgentPresentationImageFreshness.Historical
-                    : context.State is CenteredViewLiveState.Stale or CenteredViewLiveState.Gap
-                        ? CameraAgentPresentationImageFreshness.Stale
-                        : CameraAgentPresentationImageFreshness.Current;
+            var expectedCaptureInterval = ResolveCenteredExpectedCaptureInterval(facts);
+            var freshness = ComputeCenteredFreshness(
+                view,
+                retainedFromPriorRun,
+                context.State,
+                observedUtc,
+                expectedCaptureInterval);
 
             var imagePresentation = new CameraAgentCurrentImagePresentation(
                 observedUtc,
@@ -142,16 +140,6 @@ internal sealed partial class CameraAgentOperatorUiService
                 Stages: [],
                 StructuredLayersAvailable: presentation is not null,
                 HistoryBoundReached: false);
-
-            CameraAgentCurrentSkyFacts? facts = null;
-            string? factsUnavailableReason = null;
-            if (displayCapture is not null)
-            {
-                (facts, factsUnavailableReason) = await ReadCachedFactsAsync(
-                    displayCapture.CaptureId,
-                    combinedArtifactId: null,
-                    cancellationToken).ConfigureAwait(false);
-            }
 
             var minimumRefresh = TimeSpan.FromSeconds(currentSkyRefresh?.Seconds ?? CurrentSkyRefreshSetting.DefaultSeconds);
             var centeredLive = new CameraAgentCenteredLiveView(
@@ -222,12 +210,8 @@ internal sealed partial class CameraAgentOperatorUiService
             var summaries = new List<CameraAgentCenteredArchiveBaseSummary>(archiveBases.Count);
             foreach (var archiveBase in archiveBases)
             {
-                var revisions = await centeredViewIndex
-                    .ReadRevisionsAsync(archiveBase.Base.BaseId, 0, MaximumArchiveRevisionsPerBase, cancellationToken)
-                    .ConfigureAwait(false);
-                var history = await centeredViewIndex
-                    .ReadLiveHistoryAsync(archiveBase.Base.BaseId, 0, MaximumArchiveRevisionsPerBase, cancellationToken)
-                    .ConfigureAwait(false);
+                var revisions = await ReadAllRevisionsAsync(archiveBase.Base.BaseId, cancellationToken).ConfigureAwait(false);
+                var history = await ReadAllLiveHistoryAsync(archiveBase.Base.BaseId, cancellationToken).ConfigureAwait(false);
                 summaries.Add(new(archiveBase, CameraAgentCenteredViewProjection.ClassifyRevisions(archiveBase, revisions, history)));
             }
 
@@ -285,7 +269,8 @@ internal sealed partial class CameraAgentOperatorUiService
             else
             {
                 var preferred = archiveBases
-                    .OrderByDescending(static entry => entry.Base.Definition.Kind == CenteredViewKind.Stack && entry.Base.Definition.RecomputedFromBaseId is null)
+                    .OrderByDescending(static entry => entry.LastLiveRevisionId is not null)
+                    .ThenByDescending(static entry => entry.Base.Definition.Kind == CenteredViewKind.Stack && entry.Base.Definition.RecomputedFromBaseId is null)
                     .ThenBy(static entry => entry.Base.Definition.RecomputedFromBaseId is not null)
                     .First();
                 selectedView = await centeredViewIndex
@@ -304,21 +289,8 @@ internal sealed partial class CameraAgentOperatorUiService
             if (selectedView is not null)
             {
                 previewUrl = CameraAgentCenteredViewProjection.BoundPreviewUrl(selectedView);
-                var rendered = await centeredViewPresentation
-                    .ReadAsync(selectedView.Base.BaseId, selectedView.Revision.RevisionId, cancellationToken)
-                    .ConfigureAwait(false);
-                presentationStatus = rendered.Status;
-                presentationReason = rendered.Reason;
-                if (rendered.Status == CameraAgentLayeredPresentationStatus.Found &&
-                    CameraAgentCenteredViewProjection.IsPresentationCompatible(selectedView, rendered.Presentation))
-                {
-                    presentation = rendered.Presentation;
-                }
-                else if (rendered.Status == CameraAgentLayeredPresentationStatus.Found)
-                {
-                    presentationStatus = CameraAgentLayeredPresentationStatus.Malformed;
-                    presentationReason = "The centered overlay presentation does not match the exact base preview.";
-                }
+                (presentation, presentationStatus, presentationReason) = await TryReadCenteredPresentationAsync(
+                    selectedView, cancellationToken).ConfigureAwait(false);
             }
 
             return new CameraAgentCenteredArchiveView(
@@ -339,10 +311,14 @@ internal sealed partial class CameraAgentOperatorUiService
         catch (Exception exception)
         {
             logger.LogWarning(exception, "CameraAgent centered archive view read failed for capture {CaptureId}.", captureId);
-            return new CameraAgentCenteredArchiveView(
-                captureId, [], null, null, CameraAgentLayeredPresentationStatus.Unavailable,
-                "Centered archive evidence is temporarily unavailable.", null,
-                "The centered view evidence for this capture is temporarily unavailable.", null);
+            if (request?.HasExplicitTarget == true)
+            {
+                return new CameraAgentCenteredArchiveView(
+                    captureId, [], null, null, CameraAgentLayeredPresentationStatus.Unavailable,
+                    "Centered archive evidence is temporarily unavailable.", null,
+                    "The centered view evidence for this capture is temporarily unavailable.", null);
+            }
+            return null;
         }
     }
 
@@ -413,6 +389,150 @@ internal sealed partial class CameraAgentOperatorUiService
             logger.LogWarning(exception, "CameraAgent centered view selection save failed.");
             return Unavailable<CenteredViewSavedSelection>("The personal view selection could not be saved.");
         }
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Optional overlay presentation failures degrade cleanly while keeping the verified base displayable.")]
+    private async ValueTask<(CameraAgentLayeredPresentation? Presentation, CameraAgentLayeredPresentationStatus Status, string? Reason)> TryReadCenteredPresentationAsync(
+        CenteredView view,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var rendered = await centeredViewPresentation!
+                .ReadAsync(view.Base.BaseId, view.Revision.RevisionId, cancellationToken)
+                .ConfigureAwait(false);
+            if (rendered.Status == CameraAgentLayeredPresentationStatus.Found &&
+                CameraAgentCenteredViewProjection.IsPresentationCompatible(view, rendered.Presentation))
+            {
+                return (rendered.Presentation, rendered.Status, rendered.Reason);
+            }
+            if (rendered.Status == CameraAgentLayeredPresentationStatus.Found)
+            {
+                return (null, CameraAgentLayeredPresentationStatus.Malformed,
+                    "The centered overlay presentation does not match the exact base preview.");
+            }
+            return (null, rendered.Status, rendered.Reason);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "CameraAgent centered overlay presentation read failed for base {BaseId} revision {RevisionId}.",
+                view.Base.BaseId, view.Revision.RevisionId);
+            return (null, CameraAgentLayeredPresentationStatus.Unavailable,
+                "Centered overlays are temporarily unavailable. Showing the verified base image.");
+        }
+    }
+
+    private async ValueTask<List<CenteredViewRevision>> ReadAllRevisionsAsync(
+        string baseId,
+        CancellationToken cancellationToken)
+    {
+        var all = new List<CenteredViewRevision>();
+        var afterOrder = 0L;
+        while (true)
+        {
+            var page = await centeredViewIndex!
+                .ReadRevisionsAsync(baseId, afterOrder, ArchiveRevisionPageSize, cancellationToken)
+                .ConfigureAwait(false);
+            if (page.Count == 0)
+            {
+                break;
+            }
+            all.AddRange(page);
+            var nextOrder = page[^1].Order;
+            if (page.Count < ArchiveRevisionPageSize || nextOrder <= afterOrder)
+            {
+                break;
+            }
+            afterOrder = nextOrder;
+        }
+        return all;
+    }
+
+    private async ValueTask<List<CenteredViewLiveInterval>> ReadAllLiveHistoryAsync(
+        string baseId,
+        CancellationToken cancellationToken)
+    {
+        var all = new List<CenteredViewLiveInterval>();
+        var afterOrder = 0L;
+        while (true)
+        {
+            var page = await centeredViewIndex!
+                .ReadLiveHistoryAsync(baseId, afterOrder, ArchiveRevisionPageSize, cancellationToken)
+                .ConfigureAwait(false);
+            if (page.Count == 0)
+            {
+                break;
+            }
+            all.AddRange(page);
+            var nextOrder = page[^1].StartedOrder;
+            if (page.Count < ArchiveRevisionPageSize || nextOrder <= afterOrder)
+            {
+                break;
+            }
+            afterOrder = nextOrder;
+        }
+        return all;
+    }
+
+    private TimeSpan? ResolveCenteredExpectedCaptureInterval(CameraAgentCurrentSkyFacts? facts)
+    {
+        var snapshot = scheduleRuntime?.Snapshot;
+        var decision = snapshot?.CurrentDecision;
+        var activeInterval = decision is { Admitted: true, SetpointProfileId: { } profileId }
+            ? snapshot?.Revision.Definition.SetpointProfiles.FirstOrDefault(profile =>
+                string.Equals(profile.Id, profileId, StringComparison.Ordinal))?.CaptureInterval
+            : null;
+        if (activeInterval is { } active && active > TimeSpan.Zero)
+        {
+            return active;
+        }
+        if (snapshot?.Configuration.Rig.Pipeline.CaptureInterval is { } pipelineInterval && pipelineInterval > TimeSpan.Zero)
+        {
+            return pipelineInterval;
+        }
+        if (facts?.CaptureProfile?.EffectiveInterval is { } factInterval && factInterval > TimeSpan.Zero)
+        {
+            return factInterval;
+        }
+        return null;
+    }
+
+    internal static CameraAgentPresentationImageFreshness ComputeCenteredFreshness(
+        CenteredView? view,
+        bool retainedFromPriorRun,
+        CenteredViewLiveState state,
+        DateTimeOffset observedUtc,
+        TimeSpan? expectedCaptureInterval)
+    {
+        if (view is null)
+        {
+            return CameraAgentPresentationImageFreshness.Empty;
+        }
+        if (retainedFromPriorRun)
+        {
+            return CameraAgentPresentationImageFreshness.Historical;
+        }
+        if (state is CenteredViewLiveState.Stale or CenteredViewLiveState.Gap)
+        {
+            return CameraAgentPresentationImageFreshness.Stale;
+        }
+        if (expectedCaptureInterval is { } interval && interval > TimeSpan.Zero)
+        {
+            var age = observedUtc - view.Base.Definition.Reference.ExposureStartedUtc;
+            if (age > interval * 6)
+            {
+                return CameraAgentPresentationImageFreshness.Stale;
+            }
+            if (age > interval * 2)
+            {
+                return CameraAgentPresentationImageFreshness.Delayed;
+            }
+        }
+        return CameraAgentPresentationImageFreshness.Current;
     }
 
     private static CameraAgentPresentationCapture ProjectCenteredCapture(

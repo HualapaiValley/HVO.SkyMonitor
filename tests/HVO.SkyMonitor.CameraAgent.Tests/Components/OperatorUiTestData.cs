@@ -352,8 +352,14 @@ internal sealed class TestOperatorUiService : ICameraAgentOperatorUiService, ICa
         => AstrometryPublicationHandler(identity, cancellationToken);
     internal Func<Guid, CancellationToken, ValueTask<OperatorUiResult<CameraAgentRetainedAstrometry>>> AstrometryHandler { get; set; } =
         (id, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentRetainedAstrometry>.Success(new(id, "NotRetained", "assessment-not-retained")));
+    internal Func<Guid, CenteredViewArtifact?, CancellationToken, ValueTask<OperatorUiResult<CameraAgentRetainedAstrometry>>>? ExactAstrometryHandler { get; set; }
     public ValueTask<OperatorUiResult<CameraAgentRetainedAstrometry>> GetRetainedAstrometryAsync(Guid captureId, CancellationToken cancellationToken)
         => AstrometryHandler(captureId, cancellationToken);
+    public ValueTask<OperatorUiResult<CameraAgentRetainedAstrometry>> GetRetainedAstrometryAsync(
+        Guid captureId, CenteredViewArtifact? evidence, CancellationToken cancellationToken)
+        => ExactAstrometryHandler is not null
+            ? ExactAstrometryHandler(captureId, evidence, cancellationToken)
+            : AstrometryHandler(captureId, cancellationToken);
     internal Func<Guid, CancellationToken, ValueTask<OperatorUiResult<CameraAgentCaptureTransientView>>> TransientHandler { get; set; } =
         (id, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentCaptureTransientView>.Success(new(
             id, HVO.SkyMonitor.CameraAgent.Common.Options.TransientOperatingMode.Off, null)));

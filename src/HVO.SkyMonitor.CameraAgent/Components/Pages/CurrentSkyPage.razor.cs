@@ -171,6 +171,8 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         {
             _centeredArchive = null;
             _centeredDisplay = null;
+            _centeredAstrometryEvidence = null;
+            _centeredAstrometryEvidenceSet = false;
             ResetLayers(capture.CaptureId, _lifetime!.Token);
             TryLoadLayers(capture.CaptureId);
         }
@@ -183,7 +185,10 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         await WarmInteropModuleAsync();
-        if (firstRender) await LoadLayerVisibilityAsync();
+        if (firstRender || (IsCenteredLive && !_layerVisibilityRead && EffectiveLayerVisibilityKey is not null))
+        {
+            await LoadLayerVisibilityAsync();
+        }
         if (!_bindLayers || !ShowEffectiveLayeredHero) return;
         _bindLayers = false;
         var generation = _layerGeneration;
@@ -400,6 +405,8 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
                 {
                     _centeredLiveContext = null;
                     _centeredDisplay = null;
+                    _centeredAstrometryEvidence = null;
+                    _centeredAstrometryEvidenceSet = false;
                     var wasLayered = ShowLayeredHero;
                     var previousBaseUrl = ProcessedBaseSlot?.PreviewUrl;
                     _presentation = result.Value.Presentation;
@@ -619,6 +626,8 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         _centeredLiveContext = null;
         _centeredDisplay = null;
         _centeredArchive = null;
+        _centeredAstrometryEvidence = null;
+        _centeredAstrometryEvidenceSet = false;
         _latestAstrometry = null;
         _latestAstrometryRevision++;
         _lifetime?.Cancel();
@@ -680,7 +689,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
 
     private void TryLoadLayers(Guid? captureId)
     {
-        if (captureId is not { } id || _layers is not null || _layerLoading || _accessDenied || _viewerOpen ||
+        if (IsCenteredMode || captureId is not { } id || _layers is not null || _layerLoading || _accessDenied || _viewerOpen ||
             _layerCancellation is not { IsCancellationRequested: false } cancellation) return;
         _layerLoading = true;
         _ = LoadLayersAsync(id, Volatile.Read(ref _layerGeneration), cancellation.Token);
@@ -695,7 +704,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
 
     private async Task RefreshMeasuredEvidenceAsync()
     {
-        if (_layers is null || _layerLoading || _saving || _viewerOpen || _accessDenied ||
+        if (IsCenteredMode || _layers is null || _layerLoading || _saving || _viewerOpen || _accessDenied ||
             _layerCancellation is not { IsCancellationRequested: false } cancellation) return;
         _layerLoading = true;
         await LoadLayersAsync(_layers.CaptureId, Volatile.Read(ref _layerGeneration), cancellation.Token);
@@ -752,7 +761,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
             if (!_accessDenied) RevokeAccess();
             return;
         }
-        if (generation != _layerGeneration || _runCaptureId != captureId || _disposeStarted != 0 || _accessDenied ||
+        if (IsCenteredMode || generation != _layerGeneration || _runCaptureId != captureId || _disposeStarted != 0 || _accessDenied ||
             _layerCancellation?.IsCancellationRequested != false) return;
         // Keep the actual displayed base and controls frozen, including terminal absence/failure.
         // Retain one completed result, not a waiting task or its timeout/cancellation resources.
@@ -811,11 +820,13 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
            (slot.PreviewWidth is null || slot.PreviewWidth == layers.WidthPixels) &&
            (slot.PreviewHeight is null || slot.PreviewHeight == layers.HeightPixels);
 
-    private string? LayerMessage => _showingBaseOnlyForMismatch
-        ? "The retained layer manifest base does not match an eligible preview. Showing a standard image without selectable layers."
-        : _layers is { } layers && !LayersMatchDisplay(_presentation, layers)
-            ? "The retained layer manifest base does not match the resolved Combined display derivative or its preview dimensions. Showing the unannotated Combined base without layers."
-            : _layerMessage;
+    private string? LayerMessage => IsCenteredMode
+        ? _layerMessage
+        : _showingBaseOnlyForMismatch
+            ? "The retained layer manifest base does not match an eligible preview. Showing a standard image without selectable layers."
+            : _layers is { } layers && !LayersMatchDisplay(_presentation, layers)
+                ? "The retained layer manifest base does not match the resolved Combined display derivative or its preview dimensions. Showing the unannotated Combined base without layers."
+                : _layerMessage;
 
     // Unknown or failed layer reads are not proof that a capture has no retained layers.
     private bool ProcessedBaseFallback => _selectedStage == CameraAgentPresentationStage.Annotated && !_layersNotRetained;
@@ -908,26 +919,45 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
     }
 
     // Live and archived views keep separate choices. localStorage is already kept per origin; the path base tells
-    // apart instances served under one origin.
+    // apart instances served under one origin. Centered live views scope preferences by base compatibility, and
+    // centered archive reopens never let browser preferences override archived or saved visibility.
     private string LayerVisibilityKey =>
         $"hvo.{(IsArchived ? "archivedCapture" : "currentSky")}.layerVisibility.v1:{new Uri(NavigationManager.BaseUri).AbsolutePath}";
+
+    private string? EffectiveLayerVisibilityKey => IsCenteredArchived
+        ? null
+        : IsCenteredLive
+            ? _centeredDisplay is { View.Base: { } viewBase }
+                ? $"{LayerVisibilityKey}:centered:{CenteredVisibilityScopeKey(viewBase)}"
+                : null
+            : LayerVisibilityKey;
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Remembered layer choices are optional; any storage or interop failure keeps the profile defaults.")]
     private async Task LoadLayerVisibilityAsync()
     {
+        if (IsCenteredArchived || _disposeStarted != 0)
+        {
+            _layerVisibilityRead = true;
+            return;
+        }
+        var key = EffectiveLayerVisibilityKey;
+        if (key is null)
+        {
+            return;
+        }
         string? stored = null;
         try
         {
             if (await GetLayerModuleAsync() is { } module)
-                stored = await module.InvokeAsync<string?>("readLayerVisibility", LayerVisibilityKey);
+                stored = await module.InvokeAsync<string?>("readLayerVisibility", key);
         }
         catch (Exception)
         {
             // The profile defaults apply.
         }
         // A choice made while storage was being read is newer than what storage holds; what the page merely showed
-        // meanwhile is not.
-        if (_layerVisibilityRead || _disposeStarted != 0) return;
+        // meanwhile is not. Also ignore if we switched to archive or an incompatible centered base while awaiting.
+        if (_layerVisibilityRead || _disposeStarted != 0 || IsCenteredArchived || !string.Equals(EffectiveLayerVisibilityKey, key, StringComparison.Ordinal)) return;
         _layerVisibilityRead = true;
         var remembered = ParseLayerVisibility(stored);
         foreach (var (kind, visible) in remembered) _layerVisibility[kind] = visible;
@@ -942,10 +972,11 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
     private async Task SaveLayerVisibilityAsync()
     {
         _layerVisibilityRead = true;
+        if (IsCenteredArchived || EffectiveLayerVisibilityKey is not { } key) return;
         try
         {
             if (await GetLayerModuleAsync() is { } module)
-                await module.InvokeVoidAsync("writeLayerVisibility", LayerVisibilityKey,
+                await module.InvokeVoidAsync("writeLayerVisibility", key,
                     _layerVisibility.Count == 0 ? null : JsonSerializer.Serialize(_layerVisibility));
         }
         catch (Exception)
