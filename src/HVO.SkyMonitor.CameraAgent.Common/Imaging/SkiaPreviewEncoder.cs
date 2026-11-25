@@ -76,9 +76,13 @@ public static class SkiaPreviewEncoder
         return EncodeMono8ToJpeg(width, height, Mono16DisplayStretch.Apply(width, height, pixelData), quality);
     }
 
-    /// <summary>Demosaics RGGB RAW16 and encodes the display-only RGB result as JPEG.</summary>
+    /// <summary>Demosaics RAW16 using the delivered Bayer phase and encodes the display-only RGB result as JPEG.</summary>
     public static Result<byte[]> EncodeBayerRggb16ToJpeg(
-        int width, int height, ReadOnlyMemory<byte> pixelData, int quality = DefaultQuality)
+        int width,
+        int height,
+        ReadOnlyMemory<byte> pixelData,
+        int quality = DefaultQuality,
+        BayerPattern pattern = BayerPattern.Rggb)
     {
         if (pixelData.Length != checked(width * height * 2))
         {
@@ -87,6 +91,9 @@ public static class SkiaPreviewEncoder
         }
 
         return EncodeRgb24ToJpeg(
-            width, height, BayerRggb16Demosaicer.DemosaicToRgb24(width, height, pixelData), quality);
+            width,
+            height,
+            BayerRggb16Demosaicer.DemosaicToRgb24(width, height, pixelData, pattern: pattern),
+            quality);
     }
 }

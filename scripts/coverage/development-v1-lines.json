@@ -1842,51 +1842,64 @@
       }
     },
     "HVO.SkyMonitor.Imaging/BayerRggb16Demosaicer.cs": {
-      "sourceSha256": "13c642467198d349cf7e064e59449b27a01054194f853d122e4e0d4b822881f7",
+      "sourceSha256": "af10836c64e026577e5cad873c020ef646f74a136d7f5c868244bbaebce4e229",
       "lines": [
-      15, 16, 27, 28, 29, 30, 32, 33, 35, 36, 37, 39, 40, 41, 45, 50,
-      51, 52, 54, 55, 59, 61, 62, 64, 65, 69, 72, 73, 74, 75, 76, 77
+      16, 17, 29, 31, 34, 35, 36, 37, 38, 39, 41, 42, 44, 45, 46, 48,
+      49, 50, 54, 67, 68, 69, 71, 72, 76, 78, 79, 81, 82, 86, 90, 91,
+      92, 93, 94, 95
     ],
       "branches": {
-        "30": {
+        "29": {
           "total": 2,
-          "conditions": ["122"]
+          "conditions": ["7"]
         },
-        "33": {
+        "34": {
           "total": 2,
-          "conditions": ["114"]
+          "conditions": ["25"]
         },
-        "37": {
-          "total": 2,
-          "conditions": ["106"]
+        "35": {
+          "total": 4,
+          "conditions": ["44", "49"]
         },
         "39": {
           "total": 2,
-          "conditions": ["73"]
+          "conditions": ["207"]
         },
-        "52": {
+        "42": {
           "total": 2,
-          "conditions": ["77"]
+          "conditions": ["196"]
         },
-        "55": {
+        "46": {
           "total": 2,
-          "conditions": ["15"]
+          "conditions": ["185"]
         },
-        "59": {
+        "48": {
           "total": 2,
-          "conditions": ["69"]
-        },
-        "62": {
-          "total": 4,
-          "conditions": ["31", "43"]
+          "conditions": ["146"]
         },
         "69": {
           "total": 2,
-          "conditions": ["80"]
+          "conditions": ["81"]
         },
         "72": {
+          "total": 2,
+          "conditions": ["15"]
+        },
+        "76": {
+          "total": 2,
+          "conditions": ["73"]
+        },
+        "79": {
+          "total": 4,
+          "conditions": ["31", "47"]
+        },
+        "86": {
+          "total": 2,
+          "conditions": ["84"]
+        },
+        "90": {
           "total": 8,
-          "conditions": ["13", "18", "24", "9"]
+          "conditions": ["13", "17", "22", "28"]
         }
       }
     },
@@ -3159,7 +3172,7 @@
         },
         "607": {
           "total": 2,
-          "conditions": ["446"]
+          "conditions": ["447"]
         },
         "687": {
           "total": 2,

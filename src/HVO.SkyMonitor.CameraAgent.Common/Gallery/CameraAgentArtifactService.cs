@@ -38,12 +38,15 @@ internal sealed class CameraAgentPreviewEncoder : ICameraAgentPreviewEncoder
     {
         // Explicit comparison policies use the full source histogram, just like the retained recipe.
         // Convert once before resizing; Mono8/RGB and already encoded derivatives are never restretched.
+        var bayerPattern = layout.PixelFormat == CameraPixelFormat.BayerRggb16
+            ? ResolveBayerPattern(layout)
+            : BayerPattern.Rggb;
         if (displayOptions is not null && layout.PixelFormat is CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16)
         {
             var mono = layout.PixelFormat == CameraPixelFormat.Mono16;
             payload = mono
                 ? Mono16DisplayStretch.Apply(layout.Width, layout.Height, payload, cancellationToken, layout.StrideBytes, displayOptions)
-                : BayerRggb16Demosaicer.DemosaicToRgb24(layout.Width, layout.Height, payload, cancellationToken, layout.StrideBytes, displayOptions);
+                : BayerRggb16Demosaicer.DemosaicToRgb24(layout.Width, layout.Height, payload, cancellationToken, layout.StrideBytes, displayOptions, bayerPattern);
             layout = layout with
             {
                 PixelFormat = mono ? CameraPixelFormat.Mono8 : CameraPixelFormat.Rgb24,
@@ -69,7 +72,7 @@ internal sealed class CameraAgentPreviewEncoder : ICameraAgentPreviewEncoder
                 CameraPixelFormat.Rgb24 => SkiaPreviewEncoder.EncodeRgb24ToJpeg(
                     resized.Width, resized.Height, resized.Payload),
                 CameraPixelFormat.BayerRggb16 => SkiaPreviewEncoder.EncodeBayerRggb16ToJpeg(
-                    resized.Width, resized.Height, resized.Payload),
+                    resized.Width, resized.Height, resized.Payload, pattern: bayerPattern),
                 _ => throw new NotSupportedException()
             };
             if (result.IsFailure)
@@ -84,6 +87,15 @@ internal sealed class CameraAgentPreviewEncoder : ICameraAgentPreviewEncoder
             dimension = Math.Max(1, Math.Max(resized.Width, resized.Height) / 2);
         }
     }
+
+    internal static BayerPattern ResolveBayerPattern(FrameLayoutDescriptor layout) =>
+        (layout.Readout?.CfaOriginX, layout.Readout?.CfaOriginY) switch
+        {
+            (1, 0) => BayerPattern.Grbg,
+            (0, 1) => BayerPattern.Gbrg,
+            (1, 1) => BayerPattern.Bggr,
+            _ => BayerPattern.Rggb
+        };
 
     internal static (int Width, int Height, ReadOnlyMemory<byte> Payload) Downsample(
         FrameLayoutDescriptor layout,
@@ -620,7 +632,10 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
                 layout.Width,
                 layout.Height,
                 layout.PixelFormat,
-                policy?.Identity);
+                policy?.Identity,
+                layout.PixelFormat == CameraPixelFormat.BayerRggb16
+                    ? CameraAgentPreviewEncoder.ResolveBayerPattern(layout)
+                    : null);
             CameraAgentArtifactPreviewResult cached;
             bool cacheHit;
             lock (_cacheGate)
@@ -1574,7 +1589,8 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         int Width,
         int Height,
         CameraPixelFormat PixelFormat,
-        string? PolicyIdentity);
+        string? PolicyIdentity,
+        BayerPattern? DeliveredBayerPattern = null);
 
     private sealed class PreviewCacheEntry(CameraAgentArtifactPreviewResult result, long sequence)
     {
