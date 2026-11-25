@@ -31,17 +31,6 @@ trim_trailing_whitespace = false
 
 # Identity scaffolding has numerous async/ILogger patterns that intentionally diverge from analyzer guidance.
 # Suppress the noisy rules only within the identity components folder.
-[src/HVO.SkyMonitor.LogicHost/Components/Account/**.cs]
-dotnet_diagnostic.CA2007.severity = none
-dotnet_diagnostic.CA1848.severity = none
-dotnet_diagnostic.CA1812.severity = none
-dotnet_diagnostic.CA1822.severity = none
-dotnet_diagnostic.CA1863.severity = none
-dotnet_diagnostic.CA1308.severity = none
-dotnet_diagnostic.CA1062.severity = none
-dotnet_diagnostic.CA2227.severity = none
-dotnet_diagnostic.CA1819.severity = none
-
 [src/HVO.SkyMonitor.CameraAgent/Components/Account/**.cs]
 dotnet_diagnostic.CA2007.severity = none
 dotnet_diagnostic.CA1848.severity = none
@@ -71,9 +60,6 @@ dotnet_diagnostic.CA1716.severity = none
 [src/HVO.SkyMonitor.CameraAgent/Components/Pages/Weather.razor.cs]
 dotnet_diagnostic.CA5394.severity = none
 dotnet_diagnostic.CA1062.severity = none
-[src/HVO.SkyMonitor.LogicHost/Components/Pages/Weather.razor]
-dotnet_diagnostic.CA5394.severity = none
-
 # SignedTicketService uses ToLowerInvariant intentionally for URL normalization
 # CA1308 suggests ToUpperInvariant but lowercase is the web standard for URL paths
 [src/HVO.SkyMonitor.Common/Security/SignedTickets/SignedTicketService.cs]
@@ -83,11 +69,6 @@ dotnet_diagnostic.CA1308.severity = none
 # CA1819 suggests readonly collections but array is required for appsettings.json binding
 [src/HVO.SkyMonitor.Common/Security/SignedTickets/SignedTicketOptions.cs]
 dotnet_diagnostic.CA1819.severity = none
-
-# DiagnosticsController creates MinioClient in factory method; disposal is caller's responsibility
-# CA2000 flagged but this is intentional design - client is returned for caller to manage lifecycle
-[src/HVO.SkyMonitor.LogicHost/Controllers/DiagnosticsController.cs]
-dotnet_diagnostic.CA2000.severity = none
 
 # Terminal.Gui views are owned by the view they are added to, which disposes its subviews when it is disposed; the
 # wizard and hvo-sky's interface dispose their windows (#1317). CA2000 and CA2213 cannot see that ownership.
@@ -122,21 +103,6 @@ dotnet_diagnostic.CA2234.severity = none
 dotnet_diagnostic.CA1869.severity = none
 
 # Test projects intentionally have public types and may create disposable objects in test setup
-[tests/HVO.SkyMonitor.LogicHost.IntegrationTests/**.cs]
-dotnet_diagnostic.CA1515.severity = none
-dotnet_diagnostic.CA1707.severity = none
-dotnet_diagnostic.CA2000.severity = none
-dotnet_diagnostic.CA2007.severity = none
-dotnet_diagnostic.CA1812.severity = none
-# The CA2025 analyzer crashes (AD0001 NullReferenceException) while scanning this assembly on SDK 10.0.400 and still on 10.0.402 (roslyn-analyzers#7652); re-probed at each SDK bump.
-# File-scoped suppression still executes the analyzer and reports AD0001; remove after the pinned SDK contains the fix.
-dotnet_diagnostic.CA2025.severity = none
-dotnet_diagnostic.MSTEST0001.severity = none
-dotnet_diagnostic.MSTEST0002.severity = none
-dotnet_diagnostic.MSTEST0003.severity = none
-dotnet_diagnostic.MSTEST0008.severity = none
-dotnet_diagnostic.MSTEST0009.severity = none
-
 # Processing runner unit tests intentionally have public types and own their disposable fakes
 [tests/HVO.SkyMonitor.ProcessingRunner.Tests/**.cs]
 dotnet_diagnostic.CA1515.severity = none

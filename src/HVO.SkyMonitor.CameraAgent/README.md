@@ -28,7 +28,7 @@ Authenticated installer status is available at
 `/api/internal/owner-bootstrap/status`. See
 `docs/identity/operations-runbook.md` for states, health, logs, and exclusions.
 
-Blazor Server host for a self-contained SkyMonitor camera agent. It provides local identity, operational UI, capture APIs, and configuration-driven camera/pipeline hosting while remaining independent of LogicHost.
+Blazor Server host for a self-contained SkyMonitor camera agent. It provides local identity, operational UI, capture APIs, and configuration-driven camera/pipeline hosting.
 
 ## Highlights
 

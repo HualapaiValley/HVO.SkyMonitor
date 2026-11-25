@@ -1,5 +1,13 @@
 # HVO SkyMonitor Virtual-First Completion Plan
 
+## Current application topology
+
+CameraAgent is the standalone application host. #2061 retires the LogicHost
+application and its delivery paths following #2048–#2050. The plan's central
+and split-host milestones record earlier delivery and qualification. The
+CameraAgent, Silo and reusable library boundaries apply to current changes.
+[Roadmap](roadmap.md).
+
 Status date: 2026-08-24
 
 This is the authoritative architecture, virtual-first requirements, phase-order,
@@ -134,7 +142,6 @@ CameraAgent-owned revisions. These ownership statements are tracked as
 | `HVO.SkyMonitor.CameraAgent.ReplayRunner` | Self-contained local replay executable, warmup/probe behavior, and server composition for configured archived replay | Acquisition, durable replay state, publication authority, global scheduling, LogicHost/cloud dependencies, or host UI/API |
 | `HVO.SkyMonitor.CameraAgent.Modules.Zwo` | Linux ZWO ASI SDK interop and full-frame bin-1 color RAW16 acquisition for the ASI676MC and ASI178MC | Host orchestration, processing, persistence, vendor artifacts, unsupported ZWO modes, or non-ZWO cameras |
 | `HVO.SkyMonitor.CameraAgent` | Local ASP.NET/Blazor host, local Identity, authenticated local APIs and composition | Central persistence or private processing algorithms |
-| `HVO.SkyMonitor.LogicHost` | Central SQL/Redis/provider-neutral object-storage services and provider adapters, durable jobs, workers, fleet state, history, retrieval, and central UI | CameraAgent references or host-private projection/image algorithms |
 | `HVO.SkyMonitor.Deployment.Contracts` | Host-neutral installation, lifecycle, distribution, release, and compatibility records | Filesystem, network, signature verification, Docker/Compose, host runtime, or secrets |
 | `HVO.SkyMonitor.Deployment.Cli` | Self-contained installation and lifecycle orchestration across releases (`release.json` and `SHA256SUMS`), catalogs, filesystem state, Docker/Compose placement, owner bootstrap, verification, diagnostics, and recovery | Application runtime behavior, acquisition/processing, domain persistence, or host UI/API |
 
@@ -145,7 +152,7 @@ CameraAgent host or Common reference to the installer executable is permitted.
 See [lifecycle control](runbooks/cameraagent-lifecycle-control.md).
 
 
-CameraAgent and LogicHost must never reference each other. Shared behavior moves
+CameraAgent and its replay runner remain independently deployable. Shared behavior moves
 through AgentCore, Astronomy, Imaging, Processing, or another explicitly
 approved host-neutral project.
 
@@ -169,13 +176,10 @@ AgentCore + Astronomy + Imaging + Processing + Fleet.Contracts + CameraAgent.Rep
 AgentCore + Processing --> ProcessingRunner.Contracts
 AgentCore + Processing + ProcessingRunner.Contracts --> ProcessingRunner
 
-AgentCore + Astronomy + Imaging + Processing + ProcessingRunner.Contracts + Fleet.Contracts
-  +--> LogicHost
-
 AgentCore --> CameraAgent.Modules.Zwo --> CameraAgent
 
-Common --------------------> CameraAgent and LogicHost only
-Catalog.Sqlite ------------> CameraAgent and LogicHost composition roots
+Common --------------------> CameraAgent
+Catalog.Sqlite ------------> CameraAgent composition root
 
 AgentCore + Catalog.Sqlite + Deployment.Contracts
   +--> Deployment.Cli

@@ -268,7 +268,7 @@ if result.returncode != 0:
 shutil.copy2(assembly_output / f"{assembly_name}.dll", assembly_output / "Fixture.Tests.dll")
 shutil.copy2(assembly_output / f"{assembly_name}.deps.json", assembly_output / "Fixture.Tests.deps.json")
 unit_inventory = inventory_repo / "tests/unit-test-projects.json"
-unit_projects = ["Fixture.Tests", "HVO.SkyMonitor.LogicHost.Tests", "HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests"]
+unit_projects = ["Fixture.Tests"]
 for project in unit_projects:
     project_file = inventory_repo / "tests" / project / f"{project}.csproj"
     project_file.parent.mkdir(exist_ok=True)

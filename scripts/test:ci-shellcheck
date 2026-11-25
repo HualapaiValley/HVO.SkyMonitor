@@ -184,24 +184,12 @@ printf '#!/usr/bin/env bash\n:\n' > "$WORK/$trailing_path"
 printf '%s\0' "$trailing_path" > "$WORK/trailing-newline.targets"
 expect 'trailing newline path is preserved' 0 'passed for 1 derived shell file' "$WORK/trailing-newline.targets"
 
-# The bounded-source mode is exact, loud, and still lints the harness itself at error severity.
-install -d "$WORK/scripts/test"
-printf '#!/usr/bin/env bash\ncalled_later\ncalled_later() { :; }\n' > "$WORK/scripts/test:deploy-environment"
-printf '%s\0%s\0' 'scripts/test:deploy-environment' 'good file.sh' > "$WORK/exception.targets"
-expect 'bounded deployment harness is still linted' 1 'SC2218' "$WORK/exception.targets"
-printf '#!/usr/bin/env bash\n:\n' > "$WORK/scripts/test:deploy-environment"
-expect 'single deployment harness bounded mode is loud' 0 'linted with -x as their own derived targets' "$WORK/exception.targets"
-printf '#!/usr/bin/env bash\n:\n' > "$WORK/scripts/test:another-harness"
-printf '%s\0%s\0%s\0' 'scripts/test:deploy-environment' 'scripts/test:another-harness' 'good file.sh' > "$WORK/exception-extra.targets"
-expect 'ordinary files beside bounded mode remain linted' 0 'passed for 3 derived shell file' "$WORK/exception-extra.targets"
-
-# The bounded harness loses no coverage: an error in a file it sources is caught because
-# that file is a derived target in its own right, linted with -x.
-install -d "$WORK/scripts/deploy-contracts"
-printf '#!/usr/bin/env bash\ncalled_later\ncalled_later() { :; }\n' > "$WORK/scripts/deploy-contracts/body.sh"
-printf '#!/usr/bin/env bash\n. "$REPO_ROOT/scripts/deploy-contracts/body.sh"\n' > "$WORK/scripts/test:deploy-environment"
-printf '%s\0%s\0' 'scripts/test:deploy-environment' 'scripts/deploy-contracts/body.sh' > "$WORK/sourced-body.targets"
-expect 'a sourced shard body is linted as its own target' 1 'scripts/deploy-contracts/body.sh' "$WORK/sourced-body.targets"
+# The gate follows sourced files during analysis.
+install -d "$WORK/scripts"
+printf '#!/usr/bin/env bash\nlibrary_check() { :; }\n' > "$WORK/scripts/fixture-library.sh"
+printf '#!/usr/bin/env bash\n# shellcheck source=scripts/fixture-library.sh\n. scripts/fixture-library.sh\nlibrary_check\n' > "$WORK/scripts/fixture-entry.sh"
+printf '%s\0%s\0' 'scripts/fixture-entry.sh' 'scripts/fixture-library.sh' > "$WORK/sourced-body.targets"
+expect 'sourced library remains a derived target' 0 'passed for 2 derived shell file' "$WORK/sourced-body.targets"
 
 cat > "$WORK/fake-shellcheck" <<'EOF'
 #!/usr/bin/env bash

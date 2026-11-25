@@ -1,8 +1,7 @@
 # Pipeline Operations Static Prototype
 
-This prototype explores a GitHub Actions-style run view for the CameraAgent and
-LogicHost image pipeline. It is deliberately separate from the Blazor hosts and
-does not change runtime behavior.
+This prototype explores a run view for the CameraAgent image pipeline. The
+sample delivery data reflects the historical deployment topology.
 
 **Design authority.** Epic #987 adopts this prototype, unchanged from
 `origin/prototype/pipeline-operations-preview` at `b5cdec4f`, as the agreed
@@ -22,20 +21,13 @@ From the worktree root:
 python3 -m http.server 4173 --directory docs/prototypes/pipeline-operations
 ```
 
-Open `http://localhost:4173/dashboard.html` for the CameraAgent or
-`http://localhost:4173/logichost.html` for the LogicHost network shell.
+Open `http://localhost:4173/dashboard.html` for CameraAgent.
 
 The pages can also be opened directly; they have no package, build, network, or
 font dependencies. Included image assets are local.
 
 ## Pages
 
-- `logichost.html`: query-routed LogicHost base site with network welcome,
-  observatory and camera selection, public released-image discovery, and
-  distinct LogicHost-, observatory-, and camera-scoped operations. Its camera
-  workspace includes a selected latest retained presentation, artifact and
-  lineage evidence, a bounded camera archive, and a two-authority Processing
-  workspace that assumes complete edge execution evidence is available.
 - `dashboard.html`: proposed Current Sky dashboard with stage switching,
   independently selectable measured, expected, and predicted scene layers,
   astrometric fit/calculator evidence, stack lineage, acquisition and rig facts,
@@ -57,38 +49,8 @@ font dependencies. Included image assets are local.
 
 ## Interactions
 
-- Move through network, observatory, and logical-camera scopes without carrying
-  camera-owned selections into another observatory.
-- Switch a selected LogicHost capture between its exact retained Preview and,
-  where available, that same Preview plus SVG groups generated from a complete
-  retained manifest and structured layer payloads. Raw,
-  Calibrated, and Combined roles remain inventory evidence rather than being
-  synthesized into inline display stages.
-- Toggle generated groups for the central layered presentation and
-  compare fleet health, latest submission, capture time, first receipt, object
-  state, reconstruction, and artifact release as independent facts.
-- Filter the six loaded camera-archive fixtures by text, central state, and
-  display-artifact availability; switch grid/compact layout without implying a
-  total count or loading another camera's records.
-- Inspect separate received CameraAgent and LogicHost-owned graphs, select nodes
-  for dependency/input/output detail, and never interpret topological levels as
-  proof of concurrent execution.
-- Start an immutable successor central-graph draft while the effective graph and
-  historical jobs remain unchanged; received edge evidence is never edited.
-- Select imported edge executions and central jobs using the same outcome,
-  attempt, reason, artifact, and lineage vocabulary while retaining origin and
-  mutation authority.
-- Compare one exact edge execution with one exact central execution; filter to
-  differences without declaring one processing origin universally preferable.
-- Configure a draft central presentation policy and toggle generated overlay
-  groups without mutating the retained Preview or an existing publication.
-- Preview the boundary for a future CameraAgent pipeline proposal. The prototype
-  does not push, deliver, accept, stage, or activate a local revision.
 - Switch the CameraAgent Current Sky image among processed, live-stack,
   calibrated, and raw stages without changing detector evidence.
-- Follow the LogicHost five-source lineage by explicit capture and source
-  artifact identity. Archive fixtures without exact image bytes remain
-  metadata-only; no current image is reused as a historical thumbnail.
 - Search and filter Archive captures by a bounded UTC range, outcome, or
   displayed product, and switch between grid and compact layouts.
 - Move from the observing-day calendar into complete, partial, sparse, or empty
@@ -134,45 +96,8 @@ font dependencies. Included image assets are local.
 - Open **Reprocess** to compare retry delivery, reprocess source, and repeat
   acquisition semantics. Prototype actions do not mutate data.
 
-## Blazor Handoff
-
-- Read the [LogicHost implementation handoff](LOGICHOST-HANDOFF.md) before
-  translating this design into production pages. It maps the prototype to
-  current services, identifies missing contracts, and records where issue
-  ownership is established or still requires a coordinator decision.
-- The static query routes represent separate Blazor pages, not one intended
-  production component: network home, observatory selection/detail, camera
-  current sky, camera processing, camera archive, events, and scoped operations.
-- The header, authorized scope sidebar, breadcrumbs, scope tabs, and boundary
-  notices belong in a shared protected network layout and small reusable shell
-  components.
-- Camera Current Sky and capture detail should share one authorized central
-  layered-image component. Camera Archive and the all-accessible capture list
-  should share one keyset-paged archive browser.
-- Camera Processing should compose reusable graph, node-inspector, execution,
-  attempt, artifact, comparison, and presentation-policy components. Edge and
-  central records use a shared evidence vocabulary but separate service and
-  mutation boundaries.
-- Production route identity belongs in path segments. Query parameters should
-  carry archive filters, layout, and cursor state only.
-
 ## Deliberate Boundaries
 
-- The LogicHost shell keeps observatories as isolation boundaries. Cameras,
-  received schedule evidence, pipeline revisions, camera-scoped jobs, and
-  protected images remain inside one observatory scope; they are not shared as
-  reusable objects across observatories. Central events may correlate evidence
-  from multiple authorized observatories and retain every contributor.
-- The cross-observatory Public Sky view contains only illustrative released
-  JPEG/PNG/WebP preview roles from active public observatories. Public status
-  does not release every image, raw or calibrated evidence is not exposed, and
-  displayed locations remain approximate. The prototype shows that projection
-  inside the protected owner shell; it is not the anonymous public site.
-- LogicHost operations own central trust, observatory membership, logical
-  camera installation, ingest, central processing, archive, and publication.
-  Camera schedule and capture-pipeline configuration remain CameraAgent-local;
-  their LogicHost views are labeled as received capture-time evidence rather
-  than central editors.
 - The detailed W6 edge graph, node attempts, and artifact delivery records are
   illustrative future contract fixtures. Current manifest-v2 artifact evidence
   alone does not provide every local node outcome shown by this page; later

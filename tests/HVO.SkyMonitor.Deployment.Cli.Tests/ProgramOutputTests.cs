@@ -20,9 +20,6 @@ public sealed class ProgramOutputTests
         Usage: hvo-sky-install <command> [options]
 
         Commands:
-          preflight
-          partial-prepare-cleanup
-          existing-down
           status
           cameraagent install
           cameraagent lifecycle-worker
@@ -226,6 +223,9 @@ public sealed class ProgramOutputTests
 
     [TestMethod]
     [DataRow("bogus", "Unknown command 'bogus'.")]
+    [DataRow("preflight", "Unknown command 'preflight'.")]
+    [DataRow("partial-prepare-cleanup", "Unknown command 'partial-prepare-cleanup'.")]
+    [DataRow("existing-down", "Unknown command 'existing-down'.")]
     [DataRow("", "Missing command.")]
     [DataRow("help status", "Unexpected argument 'status' after 'help'.")]
     [DataRow("--version status", "Unexpected argument 'status' after '--version'.")]

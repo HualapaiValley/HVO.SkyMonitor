@@ -659,8 +659,7 @@ public sealed partial class VirtualSkyPipelineTests
                     CaptureControlTelemetry.MeterName or
                     RawIngressTelemetry.MeterName or
                     CaptureProcessingTelemetry.MeterName or
-                    "HVO.SkyMonitor.CameraAgent.EnvironmentalDelivery" or
-                    "HVO.SkyMonitor.LogicHost.EnvironmentalObservations")
+                    "HVO.SkyMonitor.CameraAgent.EnvironmentalDelivery")
                 {
                     instrumentNames.TryAdd(instrument.Name, 0);
                     current.EnableMeasurementEvents(instrument);
@@ -691,8 +690,7 @@ public sealed partial class VirtualSkyPipelineTests
                 CaptureControlTelemetry.ActivitySourceName or
                 RawIngressTelemetry.ActivitySourceName or
                 CaptureProcessingTelemetry.ActivitySourceName or
-                "HVO.SkyMonitor.CameraAgent.EnvironmentalDelivery" or
-                "HVO.SkyMonitor.LogicHost.EnvironmentalObservations",
+                "HVO.SkyMonitor.CameraAgent.EnvironmentalDelivery",
             Sample = static (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
             ActivityStopped = activity =>
             {
