@@ -7,6 +7,7 @@ if [[ -z "${HVO_PRODUCTION_CATALOG_BUNDLE:-}" || ! -d "$HVO_PRODUCTION_CATALOG_B
 fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/deployment-installer-qualification.sh
 source "$repo_root/scripts/lib/deployment-installer-qualification.sh"
 
 normalize_image_architecture() {
@@ -46,7 +47,7 @@ if [[ "$docker_server_operating_system" != linux ||
     "$docker_server_image_architecture" "$docker_server_machine_architecture" >&2
   exit 2
 fi
-root="$(mktemp -d "/tmp/hvo-i.XXXXXX")"
+root="$(mktemp -d "${TMPDIR:-/tmp}/i.XXXXXX")"
 publish_root="$root/publish"
 archive="$root/cameraagent.tar"
 baseline_revision="${HVO_INSTALLER_BASELINE_REVISION:-}"
@@ -55,6 +56,7 @@ candidate_tag=""
 variant_base_tag="hvo-skymonitor-cameraagent:installer-variant-base-$$"
 routine_tag="hvo-skymonitor-cameraagent:installer-routine-$$"
 migrating_tag="hvo-skymonitor-cameraagent:installer-migrating-$$"
+failing_tag="hvo-skymonitor-cameraagent:installer-failing-$$"
 port=55415
 instance_id="$(tr -d '\n' </proc/sys/kernel/random/uuid)"
 
@@ -62,7 +64,7 @@ cleanup() {
   docker rm --force "hvo-skymonitor-${instance_id//-/}" >/dev/null 2>&1 || true
   docker rm --force "hvo-skymonitor-${instance_id//-/}-replay" >/dev/null 2>&1 || true
   docker network rm "hvo-skymonitor-${instance_id//-/}_default" >/dev/null 2>&1 || true
-  for variant_tag in "$migrating_tag" "$routine_tag" "$variant_base_tag"; do
+  for variant_tag in "$failing_tag" "$migrating_tag" "$routine_tag" "$variant_base_tag"; do
     docker image rm --force "$variant_tag" >/dev/null 2>&1 || true
   done
   docker image rm --force "$install_tag" >/dev/null 2>&1 || true
@@ -150,6 +152,14 @@ if [[ "${release_archive:-0}" != 1 ]]; then
   docker image rm "$install_tag"
 fi
 
+capture_location=(--latitude 35.2 --longitude -114.1 --time-zone America/Phoenix)
+if [[ -z "$baseline_revision" ]]; then
+  # The disposable VirtualSky schedule starts near solar midnight whatever time the campaign runs.
+  capture_utc_hour="$(date -u +%H)"
+  capture_offset=$(( (36 - 10#$capture_utc_hour) % 24 - 12 ))
+  capture_location=(--latitude 0 --longitude "$((15 * capture_offset))"
+    --time-zone "Etc/GMT$(printf '%+d' "$((-capture_offset))")")
+fi
 common_arguments=(
   cameraagent install
   --instance-id "$instance_id"
@@ -162,10 +172,8 @@ common_arguments=(
   --image-ref "$image_id"
   --image-archive "$archive"
   --image-archive-sha256 "$archive_sha256"
-  --latitude 35.2
-  --longitude -114.1
+  "${capture_location[@]}"
   --elevation 800
-  --time-zone America/Phoenix
   --generate-password
   --replay-profile local-runner
   --json
@@ -178,6 +186,18 @@ container="hvo-skymonitor-${instance_id//-/}"
 runner_container="$container-replay"
 instance_root="$root/product/cameraagents/$instance_id"
 identity_root="$instance_root/state/identity"
+result_path="$instance_root/state/deployment/installation-result.json"
+assert_manual_rollback_refused() {
+  local label="$1" exit_code=0
+  shift
+  "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent rollback \
+    --instance-id "$instance_id" --product-root "$root/product" --json "$@" \
+    >"$root/$label.json" 2>"$root/$label-error.json" || exit_code=$?
+  test "$exit_code" -eq 3
+  test ! -s "$root/$label.json"
+  jq -e '.errorCode == "refused" and (.message | contains("checkpoint recovery ends at upgrade commit"))' \
+    "$root/$label-error.json" >/dev/null
+}
 test "$(jq -er '.healthy' "$root/first.json")" = true
 test "$(jq -er '.replayProfile' "$root/first.json")" = LocalRunner
 test "$(jq -er '.image.imageId' "$root/first.json")" = "$image_id"
@@ -231,7 +251,6 @@ test "$(docker inspect "$container" | jq -er '.[0].HostConfig.Memory')" = 429496
 if [[ -n "$baseline_revision" ]]; then
   recovery_state="$root/product/operations/cameraagent-$instance_id.owner-recovery.json"
   lifecycle_state="$root/product/operations/cameraagent-$instance_id.lifecycle.json"
-  result_path="$instance_root/state/deployment/installation-result.json"
   lifecycle_header="$root/lifecycle.header"
 
   owner_status_code() {
@@ -340,13 +359,22 @@ if [[ -n "$baseline_revision" ]]; then
   test "$(owner_status_code "$owner_ready_password_path" baseline-owner-ready-rerun)" = 200
   test "$(jq -er '.state' "$root/baseline-owner-ready-rerun-status.json")" = owner-ready
 
+  # Exercise a missing recovery transport on an image whose persisted state the candidate can upgrade.
+  withheld_owner_socket="$root/baseline-owner.sock"
+  if [[ -S "$owner_socket_path" ]]; then
+    mv -- "$owner_socket_path" "$withheld_owner_socket"
+  fi
+  test ! -e "$owner_socket_path"
   if "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent recover-owner \
     --instance-id "$instance_id" \
     --product-root "$root/product" \
     --generate-password \
     --json >"$root/baseline-recovery.json" 2>"$root/baseline-recovery-error.json"; then
-    printf 'Pre-support CameraAgent unexpectedly accepted owner recovery.\n' >&2
+    printf 'CameraAgent unexpectedly accepted owner recovery with its socket unavailable.\n' >&2
     exit 1
+  fi
+  if [[ -S "$withheld_owner_socket" ]]; then
+    mv -- "$withheld_owner_socket" "$owner_socket_path"
   fi
   test ! -s "$root/baseline-recovery.json"
   test "$(jq -er '.errorCode' "$root/baseline-recovery-error.json")" = recovery-unsupported
@@ -439,40 +467,37 @@ if [[ -n "$baseline_revision" ]]; then
       sha256sum | cut -d ' ' -f 1
   )" = "$recovery_identity_sha256"
 
-  "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent rollback \
-    --instance-id "$instance_id" \
-    --product-root "$root/product" \
-    --json >"$root/rollback.json"
-  test "$(jq -er '.outcome' "$root/rollback.json")" = completed
-  test "$(jq -er '.image.imageId' "$root/rollback.json")" = "$image_id"
-  jq -e '
-    (.preMutationContinuity.captureSequence | type) == "number" and
-    (.postMutationContinuity.captureSequence | type) == "number" and
-    .preMutationContinuity.captureSequence <= .postMutationContinuity.captureSequence
-  ' "$lifecycle_state" >/dev/null
-  test ! -e "$identity_root/owner.sock"
+  rollback_runtime_identity="$(docker inspect --format '{{.Id}}|{{.State.StartedAt}}|{{.State.Pid}}' "$container")"
+  rollback_socket_identity="$(stat -c '%d:%i:%a' "$identity_root/owner.sock")"
+  sha256sum "$lifecycle_state" "$recovery_state" "$instance_root/instance-manifest.json" "$result_path" \
+    >"$root/baseline-rollback-receipts.sha256"
+  assert_manual_rollback_refused post-commit-rollback
+  sha256sum --check "$root/baseline-rollback-receipts.sha256"
+  test -S "$identity_root/owner.sock"
+  test "$(stat -c '%d:%i:%a' "$identity_root/owner.sock")" = "$rollback_socket_identity"
+  test "$(docker inspect --format '{{.Id}}|{{.State.StartedAt}}|{{.State.Pid}}' "$container")" = "$rollback_runtime_identity"
 
   "$publish_root/HVO.SkyMonitor.Deployment.Cli" status \
     --instance-id "$instance_id" \
     --product-root "$root/product" \
     --json >"$root/final-status.json"
-  test "$(jq -er '.image.imageId' "$root/final-status.json")" = "$image_id"
+  test "$(jq -er '.image.imageId' "$root/final-status.json")" = "$candidate_image_id"
   test "$(jq -er '.running' "$root/final-status.json")" = true
   test "$(jq -er '.healthy' "$root/final-status.json")" = true
   curl --silent --show-error --fail --header "@$lifecycle_header" \
-    "http://127.0.0.1:$port/api/internal/deployment/lifecycle/state" >"$root/continuity-rollback.json"
-  test "$(jq -er '.captureControl.value.state' "$root/continuity-rollback.json")" = Running
-  test "$(jq -er '.captureSequence >= $before' --argjson before "$(jq -er '.captureSequence' "$root/continuity-before.json")" "$root/continuity-rollback.json")" = true
-  test "$(owner_status_code "$owner_ready_password_path" rollback-rejected-old-owner)" != 200
+    "http://127.0.0.1:$port/api/internal/deployment/lifecycle/state" >"$root/continuity-after-refusal.json"
+  test "$(jq -er '.captureControl.value.state' "$root/continuity-after-refusal.json")" = Running
+  test "$(jq -er '.captureSequence >= $before' --argjson before "$(jq -er '.captureSequence' "$root/continuity-before.json")" "$root/continuity-after-refusal.json")" = true
+  test "$(owner_status_code "$owner_ready_password_path" preserved-rejected-old-owner)" != 200
   test "$(owner_session_status_code candidate-owner-ready)" != 200
-  test "$(owner_status_code "$recovery_password_path" rollback-recovered-owner)" = 200
-  test "$(jq -er '.state' "$root/rollback-recovered-owner-status.json")" = owner-password-change-required
-  assert_password_replacement_gate rollback-recovered-owner
+  test "$(owner_status_code "$recovery_password_path" preserved-recovered-owner)" = 200
+  test "$(jq -er '.state' "$root/preserved-recovered-owner-status.json")" = owner-password-change-required
+  assert_password_replacement_gate preserved-recovered-owner
   test "$(jq -er '.installationId' "$result_path")" = "$(jq -er '.installationId' "$root/first.json")"
   test "$(jq -er '.configurationSha256' "$result_path")" = "$(jq -er '.configurationSha256' "$root/first.json")"
   test "$(jq -er '.catalog.databaseSha256' "$result_path")" = "$(jq -er '.catalog.databaseSha256' "$root/first.json")"
 
-  printf 'Owner recovery upgrade, restart, and rollback contract passed from %s.\n' "$baseline_revision"
+  printf 'Owner recovery survived upgrade, restart, and post-commit rollback refusal from %s.\n' "$baseline_revision"
 fi
 
 "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent preflight \
@@ -646,7 +671,7 @@ printf 'CameraAgent state preflight and operator-confirmed reset contract passed
 # The routine one declares exactly the installed state boundaries: it upgrades as a pure swap and snapshots nothing.
 # The migrating one declares a different minimum compatible revision, a state boundary the persisted-state preflight
 # never compares with the instance: it upgrades without --migration-backward-compatible, after the installer has
-# snapshotted and verified the real SQLite stores, and a rollback puts that snapshot back under the real container. A
+# snapshotted and verified the real SQLite stores. A pending failure restores its pair under the real container. A
 # baseline-revision run may install an image that predates the boundary labels, from which no upgrade is routine.
 if [[ -z "$baseline_revision" ]]; then
   lifecycle_state="$root/product/operations/cameraagent-$instance_id.lifecycle.json"
@@ -665,8 +690,55 @@ if [[ -z "$baseline_revision" ]]; then
     # A container running any image other than the manifest's reports outcome "drifted" and still exits zero.
     test "$(jq -er '.outcome' "$root/$evidence_name.json")" = status
     test "$(jq -er '.image.imageId' "$root/$evidence_name.json")" = "$expected"
-    test "$(jq -er '.running' "$root/$evidence_name.json")" = true
-    test "$(jq -er '.healthy' "$root/$evidence_name.json")" = true
+    jq -e '.running and .alive and .healthy and .healthStatusCode == 200' "$root/$evidence_name.json" >/dev/null
+    test "$(docker inspect --format '{{.Image}}' "$container")" = "$expected"
+  }
+  raw_root="$instance_root/state/raw"
+  raw_db="$raw_root/journal/raw-ingress.db"
+  settled_exposure() {
+    local sequence="$1" comparison="$2"
+    sqlite3 -readonly -cmd '.timeout 5000' "$raw_db" "
+      SELECT raw.capture_sequence, raw.capture_id, raw.payload_relative_path, lower(raw.payload_sha256),
+             raw.manifest_sha256, lane.work_id, lane.attempt_count, lane.completed_unix_ms
+      FROM raw_captures raw JOIN capture_lane_work lane USING (raw_capture_row_id)
+      WHERE raw.state = 'committed' AND lane.lane_name = 'standard' AND lane.state = 'completed'
+        AND raw.capture_sequence $comparison $sequence
+      ORDER BY raw.capture_sequence LIMIT 1;"
+  }
+  verify_settled_exposure() {
+    local record="$1" sequence capture_id payload sha256
+    IFS='|' read -r sequence capture_id payload sha256 _ <<<"$record"
+    test -n "$capture_id" || return 1
+    test "$(sha256sum "$raw_root/$payload" | cut -d ' ' -f 1)" = "$sha256" || return 1
+    printf '%s\n' "$sequence"
+  }
+  wait_for_exposure() {
+    local after="$1" deadline=$((SECONDS + 180)) record
+    while (( SECONDS < deadline )); do
+      record="$(settled_exposure "$after" '>')" || return 1
+      if [[ -n "$record" ]]; then
+        printf '%s\n' "$record"
+        return
+      fi
+      sleep 2
+    done
+    printf 'VirtualSky did not settle an exposure after sequence %s.\n' "$after" >&2
+    return 1
+  }
+  verify_checkpoint() {
+    local snapshot="$1" image="$2" snapshot_file snapshot_sha256 checkpoint_root
+    checkpoint_root="$root/product/operations/lifecycle/$(jq -er '.operationId' <<<"$snapshot")/state-snapshots/$(jq -er '.snapshotId' <<<"$snapshot")"
+    test "$(sha256sum "$checkpoint_root/manifest.json" | cut -d ' ' -f 1)" = "$(jq -er '.manifestSha256' <<<"$snapshot")" || return 1
+    jq -e --arg image "$image" --arg instance "$instance_id" '
+      .image.imageId == $image and .instanceId == $instance and
+      ([.databases[] | select(.present) | .relativePath] |
+        index("identity/cameraagent_identity.db") != null and index("raw/journal/raw-ingress.db") != null)' \
+      "$checkpoint_root/manifest.json" >/dev/null || return 1
+    while IFS=$'\t' read -r snapshot_file snapshot_sha256; do
+      test "$(sha256sum "$checkpoint_root/$snapshot_file" | cut -d ' ' -f 1)" = "$snapshot_sha256" || return 1
+      test "$(sqlite3 "file:$checkpoint_root/$snapshot_file?immutable=1" 'PRAGMA integrity_check;')" = ok || return 1
+    done < <(jq -er '.databases[] | select(.present) | [.snapshotFile, .sha256] | @tsv' "$checkpoint_root/manifest.json")
+    printf '%s\n' "$checkpoint_root"
   }
   # Every boundary except the optional raw-ingress migration must be declared, or no upgrade from this image could
   # be routine and the routine case below would prove nothing.
@@ -683,8 +755,13 @@ if [[ -z "$baseline_revision" ]]; then
   printf 'FROM %s\nLABEL io.hvo.skymonitor.installer-campaign=migrating-upgrade io.hvo.skymonitor.minimum-compatible-revision=%s\n' \
     "$variant_base_tag" 0000000000000000000000000000000000000000 |
     docker build --quiet --tag "$migrating_tag" - >/dev/null
+  # This candidate initializes normally but cannot satisfy the advertised HTTP endpoint before commit.
+  printf 'FROM %s\nLABEL io.hvo.skymonitor.minimum-compatible-revision=%s\nENTRYPOINT ["/bin/sh","-c","ASPNETCORE_URLS=http://+:8081 exec dotnet HVO.SkyMonitor.CameraAgent.dll"]\n' \
+    "$variant_base_tag" 0000000000000000000000000000000000000000 |
+    docker build --quiet --tag "$failing_tag" - >/dev/null
   routine_image_id="$(docker image inspect --format '{{.Id}}' "$routine_tag")"
   migrating_image_id="$(docker image inspect --format '{{.Id}}' "$migrating_tag")"
+  failing_image_id="$(docker image inspect --format '{{.Id}}' "$failing_tag")"
   test "$routine_image_id" != "$image_id"
   test "$migrating_image_id" != "$image_id"
   test "$(state_boundary_labels "$routine_image_id")" = "$(state_boundary_labels "$image_id")"
@@ -706,6 +783,32 @@ if [[ -z "$baseline_revision" ]]; then
   # No lifecycle operation archives the instance any more.
   test -z "$(find "$root/product/operations" -name '*.tar.gz' -print -quit)"
 
+  before_failure="$(wait_for_exposure 0)"
+  before_failure_sequence="$(verify_settled_exposure "$before_failure")"
+  failed_upgrade_exit=0
+  "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent upgrade \
+    --instance-id "$instance_id" --product-root "$root/product" --image-ref "$failing_image_id" \
+    --no-download --json >"$root/pending-upgrade.json" 2>"$root/pending-upgrade-error.json" || failed_upgrade_exit=$?
+  test "$failed_upgrade_exit" -eq 1
+  jq -es 'any(.[]; .event == "state-snapshot-restore") and any(.[]; .errorCode == "installation-failed")' \
+    "$root/pending-upgrade-error.json" >/dev/null
+  jq -e --arg image "$routine_image_id" --arg failed "$failing_image_id" '
+    .status == "Failed" and .mutationStarted == false and .originalImage.imageId == $image and
+    .candidateImage.imageId == $failed and .stateSnapshot.operationId == .operationId and
+    (.stateSnapshotRestoredUtc | type == "string")' "$lifecycle_state" >/dev/null
+  failure_snapshot="$(jq -c '.stateSnapshot' "$lifecycle_state")"
+  failure_root="$(verify_checkpoint "$failure_snapshot" "$routine_image_id")"
+  failure_raw_copy="$(jq -er '.databases[] | select(.relativePath == "raw/journal/raw-ingress.db" and .present) | .snapshotFile' "$failure_root/manifest.json")"
+  failure_boundary="$(sqlite3 "file:$failure_root/$failure_raw_copy?immutable=1" 'SELECT max(capture_sequence) FROM raw_captures')"
+  test "$(settled_exposure "$before_failure_sequence" '=')" = "$before_failure"
+  after_recovery="$(wait_for_exposure "$failure_boundary")"
+  after_recovery_sequence="$(verify_settled_exposure "$after_recovery")"
+  for sample in 1 2 3; do
+    assert_running_image "$routine_image_id" "pending-recovered-status-$sample"
+  done
+  printf 'Pending recovery restored paired image %s and checkpoint %s, then settled exposure %s with three HTTP 200 readings.\n' \
+    "$routine_image_id" "$(jq -er '.snapshotId' <<<"$failure_snapshot")" "$after_recovery_sequence"
+
   "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent upgrade \
     --instance-id "$instance_id" \
     --product-root "$root/product" \
@@ -720,38 +823,37 @@ if [[ -z "$baseline_revision" ]]; then
   jq -e '.stateMigration | contains("io.hvo.skymonitor.minimum-compatible-revision installed ")' "$lifecycle_state" >/dev/null
   migration_snapshot="$(jq -cS '.stateSnapshot' "$lifecycle_state")"
   test "$(jq -cS '.previousStateSnapshot' "$instance_root/instance-manifest.json")" = "$migration_snapshot"
-  snapshot_root="$root/product/operations/lifecycle/$(jq -er '.operationId' <<<"$migration_snapshot")/state-snapshots/$(jq -er '.snapshotId' <<<"$migration_snapshot")"
-  test "$(sha256sum "$snapshot_root/manifest.json" | cut -d ' ' -f 1)" = "$(jq -er '.manifestSha256' <<<"$migration_snapshot")"
-  # The real instance had created its Identity database and raw-ingress journal, and each is in the snapshot.
-  jq -e '[.databases[] | select(.present) | .relativePath] |
-    index("identity/cameraagent_identity.db") != null and index("raw/journal/raw-ingress.db") != null' \
-    "$snapshot_root/manifest.json" >/dev/null
-  while IFS=$'\t' read -r snapshot_file snapshot_sha256; do
-    test "$(sha256sum "$snapshot_root/$snapshot_file" | cut -d ' ' -f 1)" = "$snapshot_sha256"
-    test "$(sqlite3 "file:$snapshot_root/$snapshot_file?immutable=1" 'PRAGMA integrity_check;')" = ok
-  done < <(jq -er '.databases[] | select(.present) | [.snapshotFile, .sha256] | @tsv' "$snapshot_root/manifest.json")
+  snapshot_root="$(verify_checkpoint "$migration_snapshot" "$routine_image_id")"
 
-  # Rollback undoes the migrating upgrade by putting its snapshot back under the real container, and says so first.
-  "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent rollback \
-    --instance-id "$instance_id" \
-    --product-root "$root/product" \
-    --json >"$root/migrating-rollback.json" 2>"$root/migrating-rollback-error.json"
-  test "$(jq -er '.outcome' "$root/migrating-rollback.json")" = completed
-  test "$(jq -er '.image.imageId' "$root/migrating-rollback.json")" = "$routine_image_id"
-  test "$(jq -er '.event' "$root/migrating-rollback-error.json")" = state-snapshot-restore
-  test "$(jq -cS '.snapshot' "$root/migrating-rollback-error.json")" = "$migration_snapshot"
-  assert_running_image "$routine_image_id" migrating-rollback-status
-  test "$(jq -cS '.retainedStateSnapshot' "$lifecycle_state")" = "$migration_snapshot"
-  test "$(jq -cS '.previousStateSnapshot' "$instance_root/instance-manifest.json")" = "$(jq -cS '.stateSnapshot' "$lifecycle_state")"
-  # The restored Identity database carries the snapshot's migration lineage. The restarted image has opened the stores
-  # since, so they are compared by content rather than byte for byte.
-  identity_snapshot="$(jq -er '.databases[] | select(.relativePath == "identity/cameraagent_identity.db") | .snapshotFile' "$snapshot_root/manifest.json")"
-  test "$(sqlite3 "file:$snapshot_root/$identity_snapshot?immutable=1" 'SELECT group_concat(MigrationId) FROM __EFMigrationsHistory;')" = \
-    "$(sqlite3 "file:$instance_root/state/identity/cameraagent_identity.db?immutable=1" 'SELECT group_concat(MigrationId) FROM __EFMigrationsHistory;')"
+  # A later capture has no record in the retained checkpoint. Refusal leaves the capture, its completed lane,
+  # the transaction records, and the original running process intact in both plan and execution.
+  raw_copy="$(jq -er '.databases[] | select(.relativePath == "raw/journal/raw-ingress.db") | .snapshotFile' "$snapshot_root/manifest.json")"
+  committed_boundary="$(sqlite3 "file:$snapshot_root/$raw_copy?immutable=1" 'SELECT max(capture_sequence) FROM raw_captures')"
+  post_commit_capture="$(wait_for_exposure "$committed_boundary")"
+  post_commit_sequence="$(verify_settled_exposure "$post_commit_capture")"
+  stage_key="$(sqlite3 -readonly -cmd '.timeout 5000' "$raw_db" "
+    SELECT json_extract(CAST(manifest_json AS TEXT), '\$.scene.projectedSceneStageKey')
+    FROM raw_captures WHERE capture_sequence = $post_commit_sequence;")"
+  [[ "$stage_key" =~ ^[[:xdigit:]]{64}$ ]]
+  # The previous reader in #1910 tried to process this kind of capture after its active stage was gone.
+  stage_path="$raw_root/staging/projected-scenes/$stage_key.json"
+  stage_deadline=$((SECONDS + 60))
+  while [[ -e "$stage_path" ]] && (( SECONDS < stage_deadline )); do sleep 1; done
+  test ! -e "$stage_path"
+  active_process="$(docker inspect --format '{{.Id}} {{.State.StartedAt}}' "$container")"
+  sha256sum "$lifecycle_state" "$instance_root/instance-manifest.json" "$result_path" \
+    "$snapshot_root/manifest.json" >"$root/committed-receipts.sha256"
+  assert_manual_rollback_refused post-commit-plan --plan
+  assert_manual_rollback_refused post-commit-execution
+  sha256sum --check "$root/committed-receipts.sha256"
+  test "$(docker inspect --format '{{.Id}} {{.State.StartedAt}}' "$container")" = "$active_process"
+  test "$(settled_exposure "$post_commit_sequence" '=')" = "$post_commit_capture"
+  test "$(verify_settled_exposure "$post_commit_capture")" = "$post_commit_sequence"
+  assert_running_image "$migrating_image_id" post-commit-status
+  printf 'Manual rollback plan and execution refused with capture %s and its completed lane intact.\n' "$post_commit_sequence"
 
   # A state reset discards the retained snapshot: the documented uninstall, reset-state and install rebuild the manifest
-  # without previousStateSnapshot, so a later rollback is a pure swap onto the reinstalled stores and never brings back
-  # the databases from before the reset.
+  # without previousStateSnapshot. The new stores and history remain untouched by a legacy rollback request.
   retained_snapshot="$(jq -cS '.previousStateSnapshot' "$instance_root/instance-manifest.json")"
   test "$retained_snapshot" != null
   retained_root="$root/product/operations/lifecycle/$(jq -er '.operationId' <<<"$retained_snapshot")/state-snapshots/$(jq -er '.snapshotId' <<<"$retained_snapshot")"
@@ -788,23 +890,13 @@ if [[ -z "$baseline_revision" ]]; then
   post_reset_users="$(sqlite3 "file:$identity_root/cameraagent_identity.db?immutable=1" 'SELECT group_concat(Id) FROM (SELECT Id FROM AspNetUsers ORDER BY Id);')"
   test -n "$post_reset_users"
   test "$post_reset_users" != "$pre_reset_users"
-  "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent rollback \
-    --instance-id "$instance_id" \
-    --product-root "$root/product" \
-    --json >"$root/post-reset-rollback.json" 2>"$root/post-reset-rollback-error.json"
-  test "$(jq -er '.outcome' "$root/post-reset-rollback.json")" = completed
-  test "$(jq -er '.image.imageId' "$root/post-reset-rollback.json")" = "$rollback_target_image_id"
-  # No restore warning and no snapshot: the rollback swapped images over the reinstalled databases.
-  test ! -s "$root/post-reset-rollback-error.json"
-  assert_running_image "$rollback_target_image_id" post-reset-rollback-status
-  test "$(jq -er '.stateSnapshotRequired' "$lifecycle_state")" = false
-  test "$(jq -er '.stateSnapshot' "$lifecycle_state")" = null
-  test "$(jq -er '.retainedStateSnapshot' "$lifecycle_state")" = null
+  assert_manual_rollback_refused post-reset-rollback
+  assert_running_image "$image_id" post-reset-rollback-status
   test "$(jq -er '.previousStateSnapshot' "$instance_root/instance-manifest.json")" = null
   test "$(sqlite3 "file:$identity_root/cameraagent_identity.db?immutable=1" 'SELECT group_concat(Id) FROM (SELECT Id FROM AspNetUsers ORDER BY Id);')" = \
     "$post_reset_users"
 
-  printf 'Swap upgrade contract passed for instance %s: routine upgrade snapshots nothing, migrating upgrade snapshots and verifies the real stores, rollback restores them, and a rollback after a state reset and reinstall is a pure swap.\n' \
+  printf 'Swap upgrade and pending recovery passed for instance %s.\n' \
     "$instance_id"
 fi
 
@@ -846,7 +938,7 @@ owner_archive="$(jq -er '.backup.archive' "$root/owner-backup.json")"
 [[ -f "$root/product/backups/$owner_archive" ]] || owner_contract_fails "the purge removed the backup."
 live_owner_install=("${common_arguments[@]}")
 for index in "${!live_owner_install[@]}"; do
-  if [[ "${live_owner_install[$index]}" == "$backup_owner" ]]; then live_owner_install[$index]="$live_owner"; fi
+  if [[ "${live_owner_install[index]}" == "$backup_owner" ]]; then live_owner_install[index]="$live_owner"; fi
 done
 "$publish_root/HVO.SkyMonitor.Deployment.Cli" "${live_owner_install[@]}" >"$root/owner-install.json"
 [[ "$(jq -er '.healthy' "$root/owner-install.json")" == true ]] || owner_contract_fails "the fresh install with $live_owner is not healthy."

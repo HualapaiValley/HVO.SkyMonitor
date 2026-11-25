@@ -83,7 +83,7 @@ public sealed partial class DurableCaptureProcessingTests
                 await lanes.CompleteAsync(newerLease, token).ConfigureAwait(false);
             }
 
-            var artifacts = provider.GetRequiredService<ICameraAgentArtifactService>();
+            var artifacts = provider.GetRequiredService<CameraAgentArtifactService>();
             using var warm = new CameraAgentRetainedAstrometryService(store, artifacts);
             var warmService = CameraAgentOperatorUiServiceTests.CreateAuthorizedRetainedAstrometryService(warm);
             var olderFit = CameraAgentLatestAstrometry.FromVerified(

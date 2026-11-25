@@ -17,6 +17,7 @@ namespace HVO.SkyMonitor.Deployment;
 [JsonSerializable(typeof(ApplicationIdentityBinding))]
 [JsonSerializable(typeof(LifecycleOperationState))]
 [JsonSerializable(typeof(LifecycleResult))]
+[JsonSerializable(typeof(LeavePausedReceipt))]
 [JsonSerializable(typeof(LifecycleUpgradeNotesEvent))]
 [JsonSerializable(typeof(InstanceBackupManifest))]
 [JsonSerializable(typeof(StateSnapshotManifest))]

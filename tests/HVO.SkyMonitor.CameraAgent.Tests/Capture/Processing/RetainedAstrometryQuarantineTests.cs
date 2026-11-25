@@ -72,7 +72,7 @@ public sealed partial class DurableCaptureProcessingTests
                     return result;
                 });
 
-            using var service = new CameraAgentRetainedAstrometryService(store, intermittent.Object);
+            using var service = CreateUnpooledAstrometryReader(store, intermittent.Object);
             ICameraAgentRetainedAstrometryService reader = service;
             var accepted = await reader.ReadLatestAcceptedAsync(token).ConfigureAwait(false);
             Assert.IsTrue(accepted.Completed);
@@ -300,7 +300,7 @@ public sealed partial class DurableCaptureProcessingTests
                         await cancellation.CancelAsync().ConfigureAwait(false);
                         return await ValueTask.FromCanceled<CameraAgentArtifactContentResult>(ct).ConfigureAwait(false);
                     });
-                using var deadlineReader = new CameraAgentRetainedAstrometryService(store, interrupted.Object);
+                using var deadlineReader = CreateUnpooledAstrometryReader(store, interrupted.Object);
                 var deadline = await deadlineReader.ReadLatestAcceptedAsync(latest, cancellation.Token).ConfigureAwait(false);
                 Assert.IsTrue(cancellation.IsCancellationRequested);
                 Assert.IsFalse(deadline.Completed);

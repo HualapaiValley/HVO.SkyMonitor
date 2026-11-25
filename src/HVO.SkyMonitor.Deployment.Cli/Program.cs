@@ -99,7 +99,7 @@ internal static class Program
                     ["instanceId"] = controlWorker.InstanceId.ToString("D"),
                     ["status"] = "poll-completed"
                 };
-                await Console.Out.WriteLineAsync(controlWorker.Json ? poll.ToJsonString(SplitHostJson.Options)
+                await Console.Out.WriteLineAsync(controlWorker.Json ? poll.ToJsonString()
                     : "stage=lifecycle-worker poll=completed").ConfigureAwait(false);
                 return (int)InstallerExitCode.Done;
             }
@@ -123,35 +123,7 @@ internal static class Program
                     await Console.Error.WriteLineAsync($"Warning: {CameraAgentStateDiagnostics.Message(warning.Message)}").ConfigureAwait(false);
                 }
             }
-            if (command is PreflightRequest splitPreflight)
-            {
-                try
-                {
-                    var result = await services.SplitHostPreflight(splitPreflight, cancellationToken).ConfigureAwait(false);
-                    await Console.Out.WriteLineAsync(splitPreflight.Json ? result.ToJsonString(SplitHostJson.Options) : "stage=preflight check=complete status=passed reason=read-only").ConfigureAwait(false);
-                }
-                catch (PartialPrepareCrashException) { return 75; }
-            }
-            else if (command is ExistingDownRequest down)
-            {
-                try
-                {
-                    var result = await services.ExistingDown(down, cancellationToken).ConfigureAwait(false);
-                    await Console.Out.WriteLineAsync(down.Json ? result.ToJsonString(SplitHostJson.Options) : "stage=down check=complete status=passed reason=preserve").ConfigureAwait(false);
-                }
-                catch (PartialPrepareCrashException) { return 75; }
-            }
-            else if (command is PartialPrepareRequest partial)
-            {
-                try
-                {
-                    var result = await services.PartialPrepare(partial, cancellationToken).ConfigureAwait(false);
-                    await Console.Out.WriteLineAsync(partial.Json ? result.ToJsonString(SplitHostJson.Options) :
-                        $"partial-prepare-cleanup complete passed {(partial.DryRun ? "inspected" : "cleaned")}").ConfigureAwait(false);
-                }
-                catch (PartialPrepareCrashException) { return 75; }
-            }
-            else if (command is InstallDeploymentCommand install)
+            if (command is InstallDeploymentCommand install)
             {
                 var result = await services.Install(install.Request, cancellationToken).ConfigureAwait(false);
                 if (install.ParseWarnings.Count > 0)
@@ -411,7 +383,22 @@ internal static class Program
         if (result.Image is not null) await Console.Out.WriteLineAsync($"Image: {result.Image.ImageId}").ConfigureAwait(false);
         if (result.Catalog is not null) await Console.Out.WriteLineAsync($"Catalog: {result.Catalog.CatalogId} / {result.Catalog.PackageVersion}").ConfigureAwait(false);
         if (result.DeepSkyCatalog is not null) await Console.Out.WriteLineAsync($"Deep-sky catalog: {result.DeepSkyCatalog.CatalogId} / {result.DeepSkyCatalog.PackageVersion}").ConfigureAwait(false);
-        if (result.Running is not null) await Console.Out.WriteLineAsync($"Runtime: running={result.Running}; healthy={result.Healthy}").ConfigureAwait(false);
+        if (result.Running is not null)
+        {
+            var readiness = result.HealthStatusCode is { } status ? $" (/health HTTP {status})" : string.Empty;
+            await Console.Out.WriteLineAsync(
+                $"Runtime running={result.Running}, alive={result.Alive?.ToString() ?? "unknown"}, healthy={result.Healthy?.ToString() ?? "unknown"}{readiness}")
+                .ConfigureAwait(false);
+        }
+        if (result.PreservedAdmission is { } admission)
+        {
+            await Console.Out.WriteLineAsync(
+                $"Capture admission preserved: {admission.State} at version {admission.Version}, sequence {admission.CaptureSequence}, observed {admission.ObservedUtc:O}.")
+                .ConfigureAwait(false);
+            await Console.Out.WriteLineAsync(
+                $"Latest capture command #{admission.LatestCommandOrder} (key SHA-256 {admission.LatestCommandKeySha256}, {admission.LatestTarget}, changed={admission.LatestChanged}) by {admission.LatestActor} at {admission.LatestCompletedUtc:O}, version {admission.LatestResultVersion}.")
+                .ConfigureAwait(false);
+        }
         foreach (var path in result.PreservedPaths) await Console.Out.WriteLineAsync($"Preserved: {path}").ConfigureAwait(false);
         if (result.ResumeCommand is not null) await Console.Out.WriteLineAsync($"Resume: {result.ResumeCommand}").ConfigureAwait(false);
         await WritePlanAsync(result.Plan, result.Outcome == "planned").ConfigureAwait(false);
@@ -479,9 +466,6 @@ internal sealed record ProgramServices(
 {
     public Func<LifecycleWorkerRequest, CancellationToken, Task> ControlWorker { get; init; } = CameraAgentLifecycleManager.RunControlWorkerAsync;
     public Func<SiloCommandRequest, CancellationToken, Task<System.Text.Json.Nodes.JsonObject>> Silo { get; init; } = SiloCommands.ExecuteAsync;
-    public Func<PreflightRequest, CancellationToken, Task<System.Text.Json.Nodes.JsonObject>> SplitHostPreflight { get; init; } = global::HVO.SkyMonitor.Deployment.SplitHostPreflight.ExecuteAsync;
-    public Func<ExistingDownRequest, CancellationToken, Task<System.Text.Json.Nodes.JsonObject>> ExistingDown { get; init; } = global::HVO.SkyMonitor.Deployment.ExistingDown.ExecuteAsync;
-    public Func<PartialPrepareRequest, CancellationToken, Task<System.Text.Json.Nodes.JsonObject>> PartialPrepare { get; init; } = PartialPrepareRecovery.ExecuteAsync;
     /// <summary>The terminal, if any: the wizard runs only on one (#1317).</summary>
     public InstallTerminal Terminal { get; init; } = InstallTerminal.Current();
 

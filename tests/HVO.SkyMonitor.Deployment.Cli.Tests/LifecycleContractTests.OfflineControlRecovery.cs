@@ -166,7 +166,7 @@ public sealed partial class LifecycleContractTests
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     [DataRow(false)]
     [DataRow(true)]
-    public async Task RollbackAfterOfflineAdmissionStillVerifiesTheReturnedOriginalAndRetainsControl(bool terminal)
+    public async Task ManualRollbackRefusalWhenOfflinePreservesRetainedControl(bool terminal)
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
         var candidateReference = $"ghcr.io/example/cameraagent@sha256:{new string('a', 64)}";
@@ -184,26 +184,15 @@ public sealed partial class LifecycleContractTests
         var (_, path, _) = await PendingControlAsync(fixture, terminal);
         var before = await File.ReadAllBytesAsync(path);
         fixture.Runner.Reboot(fixture.Runner.ActiveImageId, wasRunning: false);
-        var returning = new ReturnAfterControlAdmission(fixture.Runner);
-        var result = await CameraAgentLifecycleManager.ExecuteAsync(fixture.Request(LifecycleOperationKind.Rollback), returning,
-            _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None);
-        Assert.AreEqual("completed", result.Outcome);
-        Assert.AreEqual(fixture.Manifest.Image.ImageId, result.Image!.ImageId);
-        Assert.IsTrue(returning.Inspections >= 3);
-        Assert.AreEqual(2, lifecycle.PauseCount, "Rollback must still authenticate and drain the returned original.");
+        var calls = fixture.Runner.InvocationCount;
+        var refusal = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Rollback), fixture.Runner, _ => lifecycle, null,
+            fixture.Uid, fixture.Gid, CancellationToken.None));
+        Assert.IsTrue(refusal.IsRefusal);
+        Assert.AreEqual(candidateImageId, fixture.Runner.ActiveImageId);
+        Assert.AreEqual(calls, fixture.Runner.InvocationCount);
+        Assert.AreEqual(1, lifecycle.PauseCount);
         CollectionAssert.AreEqual(before, await File.ReadAllBytesAsync(path));
-    }
-
-    private sealed class ReturnAfterControlAdmission(FakeRunner inner) : IProcessRunner
-    {
-        internal int Inspections;
-        public Task<ProcessResult> RunAsync(string fileName, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
-        {
-            var effective = arguments is ["--host", _, ..] ? arguments.Skip(2).ToArray() : arguments;
-            if (fileName == "docker" && effective is ["container", "inspect", _, ..] && ++Inspections == 3)
-                inner.Reboot(inner.ActiveImageId, wasRunning: true);
-            return inner.RunAsync(fileName, arguments, cancellationToken);
-        }
     }
 
     private static async Task<(InstallerControlJournal Journal, string Path, CameraAgentControlReceipt Receipt)> PendingControlAsync(

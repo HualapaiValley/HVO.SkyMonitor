@@ -8,7 +8,7 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
 /// <summary>
 /// Measures the linear raw capture inside the windows predicted by its own committed projected scene. The scene product
-/// is bound as canonical JSON exactly as LogicHost binds its resolved scene, so both hosts derive the same identity.
+/// is bound as canonical JSON so the shared recipe derives the same identity for identical scene evidence.
 /// </summary>
 internal class MeasuredStellarAssociationCaptureProcessingStep(
     CaptureProcessingStepMetadata metadata,

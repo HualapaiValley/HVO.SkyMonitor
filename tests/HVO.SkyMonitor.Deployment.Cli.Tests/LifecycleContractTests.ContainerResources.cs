@@ -60,7 +60,7 @@ public sealed partial class LifecycleContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task UpgradeAndRollback_OperatorLimits_SurviveWithTheExactComposeModel()
+    public async Task UpgradeAndManualRollbackRefusal_PreserveTheExactOperatorLimits()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
         var pinned = new ContainerResourceLimits(3.5m, 6 * LimitGibibyte, 256, true, true);
@@ -76,16 +76,12 @@ public sealed partial class LifecycleContractTests
         Assert.AreEqual(pinnedCompose, await File.ReadAllTextAsync(composePath));
         Assert.AreEqual(pinnedModel, upgraded.ComposeModelSha256);
 
-        await CameraAgentLifecycleManager.ExecuteAsync(
-            fixture.Request(LifecycleOperationKind.Rollback),
-            fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
-            fixture.Uid, fixture.Gid, CancellationToken.None);
-
-        var rolledBack = await CameraAgentLifecycleManager.ReadManifestAsync(fixture.Paths.ManifestPath, CancellationToken.None);
-        Assert.AreEqual(fixture.Manifest.Image.ImageId, rolledBack.Image.ImageId);
-        Assert.AreEqual(pinned, rolledBack.Resources);
+        var refusal = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Rollback), fixture.Runner, null, null,
+            fixture.Uid, fixture.Gid, CancellationToken.None));
+        Assert.IsTrue(refusal.IsRefusal);
+        Assert.AreEqual(upgraded, await CameraAgentLifecycleManager.ReadManifestAsync(fixture.Paths.ManifestPath, CancellationToken.None));
         Assert.AreEqual(pinnedCompose, await File.ReadAllTextAsync(composePath));
-        Assert.AreEqual(pinnedModel, rolledBack.ComposeModelSha256);
     }
 
     [TestMethod]

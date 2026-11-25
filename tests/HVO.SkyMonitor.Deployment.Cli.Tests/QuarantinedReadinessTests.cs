@@ -65,16 +65,18 @@ public sealed partial class QuarantinedReadinessTests
     public async Task WaitForHealth_QuarantineOnly503_SucceedsWhenAllowed()
     {
         var clock = new HealthPollTimeProvider();
+        var timeout = TimeSpan.FromSeconds(5);
         using var handler = Script(Health(1, "terminal"));
-        var client = CreateClient(handler, clock);
 
-        await client.WaitForHealthAsync(Catalog, CancellationToken.None, TimeSpan.FromSeconds(5), allowQuarantinedReadiness: true)
+        await StartHealthWait(CreateClient(handler, clock), timeout, allowQuarantinedReadiness: true)
             .WaitAsync(TestWatchdog);
 
+        await ExpectTimerAsync(clock, timeout);
         Assert.AreEqual(2, handler.RequestCount);
 
         using var recovering = Script(Health(1, "terminal"), recoveredHealth: Health(0, null));
-        var wait = CreateClient(recovering, clock).WaitForHealthAsync(Catalog, CancellationToken.None, TimeSpan.FromSeconds(5));
+        var wait = StartHealthWait(CreateClient(recovering, clock), timeout);
+        await ExpectTimerAsync(clock, timeout);
         var poll = await ExpectPollAsync(clock, recovering, requests: 2);
         Assert.IsFalse(wait.IsCompleted);
         clock.Advance(poll, PollInterval);
@@ -87,8 +89,9 @@ public sealed partial class QuarantinedReadinessTests
     {
         var clock = new HealthPollTimeProvider();
         using var handler = Script(Health(1, "terminal"));
-        var wait = CreateClient(handler, clock).WaitForHealthAsync(Catalog, CancellationToken.None, HealthTimeout);
+        var wait = StartHealthWait(CreateClient(handler, clock), HealthTimeout);
 
+        var deadline = await ExpectTimerAsync(clock, HealthTimeout);
         var poll = await ExpectPollAsync(clock, handler, requests: 2);
         var lastMillisecond = TimeSpan.FromMilliseconds(1);
         clock.Advance(poll, PollInterval - lastMillisecond);
@@ -96,8 +99,8 @@ public sealed partial class QuarantinedReadinessTests
         Assert.AreEqual(2, handler.RequestCount);
         clock.Advance(poll, lastMillisecond);
 
-        var retry = await ExpectPollAsync(clock, handler, requests: 4);
-        clock.Advance(retry, PollInterval);
+        await ExpectPollAsync(clock, handler, requests: 4);
+        clock.Advance(deadline, HealthTimeout - PollInterval);
         var failure = await Assert.ThrowsExactlyAsync<InstallerException>(() => wait.WaitAsync(TestWatchdog));
 
         StringAssert.Contains(failure.Message, "did not become ready", StringComparison.Ordinal);
@@ -111,17 +114,19 @@ public sealed partial class QuarantinedReadinessTests
         var clock = new HealthPollTimeProvider();
         using var handler = Script(Health(1, "terminal", "disk-pressure"));
         var client = CreateClient(handler, clock);
-        var wait = client.WaitForHealthAsync(Catalog, CancellationToken.None, HealthTimeout, allowQuarantinedReadiness: true);
+        var wait = StartHealthWait(client, HealthTimeout, allowQuarantinedReadiness: true);
 
-        var poll = await ExpectPollAsync(clock, handler, requests: 2);
-        clock.Advance(poll, HealthTimeout);
+        var deadline = await ExpectTimerAsync(clock, HealthTimeout);
+        await ExpectPollAsync(clock, handler, requests: 2);
+        clock.Advance(deadline, HealthTimeout);
         var failure = await Assert.ThrowsExactlyAsync<InstallerException>(() => wait.WaitAsync(TestWatchdog));
 
         StringAssert.Contains(failure.Message, "disk-pressure", StringComparison.Ordinal);
         Assert.AreEqual(2, handler.RequestCount);
 
         using var cancellation = new CancellationTokenSource();
-        var canceledWait = client.WaitForHealthAsync(Catalog, cancellation.Token, HealthTimeout, allowQuarantinedReadiness: true);
+        var canceledWait = StartHealthWait(client, HealthTimeout, allowQuarantinedReadiness: true, cancellationToken: cancellation.Token);
+        await ExpectTimerAsync(clock, HealthTimeout);
         var pending = await ExpectPollAsync(clock, handler, requests: 4);
         await cancellation.CancelAsync();
 
@@ -129,6 +134,78 @@ public sealed partial class QuarantinedReadinessTests
         Assert.AreEqual(cancellation.Token, canceled.CancellationToken);
         clock.Advance(pending, PollInterval);
         Assert.AreEqual(4, handler.RequestCount);
+    }
+
+    [TestMethod]
+    public async Task WaitForHealth_DeploymentLocationDeferredThenReady_RequiresSuccessfulSemanticHealth()
+    {
+        var clock = new HealthPollTimeProvider();
+        using var handler = new ScriptedHandler((_, count, _) => Task.FromResult(count switch
+        {
+            2 => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+            {
+                Content = new StringContent(Health(0, null, "deployment-location"))
+            },
+            4 => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(Health(0, null))
+            },
+            1 or 3 => new HttpResponseMessage(HttpStatusCode.OK),
+            _ => throw new AssertFailedException("Unexpected readiness probe.")
+        }));
+        var wait = StartHealthWait(CreateClient(handler, clock), HealthTimeout);
+
+        await ExpectTimerAsync(clock, HealthTimeout);
+        var poll = await ExpectPollAsync(clock, handler, requests: 2);
+        Assert.IsFalse(wait.IsCompleted);
+        clock.Advance(poll, PollInterval);
+
+        await wait.WaitAsync(TestWatchdog);
+        Assert.AreEqual(4, handler.RequestCount);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task WaitForHealth_InFlightProbeHonorsDeadlineAndCallerCancellation(bool cancel)
+    {
+        var clock = new HealthPollTimeProvider();
+        var timeout = TimeSpan.FromMilliseconds(200);
+        var probeStarted = new TaskCompletionSource<CancellationToken>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var handler = new ScriptedHandler(async (_, _, token) =>
+        {
+            var responseDelay = Task.Delay(Timeout.InfiniteTimeSpan, token);
+            probeStarted.SetResult(token);
+            await responseDelay;
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        });
+        using var caller = new CancellationTokenSource();
+        var pending = StartHealthWait(CreateClient(handler, clock), timeout, cancellationToken: caller.Token);
+        var deadline = await ExpectTimerAsync(clock, timeout);
+        var probeToken = await probeStarted.Task.WaitAsync(TestWatchdog);
+        Assert.IsFalse(pending.IsCompleted);
+
+        if (cancel)
+        {
+            await caller.CancelAsync();
+            Assert.IsTrue(probeToken.IsCancellationRequested, "Caller cancellation must cancel the in-flight probe.");
+            var canceled = await Assert.ThrowsAsync<OperationCanceledException>(() => pending.WaitAsync(TestWatchdog));
+            Assert.AreEqual(caller.Token, canceled.CancellationToken);
+        }
+        else
+        {
+            var lastMillisecond = TimeSpan.FromMilliseconds(1);
+            clock.Advance(deadline, timeout - lastMillisecond);
+            Assert.IsFalse(probeToken.IsCancellationRequested);
+            Assert.IsFalse(pending.IsCompleted);
+            clock.Advance(deadline, lastMillisecond);
+            Assert.IsTrue(probeToken.IsCancellationRequested, "The readiness deadline must cancel the in-flight probe.");
+
+            var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => pending.WaitAsync(TestWatchdog));
+            StringAssert.Contains(exception.Message, "did not become ready within", StringComparison.Ordinal);
+        }
+
+        Assert.AreEqual(1, handler.RequestCount);
     }
 
     [TestMethod]
@@ -165,18 +242,35 @@ public sealed partial class QuarantinedReadinessTests
     private static OwnerBootstrapClient CreateClient(ScriptedHandler handler, TimeProvider clock)
         => new(new Uri("http://camera.invalid"), handler, protectedReadTimeout: null, timeProvider: clock);
 
-    private static async Task<HealthPollTimeProvider.PollTimer> ExpectPollAsync(
+    // A missing poll delay can make the client retry synchronously before returning a task.
+    private static Task StartHealthWait(
+        OwnerBootstrapClient client, TimeSpan timeout, bool allowQuarantinedReadiness = false,
+        CancellationToken cancellationToken = default)
+        => Task.Run(
+            () => client.WaitForHealthAsync(Catalog, cancellationToken, timeout, allowQuarantinedReadiness),
+            cancellationToken);
+
+    private static async Task<HealthPollTimeProvider.ScheduledTimer> ExpectPollAsync(
         HealthPollTimeProvider clock, ScriptedHandler handler, int requests)
     {
-        var poll = await clock.NextPollAsync();
+        var poll = await ExpectTimerAsync(clock, PollInterval);
         Assert.AreEqual(requests, handler.RequestCount);
-        Assert.AreEqual(PollInterval, poll.Due - clock.GetUtcNow());
         return poll;
+    }
+
+    private static async Task<HealthPollTimeProvider.ScheduledTimer> ExpectTimerAsync(
+        HealthPollTimeProvider clock, TimeSpan delay)
+    {
+        var timer = await clock.NextTimerAsync();
+        Assert.AreEqual(delay, timer.Due - clock.GetUtcNow());
+        return timer;
     }
 
     private static ScriptedHandler Script(string unavailableHealth, string? recoveredHealth = null)
         => new((request, count, _) =>
         {
+            // Bound the worker's retries even if it never schedules a poll timer.
+            Assert.IsLessThanOrEqualTo(4, count, "Unexpected readiness probe.");
             var isAlive = count % 2 == 1;
             Assert.AreEqual(isAlive ? "/alive" : "/health", request.RequestUri!.AbsolutePath);
             var recovered = count > 2 ? recoveredHealth : null;
@@ -190,7 +284,7 @@ public sealed partial class QuarantinedReadinessTests
 
     private sealed class HealthPollTimeProvider : TimeProvider
     {
-        private readonly Channel<PollTimer> _polls = Channel.CreateUnbounded<PollTimer>();
+        private readonly Channel<ScheduledTimer> _timers = Channel.CreateUnbounded<ScheduledTimer>();
         private long _elapsedTicks;
 
         public override DateTimeOffset GetUtcNow() => DateTimeOffset.UnixEpoch.AddTicks(Interlocked.Read(ref _elapsedTicks));
@@ -198,14 +292,14 @@ public sealed partial class QuarantinedReadinessTests
         public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
         {
             Assert.AreEqual(Timeout.InfiniteTimeSpan, period);
-            var timer = new PollTimer(GetUtcNow() + dueTime, callback, state);
-            _polls.Writer.TryWrite(timer);
+            var timer = new ScheduledTimer(GetUtcNow() + dueTime, callback, state);
+            _timers.Writer.TryWrite(timer);
             return timer;
         }
 
-        public Task<PollTimer> NextPollAsync() => _polls.Reader.ReadAsync().AsTask().WaitAsync(TestWatchdog);
+        public Task<ScheduledTimer> NextTimerAsync() => _timers.Reader.ReadAsync().AsTask().WaitAsync(TestWatchdog);
 
-        public void Advance(PollTimer timer, TimeSpan elapsed)
+        public void Advance(ScheduledTimer timer, TimeSpan elapsed)
         {
             var now = DateTimeOffset.UnixEpoch.AddTicks(Interlocked.Add(ref _elapsedTicks, elapsed.Ticks));
             if (now >= timer.Due)
@@ -214,7 +308,7 @@ public sealed partial class QuarantinedReadinessTests
             }
         }
 
-        public sealed class PollTimer(DateTimeOffset due, TimerCallback callback, object? state) : ITimer
+        public sealed class ScheduledTimer(DateTimeOffset due, TimerCallback callback, object? state) : ITimer
         {
             private int _finished;
 

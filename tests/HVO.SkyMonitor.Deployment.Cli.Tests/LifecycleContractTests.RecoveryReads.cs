@@ -117,37 +117,6 @@ public sealed partial class LifecycleContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    [DataRow("text")]
-    [DataRow("null")]
-    [DataRow("non-utf8")]
-    [DataRow("malformed-json")]
-    public async Task RollbackAsync_AfterTheUpgradedReleaseRewroteAScheduleProfile_RestoresTheRetainedSnapshotAndSaysWhatItCouldNotRead(string shape)
-    {
-        using var fixture = await MigratingFixtureAsync();
-        SeedStores(fixture.Paths);
-        SeedProductsRevision(fixture.Paths);
-        await UpgradeAndCommitAsync(fixture);
-        // The upgraded release migrated the profile's storage, which the release it rolls back to never reads.
-        ExecuteSql(RawIngressPath(fixture.Paths), RewriteProfileSql(shape));
-        using var error = new StringWriter();
-
-        var rolledBack = await CameraAgentLifecycleManager.ExecuteAsync(
-            fixture.Request(LifecycleOperationKind.Rollback), fixture.Runner, _ => new FakeLifecycleClient(),
-            _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None, error: error);
-
-        Assert.AreEqual("completed", rolledBack.Outcome);
-        Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
-        AssertRecoveredOntoTheSnapshotsProfile(fixture.Paths, canonical: false);
-        AssertSaidItCouldNotReadTheProfile(error.ToString(), shape);
-        // The rollback could not read the roots, but its own snapshot still holds every store it replaced, so rolling
-        // forward again brings the upgraded release's products outbox back.
-        var journal = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
-        var own = await CameraAgentStateSnapshot.VerifyAsync(fixture.Paths, fixture.InstanceId, journal.StateSnapshot!, CancellationToken.None);
-        CollectionAssert.Contains(own.Databases.Where(static database => database.Present).Select(static database => database.RelativePath).ToArray(), ProductsOutbox);
-    }
-
-    [TestMethod]
-    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     [DataRow("text-value")]
     [DataRow("null-value")]
     [DataRow("real-value")]

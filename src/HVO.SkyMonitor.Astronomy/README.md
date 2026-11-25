@@ -1,8 +1,8 @@
 # HVO.SkyMonitor.Astronomy
 
 Reusable deterministic time, coordinate, projection, refraction, and catalog
-contracts shared by CameraAgent and LogicHost. It intentionally has no host,
-database, rendering, or image-library dependency.
+contracts used by CameraAgent and the shared processing libraries. This project
+has no host, database, rendering, or image-library dependency.
 
 ## Catalog data
 

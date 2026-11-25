@@ -294,7 +294,7 @@ internal sealed class CloudAssessmentRecipe : IProcessingRecipe
             false);
     }
 
-    private static bool EnvironmentIsValid(CloudAssessmentEnvironmentV1 environment)
+    internal static bool EnvironmentIsValid(CloudAssessmentEnvironmentV1 environment)
         => string.Equals(
                environment.SchemaVersion,
                CloudAssessmentEnvironmentV1.CurrentSchemaVersion,

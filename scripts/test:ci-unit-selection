@@ -33,7 +33,7 @@ expect_pass
 expect_pass --workflow "$workflow" --tests-root "$repo_root/tests"
 
 # Removing any one Unit-bearing selection fails and names the project.
-for slot in cameraagent-integration catalog-sqlite-performance astronomy cameraagent; do
+for slot in cameraagent-integration catalog-sqlite-performance astronomy cameraagent deployment-cli; do
   mutate "drop-$slot" "/dotnet test .* --results-directory TestResults\/unit\/$slot --logger/d"
   expect_fail 'Unit job command(s) select it' --workflow "$scratch/drop-$slot.yml"
 done
@@ -41,7 +41,7 @@ for name in LogicHost.Tests CameraAgent.LogicHost.Tests; do
   mutate "retired-$name" "/^  unit:/,/^  integration:/ {
     /dotnet test .* --results-directory TestResults\/unit\/cameraagent --logger/ { p; s#HVO.SkyMonitor.CameraAgent.Tests#HVO.SkyMonitor.$name#g; }
   }"
-  expect_fail "the Unit job selects retired LogicHost project tests/HVO.SkyMonitor.$name/" \
+  expect_fail "the Unit job selects tests/HVO.SkyMonitor.$name/HVO.SkyMonitor.$name.csproj" \
     --workflow "$scratch/retired-$name.yml"
 done
 

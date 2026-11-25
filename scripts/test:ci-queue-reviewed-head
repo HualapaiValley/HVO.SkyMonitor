@@ -669,6 +669,21 @@ class QueueReviewedHead(unittest.TestCase):
         self.data[associations(head)]["fail_page"] = 1
         self.assert_fails(self.run_command(), "cannot read GitHub API response")
 
+    def test_earlier_entry_rejects_malformed_association_pages_and_pr_numbers(self):
+        head = self.make_chain(2)[0][0]
+        path = associations(head)
+        cases = [
+            ([], "malformed paginated GitHub response"),
+            ({"items": [pull(1000, head)]}, "malformed paginated GitHub response"),
+            ([[pull(1000, head)], {}], "malformed paginated GitHub response"),
+            ([[pull(1000, head)], [None]], "malformed record"),
+        ]
+        cases.extend(([[pull(number, head)]], "invalid pull request number") for number in (0, -1, True, "1000"))
+        for pages, diagnostic in cases:
+            with self.subTest(pages=pages):
+                self.data[path] = {"pages": pages}
+                self.assert_fails(self.run_command(), diagnostic)
+
     def test_base_refresh_accepts_only_authenticated_landed_earlier_entry(self):
         (head, landed), _ = self.make_chain(2)
         old, new = base_response(self.base), base_response(landed)
@@ -790,6 +805,30 @@ class QueueReviewedHead(unittest.TestCase):
         self.assert_pass(self.stamp(newer, *args))
         self.assertEqual([call[5] for call in self.writes()], [second_status, endpoint(f"statuses/{newer}")])
         self.assert_pass(self.run_command())
+
+    def test_head_move_after_revocation_blocks_new_stamp(self):
+        self.approve()
+        self.switch(self.reviewed)
+        self.write("revision.txt", "reviewed revision\n")
+        current = self.commit("new reviewed head")
+        self.write("revision.txt", "subsequent revision\n")
+        moved = self.commit("PR head moves after revocation")
+        self.set_pull(PR, current)
+        pr_path = endpoint(f"pulls/{PR}")
+        current_response = self.data[pr_path]
+        self.data[pr_path] = {"sequence": [current_response, current_response, {"pages": [pull(PR, moved)]}]}
+
+        result = self.stamp(current, "--reviewed-base", self.base, "--supersede", self.reviewed)
+
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("the PR moved during approval verification", result.stderr)
+        writes = self.writes()
+        self.assertEqual([(call[5], call[7], call[11]) for call in writes],
+                         [(endpoint(f"statuses/{self.reviewed}"), "state=failure",
+                           f"description=Superseded by {current}")])
+        pr_read = ["api", "--hostname", "github.com", pr_path]
+        self.assertEqual([call for call in self.calls() if call == pr_read or call in writes],
+                         [pr_read, pr_read, *writes, pr_read])
 
     def test_mutations_are_caught_by_tree_fingerprint_and_trust_fixtures(self):
         good = self.approve()

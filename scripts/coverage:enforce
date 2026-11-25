@@ -4,8 +4,19 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 baseline="$repo_root/scripts/coverage/baseline.json"
 profile_args=()
+development_v1=false
 if [[ "${1:-}" == "--development-v1" ]]; then
+  development_v1=true
   profile_args+=(--development-v1)
+  shift
+fi
+
+if [[ "${1:-}" == "--skip-deployment-cli" ]]; then
+  if [[ "$development_v1" != true ]]; then
+    echo "--skip-deployment-cli is only supported with --development-v1." >&2
+    exit 2
+  fi
+  profile_args+=(--skip-deployment-cli)
   shift
 fi
 

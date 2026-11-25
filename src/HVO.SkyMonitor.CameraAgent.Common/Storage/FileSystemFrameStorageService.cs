@@ -629,17 +629,27 @@ public sealed partial class FileSystemFrameStorageService(
 
     private static SqliteConnection? OpenCenteredBrowseJournal(string root)
     {
-        var path = Path.Combine(root, "journal", "raw-ingress.db");
-        if (!File.Exists(path))
-            return null;
-
+        var journalDirectory = Path.Combine(root, "journal");
+        var path = Path.Combine(journalDirectory, "raw-ingress.db");
         RawIngressFileStore.EnsureNoSymbolicLinks(root, path);
         RawIngressFileStore.EnsureNoSymbolicLinks(root, path + "-wal");
         RawIngressFileStore.EnsureNoSymbolicLinks(root, path + "-shm");
+        try
+        {
+            if ((File.GetAttributes(journalDirectory) & FileAttributes.Directory) == 0 ||
+                (File.GetAttributes(path) & FileAttributes.Directory) != 0)
+                throw new IOException("The archive publication journal path has an unexpected file type.");
+        }
+        catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
+        {
+            // Only genuine absence permits the released file-only archive fallback.
+            return null;
+        }
         var connection = new SqliteConnection(new SqliteConnectionStringBuilder
         {
             DataSource = path,
             Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false,
             DefaultTimeout = 1
         }.ToString());
         try

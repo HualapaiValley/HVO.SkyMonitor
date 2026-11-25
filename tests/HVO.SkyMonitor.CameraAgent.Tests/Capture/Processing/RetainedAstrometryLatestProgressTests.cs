@@ -57,7 +57,7 @@ public sealed partial class DurableCaptureProcessingTests
                     return await artifacts.OpenContentAsync(artifactId, token).ConfigureAwait(false);
                 });
 
-            using var reader = new CameraAgentRetainedAstrometryService(store, delayed.Object);
+            using var reader = CreateUnpooledAstrometryReader(store, delayed.Object);
             var oldCapture = old.Fixture.Manifest.Descriptor.Capture.CaptureId;
             var ordered = rejectedOutputs.Select(output => output.ArtifactId).ToArray();
             for (var request = 0; request < 2; request++)
@@ -151,7 +151,7 @@ public sealed partial class DurableCaptureProcessingTests
                     return result;
                 });
 
-            using var reader = new CameraAgentRetainedAstrometryService(store, interrupted.Object);
+            using var reader = CreateUnpooledAstrometryReader(store, interrupted.Object);
             var baseline = await reader.ReadLatestAcceptedAsync(CancellationToken.None).ConfigureAwait(false);
             Assert.IsTrue(baseline.Completed);
             Assert.AreEqual(newerOutput.Capture.CaptureId, baseline.Summary?.CaptureId);

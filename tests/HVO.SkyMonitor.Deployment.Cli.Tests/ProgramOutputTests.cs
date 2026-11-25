@@ -20,9 +20,6 @@ public sealed class ProgramOutputTests
         Usage: hvo-sky-install <command> [options]
 
         Commands:
-          preflight
-          partial-prepare-cleanup
-          existing-down
           status
           cameraagent install
           cameraagent lifecycle-worker
@@ -120,7 +117,7 @@ public sealed class ProgramOutputTests
           cameraagent silo-verify        Check, changing nothing, a Silo-layout instance's store, binding, listeners, data root, headroom, archive and first-boot pause.
           cameraagent reset-state        Delete an uninstalled instance's local runtime state, keeping its configuration.
           cameraagent upgrade            Move an instance to a release's image (--release) or an immutable one (--image-ref).
-          cameraagent rollback           Return an instance to the image it ran before its last upgrade.
+          cameraagent rollback           Show upgrade recovery guidance or settle a committed legacy rollback with --resume.
           cameraagent reinstall          Start an uninstalled instance again from the state it kept.
           cameraagent uninstall          Remove an instance's containers, keeping its state for cameraagent reinstall.
           cameraagent purge              Remove an uninstalled instance and everything it keeps.
@@ -226,6 +223,9 @@ public sealed class ProgramOutputTests
 
     [TestMethod]
     [DataRow("bogus", "Unknown command 'bogus'.")]
+    [DataRow("preflight", "Unknown command 'preflight'.")]
+    [DataRow("partial-prepare-cleanup", "Unknown command 'partial-prepare-cleanup'.")]
+    [DataRow("existing-down", "Unknown command 'existing-down'.")]
     [DataRow("", "Missing command.")]
     [DataRow("help status", "Unexpected argument 'status' after 'help'.")]
     [DataRow("--version status", "Unexpected argument 'status' after '--version'.")]

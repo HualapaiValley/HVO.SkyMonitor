@@ -473,12 +473,31 @@ public sealed class CommandLineTests
     }
 
     [TestMethod]
+    public void ParseCommand_LeavePausedPreservesTheSignedUpgradeRequest()
+    {
+        string[] original = ["cameraagent", "upgrade", "--instance-id", Guid.NewGuid().ToString("D"),
+            "--release", "/srv/release", "--image-source", "archive"];
+        var id = Guid.NewGuid();
+        var parsed = (LifecycleRequest)CommandLine.ParseCommand([.. original, "--resume", "--leave-paused", "--operation-id", id.ToString("D")]);
+
+        Assert.IsTrue(parsed.LeavePaused);
+        Assert.AreEqual(id, parsed.RecoveryOperationId);
+        Assert.AreEqual(((LifecycleRequest)CommandLine.ParseCommand(original)).ComputeRequestSha256(), parsed.ComputeRequestSha256());
+        Assert.ThrowsExactly<InstallUsageException>(() => (parsed with { Resume = false }).Validate());
+        Assert.ThrowsExactly<InstallUsageException>(() => (parsed with { RestoreOnly = true }).Validate());
+        Assert.ThrowsExactly<InstallUsageException>(() => (parsed with { RecoveryOperationId = null }).Validate());
+        Assert.ThrowsExactly<InstallUsageException>(() => (parsed with { ImageSource = ReleaseImageSource.Registry }).Validate());
+        Assert.ThrowsExactly<InstallUsageException>(() => (parsed with { AllowQuarantinedReadiness = true }).Validate());
+    }
+
+    [TestMethod]
     [DataRow("missing-resume")]
     [DataRow("missing-operation")]
     [DataRow("missing-restore")]
     [DataRow("dry-run")]
     [DataRow("rollback")]
-    [DataRow("signed")]
+    [DataRow("signed-registry")]
+    [DataRow("signed-quarantine")]
     public void ParseCommand_RestoreOnlyRejectsUnsupportedOptions(string fault)
     {
         var request = new LifecycleRequest(LifecycleOperationKind.Upgrade, Guid.NewGuid(), InstallRequest.DefaultProductRoot,
@@ -495,7 +514,8 @@ public sealed class CommandLineTests
             "missing-restore" => request with { RestoreOnly = false },
             "dry-run" => request with { DryRun = true },
             "rollback" => request with { Operation = LifecycleOperationKind.Rollback, ImageReference = null },
-            "signed" => request with { ImageReference = null, Release = "/srv/release" },
+            "signed-registry" => request with { ImageReference = null, Release = "/srv/release", ImageSource = ReleaseImageSource.Registry },
+            "signed-quarantine" => request with { ImageReference = null, Release = "/srv/release", AllowQuarantinedReadiness = true },
             _ => throw new InvalidOperationException()
         };
         Assert.ThrowsExactly<InstallUsageException>(request.Validate);

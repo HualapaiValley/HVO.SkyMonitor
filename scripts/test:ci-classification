@@ -47,12 +47,11 @@ expect_plan() {
 }
 
 expect_suites() {
-  local expected_catalog="$1" expected_shards="$2" expected_installer="$3"
-  local event_name="$4" base_sha="$5" head_sha="$6" output
+  local expected_catalog="$1" expected_installer="$2"
+  local event_name="$3" base_sha="$4" head_sha="$5" output
   output="$(cd "$work_root" && "$classifier" "$event_name" "$base_sha" "$head_sha")"
   for expectation in \
     "deployment_catalog=$expected_catalog" \
-    "deployment_shards=$expected_shards" \
     "deployment_installer=$expected_installer"; do
     grep -Fxq "$expectation" <<< "$output" || {
       printf 'Expected suite output %s, received %s\n' "$expectation" "$output" >&2
@@ -245,7 +244,7 @@ fast_reason() {
   grep -Fxq "docs_fast_path_reason=$reason" <<< "$result" || { printf 'Expected reason %s: %s\n' "$reason" "$result" >&2; exit 1; }
   ((fast_cases += 1))
 }
-for excluded in docs/upgrade-notes/0.9.1.md docs/generated/report.txt docs/evidence/report.txt docs/other/generated/report.txt docs/runbooks/development-v1-merge-queue-drill/verification.txt docs/UPPER.MD; do
+for excluded in docs/upgrade-notes/0.9.1.md docs/generated/report.txt docs/evidence/report.txt docs/other/generated/report.txt docs/runbooks/development-v1-merge-queue-drill/verification.txt docs/runbooks/cameraagent-silo-runtime.md docs/UPPER.MD; do
   git -C "$fast_root" reset -q --hard "$fast_base"
   mkdir -p "$fast_root/$(dirname "$excluded")"
   printf 'text\n' > "$fast_root/$excluded"
@@ -285,6 +284,40 @@ for link in "<None Include='../../../docs/runbooks/example.md' />" "<None Includ
   printf 'change\n' >> "$fast_root/docs/runbooks/example.md"
   git -C "$fast_root" commit -qam link-change
   fast_reason 'project inventory unavailable' "$link_base" "$(git -C "$fast_root" rev-parse HEAD)"
+done
+# Case-sensitive negative control for the Silo replacement runbook exemption (#2071):
+# is_fast_doc_path excludes only exact lowercase docs/runbooks/cameraagent-silo-runtime.md,
+# so audit_fast_inventory must accept only that exact case and reject case variants.
+for runbook_rel in \
+  "docs/runbooks/cameraagent-silo-runtime.md" \
+  "docs/runbooks/CameraAgent-Silo-Runtime.md" \
+  "DOCS/runbooks/cameraagent-silo-runtime.md"; do
+  git -C "$fast_root" reset -q --hard "$fast_base"
+  mkdir -p "$fast_root/$(dirname "$runbook_rel")"
+  printf '# Silo runtime\n' > "$fast_root/$runbook_rel"
+  printf '<Project><ItemGroup><None Include="../../%s" Link="Shared/silo.md" /></ItemGroup></Project>\n' "$runbook_rel" > "$fast_root/tests/Example/Example.csproj"
+  git -C "$fast_root" add . && git -C "$fast_root" commit -qm "runbook case $runbook_rel"
+  case_base="$(git -C "$fast_root" rev-parse HEAD)"
+  if [[ "$runbook_rel" == "docs/runbooks/cameraagent-silo-runtime.md" ]]; then
+    (cd "$fast_root" && "$classifier" --print-docs-inventory "$case_base") > "$fast_root/.git/runbook-inventory"
+    ((fast_cases += 1))
+  else
+    if (cd "$fast_root" && "$classifier" --print-docs-inventory "$case_base") > "$fast_root/.git/runbook-inventory" 2> "$fast_root/.git/runbook-error"; then
+      printf 'Case-variant runbook %s was erroneously exempted by docs inventory audit.\n' "$runbook_rel" >&2
+      exit 1
+    fi
+    grep -Fxq 'docs inventory audit: build input references eligible documentation' "$fast_root/.git/runbook-error" || {
+      printf 'Unexpected audit error for %s: %s\n' "$runbook_rel" "$(cat "$fast_root/.git/runbook-error")" >&2
+      exit 1
+    }
+    printf 'updated\n' >> "$fast_root/$runbook_rel"
+    git -C "$fast_root" commit -qam "edit case-variant $runbook_rel"
+    if [[ "$runbook_rel" == "docs/runbooks/CameraAgent-Silo-Runtime.md" ]]; then
+      fast_reason 'project inventory unavailable' "$case_base" "$(git -C "$fast_root" rev-parse HEAD)"
+    else
+      fast_reason 'path outside documentation allowlist' "$case_base" "$(git -C "$fast_root" rev-parse HEAD)"
+    fi
+  fi
 done
 # Relative imported items use the consuming project directory in MSBuild. The
 # audit refuses uncertainty, including partial directory globs.
@@ -742,6 +775,35 @@ if git -C "$repo_root" show "$real_base:scripts/ci:docs-inventory" > "$fast_root
 else
   printf 'Real inventory canary skipped: certificate not in committed HEAD.\n'
 fi
+# Real-repo regression (#2071): single-file edits to Deployment.Cli.Tests runtime inputs
+# (CameraAgent hvo-dark.css and the Silo replacement runbook) must never take the docs fast path
+# and must always select delivery=true so Deployment.Cli.Tests runs.
+for runtime_input in \
+  "src/HVO.SkyMonitor.CameraAgent/wwwroot/css/themes/hvo-dark.css" \
+  "docs/runbooks/cameraagent-silo-runtime.md"; do
+  runtime_index="$fast_root/.git/runtime-index-${runtime_input//\//_}"
+  GIT_INDEX_FILE="$runtime_index" git -C "$repo_root" read-tree "$real_base"
+  runtime_blob="$(printf 'runtime input mutation for %s\n' "$runtime_input" | git -C "$repo_root" hash-object -w --stdin)"
+  GIT_INDEX_FILE="$runtime_index" git -C "$repo_root" update-index --add --cacheinfo "100644,$runtime_blob,$runtime_input"
+  runtime_tree="$(GIT_INDEX_FILE="$runtime_index" git -C "$repo_root" write-tree)"
+  runtime_head="$(printf 'CI runtime input canary %s\n' "$runtime_input" | git -C "$repo_root" -c user.name='CI fixture' -c user.email=fixture@example.invalid commit-tree "$runtime_tree" -p "$real_base")"
+  runtime_fast_output="$(cd "$repo_root" && "$classifier" pull_request "$real_base" "$runtime_head" docs-fast-only)"
+  grep -Fxq 'docs_fast_path=false' <<< "$runtime_fast_output" || {
+    printf 'Real-repo runtime input %s qualified for docs fast path:\n%s\n' "$runtime_input" "$runtime_fast_output" >&2
+    exit 1
+  }
+  grep -Fxq 'docs_fast_path_reason=path outside documentation allowlist' <<< "$runtime_fast_output" || {
+    printf 'Real-repo runtime input %s had unexpected docs_fast_path_reason:\n%s\n' "$runtime_input" "$runtime_fast_output" >&2
+    exit 1
+  }
+  runtime_comp_output="$(cd "$repo_root" && "$classifier" pull_request "$real_base" "$runtime_head")"
+  grep -Fxq 'mode=full' <<< "$runtime_comp_output" &&
+    grep -Fxq 'delivery=true' <<< "$runtime_comp_output" || {
+    printf 'Real-repo runtime input %s did not select delivery=true:\n%s\n' "$runtime_input" "$runtime_comp_output" >&2
+    exit 1
+  }
+done
+printf 'Real-repo Deployment.Cli.Tests runtime input canaries passed (2 inputs).\n'
 )
 canary_commit="$(cat "$fast_root/.git/canary-commit")"
 if git -C "$repo_root" cat-file -e "$canary_commit^{commit}" 2>/dev/null; then
@@ -787,8 +849,8 @@ expect_components true true true true push "$base_sha" "$head_sha"
 expect_plan full true workflow_dispatch "$base_sha" "$head_sha"
 expect_components true true true true workflow_dispatch "$base_sha" "$head_sha"
 expect_components true true true true merge_group "$base_sha" "$head_sha"
-expect_suites true true true push "$base_sha" "$head_sha"
-expect_suites true true true workflow_dispatch "$base_sha" "$head_sha"
+expect_suites true true push "$base_sha" "$head_sha"
+expect_suites true true workflow_dispatch "$base_sha" "$head_sha"
 summary_file="$work_root/.git/classification-summary.md"
 (cd "$work_root" && GITHUB_STEP_SUMMARY="$summary_file" "$classifier" pull_request "$base_sha" "$head_sha" >/dev/null)
 grep -Fq 'Mode: **reduced**' "$summary_file"
@@ -1062,19 +1124,6 @@ verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Common/Environmental/Deliv
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Common/Transients/Candidate.cs"  full false false false true false
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Common/Modules/VirtualSky/Sky.cs" full false false false true false
 
-# Direct changes in projects awaiting removal still get the complete fallback.
-retired_project_directories=(
-  src/HVO.SkyMonitor.LogicHost
-  tests/HVO.SkyMonitor.LogicHost.Tests
-  tests/HVO.SkyMonitor.LogicHost.IntegrationTests
-  tests/HVO.SkyMonitor.LogicHost.TestInfrastructure
-  tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests
-  tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests
-)
-for project_directory in "${retired_project_directories[@]}"; do
-  verify_component_plan "$project_directory/RetainedProjectProbe.cs" full false true true true true
-done
-
 verify_component_plan "src/HVO.SkyMonitor.Deployment.Contracts/Installation.cs"        full true false false false true
 verify_component_plan "tests/HVO.SkyMonitor.Deployment.Cli.Tests/InstallerTests.cs"    full true false false false true
 verify_component_plan "tools/HVO.SkyMonitor.Deployment.ReleaseTool/Program.cs"         full true false false false true
@@ -1086,21 +1135,8 @@ verify_deployment_installer_path() {
   commit_file "$path"
   deployment_head="$(git -C "$work_root" rev-parse HEAD)"
   expect_plan full true pull_request "$deployment_base" "$deployment_head"
-  expect_suites false false true pull_request "$deployment_base" "$deployment_head"
+  expect_suites false true pull_request "$deployment_base" "$deployment_head"
 }
-
-# Typed preflight ownership must retain both shard and installer selection (#1593).
-verify_preflight_owner_path() {
-  local path="$1" deployment_base deployment_head
-  deployment_base="$(git -C "$work_root" rev-parse HEAD)"
-  commit_file "$path"
-  deployment_head="$(git -C "$work_root" rev-parse HEAD)"
-  expect_plan full true pull_request "$deployment_base" "$deployment_head"
-  expect_suites false true true pull_request "$deployment_base" "$deployment_head"
-}
-verify_preflight_owner_path "src/HVO.SkyMonitor.Deployment.Cli/SplitHost/SplitHostPreflight.cs"
-verify_preflight_owner_path "src/HVO.SkyMonitor.Deployment.Contracts/PreflightContracts.cs"
-verify_preflight_owner_path "tests/HVO.SkyMonitor.Deployment.Cli.Tests/PreflightTests.cs"
 
 # Release-shell validation changes must select the tests that execute their gates even when no .NET path changes.
 verify_deployment_installer_path "scripts/release:cameraagent-publish"
@@ -1122,13 +1158,11 @@ verify_deployment_installer_path "src/HVO.SkyMonitor.TerminalUi/TerminalText.cs"
 # Deployment inputs that are not project directories keep their independent
 # deployment-contract selection and otherwise stay on the complete matrix,
 # because test code reads several of them from the repository root at run time.
-verify_component_plan "deploy/split-host/compose.logichost.yml"                        full true true true true true
-verify_component_plan "deploy/sql/logichost-runtime-role.sql"                          full true true true true true
+verify_component_plan "deploy/split-host/compose.cameraagent.yml"                        full true true true true true
 verify_component_plan "deploy/split-host/camera-modules/allsky01.virtual-asi676mc.full.json" full true true true true true
 verify_component_plan "docs/catalog/hyg-v42-license.md"                                full false true true true true
 verify_component_plan "docs/catalog/hyg-v44-attribution.md"                            full false true true true true
 verify_component_plan "scripts/catalog/hyg-v44-common.sh"                              full true true true true true
-verify_component_plan "scripts/deploy/product-layout.sh"                               full true true true true true
 verify_component_plan "scripts/catalog/install-hyg-v42.sh"                             full true true true true true
 
 # A source compiled into an active project through an MSBuild <Compile Include>
@@ -1185,9 +1219,6 @@ for link_record in "${link_records[@]}"; do
   linked_source="${link_record#*|}"
   [[ -n "$including_project" && -n "$linked_source" ]] || continue
   [[ "$linked_source" != *.csproj ]] || continue
-  if printf '%s\n' "${retired_project_directories[@]##*/}" | grep -Fx -- "$including_project" >/dev/null; then
-    continue
-  fi
   # A wildcard include cannot name one repository path. Prove its directory
   # already fails closed instead of assuming it.
   if [[ "$linked_source" == *'*'* || "$linked_source" == *'?'* ]]; then
@@ -1323,7 +1354,7 @@ complete_matrix_paths=(
   "tests/Example.Tests/ExampleTests.cs"
   "tests/fixtures/frames/sample.bin"
   "tests/fixtures/catalog/hyg-v42-bright-stars.sqlite"
-  "docs/validation/central-transient-fault-matrix.json"
+  "docs/validation/cameraagent-transient-fault-matrix.json"
   "tools/asi-capture/capture.sh"
   "docker/local/Dockerfile"
 )
@@ -1334,14 +1365,12 @@ for path in "${complete_matrix_paths[@]}"; do
   expect_components true true true true pull_request "$component_base" "$component_head"
 done
 
-# The retired UI suite was the only project that copied this historical input.
-verify_component_plan "docs/validation/logichost-ui-runtime-signals.json" reduced false false false false false
 verify_component_plan "changelog.d/camera-setup.fixed.md" reduced false false false false false
 verify_component_plan "changelog.d/123.unknown.md" full false true true true true
 
 # An unknown including project still widens a CameraAgent file to the complete
-# matrix, even if the project name resembles one of the retired projects.
-unknown_project="HVO.SkyMonitor.CameraAgent.LogicHost.Unclassified"
+# matrix, even if the project name resembles an active CameraAgent project.
+unknown_project="HVO.SkyMonitor.CameraAgent.Unclassified"
 mkdir -p "$work_root/tests/$unknown_project"
 printf '<Project><ItemGroup><Compile Include="../../%s" /></ItemGroup></Project>\n' "$linked_cameraagent_source" \
   > "$work_root/tests/$unknown_project/$unknown_project.csproj"
@@ -1350,10 +1379,8 @@ git -C "$work_root" commit --quiet -m 'Add an unclassified project that links a 
 verify_component_plan "$linked_cameraagent_source" full false true true true true
 
 # CameraAgent Dockerfile and configuration changes stay in their component lane.
-# The retained LogicHost Dockerfile uses the fallback. Both select deployment contracts.
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent/Dockerfile"                    full true false false true false
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent/cameraagent.sample.json"       full true false false true false
-verify_component_plan "src/HVO.SkyMonitor.LogicHost/Dockerfile"                      full true true true true true
 
 # A mixed diff unions every affected lane.
 base_sha="$(git -C "$work_root" rev-parse HEAD)"
@@ -1373,18 +1400,8 @@ expect_components false false true false pull_request "$base_sha" "$head_sha"
 deployment_paths=(
   ".env.template"
   "docker-compose.apps.yml"
-  "scripts/deploy:environment"
-  "scripts/deploy/common.sh"
-  "scripts/test:deploy-environment"
-  "scripts/deploy-contracts/smoke.sh"
-  "scripts/lib/deploy-test-lifecycle.sh"
-  "scripts/test:deploy-environment-cli"
   "scripts/test:deployment-installer"
   "scripts/test:deployment-installer-qualification"
-  "scripts/test:deployment-logichost-outage-contract"
-  "scripts/test:deployment-normal-flow-contract"
-  "scripts/qualify:filesystem-object-store"
-  "scripts/test:filesystem-object-store-qualification"
   "scripts/qualify:silo-runtime"
   "scripts/test:silo-runtime-qualification"
   "scripts/catalog:install"
@@ -1392,8 +1409,6 @@ deployment_paths=(
   "deploy/acceptance/cameraagent-dual-standalone-smoke/compose.yml"
   "deploy/hvo-docker/README.md"
   "deploy/hvo-docker/docker-compose.shared-services.yml"
-  "deploy/split-host/workloads/canonical-workloads.json"
-  "deploy/sql/logichost-runtime-role.sql"
   "tests/fixtures/catalog/hyg-v42-bright-stars.sqlite"
   "src/HVO.SkyMonitor.Deployment.Cli/Program.cs"
   "tests/HVO.SkyMonitor.Deployment.Distribution.Tests/ReleaseAssetsToolTests.cs"
@@ -1409,37 +1424,28 @@ for path in "${deployment_paths[@]}"; do
 done
 
 verify_targeted_suites() {
-  local path="$1" expected_catalog="$2" expected_shards="$3" expected_installer="$4"
+  local path="$1" expected_catalog="$2" expected_installer="$3"
   local targeted_base targeted_head
   targeted_base="$(git -C "$work_root" rev-parse HEAD)"
   update_file "$path"
   targeted_head="$(git -C "$work_root" rev-parse HEAD)"
   expect_plan full true pull_request "$targeted_base" "$targeted_head"
-  expect_suites "$expected_catalog" "$expected_shards" "$expected_installer" \
+  expect_suites "$expected_catalog" "$expected_installer" \
     pull_request "$targeted_base" "$targeted_head"
 }
 
-verify_targeted_suites ".github/workflows/ci.yml" true true true
-verify_targeted_suites ".github/workflows/release.yml" true false true
-verify_targeted_suites ".github/workflows/prerelease.yml" true false true
-verify_targeted_suites ".github/workflows/release-image.yml" true false true
-verify_targeted_suites "scripts/catalog/install-hyg-v42.sh" true true false
-verify_targeted_suites "scripts/ci:component-build" true true true
-verify_targeted_suites "tests/fixtures/catalog/hyg-v42-bright-stars.sqlite" true true false
-verify_targeted_suites "scripts/infra:operation-lock" true true false
-verify_targeted_suites "scripts/deploy/common.sh" false true false
-verify_targeted_suites "scripts/deploy/product-layout.sh" false true false
-verify_targeted_suites "scripts/test:deploy-environment" false true false
-# A shard body extracted from the harness (#875 stage 2) is the same contract input.
-verify_targeted_suites "scripts/deploy-contracts/smoke.sh" false true false
-verify_targeted_suites "scripts/lib/deploy-test-lifecycle.sh" false true true
-verify_targeted_suites "scripts/test:deployment-installer" false false true
-verify_targeted_suites "scripts/test:deployment-installer-qualification" false false true
-verify_targeted_suites "scripts/test:deployment-normal-flow-contract" false false false
-verify_targeted_suites "scripts/qualify:filesystem-object-store" false false false
-verify_targeted_suites "scripts/test:filesystem-object-store-qualification" false false false
-verify_targeted_suites "scripts/qualify:silo-runtime" false false false
-verify_targeted_suites "scripts/test:silo-runtime-qualification" false false false
+verify_targeted_suites ".github/workflows/ci.yml" true true
+verify_targeted_suites ".github/workflows/release.yml" true true
+verify_targeted_suites ".github/workflows/prerelease.yml" true true
+verify_targeted_suites ".github/workflows/release-image.yml" true true
+verify_targeted_suites "scripts/catalog/install-hyg-v42.sh" true false
+verify_targeted_suites "scripts/ci:component-build" true true
+verify_targeted_suites "tests/fixtures/catalog/hyg-v42-bright-stars.sqlite" true false
+verify_targeted_suites "scripts/infra:operation-lock" true false
+verify_targeted_suites "scripts/test:deployment-installer" false true
+verify_targeted_suites "scripts/test:deployment-installer-qualification" false true
+verify_targeted_suites "scripts/qualify:silo-runtime" false false
+verify_targeted_suites "scripts/test:silo-runtime-qualification" false false
 
 # The complete fallback matrix.
 base_sha="$(git -C "$work_root" rev-parse HEAD)"
@@ -1524,7 +1530,7 @@ esac
 EOF
 chmod +x "$work_root/fake-bin/git"
 
-expected_fail_closed=$'mode=full\ndeployment=true\ndeployment_catalog=true\ndeployment_shards=true\ndeployment_installer=true\ncomplete=true\nshared=true\ncameraagent=true\ndelivery=true\nsecret_scan_contract=true\nrelease_scripts=true\ncatalog_recipe=true'
+expected_fail_closed=$'mode=full\ndeployment=true\ndeployment_catalog=true\ndeployment_installer=true\ncomplete=true\nshared=true\ncameraagent=true\ndelivery=true\nsecret_scan_contract=true\nrelease_scripts=true\ncatalog_recipe=true'
 for fake_case in malformed unterminated empty-path failure; do
   if [[ "$fake_case" == failure ]]; then fake_failure=true; else fake_failure=false; fi
   PATH="$work_root/fake-bin:$PATH" REAL_GIT="$real_git" FAKE_GIT_DIFF_FAILURE="$fake_failure" FAKE_GIT_DIFF_SHAPE="$fake_case" \
@@ -1839,11 +1845,7 @@ done
 printf 'Required CI SIGPIPE regression passed: 6 iterations (3 plan, 3 result); shim fired for each.\n'
 
 # Workflow shape.
-grep -Fq "if: needs.changes.outputs.mode == 'full' && github.event_name == 'workflow_dispatch'" "$workflow" || {
-  printf 'Historical Phase 14 acceptance must remain manual-dispatch only.\n' >&2
-  exit 1
-}
-for suite in catalog shards installer; do
+for suite in catalog installer; do
   grep -Fq "if: needs.changes.outputs.deployment_$suite == 'true'" "$workflow" || {
     printf 'Exhaustive deployment suite is not controlled by its classifier output: %s\n' "$suite" >&2
     exit 1
@@ -1868,10 +1870,6 @@ extract_workflow_job() {
 }
 
 deployment_job="$(extract_workflow_job deployment-contracts)"
-grep -Fq './scripts/test:filesystem-object-store-qualification' <<< "$deployment_job" || {
-  printf 'Deployment Contracts must run the filesystem object-store qualification fixture.\n' >&2
-  exit 1
-}
 grep -Fq './scripts/test:silo-runtime-qualification' <<< "$deployment_job" || {
   printf 'Deployment Contracts must run the stock Silo qualifier containment test.\n' >&2
   exit 1
@@ -2312,6 +2310,36 @@ grep -Fxq '  workflow_call:' "$repo_root/.github/workflows/ci.yml" || {
   printf 'The CI workflow must be callable by the release workflow.\n' >&2
   exit 1
 }
+
+# Development v1 Deployment.Cli.Tests path-filtering contract (#2071):
+# CameraAgent-only PRs select neither complete, delivery, nor deployment, so v1 PRs
+# can skip Deployment.Cli.Tests; deployment-contract paths under CameraAgent, sources
+# linked into Deployment.Cli(.Tests), shared libraries, build/workflow/coverage contracts,
+# and all merge_group/push events must keep Deployment.Cli.Tests selected.
+verify_component_plan "src/HVO.SkyMonitor.CameraAgent/Dockerfile"                       full true false false true false
+verify_component_plan "src/HVO.SkyMonitor.CameraAgent/cameraagent.sample.json"          full true false false true false
+verify_component_plan "src/HVO.SkyMonitor.CameraAgent/virtual-asi174.full.json"         full true false false true false
+verify_component_plan "src/HVO.SkyMonitor.CameraAgent/virtual-asi178mc.full.json"       full true false false true false
+verify_component_plan "src/HVO.SkyMonitor.CameraAgent/Configuration/OwnerPasswordFileText.cs" full false false false true true
+verify_component_plan "src/HVO.SkyMonitor.CameraAgent/Configuration/LocalIdentityOptions.cs"  full false false false true true
+verify_component_plan "src/HVO.SkyMonitor.CameraAgent/wwwroot/css/themes/hvo-dark.css"        full false false false true true
+verify_component_plan "docs/runbooks/cameraagent-silo-runtime.md"                             full false true true true true
+verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Common/DeploymentLocation/RetainedIntegrityFormat.cs" full false false false true true
+verify_component_plan "Directory.Build.targets"                                         full false true true true true
+verify_component_plan ".github/workflows/development-v1.yml"                            full false true true true true
+verify_component_plan "scripts/coverage:development-v1"                                 full false true true true true
+verify_component_plan "scripts/coverage/Program.cs"                                     full false true true true true
+verify_component_plan "scripts/coverage/UnitCoverageInputs.cs"                          full false true true true true
+verify_component_plan "tests/unit-test-projects.json"                                   full false true true true true
+ca_only_base="$(git -C "$work_root" rev-parse HEAD)"
+update_file "src/HVO.SkyMonitor.CameraAgent/Components/Home.razor"
+ca_only_head="$(git -C "$work_root" rev-parse HEAD)"
+expect_plan full false pull_request "$ca_only_base" "$ca_only_head"
+expect_components false false true false pull_request "$ca_only_base" "$ca_only_head"
+expect_plan full true merge_group "$ca_only_base" "$ca_only_head"
+expect_components true true true true merge_group "$ca_only_base" "$ca_only_head"
+expect_plan full true push "$ca_only_base" "$ca_only_head"
+expect_components true true true true push "$ca_only_base" "$ca_only_head"
 
 printf 'Secret scan contract classification passed: %d cases.\n' "$secret_scan_contract_cases"
 printf 'Release script classification passed: %d cases.\n' "$release_scripts_cases"

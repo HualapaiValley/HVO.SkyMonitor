@@ -49,7 +49,7 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
     protected override async Task OnInitializedAsync()
     {
         _from = string.IsNullOrWhiteSpace(From) ? null : From.Trim();
-        if (_from is null && Section is "scene-overlay" or "constellations" or "frame-facts" or "weather-cloud-overlay" or "cloud-assessment" or "calibration" or "projected-scene" or "legacy-annotation" or "cloud-layer" or "environment-layer" or "overlay-manifest" or "predicted-satellite-layer")
+        if (_from is null && Section is "scene-overlay" or "constellations" or "frame-facts" or "weather-cloud-overlay" or "cloud-assessment" or "regional-stellar-visibility" or "calibration" or "projected-scene" or "legacy-annotation" or "cloud-layer" or "environment-layer" or "overlay-manifest" or "predicted-satellite-layer")
         {
             var registry = await GraphService.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false);
             if (registry.Kind == OperatorUiResultKind.Unauthorized)
@@ -187,6 +187,7 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
             "VirtualSkyCloudObservation" => "simulated-cloud-observations",
             "WeatherCloudOverlay" => "weather-cloud-overlay",
             "CloudAssessment" => "cloud-assessment",
+            RegionalStellarVisibilityProducts.StepAlias => "regional-stellar-visibility",
             "Calibration" => "calibration",
             "RollingCombination" => "rolling-combination",
             "ProjectedScene" => "projected-scene",
@@ -227,6 +228,12 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
             return;
         }
         _model.AddNode(_newType);
+        FormChanged();
+    }
+
+    private void NodeConfigurationChanged(ProcessingGraphDraftModel.NodeRow node)
+    {
+        _model.EnsureRegionalVisibilityWiring(node);
         FormChanged();
     }
 

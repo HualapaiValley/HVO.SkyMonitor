@@ -7,8 +7,8 @@ in a full-screen terminal interface (`hvo-sky ui`). It talks to
 CameraAgent's operations API over HTTP with an owner API key. It never reaches into CameraAgent's process, its
 containers or its databases, and it needs no `sudo`.
 
-The installer, `hvo-sky-install`, owns the lifecycle: install, upgrade, rollback and uninstall
-([deployment-installer.md](deployment-installer.md)). `hvo-sky` owns the runtime. RoofController's `hvo-roof` is the
+The installer, `hvo-sky-install`, handles installation, upgrade, pending-upgrade recovery and uninstall
+([deployment-installer.md](deployment-installer.md#cameraagent-lifecycle)). `hvo-sky` owns the runtime. RoofController's `hvo-roof` is the
 same kind of client, and `hvo-sky` follows it where the contract agrees.
 
 ## Install
@@ -19,8 +19,7 @@ carries it for both platforms, as `hvo-sky-linux-arm64` and `hvo-sky-linux-x64` 
 `cameraagent install` or `upgrade` verifies the host platform's file against `release.json` and `SHA256SUMS` and
 installs it as `hvo-sky`, mode `0755`. It tries `~/.local/bin` first, then `/usr/local/bin` only when the runtime user
 can write there without sudo. Include the chosen folder in your shell's PATH; `--plan` lists the exact destination.
-Upgrade replaces a stale copy and keeps it as `hvo-sky.previous`; rollback restores the image's retained verified
-client without downloading it again. Uninstall removes the recorded client and its previous copy when no other
+Upgrade replaces a stale copy and keeps it as `hvo-sky.previous`. Uninstall removes the recorded client and its previous copy when no other
 installed instance uses that path. Purge also removes the installer's last-owner copies. A file changed outside the
 installer is preserved and reported rather than deleted. The same applies before replacing either the current file
 or `.previous`; an unowned recovery copy is never silently overwritten. Destination folders and ancestors must be

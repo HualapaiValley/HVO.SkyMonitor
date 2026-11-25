@@ -1,13 +1,18 @@
+using System.Collections.Immutable;
+using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
+using System.Runtime.ExceptionServices;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 
 namespace HVO.SkyMonitor.Tests;
 
 [TestClass]
-public sealed class ArchitectureBoundaryTests
+public sealed partial class ArchitectureBoundaryTests
 {
     public TestContext TestContext { get; set; } = null!;
     private const string AgentCore = "HVO.SkyMonitor.AgentCore";
@@ -29,7 +34,6 @@ public sealed class ArchitectureBoundaryTests
     private const string ProcessingRunnerContracts = "HVO.SkyMonitor.ProcessingRunner.Contracts";
     private const string ProcessingRunner = "HVO.SkyMonitor.ProcessingRunner";
     private const string CameraAgent = "HVO.SkyMonitor.CameraAgent";
-    private const string LogicHost = "HVO.SkyMonitor.LogicHost";
     private const string DeploymentContracts = "HVO.SkyMonitor.Deployment.Contracts";
     private const string DeploymentCli = "HVO.SkyMonitor.Deployment.Cli";
 
@@ -38,13 +42,15 @@ public sealed class ArchitectureBoundaryTests
     private const string TerminalUi = "HVO.SkyMonitor.TerminalUi";
 
     // Host-neutral filesystem primitives (#592): mechanisms only, references nothing, consumed
-    // by the LogicHost filesystem provider (#585) and later CameraAgent.Common (#587). Its
+    // by CameraAgent.Common and Video.FFmpeg. Its
     // dependency rule is asserted by StorageFileSystemBoundaryIsNarrowWhenPresent.
     private const string StorageFileSystem = "HVO.SkyMonitor.Storage.FileSystem";
     private const string TestSupport = "HVO.SkyMonitor.TestSupport";
     private const string FixtureCatalogSha256 = "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840";
 
     private static readonly string[] ProjectSearchDirectories = ["src", "tests", "scripts", "tools"];
+
+    private static readonly IReadOnlySet<string> HostProjects = Set(CameraAgent, CameraAgentReplayRunner, ProcessingRunner);
 
     private static readonly string[] SupportedConfigurations = ["Debug", "Release"];
 
@@ -59,8 +65,6 @@ public sealed class ArchitectureBoundaryTests
         "Moq",
         "bunit"
     ];
-
-    private static readonly Lazy<RepositoryGraph> Repository = new(RepositoryGraph.Load);
 
     private static readonly IReadOnlyDictionary<string, IReadOnlySet<string>> AllowedProductionReferences =
         new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal)
@@ -82,7 +86,6 @@ public sealed class ArchitectureBoundaryTests
             [ProcessingRunnerContracts] = Set(AgentCore, Processing),
             [ProcessingRunner] = Set(AgentCore, Processing, ProcessingRunnerContracts),
             [CameraAgent] = Set(CameraAgentCommon, CameraAgentZwo, Catalog, Common),
-            [LogicHost] = Set(AgentCore, Astronomy, Imaging, Processing, VideoFFmpeg, ProcessingRunnerContracts, FleetContracts, Catalog, Common, StorageFileSystem),
             [DeploymentContracts] = Set(),
             [TerminalUi] = Set(),
             // The installer verifies releases by release.json and SHA256SUMS (#1309); no project holds a signing trust
@@ -130,7 +133,7 @@ public sealed class ArchitectureBoundaryTests
     [TestCategory("Unit")]
     public void CustomScriptsAndOffSweepWorkerReferenceNoCaptureOrAcquisitionServices()
     {
-        var result = CompiledDependencyChecker.Check(ProductionAssembly(Repository.Value.Projects[CameraAgentCommon]),
+        var result = snapshot.ProductionAssembly(snapshot.Graph.Projects[CameraAgentCommon]).Check(
             CustomScriptOrOffSweepOwner, CompiledDependencyChecker.CaptureOrAcquisition);
         Assert.IsTrue(result.SelectedTypes.Any(type => type.Type.Name == "CustomScriptTaskAdapter"));
         Assert.IsTrue(result.SelectedTypes.Any(type => type.Type.Name == "LocalAutomationOffSweepWorker"));
@@ -145,7 +148,7 @@ public sealed class ArchitectureBoundaryTests
     [TestCategory("Unit")]
     public void CustomScriptAcquisitionRuleRejectsDependenciesOutsideCameraAgentCommon()
     {
-        var result = CompiledDependencyChecker.Check(typeof(ArchitectureBoundaryTests).Assembly.Location,
+        var result = snapshot.TestAssembly.Check(
             type => CustomScriptOrOffSweepOwner(type) && type.Type.Name == "ScriptBoundaryDependencyControl",
             CompiledDependencyChecker.CaptureOrAcquisition);
         Assert.AreEqual(1, result.TypesChecked);
@@ -171,7 +174,7 @@ public sealed class ArchitectureBoundaryTests
     [TestCategory("Unit")]
     public void Repository_EmbedsNoReleaseSigningTrustRoot()
     {
-        var root = RepositoryGraph.FindRepositoryRoot();
+        var root = snapshot.Root;
         var keys = ShippedSourceRoots
             .SelectMany(directory => Directory.EnumerateFiles(Path.Combine(root, directory), "*.pem", SearchOption.AllDirectories))
             .Select(path => Path.GetRelativePath(root, path))
@@ -179,7 +182,7 @@ public sealed class ArchitectureBoundaryTests
         Assert.IsEmpty(keys, string.Join(", ", keys));
         Assert.DoesNotContain(
             "HVO.SkyMonitor.Deployment.Distribution/",
-            File.ReadAllText(Path.Combine(root, "HVO.SkyMonitor.v9.slnx")),
+            snapshot.Source(Path.Combine(root, "HVO.SkyMonitor.v9.slnx")).Text,
             StringComparison.Ordinal);
     }
 
@@ -187,12 +190,12 @@ public sealed class ArchitectureBoundaryTests
     [TestCategory("Unit")]
     public void SpaceWeatherFactsReferenceNoHostHttpOrPersistenceNamespace()
     {
-        var repository = Repository.Value;
+        var repository = snapshot.Graph;
         var project = repository.Projects[Processing];
         Assert.IsTrue(project.References.All(reference => reference is AgentCore or Astronomy or Imaging));
         Assert.IsEmpty(project.FrameworkReferences);
         Assert.IsEmpty(project.PackageReferences);
-        var result = CompiledDependencyChecker.Check(ProductionAssembly(project), type => CompiledDependencyChecker.SpaceWeather(type.Type), CompiledDependencyChecker.HostHttpOrPersistence);
+        var result = snapshot.ProductionAssembly(project).Check(type => CompiledDependencyChecker.SpaceWeather(type.Type), CompiledDependencyChecker.HostHttpOrPersistence);
         Assert.IsGreaterThan(0, result.TypesChecked);
         Assert.IsEmpty(result.Violations, string.Join(Environment.NewLine, result.Violations));
     }
@@ -201,8 +204,8 @@ public sealed class ArchitectureBoundaryTests
     [TestCategory("Unit")]
     public void SpaceWeatherHostWorkflowReferencesNoDeliveryOrEnvironmentalSource()
     {
-        var project = Repository.Value.Projects[CameraAgentCommon];
-        var result = CompiledDependencyChecker.Check(ProductionAssembly(project),
+        var project = snapshot.Graph.Projects[CameraAgentCommon];
+        var result = snapshot.ProductionAssembly(project).Check(
             type => type.Type.Namespace.StartsWith("HVO.SkyMonitor.CameraAgent.Common.SpaceWeather", StringComparison.Ordinal),
             type => new[] { "Outbox", "Delivery", "Notification", "IEnvironmentalSource" }.Any(word =>
                 type.Namespace.Contains(word, StringComparison.Ordinal) || type.Name.Contains(word, StringComparison.Ordinal)));
@@ -214,7 +217,7 @@ public sealed class ArchitectureBoundaryTests
     [TestCategory("Unit")]
     public void SpaceWeatherEndpointsReferenceOnlyTheOperationsContract()
     {
-        var result = CompiledDependencyChecker.Check(ProductionAssembly(Repository.Value.Projects[CameraAgent]),
+        var result = snapshot.ProductionAssembly(snapshot.Graph.Projects[CameraAgent]).Check(
             type => type.Type.Name.StartsWith("CameraAgentSpaceWeatherOperationsEndpoints", StringComparison.Ordinal),
             type => type.Namespace.StartsWith("HVO.SkyMonitor.CameraAgent.Common.SpaceWeather", StringComparison.Ordinal)
                 && !type.Name.StartsWith("SpaceWeatherOperations", StringComparison.Ordinal));
@@ -226,25 +229,16 @@ public sealed class ArchitectureBoundaryTests
     [TestCategory("Unit")]
     public void CaptureRawIngressAndRecipesReferenceNoSpaceWeatherFacts()
     {
-        var checkedCount = 0;
-        var violations = new List<string>();
-        var sourceOwners = ReviewedCaptureOrRecipeFiles();
-        foreach (var project in Repository.Value.Projects.Values.Where(p => p.Kind == ProjectKind.Production))
-        {
-            var result = CompiledDependencyChecker.Check(ProductionAssembly(project),
-                type => CompiledDependencyChecker.CaptureOrRecipe(type, sourceOwners), CompiledDependencyChecker.SpaceWeather);
-            checkedCount += result.TypesChecked;
-            violations.AddRange(result.Violations);
-        }
-        Assert.IsGreaterThan(0, checkedCount);
-        Assert.IsEmpty(violations, string.Join(Environment.NewLine, violations));
+        var result = snapshot.CaptureOrRecipe;
+        Assert.IsGreaterThan(0, result.TypesChecked);
+        Assert.IsEmpty(result.Violations, string.Join(Environment.NewLine, result.Violations));
     }
 
     [TestMethod]
     [TestCategory("Unit")]
     public void SpaceWeatherMetadataRuleRejectsInternalFileCall()
     {
-        var result = CompiledDependencyChecker.Check(typeof(ArchitectureBoundaryTests).Assembly.Location,
+        var result = snapshot.TestAssembly.Check(
             type => CompiledDependencyChecker.SpaceWeather(type.Type) && type.Type.Name == "FileDependencyControl", CompiledDependencyChecker.HostHttpOrPersistence);
         Assert.AreEqual(1, result.TypesChecked);
         Assert.IsTrue(result.Violations.Any(v => v.Contains("System.IO.File", StringComparison.Ordinal)));
@@ -254,7 +248,7 @@ public sealed class ArchitectureBoundaryTests
     [TestCategory("Unit")]
     public void CaptureMetadataRuleRejectsGlobalImportAndSameAssemblyTypeDefinition()
     {
-        var result = CompiledDependencyChecker.Check(typeof(ArchitectureBoundaryTests).Assembly.Location,
+        var result = snapshot.TestAssembly.Check(
             type => CompiledDependencyChecker.CaptureOrRecipe(type.Type) && type.Type.Name == "GlobalImportDependencyControl", CompiledDependencyChecker.SpaceWeather);
         Assert.AreEqual(1, result.TypesChecked);
         Assert.IsTrue(result.Violations.Any(v => v.Contains("SpaceWeather.SwpcMessageRecord", StringComparison.Ordinal)));
@@ -264,7 +258,7 @@ public sealed class ArchitectureBoundaryTests
     [TestCategory("Unit")]
     public void SpaceWeatherMetadataRuleCoversBaseSignaturesAndAttributeArguments()
     {
-        var result = CompiledDependencyChecker.Check(typeof(ArchitectureBoundaryTests).Assembly.Location,
+        var result = snapshot.TestAssembly.Check(
             type => CompiledDependencyChecker.SpaceWeather(type.Type) && type.Type.Name == "SignatureDependencyControl", CompiledDependencyChecker.HostHttpOrPersistence);
         Assert.AreEqual(1, result.TypesChecked);
         foreach (var name in new[] { "System.IO.MemoryStream", "System.IO.FileInfo", "System.IO.DirectoryInfo", "System.IO.BinaryReader", "System.Net.Http.HttpClient" })
@@ -275,17 +269,17 @@ public sealed class ArchitectureBoundaryTests
     [TestCategory("Unit")]
     public void CaptureOrRecipeSelectionCoversReviewedSourceFiles()
     {
-        var files = ReviewedCaptureOrRecipeFiles();
-        var selected = SelectedCaptureOrRecipeTypes(files);
+        var files = snapshot.ReviewedCaptureOrRecipeFiles;
+        var selected = snapshot.CaptureOrRecipe.SelectedTypes;
         var covered = files.Where(file => selected.Any(type => type.Documents.Contains(file))).ToArray();
         // Conservative declaration detection: an ambiguous keyword stays required,
         // so a source file cannot silently disappear from the parity assertion.
         var excluded = files.Except(covered).Where(file => !System.Text.RegularExpressions.Regex.IsMatch(
-            MaskCSharpCommentsAndLiterals(File.ReadAllText(file)), @"\b(?:class|struct|interface|enum|record|delegate)\b")).ToArray();
+            snapshot.Source(file).MaskedText, @"\b(?:class|struct|interface|enum|record|delegate)\b")).ToArray();
         TestContext.WriteLine($"Reviewed source set={files.Count}; covered={covered.Length}; excluded without types={excluded.Length}");
-        foreach (var file in excluded) TestContext.WriteLine($"Excluded without types: {Path.GetRelativePath(Repository.Value.Root, file)}");
+        foreach (var file in excluded) TestContext.WriteLine($"Excluded without types: {Path.GetRelativePath(snapshot.Graph.Root, file)}");
         Assert.IsGreaterThan(0, files.Count);
-        var missing = files.Except(covered).Except(excluded).Select(file => Path.GetRelativePath(Repository.Value.Root, file)).ToArray();
+        var missing = files.Except(covered).Except(excluded).Select(file => Path.GetRelativePath(snapshot.Graph.Root, file)).ToArray();
         Assert.IsEmpty(missing, "Reviewed source owners absent from compiled selection: " + string.Join(", ", missing));
     }
 
@@ -293,13 +287,13 @@ public sealed class ArchitectureBoundaryTests
     [TestCategory("Unit")]
     public void CaptureOrRecipeSelectionIncludesReviewedNamedOwners()
     {
-        var selected = SelectedCaptureOrRecipeTypes(ReviewedCaptureOrRecipeFiles());
-        foreach (var name in new[] { "LogicHostRecipeExecutionAdapter", "CentralDerivativeRecipeCatalog" })
+        var selected = snapshot.CaptureOrRecipe.SelectedTypes;
+        foreach (var name in new[] { "ProcessingRecipeExecutor", "MeasuredStellarAssociationCaptureProcessingStep" })
         {
             Assert.IsTrue(selected.Any(type => type.Type.Name == name), name);
             TestContext.WriteLine($"Selected named owner: {name}");
         }
-        var schedulePath = Path.Combine(Repository.Value.Root, "src", CameraAgentCommon, "Scheduling", "CaptureScheduleEngine.cs");
+        var schedulePath = Path.Combine(snapshot.Graph.Root, "src", CameraAgentCommon, "Scheduling", "CaptureScheduleEngine.cs");
         var scheduleTypes = selected.Where(type => type.Documents.Contains(schedulePath)).ToArray();
         Assert.IsNotEmpty(scheduleTypes);
         foreach (var type in scheduleTypes) TestContext.WriteLine($"Selected schedule owner: {type.Type.Namespace}.{type.Type.Name}");
@@ -313,10 +307,10 @@ public sealed class ArchitectureBoundaryTests
     [TestCategory("Unit")]
     public void CaptureMetadataRuleRejectsSourcePathOnlyOwnersIncludingBodylessAndNestedTypes()
     {
-        var file = Path.Combine(Repository.Value.Root, "tests", "HVO.SkyMonitor.Architecture.Tests", "RecipeOwnershipControls.cs");
+        var file = Path.Combine(snapshot.Graph.Root, "tests", "HVO.SkyMonitor.Architecture.Tests", "RecipeOwnershipControls.cs");
         var sourceOwners = new HashSet<string>(StringComparer.Ordinal) { file };
-        Assert.IsTrue(ReviewedCaptureOrRecipeFile(file));
-        var result = CompiledDependencyChecker.Check(typeof(ArchitectureBoundaryTests).Assembly.Location,
+        Assert.IsTrue(ReviewedCaptureOrRecipeFile(snapshot.Source(file)));
+        var result = snapshot.TestAssembly.Check(
             type => type.Type.Namespace == "HVO.SkyMonitor.Tests.Flat" && type.Documents.Contains(file)
                 && CompiledDependencyChecker.CaptureOrRecipe(type, sourceOwners), CompiledDependencyChecker.SpaceWeather);
         Assert.AreEqual(3, result.TypesChecked);
@@ -333,10 +327,10 @@ public sealed class ArchitectureBoundaryTests
     [TestCategory("Unit")]
     public void CaptureMetadataRuleRejectsTypeNameOnlyOwner()
     {
-        var file = Path.Combine(Repository.Value.Root, "tests", "HVO.SkyMonitor.Architecture.Tests", "BoundaryNameControl.cs");
-        Assert.IsFalse(ReviewedCaptureOrRecipeFile(file));
-        var sourceOwners = ReviewedCaptureOrRecipeFiles();
-        var result = CompiledDependencyChecker.Check(typeof(ArchitectureBoundaryTests).Assembly.Location,
+        var file = Path.Combine(snapshot.Graph.Root, "tests", "HVO.SkyMonitor.Architecture.Tests", "BoundaryNameControl.cs");
+        Assert.IsFalse(ReviewedCaptureOrRecipeFile(snapshot.Source(file)));
+        var sourceOwners = snapshot.ReviewedCaptureOrRecipeFiles;
+        var result = snapshot.TestAssembly.Check(
             type => type.Type.Name == "RecipeNameDependencyControl" && CompiledDependencyChecker.CaptureOrRecipe(type, sourceOwners),
             CompiledDependencyChecker.SpaceWeather);
         Assert.AreEqual(1, result.TypesChecked);
@@ -360,19 +354,10 @@ public sealed class ArchitectureBoundaryTests
         finally { directory.Delete(recursive: true); }
     }
 
-    private static CompiledDependencyChecker.OwnedType[] SelectedCaptureOrRecipeTypes(IReadOnlySet<string> sourceOwners) =>
-        [.. Repository.Value.Projects.Values.Where(project => project.Kind == ProjectKind.Production)
-            .SelectMany(project => CompiledDependencyChecker.Check(ProductionAssembly(project),
-                type => CompiledDependencyChecker.CaptureOrRecipe(type, sourceOwners), CompiledDependencyChecker.SpaceWeather).SelectedTypes)];
-
-    private static HashSet<string> ReviewedCaptureOrRecipeFiles() => Directory.EnumerateFiles(Path.Combine(Repository.Value.Root, "src"), "*.cs", SearchOption.AllDirectories)
-        .Where(path => !RepositoryGraph.HasPathSegment(path, "bin") && !RepositoryGraph.HasPathSegment(path, "obj"))
-        .Where(ReviewedCaptureOrRecipeFile).ToHashSet(StringComparer.Ordinal);
-
-    private static bool ReviewedCaptureOrRecipeFile(string file)
+    private static bool ReviewedCaptureOrRecipeFile(SolutionSnapshot.SourceFile file)
     {
-        var relative = Path.GetRelativePath(Repository.Value.Root, file);
-        var source = MaskCSharpCommentsAndLiterals(File.ReadAllText(file));
+        var relative = file.RelativePath;
+        var source = file.MaskedText;
         // Exact fc52a26f reviewed selector; paths are repository-relative.
         return relative.Contains("Capture", StringComparison.OrdinalIgnoreCase)
             || relative.Contains("RawIngress", StringComparison.OrdinalIgnoreCase)
@@ -382,20 +367,11 @@ public sealed class ArchitectureBoundaryTests
             || System.Text.RegularExpressions.Regex.IsMatch(source, @"namespace\s+[^;{]*(?:Capture|RawIngress|Recipes)");
     }
 
-    // Use the existing graph's MSBuild evaluation to locate Release outputs,
-    // including RID-specific runners; no new project reference or lane is needed.
-    private static string ProductionAssembly(ProjectInfo project)
-    {
-        var path = project.ReleaseAssemblyPath;
-        Assert.IsTrue(File.Exists(path), $"Build the Release solution before architecture checks: {path}");
-        return path;
-    }
-
     [TestMethod]
     [TestCategory("Integration")]
     public void ProductionProjectReferencesFollowDocumentedGraph()
     {
-        var repository = Repository.Value;
+        var repository = snapshot.Graph;
         var violations = repository.ValidateProductionReferences(AllowedProductionReferences)
             .Concat(repository.ValidateTestOwnership(SharedTestProjects, CameraAgentTestProjects))
             .Order(StringComparer.Ordinal)
@@ -408,12 +384,9 @@ public sealed class ArchitectureBoundaryTests
     [TestCategory("Unit")]
     public void StorageFileSystemBoundaryIsNarrowWhenPresent()
     {
-        // #584 defines the boundary; #592 delivers the project; #585 and #587 consume it.
-        // The project may reference nothing: no host, no AgentCore, no Common, no persistence,
-        // no provider SDK. Its consumers are the LogicHost filesystem provider and, after
-        // RM-017, CameraAgent.Common. Nothing else may reference it, and it may not appear
-        // in the graph with a wider rule than an empty set.
-        var repository = Repository.Value;
+        // The filesystem primitives have no project dependencies. CameraAgent.Common and Video.FFmpeg
+        // are the only production consumers.
+        var repository = snapshot.Graph;
         if (!repository.Projects.TryGetValue(StorageFileSystem, out var project))
         {
             Assert.IsFalse(AllowedProductionReferences.ContainsKey(StorageFileSystem),
@@ -445,7 +418,7 @@ public sealed class ArchitectureBoundaryTests
             .Select(candidate => candidate.Name)
             .Order(StringComparer.Ordinal)
             .ToArray();
-        var permittedConsumers = new[] { CameraAgentCommon, LogicHost, VideoFFmpeg };
+        var permittedConsumers = new[] { CameraAgentCommon, VideoFFmpeg };
         Assert.IsEmpty(consumers.Except(permittedConsumers, StringComparer.Ordinal).ToArray(),
             $"Only {string.Join(" and ", permittedConsumers)} may reference {StorageFileSystem}: {string.Join(", ", consumers)}");
     }
@@ -455,10 +428,8 @@ public sealed class ArchitectureBoundaryTests
     public void TerminalUiBoundaryIsNarrow()
     {
         // #1317: what the terminal programs share. It takes Terminal.Gui and nothing else, so the installer and hvo-sky
-        // can both build on it; and no host draws a terminal, so neither CameraAgent nor LogicHost may take it, or
-        // Terminal.Gui with it. hvo-sky is CameraAgent's terminal client, not a host: it counts with CameraAgent for test
-        // ownership, and its 'ui' draws with TerminalUi.
-        var repository = Repository.Value;
+        // can both build on it. hvo-sky counts with CameraAgent for test ownership and draws its UI with TerminalUi.
+        var repository = snapshot.Graph;
         Assert.IsTrue(repository.Projects.TryGetValue(TerminalUi, out var project), $"{TerminalUi} is in the repository.");
         Assert.AreEqual(ProjectKind.Production, project.Kind);
         Assert.IsTrue(AllowedProductionReferences.TryGetValue(TerminalUi, out var allowed) && allowed.Count == 0,
@@ -468,7 +439,7 @@ public sealed class ArchitectureBoundaryTests
 
         var hosts = repository.Projects.Values
             .Where(candidate => candidate.Kind == ProjectKind.Production && candidate.Name != CameraAgentCli
-                && CameraAgentImplementations.Concat([LogicHost]).Contains(candidate.Name))
+                && CameraAgentImplementations.Contains(candidate.Name))
             .Where(candidate => candidate.References.Contains(TerminalUi) || candidate.PackageReferences.Contains("Terminal.Gui"))
             .Select(candidate => candidate.Name)
             .ToArray();
@@ -479,8 +450,8 @@ public sealed class ArchitectureBoundaryTests
     [TestCategory("Integration")]
     public void ProductionTransitiveGraphDoesNotReachHostsOrTestProjects()
     {
-        var repository = Repository.Value;
-        var violations = repository.ValidateTransitiveBoundaries(CameraAgent, LogicHost);
+        var repository = snapshot.Graph;
+        var violations = repository.ValidateTransitiveBoundaries(HostProjects);
 
         Assert.IsEmpty(violations, string.Join(Environment.NewLine, violations));
     }
@@ -496,7 +467,7 @@ public sealed class ArchitectureBoundaryTests
         // delegating to LinuxOpenFlags, and no importer outside the three declared tables may spell the values on a
         // line that talks about open flags. The sweep covers src/; tests and tools do not import libc open.
         // CameraAgent (#587) delegates to Storage.FileSystem; its public compatibility facade owns no table.
-        var root = RepositoryGraph.FindRepositoryRoot();
+        var root = snapshot.Root;
         string[] tableFiles =
         [
             Path.Combine("src", "HVO.SkyMonitor.Deployment.Cli", "NativeLinux.cs"),
@@ -517,7 +488,7 @@ public sealed class ArchitectureBoundaryTests
         var violations = new List<string>();
         var callers = 0;
 
-        var cameraAgentFacade = File.ReadAllText(Path.Combine(root, "src", "HVO.SkyMonitor.CameraAgent.Common", "Storage", "LinuxOpenFlags.cs"));
+        var cameraAgentFacade = snapshot.Source(Path.Combine(root, "src", "HVO.SkyMonitor.CameraAgent.Common", "Storage", "LinuxOpenFlags.cs")).Text;
         Assert.IsTrue(cameraAgentFacade.Contains("HVO.SkyMonitor.Storage.FileSystem.LinuxOpenFlags", StringComparison.Ordinal));
         Assert.IsFalse(cameraAgentFacade.Contains("Architecture.Arm64", StringComparison.Ordinal),
             "CameraAgent's public compatibility facade must not regain a private ABI table.");
@@ -527,12 +498,10 @@ public sealed class ArchitectureBoundaryTests
             violations.Add($"{table}: the declared flag table file is missing");
         }
 
-        foreach (var file in Directory.EnumerateFiles(Path.Combine(root, "src"), "*.cs", SearchOption.AllDirectories)
-                     .Where(path => !RepositoryGraph.HasPathSegment(path, "bin") && !RepositoryGraph.HasPathSegment(path, "obj"))
-                     .Order(StringComparer.Ordinal))
+        foreach (var file in snapshot.CSharpFiles)
         {
-            var text = File.ReadAllText(file);
-            var relative = Path.GetRelativePath(root, file);
+            var text = file.Text;
+            var relative = file.RelativePath;
             var declaresTable = tableFiles.Contains(relative, StringComparer.Ordinal);
             if (declaresTable && !text.Contains("Architecture.Arm64", StringComparison.Ordinal))
             {
@@ -612,18 +581,8 @@ public sealed class ArchitectureBoundaryTests
 
     [TestMethod]
     [TestCategory("Unit")]
-    public void LogicHostLogEventIdsAreUniqueAcrossProductionSources()
-        => AssertHostOwnedLogEventIdsAreUnique("LogicHost", "HVO.SkyMonitor.LogicHost");
-
-    [TestMethod]
-    [TestCategory("Unit")]
     public void CameraAgentAccountFormsReachTheirHandlers()
         => AssertAccountFormsReachTheirHandlers("HVO.SkyMonitor.CameraAgent");
-
-    [TestMethod]
-    [TestCategory("Unit")]
-    public void LogicHostAccountFormsReachTheirHandlers()
-        => AssertAccountFormsReachTheirHandlers("HVO.SkyMonitor.LogicHost");
 
     // The account pages render statically, so only a form post reaches them. A posted input
     // reaches the page only through a [SupplyParameterFromForm] property, and Blazor names each
@@ -633,7 +592,7 @@ public sealed class ArchitectureBoundaryTests
     // runs, so a control wired through one does nothing.
     private static void AssertAccountFormsReachTheirHandlers(string projectDirectoryName)
     {
-        var root = RepositoryGraph.FindRepositoryRoot();
+        var root = snapshot.Root;
         var accountRoot = Path.Combine(root, "src", projectDirectoryName, "Components", "Account");
         var suppliedPattern = new System.Text.RegularExpressions.Regex(
             """\[SupplyParameterFromForm[^\]]*\]\s*(?:(?:public|private|protected|internal)\s+)?[\w<>?.,]+\s+(?<name>\w+)\s*\{""",
@@ -649,9 +608,9 @@ public sealed class ArchitectureBoundaryTests
 
         foreach (var page in Directory.EnumerateFiles(accountRoot, "*.razor", SearchOption.AllDirectories).Order(StringComparer.Ordinal))
         {
-            var markup = File.ReadAllText(page);
+            var markup = snapshot.Source(page).Text;
             var codeBehind = page + ".cs";
-            var code = markup + (File.Exists(codeBehind) ? File.ReadAllText(codeBehind) : string.Empty);
+            var code = markup + (File.Exists(codeBehind) ? snapshot.Source(codeBehind).Text : string.Empty);
             var supplied = suppliedPattern.Matches(code).Select(match => match.Groups["name"].Value).ToHashSet(StringComparer.Ordinal);
             foreach (System.Text.RegularExpressions.Match match in bindPattern.Matches(markup))
             {
@@ -681,17 +640,15 @@ public sealed class ArchitectureBoundaryTests
             """\b(?:EventId\s*=\s*|new\s+EventId\s*\(\s*|LoggerMessage\s*\(\s*|EventId\b[^;=]*=\s*new\s*\(\s*)(?<id>\d+)""",
             System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
-    private static void AssertHostOwnedLogEventIdsAreUnique(string hostName, string projectDirectoryName)
+    private static ImmutableArray<(int Id, string Path, int Line)> ScanLogEventDeclarations(
+        ImmutableArray<SolutionSnapshot.SourceFile> files)
     {
-        var root = RepositoryGraph.FindRepositoryRoot();
         var declarationPattern = LogEventIdDeclarationPattern();
-        var declarations = new List<(int Id, string Path, int Line)>();
+        var declarations = ImmutableArray.CreateBuilder<(int Id, string Path, int Line)>();
 
-        foreach (var file in Directory.EnumerateFiles(Path.Combine(root, "src"), "*.cs", SearchOption.AllDirectories)
-                     .Where(path => !RepositoryGraph.HasPathSegment(path, "bin") && !RepositoryGraph.HasPathSegment(path, "obj"))
-                     .Order(StringComparer.Ordinal))
+        foreach (var file in files)
         {
-            var source = MaskCSharpCommentsAndLiterals(File.ReadAllText(file));
+            var source = file.MaskedText;
             foreach (System.Text.RegularExpressions.Match match in declarationPattern.Matches(source))
             {
                 var line = 1;
@@ -705,13 +662,18 @@ public sealed class ArchitectureBoundaryTests
 
                 declarations.Add((
                     int.Parse(match.Groups["id"].Value, System.Globalization.CultureInfo.InvariantCulture),
-                    Path.GetRelativePath(root, file),
+                    file.RelativePath,
                     line));
             }
         }
 
+        return declarations.ToImmutable();
+    }
+
+    private static void AssertHostOwnedLogEventIdsAreUnique(string hostName, string projectDirectoryName)
+    {
         var ownedPrefix = Path.Combine("src", projectDirectoryName);
-        var duplicates = declarations
+        var duplicates = snapshot.LogEventDeclarations
             .GroupBy(declaration => declaration.Id)
             .Where(group => group.Count() > 1)
             .Where(group => group.Any(declaration => declaration.Path.StartsWith(ownedPrefix, StringComparison.Ordinal)))
@@ -1049,26 +1011,26 @@ public sealed class ArchitectureBoundaryTests
         var projects = new Dictionary<string, ProjectInfo>(StringComparer.Ordinal)
         {
             [CameraAgent] = Project(CameraAgent, ProjectKind.Production, CameraAgentCommon),
-            [CameraAgentCommon] = Project(CameraAgentCommon, ProjectKind.Production, LogicHost),
-            [LogicHost] = Project(LogicHost, ProjectKind.Production, Common),
+            [CameraAgentCommon] = Project(CameraAgentCommon, ProjectKind.Production, ProcessingRunner),
+            [ProcessingRunner] = Project(ProcessingRunner, ProjectKind.Production, Common),
             [Common] = Project(Common, ProjectKind.Production, TestSupport),
             [TestSupport] = Project(TestSupport, ProjectKind.Test)
         };
         var graph = new RepositoryGraph(string.Empty, projects);
 
-        var violations = graph.ValidateTransitiveBoundaries(CameraAgent, LogicHost);
+        var violations = graph.ValidateTransitiveBoundaries(HostProjects);
 
         Assert.IsTrue(violations.Any(violation => violation.Contains(
-            $"{CameraAgent} -> {CameraAgentCommon} -> {LogicHost}", StringComparison.Ordinal)));
+            $"{CameraAgent} -> {CameraAgentCommon} -> {ProcessingRunner}", StringComparison.Ordinal)));
         Assert.IsTrue(violations.Any(violation => violation.Contains(
-            $"{LogicHost} -> {Common} -> {TestSupport}", StringComparison.Ordinal)));
+            $"{ProcessingRunner} -> {Common} -> {TestSupport}", StringComparison.Ordinal)));
     }
 
     [TestMethod]
     [TestCategory("Integration")]
     public void AgentCoreHasNoHostInfrastructureOrImagingDependencies()
     {
-        var repository = Repository.Value;
+        var repository = snapshot.Graph;
         var agentCore = repository.Projects[AgentCore];
         var forbiddenNames = new[]
         {
@@ -1082,37 +1044,6 @@ public sealed class ArchitectureBoundaryTests
 
         Assert.IsEmpty(dependencies,
             $"ARCH-AGENTCORE: '{AgentCore}' must remain transport-neutral but references host infrastructure or imaging dependencies: {string.Join(", ", dependencies)}.");
-    }
-
-    [TestMethod]
-    [TestCategory("Integration")]
-    public void LogicHostProviderSdkUsageIsConfinedToObjectStorageInfrastructure()
-    {
-        var logicHostRoot = Path.Combine(Repository.Value.Root, "src", LogicHost);
-        var providerRoot = Path.Combine(logicHostRoot, "Infrastructure", "ObjectStorage")
-            + Path.DirectorySeparatorChar;
-        var violations = Directory.EnumerateFiles(logicHostRoot, "*.cs", SearchOption.AllDirectories)
-            .Where(path => !path.StartsWith(providerRoot, StringComparison.Ordinal))
-            .Where(path =>
-            {
-                var source = File.ReadAllText(path);
-                return source.Contains("using Minio", StringComparison.Ordinal)
-                    || source.Contains("using Amazon.S3", StringComparison.Ordinal)
-                    || source.Contains("using Amazon.Runtime", StringComparison.Ordinal)
-                    || source.Contains("IAmazonS3", StringComparison.Ordinal)
-                    || source.Contains("AmazonS3Client", StringComparison.Ordinal)
-                    || source.Contains("IMinioClient", StringComparison.Ordinal)
-                    || source.Contains("MinioClient", StringComparison.Ordinal)
-                    || source.Contains("MinioException", StringComparison.Ordinal)
-                    || source.Contains("AWSCredentials", StringComparison.Ordinal)
-                    || source.Contains("FallbackCredentialsFactory", StringComparison.Ordinal);
-            })
-            .Select(path => Path.GetRelativePath(Repository.Value.Root, path))
-            .Order(StringComparer.Ordinal)
-            .ToArray();
-
-        Assert.IsEmpty(violations,
-            $"Provider SDK usage must remain under LogicHost/Infrastructure/ObjectStorage:{Environment.NewLine}{string.Join(Environment.NewLine, violations)}");
     }
 
     [TestMethod]
@@ -1135,8 +1066,8 @@ public sealed class ArchitectureBoundaryTests
                 "<Project Sdk=\"Microsoft.NET.Sdk\"><Import Project=\"references.props\" />" +
                 "<ItemGroup Condition=\"'$(Configuration)' == 'Debug'\"><ProjectReference Include=\"DebugOnly.csproj\" /></ItemGroup></Project>");
 
-            var releaseEvaluation = RepositoryGraph.EvaluateProject(sourceProject, "Release");
-            var debugEvaluation = RepositoryGraph.EvaluateProject(sourceProject, "Debug");
+            var releaseEvaluation = RepositoryGraph.EvaluateProjectAsync(sourceProject, "Release").GetAwaiter().GetResult();
+            var debugEvaluation = RepositoryGraph.EvaluateProjectAsync(sourceProject, "Debug").GetAwaiter().GetResult();
 
             Assert.ContainsSingle(releaseEvaluation.ProjectReferencePaths, Path.GetFullPath(importedProject));
             CollectionAssert.AreEquivalent(
@@ -1146,6 +1077,1169 @@ public sealed class ArchitectureBoundaryTests
         finally
         {
             Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task ProjectEvaluationProcessTimeoutKillsProcessTreeAndPreservesDiagnostics()
+    {
+        Assert.AreEqual(TimeSpan.FromMinutes(2), RepositoryGraph.DefaultEvaluationTimeout);
+        Assert.AreEqual(TimeSpan.FromSeconds(5), RepositoryGraph.PostKillGracePeriod);
+
+        const string stdoutMarker = "ARCH-TIMEOUT-STDOUT-MARKER";
+        const string stderrMarker = "ARCH-TIMEOUT-STDERR-MARKER";
+        const string operationDescription = "SyntheticHungProject.csproj";
+
+        var fastResult = await RepositoryGraph.RunProcessWithTimeoutAsync(
+            CreateQuickOutputStartInfo("ARCH-OK-STDOUT", "ARCH-OK-STDERR"),
+            "SyntheticFastProject.csproj",
+            TimeSpan.FromSeconds(10),
+            TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.AreEqual(0, fastResult.ExitCode);
+        Assert.Contains("ARCH-OK-STDOUT", fastResult.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("ARCH-OK-STDERR", fastResult.StandardError, StringComparison.Ordinal);
+
+        var pidFile = Path.Combine(Path.GetTempPath(), $"skymonitor-arch-hang-{Guid.NewGuid():N}.pid");
+        int? grandchildPid = null;
+        try
+        {
+            var elapsed = Stopwatch.StartNew();
+            var exception = await Assert.ThrowsExactlyAsync<TimeoutException>(() =>
+                RepositoryGraph.RunProcessWithTimeoutAsync(
+                    CreateHangingChildStartInfo(stdoutMarker, stderrMarker, pidFile),
+                    operationDescription,
+                    TimeSpan.FromMilliseconds(750),
+                    TestContext.CancellationToken)).ConfigureAwait(false);
+            elapsed.Stop();
+
+            grandchildPid = TryExtractPid(exception.Message, "child_pid=") ?? TryReadPidFile(pidFile);
+
+            Assert.IsLessThan(
+                TimeSpan.FromSeconds(15),
+                elapsed.Elapsed,
+                $"Timed-out child process took {elapsed.Elapsed.TotalSeconds.ToString("0.##", CultureInfo.InvariantCulture)}s to terminate.");
+            Assert.Contains("ARCH-EVALUATE", exception.Message, StringComparison.Ordinal);
+            Assert.Contains(operationDescription, exception.Message, StringComparison.Ordinal);
+            if (OperatingSystem.IsLinux())
+            {
+                Assert.Contains(
+                    "and process-tree termination was requested; the root process and all tracked tagged descendants exited and redirected output streams closed.",
+                    exception.Message,
+                    StringComparison.Ordinal);
+            }
+            else
+            {
+                Assert.Contains("process-tree termination was requested", exception.Message, StringComparison.Ordinal);
+            }
+            Assert.Contains(stdoutMarker, exception.Message, StringComparison.Ordinal);
+            Assert.Contains(stderrMarker, exception.Message, StringComparison.Ordinal);
+
+            if (!OperatingSystem.IsWindows())
+            {
+                Assert.IsTrue(
+                    grandchildPid.HasValue,
+                    $"Expected grandchild PID marker in timeout message:{Environment.NewLine}{exception.Message}");
+                Assert.IsTrue(
+                    await WaitForProcessGoneAsync(grandchildPid.Value, TimeSpan.FromSeconds(5), TestContext.CancellationToken).ConfigureAwait(false),
+                    $"Expected Kill(entireProcessTree: true) to terminate grandchild PID {grandchildPid.Value.ToString(CultureInfo.InvariantCulture)}.");
+            }
+        }
+        finally
+        {
+            await CleanupSyntheticProcessAsync(grandchildPid, pidFile).ConfigureAwait(false);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task ProjectEvaluationTimeoutWhenRootExitsWithPipeHoldingDescendantBoundsDrainAndClosesPipes()
+    {
+        const string stdoutMarker = "ARCH-EXITED-ROOT-STDOUT-MARKER";
+        const string stderrMarker = "ARCH-EXITED-ROOT-STDERR-MARKER";
+        const string operationDescription = "SyntheticExitedRootProject.csproj";
+        var pidFile = Path.Combine(Path.GetTempPath(), $"skymonitor-arch-exited-root-{Guid.NewGuid():N}.pid");
+        int? childPid = null;
+
+        try
+        {
+            var elapsed = Stopwatch.StartNew();
+            var exception = await Assert.ThrowsExactlyAsync<TimeoutException>(() =>
+                RepositoryGraph.RunProcessWithTimeoutAsync(
+                    CreateExitedParentWithPipeHoldingChildStartInfo(stdoutMarker, stderrMarker, pidFile, stripEvaluationRunId: true),
+                    operationDescription,
+                    TimeSpan.FromMilliseconds(500),
+                    TimeSpan.FromMilliseconds(300),
+                    TestContext.CancellationToken)).ConfigureAwait(false);
+            elapsed.Stop();
+
+            childPid = TryExtractPid(exception.Message, "child_pid=") ?? TryReadPidFile(pidFile);
+
+            Assert.IsLessThan(
+                TimeSpan.FromSeconds(5),
+                elapsed.Elapsed,
+                $"Exited-parent pipe drain took {elapsed.Elapsed.TotalSeconds.ToString("0.##", CultureInfo.InvariantCulture)}s.");
+            Assert.Contains("ARCH-EVALUATE", exception.Message, StringComparison.Ordinal);
+            Assert.Contains(operationDescription, exception.Message, StringComparison.Ordinal);
+            Assert.Contains(stdoutMarker, exception.Message, StringComparison.Ordinal);
+            Assert.Contains(stderrMarker, exception.Message, StringComparison.Ordinal);
+
+            if (!OperatingSystem.IsWindows())
+            {
+                Assert.DoesNotContain(
+                    "the root process and all tracked tagged descendants exited",
+                    exception.Message,
+                    StringComparison.Ordinal);
+                Assert.Contains(
+                    "while draining redirected output after the root process exited",
+                    exception.Message,
+                    StringComparison.Ordinal);
+                Assert.Contains("descendant", exception.Message, StringComparison.Ordinal);
+                Assert.IsTrue(
+                    childPid.HasValue,
+                    $"Expected pipe-holding child PID marker in timeout message:{Environment.NewLine}{exception.Message}");
+
+                if (OperatingSystem.IsLinux())
+                {
+                    AssertRedirectedPipeReadersClosedForProcess(childPid.Value);
+                }
+            }
+        }
+        finally
+        {
+            await CleanupSyntheticProcessAsync(childPid, pidFile).ConfigureAwait(false);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task ProjectEvaluationTimeoutBoundsPostKillDrainWhenEscapedDescendantHoldsPipesOpen()
+    {
+        const string stdoutMarker = "ARCH-ESCAPED-PIPE-STDOUT-MARKER";
+        const string stderrMarker = "ARCH-ESCAPED-PIPE-STDERR-MARKER";
+        const string operationDescription = "SyntheticEscapedPipeProject.csproj";
+        var pidFile = Path.Combine(Path.GetTempPath(), $"skymonitor-arch-escaped-{Guid.NewGuid():N}.pid");
+        int? escapedPid = null;
+
+        try
+        {
+            var elapsed = Stopwatch.StartNew();
+            var exception = await Assert.ThrowsExactlyAsync<TimeoutException>(() =>
+                RepositoryGraph.RunProcessWithTimeoutAsync(
+                    CreateHangingRootWithEscapedPipeHolderStartInfo(stdoutMarker, stderrMarker, pidFile, stripEvaluationRunId: true),
+                    operationDescription,
+                    TimeSpan.FromMilliseconds(500),
+                    TimeSpan.FromMilliseconds(300),
+                    TestContext.CancellationToken)).ConfigureAwait(false);
+            elapsed.Stop();
+
+            escapedPid = TryExtractPid(exception.Message, "escaped_pid=") ?? TryReadPidFile(pidFile);
+
+            Assert.IsLessThan(
+                TimeSpan.FromSeconds(5),
+                elapsed.Elapsed,
+                $"Post-kill drain with escaped pipe holder took {elapsed.Elapsed.TotalSeconds.ToString("0.##", CultureInfo.InvariantCulture)}s.");
+            Assert.Contains("ARCH-EVALUATE", exception.Message, StringComparison.Ordinal);
+            Assert.Contains(operationDescription, exception.Message, StringComparison.Ordinal);
+            Assert.Contains(stdoutMarker, exception.Message, StringComparison.Ordinal);
+            Assert.Contains(stderrMarker, exception.Message, StringComparison.Ordinal);
+
+            if (!OperatingSystem.IsWindows())
+            {
+                Assert.DoesNotContain(
+                    "the root process and all tracked tagged descendants exited",
+                    exception.Message,
+                    StringComparison.Ordinal);
+                Assert.Contains(
+                    "and the root process exited after termination was requested, but redirected output draining timed out",
+                    exception.Message,
+                    StringComparison.Ordinal);
+                Assert.IsTrue(
+                    escapedPid.HasValue,
+                    $"Expected escaped pipe-holder PID marker in timeout message:{Environment.NewLine}{exception.Message}");
+
+                if (OperatingSystem.IsLinux())
+                {
+                    AssertRedirectedPipeReadersClosedForProcess(escapedPid.Value);
+                }
+            }
+        }
+        finally
+        {
+            await CleanupSyntheticProcessAsync(escapedPid, pidFile).ConfigureAwait(false);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task ProjectEvaluationTimeoutWhenRootExitsTerminatesReparentedPipeHoldingDescendant()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        const string stdoutMarker = "ARCH-REPARENTED-OPEN-STDOUT-MARKER";
+        const string stderrMarker = "ARCH-REPARENTED-OPEN-STDERR-MARKER";
+        const string operationDescription = "SyntheticReparentedPipeHolderProject.csproj";
+        var pidFile = Path.Combine(Path.GetTempPath(), $"skymonitor-arch-reparented-open-{Guid.NewGuid():N}.pid");
+        int? childPid = null;
+
+        try
+        {
+            var elapsed = Stopwatch.StartNew();
+            var exception = await Assert.ThrowsExactlyAsync<TimeoutException>(() =>
+                RepositoryGraph.RunProcessWithTimeoutAsync(
+                    CreateExitedParentWithPipeHoldingChildStartInfo(stdoutMarker, stderrMarker, pidFile),
+                    operationDescription,
+                    TimeSpan.FromMilliseconds(500),
+                    RepositoryGraph.PostKillGracePeriod,
+                    TestContext.CancellationToken)).ConfigureAwait(false);
+            elapsed.Stop();
+
+            childPid = TryExtractPid(exception.Message, "child_pid=") ?? TryReadPidFile(pidFile);
+
+            Assert.IsLessThan(
+                TimeSpan.FromSeconds(3.5),
+                elapsed.Elapsed,
+                $"Reparented pipe-holding descendant cleanup should not stall for the full post-kill grace period; took {elapsed.Elapsed.TotalSeconds.ToString("0.##", CultureInfo.InvariantCulture)}s.");
+            Assert.Contains("ARCH-EVALUATE", exception.Message, StringComparison.Ordinal);
+            Assert.Contains(operationDescription, exception.Message, StringComparison.Ordinal);
+            Assert.Contains(stdoutMarker, exception.Message, StringComparison.Ordinal);
+            Assert.Contains(stderrMarker, exception.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                "the root process and all tracked tagged descendants exited",
+                exception.Message,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "while draining redirected output after the root process exited",
+                exception.Message,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "surviving tagged descendants were terminated",
+                exception.Message,
+                StringComparison.Ordinal);
+            Assert.IsTrue(
+                childPid.HasValue,
+                $"Expected reparented pipe-holding child PID marker in timeout message:{Environment.NewLine}{exception.Message}");
+            Assert.IsTrue(
+                await WaitForProcessGoneAsync(childPid.Value, TimeSpan.FromSeconds(5), TestContext.CancellationToken).ConfigureAwait(false),
+                $"Expected timeout cleanup to terminate reparented pipe-holding descendant PID {childPid.Value.ToString(CultureInfo.InvariantCulture)}.");
+        }
+        finally
+        {
+            await CleanupSyntheticProcessAsync(childPid, pidFile).ConfigureAwait(false);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task ProjectEvaluationTimeoutTerminatesReparentedPipeClosedDescendants()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        // Case 1: Root hangs while a reparented descendant closes its redirected pipes and stays alive.
+        var hangingPidFile = Path.Combine(Path.GetTempPath(), $"skymonitor-arch-reparented-closed-{Guid.NewGuid():N}.pid");
+        int? hangingEscapedPid = null;
+
+        try
+        {
+            var elapsed = Stopwatch.StartNew();
+            var exception = await Assert.ThrowsExactlyAsync<TimeoutException>(() =>
+                RepositoryGraph.RunProcessWithTimeoutAsync(
+                    CreateHangingRootWithReparentedPipeClosedDescendantStartInfo(
+                        "ARCH-REPARENTED-CLOSED-STDOUT",
+                        "ARCH-REPARENTED-CLOSED-STDERR",
+                        hangingPidFile),
+                    "SyntheticReparentedPipeClosedProject.csproj",
+                    TimeSpan.FromMilliseconds(500),
+                    RepositoryGraph.PostKillGracePeriod,
+                    TestContext.CancellationToken)).ConfigureAwait(false);
+            elapsed.Stop();
+
+            hangingEscapedPid = TryExtractPid(exception.Message, "escaped_pid=") ?? TryReadPidFile(hangingPidFile);
+
+            Assert.IsLessThan(
+                TimeSpan.FromSeconds(3.5),
+                elapsed.Elapsed,
+                $"Reparented pipe-closed descendant cleanup took {elapsed.Elapsed.TotalSeconds.ToString("0.##", CultureInfo.InvariantCulture)}s.");
+            Assert.Contains(
+                "and process-tree termination was requested; the root process and all tracked tagged descendants exited and redirected output streams closed.",
+                exception.Message,
+                StringComparison.Ordinal);
+            Assert.IsTrue(
+                hangingEscapedPid.HasValue,
+                $"Expected reparented pipe-closed PID marker in timeout message:{Environment.NewLine}{exception.Message}");
+            Assert.IsTrue(
+                await WaitForProcessGoneAsync(hangingEscapedPid.Value, TimeSpan.FromSeconds(5), TestContext.CancellationToken).ConfigureAwait(false),
+                $"Expected timeout cleanup to terminate reparented pipe-closed descendant PID {hangingEscapedPid.Value.ToString(CultureInfo.InvariantCulture)} before reporting verified cleanup.");
+        }
+        finally
+        {
+            await CleanupSyntheticProcessAsync(hangingEscapedPid, hangingPidFile).ConfigureAwait(false);
+        }
+
+        // Case 2: Root exits while one reparented descendant holds pipes open and another reparented descendant closes its pipes.
+        var closedPidFile = Path.Combine(Path.GetTempPath(), $"skymonitor-arch-exited-closed-{Guid.NewGuid():N}.pid");
+        var openPidFile = Path.Combine(Path.GetTempPath(), $"skymonitor-arch-exited-open-{Guid.NewGuid():N}.pid");
+        int? closedPid = null;
+        int? openPid = null;
+
+        try
+        {
+            var elapsed = Stopwatch.StartNew();
+            var exception = await Assert.ThrowsExactlyAsync<TimeoutException>(() =>
+                RepositoryGraph.RunProcessWithTimeoutAsync(
+                    CreateExitedRootWithPipeHoldingAndPipeClosedDescendantsStartInfo(
+                        "ARCH-EXITED-MIXED-STDOUT",
+                        "ARCH-EXITED-MIXED-STDERR",
+                        closedPidFile,
+                        openPidFile),
+                    "SyntheticExitedRootMixedDescendantsProject.csproj",
+                    TimeSpan.FromMilliseconds(500),
+                    RepositoryGraph.PostKillGracePeriod,
+                    TestContext.CancellationToken)).ConfigureAwait(false);
+            elapsed.Stop();
+
+            closedPid = TryExtractPid(exception.Message, "closed_pid=") ?? TryReadPidFile(closedPidFile);
+            openPid = TryExtractPid(exception.Message, "open_pid=") ?? TryReadPidFile(openPidFile);
+
+            Assert.IsLessThan(
+                TimeSpan.FromSeconds(3.5),
+                elapsed.Elapsed,
+                $"Exited-root mixed descendant cleanup took {elapsed.Elapsed.TotalSeconds.ToString("0.##", CultureInfo.InvariantCulture)}s.");
+            Assert.DoesNotContain(
+                "the root process and all tracked tagged descendants exited",
+                exception.Message,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "while draining redirected output after the root process exited",
+                exception.Message,
+                StringComparison.Ordinal);
+            Assert.IsTrue(
+                closedPid.HasValue,
+                $"Expected pipe-closed descendant PID marker in timeout message:{Environment.NewLine}{exception.Message}");
+            Assert.IsTrue(
+                openPid.HasValue,
+                $"Expected pipe-holding descendant PID marker in timeout message:{Environment.NewLine}{exception.Message}");
+            Assert.IsTrue(
+                await WaitForProcessGoneAsync(closedPid.Value, TimeSpan.FromSeconds(5), TestContext.CancellationToken).ConfigureAwait(false),
+                $"Expected timeout cleanup to terminate reparented pipe-closed descendant PID {closedPid.Value.ToString(CultureInfo.InvariantCulture)}.");
+            Assert.IsTrue(
+                await WaitForProcessGoneAsync(openPid.Value, TimeSpan.FromSeconds(5), TestContext.CancellationToken).ConfigureAwait(false),
+                $"Expected timeout cleanup to terminate reparented pipe-holding descendant PID {openPid.Value.ToString(CultureInfo.InvariantCulture)}.");
+        }
+        finally
+        {
+            await CleanupSyntheticProcessAsync(closedPid, closedPidFile).ConfigureAwait(false);
+            await CleanupSyntheticProcessAsync(openPid, openPidFile).ConfigureAwait(false);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task WaitForProcessGoneAsyncRecognizesLiveLinuxZombieProcess()
+    {
+        var expectedEntry = Encoding.UTF8.GetBytes($"{RepositoryGraph.EvaluationRunIdEnvironmentVariable}=abc123");
+        Assert.IsTrue(RepositoryGraph.ContainsEnvironmentEntry(
+            Encoding.UTF8.GetBytes($"PATH=/usr/bin\0{RepositoryGraph.EvaluationRunIdEnvironmentVariable}=abc123\0HOME=/tmp\0"),
+            expectedEntry));
+        Assert.IsFalse(RepositoryGraph.ContainsEnvironmentEntry(
+            Encoding.UTF8.GetBytes($"OTHER_{RepositoryGraph.EvaluationRunIdEnvironmentVariable}=abc123\0{RepositoryGraph.EvaluationRunIdEnvironmentVariable}=abc1234\0"),
+            expectedEntry));
+
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        var startInfo = new ProcessStartInfo("/bin/sh")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+        startInfo.ArgumentList.Add("-c");
+        startInfo.ArgumentList.Add("sleep 0.1 & zombie_pid=$!; printf '%s\\n' \"$zombie_pid\"; exec sleep 30");
+
+        using var parentProcess = new Process { StartInfo = startInfo };
+        Assert.IsTrue(parentProcess.Start(), "Expected synthetic zombie parent process to start.");
+
+        int? zombiePid = null;
+        try
+        {
+            var pidLine = await parentProcess.StandardOutput.ReadLineAsync(TestContext.CancellationToken)
+                .AsTask()
+                .WaitAsync(TimeSpan.FromSeconds(5), TestContext.CancellationToken)
+                .ConfigureAwait(false);
+            Assert.IsTrue(
+                int.TryParse(pidLine?.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var parsedZombiePid),
+                $"Expected synthetic zombie child PID on stdout, got '{pidLine}'.");
+            zombiePid = parsedZombiePid;
+
+            var becameZombie = false;
+            var zombieWait = Stopwatch.StartNew();
+            while (zombieWait.Elapsed < TimeSpan.FromSeconds(5))
+            {
+                var stat = TryReadLinuxProcessStat(parsedZombiePid);
+                if (stat is not null && TryGetLinuxStatState(stat) == 'Z')
+                {
+                    becameZombie = true;
+                    break;
+                }
+
+                await Task.Delay(20, TestContext.CancellationToken).ConfigureAwait(false);
+            }
+
+            Assert.IsTrue(
+                becameZombie,
+                $"Expected child PID {parsedZombiePid.ToString(CultureInfo.InvariantCulture)} to enter persistent Linux zombie 'Z' state while parent sleep stays alive.");
+            Assert.IsTrue(IsLinuxZombieOrDeadProcess(parsedZombiePid));
+            Assert.IsTrue(
+                await WaitForProcessGoneAsync(parsedZombiePid, TimeSpan.FromSeconds(5), TestContext.CancellationToken).ConfigureAwait(false),
+                $"Expected WaitForProcessGoneAsync to recognize live Linux zombie PID {parsedZombiePid.ToString(CultureInfo.InvariantCulture)} as gone.");
+
+            var statAfterCheck = TryReadLinuxProcessStat(parsedZombiePid);
+            Assert.IsNotNull(statAfterCheck, "Expected zombie /proc/<pid>/stat entry to remain present while unreaped by parent.");
+            Assert.AreEqual('Z', TryGetLinuxStatState(statAfterCheck), "Expected zombie process to still be in state 'Z' before parent cleanup.");
+        }
+        finally
+        {
+            KillProcessBestEffort(parentProcess.Id);
+            var parentExited = await WaitForProcessGoneAsync(parentProcess.Id, TimeSpan.FromSeconds(5), CancellationToken.None).ConfigureAwait(false);
+            if (parentExited)
+            {
+                using var reapCts = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+                try
+                {
+                    await parentProcess.WaitForExitAsync(reapCts.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (reapCts.IsCancellationRequested)
+                {
+                }
+            }
+
+            Assert.IsTrue(
+                parentExited,
+                $"Synthetic zombie parent PID {parentProcess.Id.ToString(CultureInfo.InvariantCulture)} was still alive after cleanup kill.");
+
+            if (zombiePid.HasValue)
+            {
+                var zombieGone = await WaitForProcessGoneAsync(zombiePid.Value, TimeSpan.FromSeconds(5), CancellationToken.None).ConfigureAwait(false);
+                Assert.IsTrue(
+                    zombieGone,
+                    $"Synthetic zombie child PID {zombiePid.Value.ToString(CultureInfo.InvariantCulture)} was still reported live after parent cleanup.");
+            }
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task ProjectEvaluationCallerCancellationKillsProcessTreeBeforeThrowing()
+    {
+        const string stdoutMarker = "ARCH-CANCEL-STDOUT-MARKER";
+        const string stderrMarker = "ARCH-CANCEL-STDERR-MARKER";
+        var pidFile = Path.Combine(Path.GetTempPath(), $"skymonitor-arch-cancel-{Guid.NewGuid():N}.pid");
+        int? grandchildPid = null;
+
+        try
+        {
+            using var callerCts = CancellationTokenSource.CreateLinkedTokenSource(TestContext.CancellationToken);
+            var runTask = RepositoryGraph.RunProcessWithTimeoutAsync(
+                CreateHangingChildStartInfo(stdoutMarker, stderrMarker, pidFile),
+                "SyntheticCancelledProject.csproj",
+                TimeSpan.FromSeconds(30),
+                TimeSpan.FromMilliseconds(500),
+                callerCts.Token);
+
+            if (!OperatingSystem.IsWindows())
+            {
+                grandchildPid = await WaitForPidFileAsync(pidFile, TimeSpan.FromSeconds(10), TestContext.CancellationToken).ConfigureAwait(false);
+                Assert.IsTrue(grandchildPid.HasValue, "Expected synthetic hanging child to record its grandchild PID before cancellation.");
+            }
+            else
+            {
+                await Task.Delay(250, TestContext.CancellationToken).ConfigureAwait(false);
+            }
+
+            var cancelElapsed = Stopwatch.StartNew();
+            await callerCts.CancelAsync().ConfigureAwait(false);
+            await Assert.ThrowsAsync<OperationCanceledException>(() => runTask).ConfigureAwait(false);
+            cancelElapsed.Stop();
+
+            Assert.IsLessThan(
+                TimeSpan.FromSeconds(5),
+                cancelElapsed.Elapsed,
+                $"Caller cancellation took {cancelElapsed.Elapsed.TotalSeconds.ToString("0.##", CultureInfo.InvariantCulture)}s to unwind.");
+
+            if (!OperatingSystem.IsWindows())
+            {
+                Assert.IsTrue(
+                    await WaitForProcessGoneAsync(grandchildPid!.Value, TimeSpan.FromSeconds(5), TestContext.CancellationToken).ConfigureAwait(false),
+                    $"Expected caller cancellation to kill grandchild PID {grandchildPid.Value.ToString(CultureInfo.InvariantCulture)} before throwing.");
+            }
+        }
+        finally
+        {
+            await CleanupSyntheticProcessAsync(grandchildPid, pidFile).ConfigureAwait(false);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task RepositoryGraphWorkersCancelSiblingsFailFastAndRecognizeLinuxZombies()
+    {
+        Assert.IsTrue(IsLinuxStatZombieOrDead("4242 (sleep) Z 1 4242 4242 0 -1 0"));
+        Assert.IsTrue(IsLinuxStatZombieOrDead("4242 (weird (proc) name) Z 1 4242 4242 0 -1 0"));
+        Assert.IsTrue(IsLinuxStatZombieOrDead("4242 (exiting) X 1 4242 4242 0 -1 0"));
+        Assert.IsFalse(IsLinuxStatZombieOrDead("4242 (sleep) S 1 4242 4242 0 -1 0"));
+        Assert.IsFalse(IsLinuxStatZombieOrDead("4242 (dotnet) R 1 4242 4242 0 -1 0"));
+
+        var pidFile = Path.Combine(Path.GetTempPath(), $"skymonitor-arch-failfast-{Guid.NewGuid():N}.pid");
+        int? siblingGrandchildPid = null;
+        var queuedStartedCount = 0;
+
+        try
+        {
+            var elapsed = Stopwatch.StartNew();
+            var exception = await Assert.ThrowsExactlyAsync<TimeoutException>(() =>
+                RepositoryGraph.RunWithFailFastWorkersAsync(
+                    [0, 1, 2, 3],
+                    maxConcurrency: 2,
+                    async (workIndex, ct) =>
+                    {
+                        if (workIndex == 0)
+                        {
+                            await RepositoryGraph.RunProcessWithTimeoutAsync(
+                                CreateHangingChildStartInfo("ARCH-SIBLING-OUT", "ARCH-SIBLING-ERR", pidFile),
+                                "SyntheticSiblingProject.csproj",
+                                TimeSpan.FromSeconds(30),
+                                TimeSpan.FromMilliseconds(500),
+                                ct).ConfigureAwait(false);
+                            return workIndex;
+                        }
+
+                        if (workIndex == 1)
+                        {
+                            if (!OperatingSystem.IsWindows())
+                            {
+                                siblingGrandchildPid = await WaitForPidFileAsync(pidFile, TimeSpan.FromSeconds(10), ct).ConfigureAwait(false);
+                            }
+                            else
+                            {
+                                await Task.Delay(250, ct).ConfigureAwait(false);
+                            }
+
+                            throw new TimeoutException("ARCH-EVALUATE: synthetic first failure");
+                        }
+
+                        Interlocked.Increment(ref queuedStartedCount);
+                        await Task.Delay(TimeSpan.FromSeconds(30), ct).ConfigureAwait(false);
+                        return workIndex;
+                    },
+                    TestContext.CancellationToken)).ConfigureAwait(false);
+            elapsed.Stop();
+
+            Assert.Contains("ARCH-EVALUATE: synthetic first failure", exception.Message, StringComparison.Ordinal);
+            Assert.IsLessThan(
+                TimeSpan.FromSeconds(5),
+                elapsed.Elapsed,
+                $"Fail-fast worker cancellation took {elapsed.Elapsed.TotalSeconds.ToString("0.##", CultureInfo.InvariantCulture)}s.");
+            Assert.AreEqual(0, Volatile.Read(ref queuedStartedCount), "Queued evaluations should not start after a sibling fails.");
+
+            if (!OperatingSystem.IsWindows())
+            {
+                siblingGrandchildPid ??= TryReadPidFile(pidFile);
+                Assert.IsTrue(siblingGrandchildPid.HasValue, "Expected sibling worker to start its synthetic child before failing.");
+                Assert.IsTrue(
+                    await WaitForProcessGoneAsync(siblingGrandchildPid.Value, TimeSpan.FromSeconds(5), TestContext.CancellationToken).ConfigureAwait(false),
+                    $"Expected fail-fast cancellation to terminate sibling grandchild PID {siblingGrandchildPid.Value.ToString(CultureInfo.InvariantCulture)}.");
+            }
+        }
+        finally
+        {
+            await CleanupSyntheticProcessAsync(siblingGrandchildPid, pidFile).ConfigureAwait(false);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void DescribeTimeoutTerminationCoversAllCleanupOutcomes()
+    {
+        var cases = new (
+            string Name,
+            bool RootExitedBeforeKill,
+            bool KillSucceeded,
+            bool RootExitedAfterKill,
+            RepositoryGraph.TaggedDescendantCleanupResult TaggedCleanup,
+            bool PipesDrained,
+            string Expected)[]
+        {
+            (
+                "VerifiedCleanExitNoReparentedDescendants",
+                false,
+                true,
+                true,
+                new RepositoryGraph.TaggedDescendantCleanupResult(Supported: true, SignaledCount: 0, SurvivingDescendantsDetected: false),
+                true,
+                "and process-tree termination was requested; the root process and all tracked tagged descendants exited and redirected output streams closed."
+            ),
+            (
+                "VerifiedCleanExitAfterSignalingReparentedDescendants",
+                false,
+                true,
+                true,
+                new RepositoryGraph.TaggedDescendantCleanupResult(Supported: true, SignaledCount: 2, SurvivingDescendantsDetected: false),
+                true,
+                "and process-tree termination was requested; the root process and all tracked tagged descendants exited and redirected output streams closed."
+            ),
+            (
+                "RootExitedBeforeKillAndPipesTimedOut",
+                true,
+                false,
+                true,
+                new RepositoryGraph.TaggedDescendantCleanupResult(Supported: true, SignaledCount: 0, SurvivingDescendantsDetected: false),
+                false,
+                "while draining redirected output after the root process exited; pipe readers were closed after the bounded drain grace period and descendant processes may still be running."
+            ),
+            (
+                "RootExitedBeforeKillWithSurvivingTaggedDescendants",
+                true,
+                false,
+                true,
+                new RepositoryGraph.TaggedDescendantCleanupResult(Supported: true, SignaledCount: 1, SurvivingDescendantsDetected: true),
+                true,
+                "while draining redirected output after the root process exited; tagged descendant processes remained active after the post-kill grace period."
+            ),
+            (
+                "RootExitedBeforeKillWithTerminatedTaggedDescendants",
+                true,
+                false,
+                true,
+                new RepositoryGraph.TaggedDescendantCleanupResult(Supported: true, SignaledCount: 2, SurvivingDescendantsDetected: false),
+                true,
+                "while draining redirected output after the root process exited; surviving tagged descendants were terminated and redirected pipes closed during cleanup, though full process-tree termination could not be established because the root process had already exited."
+            ),
+            (
+                "RootExitedBeforeKillWithNoTaggedDescendantsSignaled",
+                true,
+                false,
+                true,
+                new RepositoryGraph.TaggedDescendantCleanupResult(Supported: true, SignaledCount: 0, SurvivingDescendantsDetected: false),
+                true,
+                "while draining redirected output after the root process exited; redirected pipes closed during cleanup, but process-tree termination could not be established because the root process had already exited."
+            ),
+            (
+                "RootDidNotExitAfterKill",
+                false,
+                true,
+                false,
+                new RepositoryGraph.TaggedDescendantCleanupResult(Supported: true, SignaledCount: 0, SurvivingDescendantsDetected: false),
+                false,
+                "and termination was requested, but the root process did not exit within the post-kill grace period; pipe readers were closed and descendant processes may still be running."
+            ),
+            (
+                "RootExitedAfterKillWithSurvivingTaggedDescendants",
+                false,
+                true,
+                true,
+                new RepositoryGraph.TaggedDescendantCleanupResult(Supported: true, SignaledCount: 1, SurvivingDescendantsDetected: true),
+                true,
+                "and the root process exited after termination was requested, but tagged descendant processes remained active after the post-kill grace period."
+            ),
+            (
+                "RootExitedAfterKillAndPipesTimedOut",
+                false,
+                true,
+                true,
+                new RepositoryGraph.TaggedDescendantCleanupResult(Supported: true, SignaledCount: 0, SurvivingDescendantsDetected: false),
+                false,
+                "and the root process exited after termination was requested, but redirected output draining timed out; pipe readers were closed and descendant processes may still be running."
+            ),
+            (
+                "RootExitedBeforeKillSucceeded",
+                false,
+                false,
+                true,
+                new RepositoryGraph.TaggedDescendantCleanupResult(Supported: true, SignaledCount: 0, SurvivingDescendantsDetected: false),
+                true,
+                "and the root process exited before process-tree termination could be established."
+            ),
+            (
+                "TaggedDescendantCleanupUnsupportedOnPlatform",
+                false,
+                true,
+                true,
+                new RepositoryGraph.TaggedDescendantCleanupResult(Supported: false, SignaledCount: 0, SurvivingDescendantsDetected: false),
+                true,
+                "and process-tree termination was requested and the root process exited with drained pipes, but reparented descendants could not be verified on this platform."
+            ),
+        };
+
+        foreach (var testCase in cases)
+        {
+            var actual = RepositoryGraph.DescribeTimeoutTermination(
+                testCase.RootExitedBeforeKill,
+                testCase.KillSucceeded,
+                testCase.RootExitedAfterKill,
+                testCase.TaggedCleanup,
+                testCase.PipesDrained);
+
+            Assert.AreEqual(
+                testCase.Expected,
+                actual,
+                $"Unexpected timeout termination description for case '{testCase.Name}'.");
+        }
+    }
+
+    private static ProcessStartInfo CreateQuickOutputStartInfo(string stdoutText, string stderrText)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            var windowsStartInfo = new ProcessStartInfo("cmd.exe")
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false
+            };
+            windowsStartInfo.ArgumentList.Add("/c");
+            windowsStartInfo.ArgumentList.Add($"echo {stdoutText}& echo {stderrText} 1>&2");
+            return windowsStartInfo;
+        }
+
+        var unixStartInfo = new ProcessStartInfo("/bin/sh")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+        unixStartInfo.ArgumentList.Add("-c");
+        unixStartInfo.ArgumentList.Add("printf '%s\\n' \"$1\"; printf '%s\\n' \"$2\" >&2");
+        unixStartInfo.ArgumentList.Add("--");
+        unixStartInfo.ArgumentList.Add(stdoutText);
+        unixStartInfo.ArgumentList.Add(stderrText);
+        return unixStartInfo;
+    }
+
+    private static ProcessStartInfo CreateHangingChildStartInfo(string stdoutMarker, string stderrMarker, string pidFile)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            var windowsStartInfo = new ProcessStartInfo("cmd.exe")
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false
+            };
+            windowsStartInfo.ArgumentList.Add("/c");
+            windowsStartInfo.ArgumentList.Add($"echo {stdoutMarker}& echo {stderrMarker} 1>&2& ping -n 61 127.0.0.1 >nul");
+            return windowsStartInfo;
+        }
+
+        var unixStartInfo = new ProcessStartInfo("/bin/sh")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+        unixStartInfo.ArgumentList.Add("-c");
+        unixStartInfo.ArgumentList.Add(
+            "sleep 60 & child_pid=$!; printf '%s\\n' \"$child_pid\" > \"$1.tmp\" && mv \"$1.tmp\" \"$1\"; printf '%s child_pid=%s\\n' \"$2\" \"$child_pid\"; printf '%s\\n' \"$3\" >&2; wait \"$child_pid\"");
+        unixStartInfo.ArgumentList.Add("--");
+        unixStartInfo.ArgumentList.Add(pidFile);
+        unixStartInfo.ArgumentList.Add(stdoutMarker);
+        unixStartInfo.ArgumentList.Add(stderrMarker);
+        return unixStartInfo;
+    }
+
+    private static ProcessStartInfo CreateExitedParentWithPipeHoldingChildStartInfo(
+        string stdoutMarker,
+        string stderrMarker,
+        string pidFile,
+        bool stripEvaluationRunId = false)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return CreateHangingChildStartInfo(stdoutMarker, stderrMarker, pidFile);
+        }
+
+        var childLaunch = stripEvaluationRunId
+            ? $"(unset {RepositoryGraph.EvaluationRunIdEnvironmentVariable}; exec sleep 60)"
+            : "sleep 60";
+        var unixStartInfo = new ProcessStartInfo("/bin/sh")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+        unixStartInfo.ArgumentList.Add("-c");
+        unixStartInfo.ArgumentList.Add(
+            $"{childLaunch} & child_pid=$!; printf '%s\\n' \"$child_pid\" > \"$1.tmp\" && mv \"$1.tmp\" \"$1\"; printf '%s child_pid=%s\\n' \"$2\" \"$child_pid\"; printf '%s\\n' \"$3\" >&2; exit 0");
+        unixStartInfo.ArgumentList.Add("--");
+        unixStartInfo.ArgumentList.Add(pidFile);
+        unixStartInfo.ArgumentList.Add(stdoutMarker);
+        unixStartInfo.ArgumentList.Add(stderrMarker);
+        return unixStartInfo;
+    }
+
+    private static ProcessStartInfo CreateHangingRootWithEscapedPipeHolderStartInfo(
+        string stdoutMarker,
+        string stderrMarker,
+        string pidFile,
+        bool stripEvaluationRunId = false)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return CreateHangingChildStartInfo(stdoutMarker, stderrMarker, pidFile);
+        }
+
+        var escapedLaunch = stripEvaluationRunId
+            ? $"(unset {RepositoryGraph.EvaluationRunIdEnvironmentVariable}; exec sleep 60)"
+            : "sleep 60";
+        var unixStartInfo = new ProcessStartInfo("/bin/sh")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+        unixStartInfo.ArgumentList.Add("-c");
+        unixStartInfo.ArgumentList.Add(
+            $"({escapedLaunch} & escaped_pid=$!; printf '%s\\n' \"$escaped_pid\" > \"$1.tmp\" && mv \"$1.tmp\" \"$1\") & wait $!; escaped_pid=$(cat \"$1\"); printf '%s escaped_pid=%s\\n' \"$2\" \"$escaped_pid\"; printf '%s\\n' \"$3\" >&2; exec sleep 60");
+        unixStartInfo.ArgumentList.Add("--");
+        unixStartInfo.ArgumentList.Add(pidFile);
+        unixStartInfo.ArgumentList.Add(stdoutMarker);
+        unixStartInfo.ArgumentList.Add(stderrMarker);
+        return unixStartInfo;
+    }
+
+    private static ProcessStartInfo CreateHangingRootWithReparentedPipeClosedDescendantStartInfo(
+        string stdoutMarker,
+        string stderrMarker,
+        string pidFile)
+    {
+        var unixStartInfo = new ProcessStartInfo("/bin/sh")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+        unixStartInfo.ArgumentList.Add("-c");
+        unixStartInfo.ArgumentList.Add(
+            "(sleep 60 </dev/null >/dev/null 2>&1 & escaped_pid=$!; printf '%s\\n' \"$escaped_pid\" > \"$1.tmp\" && mv \"$1.tmp\" \"$1\") & wait $!; escaped_pid=$(cat \"$1\"); printf '%s escaped_pid=%s\\n' \"$2\" \"$escaped_pid\"; printf '%s\\n' \"$3\" >&2; exec sleep 60");
+        unixStartInfo.ArgumentList.Add("--");
+        unixStartInfo.ArgumentList.Add(pidFile);
+        unixStartInfo.ArgumentList.Add(stdoutMarker);
+        unixStartInfo.ArgumentList.Add(stderrMarker);
+        return unixStartInfo;
+    }
+
+    private static ProcessStartInfo CreateExitedRootWithPipeHoldingAndPipeClosedDescendantsStartInfo(
+        string stdoutMarker,
+        string stderrMarker,
+        string closedPidFile,
+        string openPidFile)
+    {
+        var unixStartInfo = new ProcessStartInfo("/bin/sh")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+        unixStartInfo.ArgumentList.Add("-c");
+        unixStartInfo.ArgumentList.Add(
+            "(sleep 60 </dev/null >/dev/null 2>&1 & closed_pid=$!; printf '%s\\n' \"$closed_pid\" > \"$1.tmp\" && mv \"$1.tmp\" \"$1\") & wait $!; closed_pid=$(cat \"$1\"); sleep 60 & open_pid=$!; printf '%s\\n' \"$open_pid\" > \"$2.tmp\" && mv \"$2.tmp\" \"$2\"; printf '%s closed_pid=%s open_pid=%s\\n' \"$3\" \"$closed_pid\" \"$open_pid\"; printf '%s\\n' \"$4\" >&2; exit 0");
+        unixStartInfo.ArgumentList.Add("--");
+        unixStartInfo.ArgumentList.Add(closedPidFile);
+        unixStartInfo.ArgumentList.Add(openPidFile);
+        unixStartInfo.ArgumentList.Add(stdoutMarker);
+        unixStartInfo.ArgumentList.Add(stderrMarker);
+        return unixStartInfo;
+    }
+
+    private static int? TryExtractPid(string text, string prefix)
+    {
+        var pidStart = text.IndexOf(prefix, StringComparison.Ordinal);
+        if (pidStart < 0)
+        {
+            return null;
+        }
+
+        var digitsStart = pidStart + prefix.Length;
+        var digitsEnd = digitsStart;
+        while (digitsEnd < text.Length && char.IsAsciiDigit(text[digitsEnd]))
+        {
+            digitsEnd++;
+        }
+
+        return int.TryParse(
+            text.AsSpan(digitsStart, digitsEnd - digitsStart),
+            NumberStyles.None,
+            CultureInfo.InvariantCulture,
+            out var pid)
+            ? pid
+            : null;
+    }
+
+    private static int? TryReadPidFile(string pidFile)
+    {
+        try
+        {
+            if (!File.Exists(pidFile))
+            {
+                return null;
+            }
+
+            var content = File.ReadAllText(pidFile).Trim();
+            return int.TryParse(content, NumberStyles.None, CultureInfo.InvariantCulture, out var pid)
+                ? pid
+                : null;
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+    }
+
+    private static async Task<int?> WaitForPidFileAsync(string pidFile, TimeSpan maxWait, CancellationToken cancellationToken)
+    {
+        var deadline = Stopwatch.StartNew();
+        while (deadline.Elapsed < maxWait)
+        {
+            var pid = TryReadPidFile(pidFile);
+            if (pid.HasValue)
+            {
+                return pid;
+            }
+
+            await Task.Delay(20, cancellationToken).ConfigureAwait(false);
+        }
+
+        return TryReadPidFile(pidFile);
+    }
+
+    private static async Task CleanupSyntheticProcessAsync(int? knownPid, string pidFile)
+    {
+        try
+        {
+            var pid = knownPid ?? TryReadPidFile(pidFile);
+            if (pid.HasValue)
+            {
+                KillProcessBestEffort(pid.Value);
+                var exited = await WaitForProcessGoneAsync(pid.Value, TimeSpan.FromSeconds(5), CancellationToken.None).ConfigureAwait(false);
+                Assert.IsTrue(
+                    exited,
+                    $"Synthetic test process PID {pid.Value.ToString(CultureInfo.InvariantCulture)} remained alive after cleanup kill.");
+            }
+        }
+        finally
+        {
+            TryDeleteFile(pidFile);
+            TryDeleteFile($"{pidFile}.tmp");
+        }
+    }
+
+    private static void KillProcessBestEffort(int pid)
+    {
+        if (IsLinuxZombieOrDeadProcess(pid))
+        {
+            return;
+        }
+
+        try
+        {
+            using var process = Process.GetProcessById(pid);
+            process.Kill(entireProcessTree: true);
+        }
+        catch (ArgumentException)
+        {
+        }
+        catch (InvalidOperationException)
+        {
+        }
+        catch (Win32Exception)
+        {
+        }
+        catch (AggregateException)
+        {
+        }
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+    }
+
+    private static void AssertRedirectedPipeReadersClosedForProcess(int childPid)
+    {
+        var pidText = childPid.ToString(CultureInfo.InvariantCulture);
+        var childStdoutPipe = TryReadLinkTarget($"/proc/{pidText}/fd/1");
+        var childStderrPipe = TryReadLinkTarget($"/proc/{pidText}/fd/2");
+
+        Assert.IsNotNull(childStdoutPipe, $"Expected child PID {pidText} to keep stdout fd open.");
+        Assert.IsNotNull(childStderrPipe, $"Expected child PID {pidText} to keep stderr fd open.");
+        Assert.IsTrue(
+            childStdoutPipe.StartsWith("pipe:[", StringComparison.Ordinal),
+            $"Expected child stdout fd to reference an anonymous pipe, got '{childStdoutPipe}'.");
+        Assert.IsTrue(
+            childStderrPipe.StartsWith("pipe:[", StringComparison.Ordinal),
+            $"Expected child stderr fd to reference an anonymous pipe, got '{childStderrPipe}'.");
+
+        var selfOpenTargets = GetCurrentProcessOpenLinkTargets();
+        Assert.IsFalse(
+            selfOpenTargets.Contains(childStdoutPipe),
+            $"Parent test process still holds stdout pipe reader '{childStdoutPipe}' open after timeout.");
+        Assert.IsFalse(
+            selfOpenTargets.Contains(childStderrPipe),
+            $"Parent test process still holds stderr pipe reader '{childStderrPipe}' open after timeout.");
+    }
+
+    private static string? TryReadLinkTarget(string path)
+    {
+        try
+        {
+            return new FileInfo(path).LinkTarget;
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    private static HashSet<string> GetCurrentProcessOpenLinkTargets()
+    {
+        var targets = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var entry in Directory.EnumerateFileSystemEntries("/proc/self/fd"))
+        {
+            var target = TryReadLinkTarget(entry);
+            if (target is not null)
+            {
+                targets.Add(target);
+            }
+        }
+
+        return targets;
+    }
+
+    private static bool IsLinuxZombieOrDeadProcess(int pid)
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return false;
+        }
+
+        try
+        {
+            var stat = File.ReadAllText($"/proc/{pid.ToString(CultureInfo.InvariantCulture)}/stat");
+            return IsLinuxStatZombieOrDead(stat);
+        }
+        catch (FileNotFoundException)
+        {
+            return true;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return true;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    private static string? TryReadLinuxProcessStat(int pid)
+    {
+        try
+        {
+            return File.ReadAllText($"/proc/{pid.ToString(CultureInfo.InvariantCulture)}/stat");
+        }
+        catch (FileNotFoundException)
+        {
+            return null;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return null;
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    private static char? TryGetLinuxStatState(string statContent)
+    {
+        var closeParenIndex = statContent.LastIndexOf(')');
+        if (closeParenIndex < 0 || closeParenIndex + 2 >= statContent.Length)
+        {
+            return null;
+        }
+
+        return statContent[closeParenIndex + 2];
+    }
+
+    private static bool IsLinuxStatZombieOrDead(string statContent) =>
+        TryGetLinuxStatState(statContent) is 'Z' or 'X' or 'x';
+
+    private static async Task<bool> WaitForProcessGoneAsync(int pid, TimeSpan maxWait, CancellationToken cancellationToken)
+    {
+        var deadline = Stopwatch.StartNew();
+        while (true)
+        {
+            if (IsLinuxZombieOrDeadProcess(pid))
+            {
+                return true;
+            }
+
+            try
+            {
+                using var process = Process.GetProcessById(pid);
+                if (process.HasExited)
+                {
+                    return true;
+                }
+            }
+            catch (ArgumentException)
+            {
+                return true;
+            }
+            catch (InvalidOperationException)
+            {
+                return true;
+            }
+
+            if (deadline.Elapsed >= maxWait)
+            {
+                return false;
+            }
+
+            await Task.Delay(25, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -1175,14 +2269,14 @@ public sealed class ArchitectureBoundaryTests
     [TestCategory("Integration")]
     public async Task HostReleasePublishOutputsContainNoTestAssemblies()
     {
-        var repository = Repository.Value;
+        var repository = snapshot.Graph;
         var evidenceRoot = Environment.GetEnvironmentVariable("HVO_PUBLISH_EVIDENCE_ROOT");
         var testAssemblies = repository.Projects.Values
             .Where(project => project.Kind == ProjectKind.Test)
             .Select(project => project.AssemblyName)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var hostName in new[] { CameraAgent, CameraAgentReplayRunner, ProcessingRunner })
+        foreach (var hostName in HostProjects.Order(StringComparer.Ordinal))
         {
             var output = string.IsNullOrWhiteSpace(evidenceRoot)
                 ? Path.Combine(Path.GetTempPath(), $"skymonitor-architecture-{hostName}-{Guid.NewGuid():N}")
@@ -1206,7 +2300,7 @@ public sealed class ArchitectureBoundaryTests
                     output,
                     hostName is CameraAgentReplayRunner or ProcessingRunner ? "linux-x64" : null).ConfigureAwait(false);
                 var forbiddenAssemblies = testAssemblies.ToHashSet(StringComparer.OrdinalIgnoreCase);
-                foreach (var forbiddenHost in new[] { CameraAgent, LogicHost, CameraAgentReplayRunner, ProcessingRunner }.Where(
+                foreach (var forbiddenHost in HostProjects.Where(
                     candidate => candidate != hostName))
                 {
                     forbiddenAssemblies.Add(repository.Projects[forbiddenHost].AssemblyName);
@@ -1227,16 +2321,11 @@ public sealed class ArchitectureBoundaryTests
 
     [TestMethod]
     [TestCategory("Unit")]
-    public void HostDockerfilesDoNotPackageTestCatalogFixtures()
+    public void CameraAgentDockerfileDoesNotPackageTestCatalogFixtures()
     {
-        var repositoryRoot = Repository.Value.Root;
-
-        foreach (var hostName in new[] { CameraAgent, LogicHost })
-        {
-            var dockerfile = File.ReadAllText(Path.Combine(repositoryRoot, "src", hostName, "Dockerfile"));
-            Assert.IsFalse(dockerfile.Contains("tests/fixtures/catalog", StringComparison.OrdinalIgnoreCase),
-                $"ARCH-PUBLISH: '{hostName}' Dockerfile must not package a test catalog fixture.");
-        }
+        var dockerfile = snapshot.Source(Path.Combine(snapshot.Graph.Root, "src", CameraAgent, "Dockerfile")).Text;
+        Assert.IsFalse(dockerfile.Contains("tests/fixtures/catalog", StringComparison.OrdinalIgnoreCase),
+            $"ARCH-PUBLISH: '{CameraAgent}' Dockerfile must not package a test catalog fixture.");
     }
 
     [TestMethod]
@@ -1253,7 +2342,7 @@ public sealed class ArchitectureBoundaryTests
             var testAssemblyName = testAssembly.GetName().Name!;
             File.Copy(testAssembly.Location, Path.Combine(output, "renamed-test.dll"));
             File.Copy(
-                Path.Combine(Repository.Value.Root, "tests", "fixtures", "catalog", "hyg-v42-bright-stars.sqlite"),
+                Path.Combine(snapshot.Graph.Root, "tests", "fixtures", "catalog", "hyg-v42-bright-stars.sqlite"),
                 Path.Combine(output, "renamed-catalog.dat"));
             File.WriteAllText(Path.Combine(output, "catalog-package.json"),
                 """{"package":{"kind":"fixture"}}""");
@@ -1491,9 +2580,8 @@ public sealed class ArchitectureBoundaryTests
 
         public IReadOnlyDictionary<string, ProjectInfo> Projects { get; }
 
-        public static RepositoryGraph Load()
+        public static RepositoryGraph Load(string root)
         {
-            var root = FindRepositoryRoot();
             var projectPaths = ProjectSearchDirectories
                 .SelectMany(directory => Directory.EnumerateFiles(
                     Path.Combine(root, directory),
@@ -1507,14 +2595,25 @@ public sealed class ArchitectureBoundaryTests
                 static path => Path.GetFileNameWithoutExtension(path)!,
                 StringComparer.Ordinal);
             var projects = new Dictionary<string, ProjectInfo>(StringComparer.Ordinal);
+            var evaluationRequests = projectPaths
+                .SelectMany(path => SupportedConfigurations.Select(configuration => (Path: path, Configuration: configuration)))
+                .ToArray();
 
-            foreach (var path in projectPaths)
+            // Evaluation runs no targets. Wait for every worker, cancelling remaining workers promptly on the first failure,
+            // then surface results and failures in project and configuration order.
+            var allEvaluations = RunWithFailFastWorkersAsync(
+                evaluationRequests,
+                Math.Clamp(Environment.ProcessorCount, 1, 8),
+                static (request, cancellationToken) => EvaluateProjectAsync(request.Path, request.Configuration, cancellationToken))
+                .GetAwaiter().GetResult();
+
+            var configurationCount = SupportedConfigurations.Length;
+            for (var index = 0; index < projectPaths.Length; index++)
             {
+                var path = projectPaths[index];
                 var name = Path.GetFileNameWithoutExtension(path)!;
                 var relativePath = Path.GetRelativePath(root, path);
-                var evaluations = SupportedConfigurations
-                    .Select(configuration => EvaluateProject(path, configuration))
-                    .ToArray();
+                var evaluations = allEvaluations.AsSpan(index * configurationCount, configurationCount).ToArray();
                 var evaluation = evaluations[^1];
                 var kind = relativePath.StartsWith($"src{Path.DirectorySeparatorChar}", StringComparison.Ordinal) && name != TestSupport
                     ? ProjectKind.Production
@@ -1538,6 +2637,54 @@ public sealed class ArchitectureBoundaryTests
             }
 
             return new RepositoryGraph(root, projects);
+        }
+
+        internal static async Task<TResult[]> RunWithFailFastWorkersAsync<TWork, TResult>(
+            IReadOnlyList<TWork> workItems,
+            int maxConcurrency,
+            Func<TWork, CancellationToken, Task<TResult>> workerAction,
+            CancellationToken cancellationToken = default)
+        {
+            ArgumentOutOfRangeException.ThrowIfLessThan(maxConcurrency, 1);
+
+            using var workers = new SemaphoreSlim(maxConcurrency);
+            using var failFastCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            ExceptionDispatchInfo? firstFailure = null;
+            var tasks = workItems.Select(work => ExecuteAsync(work)).ToArray();
+
+            await Task.WhenAll(tasks.Cast<Task>()).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+
+            foreach (var task in tasks)
+            {
+                if (task.IsFaulted)
+                {
+                    task.GetAwaiter().GetResult();
+                }
+            }
+
+            firstFailure?.Throw();
+
+            return tasks.Select(static task => task.GetAwaiter().GetResult()).ToArray();
+
+            async Task<TResult> ExecuteAsync(TWork work)
+            {
+                await workers.WaitAsync(failFastCts.Token).ConfigureAwait(false);
+                try
+                {
+                    failFastCts.Token.ThrowIfCancellationRequested();
+                    return await workerAction(work, failFastCts.Token).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException || !failFastCts.IsCancellationRequested)
+                {
+                    Interlocked.CompareExchange(ref firstFailure, ExceptionDispatchInfo.Capture(ex), null);
+                    await failFastCts.CancelAsync().ConfigureAwait(false);
+                    throw;
+                }
+                finally
+                {
+                    workers.Release();
+                }
+            }
         }
 
         public string[] ValidateProductionReferences(
@@ -1565,7 +2712,6 @@ public sealed class ArchitectureBoundaryTests
                     }
                 }
 
-
                 foreach (var package in project.PackageReferences.Where(IsTestOnlyPackage))
                 {
                     violations.Add($"ARCH-PACKAGE: Production project '{project.Name}' references test-only package '{package}'.");
@@ -1590,7 +2736,7 @@ public sealed class ArchitectureBoundaryTests
             return violations.Order(StringComparer.Ordinal).ToArray();
         }
 
-        public string[] ValidateTransitiveBoundaries(string cameraAgent, string logicHost)
+        public string[] ValidateTransitiveBoundaries(IReadOnlySet<string> hosts)
         {
             var violations = new List<string>();
             foreach (var source in Projects.Values.Where(project => project.Kind == ProjectKind.Production))
@@ -1598,8 +2744,7 @@ public sealed class ArchitectureBoundaryTests
                 foreach (var path in FindReachablePaths(source.Name))
                 {
                     var target = Projects[path[^1]];
-                    var crossesHostBoundary = source.Name == cameraAgent && target.Name == logicHost ||
-                        source.Name == logicHost && target.Name == cameraAgent;
+                    var crossesHostBoundary = hosts.Contains(source.Name) && hosts.Contains(target.Name);
                     if (target.Kind != ProjectKind.Production || crossesHostBoundary)
                     {
                         violations.Add($"ARCH-TRANSITIVE: Consumer '{source.Name}' reaches forbidden dependency '{target.Name}' through {string.Join(" -> ", path)}.");
@@ -1646,16 +2791,9 @@ public sealed class ArchitectureBoundaryTests
                 var reachable = FindReachablePaths(projectName)
                     .Select(path => path[^1])
                     .ToHashSet(StringComparer.Ordinal);
-                var reachesCameraAgent = reachable.Overlaps(CameraAgentImplementations);
-                var reachesLogicHost = reachable.Contains(LogicHost);
-
-                if (sharedProjects.Contains(projectName) && (reachesCameraAgent || reachesLogicHost))
+                if (sharedProjects.Contains(projectName) && reachable.Overlaps(CameraAgentImplementations))
                 {
                     violations.Add($"ARCH-TEST-SHARED: Shared test project '{projectName}' reaches a host implementation.");
-                }
-                if (cameraAgentProjects.Contains(projectName) && reachesLogicHost)
-                {
-                    violations.Add($"ARCH-TEST-CAMERA: CameraAgent test project '{projectName}' reaches '{LogicHost}'.");
                 }
             }
 
@@ -1685,36 +2823,50 @@ public sealed class ArchitectureBoundaryTests
             }
         }
 
-        internal static ProjectEvaluation EvaluateProject(string projectPath, string configuration)
-        {
-            using var process = new Process
-            {
-                StartInfo = new ProcessStartInfo("dotnet")
-                {
-                    WorkingDirectory = Path.GetDirectoryName(projectPath)!,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false
-                }
-            };
-            process.StartInfo.ArgumentList.Add("msbuild");
-            process.StartInfo.ArgumentList.Add(projectPath);
-            process.StartInfo.ArgumentList.Add("-nologo");
-            process.StartInfo.ArgumentList.Add($"-property:Configuration={configuration}");
-            process.StartInfo.ArgumentList.Add("-getProperty:AssemblyName,TargetPath");
-            process.StartInfo.ArgumentList.Add("-getItem:ProjectReference,PackageReference,FrameworkReference");
+        // Tagged descendant cleanup relies on descendants inheriting this environment variable;
+        // processes that scrub their environment (for example via `env -i`) and close pipes
+        // cannot be enumerated without cgroups or a subreaper, which is why timeout diagnostics
+        // report only the root exit, tracked tagged descendants, and pipe closure actually verified.
+        internal const string EvaluationRunIdEnvironmentVariable = "HVO_ARCH_EVAL_RUN_ID";
+        internal static readonly TimeSpan DefaultEvaluationTimeout = TimeSpan.FromMinutes(2);
+        internal static readonly TimeSpan PostKillGracePeriod = TimeSpan.FromSeconds(5);
 
-            process.Start();
-            var output = process.StandardOutput.ReadToEnd();
-            var error = process.StandardError.ReadToEnd();
-            process.WaitForExit();
-            if (process.ExitCode != 0)
+        internal static Task<ProjectEvaluation> EvaluateProjectAsync(
+            string projectPath,
+            string configuration,
+            CancellationToken cancellationToken = default) =>
+            EvaluateProjectAsync(projectPath, configuration, DefaultEvaluationTimeout, cancellationToken);
+
+        internal static async Task<ProjectEvaluation> EvaluateProjectAsync(
+            string projectPath,
+            string configuration,
+            TimeSpan timeout,
+            CancellationToken cancellationToken = default)
+        {
+            var startInfo = new ProcessStartInfo("dotnet")
+            {
+                WorkingDirectory = Path.GetDirectoryName(projectPath)!,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false
+            };
+            startInfo.ArgumentList.Add("msbuild");
+            startInfo.ArgumentList.Add(projectPath);
+            startInfo.ArgumentList.Add("-nologo");
+            startInfo.ArgumentList.Add("-nodeReuse:false");
+            startInfo.ArgumentList.Add($"-property:Configuration={configuration}");
+            startInfo.ArgumentList.Add("-getProperty:AssemblyName,TargetPath");
+            startInfo.ArgumentList.Add("-getItem:ProjectReference,PackageReference,FrameworkReference");
+            startInfo.Environment["MSBUILDDISABLENODEREUSE"] = "1";
+
+            var result = await RunProcessWithTimeoutAsync(startInfo, projectPath, timeout, cancellationToken).ConfigureAwait(false);
+            if (result.ExitCode != 0)
             {
                 throw new InvalidOperationException(
-                    $"ARCH-EVALUATE: MSBuild evaluation failed for '{projectPath}'.{Environment.NewLine}{output}{Environment.NewLine}{error}");
+                    $"ARCH-EVALUATE: MSBuild evaluation failed for '{projectPath}'.{Environment.NewLine}{result.StandardOutput}{Environment.NewLine}{result.StandardError}");
             }
 
-            using var document = JsonDocument.Parse(output);
+            using var document = JsonDocument.Parse(result.StandardOutput);
             var root = document.RootElement;
             var assemblyName = root.GetProperty("Properties").GetProperty("AssemblyName").GetString()
                 ?? Path.GetFileNameWithoutExtension(projectPath)!;
@@ -1731,6 +2883,455 @@ public sealed class ArchitectureBoundaryTests
             return new ProjectEvaluation(assemblyName, projectReferences, packageReferences, frameworkReferences)
             { TargetPath = root.GetProperty("Properties").GetProperty("TargetPath").GetString()! };
         }
+
+        internal static Task<ProcessExecutionResult> RunProcessWithTimeoutAsync(
+            ProcessStartInfo startInfo,
+            string operationDescription,
+            TimeSpan timeout,
+            CancellationToken cancellationToken = default) =>
+            RunProcessWithTimeoutAsync(startInfo, operationDescription, timeout, PostKillGracePeriod, cancellationToken);
+
+        internal static async Task<ProcessExecutionResult> RunProcessWithTimeoutAsync(
+            ProcessStartInfo startInfo,
+            string operationDescription,
+            TimeSpan timeout,
+            TimeSpan postKillGracePeriod,
+            CancellationToken cancellationToken = default)
+        {
+            ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(timeout, TimeSpan.Zero);
+            ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(postKillGracePeriod, TimeSpan.Zero);
+            var effectivePostKillGracePeriod = postKillGracePeriod;
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var evaluationRunId = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
+            startInfo.Environment[EvaluationRunIdEnvironmentVariable] = evaluationRunId;
+
+            using var process = new Process { StartInfo = startInfo };
+            if (!process.Start())
+            {
+                throw new InvalidOperationException(
+                    $"ARCH-EVALUATE: Failed to start process for '{operationDescription}'.");
+            }
+
+            // Drain both pipes concurrently so a failing or timed-out process can write its full diagnostics.
+            using var drainCts = new CancellationTokenSource();
+            var outputBuffer = new StringBuilder();
+            var errorBuffer = new StringBuilder();
+            var outputTask = DrainStreamAsync(process.StandardOutput, outputBuffer, drainCts.Token);
+            var errorTask = DrainStreamAsync(process.StandardError, errorBuffer, drainCts.Token);
+
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(timeout);
+            var rootExitedBeforeCancellation = false;
+
+            try
+            {
+                await process.WaitForExitAsync(timeoutCts.Token).ConfigureAwait(false);
+                rootExitedBeforeCancellation = true;
+                await Task.WhenAll(outputTask, errorTask).WaitAsync(timeoutCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                var timedOut = !cancellationToken.IsCancellationRequested;
+                var rootExitedBeforeKill = rootExitedBeforeCancellation || IsProcessExitedSafe(process);
+                var killSucceeded = TerminateProcessTree(process);
+                var rootExitedAfterKill = await WaitForExitAfterKillAsync(process, effectivePostKillGracePeriod).ConfigureAwait(false);
+                var taggedCleanup = await TerminateTaggedDescendantsAsync(evaluationRunId, effectivePostKillGracePeriod).ConfigureAwait(false);
+                var pipesDrained = await DrainOutputsAfterKillAsync(
+                    process,
+                    outputTask,
+                    errorTask,
+                    drainCts,
+                    effectivePostKillGracePeriod).ConfigureAwait(false);
+
+                if (!timedOut)
+                {
+                    throw;
+                }
+
+                var timedOutOutput = SnapshotBuffer(outputBuffer);
+                var timedOutError = SnapshotBuffer(errorBuffer);
+                var terminationStatus = DescribeTimeoutTermination(
+                    rootExitedBeforeKill,
+                    killSucceeded,
+                    rootExitedAfterKill,
+                    taggedCleanup,
+                    pipesDrained);
+                throw new TimeoutException(
+                    $"ARCH-EVALUATE: Process timed out after {timeout.TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture)}s for '{operationDescription}' {terminationStatus}" +
+                    $"{Environment.NewLine}StandardOutput:{Environment.NewLine}{timedOutOutput}" +
+                    $"{Environment.NewLine}StandardError:{Environment.NewLine}{timedOutError}");
+            }
+            finally
+            {
+                if (!drainCts.IsCancellationRequested)
+                {
+                    await drainCts.CancelAsync().ConfigureAwait(false);
+                }
+
+                CloseRedirectedStreams(process);
+            }
+
+            return new ProcessExecutionResult(
+                process.ExitCode,
+                SnapshotBuffer(outputBuffer),
+                SnapshotBuffer(errorBuffer));
+        }
+
+        internal readonly record struct TaggedDescendantCleanupResult(
+            bool Supported,
+            int SignaledCount,
+            bool SurvivingDescendantsDetected);
+
+        internal static string DescribeTimeoutTermination(
+            bool rootExitedBeforeKill,
+            bool killSucceeded,
+            bool rootExitedAfterKill,
+            TaggedDescendantCleanupResult taggedCleanup,
+            bool pipesDrained)
+        {
+            if (!rootExitedBeforeKill &&
+                killSucceeded &&
+                rootExitedAfterKill &&
+                pipesDrained &&
+                taggedCleanup.Supported &&
+                !taggedCleanup.SurvivingDescendantsDetected)
+            {
+                return "and process-tree termination was requested; the root process and all tracked tagged descendants exited and redirected output streams closed.";
+            }
+
+            if (rootExitedBeforeKill && !pipesDrained)
+            {
+                return "while draining redirected output after the root process exited; pipe readers were closed after the bounded drain grace period and descendant processes may still be running.";
+            }
+
+            if (rootExitedBeforeKill && taggedCleanup.SurvivingDescendantsDetected)
+            {
+                return "while draining redirected output after the root process exited; tagged descendant processes remained active after the post-kill grace period.";
+            }
+
+            if (rootExitedBeforeKill && taggedCleanup.SignaledCount > 0)
+            {
+                return "while draining redirected output after the root process exited; surviving tagged descendants were terminated and redirected pipes closed during cleanup, though full process-tree termination could not be established because the root process had already exited.";
+            }
+
+            if (rootExitedBeforeKill)
+            {
+                return "while draining redirected output after the root process exited; redirected pipes closed during cleanup, but process-tree termination could not be established because the root process had already exited.";
+            }
+
+            if (!rootExitedAfterKill)
+            {
+                return "and termination was requested, but the root process did not exit within the post-kill grace period; pipe readers were closed and descendant processes may still be running.";
+            }
+
+            if (taggedCleanup.SurvivingDescendantsDetected)
+            {
+                return "and the root process exited after termination was requested, but tagged descendant processes remained active after the post-kill grace period.";
+            }
+
+            if (!pipesDrained)
+            {
+                return "and the root process exited after termination was requested, but redirected output draining timed out; pipe readers were closed and descendant processes may still be running.";
+            }
+
+            if (!killSucceeded)
+            {
+                return "and the root process exited before process-tree termination could be established.";
+            }
+
+            return "and process-tree termination was requested and the root process exited with drained pipes, but reparented descendants could not be verified on this platform.";
+        }
+
+        // Linux best-effort cleanup scans /proc/<pid>/environ for descendants that inherited
+        // HVO_ARCH_EVAL_RUN_ID. Descendants that clear their environment (for example via `env -i`)
+        // cannot be enumerated without cgroups or a subreaper, which is why
+        // DescribeTimeoutTermination qualifies its success message to the cleanup actually verified.
+        private static async Task<TaggedDescendantCleanupResult> TerminateTaggedDescendantsAsync(
+            string evaluationRunId,
+            TimeSpan gracePeriod)
+        {
+            if (!OperatingSystem.IsLinux())
+            {
+                return new TaggedDescendantCleanupResult(
+                    Supported: false,
+                    SignaledCount: 0,
+                    SurvivingDescendantsDetected: false);
+            }
+
+            var expectedEntry = Encoding.UTF8.GetBytes($"{EvaluationRunIdEnvironmentVariable}={evaluationRunId}");
+            var signaledPids = new HashSet<int>();
+            var deadline = Stopwatch.StartNew();
+
+            while (true)
+            {
+                var livePids = FindLiveTaggedLinuxProcessIds(expectedEntry);
+                if (livePids.Count == 0)
+                {
+                    return new TaggedDescendantCleanupResult(
+                        Supported: true,
+                        SignaledCount: signaledPids.Count,
+                        SurvivingDescendantsDetected: false);
+                }
+
+                foreach (var pid in livePids)
+                {
+                    signaledPids.Add(pid);
+                    KillProcessBestEffort(pid);
+                }
+
+                if (deadline.Elapsed >= gracePeriod)
+                {
+                    var remaining = FindLiveTaggedLinuxProcessIds(expectedEntry);
+                    return new TaggedDescendantCleanupResult(
+                        Supported: true,
+                        SignaledCount: signaledPids.Count,
+                        SurvivingDescendantsDetected: remaining.Count > 0);
+                }
+
+                await Task.Delay(20).ConfigureAwait(false);
+            }
+        }
+
+        private static List<int> FindLiveTaggedLinuxProcessIds(ReadOnlySpan<byte> expectedEnvironmentEntry)
+        {
+            var matches = new List<int>();
+            var currentPid = Environment.ProcessId;
+
+            foreach (var entry in Directory.EnumerateDirectories("/proc"))
+            {
+                var fileName = Path.GetFileName(entry.AsSpan());
+                if (!int.TryParse(fileName, NumberStyles.None, CultureInfo.InvariantCulture, out var pid) ||
+                    pid <= 0 ||
+                    pid == currentPid)
+                {
+                    continue;
+                }
+
+                if (IsLinuxZombieOrDeadProcess(pid))
+                {
+                    continue;
+                }
+
+                var environBytes = TryReadProcFileBytes($"/proc/{pid.ToString(CultureInfo.InvariantCulture)}/environ");
+                if (environBytes is not null && ContainsEnvironmentEntry(environBytes, expectedEnvironmentEntry))
+                {
+                    matches.Add(pid);
+                }
+            }
+
+            return matches;
+        }
+
+        private static byte[]? TryReadProcFileBytes(string path)
+        {
+            try
+            {
+                return File.ReadAllBytes(path);
+            }
+            catch (FileNotFoundException)
+            {
+                return null;
+            }
+            catch (DirectoryNotFoundException)
+            {
+                return null;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return null;
+            }
+            catch (IOException)
+            {
+                return null;
+            }
+        }
+
+        internal static bool ContainsEnvironmentEntry(ReadOnlySpan<byte> environBytes, ReadOnlySpan<byte> expectedEntry)
+        {
+            if (expectedEntry.IsEmpty || environBytes.Length < expectedEntry.Length)
+            {
+                return false;
+            }
+
+            var offset = 0;
+            while (offset < environBytes.Length)
+            {
+                var nulIndex = environBytes[offset..].IndexOf((byte)0);
+                var entry = nulIndex < 0 ? environBytes[offset..] : environBytes.Slice(offset, nulIndex);
+                if (entry.SequenceEqual(expectedEntry))
+                {
+                    return true;
+                }
+
+                if (nulIndex < 0)
+                {
+                    break;
+                }
+
+                offset += nulIndex + 1;
+            }
+
+            return false;
+        }
+
+        private static bool IsProcessExitedSafe(Process process)
+        {
+            try
+            {
+                return process.HasExited;
+            }
+            catch (InvalidOperationException)
+            {
+                return true;
+            }
+            catch (Win32Exception)
+            {
+                return false;
+            }
+        }
+
+        private static bool TerminateProcessTree(Process process)
+        {
+            try
+            {
+                process.Kill(entireProcessTree: true);
+                return true;
+            }
+            catch (InvalidOperationException)
+            {
+                // Process already exited before Kill could signal it.
+                return false;
+            }
+            catch (Win32Exception) when (IsProcessExitedSafe(process))
+            {
+                // Process exited concurrently while terminating the tree.
+                return false;
+            }
+            catch (AggregateException ex) when (ex.InnerExceptions.All(inner => inner is InvalidOperationException or Win32Exception) && IsProcessExitedSafe(process))
+            {
+                // Processes in the tree exited concurrently while terminating.
+                return false;
+            }
+        }
+
+        private static async Task<bool> WaitForExitAfterKillAsync(Process process, TimeSpan gracePeriod)
+        {
+            using var exitCts = new CancellationTokenSource(gracePeriod);
+            try
+            {
+                await process.WaitForExitAsync(exitCts.Token).ConfigureAwait(false);
+                return true;
+            }
+            catch (OperationCanceledException) when (exitCts.IsCancellationRequested)
+            {
+                // Bounded post-kill wait expired; continue so the timeout error is still surfaced.
+                return IsProcessExitedSafe(process);
+            }
+        }
+
+        private static async Task<bool> DrainOutputsAfterKillAsync(
+            Process process,
+            Task outputTask,
+            Task errorTask,
+            CancellationTokenSource drainCts,
+            TimeSpan gracePeriod)
+        {
+            try
+            {
+                await Task.WhenAll(outputTask, errorTask).WaitAsync(gracePeriod).ConfigureAwait(false);
+                return true;
+            }
+            catch (TimeoutException)
+            {
+                await drainCts.CancelAsync().ConfigureAwait(false);
+                CloseRedirectedStreams(process);
+                try
+                {
+                    await Task.WhenAll(outputTask, errorTask).WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+                }
+                catch (TimeoutException)
+                {
+                    // Pipe readers were closed and cancellation was requested; do not block indefinitely.
+                }
+
+                return false;
+            }
+        }
+
+        private static void CloseRedirectedStreams(Process process)
+        {
+            if (process.StartInfo.RedirectStandardOutput)
+            {
+                try
+                {
+                    process.StandardOutput.Dispose();
+                }
+                catch (InvalidOperationException)
+                {
+                }
+            }
+
+            if (process.StartInfo.RedirectStandardError)
+            {
+                try
+                {
+                    process.StandardError.Dispose();
+                }
+                catch (InvalidOperationException)
+                {
+                }
+            }
+        }
+
+        private static async Task DrainStreamAsync(
+            StreamReader reader,
+            StringBuilder destination,
+            CancellationToken cancellationToken)
+        {
+            var buffer = new char[4096];
+            try
+            {
+                while (true)
+                {
+                    var read = await reader.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false);
+                    if (read == 0)
+                    {
+                        break;
+                    }
+
+                    lock (destination)
+                    {
+                        destination.Append(buffer, 0, read);
+                    }
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // Post-kill drain window expired; preserve everything captured so far.
+            }
+            catch (ObjectDisposedException) when (cancellationToken.IsCancellationRequested)
+            {
+                // Process stream closed when Process was disposed after drain cancellation.
+            }
+            catch (IOException) when (cancellationToken.IsCancellationRequested)
+            {
+                // Pipe closed after drain cancellation.
+            }
+        }
+
+        private static string SnapshotBuffer(StringBuilder buffer)
+        {
+            lock (buffer)
+            {
+                return buffer.ToString();
+            }
+        }
+
+        internal sealed record ProcessExecutionResult(
+            int ExitCode,
+            string StandardOutput,
+            string StandardError);
 
         private static string[] GetItemValues(JsonElement items, string itemName, string propertyName) =>
             items.GetProperty(itemName)
