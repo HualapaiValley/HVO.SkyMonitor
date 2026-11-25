@@ -288,6 +288,9 @@ internal sealed class TestOperatorUiService : ICameraAgentOperatorUiService, ICa
         return new CameraAgentCapturePresentation(hasSelected ? selected : null, stages);
     }
     internal Func<CancellationToken, ValueTask<OperatorUiResult<CameraAgentCurrentSkyView>>>? CurrentSkyHandler { get; set; }
+    internal Func<CenteredLiveMode, CancellationToken, ValueTask<OperatorUiResult<CameraAgentCurrentSkyView>>>? CenteredCurrentSkyHandler { get; set; }
+    internal Func<Guid, CameraAgentCenteredArchiveRequest?, CancellationToken, ValueTask<OperatorUiResult<CameraAgentCaptureDetailView>>>? CenteredDetailViewHandler { get; set; }
+    internal Func<Guid, string, string, IReadOnlyList<string>, CancellationToken, ValueTask<OperatorUiResult<CenteredViewSavedSelection>>>? SaveCenteredSelectionHandler { get; set; }
     internal Func<CameraAgentGalleryCalendarQuery, CancellationToken, ValueTask<OperatorUiResult<CameraAgentGalleryCalendar>>> CalendarHandler { get; set; } =
         (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryCalendar>.Success(new(TimeZoneInfo.Utc.Id, true, [])));
     internal Func<Guid, CameraAgentGalleryQuery, CancellationToken, ValueTask<OperatorUiResult<CameraAgentGalleryNeighbours>>> NeighboursHandler { get; set; } =
@@ -296,6 +299,32 @@ internal sealed class TestOperatorUiService : ICameraAgentOperatorUiService, ICa
         (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentProductPage>.Success(new([], null)));
     internal Func<Guid, CancellationToken, ValueTask<OperatorUiResult<CameraAgentProductDetail>>> ProductDetailHandler { get; set; } =
         (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentProductDetail>.Failure(OperatorUiResultKind.NotFound, "The requested product was not found."));
+
+    public ValueTask<OperatorUiResult<CameraAgentCurrentSkyView>> GetCurrentSkyViewAsync(
+        CenteredLiveMode mode,
+        CancellationToken cancellationToken)
+        => CenteredCurrentSkyHandler is not null
+            ? CenteredCurrentSkyHandler(mode, cancellationToken)
+            : GetCurrentSkyViewAsync(cancellationToken);
+
+    public ValueTask<OperatorUiResult<CameraAgentCaptureDetailView>> GetCaptureDetailViewAsync(
+        Guid captureId,
+        CameraAgentCenteredArchiveRequest? centeredRequest,
+        CancellationToken cancellationToken)
+        => CenteredDetailViewHandler is not null
+            ? CenteredDetailViewHandler(captureId, centeredRequest, cancellationToken)
+            : GetCaptureDetailViewAsync(captureId, cancellationToken);
+
+    public ValueTask<OperatorUiResult<CenteredViewSavedSelection>> SaveCenteredViewSelectionAsync(
+        Guid referenceCaptureId,
+        string baseId,
+        string revisionId,
+        IReadOnlyList<string> enabledLayerIds,
+        CancellationToken cancellationToken)
+        => SaveCenteredSelectionHandler is not null
+            ? SaveCenteredSelectionHandler(referenceCaptureId, baseId, revisionId, enabledLayerIds, cancellationToken)
+            : ValueTask.FromResult(OperatorUiResult<CenteredViewSavedSelection>.Success(
+                new CenteredViewSavedSelection(Guid.NewGuid(), baseId, revisionId, enabledLayerIds.ToArray(), OperatorUiTestData.Now)));
 
     public async ValueTask<OperatorUiResult<CameraAgentCurrentSkyView>> GetCurrentSkyViewAsync(CancellationToken cancellationToken)
     {

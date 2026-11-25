@@ -659,7 +659,7 @@ public sealed partial class CameraAgentArtifactServiceTests
         }
     }
 
-    private sealed class ArtifactFixture : IDisposable
+    internal sealed class ArtifactFixture : IDisposable
     {
         private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
         private readonly SqliteRawCaptureJournal _journal;
@@ -950,7 +950,7 @@ public sealed partial class CameraAgentArtifactServiceTests
         }
     }
 
-    private sealed record StoredArtifact(
+    internal sealed record StoredArtifact(
         Guid ArtifactId,
         byte[] Payload,
         string ChecksumSha256,

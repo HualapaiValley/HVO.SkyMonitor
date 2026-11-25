@@ -21,6 +21,10 @@ public static class CenteredViewLinks
     public static string Presentation(string baseId, string revisionId) => $"{Route}/{baseId}/{revisionId}/presentation.svg";
     public static string Revision(Guid referenceCaptureId, string baseId, string revisionId) =>
         $"/api/v1/operations/gallery/{referenceCaptureId:D}/views/{baseId}/{revisionId}";
+    public static string Archive(Guid referenceCaptureId, string baseId, string revisionId) =>
+        $"/gallery/{referenceCaptureId:D}?base={Uri.EscapeDataString(baseId)}&revision={Uri.EscapeDataString(revisionId)}";
+    public static string ArchiveSelection(Guid referenceCaptureId, Guid selectionId) =>
+        $"/gallery/{referenceCaptureId:D}?selection={selectionId:D}";
 
     public static bool IsIdentity(string? value) =>
         value is { Length: 64 } && value.All(static character => char.IsAsciiDigit(character) || character is >= 'A' and <= 'F');

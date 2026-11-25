@@ -69,14 +69,25 @@ else
     <section class="dashboard-status" aria-label="@(IsArchived ? "Historical capture status" : "CameraAgent status")" aria-live="polite">
         <div class="dashboard-status__state"><span class="status-icon @SystemIconClass" aria-hidden="true"></span><span><strong>@SystemLabel</strong><small>@(_presentation?.System.Message ?? "Loading CameraAgent state.")</small></span></div>
         <dl>
-            <div><dt>@(IsArchived ? "Selected capture" : "Current capture")</dt><dd>@(_presentation?.LatestCapture is { } latest ? $"#{latest.CaptureSequence}" : "Unavailable")</dd></div>
-            @if (IsArchived)
+            @if (IsCenteredLive)
             {
-                <div><dt>Captured</dt><dd>@SiteTime.Format(ArchivedView!.Capture.ExposureStartedUtc)</dd></div>
+                <div><dt>Current reference</dt><dd data-centered-reference="@CenteredReferenceLabel">@CenteredReferenceLabel</dd></div>
+                <div><dt>Acquisition head</dt><dd data-centered-head="@CenteredAcquisitionHeadLabel">@CenteredAcquisitionHeadLabel</dd></div>
+                <div><dt>Contributors</dt><dd data-centered-contributors="@CenteredContributorCount">@CenteredContributorCountLabel</dd></div>
+                <div><dt>Image age</dt><dd>@(FactCapture is { } centeredAge ? FormatDuration(centeredAge.AgeSeconds) : "Unavailable")</dd></div>
+                <div><dt>Pipeline state</dt><dd><span class="state-chip @CenteredLiveStateChipClass" data-centered-state="@CenteredLiveStateLabel">@CenteredLiveStateLabel</span></dd></div>
             }
             else
             {
-                <div><dt>Image age</dt><dd>@(FactCapture is { } image ? FormatDuration(image.AgeSeconds) : "Unavailable")</dd></div>
+                <div><dt>@(IsArchived ? "Selected capture" : "Current capture")</dt><dd>@(_presentation?.LatestCapture is { } latest ? $"#{latest.CaptureSequence}" : "Unavailable")</dd></div>
+                @if (IsArchived)
+                {
+                    <div><dt>Captured</dt><dd>@SiteTime.Format(ArchivedView!.Capture.ExposureStartedUtc)</dd></div>
+                }
+                else
+                {
+                    <div><dt>Image age</dt><dd>@(FactCapture is { } image ? FormatDuration(image.AgeSeconds) : "Unavailable")</dd></div>
+                }
             }
             <div><dt>LogicHost</dt><dd><a href="/operations/delivery" title="@CentralStatusReason">@CentralStatusLabel</a></dd></div>
             <div><dt>Storage</dt><dd><a href="/operations/storage" title="@StorageStatusReason">@StorageStatusLabel</a></dd></div>
@@ -89,15 +100,31 @@ else
         <article class="sky-viewer-card current-sky-visual">
             <header class="card-heading image-heading">
                 <div>
-                    @if (!IsArchived)
+                    @if (IsCenteredMode)
                     {
-                        <p class="eyebrow">@(FactCapture is { } reference ? $"Capture #{reference.CaptureSequence} / sequence {reference.CaptureSequence}" : "Latest durable capture")</p>
+                        <p class="eyebrow">@(IsCenteredArchived ? "Centered archive view" : CenteredViewKindLabel)</p>
+                        <h2>@CenteredImageHeading</h2>
+                        <p>@CenteredImageSubtitle</p>
                     }
-                    <h2>@ImageHeading</h2>
-                    <p>@ImageSubtitle</p>
+                    else
+                    {
+                        @if (!IsArchived)
+                        {
+                            <p class="eyebrow">@(FactCapture is { } reference ? $"Capture #{reference.CaptureSequence} / sequence {reference.CaptureSequence}" : "Latest durable capture")</p>
+                        }
+                        <h2>@ImageHeading</h2>
+                        <p>@ImageSubtitle</p>
+                    }
                 </div>
                 <div class="image-heading-actions">
-                    @if (FactCapture is not null)
+                    @if (IsCenteredMode)
+                    {
+                        @if (_centeredDisplay is { View: { } centeredBadgeView })
+                        {
+                            <span class="product-badge @(centeredBadgeView.Base.Definition.Kind == CenteredViewKind.Stack ? "current" : "source")">@(centeredBadgeView.Base.Definition.Kind == CenteredViewKind.Stack ? "Registered stack" : "Single exposure")</span>
+                        }
+                    }
+                    else if (FactCapture is not null)
                     {
                         <span class="product-badge @ProductBadgeClass">@ProductBadgeLabel</span>
                     }
@@ -111,6 +138,55 @@ else
                 </div>
             </header>
 
+            @if (IsCenteredLive)
+            {
+                <div class="centered-live-controls" role="group" aria-label="Centered live display mode">
+                    <button type="button" class="button secondary small @(_centeredLiveMode == CenteredLiveMode.Centered ? "active" : "")" aria-pressed="@(_centeredLiveMode == CenteredLiveMode.Centered ? "true" : "false")" @onclick="() => SetCenteredLiveModeAsync(CenteredLiveMode.Centered)">Centered live</button>
+                    <button type="button" class="button secondary small @(_centeredLiveMode == CenteredLiveMode.Single ? "active" : "")" aria-pressed="@(_centeredLiveMode == CenteredLiveMode.Single ? "true" : "false")" @onclick="() => SetCenteredLiveModeAsync(CenteredLiveMode.Single)">Single exposure</button>
+                    <button type="button" class="button secondary small @(_livePaused ? "active" : "")" aria-pressed="@(_livePaused ? "true" : "false")" @onclick="ToggleLivePausedAsync">@(_livePaused ? "Resume live" : "Pause live")</button>
+                </div>
+            }
+
+            @if (IsCenteredArchived)
+            {
+                <div class="centered-archive-controls" aria-label="Centered archive views">
+                    @if (HasCenteredSelectionError)
+                    {
+                        <div class="state-notice state-notice--error centered-selection-error" role="alert">
+                            <strong>Requested centered view unavailable</strong>
+                            <span>@_centeredArchive!.SelectionError</span>
+                        </div>
+                    }
+                    @if (HasActiveSavedSelection)
+                    {
+                        <div class="state-notice centered-saved-selection" role="status">
+                            <strong>Saved personal selection</strong>
+                            <span>Reproducing revision #@(_centeredDisplay!.View.Revision.Order) with @_centeredArchive!.SavedSelection!.EnabledLayerIds.Count saved layer@(_centeredArchive.SavedSelection.EnabledLayerIds.Count == 1 ? "" : "s") (saved @SiteTime.Format(_centeredArchive.SavedSelection.SavedUtc)).</span>
+                        </div>
+                    }
+                    @if (_centeredArchive!.Bases.Count > 0)
+                    {
+                        <nav class="centered-archive-bases" aria-label="Published views for capture #@ArchivedView!.Capture.CaptureSequence">
+                            @foreach (var summary in _centeredArchive.Bases)
+                            {
+                                var activeBase = _centeredDisplay?.View.Base.BaseId == summary.ArchiveBase.Base.BaseId;
+                                <a class="button secondary small @(activeBase ? "active" : "")" data-centered-base-kind="@summary.ArchiveBase.Base.Definition.Kind" aria-current="@(activeBase ? "true" : null)" href="@CenteredArchiveSelectionUrl(summary.ArchiveBase.Base.BaseId, summary.ArchiveBase.DefaultRevisionId)">@ArchiveCenteredBaseLabel(summary.ArchiveBase)</a>
+                            }
+                        </nav>
+                    }
+                    @if (ActiveCenteredArchiveBaseSummary is { Revisions.Count: > 0 } activeBaseSummary)
+                    {
+                        <nav class="centered-archive-revisions" aria-label="Published revisions">
+                            @foreach (var rev in activeBaseSummary.Revisions)
+                            {
+                                var activeRev = _centeredDisplay?.View.Revision.RevisionId == rev.RevisionId;
+                                <a class="centered-revision-link @(activeRev ? "active" : "") @(rev.IsLaterEnrichment ? "enrichment" : "")" data-revision-role="@rev.Role" data-revision-id="@rev.RevisionId" aria-current="@(activeRev ? "true" : null)" href="@CenteredArchiveSelectionUrl(activeBaseSummary.ArchiveBase.Base.BaseId, rev.RevisionId)"><strong>@rev.Label</strong><small>@SiteTime.Format(rev.PublishedUtc)</small></a>
+                            }
+                        </nav>
+                    }
+                </div>
+            }
+
             @if (!IsArchived && (_initialLoading || _refreshDeadlineMessage is not null))
             {
                 <div class="state-notice sky-refresh-notice" role="status" aria-live="polite">
@@ -119,9 +195,38 @@ else
                 </div>
             }
 
-            <figure class="sky-figure @(ShowLayeredHero ? "" : "layers-suppressed")" @ref="_figure">
+            <figure class="sky-figure @(ShowEffectiveLayeredHero ? "" : "layers-suppressed")" @ref="_figure">
                 <div class="sky-image-stage" style="@StageAspectStyle">
-                    @if (ShowLayeredHero)
+                    @if (IsCenteredMode)
+                    {
+                        @if (ShowCenteredLayeredHero)
+                        {
+                            <div class="sky-layer-workspace" aria-label="Current sky layers" @key="LayerWorkspaceKey" data-presentation-identity="@_layers!.PresentationIdentitySha256" data-centered-base="@_centeredDisplay!.View.Base.BaseId" data-centered-revision="@_centeredDisplay.View.Revision.RevisionId">
+                                <div class="sky-layer-canvas @(_layerInteractive ? "sky-layer-canvas--verified" : "")">
+                                    <img @key="LayerImageKey" src="@CenteredBasePreviewUrl" alt="@ImageAlt" />
+                                    <div class="sky-layer-overlay scene-overlay" aria-hidden="true">@LayerSvg</div>
+                                </div>
+                            </div>
+                        }
+                        else if (HasCenteredSelectionError)
+                        {
+                            <CaptureImage Loading="false"
+                                          Source="@null"
+                                          Alt="@ImageAlt"
+                                          EmptyTitle="Requested centered view unavailable"
+                                          EmptyMessage="@(_centeredArchive?.SelectionError ?? "The requested centered view is unavailable.")" />
+                        }
+                        else
+                        {
+                            <CaptureImage Loading="@(_initialLoading && _centeredDisplay is null)"
+                                          Source="@CenteredBasePreviewUri"
+                                          RetryObservedUtc="@_presentation?.ObservedUtc"
+                                          Alt="@ImageAlt"
+                                          EmptyTitle="@(IsArchived ? "This centered view cannot be displayed" : "Warming up centered sky")"
+                                          EmptyMessage="@(IsArchived ? "Retained facts and authorized technical downloads remain available. No other capture is substituted." : "CameraAgent will show each ready base immediately without waiting for optional layers.")" />
+                        }
+                    }
+                    else if (ShowLayeredHero)
                     {
                         <div class="sky-layer-workspace" aria-label="Current sky layers" @key="_layers!.CaptureId" data-presentation-identity="@_layers!.PresentationIdentitySha256">
                             <div class="sky-layer-canvas @(_layerInteractive ? "sky-layer-canvas--verified" : "")">
@@ -145,7 +250,7 @@ else
                         <span class="status-icon @CaptureOutcomeIconClass" aria-hidden="true"></span>
                         <span><strong>@CaptureOutcomeTitle</strong><small>@CaptureOutcomeSubtitle</small></span>
                     </div>
-                    @if (ShowLayeredHero)
+                    @if (ShowEffectiveLayeredHero)
                     {
                         <div class="scene-semantics" aria-label="Layer evidence types"><span class="measured">Measured</span><span class="expected">Expected</span><span class="predicted">Predicted</span></div>
                     }
@@ -154,7 +259,7 @@ else
                         {
                             <a class="inline-action" href="@DetailUrl" @onclick="OpenTechnicalEvidenceAsync" @onclick:preventDefault="IsArchived">@(IsArchived ? "Evidence and downloads" : "Open capture details")</a>
                         }
-                        @if (_presentation?.DisplayCapture is not null && DisplaySlot is not null)
+                        @if (_presentation?.DisplayCapture is not null && (DisplaySlot is not null || _centeredDisplay is not null))
                         {
                             <button id="current-sky-view-large" class="image-tool" type="button" aria-label="Open full screen image" title="Open full screen image" @onclick="OpenFullScreenAsync"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 3H3v4m10-4h4v4M7 17H3v-4m10 4h4v-4"></path></svg></button>
                         }
@@ -169,8 +274,20 @@ else
                     <p class="technical-evidence-error" role="alert">@_viewerError</p>
                 }
                 <section class="fullscreen-controls" aria-label="Full screen image controls">
-                    <div class="fullscreen-controls-heading"><strong>@ImageHeading</strong><span>@LayerCountLabel</span><button type="button" class="button secondary small" @onclick="CloseFullScreenAsync">Close image</button></div>
-                    @if (ShowLayeredHero && _layers is not null)
+                    <div class="fullscreen-controls-heading"><strong>@(IsCenteredMode ? CenteredImageHeading : ImageHeading)</strong><span>@LayerCountLabel</span><button type="button" class="button secondary small" @onclick="CloseFullScreenAsync">Close image</button></div>
+                    @if (IsCenteredMode)
+                    {
+                        @if (ShowCenteredLayeredHero && _centeredDisplay is not null)
+                        {
+                            <div class="fullscreen-layer-list">@foreach (var row in GetCenteredLayerRows("Measured").Concat(GetCenteredLayerRows("Sky context")).Concat(GetCenteredLayerRows("Diagnostics"))) { @CenteredLayerToggle(row) }</div>
+                            <div class="overlay-actions">
+                                <button class="text-button" type="button" disabled="@(!_layerInteractive)" @onclick="RestoreLayerDefaults">Restore profile defaults</button>
+                                <button class="text-button" type="button" disabled="@(_centeredSaving || !_layerInteractive)" @onclick="SaveCenteredPersonalSelectionAsync">@(_centeredSaving ? "Saving selection..." : "Save personal view selection")</button>
+                            </div>
+                        }
+                        else { <p class="scene-unavailable">Interactive centered overlays are unavailable for this base.</p> }
+                    }
+                    else if (ShowLayeredHero && _layers is not null)
                     {
                         <div class="fullscreen-layer-list">@foreach (var layer in _layers.Layers) { @LayerToggle(layer) }</div>
                         <div class="overlay-actions">
@@ -184,7 +301,39 @@ else
                 </section>
             </figure>
 
-            @if (_presentation is not null && _presentation.Stages.Count > 0)
+            @if (IsCenteredMode)
+            {
+                <p class="stage-status" aria-live="polite">@CenteredStageStatus</p>
+                @if (_centeredDisplay is { View: { } centeredInfo })
+                {
+                    <section class="stack-lineage centered-contributors" aria-labelledby="centered-contributors-heading">
+                        <header>
+                            <div><p class="eyebrow">Published base provenance</p><h3 id="centered-contributors-heading">@(centeredInfo.Base.Definition.Kind == CenteredViewKind.Stack ? $"Registered stack centered on capture #{centeredInfo.Base.Definition.Reference.Capture.CaptureSequence}" : $"Single exposure capture #{centeredInfo.Base.Definition.Reference.Capture.CaptureSequence}")</h3></div>
+                            @if (CenteredPreviewDownloadUrl is { } previewDownload)
+                            {
+                                <a class="inline-action" href="@previewDownload" download>Download preview JPEG</a>
+                            }
+                        </header>
+                        <dl class="lineage-facts">
+                            <div><dt>Reference</dt><dd>Capture #@centeredInfo.Base.Definition.Reference.Capture.CaptureSequence</dd></div>
+                            <div><dt>Contributors</dt><dd>@CenteredContributorCountLabel</dd></div>
+                            <div><dt>Revision</dt><dd>#@centeredInfo.Revision.Order (@SiteTime.Format(centeredInfo.Revision.PublishedUtc))</dd></div>
+                            <div><dt>Preview</dt><dd>@centeredInfo.Base.Definition.Preview.Transform.PreviewWidth × @centeredInfo.Base.Definition.Preview.Transform.PreviewHeight (@centeredInfo.Base.Definition.Preview.Source)</dd></div>
+                        </dl>
+                        <ul class="centered-contributor-list">
+                            @foreach (var contributor in centeredInfo.Base.Definition.Contributors)
+                            {
+                                var isRef = contributor.Exposure.Capture.CaptureId == centeredInfo.Base.Definition.Reference.Capture.CaptureId;
+                                <li class="@(isRef ? "reference" : "")">
+                                    <a href="/gallery/@contributor.Exposure.Capture.CaptureId.ToString("D")">Capture #@contributor.Exposure.Capture.CaptureSequence</a>
+                                    <span>@(isRef ? "Reference" : "Contributor") · @contributor.RegistrationMethod</span>
+                                </li>
+                            }
+                        </ul>
+                    </section>
+                }
+            }
+            else if (_presentation is not null && _presentation.Stages.Count > 0)
             {
                 <div class="stage-switcher dashboard-stages stage-selector" role="group" aria-label="Image stage" aria-describedby="stage-unavailable">
                     @foreach (var slot in OrderedStages)
@@ -255,9 +404,68 @@ else
         </div>
 
         <aside class="sky-inspector current-sky-inspector">
-            <section class="inspector-card overlay-controls scene-panel @(ShowLayeredHero ? "" : "evidence-unavailable")" aria-labelledby="overlays-heading">
+            <section class="inspector-card overlay-controls scene-panel @(ShowEffectiveLayeredHero ? "" : "evidence-unavailable")" aria-labelledby="overlays-heading">
                 <header><div><p class="eyebrow">Reproducible presentation</p><h2 id="overlays-heading">Scene evidence</h2></div><span>@LayerCountLabel</span></header>
                 <p>Measured image evidence, expected sky context, and predicted diagnostics remain distinct from the base image.</p>
+                @if (IsCenteredMode)
+                {
+                    <div class="overlay-list sky-layer-controls centered-layer-controls">
+                        <div class="overlay-group" role="group" aria-label="Measured layers"><p><strong>Measured</strong><span>Image-derived associations</span></p>
+                            @{ var centeredMeasured = GetCenteredLayerRows("Measured"); }
+                            @if (centeredMeasured.Count == 0)
+                            {
+                                <p class="scene-unavailable">No measured overlay slots recorded for this base.</p>
+                            }
+                            else
+                            {
+                                @foreach (var row in centeredMeasured) { @CenteredLayerToggle(row) }
+                            }
+                        </div>
+                        <div class="overlay-group" role="group" aria-label="Sky context layers"><p><strong>Sky context</strong><span>Expected projected geometry</span></p>
+                            @{ var centeredSky = GetCenteredLayerRows("Sky context"); }
+                            @if (centeredSky.Count == 0)
+                            {
+                                <p class="scene-unavailable">No sky context overlay slots recorded for this base.</p>
+                            }
+                            else
+                            {
+                                @foreach (var row in centeredSky) { @CenteredLayerToggle(row) }
+                            }
+                        </div>
+                        <div class="overlay-group" role="group" aria-label="Diagnostics layers"><p><strong>Diagnostics</strong><span>Never a measured-visibility claim</span></p>
+                            @{ var centeredDiagnostics = GetCenteredLayerRows("Diagnostics"); }
+                            @if (centeredDiagnostics.Count == 0)
+                            {
+                                <p class="scene-unavailable">No diagnostic overlay slots recorded for this base.</p>
+                            }
+                            else
+                            {
+                                @foreach (var row in centeredDiagnostics) { @CenteredLayerToggle(row) }
+                            }
+                        </div>
+                    </div>
+                    @if (_centeredDisplay is not null)
+                    {
+                        <div class="overlay-actions">
+                            <button class="text-button restore-layers" type="button" disabled="@(!ShowCenteredLayeredHero || !_layerInteractive)" @onclick="RestoreLayerDefaults">Restore profile defaults</button>
+                            <div class="sky-layer-save"><button type="button" class="text-button save-centered-selection" disabled="@(_centeredSaving || !ShowCenteredLayeredHero || !_layerInteractive)" @onclick="SaveCenteredPersonalSelectionAsync">@(_centeredSaving ? "Saving selection..." : "Save personal view selection")</button></div>
+                        </div>
+                        @if (_centeredSaveMessage is not null)
+                        {
+                            <p role="status" class="sky-layer-result centered-save-result">@_centeredSaveMessage @if (_centeredSavedUrl is not null) { <a href="@_centeredSavedUrl">Open saved personal view</a> }</p>
+                        }
+                        @if (_centeredSaveError is not null)
+                        {
+                            <p role="alert" class="sky-layer-result sky-layer-result--error">@_centeredSaveError</p>
+                        }
+                    }
+                    else
+                    {
+                        <p class="scene-unavailable">Waiting for a ready base image to bind scene overlays.</p>
+                    }
+                }
+                else
+                {
                 <div class="overlay-list sky-layer-controls">
                     <div class="overlay-group" role="group" aria-label="Measured layers"><p><strong>Measured</strong><span>Image-derived associations</span></p>
                         <button class="text-button refresh-measured-evidence" type="button" disabled="@(_layers is null || _layerLoading || _saving || _viewerOpen)" @onclick="RefreshMeasuredEvidenceAsync">@(_layerLoading ? "Reading measured evidence..." : "Refresh measured evidence")</button>
@@ -324,6 +532,7 @@ else
                     @if (_saveError is not null) { <p role="alert" class="sky-layer-result sky-layer-result--error">@_saveError</p> }
                 }
                 else { <p class="scene-unavailable">Selectable scene layers are unavailable for this image.</p> }
+                }
             </section>
 
             <section class="inspector-card astrometry-card" aria-labelledby="astrometry-heading" aria-busy="@(_astrometryLoading ? "true" : "false")">
@@ -526,5 +735,23 @@ else
     private RenderFragment LayerToggle(CameraAgentPresentationLayer layer) => __builder =>
     {
         <label><input type="checkbox" disabled="@(!ShowLayeredHero || !_layerInteractive || layer.Satellite is { Renderable: false })" checked="@_selectedLayers.Contains(layer.IdentitySha256)" @onchange="args => SelectLayer(layer.IdentitySha256, args.Value is true)" data-layer-target="@layer.DomGroupId" data-layer-identity="@layer.IdentitySha256" /><span class="layer-swatch @layer.Kind"></span><span><strong>@LayerLabel(layer.Kind)</strong><small>@LayerDescription(layer.Kind) @SatelliteDescription(layer.Satellite)</small></span></label>
+    };
+
+    private RenderFragment CenteredLayerToggle(CenteredLayerRow row) => __builder =>
+    {
+        var enabled = row.IsDrawable && ShowCenteredLayeredHero && _layerInteractive && row.DrawableLayer!.Satellite is not { Renderable: false };
+        var identity = row.DrawableLayer?.IdentitySha256;
+        <label data-layer-kind="@row.Layer.Key.Kind" data-layer-readiness="@row.ReadinessCode" data-layer-scope="@row.Layer.Key.Scope">
+            @if (identity is not null)
+            {
+                <input type="checkbox" disabled="@(!enabled)" checked="@_selectedLayers.Contains(identity)" @onchange="args => SelectLayer(identity, args.Value is true)" data-layer-target="@row.DrawableLayer!.DomGroupId" data-layer-identity="@identity" />
+            }
+            else
+            {
+                <input type="checkbox" disabled />
+            }
+            <span class="layer-swatch @row.Layer.Key.Kind"></span>
+            <span><strong>@row.Label <em class="layer-readiness-tag layer-readiness-tag--@row.ReadinessCode.ToLowerInvariant()">@row.ReadinessLabel</em></strong><small>@row.Description</small></span>
+        </label>
     };
 }

@@ -1,0 +1,827 @@
+using System.Text;
+using System.Text.Json;
+using Bunit;
+using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Gallery;
+using HVO.SkyMonitor.CameraAgent.Components.Pages;
+using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.TestSupport;
+using Microsoft.AspNetCore.Components;
+using Microsoft.Extensions.DependencyInjection;
+
+namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
+
+public sealed partial class CurrentSkyPageTests
+{
+    private static readonly CenteredViewStream CenteredStream = new(
+        new("agent-test", "camera-1"),
+        Guid.Parse("19230000-0000-0000-0000-000000000001"),
+        "centered-gen-1");
+
+    [TestMethod]
+    public async Task CenteredStartupSequenceDisplaysSinglesHolds103SwitchesInPlaceToStackAndAdvancesTo104()
+    {
+        using var context = new BunitContext();
+        var (service, clock) = ConfigurePolling(context);
+
+        var exp101 = CenteredExposure(101, OperatorUiTestData.Now.AddSeconds(-50));
+        var exp102 = CenteredExposure(102, OperatorUiTestData.Now.AddSeconds(-40));
+        var exp103 = CenteredExposure(103, OperatorUiTestData.Now.AddSeconds(-30));
+        var exp104 = CenteredExposure(104, OperatorUiTestData.Now.AddSeconds(-20));
+        var exp105 = CenteredExposure(105, OperatorUiTestData.Now.AddSeconds(-10));
+        var exp106 = CenteredExposure(106, OperatorUiTestData.Now);
+
+        var single101 = CenteredSingle(exp101, 1);
+        var single102 = CenteredSingle(exp102, 2);
+        var single103 = CenteredSingle(exp103, 3);
+        var stack103 = CenteredStack(exp103, [exp101, exp102, exp103, exp104, exp105], 4);
+        var stack104 = CenteredStack(exp104, [exp102, exp103, exp104, exp105, exp106], 5);
+
+        CameraAgentCurrentSkyView activeView = CenteredSkyView(
+            single101, exp101, CenteredViewLiveState.Warming, clock.GetUtcNow());
+        service.CenteredCurrentSkyHandler = (_, _) =>
+            ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(activeView));
+
+        var cut = context.Render<CurrentSkyPage>();
+
+        // 101 as single, warming state
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual("#101", cut.Find("[data-centered-reference]").TextContent);
+            Assert.AreEqual("#101", cut.Find("[data-centered-head]").TextContent);
+            Assert.AreEqual("1 frame (single)", cut.Find("[data-centered-contributors]").TextContent);
+            Assert.AreEqual("Warming", cut.Find("[data-centered-state]").TextContent);
+            StringAssert.Contains(cut.Find(".image-heading h2").TextContent, "Single exposure", StringComparison.Ordinal);
+        });
+
+        // 102 as single
+        clock.Advance(TimeSpan.FromSeconds(15));
+        activeView = CenteredSkyView(single102, exp102, CenteredViewLiveState.Warming, clock.GetUtcNow());
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual("#102", cut.Find("[data-centered-reference]").TextContent);
+            Assert.AreEqual("#102", cut.Find("[data-centered-head]").TextContent);
+            Assert.AreEqual("1 frame (single)", cut.Find("[data-centered-contributors]").TextContent);
+        });
+
+        // 103 as single
+        clock.Advance(TimeSpan.FromSeconds(15));
+        activeView = CenteredSkyView(single103, exp103, CenteredViewLiveState.Warming, clock.GetUtcNow());
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual("#103", cut.Find("[data-centered-reference]").TextContent);
+            Assert.AreEqual("#103", cut.Find("[data-centered-head]").TextContent);
+            Assert.AreEqual("1 frame (single)", cut.Find("[data-centered-contributors]").TextContent);
+        });
+
+        // 104 arrives -> hold single 103 while acquisition head moves to 104 and state is Building stack
+        clock.Advance(TimeSpan.FromSeconds(5));
+        activeView = CenteredSkyView(single103, exp104, CenteredViewLiveState.Building, clock.GetUtcNow());
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual("#103", cut.Find("[data-centered-reference]").TextContent);
+            Assert.AreEqual("#104", cut.Find("[data-centered-head]").TextContent);
+            Assert.AreEqual("1 frame (single)", cut.Find("[data-centered-contributors]").TextContent);
+            Assert.AreEqual("Building stack", cut.Find("[data-centered-state]").TextContent);
+        });
+
+        // 105 arrives -> switch in place to stack centered on 103 (5 frames), even within MinimumRefreshInterval!
+        clock.Advance(TimeSpan.FromSeconds(2));
+        activeView = CenteredSkyView(stack103, exp105, CenteredViewLiveState.Ready, clock.GetUtcNow(),
+            minimumRefresh: TimeSpan.FromSeconds(60));
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual("#103", cut.Find("[data-centered-reference]").TextContent);
+            Assert.AreEqual("#105", cut.Find("[data-centered-head]").TextContent);
+            Assert.AreEqual("5 frames", cut.Find("[data-centered-contributors]").TextContent);
+            Assert.AreEqual("Ready", cut.Find("[data-centered-state]").TextContent);
+            StringAssert.Contains(cut.Find(".image-heading h2").TextContent, "Live stack centered on #103", StringComparison.Ordinal);
+        });
+
+        // 106 arrives -> advance to stack centered on 104
+        clock.Advance(TimeSpan.FromSeconds(15));
+        activeView = CenteredSkyView(stack104, exp106, CenteredViewLiveState.Ready, clock.GetUtcNow());
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual("#104", cut.Find("[data-centered-reference]").TextContent);
+            Assert.AreEqual("#106", cut.Find("[data-centered-head]").TextContent);
+            Assert.AreEqual("5 frames", cut.Find("[data-centered-contributors]").TextContent);
+            StringAssert.Contains(cut.Find(".image-heading h2").TextContent, "Live stack centered on #104", StringComparison.Ordinal);
+        });
+    }
+
+    [TestMethod]
+    public async Task CenteredSingleModeAdvancesImmediatelyAndPauseRetainsLastViewWithUpdatingAge()
+    {
+        using var context = new BunitContext();
+        var (service, clock) = ConfigurePolling(context);
+
+        var exp103 = CenteredExposure(103, clock.GetUtcNow().AddSeconds(-30));
+        var exp104 = CenteredExposure(104, clock.GetUtcNow().AddSeconds(-20));
+        var exp105 = CenteredExposure(105, clock.GetUtcNow().AddSeconds(-10));
+        var exp106 = CenteredExposure(106, clock.GetUtcNow());
+
+        var single103 = CenteredSingle(exp103, 1);
+        var single104 = CenteredSingle(exp104, 2);
+        var single105 = CenteredSingle(exp105, 3);
+        var single106 = CenteredSingle(exp106, 4);
+
+        CenteredView? currentSingle = single104;
+        var liveState = CenteredViewLiveState.Building;
+        CenteredView? centeredView = single103;
+        var observedMode = CenteredLiveMode.Centered;
+
+        service.CenteredCurrentSkyHandler = (mode, _) =>
+        {
+            observedMode = mode;
+            var view = mode == CenteredLiveMode.Single ? currentSingle : centeredView;
+            return ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(
+                CenteredSkyView(view, exp105, liveState, clock.GetUtcNow(), mode: mode, minimumRefresh: TimeSpan.FromSeconds(120))));
+        };
+
+        var cut = context.Render<CurrentSkyPage>();
+        cut.WaitForAssertion(() => Assert.AreEqual("#103", cut.Find("[data-centered-reference]").TextContent));
+
+        // Switch to Single exposure mode -> immediately advances to single 104
+        await cut.FindAll(".centered-live-controls button").Single(button => button.TextContent == "Single exposure")
+            .ClickAsync().ConfigureAwait(false);
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual(CenteredLiveMode.Single, observedMode);
+            Assert.AreEqual("#104", cut.Find("[data-centered-reference]").TextContent);
+        });
+
+        // Single mode advances immediately to 105 on next poll even with 120s minimum refresh interval
+        currentSingle = single105;
+        clock.Advance(TimeSpan.FromSeconds(15));
+        cut.WaitForAssertion(() => Assert.AreEqual("#105", cut.Find("[data-centered-reference]").TextContent));
+
+        // Pause live updates locally -> retains 105 even when 106 arrives, while age advances
+        await cut.FindAll(".centered-live-controls button").Single(button => button.TextContent == "Pause live")
+            .ClickAsync().ConfigureAwait(false);
+        cut.WaitForAssertion(() => Assert.AreEqual("Paused", cut.Find("[data-centered-state]").TextContent));
+
+        currentSingle = single106;
+        clock.Advance(TimeSpan.FromSeconds(30));
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual("#105", cut.Find("[data-centered-reference]").TextContent);
+            Assert.AreEqual("Paused", cut.Find("[data-centered-state]").TextContent);
+            StringAssert.Contains(cut.Find(".dashboard-status").TextContent, "55s", StringComparison.Ordinal);
+        });
+
+        // Resume -> advances to 106; then backend capture pause with null view still retains 106 with updating age
+        await cut.FindAll(".centered-live-controls button").Single(button => button.TextContent == "Resume live")
+            .ClickAsync().ConfigureAwait(false);
+        cut.WaitForAssertion(() => Assert.AreEqual("#106", cut.Find("[data-centered-reference]").TextContent));
+
+        currentSingle = null;
+        liveState = CenteredViewLiveState.Paused;
+        clock.Advance(TimeSpan.FromSeconds(12));
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual("#106", cut.Find("[data-centered-reference]").TextContent);
+            Assert.AreEqual("Paused", cut.Find("[data-centered-state]").TextContent);
+            StringAssert.Contains(cut.Find(".dashboard-status").TextContent, "57s", StringComparison.Ordinal);
+        });
+
+        // Switching back to Centered live shows the active centered stack (#103)
+        liveState = CenteredViewLiveState.Ready;
+        await cut.FindAll(".centered-live-controls button").Single(button => button.TextContent == "Centered live")
+            .ClickAsync().ConfigureAwait(false);
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual(CenteredLiveMode.Centered, observedMode);
+            Assert.AreEqual("#103", cut.Find("[data-centered-reference]").TextContent);
+        });
+    }
+
+    [TestMethod]
+    public async Task CenteredBaseNeverWaitsForOptionalLayersAndDistinguishesEveryReadinessState()
+    {
+        using var context = new BunitContext();
+        var (service, clock) = ConfigurePolling(context);
+        var exp103 = CenteredExposure(103, clock.GetUtcNow().AddSeconds(-10));
+        var refId = exp103.Capture.CaptureId;
+
+        // Initial revision: base is ready immediately while ALL optional layers are still pending (Waiting)
+        CenteredViewLayer[] initialLayers =
+        [
+            PendingLayer("star-annotations", refId),
+            PendingLayer("scene-constellations", refId),
+            PendingLayer("MeasuredTransientTrails", refId, CenteredViewLayerScope.Contributor),
+            PendingLayer(AstrometricDiagnosticPresentation.ResidualsLayer, refId),
+            DisabledLayer("cloud-mask", refId),
+            PendingLayer("predicted-satellites", refId, CenteredViewLayerScope.Contributor)
+        ];
+        var rev1 = CenteredSingle(exp103, 1, initialLayers);
+        var current = rev1;
+        service.CenteredCurrentSkyHandler = (_, _) =>
+            ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(
+                CenteredSkyView(current, exp103, CenteredViewLiveState.Warming, clock.GetUtcNow())));
+
+        var cut = context.Render<CurrentSkyPage>();
+
+        // Base renders immediately with 0 ready layers and pending checkboxes disabled
+        cut.WaitForAssertion(() =>
+        {
+            Assert.IsNotNull(cut.Find(".sky-layer-canvas img"));
+            Assert.AreEqual("#103", cut.Find("[data-centered-reference]").TextContent);
+            Assert.IsEmpty(cut.FindAll(".centered-layer-controls input:not(:disabled)"));
+            Assert.AreEqual("Pending", cut.Find("[data-layer-kind='star-annotations'] .layer-readiness-tag").TextContent);
+            Assert.AreEqual("Disabled", cut.Find("[data-layer-kind='cloud-mask'] .layer-readiness-tag").TextContent);
+        });
+
+        // Second revision on the same base: distinct Ready, Partial, Pending, NoDetection, Incompatible, Disabled states!
+        var starDrawable = Drawable("star-annotations", 20, enabledByDefault: true, rev1.Base.Definition.Preview.Product.Compatibility);
+        var constDrawable = Drawable("scene-constellations", 10, enabledByDefault: true, rev1.Base.Definition.Preview.Product.Compatibility);
+        CenteredViewLayer[] rev2Layers =
+        [
+            new(new("star-annotations", CenteredViewLayerScope.Reference, refId), 2, EvidencePin("stars"), clock.GetUtcNow(), CenteredViewReadiness.Ready, null, starDrawable),
+            new(new("scene-constellations", CenteredViewLayerScope.Reference, refId), 3, EvidencePin("const"), clock.GetUtcNow(), CenteredViewReadiness.Partial, "centered.partial-coverage", constDrawable),
+            new(new("MeasuredTransientTrails", CenteredViewLayerScope.Contributor, refId), 4, EvidencePin("trails"), clock.GetUtcNow(), CenteredViewReadiness.AssessedEmpty, null, null),
+            new(new(AstrometricDiagnosticPresentation.ResidualsLayer, CenteredViewLayerScope.Reference, refId), 5, null, clock.GetUtcNow(), CenteredViewReadiness.Incompatible, "centered.no-accepted-fit", null),
+            DisabledLayer("cloud-mask", refId),
+            PendingLayer("predicted-satellites", refId, CenteredViewLayerScope.Contributor)
+        ];
+        current = CenteredRevision(rev1.Base, rev1.Revision.RevisionId, 2, rev2Layers);
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual("Ready", cut.Find("[data-layer-kind='star-annotations'] .layer-readiness-tag").TextContent);
+            Assert.AreEqual("Partial", cut.Find("[data-layer-kind='scene-constellations'] .layer-readiness-tag").TextContent);
+            Assert.AreEqual("No detection", cut.Find("[data-layer-kind='MeasuredTransientTrails'] .layer-readiness-tag").TextContent);
+            Assert.AreEqual("Incompatible", cut.Find($"[data-layer-kind='{AstrometricDiagnosticPresentation.ResidualsLayer}'] .layer-readiness-tag").TextContent);
+            Assert.AreEqual("Disabled", cut.Find("[data-layer-kind='cloud-mask'] .layer-readiness-tag").TextContent);
+            Assert.AreEqual("Pending", cut.Find("[data-layer-kind='predicted-satellites'] .layer-readiness-tag").TextContent);
+
+            Assert.IsFalse(cut.Find("[data-layer-kind='star-annotations'] input").HasAttribute("disabled"));
+            Assert.IsFalse(cut.Find("[data-layer-kind='scene-constellations'] input").HasAttribute("disabled"));
+            Assert.IsTrue(cut.Find("[data-layer-kind='MeasuredTransientTrails'] input").HasAttribute("disabled"));
+            Assert.IsTrue(cut.Find($"[data-layer-kind='{AstrometricDiagnosticPresentation.ResidualsLayer}'] input").HasAttribute("disabled"));
+            Assert.IsTrue(cut.Find("[data-layer-kind='cloud-mask'] input").HasAttribute("disabled"));
+            Assert.IsTrue(cut.Find("[data-layer-kind='predicted-satellites'] input").HasAttribute("disabled"));
+        });
+    }
+
+    [TestMethod]
+    public async Task CenteredPersonalVisibilityCarriesOverOnlyWhenNewBaseIsCompatibleAndLatestFitStaysSeparate()
+    {
+        var astrometry = (await AstrometryEvidenceAsync().ConfigureAwait(false)) with { ArtifactId = Guid.NewGuid() };
+        var latestSummary = CameraAgentLatestAstrometry.FromVerified(astrometry)!;
+
+        using var context = new BunitContext();
+        var (service, clock) = ConfigurePolling(context);
+        var exp103 = CenteredExposure(103, clock.GetUtcNow().AddSeconds(-20));
+        var exp104 = CenteredExposure(104, clock.GetUtcNow().AddSeconds(-10));
+        var exp105 = CenteredExposure(105, clock.GetUtcNow());
+
+        var compatible = new PresentationCompatibilityDescriptor(640, 480, new string('B', 64), new string('C', 64));
+        var incompatible = new PresentationCompatibilityDescriptor(320, 240, new string('D', 64), new string('E', 64));
+
+        var single103 = CenteredSingle(exp103, 1,
+            [ReadyLayer("star-annotations", exp103.Capture.CaptureId, 1, compatible, enabledByDefault: true)],
+            compatibility: compatible);
+        var single104 = CenteredSingle(exp104, 2,
+            [ReadyLayer("star-annotations", exp104.Capture.CaptureId, 1, compatible, enabledByDefault: true)],
+            compatibility: compatible);
+        var single105Incompatible = CenteredSingle(exp105, 3,
+            [ReadyLayer("star-annotations", exp105.Capture.CaptureId, 1, incompatible, enabledByDefault: true)],
+            compatibility: incompatible, width: 320, height: 240);
+
+        var current = single103;
+        service.CenteredCurrentSkyHandler = (_, _) =>
+            ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(
+                CenteredSkyView(current, current.Base.Definition.Reference, CenteredViewLiveState.Ready, clock.GetUtcNow())));
+        service.LatestAstrometryHandler = (_, _) =>
+            ValueTask.FromResult(OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(new(true, latestSummary)));
+        service.AstrometryHandler = (id, _) =>
+            ValueTask.FromResult(OperatorUiResult<CameraAgentRetainedAstrometry>.Success(
+                new(id, "NotRetained", "assessment-not-retained")));
+
+        var cut = context.Render<CurrentSkyPage>();
+
+        // Wait for ready star-annotations and latest fit headline (for a different capture than 103)
+        cut.WaitForAssertion(() =>
+        {
+            Assert.IsFalse(cut.Find("[data-layer-kind='star-annotations'] input").HasAttribute("disabled"));
+            Assert.IsTrue(cut.Find("[data-layer-kind='star-annotations'] input").HasAttribute("checked"));
+            StringAssert.Contains(cut.Find(".latest-measured-solution").TextContent, "For a different capture.", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".latest-measured-solution").TextContent, latestSummary.SolutionIdentitySha256, StringComparison.Ordinal);
+            Assert.IsTrue(cut.Find(".pixel-sky-calculator button").HasAttribute("disabled"));
+        });
+
+        // Operator turns OFF star-annotations on 103
+        await cut.Find("[data-layer-kind='star-annotations'] input").ChangeAsync(false).ConfigureAwait(false);
+        Assert.IsFalse(cut.Find("[data-layer-kind='star-annotations'] input").HasAttribute("checked"));
+
+        // Advance to compatible base 104 -> remembered OFF visibility carries over!
+        current = single104;
+        clock.Advance(TimeSpan.FromSeconds(15));
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual("#104", cut.Find("[data-centered-reference]").TextContent);
+            Assert.IsFalse(cut.Find("[data-layer-kind='star-annotations'] input").HasAttribute("disabled"));
+            Assert.IsFalse(cut.Find("[data-layer-kind='star-annotations'] input").HasAttribute("checked"));
+        });
+
+        // Advance to incompatible base 105 (different geometry compatibility) -> personal visibility NOT carried over; profile default ON applies!
+        current = single105Incompatible;
+        clock.Advance(TimeSpan.FromSeconds(15));
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual("#105", cut.Find("[data-centered-reference]").TextContent);
+            Assert.IsFalse(cut.Find("[data-layer-kind='star-annotations'] input").HasAttribute("disabled"));
+            Assert.IsTrue(cut.Find("[data-layer-kind='star-annotations'] input").HasAttribute("checked"));
+        });
+    }
+
+    [TestMethod]
+    public async Task CenteredReconnectOutOfOrderBaseAndLateTrailOn103CannotReplace104()
+    {
+        using var context = new BunitContext();
+        var (service, clock) = ConfigurePolling(context);
+        var publisher = new TestCenteredViewPublisher();
+        context.Services.AddSingleton<ICenteredViewPublisher>(publisher);
+
+        var exp101 = CenteredExposure(101, clock.GetUtcNow().AddSeconds(-50));
+        var exp102 = CenteredExposure(102, clock.GetUtcNow().AddSeconds(-40));
+        var exp103 = CenteredExposure(103, clock.GetUtcNow().AddSeconds(-30));
+        var exp104 = CenteredExposure(104, clock.GetUtcNow().AddSeconds(-20));
+        var exp105 = CenteredExposure(105, clock.GetUtcNow().AddSeconds(-10));
+        var exp106 = CenteredExposure(106, clock.GetUtcNow());
+
+        var compat = new PresentationCompatibilityDescriptor(640, 480, new string('B', 64), new string('C', 64));
+        var stack103 = CenteredStack(exp103, [exp101, exp102, exp103, exp104, exp105], 5,
+            [ReadyLayer("MeasuredTransientTrails", exp105.Capture.CaptureId, 7, compat, scope: CenteredViewLayerScope.Contributor)]);
+        var stack104Rev10 = CenteredStack(exp104, [exp102, exp103, exp104, exp105, exp106], 10,
+            [PendingLayer("MeasuredTransientTrails", exp105.Capture.CaptureId, CenteredViewLayerScope.Contributor)]);
+        var stack104Rev8 = CenteredRevision(stack104Rev10.Base, null, 8, []);
+        var stack104Rev12 = CenteredRevision(stack104Rev10.Base, stack104Rev10.Revision.RevisionId, 12,
+            [ReadyLayer("star-annotations", exp104.Capture.CaptureId, 9, compat)]);
+
+        var current = stack104Rev10;
+        service.CenteredCurrentSkyHandler = (_, _) =>
+            ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(
+                CenteredSkyView(current, exp106, CenteredViewLiveState.Ready, clock.GetUtcNow())));
+
+        var cut = context.Render<CurrentSkyPage>();
+        cut.WaitForAssertion(() => Assert.AreEqual("#104", cut.Find("[data-centered-reference]").TextContent));
+
+        // Out-of-order base (103 with late trail) arrives on reconnect -> MUST NOT replace 104!
+        current = stack103;
+        publisher.RaiseChanged(CenteredStream);
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual("#104", cut.Find("[data-centered-reference]").TextContent);
+            Assert.AreEqual(stack104Rev10.Base.BaseId, cut.Find(".sky-layer-workspace").GetAttribute("data-centered-base"));
+        });
+
+        // Older revision (#8 < #10) on same base 104 -> MUST NOT regress!
+        current = stack104Rev8;
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        Assert.AreEqual(stack104Rev10.Revision.RevisionId, cut.Find(".sky-layer-workspace").GetAttribute("data-centered-revision"));
+
+        // Newer revision (#12 > #10) on same base 104 via publisher wakeup -> swaps atomically in place!
+        current = stack104Rev12;
+        publisher.RaiseChanged(CenteredStream);
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual(stack104Rev12.Revision.RevisionId, cut.Find(".sky-layer-workspace").GetAttribute("data-centered-revision"));
+            Assert.IsFalse(cut.Find("[data-layer-kind='star-annotations'] input").HasAttribute("disabled"));
+        });
+    }
+
+    [TestMethod]
+    public async Task CenteredArchiveOffersSingleAndStackRevisionsSavedSelectionAndLegacyFallback()
+    {
+        var exp101 = CenteredExposure(101, OperatorUiTestData.Now.AddSeconds(-50));
+        var exp102 = CenteredExposure(102, OperatorUiTestData.Now.AddSeconds(-40));
+        var exp103 = CenteredExposure(103, OperatorUiTestData.Now.AddSeconds(-30));
+        var exp104 = CenteredExposure(104, OperatorUiTestData.Now.AddSeconds(-20));
+        var exp105 = CenteredExposure(105, OperatorUiTestData.Now.AddSeconds(-10));
+        var capture103Id = exp103.Capture.CaptureId;
+        var compat = new PresentationCompatibilityDescriptor(640, 480, new string('B', 64), new string('C', 64));
+
+        var single103 = CenteredSingle(exp103, 1, [PendingLayer("star-annotations", capture103Id)], compat);
+        var stack103Initial = CenteredStack(exp103, [exp101, exp102, exp103, exp104, exp105], 2,
+            [ReadyLayer("star-annotations", capture103Id, 1, compat, enabledByDefault: true)], compat);
+        var stack103LastLive = CenteredRevision(stack103Initial.Base, stack103Initial.Revision.RevisionId, 3,
+        [
+            ReadyLayer("star-annotations", capture103Id, 1, compat, enabledByDefault: true),
+            ReadyLayer("scene-constellations", capture103Id, 2, compat, enabledByDefault: true)
+        ]);
+        var stack103LaterTrail = CenteredRevision(stack103Initial.Base, stack103LastLive.Revision.RevisionId, 8,
+        [
+            ReadyLayer("star-annotations", capture103Id, 1, compat, enabledByDefault: true),
+            ReadyLayer("scene-constellations", capture103Id, 2, compat, enabledByDefault: true),
+            ReadyLayer("MeasuredTransientTrails", exp105.Capture.CaptureId, 5, compat, enabledByDefault: false, scope: CenteredViewLayerScope.Contributor)
+        ]);
+
+        var singleArchiveBase = new CenteredViewArchiveBase(single103.Base, single103.Revision.RevisionId, single103.Revision.RevisionId, single103.Revision.RevisionId);
+        var stackArchiveBase = new CenteredViewArchiveBase(stack103Initial.Base, stack103Initial.Revision.RevisionId, stack103LaterTrail.Revision.RevisionId, stack103LastLive.Revision.RevisionId);
+
+        CenteredViewLiveInterval[] stackLiveHistory =
+        [
+            new(stack103Initial.Base.BaseId, stack103Initial.Revision.RevisionId, 2, OperatorUiTestData.Now.AddSeconds(-25), 3, OperatorUiTestData.Now.AddSeconds(-22)),
+            new(stack103Initial.Base.BaseId, stack103LastLive.Revision.RevisionId, 3, OperatorUiTestData.Now.AddSeconds(-22), 5, OperatorUiTestData.Now.AddSeconds(-15))
+        ];
+        CameraAgentCenteredArchiveBaseSummary[] summaries =
+        [
+            new(singleArchiveBase, CameraAgentCenteredViewProjection.ClassifyRevisions(singleArchiveBase, [single103.Revision], [])),
+            new(stackArchiveBase, CameraAgentCenteredViewProjection.ClassifyRevisions(stackArchiveBase,
+                [stack103Initial.Revision, stack103LastLive.Revision, stack103LaterTrail.Revision], stackLiveHistory))
+        ];
+
+        // 1. Open archive 103 -> offers Single exposure & Live stack centered on #103, and distinctly labels later archive enrichment
+        using (var context = new BunitContext())
+        {
+            var service = Configure(context);
+            var module = context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js");
+            module.Setup<string>("bindLayerToggles", _ => true).SetResult("valid");
+            module.Setup<string?>("readLayerVisibility", _ => true).SetResult(null);
+            module.SetupVoid("writeLayerVisibility", _ => true).SetVoidResult();
+
+            var selectionId = Guid.Parse("19230000-0000-0000-0000-000000009999");
+            IReadOnlyList<string>? savedEnabledLayers = null;
+            service.SaveCenteredSelectionHandler = (refId, bId, rId, enabled, _) =>
+            {
+                Assert.AreEqual(capture103Id, refId);
+                Assert.AreEqual(stack103LastLive.Base.BaseId, bId);
+                Assert.AreEqual(stack103LastLive.Revision.RevisionId, rId);
+                savedEnabledLayers = enabled;
+                return ValueTask.FromResult(OperatorUiResult<CenteredViewSavedSelection>.Success(
+                    new(selectionId, bId, rId, enabled.ToArray(), OperatorUiTestData.Now)));
+            };
+
+            var detail = CenteredDetailView(capture103Id, summaries, stack103LastLive, savedSelection: null, selectionError: null);
+            var cut = context.Render<CurrentSkyPage>(p => p.Add(c => c.ArchivedView, detail));
+
+            cut.WaitForAssertion(() =>
+            {
+                var baseLinks = cut.FindAll(".centered-archive-bases a");
+                Assert.HasCount(2, baseLinks);
+                StringAssert.Contains(baseLinks[0].TextContent, "Single exposure", StringComparison.Ordinal);
+                StringAssert.Contains(baseLinks[1].TextContent, "Live stack centered on #103 (5 frames)", StringComparison.Ordinal);
+
+                var revLinks = cut.FindAll(".centered-archive-revisions a");
+                Assert.HasCount(3, revLinks);
+                Assert.AreEqual("Initial", revLinks[0].GetAttribute("data-revision-role"));
+                Assert.AreEqual("LastPublishedLive", revLinks[1].GetAttribute("data-revision-role"));
+                Assert.AreEqual("LaterArchiveEnrichment", revLinks[2].GetAttribute("data-revision-role"));
+                StringAssert.Contains(revLinks[2].TextContent, "Later archive enrichment", StringComparison.Ordinal);
+                Assert.IsFalse(cut.Find(".save-centered-selection").HasAttribute("disabled"));
+            });
+
+            // Turn off constellations and save personal selection
+            await cut.Find("[data-layer-kind='scene-constellations'] input").ChangeAsync(false).ConfigureAwait(false);
+            await cut.Find(".save-centered-selection").ClickAsync().ConfigureAwait(false);
+            cut.WaitForAssertion(() =>
+            {
+                Assert.IsNotNull(savedEnabledLayers);
+                Assert.HasCount(1, savedEnabledLayers);
+                Assert.AreEqual(CenteredViewLinks.ArchiveSelection(capture103Id, selectionId),
+                    cut.Find(".centered-save-result a").GetAttribute("href"));
+            });
+        }
+
+        // 2. Fresh browser with conflicting localStorage opens the saved personal selection -> reproduces exact saved layers!
+        using (var freshContext = new BunitContext())
+        {
+            Configure(freshContext);
+            var module = freshContext.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js");
+            module.Setup<string>("bindLayerToggles", _ => true).SetResult("valid");
+            // Fresh browser has opposite localStorage preference (stars OFF, constellations ON)
+            module.Setup<string?>("readLayerVisibility", _ => true).SetResult("{\"star-annotations\":false,\"scene-constellations\":true}");
+
+            var starId = stack103LastLive.Revision.Manifest.Layers.Single(layer => layer.LayerKind == "star-annotations").LayerIdentitySha256;
+            var saved = new CenteredViewSavedSelection(Guid.NewGuid(), stack103LastLive.Base.BaseId, stack103LastLive.Revision.RevisionId, [starId], OperatorUiTestData.Now);
+            var detail = CenteredDetailView(capture103Id, summaries, stack103LastLive, savedSelection: saved, selectionError: null);
+
+            var cut = freshContext.Render<CurrentSkyPage>(p => p.Add(c => c.ArchivedView, detail));
+            cut.WaitForAssertion(() =>
+            {
+                StringAssert.Contains(cut.Find(".centered-saved-selection").TextContent, "Saved personal selection", StringComparison.Ordinal);
+                Assert.IsTrue(cut.Find("[data-layer-kind='star-annotations'] input").HasAttribute("checked"));
+                Assert.IsFalse(cut.Find("[data-layer-kind='scene-constellations'] input").HasAttribute("checked"));
+            });
+        }
+
+        // 3. Explicit mismatched/missing centered target -> shows explicit error and never substitutes another base
+        using (var errorContext = new BunitContext())
+        {
+            Configure(errorContext);
+            var detail = CenteredDetailView(capture103Id, summaries, selectedView: null, savedSelection: null,
+                selectionError: "The requested centered view revision was not found or does not belong to this capture.");
+            var cut = errorContext.Render<CurrentSkyPage>(p => p.Add(c => c.ArchivedView, detail));
+            cut.WaitForAssertion(() =>
+            {
+                StringAssert.Contains(cut.Find(".centered-selection-error").TextContent, "not found or does not belong to this capture", StringComparison.Ordinal);
+                Assert.IsEmpty(cut.FindAll(".sky-layer-workspace"));
+            });
+        }
+
+        // 4. Older legacy archive capture (CenteredArchive == null) -> renders actual retained stages & historical availability
+        using (var legacyContext = new BunitContext())
+        {
+            Configure(legacyContext);
+            var legacyCapture = OperatorUiTestData.Capture();
+            var legacyDetail = new CameraAgentCaptureDetailView(legacyCapture,
+                new(CameraAgentPresentationStage.Annotated, OperatorUiTestData.CurrentImage().Stages));
+            var cut = legacyContext.Render<CurrentSkyPage>(p => p.Add(c => c.ArchivedView, legacyDetail));
+            cut.WaitForAssertion(() =>
+            {
+                Assert.IsEmpty(cut.FindAll(".centered-archive-controls"));
+                Assert.IsNotNull(cut.Find(".stage-switcher"));
+                StringAssert.Contains(cut.Find(".stage-unavailable").TextContent, "Calibrated", StringComparison.Ordinal);
+            });
+        }
+    }
+
+    private static CenteredViewExposure CenteredExposure(long sequence, DateTimeOffset startedUtc)
+    {
+        var captureId = Guid.Parse($"19230000-0000-0000-0000-{sequence:D12}");
+        var descriptor = ArtifactManifestFixture.CreateManifest(CameraPixelFormat.Mono8, 640, 480, 640, new byte[640 * 480]).Descriptor;
+        descriptor = descriptor with
+        {
+            Capture = descriptor.Capture with { AgentId = "agent-test", CaptureId = captureId, CaptureSequence = sequence },
+            Timing = descriptor.Timing with { ExposureStartedUtc = startedUtc, ExposureEndedUtc = startedUtc.AddSeconds(2) },
+            Artifact = descriptor.Artifact with { ArtifactId = Guid.Parse($"19231000-0000-0000-0000-{sequence:D12}") }
+        };
+        var input = new ExposureInputV1(
+            new(CenteredStream.Camera, CenteredStream.RunId, captureId),
+            descriptor,
+            new(descriptor.Layout, new RigOrientation(0, 0, 0), new string('A', 64), "optics", null));
+        return new(input, Guid.Parse($"19232000-0000-0000-0000-{sequence:D12}"),
+            new(Guid.Parse($"19233000-0000-0000-0000-{sequence:D12}"), new string('A', 64), new string('B', 64)));
+    }
+
+    private static CenteredView CenteredSingle(
+        CenteredViewExposure reference,
+        long order,
+        IReadOnlyList<CenteredViewLayer>? layers = null,
+        PresentationCompatibilityDescriptor? compatibility = null,
+        int width = 640,
+        int height = 480)
+    {
+        var compat = compatibility ?? new PresentationCompatibilityDescriptor(width, height, new string('B', 64), new string('C', 64));
+        var previewArtifactId = Guid.Parse($"19234000-0000-0000-0000-{reference.Capture.CaptureSequence:D12}");
+        var preview = new CenteredViewPreview(
+            new(previewArtifactId, new string('C', 64), "image/jpeg", compat),
+            new string('D', 64),
+            RecipeIdentityDescriptor.Create("preview", "1.0.0", "preview-v1", JsonSerializer.SerializeToElement(new { })),
+            "Skia JPEG",
+            "jpeg-v1",
+            new(width, height, 0, 0, width, height, width, height))
+        {
+            Source = CenteredViewImageSource.QualifiedLinear
+        };
+        var definition = new CenteredViewBaseDefinition(
+            CenteredStream,
+            reference,
+            reference.Capture.CaptureSequence,
+            CenteredViewKind.Single,
+            reference.Linear!,
+            preview,
+            [new(reference, "ReferenceIdentity", JsonSerializer.SerializeToElement(new { method = "identity" }))],
+            null);
+        return CenteredRevision(new(SqliteCenteredViews.BaseIdentity(definition), definition, OperatorUiTestData.Now), null, order, layers ?? []);
+    }
+
+    private static CenteredView CenteredStack(
+        CenteredViewExposure reference,
+        IReadOnlyList<CenteredViewExposure> contributors,
+        long order,
+        IReadOnlyList<CenteredViewLayer>? layers = null,
+        PresentationCompatibilityDescriptor? compatibility = null)
+    {
+        var compat = compatibility ?? new PresentationCompatibilityDescriptor(640, 480, new string('B', 64), new string('C', 64));
+        var previewArtifactId = Guid.Parse($"19235000-0000-0000-0000-{reference.Capture.CaptureSequence:D12}");
+        var preview = new CenteredViewPreview(
+            new(previewArtifactId, new string('E', 64), "image/jpeg", compat),
+            new string('F', 64),
+            RecipeIdentityDescriptor.Create("preview", "1.0.0", "preview-v1", JsonSerializer.SerializeToElement(new { })),
+            "Skia JPEG",
+            "jpeg-v1",
+            new(640, 480, 0, 0, 640, 480, 640, 480))
+        {
+            Source = CenteredViewImageSource.RegisteredLinear
+        };
+        var closedWindow = new CenteredViewArtifact(Guid.Parse($"19236000-0000-0000-0000-{reference.Capture.CaptureSequence:D12}"), new string('1', 64), new string('2', 64));
+        var science = new CenteredViewArtifact(Guid.Parse($"19237000-0000-0000-0000-{reference.Capture.CaptureSequence:D12}"), new string('3', 64), new string('4', 64));
+        var members = contributors.Select(member => new CenteredViewContributor(
+            member,
+            member.Capture.CaptureId == reference.Capture.CaptureId ? "ReferenceIdentity" : "VerifiedCentroidSimilarity",
+            JsonSerializer.SerializeToElement(new { method = "test" }))).ToArray();
+        var definition = new CenteredViewBaseDefinition(
+            CenteredStream,
+            reference,
+            reference.Capture.CaptureSequence,
+            CenteredViewKind.Stack,
+            science,
+            preview,
+            members,
+            closedWindow);
+        return CenteredRevision(new(SqliteCenteredViews.BaseIdentity(definition), definition, OperatorUiTestData.Now), null, order, layers ?? []);
+    }
+
+    private static CenteredView CenteredRevision(
+        CenteredViewBase viewBase,
+        string? previousRevisionId,
+        long order,
+        IReadOnlyList<CenteredViewLayer> layers)
+    {
+        var normalized = SqliteCenteredViews.NormalizedLayers(viewBase.Definition, layers);
+        var manifest = LayeredPresentationJson.CreateManifest(
+            viewBase.Definition.Preview.Product,
+            sceneIdentitySha256: null,
+            normalized.Where(static layer => layer.Drawable is not null).Select(static layer => layer.Drawable!));
+        var revisionId = SqliteCenteredViews.RevisionIdentity(viewBase.BaseId, previousRevisionId, normalized);
+        return new(viewBase, new(revisionId, viewBase.BaseId, order, OperatorUiTestData.Now.AddSeconds(order), manifest, normalized));
+    }
+
+    private static CenteredViewLayer PendingLayer(string kind, Guid captureId, CenteredViewLayerScope scope = CenteredViewLayerScope.Reference) =>
+        new(new(kind, scope, captureId), 0, null, null, CenteredViewReadiness.Waiting, "centered.awaiting-product", null);
+
+    private static CenteredViewLayer DisabledLayer(string kind, Guid captureId, CenteredViewLayerScope scope = CenteredViewLayerScope.Reference) =>
+        new(new(kind, scope, captureId), 0, null, null, CenteredViewReadiness.NotConfigured, "centered.layer-not-configured", null);
+
+    private static CenteredViewLayer ReadyLayer(
+        string kind,
+        Guid captureId,
+        long evidenceOrder,
+        PresentationCompatibilityDescriptor compatibility,
+        bool enabledByDefault = true,
+        CenteredViewLayerScope scope = CenteredViewLayerScope.Reference)
+    {
+        var drawable = Drawable(kind, 20, enabledByDefault, compatibility);
+        return new(new(kind, scope, captureId), evidenceOrder, EvidencePin($"{kind}-{captureId:N}"),
+            OperatorUiTestData.Now, CenteredViewReadiness.Ready, null, drawable);
+    }
+
+    private static PresentationLayerV1 Drawable(
+        string kind,
+        int zOrder,
+        bool enabledByDefault,
+        PresentationCompatibilityDescriptor compatibility) =>
+        LayeredPresentationJson.CreateLayer(
+            kind,
+            new(Guid.NewGuid(), new string('7', 64), PresentationLayerPayloadJson.MediaType, compatibility),
+            sceneIdentitySha256: null,
+            PresentationCoordinateSpace.ScenePixels,
+            "renderer-v1",
+            "style-v1",
+            zOrder,
+            PresentationBlendMode.Normal,
+            1_000_000,
+            enabledByDefault,
+            default);
+
+    private static CenteredViewArtifact EvidencePin(string seed)
+    {
+        var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(seed)));
+        return new(Guid.NewGuid(), hash, hash);
+    }
+
+    private static CameraAgentLayeredPresentation ProjectCenteredPresentation(CenteredView view)
+    {
+        var layers = view.Revision.Manifest.Layers.Select((layer, index) => new CameraAgentPresentationLayer(
+            layer.LayerIdentitySha256,
+            layer.LayerKind,
+            FormattableString.Invariant($"hvo-layer-{index}"),
+            layer.ZOrder,
+            layer.EnabledByDefault,
+            layer.OpacityMillionths,
+            layer.RendererVersion,
+            layer.StyleVersion)).ToArray();
+        var groups = string.Concat(layers.Select(layer => $"<g id=\"{layer.DomGroupId}\" data-layer-kind=\"{layer.Kind}\"></g>"));
+        var w = view.Base.Definition.Preview.Transform.PreviewWidth;
+        var h = view.Base.Definition.Preview.Transform.PreviewHeight;
+        var svg = Encoding.UTF8.GetBytes(FormattableString.Invariant($"<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {w} {h}\">{groups}</svg>"));
+        return new CameraAgentLayeredPresentation(
+            view.Base.Definition.Reference.Capture.CaptureId,
+            view.Base.Definition.Preview.Product.ArtifactId,
+            view.Revision.Manifest.ManifestIdentitySha256,
+            view.Revision.RevisionId,
+            new string('9', 64),
+            w,
+            h,
+            layers,
+            svg);
+    }
+
+    private static CameraAgentCurrentSkyView CenteredSkyView(
+        CenteredView? view,
+        CenteredViewExposure admissionHead,
+        CenteredViewLiveState state,
+        DateTimeOffset observedUtc,
+        CenteredLiveMode mode = CenteredLiveMode.Centered,
+        TimeSpan? minimumRefresh = null)
+    {
+        var headCapture = new CameraAgentPresentationCapture(
+            admissionHead.Capture.CaptureId,
+            admissionHead.Capture.CaptureSequence,
+            admissionHead.ExposureStartedUtc,
+            Math.Max(0, (long)(observedUtc - admissionHead.ExposureStartedUtc).TotalSeconds),
+            GalleryEvidenceOrigin.Simulated);
+        var displayCapture = view is null
+            ? null
+            : new CameraAgentPresentationCapture(
+                view.Base.Definition.Reference.Capture.CaptureId,
+                view.Base.Definition.Reference.Capture.CaptureSequence,
+                view.Base.Definition.Reference.ExposureStartedUtc,
+                Math.Max(0, (long)(observedUtc - view.Base.Definition.Reference.ExposureStartedUtc).TotalSeconds),
+                GalleryEvidenceOrigin.Simulated);
+        var systemState = state switch
+        {
+            CenteredViewLiveState.Paused => CameraAgentPresentationSystemState.Paused,
+            CenteredViewLiveState.Warming => CameraAgentPresentationSystemState.Starting,
+            CenteredViewLiveState.Stale => CameraAgentPresentationSystemState.Standby,
+            CenteredViewLiveState.Gap => CameraAgentPresentationSystemState.Unavailable,
+            _ => CameraAgentPresentationSystemState.Capturing
+        };
+        var presentation = new CameraAgentCurrentImagePresentation(
+            observedUtc,
+            view is null ? CameraAgentPresentationImageFreshness.Empty : CameraAgentPresentationImageFreshness.Current,
+            new(systemState, $"Centered state: {state}", observedUtc),
+            headCapture,
+            displayCapture,
+            false,
+            null,
+            [],
+            view is not null,
+            false);
+        var rendered = view is null ? null : ProjectCenteredPresentation(view);
+        var liveContext = new CenteredViewLiveContext(CenteredStream, headCapture, observedUtc, state, null);
+        var centered = new CameraAgentCenteredLiveView(
+            liveContext,
+            mode,
+            view,
+            view is null ? null : new(view.Base.BaseId, view.Revision.RevisionId, view.Revision.Order, observedUtc, null, null),
+            rendered,
+            rendered is null ? CameraAgentLayeredPresentationStatus.NotRetained : CameraAgentLayeredPresentationStatus.Found,
+            null,
+            RetainedFromPriorRun: false,
+            view is null ? null : CameraAgentCenteredViewProjection.BoundPreviewUrl(view));
+        return new CameraAgentCurrentSkyView(presentation, null, null)
+        {
+            ProcessingPending = false,
+            MinimumRefreshInterval = minimumRefresh ?? TimeSpan.FromSeconds(15),
+            Centered = centered
+        };
+    }
+
+    private static CameraAgentCaptureDetailView CenteredDetailView(
+        Guid captureId,
+        IReadOnlyList<CameraAgentCenteredArchiveBaseSummary> bases,
+        CenteredView? selectedView,
+        CenteredViewSavedSelection? savedSelection,
+        string? selectionError)
+    {
+        var capture = OperatorUiTestData.Capture(captureId) with { CaptureSequence = 103 };
+        var presentation = new CameraAgentCapturePresentation(null, []);
+        var rendered = selectedView is null ? null : ProjectCenteredPresentation(selectedView);
+        var archive = new CameraAgentCenteredArchiveView(
+            captureId,
+            bases,
+            selectedView,
+            rendered,
+            rendered is null ? CameraAgentLayeredPresentationStatus.NotRetained : CameraAgentLayeredPresentationStatus.Found,
+            null,
+            savedSelection,
+            selectionError,
+            selectedView is null ? null : CameraAgentCenteredViewProjection.BoundPreviewUrl(selectedView));
+        return new CameraAgentCaptureDetailView(capture, presentation) { CenteredArchive = archive };
+    }
+
+    private sealed class TestCenteredViewPublisher : ICenteredViewPublisher
+    {
+        public event Action<CenteredViewStream>? Changed;
+
+        public void RaiseChanged(CenteredViewStream stream) => Changed?.Invoke(stream);
+
+        public ValueTask<CenteredView> RegisterBaseAsync(CenteredViewBaseDefinition definition, IReadOnlyList<CenteredViewLayer> initialLayers, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public ValueTask<CenteredView?> PublishLayerAsync(string baseId, CenteredViewLayer layer, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public ValueTask<CenteredViewCurrent?> SelectLiveAsync(CenteredViewStream stream, string baseId, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public ValueTask<CenteredViewSavedSelection?> SaveAsync(string owner, Guid selectionId, string baseId, string revisionId, IReadOnlyList<string> enabledLayerIds, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+    }
+}
