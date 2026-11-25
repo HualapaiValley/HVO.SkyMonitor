@@ -172,10 +172,87 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
         CollectionAssert.AreEqual(new[] { Category.UnavailableProductImage }, report.Categories.ToArray());
         Assert.AreEqual(run.DayPath, report.UrlAtFailure.Split('?')[0]);
         Assert.IsTrue(report.Observation.PreviewFailedMarker);
+        Assert.IsNull(report.AtFailure.Markup["calendarCell"], "the Calendar is gone after navigation");
+        StringAssert.Contains(report.CalendarCellAtClick!, "datetime=\"2026-10-01\"", StringComparison.Ordinal);
+        StringAssert.Contains(report.CalendarCellAtClick!, "data-nightly-state=\"Partial\"", StringComparison.Ordinal);
         Assert.IsTrue(report.Observation.PreviewRequests.Any(static request => request.Status == 503 && request.ContentType == "text/plain"));
         Assert.IsTrue(report.Observation.Probe!.Available, "the server still serves the image, so the failure was the browser's response");
         StringAssert.Contains(report.AtFailure.Markup["dayTile"]!, "product-slot__failed", StringComparison.Ordinal);
         await run.AssertRetainedEvidenceAsync(report, "PREVIEW_BODY_SENTINEL_1916");
+    }
+
+    [TestMethod]
+    public async Task PendingPreviewIsRetainedWithoutClaimingTheServerReturnedAnError()
+    {
+        await using var run = await InducedRun.StartAsync(TestContext);
+        await run.Page.Locator(".app-frame[data-interactive='true']").WaitForAsync();
+        var requested = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await run.Page.RouteAsync(url => new Uri(url).AbsolutePath == run.PreviewPath, _ =>
+        {
+            // Keep the request paused until the browser context closes.
+            requested.TrySetResult();
+            return Task.CompletedTask;
+        });
+
+        var report = await run.FailAsync(TimeSpan.FromMilliseconds(300), async () =>
+        {
+            await requested.Task.WaitAsync(TimeSpan.FromSeconds(20));
+            await run.Page.AddStyleTagAsync(new() { Content = "[data-product-kind='daily summary'] img { visibility: hidden !important; }" });
+        });
+
+        Assert.AreEqual("preview image", report.FailedStep);
+        Assert.IsNotEmpty(report.Observation.PreviewRequests);
+        Assert.IsTrue(report.Observation.PreviewRequests.All(static request => request.Outcome == "requested"));
+        Assert.IsTrue(report.Observation.Probe!.Available);
+        CollectionAssert.DoesNotContain(report.Categories.ToArray(), Category.UnavailableProductImage);
+        await run.AssertRetainedEvidenceAsync(report);
+    }
+
+    [TestMethod]
+    public async Task RedirectedPreviewRetainsTheLoginResponseWithoutCredentials()
+    {
+        const string authorization = "Bearer PREVIEW_AUTH_SENTINEL_1916";
+        const string requestCookie = "PREVIEW_REQUEST_COOKIE_SENTINEL_1916";
+        const string responseCookie = "PREVIEW_RESPONSE_COOKIE_SENTINEL_1916";
+        const string redirectToken = "PREVIEW_REDIRECT_TOKEN_SENTINEL_1916";
+        const string typeParameter = "PREVIEW_CONTENT_TYPE_SENTINEL_1916";
+        await using var run = await InducedRun.StartAsync(TestContext);
+        await run.Page.SetExtraHTTPHeadersAsync(new Dictionary<string, string> { ["Authorization"] = authorization });
+        var origin = new Uri(run.Page.Url).GetLeftPart(UriPartial.Authority);
+        await run.Page.Context.AddCookiesAsync([new() { Name = "CalendarProbe", Value = requestCookie, Url = origin, HttpOnly = true }]);
+        var requestSecrets = new TaskCompletionSource<(bool Authorization, bool Cookie)>(TaskCreationOptions.RunContinuationsAsynchronously);
+        await run.Page.RouteAsync(url => new Uri(url).AbsolutePath == run.PreviewPath, async route =>
+        {
+            var headers = await route.Request.AllHeadersAsync();
+            requestSecrets.TrySetResult((
+                headers.TryGetValue("authorization", out var auth) && auth == authorization,
+                headers.TryGetValue("cookie", out var cookie) && cookie.Contains(requestCookie, StringComparison.Ordinal)));
+            await route.FulfillAsync(new()
+            {
+                Status = 302,
+                ContentType = "text/plain; secret=" + typeParameter,
+                Headers = new Dictionary<string, string>
+                {
+                    ["Location"] = "/Account/Login?ReturnUrl=%2F" + redirectToken,
+                    ["Set-Cookie"] = "CalendarProbeReply=" + responseCookie + "; Path=/; HttpOnly"
+                }
+            });
+        });
+
+        var report = await run.FailAsync(TimeSpan.FromSeconds(2), () =>
+            run.Page.Locator("[data-product-kind='daily summary'] .product-slot__failed").WaitForAsync(new() { Timeout = 20_000 }));
+
+        var sent = await requestSecrets.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.IsTrue(sent.Authorization, "the intercepted preview sent the synthetic Authorization header");
+        Assert.IsTrue(sent.Cookie, "the intercepted preview sent the synthetic session cookie");
+        Assert.IsTrue((await run.Page.Context.CookiesAsync()).Any(static cookie => cookie.Value == responseCookie));
+        Assert.AreEqual("preview image", report.FailedStep);
+        CollectionAssert.AreEqual(new[] { Category.UnavailableProductImage }, report.Categories.ToArray());
+        var requests = report.Observation.PreviewRequests;
+        Assert.IsTrue(requests.Any(static request => request is { Outcome: "redirected", Status: 302, ContentType: "text/plain" }));
+        Assert.IsTrue(requests.Any(static request => request is { Outcome: "response", Status: 200, ContentType: "text/html" }));
+        Assert.IsTrue(report.Observation.Probe!.Available, "the direct re-read still reaches the real image endpoint");
+        await run.AssertRetainedEvidenceAsync(report, "PREVIEW_AUTH_SENTINEL_1916", requestCookie, responseCookie, redirectToken, typeParameter);
     }
 
     [TestMethod]
@@ -587,9 +664,10 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
             secrets.AddRange(circuitTokens);
             Assert.IsGreaterThan(0, circuitTokens.Count, "the run must have observed a circuit token to prove it is excluded");
             Assert.AreEqual(EvidenceRetentionOutcome.Published, Evidence.LastRetention!.Outcome, "the complete file was registered with the run");
+            var output = json + "\n" + report.Summary(Path.GetFileName(report.EvidencePath!));
             foreach (var secret in secrets.Distinct(StringComparer.Ordinal))
             {
-                Assert.DoesNotContain(secret, json, StringComparison.Ordinal, "retained evidence must exclude credential and session values");
+                Assert.DoesNotContain(secret, output, StringComparison.Ordinal, "retained evidence must exclude credential and session values");
             }
         }
 

@@ -47,20 +47,45 @@ public sealed class CalendarDayPreviewEvidenceTests
     [DataRow(503, "text/plain", DisplayName = "server error")]
     [DataRow(404, "application/problem+json", DisplayName = "not found")]
     [DataRow(200, "text/html", DisplayName = "non-image success")]
+    [DataRow(302, "text/html", DisplayName = "redirect without a destination")]
     public void FailedBrowserPreviewResponseIsUnavailableProductImage(int status, string contentType) =>
         AssertCategories(
             Observation(requests: [new(40, "response", status, contentType, null)], imageVisibleAtFailure: true),
             Category.UnavailableProductImage);
 
     [TestMethod]
+    [DataRow(null, null, false, DisplayName = "redirect target is still pending")]
+    [DataRow(200, "image/png", false, DisplayName = "redirect ends with an image")]
+    [DataRow(304, "none", false, DisplayName = "redirect revalidates a cached image")]
+    [DataRow(200, "text/html", true, DisplayName = "redirect ends with a login page")]
+    [DataRow(404, "text/plain", true, DisplayName = "redirect target is missing")]
+    public void PreviewClassificationUsesTheRedirectOutcome(int? status, string? contentType, bool unavailable)
+    {
+        var requests = new List<CalendarDayPreviewRequest>
+        {
+            new(5, "requested", null, null, null), new(10, "redirected", 302, "text/html", null),
+            new(15, "requested", null, null, null)
+        };
+        if (status is not null)
+        {
+            requests.Add(new(30, "response", status, contentType, null));
+        }
+
+        AssertCategories(Observation(requests: requests, dayLoadingAfterSettle: true),
+            unavailable ? Category.UnavailableProductImage : Category.RenderIncomplete);
+    }
+
+    [TestMethod]
     public void NetworkFailureWithoutAnyImageResponseIsUnavailableProductImage() =>
         AssertCategories(Observation(requests: [new(40, "failed", null, null, "net::ERR_CONNECTION_REFUSED")]), Category.UnavailableProductImage);
 
     [TestMethod]
-    public void AbortedPrerenderRequestFollowedByImageIsNotUnavailable() =>
+    [DataRow(200, "image/png")]
+    [DataRow(304, "none")]
+    public void AbortedPrerenderRequestFollowedByImageIsNotUnavailable(int status, string contentType) =>
         AssertCategories(
             Observation(
-                requests: [new(10, "failed", null, null, "net::ERR_ABORTED"), new(90, "response", 200, "image/png", null)],
+                requests: [new(10, "failed", null, null, "net::ERR_ABORTED"), new(90, "response", status, contentType, null)],
                 imageVisibleAtFailure: true),
             Category.TestSynchronization);
 
@@ -153,6 +178,7 @@ public sealed class CalendarDayPreviewEvidenceTests
     [DataRow("image/png", "image/png")]
     [DataRow("IMAGE/PNG; charset=binary", "image/png")]
     [DataRow("text/plain; charset=utf-8", "text/plain")]
+    [DataRow("text/html; authorization=BEARER_1916; cookie=SESSION_1916", "text/html")]
     [DataRow("application/x-secret-token", "other")]
     [DataRow(null, "none")]
     public void ContentTypesAreBounded(string? contentType, string expected) =>
@@ -322,7 +348,7 @@ public sealed class CalendarDayPreviewEvidenceTests
         var report = new CalendarDayPreviewReport(
             "Class", "Method", "1440x900-partial", "2026-10-01", "/archive/day/2026-10-01",
             "/api/v1/operations/still-products/{expected-product}/preview", "preview image", "System.TimeoutException", 30_000,
-            categories, observation, "true", "/archive/calendar?month=2026-10", "/archive/day/2026-10-01", "/archive/day/2026-10-01",
+            categories, observation, "true", "/archive/calendar?month=2026-10", "<li></li>", "/archive/day/2026-10-01", "/archive/day/2026-10-01",
             0, 30_000, 10_000, snapshot, snapshot, [new("console:resource-load-failed", 1)],
             [new(250, LogLevel.Error, "HVO.SkyMonitor.CameraAgent", 1, "System.Exception", null)],
             [new(1, 0, "click", "interactive=true route=/archive/calendar?month=2026-10")], null);
@@ -334,6 +360,7 @@ public sealed class CalendarDayPreviewEvidenceTests
         Assert.AreEqual(30_000, root.GetProperty("failure").GetProperty("timeoutMs").GetInt32());
         Assert.IsFalse(root.GetProperty("failure").TryGetProperty("messageLines", out _));
         Assert.AreEqual("UnavailableProductImage", root.GetProperty("categories")[0].GetString());
+        Assert.AreEqual("<li></li>", root.GetProperty("navigation").GetProperty("calendarCellAtClick").GetString());
         Assert.AreEqual(503, root.GetProperty("preview").GetProperty("browserRequests")[0].GetProperty("status").GetInt32());
         Assert.IsTrue(root.GetProperty("preview").GetProperty("tileFailureMarker").GetBoolean());
         Assert.AreEqual("<article></article>", root.GetProperty("atFailure").GetProperty("markup").GetProperty("dayTile").GetString());
