@@ -166,16 +166,17 @@ public sealed class ProcessingGraphEditorPageTests
     }
 
     [TestMethod]
-    public void RowHeaderTypeSelectWiresRegionalVisibilityAndLinksToTheBuiltInPredictionStage()
+    public void RowHeaderTypeSelectWiresRegionalVisibilityAndLinksToTheRetainedMeasurementStage()
     {
         const string initialAlias = "CombinedPreview";
+        const string measurementAlias = ExposureMeasurementProducts.StepAlias;
         const string predictionAlias = ExposureCatalogPredictionProducts.StepAlias;
         using var context = new BunitContext();
         context.JSInterop.Mode = JSRuntimeMode.Loose;
         var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
         var pipeline = new CapturePipelineConfig(
         [
-            new(ExposureMeasurementProducts.StepAlias, ExposureMeasurementProducts.StepAlias, 4,
+            new(measurementAlias, measurementAlias, 4,
                 null, ["$raw"], Required: false, Enabled: true, Publication: durable),
             new(initialAlias, "preview", 10, null, ["$raw"], Required: true, Enabled: true)
         ]);
@@ -192,9 +193,10 @@ public sealed class ProcessingGraphEditorPageTests
 
         typeSelect.Change(RegionalStellarVisibilityProducts.StepAlias);
 
-        var inspect = cut.Find($"{predictionSelector} .node-row--builtin a");
+        Assert.HasCount(1, cut.FindAll(predictionSelector));
+        var inspect = cut.Find($"li.node-row[data-node-alias='{measurementAlias}'] .node-row--builtin a");
         Assert.AreEqual("Inspect built-in stage", inspect.TextContent.Trim());
-        Assert.AreEqual($"/operations/pipeline/graphs/rev-active/nodes/{predictionAlias}", inspect.GetAttribute("href"));
+        Assert.AreEqual($"/operations/pipeline/graphs/rev-active/nodes/{measurementAlias}", inspect.GetAttribute("href"));
 
         cut.Find("form").Submit();
         cut.Find(".editor-actions button.btn-primary").Click();
@@ -204,7 +206,7 @@ public sealed class ProcessingGraphEditorPageTests
         Assert.IsFalse(regional.Required);
         Assert.AreEqual(durable, regional.Publication);
         CollectionAssert.AreEquivalent(
-            new[] { "$raw", ExposureMeasurementProducts.StepAlias, predictionAlias }, regional.DependsOn!.ToArray());
+            new[] { "$raw", measurementAlias, predictionAlias }, regional.DependsOn!.ToArray());
     }
 
     [TestMethod]
