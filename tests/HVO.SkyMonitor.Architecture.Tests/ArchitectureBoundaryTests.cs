@@ -1123,7 +1123,10 @@ public sealed partial class ArchitectureBoundaryTests
             Assert.Contains(operationDescription, exception.Message, StringComparison.Ordinal);
             if (OperatingSystem.IsLinux())
             {
-                Assert.Contains("and its process tree was terminated.", exception.Message, StringComparison.Ordinal);
+                Assert.Contains(
+                    "and process-tree termination was requested; the root process and all tracked tagged descendants exited and redirected output streams closed.",
+                    exception.Message,
+                    StringComparison.Ordinal);
             }
             else
             {
@@ -1184,7 +1187,7 @@ public sealed partial class ArchitectureBoundaryTests
             if (!OperatingSystem.IsWindows())
             {
                 Assert.DoesNotContain(
-                    "its process tree was terminated",
+                    "the root process and all tracked tagged descendants exited",
                     exception.Message,
                     StringComparison.Ordinal);
                 Assert.Contains(
@@ -1244,7 +1247,7 @@ public sealed partial class ArchitectureBoundaryTests
             if (!OperatingSystem.IsWindows())
             {
                 Assert.DoesNotContain(
-                    "its process tree was terminated",
+                    "the root process and all tracked tagged descendants exited",
                     exception.Message,
                     StringComparison.Ordinal);
                 Assert.Contains(
@@ -1305,7 +1308,7 @@ public sealed partial class ArchitectureBoundaryTests
             Assert.Contains(stdoutMarker, exception.Message, StringComparison.Ordinal);
             Assert.Contains(stderrMarker, exception.Message, StringComparison.Ordinal);
             Assert.DoesNotContain(
-                "its process tree was terminated",
+                "the root process and all tracked tagged descendants exited",
                 exception.Message,
                 StringComparison.Ordinal);
             Assert.Contains(
@@ -1363,13 +1366,16 @@ public sealed partial class ArchitectureBoundaryTests
                 TimeSpan.FromSeconds(3.5),
                 elapsed.Elapsed,
                 $"Reparented pipe-closed descendant cleanup took {elapsed.Elapsed.TotalSeconds.ToString("0.##", CultureInfo.InvariantCulture)}s.");
-            Assert.Contains("and its process tree was terminated.", exception.Message, StringComparison.Ordinal);
+            Assert.Contains(
+                "and process-tree termination was requested; the root process and all tracked tagged descendants exited and redirected output streams closed.",
+                exception.Message,
+                StringComparison.Ordinal);
             Assert.IsTrue(
                 hangingEscapedPid.HasValue,
                 $"Expected reparented pipe-closed PID marker in timeout message:{Environment.NewLine}{exception.Message}");
             Assert.IsTrue(
                 await WaitForProcessGoneAsync(hangingEscapedPid.Value, TimeSpan.FromSeconds(5), TestContext.CancellationToken).ConfigureAwait(false),
-                $"Expected timeout cleanup to terminate reparented pipe-closed descendant PID {hangingEscapedPid.Value.ToString(CultureInfo.InvariantCulture)} before reporting process-tree termination.");
+                $"Expected timeout cleanup to terminate reparented pipe-closed descendant PID {hangingEscapedPid.Value.ToString(CultureInfo.InvariantCulture)} before reporting verified cleanup.");
         }
         finally
         {
@@ -1406,7 +1412,7 @@ public sealed partial class ArchitectureBoundaryTests
                 elapsed.Elapsed,
                 $"Exited-root mixed descendant cleanup took {elapsed.Elapsed.TotalSeconds.ToString("0.##", CultureInfo.InvariantCulture)}s.");
             Assert.DoesNotContain(
-                "its process tree was terminated",
+                "the root process and all tracked tagged descendants exited",
                 exception.Message,
                 StringComparison.Ordinal);
             Assert.Contains(
@@ -1656,6 +1662,136 @@ public sealed partial class ArchitectureBoundaryTests
         finally
         {
             await CleanupSyntheticProcessAsync(siblingGrandchildPid, pidFile).ConfigureAwait(false);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void DescribeTimeoutTerminationCoversAllCleanupOutcomes()
+    {
+        var cases = new (
+            string Name,
+            bool RootExitedBeforeKill,
+            bool KillSucceeded,
+            bool RootExitedAfterKill,
+            RepositoryGraph.TaggedDescendantCleanupResult TaggedCleanup,
+            bool PipesDrained,
+            string Expected)[]
+        {
+            (
+                "VerifiedCleanExitNoReparentedDescendants",
+                false,
+                true,
+                true,
+                new RepositoryGraph.TaggedDescendantCleanupResult(Supported: true, SignaledCount: 0, SurvivingDescendantsDetected: false),
+                true,
+                "and process-tree termination was requested; the root process and all tracked tagged descendants exited and redirected output streams closed."
+            ),
+            (
+                "VerifiedCleanExitAfterSignalingReparentedDescendants",
+                false,
+                true,
+                true,
+                new RepositoryGraph.TaggedDescendantCleanupResult(Supported: true, SignaledCount: 2, SurvivingDescendantsDetected: false),
+                true,
+                "and process-tree termination was requested; the root process and all tracked tagged descendants exited and redirected output streams closed."
+            ),
+            (
+                "RootExitedBeforeKillAndPipesTimedOut",
+                true,
+                false,
+                true,
+                new RepositoryGraph.TaggedDescendantCleanupResult(Supported: true, SignaledCount: 0, SurvivingDescendantsDetected: false),
+                false,
+                "while draining redirected output after the root process exited; pipe readers were closed after the bounded drain grace period and descendant processes may still be running."
+            ),
+            (
+                "RootExitedBeforeKillWithSurvivingTaggedDescendants",
+                true,
+                false,
+                true,
+                new RepositoryGraph.TaggedDescendantCleanupResult(Supported: true, SignaledCount: 1, SurvivingDescendantsDetected: true),
+                true,
+                "while draining redirected output after the root process exited; tagged descendant processes remained active after the post-kill grace period."
+            ),
+            (
+                "RootExitedBeforeKillWithTerminatedTaggedDescendants",
+                true,
+                false,
+                true,
+                new RepositoryGraph.TaggedDescendantCleanupResult(Supported: true, SignaledCount: 2, SurvivingDescendantsDetected: false),
+                true,
+                "while draining redirected output after the root process exited; surviving tagged descendants were terminated and redirected pipes closed during cleanup, though full process-tree termination could not be established because the root process had already exited."
+            ),
+            (
+                "RootExitedBeforeKillWithNoTaggedDescendantsSignaled",
+                true,
+                false,
+                true,
+                new RepositoryGraph.TaggedDescendantCleanupResult(Supported: true, SignaledCount: 0, SurvivingDescendantsDetected: false),
+                true,
+                "while draining redirected output after the root process exited; redirected pipes closed during cleanup, but process-tree termination could not be established because the root process had already exited."
+            ),
+            (
+                "RootDidNotExitAfterKill",
+                false,
+                true,
+                false,
+                new RepositoryGraph.TaggedDescendantCleanupResult(Supported: true, SignaledCount: 0, SurvivingDescendantsDetected: false),
+                false,
+                "and termination was requested, but the root process did not exit within the post-kill grace period; pipe readers were closed and descendant processes may still be running."
+            ),
+            (
+                "RootExitedAfterKillWithSurvivingTaggedDescendants",
+                false,
+                true,
+                true,
+                new RepositoryGraph.TaggedDescendantCleanupResult(Supported: true, SignaledCount: 1, SurvivingDescendantsDetected: true),
+                true,
+                "and the root process exited after termination was requested, but tagged descendant processes remained active after the post-kill grace period."
+            ),
+            (
+                "RootExitedAfterKillAndPipesTimedOut",
+                false,
+                true,
+                true,
+                new RepositoryGraph.TaggedDescendantCleanupResult(Supported: true, SignaledCount: 0, SurvivingDescendantsDetected: false),
+                false,
+                "and the root process exited after termination was requested, but redirected output draining timed out; pipe readers were closed and descendant processes may still be running."
+            ),
+            (
+                "RootExitedBeforeKillSucceeded",
+                false,
+                false,
+                true,
+                new RepositoryGraph.TaggedDescendantCleanupResult(Supported: true, SignaledCount: 0, SurvivingDescendantsDetected: false),
+                true,
+                "and the root process exited before process-tree termination could be established."
+            ),
+            (
+                "TaggedDescendantCleanupUnsupportedOnPlatform",
+                false,
+                true,
+                true,
+                new RepositoryGraph.TaggedDescendantCleanupResult(Supported: false, SignaledCount: 0, SurvivingDescendantsDetected: false),
+                true,
+                "and process-tree termination was requested and the root process exited with drained pipes, but reparented descendants could not be verified on this platform."
+            ),
+        };
+
+        foreach (var testCase in cases)
+        {
+            var actual = RepositoryGraph.DescribeTimeoutTermination(
+                testCase.RootExitedBeforeKill,
+                testCase.KillSucceeded,
+                testCase.RootExitedAfterKill,
+                testCase.TaggedCleanup,
+                testCase.PipesDrained);
+
+            Assert.AreEqual(
+                testCase.Expected,
+                actual,
+                $"Unexpected timeout termination description for case '{testCase.Name}'.");
         }
     }
 
@@ -2687,6 +2823,10 @@ public sealed partial class ArchitectureBoundaryTests
             }
         }
 
+        // Tagged descendant cleanup relies on descendants inheriting this environment variable;
+        // processes that scrub their environment (for example via `env -i`) and close pipes
+        // cannot be enumerated without cgroups or a subreaper, which is why timeout diagnostics
+        // report only the root exit, tracked tagged descendants, and pipe closure actually verified.
         internal const string EvaluationRunIdEnvironmentVariable = "HVO_ARCH_EVAL_RUN_ID";
         internal static readonly TimeSpan DefaultEvaluationTimeout = TimeSpan.FromMinutes(2);
         internal static readonly TimeSpan PostKillGracePeriod = TimeSpan.FromSeconds(5);
@@ -2838,12 +2978,12 @@ public sealed partial class ArchitectureBoundaryTests
                 SnapshotBuffer(errorBuffer));
         }
 
-        private readonly record struct TaggedDescendantCleanupResult(
+        internal readonly record struct TaggedDescendantCleanupResult(
             bool Supported,
             int SignaledCount,
             bool SurvivingDescendantsDetected);
 
-        private static string DescribeTimeoutTermination(
+        internal static string DescribeTimeoutTermination(
             bool rootExitedBeforeKill,
             bool killSucceeded,
             bool rootExitedAfterKill,
@@ -2857,7 +2997,7 @@ public sealed partial class ArchitectureBoundaryTests
                 taggedCleanup.Supported &&
                 !taggedCleanup.SurvivingDescendantsDetected)
             {
-                return "and its process tree was terminated.";
+                return "and process-tree termination was requested; the root process and all tracked tagged descendants exited and redirected output streams closed.";
             }
 
             if (rootExitedBeforeKill && !pipesDrained)
@@ -2903,6 +3043,10 @@ public sealed partial class ArchitectureBoundaryTests
             return "and process-tree termination was requested and the root process exited with drained pipes, but reparented descendants could not be verified on this platform.";
         }
 
+        // Linux best-effort cleanup scans /proc/<pid>/environ for descendants that inherited
+        // HVO_ARCH_EVAL_RUN_ID. Descendants that clear their environment (for example via `env -i`)
+        // cannot be enumerated without cgroups or a subreaper, which is why
+        // DescribeTimeoutTermination qualifies its success message to the cleanup actually verified.
         private static async Task<TaggedDescendantCleanupResult> TerminateTaggedDescendantsAsync(
             string evaluationRunId,
             TimeSpan gracePeriod)
