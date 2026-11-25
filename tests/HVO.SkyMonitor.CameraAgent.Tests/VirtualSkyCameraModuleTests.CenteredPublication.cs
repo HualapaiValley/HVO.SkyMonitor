@@ -18,6 +18,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Moq;
+using SQLitePCL;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests;
 
@@ -1406,19 +1407,45 @@ public sealed partial class VirtualSkyCameraModuleTests
                 }
             };
 
-            var publishTask = Task.Run(() => windows.PublishReadyAsync(token).AsTask(), token);
-            var (heldConnection, heldTransaction) = await lockHeld.Task.WaitAsync(TimeSpan.FromSeconds(10), token).ConfigureAwait(false);
-            await using (heldConnection.ConfigureAwait(false))
-            await using (heldTransaction.ConfigureAwait(false))
+            var beginImmediateEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var traceInstalled = 0;
+            views.BeforeResolveMissingCenterWriteForTest = connection =>
             {
-                await Task.Delay(TimeSpan.FromMilliseconds(250), token).ConfigureAwait(false);
-                Assert.IsFalse(publishTask.IsCompleted,
-                    "Attempt 8 must block waiting on BEGIN IMMEDIATE while the concurrent Single writer holds the write transaction.");
-                await heldTransaction.CommitAsync(token).ConfigureAwait(false);
-            }
+                if (Interlocked.Exchange(ref traceInstalled, 1) != 0)
+                    return null;
 
-            await publishTask.WaitAsync(TimeSpan.FromSeconds(10), token).ConfigureAwait(false);
-            afterReadLinear = null;
+                raw.sqlite3_trace(connection.Handle, (_, statement) =>
+                {
+                    var sql = statement.utf8_to_string();
+                    if (sql is not null && sql.TrimStart().StartsWith("BEGIN IMMEDIATE", StringComparison.OrdinalIgnoreCase))
+                        beginImmediateEntered.TrySetResult();
+                }, null);
+                return new ClearSqliteTraceScope(connection);
+            };
+
+            try
+            {
+                var publishTask = Task.Run(() => windows.PublishReadyAsync(token).AsTask(), token);
+                var (heldConnection, heldTransaction) = await lockHeld.Task.WaitAsync(TimeSpan.FromSeconds(10), token).ConfigureAwait(false);
+                await using (heldConnection.ConfigureAwait(false))
+                await using (heldTransaction.ConfigureAwait(false))
+                {
+                    var completed = await Task.WhenAny(beginImmediateEntered.Task, publishTask)
+                        .WaitAsync(TimeSpan.FromSeconds(10), token).ConfigureAwait(false);
+                    Assert.AreSame(beginImmediateEntered.Task, completed,
+                        "Attempt 8 must reach BEGIN IMMEDIATE while the concurrent Single writer still holds the write transaction.");
+                    Assert.IsFalse(publishTask.IsCompleted,
+                        "Attempt 8 must block waiting on BEGIN IMMEDIATE while the concurrent Single writer holds the write transaction.");
+                    await heldTransaction.CommitAsync(token).ConfigureAwait(false);
+                }
+
+                await publishTask.WaitAsync(TimeSpan.FromSeconds(10), token).ConfigureAwait(false);
+            }
+            finally
+            {
+                views.BeforeResolveMissingCenterWriteForTest = null;
+                afterReadLinear = null;
+            }
 
             using (var connection = await store.OpenCenteredViewsAsync(token).ConfigureAwait(false))
             using (var cmd = connection.CreateCommand())
@@ -1469,5 +1496,14 @@ public sealed partial class VirtualSkyCameraModuleTests
         public ValueTask<IReadOnlyList<ExposureProductLookup>> ReadProductsAfterAsync(
             CameraKey camera, long afterRevision, int maximumCount, CancellationToken cancellationToken)
             => inner.ReadProductsAfterAsync(camera, afterRevision, maximumCount, cancellationToken);
+    }
+
+    private sealed class ClearSqliteTraceScope(SqliteConnection connection) : IDisposable
+    {
+        public void Dispose()
+        {
+            if (connection.State == System.Data.ConnectionState.Open && connection.Handle is not null)
+                raw.sqlite3_trace(connection.Handle, (delegate_trace?)null, null);
+        }
     }
 }

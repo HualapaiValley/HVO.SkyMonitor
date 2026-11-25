@@ -117,6 +117,8 @@ internal sealed partial class SqliteCenteredViews
         return values;
     }
 
+    internal Func<SqliteConnection, IDisposable?>? BeforeResolveMissingCenterWriteForTest { get; set; }
+
     internal async ValueTask<CenterSingleCheckpointResult> ResolveOrCheckpointMissingCenterAsync(
         string windowId, CenteredViewStream stream, Guid referenceCaptureId, long? settledLinearRevision,
         long observedLinearRevision, TimeSpan retryAfter, int maximumRetries, string terminalReason,
@@ -125,6 +127,7 @@ internal sealed partial class SqliteCenteredViews
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumRetries);
         var streamId = StreamId(stream);
         using var connection = await OpenAsync(token).ConfigureAwait(false);
+        using var writeHookScope = BeforeResolveMissingCenterWriteForTest?.Invoke(connection);
         using var transaction = BeginWrite(connection);
         string? baseId = null;
         var currentLinearRevision = 0L;
