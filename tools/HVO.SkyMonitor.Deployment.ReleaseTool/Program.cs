@@ -12,8 +12,7 @@ namespace HVO.SkyMonitor.Deployment.ReleaseTool;
 /// The release tool. <c>create-release</c> (Program.Release.cs) writes a release's files as
 /// scripts/release:assets builds them (install contract section 4). A release's trust is SHA256SUMS and the build
 /// provenance attestations the release workflow makes; the key-signed manifests and indexes, and the commands that made
-/// them, were retired by the owner on 2026-10-16 (#1310). <c>verify-logichost-candidate</c> rehearses local
-/// candidate integrity only; it neither authorizes publication nor enables LogicHost installation.
+/// them, were retired in #1310.
 /// </summary>
 internal static partial class Program
 {
@@ -28,22 +27,11 @@ internal static partial class Program
             {
                 throw new ReleaseToolException("A release-tool command is required.");
             }
-            var options = ParseOptions(args[1..]);
-            switch (args[0])
+            if (args[0] != "create-release")
             {
-                case "create-release":
-                    await CreateReleaseAsync(options, CancellationToken.None).ConfigureAwait(false);
-                    break;
-                case "verify-logichost-candidate":
-                    RejectUnknown(options, "--from");
-                    var candidate = await LogicHostCandidate.VerifyAsync(
-                        RequireExistingDirectory(options, "--from"), CancellationToken.None).ConfigureAwait(false);
-                    await Console.Out.WriteLineAsync(
-                        $"Local LogicHost identity candidate {candidate.Version}: listed asset integrity verified; full bundle completeness, publisher trust and runtime qualification NOT verified.").ConfigureAwait(false);
-                    break;
-                default:
-                    throw new ReleaseToolException($"Unknown release-tool command '{args[0]}'.");
+                throw new ReleaseToolException($"Unknown release-tool command '{args[0]}'.");
             }
+            await CreateReleaseAsync(ParseOptions(args[1..]), CancellationToken.None).ConfigureAwait(false);
             return 0;
         }
         catch (Exception exception) when (exception is ReleaseToolException or IOException or UnauthorizedAccessException or

@@ -2,7 +2,7 @@
   "schemaVersion": 2,
   "sdkVersion": "10.0.402",
   "collectorVersion": "10.1.0",
-  "settingsSha256": "1bc4fc093e52e3683c66e78ebbee34f0d1e003f170f27aab7a2a9f27eaa4f231",
+  "settingsSha256": "03caab98ac3d6a546bd43cffeb4073d805069bea241ee96e6921be8a3c94591f",
   "files": {
     "HVO.SkyMonitor.AgentCore/ArtifactManifestV2.cs": {
       "sourceSha256": "739c43c7b11a6340251112611e8ec538e3bb63de9e4ec15e2f9e8c672b58ecd4",

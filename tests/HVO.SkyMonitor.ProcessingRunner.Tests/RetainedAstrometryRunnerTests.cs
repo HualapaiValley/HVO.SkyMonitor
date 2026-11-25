@@ -44,11 +44,26 @@ public sealed class RetainedAstrometryRunnerTests
             Inputs = claim.Inputs.Select(a => a.ArtifactId == f.Measured.ArtifactId
             ? a with { RecipeDescriptor = a.RecipeDescriptor! with { ImplementationVersion = "tampered" } } : a).ToArray()
         };
-        if (fault == "context" || fault == "scene") claim = claim with
+        if (fault is "context" or "scene")
         {
-            AuxiliaryInputs = claim.AuxiliaryInputs!.Select(a =>
-            a.Name == (fault == "scene" ? "scene" : MeasuredAstrometryJson.ContextInputName) ? a with { CanonicalJson = a.CanonicalJson + " " } : a).ToArray()
-        };
+            var name = fault == "scene"
+                ? BuiltInProcessingRecipes.MeasuredStellarAssociationsSceneInputName
+                : MeasuredAstrometryJson.ContextInputName;
+            var inputs = claim.AuxiliaryInputs!;
+            var input = inputs.Single(a => a.Name == name);
+            Assert.IsNotNull(input.CanonicalJson);
+            var tampered = claim with
+            {
+                AuxiliaryInputs = inputs.Select(a => a.Name == name
+                    ? a with { CanonicalJson = input.CanonicalJson + " " }
+                    : a).ToArray()
+            };
+            var error = Assert.ThrowsExactly<ProcessingRunnerProtocolException>(() =>
+                ProcessingRunnerProjection.ReconstructRequest(tampered, request.Inputs.Select(a => a.Payload).ToArray()));
+            Assert.AreEqual(ProcessingRunnerReasonCodes.PayloadChecksumMismatch, error.ReasonCode);
+            StringAssert.Contains(error.Message, $"'{name}'", StringComparison.Ordinal);
+            return;
+        }
         if (fault == "raw-descriptor" || fault == "time") claim = claim with
         {
             Inputs = claim.Inputs.Select(a => a.ArtifactId == f.Raw.ArtifactId

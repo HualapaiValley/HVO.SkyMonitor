@@ -25,7 +25,7 @@ internal static class CompiledDependencyChecker
     internal static bool CaptureOrRecipe(OwnedType type, IReadOnlySet<string> sourceOwners) => !SpaceWeather(type.Type)
         && (CaptureOrRecipe(type.Type) || type.Documents.Overlaps(sourceOwners));
     internal static bool HostHttpOrPersistence(TypeName type) =>
-        new[] { "HVO.SkyMonitor.CameraAgent", "HVO.SkyMonitor.LogicHost", "HVO.SkyMonitor.Common", "HVO.SkyMonitor.Catalog", "HVO.SkyMonitor.Storage",
+        new[] { "HVO.SkyMonitor.CameraAgent", "HVO.SkyMonitor.Common", "HVO.SkyMonitor.Catalog", "HVO.SkyMonitor.Storage",
             "Microsoft.AspNetCore", "Microsoft.EntityFrameworkCore", "Microsoft.Data.Sqlite", "System.Net", "System.IO", "System.Data", "SQLite", "Sqlite" }
         .Any(prefix => Subtree(type.Namespace, prefix) || Subtree(type.Assembly, prefix));
 

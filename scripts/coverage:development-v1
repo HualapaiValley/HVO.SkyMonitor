@@ -65,7 +65,6 @@ shopt -s nullglob
 reports=("$results_dir"/*/coverage.cobertura.xml)
 expected_reports="$(jq -se '
   select(length == 1) | .[0]
-  | map(select(startswith("HVO.SkyMonitor.LogicHost.") or startswith("HVO.SkyMonitor.CameraAgent.LogicHost.") | not))
   | length' "$repo_root/tests/unit-test-projects.json")"
 if (( expected_reports == 0 || ${#reports[@]} != expected_reports )); then
   printf 'Missing or extra Unit coverage data: expected %s reports (one per selected Unit-bearing project), found %s in %s. Rerun the Development v1 Unit selection with the generated settings and XPlat collection in a fresh directory.\n' \

@@ -1,5 +1,7 @@
 # Deferred Phase 14 Evidence Campaign
 
+This campaign is historical. Reproduce its commands and fixtures at the [last split-host source revision](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/66e6aa237b40c70342815af6e2511122daa56bb6/docs/planning/phase14-evidence-campaign.md).
+
 ## Authority And Scope
 
 Issue #305 owns post-milestone Phase 14 evidence import, remaining real fault
@@ -7,12 +9,10 @@ campaigns, aggregation, and measured optimization. Issue #318 defines this
 contract. Neither issue reopens or claims the closed Virtual-First Platform
 Completion milestone, `GATE-P14`, or `DONE-007`.
 
-The deferred evidence campaign and its source/component importers are retained
-as historical reproducibility tooling and are not automatic gates. Manual CI
-retains the acceptance inventory contract. Pull-request Deployment Contracts
-retains separate capability-named tests for the current lightweight campaign
-orchestration behavior. Source/component imports run explicitly only when
-reproducing this closed evidence set.
+The historical revision contains the evidence campaign and its source and
+component importers. Its manual CI validated the acceptance inventory and its
+Deployment Contracts check exercised the campaign orchestration. Current CI
+qualifies the standalone application under the [CI runbook](../runbooks/ci-pipeline.md).
 
 The machine-readable definition is
 `deploy/split-host/acceptance/phase14-evidence-contract.json`. The existing

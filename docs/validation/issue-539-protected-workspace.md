@@ -13,7 +13,7 @@ scope navigation #1238, Current Sky/archive/viewer #1239, imported inspection
 are delivered. The latest owner-approved
 [remaining-scope instruction](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/539#issuecomment-6363083377)
 requests integration acceptance over these contracts. The static
-[handoff](../prototypes/pipeline-operations/LOGICHOST-HANDOFF.md) supplies interaction
+[handoff](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/66e6aa237b40c70342815af6e2511122daa56bb6/docs/prototypes/pipeline-operations/LOGICHOST-HANDOFF.md) supplies interaction
 language; its historical missing-contract and start-order statements are not
 the current delivery state.
 

@@ -106,8 +106,6 @@ internal static class UnitCoverageInputs
         }
 
         var expectedProjects = unitProjects
-            .Where(static project => !project.StartsWith("HVO.SkyMonitor.LogicHost.", StringComparison.Ordinal) &&
-                !project.StartsWith("HVO.SkyMonitor.CameraAgent.LogicHost.", StringComparison.Ordinal))
             .ToHashSet(StringComparer.Ordinal);
         if (!seenProjects.SetEquals(expectedProjects) || reportsByHash.Values.Any(static queue => queue.Count > 0))
         {
@@ -484,7 +482,7 @@ internal static class UnitCoverageInputs
         var supported = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["Format"] = "cobertura",
-            ["Exclude"] = "[*.Tests]*,[*.IntegrationTests]*,[HVO.SkyMonitor.TestSupport]*,[HVO.SkyMonitor.LogicHost.TestInfrastructure]*",
+            ["Exclude"] = "[*.Tests]*,[*.IntegrationTests]*,[HVO.SkyMonitor.TestSupport]*",
             ["ExcludeByFile"] = "**/obj/**,**/bin/**,**/Migrations/**",
             ["ExcludeByAttribute"] = "ExcludeFromCodeCoverage",
             ["IncludeTestAssembly"] = "false",

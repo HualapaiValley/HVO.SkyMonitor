@@ -1488,7 +1488,7 @@ profile is part of the retained installation request and rendered Compose model;
 changing it requires a new converged installation rather than an ad hoc Compose
 edit. The LocalRunner topology uses the distinct `cameraagent-compose-v3`
 contract; legacy and current in-process installations remain on
-`cameraagent-compose-v2`. The split-host development Compose scripts remain
+`cameraagent-compose-v2`. Development Compose wrappers remain
 in-process only.
 
 The local-runner profile starts the self-contained replay executable from the
@@ -3331,7 +3331,7 @@ version and `--resume`; request hash, operation ID, host, daemon, root inode, an
 the original tree inventory must still match. Missing original entries are
 accepted after partial deletion, while additions and replacements fail closed.
 
-LogicHost lifecycle, remote orchestration, and physical-camera discovery remain
+Remote orchestration and physical-camera discovery remain
 future lifecycle scope.
 
 ## Harness Inputs For A Published Image
