@@ -55,7 +55,10 @@ public sealed record CameraAgentCenteredArchiveView(
     string? PresentationReason,
     CenteredViewSavedSelection? SavedSelection,
     string? SelectionError,
-    Uri? PreviewUrl);
+    Uri? PreviewUrl)
+{
+    public bool PresentationDeferred { get; init; }
+}
 
 internal sealed record CameraAgentCenteredPresentationRead(
     CameraAgentLayeredPresentationStatus Status,

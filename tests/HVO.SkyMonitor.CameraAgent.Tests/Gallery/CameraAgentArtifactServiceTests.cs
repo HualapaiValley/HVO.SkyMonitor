@@ -129,6 +129,64 @@ public sealed partial class CameraAgentArtifactServiceTests
     }
 
     [TestMethod]
+    public async Task StalledOverlayArtifactReadHashDoesNotBlockConcurrentBasePreviewReadAsync()
+    {
+        using var fixture = await ArtifactFixture.CreateAsync().ConfigureAwait(false);
+        var raw = await fixture.AddRawAsync().ConfigureAwait(false);
+        var preview = await fixture.AddOutputAsync(
+            raw.Manifest,
+            FrameArtifactRole.Preview,
+            mediaType: "image/jpeg").ConfigureAwait(false);
+        var overlay = await fixture.AddOutputAsync(
+            raw.Manifest,
+            FrameArtifactRole.Metadata,
+            payloadSeed: 42,
+            mediaType: PresentationLayerPayloadJson.MediaType,
+            recipeName: "overlay-layer-probe",
+            variant: "overlay-probe").ConfigureAwait(false);
+
+        var overlayHashEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseOverlayHash = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Service.PayloadChecksumReader = async (stream, artifactId, token) =>
+        {
+            if (artifactId == overlay.ArtifactId)
+            {
+                overlayHashEntered.TrySetResult();
+                await releaseOverlayHash.Task.WaitAsync(TimeSpan.FromSeconds(5), token).ConfigureAwait(false);
+            }
+            return await PayloadChecksum.ComputeSha256Async(stream, token).ConfigureAwait(false);
+        };
+
+        var overlayReadTask = fixture.Service.OpenContentAsync(overlay.ArtifactId, CancellationToken.None).AsTask();
+        await overlayHashEntered.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        Assert.IsFalse(overlayReadTask.IsCompleted);
+
+        // Concurrent base preview content read AND GetPreviewAsync MUST complete immediately
+        // without waiting on the stalled overlay read/hash!
+        var previewContentResult = await fixture.Service.OpenContentAsync(preview.ArtifactId, CancellationToken.None)
+            .AsTask().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentArtifactReadStatus.Found, previewContentResult.Status);
+        await using (previewContentResult.Content!.ConfigureAwait(false))
+        {
+            CollectionAssert.AreEqual(preview.Payload, await ReadAllAsync(previewContentResult.Content!).ConfigureAwait(false));
+        }
+
+        var previewResult = await fixture.Service.GetPreviewAsync(preview.ArtifactId, CancellationToken.None)
+            .AsTask().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentArtifactReadStatus.Found, previewResult.Status);
+        CollectionAssert.AreEqual(preview.Payload, previewResult.Content.ToArray());
+        Assert.IsFalse(overlayReadTask.IsCompleted, "Overlay read should still be gated while preview reads completed.");
+
+        releaseOverlayHash.SetResult();
+        var overlayResult = await overlayReadTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentArtifactReadStatus.Found, overlayResult.Status);
+        await using (overlayResult.Content!.ConfigureAwait(false))
+        {
+            CollectionAssert.AreEqual(overlay.Payload, await ReadAllAsync(overlayResult.Content!).ConfigureAwait(false));
+        }
+    }
+
+    [TestMethod]
     public async Task ValidatedMetadataCacheAvoidsConditionalHeadAndRangeRescansAsync()
     {
         using var fixture = await ArtifactFixture.CreateAsync().ConfigureAwait(false);

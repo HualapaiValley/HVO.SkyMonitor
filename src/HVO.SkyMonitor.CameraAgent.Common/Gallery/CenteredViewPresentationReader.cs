@@ -37,9 +37,35 @@ public static class CenteredViewLinks
         value is { Length: 64 } && value.All(static character => char.IsAsciiDigit(character) || character is >= 'A' and <= 'F');
 }
 
-internal sealed class CenteredViewPresentationReader(
-    ICenteredViewReadIndex index, ICameraAgentArtifactService artifacts) : ICenteredViewPresentationReader
+internal sealed class CenteredViewPresentationReader : ICenteredViewPresentationReader
 {
+    internal static readonly TimeSpan DefaultOptionalLayerReadTimeout = TimeSpan.FromSeconds(2);
+
+    private readonly ICenteredViewReadIndex _index;
+    private readonly ICameraAgentArtifactService _artifacts;
+    private readonly TimeProvider _timeProvider;
+    private readonly TimeSpan _optionalLayerReadTimeout;
+
+    public CenteredViewPresentationReader(
+        ICenteredViewReadIndex index,
+        ICameraAgentArtifactService artifacts,
+        TimeProvider? timeProvider = null)
+        : this(index, artifacts, timeProvider ?? TimeProvider.System, DefaultOptionalLayerReadTimeout)
+    {
+    }
+
+    internal CenteredViewPresentationReader(
+        ICenteredViewReadIndex index,
+        ICameraAgentArtifactService artifacts,
+        TimeProvider timeProvider,
+        TimeSpan optionalLayerReadTimeout)
+    {
+        _index = index;
+        _artifacts = artifacts;
+        _timeProvider = timeProvider;
+        _optionalLayerReadTimeout = optionalLayerReadTimeout;
+    }
+
     public async ValueTask<CameraAgentArtifactContentResult> OpenPreviewAsync(
         string baseId, string revisionId, CancellationToken cancellationToken = default)
     {
@@ -54,7 +80,7 @@ internal sealed class CenteredViewPresentationReader(
         string baseId, CancellationToken cancellationToken = default)
     {
         var viewBase = CenteredViewLinks.IsIdentity(baseId)
-            ? await index.ReadBaseAsync(baseId, cancellationToken).ConfigureAwait(false)
+            ? await _index.ReadBaseAsync(baseId, cancellationToken).ConfigureAwait(false)
             : null;
         if (viewBase is null)
             return new(CameraAgentArtifactReadStatus.NotFound);
@@ -85,17 +111,34 @@ internal sealed class CenteredViewPresentationReader(
             var referenceCaptureId = view.Base.Definition.Reference.Capture.CaptureId;
             var validLayers = new List<PresentationLayerV1>(manifest.Layers.Count);
             var payloads = new List<PresentationLayerPayloadV1>(manifest.Layers.Count);
-            foreach (var layer in manifest.Layers)
+            if (manifest.Layers.Count > 0)
             {
-                var (payload, consumedBytes) = await TryReadOptionalLayerAsync(
-                    layer, manifest, referenceCaptureId, budget, cancellationToken).ConfigureAwait(false);
-                if (payload is null)
+                var layerTasks = new Task<(PresentationLayerPayloadV1? Payload, int ConsumedBytes)>[manifest.Layers.Count];
+                for (var index = 0; index < manifest.Layers.Count; index++)
                 {
-                    continue;
+                    var layer = manifest.Layers[index];
+                    layerTasks[index] = Task.Run(
+                        () => TryReadOptionalLayerAsync(
+                            layer,
+                            manifest,
+                            referenceCaptureId,
+                            CameraAgentLayeredPresentationService.MaximumSourcePayloadBytes,
+                            cancellationToken).AsTask(),
+                        CancellationToken.None);
                 }
-                budget -= consumedBytes;
-                validLayers.Add(layer);
-                payloads.Add(payload);
+
+                var results = await Task.WhenAll(layerTasks).ConfigureAwait(false);
+                for (var index = 0; index < results.Length; index++)
+                {
+                    var (payload, consumedBytes) = results[index];
+                    if (payload is null || consumedBytes > budget)
+                    {
+                        continue;
+                    }
+                    budget -= consumedBytes;
+                    validLayers.Add(manifest.Layers[index]);
+                    payloads.Add(payload);
+                }
             }
 
             var effectiveManifest = validLayers.Count == manifest.Layers.Count
@@ -121,29 +164,43 @@ internal sealed class CenteredViewPresentationReader(
         }
     }
 
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed", Justification = "Timed-out optional layer open is detached with best-effort stream disposal so healthy sibling layers are never blocked.")]
     private async ValueTask<(PresentationLayerPayloadV1? Payload, int ConsumedBytes)> TryReadOptionalLayerAsync(
         PresentationLayerV1 layer,
         OverlayManifestV1 manifest,
         Guid referenceCaptureId,
-        int budget,
+        int maximumBytes,
         CancellationToken cancellationToken)
     {
+        using var layerDeadline = new CancellationTokenSource(_optionalLayerReadTimeout, _timeProvider);
+        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, layerDeadline.Token);
+        var layerToken = bounded.Token;
         try
         {
             if (layer.CoordinateSpace != PresentationCoordinateSpace.ScenePixels)
                 return (null, 0);
 
-            var opened = await artifacts.OpenContentAsync(layer.SourceProduct.ArtifactId, cancellationToken).ConfigureAwait(false);
+            var openTask = _artifacts.OpenContentAsync(layer.SourceProduct.ArtifactId, layerToken).AsTask();
+            CameraAgentArtifactContentResult opened;
+            try
+            {
+                opened = await openTask.WaitAsync(layerToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                _ = DisposeLateOpenedContentAsync(openTask);
+                throw;
+            }
             if (opened.Content is not { } content || opened.Status != CameraAgentArtifactReadStatus.Found)
                 return (null, 0);
             await using var lease = content.ConfigureAwait(false);
             if (content.MediaType != layer.SourceProduct.MediaType || content.Role != FrameArtifactRole.Metadata ||
                 content.CaptureId != referenceCaptureId)
                 return (null, 0);
-            if (content.ByteLength is < 1 or > PresentationLayerPayloadJson.MaximumPayloadBytes || content.ByteLength > budget)
+            if (content.ByteLength is < 1 or > PresentationLayerPayloadJson.MaximumPayloadBytes || content.ByteLength > maximumBytes)
                 return (null, 0);
             var bytes = new byte[checked((int)content.ByteLength)];
-            await content.ReadExactlyAsync(bytes, cancellationToken).ConfigureAwait(false);
+            await content.ReadExactlyAsync(bytes, layerToken).AsTask().WaitAsync(layerToken).ConfigureAwait(false);
             var payload = PresentationLayerPayloadJson.Parse(bytes).Payload;
             if (payload is null || payload.ContentIdentitySha256 != layer.SourceProduct.ProductIdentitySha256 ||
                 payload.WidthPixels != manifest.BaseProduct.Compatibility.WidthPixels ||
@@ -158,20 +215,41 @@ internal sealed class CenteredViewPresentationReader(
         {
             throw;
         }
+        catch (OperationCanceledException)
+        {
+            return (null, 0);
+        }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or EndOfStreamException or InvalidDataException or JsonException)
         {
             return (null, 0);
         }
     }
 
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Best-effort disposal of a timed-out optional layer stream must never surface unobserved task exceptions.")]
+    private static async Task DisposeLateOpenedContentAsync(Task<CameraAgentArtifactContentResult> openTask)
+    {
+        try
+        {
+            var result = await openTask.ConfigureAwait(false);
+            if (result.Content is { } content)
+            {
+                await content.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        catch (Exception)
+        {
+            // Timed-out optional layer open already degraded cleanly.
+        }
+    }
+
     private ValueTask<CenteredView?> ReadViewAsync(string baseId, string revisionId, CancellationToken cancellationToken)
         => CenteredViewLinks.IsIdentity(baseId) && CenteredViewLinks.IsIdentity(revisionId)
-            ? index.ReadRevisionAsync(baseId, revisionId, cancellationToken) : ValueTask.FromResult<CenteredView?>(null);
+            ? _index.ReadRevisionAsync(baseId, revisionId, cancellationToken) : ValueTask.FromResult<CenteredView?>(null);
 
     private async ValueTask<CameraAgentArtifactContentResult> OpenBoundPreviewAsync(CenteredViewBase viewBase, CancellationToken token)
     {
         var preview = viewBase.Definition.Preview;
-        var opened = await artifacts.OpenContentAsync(preview.Product.ArtifactId, token).ConfigureAwait(false);
+        var opened = await _artifacts.OpenContentAsync(preview.Product.ArtifactId, token).ConfigureAwait(false);
         if (opened.Content is not { } content)
             return opened;
         if (content.CaptureId == viewBase.Definition.Reference.Capture.CaptureId && content.Role == FrameArtifactRole.Preview &&

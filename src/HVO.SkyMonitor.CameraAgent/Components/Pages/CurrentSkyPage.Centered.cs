@@ -336,7 +336,7 @@ public sealed partial class CurrentSkyPage
             centered.PreviewUrl,
             CenteredLiveMode.Centered,
             RetainedFromPriorRun: false,
-            PresentationDeferred: false);
+            PresentationDeferred: centered.PresentationDeferred);
 
         ApplyCenteredDisplayCore(
             nextDisplay,
@@ -344,6 +344,11 @@ public sealed partial class CurrentSkyPage
             explicitSavedSelection: centered.SavedSelection,
             captureChanged: true,
             cancellationToken: _lifetime!.Token);
+
+        if (centered.PresentationDeferred)
+        {
+            StartCenteredPresentationLoad(selected, preserveDisplayedWorkspace: false, _lifetime.Token);
+        }
     }
 
     private void ApplyCenteredLiveResult(
@@ -408,6 +413,7 @@ public sealed partial class CurrentSkyPage
                     sameView.Revision.RevisionId == previous.View.Revision.RevisionId &&
                     incoming.PresentationDeferred &&
                     !_viewerOpen &&
+                    !_livePaused &&
                     (manual ||
                      previous.Presentation is null ||
                      previous.Presentation.Layers.Count < previous.View.Revision.Manifest.Layers.Count))
@@ -597,7 +603,7 @@ public sealed partial class CurrentSkyPage
         bool preserveDisplayedWorkspace,
         CancellationToken cancellationToken)
     {
-        if (IsArchived || _accessDenied || _disposeStarted != 0 || cancellationToken.IsCancellationRequested)
+        if (_accessDenied || Volatile.Read(ref _disposeStarted) != 0 || cancellationToken.IsCancellationRequested)
         {
             return;
         }
@@ -610,10 +616,30 @@ public sealed partial class CurrentSkyPage
         CancelCenteredPresentationLoad();
         var generation = Interlocked.Increment(ref _centeredPresentationGeneration);
         var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        _centeredPresentationCancellation = linked;
+        var prior = Interlocked.Exchange(ref _centeredPresentationCancellation, linked);
+        if (prior is not null)
+        {
+            prior.Cancel();
+            prior.Dispose();
+        }
+        if (Volatile.Read(ref _disposeStarted) != 0)
+        {
+            CancelCenteredPresentationLoad();
+            return;
+        }
         _centeredPresentationLoading = true;
         _centeredPresentationInFlight = targetKey;
-        _ = LoadCenteredPresentationAsync(targetView, generation, preserveDisplayedWorkspace, linked.Token);
+        var token = linked.Token;
+        // Offload starting the optional presentation read off the Blazor renderer thread so even a
+        // synchronously blocking presentation read never delays StateHasChanged() for the ready base.
+        ThreadPool.UnsafeQueueUserWorkItem(
+            static state => _ = state.Page.LoadCenteredPresentationAsync(
+                state.TargetView,
+                state.Generation,
+                state.PreserveDisplayedWorkspace,
+                state.Token),
+            (Page: this, TargetView: targetView, Generation: generation, PreserveDisplayedWorkspace: preserveDisplayedWorkspace, Token: token),
+            preferLocal: false);
     }
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Optional centered overlay reads must never block or fail the displayed ready base.")]
@@ -672,7 +698,6 @@ public sealed partial class CurrentSkyPage
         if (generation != Volatile.Read(ref _centeredPresentationGeneration) ||
             _disposeStarted != 0 ||
             _accessDenied ||
-            IsArchived ||
             cancellationToken.IsCancellationRequested)
         {
             return;
@@ -692,6 +717,12 @@ public sealed partial class CurrentSkyPage
             return;
         }
 
+        var revisionAdvanced = !string.Equals(current.View.Revision.RevisionId, targetView.Revision.RevisionId, StringComparison.Ordinal);
+        if (_livePaused && revisionAdvanced)
+        {
+            return;
+        }
+
         if (preserveDisplayedWorkspace)
         {
             if (targetView.Revision.Order < current.View.Revision.Order)
@@ -699,7 +730,7 @@ public sealed partial class CurrentSkyPage
                 return;
             }
         }
-        else if (!string.Equals(current.View.Revision.RevisionId, targetView.Revision.RevisionId, StringComparison.Ordinal))
+        else if (revisionAdvanced)
         {
             return;
         }
@@ -729,7 +760,6 @@ public sealed partial class CurrentSkyPage
             }
         }
 
-        var revisionAdvanced = !string.Equals(current.View.Revision.RevisionId, targetView.Revision.RevisionId, StringComparison.Ordinal);
         var presentationChanged = !CenteredPresentationsMatch(current.Presentation, validated) ||
             current.PresentationStatus != status ||
             !string.Equals(current.PresentationReason, reason, StringComparison.Ordinal) ||
@@ -748,7 +778,7 @@ public sealed partial class CurrentSkyPage
             ApplyCenteredDisplayCore(
                 nextDisplay,
                 current.View.Base,
-                explicitSavedSelection: null,
+                explicitSavedSelection: IsCenteredArchived ? _centeredArchive?.SavedSelection : null,
                 captureChanged: false,
                 cancellationToken: _lifetime!.Token,
                 cancelPendingPresentation: false);
@@ -1008,7 +1038,13 @@ public sealed partial class CurrentSkyPage
             return;
         }
         _livePaused = !_livePaused;
-        if (!_livePaused && _lifetime is not null)
+        if (_livePaused)
+        {
+            CancelCenteredPresentationLoad();
+            StateHasChanged();
+            return;
+        }
+        if (_lifetime is not null)
         {
             Interlocked.Exchange(ref _manualRefreshRequested, 1);
             await RequestRefreshAsync(_lifetime.Token);

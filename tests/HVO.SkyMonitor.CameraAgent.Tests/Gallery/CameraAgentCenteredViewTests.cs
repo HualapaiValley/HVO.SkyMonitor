@@ -335,4 +335,143 @@ public sealed partial class CameraAgentArtifactServiceTests
                 Assert.IsGreaterThan(pixel[channel] + 90, pixel[expected]);
         }
     }
+
+    [TestMethod]
+    public async Task CenteredPresentationReaderOpensHealthySiblingLayerWithoutWaitingForStalledLayerGateAsync()
+    {
+        using var fixture = await ArtifactFixture.CreateAsync().ConfigureAwait(false);
+        var token = CancellationToken.None;
+        var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = fixture.Root });
+        using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+        using var telemetry = new CaptureProcessingTelemetry();
+        var persistence = new CaptureProcessingPersistence(options, fixture.ProcessingStore, storage, telemetry,
+            NullLogger<CaptureProcessingPersistence>.Instance);
+        var views = new SqliteCenteredViews(fixture.ProcessingStore, TimeProvider.System, NullLogger<SqliteCenteredViews>.Instance);
+        var producer = new CenteredViewProducer(persistence, fixture.Service, views, options, fixture.ProcessingStore);
+        var layerProducer = new CenteredViewLayerProducer(views, persistence);
+
+        const int width = 64;
+        const int height = 48;
+        var layout = new FrameLayoutDescriptor(width, height, width * 2, CameraPixelFormat.Mono16,
+            FrameByteOrder.LittleEndian, 16, 16, FrameSamplePacking.ByteAligned, ColorFilterArrayPattern.None, 0, 65535, width * height * 2);
+        var pixels = new byte[width * height * 2];
+        for (var i = 0; i < width * height; i++)
+        {
+            BinaryPrimitives.WriteUInt16LittleEndian(pixels.AsSpan(i * 2), (ushort)(200 + (i % 500)));
+        }
+
+        var raw = await fixture.AddRawAsync(pixels, width, height, layout).ConfigureAwait(false);
+        var stream = new CenteredViewStream(new(raw.Manifest.Descriptor.Capture.AgentId, "camera-1"), Guid.NewGuid(), "gen-m5");
+        var input = new ExposureInputV1(
+            new(stream.Camera, stream.RunId, raw.Manifest.Descriptor.Capture.CaptureId),
+            raw.Manifest.Descriptor,
+            new(layout, new RigOrientation(0, 0, 0), new string('A', 64), "optics", null));
+
+        var single = await producer.PublishSingleAsync(stream, Guid.NewGuid(), input.Raw.Capture.CaptureSequence,
+            new(input, LinearExposureDisposition.Unsupported, 1, null, null, "raw-fallback"), new(), token).ConfigureAwait(false);
+        Assert.IsNotNull(single);
+
+        var rawPin = input.Raw.Artifact;
+        var sourceArtifact = new ProcessingArtifact(rawPin.ArtifactId, FrameArtifactRole.Raw, rawPin.Variant,
+            ProcessingIdentity.CreateRecipeIdentity(rawPin.Recipe).IdentitySha256, rawPin.MediaType, layout, pixels,
+            rawPin.CreatedUtc, input.Raw.Controls.EffectiveExposure, CameraAgentRecipeExecutionAdapter.CreateCompatibility(input.Raw))
+        {
+            CaptureId = input.Key.CaptureId,
+            DescriptorIdentitySha256 = CaptureContractJson.ComputeDescriptorSha256(input.Raw)
+        };
+
+        var layer1Payload = PresentationLayerPayloadJson.Create(sourceArtifact.DescriptorIdentitySha256!, width, height,
+            segments: [new(new(4, 4), new(20, 20), 2, new(255, 255, 255))]);
+        var layer1Product = PresentationProcessingProducts.CreateLayerProduct(layer1Payload, "scene-annotation-layer-v1", [sourceArtifact], "layer-v1");
+        await persistence.PersistCenteredViewProductAsync(input.Raw, layer1Product, token).ConfigureAwait(false);
+        var layer1Slot = new ExposureProductSlot(Guid.NewGuid(), "stars", layer1Payload.SchemaVersion, layer1Product.Variant);
+        var layer1Ref = new ExposureProductRef(input.Key, layer1Slot, ProcessingIdentity.CreateArtifactId(layer1Product.OutputIdentitySha256),
+            layer1Product.OutputIdentitySha256, layer1Product.ChecksumSha256, layer1Payload.ContentIdentitySha256);
+        await layerProducer.PublishAsync(single.Base.BaseId, CenteredViewLayerScope.Reference,
+            new(input.Key, layer1Slot, ExposureProductAvailability.Available, 1, layer1Ref, null),
+            new("star-annotations", 20, true), input.Raw.Timing.ExposureEndedUtc, cancellationToken: token).ConfigureAwait(false);
+
+        var layer2Payload = PresentationLayerPayloadJson.Create(sourceArtifact.DescriptorIdentitySha256!, width, height,
+            segments: [new(new(8, 8), new(28, 28), 2, new(255, 200, 100))]);
+        var layer2Product = PresentationProcessingProducts.CreateLayerProduct(layer2Payload, "scene-constellation-layer-v1", [sourceArtifact], "layer-v1");
+        await persistence.PersistCenteredViewProductAsync(input.Raw, layer2Product, token).ConfigureAwait(false);
+        var layer2Slot = new ExposureProductSlot(Guid.NewGuid(), "constellations", layer2Payload.SchemaVersion, layer2Product.Variant);
+        var layer2Ref = new ExposureProductRef(input.Key, layer2Slot, ProcessingIdentity.CreateArtifactId(layer2Product.OutputIdentitySha256),
+            layer2Product.OutputIdentitySha256, layer2Product.ChecksumSha256, layer2Payload.ContentIdentitySha256);
+        var enriched = await layerProducer.PublishAsync(single.Base.BaseId, CenteredViewLayerScope.Reference,
+            new(input.Key, layer2Slot, ExposureProductAvailability.Available, 2, layer2Ref, null),
+            new("scene-constellations", 10, true), input.Raw.Timing.ExposureEndedUtc, cancellationToken: token).ConfigureAwait(false);
+        Assert.IsNotNull(enriched);
+        Assert.HasCount(2, enriched.Revision.Manifest.Layers);
+
+        var layer1ArtifactId = enriched.Revision.Manifest.Layers[0].SourceProduct.ArtifactId;
+        var layer2ArtifactId = enriched.Revision.Manifest.Layers[1].SourceProduct.ArtifactId;
+        var layer2Kind = enriched.Revision.Manifest.Layers[1].LayerKind;
+
+        var layer1Gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var layer1Entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var layer2OpenedWhileLayer1Blocked = false;
+        var gatedArtifacts = new GatedLayerArtifactService(
+            fixture.Service,
+            layer1ArtifactId,
+            layer2ArtifactId,
+            layer1Entered,
+            layer1Gate,
+            () => layer2OpenedWhileLayer1Blocked = !layer1Gate.Task.IsCompleted);
+
+        var reader = new CenteredViewPresentationReader(
+            views,
+            gatedArtifacts,
+            TimeProvider.System,
+            TimeSpan.FromMilliseconds(150));
+
+        try
+        {
+            var rendered = await reader.ReadAsync(enriched.Base.BaseId, enriched.Revision.RevisionId, token)
+                .AsTask().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+            Assert.IsTrue(layer1Entered.Task.IsCompleted, "Stalled layer 1 read should have been started.");
+            Assert.IsFalse(layer1Gate.Task.IsCompleted, "Layer 1 gate must remain unreleased while layer 2 completes.");
+            Assert.IsTrue(layer2OpenedWhileLayer1Blocked, "Healthy sibling layer 2 must open without waiting for layer 1.");
+            Assert.AreEqual(CameraAgentLayeredPresentationStatus.Found, rendered.Status);
+            Assert.IsNotNull(rendered.Presentation);
+            Assert.HasCount(1, rendered.Presentation.Layers);
+            Assert.AreEqual(layer2Kind, rendered.Presentation.Layers[0].Kind);
+            Assert.IsTrue(CameraAgentCenteredViewProjection.IsPresentationCompatible(enriched, rendered.Presentation));
+        }
+        finally
+        {
+            layer1Gate.TrySetResult();
+        }
+    }
+
+    private sealed class GatedLayerArtifactService(
+        ICameraAgentArtifactService inner,
+        Guid stalledArtifactId,
+        Guid healthyArtifactId,
+        TaskCompletionSource stalledEntered,
+        TaskCompletionSource stalledGate,
+        Action onHealthyOpened) : ICameraAgentArtifactService
+    {
+        public async ValueTask<CameraAgentArtifactContentResult> OpenContentAsync(Guid artifactId, CancellationToken cancellationToken)
+        {
+            if (artifactId == stalledArtifactId)
+            {
+                stalledEntered.TrySetResult();
+                await stalledGate.Task.ConfigureAwait(false);
+                return await inner.OpenContentAsync(artifactId, CancellationToken.None).ConfigureAwait(false);
+            }
+            if (artifactId == healthyArtifactId)
+            {
+                onHealthyOpened();
+            }
+            return await inner.OpenContentAsync(artifactId, cancellationToken).ConfigureAwait(false);
+        }
+
+        public ValueTask<CameraAgentArtifactContentResult> OpenReplayOutputContentAsync(Guid executionId, Guid artifactId, CancellationToken cancellationToken) =>
+            inner.OpenReplayOutputContentAsync(executionId, artifactId, cancellationToken);
+
+        public ValueTask<CameraAgentArtifactPreviewResult> GetPreviewAsync(Guid artifactId, CancellationToken cancellationToken, Guid? displayReference = null) =>
+            inner.GetPreviewAsync(artifactId, cancellationToken, displayReference);
+    }
 }

@@ -1512,6 +1512,11 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
             else if (IsCenteredArchived && _centeredDisplay is { View: { } archivedView })
             {
                 RetryCenteredAstrometryIfTransient(archivedView);
+                if (_centeredDisplay.Presentation is null ||
+                    _centeredDisplay.Presentation.Layers.Count < archivedView.Revision.Manifest.Layers.Count)
+                {
+                    StartCenteredPresentationLoad(archivedView, preserveDisplayedWorkspace: false, _lifetime.Token);
+                }
             }
             Interlocked.Exchange(ref _manualRefreshRequested, 1);
             await RequestRefreshAsync(_lifetime.Token);
@@ -1733,27 +1738,28 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        var firstDispose = Interlocked.Exchange(ref _disposeStarted, 1) == 0;
         UnsubscribeCenteredPublisher();
         Interlocked.Increment(ref _centeredPresentationGeneration);
         _centeredPresentationLoading = false;
         _centeredPresentationInFlight = null;
-        if (_centeredPresentationCancellation is not null)
+        var centeredCancellation = Interlocked.Exchange(ref _centeredPresentationCancellation, null);
+        if (centeredCancellation is not null)
         {
-            await _centeredPresentationCancellation.CancelAsync().ConfigureAwait(false);
-            _centeredPresentationCancellation.Dispose();
-            _centeredPresentationCancellation = null;
+            await centeredCancellation.CancelAsync().ConfigureAwait(false);
+            centeredCancellation.Dispose();
         }
-        if (_lifetime is null || Interlocked.Exchange(ref _disposeStarted, 1) != 0)
+        if (!firstDispose || _lifetime is null)
         {
             return;
         }
         await _lifetime.CancelAsync().ConfigureAwait(false);
         Interlocked.Increment(ref _layerGeneration);
-        if (_layerCancellation is not null)
+        var layerCancellation = Interlocked.Exchange(ref _layerCancellation, null);
+        if (layerCancellation is not null)
         {
-            await _layerCancellation.CancelAsync().ConfigureAwait(false);
-            _layerCancellation.Dispose();
-            _layerCancellation = null;
+            await layerCancellation.CancelAsync().ConfigureAwait(false);
+            layerCancellation.Dispose();
         }
         _timer?.Dispose();
         if (_pollTask is not null)

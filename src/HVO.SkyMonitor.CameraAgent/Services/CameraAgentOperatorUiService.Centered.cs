@@ -281,27 +281,23 @@ internal sealed partial class CameraAgentOperatorUiService
                 }
             }
 
-            CameraAgentLayeredPresentation? presentation = null;
-            var presentationStatus = CameraAgentLayeredPresentationStatus.NotRetained;
-            string? presentationReason = null;
-            Uri? previewUrl = null;
-            if (selectedView is not null)
-            {
-                previewUrl = CameraAgentCenteredViewProjection.BoundPreviewUrl(selectedView);
-                (presentation, presentationStatus, presentationReason) = await TryReadCenteredPresentationAsync(
-                    selectedView, cancellationToken).ConfigureAwait(false);
-            }
+            var previewUrl = selectedView is null
+                ? null
+                : CameraAgentCenteredViewProjection.BoundPreviewUrl(selectedView);
 
             return new CameraAgentCenteredArchiveView(
                 captureId,
                 summaries.AsReadOnly(),
                 selectedView,
-                presentation,
-                presentationStatus,
-                presentationReason,
+                Presentation: null,
+                PresentationStatus: CameraAgentLayeredPresentationStatus.NotRetained,
+                PresentationReason: null,
                 savedSelection,
                 selectionError,
-                previewUrl);
+                previewUrl)
+            {
+                PresentationDeferred = selectedView is not null
+            };
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

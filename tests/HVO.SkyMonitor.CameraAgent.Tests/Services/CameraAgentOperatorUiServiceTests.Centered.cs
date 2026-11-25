@@ -182,7 +182,7 @@ public sealed partial class CameraAgentOperatorUiServiceTests
         Assert.AreEqual(CenteredArchiveRevisionRole.LaterArchiveEnrichment, stackRevisions[1].Role);
         Assert.IsTrue(stackRevisions[1].IsLaterEnrichment);
 
-        // 3. Open the later archive enrichment explicitly by ?base=...&revision=...
+        // 3. Open the later archive enrichment explicitly by ?base=...&revision=... (base-first, overlays deferred)
         var enrichedRevId = stackRevisions[1].RevisionId;
         var enrichedOpen = await service.GetCaptureDetailViewAsync(
             input103.Key.CaptureId,
@@ -190,9 +190,16 @@ public sealed partial class CameraAgentOperatorUiServiceTests
             token).ConfigureAwait(false);
         Assert.IsTrue(enrichedOpen.IsSuccess);
         Assert.AreEqual(enrichedRevId, enrichedOpen.Value!.CenteredArchive!.SelectedView?.Revision.RevisionId);
-        Assert.IsNotNull(enrichedOpen.Value.CenteredArchive.Presentation);
-        Assert.HasCount(1, enrichedOpen.Value.CenteredArchive.Presentation.Layers);
-        var trailLayerId = enrichedOpen.Value.CenteredArchive.Presentation.Layers[0].IdentitySha256;
+        Assert.IsNull(enrichedOpen.Value.CenteredArchive.Presentation);
+        Assert.IsTrue(enrichedOpen.Value.CenteredArchive.PresentationDeferred);
+
+        var enrichedPresentation = await service.GetCenteredPresentationAsync(
+            stack103.Base.BaseId, enrichedRevId, token).ConfigureAwait(false);
+        Assert.IsTrue(enrichedPresentation.IsSuccess);
+        Assert.AreEqual(CameraAgentLayeredPresentationStatus.Found, enrichedPresentation.Value!.Status);
+        Assert.IsNotNull(enrichedPresentation.Value.Presentation);
+        Assert.HasCount(1, enrichedPresentation.Value.Presentation.Layers);
+        var trailLayerId = enrichedPresentation.Value.Presentation.Layers[0].IdentitySha256;
 
         // 4. Save personal selection on the enriched revision and reopen it!
         var saved = await service.SaveCenteredViewSelectionAsync(
@@ -435,8 +442,10 @@ public sealed partial class CameraAgentOperatorUiServiceTests
         Assert.IsNotNull(archive.Value?.CenteredArchive?.SelectedView);
         Assert.IsNotNull(archive.Value.CenteredArchive.PreviewUrl);
         Assert.IsNull(archive.Value.CenteredArchive.Presentation);
+        Assert.IsTrue(archive.Value.CenteredArchive.PresentationDeferred);
 
-        // Sol H1: Holding optional overlay I/O on a TaskCompletionSource NEVER blocks ready-base delivery!
+        // Sol H1: Holding optional overlay I/O on a TaskCompletionSource NEVER blocks ready-base delivery
+        // for EITHER live Current Sky OR shared archive reopen!
         var blockedOverlayGate = new TaskCompletionSource<CameraAgentLayeredPresentationResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         var overlayReadStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var blockingReader = new Mock<ICenteredViewPresentationReader>(MockBehavior.Strict);
@@ -462,6 +471,14 @@ public sealed partial class CameraAgentOperatorUiServiceTests
         Assert.AreEqual(enriched.Base.BaseId, readyBase.Value.Centered.View.Base.BaseId);
         Assert.IsTrue(readyBase.Value.Centered.PresentationDeferred);
         Assert.IsFalse(overlayReadStarted.Task.IsCompleted, "Ready-base delivery must not await optional overlay I/O.");
+
+        var readyArchiveBase = await decoupledService.GetCaptureDetailViewAsync(input.Key.CaptureId, null, token).ConfigureAwait(false);
+        Assert.IsTrue(readyArchiveBase.IsSuccess);
+        Assert.IsNotNull(readyArchiveBase.Value?.CenteredArchive?.SelectedView);
+        Assert.AreEqual(enriched.Base.BaseId, readyArchiveBase.Value.CenteredArchive.SelectedView.Base.BaseId);
+        Assert.IsNull(readyArchiveBase.Value.CenteredArchive.Presentation);
+        Assert.IsTrue(readyArchiveBase.Value.CenteredArchive.PresentationDeferred);
+        Assert.IsFalse(overlayReadStarted.Task.IsCompleted, "Archive base delivery must not await optional overlay I/O.");
 
         var asyncOverlayTask = decoupledService.GetCenteredPresentationAsync(
             enriched.Base.BaseId, enriched.Revision.RevisionId, token).AsTask();
@@ -593,14 +610,20 @@ public sealed partial class CameraAgentOperatorUiServiceTests
 
         // 1. Default archive open prefers live-published Single over never-live Stack (Opus L-3),
         //    pages all 135 revisions past 128 cap (Sol M4), never mislabels non-live revisions (Opus L-4),
-        //    and rejects wrong ManifestIdentitySha256 as Malformed (Opus L-6 #2)!
+        //    defers overlay presentation (Sol H1b), and rejects wrong ManifestIdentitySha256 as Malformed on async read (Opus L-6 #2)!
         var result = await service.GetCaptureDetailViewAsync(capture103Id, null, CancellationToken.None).ConfigureAwait(false);
         Assert.IsTrue(result.IsSuccess);
         var archive = result.Value!.CenteredArchive!;
         Assert.AreEqual(singleBase.BaseId, archive.SelectedView?.Base.BaseId);
         Assert.AreEqual(singleRevisions[129].RevisionId, archive.SelectedView?.Revision.RevisionId);
         Assert.IsNull(archive.Presentation);
-        Assert.AreEqual(CameraAgentLayeredPresentationStatus.Malformed, archive.PresentationStatus);
+        Assert.IsTrue(archive.PresentationDeferred);
+
+        var malformedRead = await service.GetCenteredPresentationAsync(
+            singleBase.BaseId, singleRevisions[129].RevisionId, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(malformedRead.IsSuccess);
+        Assert.IsNull(malformedRead.Value!.Presentation);
+        Assert.AreEqual(CameraAgentLayeredPresentationStatus.Malformed, malformedRead.Value.Status);
 
         var singleSummary = archive.Bases.Single(b => b.ArchiveBase.Base.BaseId == singleBase.BaseId);
         Assert.HasCount(135, singleSummary.Revisions);

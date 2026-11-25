@@ -167,7 +167,9 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
 
         var lifecycleGate = StorageLifecycleLock.ForRoot(_root);
         await StorageLifecycleLock.WaitAsync(lifecycleGate, "artifact-read", _logger, cancellationToken).ConfigureAwait(false);
+        var lifecycleGateHeld = true;
         FileStream? payload = null;
+        FileStream? sidecarStream = null;
         try
         {
             await _processingStore.InitializeAsync(cancellationToken).ConfigureAwait(false);
@@ -180,6 +182,7 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
                 replayExecutionId is null && !forPreview && _localArchive is not null
                 ? await _localArchive.FindAsync(connection, artifactId, cancellationToken).ConfigureAwait(false)
                 : null;
+            connection.Dispose();
             if (evidence.Status != CameraAgentArtifactReadStatus.Found && archive is null)
             {
                 return new(evidence.Status);
@@ -188,32 +191,75 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
             var row = evidence.Row;
             var payloadPath = archive?.PayloadPath ?? ResolveSafePath(row!.PayloadRelativePath);
             var sidecarPath = archive is null ? ResolveSafePath(row!.SidecarRelativePath) : null;
-            ValidatedArtifact validated;
+            ValidatedArtifact? validated = null;
             var cachedValidation = false;
+            FileIdentity? payloadIdentity = null;
+            FileIdentity? sidecarIdentity = null;
             if (archive is not null)
             {
                 validated = CreateValidated(archive.Manifest.Descriptor, archive.Manifest.RelativeArtifactPath);
+                if (forPreview && PreviewStatus(validated) is { } archivePreviewStatus)
+                {
+                    return new(archivePreviewStatus);
+                }
+                if (!File.Exists(payloadPath))
+                {
+                    return new(CameraAgentArtifactReadStatus.Gone);
+                }
+                RawIngressFileStore.EnsureNoSymbolicLinks(archive.StorageRoot, payloadPath);
             }
             else
             {
-                cachedValidation = TryGetValidatedArtifact(row!, payloadPath, sidecarPath!, out validated);
-                if (!cachedValidation)
+                cachedValidation = TryGetValidatedArtifact(row!, payloadPath, sidecarPath!, out var cached);
+                if (cachedValidation)
                 {
-                    validated = await ValidateEvidenceAsync(row!, cancellationToken).ConfigureAwait(false);
+                    validated = cached;
+                    if (forPreview && PreviewStatus(validated) is { } cachedPreviewStatus)
+                    {
+                        return new(cachedPreviewStatus);
+                    }
+                    if (!File.Exists(payloadPath))
+                    {
+                        return new(CameraAgentArtifactReadStatus.Gone);
+                    }
+                    EnsurePhysicalPath(payloadPath);
+                }
+                else
+                {
+                    if (row!.Kind == ArtifactEvidenceKind.Raw && row.RawState == "missing_evidence")
+                    {
+                        return new(CameraAgentArtifactReadStatus.Gone);
+                    }
+                    if (row.Kind == ArtifactEvidenceKind.Raw && row.RawState != "committed")
+                    {
+                        return new(CameraAgentArtifactReadStatus.Conflict);
+                    }
+                    if (string.Equals(payloadPath, sidecarPath, PathComparison))
+                    {
+                        return new(CameraAgentArtifactReadStatus.Conflict);
+                    }
+                    EnsurePhysicalPath(payloadPath);
+                    EnsurePhysicalPath(sidecarPath!);
+                    if (!File.Exists(payloadPath) || !File.Exists(sidecarPath))
+                    {
+                        return new(CameraAgentArtifactReadStatus.Gone);
+                    }
+                    sidecarStream = new FileStream(
+                        sidecarPath!,
+                        FileMode.Open,
+                        FileAccess.Read,
+                        FileShare.Read | FileShare.Delete,
+                        bufferSize: 16 * 1024,
+                        FileOptions.Asynchronous | FileOptions.SequentialScan);
+                    if (sidecarStream.Length is < 1 or > MaximumEvidenceBytes)
+                    {
+                        return new(CameraAgentArtifactReadStatus.Conflict);
+                    }
+                    payloadIdentity = ReadFileIdentity(payloadPath);
+                    sidecarIdentity = ReadFileIdentity(sidecarPath!);
                 }
             }
-            if (forPreview && PreviewStatus(validated) is { } previewStatus)
-            {
-                return new(previewStatus);
-            }
-            if (!File.Exists(payloadPath))
-            {
-                return new(CameraAgentArtifactReadStatus.Gone);
-            }
-            if (archive is null)
-                EnsurePhysicalPath(payloadPath);
-            else
-                RawIngressFileStore.EnsureNoSymbolicLinks(archive.StorageRoot, payloadPath);
+
             payload = new FileStream(
                 payloadPath,
                 FileMode.Open,
@@ -221,23 +267,54 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
                 FileShare.Read | FileShare.Delete,
                 bufferSize: 64 * 1024,
                 FileOptions.Asynchronous | FileOptions.SequentialScan);
-            if (payload.Length != validated.ByteLength)
+
+            // Both immutable inode handles and file identities are now pinned; release the root
+            // lifecycle lock before reading sidecar/payload bytes and computing SHA-256 so
+            // concurrent preview and overlay reads never serialize on file I/O or hashing.
+            lifecycleGateHeld = false;
+            lifecycleGate.Release();
+
+            if (sidecarStream is not null)
+            {
+                Interlocked.Increment(ref _evidenceValidationReads);
+                var sidecar = new byte[checked((int)sidecarStream.Length)];
+                await sidecarStream.ReadExactlyAsync(sidecar, cancellationToken).ConfigureAwait(false);
+                await sidecarStream.DisposeAsync().ConfigureAwait(false);
+                sidecarStream = null;
+                if (!sidecar.AsSpan().SequenceEqual(row!.EvidenceJson))
+                {
+                    await payload.DisposeAsync().ConfigureAwait(false);
+                    payload = null;
+                    return new(CameraAgentArtifactReadStatus.Conflict);
+                }
+                validated = row.Kind == ArtifactEvidenceKind.Raw
+                    ? ValidateRaw(row, sidecar)
+                    : ValidateProcessing(row, sidecar);
+                if (forPreview && PreviewStatus(validated) is { } previewStatus)
+                {
+                    await payload.DisposeAsync().ConfigureAwait(false);
+                    payload = null;
+                    return new(previewStatus);
+                }
+            }
+
+            if (payload.Length != validated!.ByteLength)
             {
                 await payload.DisposeAsync().ConfigureAwait(false);
                 payload = null;
                 return new(CameraAgentArtifactReadStatus.Conflict);
             }
             Interlocked.Increment(ref _payloadValidationReads);
-            var checksum = await PayloadChecksum.ComputeSha256Async(payload, cancellationToken).ConfigureAwait(false);
+            var checksum = await PayloadChecksumReader(payload, validated.ArtifactId, cancellationToken).ConfigureAwait(false);
             if (!string.Equals(checksum, validated.ChecksumSha256, StringComparison.OrdinalIgnoreCase))
             {
                 await payload.DisposeAsync().ConfigureAwait(false);
                 payload = null;
                 return new(CameraAgentArtifactReadStatus.Conflict);
             }
-            if (!cachedValidation && row is not null)
+            if (!cachedValidation && row is not null && payloadIdentity is { } pId && sidecarIdentity is { } sId)
             {
-                AddValidatedArtifact(row, validated, payloadPath, sidecarPath!);
+                AddValidatedArtifact(row, validated, pId, sId);
             }
             payload.Position = 0;
             var content = new CameraAgentArtifactContentStream(
@@ -298,7 +375,14 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         }
         finally
         {
-            lifecycleGate.Release();
+            if (sidecarStream is not null)
+            {
+                await sidecarStream.DisposeAsync().ConfigureAwait(false);
+            }
+            if (lifecycleGateHeld)
+            {
+                lifecycleGate.Release();
+            }
         }
     }
 
@@ -685,46 +769,6 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         cancellationToken.ThrowIfCancellationRequested();
         AddCached(cacheKey, result);
         return result;
-    }
-
-    private async ValueTask<ValidatedArtifact> ValidateEvidenceAsync(
-        ArtifactEvidenceRow row,
-        CancellationToken cancellationToken)
-    {
-        if (row.Kind == ArtifactEvidenceKind.Raw && row.RawState == "missing_evidence")
-        {
-            throw new FileNotFoundException();
-        }
-        if (row.Kind == ArtifactEvidenceKind.Raw && row.RawState != "committed")
-        {
-            throw new ArtifactEvidenceException();
-        }
-        var payloadPath = ResolveSafePath(row.PayloadRelativePath);
-        var sidecarPath = ResolveSafePath(row.SidecarRelativePath);
-        if (string.Equals(payloadPath, sidecarPath, PathComparison))
-        {
-            throw new ArtifactEvidenceException();
-        }
-        EnsurePhysicalPath(payloadPath);
-        EnsurePhysicalPath(sidecarPath);
-        if (!File.Exists(payloadPath) || !File.Exists(sidecarPath))
-        {
-            throw new FileNotFoundException();
-        }
-        var sidecarLength = new FileInfo(sidecarPath).Length;
-        if (sidecarLength is < 1 or > MaximumEvidenceBytes)
-        {
-            throw new ArtifactEvidenceException();
-        }
-        Interlocked.Increment(ref _evidenceValidationReads);
-        var sidecar = await File.ReadAllBytesAsync(sidecarPath, cancellationToken).ConfigureAwait(false);
-        if (!sidecar.AsSpan().SequenceEqual(row.EvidenceJson))
-        {
-            throw new ArtifactEvidenceException();
-        }
-        return row.Kind == ArtifactEvidenceKind.Raw
-            ? ValidateRaw(row, sidecar)
-            : ValidateProcessing(row, sidecar);
     }
 
     private static ValidatedArtifact ValidateRaw(ArtifactEvidenceRow row, byte[] sidecar)
@@ -1214,17 +1258,20 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         return false;
     }
 
+    internal Func<Stream, Guid, CancellationToken, ValueTask<string>> PayloadChecksumReader { get; set; } =
+        static (stream, _, token) => PayloadChecksum.ComputeSha256Async(stream, token);
+
     private void AddValidatedArtifact(
         ArtifactEvidenceRow row,
         ValidatedArtifact validated,
-        string payloadPath,
-        string sidecarPath)
+        FileIdentity payloadIdentity,
+        FileIdentity sidecarIdentity)
     {
         var entry = new ArtifactValidationCacheEntry(
             validated,
             EvidenceIdentity(row),
-            ReadFileIdentity(payloadPath),
-            ReadFileIdentity(sidecarPath),
+            payloadIdentity,
+            sidecarIdentity,
             0);
         lock (_cacheGate)
         {

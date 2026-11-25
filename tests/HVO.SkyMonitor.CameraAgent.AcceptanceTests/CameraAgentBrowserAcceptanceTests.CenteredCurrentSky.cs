@@ -1,6 +1,8 @@
 using System.Buffers.Binary;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
 using HVO.SkyMonitor.CameraAgent.Common.Background;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
@@ -10,6 +12,8 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
+using HVO.SkyMonitor.CameraAgent.Settings;
+using HVO.SkyMonitor.Catalog.Sqlite;
 using HVO.SkyMonitor.Common.Configuration;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
@@ -279,19 +283,22 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         }
 
         // 7. Mutate site/default settings on disk AND restart the Kestrel host!
-        //    Verify exact archive & saved-selection reopen across host restart and site/default preference changes!
+        //    Verify the restarted host reflects the changed MinimumRefreshSeconds site default
+        //    AND reopens the exact archive & saved selection across restart!
         await host.RunWithHostStoppedAsync(async root =>
         {
             var settingsJson = JsonSerializer.Serialize(new
             {
                 CameraAgent = new
                 {
-                    CurrentSky = new { RefreshSeconds = 60 }
+                    CurrentSky = new { MinimumRefreshSeconds = 60 }
                 }
             });
             await File.WriteAllTextAsync(Path.Combine(root, DeploymentLocalSettings.FileName), settingsJson, token)
                 .ConfigureAwait(false);
         }).ConfigureAwait(false);
+
+        Assert.AreEqual(60, host.Services.GetRequiredService<CurrentSkyRefreshSetting>().Seconds);
 
         await using (var restartedContext = await diagnostics.NewContextAsync(new()
         {
@@ -302,6 +309,21 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         {
             var restartedPage = await restartedContext.NewPageAsync().ConfigureAwait(false);
             await LoginAsync(restartedPage, CameraAgentKestrelFixture.OwnerEmail, CameraAgentKestrelFixture.OwnerPassword).ConfigureAwait(false);
+
+            // Confirm the restarted host reflects MinimumRefreshSeconds = 60 in its authenticated settings API
+            var settingsResponse = await restartedContext.APIRequest.GetAsync(CameraAgentSettingsContract.Route).ConfigureAwait(false);
+            Assert.IsTrue(settingsResponse.Ok, $"Expected settings API 200 OK, got {settingsResponse.Status}.");
+            var settingsPayload = JsonSerializer.Deserialize<CameraAgentSettingsResponse>(
+                await settingsResponse.TextAsync().ConfigureAwait(false),
+                CenteredAcceptanceJson);
+            Assert.IsNotNull(settingsPayload);
+            var currentSkySetting = settingsPayload.Groups
+                .SelectMany(static group => group.Settings)
+                .Single(static setting => string.Equals(setting.Key, CameraAgentSettingsCatalogue.MinimumRefreshInterval.Key, StringComparison.Ordinal));
+            Assert.IsTrue(currentSkySetting.IsSet);
+            Assert.AreEqual(CameraAgentSettingSource.SettingsFile, currentSkySetting.Source);
+            Assert.AreEqual(60, currentSkySetting.Value?.GetInt32());
+
             // Seed conflicting browser default preferences for BOTH archive and live keys
             await restartedPage.EvaluateAsync(
                 "() => { localStorage.setItem('hvo.archivedCapture.layerVisibility.v1:/', JSON.stringify({ 'star-annotations': true, 'MeasuredTransientTrails': false })); localStorage.setItem('hvo.currentSky.layerVisibility.v1:/', JSON.stringify({ 'star-annotations': true, 'MeasuredTransientTrails': false })); }")
@@ -428,6 +450,203 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         }
     }
 
+    [TestMethod]
+    [DataRow(CameraPixelFormat.Mono16)]
+    [DataRow(CameraPixelFormat.BayerRggb16)]
+    public async Task CenteredCurrentSkyOrdinaryVirtualSkyAdvancementAndArchiveReopenAsync(CameraPixelFormat pixelFormat)
+    {
+        using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
+        await playwright.EnsureLaunchableOrInconclusiveAsync().ConfigureAwait(false);
+
+        const int width = 224;
+        const int height = 224;
+        const double latitude = 35.347;
+        const double longitude = -113.878;
+        var fixedSceneUtc = new DateTimeOffset(2026, 11, 20, 22, 30, 0, TimeSpan.Zero);
+        var wideStars = CreateOrdinaryCenteredWideStars(fixedSceneUtc, width, height, latitude, longitude);
+
+        await using var host = await CameraAgentKestrelFixture.CreateAsync(
+            configureServices: services =>
+            {
+                services.Replace(ServiceDescriptor.Singleton<ICelestialCatalog>(provider =>
+                    new WideFieldBrowserCatalog(
+                        wideStars,
+                        provider.GetRequiredService<SqliteCelestialCatalog>())));
+            },
+            settingsOverrides: new Dictionary<string, string?>
+            {
+                ["CameraAgent:Observatory:LatitudeDegrees"] = "35.347",
+                ["CameraAgent:Observatory:LongitudeDegrees"] = "-113.878",
+                ["CameraAgent:Observatory:ElevationMeters"] = "0",
+                ["CameraAgent:Observatory:TimeZoneId"] = "America/Phoenix"
+            },
+            prepareRoot: async root =>
+            {
+                var configPath = Path.Combine(root, "cameraagent.browser.json");
+                var document = JsonNode.Parse(await File.ReadAllTextAsync(configPath).ConfigureAwait(false))?.AsObject()
+                    ?? throw new InvalidDataException("The browser fixture configuration is invalid.");
+                var isBayer = pixelFormat == CameraPixelFormat.BayerRggb16;
+                document["centeredExposure"] = new JsonObject
+                {
+                    ["cameraId"] = "browser-centered-virtual",
+                    ["executionVersion"] = CenteredExposureProfile.CurrentExecutionVersion
+                };
+                document["module"] = JsonNode.Parse(JsonSerializer.Serialize(new
+                {
+                    type = "VirtualSky",
+                    options = new
+                    {
+                        seed = 1923,
+                        fixedSceneUtc = fixedSceneUtc,
+                        illuminationMode = "ControlledNight",
+                        maximumMagnitude = 6.5,
+                        maximumResults = 200,
+                        magnitudeZeroElectronsPerSecond = 14000.0,
+                        backgroundElectronsPerSecond = 2.0,
+                        shotNoiseEnabled = false,
+                        readNoiseStandardDeviation = 0.0,
+                        rigProfileVersion = isBayer ? "browser-centered-bayer-v1" : "browser-centered-mono16-v1",
+                        asi178Sensor = new { enabled = isBayer }
+                    }
+                }));
+                var sensor = document["rig"]!["sensor"]!.AsObject();
+                sensor["name"] = isBayer ? "BrowserCenteredBayerRggb16" : "BrowserCenteredMono16";
+                sensor["widthPixels"] = width;
+                sensor["heightPixels"] = height;
+                sensor["pixelSizeMicrons"] = 5.86;
+                sensor["colorMode"] = isBayer ? "Color" : "Mono";
+                sensor["pixelFormat"] = isBayer ? "BayerRggb16" : "Mono16";
+                sensor["responseMode"] = isBayer ? "BayerRaw" : "Monochrome";
+                sensor["strideBytes"] = width * 2;
+                sensor["byteOrder"] = "LittleEndian";
+                sensor["sensorRecipeVersion"] = isBayer ? "browser-centered-bayer-v1" : "browser-centered-mono16-v1";
+                var optics = document["rig"]!["optics"]!.AsObject();
+                optics["principalPointX"] = width / 2.0;
+                optics["principalPointY"] = height / 2.0;
+                optics["imageCircleRadiusPixels"] = 0.98 * width / 2.0;
+                if (isBayer)
+                {
+                    document["rig"]!.AsObject().Remove("readout");
+                }
+                else
+                {
+                    document["rig"]!["readout"] = JsonNode.Parse($$"""
+                        {
+                          "roi": { "x": 0, "y": 0, "width": {{width}}, "height": {{height}} },
+                          "binX": 1,
+                          "binY": 1,
+                          "binningAlgorithm": "IdentityV1",
+                          "pixelFormat": "Mono16",
+                          "sampleDepthBits": 12,
+                          "containerDepthBits": 16,
+                          "packing": "ByteAligned",
+                          "storedCodeTransform": "RightAlignedV1",
+                          "levelCodeSpace": "NativeSample",
+                          "blackLevel": 0,
+                          "whiteLevel": 4095,
+                          "strideBytes": {{width * 2}},
+                          "byteOrder": "LittleEndian",
+                          "cfaPattern": "None"
+                        }
+                        """);
+                }
+                document["rig"]!["pipeline"]!["captureInterval"] = "00:00:00.5000000";
+                document["rig"]!["pipeline"]!["dayExposure"] = "00:00:00.2500000";
+                document["rig"]!["pipeline"]!["nightExposure"] = "00:00:00.2500000";
+                document["schedule"]!["setpointProfiles"]![0]!["captureInterval"] = "00:00:00.5000000";
+                document["schedule"]!["setpointProfiles"]![0]!["exposure"] = "00:00:00.2500000";
+                document["pipeline"]!["steps"] = JsonNode.Parse($$"""
+                    [
+                      {
+                        "id": "Calibration",
+                        "type": "Calibration",
+                        "order": 10,
+                        "enabled": true,
+                        "required": false,
+                        "dependsOn": ["$raw"],
+                        "publication": { "persistence": "durable-local" },
+                        "options": {
+                          "strategy": "None",
+                          "outputVariant": "qualified-linear"
+                        }
+                      },
+                      {
+                        "id": "ProjectedScene",
+                        "type": "ProjectedScene",
+                        "order": 15,
+                        "enabled": true,
+                        "required": false,
+                        "dependsOn": ["$raw"],
+                        "publication": { "persistence": "durable-local" }
+                      },
+                      {
+                        "id": "LocalStorage",
+                        "type": "Storage",
+                        "order": 100,
+                        "enabled": true,
+                        "dependsOn": ["$raw"],
+                        "options": {
+                          "storageRoot": {{JsonSerializer.Serialize(root)}},
+                          "retentionDays": 1,
+                          "updateLatestFrame": true,
+                          "queueForUpload": false
+                        }
+                      }
+                    ]
+                    """);
+                await File.WriteAllTextAsync(configPath, document.ToJsonString(new JsonSerializerOptions { WriteIndented = true }))
+                    .ConfigureAwait(false);
+            }).ConfigureAwait(false);
+
+        await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
+        await using var diagnostics = new PlaywrightDiagnostics(browser, TestContext);
+        await using var context = await diagnostics.NewContextAsync(new()
+        {
+            BaseURL = host.BaseAddress.ToString(),
+            ColorScheme = ColorScheme.Dark,
+            ViewportSize = new() { Width = 1440, Height = 1000 }
+        }).ConfigureAwait(false);
+
+        var page = await context.NewPageAsync().ConfigureAwait(false);
+        await LoginAsync(page, CameraAgentKestrelFixture.OwnerEmail, CameraAgentKestrelFixture.OwnerPassword).ConfigureAwait(false);
+        await page.GotoAsync("/").ConfigureAwait(false);
+        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
+
+        // Ordinary VirtualSky capture (with all real background workers running!) advances naturally
+        // through Current Sky to a verified centered 5-frame registered stack in Ready state!
+        await page.Locator("[data-centered-reference^='#']").WaitForAsync(new() { Timeout = 30_000 }).ConfigureAwait(false);
+        await page.Locator("[data-centered-state='Ready']").WaitForAsync(new() { Timeout = 45_000 }).ConfigureAwait(false);
+        await page.Locator("[data-centered-contributors='5']").WaitForAsync(new() { Timeout = 45_000 }).ConfigureAwait(false);
+        await page.Locator(".sky-layer-canvas--verified").WaitForAsync(new() { Timeout = 30_000 }).ConfigureAwait(false);
+
+        var displayedBaseId = await page.Locator(".sky-layer-workspace").GetAttributeAsync("data-centered-base").ConfigureAwait(false);
+        var displayedRevisionId = await page.Locator(".sky-layer-workspace").GetAttributeAsync("data-centered-revision").ConfigureAwait(false);
+        Assert.IsFalse(string.IsNullOrWhiteSpace(displayedBaseId));
+        Assert.IsFalse(string.IsNullOrWhiteSpace(displayedRevisionId));
+        Assert.IsTrue(await page.EvaluateAsync<bool>(
+            $"() => {{ const img = document.querySelector('.sky-layer-canvas > img'); return !!img && img.complete && img.naturalWidth === {width} && img.naturalHeight === {height}; }}")
+            .ConfigureAwait(false),
+            $"Expected ordinary VirtualSky {pixelFormat} centered base to render at exact {width}x{height} natural dimensions.");
+
+        // Reopen the exact live view in the archive through the "Open capture details" link!
+        var detailHref = await page.Locator(".figure-actions a").GetAttributeAsync("href").ConfigureAwait(false)
+            ?? throw new AssertFailedException("Expected capture details href.");
+        StringAssert.Contains(detailHref, "/gallery/", StringComparison.Ordinal);
+        StringAssert.Contains(detailHref, $"base={displayedBaseId}", StringComparison.Ordinal);
+        StringAssert.Contains(detailHref, $"revision={displayedRevisionId}", StringComparison.Ordinal);
+
+        await page.GotoAsync(detailHref).ConfigureAwait(false);
+        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
+        await page.Locator(".centered-archive-bases a").First.WaitForAsync(new() { Timeout = 20_000 }).ConfigureAwait(false);
+        await page.Locator(".sky-layer-canvas--verified").WaitForAsync(new() { Timeout = 20_000 }).ConfigureAwait(false);
+        Assert.AreEqual(displayedBaseId,
+            await page.Locator(".sky-layer-workspace").GetAttributeAsync("data-centered-base").ConfigureAwait(false));
+        Assert.AreEqual(displayedRevisionId,
+            await page.Locator(".sky-layer-workspace").GetAttributeAsync("data-centered-revision").ConfigureAwait(false));
+
+        await diagnostics.CompleteAsync().ConfigureAwait(false);
+    }
+
     private static async Task<ReconstructionDescriptor> AddCenteredRawAsync(
         string root,
         SqliteRawCaptureJournal journal,
@@ -523,5 +742,62 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
             _views is not null && Stream is not null
                 ? _views.ReadArchiveAsync(Stream, referenceCaptureId, cancellationToken)
                 : ValueTask.FromResult<IReadOnlyList<CenteredViewArchiveBase>>([]);
+    }
+
+    private static CelestialCatalogObject[] CreateOrdinaryCenteredWideStars(
+        DateTimeOffset sceneUtc, int width, int height, double latitudeDegrees, double longitudeDegrees)
+    {
+        PixelPoint[] offsets =
+        [
+            new(30, -53), new(62, -18), new(-16, 21), new(-45, -38), new(-16, -19), new(28, 52),
+            new(-60, -22), new(-61, 18), new(-49, 43), new(-22, 45), new(15, -40), new(4, 41), new(41, 11), new(20, 6),
+            new(-70, -49), new(-97, -5), new(-21, -94), new(73, 46), new(54, 74), new(-89, -23), new(36, -86), new(-96, 31),
+            new(13, -98), new(-81, 52), new(-38, 79), new(-82, 16), new(58, -64), new(68, -41), new(20, 87), new(1, 98)
+        ];
+        var rig = new CameraRigConfig(
+            new SensorProfile("BrowserWide", width, height, 5.86, SensorColorMode.Mono, CameraPixelFormat.Mono16, SensorResponseMode.Monochrome),
+            new OpticsProfile("EquidistantFisheye", 0, 180, 0, LensKind.Fisheye, width / 2d, height / 2d, 0.98 * Math.Min(width, height) / 2d),
+            new RigOrientation(90, 0, 0),
+            new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1));
+        var projection = RigProjectionContextFactory.CreateNative(rig);
+        var projector = ProjectorFactory.Create(projection);
+        return offsets.Select((offset, index) =>
+        {
+            var direction = projector.Unproject(new(projection.PrincipalPointX + offset.X, projection.PrincipalPointY + offset.Y));
+            Assert.IsNotNull(direction);
+            var ofDate = CoordinateTransforms.HorizontalToEquatorial(direction.Value, sceneUtc, latitudeDegrees, longitudeDegrees);
+            var star = EquatorialPrecession.PrecessToJ2000(ofDate, sceneUtc);
+            var name = $"browser-wide-{index}";
+            return new CelestialCatalogObject(name, name, star.RightAscensionHours, star.DeclinationDegrees,
+                0.4 + index * 0.025, 0.3 + index % 11 * 0.05);
+        }).ToArray();
+    }
+
+    private sealed class WideFieldBrowserCatalog(
+        IEnumerable<CelestialCatalogObject> objects,
+        SqliteCelestialCatalog backing) : ICelestialCatalog, IHipparcosCatalog, ICelestialCatalogMetadataSource, IDeepSkyCatalogSource
+    {
+        private readonly InMemoryCelestialCatalog _inner = new(objects);
+
+        public CatalogMetadata Metadata => backing.Metadata;
+
+        public string PreprocessingVersion => backing.PreprocessingVersion;
+
+        public string? CatalogId => backing.CatalogId;
+
+        public string? CatalogPackageVersion => backing.CatalogPackageVersion;
+
+        public IDeepSkyCatalog? DeepSky => backing.DeepSky;
+
+        public IReadOnlyList<CelestialCatalogObject> Query(CatalogQuery query) =>
+            _inner.Query(query);
+
+        public ValueTask<IReadOnlyList<CelestialCatalogObject>> QueryCandidatesAsync(
+            CatalogCandidateQuery query, CancellationToken cancellationToken = default) =>
+            _inner.QueryCandidatesAsync(query, cancellationToken);
+
+        public ValueTask<IReadOnlyList<CelestialCatalogObject>> GetByHipparcosIdsAsync(
+            IReadOnlyCollection<string> hipparcosIds, CancellationToken cancellationToken = default) =>
+            _inner.GetByHipparcosIdsAsync(hipparcosIds, cancellationToken);
     }
 }
