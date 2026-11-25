@@ -618,8 +618,21 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         var referenceLocator = page.Locator("[data-centered-reference^='#']");
         await referenceLocator.WaitForAsync(new() { Timeout = 30_000 }).ConfigureAwait(false);
         await page.Locator(".sky-layer-canvas--verified").WaitForAsync(new() { Timeout = 30_000 }).ConfigureAwait(false);
-        var firstReference = await referenceLocator.GetAttributeAsync("data-centered-reference").ConfigureAwait(false);
-        var firstBaseId = await page.Locator(".sky-layer-workspace").GetAttributeAsync("data-centered-base").ConfigureAwait(false);
+        // Sample the initial reference and displayed base atomically in one JS turn so live progression
+        // between two Playwright round trips cannot skew firstReference against firstBaseId.
+        var initial = await page.EvaluateAsync<JsonElement>(
+            """
+            () => {
+                const refEl = document.querySelector('[data-centered-reference]');
+                const ws = document.querySelector('.sky-layer-workspace');
+                return {
+                    reference: refEl?.getAttribute('data-centered-reference') ?? null,
+                    baseId: ws?.getAttribute('data-centered-base') ?? null
+                };
+            }
+            """).ConfigureAwait(false);
+        var firstReference = initial.GetProperty("reference").GetString();
+        var firstBaseId = initial.GetProperty("baseId").GetString();
         Assert.IsFalse(string.IsNullOrWhiteSpace(firstReference));
         Assert.IsFalse(string.IsNullOrWhiteSpace(firstBaseId));
         var firstSequence = long.Parse(firstReference.AsSpan(1), System.Globalization.CultureInfo.InvariantCulture);

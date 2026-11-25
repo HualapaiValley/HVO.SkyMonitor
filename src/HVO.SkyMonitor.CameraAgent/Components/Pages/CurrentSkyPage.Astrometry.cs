@@ -307,16 +307,19 @@ public sealed partial class CurrentSkyPage
         AstrometricAssessmentStatus.BudgetExceeded => "warning",
         _ => "pending"
     };
+    private string MeasuredDiagnosticsReason => !IsCenteredMode && _showingBaseOnlyForMismatch
+        ? "Withheld because the preview and retained layer geometry differ."
+        : _astrometry?.DiagnosticsReason ?? "No compatible accepted result retained";
     private bool CanCalculate => !_accessDenied && _astrometry?.Mapping is not null &&
         _astrometry.Solution?.Assessment.HasMeasuredMapping == true && _astrometry.CaptureId == _runCaptureId &&
-        (DisplaySlot is { } slot &&
-         (slot.ArtifactId == _astrometry.Solution?.Assessment.Frame.SourceArtifactId ||
-          _astrometry.CompatibleBaseArtifactId is { } baseId && (slot.DisplayArtifactId == baseId || slot.ArtifactId == baseId)) ||
-         _centeredDisplay is { } centered &&
-         centered.View.Base.Definition.Reference.Capture.CaptureId == _astrometry.CaptureId &&
-         centered.View.Base.Definition.Reference.Input.Raw.Artifact.ArtifactId == _astrometry.Solution?.Assessment.Frame.SourceArtifactId &&
-         centered.View.Base.Definition.Preview.Transform.ReferenceWidth == _astrometry.WidthPixels &&
-         centered.View.Base.Definition.Preview.Transform.ReferenceHeight == _astrometry.HeightPixels);
+        ((!IsCenteredMode && !_showingBaseOnlyForMismatch && DisplaySlot is { } slot &&
+          (slot.ArtifactId == _astrometry.Solution?.Assessment.Frame.SourceArtifactId ||
+           _astrometry.CompatibleBaseArtifactId is { } baseId && (slot.DisplayArtifactId == baseId || slot.ArtifactId == baseId))) ||
+         (IsCenteredMode && _centeredDisplay is { } centered &&
+          centered.View.Base.Definition.Reference.Capture.CaptureId == _astrometry.CaptureId &&
+          centered.View.Base.Definition.Reference.Input.Raw.Artifact.ArtifactId == _astrometry.Solution?.Assessment.Frame.SourceArtifactId &&
+          centered.View.Base.Definition.Preview.Transform.ReferenceWidth == _astrometry.WidthPixels &&
+          centered.View.Base.Definition.Preview.Transform.ReferenceHeight == _astrometry.HeightPixels));
     private string CalculatorAvailability => CanCalculate
         ? "Source output pixels (zero-based); equatorial coordinates are mean of date at the capture midpoint. Geometric horizon; no refraction. Never updates rig calibration."
         : "Requires an accepted retained mapping and an exact source mapping to the selected image. Never updates rig calibration.";

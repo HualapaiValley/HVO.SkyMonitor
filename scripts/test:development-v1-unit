@@ -5,7 +5,9 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import runpy
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -15,11 +17,13 @@ from xml.etree import ElementTree as ET
 
 
 driver = runpy.run_path(str(Path(__file__).resolve().with_name("ci:development-v1-unit")))
+REPO_ROOT = driver["ROOT"]
 partition = driver["partition"]
 main = driver["main"]
 verify = driver["verify"]
 camera_agent = driver["CAMERA_AGENT"]
 names = ("cameraagent-shard-1", "cameraagent-shard-2")
+AREA_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9]*(?:\.[A-Za-z][A-Za-z0-9]*)*")
 
 
 def discovered(number, area, categories=("Unit",)):
@@ -103,6 +107,29 @@ class UnitContractTests(unittest.TestCase):
                     write_results(evidence, names[1], assembly, cases)
                     verify(evidence, plan)
 
+    def test_checked_in_cameraagent_unit_shards_map_is_valid(self):
+        area_groups = json.loads((REPO_ROOT / "scripts/ci/cameraagent-unit-shards.json").read_text(encoding="utf-8"))
+        self.assertIsInstance(area_groups, list)
+        self.assertEqual(len(area_groups), 2)
+        self.assertEqual(len(area_groups), len(driver["SHARDS"]))
+        seen = set()
+        synthetic_cases = []
+        case_number = 1
+        for shard_index, areas in enumerate(area_groups):
+            self.assertIsInstance(areas, list, f"shard {shard_index} must be a list")
+            self.assertTrue(areas, f"shard {shard_index} must not be empty")
+            for area in areas:
+                self.assertIsInstance(area, str, f"shard {shard_index} contains non-string Area {area!r}")
+                self.assertRegex(area, f"^{AREA_PATTERN.pattern}$", f"invalid Area entry {area!r}")
+                self.assertNotIn(area, seen, f"duplicate Area entry {area!r}")
+                seen.add(area)
+                synthetic_cases.append(discovered(case_number, area))
+                case_number += 1
+        plan = partition(area_groups, synthetic_cases)
+        self.assertEqual(len(plan[names[0]]), len(area_groups[0]))
+        self.assertEqual(len(plan[names[1]]), len(area_groups[1]))
+        self.assertFalse(plan[names[0]].keys() & plan[names[1]].keys())
+
     def test_full_workload_launches_both_shards_and_all_other_unit_projects(self):
         self.check_launch()
 
@@ -112,14 +139,20 @@ class UnitContractTests(unittest.TestCase):
     def test_other_projects_failure_blocks_workload_with_successful_shards(self):
         self.check_launch(other_exit_code=7)
 
-    def check_launch(self, skip_deployment_cli=False, other_exit_code=0):
+    def test_discovery_subprocess_uses_repo_root_cwd_from_other_working_directory(self):
+        self.check_launch(run_from_other_cwd=True)
+
+    def check_launch(self, skip_deployment_cli=False, other_exit_code=0, run_from_other_cwd=False):
         with tempfile.TemporaryDirectory() as scratch:
-            root = Path(scratch)
+            root = Path(scratch) / "repo"
             release = root / "tests" / camera_agent / "bin/Release/net10.0"
             release.mkdir(parents=True)
             (release / "fixture").write_text("fixture")
             (root / "scripts/ci").mkdir(parents=True)
             (root / "scripts/ci/cameraagent-unit-shards.json").write_text(json.dumps(self.areas))
+            audit_project = root / "scripts/test-categories/HVO.SkyMonitor.TestCategoryAudit.csproj"
+            audit_project.parent.mkdir(parents=True)
+            audit_project.write_text("<Project />")
             projects = ["HVO.SkyMonitor.Other.Tests", "HVO.SkyMonitor.More.Tests", "HVO.SkyMonitor.Deployment.Cli.Tests"]
             solution = ET.Element("Solution")
             for project in [camera_agent, *projects]:
@@ -133,6 +166,7 @@ class UnitContractTests(unittest.TestCase):
             (evidence / "unit").mkdir(parents=True)
             launches = []
             waits = []
+            discovery_calls = []
 
             class Process:
                 def __init__(self, exit_code):
@@ -145,6 +179,15 @@ class UnitContractTests(unittest.TestCase):
                 def poll(self):
                     return self.exit_code
 
+            def fake_discovery(command, **kwargs):
+                discovery_calls.append((command, kwargs))
+                project_arg = command[command.index("--project") + 1]
+                self.assertEqual(kwargs.get("cwd"), root)
+                self.assertTrue((Path(kwargs["cwd"]) / project_arg).is_file())
+                if run_from_other_cwd:
+                    self.assertFalse((Path.cwd() / project_arg).exists())
+                return subprocess.CompletedProcess(command, 0, json.dumps(self.cases))
+
             def launch(command):
                 launches.append(command)
                 if len(launches) > 1:
@@ -156,15 +199,24 @@ class UnitContractTests(unittest.TestCase):
                 return Process(other_exit_code if len(launches) == 1 else 0)
 
             args = ["--skip-deployment-cli", str(evidence)] if skip_deployment_cli else [str(evidence)]
-            with (patch.dict(main.__globals__, ROOT=root),
-                  patch.dict(os.environ, DOCKER_HOST="unix:///tmp/hvo-no-docker.sock", SkipDeploymentCliTests="true"),
-                  patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(self.cases))),
-                  patch.object(subprocess, "Popen", side_effect=launch), contextlib.redirect_stdout(io.StringIO())):
-                if other_exit_code:
-                    with self.assertRaisesRegex(ValueError, "^Unit selection failed in other-unit$"):
+            previous_cwd = os.getcwd()
+            try:
+                if run_from_other_cwd:
+                    elsewhere = Path(scratch) / "elsewhere"
+                    elsewhere.mkdir()
+                    os.chdir(elsewhere)
+                with (patch.dict(main.__globals__, ROOT=root),
+                      patch.dict(os.environ, DOCKER_HOST="unix:///tmp/hvo-no-docker.sock", SkipDeploymentCliTests="true"),
+                      patch.object(subprocess, "run", side_effect=fake_discovery),
+                      patch.object(subprocess, "Popen", side_effect=launch), contextlib.redirect_stdout(io.StringIO())):
+                    if other_exit_code:
+                        with self.assertRaisesRegex(ValueError, "^Unit selection failed in other-unit$"):
+                            main(args)
+                    else:
                         main(args)
-                else:
-                    main(args)
+            finally:
+                os.chdir(previous_cwd)
+            self.assertEqual(len(discovery_calls), 1)
             self.assertEqual(waits, [3, 3, 3])
             selected = json.loads((evidence / "other-unit.slnf").read_text())["solution"]["projects"]
             self.assertEqual(selected, sorted(f"tests/{project}/{project}.csproj" for project in projects))
@@ -182,6 +234,207 @@ class UnitContractTests(unittest.TestCase):
                 self.assertIn("--no-build", command)
             first_out, second_out = [next(arg for arg in command if arg.startswith("-p:OutDir=")) for command in launches[1:]]
             self.assertNotEqual(first_out, second_out)
+
+
+class CoverageWrapperContractTests(unittest.TestCase):
+    def make_fixture(self, scratch, report_count, *, unit_dir_name="unit", verify_exit_code=0, enforce_exit_code=0):
+        repo = scratch / "repo"
+        (repo / "scripts/coverage").mkdir(parents=True)
+        (repo / "tests").mkdir(parents=True)
+        shutil.copy2(REPO_ROOT / "scripts/coverage:development-v1", repo / "scripts/coverage:development-v1")
+        (repo / "scripts/coverage/baseline.json").write_text("{}", encoding="utf-8")
+        # 17 Unit test projects (matching the checked-in Development v1 inventory),
+        # so sharded CameraAgent mode expects 18 reports without --skip-deployment-cli
+        # and 17 reports with --skip-deployment-cli.
+        unit_projects = [
+            camera_agent,
+            "HVO.SkyMonitor.Deployment.Cli.Tests",
+            *(f"HVO.SkyMonitor.Fixture{index:02d}.Tests" for index in range(1, 16)),
+        ]
+        self.assertEqual(len(unit_projects), 17)
+        (repo / "tests/unit-test-projects.json").write_text(json.dumps(unit_projects), encoding="utf-8")
+
+        record_file = scratch / "calls.jsonl"
+        for tool_name, exit_code in (("ci:development-v1-unit", verify_exit_code), ("coverage:enforce", enforce_exit_code)):
+            stub = repo / "scripts" / tool_name
+            stub.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, pathlib, sys\n"
+                f"with pathlib.Path({str(record_file)!r}).open('a', encoding='utf-8') as handle:\n"
+                f"    handle.write(json.dumps({{'tool': {tool_name!r}, 'argv': sys.argv[1:]}}) + '\\n')\n"
+                f"sys.exit({exit_code})\n",
+                encoding="utf-8",
+            )
+            stub.chmod(0o755)
+
+        bin_dir = scratch / "bin"
+        bin_dir.mkdir()
+        stub_dotnet = bin_dir / "dotnet"
+        stub_dotnet.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, pathlib, sys\n"
+            "args = sys.argv[1:]\n"
+            f"with pathlib.Path({str(record_file)!r}).open('a', encoding='utf-8') as handle:\n"
+            "    handle.write(json.dumps({'tool': 'dotnet', 'argv': args}) + '\\n')\n"
+            "if args and args[0] == 'reportgenerator':\n"
+            "    reports = next(a.split(':', 1)[1] for a in args if a.startswith('-reports:')).split(';')\n"
+            "    target_dir = pathlib.Path(next(a.split(':', 1)[1] for a in args if a.startswith('-targetdir:')))\n"
+            "    target_dir.mkdir(parents=True, exist_ok=True)\n"
+            "    (target_dir / 'Cobertura.xml').write_text('<coverage />', encoding='utf-8')\n"
+            "    for index, report_path in enumerate(reports, 1):\n"
+            "        print(f\"Finished parsing '{report_path}' {index}/{len(reports)}\")\n"
+            "sys.exit(0)\n",
+            encoding="utf-8",
+        )
+        stub_dotnet.chmod(0o755)
+
+        evidence = scratch / "evidence"
+        unit_dir = evidence / unit_dir_name
+        unit_dir.mkdir(parents=True)
+        for index in range(report_count):
+            report_path = unit_dir / f"report-{index:02d}" / "coverage.cobertura.xml"
+            report_path.parent.mkdir()
+            report_path.write_text("<coverage />", encoding="utf-8")
+
+        env = os.environ | {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+
+        def invoke(*args):
+            if record_file.exists():
+                record_file.unlink()
+            result = subprocess.run(
+                [str(repo / "scripts/coverage:development-v1"), *args],
+                capture_output=True, text=True, env=env,
+            )
+            calls = ([json.loads(line) for line in record_file.read_text(encoding="utf-8").splitlines()]
+                     if record_file.exists() else [])
+            return result, calls
+
+        return repo, evidence, unit_dir, invoke
+
+    def test_cameraagent_shards_report_counts_argument_orders_and_stubbed_verification(self):
+        cases = (
+            ("sharded full", ["--cameraagent-shards"], 18, False),
+            ("sharded then skip", ["--cameraagent-shards", "--skip-deployment-cli"], 17, True),
+            ("skip then sharded", ["--skip-deployment-cli", "--cameraagent-shards"], 17, True),
+        )
+        for label, flags, expected_count, expect_skip in cases:
+            with self.subTest(label=label, case="exact count"), tempfile.TemporaryDirectory() as scratch_str:
+                scratch = Path(scratch_str)
+                repo, evidence, unit_dir, invoke = self.make_fixture(scratch, expected_count)
+                target_dir = scratch / "coverage"
+                result, calls = invoke(*flags, str(unit_dir), str(target_dir))
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(f"Merging {expected_count} fresh Unit reports", result.stdout)
+                self.assertIn(f"Verified ReportGenerator parsed all {expected_count} expected Unit reports", result.stdout)
+                self.assertEqual([call["tool"] for call in calls],
+                                 ["ci:development-v1-unit", "dotnet", "dotnet", "coverage:enforce"])
+                self.assertEqual(calls[0]["argv"], ["--verify", str(evidence)])
+
+                gate_argv = calls[1]["argv"]
+                gate_tail = gate_argv[gate_argv.index("--") + 1:]
+                expected_prefix = ["--development-v1"]
+                if expect_skip:
+                    expected_prefix.append("--skip-deployment-cli")
+                expected_prefix += [
+                    "--validate-reports", "--sharded-unit-results",
+                    str(unit_dir), str(repo / "scripts/coverage/baseline.json"),
+                ]
+                self.assertEqual(gate_tail[:len(expected_prefix)], expected_prefix)
+                self.assertEqual(len(gate_tail) - len(expected_prefix), expected_count)
+
+                merge_argv = calls[2]["argv"]
+                self.assertEqual(merge_argv[0], "reportgenerator")
+                merged_reports = next(a.split(":", 1)[1] for a in merge_argv if a.startswith("-reports:")).split(";")
+                self.assertEqual(len(merged_reports), expected_count)
+
+                expected_enforce = ["--development-v1"]
+                if expect_skip:
+                    expected_enforce.append("--skip-deployment-cli")
+                expected_enforce += ["--merged", str(target_dir / "Cobertura.xml")]
+                self.assertEqual(calls[3]["argv"], expected_enforce)
+
+            for wrong_count in (expected_count - 1, expected_count + 1):
+                with self.subTest(label=label, wrong_count=wrong_count), tempfile.TemporaryDirectory() as scratch_str:
+                    scratch = Path(scratch_str)
+                    _, evidence, unit_dir, invoke = self.make_fixture(scratch, wrong_count)
+                    result, calls = invoke(*flags, str(unit_dir), str(scratch / "coverage"))
+                    self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                    self.assertIn(f"expected {expected_count} reports", result.stderr)
+                    self.assertIn(f"found {wrong_count}", result.stderr)
+                    self.assertEqual(calls, [{"tool": "ci:development-v1-unit", "argv": ["--verify", str(evidence)]}])
+
+        with self.subTest(case="shard verification failure aborts before coverage tools"), tempfile.TemporaryDirectory() as scratch_str:
+            scratch = Path(scratch_str)
+            _, evidence, unit_dir, invoke = self.make_fixture(scratch, 18, verify_exit_code=1)
+            result, calls = invoke("--cameraagent-shards", str(unit_dir), str(scratch / "coverage"))
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertEqual(calls, [{"tool": "ci:development-v1-unit", "argv": ["--verify", str(evidence)]}])
+
+    def test_cameraagent_shards_rejects_settings_and_duplicate_flags(self):
+        with tempfile.TemporaryDirectory() as scratch_str:
+            scratch = Path(scratch_str)
+            _, _, unit_dir, invoke = self.make_fixture(scratch, 18)
+            settings_out = str(scratch / "v1.runsettings")
+            coverage_out = str(scratch / "coverage")
+            for label, args in (
+                ("settings then shards", ["--settings", "--cameraagent-shards", settings_out]),
+                ("shards then settings", ["--cameraagent-shards", "--settings", settings_out]),
+                ("settings shards skip", ["--settings", "--cameraagent-shards", "--skip-deployment-cli", settings_out]),
+                ("skip shards settings", ["--skip-deployment-cli", "--cameraagent-shards", "--settings", settings_out]),
+                ("duplicate shards", ["--cameraagent-shards", "--cameraagent-shards", str(unit_dir), coverage_out]),
+            ):
+                with self.subTest(label=label):
+                    result, calls = invoke(*args)
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertIn("Usage:", result.stderr)
+                    self.assertEqual(calls, [])
+
+    def test_results_dir_strips_trailing_slashes(self):
+        with tempfile.TemporaryDirectory() as scratch_str:
+            scratch = Path(scratch_str)
+            repo, evidence, unit_dir, invoke = self.make_fixture(scratch, 18)
+            for suffix in ("/", "///"):
+                with self.subTest(mode="sharded", suffix=suffix):
+                    target_dir = scratch / f"coverage-sharded-{len(suffix)}"
+                    result, calls = invoke("--cameraagent-shards", f"{unit_dir}{suffix}", str(target_dir))
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertEqual(calls[0], {"tool": "ci:development-v1-unit", "argv": ["--verify", str(evidence)]})
+                    gate_argv = calls[1]["argv"]
+                    gate_tail = gate_argv[gate_argv.index("--") + 1:]
+                    self.assertEqual(gate_tail[:5], [
+                        "--development-v1", "--validate-reports", "--sharded-unit-results",
+                        str(unit_dir), str(repo / "scripts/coverage/baseline.json"),
+                    ])
+                    report_args = gate_tail[5:]
+                    self.assertEqual(len(report_args), 18)
+                    self.assertFalse(any("//" in path for path in report_args), report_args)
+                    recorded_reports = (target_dir / "reports.txt").read_text(encoding="utf-8").splitlines()
+                    self.assertEqual(len(recorded_reports), 18)
+                    self.assertFalse(any("//" in path for path in recorded_reports), recorded_reports)
+
+        with tempfile.TemporaryDirectory() as scratch_str:
+            scratch = Path(scratch_str)
+            repo, _, unit_dir, invoke = self.make_fixture(scratch, 17)
+            target_dir = scratch / "coverage-unsharded"
+            result, calls = invoke(f"{unit_dir}/", str(target_dir))
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            gate_argv = calls[0]["argv"]
+            gate_tail = gate_argv[gate_argv.index("--") + 1:]
+            self.assertEqual(gate_tail[:5], [
+                "--development-v1", "--validate-reports", "--unit-results",
+                str(unit_dir), str(repo / "scripts/coverage/baseline.json"),
+            ])
+            self.assertFalse(any("//" in path for path in gate_tail[5:]), gate_tail[5:])
+
+        with tempfile.TemporaryDirectory() as scratch_str:
+            scratch = Path(scratch_str)
+            _, _, other_dir, invoke = self.make_fixture(scratch, 18, unit_dir_name="not-unit")
+            for bad_dir in (f"{other_dir}/", "/"):
+                with self.subTest(bad_dir=bad_dir):
+                    result, calls = invoke("--cameraagent-shards", bad_dir, str(scratch / "coverage-bad"))
+                    self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                    self.assertIn("CameraAgent shard verification requires the fresh evidence unit directory.", result.stderr)
+                    self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":

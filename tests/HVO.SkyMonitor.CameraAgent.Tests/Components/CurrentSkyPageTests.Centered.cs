@@ -2042,10 +2042,15 @@ public sealed partial class CurrentSkyPageTests
             }
         };
 
+        var overlayCalls = 0;
         var overlayStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseOverlay = new TaskCompletionSource<OperatorUiResult<CameraAgentCenteredPresentationRead>>(TaskCreationOptions.RunContinuationsAsynchronously);
         service.CenteredPresentationHandler = (_, _, _) =>
         {
+            if (Interlocked.Increment(ref overlayCalls) > 1)
+            {
+                throw new InvalidOperationException("Deferred archived overlay should replay on viewer close without issuing a second presentation read.");
+            }
             overlayStarted.TrySetResult();
             return new ValueTask<OperatorUiResult<CameraAgentCenteredPresentationRead>>(releaseOverlay.Task);
         };
@@ -2070,6 +2075,121 @@ public sealed partial class CurrentSkyPageTests
             Assert.IsTrue(cut.Find("[data-layer-kind='star-annotations'] input").HasAttribute("checked"));
             Assert.IsFalse(cut.Find("[data-layer-kind='scene-constellations'] input").HasAttribute("checked"));
         });
+        Assert.AreEqual(1, Volatile.Read(ref overlayCalls),
+            "Closing the fullscreen viewer must replay the retained deferred result instead of re-fetching.");
+    }
+
+    [TestMethod]
+    public async Task SwitchingFromNonCenteredMismatchFallbackToCenteredClearsMismatchAndEnablesCalculatorAsync()
+    {
+        var fit = await AstrometryEvidenceAsync().ConfigureAwait(false);
+        var fitArtifactId = Guid.NewGuid();
+        var pinned = fit with { ArtifactId = fitArtifactId };
+        var fitPin = new CenteredViewArtifact(fitArtifactId, new string('A', 64), new string('B', 64));
+
+        var image = WithStructuredBase();
+        var firstCapture = image.DisplayCapture! with
+        {
+            CaptureId = Guid.NewGuid(),
+            CaptureSequence = 100,
+            ExposureStartedUtc = fit.Solution!.Assessment.Frame.ExposureStartUtc.AddMinutes(-1)
+        };
+        var first = new CameraAgentCurrentSkyView(
+            image with { DisplayCapture = firstCapture, LatestCapture = firstCapture },
+            null,
+            null);
+
+        var selectedCapture = firstCapture with
+        {
+            CaptureId = fit.CaptureId,
+            CaptureSequence = 101,
+            ExposureStartedUtc = fit.Solution.Assessment.Frame.ExposureStartUtc
+        };
+        var retainedLayers = Layered(selectedCapture.CaptureId, new string('D', 64)) with
+        {
+            Astrometry = fit with { CompatibleBaseArtifactId = null }
+        };
+        var combinedSlot = image.Stages.Single(slot => slot.Stage == CameraAgentPresentationStage.Combined);
+        var mismatchedCombined = combinedSlot with
+        {
+            DisplayArtifactId = retainedLayers.BaseArtifactId,
+            DisplayReferenceId = retainedLayers.BaseArtifactId,
+            PreviewUrl = new($"/api/v1/operations/artifacts/{retainedLayers.BaseArtifactId:D}/preview", UriKind.Relative),
+            PreviewWidth = retainedLayers.WidthPixels / 2,
+            PreviewHeight = retainedLayers.HeightPixels / 2
+        };
+        var nonCenteredFallback = new CameraAgentCurrentSkyView(
+            image with
+            {
+                DisplayCapture = selectedCapture,
+                LatestCapture = selectedCapture,
+                Stages = image.Stages.Select(slot => slot.Stage == CameraAgentPresentationStage.Combined ? mismatchedCombined : slot).ToArray()
+            },
+            null,
+            null);
+
+        var exp101 = CenteredExposure(101, fit.Solution.Assessment.Frame.ExposureStartUtc);
+        exp101 = exp101 with
+        {
+            Input = exp101.Input with
+            {
+                Key = exp101.Input.Key with { CaptureId = fit.CaptureId },
+                Raw = exp101.Input.Raw with
+                {
+                    Capture = exp101.Input.Raw.Capture with { CaptureId = fit.CaptureId },
+                    Artifact = exp101.Input.Raw.Artifact with { ArtifactId = fit.Solution.Assessment.Frame.SourceArtifactId }
+                }
+            }
+        };
+        var compat = new PresentationCompatibilityDescriptor(
+            fit.WidthPixels, fit.HeightPixels, new string('B', 64), new string('C', 64));
+        var starLayer = ReadyLayer("star-annotations", fit.CaptureId, 1, compat, enabledByDefault: true);
+        var residualsLayer = new CenteredViewLayer(
+            new(AstrometricDiagnosticPresentation.ResidualsLayer, CenteredViewLayerScope.Reference, fit.CaptureId),
+            2, fitPin, OperatorUiTestData.Now, CenteredViewReadiness.Ready, null,
+            Drawable(AstrometricDiagnosticPresentation.ResidualsLayer, 412, false, compat));
+        var centeredView = CenteredSingle(exp101, 1, [starLayer, residualsLayer], compat, width: fit.WidthPixels, height: fit.HeightPixels);
+        var centeredSky = CenteredSkyView(centeredView, exp101, CenteredViewLiveState.Ready, OperatorUiTestData.Now);
+
+        using var context = new BunitContext();
+        var (service, clock) = ConfigurePolling(context);
+        var current = first;
+        service.CurrentSkyHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(current));
+        service.PresentationHandler = (id, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(
+            id == selectedCapture.CaptureId ? retainedLayers : Layered(id, new string('D', 64))));
+        service.ExactAstrometryHandler = (_, _, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentRetainedAstrometry>.Success(pinned));
+
+        var cut = context.Render<CurrentSkyPage>();
+        WaitForFirst(cut, clock, first);
+        cut.WaitForElement(".sky-layer-canvas--verified");
+
+        // Transition into non-centered sustained mismatch fallback (_showingBaseOnlyForMismatch = true).
+        current = nonCenteredFallback;
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        cut.WaitForAssertion(() =>
+        {
+            Assert.HasCount(2, cut.FindAll(".pixel-sky-calculator button[disabled]"));
+            StringAssert.Contains(cut.Markup, "Withheld because the preview and retained layer geometry differ.", StringComparison.Ordinal);
+        });
+
+        // Switch into centered mode on the exact same reference capture: prior mismatch state must not stick.
+        current = centeredSky;
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual(centeredView.Base.BaseId, cut.Find(".sky-layer-workspace").GetAttribute("data-centered-base"));
+            Assert.AreEqual("Accepted", cut.Find(".astrometry-card .state-chip").TextContent);
+            Assert.IsFalse(cut.Find(".pixel-sky-calculator button").HasAttribute("disabled"),
+                "Prior non-centered mismatch fallback must not leave centered calculator disabled.");
+            Assert.IsFalse(cut.Markup.Contains("Withheld because the preview and retained layer geometry differ.", StringComparison.Ordinal),
+                "Prior non-centered mismatch withholding notice must not appear in centered mode.");
+        });
+
+        await cut.Find(".pixel-sky-calculator input").ChangeAsync("280").ConfigureAwait(false);
+        await cut.FindAll(".pixel-sky-calculator input")[1].ChangeAsync("240").ConfigureAwait(false);
+        await cut.Find("form.pixel-sky-calculator").SubmitAsync().ConfigureAwait(false);
+        StringAssert.Contains(cut.Find(".astrometry-calculator-result").TextContent, "mean of date", StringComparison.Ordinal);
     }
 
     [TestMethod]

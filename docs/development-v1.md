@@ -103,7 +103,10 @@ The gate refreshes the destination tip through the read-only ref API and walks
 the group's first parents to that tip. It requires exactly two parents per entry,
 with a limit of 100 entries. Each second parent must equal an open PR's current
 head targeting this repository's `development/v1`. Earlier entries require a
-unique matching PR association so the approval can be checked for that PR.
+unique matching PR association because the diff approval binds the PR number.
+If open PRs share a head and destination, the association cannot identify
+which PR actually entered the queue. The gate rejects that earlier entry. Use
+a single-entry group so GitHub's queue ref identifies the PR directly.
 An earlier entry landing during traversal can become the trusted stopping point.
 Fork PRs use commit statuses in the base repository.
 

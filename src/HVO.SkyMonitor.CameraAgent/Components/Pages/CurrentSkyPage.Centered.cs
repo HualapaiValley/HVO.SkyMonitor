@@ -305,6 +305,8 @@ public sealed partial class CurrentSkyPage
     private void ApplyCenteredArchive(CameraAgentCaptureDetailView archive)
     {
         CancelCenteredPresentationLoad();
+        _showingBaseOnlyForMismatch = false;
+        _gaveDisplayMismatchOneRefresh = false;
         _centeredArchive = archive.CenteredArchive;
         _centeredLiveContext = null;
         _centeredSaveMessage = null;
@@ -367,6 +369,8 @@ public sealed partial class CurrentSkyPage
         var incoming = view.Centered!;
         var previous = _centeredDisplay;
         var action = ClassifyCenteredUpdate(previous, incoming, manual, started, view.MinimumRefreshInterval);
+        _showingBaseOnlyForMismatch = false;
+        _gaveDisplayMismatchOneRefresh = false;
         _centeredLiveContext = incoming.Context;
         _operations = view.Operations;
         _errorMessage = null;
@@ -537,13 +541,15 @@ public sealed partial class CurrentSkyPage
             }
         }
 
-        if (captureChanged)
+        if (captureChanged || _centeredDisplay is null)
         {
             ResetLayers(referenceCaptureId, cancellationToken, discardDisplayedEvidence: true);
             _centeredAstrometryEvidence = null;
             _centeredAstrometryEvidenceSet = false;
         }
 
+        _showingBaseOnlyForMismatch = false;
+        _gaveDisplayMismatchOneRefresh = false;
         _centeredDisplay = nextDisplay;
         _layerLoading = false;
         _layersNotRetained = false;
