@@ -156,6 +156,24 @@ internal sealed class CenteredViewLayerProducer(
                     .ConfigureAwait(false);
             partial |= measurement.Sources.Detections.Count > evidence.Payload.Markers.Count;
         }
+        if (evidence.RegionalVisibility is { } visibility)
+        {
+            if (scope != CenteredViewLayerScope.Reference ||
+                visibility.Sources.CaptureId != sourceExposure.Capture.CaptureId ||
+                visibility.Sources.RawArtifactId != sourceExposure.Input.Raw.Artifact.ArtifactId ||
+                visibility.Sources.RawDescriptorSha256 != CaptureContractJson.ComputeDescriptorSha256(sourceExposure.Input.Raw))
+                throw new InvalidDataException("Regional stellar visibility does not match the exact admitted reference exposure.");
+            if (visibility.Status == RegionalVisibilityAssessmentStatus.Withheld)
+                return await views.PublishLayerAsync(viewBase.BaseId, new(key, evidence.Lookup.Revision!.Value,
+                    evidence.Pin, observedUtc, CenteredViewReadiness.Incompatible,
+                    visibility.ReasonCodes.Count > 0 ? visibility.ReasonCodes[0] : RegionalVisibilityReasonCodes.PointingUncertain, null), token)
+                    .ConfigureAwait(false);
+            if (visibility.Status == RegionalVisibilityAssessmentStatus.InsufficientEvidence)
+                return await views.PublishLayerAsync(viewBase.BaseId, new(key, evidence.Lookup.Revision!.Value,
+                    evidence.Pin, observedUtc, CenteredViewReadiness.AssessedEmpty,
+                    visibility.ReasonCodes.Count > 0 ? visibility.ReasonCodes[0] : RegionalVisibilityReasonCodes.InsufficientSupport, null), token)
+                    .ConfigureAwait(false);
+        }
 
         PresentationLayerPayloadV1 mapped;
         try
@@ -223,7 +241,7 @@ internal sealed class CenteredViewLayerProducer(
         if (source is not { Availability: ExposureProductAvailability.Available, Revision: > 0, Product: { } product } ||
             product.Exposure != source.Exposure || product.Slot != source.Slot ||
             (!PresentationLayerPayloadV1.SupportsSchema(product.Slot.SchemaVersion) &&
-                product.Slot.SchemaVersion is not (ExposureMeasurementProducts.SchemaVersion or MeasuredAstrometrySolutionV1.CurrentSchemaVersion)))
+                product.Slot.SchemaVersion is not (ExposureMeasurementProducts.SchemaVersion or RegionalStellarVisibilityProducts.SchemaVersion or MeasuredAstrometrySolutionV1.CurrentSchemaVersion)))
             throw new InvalidDataException("A drawable layer requires a committed source-pixel payload.");
         var pin = new CenteredViewArtifact(product.ArtifactId, product.OutputIdentitySha256, product.PayloadSha256);
         if (product.Slot.SchemaVersion == ExposureMeasurementProducts.SchemaVersion)
@@ -237,6 +255,18 @@ internal sealed class CenteredViewLayerProducer(
                 new PresentationMarkerV1(detection.Pixel, 3, new(200, 240, 255), Crosshair: true));
             return new(source, pin, measurementArtifact, PresentationLayerPayloadJson.Create(
                 identity, layout.Width, layout.Height, markers: markers), measurement);
+        }
+        if (product.Slot.SchemaVersion == RegionalStellarVisibilityProducts.SchemaVersion)
+        {
+            var (visibilityArtifact, visibility) = await persistence.ReadCenteredViewRegionalVisibilityAsync(source.Exposure.CaptureId, pin, token)
+                .ConfigureAwait(false);
+            if (visibilityArtifact.ContentIdentitySha256 is not { } identity ||
+                identity != product.ContentIdentitySha256 ||
+                identity != visibility.AssessmentIdentitySha256)
+                throw new InvalidDataException("The regional stellar visibility content identity is unbound.");
+            var visibilityPayload = PresentationLayerProducers.FromRegionalStellarVisibility(
+                visibility, visibility.Conditions.WidthPixels, visibility.Conditions.HeightPixels);
+            return new(source, pin, visibilityArtifact, visibilityPayload, RegionalVisibility: visibility);
         }
         var artifact = await persistence.ReadCenteredViewProductAsync(source.Exposure.CaptureId, pin, token).ConfigureAwait(false);
         if (product.Slot.SchemaVersion == MeasuredAstrometrySolutionV1.CurrentSchemaVersion)
@@ -453,6 +483,7 @@ internal sealed class CenteredViewLayerProducer(
 
     private sealed record SourceLayer(ExposureProductLookup Lookup, CenteredViewArtifact Pin,
         ProcessingArtifact Artifact, PresentationLayerPayloadV1 Payload, ExposureMeasurementV1? Measurement = null,
-        CameraAgentRetainedAstrometry? Astrometry = null, CaptureSatelliteStatusV1? Satellite = null);
+        CameraAgentRetainedAstrometry? Astrometry = null, CaptureSatelliteStatusV1? Satellite = null,
+        RegionalStellarVisibilityV1? RegionalVisibility = null);
     private static readonly JsonSerializerOptions GeometryJson = new(JsonSerializerDefaults.Web);
 }

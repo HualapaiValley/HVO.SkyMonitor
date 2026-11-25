@@ -131,6 +131,31 @@
                                     }
                                 </section>
                             }
+                            @if (selected.OutputContracts.Any(static contract => contract.Recipe?.Name == HVO.SkyMonitor.Processing.RegionalStellarVisibilityProducts.RecipeName))
+                            {
+                                <section class="stage-facts" aria-label="Regional stellar visibility">
+                                    @if (_view.RegionalStellarVisibility?.Assessment is { } visibility)
+                                    {
+                                        <dl class="fact-grid">
+                                            <div><dt>Status</dt><dd>@visibility.Status</dd></div>
+                                            <div><dt>Method</dt><dd><code>@visibility.MethodId</code></dd></div>
+                                            <div><dt>Geometry basis</dt><dd>@visibility.GeometryBasis</dd></div>
+                                            <div><dt>Focus basis</dt><dd>@visibility.FocusBasis</dd></div>
+                                            <div><dt>Confidence</dt><dd>@MeasurementNumber(visibility.ConfidenceMillionths / 1_000_000d)</dd></div>
+                                            <div><dt>Assessed tiles</dt><dd>@visibility.Grid.AssessedTileCount / @visibility.Tiles.Count (@visibility.Grid.ClearTileCount clear, @visibility.Grid.DeficitTileCount deficit, @visibility.Grid.InsufficientEvidenceTileCount low support, @visibility.Grid.ExcludedTileCount excluded)</dd></div>
+                                            <div><dt>Expected detectable stars</dt><dd>@visibility.Grid.TotalExpectedDetectableStars expected / @visibility.Grid.TotalMatchedMeasuredStars matched</dd></div>
+                                            @if (visibility.ReasonCodes.Count > 0)
+                                            {
+                                                <div><dt>Reasons</dt><dd>@string.Join(", ", visibility.ReasonCodes)</dd></div>
+                                            }
+                                        </dl>
+                                    }
+                                    else
+                                    {
+                                        <p>@(_view.RegionalStellarVisibility?.UnavailableReason ?? "Regional stellar visibility unavailable")</p>
+                                    }
+                                </section>
+                            }
                             <div class="detail-grid"><section class="stage-facts"><h3>Execution</h3><dl><div><dt>Started</dt><dd>@SiteTime.Format(selected.StartedUtc, unavailable: "Not recorded")</dd></div><div><dt>Completed</dt><dd>@SiteTime.Format(selected.CompletedUtc, unavailable: "Not recorded")</dd></div><div><dt>Duration</dt><dd>@PipelineRunPresentation.Duration(PipelineRunPresentation.Duration(selected))</dd></div><div><dt>Attempts</dt><dd>@selected.AttemptCount recorded</dd></div><div><dt>Runner</dt><dd>@PipelineRunPresentation.Runner(selected)</dd></div><div><dt>Stage</dt><dd>@selected.NodeId</dd></div></dl><h3>Dependencies</h3><div class="token-list">@if (selected.Dependencies.Count == 0) { <span>No dependencies recorded</span> } @foreach (var dependency in selected.Dependencies) { <span>@dependency.ProducerId / @(dependency.Required ? "required" : "optional")</span> }</div><h3>Outputs</h3><div class="token-list outputs">@if (selected.Outputs.Count == 0) { <span>No outputs recorded</span> } @foreach (var output in selected.Outputs) { <span>@output.Role / @output.Variant / @output.AvailabilityState</span> }</div></section><section class="event-log"><div class="event-heading"><h3>Stage events</h3><span>Recorded execution facts</span></div><ol>@foreach (var fact in StageFacts(selected)) { <li><time>@SiteTime.Format(fact.Time, unavailable: "Not timed")</time><span class="event-level @fact.Tone">@fact.Label</span><p>@fact.Message</p></li> }</ol><p class="unavailable-copy">Journal facts are shown at their recorded times; no log messages or successful commits are synthesized.</p></section></div>
                         }
                         else if (_tab == "artifacts")

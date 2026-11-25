@@ -1099,11 +1099,7 @@ public sealed class VirtualSkyCameraModule(
             Seed = unchecked(_options.Seed + (int)(captureSequence * 104729)),
             Cloud = cloud,
             Transient = transient,
-            ChannelResponse = _config.Rig.Sensor.SimulationResponse?.ColorResponse is { } configuredColor
-                ? new RgbChannelSettings(configuredColor.Red, configuredColor.Green, configuredColor.Blue)
-                : _options.SyntheticCalibration is not null || _options.Asi676Enabled
-                    ? new RgbChannelSettings(1, 1, 1)
-                    : new RgbChannelSettings(0.94, 1, 0.8),
+            ChannelResponse = ResolveBayerChannelResponse(_config.Rig.Sensor, _options),
             SensorResponse = _config.Rig.Sensor.SimulationResponse is { } configuredResponse
                 ? ConfiguredSensorResponseResolver.Resolve(configuredResponse, setpoint.Gain)
                 : _options.Asi178Sensor.Enabled
@@ -1125,6 +1121,13 @@ public sealed class VirtualSkyCameraModule(
                     : FrameStoredCodeTransform.RightAlignedV1),
             ContainerDepthBits = _resolvedReadout?.Layout.ContainerDepthBits ?? 16
         };
+
+    internal static RgbChannelSettings ResolveBayerChannelResponse(SensorProfile sensor, VirtualSkyCameraModuleOptions options)
+        => sensor.SimulationResponse?.ColorResponse is { } configuredColor
+            ? new(configuredColor.Red, configuredColor.Green, configuredColor.Blue)
+            : options.SyntheticCalibration is not null || options.Asi676Enabled
+                ? new(1, 1, 1)
+                : new(0.94, 1, 0.8);
 
     private FrameLayoutDescriptor CreateFrameLayout(
         SensorProfile sensor,
