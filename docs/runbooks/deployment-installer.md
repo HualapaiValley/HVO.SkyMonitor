@@ -2937,7 +2937,7 @@ candidate.
 Stock maintenance may prune the original working checkpoint after completion.
 An exact replay then refuses because the original proof is missing. A separately
 authorized, verified owner-only evidence copy retains that checkpoint outside
-stock pruning while the manifest continues to name the retry checkpoint for rollback.
+stock pruning while the manifest continues to name the retry checkpoint for diagnosis.
 
 The normal release wrapper still requires the installer distributed with its
 verified release. The original release artifacts and their attestations remain

@@ -328,9 +328,11 @@ and optical controls, including per-track transmission.
 The independent trail detector consumes raw pixels and their delivered readout,
 the capture-time rig and observing site, and the effective exposure. With
 exposure-integrated star masks enabled, it uses the validated celestial start
-from the time-only `Scene.VirtualExposure` and the effective exposure to
-integrate catalog-star geometry. It receives no named-pass identity, prediction
-lineage, or expected tracks.
+from the time-only `Scene.VirtualExposure` record (see
+[Exposure-aware stellar visibility and motion](#exposure-aware-stellar-visibility-and-motion);
+falling back to the capture descriptor's `ExposureStartedUtc` when absent) and
+the effective exposure to integrate catalog-star geometry. It receives no
+named-pass identity, prediction lineage, or expected tracks.
 
 For example, one generic sensor-stage fixture can be configured as:
 

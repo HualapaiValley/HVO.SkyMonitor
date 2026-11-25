@@ -360,10 +360,12 @@ independently. Refs #2060.
 
 Seven consecutive successful queue-generated pushes on November 24–25, 2026 UTC
 reused exact-SHA merge-group validation on GitHub-hosted runners. The three
-immediately preceding pushes were cancelled before Build and Unit received a
-runner. The push concurrency group still cancels older runs on
-`development/v1`. A push that needs full validation competes for the build pool
-until superseded or completed. [First sampled push](https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/45416424061)
+immediately preceding pre-reuse pushes (`45416424061`, `45428390080`, and
+`45445955706`) were cancelled manually during Preflight before merge-group reuse
+reached `development/v1`, rather than by the concurrency group. Separately, the
+push concurrency group still cancels older superseded runs on `development/v1`,
+and a push that needs full validation competes for the build pool until
+superseded or completed. [First sampled push](https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/45416424061)
 · [Last sampled push](https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/45522117380)
 
 | Workflow | Triggers | Concurrency |

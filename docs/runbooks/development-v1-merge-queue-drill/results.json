@@ -33,7 +33,7 @@
     }
   ],
   "sha256": {
-    "development-v1-merge-queue-drill.md": "d74fbaacfa98250923a5911fe47f22580be4ce5ce1c6b3d4a60da61cda708599",
+    "development-v1-merge-queue-drill.md": "d1186ff64990afe454f160d3168d7e727ff6435772b94504d178086129e33d35",
     "development-v1-merge-queue-drill/verify.py": "35d19d2da040da9ebcc72be384be13cfabbf61a4647ff47fa07bfd7945b635ca",
     "development-v1-merge-queue-drill/branch-protection.before.json": "03aa0dffe726b35a892be72af4115e788c26f00fd5029d11dca6916df2f36c6e",
     "development-v1-merge-queue-drill/ruleset-26838822.before.json": "29ab59ea55fe5f1acc849fe1c601094085de360013281d93cc4130b713a14097",

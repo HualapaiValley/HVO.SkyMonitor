@@ -96,25 +96,31 @@ tracks. A no-candidate result from the independent trail detector describes the
 image assessment.
 
 - **`PinnedSnapshotUnavailable`** means the exact pinned manifest could not be
-  read from the local orbital store. Compare the package's manifest identity
+  read from the local orbital store. Compare the package's
+  `snapshotManifest.sha256` (and any explicit `pinnedInputs.snapshotManifestSha256`)
   with `currentManifestSha256` in [orbital status](orbital-elements-refresh.md#status-refresh-and-resume).
-  That field identifies the active snapshot. An older manifest is usable
-  while retained. Follow the reported `recoveryAction` for store or provider
-  problems. If the pin is missing or retired, prepare a new package from a
-  snapshot retained on this instance. If you need a new retrieval, use
-  **Software & Catalog → Refresh now** after `nextPermittedAttemptUtc` and
-  after resolving any provider halt. Verify the activated identity before
-  rebuilding the package.
+  `currentManifestSha256` identifies only the currently active snapshot, so a
+  mismatch does not by itself indicate failure: an older manifest remains usable
+  while retained in the local store, whereas a missing, retired, or unreadable
+  manifest produces `PinnedSnapshotUnavailable`. Follow the reported
+  `recoveryAction` for store or provider problems. If the pin is missing or
+  retired, prepare a new package from a snapshot retained on this instance. If
+  you need a new retrieval, use **Software & Catalog → Refresh now** after
+  `nextPermittedAttemptUtc` and after resolving any provider halt. Verify the
+  activated identity before rebuilding the package.
 - **`PinnedTimeInputsUnavailable`** means CameraAgent resolved time data but the
   Earth-orientation or leap-second hash differs from the pin. In
   **Observatory & location → Orbital refresh & satellite setup**, expand
   **Read-only time-data configuration and resolved status**. Compare both hashes
-  to the package and check coverage for the observed shutter interval. Restore
-  the exact approved pair with the
-  [four time override settings](../astronomy/satellite-planning-v1.md#local-time-inputs)
-  and set `overrideTimeDataAvailableUtc` to when those exact bytes were
-  available, at or before raw admission. You can also prepare a new package
-  from the verified pair that covers the planned exposure.
+  to the package and check coverage for the observed shutter interval. To
+  restore the exact approved pair, configure the
+  [four `CameraAgent:SatellitePlanning` time override settings](../astronomy/satellite-planning-v1.md#local-time-inputs)
+  and set `overrideTimeDataAvailableUtc` in the `CaptureSatelliteTracks` node's
+  `options` to the explicit UTC (`Z` / `+00:00`) timestamp when those exact
+  bytes were available, at or before raw admission (omitting it or setting a
+  later timestamp yields `TimeAvailabilityUnknown` or
+  `TimeNotOriginallyAvailable`). You can also prepare a new package from the
+  verified pair that covers the planned exposure.
 
 When you rebuild the package, update `namedOrbitalPass.packageSha256` and any
 explicit graph pins together. These settings apply to future captures. Archived
