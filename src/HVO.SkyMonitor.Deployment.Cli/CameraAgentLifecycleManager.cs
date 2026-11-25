@@ -107,7 +107,10 @@ internal sealed partial class CameraAgentLifecycleManager
         if (request.Operation is not null && uid == 0)
             throw InstallerException.Refused("Run lifecycle operations as the Docker-capable runtime user, not as root.");
         if (request.Operation == LifecycleOperationKind.Rollback && !request.Resume)
-            throw InstallerException.Refused(ManualRollbackGuidance);
+        {
+            var usesSiloLayout = await DeclaresSiloLayoutAsync(paths.ManifestPath, cancellationToken).ConfigureAwait(false);
+            throw InstallerException.Refused(usesSiloLayout ? SiloLayoutUnsupported : ManualRollbackGuidance);
+        }
         // A restore's target may be absent or half replaced, so it starts from the archive, not the instance manifest.
         if (request.Operation == LifecycleOperationKind.Restore)
         {
@@ -301,6 +304,24 @@ internal sealed partial class CameraAgentLifecycleManager
         "CameraAgent checkpoint recovery ends at upgrade commit. Preserve the current captures and records. " +
         "For a committed upgrade, use a supported forward repair or the explicit backup and restore procedure. " +
         "For a pending upgrade, see 'Restore Only After an Interrupted Upgrade' in the deployment installer runbook.";
+
+    private static async Task<bool> DeclaresSiloLayoutAsync(string manifestPath, CancellationToken cancellationToken)
+    {
+        // A fresh rollback always refuses. Read only the layout declaration to select guidance even when other
+        // retained records are unavailable.
+        try
+        {
+            await using var stream = SafeFileSystem.OpenOwnerFileRead(manifestPath);
+            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
+            return document.RootElement.ValueKind == JsonValueKind.Object &&
+                   document.RootElement.TryGetProperty("componentSchemaVersion", out var schema) &&
+                   schema.ValueKind == JsonValueKind.String && schema.ValueEquals(SiloRuntimeProfile.ComponentSchemaVersion);
+        }
+        catch (Exception exception) when (exception is InstallerException or IOException or UnauthorizedAccessException or JsonException)
+        {
+            return false;
+        }
+    }
 
     private static void EnsureLegacyRollbackSettlement(
         LifecycleRequest request, InstanceManifest manifest, LifecycleOperationState? operation)

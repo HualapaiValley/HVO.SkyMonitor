@@ -45,6 +45,32 @@ public sealed partial class LifecycleContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow(null, false)]
+    [DataRow(null, true)]
+    [DataRow("{", false)]
+    [DataRow("[]", true)]
+    [DataRow("{\"componentSchemaVersion\":12}", false)]
+    public async Task Rollback_WithoutReadableLayoutDeclaration_GivesManualGuidance(string? manifestContents, bool plan)
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        if (manifestContents is null)
+            File.Delete(fixture.Paths.ManifestPath);
+        else
+            await File.WriteAllTextAsync(fixture.Paths.ManifestPath, manifestContents);
+        var before = FileSystemActivity.Snapshot(fixture.Root);
+
+        var refusal = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Rollback) with { DryRun = plan },
+            fixture.Runner, null, null, fixture.Uid, fixture.Gid, CancellationToken.None));
+
+        Assert.IsTrue(refusal.IsRefusal);
+        Assert.AreEqual(CameraAgentLifecycleManager.ManualRollbackGuidance, refusal.Message);
+        Assert.AreEqual(0, fixture.Runner.InvocationCount);
+        FileSystemActivity.AssertUnchanged(before, FileSystemActivity.Snapshot(fixture.Root), "manual rollback refusal");
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task RollbackResume_PrecommitLegacyRollbackRetainsItsEvidenceForSupport()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed, recoveryState: true);

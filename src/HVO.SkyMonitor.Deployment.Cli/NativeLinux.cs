@@ -258,7 +258,8 @@ internal static partial class NativeLinux
 
     public static SafeFileHandle OpenReadOnlyNoFollow(string path)
     {
-        var descriptor = Open(path, OpenReadOnly | OpenNoFollow | OpenCloseOnExec);
+        // The caller authenticates the file type on the opened handle. A FIFO must not block that check.
+        var descriptor = Open(path, OpenReadOnly | OpenNoFollow | OpenCloseOnExec | OpenNonBlocking);
         return descriptor >= 0
             ? new SafeFileHandle(descriptor, ownsHandle: true)
             : throw new InstallerException($"Protected file '{path}' could not be opened without following links.");
