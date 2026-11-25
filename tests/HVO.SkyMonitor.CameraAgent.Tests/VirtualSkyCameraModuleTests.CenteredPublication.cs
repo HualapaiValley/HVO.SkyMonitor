@@ -1275,6 +1275,179 @@ public sealed partial class VirtualSkyCameraModuleTests
         }
     }
 
+    [TestMethod]
+    public async Task CenteredWindowPublicationFinalAttemptWaitsForInFlightSingleCommitInsideWriteTransaction()
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-centered-window-final-attempt-lock");
+        var token = TestContext.CancellationToken;
+        var start = new DateTimeOffset(2026, 11, 20, 22, 30, 0, TimeSpan.Zero);
+        var clock = new CenteredClock { UtcNow = start };
+        var deviceClock = new ExposureTestTimeProvider(start, autoAdvance: true);
+        var profile = CenteredRuntimeProfile(root, start, CameraPixelFormat.Mono16);
+        Func<ExposureKey, CancellationToken, ValueTask>? afterReadLinear = null;
+        try
+        {
+            using var provider = CenteredRuntimeProvider(root, clock, services =>
+            {
+                services.AddSingleton<CenteredExposureProductReader>();
+                services.AddSingleton<IExposureProductReader>(sp =>
+                    new InterceptingExposureProductReader(
+                        sp.GetRequiredService<CenteredExposureProductReader>(),
+                        (key, ct) => afterReadLinear is null ? ValueTask.CompletedTask : afterReadLinear(key, ct)));
+            });
+            var active = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(provider, profile).ConfigureAwait(false);
+            var schedule = await ReadCenteredPublicationScheduleAsync(provider, token).ConfigureAwait(false);
+            var ingress = provider.GetRequiredService<RawCaptureIngress>();
+            var device = new VirtualSkyCameraModule(deviceClock, CenteredRuntimeCatalog(start), new ProjectedSceneStore(),
+                stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
+            await using var camera = device.ConfigureAwait(false);
+            await device.InitializeAsync(active, token).ConfigureAwait(false);
+            var singles = provider.GetRequiredService<CenteredViewPublicationWorker>();
+            var windows = provider.GetRequiredService<CenteredViewWindowPublicationWorker>();
+            var coordinator = provider.GetRequiredService<CenteredWindowCoordinator>();
+            var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
+            var views = provider.GetRequiredService<SqliteCenteredViews>();
+
+            CameraKey key = default!;
+            CenteredViewStream? stream = null;
+            Guid capture4 = default;
+            for (var ordinal = 1; ordinal <= 4; ordinal++)
+            {
+                var captured = await CaptureCenteredRuntimeAttemptAsync(ingress, device, deviceClock, clock, active,
+                    start.AddSeconds((ordinal - 1) * 2), 1, token, schedule: schedule).ConfigureAwait(false);
+                var receipt = await ingress.AcceptCenteredAsync(active, captured.Submission, captured.Reservation, token)
+                    .ConfigureAwait(false);
+                key = captured.Reservation.Pending.Key.Camera;
+                stream = CenteredViewLookup.ResolveStream(await ingress.ReadCurrentAsync(key, token).ConfigureAwait(false));
+                Assert.IsNotNull(stream);
+                if (ordinal <= 3)
+                {
+                    await ProcessCenteredRuntimeExposureAsync(provider, active, token).ConfigureAwait(false);
+                    await singles.DrainCameraAsync(key, stream, CancellationToken.None, token).ConfigureAwait(false);
+                }
+                else
+                {
+                    capture4 = receipt.Manifest.Descriptor.Capture.CaptureId;
+                }
+            }
+
+            var windowReader = provider.GetRequiredService<ICenteredWindowReader>();
+            var window4 = await windowReader.ReadAsync(capture4, token).ConfigureAwait(false);
+            Assert.IsNotNull(window4);
+
+            // Close window 4 before capture 4's Single commits, and advance through 7 retries.
+            clock.UtcNow = window4.DeadlineUtc.AddMilliseconds(1);
+            await coordinator.CloseDueAsync(token).ConfigureAwait(false);
+            for (var attempt = 1; attempt < CenteredViewWindowPublicationWorker.MaximumMissingCenterRetries; attempt++)
+            {
+                await windows.PublishReadyAsync(token).ConfigureAwait(false);
+                clock.UtcNow = clock.UtcNow.Add(CenteredViewWindowPublicationWorker.RetryDelay);
+            }
+
+            // On attempt 8, acquire BEGIN IMMEDIATE on a second connection and insert capture 4's center Single
+            // uncommitted before ResolveOrCheckpointMissingCenterAsync begins. Keep the transaction open so
+            // attempt 8 must wait for BEGIN IMMEDIATE before reading; a non-atomic pre-lock SELECT would read
+            // the pre-commit snapshot and falsely terminalize window 4 at retry_count = 8.
+            var racedSingleBaseId = new string('a', 64);
+            var lockHeld = new TaskCompletionSource<(SqliteConnection Connection, SqliteTransaction Transaction)>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var lockAcquired = 0;
+            afterReadLinear = async (exposureKey, ct) =>
+            {
+                if (exposureKey.CaptureId != capture4 || Interlocked.Exchange(ref lockAcquired, 1) != 0)
+                    return;
+                var writerConnection = await store.OpenCenteredViewsAsync(ct).ConfigureAwait(false);
+                SqliteTransaction? writerTransaction = null;
+                try
+                {
+#pragma warning disable CA1849 // Microsoft.Data.Sqlite exposes immediate transactions only through the synchronous overload.
+                    writerTransaction = writerConnection.BeginTransaction(deferred: false);
+#pragma warning restore CA1849
+                    string streamId;
+                    string cameraId;
+                    using (var readStream = writerConnection.CreateCommand())
+                    {
+                        readStream.Transaction = writerTransaction;
+                        readStream.CommandText = """
+                            SELECT stream_id, camera_id FROM processing_centered_view_bases
+                            WHERE kind = $single AND recomputed_from IS NULL LIMIT 1;
+                            """;
+                        readStream.Parameters.AddWithValue("$single", (int)CenteredViewKind.Single);
+                        using var reader = await readStream.ExecuteReaderAsync(ct).ConfigureAwait(false);
+                        Assert.IsTrue(await reader.ReadAsync(ct).ConfigureAwait(false));
+                        streamId = reader.GetString(0);
+                        cameraId = reader.GetString(1);
+                    }
+                    using (var insertSingle = writerConnection.CreateCommand())
+                    {
+                        insertSingle.Transaction = writerTransaction;
+                        insertSingle.CommandText = """
+                            INSERT INTO processing_centered_view_bases
+                                (base_id, stream_id, camera_id, reference_id, reference_order, kind, recomputed_from, registered_utc, definition)
+                            VALUES ($base, $stream, $camera, $reference, $order, $kind, NULL, $utc, '{}');
+                            """;
+                        insertSingle.Parameters.AddWithValue("$base", racedSingleBaseId);
+                        insertSingle.Parameters.AddWithValue("$stream", streamId);
+                        insertSingle.Parameters.AddWithValue("$camera", cameraId);
+                        insertSingle.Parameters.AddWithValue("$reference", capture4);
+                        insertSingle.Parameters.AddWithValue("$order", 4L);
+                        insertSingle.Parameters.AddWithValue("$kind", (int)CenteredViewKind.Single);
+                        insertSingle.Parameters.AddWithValue("$utc", clock.UtcNow.UtcTicks);
+                        await insertSingle.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                    }
+                    lockHeld.TrySetResult((writerConnection, writerTransaction));
+                }
+                catch
+                {
+                    if (writerTransaction is not null)
+                        await writerTransaction.DisposeAsync().ConfigureAwait(false);
+                    await writerConnection.DisposeAsync().ConfigureAwait(false);
+                    throw;
+                }
+            };
+
+            var publishTask = Task.Run(() => windows.PublishReadyAsync(token).AsTask(), token);
+            var (heldConnection, heldTransaction) = await lockHeld.Task.WaitAsync(TimeSpan.FromSeconds(10), token).ConfigureAwait(false);
+            await using (heldConnection.ConfigureAwait(false))
+            await using (heldTransaction.ConfigureAwait(false))
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(250), token).ConfigureAwait(false);
+                Assert.IsFalse(publishTask.IsCompleted,
+                    "Attempt 8 must block waiting on BEGIN IMMEDIATE while the concurrent Single writer holds the write transaction.");
+                await heldTransaction.CommitAsync(token).ConfigureAwait(false);
+            }
+
+            await publishTask.WaitAsync(TimeSpan.FromSeconds(10), token).ConfigureAwait(false);
+            afterReadLinear = null;
+
+            using (var connection = await store.OpenCenteredViewsAsync(token).ConfigureAwait(false))
+            using (var cmd = connection.CreateCommand())
+            {
+                cmd.CommandText = """
+                    SELECT live_base_id, retry_utc, terminal_reason, retry_count
+                    FROM processing_centered_view_window_work WHERE window_sha256 = $window;
+                    """;
+                cmd.Parameters.AddWithValue("$window", window4.WindowIdentity);
+                using var workReader = await cmd.ExecuteReaderAsync(token).ConfigureAwait(false);
+                Assert.IsTrue(await workReader.ReadAsync(token).ConfigureAwait(false));
+                var liveBaseId = await workReader.IsDBNullAsync(0, token).ConfigureAwait(false) ? null : workReader.GetString(0);
+                var retryUtc = await workReader.IsDBNullAsync(1, token).ConfigureAwait(false) ? (long?)null : workReader.GetInt64(1);
+                var terminalReason = await workReader.IsDBNullAsync(2, token).ConfigureAwait(false) ? null : workReader.GetString(2);
+                var retryCount = workReader.GetInt64(3);
+                Assert.AreEqual(racedSingleBaseId, liveBaseId,
+                    FormattableString.Invariant($"Attempt 8 must observe the concurrently committed center Single instead of terminalizing (live_base_id={liveBaseId ?? "NULL"}, retry_utc={(retryUtc is { } value ? value.ToString(System.Globalization.CultureInfo.InvariantCulture) : "NULL")}, terminal_reason={terminalReason ?? "NULL"}, retry_count={retryCount})."));
+                Assert.IsNull(retryUtc);
+                Assert.IsNull(terminalReason);
+                Assert.AreEqual((long)(CenteredViewWindowPublicationWorker.MaximumMissingCenterRetries - 1), retryCount);
+            }
+            Assert.AreEqual(racedSingleBaseId, await views.ReadLiveCandidateAsync(stream!, token).ConfigureAwait(false));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     private sealed class InterceptingExposureProductReader(
         IExposureProductReader inner,
         Func<ExposureKey, CancellationToken, ValueTask> onAfterReadLinear) : IExposureProductReader

@@ -165,8 +165,11 @@ internal sealed partial class SqliteCaptureProcessingStore
             ALTER TABLE processing_centered_view_window_work RENAME TO processing_centered_view_window_work_legacy;
             """ + "\n" + CenteredViewWindowWorkSchemaSql + "\n" + """
             INSERT INTO processing_centered_view_window_work(window_sha256, live_base_id, retry_utc, terminal_reason, retry_count)
-            SELECT window_sha256, live_base_id, retry_utc, terminal_reason, 0
-            FROM processing_centered_view_window_work_legacy;
+            SELECT legacy.window_sha256, legacy.live_base_id, legacy.retry_utc, legacy.terminal_reason, 0
+            FROM processing_centered_view_window_work_legacy legacy
+            JOIN processing_centered_windows window ON window.window_sha256 = legacy.window_sha256
+            WHERE legacy.retry_utc IS NULL
+                OR (window.terminal = 1 AND window.closure_json IS NOT NULL AND window.reference_capture_id IS NOT NULL);
             DROP TABLE processing_centered_view_window_work_legacy;
             """ + "\n" + BackfillPendingWindowWorkSql;
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);

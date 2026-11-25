@@ -94,7 +94,7 @@ internal sealed partial class SqliteCaptureProcessingStore
     private const string EnqueueTerminalWindowWorkSql = """
         INSERT OR IGNORE INTO processing_centered_view_window_work(window_sha256, retry_utc)
         SELECT window_sha256, 0 FROM processing_centered_windows
-        WHERE window_sha256 = $window AND terminal = 1 AND reference_capture_id IS NOT NULL;
+        WHERE window_sha256 = $window AND terminal = 1 AND closure_json IS NOT NULL AND reference_capture_id IS NOT NULL;
         """;
 
     private const string InvalidCheckpoint = "invalid-window-checkpoint";
@@ -335,7 +335,7 @@ internal sealed partial class SqliteCaptureProcessingStore
                 AND EXISTS (SELECT 1 FROM processing_centered_windows WHERE window_sha256 = $window AND terminal = 0);
             UPDATE processing_centered_windows SET closure_json = NULL, failure_reason = $failure, terminal = 1
             WHERE window_sha256 = $window AND terminal = 0;
-            """ + "\n" + EnqueueTerminalWindowWorkSql;
+            """;
         command.Parameters.AddWithValue("$failure", InvalidCheckpoint);
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         await journal.ReleaseWindowInputsAsync(transaction, identity, cancellationToken).ConfigureAwait(false);

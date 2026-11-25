@@ -391,6 +391,131 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
     }
 
     [TestMethod]
+    public async Task InvalidCheckpointWithReferenceCaptureDoesNotEnqueueDueWindowWork()
+    {
+        using var fixture = await SchemaFixture.CreateAsync(initializeProcessing: true).ConfigureAwait(false);
+        var token = TestContext.CancellationToken;
+        var clock = new CenteredTestClock { UtcNow = Start.AddSeconds(12) };
+        var schedule = Schedule(4, 12);
+        var slots = Enumerable.Range(101, 5).Select(sequence => Exposure(sequence, 2 * (sequence - 101))).ToImmutableArray();
+        var referenceCaptureId = slots[2].Input!.Key.CaptureId;
+        var journal = new CenteredJournalProbe(slots);
+
+        Assert.IsTrue(await TrackAsync(fixture, schedule, slots, 1, token).ConfigureAwait(false));
+        using (var connection = await fixture.OpenAsync().ConfigureAwait(false))
+        using (var corrupt = connection.CreateCommand())
+        {
+            corrupt.CommandText = """
+                UPDATE processing_centered_windows
+                SET reference_capture_id = $reference, checkpoint_json = X'7B'
+                WHERE window_sha256 = $window;
+                """;
+            corrupt.Parameters.AddWithValue("$reference", referenceCaptureId.ToString("N"));
+            corrupt.Parameters.AddWithValue("$window", schedule.Identity);
+            Assert.AreEqual(1, await corrupt.ExecuteNonQueryAsync(token).ConfigureAwait(false));
+        }
+
+        using var store = new SqliteCaptureProcessingStore(fixture.Options, clock);
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
+            store.TryCloseCenteredWindowAsync(schedule.Identity, journal, token).AsTask()).ConfigureAwait(false);
+
+        using (var verify = await fixture.OpenAsync().ConfigureAwait(false))
+        {
+            using var windowCmd = verify.CreateCommand();
+            windowCmd.CommandText = """
+                SELECT terminal, closure_json IS NULL, failure_reason, reference_capture_id
+                FROM processing_centered_windows WHERE window_sha256 = $window;
+                """;
+            windowCmd.Parameters.AddWithValue("$window", schedule.Identity);
+            using var reader = await windowCmd.ExecuteReaderAsync(token).ConfigureAwait(false);
+            Assert.IsTrue(await reader.ReadAsync(token).ConfigureAwait(false));
+            Assert.AreEqual(1L, reader.GetInt64(0));
+            Assert.AreEqual(1L, reader.GetInt64(1));
+            Assert.AreEqual("invalid-window-checkpoint", reader.GetString(2));
+            Assert.AreEqual(referenceCaptureId.ToString("N"), reader.GetString(3));
+
+            using var workCmd = verify.CreateCommand();
+            workCmd.CommandText = "SELECT COUNT(*) FROM processing_centered_view_window_work WHERE window_sha256 = $window;";
+            workCmd.Parameters.AddWithValue("$window", schedule.Identity);
+            Assert.AreEqual(0L, (long)(await workCmd.ExecuteScalarAsync(token).ConfigureAwait(false))!);
+        }
+
+        var views = new SqliteCenteredViews(store, clock, NullLogger<SqliteCenteredViews>.Instance);
+        CollectionAssert.DoesNotContain(
+            (await views.ReadDueWindowPublicationsAsync(8, token).ConfigureAwait(false)).ToArray(),
+            schedule.Identity);
+    }
+
+    [TestMethod]
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The legacy window-work test DDL is a fixed store constant.")]
+    public async Task CenteredWindowWorkQueueAdoptionDropsLegacyUnclosedTerminalRetriesWhileKeepingValidRetries()
+    {
+        using var fixture = await SchemaFixture.CreateAsync(initializeProcessing: true).ConfigureAwait(false);
+        var token = TestContext.CancellationToken;
+        var clock = new CenteredTestClock { UtcNow = Start };
+        var validRetryingId = new string('a', 64);
+        var capacityRefusedRetryId = new string('b', 64);
+        var invalidCheckpointRetryId = new string('c', 64);
+        var settledRefusedId = new string('d', 64);
+        var retryTicks = Start.AddSeconds(10).UtcTicks;
+
+        using var connection = await fixture.OpenAsync().ConfigureAwait(false);
+        using (var setup = connection.CreateCommand())
+        {
+            setup.CommandText = """
+                DROP INDEX ix_processing_centered_view_window_due;
+                DROP INDEX ix_processing_centered_view_window_live_base;
+                DROP TABLE processing_centered_view_window_work;
+                """ + "\n" + SqliteCaptureProcessingStore.LegacyCenteredViewWindowWorkSchemaSqlForTests + """
+                INSERT INTO processing_centered_windows(window_sha256, deadline_utc_ticks, registration_deadline_utc_ticks,
+                    checkpoint_json, reference_capture_id, closure_json, failure_reason, terminal)
+                VALUES
+                    ($valid,    $t1, $t2, X'7B7D', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', X'7B7D', NULL,                        1),
+                    ($capacity, $t1, $t2, X'7B7D', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', NULL,    'window-capacity-exhausted', 1),
+                    ($invalid,  $t1, $t2, X'7B7D', 'cccccccccccccccccccccccccccccccc', NULL,    'invalid-window-checkpoint', 1),
+                    ($settled,  $t1, $t2, X'7B7D', 'dddddddddddddddddddddddddddddddd', NULL,    'window-capacity-exhausted', 1);
+                INSERT INTO processing_centered_view_window_work(window_sha256, live_base_id, retry_utc, terminal_reason)
+                VALUES
+                    ($valid,    NULL, $retry_ticks, NULL),
+                    ($capacity, NULL, $t1,          NULL),
+                    ($invalid,  NULL, $retry_ticks, NULL),
+                    ($settled,  NULL, NULL,         'centered.window-evidence-rejected');
+                """;
+            setup.Parameters.AddWithValue("$valid", validRetryingId);
+            setup.Parameters.AddWithValue("$capacity", capacityRefusedRetryId);
+            setup.Parameters.AddWithValue("$invalid", invalidCheckpointRetryId);
+            setup.Parameters.AddWithValue("$settled", settledRefusedId);
+            setup.Parameters.AddWithValue("$t1", Start.UtcTicks);
+            setup.Parameters.AddWithValue("$t2", Start.AddSeconds(30).UtcTicks);
+            setup.Parameters.AddWithValue("$retry_ticks", retryTicks);
+            await setup.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+        }
+
+        await new SqliteRawCaptureJournal(fixture.DatabasePath, 1).InitializeAsync(token).ConfigureAwait(false);
+        using var reopened = new SqliteCaptureProcessingStore(fixture.Options, clock);
+        await reopened.InitializeAsync(token).ConfigureAwait(false);
+
+        var views = new SqliteCenteredViews(reopened, clock, NullLogger<SqliteCenteredViews>.Instance);
+        Assert.IsEmpty(await views.ReadDueWindowPublicationsAsync(8, token).ConfigureAwait(false),
+            "Legacy unclosed terminal retry rows must not become due after schema adoption.");
+
+        clock.UtcNow = Start.AddSeconds(10);
+        CollectionAssert.AreEqual(new[] { validRetryingId },
+            (await views.ReadDueWindowPublicationsAsync(8, token).ConfigureAwait(false)).ToArray(),
+            "Only valid closed pending retries should remain due after schema adoption.");
+
+        Assert.AreEqual(0L, await ScalarAsync(connection,
+            "SELECT COUNT(*) FROM processing_centered_view_window_work WHERE window_sha256 IN ('" + capacityRefusedRetryId + "', '" + invalidCheckpointRetryId + "');")
+            .ConfigureAwait(false));
+        Assert.AreEqual(1L, await ScalarAsync(connection,
+            "SELECT COUNT(*) FROM processing_centered_view_window_work WHERE window_sha256 = '" + validRetryingId + "' AND retry_utc = " + retryTicks + " AND retry_count = 0;")
+            .ConfigureAwait(false));
+        Assert.AreEqual(1L, await ScalarAsync(connection,
+            "SELECT COUNT(*) FROM processing_centered_view_window_work WHERE window_sha256 = '" + settledRefusedId + "' AND retry_utc IS NULL AND terminal_reason = 'centered.window-evidence-rejected';")
+            .ConfigureAwait(false));
+    }
+
+    [TestMethod]
     public async Task CenteredCapacityRefusedWindowResolvesThroughReaderAfterAdmission()
     {
         using var fixture = await SchemaFixture.CreateAsync(initializeProcessing: true).ConfigureAwait(false);

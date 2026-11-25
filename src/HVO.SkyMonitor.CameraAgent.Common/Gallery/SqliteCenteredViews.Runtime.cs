@@ -88,7 +88,7 @@ internal sealed partial class SqliteCenteredViews
         FROM processing_centered_view_window_work work
         JOIN processing_centered_windows window ON window.window_sha256 = work.window_sha256
         WHERE work.retry_utc IS NOT NULL AND work.retry_utc <= $now
-            AND window.terminal = 1 AND window.reference_capture_id IS NOT NULL
+            AND window.terminal = 1 AND window.closure_json IS NOT NULL AND window.reference_capture_id IS NOT NULL
         ORDER BY window.deadline_utc_ticks, work.window_sha256
         LIMIT $limit;
         """;
