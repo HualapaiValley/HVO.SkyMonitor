@@ -313,29 +313,57 @@ jobs:
                   done
                   if [[ "$deploy_cli_skip_eligible" == true ]]; then
                     if ! python3 - "$base" <<'PY_DEPLOY_FLOORS'
-          import json, subprocess, sys
+          import json, math, subprocess, sys
           base = sys.argv[1]
           prefixes = ("HVO.SkyMonitor.Deployment.Cli/", "HVO.SkyMonitor.Deployment.Contracts/", "HVO.SkyMonitor.TerminalUi/")
+          pinned_retired = sorted((
+              "HVO.SkyMonitor.AgentCore/ArtifactUploadManifest.cs",
+              "HVO.SkyMonitor.Deployment.Cli/DistributionCatalogAcquirer.cs",
+              "HVO.SkyMonitor.Deployment.Distribution/DistributionVerifier.cs",
+          ))
+          local_only_allowlist = "tools/HVO.SkyMonitor.Deployment.ReleaseTool/Program.cs"
+          def reject_constant(_):
+              raise ValueError("non-finite JSON constant")
+          def is_ratio(value, *, positive=False):
+              if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                  return False
+              return (0 < value <= 1) if positive else (0 <= value <= 1)
           try:
-              baseline = json.loads(subprocess.check_output(["git", "show", f"{base}:scripts/coverage/baseline.json"]))
-              policy = json.loads(subprocess.check_output(["git", "show", f"{base}:scripts/coverage/policy.json"]))
+              baseline = json.loads(
+                  subprocess.check_output(["git", "show", f"{base}:scripts/coverage/baseline.json"]),
+                  parse_constant=reject_constant,
+              )
+              policy = json.loads(
+                  subprocess.check_output(["git", "show", f"{base}:scripts/coverage/policy.json"]),
+                  parse_constant=reject_constant,
+              )
           except Exception:
               sys.exit(2)
           if not isinstance(baseline, dict) or not isinstance(policy, dict):
+              sys.exit(2)
+          aggregate = baseline.get("aggregate")
+          if (not isinstance(aggregate, dict)
+                  or not is_ratio(aggregate.get("line"), positive=True)
+                  or not is_ratio(aggregate.get("branch"), positive=True)
+                  or not is_ratio(aggregate.get("tolerancePercentagePoints"))):
               sys.exit(2)
           files = baseline.get("files")
           retired_list = policy.get("retiredSourcePaths")
           if not isinstance(files, dict) or not files or not isinstance(retired_list, list):
               sys.exit(2)
-          if not all(isinstance(item, str) and item.strip() for item in retired_list):
+          if not all(isinstance(item, str) and item.strip() for item in retired_list) or sorted(retired_list) != pinned_retired:
               sys.exit(2)
           retired = set(retired_list)
+          if not all(item in files for item in retired):
+              sys.exit(2)
           for path, floor in files.items():
               if not isinstance(path, str) or not path.strip() or not isinstance(floor, dict):
                   sys.exit(2)
-              if "developmentV1LocalOnlyReason" in floor and floor["developmentV1LocalOnlyReason"] is not None:
+              if not is_ratio(floor.get("line")) or not is_ratio(floor.get("branch")):
+                  sys.exit(2)
+              if "developmentV1LocalOnlyReason" in floor:
                   local_only_reason = floor["developmentV1LocalOnlyReason"]
-                  if not isinstance(local_only_reason, str) or not local_only_reason.strip():
+                  if path != local_only_allowlist or not isinstance(local_only_reason, str) or not local_only_reason.strip():
                       sys.exit(2)
                   continue
               if not path.startswith(prefixes):

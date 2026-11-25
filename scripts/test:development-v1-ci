@@ -216,6 +216,7 @@ unit_command = " \\\n".join((
 ))
 unit_selection_error = "exact solution Unit command with the positive Unit category, Performance exclusion, and PR-only Deployment.Cli.Tests path-filter"
 directory_build_targets = (root / "Directory.Build.targets").read_text()
+coverage_policy_script = (root / "scripts/coverage:policy").read_text()
 skip_deployment_cli_target = (
     "<PropertyGroup Condition=\"'$(SkipDeploymentCliTests)' == 'true' And\n"
     "                            '$(MSBuildProjectName)' == 'HVO.SkyMonitor.Deployment.Cli.Tests'\">\n"
@@ -547,11 +548,37 @@ def violations(short, full, queue=None, extra=None):
                      'component classifier output missing or invalid',
                      'active canonical coverage floor or baseline requires Deployment.Cli.Tests',
                      'if not isinstance(baseline, dict) or not isinstance(policy, dict):',
+                     'aggregate = baseline.get("aggregate")',
                      'if not isinstance(files, dict) or not files or not isinstance(retired_list, list):',
+                     'sorted(retired_list) != pinned_retired',
+                     'if not all(item in files for item in retired):',
+                     'if not is_ratio(floor.get("line")) or not is_ratio(floor.get("branch")):',
+                     'if path != local_only_allowlist or not isinstance(local_only_reason, str) or not local_only_reason.strip():',
                      'run_deployment_cli=%s\\ndeployment_cli_reason=%s\\n',
                      'timeout --signal=TERM --kill-after=5s 30s bash "$classifier" --verify-docs-restore "$base"',
                      'printf \'restore_imports_verified=true\\n\' | cmp -s - "$proof"'):
         require(expected in fast, f"exact classification wiring: {expected}")
+    policy_retired_match = re.search(
+        r"\(\.retiredSourcePaths \| sort\) == \(\[(.*?)\] \| sort\)",
+        coverage_policy_script,
+        re.S,
+    )
+    workflow_retired_match = re.search(
+        r"pinned_retired = sorted\(\((.*?)\)\)",
+        fast,
+        re.S,
+    )
+    policy_retired = sorted(re.findall(r'"([^"]+)"', policy_retired_match.group(1))) if policy_retired_match else []
+    workflow_retired = sorted(re.findall(r'"([^"]+)"', workflow_retired_match.group(1))) if workflow_retired_match else []
+    policy_local_only = re.findall(r'\.key == "([^"]+)"', coverage_policy_script)
+    require(
+        bool(policy_retired) and workflow_retired == policy_retired,
+        "workload selector pinned_retired matches scripts/coverage:policy",
+    )
+    require(
+        len(policy_local_only) == 1 and f'local_only_allowlist = "{policy_local_only[0]}"' in fast,
+        "workload selector local_only_allowlist matches scripts/coverage:policy",
+    )
     checkout = step(build, "Checkout exact commit")
     require("fetch-depth: ${{ github.event_name == 'pull_request' && '0' || '1' }}" in checkout and
             "if: github.event_name != 'push' || env.MERGE_GROUP_RUN_ID == ''" in checkout and
@@ -694,6 +721,10 @@ mutations = (
     ("Deployment.Cli.Tests omits deployment flag check", short.replace(' || "$deployment_val" != deployment=false', ''), full),
     ("Deployment.Cli.Tests omits complete flag check", short.replace('"$complete_val" != complete=false || ', ''), full),
     ("Deployment.Cli.Tests omits active coverage floor fail-closed check", short.replace("active canonical coverage floor or baseline requires Deployment.Cli.Tests", "waived"), full),
+    ("Deployment.Cli.Tests omits aggregate coverage schema check", short.replace('aggregate = baseline.get("aggregate")', 'aggregate = {"line": 0.8, "branch": 0.6, "tolerancePercentagePoints": 0.01}'), full),
+    ("Deployment.Cli.Tests omits floor ratio validation", short.replace('if not is_ratio(floor.get("line")) or not is_ratio(floor.get("branch")):', 'if False:'), full),
+    ("Deployment.Cli.Tests omits local-only allowlist check", short.replace('if path != local_only_allowlist or not isinstance(local_only_reason, str) or not local_only_reason.strip():', 'if not isinstance(local_only_reason, str) or not local_only_reason.strip():'), full),
+    ("Deployment.Cli.Tests omits pinned retired policy check", short.replace(' or sorted(retired_list) != pinned_retired', ''), full),
     ("Deployment.Cli.Tests skips unconditionally", short.replace("test_project_args=(-p:SkipDeploymentCliTests=false)", "test_project_args=(-p:SkipDeploymentCliTests=true)"), full),
     ("Deployment.Cli.Tests leaves SkipDeploymentCliTests unset on full run", short.replace("test_project_args=(-p:SkipDeploymentCliTests=false)", "test_project_args=()"), full),
     ("merge_group accepts reuse ID in workload selection", short.replace('if [[ "$EVENT_NAME" == push && -n "${MERGE_GROUP_RUN_ID:-}" ]]; then', 'if [[ -n "${MERGE_GROUP_RUN_ID:-}" ]]; then'), full),
@@ -1609,9 +1640,9 @@ exit "$FAKE_EXIT"
         deploy_cases += 1
 
     # Active Deployment.Cli canonical coverage floor, missing baseline, or malformed baseline/policy fails closed to run_deployment_cli=true.
-    malformed_baseline_missing_files = json.dumps({"aggregate": {"line": 0.8, "branch": 0.6}})
-    malformed_baseline_list_files = json.dumps({"files": ["HVO.SkyMonitor.Astronomy/CameraGeometry.cs"]})
-    malformed_baseline_non_object_entry = json.dumps({"files": {"HVO.SkyMonitor.Deployment.Cli/Program.cs": "invalid"}})
+    malformed_baseline_missing_files = json.dumps({"aggregate": {"line": 0.8, "branch": 0.6, "tolerancePercentagePoints": 0.01}})
+    malformed_baseline_list_files = json.dumps({"aggregate": {"line": 0.8, "branch": 0.6, "tolerancePercentagePoints": 0.01}, "files": ["HVO.SkyMonitor.Astronomy/CameraGeometry.cs"]})
+    malformed_baseline_non_object_entry = json.dumps({"aggregate": {"line": 0.8, "branch": 0.6, "tolerancePercentagePoints": 0.01}, "files": {"HVO.SkyMonitor.Deployment.Cli/Program.cs": "invalid"}})
     malformed_policy_dict_retired = json.dumps({"retiredSourcePaths": {"HVO.SkyMonitor.Deployment.Cli/Missing.cs": True}})
     baseline_with_missing_deploy_floor = json.loads(real_coverage_baseline)
     baseline_with_missing_deploy_floor["files"]["HVO.SkyMonitor.Deployment.Cli/Missing.cs"] = {"line": 0.80, "branch": 0.70}
@@ -1626,6 +1657,38 @@ exit "$FAKE_EXIT"
     active_deploy_baseline = json.loads(real_coverage_baseline)
     active_deploy_baseline["files"]["HVO.SkyMonitor.Deployment.Cli/Program.cs"] = {"line": 0.80, "branch": 0.70}
 
+    # Sol M1: single-fault malformed coverage baseline/policy inputs that scripts/coverage:policy rejects
+    # must ALSO fail closed in the workload selector rather than selecting run_deployment_cli=false.
+    baseline_missing_aggregate = json.loads(real_coverage_baseline)
+    del baseline_missing_aggregate["aggregate"]
+    baseline_zero_aggregate_line = json.loads(real_coverage_baseline)
+    baseline_zero_aggregate_line["aggregate"]["line"] = 0
+    baseline_out_of_range_aggregate_tol = json.loads(real_coverage_baseline)
+    baseline_out_of_range_aggregate_tol["aggregate"]["tolerancePercentagePoints"] = 1.5
+    baseline_missing_floor_ratio = json.loads(real_coverage_baseline)
+    del baseline_missing_floor_ratio["files"]["HVO.SkyMonitor.Astronomy/CameraGeometry.cs"]["branch"]
+    baseline_string_floor_ratio = json.loads(real_coverage_baseline)
+    baseline_string_floor_ratio["files"]["HVO.SkyMonitor.Astronomy/CameraGeometry.cs"]["line"] = "0.95"
+    baseline_bool_floor_ratio = json.loads(real_coverage_baseline)
+    baseline_bool_floor_ratio["files"]["HVO.SkyMonitor.Astronomy/CameraGeometry.cs"]["branch"] = True
+    baseline_gt1_floor_ratio = json.loads(real_coverage_baseline)
+    baseline_gt1_floor_ratio["files"]["HVO.SkyMonitor.Astronomy/CameraGeometry.cs"]["line"] = 1.05
+    baseline_negative_floor_ratio = json.loads(real_coverage_baseline)
+    baseline_negative_floor_ratio["files"]["HVO.SkyMonitor.Astronomy/CameraGeometry.cs"]["branch"] = -0.01
+    baseline_nan_floor_ratio = real_coverage_baseline.replace("0.843690", "NaN", 1)
+    baseline_unauthorized_local_only_deploy = json.loads(real_coverage_baseline)
+    baseline_unauthorized_local_only_deploy["files"]["HVO.SkyMonitor.Deployment.Cli/Program.cs"] = {
+        "line": 0.80, "branch": 0.70, "developmentV1LocalOnlyReason": "unauthorized local-only exemption on live Deployment.Cli floor"
+    }
+    baseline_null_local_only_allowlisted = json.loads(real_coverage_baseline)
+    baseline_null_local_only_allowlisted["files"]["tools/HVO.SkyMonitor.Deployment.ReleaseTool/Program.cs"]["developmentV1LocalOnlyReason"] = None
+    baseline_blank_local_only_allowlisted = json.loads(real_coverage_baseline)
+    baseline_blank_local_only_allowlisted["files"]["tools/HVO.SkyMonitor.Deployment.ReleaseTool/Program.cs"]["developmentV1LocalOnlyReason"] = "   "
+    policy_unauthorized_retired = json.loads(real_coverage_policy)
+    policy_unauthorized_retired["retiredSourcePaths"].append("HVO.SkyMonitor.Deployment.Cli/Missing.cs")
+    baseline_missing_pinned_retired = json.loads(real_coverage_baseline)
+    del baseline_missing_pinned_retired["files"]["HVO.SkyMonitor.AgentCore/ArtifactUploadManifest.cs"]
+
     for floor_label, baseline_override, policy_override in (
         ("active Deployment.Cli floor on base prevents skip", json.dumps(active_deploy_baseline), None),
         ("missing coverage baseline on base fails closed", False, None),
@@ -1635,6 +1698,20 @@ exit "$FAKE_EXIT"
         ("policy retiredSourcePaths object fails closed", json.dumps(baseline_with_missing_deploy_floor), malformed_policy_dict_retired),
         ("blank developmentV1LocalOnlyReason fails closed", json.dumps(baseline_with_blank_local_only), None),
         ("non-string developmentV1LocalOnlyReason fails closed", json.dumps(baseline_with_non_string_local_only), None),
+        ("missing aggregate fails closed", json.dumps(baseline_missing_aggregate), None),
+        ("non-positive aggregate line ratio fails closed", json.dumps(baseline_zero_aggregate_line), None),
+        ("out-of-range aggregate tolerancePercentagePoints fails closed", json.dumps(baseline_out_of_range_aggregate_tol), None),
+        ("missing floor ratio fails closed", json.dumps(baseline_missing_floor_ratio), None),
+        ("string non-numeric floor ratio fails closed", json.dumps(baseline_string_floor_ratio), None),
+        ("boolean non-numeric floor ratio fails closed", json.dumps(baseline_bool_floor_ratio), None),
+        ("out-of-range floor ratio above 1 fails closed", json.dumps(baseline_gt1_floor_ratio), None),
+        ("out-of-range negative floor ratio fails closed", json.dumps(baseline_negative_floor_ratio), None),
+        ("non-finite NaN ratio fails closed", baseline_nan_floor_ratio, None),
+        ("unauthorized developmentV1LocalOnlyReason on live Deployment.Cli floor fails closed", json.dumps(baseline_unauthorized_local_only_deploy), None),
+        ("null developmentV1LocalOnlyReason on allowlisted ReleaseTool fails closed", json.dumps(baseline_null_local_only_allowlisted), None),
+        ("blank developmentV1LocalOnlyReason on allowlisted ReleaseTool fails closed", json.dumps(baseline_blank_local_only_allowlisted), None),
+        ("unauthorized retiredSourcePaths addition in policy fails closed", json.dumps(baseline_with_missing_deploy_floor), json.dumps(policy_unauthorized_retired)),
+        ("missing pinned retired floor in baseline fails closed", json.dumps(baseline_missing_pinned_retired), None),
     ):
         git("checkout", "-q", "--detach", filter_base)
         if baseline_override is False:
