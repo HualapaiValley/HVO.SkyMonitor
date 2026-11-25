@@ -318,8 +318,21 @@ public sealed class NamedOrbitalPassCaptureTests
     [DataRow(false, false, false, "generic-package-hash", 10_000L, true)]
     [DataRow(false, false, false, "missing-shutter", 10_000L, true)]
     [DataRow(false, false, false, "contradictory-shutter", 10_000L, true)]
-    public async Task DelayedShutterCommitsAndPredictsWithItsObservedInterval(bool clouds, bool wrongExpectedRecord,
+    public Task DelayedShutterCommitsAndPredictsWithItsObservedInterval(bool clouds, bool wrongExpectedRecord,
         bool crossesSelectionBoundary, string? metadataCase, long shutterDelayTicks, bool bayer)
+        => CaptureAndVerifyPredictionAsync(clouds, wrongExpectedRecord, crossesSelectionBoundary, metadataCase, shutterDelayTicks, bayer);
+
+    [TestMethod]
+    [DataRow(false, "PinnedSnapshotUnavailable")]
+    [DataRow(true, "PinnedSnapshotUnavailable")]
+    [DataRow(false, "PinnedTimeInputsUnavailable")]
+    [DataRow(true, "PinnedTimeInputsUnavailable")]
+    public Task UnavailableNamedPassInputsRetainStatusWithoutTracks(bool bayer, string reason)
+        => CaptureAndVerifyPredictionAsync(clouds: false, wrongExpectedRecord: false, crossesSelectionBoundary: false,
+            metadataCase: null, shutterDelayTicks: 5_000L, bayer: bayer, unavailablePinReason: reason);
+
+    private async Task CaptureAndVerifyPredictionAsync(bool clouds, bool wrongExpectedRecord, bool crossesSelectionBoundary,
+        string? metadataCase, long shutterDelayTicks, bool bayer, string? unavailablePinReason = null)
     {
         var root = Path.Combine(Path.GetTempPath(), "hvo-named-shutter-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -370,13 +383,20 @@ public sealed class NamedOrbitalPassCaptureTests
             var invalidTiming = metadataCase is "missing-shutter" or "contradictory-shutter";
             var retainedCoarsePlan = metadataCase == "retained-coarse-plan";
             var malformedLineage = metadataCase is not null && !ordinaryTransient && !invalidTiming && !retainedCoarsePlan;
+            var missingSnapshot = unavailablePinReason == "PinnedSnapshotUnavailable";
             var bright = input.Tracks[(3, CatalogNumbers[0])];
             CaptureLoopSubmission submission;
             var provider = CreateProvider(ingressRoot, clock, new InMemoryCelestialCatalog([]), input);
             await using (provider.ConfigureAwait(false))
             {
                 await InitializeCaptureServicesAsync(provider, config, ct).ConfigureAwait(false);
-                await InstallSnapshotAsync(provider, input.Snapshot, ct).ConfigureAwait(false);
+                var installed = missingSnapshot
+                    ? OrbitalSnapshot.Create(input.Snapshot.Records, [input.Snapshot.Manifest.Sources.Single() with
+                    {
+                        TermsReference = "Active fixture snapshot with a different identity from the package pin."
+                    }], input.Snapshot.Manifest.Coverage)
+                    : input.Snapshot;
+                await InstallSnapshotAsync(provider, installed, ct).ConfigureAwait(false);
                 var module = provider.GetRequiredService<ICameraModuleFactory>().Create(config.ModuleType);
                 await using var moduleLifetime = module.ConfigureAwait(false);
                 await module.InitializeAsync(config, ct).ConfigureAwait(false);
@@ -478,8 +498,18 @@ public sealed class NamedOrbitalPassCaptureTests
             }
 
             // Resolve the admitted scene from the durable raw sidecar using newly opened services.
+            FilePin? leapOverride = null;
+            if (unavailablePinReason == "PinnedTimeInputsUnavailable")
+            {
+                // Keep the same usable leap rows but resolve a different exact file from the package pin.
+                byte[] leaps = [.. input.Time.ExportLeapSeconds(), (byte)'\n'];
+                var path = Path.Combine(root, "actual-leaps");
+                await File.WriteAllBytesAsync(path, leaps, ct).ConfigureAwait(false);
+                leapOverride = new(path, Hash(leaps));
+                Assert.AreNotEqual(input.Time.LeapSecondsSha256, leapOverride.Sha256);
+            }
             var reopened = CreateProvider(ingressRoot, new ExposureTestTimeProvider(clock.GetUtcNow()),
-                new InMemoryCelestialCatalog([]), input);
+                new InMemoryCelestialCatalog([]), input, leapOverride);
             await using var reopenedLifetime = reopened.ConfigureAwait(false);
             await InitializeCaptureServicesAsync(reopened, config, ct).ConfigureAwait(false);
             var lane = reopened.GetRequiredService<CaptureLanePolicy>().Definitions.Single(static lane => lane.Name == "standard");
@@ -491,6 +521,32 @@ public sealed class NamedOrbitalPassCaptureTests
             var descriptorStart = DateTimeOffset.FromUnixTimeMilliseconds(shutter.ToUnixTimeMilliseconds());
             Assert.AreEqual(descriptorStart, manifest.Descriptor.Timing.ExposureStartedUtc);
             Assert.AreEqual(requested, manifest.Descriptor.Timing.RequestedStartUtc);
+            if (unavailablePinReason is not null)
+            {
+                Assert.IsTrue(VirtualSkyNamedPass.TryReadPredictionLineage(config, manifest.Scene, out var retainedLineage));
+                Assert.IsNotNull(retainedLineage);
+                Assert.AreEqual(input.Snapshot.Manifest.ManifestSha256, retainedLineage.Inputs.SnapshotManifestSha256);
+                Assert.AreEqual(input.Time.LeapSecondsSha256, retainedLineage.Inputs.LeapSecondsSha256);
+                var snapshots = reopened.GetRequiredService<IOrbitalSnapshotReader>();
+                var active = await snapshots.ReadCurrentAsync(ct).ConfigureAwait(false);
+                Assert.IsNotNull(active.Snapshot);
+                var exact = await snapshots.ReadExactAsync(retainedLineage.Inputs.SnapshotManifestSha256, ct).ConfigureAwait(false);
+                if (missingSnapshot)
+                {
+                    Assert.AreNotEqual(retainedLineage.Inputs.SnapshotManifestSha256, active.Snapshot.Manifest.ManifestSha256);
+                    Assert.AreEqual(OrbitalSnapshotUnavailableReason.UnknownIdentity, exact.UnavailableReason);
+                }
+                else
+                {
+                    Assert.IsNotNull(exact.Snapshot);
+                    var time = await reopened.GetRequiredService<ICameraAgentOrbitalTimeSource>()
+                        .ResolveAsync(new OrbitalUtcInterval(shutter, shutter + Exposure), ct).ConfigureAwait(false);
+                    Assert.AreEqual(CameraAgentOrbitalTimeDataSource.Override, time.Source);
+                    Assert.IsNotNull(time.Data);
+                    Assert.AreEqual(input.Time.EarthOrientationSha256, time.Data.EarthOrientationSha256);
+                    Assert.AreEqual(leapOverride!.Sha256, time.Data.LeapSecondsSha256);
+                }
+            }
             if (invalidTiming)
             {
                 Assert.IsNull(manifest.Scene!.VirtualExposure);
@@ -518,11 +574,11 @@ public sealed class NamedOrbitalPassCaptureTests
             TestContext.WriteLine($"observed={shutter:O} descriptor={descriptorStart:O} mapping={manifest.Scene?.VirtualExposure?.TimeMapping} " +
                 $"integration={manifest.Scene?.TransientScenario?.IntegrationStartUtc:O} prediction={prediction.Exposure.StartUtc:O} " +
                 $"reason={prediction.Reason} renderable={prediction.Renderable} tracks={prediction.TrackCount}");
-            var expectedReason = invalidTiming ? "NamedPassPredictionTimingUnavailable" :
+            var expectedReason = unavailablePinReason ?? (invalidTiming ? "NamedPassPredictionTimingUnavailable" :
                 malformedLineage ? "NamedPassPredictionLineageUnavailable" :
                 retainedCoarsePlan ? "NamedPassPredictionTimingMismatch" :
                 crossesSelectionBoundary ? "PinnedRecordSelectionMismatch" :
-                wrongExpectedRecord ? "NamedPassPredictionInputsMismatch" : "None";
+                wrongExpectedRecord ? "NamedPassPredictionInputsMismatch" : "None");
             Assert.AreEqual(expectedReason, prediction.Reason);
             var expectedStart = invalidTiming ? descriptorStart : shutter;
             Assert.AreEqual(new OrbitalUtcInterval(expectedStart, expectedStart + Exposure), prediction.Exposure);
@@ -545,13 +601,10 @@ public sealed class NamedOrbitalPassCaptureTests
                     Path.Combine(ingressRoot, orbital.PayloadRelativePath), ct).ConfigureAwait(false), restored);
                 Assert.HasCount(2, tracks.Tracks);
                 Assert.IsTrue(tracks.Tracks.All(track => track.RequestedInterval == prediction.Exposure));
-                if (shutterDelayTicks == 5_000)
-                {
-                    await AssertUnavailablePinsAsync(reopened, config, submission, lease.Context.RawCapture, shutter, ct).ConfigureAwait(false);
-                }
             }
             else
             {
+                Assert.AreEqual("Unavailable", prediction.Status);
                 Assert.IsNull(retained.Plan);
                 Assert.IsNull(orbital);
             }
@@ -559,56 +612,6 @@ public sealed class NamedOrbitalPassCaptureTests
         finally
         {
             Directory.Delete(root, recursive: true);
-        }
-    }
-
-    private static async Task AssertUnavailablePinsAsync(ServiceProvider provider, CameraModuleConfig config,
-        CaptureLoopSubmission submission, RawCaptureReceipt raw, DateTimeOffset shutter, CancellationToken cancellationToken)
-    {
-        var scene = raw.Manifest.Scene!;
-        var scenario = scene.TransientScenario!;
-        var artifact = new FrameArtifact(raw.Manifest.Descriptor.Artifact.ArtifactId, FrameArtifactRole.Raw, submission.Result.Frame!);
-        submission = submission with { Result = submission.Result with { Artifacts = new FrameArtifactSet(artifact) } };
-        var options = new CaptureSatelliteTracksOptions { CatalogNumbers = CatalogNumbers, OverrideTimeDataAvailableUtc = First.AddDays(-1) };
-        var differentHash = new string('A', 64);
-        foreach (var (pin, reason) in new[]
-        {
-            ("snapshotManifestSha256", "PinnedSnapshotUnavailable"),
-            ("earthOrientationSha256", "PinnedTimeInputsUnavailable")
-        })
-        {
-            // Vary one pin on the retained named lineage. The real local reader and time resolver keep their original inputs.
-            var parameters = JsonNode.Parse(scenario.Parameters.GetRawText())!;
-            parameters["namedPassPredictionV1"]!["inputs"]![pin] = differentHash;
-            var canonical = CaptureContractJson.Canonicalize(CaptureContractJson.SerializeToElement(parameters));
-            var changedScenario = scenario with
-            {
-                Parameters = canonical,
-                ParametersSha256 = CaptureContractJson.ComputeCanonicalJsonSha256(canonical)
-            };
-            var manifest = raw.Manifest with { Scene = scene with { TransientScenario = changedScenario } };
-            Assert.IsTrue(manifest.Validate().IsValid);
-            var receipt = raw with { Manifest = manifest, CommittedManifestSha256 = CaptureContractJson.ComputeManifestSha256(manifest) };
-            var context = new CaptureProcessingContext(config, submission, receipt);
-            context.BeginNode(pin, [], ["$raw"]);
-            var step = new CaptureSatelliteTracksProcessingStep(new(pin, CaptureSatelliteTracksProcessingStep.Alias, 0), options,
-                provider.GetRequiredService<CaptureSatelliteWorkStore>(), provider.GetRequiredService<IOrbitalSnapshotReader>(),
-                provider.GetRequiredService<ICameraAgentOrbitalTimeSource>());
-
-            await step.ProcessAsync(context, cancellationToken).ConfigureAwait(false);
-
-            var products = context.ProcessingProducts;
-            Assert.HasCount(2, products, "Only retained inputs and status should be emitted.");
-            var status = CaptureSatelliteProducts.ParseStatus(products.Single(
-                static product => product.SchemaVersion == CaptureSatelliteProducts.StatusSchema).Payload.Span);
-            var retained = CaptureSatelliteProducts.ParseInput(products.Single(
-                static product => product.SchemaVersion == CaptureSatelliteProducts.InputSchema).Payload.Span);
-            Assert.AreEqual(reason, status.Reason);
-            Assert.AreEqual("Unavailable", status.Status);
-            Assert.AreEqual(new OrbitalUtcInterval(shutter, shutter + Exposure), status.Exposure);
-            Assert.IsFalse(status.Renderable);
-            Assert.AreEqual(0, status.TrackCount);
-            Assert.IsNull(retained.Plan);
         }
     }
 
@@ -841,7 +844,8 @@ public sealed class NamedOrbitalPassCaptureTests
         => new(type, id, DependsOn: dependencies, Options: options is null ? null : JsonSerializer.SerializeToElement(options, Json),
             Publication: new(CaptureProcessingPersistenceMode.DurableLocal));
 
-    private static ServiceProvider CreateProvider(string root, TimeProvider clock, ICelestialCatalog catalog, PreparedInput input)
+    private static ServiceProvider CreateProvider(string root, TimeProvider clock, ICelestialCatalog catalog, PreparedInput input,
+        FilePin? leapOverride = null)
     {
         var services = new ServiceCollection();
         services.AddLogging(logging => logging.AddConsole().SetMinimumLevel(LogLevel.Warning));
@@ -863,8 +867,8 @@ public sealed class NamedOrbitalPassCaptureTests
             ["CameraAgent:SatellitePlanning:Enabled"] = "true",
             ["CameraAgent:SatellitePlanning:EarthOrientationPath"] = Path.Combine(packageRoot, "earth-orientation"),
             ["CameraAgent:SatellitePlanning:EarthOrientationSha256"] = input.Time.EarthOrientationSha256,
-            ["CameraAgent:SatellitePlanning:LeapSecondsPath"] = Path.Combine(packageRoot, "leaps"),
-            ["CameraAgent:SatellitePlanning:LeapSecondsSha256"] = input.Time.LeapSecondsSha256
+            ["CameraAgent:SatellitePlanning:LeapSecondsPath"] = leapOverride?.Path ?? Path.Combine(packageRoot, "leaps"),
+            ["CameraAgent:SatellitePlanning:LeapSecondsSha256"] = leapOverride?.Sha256 ?? input.Time.LeapSecondsSha256
         }).Build();
         services.AddCameraAgentInfrastructure(configuration);
         services.AddCameraAgentSatellitePlanning(configuration);

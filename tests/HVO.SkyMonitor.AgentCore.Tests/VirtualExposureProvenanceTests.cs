@@ -144,34 +144,51 @@ public sealed class VirtualExposureProvenanceTests
         Assert.IsTrue((manifest with { Scene = scene with { VirtualExposure = null } }).Validate().IsValid,
             "Existing scene provenance also remains readable without a virtual clock.");
         Assert.IsTrue(original.Validate().IsValid, "Existing manifests have no virtual interval requirement.");
+    }
 
+    [TestMethod]
+    [DataRow(VirtualExposureTimeMapping.ShutterUtc, "schema")]
+    [DataRow(VirtualExposureTimeMapping.ShutterUtc, "start")]
+    [DataRow(VirtualExposureTimeMapping.ShutterUtc, "end")]
+    [DataRow(VirtualExposureTimeMapping.FixedCelestialAndShutterUtc, "schema")]
+    [DataRow(VirtualExposureTimeMapping.FixedCelestialAndShutterUtc, "start")]
+    [DataRow(VirtualExposureTimeMapping.FixedCelestialAndShutterUtc, "end")]
+    public void ShutterMappedManifestRejectsWrongSchemaOrExposureEndpoint(VirtualExposureTimeMapping mapping, string mismatch)
+    {
+        var original = ArtifactManifestFixture.CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]);
         var timing = original.Descriptor.Timing;
-        var invalidClock = CaptureContractValidationResult.Failure(CaptureContractReasonCodes.InvalidIdentity, "scene.virtualExposure");
-        foreach (var mapping in new[] { VirtualExposureTimeMapping.ShutterUtc, VirtualExposureTimeMapping.FixedCelestialAndShutterUtc })
-        {
-            var celestialStart = mapping == VirtualExposureTimeMapping.ShutterUtc ? timing.ExposureStartedUtc : request.AddDays(-1);
-            var shutter = VirtualExposureProvenance.Create(request, timing.ExposureStartedUtc, celestialStart,
-                original.Descriptor.Controls.EffectiveExposure, mapping);
-            var shutterScene = scene with { SceneUtc = shutter.CelestialMidpointUtc, VirtualExposure = shutter };
-            var shutterManifest = original with { Scene = shutterScene };
-            var roundTrip = CaptureContractJson.ParseManifest(CaptureContractJson.Serialize(shutterManifest));
-            Assert.IsTrue(roundTrip.IsValid);
-            Assert.AreEqual(shutter, roundTrip.Document!.Manifest.Scene!.VirtualExposure);
+        var celestialStart = mapping == VirtualExposureTimeMapping.ShutterUtc
+            ? timing.ExposureStartedUtc : timing.RequestedStartUtc.AddDays(-1);
+        var shutter = VirtualExposureProvenance.Create(timing.RequestedStartUtc, timing.ExposureStartedUtc, celestialStart,
+            original.Descriptor.Controls.EffectiveExposure, mapping);
+        var scene = new SceneProvenance("scene", "rig-v1", "HYG", "4.2", new string('A', 64),
+            "EquidistantFisheye", "projection-v1", "astronomy-v1", "sensor-v1",
+            SceneUtc: shutter.CelestialMidpointUtc, VirtualExposure: shutter);
+        var manifest = original with { Scene = scene };
+        var roundTrip = CaptureContractJson.ParseManifest(CaptureContractJson.Serialize(manifest));
+        Assert.IsTrue(roundTrip.IsValid);
+        Assert.AreEqual(shutter, roundTrip.Document!.Manifest.Scene!.VirtualExposure);
 
+        if (mismatch == "schema")
+        {
             var oldSchema = shutter with { SchemaVersion = VirtualExposureProvenance.CurrentSchemaVersion };
-            var wrongSchema = shutterManifest with { Scene = shutterScene with { VirtualExposure = oldSchema } };
-            Assert.AreEqual(invalidClock, CaptureContractJson.ParseManifest(CaptureContractJson.Serialize(wrongSchema)).Validation);
-            foreach (var alteredTiming in new[]
-            {
-                timing with { ExposureStartedUtc = timing.ExposureStartedUtc.AddMilliseconds(1) },
-                timing with { ExposureEndedUtc = timing.ExposureEndedUtc.AddMilliseconds(1) }
-            })
-            {
-                var alteredDescriptor = original.Descriptor with { Timing = alteredTiming };
-                Assert.IsTrue(alteredDescriptor.Validate().IsValid, "The observed descriptor is valid on its own.");
-                var mismatch = shutterManifest with { Descriptor = alteredDescriptor };
-                Assert.AreEqual(invalidClock, CaptureContractJson.ParseManifest(CaptureContractJson.Serialize(mismatch)).Validation);
-            }
+            manifest = manifest with { Scene = scene with { VirtualExposure = oldSchema } };
         }
+        else
+        {
+            var alteredTiming = mismatch switch
+            {
+                "start" => timing with { ExposureStartedUtc = timing.ExposureStartedUtc.AddMilliseconds(1) },
+                "end" => timing with { ExposureEndedUtc = timing.ExposureEndedUtc.AddMilliseconds(1) },
+                _ => throw new ArgumentOutOfRangeException(nameof(mismatch))
+            };
+            var descriptor = original.Descriptor with { Timing = alteredTiming };
+            Assert.IsTrue(descriptor.Validate().IsValid, "The observed descriptor is valid on its own.");
+            manifest = manifest with { Descriptor = descriptor };
+        }
+
+        var expected = CaptureContractValidationResult.Failure(CaptureContractReasonCodes.InvalidIdentity, "scene.virtualExposure");
+        Assert.AreEqual(expected, manifest.Validate());
+        Assert.AreEqual(expected, CaptureContractJson.ParseManifest(CaptureContractJson.Serialize(manifest)).Validation);
     }
 }

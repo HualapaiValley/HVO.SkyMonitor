@@ -81,6 +81,45 @@ The projection uses readout-view coordinates and the identity image transform,
 so crop/bin/flip are not applied twice. Timing is reported command/status
 evidence; clock and physical uncertainty remain unknown when not supplied.
 
+### Named VirtualSky pass inputs
+
+Build a [named VirtualSky pass package](../validation/virtualsky-named-pass-1927.md)
+from the exact snapshot this CameraAgent retrieved through its configured
+CelesTrak refresh and still retains. The package's snapshot and time files feed
+the virtual renderer. After admission, `CaptureSatelliteTracks` resolves the
+snapshot from CameraAgent's orbital store and the time pair from its local time
+source. Any explicit graph `pinnedInputs` must agree with the package.
+
+Open the capture's satellite Diagnostics status in Current Sky or the archive
+view and read the retained reason. An unavailable prediction has zero renderable
+tracks. A no-candidate result from the independent trail detector describes the
+image assessment.
+
+- **`PinnedSnapshotUnavailable`** means the exact pinned manifest could not be
+  read from the local orbital store. Compare the package's manifest identity
+  with `currentManifestSha256` in [orbital status](orbital-elements-refresh.md#status-refresh-and-resume).
+  That field identifies the active snapshot. An older manifest is usable
+  while retained. Follow the reported `recoveryAction` for store or provider
+  problems. If the pin is missing or retired, prepare a new package from a
+  snapshot retained on this instance. If you need a new retrieval, use
+  **Software & Catalog → Refresh now** after `nextPermittedAttemptUtc` and
+  after resolving any provider halt. Verify the activated identity before
+  rebuilding the package.
+- **`PinnedTimeInputsUnavailable`** means CameraAgent resolved time data but the
+  Earth-orientation or leap-second hash differs from the pin. In
+  **Observatory & location → Orbital refresh & satellite setup**, expand
+  **Read-only time-data configuration and resolved status**. Compare both hashes
+  to the package and check coverage for the observed shutter interval. Restore
+  the exact approved pair with the
+  [four time override settings](../astronomy/satellite-planning-v1.md#local-time-inputs)
+  and set `overrideTimeDataAvailableUtc` to when those exact bytes were
+  available, at or before raw admission. You can also prepare a new package
+  from the verified pair that covers the planned exposure.
+
+When you rebuild the package, update `namedOrbitalPass.packageSha256` and any
+explicit graph pins together. These settings apply to future captures. Archived
+replay preserves the original decision and its inputs.
+
 ## Products and presentation
 
 The two enabled nodes publish ordinary typed Metadata V3 artifacts:

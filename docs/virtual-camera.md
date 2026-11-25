@@ -310,19 +310,27 @@ manifest contains rendering inputs and capture offsets but no expected label,
 raw checksum, geometry, candidate, assessment, or event identity. Matrix tests
 complete detector execution from that manifest before loading the oracle.
 
-The optional [named orbital pass](validation/virtualsky-named-pass-1927.md)
-retains `sourcePackageSha256` and `namedPassPredictionV1` in the canonical
-scenario parameters. The lineage binds the selection-policy SHA-256, the
-snapshot manifest and Earth-orientation and leap-second hashes, and the
-expected record hash for each NORAD catalog number. Prediction uses these pins
-with the retained shutter interval and rig. Private scoring can use the
-package's expected paths and optical controls after measurement.
+The optional [`namedOrbitalPass`](validation/virtualsky-named-pass-1927.md)
+adds prediction lineage to `TransientScenarioProvenance.Parameters`.
 
-The independent trail detector uses raw pixels and ordinary capture evidence.
-Its masks use the retained readout, rig and observing location, effective
-exposure, and validated time-only `Scene.VirtualExposure` for integrated
-catalog-star geometry. Named-pass identities and expected tracks are reserved
-for prediction and private scoring.
+- `sourcePackageSha256` identifies the exact rendering package.
+- `namedPassPredictionV1.selectionPolicySha256` identifies the record-selection
+  policy.
+- `namedPassPredictionV1.inputs` retains `snapshotManifestSha256`,
+  `earthOrientationSha256`, `leapSecondsSha256`, and `expectedRecords`, which
+  maps each NORAD catalog number to the expected record SHA-256.
+
+Prediction uses those pins with the observed shutter interval and capture-time
+rig, readout, and location. After measurement, private scoring can use the
+package identity to join measured candidates with the expected exposure paths
+and optical controls, including per-track transmission.
+
+The independent trail detector consumes raw pixels and their delivered readout,
+the capture-time rig and observing site, and the effective exposure. With
+exposure-integrated star masks enabled, it uses the validated celestial start
+from the time-only `Scene.VirtualExposure` and the effective exposure to
+integrate catalog-star geometry. It receives no named-pass identity, prediction
+lineage, or expected tracks.
 
 For example, one generic sensor-stage fixture can be configured as:
 
