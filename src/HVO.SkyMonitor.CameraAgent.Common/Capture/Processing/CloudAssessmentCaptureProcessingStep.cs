@@ -240,7 +240,7 @@ internal sealed class CameraAgentCloudEnvironment(
         return CreateInput(environment);
     }
 
-    private static ProcessingAuxiliaryInput CreateInput(CloudAssessmentEnvironmentV1 environment)
+    internal static ProcessingAuxiliaryInput CreateInput(CloudAssessmentEnvironmentV1 environment)
     {
         var element = CaptureContractJson.SerializeToElement(environment);
         var payload = JsonSerializer.SerializeToUtf8Bytes(CaptureContractJson.Canonicalize(element));

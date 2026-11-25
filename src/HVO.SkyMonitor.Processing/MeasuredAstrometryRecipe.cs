@@ -6,6 +6,15 @@ using HVO.SkyMonitor.Imaging;
 
 namespace HVO.SkyMonitor.Processing;
 
+/// <summary>Assessment codes retained when the measured recipe cannot use a solver result.</summary>
+public static class MeasuredAstrometryAssessmentReasonCodes
+{
+    public const string ExecutionBudget = "execution-budget";
+    public const string MeasurementIncomplete = MeasuredStellarAssociationReasonCodes.MeasurementIncomplete;
+    public const string MeasuredEntryBound = "measured-entry-bound";
+    public const string CatalogCorrespondenceMismatch = "measured-catalog-correspondence-mismatch";
+}
+
 /// <summary>
 /// Explicit post-admission analyzer. Registration makes the recipe available, never active in a host/live graph.
 /// It consumes retained measured evidence without decoding or measuring pixels and never writes a calibration.
@@ -158,11 +167,14 @@ internal sealed class MeasuredAstrometryRecipe : IProcessingRecipe
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (remaining <= 0)
-                assessment = FailureAssessment(context, calibration, catalog, solver, AstrometricAssessmentStatus.BudgetExceeded, "execution-budget");
+                assessment = FailureAssessment(context, calibration, catalog, solver, AstrometricAssessmentStatus.BudgetExceeded,
+                    MeasuredAstrometryAssessmentReasonCodes.ExecutionBudget);
             else if (measured.Measurement.Status != StellarMeasurementStatus.Completed)
-                assessment = FailureAssessment(context, calibration, catalog, solver, AstrometricAssessmentStatus.Unavailable, "measurement-incomplete");
+                assessment = FailureAssessment(context, calibration, catalog, solver, AstrometricAssessmentStatus.Unavailable,
+                    MeasuredAstrometryAssessmentReasonCodes.MeasurementIncomplete);
             else if (detections.Length > AstrometricCatalogData.MaximumEntries)
-                assessment = FailureAssessment(context, calibration, catalog, solver, AstrometricAssessmentStatus.BudgetExceeded, "measured-entry-bound");
+                assessment = FailureAssessment(context, calibration, catalog, solver, AstrometricAssessmentStatus.BudgetExceeded,
+                    MeasuredAstrometryAssessmentReasonCodes.MeasuredEntryBound);
             else
             {
                 var result = context.PreviousAccepted is { } prior
@@ -171,7 +183,8 @@ internal sealed class MeasuredAstrometryRecipe : IProcessingRecipe
                 assessment = result.Assessment;
                 if (assessment.HasMeasuredMapping && result.Associations.Any(a =>
                     !qualified.Any(m => m.DetectionIndex == a.DetectionIndex && m.CatalogId == a.CatalogId)))
-                    assessment = FailureAssessment(context, calibration, catalog, solver, AstrometricAssessmentStatus.Rejected, "measured-catalog-correspondence-mismatch");
+                    assessment = FailureAssessment(context, calibration, catalog, solver, AstrometricAssessmentStatus.Rejected,
+                        MeasuredAstrometryAssessmentReasonCodes.CatalogCorrespondenceMismatch);
                 if (assessment.HasMeasuredMapping)
                 {
                     var diagnostics = AstrometricResidualAnalyzer.Analyze(calibration, catalog, solver, result, detections,
@@ -192,15 +205,16 @@ internal sealed class MeasuredAstrometryRecipe : IProcessingRecipe
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            assessment = FailureAssessment(context, calibration, catalog, solver, AstrometricAssessmentStatus.BudgetExceeded, "execution-budget");
-            uncertainty = null; uncertaintyReason = "execution-budget";
+            assessment = FailureAssessment(context, calibration, catalog, solver, AstrometricAssessmentStatus.BudgetExceeded,
+                MeasuredAstrometryAssessmentReasonCodes.ExecutionBudget);
+            uncertainty = null; uncertaintyReason = MeasuredAstrometryAssessmentReasonCodes.ExecutionBudget;
         }
         cancellationToken.ThrowIfCancellationRequested();
         residuals = new(Math.Min(detections.Length, AstrometricCatalogData.MaximumEntries), [], [],
             detections.Take(AstrometricCatalogData.MaximumEntries).Select(d => d.Index).ToArray(), null, null, null, null, assessment.ReasonCode, []);
         // Exceeding the input bound never retains a truncated set as a complete measurement.
         if (detections.Length > AstrometricCatalogData.MaximumEntries)
-            residuals = new(0, [], [], [], null, null, null, null, "measured-entry-bound", []);
+            residuals = new(0, [], [], [], null, null, null, null, MeasuredAstrometryAssessmentReasonCodes.MeasuredEntryBound, []);
         return Produce();
 
         ValueTask<ProcessingOutcome> Produce()

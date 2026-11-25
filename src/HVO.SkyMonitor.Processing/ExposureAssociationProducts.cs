@@ -45,7 +45,7 @@ public static class ExposureAssociationProducts
         var scene = ExposureCatalogPredictionProducts.Read(sceneArtifact, raw, expected);
         var measured = ExposureMeasurementProducts.Read(retained, expected).Sources;
         if (measured.Status == ExposureMeasurementStatus.Unavailable ||
-            measured.Status == ExposureMeasurementStatus.Unsuitable && measured.Reason != "all-candidates-rejected")
+            measured.Status == ExposureMeasurementStatus.Unsuitable && measured.Reason != ExposureMeasurementSourceReasonCodes.AllCandidatesRejected)
             return ProcessingOutcome.Skipped("association.measurement-unavailable");
 
         var settings = options?.Association ?? new();

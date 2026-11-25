@@ -1,0 +1,130 @@
+@inherits SiteTimeComponent
+@using HVO.SkyMonitor.CameraAgent.Services
+
+@{
+    var definition = View.Base.Definition;
+    var reference = definition.Reference;
+    var transform = definition.Preview.Transform;
+}
+<div class="publication-evidence">
+    <dl class="publication-facts">
+        <div><dt>Display reference</dt><dd><a href="@CaptureUrl(reference.Capture.CaptureId)">Capture #@reference.Capture.CaptureSequence</a> · @Label(definition.Kind)</dd></div>
+        <div><dt>Reference execution</dt><dd><a href="@RunUrl(reference.ExecutionId)">View run</a></dd></div>
+        @if (ShowArchiveLink)
+        {
+            <div><dt>Published view</dt><dd><a href="@ArchiveUrl(View)">Open exact @Label(definition.Kind).ToLowerInvariant() revision</a></dd></div>
+        }
+        <div><dt>Retained media</dt><dd><a href="@(ArchiveUrl(View) + "/preview?inline=true")">Preview</a> · <a href="@(ArchiveUrl(View) + "/overlay.svg")">Overlay SVG</a></dd></div>
+        <div><dt>Base ID</dt><dd><code>@View.Base.BaseId</code></dd></div>
+        <div><dt>Revision ID</dt><dd><code>@View.Revision.RevisionId</code></dd></div>
+        <div><dt>Publication order</dt><dd>@View.Revision.Order</dd></div>
+        <div><dt>Revision published</dt><dd><time datetime="@View.Revision.PublishedUtc.ToString("O")">@SiteTime.Format(View.Revision.PublishedUtc)</time></dd></div>
+        <div><dt>Reference exposure end to revision publication</dt><dd>@FormatDuration(CenteredPipelinePublications.ExposureEndToPublication(View))</dd></div>
+        <div><dt>Reference input</dt><dd>@FormatLayout(reference.Input.Raw.Layout)</dd></div>
+        <div><dt>Reference readout</dt><dd>@FormatReadout(reference.Input.Raw.Layout)</dd></div>
+        <div><dt>Reference coordinates</dt><dd>@FormatGeometry(reference.Input.Geometry)</dd></div>
+        <div><dt>Science artifact</dt><dd><code>@definition.Science.ArtifactId</code></dd></div>
+        <div><dt>Preview source</dt><dd>@Label(definition.Preview.Source)
+            @if (Reason(definition.Preview.QualificationReason) is { } qualification)
+            {
+                <span> · @qualification</span>
+            }
+        </dd></div>
+        <div><dt>Closed window artifact</dt><dd>@(definition.ClosedWindow?.ArtifactId.ToString("D") ?? "Unavailable")</dd></div>
+        <div><dt>Preview geometry</dt><dd>Reference @transform.ReferenceWidth × @transform.ReferenceHeight px · crop (@transform.CropX, @transform.CropY), @transform.CropWidth × @transform.CropHeight px · preview @transform.PreviewWidth × @transform.PreviewHeight px. Coordinates use delivered pixel edges.</dd></div>
+        <div><dt>Preview checksum</dt><dd><code>@definition.Preview.PayloadSha256</code></dd></div>
+    </dl>
+
+    <h3>Source registration</h3>
+    @if (definition.Contributors.Count == 0)
+    {
+        <p>Contributor evidence unavailable.</p>
+    }
+    else
+    {
+        <p>@(definition.Kind == HVO.SkyMonitor.CameraAgent.Common.Gallery.CenteredViewKind.Stack
+            ? $"{definition.Contributors.Count}/5 window slots contributed" : "One source exposure")</p>
+        <div class="publication-table">
+            <table>
+                <thead><tr><th scope="col">Source</th><th scope="col">Exposure bounds</th><th scope="col">Actual input</th><th scope="col">Registration to reference</th></tr></thead>
+                <tbody>
+                    @foreach (var contributor in definition.Contributors)
+                    {
+                        var exposure = contributor.Exposure;
+                        <tr>
+                            <td>
+                                <a href="@CaptureUrl(exposure.Capture.CaptureId)">Capture #@exposure.Capture.CaptureSequence</a><br />
+                                <a href="@RunUrl(exposure.ExecutionId)">Source run</a><br />
+                                <span>Raw <code>@exposure.Input.Raw.Artifact.ArtifactId</code></span><br />
+                                @if (exposure.Linear is { } linear)
+                                {
+                                    <span>Linear <code>@linear.ArtifactId</code></span>
+                                }
+                                else
+                                {
+                                    <span>Linear product unavailable</span>
+                                }
+                            </td>
+                            <td>@SiteTime.Format(exposure.ExposureStartedUtc) to @SiteTime.Format(exposure.ExposureEndedUtc)</td>
+                            <td>@FormatLayout(exposure.Input.Raw.Layout)<br />@FormatReadout(exposure.Input.Raw.Layout)</td>
+                            <td>
+                                @contributor.RegistrationMethod
+                                @if (contributor.SourceToReference.ValueKind is not (System.Text.Json.JsonValueKind.Undefined or System.Text.Json.JsonValueKind.Null))
+                                {
+                                    <details><summary>Source to reference mapping</summary><pre>@contributor.SourceToReference.GetRawText()</pre></details>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+
+    <h3>Layer readiness</h3>
+    @if (_layers.Count == 0)
+    {
+        <p>Layer readiness evidence unavailable for this revision.</p>
+    }
+    else
+    {
+        @foreach (var layer in _layers)
+        {
+            <details class="publication-layer" @key="(layer.Kind, layer.Scope)" data-layer-kind="@layer.Kind">
+                <summary><strong>@LayerLabel(layer.Kind)</strong> · @Label(layer.Scope) · @layer.Readiness@(layer.Assessment is { } assessment ? $" · {assessment}" : null)</summary>
+                <div class="publication-table">
+                    <table>
+                        <thead><tr><th scope="col">Source</th><th scope="col">Readiness</th><th scope="col">Observed</th><th scope="col">Evidence</th></tr></thead>
+                        <tbody>
+                            @foreach (var site in layer.Sites)
+                            {
+                                <tr>
+                                    <td>
+                                        @if (site.Source is { } source)
+                                        {
+                                            <a href="@CaptureUrl(source.Capture.CaptureId)">Capture #@source.Capture.CaptureSequence</a>
+                                            <br /><a href="@RunUrl(source.ExecutionId)">Source run</a>
+                                        }
+                                        else
+                                        {
+                                            <span>Published @Label(definition.Kind).ToLowerInvariant()</span>
+                                        }
+                                    </td>
+                                    <td>@(site.Readiness is { } readiness ? Label(readiness) : "Unavailable")</td>
+                                    <td>@SiteTime.Format(site.Evidence?.ObservedUtc, unavailable: "Unavailable")</td>
+                                    <td>
+                                        @if (site.Evidence?.Evidence is { } evidence)
+                                        {
+                                            <code>@evidence.ArtifactId</code><br />
+                                        }
+                                        @site.Description
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            </details>
+        }
+    }
+</div>

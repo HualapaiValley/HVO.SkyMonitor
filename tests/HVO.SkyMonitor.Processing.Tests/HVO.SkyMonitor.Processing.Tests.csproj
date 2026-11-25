@@ -14,6 +14,7 @@
     <Compile Include="../../tools/HVO.SkyMonitor.VirtualSkyPoc/NominalPredictionComparison.cs" Link="Tools/NominalPredictionComparison.cs" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="../fixtures/measured-deep-sky-v1/manifest.json" Link="Fixtures/measured-deep-sky-v1.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../fixtures/orbital-prediction-v1/virtual-camera/snapshots/six-facts/*.json" Link="Fixtures/Nominal/snapshot/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../fixtures/orbital-prediction-v1/virtual-camera/snapshots/two-starlinks/*.json" Link="Fixtures/Nominal/two-starlinks/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../fixtures/orbital-prediction-v1/time/predicted-2026.finals2000A" Link="Fixtures/Nominal/predicted-2026.finals2000A" CopyToOutputDirectory="PreserveNewest" />

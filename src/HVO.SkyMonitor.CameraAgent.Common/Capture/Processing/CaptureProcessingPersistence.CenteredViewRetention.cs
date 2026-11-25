@@ -22,15 +22,18 @@ internal sealed partial class CaptureProcessingPersistence
             var lastEligibleCaptureTime = new DateTimeOffset(cutoffUtc.UtcDateTime.Date.AddTicks(TimeSpan.TicksPerDay - 1))
                 .ToUnixTimeMilliseconds();
             using var connection = await _store.OpenCenteredViewsAsync(sweepToken).ConfigureAwait(false);
-            if (!await StageCenteredViewPruneCandidatesAsync(connection, lastEligibleCaptureTime, heldAbsolutePaths,
+            if (await StageCenteredViewPruneCandidatesAsync(connection, lastEligibleCaptureTime, heldAbsolutePaths,
                     PauseAsync, sweepToken).ConfigureAwait(false))
-                return;
+            {
+                // First detach the expired, unpinned links that would otherwise keep a chain of expired views.
+                // Then remove recomputations before their original bases. A retained recomputation still pins its parent.
+                await PruneBatchesAsync(null).ConfigureAwait(false);
+                await PruneBatchesAsync(1).ConfigureAwait(false);
+                await PruneBatchesAsync(0).ConfigureAwait(false);
+            }
 
-            // First detach the expired, unpinned links that would otherwise keep a chain of expired views.
-            // Then remove recomputations before their original bases. A retained recomputation still pins its parent.
-            await PruneBatchesAsync(null).ConfigureAwait(false);
-            await PruneBatchesAsync(1).ConfigureAwait(false);
-            await PruneBatchesAsync(0).ConfigureAwait(false);
+            await PruneCenteredTrailWorkAsync(connection, lastEligibleCaptureTime, heldAbsolutePaths,
+                PauseAsync, sweepToken).ConfigureAwait(false);
 
             async ValueTask PruneBatchesAsync(int? recomputed)
             {

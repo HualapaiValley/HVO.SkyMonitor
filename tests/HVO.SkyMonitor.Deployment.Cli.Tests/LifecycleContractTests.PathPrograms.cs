@@ -11,7 +11,7 @@ public sealed partial class LifecycleContractTests
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     [DataRow(false)]
     [DataRow(true)]
-    public async Task PathPrograms_UpgradeRollbackAndRemoval_KeepCommandsWithTheirRelease(bool plan)
+    public async Task PathPrograms_UpgradeAndRemoval_KeepCommandsWithTheirRelease(bool plan)
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed,
             HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner);
@@ -44,13 +44,6 @@ public sealed partial class LifecycleContractTests
         using (var json = JsonDocument.Parse(await File.ReadAllBytesAsync(InstallRecordStore.ProgramsPath(location))))
             Assert.AreEqual(3, json.RootElement.GetProperty("instances")[0].GetProperty("programs").GetArrayLength());
 
-        await CameraAgentLifecycleManager.ExecuteAsync(fixture.Request(LifecycleOperationKind.Rollback), fixture.Runner,
-            _ => new FakeLifecycleClient(), _ => owner, fixture.Uid, fixture.Gid, CancellationToken.None, error: TextWriter.Null);
-        foreach (var target in targets)
-        {
-            StringAssert.Contains(await File.ReadAllTextAsync(target), "1.2.0", StringComparison.Ordinal);
-            StringAssert.Contains(await File.ReadAllTextAsync(target + ".previous"), "1.3.0", StringComparison.Ordinal);
-        }
         await CameraAgentLifecycleManager.ExecuteAsync(fixture.Request(LifecycleOperationKind.Uninstall), fixture.Runner,
             _ => new FakeLifecycleClient(), null, fixture.Uid, fixture.Gid, CancellationToken.None);
         Assert.IsFalse(File.Exists(targets[0]));
@@ -58,7 +51,7 @@ public sealed partial class LifecycleContractTests
         Assert.IsTrue(File.Exists(targets[1]), "the preserved instance needs its durable reinstall command");
         await CameraAgentLifecycleManager.ExecuteAsync(fixture.Request(LifecycleOperationKind.Reinstall), fixture.Runner,
             _ => new FakeLifecycleClient(), _ => owner, fixture.Uid, fixture.Gid, CancellationToken.None);
-        StringAssert.Contains(await File.ReadAllTextAsync(targets[0]), "1.2.0", StringComparison.Ordinal);
+        StringAssert.Contains(await File.ReadAllTextAsync(targets[0]), "1.3.0", StringComparison.Ordinal);
         await CameraAgentLifecycleManager.ExecuteAsync(fixture.Request(LifecycleOperationKind.Uninstall), fixture.Runner,
             _ => new FakeLifecycleClient(), null, fixture.Uid, fixture.Gid, CancellationToken.None);
         await CameraAgentLifecycleManager.ExecuteAsync(fixture.Request(LifecycleOperationKind.Purge) with
@@ -172,35 +165,6 @@ public sealed partial class LifecycleContractTests
         Assert.AreEqual(0, fixture.Runner.PullCount);
         Assert.AreEqual(manifest, await File.ReadAllTextAsync(fixture.Paths.ManifestPath));
         Assert.IsFalse(File.Exists(fixture.Paths.LifecycleStatePath));
-    }
-
-    [TestMethod]
-    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    [DataRow(false)]
-    [DataRow(true)]
-    public async Task PathPrograms_RollbackWithMissingOrCorruptRetainedClient_RefusesBeforeTheImageChanges(bool missing)
-    {
-        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed,
-            HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner);
-        await RecordInstalledReleaseAsync(fixture, "1.2.0");
-        await SeedPathProgramsAsync(fixture);
-        using var release = CandidateRelease(fixture, out var candidateImageId, version: "1.3.0");
-        fixture.Runner.CandidateRawIngressSchema = "13";
-        var owner = new FakeOwnerClient(fixture.ApplicationIdentity);
-        await CameraAgentLifecycleManager.ExecuteAsync(fixture.Request(LifecycleOperationKind.Upgrade) with
-        { Release = release.Folder, MigrationBackwardCompatible = true }, fixture.Runner, _ => new FakeLifecycleClient(),
-            _ => owner, fixture.Uid, fixture.Gid, CancellationToken.None);
-        var sha256 = Convert.ToHexStringLower(SHA256.HashData("hvo-sky 1.2.0"u8));
-        var retained = PathPrograms.Cached(fixture.Paths, sha256);
-        if (missing) File.Delete(retained);
-        else await File.WriteAllTextAsync(retained, "tampered");
-        var journal = await File.ReadAllTextAsync(fixture.Paths.LifecycleStatePath);
-        var failure = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            fixture.Request(LifecycleOperationKind.Rollback), fixture.Runner, _ => new FakeLifecycleClient(), _ => owner,
-            fixture.Uid, fixture.Gid, CancellationToken.None, error: TextWriter.Null));
-        Assert.IsTrue(failure.IsRefusal);
-        Assert.AreEqual(candidateImageId, fixture.Runner.ActiveImageId);
-        Assert.AreEqual(journal, await File.ReadAllTextAsync(fixture.Paths.LifecycleStatePath));
     }
 
     [TestMethod]

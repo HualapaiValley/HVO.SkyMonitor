@@ -491,13 +491,17 @@ internal sealed partial class SqliteCaptureProcessingStore
                 (string.Equals(step.Type, MeasuredAstrometryCaptureProcessingStep.Alias, StringComparison.OrdinalIgnoreCase) ||
                  string.Equals(step.Type, ExposureAstrometryCaptureProcessingStep.CenteredAlias, StringComparison.OrdinalIgnoreCase)) &&
                 (string.IsNullOrWhiteSpace(step.Id) ? step.Type : step.Id.Trim()) == node.NodeId);
-            if (astrometry || revision.Pipeline.Steps.Any(step => step.Enabled != false &&
+            var regionalVisibility = revision.Pipeline.Steps.Any(step => step.Enabled != false &&
+                string.Equals(step.Type, RegionalStellarVisibilityProducts.StepAlias, StringComparison.OrdinalIgnoreCase) &&
+                (string.IsNullOrWhiteSpace(step.Id) ? RegionalStellarVisibilityProducts.StepAlias : step.Id.Trim()) == node.NodeId);
+            if (astrometry || regionalVisibility || revision.Pipeline.Steps.Any(step => step.Enabled != false &&
                 string.Equals(step.Type, CaptureSatelliteTracksProcessingStep.Alias, StringComparison.OrdinalIgnoreCase) &&
                 (string.IsNullOrWhiteSpace(step.Id) ? step.Type : step.Id.Trim()) == node.NodeId))
             {
-                using var satellite = connection.CreateCommand();
-                satellite.Transaction = transaction;
-                satellite.CommandText = """
+                // Step 30b's original output carries its environmental association in the retained recipe.
+                using var auxiliary = connection.CreateCommand();
+                auxiliary.Transaction = transaction;
+                auxiliary.CommandText = """
                     SELECT output.output_identity_sha256, output.payload_relative_path, output.product_schema_version
                     FROM processing_outputs output
                     WHERE output.capture_id = $capture AND output.node_id = $node AND output.availability_state = 'Available'
@@ -510,21 +514,24 @@ internal sealed partial class SqliteCaptureProcessingStore
                             AND execution.primary_artifact_id = $raw)
                     ORDER BY output.output_identity_sha256 LIMIT 4;
                     """;
-                satellite.Parameters.AddWithValue("$capture", source.RawCapture.Manifest.Descriptor.Capture.CaptureId.ToString("N"));
-                satellite.Parameters.AddWithValue("$raw", source.RawCapture.Manifest.Descriptor.Artifact.ArtifactId.ToString("N"));
-                satellite.Parameters.AddWithValue("$node", node.NodeId);
-                var inputSchema = astrometry ? MeasuredAstrometryContextV1.CurrentSchemaVersion : CaptureSatelliteProducts.InputSchema;
-                satellite.Parameters.AddWithValue("$input", inputSchema);
-                satellite.Parameters.AddWithValue("$result", astrometry ? MeasuredAstrometrySolutionV1.CurrentSchemaVersion : CaptureOrbitalPredictionJson.SchemaVersion);
+                auxiliary.Parameters.AddWithValue("$capture", source.RawCapture.Manifest.Descriptor.Capture.CaptureId.ToString("N"));
+                auxiliary.Parameters.AddWithValue("$raw", source.RawCapture.Manifest.Descriptor.Artifact.ArtifactId.ToString("N"));
+                auxiliary.Parameters.AddWithValue("$node", node.NodeId);
+                var inputSchema = regionalVisibility ? RegionalStellarVisibilityProducts.SchemaVersion :
+                    astrometry ? MeasuredAstrometryContextV1.CurrentSchemaVersion : CaptureSatelliteProducts.InputSchema;
+                auxiliary.Parameters.AddWithValue("$input", inputSchema);
+                auxiliary.Parameters.AddWithValue("$result", regionalVisibility ? DBNull.Value :
+                    astrometry ? MeasuredAstrometrySolutionV1.CurrentSchemaVersion : CaptureOrbitalPredictionJson.SchemaVersion);
                 var pinned = new List<ProcessingFrozenOutputInput>();
                 var schemas = new HashSet<string>(StringComparer.Ordinal);
-                using var reader = await satellite.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                using var reader = await auxiliary.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
                 while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
-                    if (!schemas.Add(reader.GetString(2))) throw new InvalidDataException("The original satellite products are ambiguous.");
+                    if (!schemas.Add(reader.GetString(2))) throw new InvalidDataException("The original analyzer products are ambiguous.");
                     pinned.Add(new(reader.GetString(0), 0, reader.GetString(1)));
                 }
-                if (!schemas.Contains(inputSchema) || astrometry && !schemas.Contains(MeasuredAstrometrySolutionV1.CurrentSchemaVersion))
+                if (!regionalVisibility && (!schemas.Contains(inputSchema) ||
+                    astrometry && !schemas.Contains(MeasuredAstrometrySolutionV1.CurrentSchemaVersion)))
                     throw new InvalidDataException("The original bounded analyzer evidence is not retained.");
                 outputInputsByNode[node.NodeId] = pinned;
                 auxiliaryOutputNodes.Add(node.NodeId);

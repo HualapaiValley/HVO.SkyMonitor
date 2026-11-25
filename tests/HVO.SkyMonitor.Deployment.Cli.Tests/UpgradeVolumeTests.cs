@@ -8,8 +8,8 @@ using Microsoft.Data.Sqlite;
 namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 
 /// <summary>
-/// Manual volume measurement for #1314: an upgrade and a rollback, each with an unchanged state contract and with a
-/// declared migration, against a realistic retained volume of many files across raw, archive and derived trees. Run
+/// Measures a pure image swap, a refused post-commit rollback and recovery of a pending migration
+/// against a retained volume of files across raw, archive and derived trees. Run
 /// it inside a 1 CPU / 1 GiB limit, for example
 /// <c>systemd-run --user --scope -p CPUQuota=100% -p MemoryMax=1G -p MemorySwapMax=0 -- dotnet test ...</c>, which
 /// also bounds the <c>tar</c> and <c>gzip</c> children an earlier installer ran.
@@ -26,8 +26,7 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 /// </para>
 /// <para>
 /// The report, written to <c>HVO_UPGRADE_VOLUME_REPORT</c> and to standard output, gives each operation's wall time,
-/// outcome, and the process and cgroup memory peaks. The test uses only lifecycle APIs that predate #1314, so the
-/// same file measures the earlier backup path for comparison.
+/// outcome, and the process and cgroup memory peaks.
 /// </para>
 /// </remarks>
 [TestClass]
@@ -41,7 +40,7 @@ public sealed class UpgradeVolumeTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task UpgradeAndRollback_OnARealisticRetainedVolume_ReportTheirTimings()
+    public async Task UpgradeRecoveryAndRollbackRefusal_OnARealisticRetainedVolume_ReportTheirTimings()
     {
         var source = Environment.GetEnvironmentVariable("HVO_UPGRADE_VOLUME_SOURCE");
         if (string.IsNullOrEmpty(source))
@@ -75,14 +74,14 @@ public sealed class UpgradeVolumeTests
         var lifecycle = new VolumeLifecycleClient();
         var operations = new List<object>();
 
-        async Task TimeAsync(string name, LifecycleRequest request)
+        async Task TimeAsync(string name, LifecycleRequest request, bool failCandidateReadiness = false)
         {
             var stopwatch = Stopwatch.StartNew();
             string outcome;
             try
             {
                 outcome = (await CameraAgentLifecycleManager.ExecuteAsync(
-                    request, fixture.Runner, _ => lifecycle, _ => new VolumeOwnerClient(fixture.ApplicationIdentity),
+                    request, fixture.Runner, _ => lifecycle, _ => new VolumeOwnerClient(fixture.ApplicationIdentity, failCandidateReadiness),
                     fixture.Uid, fixture.Gid, CancellationToken.None, error: TextWriter.Null)).Outcome;
             }
             catch (InstallerException exception)
@@ -94,17 +93,23 @@ public sealed class UpgradeVolumeTests
             Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"{name}: {stopwatch.Elapsed.TotalSeconds:F2} s, {outcome}"));
         }
 
-        LifecycleRequest Upgrade() => fixture.Request(LifecycleOperationKind.Upgrade) with
+        LifecycleRequest Upgrade(string imageReference) => fixture.Request(LifecycleOperationKind.Upgrade) with
         {
-            ImageReference = CandidateReference,
+            ImageReference = imageReference,
             NoDownload = true,
             MigrationBackwardCompatible = true
         };
-        await TimeAsync("upgrade-unchanged-contract", Upgrade());
-        await TimeAsync("rollback-unchanged-contract", fixture.Request(LifecycleOperationKind.Rollback));
+        await TimeAsync("upgrade-unchanged-contract", Upgrade(CandidateReference));
+        await TimeAsync("manual-rollback-refused", fixture.Request(LifecycleOperationKind.Rollback));
+        var active = await CameraAgentLifecycleManager.ReadManifestAsync(fixture.Paths.ManifestPath, CancellationToken.None);
+        var migratingImage = $"sha256:{new string('6', 64)}";
+        fixture.Runner.ConfigureRuntime(fixture.Paths, active.Image.ImmutableReference, active.Image.ImageId,
+            migratingImage, migratingImage, fixture.Uid, fixture.Gid);
         fixture.Runner.CandidateLabels["io.hvo.skymonitor.minimum-compatible-revision"] = new string('6', 40);
-        await TimeAsync("upgrade-declared-migration", Upgrade());
-        await TimeAsync("rollback-declared-migration", fixture.Request(LifecycleOperationKind.Rollback));
+        await TimeAsync("pending-migration-recovery", Upgrade(migratingImage), failCandidateReadiness: true);
+        var restored = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
+        Assert.IsNotNull(restored!.StateSnapshotRestoredUtc);
+        Assert.AreEqual(active.Image.ImageId, fixture.Runner.ActiveImageId);
 
         var report = JsonSerializer.Serialize(new
         {
@@ -247,14 +252,18 @@ public sealed class UpgradeVolumeTests
         public Task ResumeAsync(Guid operationId, string verificationToken, CancellationToken cancellationToken) => Task.CompletedTask;
     }
 
-    private sealed class VolumeOwnerClient(Guid expectedAgentId) : IOwnerBootstrapClient
+    private sealed class VolumeOwnerClient(Guid expectedAgentId, bool failCandidateReadiness) : IOwnerBootstrapClient
     {
         public Task WaitForHealthAsync(
             ApprovedCatalogContract expectedCatalog,
             CancellationToken cancellationToken,
             TimeSpan? timeout = null,
             bool allowQuarantinedReadiness = false)
-            => Task.CompletedTask;
+        {
+            if (!failCandidateReadiness) return Task.CompletedTask;
+            failCandidateReadiness = false;
+            throw new InstallerException("Injected candidate readiness failure.");
+        }
 
         public Task<string> ReadStateAsync(string ownerEmail, string password, CancellationToken cancellationToken)
             => Task.FromResult("owner-password-change-required");

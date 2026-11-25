@@ -52,8 +52,8 @@ internal sealed class CaptureSatelliteTracksProcessingStep(
         var scene = context.RawCapture?.Manifest.Scene;
         var lineageValid = VirtualSkyNamedPass.TryReadPredictionLineage(context.Config, scene, out var named);
         var observedShutter = lineageValid && named is not null ? VirtualSkyNamedPass.ReadObservedShutter(scene, descriptor) : null;
-        var namedFailure = !lineageValid ? "NamedPassPredictionLineageUnavailable" :
-            named is not null && observedShutter is null ? "NamedPassPredictionTimingUnavailable" : null;
+        var namedFailure = !lineageValid ? nameof(CaptureSatelliteReason.NamedPassPredictionLineageUnavailable) :
+            named is not null && observedShutter is null ? nameof(CaptureSatelliteReason.NamedPassPredictionTimingUnavailable) : null;
         // Whole-millisecond observations already match the descriptor. Keep their existing evidence format.
         var virtualShutter = observedShutter is { } shutter &&
             (shutter.ScenarioStartUtc != descriptor.Timing.ExposureStartedUtc || shutter.ScenarioEndUtc != descriptor.Timing.ExposureEndedUtc)
@@ -126,7 +126,7 @@ internal sealed class CaptureSatelliteTracksProcessingStep(
         if (input.Plan is null)
             return input;
         // Previously prepared work can predate the exact shutter binding. Never publish its coarse plan as a named result.
-        var reason = namedFailure ?? (input.VirtualShutter != shutter ? "NamedPassPredictionTimingMismatch" : null);
+        var reason = namedFailure ?? (input.VirtualShutter != shutter ? nameof(CaptureSatelliteReason.NamedPassPredictionTimingMismatch) : null);
         return reason is null ? input : input with { Plan = null, UnavailableReason = reason, VirtualShutter = shutter };
     }
 
@@ -162,24 +162,26 @@ internal sealed class CaptureSatelliteTracksProcessingStep(
         var time = await timeSource.ResolveAsync(exposure, cancellationToken).ConfigureAwait(false);
         var available = time.Source == CameraAgentOrbitalTimeDataSource.Override ? Options.OverrideTimeDataAvailableUtc :
             new[] { time.EarthOrientationProvenance?.RetrievedUtc, time.LeapSecondsProvenance?.RetrievedUtc }.Max();
-        var reason = namedFailure ?? (named is not null && !MatchesNamedPass(named, selectionPolicy) ? "NamedPassPredictionInputsMismatch" :
-            time.Data is null ? "TimeInputsUnavailable:" + time.Problem :
-            available is null ? "TimeAvailabilityUnknown" : available > descriptor.Timing.DurableIngressUtc ? "TimeNotOriginallyAvailable" :
-            descriptor.Layout.Readout is null ? "ReadoutGeometryUnavailable" : observer is null ? "CaptureLocationUnavailable" : null);
+        var reason = namedFailure ?? (named is not null && !MatchesNamedPass(named, selectionPolicy) ? nameof(CaptureSatelliteReason.NamedPassPredictionInputsMismatch) :
+            time.Data is null ? CaptureSatelliteProducts.TimeInputsUnavailablePrefix + time.Problem :
+            available is null ? nameof(CaptureSatelliteReason.TimeAvailabilityUnknown) :
+            available > descriptor.Timing.DurableIngressUtc ? nameof(CaptureSatelliteReason.TimeNotOriginallyAvailable) :
+            descriptor.Layout.Readout is null ? nameof(CaptureSatelliteReason.ReadoutGeometryUnavailable) :
+            observer is null ? nameof(CaptureSatelliteReason.CaptureLocationUnavailable) : null);
         if (pin is not null)
         {
             if (snapshot.Snapshot?.Manifest.ManifestSha256 != pin.SnapshotManifestSha256)
-                reason ??= "PinnedSnapshotUnavailable";
+                reason ??= nameof(CaptureSatelliteReason.PinnedSnapshotUnavailable);
             if (time.Data?.EarthOrientationSha256 != pin.EarthOrientationSha256 ||
                 time.Data?.LeapSecondsSha256 != pin.LeapSecondsSha256)
-                reason ??= "PinnedTimeInputsUnavailable";
+                reason ??= nameof(CaptureSatelliteReason.PinnedTimeInputsUnavailable);
         }
         if (time.Data is { } data && (data.EarthOrientationCoverage is not { } coverage ||
             coverage.StartUtc > exposure.StartUtc || coverage.EndUtc < exposure.EndUtc ||
             data.LeapTableCoverage.StartUtc > exposure.StartUtc || data.LeapTableCoverage.EndUtc < exposure.EndUtc))
-            reason ??= "TimeCoverageUnavailable";
+            reason ??= nameof(CaptureSatelliteReason.TimeCoverageUnavailable);
         if ((exposure.EndUtc - exposure.StartUtc).TotalSeconds > Options.Bounds.MaximumWindowSeconds)
-            reason ??= "ExposureWindowBudget";
+            reason ??= nameof(CaptureSatelliteReason.ExposureWindowBudget);
         if (descriptor.Layout.Readout is { } actual)
         {
             var sensor = context.Config.Rig.Sensor;
@@ -189,16 +191,16 @@ internal sealed class CaptureSatelliteTracksProcessingStep(
                     sensor.HeightPixels, 1, 1, FrameBinningAlgorithm.IdentityV1,
                     descriptor.Layout.CfaPattern == ColorFilterArrayPattern.Rggb ? 0 : null,
                     descriptor.Layout.CfaPattern == ColorFilterArrayPattern.Rggb ? 0 : null);
-            if (actual != expected) reason ??= "CaptureReadoutProfileMismatch";
+            if (actual != expected) reason ??= nameof(CaptureSatelliteReason.CaptureReadoutProfileMismatch);
         }
         byte[]? manifest = null;
         if (snapshot.Snapshot is { } resolved)
         {
             manifest = resolved.SerializeManifest();
             if (resolved.Manifest.Sources.Any(s => s.RetrievedUtc > descriptor.Timing.DurableIngressUtc ||
-                s.ProviderGeneratedUtc > descriptor.Timing.DurableIngressUtc)) reason ??= "SnapshotNotOriginallyAvailable";
+                s.ProviderGeneratedUtc > descriptor.Timing.DurableIngressUtc)) reason ??= nameof(CaptureSatelliteReason.SnapshotNotOriginallyAvailable);
             if (Options.CatalogNumbers.Sum(n => (long)resolved.RecordsFor(new("norad", n)).Count) >
-                CaptureOrbitalPredictionInput.MaximumSelectionCandidates) reason ??= "SelectionCandidateBudget";
+                CaptureOrbitalPredictionInput.MaximumSelectionCandidates) reason ??= nameof(CaptureSatelliteReason.SelectionCandidateBudget);
         }
         var eop = time.Data?.ExportEarthOrientation();
         var leaps = time.Data?.ExportLeapSeconds();
@@ -230,7 +232,7 @@ internal sealed class CaptureSatelliteTracksProcessingStep(
                     selection.SelectedRecord?.RecordSha256 != records[selection.ObjectIdentity.CatalogNumber]))
             {
                 plan = null;
-                reason = "PinnedRecordSelectionMismatch";
+                reason = nameof(CaptureSatelliteReason.PinnedRecordSelectionMismatch);
             }
         }
         return new(CaptureSatelliteProducts.InputSchema, descriptor, context.Config.Rig, observer, OptionalBytes(plan?.SerializePlan()),

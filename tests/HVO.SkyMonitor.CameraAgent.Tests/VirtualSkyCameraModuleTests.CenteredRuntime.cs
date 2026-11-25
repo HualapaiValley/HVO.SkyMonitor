@@ -1090,12 +1090,12 @@ public sealed partial class VirtualSkyCameraModuleTests
     private static async Task<(CenteredExposureReservation Reservation, CaptureLoopSubmission Submission)> CaptureCenteredRuntimeAttemptAsync(
         RawCaptureIngress ingress, VirtualSkyCameraModule module, ExposureTestTimeProvider deviceClock,
         CenteredClock agentClock, CameraModuleConfig active, DateTimeOffset scheduled, double gain, CancellationToken token,
-        TimeSpan? interval = null, CenteredScheduleBinding? schedule = null)
+        TimeSpan? interval = null, CenteredScheduleBinding? schedule = null, CenteredSceneResources? resources = null)
     {
         if (scheduled > agentClock.UtcNow)
             agentClock.UtcNow = scheduled;
         deviceClock.Advance(scheduled - deviceClock.GetUtcNow());
-        var reservation = await ingress.ReserveCenteredAsync(active, new(null, null, null, null, "centered-live-test"),
+        var reservation = await ingress.ReserveCenteredAsync(active, resources ?? new(null, null, null, null, "centered-live-test"),
             null, token, schedule: schedule)
             .ConfigureAwait(false);
         var request = new CaptureRequest(scheduled, interval ?? TimeSpan.FromSeconds(2), CaptureMode.Still,

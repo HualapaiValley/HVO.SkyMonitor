@@ -20,26 +20,13 @@ public sealed partial class LifecycleContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task RollbackAsync_IdleCaptureWithAdvancingFleetReports_KeepsTheFleetSequenceAndPassesContinuity()
+    public async Task PendingUpgradeRecovery_IdleCaptureWithAdvancingFleetReports_KeepsTheFleetSequence()
     {
         using var fixture = await MigratingFixtureAsync();
         SeedStores(fixture.Paths);
         SeedCounters(fixture.Paths, captureSequence: 5, fleetNextSequence: 10);
         var lifecycle = new StoreBackedLifecycleClient(fixture.Paths);
-        Assert.AreEqual("completed", (await CameraAgentLifecycleManager.ExecuteAsync(
-            UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => lifecycle,
-            _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None)).Outcome);
-        // Capture stays idle under the upgraded release while fleet reports keep leaving the instance.
-        AdvanceFleet(fixture.Paths, toNextSequence: 60);
-        Assert.AreEqual(59, lifecycle.ReadBoundary().CaptureSequence);
-
-        var rolledBack = await CameraAgentLifecycleManager.ExecuteAsync(
-            fixture.Request(LifecycleOperationKind.Rollback), fixture.Runner, _ => lifecycle,
-            _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None,
-            error: TextWriter.Null);
-
-        Assert.AreEqual("completed", rolledBack.Outcome);
-        Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
+        await RecoverFromCandidateWriteAsync(fixture, () => AdvanceFleet(fixture.Paths, toNextSequence: 60), lifecycle: lifecycle);
         // The restored fleet store would number its next report 10 again; it continues from 60.
         Assert.AreEqual(60, ReadCounter(fixture.Paths, "raw/.fleet/fleet-status.db", "SELECT next_sequence FROM fleet_status_metadata WHERE metadata_key = 1;"));
         Assert.IsGreaterThanOrEqualTo(59, lifecycle.ReadBoundary().CaptureSequence);
@@ -47,25 +34,16 @@ public sealed partial class LifecycleContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task RollbackAsync_CaptureSequencesReservedWithoutFiles_AreNeverHandedOutAgain()
+    public async Task PendingUpgradeRecovery_CaptureSequencesReservedWithoutFiles_AreNeverHandedOutAgain()
     {
         using var fixture = await MigratingFixtureAsync();
         SeedStores(fixture.Paths);
         SeedCounters(fixture.Paths, captureSequence: 40, fleetNextSequence: 1);
         var lifecycle = new StoreBackedLifecycleClient(fixture.Paths);
-        Assert.AreEqual("completed", (await CameraAgentLifecycleManager.ExecuteAsync(
-            UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => lifecycle,
-            _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None)).Outcome);
-        // The upgraded release reserves seven more capture identities whose captures never produced files.
-        ExecuteSql(RawIngressPath(fixture.Paths), $"UPDATE raw_capture_sequences SET last_sequence = 47 WHERE agent_id = '{AgentId}';");
         var versionBefore = lifecycle.ReadBoundary().CaptureVersion;
+        await RecoverFromCandidateWriteAsync(fixture, () => ExecuteSql(RawIngressPath(fixture.Paths),
+            $"UPDATE raw_capture_sequences SET last_sequence = 47 WHERE agent_id = '{AgentId}';"), lifecycle: lifecycle);
 
-        var rolledBack = await CameraAgentLifecycleManager.ExecuteAsync(
-            fixture.Request(LifecycleOperationKind.Rollback), fixture.Runner, _ => lifecycle,
-            _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None,
-            error: TextWriter.Null);
-
-        Assert.AreEqual("completed", rolledBack.Outcome);
         Assert.AreEqual(47, ReadCounter(fixture.Paths, "raw/journal/raw-ingress.db", $"SELECT last_sequence FROM raw_capture_sequences WHERE agent_id = '{AgentId}';"));
         // The capture-control version a client holds is not handed out again either.
         Assert.IsGreaterThan(versionBefore, lifecycle.ReadBoundary().CaptureVersion);

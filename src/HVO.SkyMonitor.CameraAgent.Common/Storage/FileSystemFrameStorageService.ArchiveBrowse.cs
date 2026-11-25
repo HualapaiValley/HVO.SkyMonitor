@@ -14,9 +14,6 @@ public sealed partial class FileSystemFrameStorageService
         try
         {
             RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, index);
-            if (!Directory.Exists(index))
-                return [];
-
             var dates = new List<DateOnly>();
             foreach (var path in Directory.EnumerateFiles(index, "frames_*.jsonl"))
             {
@@ -27,6 +24,10 @@ public sealed partial class FileSystemFrameStorageService
                     dates.Add(date);
             }
             return dates;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return [];
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {

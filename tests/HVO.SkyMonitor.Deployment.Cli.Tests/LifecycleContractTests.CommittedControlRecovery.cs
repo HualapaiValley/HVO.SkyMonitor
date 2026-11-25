@@ -7,7 +7,6 @@ public sealed partial class LifecycleContractTests
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     [DataRow(LifecycleOperationKind.Reinstall, false, false, true)]
-    [DataRow(LifecycleOperationKind.Rollback, false, false, true)]
     [DataRow(LifecycleOperationKind.Reinstall, false, false)]
     [DataRow(LifecycleOperationKind.Reinstall, true, false)]
     [DataRow(LifecycleOperationKind.Rollback, false, false)]
@@ -25,9 +24,21 @@ public sealed partial class LifecycleContractTests
             exists: kind != LifecycleOperationKind.Reinstall || uninstallFirst);
         var ordinary = new FakeLifecycleClient();
         if (kind == LifecycleOperationKind.Rollback)
-            await CameraAgentLifecycleManager.ExecuteAsync(fixture.Request(LifecycleOperationKind.Upgrade) with
-            { ImageReference = candidate, NoDownload = true, MigrationBackwardCompatible = true }, fixture.Runner,
-                _ => ordinary, _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None);
+        {
+            ordinary.RejectNextResume = true;
+            await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+                fixture.Request(LifecycleOperationKind.Upgrade) with
+                { ImageReference = candidate, NoDownload = true, MigrationBackwardCompatible = true }, fixture.Runner,
+                _ => ordinary, _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None));
+            // Model a legacy transaction after its image commit and before resume, with matching durable records.
+            var retained = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
+            Assert.AreEqual(LifecycleOperationPhase.Committed, retained!.Phase);
+            await CameraAgentLifecycleManager.RecordAsync(fixture.Paths, retained with
+            {
+                Kind = LifecycleOperationKind.Rollback,
+                RequestSha256 = fixture.Request(kind).ComputeRequestSha256()
+            }, CancellationToken.None);
+        }
         var (journal, path, original) = await PendingControlAsync(fixture, terminal: false);
         original = original with { OriginalProcessId = Guid.NewGuid(), ResumeAfterVerification = true };
         await journal.SaveAsync(original);
@@ -40,23 +51,26 @@ public sealed partial class LifecycleContractTests
         var returned = new RetainedControlProjection(original);
         var lifecycle = new FencedDeploymentLifecycle(ordinary, returned)
         {
-            FailDrain = precommit && kind == LifecycleOperationKind.Reinstall,
-            FailConfirm = precommit && kind == LifecycleOperationKind.Rollback
+            FailDrain = precommit
         };
         fixture.Runner.Reboot(fixture.Runner.ActiveImageId, wasRunning: false);
         if (uninstallFirst)
             Assert.AreEqual("completed", (await CameraAgentLifecycleManager.ExecuteAsync(
                 fixture.Request(LifecycleOperationKind.Uninstall), fixture.Runner, _ => lifecycle, null,
                 fixture.Uid, fixture.Gid, CancellationToken.None)).Outcome);
-        IProcessRunner runner = kind == LifecycleOperationKind.Rollback ? new ReturnAfterControlAdmission(fixture.Runner) : fixture.Runner;
-        var failure = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            fixture.Request(kind), runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
-            fixture.Uid, fixture.Gid, CancellationToken.None));
-        StringAssert.Contains(failure.ToString(), precommit && kind == LifecycleOperationKind.Reinstall ? "injected drain" : "409", StringComparison.Ordinal);
+        if (kind == LifecycleOperationKind.Reinstall)
+        {
+            var failure = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+                fixture.Request(kind), fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
+                fixture.Uid, fixture.Gid, CancellationToken.None));
+            StringAssert.Contains(failure.ToString(), precommit ? "injected drain" : "409", StringComparison.Ordinal);
+        }
+        else
+        {
+            fixture.Runner.Reboot(candidate, wasRunning: true);
+        }
         var committed = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
-        Assert.AreEqual(precommit ? kind == LifecycleOperationKind.Reinstall
-            ? LifecycleOperationPhase.Prepared : LifecycleOperationPhase.Restoring
-            : LifecycleOperationPhase.Committed, committed!.Phase);
+        Assert.AreEqual(precommit ? LifecycleOperationPhase.Prepared : LifecycleOperationPhase.Committed, committed!.Phase);
         Assert.AreEqual(InstallationStatus.Running, committed.Status);
         Assert.IsTrue(committed.MutationStarted);
         CollectionAssert.AreEqual(preserved, await File.ReadAllBytesAsync(path));
@@ -303,17 +317,12 @@ public sealed partial class LifecycleContractTests
     private sealed class FencedDeploymentLifecycle(FakeLifecycleClient inner, RetainedControlProjection projection) : ICameraAgentLifecycleClient
     {
         internal bool FailDrain;
-        internal bool FailConfirm;
         public Task<LifecycleContinuity> PauseAndDrainAsync(Guid id, string token, CancellationToken ct)
         {
             if (FailDrain) { FailDrain = false; throw new InstallerException("injected drain failure"); }
             return inner.PauseAndDrainAsync(id, token, ct);
         }
-        public Task<LifecycleContinuity> ConfirmDrainedAsync(string token, CancellationToken ct)
-        {
-            if (FailConfirm) { FailConfirm = false; throw new InstallerException("injected confirm failure"); }
-            return inner.ConfirmDrainedAsync(token, ct);
-        }
+        public Task<LifecycleContinuity> ConfirmDrainedAsync(string token, CancellationToken ct) => inner.ConfirmDrainedAsync(token, ct);
         public Task<LifecycleContinuity> ReadContinuityAsync(string token, CancellationToken ct) => inner.ReadContinuityAsync(token, ct);
         public Task<LifecycleResumeReceipt> ResumeRecoveryAsync(Guid id, Guid command, long version, string token, CancellationToken ct) =>
             inner.ResumeRecoveryAsync(id, command, version, token, ct);

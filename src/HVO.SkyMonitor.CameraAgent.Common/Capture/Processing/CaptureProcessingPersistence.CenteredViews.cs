@@ -7,6 +7,9 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
 internal sealed partial class CaptureProcessingPersistence
 {
+    private const string CenteredViewPublicationProducer = "centered-view-publication";
+    private const string CenteredViewPreviewNode = CenteredViewPublicationProducer + "-preview";
+
     internal async ValueTask<ProcessingArtifact> ReadCenteredViewProductAsync(Guid captureId, CenteredViewArtifact pin,
         CancellationToken cancellationToken)
     {
@@ -36,6 +39,14 @@ internal sealed partial class CaptureProcessingPersistence
         return (CreateProcessingArtifact(output, restored), ExposureMeasurementProducts.Read(restored.Product));
     }
 
+    internal async ValueTask<(ProcessingArtifact Artifact, RegionalStellarVisibilityV1 Visibility)> ReadCenteredViewRegionalVisibilityAsync(
+        Guid captureId, CenteredViewArtifact pin, CancellationToken cancellationToken)
+    {
+        var output = await RequireCenteredViewOutputAsync(captureId, pin, cancellationToken).ConfigureAwait(false);
+        var restored = await RestoreOutputAsync(output, cancellationToken).ConfigureAwait(false);
+        return (CreateProcessingArtifact(output, restored), RegionalStellarVisibilityProducts.Read(restored.Product));
+    }
+
     private async ValueTask<DurableProcessingOutput> RequireCenteredViewOutputAsync(Guid captureId, CenteredViewArtifact pin,
         CancellationToken cancellationToken)
     {
@@ -48,17 +59,16 @@ internal sealed partial class CaptureProcessingPersistence
     internal async ValueTask PersistCenteredViewProductAsync(
         ReconstructionDescriptor reference, ProcessingProduct product, CancellationToken cancellationToken)
     {
-        const string producer = "centered-view-publication";
         ValidateProductForPublication(product);
         var gate = StorageLifecycleLock.ForRoot(_storageRoot);
-        await StorageLifecycleLock.WaitAsync(gate, producer, _logger, cancellationToken).ConfigureAwait(false);
+        await StorageLifecycleLock.WaitAsync(gate, CenteredViewPublicationProducer, _logger, cancellationToken).ConfigureAwait(false);
         try
         {
             // A stable producer node preserves the journal's bounded per-producer retention ranking.
-            var nodeId = product.Role == FrameArtifactRole.Preview ? $"{producer}-preview" : $"{producer}-layer";
+            var nodeId = product.Role == FrameArtifactRole.Preview ? CenteredViewPreviewNode : CenteredViewPublicationProducer + "-layer";
             var output = await PersistMetadataProductAsync(_storageRoot, reference, nodeId, product,
                 BeforeMetadataDirectorySyncForTest, provisionStorageRoot: false, cancellationToken).ConfigureAwait(false);
-            _faultInjector.Inject(CaptureProcessingFaultPoint.AfterOutputsPublishedBeforeNodeCommit, producer);
+            _faultInjector.Inject(CaptureProcessingFaultPoint.AfterOutputsPublishedBeforeNodeCommit, CenteredViewPublicationProducer);
             var node = new CaptureProcessingGraphNode(nodeId, OnDemandMaterializationStep.Instance, [], false,
                 product.Recipe.Descriptor.Name, product.Role, product.Variant, product.Recipe.IdentitySha256);
             await _store.WriteNodeAsync(reference.Capture.CaptureId, node, DurableProcessingNodeStatus.Completed, null, 1,

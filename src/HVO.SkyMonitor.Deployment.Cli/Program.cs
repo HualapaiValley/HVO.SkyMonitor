@@ -383,7 +383,13 @@ internal static class Program
         if (result.Image is not null) await Console.Out.WriteLineAsync($"Image: {result.Image.ImageId}").ConfigureAwait(false);
         if (result.Catalog is not null) await Console.Out.WriteLineAsync($"Catalog: {result.Catalog.CatalogId} / {result.Catalog.PackageVersion}").ConfigureAwait(false);
         if (result.DeepSkyCatalog is not null) await Console.Out.WriteLineAsync($"Deep-sky catalog: {result.DeepSkyCatalog.CatalogId} / {result.DeepSkyCatalog.PackageVersion}").ConfigureAwait(false);
-        if (result.Running is not null) await Console.Out.WriteLineAsync($"Runtime: running={result.Running}; healthy={result.Healthy}").ConfigureAwait(false);
+        if (result.Running is not null)
+        {
+            var readiness = result.HealthStatusCode is { } status ? $" (/health HTTP {status})" : string.Empty;
+            await Console.Out.WriteLineAsync(
+                $"Runtime running={result.Running}, alive={result.Alive?.ToString() ?? "unknown"}, healthy={result.Healthy?.ToString() ?? "unknown"}{readiness}")
+                .ConfigureAwait(false);
+        }
         if (result.PreservedAdmission is { } admission)
         {
             await Console.Out.WriteLineAsync(

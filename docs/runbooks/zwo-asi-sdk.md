@@ -131,6 +131,14 @@ packing evidence is still required before promoting that declaration. Existing
 ASI178 observations likewise do not justify replacing its physical opaque
 declaration with the virtual profile's `FullRangeScaledV1` simulation mapping.
 
+With a centered profile and host-metered controls, the runner records
+`linear.opaque-adc-to-container` for an opaque source whose
+stored-white threshold is unknown. It carries forward the source's valid
+effective exposure and gain as the next request in that run. A new run
+starts from its configured setpoint. The next request has no metering
+sample or measured adjustment, and the 16-bit container limit provides no
+ADC clipping evidence.
+
 Acquisition timestamps are module-observed command and status boundaries. They
 do not claim exact sensor start/end timing. `ASIGetDataAfterExp` is synchronous;
 the module retains exclusive camera and destination-buffer ownership until the

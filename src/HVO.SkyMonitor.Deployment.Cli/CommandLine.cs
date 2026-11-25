@@ -106,7 +106,7 @@ internal static class CommandLine
             ["--plan", "--dry-run", "--resume", "--restore-only", "--leave-paused", "--json", "--no-download", DeprecatedMigrationOption, "--allow-quarantined-readiness"],
             PlanScratchNote),
         new(["cameraagent", "rollback"], null,
-            "Return an instance to the image it ran before its last upgrade.",
+            "Show upgrade recovery guidance or settle a committed legacy rollback with --resume.",
             InstanceValueOptions, [.. OperationFlags, "--allow-quarantined-readiness"],
             PlanScratchNote),
         Lifecycle("Start an uninstalled instance again from the state it kept.", "cameraagent", "reinstall"),

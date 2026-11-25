@@ -75,47 +75,6 @@ public sealed partial class LifecycleContractTests
     }
 
     [TestMethod]
-    [DoNotParallelize]
-    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task RollbackAsync_ResumeAuthenticatesItsOwnSnapshotBeforeChangingAnyContainer()
-    {
-        using var fixture = await MigratingFixtureAsync();
-        SeedStores(fixture.Paths);
-        await UpgradeAndCommitAsync(fixture);
-        using var captured = new TemporaryDirectory();
-        var images = new List<CrashImage>();
-        CaptureCrashImages(fixture, captured.Path, images);
-        try
-        {
-            await RollBackAsync(fixture);
-        }
-        finally
-        {
-            ResetCrashHooks();
-        }
-        // The rollback is interrupted while the previous image runs on the retained snapshot; its own snapshot, the one
-        // --resume must restore first, is damaged. The retained snapshot that supplies the preflight view is intact.
-        RestoreCrashImage(fixture, images.Last(static image => image.Step == "journal:CandidateVerified"));
-        var interrupted = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
-        Assert.AreEqual(LifecycleOperationKind.Rollback, interrupted.Kind);
-        Assert.IsNotNull(interrupted.RetainedStateSnapshot);
-        File.Delete(Path.Combine(CameraAgentStateSnapshot.SnapshotRoot(
-            fixture.Paths, interrupted.OperationId, interrupted.StateSnapshot!.SnapshotId), "manifest.json"));
-        var (stops, ups, active) = (fixture.Runner.ComposeStopCount, fixture.Runner.ComposeUpCount, fixture.Runner.ActiveImageId);
-
-        var refused = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            fixture.Request(LifecycleOperationKind.Rollback) with { Resume = true }, fixture.Runner, _ => new FakeLifecycleClient(),
-            _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None,
-            error: TextWriter.Null));
-
-        StringAssert.Contains(refused.Message, "missing its manifest", StringComparison.Ordinal);
-        Assert.AreEqual(stops, fixture.Runner.ComposeStopCount, "The rollback stopped a container before it found it could not restore.");
-        Assert.AreEqual(ups, fixture.Runner.ComposeUpCount);
-        Assert.AreEqual(active, fixture.Runner.ActiveImageId);
-        Assert.IsTrue(fixture.Runner.Running);
-    }
-
-    [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task UpgradeAsync_FailedCandidateRecoveryAuthenticatesItsSnapshotBeforeStoppingTheCandidate()
     {
@@ -167,25 +126,6 @@ public sealed partial class LifecycleContractTests
         var journal = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
         CollectionAssert.Contains(journal.StateRestorePlan!.CurrentLocations.ToArray(), ApiOutbox);
         CollectionAssert.DoesNotContain(journal.StateRestorePlan.TargetLocations.ToArray(), ApiOutbox);
-    }
-
-    [TestMethod]
-    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task RollbackAsync_RemovesAStoreUnderARootNamedThroughTheApiAfterTheUpgradeAndKeepsItsFiles()
-    {
-        using var fixture = await MigratingFixtureAsync();
-        SeedStores(fixture.Paths);
-        ExecuteSql(RawIngressPath(fixture.Paths), ScheduleRevisionsTable);
-        await UpgradeAndCommitAsync(fixture);
-        NameApiRoot(fixture.Paths);
-
-        await RollBackAsync(fixture);
-
-        AssertApiRootStoreRemoved(fixture.Paths);
-        // The rollback's own snapshot has the store, so rolling forward again brings it back with the root.
-        var journal = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
-        var own = await CameraAgentStateSnapshot.VerifyAsync(fixture.Paths, fixture.InstanceId, journal.StateSnapshot!, CancellationToken.None);
-        CollectionAssert.Contains(own.Databases.Where(static database => database.Present).Select(static database => database.RelativePath).ToArray(), ApiOutbox);
     }
 
     [TestMethod]
