@@ -1,7 +1,13 @@
 @using HVO.SkyMonitor.Processing
 
 <div class="node-options">
-    <p class="node-options-help">@Form.Descriptor.Help</p>
+    <div class="node-options-header">
+        <p class="node-options-help">@Form.Descriptor.Help</p>
+        @if (ShowResetToDefaults)
+        {
+            <button id="@($"{IdPrefix}-reset-defaults")" type="button" class="btn btn-sm btn-outline-secondary" disabled="@(!CanResetToDefaults)" @onclick="ResetAllToDefaultsAsync">Reset to code defaults</button>
+        }
+    </div>
     @foreach (var option in Form.Descriptor.Options)
     {
         var inputId = $"{IdPrefix}-{option.Key}";
@@ -83,7 +89,7 @@
                     break;
                 case ProcessingOptionKind.Color:
                     <div class="colour-inputs">
-                        <input type="color" aria-label="@($"{option.Label} picker")" value="@Form.Get(option.Key)" @onchange="args => ChangedAsync(option.Key, args.Value?.ToString() ?? string.Empty)" />
+                        <input type="color" aria-label="@($"{option.Label} picker")" value="@Form.ColorPickerValue(option.Key)" @onchange="args => ChangedAsync(option.Key, args.Value?.ToString() ?? string.Empty)" />
                         <input id="@inputId" class="form-control" type="text" aria-describedby="@(inputId + "-help")" value="@Form.Get(option.Key)" @onchange="args => ChangedAsync(option.Key, args.Value?.ToString() ?? string.Empty)" />
                     </div>
                     break;
@@ -112,7 +118,7 @@
                     <p>This option needs a dedicated editor.</p>
                     break;
             }
-            <p id="@(inputId + "-help")">@option.Help @Bounds(option)</p>
+            <p id="@(inputId + "-help")">@option.Help @Bounds(option) Default: @Form.DefaultDisplay(option.Key).</p>
         </div>
     }
     @if (Form.Diagnostics.Count > 0)

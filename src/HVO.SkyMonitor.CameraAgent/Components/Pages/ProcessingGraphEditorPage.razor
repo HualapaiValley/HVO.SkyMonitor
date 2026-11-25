@@ -62,10 +62,17 @@
                         <li class="node-row" id="@RowId(node)" data-node-alias="@node.Type" tabindex="-1" @key="node">
                             @if (node.IsSystemManaged)
                             {
-                                <div>
+                                var builtIn = ProcessingNodeSectionRegistry.DescribeBuiltInStage(node.Type);
+                                <div class="node-row--builtin">
                                     <strong>@node.Id</strong>
                                     <span>System-managed step</span>
+                                    <p>@builtIn.RoleSummary</p>
+                                    <p>Fixed settings: @builtIn.FixedSettingsSummary</p>
                                     <p>Inputs: @string.Join(", ", node.DependsOn.Select(static input => input == ProcessingGraphDraftModel.RawInput ? "raw capture" : input))</p>
+                                    @if (_model.SourceRevisionId is { } sourceId)
+                                    {
+                                        <p><a href="@ProcessingNodeConfigPage.NodeConfigHref(sourceId, node.Id)">Inspect built-in stage</a></p>
+                                    }
                                 </div>
                             }
                             else
@@ -94,7 +101,13 @@
                                 @if (node.OptionsForm is { } optionsForm)
                                 {
                                     <section class="node-options-section" id="@OptionsSection(node)" aria-label="@optionsForm.Descriptor.Title">
-                                        <h3 id="@SceneOptionsAnchor(node)">@optionsForm.Descriptor.Title</h3>
+                                        <div class="node-options-section__head">
+                                            <h3 id="@SceneOptionsAnchor(node)">@optionsForm.Descriptor.Title</h3>
+                                            @if (_model.SourceRevisionId is { } sourceId)
+                                            {
+                                                <a class="node-options-page-link" href="@ProcessingNodeConfigPage.NodeConfigHref(sourceId, node.Id)">Configure on its own page</a>
+                                            }
+                                        </div>
                                         @if (optionsForm.Descriptor.StepAlias == FrameFactsPresentation.StepAlias)
                                         {
                                             <FrameFactsOptionsEditor @key="optionsForm" IdPrefix="@($"node-options-{index}")" Form="optionsForm" Changed="FormChanged" />
@@ -103,7 +116,8 @@
                                         {
                                             <ProcessingNodeOptionsEditor IdPrefix="@($"node-options-{index}")" Form="optionsForm" Changed="FormChanged"
                                                 NodeEnabled="@(_model.SchemaVersion == CapturePipelineSchemaVersions.ExplicitV2 ? node.Enabled : null)"
-                                                NodeEnabledChanged="value => node.Enabled = value" />
+                                                NodeEnabledChanged="value => node.Enabled = value"
+                                                ShowResetToDefaults="true" />
                                         }
                                     </section>
                                 }
@@ -154,50 +168,9 @@
                 @if (_plan is null) { <span class="editor-note">Preview the plan before saving.</span> }
             </div>
         </form>
-        @if (Section is "scene-overlay" or "constellations" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias is "ScenePresentationLayer" or SceneStylePresentation.StepAlias))
+        @if (MissingSectionNotice() is { } missingNotice)
         {
-            <p role="status">This graph has no supported scene overlay node. Add ScenePresentationLayer with its ProjectedScene input to configure visibility, sizes and constellation style.</p>
-        }
-
-        @if (Section == "overlay-manifest" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == "OverlayManifest"))
-        {
-            <p role="status">This graph has no supported Overlay manifest node. Existing layer producers and required dependencies must be configured explicitly.</p>
-        }
-        @if (Section == "cloud-layer" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == "CloudPresentationLayer"))
-        {
-            <p role="status">This graph has no supported cloud layer node. Select a retained graph with CloudPresentationLayer to edit labels and line thickness. Dimensions and assessment bindings must already be configured; missing or unsupported nodes are not created or upgraded. Saving, validation and activation remain separate.</p>
-        }
-        @if (Section == "environment-layer" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == "EnvironmentPresentationLayer"))
-        {
-            <p role="status">This graph has no supported environment layer node. Select a retained graph with EnvironmentPresentationLayer to edit scale, inset and line spacing. Dimensions and source/stack bindings must already be configured; missing or unsupported nodes are not created or upgraded. Saving, validation and activation remain separate.</p>
-        }
-        @if (Section == "legacy-annotation" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == "Annotation"))
-        {
-            <p role="status">This graph has no supported legacy Annotation node. Select a retained graph with Annotation to edit its existing styling. Missing or unsupported nodes are not replaced or upgraded; saving, validation and activation remain separate.</p>
-        }
-        @if (Section == "predicted-satellite-layer" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == "CaptureSatelliteLayer"))
-        {
-            <p role="status">This graph has no supported predicted satellite layer node. Select a saved graph with CaptureSatelliteLayer and its capture-bound prediction inputs. Saving, validation and activation remain separate.</p>
-        }
-        @if (Section == "projected-scene" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == "ProjectedScene"))
-        {
-            <p role="status">This graph has no supported projected scene node. Add ProjectedScene with an explicit raw dependency to configure physical predicted-scene queries. VirtualSky keeps its separate module settings and authoritative rendered scene; saving, validation and activation remain separate.</p>
-        }
-        @if (Section == "calibration" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == "Calibration"))
-        {
-            <p role="note">This graph has no calibration node. Add Calibration with an explicit raw dependency to configure it. Existing models and master provisioning stay unchanged; saving, validation and activation remain separate.</p>
-        }
-        @if (Section == "cloud-assessment" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == "CloudAssessment"))
-        {
-            <p role="note">This graph has no cloud assessment node. Add CloudAssessment with an explicit raw or calibrated image dependency to configure it. Clear-reference provisioning stays unchanged; saving, validation and activation remain separate.</p>
-        }
-        @if (Section == "weather-cloud-overlay" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == "WeatherCloudOverlay"))
-        {
-            <p role="note">This graph has no weather and cloud overlay node. Add WeatherCloudOverlay with an explicit preview and CloudAssessment dependency to configure it; saving and activation remain separate.</p>
-        }
-        @if (Section == "frame-facts" && !_model.Nodes.Any(static node => FrameFactsDraftConversion.IsLegacy(node.Type) || node.OptionsForm?.Descriptor.StepAlias == FrameFactsPresentation.StepAlias))
-        {
-            <p role="status">This graph has no Frame Facts node. Add FrameFactsPresentationLayerV1 with its ProjectedScene and combined-preview inputs, and explicitly opt manifest/materializer consumers in before previewing the plan.</p>
+            <p role="@missingNotice.Role">@missingNotice.Message</p>
         }
 
         @if (_plan is not null)

@@ -50,6 +50,7 @@ public sealed class OperatorRouteTests
             typeof(ProcessingGraphsPage),
             typeof(ProcessingGraphDetailPage),
             typeof(ProcessingGraphEditorPage),
+            typeof(ProcessingNodeConfigPage),
             typeof(FramesController)
         })
         {
@@ -159,6 +160,7 @@ public sealed class OperatorRouteTests
             (typeof(ProcessingGraphsPage), ["/operations/pipeline/graphs"]),
             (typeof(ProcessingGraphDetailPage), ["/operations/pipeline/graphs/{RevisionId}"]),
             (typeof(ProcessingGraphEditorPage), ["/operations/pipeline/graphs/new"]),
+            (typeof(ProcessingNodeConfigPage), ["/operations/pipeline/graphs/{RevisionId}/nodes/{NodeId}", "/operations/pipeline/configure/{NodeId}"]),
             (typeof(RegistrationPage), ["/operations/registration", "/devices/bootstrap", "/devices"])
         })
         {

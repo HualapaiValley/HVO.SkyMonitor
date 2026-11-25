@@ -49,7 +49,7 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
     protected override async Task OnInitializedAsync()
     {
         _from = string.IsNullOrWhiteSpace(From) ? null : From.Trim();
-        if (_from is null && Section is "scene-overlay" or "constellations" or "frame-facts" or "weather-cloud-overlay" or "cloud-assessment" or "calibration" or "projected-scene" or "legacy-annotation" or "cloud-layer" or "environment-layer" or "overlay-manifest" or "predicted-satellite-layer")
+        if (_from is null && ProcessingNodeSectionRegistry.IsKnownSection(Section))
         {
             var registry = await GraphService.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false);
             if (registry.Kind == OperatorUiResultKind.Unauthorized)
@@ -179,37 +179,27 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
 
     private string OptionsSection(ProcessingGraphDraftModel.NodeRow node)
     {
-        var section = node.OptionsForm?.Descriptor.StepAlias switch
-        {
-            HVO.SkyMonitor.Processing.FrameFactsPresentation.StepAlias => "frame-facts",
-            "ImageQuality" => "image-quality",
-            "Telemetry" => "capture-telemetry",
-            "VirtualSkyCloudObservation" => "simulated-cloud-observations",
-            "WeatherCloudOverlay" => "weather-cloud-overlay",
-            "CloudAssessment" => "cloud-assessment",
-            "Calibration" => "calibration",
-            "RollingCombination" => "rolling-combination",
-            "ProjectedScene" => "projected-scene",
-            "AstrometryPrediction" => "astrometry-prediction",
-            "MeasuredStellarAssociations" => "measured-stellar-associations",
-            "MeasuredAstrometry" => "measured-astrometry",
-            "CaptureSatelliteTracks" => "capture-satellite-tracks",
-            "CaptureSatelliteLayer" => "predicted-satellite-layer",
-            "Storage" => "artifact-storage",
-            "Annotation" => "legacy-annotation",
-            "OverlayManifest" => "overlay-manifest",
-            "PresentationMaterializer" => "presentation-materializer",
-            "CloudPresentationLayer" => "cloud-layer",
-            "EnvironmentPresentationLayer" => "environment-layer",
-            "Preview" => "preview",
-            "CalibratedPreview" => "calibrated-preview",
-            "CombinedPreview" => "combined-preview",
-            "JpegEncoding" => "jpeg-encoding",
-            _ => "constellations"
-        };
+        var section = ProcessingNodeSectionRegistry.SectionForAlias(node.OptionsForm?.Descriptor.StepAlias);
         var first = _model.Nodes.FirstOrDefault(row => IsSceneOptions(node)
             ? IsSceneOptions(row) : row.OptionsForm?.Descriptor.StepAlias == node.OptionsForm?.Descriptor.StepAlias);
         return ReferenceEquals(node, first) ? section : $"{section}-{_model.Nodes.IndexOf(node)}";
+    }
+
+    private (string Message, string Role)? MissingSectionNotice()
+    {
+        if (ProcessingNodeSectionRegistry.FindSection(Section) is not { } entry)
+        {
+            return null;
+        }
+        var hasMatchingNode = _model.Nodes.Any(node =>
+            (entry.Slug == "frame-facts" && FrameFactsDraftConversion.IsLegacy(node.Type)) ||
+            ProcessingNodeSectionRegistry.MatchesSection(entry.Slug, node.OptionsForm?.Descriptor.StepAlias));
+        if (hasMatchingNode)
+        {
+            return null;
+        }
+        var role = entry.Slug is "calibration" or "cloud-assessment" or "weather-cloud-overlay" ? "note" : "status";
+        return (entry.MissingNodeMessage, role);
     }
 
     private static bool IsSceneOptions(ProcessingGraphDraftModel.NodeRow node)

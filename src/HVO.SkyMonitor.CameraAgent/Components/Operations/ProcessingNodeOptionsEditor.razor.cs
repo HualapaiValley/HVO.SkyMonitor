@@ -12,6 +12,23 @@ public sealed partial class ProcessingNodeOptionsEditor : ComponentBase
     [Parameter] public EventCallback Changed { get; set; }
     [Parameter] public bool? NodeEnabled { get; set; }
     [Parameter] public EventCallback<bool> NodeEnabledChanged { get; set; }
+    [Parameter] public bool ShowResetToDefaults { get; set; }
+
+    private bool CanResetToDefaults
+        => Form.HasNonDefaultValues ||
+            (NodeEnabled.HasValue &&
+             Form.Descriptor.Find("enabled") is { } enabledOption &&
+             NodeEnabled.Value != enabledOption.DefaultValue.AsToggle());
+
+    private async Task ResetAllToDefaultsAsync()
+    {
+        Form.ResetAllToDefaults();
+        if (NodeEnabled.HasValue && Form.Descriptor.Find("enabled") is { } enabledOption)
+        {
+            await NodeEnabledChanged.InvokeAsync(enabledOption.DefaultValue.AsToggle()).ConfigureAwait(false);
+        }
+        await Changed.InvokeAsync().ConfigureAwait(false);
+    }
 
     private async Task ToggleChangedAsync(string key, bool value)
     {

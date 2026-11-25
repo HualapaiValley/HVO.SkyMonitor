@@ -1,5 +1,6 @@
 .node-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr)); gap: 1rem; }
-.node-options-help { grid-column: 1 / -1; margin: 0; }
+.node-options-header { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: start; justify-content: space-between; gap: .6rem 1rem; }
+.node-options-help { margin: 0; flex: 1 1 20rem; }
 .option-field { min-width: 0; }
 .option-field--rows { grid-column: 1 / -1; }
 .option-field > label { display: block; margin-bottom: .35rem; }

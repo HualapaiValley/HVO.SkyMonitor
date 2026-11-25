@@ -64,7 +64,7 @@ public sealed class ProcessingNodeOptionsForm
             "VIRTUALSKYCLOUDOBSERVATION" => CaptureScalarOptionDescriptors.VirtualSkyCloudObservation.StepVersion,
             "WEATHERCLOUDOVERLAY" => WeatherCloudOverlayOptionDescriptors.Descriptor.StepVersion,
             "CLOUDASSESSMENT" => CloudAssessmentOptionDescriptors.Descriptor.StepVersion,
-            "CALIBRATION" => CalibrationOptionDescriptors.Normalization.StepVersion,
+            "CALIBRATION" => CalibrationVersionFor(options),
             "PROJECTEDSCENE" => "canonical-projected-scene-v1",
             "ASTROMETRYPREDICTION" => CaptureAnalysisOptionDescriptors.Prediction.StepVersion,
             "MEASUREDSTELLARASSOCIATIONS" => CaptureAnalysisOptionDescriptors.StellarAssociations.StepVersion,
@@ -85,6 +85,114 @@ public sealed class ProcessingNodeOptionsForm
     }
 
     public string Get(string key) => _inputs[key];
+
+    /// <summary>Valid #rrggbb value for HTML color pickers; falls back to code default while invalid text is being repaired.</summary>
+    public string ColorPickerValue(string key)
+    {
+        var option = Descriptor.Find(key)!;
+        var current = _inputs[key];
+        return Parse(ProcessingOptionKind.Color, current) is { } parsed
+            ? Format(parsed)
+            : Format(option.DefaultValue);
+    }
+
+    /// <summary>Human-readable code default for display alongside option help and bounds.</summary>
+    public string DefaultDisplay(string key)
+    {
+        var option = Descriptor.Find(key)!;
+        var value = option.DefaultValue;
+        return option.Kind switch
+        {
+            ProcessingOptionKind.Toggle => value.AsToggle() ? "On" : "Off",
+            ProcessingOptionKind.NullableWholeNumber => value.AsNullableWholeNumber() is { } whole
+                ? WithUnit(whole.ToString(CultureInfo.InvariantCulture), option.Unit)
+                : option.NullValueLabel ?? "None",
+            ProcessingOptionKind.NullableRealNumber => value.AsNullableRealNumber() is { } real
+                ? WithUnit(real.ToString("R", CultureInfo.InvariantCulture), option.Unit)
+                : option.NullValueLabel ?? "None",
+            ProcessingOptionKind.WholeNumber => WithUnit(value.AsWholeNumber().ToString(CultureInfo.InvariantCulture), option.Unit),
+            ProcessingOptionKind.RealNumber => WithUnit(value.AsRealNumber().ToString("R", CultureInfo.InvariantCulture), option.Unit),
+            ProcessingOptionKind.Color => Format(value),
+            ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection or ProcessingOptionKind.ChoiceCollection
+                => value.AsCollection().Items is { Length: > 0 } items
+                    ? string.Join(", ", items)
+                    : option.EmptyCollectionLabel ?? "Empty",
+            ProcessingOptionKind.RowCollection => option.EmptyCollectionLabel ?? "Producer defaults",
+            _ => string.IsNullOrEmpty(value.AsText()) ? "Empty" : value.AsText()
+        };
+
+        static string WithUnit(string text, string? unit)
+            => string.IsNullOrWhiteSpace(unit) ? text : $"{text} {unit}";
+    }
+
+    /// <summary>Whether the option's current form state equals its code default.</summary>
+    public bool IsAtDefault(string key)
+    {
+        var option = Descriptor.Find(key)!;
+        return option.Kind switch
+        {
+            ProcessingOptionKind.RowCollection => _rows[key].Count == option.DefaultValue.AsCollection().Items.Length,
+            ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection or ProcessingOptionKind.ChoiceCollection
+                => _collections[key].Items.SequenceEqual(option.DefaultValue.AsCollection().Items, StringComparer.Ordinal),
+            _ => Parse(option.Kind, _inputs[key]) is { } parsed && parsed.Equals(option.DefaultValue)
+        };
+    }
+
+    /// <summary>True when any option in this form currently differs from its code default.</summary>
+    public bool HasNonDefaultValues => Descriptor.Options.Any(option => !IsAtDefault(option.Key));
+
+    /// <summary>Resets a single option back to its code default without disturbing unknown JSON fields.</summary>
+    public void ResetOptionToDefault(string key)
+    {
+        var option = Descriptor.Find(key)!;
+        ApplyDefault(option);
+        _edited.Add(key);
+        TryBuild(out _, out _);
+    }
+
+    /// <summary>Resets every option described by this form back to its code default while keeping unknown JSON fields untouched.</summary>
+    public void ResetAllToDefaults()
+    {
+        foreach (var option in Descriptor.Options)
+        {
+            ApplyDefault(option);
+            _edited.Add(option.Key);
+        }
+        TryBuild(out _, out _);
+    }
+
+    private void ApplyDefault(ProcessingOptionDescriptor option)
+    {
+        if (option.Kind == ProcessingOptionKind.RowCollection)
+        {
+            _rows[option.Key] = option.DefaultValue.AsCollection().Items
+                .Select(row => new ProcessingNodeOptionsForm(option.RowDescriptor!, JsonSerializer.Deserialize<JsonElement>(row)))
+                .ToList();
+        }
+        else if (option.Kind is ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection or ProcessingOptionKind.ChoiceCollection)
+        {
+            _collections[option.Key] = option.DefaultValue.AsCollection();
+        }
+        else
+        {
+            _inputs[option.Key] = Format(option.DefaultValue);
+        }
+    }
+
+    private static string CalibrationVersionFor(JsonElement? options)
+    {
+        if (options is { ValueKind: JsonValueKind.Object } source)
+        {
+            var strategy = source.EnumerateObject()
+                .LastOrDefault(static member => string.Equals(member.Name, "strategy", StringComparison.OrdinalIgnoreCase));
+            if (strategy.Value.ValueKind == JsonValueKind.String &&
+                strategy.Value.GetString() is "SyntheticReferences" or "CalibrationLibrary")
+            {
+                return CalibrationOptionDescriptors.References.StepVersion;
+            }
+        }
+        return CalibrationOptionDescriptors.Normalization.StepVersion;
+    }
 
     public ProcessingOptionSelection Collection(string key) => _collections[key];
 
