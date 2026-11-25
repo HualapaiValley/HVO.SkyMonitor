@@ -323,16 +323,26 @@ public sealed class NamedOrbitalPassCaptureTests
         => CaptureAndVerifyPredictionAsync(clouds, wrongExpectedRecord, crossesSelectionBoundary, metadataCase, shutterDelayTicks, bayer);
 
     [TestMethod]
-    [DataRow(false, CaptureSatelliteReason.PinnedSnapshotUnavailable)]
-    [DataRow(true, CaptureSatelliteReason.PinnedSnapshotUnavailable)]
-    [DataRow(false, CaptureSatelliteReason.PinnedTimeInputsUnavailable)]
-    [DataRow(true, CaptureSatelliteReason.PinnedTimeInputsUnavailable)]
-    public Task UnavailableNamedPassInputsRetainStatusWithoutTracks(bool bayer, CaptureSatelliteReason reason)
+    [DataRow(false)]
+    [DataRow(true)]
+    public Task UnavailableNamedPassSnapshotRetainsStatusWithoutTracks(bool bayer)
         => CaptureAndVerifyPredictionAsync(clouds: false, wrongExpectedRecord: false, crossesSelectionBoundary: false,
-            metadataCase: null, shutterDelayTicks: 5_000L, bayer: bayer, unavailablePinReason: reason);
+            metadataCase: null, shutterDelayTicks: 5_000L, bayer: bayer,
+            unavailablePinReason: CaptureSatelliteReason.PinnedSnapshotUnavailable);
+
+    [TestMethod]
+    [DataRow(false, false, DisplayName = "Mono, different leap-second file")]
+    [DataRow(true, false, DisplayName = "Bayer, different leap-second file")]
+    [DataRow(false, true, DisplayName = "Mono, different Earth-orientation file")]
+    [DataRow(true, true, DisplayName = "Bayer, different Earth-orientation file")]
+    public Task UnavailableNamedPassTimeInputsRetainStatusWithoutTracks(bool bayer, bool overrideEarthOrientation)
+        => CaptureAndVerifyPredictionAsync(clouds: false, wrongExpectedRecord: false, crossesSelectionBoundary: false,
+            metadataCase: null, shutterDelayTicks: 5_000L, bayer: bayer,
+            unavailablePinReason: CaptureSatelliteReason.PinnedTimeInputsUnavailable, overrideEarthOrientation);
 
     private async Task CaptureAndVerifyPredictionAsync(bool clouds, bool wrongExpectedRecord, bool crossesSelectionBoundary,
-        string? metadataCase, long shutterDelayTicks, bool bayer, CaptureSatelliteReason? unavailablePinReason = null)
+        string? metadataCase, long shutterDelayTicks, bool bayer, CaptureSatelliteReason? unavailablePinReason = null,
+        bool overrideEarthOrientation = false)
     {
         var root = Path.Combine(Path.GetTempPath(), "hvo-named-shutter-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -499,17 +509,24 @@ public sealed class NamedOrbitalPassCaptureTests
 
             // Resolve the admitted scene from the durable raw sidecar using newly opened services.
             FilePin? leapOverride = null;
+            FilePin? earthOrientationOverride = null;
             if (unavailablePinReason == CaptureSatelliteReason.PinnedTimeInputsUnavailable)
             {
-                // Keep the same usable leap rows but resolve a different exact file from the package pin.
-                byte[] leaps = [.. input.Time.ExportLeapSeconds(), (byte)'\n'];
-                leapOverride = new(Path.Combine(root, "actual-leaps"), Hash(leaps));
-                Assert.AreNotEqual(input.Time.LeapSecondsSha256, leapOverride.Sha256,
-                    "The usable leap-second override must differ from the retained pin.");
-                await File.WriteAllBytesAsync(leapOverride.Path, leaps, ct).ConfigureAwait(false);
+                // Change one file's bytes while keeping its parsed rows usable.
+                var original = overrideEarthOrientation ? input.Time.ExportEarthOrientation() : input.Time.ExportLeapSeconds();
+                byte[] changed = [.. original, (byte)'\n'];
+                var overridePin = new FilePin(Path.Combine(root, overrideEarthOrientation ? "actual-earth-orientation" : "actual-leaps"),
+                    Hash(changed));
+                Assert.AreNotEqual(Hash(original), overridePin.Sha256,
+                    "The usable time-input override must differ from the retained pin.");
+                await File.WriteAllBytesAsync(overridePin.Path, changed, ct).ConfigureAwait(false);
+                if (overrideEarthOrientation)
+                    earthOrientationOverride = overridePin;
+                else
+                    leapOverride = overridePin;
             }
             var reopened = CreateProvider(ingressRoot, new ExposureTestTimeProvider(clock.GetUtcNow()),
-                new InMemoryCelestialCatalog([]), input, leapOverride);
+                new InMemoryCelestialCatalog([]), input, leapOverride, earthOrientationOverride);
             await using var reopenedLifetime = reopened.ConfigureAwait(false);
             await InitializeCaptureServicesAsync(reopened, config, ct).ConfigureAwait(false);
             var lane = reopened.GetRequiredService<CaptureLanePolicy>().Definitions.Single(static lane => lane.Name == "standard");
@@ -526,6 +543,7 @@ public sealed class NamedOrbitalPassCaptureTests
                 Assert.IsTrue(VirtualSkyNamedPass.TryReadPredictionLineage(config, manifest.Scene, out var retainedLineage));
                 Assert.IsNotNull(retainedLineage);
                 Assert.AreEqual(input.Snapshot.Manifest.ManifestSha256, retainedLineage.Inputs.SnapshotManifestSha256);
+                Assert.AreEqual(input.Time.EarthOrientationSha256, retainedLineage.Inputs.EarthOrientationSha256);
                 Assert.AreEqual(input.Time.LeapSecondsSha256, retainedLineage.Inputs.LeapSecondsSha256);
                 var snapshots = reopened.GetRequiredService<IOrbitalSnapshotReader>();
                 var active = await snapshots.ReadCurrentAsync(ct).ConfigureAwait(false);
@@ -543,8 +561,9 @@ public sealed class NamedOrbitalPassCaptureTests
                         .ResolveAsync(new OrbitalUtcInterval(shutter, shutter + Exposure), ct).ConfigureAwait(false);
                     Assert.AreEqual(CameraAgentOrbitalTimeDataSource.Override, time.Source);
                     Assert.IsNotNull(time.Data);
-                    Assert.AreEqual(input.Time.EarthOrientationSha256, time.Data.EarthOrientationSha256);
-                    Assert.AreEqual(leapOverride!.Sha256, time.Data.LeapSecondsSha256);
+                    Assert.AreEqual(earthOrientationOverride?.Sha256 ?? retainedLineage.Inputs.EarthOrientationSha256,
+                        time.Data.EarthOrientationSha256);
+                    Assert.AreEqual(leapOverride?.Sha256 ?? retainedLineage.Inputs.LeapSecondsSha256, time.Data.LeapSecondsSha256);
                 }
             }
             if (invalidTiming)
@@ -845,7 +864,7 @@ public sealed class NamedOrbitalPassCaptureTests
             Publication: new(CaptureProcessingPersistenceMode.DurableLocal));
 
     private static ServiceProvider CreateProvider(string root, TimeProvider clock, ICelestialCatalog catalog, PreparedInput input,
-        FilePin? leapOverride = null)
+        FilePin? leapOverride = null, FilePin? earthOrientationOverride = null)
     {
         var services = new ServiceCollection();
         services.AddLogging(logging => logging.AddConsole().SetMinimumLevel(LogLevel.Warning));
@@ -865,8 +884,8 @@ public sealed class NamedOrbitalPassCaptureTests
             ["CameraAgent:TransientDetection:StarMaximumMagnitude"] = "6.5",
             ["CameraAgent:TransientDetection:StarSupportRadiusSourcePixels"] = "2",
             ["CameraAgent:SatellitePlanning:Enabled"] = "true",
-            ["CameraAgent:SatellitePlanning:EarthOrientationPath"] = Path.Combine(packageRoot, "earth-orientation"),
-            ["CameraAgent:SatellitePlanning:EarthOrientationSha256"] = input.Time.EarthOrientationSha256,
+            ["CameraAgent:SatellitePlanning:EarthOrientationPath"] = earthOrientationOverride?.Path ?? Path.Combine(packageRoot, "earth-orientation"),
+            ["CameraAgent:SatellitePlanning:EarthOrientationSha256"] = earthOrientationOverride?.Sha256 ?? input.Time.EarthOrientationSha256,
             ["CameraAgent:SatellitePlanning:LeapSecondsPath"] = leapOverride?.Path ?? Path.Combine(packageRoot, "leaps"),
             ["CameraAgent:SatellitePlanning:LeapSecondsSha256"] = leapOverride?.Sha256 ?? input.Time.LeapSecondsSha256
         }).Build();

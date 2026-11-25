@@ -1538,14 +1538,21 @@ public sealed partial class VirtualSkyCameraModuleTests
                     heldConnection = null;
                 }
 
-                await publishCts.CancelAsync().ConfigureAwait(false);
                 writerReleased.Set();
+                try
+                {
+                    await publishCts.CancelAsync().ConfigureAwait(false);
+                }
+                finally
+                {
+                    // The test body reports any publish timeout. Teardown must join the worker
+                    // before clearing its hooks or disposing the provider and storage root.
+                    if (publishTask is not null)
+                        await publishTask.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
 
-                if (publishTask is not null)
-                    await JoinBestEffortAsync(publishTask, TimeSpan.FromSeconds(10)).ConfigureAwait(false);
-
-                views.BeforeResolveMissingCenterWriteForTest = null;
-                afterReadLinear = null;
+                    views.BeforeResolveMissingCenterWriteForTest = null;
+                    afterReadLinear = null;
+                }
             }
 
             using (var connection = await store.OpenCenteredViewsAsync(token).ConfigureAwait(false))
@@ -1605,19 +1612,6 @@ public sealed partial class VirtualSkyCameraModuleTests
         try
         {
             await resource.DisposeAsync().ConfigureAwait(false);
-        }
-        catch (Exception)
-        {
-        }
-    }
-
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Best-effort bounded join during test teardown must not mask the primary assertion or timeout failure.")]
-    private static async Task JoinBestEffortAsync(Task task, TimeSpan timeout)
-    {
-        try
-        {
-            // Await completed tasks too so a task that faulted before teardown is observed.
-            await task.WaitAsync(timeout).ConfigureAwait(false);
         }
         catch (Exception)
         {

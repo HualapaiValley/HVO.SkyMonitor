@@ -339,7 +339,6 @@ public sealed partial class CurrentSkyPageTests
         var capture = image.DisplayCapture! with { CaptureId = accepted.CaptureId, ExposureStartedUtc = accepted.Solution!.Assessment.Frame.ExposureStartUtc };
         service.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(
             image with { DisplayCapture = capture, LatestCapture = capture }));
-        // Complete on the renderer, allowing the awaiting continuation to finish synchronously before assertions.
         var pending = new DeferredAstrometryRead<CameraAgentRetainedAstrometry>();
         var standaloneReads = 0;
         service.AstrometryHandler = (_, _) => { standaloneReads++; return pending.Read(); };
@@ -365,6 +364,8 @@ public sealed partial class CurrentSkyPageTests
                 ? OperatorUiResult<CameraAgentRetainedAstrometry>.Failure(OperatorUiResultKind.Unauthorized, "Denied")
                 : OperatorUiResult<CameraAgentRetainedAstrometry>.Success(accepted));
         }).ConfigureAwait(false);
+        // Drain any continuation queued to the renderer by the deferred completion.
+        await cut.InvokeAsync(static () => { }).ConfigureAwait(false);
         if (completion == "denied")
         {
             cut.WaitForAssertion(() => Assert.IsTrue(context.Services.GetRequiredService<NavigationManager>().Uri.EndsWith("/Account/AccessDenied", StringComparison.Ordinal)));

@@ -160,6 +160,8 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
     {
         const string previewBody = "PREVIEW_BODY_SENTINEL_1916";
         await using var run = await InducedRun.StartAsync(TestContext);
+        Assert.IsNotNull(await run.Cell.Locator("a.calendar-day__link").GetAttributeAsync("aria-label"));
+        Assert.IsNotNull(await run.Cell.Locator(".calendar-products i[data-nightly-state='Partial']").GetAttributeAsync("title"));
         // Only the browser's preview responses fail; the authenticated re-read still reaches the real endpoint.
         await run.Page.RouteAsync(
             url => new Uri(url).AbsolutePath == run.PreviewPath,
@@ -178,6 +180,8 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
         Assert.IsNotNull(calendarCell, "the clicked Calendar cell is retained across navigation");
         StringAssert.Contains(calendarCell, "datetime=\"2026-10-01\"", StringComparison.Ordinal);
         StringAssert.Contains(calendarCell, "data-nightly-state=\"Partial\"", StringComparison.Ordinal);
+        Assert.DoesNotContain("aria-label=", calendarCell, StringComparison.Ordinal, "The pre-click snapshot must omit the link's accessible label.");
+        Assert.DoesNotContain("title=", calendarCell, StringComparison.Ordinal, "The pre-click snapshot must omit the badge tooltip.");
         Assert.IsTrue(report.Observation.PreviewRequests.Any(static request =>
             request is { Outcome: "response", Status: 503, ContentType: "text/plain" }));
         var probe = report.Observation.Probe;

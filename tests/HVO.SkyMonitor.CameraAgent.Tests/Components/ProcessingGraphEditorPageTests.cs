@@ -166,6 +166,48 @@ public sealed class ProcessingGraphEditorPageTests
     }
 
     [TestMethod]
+    public void RowHeaderTypeSelectWiresRegionalVisibilityAndLinksToTheBuiltInPredictionStage()
+    {
+        const string initialAlias = "CombinedPreview";
+        const string predictionAlias = ExposureCatalogPredictionProducts.StepAlias;
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
+        var pipeline = new CapturePipelineConfig(
+        [
+            new(ExposureMeasurementProducts.StepAlias, ExposureMeasurementProducts.StepAlias, 4,
+                null, ["$raw"], Required: false, Enabled: true, Publication: durable),
+            new(initialAlias, "preview", 10, null, ["$raw"], Required: true, Enabled: true)
+        ]);
+        var service = CreateEditorService(pipeline);
+        service.StepAliases = [initialAlias, RegionalStellarVisibilityProducts.StepAlias];
+        context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(service);
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/pipeline/graphs/new?from=rev-active");
+
+        var cut = context.Render<ProcessingGraphEditorPage>();
+
+        var predictionSelector = $"li.node-row[data-node-alias='{predictionAlias}']";
+        var typeSelect = cut.WaitForElement($".node-row[data-node-alias='{initialAlias}'] .node-row__head select[aria-label='Node type']");
+        Assert.IsEmpty(cut.FindAll(predictionSelector));
+
+        typeSelect.Change(RegionalStellarVisibilityProducts.StepAlias);
+
+        var inspect = cut.Find($"{predictionSelector} .node-row--builtin a");
+        Assert.AreEqual("Inspect built-in stage", inspect.TextContent.Trim());
+        Assert.AreEqual($"/operations/pipeline/graphs/rev-active/nodes/{predictionAlias}", inspect.GetAttribute("href"));
+
+        cut.Find("form").Submit();
+        cut.Find(".editor-actions button.btn-primary").Click();
+
+        var regional = service.Created.Single().Pipeline.Steps.Single(static step => step.Id == "preview");
+        Assert.AreEqual(RegionalStellarVisibilityProducts.StepAlias, regional.Type);
+        Assert.IsFalse(regional.Required);
+        Assert.AreEqual(durable, regional.Publication);
+        CollectionAssert.AreEquivalent(
+            new[] { "$raw", ExposureMeasurementProducts.StepAlias, predictionAlias }, regional.DependsOn!.ToArray());
+    }
+
+    [TestMethod]
     public void InvalidDraft_ReportsProblemsWithoutCallingTheService()
     {
         using var context = new BunitContext();
