@@ -22,6 +22,9 @@ public interface ICaptureProcessingPipelineFactory
         => CreateGraph(config);
 
     CaptureProcessingPlanPreview PreviewPlan(CameraModuleConfig config);
+
+    /// <summary>Compiles a saved graph revision preview under retained-capture compatibility without relaxing proposal validation.</summary>
+    CaptureProcessingPlanPreview PreviewRetainedPlan(CameraModuleConfig config) => PreviewPlan(config);
 }
 
 internal enum CaptureProcessingGraphCompilation

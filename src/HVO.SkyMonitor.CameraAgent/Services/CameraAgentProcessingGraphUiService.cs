@@ -378,7 +378,7 @@ internal sealed class CameraAgentProcessingGraphUiService(
             var candidate = configuration with { Pipeline = pipeline };
             if (authoredDraft) candidate = IProcessingGraphOperations.PrepareAuthoredDraft(candidate);
             CaptureStoragePolicy.EnsureMatchesProfile(candidate.Pipeline, configuration.Pipeline);
-            return (pipelineFactory.PreviewPlan(candidate), null);
+            return (authoredDraft ? pipelineFactory.PreviewPlan(candidate) : pipelineFactory.PreviewRetainedPlan(candidate), null);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

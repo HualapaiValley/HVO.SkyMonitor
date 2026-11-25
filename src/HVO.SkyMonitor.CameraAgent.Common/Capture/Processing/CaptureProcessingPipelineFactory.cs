@@ -63,6 +63,12 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         .ToArray();
 
     public CaptureProcessingPlanPreview PreviewPlan(CameraModuleConfig config)
+        => PreviewPlan(config, CaptureProcessingGraphCompilation.Proposal);
+
+    public CaptureProcessingPlanPreview PreviewRetainedPlan(CameraModuleConfig config)
+        => PreviewPlan(config, CaptureProcessingGraphCompilation.RetainedCapture);
+
+    private CaptureProcessingPlanPreview PreviewPlan(CameraModuleConfig config, CaptureProcessingGraphCompilation compilation)
     {
         ArgumentNullException.ThrowIfNull(config);
         var pipeline = config.Pipeline;
@@ -79,7 +85,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             null,
             null,
             step.Publication)).ToArray();
-        var graph = CreateGraph(config);
+        var graph = CreateGraph(config, "cameraagent-capture-processing", schemaVersion, compilation);
         try
         {
             var configuredById = desired.ToDictionary(static node => node.Id, StringComparer.OrdinalIgnoreCase);

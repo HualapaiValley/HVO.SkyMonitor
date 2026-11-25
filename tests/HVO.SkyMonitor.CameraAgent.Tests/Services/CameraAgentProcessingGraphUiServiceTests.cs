@@ -1,14 +1,20 @@
 using System.ComponentModel.DataAnnotations;
 using System.Security.Claims;
 using System.Text.Json;
+using Bunit;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Configuration;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Tests.Components;
 using HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 using HVO.SkyMonitor.Common.Security;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Components.Authorization;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 
@@ -370,6 +376,12 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
         operations.Setup(value => value.ReadRevisionPipelineAsync("rev-validated", It.IsAny<CancellationToken>())).ReturnsAsync(pipeline);
         var factory = new Mock<ICaptureProcessingPipelineFactory>(MockBehavior.Strict);
         CameraModuleConfig? compiled = null;
+        factory.Setup(value => value.PreviewRetainedPlan(It.IsAny<CameraModuleConfig>()))
+            .Returns<CameraModuleConfig>(config =>
+            {
+                compiled = config;
+                return new CaptureProcessingPlanPreview(config.Pipeline.SchemaVersion, config.Pipeline.DependencyPolicy, new string('D', 64), new string('E', 64), [], []);
+            });
         factory.Setup(value => value.PreviewPlan(It.IsAny<CameraModuleConfig>()))
             .Returns<CameraModuleConfig>(config =>
             {
@@ -389,12 +401,162 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
         Assert.AreEqual("test-agent", compiled.AgentId);
         Assert.AreEqual(OperatorUiResultKind.NotFound, missing.Kind);
         Assert.IsTrue(preview.IsSuccess);
+        factory.Verify(value => value.PreviewRetainedPlan(It.IsAny<CameraModuleConfig>()), Times.Once);
+        factory.Verify(value => value.PreviewPlan(It.IsAny<CameraModuleConfig>()), Times.Once);
         operations.Verify(value => value.CreateRevisionAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CapturePipelineConfig>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
 
         factory.Setup(value => value.PreviewPlan(It.IsAny<CameraModuleConfig>())).Throws(new InvalidOperationException("dependency cycle at /private/path"));
         var invalid = await service.PreviewAsync(pipeline, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(OperatorUiResultKind.Invalid, invalid.Kind);
         Assert.AreEqual("The desired graph contains a dependency cycle.", invalid.Message);
+    }
+
+    [TestMethod]
+    [DataRow("ScenePresentationLayer")]
+    [DataRow("SceneStylePresentationLayerV1")]
+    public async Task RevisionDetailCompilesRetainedPlexRegularGraphWithDisabledDeepSkyLabelsWhileProposalsRemainRejected(string alias)
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-retained-plex-detail");
+        try
+        {
+            const string overlayJson = """{ "includeDeepSkyLayer": true, "deepSkyLabels": false, "deepSkyFont": "PlexRegular" }""";
+            using var provider = ProcessingGraphOperationsTests.CreateRemainingOptionsProvider(root);
+            var pipeline = new CapturePipelineConfig(
+            [
+                new("ProjectedScene", "scene", 10, null, ["$raw"], Enabled: true),
+                new(alias, "overlay", 20, JsonDocument.Parse(overlayJson).RootElement.Clone(), ["scene"], Enabled: true)
+            ]);
+            var config = ProcessingGraphOperationsTests.CreateProjectedSceneConfiguration() with
+            {
+                Pipeline = pipeline
+            };
+            await provider.GetRequiredService<IRawCaptureIngress>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+            var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
+            var initial = await operations.EnsureConfiguredBasicAsync(config, CancellationToken.None).ConfigureAwait(false);
+
+            var accessor = new CameraAgentConfigurationAccessor();
+            accessor.SetConfiguration(config);
+            var user = new ClaimsPrincipal(new ClaimsIdentity(
+            [
+                new Claim(ClaimTypes.NameIdentifier, "owner-id"),
+                new Claim(CanonicalCredentialClaims.AccountTypeClaim, CanonicalCredentialClaims.UserAccountType)
+            ], Microsoft.AspNetCore.Identity.IdentityConstants.ApplicationScheme));
+            var authorization = new Mock<IAuthorizationService>(MockBehavior.Strict);
+            authorization.Setup(auth => auth.AuthorizeAsync(user, null, It.IsAny<string>()))
+                .ReturnsAsync(AuthorizationResult.Success());
+            var service = new CameraAgentProcessingGraphUiService(
+                new StubAuthenticationStateProvider(user),
+                authorization.Object,
+                operations,
+                factory,
+                accessor,
+                null,
+                new ProcessingExecutionPagesTests.FixedTimeProvider(Now),
+                NullLogger<CameraAgentProcessingGraphUiService>.Instance);
+
+            var detail = await service.GetRevisionDetailAsync(initial.ActiveRevisionId, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsTrue(detail.IsSuccess, detail.Message);
+            Assert.IsNotNull(detail.Value!.Plan, $"Retained {alias} revision with PlexRegular and deepSkyLabels=false must compile on Graph Revision Details; failure={detail.Value.PlanFailure}");
+            Assert.IsNull(detail.Value.PlanFailure);
+
+            using var context = new BunitContext();
+            context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(service);
+            var cut = context.Render<ProcessingGraphDetailPage>(parameters => parameters
+                .Add(static page => page.RevisionId, initial.ActiveRevisionId));
+            cut.WaitForElement(".definition-list");
+            StringAssert.Contains(cut.Markup, "Effective graph", StringComparison.Ordinal);
+            Assert.IsFalse(cut.Markup.Contains("does not compile today", StringComparison.Ordinal),
+                $"Graph Revision Details must not reject retained {alias} PlexRegular graph.");
+
+            // New proposals with active legacy PlexRegular remain rejected at both the UI service and factory proposal boundary.
+            var proposedPreview = await service.PreviewAsync(pipeline, CancellationToken.None).ConfigureAwait(false);
+            var proposedCreate = await service.CreateRevisionAsync("proposed", "2", pipeline, "prop-key", null, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(OperatorUiResultKind.Invalid, proposedPreview.Kind);
+            Assert.AreEqual(OperatorUiResultKind.Invalid, proposedCreate.Kind);
+            StringAssert.Contains(proposedPreview.Message!, "processing.options.not-allowed", StringComparison.Ordinal);
+            StringAssert.Contains(proposedCreate.Message!, "processing.options.not-allowed", StringComparison.Ordinal);
+            Assert.ThrowsExactly<ValidationException>(() => factory.PreviewPlan(config));
+            Assert.IsNotNull(factory.PreviewRetainedPlan(config));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task RetainedQuotedNumberAllowanceRejectsAddedRenamedAndEditedStepsWhileAllowingUntouchedSourceStep()
+    {
+        var manifestQuoted12 = JsonDocument.Parse("""{"layers":[{"kind":"scene-constellations","enabled":false,"zOrder":"12"}]}""").RootElement.Clone();
+        var manifestEdited = JsonDocument.Parse("""{"layers":[{"kind":"scene-constellations","enabled":true,"zOrder":"12"}]}""").RootElement.Clone();
+        var jpeg85 = JsonDocument.Parse("""{"jpegQuality":85}""").RootElement.Clone();
+        var jpeg92 = JsonDocument.Parse("""{"jpegQuality":92}""").RootElement.Clone();
+        var sourcePipeline = new CapturePipelineConfig(
+        [
+            new("JpegEncoding", "jpeg", 10, jpeg85, ["$raw"], Enabled: true),
+            new("OverlayManifest", "manifest", 20, manifestQuoted12, ["jpeg"], Enabled: true)
+        ]);
+
+        // Positive control: untouched source step passes PreviewAsync and CreateRevisionAsync when sourceRevisionId is supplied.
+        var untouchedCandidate = new CapturePipelineConfig(
+        [
+            new("JpegEncoding", "jpeg", 10, jpeg92, ["$raw"], Enabled: true),
+            new("OverlayManifest", "manifest", 20, manifestQuoted12, ["jpeg"], Enabled: true)
+        ]);
+        var positiveOps = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
+        positiveOps.Setup(value => value.ReadRevisionPipelineAsync("rev-source", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(sourcePipeline);
+        positiveOps.Setup(value => value.CreateRevisionAsync("draft", "2", untouchedCandidate, "create-ok", "owner-id", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ProcessingGraphRevisionState("rev-new", "draft", "2", ProcessingGraphRevisionLifecycle.Draft,
+                new string('A', 64), new string('B', 64), new string('C', 64), Now, null, null, null));
+        var positiveFactory = new Mock<ICaptureProcessingPipelineFactory>(MockBehavior.Strict);
+        positiveFactory.Setup(value => value.PreviewPlan(It.Is<CameraModuleConfig>(cfg => cfg.Pipeline == untouchedCandidate)))
+            .Returns(new CaptureProcessingPlanPreview(untouchedCandidate.SchemaVersion, untouchedCandidate.DependencyPolicy, new string('D', 64), new string('E', 64), [], []));
+        var positiveService = CreateService(positiveOps.Object, authorized: true, positiveFactory.Object);
+        Assert.IsTrue((await positiveService.PreviewAsync(untouchedCandidate, "rev-source", CancellationToken.None).ConfigureAwait(false)).IsSuccess);
+        Assert.IsTrue((await positiveService.CreateRevisionAsync("draft", "2", untouchedCandidate, "create-ok", null, "rev-source", CancellationToken.None).ConfigureAwait(false)).IsSuccess);
+
+        // Negative cases: newly added, renamed, or edited step carrying a quoted number must all be rejected even with sourceRevisionId.
+        var negativeCases = new (string Label, CapturePipelineConfig Candidate)[]
+        {
+            ("added", new CapturePipelineConfig(
+            [
+                new("JpegEncoding", "jpeg", 10, jpeg85, ["$raw"], Enabled: true),
+                new("OverlayManifest", "manifest", 20, manifestQuoted12, ["jpeg"], Enabled: true),
+                new("OverlayManifest", "manifest-added", 30, manifestQuoted12, ["jpeg"], Enabled: true)
+            ])),
+            ("renamed", new CapturePipelineConfig(
+            [
+                new("JpegEncoding", "jpeg", 10, jpeg85, ["$raw"], Enabled: true),
+                new("OverlayManifest", "manifest-renamed", 20, manifestQuoted12, ["jpeg"], Enabled: true)
+            ])),
+            ("edited", new CapturePipelineConfig(
+            [
+                new("JpegEncoding", "jpeg", 10, jpeg85, ["$raw"], Enabled: true),
+                new("OverlayManifest", "manifest", 20, manifestEdited, ["jpeg"], Enabled: true)
+            ]))
+        };
+
+        foreach (var (label, candidate) in negativeCases)
+        {
+            var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
+            operations.Setup(value => value.ReadRevisionPipelineAsync("rev-source", It.IsAny<CancellationToken>()))
+                .ReturnsAsync(sourcePipeline);
+            var factory = new Mock<ICaptureProcessingPipelineFactory>(MockBehavior.Strict);
+            var service = CreateService(operations.Object, authorized: true, factory.Object);
+
+            var preview = await service.PreviewAsync(candidate, "rev-source", CancellationToken.None).ConfigureAwait(false);
+            var created = await service.CreateRevisionAsync("draft", "2", candidate, $"create-{label}", null, "rev-source", CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(OperatorUiResultKind.Invalid, preview.Kind, $"{label}: preview should fail");
+            Assert.AreEqual(OperatorUiResultKind.Invalid, created.Kind, $"{label}: create should fail");
+            StringAssert.Contains(preview.Message!, "processing.options.wrong-type", StringComparison.Ordinal, label);
+            StringAssert.Contains(created.Message!, "processing.options.wrong-type", StringComparison.Ordinal, label);
+            factory.VerifyNoOtherCalls();
+            operations.Verify(value => value.CreateRevisionAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CapturePipelineConfig>(),
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+        }
     }
 
     [TestMethod]

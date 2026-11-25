@@ -869,7 +869,6 @@ public sealed class ProcessingNodeConfigPageTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
             Directory.Delete(root, recursive: true);
         }
     }

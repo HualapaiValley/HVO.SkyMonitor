@@ -150,9 +150,13 @@ public sealed class ProcessingGraphDraftModelTests
     }
 
     [TestMethod]
-    public void UntouchedOverlayManifestWithQuotedZOrderSurvivesUnrelatedNodeEditByteForByte()
+    [DataRow("12")]
+    [DataRow("+12")]
+    [DataRow("012")]
+    [DataRow("-0")]
+    public void UntouchedOverlayManifestWithQuotedZOrderSurvivesUnrelatedNodeEditByteForByte(string quotedZOrder)
     {
-        const string manifestJson = """{ "layers": [ { "kind": "scene-constellations", "enabled": false, "zOrder": "12", "future": 1e+02 } ] }""";
+        var manifestJson = $$"""{ "layers": [ { "kind": "scene-constellations", "enabled": false, "zOrder": "{{quotedZOrder}}", "future": 1e+02 } ] }""";
         var source = new CapturePipelineConfig(
         [
             new CaptureProcessingStepConfig("JpegEncoding", "jpeg", 10,

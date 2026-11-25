@@ -591,7 +591,7 @@ public static class ProcessingNodeOptionsCodec
         {
             return false;
         }
-        var span = text[0] == '-' ? text.AsSpan(1) : text.AsSpan();
+        var span = text[0] is '-' or '+' ? text.AsSpan(1) : text.AsSpan();
         return !span.IsEmpty && !span.ContainsAnyExceptInRange('0', '9');
     }
 

@@ -178,17 +178,31 @@ public sealed partial class ProcessingNodeOptionsTests
             Assert.AreEqual(ProcessingOptionReasonCodes.NotAllowed, editedFont.Diagnostics.Single().Code);
         }
 
-        // Retained quoted numeric tolerance accepts runtime-valid quoted zOrder while keeping range and type checks.
-        var quotedManifest = Json("""{"layers":[{"kind":"scene-constellations","enabled":false,"zOrder":"12","future":1e+02}]}""");
-        Assert.IsFalse(ProcessingNodeOptionsCodec.Decode(OverlayManifestOptionDescriptors.Descriptor, quotedManifest).IsValid);
-        Assert.IsTrue(ProcessingNodeOptionsCodec.Decode(OverlayManifestOptionDescriptors.Descriptor, quotedManifest,
-            ProcessingNodeOptionsCodec.DefaultPath, allowQuotedNumbers: true).IsValid);
+        // Retained quoted numeric tolerance accepts runtime-valid quoted zOrder spellings (including +12, 012, -0)
+        // while keeping strict mode unchanged and preserving range and type checks.
+        foreach (var (quotedToken, expectedValue) in new[] { ("12", 12L), ("+12", 12L), ("012", 12L), ("-0", 0L) })
+        {
+            var quotedManifest = Json($$"""{"layers":[{"kind":"scene-constellations","enabled":false,"zOrder":"{{quotedToken}}","future":1e+02}]}""");
+            Assert.IsFalse(ProcessingNodeOptionsCodec.Decode(OverlayManifestOptionDescriptors.Descriptor, quotedManifest).IsValid, quotedToken);
+            Assert.IsTrue(ProcessingNodeOptionsCodec.Decode(OverlayManifestOptionDescriptors.Descriptor, quotedManifest,
+                ProcessingNodeOptionsCodec.DefaultPath, allowQuotedNumbers: true).IsValid, quotedToken);
+            var rowDecoded = ProcessingNodeOptionsCodec.Decode(
+                OverlayManifestOptionDescriptors.Layer,
+                Json($$"""{"kind":"scene-constellations","zOrder":"{{quotedToken}}"}"""),
+                ProcessingNodeOptionsCodec.DefaultPath,
+                allowQuotedNumbers: true);
+            Assert.IsTrue(rowDecoded.IsValid, quotedToken);
+            Assert.AreEqual(expectedValue, rowDecoded.Get("zOrder").Value.AsNullableWholeNumber(), quotedToken);
+        }
         Assert.AreEqual(ProcessingOptionReasonCodes.OutOfRange, ProcessingNodeOptionsCodec.Decode(OverlayManifestOptionDescriptors.Descriptor,
             Json("""{"layers":[{"kind":"scene-constellations","zOrder":"9999"}]}"""),
             ProcessingNodeOptionsCodec.DefaultPath, allowQuotedNumbers: true).Diagnostics.Single().Code);
-        Assert.AreEqual(ProcessingOptionReasonCodes.WrongType, ProcessingNodeOptionsCodec.Decode(OverlayManifestOptionDescriptors.Descriptor,
-            Json("""{"layers":[{"kind":"scene-constellations","zOrder":"abc"}]}"""),
-            ProcessingNodeOptionsCodec.DefaultPath, allowQuotedNumbers: true).Diagnostics.Single().Code);
+        foreach (var badToken in new[] { "abc", "+", "-", "++12", "+ 12" })
+        {
+            Assert.AreEqual(ProcessingOptionReasonCodes.WrongType, ProcessingNodeOptionsCodec.Decode(OverlayManifestOptionDescriptors.Descriptor,
+                Json($$"""{"layers":[{"kind":"scene-constellations","zOrder":"{{badToken}}"}]}"""),
+                ProcessingNodeOptionsCodec.DefaultPath, allowQuotedNumbers: true).Diagnostics.Single().Code, badToken);
+        }
     }
 
     [TestMethod]

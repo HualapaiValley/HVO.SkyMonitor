@@ -1,11 +1,21 @@
+using System.Security.Claims;
+using System.Text.Json;
 using Bunit;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Configuration;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Components.Operations;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
+using HVO.SkyMonitor.Common.Security;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Components;
+using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
@@ -149,5 +159,101 @@ public sealed class ProcessingGraphEditorPageTests
         Assert.IsNotNull(cut.Find("g.diagram-node--disabled"));
         cut.FindAll("g[role='button']")[1].KeyDown(new Microsoft.AspNetCore.Components.Web.KeyboardEventArgs { Key = "Enter" });
         Assert.AreEqual("telemetry", selected);
+    }
+
+    [TestMethod]
+    public async Task GraphEditorE2E_UntouchedOverlayManifestWithQuotedZOrderSurvivesUnrelatedJpegEditThroughPreviewAndSave()
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-editor-quoted-zorder");
+        try
+        {
+            const string manifestJson = """{ "outputVariant": "overlay-manifest-v1", "basePreviewVariant": "combined-preview", "layers": [ { "kind": "scene-constellations", "enabled": false, "zOrder": "12", "future": 1e+02 } ] }""";
+            using var provider = ProcessingGraphOperationsTests.CreateRemainingOptionsProvider(root);
+            var pipeline = new CapturePipelineConfig(
+            [
+                new("Calibration", "calibration", 10, null, ["$raw"], Enabled: true),
+                new("RollingCombination", "rolling", 20, null, ["calibration"], Enabled: true),
+                new("CombinedPreview", "preview", 30, null, ["rolling"], Enabled: true),
+                new("ProjectedScene", "scene", 40, null, ["$raw"], Enabled: true),
+                new("ScenePresentationLayer", "scene-layer", 50, null, ["scene"], Enabled: true),
+                new("EnvironmentPresentationLayer", "env-layer", 60,
+                    JsonDocument.Parse("""{ "widthPixels": 1936, "heightPixels": 1216 }""").RootElement.Clone(), ["scene", "preview"], Enabled: true),
+                new("OverlayManifest", "manifest", 70,
+                    JsonDocument.Parse(manifestJson).RootElement.Clone(), ["preview", "scene-layer", "env-layer"], Enabled: true),
+                new("PresentationMaterializer", "materializer", 75,
+                    null, ["preview", "manifest", "scene-layer", "env-layer"], Enabled: true),
+                new("JpegEncoding", "jpeg", 80,
+                    JsonDocument.Parse("""{ "jpegQuality": 85 }""").RootElement.Clone(), ["materializer"], Enabled: true)
+            ]);
+            var profile = SchedulePageTests.Profile();
+            var config = new CameraModuleConfig(
+                new ObservatoryLocation(35.0, -114.0, 1000, "UTC"),
+                profile.Module,
+                profile.Rig,
+                pipeline,
+                AgentId: "editor-quoted-zorder-e2e")
+            {
+                Schedule = profile.Schedule
+            };
+            await provider.GetRequiredService<IRawCaptureIngress>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+            var initial = await operations.EnsureConfiguredBasicAsync(config, CancellationToken.None).ConfigureAwait(false);
+            var storedInitialPipeline = await operations.ReadRevisionPipelineAsync(initial.ActiveRevisionId, CancellationToken.None).ConfigureAwait(false);
+            var storedInitialManifestRaw = storedInitialPipeline!.Steps.Single(static step => step.Id == "manifest").Options!.Value.GetRawText();
+            StringAssert.Contains(storedInitialManifestRaw, "\"zOrder\":\"12\"", StringComparison.Ordinal);
+            StringAssert.Contains(storedInitialManifestRaw, "\"future\":1e+02", StringComparison.Ordinal);
+
+            using var context = new BunitContext();
+            context.JSInterop.Mode = JSRuntimeMode.Loose;
+            var auth = context.AddAuthorization();
+            auth.SetAuthorized("owner");
+            auth.SetPolicies(CameraAgentAuthorizationPolicyNames.OperationsReadV1, CameraAgentAuthorizationPolicyNames.OperationsMutateV1);
+            var owner = new ClaimsPrincipal(new ClaimsIdentity(
+                [new Claim(ClaimTypes.NameIdentifier, "editor-owner"),
+                 new Claim(CanonicalCredentialClaims.AccountTypeClaim, CanonicalCredentialClaims.UserAccountType)],
+                Microsoft.AspNetCore.Identity.IdentityConstants.ApplicationScheme));
+            context.Services.AddSingleton<AuthenticationStateProvider>(new StubAuthProvider(owner));
+            var accessor = new CameraAgentConfigurationAccessor();
+            accessor.SetConfiguration(config);
+            context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(services => new CameraAgentProcessingGraphUiService(
+                services.GetRequiredService<AuthenticationStateProvider>(),
+                services.GetRequiredService<IAuthorizationService>(),
+                operations,
+                provider.GetRequiredService<ICaptureProcessingPipelineFactory>(),
+                accessor,
+                null,
+                TimeProvider.System,
+                NullLogger<CameraAgentProcessingGraphUiService>.Instance));
+
+            var navigation = context.Services.GetRequiredService<NavigationManager>();
+            navigation.NavigateTo($"/operations/pipeline/graphs/new?from={Uri.EscapeDataString(initial.ActiveRevisionId)}");
+            var cut = context.Render<ProcessingGraphEditorPage>();
+
+            var quality = cut.WaitForElement(".node-row[data-node-alias='JpegEncoding'] input[id$='-jpegQuality']");
+            Assert.AreEqual("85", quality.GetAttribute("value"));
+            await quality.ChangeAsync(new ChangeEventArgs { Value = "92" }).ConfigureAwait(false);
+            await cut.Find("form").SubmitAsync().ConfigureAwait(false);
+            cut.WaitForElement(".editor-preview .plan-view");
+            cut.WaitForAssertion(() => Assert.IsFalse(cut.Find(".editor-actions .btn-primary").HasAttribute("disabled")));
+            await cut.Find(".editor-actions .btn-primary").ClickAsync(new()).ConfigureAwait(false);
+            cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "saved as an immutable revision", StringComparison.Ordinal));
+
+            var registry = await operations.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false);
+            var draft = registry.Revisions.Single(revision => revision.RevisionId != initial.ActiveRevisionId);
+            var savedPipeline = await operations.ReadRevisionPipelineAsync(draft.RevisionId, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(savedPipeline);
+            Assert.AreEqual(92, savedPipeline.Steps.Single(static step => step.Id == "jpeg").Options!.Value.GetProperty("jpegQuality").GetInt32());
+            Assert.AreEqual(storedInitialManifestRaw, savedPipeline.Steps.Single(static step => step.Id == "manifest").Options!.Value.GetRawText(),
+                "Graph editor preview and save must pass sourceRevisionId so an untouched OverlayManifest with quoted zOrder survives byte-for-byte.");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private sealed class StubAuthProvider(ClaimsPrincipal principal) : AuthenticationStateProvider
+    {
+        public override Task<AuthenticationState> GetAuthenticationStateAsync() => Task.FromResult(new AuthenticationState(principal));
     }
 }
