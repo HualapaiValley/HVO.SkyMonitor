@@ -14,6 +14,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Focus;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture.Focus")]
 public sealed class ManualFocusSessionCoordinatorTests
 {
     private static readonly ManualFocusPreviewSettings Gain20 = new(TimeSpan.FromSeconds(1), 20);
@@ -166,7 +167,10 @@ public sealed class ManualFocusSessionCoordinatorTests
     }
 
     [TestMethod]
-    public async Task MinimumSamplePeriod_PacesAnInstantCameraAndStopInterruptsTheWait()
+    public async Task MinimumSamplePeriod_PacesAnInstantCameraAndStopInterruptsTheWait() =>
+        _ = await VerifyStopDuringPacedWaitAsync().ConfigureAwait(false);
+
+    internal static async Task<TimeSpan> VerifyStopDuringPacedWaitAsync()
     {
         var fixture = await FocusOwnerFixture.CreateAsync().ConfigureAwait(false);
         await using var fixtureScope = fixture.ConfigureAwait(false);
@@ -184,16 +188,17 @@ public sealed class ManualFocusSessionCoordinatorTests
         var waiting = await slow.StartAsync(new(Gain20, 560), "alice", CancellationToken.None).ConfigureAwait(false);
         await FocusWait.UntilAsync(slow, static s => s.TotalSamples >= 1, "the first sample").ConfigureAwait(false);
         var stopWatch = System.Diagnostics.Stopwatch.StartNew();
-        var stopped = await slow.StopAsync(waiting.SessionId, "alice", CancellationToken.None).ConfigureAwait(false);
+        var stopped = await slow.StopAsync(waiting.SessionId, "alice", CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
         stopWatch.Stop();
 
         // The third exposure cannot begin before two periods have passed since the first; unpaced VirtualSky takes ~0.15 s.
         Assert.IsGreaterThanOrEqualTo(TimeSpan.FromMilliseconds(800), toThirdSample);
         Assert.AreEqual(ManualFocusReasonCodes.StoppedByOperator, stopped.EndReason);
         Assert.AreEqual(1, stopped.TotalSamples, "No exposure is taken while the loop waits out its period.");
-        Assert.IsLessThan(TimeSpan.FromSeconds(5), stopWatch.Elapsed, "Stop must not wait out the sample period.");
         Assert.IsTrue(await fixture.Ownership.RevokeAsync(TimeSpan.Zero).ConfigureAwait(false),
             "No module lease outlives a session stopped during its wait.");
+        return stopWatch.Elapsed;
     }
 
     [TestMethod]
@@ -470,7 +475,10 @@ public sealed class ManualFocusSessionCoordinatorTests
     }
 
     [TestMethod]
-    public async Task Stop_CancelsTheInFlightExposureImmediatelyAndReleasesTheCamera()
+    public async Task Stop_CancelsTheInFlightExposureAndReleasesTheCamera() =>
+        _ = await VerifyStopDuringExposureAsync().ConfigureAwait(false);
+
+    internal static async Task<TimeSpan> VerifyStopDuringExposureAsync()
     {
         var fixture = await FocusOwnerFixture.CreateAsync().ConfigureAwait(false);
         await using var fixtureScope = fixture.ConfigureAwait(false);
@@ -484,15 +492,16 @@ public sealed class ManualFocusSessionCoordinatorTests
         Assert.IsFalse(await fixture.CaptureAdmittedWithinAsync(TimeSpan.FromMilliseconds(100)).ConfigureAwait(false),
             "A normal capture must not be admitted while a preview holds the camera.");
         var watch = System.Diagnostics.Stopwatch.StartNew();
-        var stopped = await coordinator.StopAsync(session.SessionId, "alice", CancellationToken.None).ConfigureAwait(false);
+        var stopped = await coordinator.StopAsync(session.SessionId, "alice", CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
         watch.Stop();
 
         Assert.AreEqual(ManualFocusSessionState.Stopped, stopped.State);
         Assert.AreEqual(ManualFocusReasonCodes.StoppedByOperator, stopped.EndReason);
-        Assert.IsLessThan(TimeSpan.FromSeconds(5), watch.Elapsed, "Stop must not wait for the 60 s exposure.");
         Assert.AreEqual(1, module.CancelledPreviews);
         Assert.IsTrue(await fixture.CaptureAdmittedWithinAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false));
         Assert.IsTrue(await fixture.Ownership.RevokeAsync(TimeSpan.Zero).ConfigureAwait(false));
+        return watch.Elapsed;
     }
 
     [TestMethod]

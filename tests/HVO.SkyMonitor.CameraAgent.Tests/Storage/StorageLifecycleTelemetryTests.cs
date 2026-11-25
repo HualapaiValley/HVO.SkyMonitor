@@ -8,6 +8,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Storage;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Storage")]
 [DoNotParallelize]
 public sealed class StorageLifecycleTelemetryTests
 {

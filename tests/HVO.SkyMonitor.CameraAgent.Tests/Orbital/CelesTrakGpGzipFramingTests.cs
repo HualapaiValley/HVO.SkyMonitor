@@ -7,6 +7,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Orbital;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Orbital")]
 public sealed class CelesTrakGpGzipFramingTests
 {
     private static readonly byte[] Payload = Encoding.UTF8.GetBytes("[{\"NORAD_CAT_ID\":25544}]");

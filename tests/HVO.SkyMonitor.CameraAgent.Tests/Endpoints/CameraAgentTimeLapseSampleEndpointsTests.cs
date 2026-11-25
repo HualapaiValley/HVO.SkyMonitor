@@ -12,6 +12,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Endpoints")]
 public sealed class CameraAgentTimeLapseSampleEndpointsTests
 {
     private string _root = null!;

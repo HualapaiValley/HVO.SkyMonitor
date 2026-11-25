@@ -40,6 +40,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 /// <summary>Real endpoint binding, installation authentication, JSON transport and SQLite pause/resume; process and hardware effects are fakes.</summary>
 [TestClass]
 [TestCategory("Integration")]
+[TestProperty("Area", "Endpoints")]
 public sealed class InstallerLifecycleControlIntegrationTests
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);

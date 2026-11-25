@@ -24,6 +24,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Endpoints")]
 [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task",
     Justification = "WebApplication must remain available for the full test scope.")]
 public sealed partial class CameraAgentProcessingGraphOperationsEndpointsTests

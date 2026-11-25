@@ -14,6 +14,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Environmental;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Environmental")]
 public sealed class EnvironmentalAcquisitionServiceTests
 {
     private static readonly DateTimeOffset Epoch = new(2026, 1, 15, 8, 0, 0, TimeSpan.Zero);
@@ -389,8 +390,14 @@ public sealed class EnvironmentalAcquisitionServiceTests
     }
 
     private sealed class StorePublisher(SqliteEnvironmentalObservationOutbox store, string root)
-        : IEnvironmentalObservationPublisher
+        : IEnvironmentalObservationPublisher, IEnvironmentalHeldPollPublisher
     {
+        public bool SupportsHeldPollSettlement => true;
+
+        public async ValueTask<EnvironmentalAcquisitionReceipt> PublishHeldPollAsync(
+            EnvironmentalObservationFactV1 fact, EnvironmentalHeldPoll poll, CancellationToken cancellationToken)
+            => (await store.CommitHeldPollAsync(root, fact, poll, cancellationToken).ConfigureAwait(false)).HeldPollReceipt!;
+
         public async ValueTask<EnvironmentalObservationPublishResult> PublishAsync(
             EnvironmentalObservationFactV1 fact,
             CancellationToken cancellationToken = default)

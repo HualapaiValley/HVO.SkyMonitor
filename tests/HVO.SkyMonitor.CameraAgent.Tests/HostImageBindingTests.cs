@@ -10,6 +10,7 @@ using Microsoft.Extensions.Logging;
 namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 [TestClass]
+[TestProperty("Area", "Hosting")]
 public sealed class HostImageBindingTests
 {
     [TestMethod]

@@ -5,6 +5,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Environmental;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Environmental")]
 public sealed class EnvironmentalAcquisitionRuntimeManifestTests
 {
     private static readonly string[] ExpectedMetrics =

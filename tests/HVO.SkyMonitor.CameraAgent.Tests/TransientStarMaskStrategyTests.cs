@@ -11,6 +11,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "Modules.VirtualSky")]
 [DoNotParallelize]
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 public sealed class TransientStarMaskStrategyTests

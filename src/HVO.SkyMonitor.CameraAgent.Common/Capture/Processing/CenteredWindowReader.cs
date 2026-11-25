@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Processing;
 
@@ -7,11 +8,26 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 public sealed record CenteredWindowSlotSnapshot(int Offset, DateTimeOffset ExpectedStartUtc,
     ExposureAttemptKey? Attempt, ExposureKey? Exposure, CenteredWindowSlotState? State, string? Reason);
 
+[JsonConverter(typeof(JsonStringEnumConverter<CenteredRegistrationInputFailureKind>))]
+public enum CenteredRegistrationInputFailureKind
+{
+    Unavailable,
+    ReadError
+}
+
+/// <summary>Identifies the frozen input that prevented registration before its deadline.</summary>
+public sealed record CenteredRegistrationInputFailure(ExposureKey Exposure, CenteredStackArtifactPin Artifact,
+    CenteredRegistrationInputFailureKind Kind);
+
 public sealed record CenteredWindowSnapshot(Guid ReferenceCaptureId, string WindowIdentity, CameraKey Camera, Guid RunId,
     DateTimeOffset DeadlineUtc, DateTimeOffset? EvidenceCutoffUtc, string? ClosureIdentity,
     bool IsTerminal, string? FailureReason, Guid? EvidenceArtifactId, string? PlanSha256,
     CenteredStackDisposition? StackDisposition, ImmutableArray<Guid> ContributingCaptureIds,
-    ImmutableArray<CenteredWindowSlotSnapshot> Slots);
+    ImmutableArray<CenteredWindowSlotSnapshot> Slots)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CenteredRegistrationInputFailure? RegistrationInputFailure { get; init; }
+}
 
 /// <summary>
 /// Reads the original live scheduling and registration evidence for an exact admitted center.
@@ -50,6 +66,9 @@ internal sealed class CenteredWindowReader(SqliteCaptureProcessingStore store) :
         return new(referenceCaptureId, schedule.Identity, schedule.Camera, schedule.RunId, schedule.DeadlineUtc,
             closed?.Closure.EvidenceCutoffUtc, closed?.Closure.Identity, closed?.IsTerminal ?? false, closed?.FailureReason,
             publication?.EvidenceArtifactId, publication?.PlanSha256, publication?.StackDisposition,
-            publication?.ContributingCaptureIds ?? [], slots);
+            publication?.ContributingCaptureIds ?? [], slots)
+        {
+            RegistrationInputFailure = closed is { IsTerminal: true } ? closed.InputFailure : null
+        };
     }
 }

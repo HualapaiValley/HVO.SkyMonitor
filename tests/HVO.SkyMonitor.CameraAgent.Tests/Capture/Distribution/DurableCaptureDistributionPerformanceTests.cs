@@ -26,6 +26,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Distribution;
 
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "Capture.Distribution")]
 [DoNotParallelize]
 public sealed class DurableCaptureDistributionPerformanceTests
 {

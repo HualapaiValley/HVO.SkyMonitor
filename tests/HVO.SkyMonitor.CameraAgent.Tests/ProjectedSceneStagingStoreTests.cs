@@ -8,6 +8,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Modules.VirtualSky")]
 [DoNotParallelize]
 public sealed partial class ProjectedSceneStagingStoreTests
 {

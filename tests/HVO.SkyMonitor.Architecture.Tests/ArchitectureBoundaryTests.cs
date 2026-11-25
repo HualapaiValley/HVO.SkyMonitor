@@ -42,7 +42,6 @@ public sealed class ArchitectureBoundaryTests
     // dependency rule is asserted by StorageFileSystemBoundaryIsNarrowWhenPresent.
     private const string StorageFileSystem = "HVO.SkyMonitor.Storage.FileSystem";
     private const string TestSupport = "HVO.SkyMonitor.TestSupport";
-    private const string LogicHostTestInfrastructure = "HVO.SkyMonitor.LogicHost.TestInfrastructure";
     private const string FixtureCatalogSha256 = "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840";
 
     private static readonly string[] ProjectSearchDirectories = ["src", "tests", "scripts", "tools"];
@@ -111,14 +110,6 @@ public sealed class ArchitectureBoundaryTests
         "HVO.SkyMonitor.CameraAgent.AcceptanceTests",
         "HVO.SkyMonitor.CameraAgent.IntegrationTests",
         "HVO.SkyMonitor.CameraAgent.Tests");
-
-    private static readonly IReadOnlySet<string> LogicHostTestProjects = Set(
-        "HVO.SkyMonitor.LogicHost.IntegrationTests",
-        "HVO.SkyMonitor.LogicHost.Tests");
-
-    private static readonly IReadOnlySet<string> CombinedTestProjects = Set(
-        "HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests",
-        "HVO.SkyMonitor.CameraAgent.LogicHost.Tests");
 
     private static readonly string[] ShippedSourceRoots = ["src", "tools"];
 
@@ -406,12 +397,7 @@ public sealed class ArchitectureBoundaryTests
     {
         var repository = Repository.Value;
         var violations = repository.ValidateProductionReferences(AllowedProductionReferences)
-            .Concat(repository.ValidateTestOwnership(
-                SharedTestProjects,
-                CameraAgentTestProjects,
-                LogicHostTestProjects,
-                CombinedTestProjects,
-                LogicHostTestInfrastructure))
+            .Concat(repository.ValidateTestOwnership(SharedTestProjects, CameraAgentTestProjects))
             .Order(StringComparer.Ordinal)
             .ToArray();
 
@@ -1196,14 +1182,13 @@ public sealed class ArchitectureBoundaryTests
             .Select(project => project.AssemblyName)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var hostName in new[] { CameraAgent, LogicHost, CameraAgentReplayRunner, ProcessingRunner })
+        foreach (var hostName in new[] { CameraAgent, CameraAgentReplayRunner, ProcessingRunner })
         {
             var output = string.IsNullOrWhiteSpace(evidenceRoot)
                 ? Path.Combine(Path.GetTempPath(), $"skymonitor-architecture-{hostName}-{Guid.NewGuid():N}")
                 : hostName switch
                 {
                     CameraAgent => Path.Combine(evidenceRoot, "cameraagent"),
-                    LogicHost => Path.Combine(evidenceRoot, "logichost"),
                     ProcessingRunner => Path.Combine(evidenceRoot, "processing-runner", "linux-x64"),
                     _ => Path.Combine(evidenceRoot, "replay-runner", "linux-x64")
                 };
@@ -1627,19 +1612,14 @@ public sealed class ArchitectureBoundaryTests
 
         public string[] ValidateTestOwnership(
             IReadOnlySet<string> sharedProjects,
-            IReadOnlySet<string> cameraAgentProjects,
-            IReadOnlySet<string> logicHostProjects,
-            IReadOnlySet<string> combinedProjects,
-            string logicHostInfrastructure)
+            IReadOnlySet<string> cameraAgentProjects)
         {
             var violations = new List<string>();
             var classified = sharedProjects
                 .Concat(cameraAgentProjects)
-                .Concat(logicHostProjects)
-                .Concat(combinedProjects)
                 .ToHashSet(StringComparer.Ordinal);
 
-            foreach (var projectName in classified.Append(logicHostInfrastructure).Where(name => !Projects.ContainsKey(name)))
+            foreach (var projectName in classified.Where(name => !Projects.ContainsKey(name)))
             {
                 violations.Add($"ARCH-TEST-MISSING: Documented test project '{projectName}' was not found.");
             }
@@ -1647,7 +1627,6 @@ public sealed class ArchitectureBoundaryTests
             foreach (var project in Projects.Values.Where(project =>
                 project.Kind == ProjectKind.Test &&
                 project.Name != TestSupport &&
-                project.Name != logicHostInfrastructure &&
                 !classified.Contains(project.Name)))
             {
                 violations.Add($"ARCH-TEST-CLASSIFY: Test project '{project.Name}' has no documented owner.");
@@ -1659,8 +1638,7 @@ public sealed class ArchitectureBoundaryTests
                 foreach (var reference in project.References.Where(reference =>
                     Projects.TryGetValue(reference, out var target) &&
                     target.Kind == ProjectKind.Test &&
-                    reference != TestSupport &&
-                    reference != logicHostInfrastructure))
+                    reference != TestSupport))
                 {
                     violations.Add($"ARCH-TEST-ASSEMBLY: Test project '{projectName}' references test assembly '{reference}'.");
                 }
@@ -1678,14 +1656,6 @@ public sealed class ArchitectureBoundaryTests
                 if (cameraAgentProjects.Contains(projectName) && reachesLogicHost)
                 {
                     violations.Add($"ARCH-TEST-CAMERA: CameraAgent test project '{projectName}' reaches '{LogicHost}'.");
-                }
-                if (logicHostProjects.Contains(projectName) && reachesCameraAgent)
-                {
-                    violations.Add($"ARCH-TEST-LOGIC: LogicHost test project '{projectName}' reaches a CameraAgent implementation.");
-                }
-                if (!combinedProjects.Contains(projectName) && reachesCameraAgent && reachesLogicHost)
-                {
-                    violations.Add($"ARCH-TEST-COMBINED: Non-combined test project '{projectName}' reaches both hosts.");
                 }
             }
 

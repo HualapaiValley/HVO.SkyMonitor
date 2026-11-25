@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Required CI aggregation. Expected results follow the validated classifier plan
-# and the fixed skip policy for retired LogicHost gates.
+# Required CI aggregation. Expected results follow the validated classifier plan.
 
 # Plan and result values are split on whitespace; disable pathname expansion so a
 # value can never glob against the runner workspace.
@@ -15,7 +14,7 @@ result_input="${3:-}"
 declare -A plan=()
 declare -A result=()
 
-plan_keys=(mode complete shared cameraagent logichost combined delivery deployment catalog_recipe)
+plan_keys=(mode complete shared cameraagent delivery deployment catalog_recipe)
 result_keys=(
   changes
   quality
@@ -26,14 +25,11 @@ result_keys=(
   architecture
   coverage-policy
   migrations-cameraagent
-  migrations-logichost
   unit
   integration
   coverage
   shared-libraries
   cameraagent-component
-  logichost-component
-  combined-integration
   delivery-component
 )
 
@@ -84,14 +80,14 @@ case "${plan[mode]}" in
   *) reject "unknown or missing CI classification mode '${plan[mode]}'" ;;
 esac
 
-for key in complete shared cameraagent logichost combined delivery deployment catalog_recipe; do
+for key in complete shared cameraagent delivery deployment catalog_recipe; do
   case "${plan[$key]}" in
     true | false) ;;
     *) reject "plan flag '$key' is not a boolean: '${plan[$key]}'" ;;
   esac
 done
 
-components=(shared cameraagent logichost combined delivery)
+components=(shared cameraagent delivery)
 any_component="false"
 every_component="true"
 for key in "${components[@]}"; do
@@ -127,19 +123,9 @@ if [[ "${plan[complete]}" == "true" && "${plan[mode]}" != "full" ]]; then
   reject "the complete matrix requires mode=full"
 fi
 
-# The classifier's fan-out rules are part of the plan contract. A shared contract
-# change must claim every consuming lane. The combined lane is only ever claimed
-# by a host seam, a combined fixture, or the shared fan-out, so it must claim at
-# least one host lane; requiring both would reject a correct host-seam plan.
-if [[ "${plan[shared]}" == "true" ]]; then
-  for key in cameraagent logichost combined delivery; do
-    [[ "${plan[$key]}" == "true" ]] || reject "a shared plan must claim every consuming lane, missing '$key'"
-  done
-fi
-
-if [[ "${plan[combined]}" == "true" ]] \
-  && [[ "${plan[cameraagent]}" != "true" && "${plan[logichost]}" != "true" ]]; then
-  reject "a combined plan must claim at least one host lane"
+# Shared contract changes must claim both active consuming lanes.
+if [[ "${plan[shared]}" == "true" && "$every_component" != "true" ]]; then
+  reject "a shared plan must claim every consuming lane"
 fi
 
 expected_when() {
@@ -185,11 +171,6 @@ expected[coverage]="$(expected_when "${plan[complete]}")"
 expected[shared-libraries]="$(expected_when "$(component_lane shared)")"
 expected[cameraagent-component]="$(expected_when "$(component_lane cameraagent)")"
 expected[delivery-component]="$(expected_when "$(component_lane delivery)")"
-
-# Keep the job results in the contract while LogicHost test execution is retired (#2048).
-expected[migrations-logichost]="skipped"
-expected[logichost-component]="skipped"
-expected[combined-integration]="skipped"
 
 report=""
 failed="false"

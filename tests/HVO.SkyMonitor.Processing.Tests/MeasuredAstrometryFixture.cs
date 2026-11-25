@@ -17,7 +17,12 @@ internal sealed record MeasuredAstrometryFixture(ProcessingArtifact Raw, Project
     internal static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     internal static JsonElement Json<T>(T value) => JsonSerializer.SerializeToElement(value, JsonOptions);
-    internal static readonly MeasuredAstrometryOptions Options = new(new(MaximumCatalogMagnitude: 7, ColdBudgetMilliseconds: 15000, WarmBudgetMilliseconds: 3000));
+    private const double RunawayMilliseconds = 60_000;
+    internal static readonly MeasuredAstrometryOptions Options = new(
+        new(MaximumCatalogMagnitude: 7, ColdBudgetMilliseconds: RunawayMilliseconds, WarmBudgetMilliseconds: RunawayMilliseconds),
+        MaximumExecutionMilliseconds: RunawayMilliseconds);
+    internal static readonly MeasuredAstrometryOptions PerformanceOptions = new(
+        new(MaximumCatalogMagnitude: 7, ColdBudgetMilliseconds: 15_000, WarmBudgetMilliseconds: 3_000));
 
     internal static Task<MeasuredAstrometryFixture> CreateAsync() => CreateAtAsync(0);
 

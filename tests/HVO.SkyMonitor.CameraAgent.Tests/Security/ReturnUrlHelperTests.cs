@@ -5,6 +5,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Security;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Hosting")]
 public class ReturnUrlHelperTests
 {
     [TestMethod]

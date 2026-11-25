@@ -15,6 +15,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.SpaceWeather.Conformance;
 /// <summary>Replays every approved fixture expectation through the real runner and SQLite store.</summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "SpaceWeather")]
 public sealed class SwpcScenarioConformanceTests
 {
     private readonly string root = Path.Combine(Path.GetTempPath(), "swpc-conformance-" + Guid.NewGuid().ToString("N"));

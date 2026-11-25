@@ -6,6 +6,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Environmental;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Environmental")]
 public sealed class EnvironmentalEvidenceSemanticsTests
 {
     [TestMethod]

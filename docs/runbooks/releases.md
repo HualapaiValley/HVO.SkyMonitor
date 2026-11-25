@@ -200,10 +200,25 @@ the ancestry gate and, when needed, the sync before proceeding.
 Only the owner pushes `v*` tags; everything after the tag is the workflow's, until the owner approves publishing.
 
 1. **Version.** If `VersionPrefix` is not the version to release, change it first, in its own pull request.
-2. **Release pull request.** Rename `## [Unreleased]` in `CHANGELOG.md` to `## [X.Y.Z] - YYYY-MM-DD`, start a new empty
-   `## [Unreleased]` above it, and add `docs/upgrade-notes/X.Y.Z.md`: what someone upgrading must do, never empty.
+2. **Release pull request.** Assemble the pending fragments and any remaining Unreleased entries, using
+   the release date in ISO format. Preview the result before writing it.
+
+   ```bash
+   version="$(./scripts/release:version)"
+   release_date="$(date +%F)"
+   ./scripts/release:changelog "$version" --date "$release_date" --dry-run
+   ./scripts/release:changelog "$version" --date "$release_date"
+   ```
+
+   Commit the versioned `CHANGELOG.md` section and the consumed fragment deletions together. Add
+   `docs/upgrade-notes/X.Y.Z.md` with the steps an operator needs to upgrade. If fragment cleanup is
+   interrupted, compare the remaining fragments with the assembled release section. Remove a remaining
+   fragment once its entry is present in that section.
+
    The release tool copies every release's upgrade notes up to this one's into `release.json`, and the release page
-   shows this version's CHANGELOG section and notes (`scripts/release:notes`). A release candidate needs neither.
+   reads this version's assembled section and notes from the tagged commit. Run
+   `./scripts/release:notes --check "$version"` before handing off the release PR. Release candidates and
+   integration prereleases leave pending fragments available for the final release.
 3. **Promote** the release pull request's commit to `main`, the release branch, following
    [Before every promotion](#before-every-promotion) before marking its promotion pull request ready.
 4. **Tag** a commit on `main` with an annotated tag, and push only that tag:

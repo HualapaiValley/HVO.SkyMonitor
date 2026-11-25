@@ -24,7 +24,8 @@ internal sealed partial class SqliteRawCaptureJournal(
     TransientDetectionOptions? transientOptions = null,
     Action? inspectionSourceOpenedSeam = null,
     CenteredExposureProductChanges? centeredProductChanges = null,
-    CenteredWindowWakeup? centeredWindowWakeup = null)
+    CenteredWindowWakeup? centeredWindowWakeup = null,
+    FirstBootPauseIdentity? firstBootPause = null)
 {
     // v16 fences readers that do not honor capture-specific environmental unavailable evidence.
     internal const int CurrentSchemaVersion = 17;
@@ -101,6 +102,7 @@ internal sealed partial class SqliteRawCaptureJournal(
         "processing_centered_view_window_work", "ix_processing_centered_view_window_live_base",
         "processing_centered_view_trail_work", "ix_processing_centered_view_trail_due", "ix_processing_centered_view_trail_capture",
         "processing_centered_windows", "ix_processing_centered_windows_pending", "ix_processing_centered_windows_reference",
+        "ix_processing_centered_windows_publication_retention", "processing_centered_registration_input_failures",
         "processing_centered_attempt_calendar", "processing_centered_product_clock", "processing_centered_window_holds",
         "ix_processing_centered_product_clock_pending",
         "processing_centered_output_availability", "ix_processing_centered_output_availability_cutoff",
@@ -197,6 +199,14 @@ internal sealed partial class SqliteRawCaptureJournal(
                 await ExecuteNonQueryAsync(
                     connection, transaction, NamedProfileSchemaSql, cancellationToken).ConfigureAwait(false);
                 await ExecuteNonQueryAsync(connection, transaction, CenteredSchemaSql, cancellationToken).ConfigureAwait(false);
+                if (firstBootPause is { } seed)
+                {
+                    // A Silo-layout clean install's first-boot pause (#1966) is written by the same transaction that
+                    // creates the capture control tables, so the first durable control state is the installer-owned
+                    // pause and a running version-0 row is never committed, even across an interruption here.
+                    await HVO.SkyMonitor.CameraAgent.Common.Capture.SqliteCaptureControlStore.SeedFirstBootPauseAsync(
+                        connection, transaction, seed, _utcNow(), cancellationToken).ConfigureAwait(false);
+                }
                 await ExecuteNonQueryAsync(
                     connection,
                     transaction,

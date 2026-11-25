@@ -11,6 +11,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Ui")]
 public sealed class ReplaySubmitPageTests
 {
     private static readonly Guid CaptureId = Guid.Parse("00000000-0000-0000-0000-000000000001");

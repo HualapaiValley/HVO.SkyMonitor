@@ -9,6 +9,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture.Processing")]
 public sealed class CenteredWindowSchedulerTests
 {
     private static readonly CameraKey Camera = new("agent", "camera");

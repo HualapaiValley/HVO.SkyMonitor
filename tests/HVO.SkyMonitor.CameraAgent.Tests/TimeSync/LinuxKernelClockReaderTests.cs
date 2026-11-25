@@ -5,6 +5,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.TimeSync;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "TimeSync")]
 public sealed class LinuxKernelClockReaderTests
 {
     private const int TimeOk = 0;

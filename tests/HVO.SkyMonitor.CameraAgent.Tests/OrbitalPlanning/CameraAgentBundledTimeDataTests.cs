@@ -13,6 +13,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.OrbitalPlanning;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "OrbitalPlanning")]
 public sealed class CameraAgentBundledTimeDataTests
 {
     private static readonly string[] ApprovedHosts = ["maia.usno.navy.mil", "datacenter.iers.org", "hpiers.obspm.fr", "data.iana.org"];
