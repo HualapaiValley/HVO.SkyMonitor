@@ -183,6 +183,12 @@ leaves capture paused. No recovery deletes accepted work.
 
 ## Receipts and failure recovery
 
+After a signed upgrade settles with capture admission preserved, use the
+compatible successor installer's `lifecycle-worker` for Drain and scheduled
+Restart. This applies to automatic recovery and RC2 leave-paused recovery.
+Stock RC2 cannot read either successor journal format. The owner's ordinary
+capture controls remain available on the verified predecessor.
+
 The installer writes its authoritative, atomically published and synchronized
 journal to `<product-root>/operations/control-worker-<uuid>.json`, outside the
 CameraAgent state mounts. It retains up to 100 receipts and never discards

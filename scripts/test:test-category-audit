@@ -15,6 +15,7 @@ AUDIT = ROOT / "scripts/test-categories/bin/Release/net10.0/HVO.SkyMonitor.TestC
 DOTNET = shutil.which("dotnet")
 UNIT = "Fixture.Unit.Tests"
 PERFORMANCE = "Fixture.Performance.Tests"
+CAMERA_AGENT = "HVO.SkyMonitor.CameraAgent.Tests"
 
 
 class DiscoveryAudit(unittest.TestCase):
@@ -53,12 +54,16 @@ shutil.copyfile(Path(sys.argv[2]).with_suffix(".fixture"), sys.argv[9])
         items = "".join(f'<Project Path="tests/{project}/{project}.csproj" />' for project in projects)
         (self.root / "HVO.SkyMonitor.v9.slnx").write_text(f"<Solution>{items}</Solution>")
 
-    def case(self, project, *categories, name="Fixture.Tests.Cases"):
+    def case(self, project, *categories, name="Fixture.Tests.Cases", areas=(), traits=(), case_id=None):
+        properties = [{"Key": {"Id": "MSTestDiscoverer.TestCategory"}, "Value": list(categories)}]
+        trait_items = [{"Key": "Area", "Value": area} for area in areas] + list(traits)
+        if trait_items:
+            properties.append({"Key": {"Id": "TestObject.Traits"}, "Value": trait_items})
         return {
-            "Id": str(uuid.uuid4()),
+            "Id": case_id or str(uuid.uuid4()),
             "FullyQualifiedName": name,
             "Source": str(self.assembly(project)),
-            "Properties": [{"Key": {"Id": "MSTestDiscoverer.TestCategory"}, "Value": list(categories)}],
+            "Properties": properties,
         }
 
     def write_discovery(self, project, cases, *, complete=True, **overrides):
@@ -165,6 +170,62 @@ shutil.copyfile(Path(sys.argv[2]).with_suffix(".fixture"), sys.argv[9])
         self.inventory.write_text(json.dumps([UNIT]))
         self.assembly(UNIT).unlink()
         self.assert_rejected("Release assembly missing")
+
+    def test_emit_cameraagent_discovery(self):
+        missing_inventory = self.audit("--emit-cameraagent-discovery")
+        self.assertEqual(missing_inventory.returncode, 1, missing_inventory)
+        self.assertIn(f"{CAMERA_AGENT} is missing from the Unit project inventory.", missing_inventory.stderr)
+        self.assertEqual(missing_inventory.stdout, "")
+        self.assertFalse(self.summary.exists())
+
+        camera_dir = self.root / "tests" / CAMERA_AGENT
+        camera_dir.mkdir(parents=True)
+        (camera_dir / f"{CAMERA_AGENT}.csproj").touch()
+        camera_assembly = self.assembly(CAMERA_AGENT)
+        camera_assembly.parent.mkdir(parents=True)
+        camera_assembly.touch()
+        self.write_solution([*self.projects, CAMERA_AGENT])
+        self.inventory.write_text(json.dumps([UNIT, CAMERA_AGENT]))
+
+        id_low = str(uuid.UUID(int=1))
+        id_mid = str(uuid.UUID(int=2))
+        id_high = str(uuid.UUID(int=3))
+        self.write_discovery(CAMERA_AGENT, [
+            self.case(CAMERA_AGENT, "Unit", name="CameraSuite.Beta", areas=("Modules.VirtualSky",),
+                      traits=({"Key": "Owner", "Value": "Ignored"},), case_id=id_high),
+            self.case(CAMERA_AGENT, "Unit", "Unit", name="CameraSuite.Alpha", areas=("Capture.Processing",),
+                      case_id=id_low),
+            self.case(CAMERA_AGENT, "Performance", name="CameraSuite.Perf", areas=("Capture.Processing",),
+                      case_id=id_mid),
+        ])
+
+        result = self.audit("--emit-cameraagent-discovery")
+        self.assertEqual(result.returncode, 0, result)
+        self.assertEqual(result.stderr, "")
+        self.assertFalse(self.summary.exists())
+        self.assertEqual(json.loads(result.stdout), [
+            {"Id": id_low, "Name": "CameraSuite.Alpha", "Categories": ["Unit"], "Areas": ["Capture.Processing"]},
+            {"Id": id_mid, "Name": "CameraSuite.Perf", "Categories": ["Performance"], "Areas": ["Capture.Processing"]},
+            {"Id": id_high, "Name": "CameraSuite.Beta", "Categories": ["Unit"], "Areas": ["Modules.VirtualSky"]},
+        ])
+
+        self.write_discovery(CAMERA_AGENT, [
+            self.case(CAMERA_AGENT, "Unit", name="CameraSuite.NullArea", traits=({"Key": "Area", "Value": None},)),
+        ])
+        null_area = self.audit("--emit-cameraagent-discovery")
+        self.assertEqual(null_area.returncode, 1, null_area)
+        self.assertIn("null Area trait", null_area.stderr)
+        self.assertEqual(null_area.stdout, "")
+
+        camera_assembly.unlink()
+        missing_assembly = self.audit("--emit-cameraagent-discovery")
+        self.assertEqual(missing_assembly.returncode, 1, missing_assembly)
+        self.assertIn("Release assembly missing", missing_assembly.stderr)
+        self.assertEqual(missing_assembly.stdout, "")
+
+        bad_args = self.audit("--emit-matrix", "--emit-cameraagent-discovery")
+        self.assertEqual(bad_args.returncode, 2, bad_args)
+        self.assertIn("Usage:", bad_args.stderr)
 
 
 if __name__ == "__main__":

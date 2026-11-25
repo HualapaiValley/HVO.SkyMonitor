@@ -112,7 +112,9 @@ public enum LifecycleOperationPhase
     /// <summary>The operation's verified snapshot of the instance's small SQLite databases is recorded.</summary>
     StateSnapshotRecorded,
     /// <summary>A rollback has put back the database snapshot retained by the upgrade it undoes.</summary>
-    RetainedStateApplied
+    RetainedStateApplied,
+    /// <summary>The verified predecessor is running and the installer left capture admission to the owner.</summary>
+    RecoveryAdmissionPreserved
 }
 
 public sealed record ApplicationIdentityBinding(
@@ -300,7 +302,23 @@ public sealed record LifecycleOperationState(
     StateRestorePlan? StateRestorePlan = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] CatalogInstallationIdentity? OriginalDeepSkyCatalog = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] CatalogInstallationIdentity? CandidateDeepSkyCatalog = null,
-    bool DeepSkyTransition = false);
+    bool DeepSkyTransition = false,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SignedReleaseChecksumsSha256 = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] LifecycleStateSnapshot? LeavePausedOriginalSnapshot = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Guid? LeavePausedOriginalRestorePlanId = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Guid? SignedRecoveryPauseCommandId = null)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? SignedRetryAdmissionOutcome { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Guid? AuthorizedSignedRestoreSnapshotId { get; init; }
+}
+
+public sealed record LifecycleAdmissionObservation(
+    string State, long Version, long CaptureSequence, DateTimeOffset ObservedUtc,
+    long LatestCommandOrder, string LatestCommandKeySha256, string LatestTarget, string LatestActor, bool LatestChanged,
+    long LatestResultVersion, DateTimeOffset LatestCompletedUtc);
 
 /// <summary>
 /// What a snapshot restore covers, journaled before it replaces any store so that an interrupted retry still knows it:
@@ -466,6 +484,9 @@ public sealed record LifecycleResult(
     /// <summary>What a completed <c>cameraagent restore</c> put back. Omitted by every other command.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public LifecycleRestore? Restore { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public LifecycleAdmissionObservation? PreservedAdmission { get; init; }
 }
 
 /// <summary>

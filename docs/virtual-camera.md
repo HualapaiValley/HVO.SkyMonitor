@@ -281,7 +281,7 @@ is never persisted. Dated W1/W2 measurements and interpretation are retained in
 contains an opaque canonical identity, numeric revision, seed, UTC epoch, one
 through sixty-four temporal midpoint samples, and at most 128 generic sky or
 sensor primitives with at most 1,024 total keyframes. Keyframes are strictly
-ordered within one day of the epoch. Production definitions contain no meteor,
+ordered within one day of the epoch. Generic definitions contain no meteor,
 fireball, satellite, aircraft, cosmic-ray, hot-pixel, expected-class, score, or
 mask fields.
 
@@ -304,13 +304,25 @@ ordinary renderer hot path.
 algorithm identity, seed/epoch, logical integration interval, sample count, and
 sky/sensor primitive counts. Canonical manifest v2 parsing verifies those values
 and the canonical parameter hash; retired manifest versions fail validation.
-Processing recipes receive the normal image
-artifact, not simulator provenance as a detector feature. Semantic oracle labels
-exist only in the separate test-owned
+Semantic oracle labels for the generic fixture live in the separate test-owned
 `tests/fixtures/virtual-sky/transient-detection-oracle-v1.json`. The stimulus
 manifest contains rendering inputs and capture offsets but no expected label,
 raw checksum, geometry, candidate, assessment, or event identity. Matrix tests
 complete detector execution from that manifest before loading the oracle.
+
+The optional [named orbital pass](validation/virtualsky-named-pass-1927.md)
+retains `sourcePackageSha256` and `namedPassPredictionV1` in the canonical
+scenario parameters. The lineage binds the selection-policy SHA-256, the
+snapshot manifest and Earth-orientation and leap-second hashes, and the
+expected record hash for each NORAD catalog number. Prediction uses these pins
+with the retained shutter interval and rig. Private scoring can use the
+package's expected paths and optical controls after measurement.
+
+The independent trail detector uses raw pixels and ordinary capture evidence.
+Its masks use the retained readout, rig and observing location, effective
+exposure, and validated time-only `Scene.VirtualExposure` for integrated
+catalog-star geometry. Named-pass identities and expected tracks are reserved
+for prediction and private scoring.
 
 For example, one generic sensor-stage fixture can be configured as:
 

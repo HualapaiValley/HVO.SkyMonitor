@@ -25,7 +25,8 @@ internal static class QuarantinedReadiness
         var catalog = health.GetProperty("checks").EnumerateArray().Single(item =>
             item.GetProperty("name").GetString() == "catalog");
         var data = catalog.GetProperty("data");
-        return data.GetProperty("CatalogId").GetString() == expectedCatalog.CatalogId &&
+        return catalog.GetProperty("status").GetString() == "Healthy" &&
+               data.GetProperty("CatalogId").GetString() == expectedCatalog.CatalogId &&
                data.GetProperty("CatalogVersion").GetString() == expectedCatalog.CatalogVersion &&
                data.GetProperty("SchemaVersion").GetString() == expectedCatalog.SchemaVersion &&
                data.GetProperty("PreprocessingVersion").GetString() == expectedCatalog.PreprocessingVersion &&

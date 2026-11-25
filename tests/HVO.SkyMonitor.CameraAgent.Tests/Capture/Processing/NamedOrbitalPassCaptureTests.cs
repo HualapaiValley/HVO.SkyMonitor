@@ -545,6 +545,10 @@ public sealed class NamedOrbitalPassCaptureTests
                     Path.Combine(ingressRoot, orbital.PayloadRelativePath), ct).ConfigureAwait(false), restored);
                 Assert.HasCount(2, tracks.Tracks);
                 Assert.IsTrue(tracks.Tracks.All(track => track.RequestedInterval == prediction.Exposure));
+                if (shutterDelayTicks == 5_000)
+                {
+                    await AssertUnavailablePinsAsync(reopened, config, submission, lease.Context.RawCapture, shutter, ct).ConfigureAwait(false);
+                }
             }
             else
             {
@@ -555,6 +559,56 @@ public sealed class NamedOrbitalPassCaptureTests
         finally
         {
             Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static async Task AssertUnavailablePinsAsync(ServiceProvider provider, CameraModuleConfig config,
+        CaptureLoopSubmission submission, RawCaptureReceipt raw, DateTimeOffset shutter, CancellationToken cancellationToken)
+    {
+        var scene = raw.Manifest.Scene!;
+        var scenario = scene.TransientScenario!;
+        var artifact = new FrameArtifact(raw.Manifest.Descriptor.Artifact.ArtifactId, FrameArtifactRole.Raw, submission.Result.Frame!);
+        submission = submission with { Result = submission.Result with { Artifacts = new FrameArtifactSet(artifact) } };
+        var options = new CaptureSatelliteTracksOptions { CatalogNumbers = CatalogNumbers, OverrideTimeDataAvailableUtc = First.AddDays(-1) };
+        var differentHash = new string('A', 64);
+        foreach (var (pin, reason) in new[]
+        {
+            ("snapshotManifestSha256", "PinnedSnapshotUnavailable"),
+            ("earthOrientationSha256", "PinnedTimeInputsUnavailable")
+        })
+        {
+            // Vary one pin on the retained named lineage. The real local reader and time resolver keep their original inputs.
+            var parameters = JsonNode.Parse(scenario.Parameters.GetRawText())!;
+            parameters["namedPassPredictionV1"]!["inputs"]![pin] = differentHash;
+            var canonical = CaptureContractJson.Canonicalize(CaptureContractJson.SerializeToElement(parameters));
+            var changedScenario = scenario with
+            {
+                Parameters = canonical,
+                ParametersSha256 = CaptureContractJson.ComputeCanonicalJsonSha256(canonical)
+            };
+            var manifest = raw.Manifest with { Scene = scene with { TransientScenario = changedScenario } };
+            Assert.IsTrue(manifest.Validate().IsValid);
+            var receipt = raw with { Manifest = manifest, CommittedManifestSha256 = CaptureContractJson.ComputeManifestSha256(manifest) };
+            var context = new CaptureProcessingContext(config, submission, receipt);
+            context.BeginNode(pin, [], ["$raw"]);
+            var step = new CaptureSatelliteTracksProcessingStep(new(pin, CaptureSatelliteTracksProcessingStep.Alias, 0), options,
+                provider.GetRequiredService<CaptureSatelliteWorkStore>(), provider.GetRequiredService<IOrbitalSnapshotReader>(),
+                provider.GetRequiredService<ICameraAgentOrbitalTimeSource>());
+
+            await step.ProcessAsync(context, cancellationToken).ConfigureAwait(false);
+
+            var products = context.ProcessingProducts;
+            Assert.HasCount(2, products, "Only retained inputs and status should be emitted.");
+            var status = CaptureSatelliteProducts.ParseStatus(products.Single(
+                static product => product.SchemaVersion == CaptureSatelliteProducts.StatusSchema).Payload.Span);
+            var retained = CaptureSatelliteProducts.ParseInput(products.Single(
+                static product => product.SchemaVersion == CaptureSatelliteProducts.InputSchema).Payload.Span);
+            Assert.AreEqual(reason, status.Reason);
+            Assert.AreEqual("Unavailable", status.Status);
+            Assert.AreEqual(new OrbitalUtcInterval(shutter, shutter + Exposure), status.Exposure);
+            Assert.IsFalse(status.Renderable);
+            Assert.AreEqual(0, status.TrackCount);
+            Assert.IsNull(retained.Plan);
         }
     }
 

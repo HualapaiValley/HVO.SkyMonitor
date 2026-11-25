@@ -90,7 +90,7 @@ internal sealed partial class CameraAgentLifecycleManager
                 throw InstallerException.Refused("An uninstalled instance requires an incomplete reinstall or rollback for settlement.");
             // Already admissible local settlement must not depend on an unnecessary process probe.
             if (operation is null || operation.Status == InstallationStatus.Completed || IsRefused(operation) || IsRestored(operation) ||
-                IsSettledBackupForControl(operation))
+                IsAdmissionPreserved(operation) || IsSettledBackupForControl(operation))
                 return deploymentLock;
             var committedRecovery = settleCommittedRecovery && operation is
             {
@@ -108,7 +108,7 @@ internal sealed partial class CameraAgentLifecycleManager
                 Kind: LifecycleOperationKind.Reinstall or LifecycleOperationKind.Rollback
             } && operation.InstanceId == Guid.Parse(Path.GetFileName(paths.InstanceRoot)) &&
                 await returnedProcess(cancellationToken).ConfigureAwait(false);
-            if (operation is { Status: not InstallationStatus.Completed } && !IsRefused(operation) && !IsRestored(operation) && !committedRecovery && !precommitRecovery)
+            if (!committedRecovery && !precommitRecovery)
                 throw InstallerException.Refused("An installer lifecycle operation must be recovered before runtime control.");
             return deploymentLock;
         }

@@ -244,7 +244,7 @@ fast_reason() {
   grep -Fxq "docs_fast_path_reason=$reason" <<< "$result" || { printf 'Expected reason %s: %s\n' "$reason" "$result" >&2; exit 1; }
   ((fast_cases += 1))
 }
-for excluded in docs/upgrade-notes/0.9.1.md docs/generated/report.txt docs/evidence/report.txt docs/other/generated/report.txt docs/runbooks/development-v1-merge-queue-drill/verification.txt docs/UPPER.MD; do
+for excluded in docs/upgrade-notes/0.9.1.md docs/generated/report.txt docs/evidence/report.txt docs/other/generated/report.txt docs/runbooks/development-v1-merge-queue-drill/verification.txt docs/runbooks/cameraagent-silo-runtime.md docs/UPPER.MD; do
   git -C "$fast_root" reset -q --hard "$fast_base"
   mkdir -p "$fast_root/$(dirname "$excluded")"
   printf 'text\n' > "$fast_root/$excluded"
@@ -284,6 +284,40 @@ for link in "<None Include='../../../docs/runbooks/example.md' />" "<None Includ
   printf 'change\n' >> "$fast_root/docs/runbooks/example.md"
   git -C "$fast_root" commit -qam link-change
   fast_reason 'project inventory unavailable' "$link_base" "$(git -C "$fast_root" rev-parse HEAD)"
+done
+# Case-sensitive negative control for the Silo replacement runbook exemption (#2071):
+# is_fast_doc_path excludes only exact lowercase docs/runbooks/cameraagent-silo-runtime.md,
+# so audit_fast_inventory must accept only that exact case and reject case variants.
+for runbook_rel in \
+  "docs/runbooks/cameraagent-silo-runtime.md" \
+  "docs/runbooks/CameraAgent-Silo-Runtime.md" \
+  "DOCS/runbooks/cameraagent-silo-runtime.md"; do
+  git -C "$fast_root" reset -q --hard "$fast_base"
+  mkdir -p "$fast_root/$(dirname "$runbook_rel")"
+  printf '# Silo runtime\n' > "$fast_root/$runbook_rel"
+  printf '<Project><ItemGroup><None Include="../../%s" Link="Shared/silo.md" /></ItemGroup></Project>\n' "$runbook_rel" > "$fast_root/tests/Example/Example.csproj"
+  git -C "$fast_root" add . && git -C "$fast_root" commit -qm "runbook case $runbook_rel"
+  case_base="$(git -C "$fast_root" rev-parse HEAD)"
+  if [[ "$runbook_rel" == "docs/runbooks/cameraagent-silo-runtime.md" ]]; then
+    (cd "$fast_root" && "$classifier" --print-docs-inventory "$case_base") > "$fast_root/.git/runbook-inventory"
+    ((fast_cases += 1))
+  else
+    if (cd "$fast_root" && "$classifier" --print-docs-inventory "$case_base") > "$fast_root/.git/runbook-inventory" 2> "$fast_root/.git/runbook-error"; then
+      printf 'Case-variant runbook %s was erroneously exempted by docs inventory audit.\n' "$runbook_rel" >&2
+      exit 1
+    fi
+    grep -Fxq 'docs inventory audit: build input references eligible documentation' "$fast_root/.git/runbook-error" || {
+      printf 'Unexpected audit error for %s: %s\n' "$runbook_rel" "$(cat "$fast_root/.git/runbook-error")" >&2
+      exit 1
+    }
+    printf 'updated\n' >> "$fast_root/$runbook_rel"
+    git -C "$fast_root" commit -qam "edit case-variant $runbook_rel"
+    if [[ "$runbook_rel" == "docs/runbooks/CameraAgent-Silo-Runtime.md" ]]; then
+      fast_reason 'project inventory unavailable' "$case_base" "$(git -C "$fast_root" rev-parse HEAD)"
+    else
+      fast_reason 'path outside documentation allowlist' "$case_base" "$(git -C "$fast_root" rev-parse HEAD)"
+    fi
+  fi
 done
 # Relative imported items use the consuming project directory in MSBuild. The
 # audit refuses uncertainty, including partial directory globs.
@@ -741,6 +775,35 @@ if git -C "$repo_root" show "$real_base:scripts/ci:docs-inventory" > "$fast_root
 else
   printf 'Real inventory canary skipped: certificate not in committed HEAD.\n'
 fi
+# Real-repo regression (#2071): single-file edits to Deployment.Cli.Tests runtime inputs
+# (CameraAgent hvo-dark.css and the Silo replacement runbook) must never take the docs fast path
+# and must always select delivery=true so Deployment.Cli.Tests runs.
+for runtime_input in \
+  "src/HVO.SkyMonitor.CameraAgent/wwwroot/css/themes/hvo-dark.css" \
+  "docs/runbooks/cameraagent-silo-runtime.md"; do
+  runtime_index="$fast_root/.git/runtime-index-${runtime_input//\//_}"
+  GIT_INDEX_FILE="$runtime_index" git -C "$repo_root" read-tree "$real_base"
+  runtime_blob="$(printf 'runtime input mutation for %s\n' "$runtime_input" | git -C "$repo_root" hash-object -w --stdin)"
+  GIT_INDEX_FILE="$runtime_index" git -C "$repo_root" update-index --add --cacheinfo "100644,$runtime_blob,$runtime_input"
+  runtime_tree="$(GIT_INDEX_FILE="$runtime_index" git -C "$repo_root" write-tree)"
+  runtime_head="$(printf 'CI runtime input canary %s\n' "$runtime_input" | git -C "$repo_root" -c user.name='CI fixture' -c user.email=fixture@example.invalid commit-tree "$runtime_tree" -p "$real_base")"
+  runtime_fast_output="$(cd "$repo_root" && "$classifier" pull_request "$real_base" "$runtime_head" docs-fast-only)"
+  grep -Fxq 'docs_fast_path=false' <<< "$runtime_fast_output" || {
+    printf 'Real-repo runtime input %s qualified for docs fast path:\n%s\n' "$runtime_input" "$runtime_fast_output" >&2
+    exit 1
+  }
+  grep -Fxq 'docs_fast_path_reason=path outside documentation allowlist' <<< "$runtime_fast_output" || {
+    printf 'Real-repo runtime input %s had unexpected docs_fast_path_reason:\n%s\n' "$runtime_input" "$runtime_fast_output" >&2
+    exit 1
+  }
+  runtime_comp_output="$(cd "$repo_root" && "$classifier" pull_request "$real_base" "$runtime_head")"
+  grep -Fxq 'mode=full' <<< "$runtime_comp_output" &&
+    grep -Fxq 'delivery=true' <<< "$runtime_comp_output" || {
+    printf 'Real-repo runtime input %s did not select delivery=true:\n%s\n' "$runtime_input" "$runtime_comp_output" >&2
+    exit 1
+  }
+done
+printf 'Real-repo Deployment.Cli.Tests runtime input canaries passed (2 inputs).\n'
 )
 canary_commit="$(cat "$fast_root/.git/canary-commit")"
 if git -C "$repo_root" cat-file -e "$canary_commit^{commit}" 2>/dev/null; then
@@ -2247,6 +2310,36 @@ grep -Fxq '  workflow_call:' "$repo_root/.github/workflows/ci.yml" || {
   printf 'The CI workflow must be callable by the release workflow.\n' >&2
   exit 1
 }
+
+# Development v1 Deployment.Cli.Tests path-filtering contract (#2071):
+# CameraAgent-only PRs select neither complete, delivery, nor deployment, so v1 PRs
+# can skip Deployment.Cli.Tests; deployment-contract paths under CameraAgent, sources
+# linked into Deployment.Cli(.Tests), shared libraries, build/workflow/coverage contracts,
+# and all merge_group/push events must keep Deployment.Cli.Tests selected.
+verify_component_plan "src/HVO.SkyMonitor.CameraAgent/Dockerfile"                       full true false false true false
+verify_component_plan "src/HVO.SkyMonitor.CameraAgent/cameraagent.sample.json"          full true false false true false
+verify_component_plan "src/HVO.SkyMonitor.CameraAgent/virtual-asi174.full.json"         full true false false true false
+verify_component_plan "src/HVO.SkyMonitor.CameraAgent/virtual-asi178mc.full.json"       full true false false true false
+verify_component_plan "src/HVO.SkyMonitor.CameraAgent/Configuration/OwnerPasswordFileText.cs" full false false false true true
+verify_component_plan "src/HVO.SkyMonitor.CameraAgent/Configuration/LocalIdentityOptions.cs"  full false false false true true
+verify_component_plan "src/HVO.SkyMonitor.CameraAgent/wwwroot/css/themes/hvo-dark.css"        full false false false true true
+verify_component_plan "docs/runbooks/cameraagent-silo-runtime.md"                             full false true true true true
+verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Common/DeploymentLocation/RetainedIntegrityFormat.cs" full false false false true true
+verify_component_plan "Directory.Build.targets"                                         full false true true true true
+verify_component_plan ".github/workflows/development-v1.yml"                            full false true true true true
+verify_component_plan "scripts/coverage:development-v1"                                 full false true true true true
+verify_component_plan "scripts/coverage/Program.cs"                                     full false true true true true
+verify_component_plan "scripts/coverage/UnitCoverageInputs.cs"                          full false true true true true
+verify_component_plan "tests/unit-test-projects.json"                                   full false true true true true
+ca_only_base="$(git -C "$work_root" rev-parse HEAD)"
+update_file "src/HVO.SkyMonitor.CameraAgent/Components/Home.razor"
+ca_only_head="$(git -C "$work_root" rev-parse HEAD)"
+expect_plan full false pull_request "$ca_only_base" "$ca_only_head"
+expect_components false false true false pull_request "$ca_only_base" "$ca_only_head"
+expect_plan full true merge_group "$ca_only_base" "$ca_only_head"
+expect_components true true true true merge_group "$ca_only_base" "$ca_only_head"
+expect_plan full true push "$ca_only_base" "$ca_only_head"
+expect_components true true true true push "$ca_only_base" "$ca_only_head"
 
 printf 'Secret scan contract classification passed: %d cases.\n' "$secret_scan_contract_cases"
 printf 'Release script classification passed: %d cases.\n' "$release_scripts_cases"
