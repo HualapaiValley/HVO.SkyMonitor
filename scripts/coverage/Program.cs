@@ -78,10 +78,10 @@ foreach (var (path, threshold) in thresholds.ToArray())
     else if (developmentV1)
     {
         reason = threshold.DevelopmentV1LocalOnlyReason;
-        if (reason is null && skipDeploymentCli &&
-            path.StartsWith("HVO.SkyMonitor.Deployment.Cli/", StringComparison.Ordinal))
+        if (reason is null && skipDeploymentCli && IsDeploymentCliOwnedFloorPath(path))
         {
-            reason = "Deployment.Cli.Tests path-filtered out on non-deployment development/v1 pull request";
+            Console.Error.WriteLine($"Coverage gate failed: --skip-deployment-cli cannot waive active canonical floor '{path}'. Run Deployment.Cli.Tests to enforce every active canonical floor.");
+            return 1;
         }
     }
 
@@ -432,6 +432,11 @@ static string NormalizeSourcePath(string path)
     var toolsMarker = normalized.LastIndexOf("/tools/", StringComparison.Ordinal);
     return toolsMarker >= 0 ? normalized[(toolsMarker + 1)..] : normalized.TrimStart('/');
 }
+
+static bool IsDeploymentCliOwnedFloorPath(string path)
+    => path.StartsWith("HVO.SkyMonitor.Deployment.Cli/", StringComparison.Ordinal) ||
+       path.StartsWith("HVO.SkyMonitor.Deployment.Contracts/", StringComparison.Ordinal) ||
+       path.StartsWith("HVO.SkyMonitor.TerminalUi/", StringComparison.Ordinal);
 
 static bool SourcePathExists(string repositoryRoot, string path)
 {

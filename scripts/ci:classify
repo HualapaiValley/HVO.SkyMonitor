@@ -157,7 +157,7 @@ is_reduced_path() {
 
 is_fast_doc_path() {
   case "$1" in
-    docs/catalog/* | docs/contracts/* | docs/validation/* | docs/evidence/* | docs/*/evidence/* | docs/generated/* | docs/*/generated/* | docs/images/* | docs/upgrade-notes/* | docs/runbooks/development-v1-merge-queue-drill/*) return 1 ;;
+    docs/catalog/* | docs/contracts/* | docs/validation/* | docs/evidence/* | docs/*/evidence/* | docs/generated/* | docs/*/generated/* | docs/images/* | docs/upgrade-notes/* | docs/runbooks/development-v1-merge-queue-drill/* | docs/runbooks/cameraagent-silo-runtime.md) return 1 ;;
     docs/*.md | docs/*.markdown | docs/*.txt | README.md | AGENTS.md | CLAUDE.md) return 0 ;;
   esac
   return 1
@@ -284,7 +284,10 @@ while pending:
                 fail("build input references a root documentation name")
             for match in re.finditer(r"(?i)(?:^|/)docs/([^\s\"'<>;]+)", norm):
                 part = match.group(1).lower()
-                if ".." in part.split("/") or not part.startswith(("catalog/", "contracts/", "validation/", "images/", "upgrade-notes/", "evidence/", "generated/")):
+                if ".." in part.split("/") or (
+                    part != "runbooks/cameraagent-silo-runtime.md"
+                    and not part.startswith(("catalog/", "contracts/", "validation/", "images/", "upgrade-notes/", "evidence/", "generated/"))
+                ):
                     fail("build input references eligible documentation")
         for attr in ("Include", "Update", "Remove"):
             value = node.attrib.get(attr)
@@ -311,7 +314,10 @@ while pending:
                 if resolved_part.startswith("/") or resolved_part == ".." or resolved_part.startswith("../"):
                     fail("item path escapes the committed tree")
                 if lower_part in ("readme.md", "agents.md", "claude.md") or (
-                    lower_part.startswith("docs/") and not lower_part.startswith(("docs/catalog/", "docs/contracts/", "docs/validation/", "docs/images/", "docs/upgrade-notes/", "docs/evidence/", "docs/generated/"))):
+                    lower_part.startswith("docs/")
+                    and lower_part != "docs/runbooks/cameraagent-silo-runtime.md"
+                    and not lower_part.startswith(("docs/catalog/", "docs/contracts/", "docs/validation/", "docs/images/", "docs/upgrade-notes/", "docs/evidence/", "docs/generated/"))
+                ):
                     fail("item references eligible documentation")
                 if "*" in part or "?" in part:
                     wildcard_tail = re.split(r"[?*]", part, 1)[1]

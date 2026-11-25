@@ -548,6 +548,7 @@ def violations(short, full, queue=None, extra=None):
                      "grep '^complete='", "grep '^delivery='", "grep '^deployment='",
                      '"$complete_val" != complete=false || "$delivery_val" != delivery=false || "$deployment_val" != deployment=false',
                      'component classifier output missing or invalid',
+                     'active canonical coverage floor or baseline requires Deployment.Cli.Tests',
                      'run_deployment_cli=%s\\ndeployment_cli_reason=%s\\n',
                      'timeout --signal=TERM --kill-after=5s 30s bash "$classifier" --verify-docs-restore "$base"',
                      'printf \'restore_imports_verified=true\\n\' | cmp -s - "$proof"'):
@@ -693,6 +694,7 @@ mutations = (
     ("Deployment.Cli.Tests skips on missing output", short.replace('"$RUN_DEPLOYMENT_CLI" == false', '"$RUN_DEPLOYMENT_CLI" != true', 1), full),
     ("Deployment.Cli.Tests omits deployment flag check", short.replace(' || "$deployment_val" != deployment=false', ''), full),
     ("Deployment.Cli.Tests omits complete flag check", short.replace('"$complete_val" != complete=false || ', ''), full),
+    ("Deployment.Cli.Tests omits active coverage floor fail-closed check", short.replace("active canonical coverage floor or baseline requires Deployment.Cli.Tests", "waived"), full),
     ("Deployment.Cli.Tests skips unconditionally", short.replace("test_project_args=(-p:SkipLogicHostTests=true)", "test_project_args=(-p:SkipLogicHostTests=true -p:SkipDeploymentCliTests=true)"), full),
     ("inflated summary hard timeout", short.replace("hardTimeoutSeconds:1320", "hardTimeoutSeconds:13200"), full),
     ("inflated workload budget", short.replace("started_at_epoch + 1080", "started_at_epoch + 10800"), full),
@@ -1549,17 +1551,26 @@ exit "$FAKE_EXIT"
         raise SystemExit(f"Verified merge-group push selected the wrong workload: {output.read_text()} {result.stderr}")
 
     # Issue #2071: Deployment.Cli.Tests path-filtering decisions using the real
-    # trusted base classifier against synthetic PR merges and non-PR events.
+    # trusted base classifier, real Deployment.Cli.Tests.csproj runtime-input links,
+    # and real coverage baseline/policy against PR merges and non-PR events.
     deploy_cases = 0
     git("checkout", "-q", "--detach", real_base)
+    real_deploy_cli_tests_csproj = (root / "tests/HVO.SkyMonitor.Deployment.Cli.Tests/HVO.SkyMonitor.Deployment.Cli.Tests.csproj").read_text()
+    real_coverage_baseline = (root / "scripts/coverage/baseline.json").read_text()
+    real_coverage_policy = (root / "scripts/coverage/policy.json").read_text()
     seed_files = (
         ("src/HVO.SkyMonitor.CameraAgent/Components/Home.razor", "<p>home</p>\n"),
         ("src/HVO.SkyMonitor.CameraAgent/Dockerfile", "FROM scratch\n"),
         ("src/HVO.SkyMonitor.CameraAgent/Configuration/OwnerPasswordFileText.cs", "class P {}\n"),
+        ("src/HVO.SkyMonitor.CameraAgent/wwwroot/css/themes/hvo-dark.css", ":root[data-theme=\"hvo-dark\"] { --hvo-body-bg: #0b1018; }\n"),
+        ("docs/runbooks/cameraagent-silo-runtime.md", "# Silo runtime\n"),
         ("src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj",
          '<Project><ItemGroup><Compile Include="../HVO.SkyMonitor.CameraAgent/Configuration/OwnerPasswordFileText.cs" /></ItemGroup></Project>\n'),
+        ("tests/HVO.SkyMonitor.Deployment.Cli.Tests/HVO.SkyMonitor.Deployment.Cli.Tests.csproj", real_deploy_cli_tests_csproj),
         ("src/HVO.SkyMonitor.Deployment.Cli/Program.cs", "class D {}\n"),
         ("src/HVO.SkyMonitor.AgentCore/Contract.cs", "class C {}\n"),
+        ("scripts/coverage/baseline.json", real_coverage_baseline),
+        ("scripts/coverage/policy.json", real_coverage_policy),
     )
     for rel, body in seed_files:
         target = fixture / rel
@@ -1574,6 +1585,8 @@ exit "$FAKE_EXIT"
         ("CameraAgent-only merge_group always runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/Components/Home.razor", "merge_group", "true"),
         ("CameraAgent-only push always runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/Components/Home.razor", "push", "true"),
         ("CameraAgent Dockerfile PR runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/Dockerfile", "pull_request", "true"),
+        ("CameraAgent hvo-dark.css PR runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/wwwroot/css/themes/hvo-dark.css", "pull_request", "true"),
+        ("Silo replacement runbook PR runs Deployment.Cli.Tests and is not docs-fast-path skipped", "docs/runbooks/cameraagent-silo-runtime.md", "pull_request", "true"),
         ("Linked CameraAgent source PR runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/Configuration/OwnerPasswordFileText.cs", "pull_request", "true"),
         ("Deployment.Cli PR runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.Deployment.Cli/Program.cs", "pull_request", "true"),
         ("Shared AgentCore PR runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.AgentCore/Contract.cs", "pull_request", "true"),
@@ -1597,6 +1610,37 @@ exit "$FAKE_EXIT"
         lines = output.read_text().splitlines()
         if result.returncode or "run_full=true" not in lines or f"run_deployment_cli={expected_deploy_cli}" not in lines:
             raise SystemExit(f"Deployment.Cli path-filter case '{label}' failed: {lines} {result.stderr}")
+        deploy_cases += 1
+
+    # Active Deployment.Cli canonical coverage floor or missing baseline fails closed to run_deployment_cli=true.
+    for floor_label, mutate_baseline in (
+        ("active Deployment.Cli floor on base prevents skip", True),
+        ("missing coverage baseline on base fails closed", False),
+    ):
+        git("checkout", "-q", "--detach", filter_base)
+        if mutate_baseline:
+            mutated = json.loads(real_coverage_baseline)
+            mutated["files"]["HVO.SkyMonitor.Deployment.Cli/Program.cs"] = {"line": 0.80, "branch": 0.70}
+            (fixture / "scripts/coverage/baseline.json").write_text(json.dumps(mutated))
+            git("add", "scripts/coverage/baseline.json")
+        else:
+            git("rm", "-q", "scripts/coverage/baseline.json")
+        git("commit", "-qm", floor_label)
+        floor_base = git("rev-parse", "HEAD")
+        (fixture / "src/HVO.SkyMonitor.CameraAgent/Components/Home.razor").write_text("ca-only-under-floor\n")
+        git("commit", "-qam", "ca-only change")
+        floor_head = git("rev-parse", "HEAD")
+        floor_tree = git("rev-parse", "HEAD^{tree}")
+        floor_merge = git("commit-tree", floor_tree, "-p", floor_base, "-p", floor_head, "-m", "merge " + floor_label)
+        git("checkout", "-q", "--detach", floor_merge)
+        output.write_text("")
+        case_env = dict(env, GITHUB_SHA=floor_merge, EVENT_NAME="pull_request", PR_HEAD_SHA=floor_head, MERGE_GROUP_RUN_ID="")
+        result = subprocess.run(["bash", "-euo", "pipefail", "-c", fast_script], cwd=fixture, env=case_env,
+                                capture_output=True, text=True)
+        lines = output.read_text().splitlines()
+        if (result.returncode or "run_full=true" not in lines or "run_deployment_cli=true" not in lines or
+                "deployment_cli_reason=active canonical coverage floor or baseline requires Deployment.Cli.Tests" not in lines):
+            raise SystemExit(f"Coverage floor fail-closed case '{floor_label}' failed: {lines} {result.stderr}")
         deploy_cases += 1
 
     # Endpoints disagree: PR tip is CameraAgent-only, but merge tree modifies Deployment.Cli.

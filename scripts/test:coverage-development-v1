@@ -975,54 +975,84 @@ if skip_extra.returncode != 1 or "Missing or extra Unit coverage data" not in sk
 cases += 1
 print("PASS --skip-deployment-cli rejects unexpected extra Deployment.Cli.Tests report")
 
-# Synthetic active HVO.SkyMonitor.Deployment.Cli floor:
+# Synthetic active Deployment.Cli / Deployment.Contracts / TerminalUi floors:
 # - included in --settings and enforced by default (merge_group / deployment PR)
-# - excluded from --settings and explicitly skipped with --skip-deployment-cli
-deploy_floor_path = "HVO.SkyMonitor.Deployment.Cli/SyntheticFloor.cs"
-deploy_floor_source = inventory_repo / "src" / deploy_floor_path
-deploy_floor_source.parent.mkdir(parents=True, exist_ok=True)
-deploy_floor_source.write_text("namespace Synthetic; public static class SyntheticFloor { public static int V() => 1; }\n")
-deploy_baseline = copy.deepcopy(fixture_baseline)
-deploy_baseline["files"][deploy_floor_path] = {"line": 0.80, "branch": 0.70}
-fixture_baseline_path.write_text(json.dumps(deploy_baseline))
-pinned_with_deploy = json.loads(pinned_bytes)
-pinned_with_deploy["files"][deploy_floor_path] = {
-    "sourceSha256": hashlib.sha256(deploy_floor_source.read_bytes()).hexdigest(),
-    "lines": [1],
-    "branches": {},
-}
-pinned_path.write_text(json.dumps(pinned_with_deploy))
+# - NEVER waived in --skip-deployment-cli mode; both --settings and CoverageGate fail closed.
+for deploy_floor_path in (
+    "HVO.SkyMonitor.Deployment.Cli/SyntheticFloor.cs",
+    "HVO.SkyMonitor.Deployment.Contracts/SyntheticFloor.cs",
+    "HVO.SkyMonitor.TerminalUi/SyntheticFloor.cs",
+):
+    deploy_floor_assembly = deploy_floor_path.split("/")[0]
+    deploy_floor_source = inventory_repo / "src" / deploy_floor_path
+    deploy_floor_source.parent.mkdir(parents=True, exist_ok=True)
+    deploy_floor_source.write_text("namespace Synthetic; public static class SyntheticFloor { public static int V() => 1; }\n")
+    deploy_baseline = copy.deepcopy(fixture_baseline)
+    deploy_baseline["files"][deploy_floor_path] = {"line": 0.80, "branch": 0.70}
+    fixture_baseline_path.write_text(json.dumps(deploy_baseline))
+    pinned_with_deploy = json.loads(pinned_bytes)
+    pinned_with_deploy["files"][deploy_floor_path] = {
+        "sourceSha256": hashlib.sha256(deploy_floor_source.read_bytes()).hexdigest(),
+        "lines": [1],
+        "branches": {},
+    }
+    pinned_path.write_text(json.dumps(pinned_with_deploy))
 
-full_settings_with_deploy = scratch / "fixture-full-deploy.runsettings"
-skip_settings_with_deploy = scratch / "fixture-skip-deploy.runsettings"
-subprocess.run([str(fixture_scripts / "coverage:development-v1"), "--settings", str(full_settings_with_deploy)], check=True)
-subprocess.run([str(fixture_scripts / "coverage:development-v1"), "--settings", "--skip-deployment-cli", str(skip_settings_with_deploy)], check=True)
-assert "[HVO.SkyMonitor.Deployment.Cli]*" in ET.parse(full_settings_with_deploy).find(".//Configuration/Include").text
-assert "[HVO.SkyMonitor.Deployment.Cli]*" not in ET.parse(skip_settings_with_deploy).find(".//Configuration/Include").text
-cases += 1
-print("PASS --settings --skip-deployment-cli omits active Deployment.Cli floor assembly while default includes it")
+    full_settings_with_deploy = scratch / f"fixture-full-{deploy_floor_assembly}.runsettings"
+    skip_settings_with_deploy = scratch / f"fixture-skip-{deploy_floor_assembly}.runsettings"
+    subprocess.run([str(fixture_scripts / "coverage:development-v1"), "--settings", str(full_settings_with_deploy)], check=True)
+    assert f"[{deploy_floor_assembly}]*" in ET.parse(full_settings_with_deploy).find(".//Configuration/Include").text
+    cases += 1
+    print(f"PASS default --settings includes active {deploy_floor_assembly} floor assembly")
 
-skip_with_floor = subprocess.run(
-    [str(fixture_scripts / "coverage:development-v1"), "--skip-deployment-cli", str(results), str(inventory_repo / "coverage-output-skip-floor")],
-    capture_output=True, text=True, env=wrapper_env)
-if skip_with_floor.returncode != 0 or f"SKIP {deploy_floor_path}" not in skip_with_floor.stdout or "Coverage gate passed." not in skip_with_floor.stdout:
-    raise SystemExit(f"FAIL --skip-deployment-cli failed on skipped Deployment.Cli floor: exit={skip_with_floor.returncode}\n{skip_with_floor.stdout}{skip_with_floor.stderr}")
-cases += 1
-print("PASS --skip-deployment-cli explicitly skips active Deployment.Cli floor and passes remaining floors")
+    skip_settings_result = subprocess.run(
+        [str(fixture_scripts / "coverage:development-v1"), "--settings", "--skip-deployment-cli", str(skip_settings_with_deploy)],
+        capture_output=True, text=True)
+    if skip_settings_result.returncode == 0 or deploy_floor_path not in skip_settings_result.stderr or "Cannot use --skip-deployment-cli" not in skip_settings_result.stderr:
+        raise SystemExit(
+            f"FAIL --settings --skip-deployment-cli waived active floor {deploy_floor_path}: "
+            f"exit={skip_settings_result.returncode}\n{skip_settings_result.stdout}{skip_settings_result.stderr}")
+    cases += 1
+    print(f"PASS --settings --skip-deployment-cli fails closed on active {deploy_floor_assembly} floor")
 
-enforce_default_missing = subprocess.run(
-    [real_dotnet, str(fixture_gate), "--development-v1", str(fixture_baseline_path), str(inventory_repo / "coverage-output-skip-floor/Cobertura.xml")],
-    capture_output=True, text=True)
-if enforce_default_missing.returncode != 1 or deploy_floor_path not in enforce_default_missing.stderr or "measured coverage MISSING" not in enforce_default_missing.stderr:
-    raise SystemExit(f"FAIL default --development-v1 gate did not enforce Deployment.Cli floor: {enforce_default_missing.stdout}{enforce_default_missing.stderr}")
-cases += 1
-print("PASS default --development-v1 gate still enforces active Deployment.Cli floor when Deployment.Cli.Tests is not skipped")
+    skip_wrapper_result = subprocess.run(
+        [str(fixture_scripts / "coverage:development-v1"), "--skip-deployment-cli", str(results), str(inventory_repo / f"coverage-output-skip-{deploy_floor_assembly}")],
+        capture_output=True, text=True, env=wrapper_env)
+    if (skip_wrapper_result.returncode == 0 or
+            f"SKIP {deploy_floor_path}" in skip_wrapper_result.stdout or
+            "--skip-deployment-cli cannot waive active canonical floor" not in skip_wrapper_result.stderr):
+        raise SystemExit(
+            f"FAIL --skip-deployment-cli wrapper waived active floor {deploy_floor_path}: "
+            f"exit={skip_wrapper_result.returncode}\n{skip_wrapper_result.stdout}{skip_wrapper_result.stderr}")
+    cases += 1
+    print(f"PASS --skip-deployment-cli wrapper fails closed on active {deploy_floor_assembly} floor")
+
+    direct_skip_enforce = subprocess.run(
+        [real_dotnet, str(fixture_gate), "--development-v1", "--skip-deployment-cli", str(fixture_baseline_path), str(valid)],
+        capture_output=True, text=True)
+    if (direct_skip_enforce.returncode == 0 or
+            f"SKIP {deploy_floor_path}" in direct_skip_enforce.stdout or
+            "--skip-deployment-cli cannot waive active canonical floor" not in direct_skip_enforce.stderr):
+        raise SystemExit(
+            f"FAIL direct CoverageGate --skip-deployment-cli waived active floor {deploy_floor_path}: "
+            f"exit={direct_skip_enforce.returncode}\n{direct_skip_enforce.stdout}{direct_skip_enforce.stderr}")
+    cases += 1
+    print(f"PASS direct CoverageGate --skip-deployment-cli fails closed on active {deploy_floor_assembly} floor")
+
+    enforce_default_missing = subprocess.run(
+        [real_dotnet, str(fixture_gate), "--development-v1", str(fixture_baseline_path), str(inventory_repo / "coverage-output-skip/Cobertura.xml")],
+        capture_output=True, text=True)
+    if enforce_default_missing.returncode != 1 or deploy_floor_path not in enforce_default_missing.stderr or "measured coverage MISSING" not in enforce_default_missing.stderr:
+        raise SystemExit(f"FAIL default --development-v1 gate did not enforce {deploy_floor_path}: {enforce_default_missing.stdout}{enforce_default_missing.stderr}")
+    cases += 1
+    print(f"PASS default --development-v1 gate enforces active {deploy_floor_assembly} floor")
+
+    shutil.rmtree(deploy_floor_source.parent)
 
 fixture_baseline_path.write_text(json.dumps(fixture_baseline))
 pinned_path.write_bytes(pinned_bytes)
 unit_inventory.write_text(json.dumps(unit_projects))
 shutil.rmtree(deploy_cli_test_project)
-shutil.rmtree(deploy_floor_source.parent)
 
 print(f"Development v1 coverage contracts passed: {cases} behavioral cases.")
 PY

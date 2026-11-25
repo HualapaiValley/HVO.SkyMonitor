@@ -245,7 +245,7 @@ fast_reason() {
   grep -Fxq "docs_fast_path_reason=$reason" <<< "$result" || { printf 'Expected reason %s: %s\n' "$reason" "$result" >&2; exit 1; }
   ((fast_cases += 1))
 }
-for excluded in docs/upgrade-notes/0.9.1.md docs/generated/report.txt docs/evidence/report.txt docs/other/generated/report.txt docs/runbooks/development-v1-merge-queue-drill/verification.txt docs/UPPER.MD; do
+for excluded in docs/upgrade-notes/0.9.1.md docs/generated/report.txt docs/evidence/report.txt docs/other/generated/report.txt docs/runbooks/development-v1-merge-queue-drill/verification.txt docs/runbooks/cameraagent-silo-runtime.md docs/UPPER.MD; do
   git -C "$fast_root" reset -q --hard "$fast_base"
   mkdir -p "$fast_root/$(dirname "$excluded")"
   printf 'text\n' > "$fast_root/$excluded"
@@ -742,6 +742,35 @@ if git -C "$repo_root" show "$real_base:scripts/ci:docs-inventory" > "$fast_root
 else
   printf 'Real inventory canary skipped: certificate not in committed HEAD.\n'
 fi
+# Real-repo regression (#2071): single-file edits to Deployment.Cli.Tests runtime inputs
+# (CameraAgent hvo-dark.css and the Silo replacement runbook) must never take the docs fast path
+# and must always select delivery=true so Deployment.Cli.Tests runs.
+for runtime_input in \
+  "src/HVO.SkyMonitor.CameraAgent/wwwroot/css/themes/hvo-dark.css" \
+  "docs/runbooks/cameraagent-silo-runtime.md"; do
+  runtime_index="$fast_root/.git/runtime-index-${runtime_input//\//_}"
+  GIT_INDEX_FILE="$runtime_index" git -C "$repo_root" read-tree "$real_base"
+  runtime_blob="$(printf 'runtime input mutation for %s\n' "$runtime_input" | git -C "$repo_root" hash-object -w --stdin)"
+  GIT_INDEX_FILE="$runtime_index" git -C "$repo_root" update-index --add --cacheinfo "100644,$runtime_blob,$runtime_input"
+  runtime_tree="$(GIT_INDEX_FILE="$runtime_index" git -C "$repo_root" write-tree)"
+  runtime_head="$(printf 'CI runtime input canary %s\n' "$runtime_input" | git -C "$repo_root" -c user.name='CI fixture' -c user.email=fixture@example.invalid commit-tree "$runtime_tree" -p "$real_base")"
+  runtime_fast_output="$(cd "$repo_root" && "$classifier" pull_request "$real_base" "$runtime_head" docs-fast-only)"
+  grep -Fxq 'docs_fast_path=false' <<< "$runtime_fast_output" || {
+    printf 'Real-repo runtime input %s qualified for docs fast path:\n%s\n' "$runtime_input" "$runtime_fast_output" >&2
+    exit 1
+  }
+  grep -Fxq 'docs_fast_path_reason=path outside documentation allowlist' <<< "$runtime_fast_output" || {
+    printf 'Real-repo runtime input %s had unexpected docs_fast_path_reason:\n%s\n' "$runtime_input" "$runtime_fast_output" >&2
+    exit 1
+  }
+  runtime_comp_output="$(cd "$repo_root" && "$classifier" pull_request "$real_base" "$runtime_head")"
+  grep -Fxq 'mode=full' <<< "$runtime_comp_output" &&
+    grep -Fxq 'delivery=true' <<< "$runtime_comp_output" || {
+    printf 'Real-repo runtime input %s did not select delivery=true:\n%s\n' "$runtime_input" "$runtime_comp_output" >&2
+    exit 1
+  }
+done
+printf 'Real-repo Deployment.Cli.Tests runtime input canaries passed (2 inputs).\n'
 )
 canary_commit="$(cat "$fast_root/.git/canary-commit")"
 if git -C "$repo_root" cat-file -e "$canary_commit^{commit}" 2>/dev/null; then
@@ -2324,6 +2353,8 @@ verify_component_plan "src/HVO.SkyMonitor.CameraAgent/virtual-asi174.full.json" 
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent/virtual-asi178mc.full.json"       full true false false true false
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent/Configuration/OwnerPasswordFileText.cs" full false false false true true
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent/Configuration/LocalIdentityOptions.cs"  full false false false true true
+verify_component_plan "src/HVO.SkyMonitor.CameraAgent/wwwroot/css/themes/hvo-dark.css"        full false false false true true
+verify_component_plan "docs/runbooks/cameraagent-silo-runtime.md"                             full false true true true true
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Common/DeploymentLocation/RetainedIntegrityFormat.cs" full false false false true true
 verify_component_plan "Directory.Build.targets"                                         full false true true true true
 verify_component_plan ".github/workflows/development-v1.yml"                            full false true true true true
