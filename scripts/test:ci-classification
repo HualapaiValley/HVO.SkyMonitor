@@ -3591,34 +3591,22 @@ preamble = script_text.split("\nresult_jobs=(\n", 1)[0]
 fork_marker = "    ) </dev/null &\n"
 if preamble.count(fork_marker) != 1:
     raise SystemExit(f"Expected 1 worker fork marker in harness preamble, found {preamble.count(fork_marker)}")
+cleanup_marker = "cleanup() {\n  trap '' INT TERM\n"
+if preamble.count(cleanup_marker) != 1:
+    raise SystemExit(
+        f"Expected 1 cleanup trap-disarm marker in harness preamble, found {preamble.count(cleanup_marker)}"
+    )
+cleanup_probe = (
+    "cleanup() {\n"
+    '  if [[ -n "${HVO_CLEANUP_TRAP_LOG:-}" ]]; then\n'
+    '    trap -p INT TERM > "$HVO_CLEANUP_TRAP_LOG"\n'
+    "  fi\n"
+    "  trap '' INT TERM\n"
+)
+instrumented_preamble = preamble.replace(cleanup_marker, cleanup_probe, 1)
 
-active = {"proc": None, "worker_pgid": None}
+active = {"proc": None, "worker_pgid": None, "probe_dir": None, "resume_fifo": None}
 
-def _cleanup_active():
-    proc = active["proc"]
-    if proc is not None and proc.poll() is None:
-        try:
-            proc.terminate()
-            proc.wait(timeout=1.5)
-        except Exception:
-            try:
-                proc.kill()
-                proc.wait(timeout=2)
-            except Exception:
-                pass
-    pgid = active["worker_pgid"]
-    if pgid is not None:
-        try:
-            os.killpg(pgid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-
-def _on_signal(signum, _frame):
-    _cleanup_active()
-    raise SystemExit(128 + signum)
-
-signal.signal(signal.SIGTERM, _on_signal)
-signal.signal(signal.SIGINT, _on_signal)
 
 def pgid_survivors(pgid):
     alive = []
@@ -3634,6 +3622,147 @@ def pgid_survivors(pgid):
         except OSError:
             pass
     return alive
+
+
+def _pid_pgrp(pid):
+    try:
+        return os.getpgid(pid)
+    except OSError:
+        return None
+
+
+def _child_pgids(parent_pid, skip_pgrp):
+    pgids = set()
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            stat = pathlib.Path(f"/proc/{entry}/stat").read_text()
+            after = stat.rsplit(")", 1)[1].split()
+            state, ppid, pgrp = after[0], int(after[1]), int(after[2])
+            if ppid == parent_pid and state not in ("Z", "X") and pgrp > 0 and pgrp != skip_pgrp:
+                pgids.add(pgrp)
+        except (OSError, ValueError, IndexError):
+            pass
+    return pgids
+
+
+def _collect_worker_pgids(skip_pgrp):
+    pgids = set()
+    recorded_pgid = active["worker_pgid"]
+    if recorded_pgid is not None and recorded_pgid > 0 and recorded_pgid != skip_pgrp:
+        pgids.add(recorded_pgid)
+    proc = active["proc"]
+    if proc is not None and proc.poll() is None:
+        pgids.update(_child_pgids(proc.pid, skip_pgrp))
+    probe_dir = active["probe_dir"]
+    if probe_dir is not None:
+        for name in ("worker.pid", "worker.pid.tmp", "worker.pids", "nested.pids"):
+            path = probe_dir / name
+            try:
+                tokens = path.read_text().split()
+            except OSError:
+                continue
+            for tok in tokens:
+                try:
+                    pid = int(tok)
+                except ValueError:
+                    continue
+                if pid <= 0 or pid == os.getpid():
+                    continue
+                if proc is not None and pid == proc.pid:
+                    continue
+                if name in ("worker.pid", "worker.pid.tmp") and pid != skip_pgrp:
+                    pgids.add(pid)
+                pgrp = _pid_pgrp(pid)
+                if pgrp is not None and pgrp > 0 and pgrp != skip_pgrp:
+                    pgids.add(pgrp)
+    return pgids
+
+
+def _unblock_fifo(fifo_path, payload=b"abort\n"):
+    if fifo_path is None:
+        return
+    try:
+        fd = os.open(fifo_path, os.O_WRONLY | os.O_NONBLOCK)
+        try:
+            os.write(fd, payload)
+        finally:
+            os.close(fd)
+    except OSError:
+        pass
+
+
+def _cleanup_active():
+    my_pgrp = os.getpgrp()
+    pgids = _collect_worker_pgids(my_pgrp)
+    proc = active["proc"]
+    if proc is not None and proc.poll() is None:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        _unblock_fifo(active["resume_fifo"], b"abort\n")
+        try:
+            proc.wait(timeout=1.5)
+        except Exception:
+            try:
+                proc.kill()
+                proc.wait(timeout=2)
+            except Exception:
+                pass
+    else:
+        _unblock_fifo(active["resume_fifo"], b"abort\n")
+    pgids.update(_collect_worker_pgids(my_pgrp))
+    if pgids:
+        deadline = time.monotonic() + 1.0
+        while True:
+            any_alive = False
+            for pgid in pgids:
+                if pgid_survivors(pgid):
+                    any_alive = True
+                    try:
+                        os.killpg(pgid, signal.SIGKILL)
+                    except OSError:
+                        pass
+            if not any_alive or time.monotonic() >= deadline:
+                break
+            time.sleep(0.01)
+
+
+def _on_signal(signum, _frame):
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    _cleanup_active()
+    raise SystemExit(128 + signum)
+
+
+signal.signal(signal.SIGTERM, _on_signal)
+signal.signal(signal.SIGINT, _on_signal)
+
+
+def parse_hook_state(state_path):
+    if not state_path.exists():
+        return None
+    result = {}
+    for line in state_path.read_text().splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            result[key] = value
+    return result
+
+
+def assert_traps_disarmed(log_path, context):
+    if not log_path.exists():
+        raise SystemExit(f"{context}: cleanup trap log missing ({log_path})")
+    lines = [line.strip() for line in log_path.read_text().splitlines() if line.strip()]
+    expected = {"trap -- '' SIGINT", "trap -- '' SIGTERM"}
+    if set(lines) != expected:
+        raise SystemExit(
+            f"{context}: expected INT and TERM traps already disarmed when cleanup() begins, "
+            f"saw {lines!r}"
+        )
+
 
 worker_body = """
 run_probe_worker() {
@@ -3665,29 +3794,46 @@ try:
         case_tmp.mkdir(parents=True, mode=0o700)
         probe_dir.mkdir(parents=True, mode=0o700)
         resume_fifo = probe_dir / "resume.fifo"
+        trap_log = probe_dir / "cleanup_traps.log"
+        hook_state_path = probe_dir / "hook_exit.state"
         os.mkfifo(resume_fifo)
         hook = (
             fork_marker
             + '    exec 4<>"$HVO_PROBE_DIR/resume.fifo"\n'
-            + '    printf \'%d\\n\' "$!" > "$HVO_PROBE_DIR/worker.pid"\n'
+            + '    printf \'%d\\n\' "$!" > "$HVO_PROBE_DIR/worker.pid.tmp"\n'
+            + '    mv "$HVO_PROBE_DIR/worker.pid.tmp" "$HVO_PROBE_DIR/worker.pid"\n'
             + '    : > "$HVO_PROBE_DIR/paused.flag"\n'
-            + '    read -r -t 5 -u 4 _ || true\n'
+            + '    _hvo_resume_token=""\n'
+            + '    _hvo_read_rc=0\n'
+            + '    IFS= read -r -t 5 -u 4 _hvo_resume_token || _hvo_read_rc=$?\n'
             + '    exec 4>&-\n'
+            + '    printf \'read_rc=%d\\ntoken=%s\\nlaunching=%s\\npending=%s\\nreg_pid=%d\\nreg_pgid=%d\\n\' \\\n'
+            + '      "$_hvo_read_rc" "$_hvo_resume_token" "${launching_worker:-}" \\\n'
+            + '      "${pending_signal_exit:-}" "${#active_idx_to_pid[@]}" "${#active_idx_to_pgid[@]}" \\\n'
+            + '      > "$HVO_PROBE_DIR/hook_exit.state"\n'
+            + '    if (( _hvo_read_rc != 0 )) || [[ "$_hvo_resume_token" != "go" ]]; then\n'
+            + '      exit 97\n'
+            + '    fi\n'
         )
         harness = case_dir / "harness.sh"
-        harness.write_text(preamble.replace(fork_marker, hook, 1) + worker_body)
+        harness_out = case_dir / "harness.out"
+        harness_err = case_dir / "harness.err"
+        harness.write_text(instrumented_preamble.replace(fork_marker, hook, 1) + worker_body)
         env = os.environ.copy()
         env["TMPDIR"] = str(case_tmp)
         env["HVO_PROBE_DIR"] = str(probe_dir)
+        env["HVO_CLEANUP_TRAP_LOG"] = str(trap_log)
         active["proc"] = None
         active["worker_pgid"] = None
-        proc = subprocess.Popen(
-            ["bash", str(harness)],
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
+        active["probe_dir"] = probe_dir
+        active["resume_fifo"] = resume_fifo
+        with harness_out.open("w") as out_fh, harness_err.open("w") as err_fh:
+            proc = subprocess.Popen(
+                ["bash", str(harness)],
+                env=env,
+                stdout=out_fh,
+                stderr=err_fh,
+            )
         active["proc"] = proc
         try:
             deadline = time.monotonic() + 10.0
@@ -3695,7 +3841,11 @@ try:
                 if (probe_dir / "paused.flag").exists() and (probe_dir / "worker_ready.flag").exists():
                     break
                 if proc.poll() is not None:
-                    raise SystemExit(f"Launch-window probe exited early ({proc.returncode}): {proc.stderr.read()}")
+                    raise SystemExit(
+                        f"Launch-window probe exited early ({proc.returncode}); "
+                        f"hook_state={parse_hook_state(hook_state_path)!r}; "
+                        f"stderr={harness_err.read_text()!r}"
+                    )
                 time.sleep(0.01)
             if not ((probe_dir / "paused.flag").exists() and (probe_dir / "worker_ready.flag").exists()):
                 raise SystemExit(f"Launch-window probe timed out waiting for pause/ready ({sig.name})")
@@ -3704,20 +3854,42 @@ try:
             before = pgid_survivors(worker_pgid)
             if len(before) < 4:
                 raise SystemExit(f"Expected >=4 live processes in worker pgid {worker_pgid}, saw {before}")
-            os.kill(proc.pid, sig)
-            time.sleep(0.03)
             try:
-                fd = os.open(resume_fifo, os.O_WRONLY | os.O_NONBLOCK)
+                os.kill(proc.pid, sig)
+            except ProcessLookupError:
+                pass
+            else:
+                time.sleep(0.03)
                 try:
-                    os.write(fd, b"go\n")
-                finally:
-                    os.close(fd)
-            except OSError as exc:
-                if exc.errno not in (errno.ENXIO, errno.EPIPE):
-                    raise
+                    fd = os.open(resume_fifo, os.O_WRONLY | os.O_NONBLOCK)
+                    try:
+                        os.write(fd, b"go\n")
+                    finally:
+                        os.close(fd)
+                except OSError as exc:
+                    if exc.errno not in (errno.ENXIO, errno.EPIPE):
+                        raise
             rc = proc.wait(timeout=10)
+            hook_state = parse_hook_state(hook_state_path)
             if rc != expected_rc:
-                raise SystemExit(f"Launch-window {sig.name} expected exit {expected_rc}, got {rc}: {proc.stderr.read()}")
+                raise SystemExit(
+                    f"Launch-window {sig.name} expected exit {expected_rc}, got {rc}; "
+                    f"hook_state={hook_state!r}; stderr={harness_err.read_text()!r}"
+                )
+            expected_hook = {
+                "read_rc": "0",
+                "token": "go",
+                "launching": "1",
+                "pending": str(expected_rc),
+                "reg_pid": "0",
+                "reg_pgid": "0",
+            }
+            if hook_state != expected_hook:
+                raise SystemExit(
+                    f"Launch-window {sig.name} handshake did not prove pre-registration deferral: "
+                    f"expected {expected_hook!r}, got {hook_state!r}"
+                )
+            assert_traps_disarmed(trap_log, f"Launch-window {sig.name} deferred exit")
             survivors = pgid_survivors(worker_pgid)
             if survivors:
                 raise SystemExit(f"Launch-window {sig.name} left surviving processes in pgid {worker_pgid}: {survivors}")
@@ -3728,28 +3900,39 @@ try:
             _cleanup_active()
             active["proc"] = None
             active["worker_pgid"] = None
+            active["probe_dir"] = None
+            active["resume_fifo"] = None
 
-    # 2. Rapid back-to-back SIGINT regression (must disarm INT/TERM before exit -> cleanup)
-    for trial in range(5):
-        case_dir = root_dir / f"rapid-{trial}"
+    # 2. Direct handle_signal disarm + rapid back-to-back SIGINT smoke regression
+    direct_cases = [("direct-sigterm", signal.SIGTERM, 143, 1)] + [
+        (f"rapid-{trial}", signal.SIGINT, 130, 3) for trial in range(5)
+    ]
+    for label, sig, expected_rc, burst in direct_cases:
+        case_dir = root_dir / label
         case_tmp = case_dir / "tmp"
         probe_dir = case_dir / "probe"
         case_tmp.mkdir(parents=True, mode=0o700)
         probe_dir.mkdir(parents=True, mode=0o700)
+        trap_log = probe_dir / "cleanup_traps.log"
         harness = case_dir / "harness.sh"
-        harness.write_text(preamble + worker_body)
+        harness_out = case_dir / "harness.out"
+        harness_err = case_dir / "harness.err"
+        harness.write_text(instrumented_preamble + worker_body)
         env = os.environ.copy()
         env["TMPDIR"] = str(case_tmp)
         env["HVO_PROBE_DIR"] = str(probe_dir)
+        env["HVO_CLEANUP_TRAP_LOG"] = str(trap_log)
         active["proc"] = None
         active["worker_pgid"] = None
-        proc = subprocess.Popen(
-            ["bash", str(harness)],
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
+        active["probe_dir"] = probe_dir
+        active["resume_fifo"] = None
+        with harness_out.open("w") as out_fh, harness_err.open("w") as err_fh:
+            proc = subprocess.Popen(
+                ["bash", str(harness)],
+                env=env,
+                stdout=out_fh,
+                stderr=err_fh,
+            )
         active["proc"] = proc
         try:
             deadline = time.monotonic() + 10.0
@@ -3757,32 +3940,36 @@ try:
                 if (probe_dir / "worker_ready.flag").exists():
                     break
                 if proc.poll() is not None:
-                    raise SystemExit(f"Rapid-SIGINT trial {trial} exited early ({proc.returncode}): {proc.stderr.read()}")
+                    raise SystemExit(f"{label} exited early ({proc.returncode}): {harness_err.read_text()}")
                 time.sleep(0.01)
             if not (probe_dir / "worker_ready.flag").exists():
-                raise SystemExit(f"Rapid-SIGINT trial {trial} timed out waiting for worker")
+                raise SystemExit(f"{label} timed out waiting for worker")
             worker_pid = int((probe_dir / "worker.pids").read_text().split()[0])
             worker_pgid = os.getpgid(worker_pid)
             active["worker_pgid"] = worker_pgid
-            for _ in range(3):
+            for i in range(burst):
                 try:
-                    os.kill(proc.pid, signal.SIGINT)
+                    os.kill(proc.pid, sig)
                 except ProcessLookupError:
                     break
-                time.sleep(0.00005)
+                if i + 1 < burst:
+                    time.sleep(0.00005)
             rc = proc.wait(timeout=10)
-            if rc != 130:
-                raise SystemExit(f"Rapid-SIGINT trial {trial} expected exit 130, got {rc}: {proc.stderr.read()}")
+            if rc != expected_rc:
+                raise SystemExit(f"{label} expected exit {expected_rc}, got {rc}: {harness_err.read_text()}")
+            assert_traps_disarmed(trap_log, f"{label} direct signal")
             survivors = pgid_survivors(worker_pgid)
             if survivors:
-                raise SystemExit(f"Rapid-SIGINT trial {trial} left surviving processes in pgid {worker_pgid}: {survivors}")
+                raise SystemExit(f"{label} left surviving processes in pgid {worker_pgid}: {survivors}")
             leaked = [p.name for p in case_tmp.iterdir()]
             if leaked:
-                raise SystemExit(f"Rapid-SIGINT trial {trial} leaked TMPDIR entries: {leaked}")
+                raise SystemExit(f"{label} leaked TMPDIR entries: {leaked}")
         finally:
             _cleanup_active()
             active["proc"] = None
             active["worker_pgid"] = None
+            active["probe_dir"] = None
+            active["resume_fifo"] = None
 finally:
     shutil.rmtree(root_dir, ignore_errors=True)
 PY
