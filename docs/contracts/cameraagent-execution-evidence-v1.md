@@ -5,7 +5,7 @@ contract a completed CameraAgent uses to expose its immutable graph revisions
 and graph executions to LogicHost. It is a vocabulary and a
 set of rules, not a sender or a receiver: issue #536 defines it, #537 adds the
 CameraAgent durable exporter, and #538 adds the LogicHost import half. See the
-[LogicHost import runbook](../runbooks/logichost-execution-evidence.md) for
+[LogicHost import runbook](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/66e6aa237b40c70342815af6e2511122daa56bb6/docs/runbooks/logichost-execution-evidence.md) for
 authorization, receipt, reconciliation, and bounded read operations.
 
 The contract lives in `src/HVO.SkyMonitor.Processing`

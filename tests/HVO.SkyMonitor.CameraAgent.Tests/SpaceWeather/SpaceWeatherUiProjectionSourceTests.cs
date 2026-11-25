@@ -13,6 +13,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.SpaceWeather;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "SpaceWeather")]
 public sealed class SpaceWeatherUiProjectionSourceTests
 {
     /// <summary>A hang detector only: no assertion depends on how long a read takes.</summary>

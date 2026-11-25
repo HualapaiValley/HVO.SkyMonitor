@@ -8,6 +8,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Environmental;
 
 [TestClass]
 [TestCategory("Integration")]
+[TestProperty("Area", "Environmental")]
 public sealed class EnvironmentalAdapterCompatibilityTests
 {
     [TestMethod]

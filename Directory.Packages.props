@@ -6,9 +6,6 @@
 
   <ItemGroup>
     <PackageVersion Include="AngleSharp" Version="1.8.1" />
-    <PackageVersion Include="AWSSDK.Core" Version="4.0.102.19" />
-    <PackageVersion Include="AWSSDK.S3" Version="4.0.104.11" />
-    <PackageVersion Include="AWSSDK.SecurityToken" Version="4.0.101.10" />
     <PackageVersion Include="Asp.Versioning.Mvc" Version="10.2.1" />
     <PackageVersion Include="Asp.Versioning.Mvc.ApiExplorer" Version="10.2.1" />
     <PackageVersion Include="Asp.Versioning.OpenApi" Version="10.2.3" />
@@ -29,11 +26,8 @@
     <PackageVersion Include="Microsoft.AspNetCore.OpenApi" Version="10.0.14" />
     <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.14" />
     <PackageVersion Include="Microsoft.EntityFrameworkCore" Version="10.0.14" />
-    <PackageVersion Include="Microsoft.EntityFrameworkCore.InMemory" Version="10.0.14" />
     <PackageVersion Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.14" />
     <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.14" />
-    <PackageVersion Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.14" />
-    <PackageVersion Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="10.0.14" />
     <PackageVersion Include="Microsoft.Extensions.Configuration.Abstractions" Version="10.0.14" />
     <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.14" />
     <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.14" />
@@ -47,15 +41,10 @@
     <PackageVersion Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.14" />
     <PackageVersion Include="Microsoft.Extensions.Options.DataAnnotations" Version="10.0.14" />
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.10.2" />
-    <PackageVersion Include="Minio" Version="7.0.0" />
     <PackageVersion Include="Moq" Version="4.21.0" />
     <PackageVersion Include="MSTest" Version="4.5.3" />
     <PackageVersion Include="MSTest.TestAdapter" Version="4.5.3" />
     <PackageVersion Include="MSTest.TestFramework" Version="4.5.3" />
-    <PackageVersion Include="OpenIddict.Server.AspNetCore" Version="7.8.0" />
-    <PackageVersion Include="OpenIddict.Validation.AspNetCore" Version="7.8.0" />
-    <PackageVersion Include="OpenIddict.Validation.ServerIntegration" Version="7.8.0" />
-    <PackageVersion Include="OpenIddict.EntityFrameworkCore" Version="7.8.0" />
     <PackageVersion Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.20.1" />
     <PackageVersion Include="OpenTelemetry.Exporter.Prometheus.AspNetCore" Version="1.19.0-beta.1" />
     <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="1.20.1" />
@@ -71,11 +60,9 @@
     <PackageVersion Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="4.155.0" />
     <PackageVersion Include="SkiaSharp.NativeAssets.macOS" Version="4.155.0" />
     <PackageVersion Include="SkiaSharp.NativeAssets.Win32" Version="4.155.0" />
-    <PackageVersion Include="StackExchange.Redis" Version="3.4.31" />
     <PackageVersion Include="Microsoft.OpenApi" Version="2.12.2" />
     <PackageVersion Include="Microsoft.Playwright.MSTest" Version="1.65.1" />
     <PackageVersion Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.53.3" />
-    <PackageVersion Include="SSH.NET" Version="2026.0.0" />
     <PackageVersion Include="System.CommandLine" Version="2.0.14" />
     <PackageVersion Include="System.Security.Cryptography.Pkcs" Version="10.0.14" />
     <PackageVersion Include="System.Security.Cryptography.Xml" Version="10.0.14" />
@@ -93,7 +80,5 @@
     <PackageVersion Include="Microsoft.Extensions.FileProviders.Abstractions" Version="10.0.14" />
     <PackageVersion Include="Microsoft.Extensions.FileProviders.Physical" Version="10.0.14" />
     <PackageVersion Include="Microsoft.Extensions.FileSystemGlobbing" Version="10.0.14" />
-    <PackageVersion Include="Testcontainers.MsSql" Version="4.16.0" />
-    <PackageVersion Include="Testcontainers.Redis" Version="4.16.0" />
   </ItemGroup>
 </Project>

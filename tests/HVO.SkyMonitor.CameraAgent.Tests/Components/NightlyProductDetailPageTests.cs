@@ -15,6 +15,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Ui")]
 public sealed class NightlyProductDetailPageTests
 {
     private static readonly TimeSpan Mst = TimeSpan.FromHours(-7);

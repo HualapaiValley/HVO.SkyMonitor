@@ -9,6 +9,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Modules.VirtualSky")]
 public sealed class VirtualLongExposureFixtureTests
 {
     private static readonly CelestialCatalogObject Star = new("star", "star", 0, 0, 1);

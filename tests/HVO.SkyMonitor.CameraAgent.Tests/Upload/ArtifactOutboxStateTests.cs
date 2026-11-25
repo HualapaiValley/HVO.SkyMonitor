@@ -4,6 +4,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Upload;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Upload")]
 public sealed class ArtifactOutboxStateTests
 {
     [TestMethod]

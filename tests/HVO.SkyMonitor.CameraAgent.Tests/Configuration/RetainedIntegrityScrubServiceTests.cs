@@ -13,6 +13,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Configuration;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Configuration")]
 public sealed class RetainedIntegrityScrubServiceTests
 {
     private static readonly double[] CompleteBackoff = [1, 2, 4, 8];

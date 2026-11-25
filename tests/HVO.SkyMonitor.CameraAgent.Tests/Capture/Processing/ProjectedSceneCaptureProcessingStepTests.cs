@@ -19,6 +19,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture.Processing")]
 [DoNotParallelize]
 public sealed class ProjectedSceneCaptureProcessingStepTests
 {

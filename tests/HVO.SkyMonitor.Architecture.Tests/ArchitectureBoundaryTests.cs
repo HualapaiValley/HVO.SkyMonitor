@@ -30,7 +30,6 @@ public sealed partial class ArchitectureBoundaryTests
     private const string ProcessingRunnerContracts = "HVO.SkyMonitor.ProcessingRunner.Contracts";
     private const string ProcessingRunner = "HVO.SkyMonitor.ProcessingRunner";
     private const string CameraAgent = "HVO.SkyMonitor.CameraAgent";
-    private const string LogicHost = "HVO.SkyMonitor.LogicHost";
     private const string DeploymentContracts = "HVO.SkyMonitor.Deployment.Contracts";
     private const string DeploymentCli = "HVO.SkyMonitor.Deployment.Cli";
 
@@ -39,13 +38,15 @@ public sealed partial class ArchitectureBoundaryTests
     private const string TerminalUi = "HVO.SkyMonitor.TerminalUi";
 
     // Host-neutral filesystem primitives (#592): mechanisms only, references nothing, consumed
-    // by the LogicHost filesystem provider (#585) and later CameraAgent.Common (#587). Its
+    // by CameraAgent.Common and Video.FFmpeg. Its
     // dependency rule is asserted by StorageFileSystemBoundaryIsNarrowWhenPresent.
     private const string StorageFileSystem = "HVO.SkyMonitor.Storage.FileSystem";
     private const string TestSupport = "HVO.SkyMonitor.TestSupport";
     private const string FixtureCatalogSha256 = "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840";
 
     private static readonly string[] ProjectSearchDirectories = ["src", "tests", "scripts", "tools"];
+
+    private static readonly IReadOnlySet<string> HostProjects = Set(CameraAgent, CameraAgentReplayRunner, ProcessingRunner);
 
     private static readonly string[] SupportedConfigurations = ["Debug", "Release"];
 
@@ -81,7 +82,6 @@ public sealed partial class ArchitectureBoundaryTests
             [ProcessingRunnerContracts] = Set(AgentCore, Processing),
             [ProcessingRunner] = Set(AgentCore, Processing, ProcessingRunnerContracts),
             [CameraAgent] = Set(CameraAgentCommon, CameraAgentZwo, Catalog, Common),
-            [LogicHost] = Set(AgentCore, Astronomy, Imaging, Processing, VideoFFmpeg, ProcessingRunnerContracts, FleetContracts, Catalog, Common, StorageFileSystem),
             [DeploymentContracts] = Set(),
             [TerminalUi] = Set(),
             // The installer verifies releases by release.json and SHA256SUMS (#1309); no project holds a signing trust
@@ -284,7 +284,7 @@ public sealed partial class ArchitectureBoundaryTests
     public void CaptureOrRecipeSelectionIncludesReviewedNamedOwners()
     {
         var selected = snapshot.CaptureOrRecipe.SelectedTypes;
-        foreach (var name in new[] { "LogicHostRecipeExecutionAdapter", "CentralDerivativeRecipeCatalog" })
+        foreach (var name in new[] { "ProcessingRecipeExecutor", "MeasuredStellarAssociationCaptureProcessingStep" })
         {
             Assert.IsTrue(selected.Any(type => type.Type.Name == name), name);
             TestContext.WriteLine($"Selected named owner: {name}");
@@ -380,11 +380,8 @@ public sealed partial class ArchitectureBoundaryTests
     [TestCategory("Unit")]
     public void StorageFileSystemBoundaryIsNarrowWhenPresent()
     {
-        // #584 defines the boundary; #592 delivers the project; #585 and #587 consume it.
-        // The project may reference nothing: no host, no AgentCore, no Common, no persistence,
-        // no provider SDK. Its consumers are the LogicHost filesystem provider and, after
-        // RM-017, CameraAgent.Common. Nothing else may reference it, and it may not appear
-        // in the graph with a wider rule than an empty set.
+        // The filesystem primitives have no project dependencies. CameraAgent.Common and Video.FFmpeg
+        // are the only production consumers.
         var repository = snapshot.Graph;
         if (!repository.Projects.TryGetValue(StorageFileSystem, out var project))
         {
@@ -417,7 +414,7 @@ public sealed partial class ArchitectureBoundaryTests
             .Select(candidate => candidate.Name)
             .Order(StringComparer.Ordinal)
             .ToArray();
-        var permittedConsumers = new[] { CameraAgentCommon, LogicHost, VideoFFmpeg };
+        var permittedConsumers = new[] { CameraAgentCommon, VideoFFmpeg };
         Assert.IsEmpty(consumers.Except(permittedConsumers, StringComparer.Ordinal).ToArray(),
             $"Only {string.Join(" and ", permittedConsumers)} may reference {StorageFileSystem}: {string.Join(", ", consumers)}");
     }
@@ -427,9 +424,7 @@ public sealed partial class ArchitectureBoundaryTests
     public void TerminalUiBoundaryIsNarrow()
     {
         // #1317: what the terminal programs share. It takes Terminal.Gui and nothing else, so the installer and hvo-sky
-        // can both build on it; and no host draws a terminal, so neither CameraAgent nor LogicHost may take it, or
-        // Terminal.Gui with it. hvo-sky is CameraAgent's terminal client, not a host: it counts with CameraAgent for test
-        // ownership, and its 'ui' draws with TerminalUi.
+        // can both build on it. hvo-sky counts with CameraAgent for test ownership and draws its UI with TerminalUi.
         var repository = snapshot.Graph;
         Assert.IsTrue(repository.Projects.TryGetValue(TerminalUi, out var project), $"{TerminalUi} is in the repository.");
         Assert.AreEqual(ProjectKind.Production, project.Kind);
@@ -440,7 +435,7 @@ public sealed partial class ArchitectureBoundaryTests
 
         var hosts = repository.Projects.Values
             .Where(candidate => candidate.Kind == ProjectKind.Production && candidate.Name != CameraAgentCli
-                && CameraAgentImplementations.Concat([LogicHost]).Contains(candidate.Name))
+                && CameraAgentImplementations.Contains(candidate.Name))
             .Where(candidate => candidate.References.Contains(TerminalUi) || candidate.PackageReferences.Contains("Terminal.Gui"))
             .Select(candidate => candidate.Name)
             .ToArray();
@@ -452,7 +447,7 @@ public sealed partial class ArchitectureBoundaryTests
     public void ProductionTransitiveGraphDoesNotReachHostsOrTestProjects()
     {
         var repository = snapshot.Graph;
-        var violations = repository.ValidateTransitiveBoundaries(CameraAgent, LogicHost);
+        var violations = repository.ValidateTransitiveBoundaries(HostProjects);
 
         Assert.IsEmpty(violations, string.Join(Environment.NewLine, violations));
     }
@@ -582,18 +577,8 @@ public sealed partial class ArchitectureBoundaryTests
 
     [TestMethod]
     [TestCategory("Unit")]
-    public void LogicHostLogEventIdsAreUniqueAcrossProductionSources()
-        => AssertHostOwnedLogEventIdsAreUnique("LogicHost", "HVO.SkyMonitor.LogicHost");
-
-    [TestMethod]
-    [TestCategory("Unit")]
     public void CameraAgentAccountFormsReachTheirHandlers()
         => AssertAccountFormsReachTheirHandlers("HVO.SkyMonitor.CameraAgent");
-
-    [TestMethod]
-    [TestCategory("Unit")]
-    public void LogicHostAccountFormsReachTheirHandlers()
-        => AssertAccountFormsReachTheirHandlers("HVO.SkyMonitor.LogicHost");
 
     // The account pages render statically, so only a form post reaches them. A posted input
     // reaches the page only through a [SupplyParameterFromForm] property, and Blazor names each
@@ -1022,19 +1007,19 @@ public sealed partial class ArchitectureBoundaryTests
         var projects = new Dictionary<string, ProjectInfo>(StringComparer.Ordinal)
         {
             [CameraAgent] = Project(CameraAgent, ProjectKind.Production, CameraAgentCommon),
-            [CameraAgentCommon] = Project(CameraAgentCommon, ProjectKind.Production, LogicHost),
-            [LogicHost] = Project(LogicHost, ProjectKind.Production, Common),
+            [CameraAgentCommon] = Project(CameraAgentCommon, ProjectKind.Production, ProcessingRunner),
+            [ProcessingRunner] = Project(ProcessingRunner, ProjectKind.Production, Common),
             [Common] = Project(Common, ProjectKind.Production, TestSupport),
             [TestSupport] = Project(TestSupport, ProjectKind.Test)
         };
         var graph = new RepositoryGraph(string.Empty, projects);
 
-        var violations = graph.ValidateTransitiveBoundaries(CameraAgent, LogicHost);
+        var violations = graph.ValidateTransitiveBoundaries(HostProjects);
 
         Assert.IsTrue(violations.Any(violation => violation.Contains(
-            $"{CameraAgent} -> {CameraAgentCommon} -> {LogicHost}", StringComparison.Ordinal)));
+            $"{CameraAgent} -> {CameraAgentCommon} -> {ProcessingRunner}", StringComparison.Ordinal)));
         Assert.IsTrue(violations.Any(violation => violation.Contains(
-            $"{LogicHost} -> {Common} -> {TestSupport}", StringComparison.Ordinal)));
+            $"{ProcessingRunner} -> {Common} -> {TestSupport}", StringComparison.Ordinal)));
     }
 
     [TestMethod]
@@ -1055,37 +1040,6 @@ public sealed partial class ArchitectureBoundaryTests
 
         Assert.IsEmpty(dependencies,
             $"ARCH-AGENTCORE: '{AgentCore}' must remain transport-neutral but references host infrastructure or imaging dependencies: {string.Join(", ", dependencies)}.");
-    }
-
-    [TestMethod]
-    [TestCategory("Integration")]
-    public void LogicHostProviderSdkUsageIsConfinedToObjectStorageInfrastructure()
-    {
-        var logicHostRoot = Path.Combine(snapshot.Graph.Root, "src", LogicHost);
-        var providerRoot = Path.Combine(logicHostRoot, "Infrastructure", "ObjectStorage")
-            + Path.DirectorySeparatorChar;
-        var violations = Directory.EnumerateFiles(logicHostRoot, "*.cs", SearchOption.AllDirectories)
-            .Where(path => !path.StartsWith(providerRoot, StringComparison.Ordinal))
-            .Where(path =>
-            {
-                var source = snapshot.Source(path).Text;
-                return source.Contains("using Minio", StringComparison.Ordinal)
-                    || source.Contains("using Amazon.S3", StringComparison.Ordinal)
-                    || source.Contains("using Amazon.Runtime", StringComparison.Ordinal)
-                    || source.Contains("IAmazonS3", StringComparison.Ordinal)
-                    || source.Contains("AmazonS3Client", StringComparison.Ordinal)
-                    || source.Contains("IMinioClient", StringComparison.Ordinal)
-                    || source.Contains("MinioClient", StringComparison.Ordinal)
-                    || source.Contains("MinioException", StringComparison.Ordinal)
-                    || source.Contains("AWSCredentials", StringComparison.Ordinal)
-                    || source.Contains("FallbackCredentialsFactory", StringComparison.Ordinal);
-            })
-            .Select(path => Path.GetRelativePath(snapshot.Graph.Root, path))
-            .Order(StringComparer.Ordinal)
-            .ToArray();
-
-        Assert.IsEmpty(violations,
-            $"Provider SDK usage must remain under LogicHost/Infrastructure/ObjectStorage:{Environment.NewLine}{string.Join(Environment.NewLine, violations)}");
     }
 
     [TestMethod]
@@ -1155,7 +1109,7 @@ public sealed partial class ArchitectureBoundaryTests
             .Select(project => project.AssemblyName)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var hostName in new[] { CameraAgent, CameraAgentReplayRunner, ProcessingRunner })
+        foreach (var hostName in HostProjects.Order(StringComparer.Ordinal))
         {
             var output = string.IsNullOrWhiteSpace(evidenceRoot)
                 ? Path.Combine(Path.GetTempPath(), $"skymonitor-architecture-{hostName}-{Guid.NewGuid():N}")
@@ -1179,7 +1133,7 @@ public sealed partial class ArchitectureBoundaryTests
                     output,
                     hostName is CameraAgentReplayRunner or ProcessingRunner ? "linux-x64" : null).ConfigureAwait(false);
                 var forbiddenAssemblies = testAssemblies.ToHashSet(StringComparer.OrdinalIgnoreCase);
-                foreach (var forbiddenHost in new[] { CameraAgent, LogicHost, CameraAgentReplayRunner, ProcessingRunner }.Where(
+                foreach (var forbiddenHost in HostProjects.Where(
                     candidate => candidate != hostName))
                 {
                     forbiddenAssemblies.Add(repository.Projects[forbiddenHost].AssemblyName);
@@ -1200,16 +1154,11 @@ public sealed partial class ArchitectureBoundaryTests
 
     [TestMethod]
     [TestCategory("Unit")]
-    public void HostDockerfilesDoNotPackageTestCatalogFixtures()
+    public void CameraAgentDockerfileDoesNotPackageTestCatalogFixtures()
     {
-        var repositoryRoot = snapshot.Graph.Root;
-
-        foreach (var hostName in new[] { CameraAgent, LogicHost })
-        {
-            var dockerfile = snapshot.Source(Path.Combine(repositoryRoot, "src", hostName, "Dockerfile")).Text;
-            Assert.IsFalse(dockerfile.Contains("tests/fixtures/catalog", StringComparison.OrdinalIgnoreCase),
-                $"ARCH-PUBLISH: '{hostName}' Dockerfile must not package a test catalog fixture.");
-        }
+        var dockerfile = snapshot.Source(Path.Combine(snapshot.Graph.Root, "src", CameraAgent, "Dockerfile")).Text;
+        Assert.IsFalse(dockerfile.Contains("tests/fixtures/catalog", StringComparison.OrdinalIgnoreCase),
+            $"ARCH-PUBLISH: '{CameraAgent}' Dockerfile must not package a test catalog fixture.");
     }
 
     [TestMethod]
@@ -1557,7 +1506,6 @@ public sealed partial class ArchitectureBoundaryTests
                     }
                 }
 
-
                 foreach (var package in project.PackageReferences.Where(IsTestOnlyPackage))
                 {
                     violations.Add($"ARCH-PACKAGE: Production project '{project.Name}' references test-only package '{package}'.");
@@ -1582,7 +1530,7 @@ public sealed partial class ArchitectureBoundaryTests
             return violations.Order(StringComparer.Ordinal).ToArray();
         }
 
-        public string[] ValidateTransitiveBoundaries(string cameraAgent, string logicHost)
+        public string[] ValidateTransitiveBoundaries(IReadOnlySet<string> hosts)
         {
             var violations = new List<string>();
             foreach (var source in Projects.Values.Where(project => project.Kind == ProjectKind.Production))
@@ -1590,8 +1538,7 @@ public sealed partial class ArchitectureBoundaryTests
                 foreach (var path in FindReachablePaths(source.Name))
                 {
                     var target = Projects[path[^1]];
-                    var crossesHostBoundary = source.Name == cameraAgent && target.Name == logicHost ||
-                        source.Name == logicHost && target.Name == cameraAgent;
+                    var crossesHostBoundary = hosts.Contains(source.Name) && hosts.Contains(target.Name);
                     if (target.Kind != ProjectKind.Production || crossesHostBoundary)
                     {
                         violations.Add($"ARCH-TRANSITIVE: Consumer '{source.Name}' reaches forbidden dependency '{target.Name}' through {string.Join(" -> ", path)}.");
@@ -1638,16 +1585,9 @@ public sealed partial class ArchitectureBoundaryTests
                 var reachable = FindReachablePaths(projectName)
                     .Select(path => path[^1])
                     .ToHashSet(StringComparer.Ordinal);
-                var reachesCameraAgent = reachable.Overlaps(CameraAgentImplementations);
-                var reachesLogicHost = reachable.Contains(LogicHost);
-
-                if (sharedProjects.Contains(projectName) && (reachesCameraAgent || reachesLogicHost))
+                if (sharedProjects.Contains(projectName) && reachable.Overlaps(CameraAgentImplementations))
                 {
                     violations.Add($"ARCH-TEST-SHARED: Shared test project '{projectName}' reaches a host implementation.");
-                }
-                if (cameraAgentProjects.Contains(projectName) && reachesLogicHost)
-                {
-                    violations.Add($"ARCH-TEST-CAMERA: CameraAgent test project '{projectName}' reaches '{LogicHost}'.");
                 }
             }
 

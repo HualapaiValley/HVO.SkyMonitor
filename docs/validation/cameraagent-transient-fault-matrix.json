@@ -1,0 +1,17 @@
+{
+  "schema": "hvo-cameraagent-transient-fault-matrix-v1",
+  "issue": 116,
+  "boundary": "CameraAgent acquisition and local transient provenance during an outbound transport outage",
+  "defaultMode": "Off",
+  "rows": [
+    {
+      "id": "cameraagent-central-outage-isolation",
+      "workload": "W0",
+      "fault": "The CameraAgent artifact uploader receives deterministic failures at the outbound transport boundary",
+      "control": "A failing HTTP handler is injected only at the CameraAgent-to-Central artifact transport boundary",
+      "expectedDurableState": "Acquisition, raw SQLite/filesystem durability, transient provenance and local previews continue while upload records remain pending or retry.",
+      "test": "HVO.SkyMonitor.CameraAgent.IntegrationTests.VirtualSkyPipelineTests.CentralTransportOutageDoesNotBlockAcquisitionOrLoseLocalTransientProvenance",
+      "dockerRequired": false
+    }
+  ]
+}

@@ -15,7 +15,7 @@ clears the keep/change ordering decision for #1244/#1245 and applicable
 proves COPY_ONLY metadata, actual isolated restore using the backup's file list,
 full DBCC CHECKDB and canonical row/hash equality. Its SQL CU14 image and source
 identities remain historical; this study does not claim a new CU26 run of that
-campaign. The current [toolkit](../../deploy/sql/backup-restore-checkdb.sql)
+campaign. The current [toolkit](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/66e6aa237b40c70342815af6e2511122daa56bb6/deploy/sql/backup-restore-checkdb.sql)
 requires SQL Server 2022 and compatibility 160. Its isolated verification restore
 is a primitive, not an implemented in-place LogicHost upgrade rollback command.
 

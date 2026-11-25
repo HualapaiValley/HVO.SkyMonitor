@@ -2,6 +2,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Cli;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Cli")]
 public sealed class SkyCliAstrometryTests
 {
     [TestMethod]

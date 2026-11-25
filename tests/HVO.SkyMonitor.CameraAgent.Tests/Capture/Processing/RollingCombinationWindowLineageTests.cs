@@ -24,6 +24,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 /// configured window while replay keeps consuming its own frozen pins.
 /// </summary>
 [TestClass]
+[TestProperty("Area", "Capture.Processing")]
 public sealed partial class RollingCombinationWindowLineageTests
 {
     private const int WindowSize = 5;

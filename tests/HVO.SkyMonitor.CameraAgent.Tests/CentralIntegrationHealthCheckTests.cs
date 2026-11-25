@@ -10,6 +10,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Hosting")]
 public sealed class CentralIntegrationHealthCheckTests
 {
     private static readonly IOptions<CameraAgentHostOptions> DisabledOptions = Options.Create(

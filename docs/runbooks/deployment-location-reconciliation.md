@@ -1,21 +1,21 @@
 # Deployment-Location Reconciliation
 
-LogicHost owns Observatory membership and fallback location. CameraAgent owns its
-protected deployment snapshot while capturing offline. A pending or rejected
-central disposition never changes local geometry or stops acquisition.
+CameraAgent owns the protected deployment snapshot used for capture. Standalone
+installations use local geometry. If central integration is explicitly enabled,
+a pending or rejected acknowledgement leaves the active local snapshot in use.
+
+> Historical procedures for the retired LogicHost owner API, health check, and
+> meter are in the [pre-retirement runbook](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/66e6aa237b40c70342815af6e2511122daa56bb6/docs/runbooks/deployment-location-reconciliation.md#owner-api).
 
 ## Runtime Behavior
 
-- New v2 bootstrap requires the active protected deployment snapshot and source kind.
-- Active CameraAgents retry the same immutable version at
-  `POST /api/device/deployment-location` using the per-device key.
-- Unknown, pending, or mismatched capture provenance is retained. Only
-  location-dependent central annotation work is quarantined.
-- Acknowledgment binds exact central frames and revives their quarantined
-  annotation jobs. It does not rewrite the frame's reported provenance.
-- Observatory location changes append a new Observatory version and return
-  previously acknowledged deployments to `Pending` for owner review. Historical
-  frame facts remain unchanged.
+- With central integration enabled, v2 bootstrap requires the active protected
+  deployment snapshot and source kind.
+- CameraAgent retries the same immutable version at
+  `POST /api/device/deployment-location` on the configured service using the
+  per-device key.
+- Captures retain their original deployment provenance across local versions
+  and acknowledgement decisions.
 
 ## Manual Local Coordinates
 
@@ -47,12 +47,11 @@ takes part in it.
   version. A superseded record never governs again.
 - **Central acknowledgement.** With `CentralIntegration:Mode=Enabled` the manual
   version becomes the protected local candidate instead of activating. The
-  reconciliation worker proposes it, LogicHost acknowledges or rejects it, and an
-  acknowledged version is staged and activated at the following restart.
-  LogicHost never replaces local coordinates with its own; it can only
-  acknowledge or reject the exact local proposal. If a central acknowledgement is
-  already staged when the entry is made, that staged version activates first and
-  the manual entry is then proposed as its successor.
+  reconciliation worker proposes it to the configured service for a decision on
+  that exact version. An acknowledged version is staged and activates at the
+  following restart. If a central acknowledgement is already staged when the
+  entry is made, that staged version activates first and the manual entry is
+  then proposed as its successor.
 - **Validation.** Latitude, longitude, the portable IANA time zone, and the
   canonical hash are validated by the deployment-location contract; elevation is
   additionally bounded to -500 m to 9000 m for a manual entry. That bound is
@@ -89,54 +88,12 @@ takes part in it.
   unchanged configuration seed makes the same entry govern once more and appends a
   further version. Delete the sidecar before rolling forward to avoid that.
 
-## Owner API
-
-Owner reads require cookie, read-capable API key, or owner bearer credentials.
-Mutations require cookie credentials, a read-write API key, `api.owner.write`, or
-`api.admin`. Cross-owner proposal IDs return `404`.
-
-List pending proposals:
-
-```bash
-curl -fsS \
-  -H "Authorization: Bearer $OWNER_TOKEN" \
-  "https://logichost/api/internal/deployment-location-proposals?status=Pending&take=100"
-```
-
-Read one proposal and retain its strong `ETag` response header:
-
-```bash
-curl -fsS -D /tmp/deployment-location.headers \
-  -H "Authorization: Bearer $OWNER_TOKEN" \
-  "https://logichost/api/internal/deployment-location-proposals/$PROPOSAL_ID"
-```
-
-Acknowledge an exact proposal:
-
-```bash
-curl -fsS -X POST \
-  -H "Authorization: Bearer $OWNER_TOKEN" \
-  -H "If-Match: $PROPOSAL_ETAG" \
-  -H "Content-Type: application/json" \
-  -d '{"status":"Acknowledged","reason":"owner-approved"}' \
-  "https://logichost/api/internal/deployment-location-proposals/$PROPOSAL_ID/resolution"
-```
-
-Use `Rejected` instead of `Acknowledged` when the reported deployment is not
-valid for the selected Observatory. A missing `If-Match` returns `428`; malformed
-input returns `400`; a stale ETag returns `412`; an already resolved immutable
-proposal cannot be changed and returns `409`. Correct the protected local
-location or Observatory assignment and submit a new location version instead.
-
 ## Health and Telemetry
 
-- LogicHost check `deployment-location` is `Degraded` while proposals or capture
-  mismatches need attention and `Unhealthy` for persistence invariants.
-- CameraAgent check `deployment-location-reconciliation` is independently
-  `Degraded` while pending or offline. Local `deployment-location` remains
-  `Healthy` while protected geometry is usable.
-- Meter `HVO.SkyMonitor.LogicHost.DeploymentLocation` reports bounded operation,
-  duration, pending-count, oldest-age, and backfill instruments.
+- The local `deployment-location` check is `Healthy` while protected geometry
+  is usable. With central integration enabled,
+  `deployment-location-reconciliation` reports its own `Degraded` status while
+  acknowledgement is pending or the service is offline.
 - Meter `HVO.SkyMonitor.CameraAgent.DeploymentLocation` reports bounded local and
   reconciliation outcomes, including the `manual` operation with `applied`,
   `replayed`, `unchanged`, `conflict`, `invalid`, and `failed` outcomes.
@@ -146,17 +103,10 @@ location or Observatory assignment and submit a new location version instead.
 
 ## Troubleshooting
 
-1. Confirm CameraAgent local `deployment-location` health is healthy. Do not
-   replace a valid local snapshot merely because LogicHost is unavailable.
-2. Confirm `deployment-location-reconciliation` is not reporting rejected
-   credentials. Re-bootstrap only when device credentials are invalid or expired.
-3. Inspect the owner proposal API and compare Observatory membership, timezone,
-   radius, source kind, accuracy, and effective interval.
-4. Resolve the proposal with its current ETag. On `412`, fetch it again before
-   deciding; do not retry a stale decision blindly.
-5. Confirm LogicHost health returns to healthy and the annotation job leaves
-   `Quarantined`. Non-location-dependent evidence should have remained available.
-6. A future acknowledged successor reports `restart-scheduled` and remains staged
+1. Confirm the local `deployment-location` check reports `Healthy`.
+2. In enabled mode, check `deployment-location-reconciliation` for a rejected
+   credential. Re-bootstrap only when device credentials are invalid or expired.
+3. A future acknowledged successor reports `restart-scheduled` and remains staged
    while the current geometry stays active. If its interval expires before a
    restart, the next startup preserves the active snapshot, clears the unusable
    stage, and exposes the protected candidate for reproposal or replacement.

@@ -1,5 +1,7 @@
 # Requirements-Driven CI and Deployment Target Architecture
 
+This proposal records the former split-host CI topology. See the [current CI runbook](../runbooks/ci-pipeline.md) for the active gates.
+
 Issue #877. Parent epic #876. This document is the approved current-state evidence map and target design that must precede any change to protected CI or deployment authority. It writes design and evidence only; it does not rewrite CI and does not translate the deployment harness.
 
 ## 1. Current-State Gate Inventory
@@ -150,7 +152,7 @@ Rollback at every stage is reverting the adapter to the legacy selector, because
 | #850 LogicHost integration critical path | Retained and elevated. Integration is the measured controlling path. |
 | #851 Rebalance deployment shard long tails | Superseded by #875. Rebalancing the Bash coordinator is wasted work if it is being replaced. |
 | #852 Immutable same-run build reuse pilot | Retained as the pilot for 3.3. |
-| #853 Separate per-project counts from audit code | Retained. Category inventory ownership in the graph depends on it. |
+| #853 Separate per-project counts from audit code | Superseded by CI discovery totals and a Unit assembly membership list (#2062). |
 | #873 ShellCheck warning backlog | Retained, reduced scope. Files replaced by typed shards need no warning remediation. |
 | #875 Typed deployment shard orchestration | Retained as the central deployment deliverable, absorbing #851. |
 | #782 ShellCheck error enforcement | Blocked until #875 lands. The 15.4 GB file is the entire obstacle; enforcement becomes feasible once it no longer exists. |

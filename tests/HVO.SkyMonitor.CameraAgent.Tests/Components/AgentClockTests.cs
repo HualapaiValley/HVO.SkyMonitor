@@ -6,6 +6,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Ui")]
 public sealed class AgentClockTests
 {
     private static readonly DateTimeOffset Now = new(2026, 7, 23, 12, 0, 0, 250, TimeSpan.Zero);

@@ -266,7 +266,11 @@ public sealed class CalendarDayPreviewEvidenceTests
     }
 
     [TestMethod]
-    public async Task BoundedAwaitGivesUpAtItsCap()
+    [Timeout(30_000)]
+    public async Task BoundedAwaitGivesUpAtItsCap() =>
+        _ = await VerifyBoundedAwaitAsync().ConfigureAwait(false);
+
+    internal static async Task<TimeSpan> VerifyBoundedAwaitAsync()
     {
         var never = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
         var started = System.Diagnostics.Stopwatch.StartNew();
@@ -274,7 +278,7 @@ public sealed class CalendarDayPreviewEvidenceTests
         await Assert.ThrowsAsync<OperationCanceledException>(
             () => CalendarDayPreviewEvidence.Bounded(never.Task, TimeSpan.FromMilliseconds(100), CancellationToken.None)).ConfigureAwait(false);
 
-        Assert.IsLessThan(TimeSpan.FromSeconds(5), started.Elapsed);
+        return started.Elapsed;
     }
 
     [TestMethod]
@@ -367,7 +371,10 @@ public sealed class CalendarDayPreviewEvidenceTests
     [DataRow("capture", DisplayName = "capture that stalls synchronously before returning")]
     [DataRow("writer", DisplayName = "writer that stalls synchronously before returning")]
     [DataRow("async-writer", DisplayName = "writer that stalls asynchronously")]
-    public async Task StalledAttemptsReturnByTheDeadlineAndNeverPublishLate(string stall)
+    public async Task StalledAttemptsNeverPublishLate(string stall) =>
+        _ = await VerifyStalledAttemptsAsync(stall).ConfigureAwait(false);
+
+    internal static async Task<TimeSpan> VerifyStalledAttemptsAsync(string stall)
     {
         var root = RetentionRoot();
         try
@@ -384,12 +391,13 @@ public sealed class CalendarDayPreviewEvidenceTests
             var result = await EvidenceRetention.RunAsync(capture, static _ => "case.evidence.json", static value => value,
                 Store(root, writer), Budget).ConfigureAwait(false);
 
-            Assert.IsLessThan(Stall, started.Elapsed, "the caller does not wait for the stalled step");
+            var elapsed = started.Elapsed;
             Assert.AreEqual(EvidenceRetentionOutcome.NotPublished, result.Outcome);
             Assert.IsTrue(result.Expired);
             StringAssert.Contains(result.Describe("row", Budget), "cannot publish or attach", StringComparison.Ordinal);
             await Completion(result.Operation).ConfigureAwait(false);
             Assert.IsEmpty(Directory.Exists(root) ? Directory.GetFiles(root) : [], "the late attempt published nothing and removed its temporary file");
+            return elapsed;
         }
         finally
         {
@@ -465,7 +473,10 @@ public sealed class CalendarDayPreviewEvidenceTests
     [TestMethod]
     [DataRow(false, DisplayName = "throwing cancellation callback, writer fails immediately")]
     [DataRow(true, DisplayName = "throwing cancellation callback, writer stalls")]
-    public async Task ThrowingCancellationCallbacksStayOffTheCallersPath(bool stalls)
+    public async Task ThrowingCancellationCallbacksStayOffTheCallersPath(bool stalls) =>
+        _ = await VerifyThrowingCancellationCallbacksAsync(stalls).ConfigureAwait(false);
+
+    internal static async Task<TimeSpan> VerifyThrowingCancellationCallbacksAsync(bool stalls)
     {
         var root = RetentionRoot();
         var unobserved = new System.Collections.Concurrent.ConcurrentQueue<Exception>();
@@ -487,7 +498,7 @@ public sealed class CalendarDayPreviewEvidenceTests
                     throw new IOException("WRITE_FAULT_1916");
                 }), Budget).ConfigureAwait(false);
 
-            Assert.IsLessThan(Stall, started.Elapsed);
+            var elapsed = started.Elapsed;
             Assert.AreEqual(EvidenceRetentionOutcome.NotPublished, result.Outcome);
             Assert.AreEqual(stalls, result.Expired);
             Assert.AreEqual(stalls ? null : typeof(IOException).FullName, result.FailureType);
@@ -498,6 +509,7 @@ public sealed class CalendarDayPreviewEvidenceTests
             GC.Collect();
             Assert.IsEmpty(unobserved, "a callback or write fault went unobserved");
             Assert.IsEmpty(Directory.Exists(root) ? Directory.GetFiles(root) : []);
+            return elapsed;
         }
         finally
         {
@@ -507,7 +519,10 @@ public sealed class CalendarDayPreviewEvidenceTests
     }
 
     [TestMethod]
-    public async Task SynchronousAttachmentThatBlocksAfterTheRenameIsUnconfirmed()
+    public async Task SynchronousAttachmentThatBlocksAfterTheRenameIsUnconfirmed() =>
+        _ = await VerifyBlockedAttachmentAsync().ConfigureAwait(false);
+
+    internal static async Task<TimeSpan> VerifyBlockedAttachmentAsync()
     {
         var root = RetentionRoot();
         var attached = new System.Collections.Concurrent.ConcurrentQueue<string>();
@@ -523,13 +538,14 @@ public sealed class CalendarDayPreviewEvidenceTests
                     attached.Enqueue(path);
                 }), Budget).ConfigureAwait(false);
 
-            Assert.IsLessThan(Stall, started.Elapsed, "the caller does not wait for the blocked attachment");
+            var elapsed = started.Elapsed;
             Assert.AreEqual(EvidenceRetentionOutcome.AttachmentUnconfirmed, result.Outcome);
             StringAssert.Contains(result.AttachmentNote(), "not confirmed by the deadline; it may still complete", StringComparison.Ordinal);
             Assert.AreEqual("{\"schema\":\"complete\"}", await File.ReadAllTextAsync(result.Path!).ConfigureAwait(false),
                 "the file was complete before attaching started");
             await Completion(result.Operation).ConfigureAwait(false);
             CollectionAssert.AreEqual(new[] { result.Path }, attached.ToArray(), "the attachment that had started completes late");
+            return elapsed;
         }
         finally
         {

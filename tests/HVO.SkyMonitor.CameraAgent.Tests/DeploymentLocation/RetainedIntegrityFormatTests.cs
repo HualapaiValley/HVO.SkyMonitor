@@ -6,6 +6,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.DeploymentLocation;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "DeploymentLocation")]
 public sealed class RetainedIntegrityFormatTests
 {
     [TestMethod]

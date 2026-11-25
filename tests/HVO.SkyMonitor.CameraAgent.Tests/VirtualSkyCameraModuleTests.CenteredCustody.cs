@@ -16,6 +16,9 @@ public sealed partial class VirtualSkyCameraModuleTests
     [TestMethod]
     public async Task CenteredCustody_FullSensorOverlapPreservesOrdinaryMeasurementAndDelayedRegistration()
     {
+        var native = await LoadProfileAsync("virtual-asi178mc.full.json").ConfigureAwait(false);
+        var nativeResponse = native.Rig.Sensor.SimulationResponse;
+        Assert.IsNotNull(nativeResponse);
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-centered-full-custody");
         var token = CancellationToken.None;
         var start = new DateTimeOffset(2026, 11, 20, 22, 30, 0, TimeSpan.Zero);
@@ -23,13 +26,15 @@ public sealed partial class VirtualSkyCameraModuleTests
         var deviceClock = new ExposureTestTimeProvider(start, autoAdvance: true);
         var interval = TimeSpan.FromSeconds(2);
         var profile = CenteredRuntimeProfile(root, start, CameraPixelFormat.BayerRggb16);
-        var sensor = CreateConfig(CameraPixelFormat.BayerRggb16, 3096, 2080);
+        var optics = CreateConfig(CameraPixelFormat.BayerRggb16, 3096, 2080).Rig.Optics;
         profile = profile with
         {
             Rig = profile.Rig with
             {
-                Sensor = sensor.Rig.Sensor,
-                Optics = sensor.Rig.Optics,
+                // Keep the native custody byte load and real Bayer measurement, without sampling shot noise on every frame.
+                Sensor = native.Rig.Sensor with { SimulationResponse = nativeResponse with { ShotNoiseEnabled = false } },
+                Readout = native.Rig.Readout,
+                Optics = optics,
                 Pipeline = profile.Rig.Pipeline with
                 {
                     CadenceMode = CaptureCadenceMode.MinimumStartInterval,
@@ -124,7 +129,7 @@ public sealed partial class VirtualSkyCameraModuleTests
         var start = new DateTimeOffset(2026, 11, 20, 22, 30, 0, TimeSpan.Zero);
         var clock = new CenteredClock { UtcNow = start };
         var deviceClock = new ExposureTestTimeProvider(start, autoAdvance: true);
-        var profile = CenteredRuntimeProfile(root, start, CameraPixelFormat.Mono16);
+        var profile = CenteredRuntimeProfile(root, start, CameraPixelFormat.Mono16, size: 128);
         using var metrics = new MeterListener
         {
             InstrumentPublished = (instrument, listener) =>
@@ -203,7 +208,7 @@ public sealed partial class VirtualSkyCameraModuleTests
         try
         {
             using var provider = CenteredRuntimeProvider(root, clock);
-            var profile = CenteredRuntimeProfile(root, start, CameraPixelFormat.Mono16);
+            var profile = CenteredRuntimeProfile(root, start, CameraPixelFormat.Mono16, size: 128);
             var active = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(provider, profile).ConfigureAwait(false);
             var ingress = provider.GetRequiredService<RawCaptureIngress>();
             var module = new VirtualSkyCameraModule(deviceClock, CenteredRuntimeCatalog(start), new ProjectedSceneStore(),

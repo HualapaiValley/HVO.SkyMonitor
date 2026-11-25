@@ -13,6 +13,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Environmental;
 
 [TestClass]
 [TestCategory("Integration")]
+[TestProperty("Area", "Environmental")]
 public sealed partial class EnvironmentalCaptureFailureTests
 {
     private static readonly DateTimeOffset Epoch = EnvironmentalHardwareAdapterTests.Epoch;

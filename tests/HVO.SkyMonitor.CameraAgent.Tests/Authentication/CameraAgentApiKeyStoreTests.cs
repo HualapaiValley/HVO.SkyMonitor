@@ -12,6 +12,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Authentication;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Hosting")]
 public sealed class CameraAgentApiKeyStoreTests
 {
     [TestMethod]

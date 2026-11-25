@@ -110,14 +110,30 @@ public sealed partial class LifecycleContractTests
     }
 
     [TestMethod]
-    public void Diagnostic1569_BareOuterKeyRemainsLinear()
+    [Timeout(120_000)]
+    public void Diagnostic1569_BareOuterKeyHidesQuotedTailOnLargeInput() =>
+        _ = VerifyDiagnostic1569BareOuterKey();
+
+    internal static (long RedactMilliseconds, long SafeDiagnosticMilliseconds) VerifyDiagnostic1569BareOuterKey()
     {
         var diagnostic = string.Concat(Enumerable.Repeat("token db_password\t\"a value\" ", 50_000));
         var watch = System.Diagnostics.Stopwatch.StartNew();
         Assert.AreEqual("token <redacted>…", Redaction.Redact(diagnostic));
-        Assert.IsLessThanOrEqualTo(3_000L, watch.ElapsedMilliseconds);
+        var redactMilliseconds = watch.ElapsedMilliseconds;
         watch.Restart();
         Assert.AreEqual("token <redacted>…", Redaction.SafeDiagnostic(diagnostic));
-        Assert.IsLessThanOrEqualTo(3_000L, watch.ElapsedMilliseconds);
+        return (redactMilliseconds, watch.ElapsedMilliseconds);
+    }
+}
+
+public sealed partial class LifecycleRedactionPerformanceTests
+{
+    [TestMethod]
+    [Timeout(120_000)]
+    public void Diagnostic1569_BareOuterKeyRemainsLinear()
+    {
+        var (redact, safeDiagnostic) = LifecycleContractTests.VerifyDiagnostic1569BareOuterKey();
+        Assert.IsLessThanOrEqualTo(3_000L, redact);
+        Assert.IsLessThanOrEqualTo(3_000L, safeDiagnostic);
     }
 }

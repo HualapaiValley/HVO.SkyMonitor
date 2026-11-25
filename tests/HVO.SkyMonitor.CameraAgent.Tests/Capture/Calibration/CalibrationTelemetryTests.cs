@@ -7,6 +7,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Calibration;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture.Calibration")]
 public sealed class CalibrationTelemetryTests
 {
     [TestMethod]

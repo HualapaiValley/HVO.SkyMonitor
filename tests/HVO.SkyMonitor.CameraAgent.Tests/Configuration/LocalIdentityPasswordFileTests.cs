@@ -8,6 +8,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Configuration;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Configuration")]
 [DoNotParallelize]
 public sealed class LocalIdentityPasswordFileTests
 {

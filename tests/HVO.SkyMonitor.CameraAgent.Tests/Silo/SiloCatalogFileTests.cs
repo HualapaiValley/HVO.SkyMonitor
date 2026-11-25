@@ -12,6 +12,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Silo;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Silo")]
 public sealed class SiloCatalogFileTests
 {
     private const string ForeignSql = "CREATE TABLE someone_elses(x);";

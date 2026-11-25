@@ -10,6 +10,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture")]
 public sealed class CameraModuleCadenceTests
 {
     private static readonly DateTimeOffset StartUtc = new(2000, 1, 1, 12, 0, 0, TimeSpan.Zero);
