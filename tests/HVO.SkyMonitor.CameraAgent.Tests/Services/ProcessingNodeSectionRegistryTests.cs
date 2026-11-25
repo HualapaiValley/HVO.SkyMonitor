@@ -72,6 +72,15 @@ public sealed class ProcessingNodeSectionRegistryTests
     }
 
     [TestMethod]
+    public void FrameFactsSectionMatchesOnlyRichFrameFactsAndNotLegacyAnnotation()
+    {
+        Assert.IsTrue(ProcessingNodeSectionRegistry.MatchesSection("frame-facts", FrameFactsPresentation.StepAlias));
+        Assert.IsFalse(ProcessingNodeSectionRegistry.MatchesSection("frame-facts", "Annotation"));
+        Assert.IsTrue(ProcessingNodeSectionRegistry.MatchesSection("legacy-annotation", "Annotation"));
+        Assert.AreEqual("legacy-annotation", ProcessingNodeSectionRegistry.SectionForAlias("Annotation"));
+    }
+
+    [TestMethod]
     [DataRow(null, "linear-normalization-none-v1")]
     [DataRow("""{"strategy":"None"}""", "linear-normalization-none-v1")]
     [DataRow("""{"strategy":"SyntheticReferences"}""", "reference-calibration-linear16-v2")]

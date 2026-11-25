@@ -86,9 +86,14 @@ public sealed class ProcessingNodeOptionsFormDefaultsTests
         Assert.AreEqual("Using producer defaults.", manifest.DefaultDisplay("layers"));
         Assert.IsFalse(manifest.HasNonDefaultValues);
         manifest.AddRow("layers");
+        manifest.Rows("layers")[0].Set("enabled", "False");
+        manifest.RowsChanged("layers");
         Assert.IsTrue(manifest.HasNonDefaultValues);
         manifest.ResetAllToDefaults();
         Assert.IsFalse(manifest.HasNonDefaultValues);
+        Assert.HasCount(1, manifest.Rows("layers"));
+        Assert.AreEqual("True", manifest.Rows("layers")[0].Get("enabled"));
+        manifest.ClearRows("layers");
         Assert.IsEmpty(manifest.Rows("layers"));
 
         var materializer = new ProcessingNodeOptionsForm(PresentationMaterializerOptionDescriptors.Descriptor, null);
@@ -98,5 +103,57 @@ public sealed class ProcessingNodeOptionsFormDefaultsTests
         materializer.ResetAllToDefaults();
         Assert.IsFalse(materializer.HasNonDefaultValues);
         Assert.IsEmpty(materializer.Collection("enabledLayerKinds").Items);
+    }
+
+    [TestMethod]
+    public void ResettingOverlayManifestPreservesUnknownFieldsInsideLayerOverrideRows()
+    {
+        const string sourceJson = """
+            {
+              "constellationOpacityMillionths": 500000,
+              "topFuture": [1e+02],
+              "layers": [
+                { "kind": "scene-constellations", "enabled": false, "zOrder": 42, "future": [1e+02] },
+                { "kind": "environment", "enabled": false, "zOrder": 15, "extra": { "keep": true } }
+              ]
+            }
+            """;
+        var source = JsonDocument.Parse(sourceJson).RootElement.Clone();
+        var form = new ProcessingNodeOptionsForm(OverlayManifestOptionDescriptors.Descriptor, source);
+
+        Assert.IsTrue(form.HasNonDefaultValues);
+        Assert.IsFalse(form.IsAtDefault("layers"));
+
+        form.ResetAllToDefaults();
+
+        Assert.IsFalse(form.HasNonDefaultValues);
+        Assert.IsTrue(form.IsAtDefault("layers"));
+        Assert.IsTrue(form.TryBuild(out var rebuilt, out var errors), string.Join(' ', errors));
+
+        var root = rebuilt!.Value;
+        Assert.AreEqual(800_000, root.GetProperty("constellationOpacityMillionths").GetInt32());
+        Assert.AreEqual("[1e+02]", root.GetProperty("topFuture").GetRawText());
+        var layers = root.GetProperty("layers");
+        Assert.AreEqual(2, layers.GetArrayLength());
+
+        Assert.AreEqual("scene-constellations", layers[0].GetProperty("kind").GetString());
+        Assert.IsTrue(layers[0].GetProperty("enabled").GetBoolean());
+        Assert.AreEqual(JsonValueKind.Null, layers[0].GetProperty("zOrder").ValueKind);
+        Assert.AreEqual("[1e+02]", layers[0].GetProperty("future").GetRawText());
+
+        Assert.AreEqual("environment", layers[1].GetProperty("kind").GetString());
+        Assert.IsTrue(layers[1].GetProperty("enabled").GetBoolean());
+        Assert.AreEqual(JsonValueKind.Null, layers[1].GetProperty("zOrder").ValueKind);
+        Assert.AreEqual("{ \"keep\": true }", layers[1].GetProperty("extra").GetRawText());
+
+        // Row deletion remains an explicit action via RemoveRow / ClearRows.
+        form.RemoveRow("layers", 1);
+        Assert.IsTrue(form.TryBuild(out var afterRemove, out _));
+        Assert.AreEqual(1, afterRemove!.Value.GetProperty("layers").GetArrayLength());
+        Assert.AreEqual("[1e+02]", afterRemove.Value.GetProperty("layers")[0].GetProperty("future").GetRawText());
+
+        form.ClearRows("layers");
+        Assert.IsTrue(form.TryBuild(out var afterClear, out _));
+        Assert.AreEqual(0, afterClear!.Value.GetProperty("layers").GetArrayLength());
     }
 }

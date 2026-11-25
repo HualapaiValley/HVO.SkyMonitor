@@ -7,21 +7,33 @@ using Microsoft.AspNetCore.Components;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
-public sealed partial class ProcessingNodeConfigPage : ComponentBase
+public sealed partial class ProcessingNodeConfigPage : ComponentBase, IDisposable
 {
+    private sealed record PreviewSnapshot(
+        long DraftGeneration,
+        string? SourceRevisionId,
+        string? NodeId,
+        string Name,
+        string Revision,
+        CapturePipelineConfig Pipeline,
+        CaptureProcessingPlanPreview Plan,
+        bool GraphChanged);
+
+    private readonly CancellationTokenSource _lifetimeCts = new();
+    private CancellationTokenSource? _routeCts;
+    private CancellationTokenSource? _previewCts;
     private CameraAgentProcessingGraphRevisionDetail? _detail;
     private ProcessingGraphDraftModel _model = ProcessingGraphDraftModel.Empty();
     private ProcessingGraphDraftModel.NodeRow? _node;
     private int _nodeIndex;
     private string? _resolvedRevisionId;
-    private CaptureProcessingPlanPreview? _plan;
-    private CapturePipelineConfig? _previewedPipeline;
+    private PreviewSnapshot? _preview;
     private string? _message;
     private bool _messageIsError;
     private bool _loading = true;
     private bool _notFound;
     private bool _busy;
-    private bool _graphChanged;
+    private bool _disposed;
     private long _draftGeneration;
     private string? _savedRevisionId;
     private string? _saveKey;
@@ -29,7 +41,10 @@ public sealed partial class ProcessingNodeConfigPage : ComponentBase
 
     [Parameter] public string? RevisionId { get; set; }
 
-    [Parameter] public string NodeId { get; set; } = string.Empty;
+    [Parameter] public string? NodeId { get; set; }
+
+    [SupplyParameterFromQuery(Name = "nodeId")]
+    public string? QueryNodeId { get; set; }
 
     [Inject] internal ICameraAgentProcessingGraphUiService GraphService { get; set; } = default!;
 
@@ -68,20 +83,48 @@ public sealed partial class ProcessingNodeConfigPage : ComponentBase
             : $"/operations/pipeline/graphs/new?from={Uri.EscapeDataString(_resolvedRevisionId)}";
 
     internal static string NodeConfigHref(string revisionId, string nodeId)
-        => $"/operations/pipeline/graphs/{Uri.EscapeDataString(revisionId)}/nodes/{Uri.EscapeDataString(nodeId)}";
+        => IsSafePathSegment(nodeId)
+            ? $"/operations/pipeline/graphs/{Uri.EscapeDataString(revisionId)}/nodes/{Uri.EscapeDataString(nodeId)}"
+            : $"/operations/pipeline/graphs/{Uri.EscapeDataString(revisionId)}/node?nodeId={Uri.EscapeDataString(nodeId)}";
+
+    internal static string ActiveNodeConfigHref(string nodeId)
+        => IsSafePathSegment(nodeId)
+            ? $"/operations/pipeline/configure/{Uri.EscapeDataString(nodeId)}"
+            : $"/operations/pipeline/configure?nodeId={Uri.EscapeDataString(nodeId)}";
+
+    private static bool IsSafePathSegment(string value)
+    {
+        if (string.IsNullOrEmpty(value) || value[0] == '.' || value[^1] == '.' || value.Contains("..", StringComparison.Ordinal))
+        {
+            return false;
+        }
+        foreach (var ch in value)
+        {
+            var allowed = ch is (>= 'a' and <= 'z') or (>= 'A' and <= 'Z') or (>= '0' and <= '9') or '-' or '_' or '.';
+            if (!allowed)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
 
     protected override async Task OnParametersSetAsync()
     {
+        var loadGeneration = ++_draftGeneration;
+        CancelAndResetPreview();
+        var routeCts = ResetRouteCancellation();
+        var token = routeCts.Token;
+
         _loading = true;
         _notFound = false;
+        _busy = false;
         _detail = null;
         _node = null;
         _nodeIndex = 0;
         _resolvedRevisionId = null;
         _model = ProcessingGraphDraftModel.Empty();
-        _plan = null;
-        _previewedPipeline = null;
-        _graphChanged = false;
+        _preview = null;
         _savedRevisionId = null;
         _saveKey = null;
         _savePayload = null;
@@ -92,7 +135,11 @@ public sealed partial class ProcessingNodeConfigPage : ComponentBase
             var revisionId = string.IsNullOrWhiteSpace(RevisionId) ? null : RevisionId.Trim();
             if (revisionId is null)
             {
-                var registry = await GraphService.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false);
+                var registry = await GraphService.GetRegistryAsync(token).ConfigureAwait(true);
+                if (IsStale(loadGeneration, token))
+                {
+                    return;
+                }
                 if (registry.Kind == OperatorUiResultKind.Unauthorized)
                 {
                     NavigationManager.NavigateTo("/Account/AccessDenied");
@@ -107,7 +154,11 @@ public sealed partial class ProcessingNodeConfigPage : ComponentBase
             }
             _resolvedRevisionId = revisionId;
 
-            var result = await GraphService.GetRevisionDetailAsync(revisionId, CancellationToken.None).ConfigureAwait(false);
+            var result = await GraphService.GetRevisionDetailAsync(revisionId, token).ConfigureAwait(true);
+            if (IsStale(loadGeneration, token))
+            {
+                return;
+            }
             if (result.Kind == OperatorUiResultKind.Unauthorized)
             {
                 NavigationManager.NavigateTo("/Account/AccessDenied");
@@ -127,7 +178,7 @@ public sealed partial class ProcessingNodeConfigPage : ComponentBase
                 _detail.State.Name,
                 ProcessingGraphEditorPage.NextRevisionLabel(_detail.State.Revision));
 
-            var targetId = NodeId.Trim();
+            var targetId = (QueryNodeId ?? NodeId ?? string.Empty).Trim();
             _nodeIndex = _model.Nodes.FindIndex(row => string.Equals(row.Id, targetId, StringComparison.Ordinal));
             if (_nodeIndex < 0)
             {
@@ -141,91 +192,127 @@ public sealed partial class ProcessingNodeConfigPage : ComponentBase
             }
             _node = _model.Nodes[_nodeIndex];
         }
+        catch (OperationCanceledException) when (_disposed || token.IsCancellationRequested)
+        {
+        }
         finally
         {
-            _loading = false;
+            if (!_disposed && loadGeneration == _draftGeneration)
+            {
+                _loading = false;
+            }
         }
     }
 
     private void FormChanged()
     {
         _draftGeneration++;
-        _plan = null;
-        _previewedPipeline = null;
+        CancelAndResetPreview();
+        _preview = null;
         _message = null;
         _savedRevisionId = null;
-        _graphChanged = false;
+        _busy = false;
     }
 
     private async Task PreviewAsync()
     {
-        _plan = null;
-        _previewedPipeline = null;
+        _preview = null;
         if (!_model.TryBuild(out var pipeline, out var errors))
         {
             SetMessage(string.Join(' ', errors), error: true);
             return;
         }
-        _busy = true;
         var generation = _draftGeneration;
+        var sourceRevisionId = _model.SourceRevisionId;
+        var nodeId = _node?.Id;
+        var name = _model.Name.Trim();
+        var revision = _model.Revision.Trim();
+        var graphChanged = _model.HasGraphChanges(pipeline);
+        var previewCts = ResetPreviewCancellation();
+        var token = previewCts.Token;
+
+        _busy = true;
         try
         {
-            var result = await GraphService.PreviewAsync(pipeline, CancellationToken.None).ConfigureAwait(true);
+            var result = await GraphService.PreviewAsync(pipeline, token).ConfigureAwait(true);
+            if (IsStale(generation, token) || !MatchesActiveDraft(sourceRevisionId, nodeId))
+            {
+                return;
+            }
             if (result.Kind == OperatorUiResultKind.Unauthorized)
             {
                 NavigationManager.NavigateTo("/Account/AccessDenied");
                 return;
             }
-            if (generation != _draftGeneration) return;
             if (result.IsSuccess && result.Value is not null)
             {
-                _plan = result.Value;
-                _previewedPipeline = pipeline;
-                _graphChanged = _model.HasGraphChanges(pipeline);
-                SetMessage(_graphChanged
+                _preview = new PreviewSnapshot(generation, sourceRevisionId, nodeId, name, revision, pipeline, result.Value, graphChanged);
+                SetMessage(graphChanged
                     ? "The draft compiles. No durable state changed."
                     : "No graph changes. The source revision is unchanged; no new revision is needed.", error: false);
             }
             else
             {
-                _plan = null;
-                _previewedPipeline = null;
+                _preview = null;
                 SetMessage(result.Message ?? "The draft does not compile.", error: true);
             }
         }
+        catch (OperationCanceledException) when (_disposed || token.IsCancellationRequested)
+        {
+        }
         finally
         {
-            _busy = false;
+            if (!_disposed && generation == _draftGeneration)
+            {
+                _busy = false;
+            }
         }
     }
 
     private async Task SaveDraftAsync()
     {
-        if (_previewedPipeline is null || !_graphChanged || _savedRevisionId is not null)
+        var snapshot = _preview;
+        if (snapshot is null || !snapshot.GraphChanged || _savedRevisionId is not null ||
+            snapshot.DraftGeneration != _draftGeneration ||
+            !MatchesActiveDraft(snapshot.SourceRevisionId, snapshot.NodeId) ||
+            !string.Equals(snapshot.Name, _model.Name.Trim(), StringComparison.Ordinal) ||
+            !string.Equals(snapshot.Revision, _model.Revision.Trim(), StringComparison.Ordinal))
         {
             return;
         }
-        var signature = string.Join('\n', _model.Name, _model.Revision, _model.SourceRevisionId, _plan?.DesiredSha256, _plan?.EffectiveSha256);
+        var signature = string.Join('\n', snapshot.Name, snapshot.Revision, snapshot.SourceRevisionId, snapshot.NodeId, snapshot.Plan.DesiredSha256, snapshot.Plan.EffectiveSha256);
         if (!string.Equals(_savePayload, signature, StringComparison.Ordinal))
         {
             _savePayload = signature;
             _saveKey = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
         }
+        var token = (_routeCts ?? _lifetimeCts).Token;
         _busy = true;
         OperatorUiResult<ProcessingGraphRevisionState> result;
         try
         {
             result = await GraphService.CreateRevisionAsync(
-                _model.Name.Trim(),
-                _model.Revision.Trim(),
-                _previewedPipeline,
+                snapshot.Name,
+                snapshot.Revision,
+                snapshot.Pipeline,
                 _saveKey!,
-                _model.SourceRevisionId is null ? "node configuration draft" : $"node '{_node?.Id}' draft from {_model.SourceRevisionId}",
-                CancellationToken.None).ConfigureAwait(false);
+                snapshot.SourceRevisionId is null ? "node configuration draft" : $"node '{snapshot.NodeId}' draft from {snapshot.SourceRevisionId}",
+                token).ConfigureAwait(true);
+        }
+        catch (OperationCanceledException) when (_disposed || token.IsCancellationRequested)
+        {
+            return;
         }
         finally
         {
-            _busy = false;
+            if (!_disposed && snapshot.DraftGeneration == _draftGeneration)
+            {
+                _busy = false;
+            }
+        }
+        if (IsStale(snapshot.DraftGeneration, token) || !MatchesActiveDraft(snapshot.SourceRevisionId, snapshot.NodeId))
+        {
+            return;
         }
         if (result.Kind == OperatorUiResultKind.Unauthorized)
         {
@@ -248,9 +335,66 @@ public sealed partial class ProcessingNodeConfigPage : ComponentBase
         }
     }
 
+    private bool IsStale(long generation, CancellationToken token)
+        => _disposed || token.IsCancellationRequested || generation != _draftGeneration;
+
+    private bool MatchesActiveDraft(string? sourceRevisionId, string? nodeId)
+        => string.Equals(_model.SourceRevisionId, sourceRevisionId, StringComparison.Ordinal) &&
+           string.Equals(_node?.Id, nodeId, StringComparison.Ordinal);
+
+    private CancellationTokenSource ResetRouteCancellation()
+    {
+        var previous = _routeCts;
+        _routeCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
+        if (previous is not null)
+        {
+            previous.Cancel();
+            previous.Dispose();
+        }
+        return _routeCts;
+    }
+
+    private CancellationTokenSource ResetPreviewCancellation()
+    {
+        CancelAndResetPreview();
+        var parent = _routeCts ?? _lifetimeCts;
+        _previewCts = CancellationTokenSource.CreateLinkedTokenSource(parent.Token);
+        return _previewCts;
+    }
+
+    private void CancelAndResetPreview()
+    {
+        var previous = _previewCts;
+        _previewCts = null;
+        if (previous is not null)
+        {
+            previous.Cancel();
+            previous.Dispose();
+        }
+    }
+
     private void SetMessage(string message, bool error)
     {
         _message = message;
         _messageIsError = error;
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+        _disposed = true;
+        _draftGeneration++;
+        CancelAndResetPreview();
+        if (_routeCts is not null)
+        {
+            _routeCts.Cancel();
+            _routeCts.Dispose();
+            _routeCts = null;
+        }
+        _lifetimeCts.Cancel();
+        _lifetimeCts.Dispose();
     }
 }

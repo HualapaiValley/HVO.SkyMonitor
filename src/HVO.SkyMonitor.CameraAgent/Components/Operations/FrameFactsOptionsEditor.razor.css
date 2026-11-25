@@ -1,9 +1,13 @@
 .frame-facts-editor { display: grid; gap: 1rem; min-width: 0; }
+.frame-facts-header { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: .75rem; }
+.frame-facts-header p { margin: 0; flex: 1 1 20rem; }
 .corner-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
 .corner, .layout-options, .frozen-preview { border: 1px solid var(--hvo-border, #46617e); border-radius: .5rem; padding: 1rem; min-width: 0; }
 .corner legend, .layout-options legend { float: none; width: auto; font-size: 1rem; }
 .corner textarea { width: 100%; font-family: monospace; }
-.corner-style { display: grid; gap: .4rem; margin-top: .6rem; }
+.corner-style { display: grid; gap: .6rem; margin-top: .6rem; }
+.corner-style-field, .layout-option-field { display: grid; gap: .25rem; min-width: 0; }
+.option-help { margin: 0; font-size: .85rem; opacity: .85; }
 .colour-inputs { display: flex; gap: .5rem; }
 .colour-inputs input[type=color] { width: 3rem; min-width: 3rem; height: 2.5rem; }
 .layout-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8rem; }

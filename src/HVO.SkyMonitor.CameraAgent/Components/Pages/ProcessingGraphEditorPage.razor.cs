@@ -185,15 +185,23 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
         return ReferenceEquals(node, first) ? section : $"{section}-{_model.Nodes.IndexOf(node)}";
     }
 
+    private bool HasRichFrameFactsNode
+        => _model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == FrameFactsPresentation.StepAlias);
+
+    private bool HasLegacyFrameFactsConversionNode
+        => _model.Nodes.Any(static node => FrameFactsDraftConversion.IsLegacy(node.Type));
+
+    private bool HasFrameFactsAnchor => HasRichFrameFactsNode || HasLegacyFrameFactsConversionNode;
+
     private (string Message, string Role)? MissingSectionNotice()
     {
         if (ProcessingNodeSectionRegistry.FindSection(Section) is not { } entry)
         {
             return null;
         }
-        var hasMatchingNode = _model.Nodes.Any(node =>
-            (entry.Slug == "frame-facts" && FrameFactsDraftConversion.IsLegacy(node.Type)) ||
-            ProcessingNodeSectionRegistry.MatchesSection(entry.Slug, node.OptionsForm?.Descriptor.StepAlias));
+        var hasMatchingNode = entry.Slug == "frame-facts"
+            ? HasFrameFactsAnchor
+            : _model.Nodes.Any(node => ProcessingNodeSectionRegistry.MatchesSection(entry.Slug, node.OptionsForm?.Descriptor.StepAlias));
         if (hasMatchingNode)
         {
             return null;

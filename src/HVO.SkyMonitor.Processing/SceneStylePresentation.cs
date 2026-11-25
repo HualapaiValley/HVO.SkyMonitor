@@ -53,12 +53,13 @@ public static class SceneStylePresentation
         bool includeMarkers = true, bool includeLabels = true, bool includeConstellations = true,
         bool includeImageCircle = true, bool includeCardinalDirections = true,
         MeasuredStellarAssociationsV1? associations = null, bool expectedPositionDiagnostics = true,
-        HorizonObstructionSceneEligibility? horizon = null, bool includeDeepSky = true)
+        HorizonObstructionSceneEligibility? horizon = null, bool includeDeepSky = true,
+        PresentationDeepSkyStyleV1? deepSkyStyle = null)
     {
         ArgumentNullException.ThrowIfNull(style);
         style.Validate();
         return PresentationLayerProducers.FromProjectedSceneGroupsCore(scene, style.Annotation, includeMarkers, includeLabels,
-            includeConstellations, includeImageCircle, includeCardinalDirections, associations, expectedPositionDiagnostics, style, horizon, includeDeepSky);
+            includeConstellations, includeImageCircle, includeCardinalDirections, associations, expectedPositionDiagnostics, style, horizon, includeDeepSky, deepSkyStyle);
     }
 
     private static ImmutableArray<ProcessingOptionDescriptor> Options()

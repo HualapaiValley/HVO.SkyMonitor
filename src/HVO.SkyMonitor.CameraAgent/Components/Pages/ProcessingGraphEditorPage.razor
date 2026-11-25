@@ -110,7 +110,7 @@
                                         </div>
                                         @if (optionsForm.Descriptor.StepAlias == FrameFactsPresentation.StepAlias)
                                         {
-                                            <FrameFactsOptionsEditor @key="optionsForm" IdPrefix="@($"node-options-{index}")" Form="optionsForm" Changed="FormChanged" />
+                                            <FrameFactsOptionsEditor @key="optionsForm" IdPrefix="@($"node-options-{index}")" Form="optionsForm" Changed="FormChanged" ShowResetToDefaults="true" />
                                         }
                                         else
                                         {
@@ -132,9 +132,9 @@
                 </div>
             </fieldset>
 
-            @if (_model.Nodes.Any(node => FrameFactsDraftConversion.IsLegacy(node.Type)))
+            @if (HasLegacyFrameFactsConversionNode)
             {
-                <section id="@(_model.Nodes.Any(node => node.OptionsForm?.Descriptor.StepAlias == FrameFactsPresentation.StepAlias) ? "frame-facts-conversion" : "frame-facts")" class="editor-group" aria-label="Frame Facts conversion">
+                <section id="@(HasRichFrameFactsNode ? "frame-facts-conversion" : "frame-facts")" class="editor-group" aria-label="Frame Facts conversion">
                     <h2>Frame Facts corner presets</h2>
                     <p>The legacy presets remain in this draft. Converting selects the rich version for every legacy preset node and opts manifest/materializer consumers in together. Token templates, pinned fonts and dark panels replace automatic legacy typography. Existing variants, dependencies and unknown options are retained.</p>
                     <button type="button" class="btn btn-outline-light" disabled="@_busy" @ref="_conversionTrigger" @onclick="ReviewConversionAsync">Review whole-draft Frame Facts conversion</button>

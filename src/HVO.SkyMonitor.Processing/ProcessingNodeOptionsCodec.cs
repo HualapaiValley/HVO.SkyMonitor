@@ -154,6 +154,14 @@ public static class ProcessingNodeOptionsCodec
             diagnostics.Add(new(ProcessingOptionReasonCodes.NotAllowed, MemberPath(path, "windowSize"),
                 $"Centered windows support at most {ProcessingGraphCompiler.MaximumContractsPerNode} required positions."));
         }
+        if (diagnostics.Count == 0 && descriptor.StepAlias.Equals("ProjectedScene", StringComparison.OrdinalIgnoreCase) &&
+            decoded.FirstOrDefault(static option => option.Descriptor.Key == "deepSkyMinimumSizeArcminutes") is { } minSize &&
+            decoded.FirstOrDefault(static option => option.Descriptor.Key == "deepSkyMaximumSizeArcminutes") is { } maxSize &&
+            minSize.Value.AsRealNumber() > maxSize.Value.AsRealNumber())
+        {
+            diagnostics.Add(new(ProcessingOptionReasonCodes.OutOfRange, MemberPath(path, "deepSkyMinimumSizeArcminutes"),
+                "Deep-sky minimum size must be less than or equal to maximum size."));
+        }
         if (diagnostics.Count == 0)
             diagnostics.AddRange(AnnotationOptionDescriptors.ValidateSelections(descriptor, decoded, path));
         if (diagnostics.Count == 0 && descriptor.StepAlias == FrameFactsPresentation.StepAlias &&

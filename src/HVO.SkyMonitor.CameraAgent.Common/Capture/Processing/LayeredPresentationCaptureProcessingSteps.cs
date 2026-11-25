@@ -169,11 +169,7 @@ internal class ScenePresentationLayerCaptureProcessingStep(
         LayeredPresentationCaptureProcessing.Add(context, annotation, cardinals, imageCircle, constellations);
         if (Options.IncludeDeepSkyLayer)
         {
-            var deepSky = PresentationDeepSkyLayerProducer.Create(scene, new(
-                MaximumLabels: Options.DeepSkyLabels ? 24 : 0, LabelScale: Options.DeepSkyLabelScale,
-                Color: new(Options.DeepSkyRed, Options.DeepSkyGreen, Options.DeepSkyBlue), DrawOutlines: Options.DeepSkyOutlines,
-                LineThickness: Options.DeepSkyLineThickness,
-                LabelFace: Enum.Parse<PresentationFontFaceV3>(Options.DeepSkyFont)), horizon: horizon?.SelectDeepSky(scene));
+            var deepSky = PresentationDeepSkyLayerProducer.Create(scene, Options.ToDeepSkyStyle(), horizon: horizon?.SelectDeepSky(scene));
             LayeredPresentationCaptureProcessing.Add(context, PresentationProcessingProducts.CreateLayerProduct(
                 deepSky.Payload, Options.DeepSkyOutputVariant, [source], PresentationDeepSkyLayerProducer.ProducerVersion, horizon?.IdentitySha256));
         }
@@ -182,7 +178,8 @@ internal class ScenePresentationLayerCaptureProcessingStep(
     protected virtual PresentationSceneLayerPayloadsV2 Produce(ProjectedSceneV1 scene, PresentationAnnotationStyleV1 style,
         bool markers, bool labels, bool constellations, bool circle, bool cardinals,
         MeasuredStellarAssociationsV1? measured, bool expected, HorizonObstructionSceneEligibility? horizon) =>
-        PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, style, markers, labels, constellations, circle, cardinals, measured, expected, horizon, includeDeepSky: !Options.IncludeDeepSkyLayer);
+        PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, style, markers, labels, constellations, circle, cardinals, measured, expected, horizon,
+            includeDeepSky: !Options.IncludeDeepSkyLayer, deepSkyStyle: Options.ToDeepSkyStyle());
 }
 
 internal sealed class CloudPresentationLayerCaptureProcessingStep(
@@ -558,13 +555,35 @@ internal class ScenePresentationLayerProcessingStepOptions : IValidatableObject
     public bool IncludeDeepSkyLayer { get; init; }
     [Required, MaxLength(128)] public string DeepSkyOutputVariant { get; init; } = "scene-deep-sky-v1";
     public bool DeepSkyLabels { get; init; } = true;
+    [Range(0, 24)] public int DeepSkyMaximumLabels { get; init; } = 24;
+    [Range(0, PresentationLayerPayloadV1.MaximumLineCharacters)] public int DeepSkyMaximumLabelCharacters { get; init; } = 24;
+    public bool DeepSkyLabelCatalogObjects { get; init; } = true;
     public bool DeepSkyOutlines { get; init; } = true;
     [Range(1, 8)] public int DeepSkyLabelScale { get; init; } = 1;
     [Range(1, 8)] public int DeepSkyLineThickness { get; init; } = 2;
+    [Range(2, 32)] public int DeepSkyMinimumGlyphRadius { get; init; } = 7;
     public byte DeepSkyRed { get; init; } = 255;
     public byte DeepSkyGreen { get; init; } = 196;
     public byte DeepSkyBlue { get; init; } = 120;
     public string DeepSkyFont { get; init; } = "MonoRegular";
+
+    internal PresentationDeepSkyStyleV1 ToDeepSkyStyle() => new(
+        MaximumLabels: DeepSkyLabels ? DeepSkyMaximumLabels : 0,
+        MaximumLabelCharacters: DeepSkyMaximumLabelCharacters,
+        LabelScale: DeepSkyLabelScale,
+        LabelCatalogObjects: DeepSkyLabelCatalogObjects,
+        MinimumGlyphRadius: DeepSkyMinimumGlyphRadius,
+        Color: new(DeepSkyRed, DeepSkyGreen, DeepSkyBlue),
+        DrawOutlines: DeepSkyOutlines,
+        LineThickness: DeepSkyLineThickness,
+        LabelFace: Enum.Parse<PresentationFontFaceV3>(DeepSkyFont));
+
+    internal bool HasCustomDeepSkyStyle() =>
+        !DeepSkyLabels || DeepSkyMaximumLabels != 24 || DeepSkyMaximumLabelCharacters != 24 ||
+        !DeepSkyLabelCatalogObjects || !DeepSkyOutlines || DeepSkyLabelScale != 1 ||
+        DeepSkyLineThickness != 2 || DeepSkyMinimumGlyphRadius != 7 ||
+        DeepSkyRed != 255 || DeepSkyGreen != 196 || DeepSkyBlue != 120 ||
+        !string.Equals(DeepSkyFont, "MonoRegular", StringComparison.Ordinal);
 
     [Required, MaxLength(128)] public string AnnotationOutputVariant { get; init; } = "scene-annotation-layer-v1";
     [Required, MaxLength(128)] public string CardinalOutputVariant { get; init; } = "scene-cardinal-layer-v1";

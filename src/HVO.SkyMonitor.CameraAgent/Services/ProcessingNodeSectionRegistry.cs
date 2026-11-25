@@ -31,7 +31,7 @@ internal static class ProcessingNodeSectionRegistry
             [ProcessingNodeOptionsDescriptors.ScenePresentationLayerStepAlias, SceneStylePresentation.StepAlias],
             "This graph has no supported scene overlay node. Add ScenePresentationLayer with its ProjectedScene input to configure visibility, sizes and constellation style."),
         new("frame-facts", "Frame Facts",
-            [FrameFactsPresentation.StepAlias, "Annotation"],
+            [FrameFactsPresentation.StepAlias],
             "This graph has no Frame Facts node. Add FrameFactsPresentationLayerV1 with its ProjectedScene and combined-preview inputs, and explicitly opt manifest/materializer consumers in before previewing the plan."),
         new("legacy-annotation", "Legacy annotation",
             ["Annotation"],

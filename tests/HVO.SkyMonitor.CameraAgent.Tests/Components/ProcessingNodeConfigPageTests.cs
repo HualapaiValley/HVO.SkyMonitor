@@ -361,6 +361,349 @@ public sealed class ProcessingNodeConfigPageTests
         }
     }
 
+    [TestMethod]
+    public async Task DelayedPreviewFromRevisionACannotEnableOrExecuteSaveOnRevisionB()
+    {
+        using var context = new BunitContext();
+        var pipelineA = new CapturePipelineConfig(
+        [
+            new(SceneStylePresentation.StepAlias, "scene-style", 10,
+                JsonDocument.Parse("""{ "constellationLineThickness": 2 }""").RootElement.Clone(), ["$raw"], Enabled: true)
+        ]);
+        var pipelineB = new CapturePipelineConfig(
+        [
+            new(SceneStylePresentation.StepAlias, "scene-style", 10,
+                JsonDocument.Parse("""{ "constellationLineThickness": 5 }""").RootElement.Clone(), ["$raw"], Enabled: true)
+        ]);
+        var detailA = new CameraAgentProcessingGraphRevisionDetail(
+            new("rev-a", "graph-a", "1", ProcessingGraphRevisionLifecycle.Active,
+                new string('1', 64), new string('2', 64), new string('3', 64), DateTimeOffset.UtcNow, null, null, null),
+            pipelineA, null, null);
+        var detailB = new CameraAgentProcessingGraphRevisionDetail(
+            new("rev-b", "graph-b", "7", ProcessingGraphRevisionLifecycle.Draft,
+                new string('4', 64), new string('5', 64), new string('6', 64), DateTimeOffset.UtcNow, null, null, null),
+            pipelineB, null, null);
+
+        var delayedPreviewA = new TaskCompletionSource<OperatorUiResult<CaptureProcessingPlanPreview>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var previewAStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        CancellationToken previewAToken = default;
+        var previewCalls = 0;
+
+        var service = Configure(context, pipelineA);
+        service.RevisionDetailHandler = (revisionId, _) => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentProcessingGraphRevisionDetail>.Success(revisionId == "rev-a" ? detailA : detailB));
+        service.PreviewHandler = (candidate, token) =>
+        {
+            previewCalls++;
+            if (previewCalls == 1)
+            {
+                previewAToken = token;
+                previewAStarted.TrySetResult();
+                return new ValueTask<OperatorUiResult<CaptureProcessingPlanPreview>>(delayedPreviewA.Task);
+            }
+            return ValueTask.FromResult(OperatorUiResult<CaptureProcessingPlanPreview>.Success(
+                new(candidate.SchemaVersion, candidate.DependencyPolicy, new string('D', 64), new string('E', 64), [], [])));
+        };
+
+        var cut = context.Render<ProcessingNodeConfigPage>(parameters => parameters
+            .Add(static page => page.RevisionId, "rev-a")
+            .Add(static page => page.NodeId, "scene-style"));
+        cut.WaitForElement("#node-options-0-constellationLineThickness");
+        Assert.AreEqual("2", cut.Find("#node-options-0-constellationLineThickness").GetAttribute("value"));
+
+        // Edit rev-a and start a preview that stays in flight.
+        await cut.Find("#node-options-0-constellationLineThickness").ChangeAsync(new() { Value = "3" }).ConfigureAwait(false);
+        var pendingPreviewA = cut.Find("form").TriggerEventAsync("onsubmit", EventArgs.Empty);
+        await previewAStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        Assert.IsFalse(previewAToken.IsCancellationRequested);
+
+        // Navigate to rev-b while rev-a's preview is still pending.
+        cut.Render(parameters => parameters
+            .Add(static page => page.RevisionId, "rev-b")
+            .Add(static page => page.NodeId, "scene-style"));
+        cut.WaitForAssertion(() => Assert.AreEqual("5", cut.Find("#node-options-0-constellationLineThickness").GetAttribute("value")));
+        Assert.IsTrue(previewAToken.IsCancellationRequested, "Navigating to another revision must cancel in-flight preview work.");
+
+        // Even if the stale preview completes with a valid result ignoring cancellation, it must be discarded.
+        delayedPreviewA.SetResult(OperatorUiResult<CaptureProcessingPlanPreview>.Success(
+            new(pipelineA.SchemaVersion, pipelineA.DependencyPolicy, new string('A', 64), new string('B', 64), [], [])));
+        await pendingPreviewA.ConfigureAwait(false);
+
+        Assert.IsTrue(cut.Find("button.btn-primary").HasAttribute("disabled"),
+            "A delayed preview from revision A must never enable Save on revision B.");
+        Assert.IsEmpty(cut.FindAll("#config-preview-heading"));
+        Assert.IsEmpty(service.Created);
+
+        // Editing, previewing, and saving on revision B submits only revision B's identity and pipeline.
+        await cut.Find("#node-options-0-constellationLineThickness").ChangeAsync(new() { Value = "6" }).ConfigureAwait(false);
+        await cut.Find("form").SubmitAsync().ConfigureAwait(false);
+        Assert.IsFalse(cut.Find("button.btn-primary").HasAttribute("disabled"));
+        await cut.Find("button.btn-primary").ClickAsync(new()).ConfigureAwait(false);
+
+        var created = service.Created.Single();
+        Assert.AreEqual("graph-b", created.Name);
+        Assert.AreEqual("8", created.Revision);
+        Assert.AreEqual(6, created.Pipeline.Steps[0].Options!.Value.GetProperty("constellationLineThickness").GetInt32());
+        StringAssert.Contains(created.Reason, "rev-b", StringComparison.Ordinal);
+
+        // Disposing while a preview is pending cancels the token cleanly.
+        var disposeToken = CancellationToken.None;
+        var disposeStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var disposePending = new TaskCompletionSource<OperatorUiResult<CaptureProcessingPlanPreview>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        service.PreviewHandler = (_, token) =>
+        {
+            disposeToken = token;
+            disposeStarted.TrySetResult();
+            return new ValueTask<OperatorUiResult<CaptureProcessingPlanPreview>>(disposePending.Task);
+        };
+        await cut.Find("#node-options-0-constellationLineThickness").ChangeAsync(new() { Value = "7" }).ConfigureAwait(false);
+        var inFlightOnDispose = cut.Find("form").TriggerEventAsync("onsubmit", EventArgs.Empty);
+        await disposeStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        await context.DisposeComponentsAsync().ConfigureAwait(false);
+        Assert.IsTrue(disposeToken.IsCancellationRequested);
+        disposePending.SetCanceled(disposeToken);
+        await inFlightOnDispose.ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public void DotDotAndArbitraryNodeIdsUseQueryParameterLinksAndResolveToConfigPage()
+    {
+        var dotDotHref = ProcessingNodeConfigPage.NodeConfigHref("rev-active", "..");
+        var resolvedDotDot = new Uri(new Uri("https://localhost"), dotDotHref);
+        Assert.AreEqual("/operations/pipeline/graphs/rev-active/node", resolvedDotDot.AbsolutePath);
+        Assert.AreEqual("?nodeId=..", resolvedDotDot.Query);
+
+        var slashHref = ProcessingNodeConfigPage.NodeConfigHref("rev-active", "a/b?x=1");
+        var resolvedSlash = new Uri(new Uri("https://localhost"), slashHref);
+        Assert.AreEqual("/operations/pipeline/graphs/rev-active/node", resolvedSlash.AbsolutePath);
+        Assert.AreEqual("?nodeId=a%2Fb%3Fx%3D1", resolvedSlash.Query);
+
+        var activeDotDotHref = ProcessingNodeConfigPage.ActiveNodeConfigHref("..");
+        var resolvedActiveDotDot = new Uri(new Uri("https://localhost"), activeDotDotHref);
+        Assert.AreEqual("/operations/pipeline/configure", resolvedActiveDotDot.AbsolutePath);
+        Assert.AreEqual("?nodeId=..", resolvedActiveDotDot.Query);
+
+        // Safe node IDs keep the backward-compatible path helper format.
+        Assert.AreEqual("/operations/pipeline/graphs/rev-active/nodes/preview",
+            ProcessingNodeConfigPage.NodeConfigHref("rev-active", "preview"));
+
+        using var context = new BunitContext();
+        var pipeline = new CapturePipelineConfig(
+        [
+            new("Preview", "..", 10, null, ["$raw"], Enabled: true)
+        ]);
+        var service = Configure(context, pipeline);
+
+        // Detail page renders the query-parameter link for node ID "..".
+        var detail = context.Render<ProcessingGraphDetailPage>(parameters => parameters
+            .Add(static page => page.RevisionId, "rev-active"));
+        detail.WaitForElement(".definition-list");
+        var link = detail.Find(".definition-node__link");
+        Assert.AreEqual(dotDotHref, link.GetAttribute("href"));
+        detail.Dispose();
+
+        // Following that href resolves ProcessingNodeConfigPage via the query parameter.
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo(dotDotHref);
+        var configPage = context.Render<ProcessingNodeConfigPage>(parameters => parameters
+            .Add(static page => page.RevisionId, "rev-active"));
+        configPage.WaitForElement(".config-form");
+        StringAssert.Contains(configPage.Find("h1").TextContent, "..", StringComparison.Ordinal);
+        configPage.Find("#node-options-0-blackPercentile").Change("0.25");
+        configPage.Find("form").Submit();
+        Assert.IsFalse(configPage.Find("button.btn-primary").HasAttribute("disabled"));
+        configPage.Find("button.btn-primary").Click();
+        Assert.AreEqual("..", service.Created.Single().Pipeline.Steps[0].Id);
+        Assert.AreEqual(0.25, service.Created.Single().Pipeline.Steps[0].Options!.Value.GetProperty("blackPercentile").GetDouble());
+    }
+
+    [TestMethod]
+    public void CurrentSkyFrameFactsLinkShowsMissingNoticeOnAnnotationOnlyGraph()
+    {
+        using var context = new BunitContext();
+        Configure(context, new CapturePipelineConfig(
+        [
+            new("Annotation", "legacy-annot", 10, null, ["$raw"], Enabled: true)
+        ]));
+        context.Services.GetRequiredService<NavigationManager>()
+            .NavigateTo("/operations/pipeline/graphs/new?section=frame-facts#frame-facts");
+
+        var cut = context.Render<ProcessingGraphEditorPage>();
+        cut.WaitForElement("#legacy-annotation");
+        Assert.IsEmpty(cut.FindAll("#frame-facts"), "An Annotation-only graph renders no #frame-facts target.");
+        Assert.IsTrue(
+            cut.FindAll("p[role='status']").Any(static notice =>
+                notice.TextContent.Contains("This graph has no Frame Facts node.", StringComparison.Ordinal)),
+            "Expected Frame Facts missing-node notice on an Annotation-only graph.");
+    }
+
+    [TestMethod]
+    public void DedicatedFrameFactsPageShowsDescriptorGuidanceBoundsAndResetInvalidatesBothPreviews()
+    {
+        using var context = new BunitContext();
+        const string sourceJson = """
+            {
+              "widthPixels": 1936,
+              "heightPixels": 1216,
+              "inset": 20,
+              "lineSpacing": 6,
+              "topLeftTemplate": "Seq {{capture.sequence}}",
+              "topLeftFont": "MonoBold",
+              "topLeftSizeMilliPixels": 24000,
+              "topLeftRed": 17,
+              "topLeftGreen": 170,
+              "topLeftBlue": 238,
+              "topLeftMissingPolicy": "DropLine",
+              "future": [1e+02]
+            }
+            """;
+        var pipeline = new CapturePipelineConfig(
+        [
+            new(FrameFactsPresentation.StepAlias, "facts", 72,
+                JsonDocument.Parse(sourceJson).RootElement.Clone(), ["$raw"], Enabled: true)
+        ]);
+        var service = Configure(context, pipeline);
+
+        var cut = context.Render<ProcessingNodeConfigPage>(parameters => parameters
+            .Add(static page => page.RevisionId, "rev-active")
+            .Add(static page => page.NodeId, "facts"));
+        cut.WaitForElement(".frame-facts-editor");
+
+        // Descriptor-backed help, bounds, and defaults on corner style fields.
+        Assert.AreEqual("node-options-0-topLeftSizeMilliPixels-help",
+            cut.Find("#node-options-0-topLeftSizeMilliPixels").GetAttribute("aria-describedby"));
+        var sizeHelp = cut.Find("#node-options-0-topLeftSizeMilliPixels-help").TextContent;
+        StringAssert.Contains(sizeHelp, "Font size in thousandths of an image pixel.", StringComparison.Ordinal);
+        StringAssert.Contains(sizeHelp, "4000–64000 milli-px.", StringComparison.Ordinal);
+        StringAssert.Contains(sizeHelp, "Default: 16000 milli-px.", StringComparison.Ordinal);
+
+        Assert.AreEqual("node-options-0-topLeftFont-help",
+            cut.Find("#node-options-0-topLeftFont").GetAttribute("aria-describedby"));
+        StringAssert.Contains(cut.Find("#node-options-0-topLeftFont-help").TextContent, "Default: MonoRegular.", StringComparison.Ordinal);
+
+        Assert.AreEqual("node-options-0-topLeftColor-help",
+            cut.Find("#node-options-0-topLeftColor").GetAttribute("aria-describedby"));
+        StringAssert.Contains(cut.Find("#node-options-0-topLeftColor-help").TextContent, "Default: #ffffff.", StringComparison.Ordinal);
+
+        Assert.AreEqual("node-options-0-topLeftMissingPolicy-help",
+            cut.Find("#node-options-0-topLeftMissingPolicy").GetAttribute("aria-describedby"));
+        StringAssert.Contains(cut.Find("#node-options-0-topLeftMissingPolicy-help").TextContent, "Default: Placeholder.", StringComparison.Ordinal);
+
+        // Produce both the rendered facts preview and the compiled graph preview.
+        cut.Find(".frozen-preview button").Click();
+        Assert.IsNotNull(cut.Find(".preview-image"));
+        cut.Find("#node-options-0-topLeftTemplate").Change("Edited {{capture.sequence}}");
+        cut.Find(".frozen-preview button").Click();
+        Assert.IsNotNull(cut.Find(".preview-image"));
+        cut.Find("form").Submit();
+        Assert.IsNotNull(cut.Find("#config-preview-heading"));
+        Assert.IsFalse(cut.Find("button.btn-primary").HasAttribute("disabled"));
+
+        // Reset restores defaults, preserves presentation dimensions & unknown fields, and invalidates both previews.
+        var resetButton = cut.Find("#node-options-0-reset-defaults");
+        Assert.IsFalse(resetButton.HasAttribute("disabled"));
+        resetButton.Click();
+
+        Assert.IsEmpty(cut.FindAll(".preview-image"), "Reset must invalidate the rendered frozen facts preview.");
+        Assert.IsEmpty(cut.FindAll("#config-preview-heading"), "Reset must invalidate the compiled graph preview.");
+        Assert.IsTrue(cut.Find("button.btn-primary").HasAttribute("disabled"));
+        Assert.IsTrue(cut.Find("#node-options-0-reset-defaults").HasAttribute("disabled"));
+        Assert.AreEqual(string.Empty, cut.Find("#node-options-0-topLeftTemplate").GetAttribute("value"));
+        Assert.AreEqual("MonoRegular", cut.Find("#node-options-0-topLeftFont").GetAttribute("value"));
+        Assert.AreEqual("16000", cut.Find("#node-options-0-topLeftSizeMilliPixels").GetAttribute("value"));
+        Assert.AreEqual("#ffffff", cut.Find("#node-options-0-topLeftColor").GetAttribute("value"));
+        Assert.AreEqual("Placeholder", cut.Find("#node-options-0-topLeftMissingPolicy").GetAttribute("value"));
+        Assert.AreEqual("12", cut.Find("#node-options-0-inset").GetAttribute("value"));
+        Assert.AreEqual("2", cut.Find("#node-options-0-lineSpacing").GetAttribute("value"));
+        Assert.AreEqual("1936", cut.Find("#node-options-0-widthPixels").GetAttribute("value"));
+        Assert.AreEqual("1216", cut.Find("#node-options-0-heightPixels").GetAttribute("value"));
+
+        // Frozen preview still renders after reset, and saving preserves unknown JSON members.
+        cut.Find(".frozen-preview button").Click();
+        Assert.IsNotNull(cut.Find(".preview-image"));
+        cut.Find("form").Submit();
+        Assert.IsFalse(cut.Find("button.btn-primary").HasAttribute("disabled"));
+        cut.Find("button.btn-primary").Click();
+
+        var saved = service.Created.Single().Pipeline.Steps[0].Options!.Value;
+        Assert.AreEqual(1936, saved.GetProperty("widthPixels").GetInt32());
+        Assert.AreEqual(1216, saved.GetProperty("heightPixels").GetInt32());
+        Assert.AreEqual(12, saved.GetProperty("inset").GetInt32());
+        Assert.AreEqual(2, saved.GetProperty("lineSpacing").GetInt32());
+        Assert.AreEqual(16_000, saved.GetProperty("topLeftSizeMilliPixels").GetInt32());
+        Assert.AreEqual("[1e+02]", saved.GetProperty("future").GetRawText());
+    }
+
+    [TestMethod]
+    public void DedicatedPagesConfigureDeepSkyStyleLabelAndQuerySettingsWithValidationAndLosslessReset()
+    {
+        using var context = new BunitContext();
+        const string sceneSource = """{ "deepSkyMaximumLabels": 10, "future": [1e+02] }""";
+        const string querySource = """{ "deepSkyEnabled": true, "future": [1e+02] }""";
+        var pipeline = new CapturePipelineConfig(
+        [
+            new("ProjectedScene", "scene-query", 10, JsonDocument.Parse(querySource).RootElement.Clone(), ["$raw"], Enabled: true),
+            new(SceneStylePresentation.StepAlias, "scene-style", 20, JsonDocument.Parse(sceneSource).RootElement.Clone(), ["scene-query"], Enabled: true)
+        ]);
+        var service = Configure(context, pipeline);
+
+        // Scene node exposes all deep-sky style and label controls, validates bounds, resets losslessly, and persists.
+        var sceneCut = context.Render<ProcessingNodeConfigPage>(parameters => parameters
+            .Add(static page => page.RevisionId, "rev-active")
+            .Add(static page => page.NodeId, "scene-style"));
+        sceneCut.WaitForElement("#node-options-1-deepSkyMaximumLabels");
+
+        sceneCut.Find("#node-options-1-deepSkyMaximumLabels").Change("30");
+        sceneCut.Find("form").Submit();
+        Assert.IsNotEmpty(sceneCut.FindAll(".option-errors[role='alert'] li"));
+        Assert.IsTrue(sceneCut.Find("button.btn-primary").HasAttribute("disabled"));
+
+        sceneCut.Find("#node-options-1-deepSkyMaximumLabels").Change("8");
+        sceneCut.Find("#node-options-1-deepSkyMaximumLabelCharacters").Change("14");
+        sceneCut.Find("#node-options-1-deepSkyLabelCatalogObjects").Change(false);
+        sceneCut.Find("#node-options-1-deepSkyMinimumGlyphRadius").Change("10");
+        sceneCut.Find("#node-options-1-deepSkyLineThickness").Change("4");
+        sceneCut.Find("#node-options-1-deepSkyLabelScale").Change("3");
+        sceneCut.Find("#node-options-1-deepSkyColor").Change("#40c0ff");
+        sceneCut.Find("#node-options-1-deepSkyFont").Change("PlexRegular");
+        sceneCut.Find("form").Submit();
+        Assert.IsFalse(sceneCut.Find("button.btn-primary").HasAttribute("disabled"));
+        sceneCut.Find("button.btn-primary").Click();
+
+        var savedScene = service.Created.Single().Pipeline.Steps[1].Options!.Value;
+        Assert.AreEqual(8, savedScene.GetProperty("deepSkyMaximumLabels").GetInt32());
+        Assert.AreEqual(14, savedScene.GetProperty("deepSkyMaximumLabelCharacters").GetInt32());
+        Assert.IsFalse(savedScene.GetProperty("deepSkyLabelCatalogObjects").GetBoolean());
+        Assert.AreEqual(10, savedScene.GetProperty("deepSkyMinimumGlyphRadius").GetInt32());
+        Assert.AreEqual(4, savedScene.GetProperty("deepSkyLineThickness").GetInt32());
+        Assert.AreEqual(3, savedScene.GetProperty("deepSkyLabelScale").GetInt32());
+        Assert.AreEqual(64, savedScene.GetProperty("deepSkyRed").GetInt32());
+        Assert.AreEqual(192, savedScene.GetProperty("deepSkyGreen").GetInt32());
+        Assert.AreEqual(255, savedScene.GetProperty("deepSkyBlue").GetInt32());
+        Assert.AreEqual("PlexRegular", savedScene.GetProperty("deepSkyFont").GetString());
+        Assert.AreEqual("[1e+02]", savedScene.GetProperty("future").GetRawText());
+
+        // Reset restores deep-sky defaults while keeping unknown fields.
+        sceneCut.Find("#node-options-1-reset-defaults").Click();
+        Assert.AreEqual("24", sceneCut.Find("#node-options-1-deepSkyMaximumLabels").GetAttribute("value"));
+        Assert.AreEqual("#ffc478", sceneCut.Find("#node-options-1-deepSkyColor").GetAttribute("value"));
+        Assert.AreEqual("MonoRegular", sceneCut.Find("#node-options-1-deepSkyFont").GetAttribute("value"));
+        sceneCut.Find("form").Submit();
+        sceneCut.Find("button.btn-primary").Click();
+        Assert.AreEqual("[1e+02]", service.Created[^1].Pipeline.Steps[1].Options!.Value.GetProperty("future").GetRawText());
+        sceneCut.Dispose();
+
+        // ProjectedScene page validates deep-sky min <= max size bounds.
+        var queryCut = context.Render<ProcessingNodeConfigPage>(parameters => parameters
+            .Add(static page => page.RevisionId, "rev-active")
+            .Add(static page => page.NodeId, "scene-query"));
+        queryCut.WaitForElement("#node-options-0-deepSkyMinimumSizeArcminutes");
+        queryCut.Find("#node-options-0-deepSkyMinimumSizeArcminutes").Change("50");
+        queryCut.Find("#node-options-0-deepSkyMaximumSizeArcminutes").Change("10");
+        queryCut.Find("form").Submit();
+        Assert.IsNotEmpty(queryCut.FindAll(".option-errors[role='alert'] li"));
+        Assert.IsTrue(queryCut.Find("button.btn-primary").HasAttribute("disabled"));
+    }
+
     private static ProcessingExecutionPagesTests.GraphUiService Configure(BunitContext context, CapturePipelineConfig pipeline)
     {
         context.JSInterop.Mode = JSRuntimeMode.Loose;

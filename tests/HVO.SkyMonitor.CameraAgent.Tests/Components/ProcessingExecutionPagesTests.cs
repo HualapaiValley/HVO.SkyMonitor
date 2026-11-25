@@ -878,11 +878,13 @@ public sealed class ProcessingExecutionPagesTests
         public IReadOnlyList<string> StepAliases { get; set; } = ["preview", "telemetry", "calibration"];
         public ProcessingGraphRegistryState? Registry { get; set; }
         public Func<CapturePipelineConfig, OperatorUiResult<CaptureProcessingPlanPreview>>? Preview { get; set; }
+        public Func<CapturePipelineConfig, CancellationToken, ValueTask<OperatorUiResult<CaptureProcessingPlanPreview>>>? PreviewHandler { get; set; }
         public Task<OperatorUiResult<CaptureProcessingPlanPreview>>? PendingPreview { get; set; }
         public Func<(string Name, string Revision, CapturePipelineConfig Pipeline, string Key, string? Reason), OperatorUiResult<ProcessingGraphRevisionState>>? Create { get; set; }
         public List<(string Name, string Revision, CapturePipelineConfig Pipeline, string Key, string? Reason)> Created { get; } = [];
         public OperatorUiResult<ProcessingGraphRegistryState>? RegistryFailure { get; set; }
         public CameraAgentProcessingGraphRevisionDetail? RevisionDetail { get; set; }
+        public Func<string, CancellationToken, ValueTask<OperatorUiResult<CameraAgentProcessingGraphRevisionDetail>>>? RevisionDetailHandler { get; set; }
         public OperatorUiResult<CameraAgentProcessingGraphRevisionDetail>? RevisionDetailFailure { get; set; }
         public Func<string, OperatorUiResult<ProcessingGraphRegistryState>>? RegistryMutation { get; set; }
         public Func<string, OperatorUiResult<ProcessingGraphRevisionState>>? RevisionMutation { get; set; }
@@ -892,10 +894,13 @@ public sealed class ProcessingExecutionPagesTests
             => ValueTask.FromResult(RegistryFailure ?? OperatorUiResult<ProcessingGraphRegistryState>.Success(Registry!));
 
         public ValueTask<OperatorUiResult<CameraAgentProcessingGraphRevisionDetail>> GetRevisionDetailAsync(string revisionId, CancellationToken cancellationToken)
-            => ValueTask.FromResult(RevisionDetailFailure ?? OperatorUiResult<CameraAgentProcessingGraphRevisionDetail>.Success(RevisionDetail!));
+            => RevisionDetailHandler is not null
+                ? RevisionDetailHandler(revisionId, cancellationToken)
+                : ValueTask.FromResult(RevisionDetailFailure ?? OperatorUiResult<CameraAgentProcessingGraphRevisionDetail>.Success(RevisionDetail!));
 
         public async ValueTask<OperatorUiResult<CaptureProcessingPlanPreview>> PreviewAsync(CapturePipelineConfig pipeline, CancellationToken cancellationToken)
-            => PendingPreview is { } pending ? await pending.ConfigureAwait(false)
+            => PreviewHandler is not null ? await PreviewHandler(pipeline, cancellationToken).ConfigureAwait(false)
+                : PendingPreview is { } pending ? await pending.ConfigureAwait(false)
                 : Preview?.Invoke(pipeline) ?? throw new NotSupportedException();
 
         public ValueTask<OperatorUiResult<ProcessingGraphRegistryState>> ActivateAsync(string revisionId, long expectedVersion, string idempotencyKey, string? reason, CancellationToken cancellationToken)

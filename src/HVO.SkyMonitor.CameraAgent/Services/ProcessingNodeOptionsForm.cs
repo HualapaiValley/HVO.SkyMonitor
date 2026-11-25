@@ -131,7 +131,9 @@ public sealed class ProcessingNodeOptionsForm
         var option = Descriptor.Find(key)!;
         return option.Kind switch
         {
-            ProcessingOptionKind.RowCollection => _rows[key].Count == option.DefaultValue.AsCollection().Items.Length,
+            ProcessingOptionKind.RowCollection => _rows[key].Count == 0
+                ? option.DefaultValue.AsCollection().Items.Length == 0
+                : _rows[key].All(row => row.AreOptionsAtDefault(option.RowIdentityKey)),
             ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection or ProcessingOptionKind.ChoiceCollection
                 => _collections[key].Items.SequenceEqual(option.DefaultValue.AsCollection().Items, StringComparer.Ordinal),
             _ => Parse(option.Kind, _inputs[key]) is { } parsed && parsed.Equals(option.DefaultValue)
@@ -139,7 +141,14 @@ public sealed class ProcessingNodeOptionsForm
     }
 
     /// <summary>True when any option in this form currently differs from its code default.</summary>
-    public bool HasNonDefaultValues => Descriptor.Options.Any(option => !IsAtDefault(option.Key));
+    public bool HasNonDefaultValues => !AreOptionsAtDefault();
+
+    /// <summary>True when any option outside <paramref name="excludedKeys"/> differs from its code default.</summary>
+    public bool HasNonDefaultValuesExcluding(IReadOnlySet<string> excludedKeys)
+    {
+        ArgumentNullException.ThrowIfNull(excludedKeys);
+        return Descriptor.Options.Any(option => !excludedKeys.Contains(option.Key) && !IsAtDefault(option.Key));
+    }
 
     /// <summary>Resets a single option back to its code default without disturbing unknown JSON fields.</summary>
     public void ResetOptionToDefault(string key)
@@ -151,10 +160,28 @@ public sealed class ProcessingNodeOptionsForm
     }
 
     /// <summary>Resets every option described by this form back to its code default while keeping unknown JSON fields untouched.</summary>
-    public void ResetAllToDefaults()
+    public void ResetAllToDefaults() => ResetOptionsToDefaults(excludedKey: null, excludedKeys: null);
+
+    /// <summary>Resets every option outside <paramref name="excludedKeys"/> back to its code default while keeping unknown JSON fields untouched.</summary>
+    public void ResetAllToDefaultsExcluding(IReadOnlySet<string> excludedKeys)
+    {
+        ArgumentNullException.ThrowIfNull(excludedKeys);
+        ResetOptionsToDefaults(excludedKey: null, excludedKeys: excludedKeys);
+    }
+
+    private bool AreOptionsAtDefault(string? excludedKey = null)
+        => Descriptor.Options.All(option =>
+            (excludedKey is not null && string.Equals(option.Key, excludedKey, StringComparison.Ordinal)) ||
+            IsAtDefault(option.Key));
+
+    private void ResetOptionsToDefaults(string? excludedKey, IReadOnlySet<string>? excludedKeys)
     {
         foreach (var option in Descriptor.Options)
         {
+            if (excludedKey is not null && string.Equals(option.Key, excludedKey, StringComparison.Ordinal))
+                continue;
+            if (excludedKeys is not null && excludedKeys.Contains(option.Key))
+                continue;
             ApplyDefault(option);
             _edited.Add(option.Key);
         }
@@ -165,9 +192,12 @@ public sealed class ProcessingNodeOptionsForm
     {
         if (option.Kind == ProcessingOptionKind.RowCollection)
         {
-            _rows[option.Key] = option.DefaultValue.AsCollection().Items
-                .Select(row => new ProcessingNodeOptionsForm(option.RowDescriptor!, JsonSerializer.Deserialize<JsonElement>(row)))
-                .ToList();
+            // Reserve row deletion for explicit RemoveRow/ClearRows actions so unknown members inside
+            // existing rows (such as OverlayManifest layer overrides) survive reset losslessly.
+            foreach (var row in _rows[option.Key])
+            {
+                row.ResetOptionsToDefaults(option.RowIdentityKey, excludedKeys: null);
+            }
         }
         else if (option.Kind is ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection or ProcessingOptionKind.ChoiceCollection)
         {

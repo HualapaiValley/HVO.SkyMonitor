@@ -1,3 +1,4 @@
+using System.Globalization;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
@@ -12,6 +13,7 @@ public sealed partial class FrameFactsOptionsEditor : ComponentBase
         [("topLeft", "Top left"), ("topRight", "Top right"), ("bottomLeft", "Bottom left"), ("bottomRight", "Bottom right")];
     private static readonly string[] StyleSuffixes = ["Font", "SizeMilliPixels", "Color", "MissingPolicy"];
     private static readonly string[] LayoutKeys = ["widthPixels", "heightPixels", "inset", "lineSpacing"];
+    private static readonly HashSet<string> DimensionKeys = new(StringComparer.Ordinal) { "widthPixels", "heightPixels" };
     private FrameFactsSnapshotV1 _snapshot = FrameFactsEditorPreview.MissingSnapshot();
     private bool _loaded;
     private bool _loadingFacts;
@@ -23,6 +25,16 @@ public sealed partial class FrameFactsOptionsEditor : ComponentBase
     [Parameter, EditorRequired] public string IdPrefix { get; set; } = string.Empty;
     [Parameter, EditorRequired] public ProcessingNodeOptionsForm Form { get; set; } = default!;
     [Parameter] public EventCallback Changed { get; set; }
+    [Parameter] public bool ShowResetToDefaults { get; set; }
+
+    private bool CanResetToDefaults => Form.HasNonDefaultValuesExcluding(DimensionKeys);
+
+    private async Task ResetAllToDefaultsAsync()
+    {
+        Form.ResetAllToDefaultsExcluding(DimensionKeys);
+        ClearPreview();
+        await Changed.InvokeAsync().ConfigureAwait(false);
+    }
 
     private async Task ChangeAsync(string key, string value)
     {
@@ -32,6 +44,15 @@ public sealed partial class FrameFactsOptionsEditor : ComponentBase
     }
 
     private void ClearPreview() { _image = null; _payload = null; _error = null; }
+
+    private static string? Bounds(ProcessingOptionDescriptor option) => option.Kind switch
+    {
+        ProcessingOptionKind.WholeNumber or ProcessingOptionKind.NullableWholeNumber => string.Create(CultureInfo.InvariantCulture, $"{option.MinimumWholeNumber}–{option.MaximumWholeNumber} {option.Unit}."),
+        ProcessingOptionKind.RealNumber or ProcessingOptionKind.NullableRealNumber => string.Create(CultureInfo.InvariantCulture, $"{option.MinimumRealNumber}–{option.MaximumRealNumber} {option.Unit}."),
+        ProcessingOptionKind.Color => "Use #RRGGBB or the colour picker.",
+        ProcessingOptionKind.Text when option.MaximumLength.HasValue => $"Maximum {option.MaximumLength} characters.",
+        _ => null
+    };
 
     private async Task LoadFactsAsync(InputFileChangeEventArgs args)
     {

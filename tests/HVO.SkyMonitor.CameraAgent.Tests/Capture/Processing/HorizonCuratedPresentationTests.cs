@@ -86,6 +86,94 @@ public sealed class HorizonCuratedPresentationTests
     }
 
     [TestMethod]
+    [DataRow("ScenePresentationLayer")]
+    [DataRow("SceneStylePresentationLayerV1")]
+    public async Task InlineDeepSkyStyleOptionsAreConsumedByBothSceneProducersAndReflectedInPlanIdentity(string alias)
+    {
+        var fixture = await FixtureAsync("clear").ConfigureAwait(false);
+        using var services = Services(fixture);
+        var context = Context(fixture, replay: false);
+        var customColor = new PresentationColor(64, 192, 255);
+        var expectedFace = alias == "ScenePresentationLayer"
+            ? PresentationFontFaceV3.MonoBold
+            : PresentationFontFaceV3.PlexRegular;
+        ScenePresentationLayerCaptureProcessingStep step = alias == "ScenePresentationLayer"
+            ? new ScenePresentationLayerCaptureProcessingStep(new("layer", alias, 1), new()
+            {
+                IncludeDeepSkyLayer = false,
+                DeepSkyLabels = true,
+                DeepSkyMaximumLabels = 2,
+                DeepSkyLabelCatalogObjects = false,
+                DeepSkyOutlines = false,
+                DeepSkyLineThickness = 4,
+                DeepSkyMinimumGlyphRadius = 10,
+                DeepSkyRed = customColor.Red,
+                DeepSkyGreen = customColor.Green,
+                DeepSkyBlue = customColor.Blue,
+                DeepSkyFont = "MonoBold"
+            }, services)
+            : new SceneStylePresentationCaptureProcessingStep(new("layer", alias, 1), new()
+            {
+                IncludeDeepSkyLayer = false,
+                DeepSkyLabels = true,
+                DeepSkyMaximumLabels = 2,
+                DeepSkyLabelCatalogObjects = false,
+                DeepSkyOutlines = false,
+                DeepSkyLineThickness = 4,
+                DeepSkyMinimumGlyphRadius = 10,
+                DeepSkyRed = customColor.Red,
+                DeepSkyGreen = customColor.Green,
+                DeepSkyBlue = customColor.Blue,
+                DeepSkyFont = "PlexRegular"
+            }, services);
+
+        await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
+        var payload = PresentationLayerPayloadJson.Parse(context.ProcessingOutcomes.Single().Products[0].Payload).Payload!;
+        var dashed = payload.Segments.Where(static segment => segment.Stroke is { DashPixels: > 0 }).ToArray();
+        Assert.IsNotEmpty(dashed);
+        Assert.IsTrue(dashed.All(segment => segment.Color == customColor && segment.Thickness == 4),
+            "Inline deep-sky segments must consume the configured style options.");
+        var deepSkyLabel = payload.TextBlocks.Single(static block => block.Lines.Contains("M31", StringComparer.Ordinal));
+        Assert.AreEqual(expectedFace, deepSkyLabel.Appearance!.Body.Face);
+        Assert.IsTrue(payload.TextBlocks.SelectMany(static block => block.Lines)
+            .Contains(PresentationDeepSkyLayerProducer.Legend, StringComparer.Ordinal));
+        Assert.IsFalse(payload.TextBlocks.SelectMany(static block => block.Lines).Contains("NGC 7000", StringComparer.Ordinal) &&
+                       payload.TextBlocks.Count(block => block.Appearance?.Body.Face == expectedFace) > 2);
+
+        // Verify pipeline factory effective options reflect custom inline deep-sky style without changing default plan identity.
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-deepsky-plan");
+        try
+        {
+            using var provider = ProcessingGraphOperationsTests.CreateRemainingOptionsProvider(root);
+            var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
+            var defaultPipeline = new CapturePipelineConfig(
+            [
+                new("ProjectedScene", "scene", 10, null, ["$raw"], Enabled: true),
+                new(alias, "layer", 20, null, ["scene"], Enabled: true)
+            ]);
+            var styledPipeline = defaultPipeline with
+            {
+                Steps =
+                [
+                    defaultPipeline.Steps[0],
+                    defaultPipeline.Steps[1] with
+                    {
+                        Options = JsonDocument.Parse("""{"deepSkyRed":64,"deepSkyGreen":192,"deepSkyBlue":255,"deepSkyLineThickness":4}""").RootElement.Clone()
+                    }
+                ]
+            };
+            var defaultPlan = factory.PreviewPlan(fixture.Config with { Pipeline = defaultPipeline });
+            var styledPlan = factory.PreviewPlan(fixture.Config with { Pipeline = styledPipeline });
+            Assert.AreNotEqual(defaultPlan.EffectiveSha256, styledPlan.EffectiveSha256,
+                "Customizing inline deep-sky style must produce a distinct compiled plan identity.");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
     [DataRow("ScenePresentationLayer", "blocked")]
     [DataRow("ScenePresentationLayer", "unknown")]
     [DataRow("ScenePresentationLayer", "incompatible")]

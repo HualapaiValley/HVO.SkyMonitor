@@ -1469,7 +1469,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         var omitDeepSky = options switch
         {
             ProjectedSceneCaptureProcessingStepOptions query => !query.DeepSkyEnabled,
-            ScenePresentationLayerProcessingStepOptions layer => !layer.IncludeDeepSkyLayer,
+            ScenePresentationLayerProcessingStepOptions layer => !layer.IncludeDeepSkyLayer && !layer.HasCustomDeepSkyStyle(),
             _ => false
         };
         if ((!omitLegacyEnabled && !omitDeepSky) || serialized.ValueKind is not JsonValueKind.Object)
