@@ -93,8 +93,7 @@ internal sealed class CaptureSatelliteTracksProcessingStep(
         context.RecordCanonicalInput("capture-satellite-input", CaptureSatelliteProducts.InputSchema,
             ProcessingIdentity.ComputePayloadSha256(CaptureSatelliteProducts.SerializeInput(input)));
         if (input.Plan is not null)
-            context.RecordExecutionRequest(new(CaptureOrbitalPredictionRecipe.Name, JsonSerializer.SerializeToElement(new { }),
-                ProcessingInputSelector.Raw(source.Variant), [source], OutputVariant, InputArtifactId: source.ArtifactId));
+            context.RecordExecutionRequest(CaptureSatelliteProducts.CreatePredictionRequest(source, OutputVariant));
         context.RecordExecutionRoute(ProcessingNodeExecutionRoute.InProcess);
         LayeredPresentationCaptureProcessing.Add(context, CaptureSatelliteProducts.Create(input, source, OutputVariant, result, exactSnapshot)
             .Where(static p => p.SchemaVersion is CaptureSatelliteProducts.InputSchema or CaptureSatelliteProducts.StatusSchema or

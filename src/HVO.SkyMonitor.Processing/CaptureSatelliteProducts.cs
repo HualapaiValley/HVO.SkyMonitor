@@ -151,14 +151,15 @@ public static class CaptureSatelliteProducts
         Validate(input);
         if (input.Plan is null) return null;
         var recipe = new CaptureOrbitalPredictionRecipe(Restore(input, exactSnapshot), RestoreTime(input), clock);
-        var outcome = await execute(recipe, new(
-            CaptureOrbitalPredictionRecipe.Name, JsonSerializer.SerializeToElement(new { }),
-            ProcessingInputSelector.Raw(raw.Variant), [raw], outputVariant, InputArtifactId: raw.ArtifactId),
-            cancellationToken).ConfigureAwait(false);
+        var outcome = await execute(recipe, CreatePredictionRequest(raw, outputVariant), cancellationToken).ConfigureAwait(false);
         if (outcome.Status != ProcessingOutcomeStatus.Produced)
             throw new InvalidDataException($"Capture satellite recipe rejected its raw evidence ({outcome.ReasonCode}).");
         return outcome.Products.Single();
     }
+
+    internal static ProcessingExecutionRequest CreatePredictionRequest(ProcessingArtifact raw, string outputVariant) =>
+        new(CaptureOrbitalPredictionRecipe.Name, JsonSerializer.SerializeToElement(new { }),
+            ProcessingInputSelector.Raw(raw.Variant), [raw], outputVariant, InputArtifactId: raw.ArtifactId);
 
     /// <summary>Rebuilds typed products from retained result bytes, including a separate truthful query status.</summary>
     public static IReadOnlyList<ProcessingProduct> Create(CaptureSatelliteInputV1 input, ProcessingArtifact raw,

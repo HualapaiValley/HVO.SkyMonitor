@@ -67,22 +67,33 @@ public sealed class CaptureSatelliteBindingTests
         const string outputVariant = "camera-satellite-prediction";
         var fixture = new CaptureSatelliteFixture(rawVariant: rawVariant);
         var descriptor = fixture.Descriptor;
+        Assert.AreNotEqual(descriptor.Timing.RequestedStartUtc, descriptor.Timing.ExposureStartedUtc);
+        Assert.AreNotEqual(descriptor.Timing.ExposureEndedUtc - descriptor.Timing.ExposureStartedUtc,
+            descriptor.Controls.EffectiveExposure);
         var raw = AsFrameArtifact(descriptor, fixture.Raw.Payload);
         var source = CaptureSatelliteTracksProcessingStep.CreateSource(fixture.Configuration, raw, descriptor);
         var expected = new ProcessingExecutionRequest(CaptureOrbitalPredictionRecipe.Name,
             JsonSerializer.SerializeToElement(new { }), new(ProcessingInputKind.Raw, FrameArtifactRole.Raw, rawVariant),
             [source], outputVariant, InputArtifactId: descriptor.Artifact.ArtifactId);
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.CancellationToken);
+        var cancellationToken = cancellation.Token;
         ProcessingExecutionRequest? dispatched = null;
 
         var product = await CaptureSatelliteProducts.PredictAsync(fixture.Evidence, source, outputVariant,
             (recipe, request, token) =>
             {
+                Assert.AreEqual(cancellationToken, token, "Prediction must forward the caller's cancellation token.");
+                Assert.AreEqual(expected.InputArtifactId, request.InputArtifactId, "The request must pin the exact raw artifact.");
+                var dispatchedSource = Assert.ContainsSingle(request.Inputs);
+                Assert.AreEqual(descriptor.Timing.ExposureStartedUtc, dispatchedSource.ObservationStartedUtc,
+                    "Prediction must use the observed exposure start.");
+                Assert.AreEqual(descriptor.Timing.ExposureEndedUtc, dispatchedSource.ObservationEndedUtc,
+                    "Prediction must use the observed exposure end.");
                 dispatched = request;
                 return new ProcessingRecipeExecutor([recipe]).ExecuteAsync(request, token);
-            }, TestContext.CancellationToken).ConfigureAwait(false);
+            }, cancellationToken).ConfigureAwait(false);
 
         Assert.IsNotNull(dispatched);
-        Assert.AreEqual(expected.InputArtifactId, dispatched.InputArtifactId, "The request must pin the exact raw artifact.");
         Assert.IsTrue(JsonElement.DeepEquals(expected.Options, dispatched.Options));
         var actualSource = Assert.ContainsSingle(dispatched.Inputs);
         Assert.AreSame(source, actualSource);
@@ -92,10 +103,14 @@ public sealed class CaptureSatelliteBindingTests
         Assert.AreEqual(descriptor.Capture.CaptureSequence, actualSource.CaptureSequence);
         Assert.AreEqual(CaptureContractJson.ComputeDescriptorSha256(descriptor), actualSource.DescriptorIdentitySha256);
         Assert.AreEqual(descriptor.Artifact.CreatedUtc, actualSource.CreatedUtc);
-        Assert.AreEqual(descriptor.Timing.ExposureStartedUtc, actualSource.ObservationStartedUtc);
-        Assert.AreEqual(descriptor.Timing.ExposureEndedUtc, actualSource.ObservationEndedUtc);
         Assert.IsNotNull(product);
         Assert.AreEqual(descriptor.Artifact.ArtifactId, Assert.ContainsSingle(product.SourceArtifactIds));
+
+        var publicProduct = await CaptureSatelliteProducts.PredictAsync(fixture.Evidence, source, outputVariant,
+            cancellationToken).ConfigureAwait(false);
+        Assert.IsNotNull(publicProduct);
+        Assert.AreEqual(product.OutputIdentitySha256, publicProduct.OutputIdentitySha256);
+        Assert.AreEqual(product.ChecksumSha256, publicProduct.ChecksumSha256);
     }
 
     [TestMethod]

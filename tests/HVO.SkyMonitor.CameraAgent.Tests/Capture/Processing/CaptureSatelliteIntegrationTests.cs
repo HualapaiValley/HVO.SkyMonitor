@@ -71,6 +71,7 @@ public sealed partial class CaptureSatelliteIntegrationTests
                     Variant = receipt.Manifest.Descriptor.Artifact.Variant,
                     MediaType = receipt.Manifest.Descriptor.Artifact.MediaType,
                     CreatedUtc = receipt.Manifest.Descriptor.Artifact.CreatedUtc,
+                    Integration = receipt.Manifest.Descriptor.Controls.EffectiveExposure,
                     Layout = receipt.Manifest.Descriptor.Layout,
                     ObservationStartedUtc = receipt.Manifest.Descriptor.Timing.ExposureStartedUtc,
                     ObservationEndedUtc = receipt.Manifest.Descriptor.Timing.ExposureEndedUtc

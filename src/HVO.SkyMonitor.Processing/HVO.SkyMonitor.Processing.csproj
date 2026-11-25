@@ -4,7 +4,4 @@
     <ProjectReference Include="..\HVO.SkyMonitor.Astronomy\HVO.SkyMonitor.Astronomy.csproj" />
     <ProjectReference Include="..\HVO.SkyMonitor.Imaging\HVO.SkyMonitor.Imaging.csproj" />
   </ItemGroup>
-  <ItemGroup>
-    <InternalsVisibleTo Include="HVO.SkyMonitor.CameraAgent.Tests" />
-  </ItemGroup>
 </Project>
