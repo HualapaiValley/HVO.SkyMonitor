@@ -168,7 +168,7 @@ is_fast_doc_path() {
 # and blob identities. Changes disable the exemption until reviewed.
 audit_fast_inventory() {
   python3 -I - "$1" "${2:-}" <<'PY_AUDIT'
-import os, posixpath, re, subprocess, sys, xml.etree.ElementTree as ET
+import json, os, posixpath, re, subprocess, sys, xml.etree.ElementTree as ET
 
 commit = sys.argv[1]
 restore_source = sys.argv[2] == "restore-source"
@@ -180,6 +180,33 @@ def git(*args):
         return subprocess.run(["git", *args], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True).stdout
     except (OSError, subprocess.CalledProcessError):
         fail("Git could not read the committed input tree")
+
+def unique_object(pairs):
+    result = dict(pairs)
+    if len(result) != len(pairs):
+        fail("duplicate certificate or restore data keys")
+    return result
+
+def validate_global_json(raw):
+    if raw.startswith((b"\x00\x00\xfe\xff", b"\xff\xfe\x00\x00", b"\xff\xfe", b"\xfe\xff")) or b"\x00" in raw:
+        fail("global.json is not UTF-8")
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        fail("global.json is not UTF-8")
+    try:
+        settings = json.loads(text, object_pairs_hook=unique_object)
+    except ValueError:
+        fail("unknown SDK resolver configuration")
+    if type(settings) is not dict or set(settings) != {"sdk"}:
+        fail("unknown SDK resolver configuration")
+    version_pin = settings["sdk"]
+    if type(version_pin) is not dict or set(version_pin) != {"version", "rollForward", "allowPrerelease"}:
+        fail("unknown SDK resolver configuration")
+    version = version_pin["version"]
+    if (type(version) is not str or not re.fullmatch(r"10\.0\.[0-9]+", version) or
+            version_pin["rollForward"] != "disable" or version_pin["allowPrerelease"] is not False):
+        fail("SDK pin unavailable or unsupported")
 
 def read_xml(name):
     raw = git("cat-file", "blob", commit + ":" + name)
@@ -227,6 +254,12 @@ for name, (metadata, _) in entries.items():
     )):
         restore_inputs.add(name)
 
+if restore_source and "global.json" in entries:
+    global_meta, _ = entries["global.json"]
+    if not global_meta.startswith((b"100644 blob ", b"100755 blob ")):
+        fail("non-regular build input")
+    validate_global_json(git("cat-file", "blob", commit + ":global.json"))
+
 # Certify the exact solution the workflow restores and builds. Unknown solution
 # syntax or project paths cannot establish the exemption.
 solution = "HVO.SkyMonitor.v9.slnx"
@@ -235,6 +268,7 @@ if solution not in entries or not entries[solution][0].startswith(b"100644 blob 
 solution_root = read_xml(solution)
 if solution_root.tag != "Solution" or solution_root.attrib: fail("unknown solution format")
 projects = set()
+folders = set()
 def add_solution_project(node):
     if len(node) != 0:
         fail("unknown solution entry")
@@ -249,8 +283,17 @@ for child in solution_root:
     if child.tag == "Project":
         add_solution_project(child)
     elif child.tag == "Folder":
-        if set(child.attrib) != {"Name"} or not child.attrib["Name"].strip():
+        folder_name = child.attrib.get("Name", "")
+        segments = folder_name[1:-1].split("/") if len(folder_name) >= 3 else []
+        folder_key = folder_name.casefold()
+        if (set(child.attrib) != {"Name"} or len(folder_name) < 3 or
+                not folder_name.startswith("/") or not folder_name.endswith("/") or
+                any(c in folder_name for c in '\\:*?"<>|') or
+                any(ord(c) < 32 for c in folder_name) or
+                not all(segment.strip() and segment not in (".", "..") for segment in segments) or
+                folder_key in folders):
             fail("unknown solution entry")
+        folders.add(folder_key)
         for entry in child:
             if entry.tag != "Project":
                 fail("unknown solution entry")
@@ -759,7 +802,7 @@ if [[ "$event_name" == "--check-docs-inventory" ]]; then
             fi
           fi
         fi
-      elif [[ "$check_reason" == "unknown SDK resolver configuration" || "$check_reason" == "SDK pin unavailable or unsupported" ]]; then
+      elif [[ "$check_reason" == "unknown SDK resolver configuration" || "$check_reason" == "SDK pin unavailable or unsupported" || "$check_reason" == "global.json is not UTF-8" ]]; then
         check_kind="unsafe"
       fi
     elif ! cmp -s "$check_expected" "$check_actual"; then

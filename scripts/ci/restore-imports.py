@@ -80,8 +80,25 @@ GLOBAL_JSON_KEYS = {"sdk"}
 GLOBAL_JSON_SDK_KEYS = {"version", "rollForward", "allowPrerelease"}
 
 
+def decode_utf8_json(data, reason):
+    require(
+        isinstance(data, (bytes, bytearray)) and
+        not data.startswith((b"\x00\x00\xfe\xff", b"\xff\xfe\x00\x00", b"\xff\xfe", b"\xfe\xff")) and
+        b"\x00" not in data,
+        reason,
+    )
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError as error:
+        raise ProofError(reason) from error
+
+
 def read_sdk_pin(data):
-    settings = parse(data)
+    text = decode_utf8_json(data, "global.json is not UTF-8")
+    try:
+        settings = parse(text)
+    except ValueError as error:
+        raise ProofError("unknown SDK resolver configuration") from error
     require(type(settings) is dict and set(settings) == GLOBAL_JSON_KEYS, "unknown SDK resolver configuration")
     version_pin = settings["sdk"]
     require(type(version_pin) is dict and set(version_pin) == GLOBAL_JSON_SDK_KEYS,
@@ -103,6 +120,7 @@ def solution_projects(solution_blob):
     solution_root = ET.fromstring(solution_blob.decode("utf-8-sig"))
     require(solution_root.tag == "Solution" and not solution_root.attrib, "unknown solution format")
     expected_projects = set()
+    seen_folders = set()
 
     def add_project(node):
         require(len(node) == 0 and set(node.attrib) == {"Path"}, "unknown solution entry")
@@ -118,7 +136,21 @@ def solution_projects(solution_blob):
         if child.tag == "Project":
             add_project(child)
         elif child.tag == "Folder":
-            require(set(child.attrib) == {"Name"} and bool(child.attrib["Name"].strip()), "unknown solution entry")
+            folder_name = child.attrib.get("Name", "")
+            segments = folder_name[1:-1].split("/") if len(folder_name) >= 3 else []
+            folder_key = folder_name.casefold()
+            require(
+                set(child.attrib) == {"Name"} and
+                len(folder_name) >= 3 and
+                folder_name.startswith("/") and
+                folder_name.endswith("/") and
+                not any(c in folder_name for c in '\\:*?"<>|') and
+                all(ord(c) >= 32 for c in folder_name) and
+                all(segment.strip() and segment not in (".", "..") for segment in segments) and
+                folder_key not in seen_folders,
+                "unknown solution entry",
+            )
+            seen_folders.add(folder_key)
             for entry in child:
                 require(entry.tag == "Project", "unknown solution entry")
                 add_project(entry)
