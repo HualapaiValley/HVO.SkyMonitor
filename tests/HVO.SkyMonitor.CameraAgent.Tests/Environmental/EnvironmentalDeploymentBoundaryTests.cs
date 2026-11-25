@@ -285,11 +285,12 @@ public sealed class EnvironmentalDeploymentBoundaryTests
     }
 
     [TestMethod]
-    [DataRow(false, false, DisplayName = "Unexpected queued trigger failure after held settlement")]
-    [DataRow(true, false, DisplayName = "Queued journal failure with recovery confirmed by the settled slot")]
-    [DataRow(true, true, DisplayName = "Queued journal failure with recovery confirmed by the removed slot")]
+    [DataRow(false, false, false, DisplayName = "Unexpected queued trigger failure after held settlement")]
+    [DataRow(true, true, false, DisplayName = "Queued journal failure with recovery confirmed by the settled slot")]
+    [DataRow(true, true, true, DisplayName = "Queued journal failure with recovery confirmed by the removed slot")]
+    [DataRow(true, false, false, DisplayName = "Queued journal failure without a prior held-poll outage")]
     public async Task ProtectedLocationStartup_QueuedTriggerFailureDoesNotRepeatACommittedHeldPoll(
-        bool refuseQueuedAttempt, bool removeSettledSlot)
+        bool refuseQueuedAttempt, bool priorHeldPollOutage, bool removeSettledSlot)
     {
         var fixture = new Fixture(Epoch.AddSeconds(-1), Location(Epoch.AddDays(-1)), protectedStartup: true);
         await using var fixtureLifetime = fixture.ConfigureAwait(false);
@@ -297,7 +298,7 @@ public sealed class EnvironmentalDeploymentBoundaryTests
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         fixture.Publisher.BeforeHeldCommit = cancellationToken =>
         {
-            if (refuseQueuedAttempt && fixture.Publisher.HeldCommitAttempts == 1)
+            if (priorHeldPollOutage && fixture.Publisher.HeldCommitAttempts == 1)
                 return Task.CompletedTask;
             entered.TrySetResult();
             return release.Task.WaitAsync(cancellationToken);
@@ -305,9 +306,9 @@ public sealed class EnvironmentalDeploymentBoundaryTests
         await fixture.LoadProvisionalLocationAsync().ConfigureAwait(false);
         await fixture.StartAndFireFirstPollAsync().ConfigureAwait(false);
         await fixture.WaitForLocationHoldAsync().ConfigureAwait(false);
-        if (refuseQueuedAttempt) await fixture.RefuseAllAttemptsAsync().ConfigureAwait(false);
+        if (priorHeldPollOutage) await fixture.RefuseAllAttemptsAsync().ConfigureAwait(false);
         await fixture.ReconcileLocationAsync().ConfigureAwait(false);
-        if (refuseQueuedAttempt)
+        if (priorHeldPollOutage)
         {
             var retry = Epoch.AddSeconds(30);
             await fixture.Clock.WaitForTimerAsync(retry).WaitAsync(HarnessDeadline).ConfigureAwait(false);
@@ -331,27 +332,29 @@ public sealed class EnvironmentalDeploymentBoundaryTests
         }
 
         await fixture.Clock.WaitForTimerAsync(Epoch + StartupSourcePeriod).WaitAsync(HarnessDeadline).ConfigureAwait(false);
-        Assert.AreEqual(refuseQueuedAttempt ? 2 : 1, fixture.Publisher.HeldCommitAttempts);
+        Assert.AreEqual(priorHeldPollOutage ? 2 : 1, fixture.Publisher.HeldCommitAttempts);
         Assert.AreEqual(refuseQueuedAttempt ? 2L : 1L, (await fixture.ReadSnapshotAsync().ConfigureAwait(false)).StoredCount);
-        var periodic = (await fixture.ReadAttemptsAsync().ConfigureAwait(false))
-            .Single(static attempt => attempt.Trigger == EnvironmentalAcquisitionTrigger.Periodic);
+        var attempts = await fixture.ReadAttemptsAsync().ConfigureAwait(false);
+        Assert.HasCount(2, attempts);
+        var periodic = attempts.Single(static attempt => attempt.Trigger == EnvironmentalAcquisitionTrigger.Periodic);
         Assert.AreEqual(EnvironmentalAcquisitionDisposition.Produced, periodic.Disposition);
+        var capture = attempts.Single(static attempt => attempt.Trigger == EnvironmentalAcquisitionTrigger.AfterCapture);
+        Assert.AreEqual(EnvironmentalAcquisitionDisposition.Coalesced, capture.Disposition);
         Assert.AreEqual(removeSettledSlot ? null : new EnvironmentalLocationPollSlot(Epoch, true),
             await fixture.ReadLocationPollSlotAsync().ConfigureAwait(false));
+        AssertHeldPollJournalEvents(fixture, priorHeldPollOutage ? [2526, 2527] : []);
         var errors = fixture.Logger.Events.Where(static entry => entry.Level >= LogLevel.Warning).ToArray();
-        Assert.HasCount(refuseQueuedAttempt ? 2 : 1, errors);
+        Assert.HasCount(priorHeldPollOutage ? 2 : 1, errors);
         var queuedError = errors[^1];
         Assert.AreEqual(2522, queuedError.Id);
         StringAssert.Contains(queuedError.Message, "trigger AfterCapture", StringComparison.Ordinal);
         if (refuseQueuedAttempt)
         {
-            AssertHeldPollJournalEvents(fixture, 2526, 2527);
             Assert.IsInstanceOfType<SqliteException>(queuedError.Exception);
             StringAssert.Contains(queuedError.Message, "queued-trigger-journal-unavailable", StringComparison.Ordinal);
         }
         else
         {
-            AssertHeldPollJournalEvents(fixture);
             Assert.IsInstanceOfType<InvalidOperationException>(queuedError.Exception);
             StringAssert.Contains(queuedError.Message, "queued-trigger-unexpected", StringComparison.Ordinal);
         }

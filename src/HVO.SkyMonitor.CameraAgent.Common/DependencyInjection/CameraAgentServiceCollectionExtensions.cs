@@ -356,7 +356,8 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<ICameraAgentProcessingCompletion, CameraAgentProcessingCompletionReader>();
         services.AddSingleton<ICameraAgentCurrentImagePresentationService, CameraAgentCurrentImagePresentationService>();
         services.AddSingleton<ICameraAgentPreviewEncoder, CameraAgentPreviewEncoder>();
-        services.AddSingleton<ICameraAgentArtifactService, CameraAgentArtifactService>();
+        services.AddSingleton<CameraAgentArtifactService>();
+        services.AddSingleton<ICameraAgentArtifactService>(provider => provider.GetRequiredService<CameraAgentArtifactService>());
         services.AddSingleton<ICameraAgentLayeredPresentationService, CameraAgentLayeredPresentationService>();
         services.AddSingleton<SqliteCenteredViews>();
         services.AddSingleton<ICenteredViewReadIndex>(provider => provider.GetRequiredService<SqliteCenteredViews>());
@@ -373,7 +374,10 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddHostedService(provider => provider.GetRequiredService<CenteredViewWindowPublicationWorker>());
         services.AddSingleton<CenteredViewTrailPublication>();
         services.AddHostedService(provider => provider.GetRequiredService<CenteredViewTrailPublication>());
-        services.AddSingleton<ICameraAgentRetainedAstrometryService, CameraAgentRetainedAstrometryService>();
+        services.AddSingleton<ICameraAgentRetainedAstrometryService>(provider => new CameraAgentRetainedAstrometryService(
+            provider.GetRequiredService<SqliteCaptureProcessingStore>(),
+            provider.GetRequiredService<ICameraAgentArtifactService>(),
+            provider.GetRequiredService<CameraAgentArtifactService>().BeginRetainedHistoryRead));
         services.AddSingleton<CaptureProcessingPersistence>();
         services.AddExposureMeasurement();
         services.AddSingleton<SqliteNightlyProductStore>();

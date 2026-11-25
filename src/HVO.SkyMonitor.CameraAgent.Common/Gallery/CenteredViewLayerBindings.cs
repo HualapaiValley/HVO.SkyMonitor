@@ -23,14 +23,16 @@ internal static class CenteredViewLayerBindings
     private static readonly CenteredViewLayerBinding DeepSky = Reference("scene-deep-sky", 35, false);
     private static readonly CenteredViewLayerBinding CloudMask = Reference("cloud-mask", 30, false);
     private static readonly CenteredViewLayerBinding CloudLabel = Reference("cloud-label", 31, false);
+    private static readonly CenteredViewLayerBinding RegionalVisibility = Reference(RegionalStellarVisibilityProducts.LayerKind, 32, false);
     private static readonly CenteredViewLayerBinding Environment = Reference("environment", 50);
     private static readonly CenteredViewLayerBinding Residuals = Reference(AstrometricDiagnosticPresentation.ResidualsLayer, 412, false);
     private static readonly CenteredViewLayerBinding Satellites = new(CenteredViewLayerScope.Contributor, new("predicted-satellites", 400, false));
 
     internal static IReadOnlyList<CenteredViewLayerBinding> Known { get; } =
-        [Markers, Annotation, Cardinals, ImageCircle, Constellations, DeepSky, CloudMask, CloudLabel, Environment, Residuals, Satellites];
+        [Markers, Annotation, Cardinals, ImageCircle, Constellations, DeepSky, CloudMask, CloudLabel, RegionalVisibility, Environment, Residuals, Satellites];
 
     internal static bool SupportsSchema(string? schema) => schema is ExposureMeasurementProducts.SchemaVersion or
+        RegionalStellarVisibilityProducts.SchemaVersion or
         MeasuredAstrometrySolutionV1.CurrentSchemaVersion || PresentationLayerPayloadV1.SupportsSchema(schema);
 
     internal static string SourceSchema(string schema) => schema.StartsWith(DispositionPrefix, StringComparison.Ordinal)
@@ -39,6 +41,7 @@ internal static class CenteredViewLayerBindings
     internal static CenteredViewLayerBinding? ReadLegacySlot(ExposureProductSlot slot) => SourceSchema(slot.SchemaVersion) switch
     {
         ExposureMeasurementProducts.SchemaVersion when slot.Variant == ExposureMeasurementProducts.Variant => Markers,
+        RegionalStellarVisibilityProducts.SchemaVersion => RegionalVisibility,
         MeasuredAstrometrySolutionV1.CurrentSchemaVersion => Residuals,
         var schema when PresentationLayerPayloadV1.SupportsSchema(schema) => slot.Variant switch
         {
@@ -81,6 +84,7 @@ internal static class CenteredViewLayerBindings
         MeasuredAstrometryCaptureProcessingStep.Alias or ExposureAstrometryCaptureProcessingStep.CenteredAlias => [Residuals],
         "ScenePresentationLayer" or SceneStylePresentation.StepAlias => [Annotation, Cardinals, ImageCircle, Constellations, DeepSky],
         "CloudPresentationLayer" => [CloudMask, CloudLabel],
+        RegionalStellarVisibilityProducts.StepAlias => [RegionalVisibility],
         "EnvironmentPresentationLayer" or FrameFactsPresentation.StepAlias => [null, Environment],
         CaptureSatelliteLayerProcessingStep.Alias => [Satellites],
         _ => []

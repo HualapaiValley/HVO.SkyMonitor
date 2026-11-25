@@ -10,10 +10,13 @@ using HVO.SkyMonitor.CameraAgent.Data;
 using HVO.SkyMonitor.CameraAgent.Endpoints;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Fleet;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Modules.Zwo;
 using HVO.SkyMonitor.Common.Security;
 using HVO.SkyMonitor.Processing;
@@ -32,6 +35,281 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.RawIngress;
 
 public sealed partial class RawCaptureIngressTests
 {
+    [TestMethod]
+    public async Task CenteredScheduleRetiresOldExpansionsAndReopensAdmissionAndReplay()
+    {
+        var root = CreateRoot();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        var token = deadline.Token;
+        var start = Timestamp(8).AddMinutes(5);
+        var clock = new ExposureTestTimeProvider(start);
+        var config = CenteredContinuousConfiguration(start);
+        var schedule = config.Schedule!;
+        config = config with
+        {
+            Schedule = schedule with
+            {
+                WeeklyWindows = Enum.GetValues<DayOfWeek>().Select(day =>
+                    schedule.WeeklyWindows[0] with { Id = $"morning-{day}", Day = day }).ToArray()
+            }
+        };
+        try
+        {
+            CenteredRawEvidence original;
+            CaptureScheduleRuntimeSnapshot first;
+            CaptureScheduleRuntimeSnapshot? day40 = null;
+            CaptureScheduleRuntimeSnapshot previous;
+            CaptureScheduleRuntimeSnapshot latest;
+            long expansions;
+            using (var setup = new CenteredFixture(root, timeProvider: clock))
+            using (var telemetry = new CaptureControlTelemetry())
+            using (var admission = new CaptureAdmissionCoordinator(setup.Ingress, setup.Options, clock, telemetry))
+            using (var store = new SqliteCaptureScheduleStore(setup.Ingress, setup.Options, clock))
+            {
+                var lanes = new CaptureLaneState(clock, setup.Options);
+                lanes.Update([]);
+                using var runtime = new CaptureScheduleRuntimeCoordinator(store, admission, setup.RawState, lanes, setup.Factory, clock);
+                await setup.Ingress.InitializeAsync(token).ConfigureAwait(false);
+                await admission.InitializeAsync(token).ConfigureAwait(false);
+                first = await runtime.InitializeAsync(config, token).ConfigureAwait(false);
+                using var stop = CancellationTokenSource.CreateLinkedTokenSource(token);
+                var module = new CenteredRunnerModule((_, request, _) => Task.FromResult(CompleteScheduledCapture(clock, request)));
+                await using var moduleScope = module.ConfigureAwait(false);
+                var host = new CaptureHostContext(config, setup.Ingress, new CenteredTraceNotifier { Committed = stop.Cancel });
+                await new CameraModuleRunner(module, host, clock, NullLogger.Instance, admission,
+                    new AstronomyEnginePlanetEphemeris(), telemetry, scheduleRuntimeCoordinator: runtime)
+                    .RunAsync(stop.Token).WaitAsync(token).ConfigureAwait(false);
+                token.ThrowIfCancellationRequested();
+                var lane = setup.Policy.Definitions.Single(item => item.Name == "standard");
+                var work = await setup.Ingress.ClaimAsync(lane, "live", config, token).ConfigureAwait(false);
+                var raw = (await setup.Ingress.ReadCurrentAsync(new(config.AgentId!, config.CenteredExposure!.CameraId), token)
+                    .ConfigureAwait(false)).AcquisitionHead!.Exposure;
+                original = (await setup.Ingress.ReadCenteredRawAsync(raw, token).ConfigureAwait(false))!;
+                Assert.IsNotNull(work);
+                using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+                var persistence = new CaptureProcessingPersistence(setup.Options, setup.Store, storage, setup.Telemetry,
+                    NullLogger<CaptureProcessingPersistence>.Instance);
+                using var handler = new StandardCaptureLaneHandler(setup.Factory, persistence, setup.Telemetry,
+                    NullLogger<StandardCaptureLaneHandler>.Instance, setup.Ingress, setup.Options, timeProvider: clock);
+                var result = await handler.HandleAsync(work.Context, token).ConfigureAwait(false);
+                Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
+                await setup.Ingress.CompleteAsync(work, token).ConfigureAwait(false);
+
+                for (var day = 1; day <= 50; day++)
+                {
+                    clock.Advance(TimeSpan.FromDays(1));
+                    await runtime.GetOperatorStateAsync(token).ConfigureAwait(false);
+                    if (day is 10 or 25)
+                        await SwitchAsync(runtime, store, day).ConfigureAwait(false);
+                    if (day == 40)
+                        day40 = runtime.Snapshot;
+                    if (day is 10 or 25 or 40 or 50)
+                        _ = await ReadExpansionCountAsync(day).ConfigureAwait(false);
+                }
+                previous = runtime.Snapshot!;
+                await SwitchAsync(runtime, store, 50).ConfigureAwait(false);
+                latest = runtime.Snapshot!;
+                expansions = await ReadExpansionCountAsync(50).ConfigureAwait(false);
+                Assert.IsLessThanOrEqualTo(68L, expansions, "Keep at most 64 recent and four active or pending expansions.");
+                Assert.IsNull(await ReadAdmissionAsync(store, first, start).ConfigureAwait(false));
+                using var journal = await OpenJournalAsync(root).ConfigureAwait(false);
+                Assert.AreEqual(0L, await ScalarLongAsync(journal, "SELECT COUNT(*) FROM pragma_foreign_key_check;").ConfigureAwait(false));
+            }
+
+            using var reopened = new CenteredFixture(root, timeProvider: clock);
+            using var restartedTelemetry = new CaptureControlTelemetry();
+            using var restartedAdmission = new CaptureAdmissionCoordinator(reopened.Ingress, reopened.Options, clock, restartedTelemetry);
+            using var restartedStore = new SqliteCaptureScheduleStore(reopened.Ingress, reopened.Options, clock);
+            await restartedAdmission.InitializeAsync(token).ConfigureAwait(false);
+            var reopenedLanes = new CaptureLaneState(clock, reopened.Options);
+            reopenedLanes.Update([]);
+            using var restarted = new CaptureScheduleRuntimeCoordinator(restartedStore, restartedAdmission, reopened.RawState,
+                reopenedLanes, reopened.Factory, clock);
+            var current = await restarted.InitializeAsync(config, token).ConfigureAwait(false);
+            Assert.AreEqual(latest.Revision.RevisionId, current.Revision.RevisionId);
+            Assert.AreEqual(latest.AdmissionPolicy.ExpansionSha256, current.AdmissionPolicy.ExpansionSha256);
+            Assert.IsLessThanOrEqualTo(expansions, await ReadExpansionCountAsync(50).ConfigureAwait(false));
+            Assert.AreEqual(previous.AdmissionPolicy.ExpansionSha256,
+                (await ReadAdmissionAsync(restartedStore, previous, clock.GetUtcNow()).ConfigureAwait(false))?.ExpansionSha256);
+            Assert.IsNotNull(day40);
+            Assert.AreEqual(day40.AdmissionPolicy.ExpansionSha256,
+                (await ReadAdmissionAsync(restartedStore, day40, start.AddDays(40)).ConfigureAwait(false))?.ExpansionSha256);
+
+            var state = await restartedStore.GetSnapshotAsync(token).ConfigureAwait(false);
+            await restarted.RollbackAsync(previous.Revision.RevisionId, "rollback-recent", state.Version, "owner", null, token)
+                .ConfigureAwait(false);
+            var grant = await restarted.WaitForGrantAsync(token).ConfigureAwait(false);
+            Assert.AreEqual(previous.AdmissionPolicy.ExpansionSha256, grant.Evidence.ExpansionSha256);
+            Assert.AreEqual(previous.Revision.RevisionId, grant.Evidence.ScheduleRevisionId);
+
+            var historical = original.Manifest.Descriptor;
+            await reopened.GraphOperations.SubmitReplayAsync(
+                new(historical.Capture.CaptureId, original.Manifest.CaptureGraphRevisionId!, historical.Artifact.ArtifactId),
+                "retired-expansion-replay", "owner", token).ConfigureAwait(false);
+            var replay = await reopened.Store.ClaimReplayAsync("replay", token).ConfigureAwait(false);
+            Assert.IsNotNull(replay);
+            Assert.AreEqual(original.ManifestSha256, replay.RawCapture.CommittedManifestSha256);
+            var replayed = replay.RawCapture.Manifest.Descriptor.CenteredAcquisition!.ScheduleAdmission!;
+            Assert.AreEqual(historical.CenteredAcquisition!.ScheduleAdmission, replayed);
+            Assert.AreEqual(first.AdmissionPolicy.ExpansionSha256, replayed.ExpansionSha256);
+            using var replayStorage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            var replayPersistence = new CaptureProcessingPersistence(reopened.Options, reopened.Store, replayStorage,
+                reopened.Telemetry, NullLogger<CaptureProcessingPersistence>.Instance);
+            var execution = new ProcessingExecutionContext(replay.Execution.ExecutionId, ProcessingGraphExecutionClass.Replay,
+                replay.Execution.GraphRevisionId, replay.Execution.LocalPlanIdentitySha256, false, replay.WorkId,
+                replay.LeaseToken, replay.LeaseOwner, replay.Execution.DeadlineUtc);
+            var graph = reopened.Factory.CreateRetainedGraph(replay.Configuration);
+            try
+            {
+                var result = await FrameProcessingWorker.ProcessGraphItemAsync(
+                    new(replay.Configuration, replay.Submission, replay.RawCapture, replay.WorkId, replay.LeaseToken, execution),
+                    graph, replayPersistence, reopened.Telemetry, replay.Execution.AttemptCount, NullLogger.Instance, token,
+                    durableAttempt: replay.ClaimCount, timeProvider: clock).ConfigureAwait(false);
+                Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
+                var completed = await reopened.Store.CompleteReplayAsync(replay, result, token).ConfigureAwait(false);
+                Assert.AreEqual(ProcessingGraphExecutionStatus.Completed, completed.Status);
+            }
+            finally { graph.DisposeSteps(); }
+        }
+        finally { DeleteRoot(root); }
+
+        async Task SwitchAsync(CaptureScheduleRuntimeCoordinator runtime, SqliteCaptureScheduleStore store, int day)
+        {
+            var changed = config.Schedule! with
+            {
+                SetpointProfiles = [config.Schedule.SetpointProfiles[0] with { Gain = day }]
+            };
+            var state = await store.GetSnapshotAsync(token).ConfigureAwait(false);
+            var staged = await runtime.StageAsync(LocalCaptureProfileDefinition.CreateV2(config, changed),
+                $"stage-{day}", state.Version, "owner", null, token).ConfigureAwait(false);
+            await runtime.ActivateAsync(staged.PendingRevision!.RevisionId, $"activate-{day}", staged.Version, "owner", null, token)
+                .ConfigureAwait(false);
+        }
+
+        async Task<long> ReadExpansionCountAsync(int day)
+        {
+            using var journal = await OpenJournalAsync(root).ConfigureAwait(false);
+            var count = await ScalarLongAsync(journal, "SELECT COUNT(*) FROM capture_schedule_expansions;").ConfigureAwait(false);
+            var intervals = await ScalarLongAsync(journal, "SELECT COUNT(*) FROM capture_schedule_intervals;").ConfigureAwait(false);
+            var pages = await ScalarLongAsync(journal, "PRAGMA page_count;").ConfigureAwait(false);
+            var free = await ScalarLongAsync(journal, "PRAGMA freelist_count;").ConfigureAwait(false);
+            var pageSize = await ScalarLongAsync(journal, "PRAGMA page_size;").ConfigureAwait(false);
+            Console.WriteLine($"Day {day}: {count} expansions, {intervals} intervals, {(pages - free) * pageSize} bytes in live journal pages.");
+            return count;
+        }
+
+        Task<CaptureSchedulePreview?> ReadAdmissionAsync(SqliteCaptureScheduleStore store,
+            CaptureScheduleRuntimeSnapshot snapshot, DateTimeOffset utc)
+            => store.TryReadPreviewAsync(snapshot.Revision, snapshot.Location, utc,
+                CaptureScheduleIntervalExpander.AdmissionAlgorithmVersion, snapshot.AdmissionPolicy.PreviewStartUtc, token);
+    }
+
+    [TestMethod]
+    public async Task CenteredZwoOpaqueInputRecordsUnavailableMeteringAndKeepsRequestedControls()
+    {
+        var root = CreateRoot();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var stop = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
+        var token = deadline.Token;
+        try
+        {
+            var start = Timestamp(8).AddMinutes(5);
+            var clock = new ExposureTestTimeProvider(start);
+            var centered = CenteredContinuousConfiguration(start);
+            var zwo = ZwoAsiCameraModuleTests.CreateCenteredTransportTestConfig();
+            var config = zwo with
+            {
+                AgentId = centered.AgentId,
+                DeploymentLocation = centered.DeploymentLocation,
+                CenteredExposure = centered.CenteredExposure,
+                Schedule = centered.Schedule,
+                Pipeline = centered.Pipeline with { Steps = [] },
+                Rig = zwo.Rig with
+                {
+                    Pipeline = zwo.Rig.Pipeline with
+                    {
+                        Envelope = new(TimeSpan.FromMilliseconds(1), TimeSpan.FromSeconds(1), 0, 82,
+                            new(TimeSpan.FromMilliseconds(10), 5), new(TimeSpan.FromMilliseconds(100), 40), 0.65)
+                    },
+                    ControlPolicy = new()
+                    {
+                        ExposureControl = AutomaticControlOwnership.HostMetered,
+                        GainControl = AutomaticControlOwnership.HostMetered,
+                        Metering = new() { UseImageCircle = false }
+                    }
+                }
+            };
+            using var setup = new CenteredFixture(root, timeProvider: clock);
+            using var telemetry = new CaptureControlTelemetry();
+            using var admission = new CaptureAdmissionCoordinator(setup.Ingress, setup.Options, clock, telemetry);
+            using var store = new SqliteCaptureScheduleStore(setup.Ingress, setup.Options, clock);
+            var lanes = new CaptureLaneState(clock, setup.Options);
+            lanes.Update([]);
+            using var runtime = new CaptureScheduleRuntimeCoordinator(store, admission, setup.RawState, lanes, setup.Factory, clock);
+            await setup.Ingress.InitializeAsync(token).ConfigureAwait(false);
+            await admission.InitializeAsync(token).ConfigureAwait(false);
+            config = (await runtime.InitializeAsync(config, token).ConfigureAwait(false)).Configuration;
+
+            var camera = new CameraKey(config.AgentId!, config.CenteredExposure!.CameraId);
+            var owner = (await setup.Ingress.FenceCenteredOwnerAsync(camera.AgentId, camera.CameraId,
+                CaptureContractJson.ComputeCanonicalJsonSha256(config), token).ConfigureAwait(false))!;
+            var native = new ZwoAsiCameraModuleTests.FakeAsiNativeApi
+            {
+                ExposureStatuses = new([AsiExposureStatus.Idle, AsiExposureStatus.Idle, AsiExposureStatus.Success,
+                    AsiExposureStatus.Idle, AsiExposureStatus.Success]),
+                ExposureStatusObserved = () => clock.Advance(TimeSpan.FromMilliseconds(10))
+            };
+            var module = ZwoAsiCameraModuleTests.Module(native, clock);
+            await using var moduleScope = module.ConfigureAwait(false);
+            string? deviceIdentity = null;
+            await ((ICameraBoundExposureCapture)module).InitializeBoundAsync(config, async (verified, ct) =>
+            {
+                await setup.Ingress.FenceCenteredDeviceAsync(owner, verified, ct).ConfigureAwait(false);
+                deviceIdentity = verified;
+            }, token).ConfigureAwait(false);
+            await setup.Ingress.ActivateCenteredOwnerAsync(owner, token).ConfigureAwait(false);
+
+            var commits = 0;
+            var host = new CaptureHostContext(config, setup.Ingress, new CenteredTraceNotifier
+            {
+                Committed = () => { if (++commits == 2) stop.Cancel(); }
+            }, centeredDeviceIdentity: deviceIdentity, centeredOwner: owner);
+            await new CameraModuleRunner(module, host, clock, NullLogger.Instance, admission,
+                new AstronomyEnginePlanetEphemeris(), telemetry, scheduleRuntimeCoordinator: runtime)
+                .RunAsync(stop.Token).WaitAsync(token).ConfigureAwait(false);
+            token.ThrowIfCancellationRequested();
+            Assert.AreEqual(2, commits);
+            Assert.AreEqual(2, native.Calls.Count(call => call == "Set:Exposure:10000"));
+            Assert.AreEqual(2, native.Calls.Count(call => call == "Set:Gain:5"));
+
+            var head = (await setup.Ingress.ReadCurrentAsync(camera, token).ConfigureAwait(false)).AcquisitionHead!;
+            var raw = (await setup.Ingress.ReadCenteredRawAsync(head.Exposure, token).ConfigureAwait(false))!;
+            var layout = raw.Manifest.Descriptor.Layout;
+            Assert.AreEqual(FrameStoredCodeTransform.OpaqueContainerV1, layout.StoredCodeTransform);
+            Assert.AreEqual(65535d, layout.WhiteLevel);
+            Assert.IsFalse(FrameWhiteThreshold.TryResolveStored(layout, out _, out var reason));
+            Assert.AreEqual(FrameWhiteThreshold.OpaqueAdcReason, reason);
+            var requested = raw.Manifest.Descriptor.CenteredAcquisition!.Module!.RequestedSetpoint;
+            Assert.IsNotNull(requested);
+            Assert.AreEqual(new CaptureSetpoint(TimeSpan.FromMilliseconds(10), 5, null, 15), requested);
+            Assert.AreEqual(requested.Exposure, raw.Manifest.Descriptor.Controls.EffectiveExposure);
+            Assert.AreEqual(requested.Gain, raw.Manifest.Descriptor.Controls.EffectiveGain);
+
+            using var db = await OpenJournalAsync(root).ConfigureAwait(false);
+            using var check = db.CreateCommand();
+            check.CommandText = """
+                SELECT COUNT(*) FROM centered_exposure_attempts target
+                JOIN centered_exposure_attempts source ON source.run_id = target.run_id
+                  AND source.ordinal = 1 AND source.capture_id = target.source_capture_id
+                WHERE target.ordinal = 2 AND target.status = 'observed' AND target.reason = $reason
+                  AND target.metering_json IS NULL AND target.requested_json = source.requested_json;
+                """;
+            check.Parameters.AddWithValue("$reason", FrameWhiteThreshold.OpaqueAdcReason);
+            Assert.AreEqual(1L, await check.ExecuteScalarAsync(token).ConfigureAwait(false));
+        }
+        finally { DeleteRoot(root); }
+    }
+
     [TestMethod]
     [DataRow(false, false, false)]
     [DataRow(true, false, false)]

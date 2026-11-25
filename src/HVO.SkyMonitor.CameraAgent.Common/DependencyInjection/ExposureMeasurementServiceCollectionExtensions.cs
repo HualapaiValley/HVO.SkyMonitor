@@ -11,6 +11,8 @@ internal static class ExposureMeasurementServiceCollectionExtensions
         services.AddSingleton<ICenteredExposureGraphExtension, ExposureMeasurementGraphPlan>();
         services.AddSingleton<CaptureExposureMeasurementReader>();
         services.AddSingleton<IExposureMeasurementRunReader>(provider => provider.GetRequiredService<CaptureExposureMeasurementReader>());
+        services.AddSingleton<CaptureRegionalStellarVisibilityReader>();
+        services.AddSingleton<IRegionalStellarVisibilityRunReader>(provider => provider.GetRequiredService<CaptureRegionalStellarVisibilityReader>());
         services.AddSingleton(new CaptureProcessingStepRegistration(ProjectedSceneCaptureProcessingStep.ExposurePredictionAlias,
             typeof(ExposureCatalogPredictionCaptureProcessingStep), typeof(ProjectedSceneCaptureProcessingStepOptions),
             ExposureMeasurementGraphPlan.PredictionDefaultOrder, AutoInclude: false));
@@ -21,5 +23,7 @@ internal static class ExposureMeasurementServiceCollectionExtensions
             typeof(ExposureStellarAssociationCaptureProcessingStep), typeof(MeasuredStellarAssociationProcessingStepOptions), 16, AutoInclude: false));
         services.AddSingleton(new CaptureProcessingStepRegistration(ExposureAstrometryCaptureProcessingStep.CenteredAlias,
             typeof(ExposureAstrometryCaptureProcessingStep), typeof(MeasuredAstrometryCaptureOptions), 19, AutoInclude: false));
+        services.AddSingleton(new CaptureProcessingStepRegistration(RegionalStellarVisibilityProducts.StepAlias,
+            typeof(RegionalStellarVisibilityCaptureProcessingStep), typeof(RegionalStellarVisibilityProcessingStepOptions), 30, AutoInclude: false));
     }
 }

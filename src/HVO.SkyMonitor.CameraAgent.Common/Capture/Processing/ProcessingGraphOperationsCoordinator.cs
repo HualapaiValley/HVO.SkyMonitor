@@ -438,9 +438,9 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         var snapshot = CreateRevisionSnapshot(profile with { Pipeline = pipeline },
             ReferenceAstrometryPreset.GraphName, revision, _timeProvider.GetUtcNow());
         var committed = await _store.InsertReferenceAstrometryRevisionAsync(
-            snapshot, idempotencyKey, actor, reason, requestSha256, candidate =>
+            snapshot, idempotencyKey, actor, reason, requestSha256, (candidate, durableProfile) =>
             {
-                var current = _currentCaptureProfile?.Invoke() ?? profile;
+                var current = durableProfile?.ApplyTo(profile) ?? _currentCaptureProfile?.Invoke() ?? profile;
                 EnsureReferenceAstrometryPresetMode(current);
                 CaptureStoragePolicy.EnsureMatchesProfile(candidate.Pipeline, current.Pipeline);
                 if (current.Rig != profile.Rig)

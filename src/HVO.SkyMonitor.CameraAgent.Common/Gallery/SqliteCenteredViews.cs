@@ -99,6 +99,8 @@ internal sealed partial class SqliteCenteredViews(
     private static string Identity<T>(T value) => CaptureContractJson.ComputeCanonicalJsonSha256(
         JsonSerializer.SerializeToElement(value, JsonOptions));
 
+    internal static string ExposureIdentity(ExposureKey exposure) => Identity(exposure);
+
     private static string StreamId(CenteredViewStream stream)
     {
         ArgumentNullException.ThrowIfNull(stream);

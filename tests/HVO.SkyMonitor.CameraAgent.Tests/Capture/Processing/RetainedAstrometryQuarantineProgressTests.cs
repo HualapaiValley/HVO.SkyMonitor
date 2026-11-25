@@ -103,7 +103,7 @@ public sealed partial class DurableCaptureProcessingTests
                     return result;
                 });
 
-            using var service = new CameraAgentRetainedAstrometryService(store, delayed.Object);
+            using var service = CreateUnpooledAstrometryReader(store, delayed.Object);
             ICameraAgentRetainedAstrometryService reader = service;
             var attempts = new[]
             {

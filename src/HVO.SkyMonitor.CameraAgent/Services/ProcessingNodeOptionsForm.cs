@@ -64,6 +64,7 @@ public sealed class ProcessingNodeOptionsForm
             "VIRTUALSKYCLOUDOBSERVATION" => CaptureScalarOptionDescriptors.VirtualSkyCloudObservation.StepVersion,
             "WEATHERCLOUDOVERLAY" => WeatherCloudOverlayOptionDescriptors.Descriptor.StepVersion,
             "CLOUDASSESSMENT" => CloudAssessmentOptionDescriptors.Descriptor.StepVersion,
+            "REGIONALSTELLARVISIBILITY" => RegionalStellarVisibilityOptionDescriptors.Descriptor.StepVersion,
             "CALIBRATION" => CalibrationOptionDescriptors.Normalization.StepVersion,
             "PROJECTEDSCENE" => "canonical-projected-scene-v1",
             "ASTROMETRYPREDICTION" => CaptureAnalysisOptionDescriptors.Prediction.StepVersion,

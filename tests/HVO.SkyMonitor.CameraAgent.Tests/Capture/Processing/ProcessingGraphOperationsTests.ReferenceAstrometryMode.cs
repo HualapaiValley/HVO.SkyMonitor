@@ -17,7 +17,9 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 public sealed partial class ProcessingGraphOperationsTests
 {
     [TestMethod]
-    public async Task ReferenceAstrometryEndpointPreservesLegacyReceiptsAndRefusesCenteredCreates()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task ReferenceAstrometryEndpointPreservesLegacyReceiptsAndRefusesCenteredCreates(bool beforeSnapshotReplacement)
     {
         const string actor = "owner";
         const string reason = "reference preset mode transition";
@@ -123,17 +125,35 @@ public sealed partial class ProcessingGraphOperationsTests
                 var scheduleState = await schedule.GetOperatorStateAsync(token).ConfigureAwait(false);
                 var staged = await schedule.StageAsync(profile, "stage-centered", scheduleState.StateVersion, actor, reason, token)
                     .ConfigureAwait(false);
-                await schedule.ActivateAsync(staged.PendingRevision!.RevisionId, "activate-centered", staged.Version,
-                    actor, reason, token).ConfigureAwait(false);
+                var target = staged.PendingRevision!;
+                var commandCount = CountRows(root, "processing_graph_commands");
+                if (beforeSnapshotReplacement)
+                {
+                    var scheduleStore = provider.GetRequiredService<SqliteCaptureScheduleStore>();
+                    var prepared = await schedule.PrepareStartupAsync(target, profile.ApplyTo(legacy), token)
+                        .ConfigureAwait(false);
+                    await schedule.CommitPreparedStartupAsync(prepared, async boundaryToken =>
+                    {
+                        await scheduleStore.ActivateAsync(target.RevisionId, "activate-centered", staged.Version,
+                            actor, reason, boundaryToken).ConfigureAwait(false);
+                        var durable = await scheduleStore.GetSnapshotAsync(boundaryToken).ConfigureAwait(false);
+                        Assert.AreEqual(target.RevisionId, durable.ActiveRevision.RevisionId);
+                        Assert.IsNotNull(durable.ActiveRevision.Profile.CenteredExposure);
+                        Assert.IsNull(schedule.Snapshot!.Configuration.CenteredExposure);
+
+                        await RefusePendingPresetAsync().ConfigureAwait(false);
+                        Assert.AreEqual(created, await CreatePresetAsync(legacyBasis, issuedKey).ConfigureAwait(false));
+                    }, token).ConfigureAwait(false);
+                }
+                else
+                {
+                    await schedule.ActivateAsync(target.RevisionId, "activate-centered", staged.Version,
+                        actor, reason, token).ConfigureAwait(false);
+                    await RefusePendingPresetAsync().ConfigureAwait(false);
+                }
                 var centered = schedule.Snapshot!.Configuration;
                 Assert.IsNotNull(centered.CenteredExposure);
                 Assert.AreEqual(CameraPixelFormat.Mono16, centered.Rig.Readout?.PixelFormat);
-                var commandCount = CountRows(root, "processing_graph_commands");
-
-                // Only the active schedule has changed. The configured-basic graph has not been refreshed.
-                allowRead.SetResult();
-                AssertIncompatible(await pending.ConfigureAwait(false));
-                Assert.IsNull(await ReadReceiptAsync(legacyBasis, pendingKey).ConfigureAwait(false));
                 Assert.AreEqual(commandCount, CountRows(root, "processing_graph_commands"));
                 Assert.HasCount(active.Revisions.Count,
                     (await store.ReadRegistryAsync(token).ConfigureAwait(false)).Revisions);
@@ -152,6 +172,19 @@ public sealed partial class ProcessingGraphOperationsTests
                 Assert.AreEqual(centeredRegistry.StateVersion, after.StateVersion);
                 Assert.AreEqual(centeredRegistry.ActiveRevisionId, after.ActiveRevisionId);
                 Assert.HasCount(centeredRegistry.Revisions.Count, after.Revisions);
+
+                var activeSchedule = await schedule.GetOperatorStateAsync(token).ConfigureAwait(false);
+                await schedule.RollbackAsync(scheduleState.ActiveRevision.RevisionId, "rollback-to-legacy",
+                    activeSchedule.StateVersion, actor, reason, token).ConfigureAwait(false);
+                var legacyAgain = await CreatePresetAsync(legacyBasis, "legacy-after-rollback").ConfigureAwait(false);
+                Assert.AreEqual(StatusCodes.Status200OK, legacyAgain.Status, legacyAgain.Body);
+
+                async Task RefusePendingPresetAsync()
+                {
+                    allowRead.SetResult();
+                    AssertIncompatible(await pending.ConfigureAwait(false));
+                    Assert.IsNull(await ReadReceiptAsync(legacyBasis, pendingKey).ConfigureAwait(false));
+                }
             }
             finally
             {

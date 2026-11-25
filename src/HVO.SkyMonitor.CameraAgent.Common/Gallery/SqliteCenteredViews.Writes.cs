@@ -50,7 +50,7 @@ internal sealed partial class SqliteCenteredViews
             await ExecuteAsync(connection, transaction, """
                 INSERT INTO processing_centered_view_members (exposure_id, registered_order, base_id)
                 VALUES ($exposure, $order, $base);
-                """, cancellationToken, ("$exposure", Identity(member.Exposure.Input.Key)), ("$order", revision.Order),
+                """, cancellationToken, ("$exposure", ExposureIdentity(member.Exposure.Input.Key)), ("$order", revision.Order),
                 ("$base", baseId)).ConfigureAwait(false);
         }
         cancellationToken.ThrowIfCancellationRequested();

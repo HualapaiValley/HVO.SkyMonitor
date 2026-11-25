@@ -8,7 +8,11 @@ using System.Xml.Linq;
 /// <summary>Checks input completeness against build metadata rather than other coverage inputs.</summary>
 internal static class UnitCoverageInputs
 {
-    internal static void Validate(string repositoryRoot, string resultsDirectory, string[] reports, IEnumerable<string> floorPaths)
+    private const string CameraAgent = "HVO.SkyMonitor.CameraAgent.Tests";
+    private const string FirstShard = "cameraagent-shard-1";
+    private const string SecondShard = "cameraagent-shard-2";
+
+    internal static void Validate(string repositoryRoot, string resultsDirectory, string[] reports, IEnumerable<string> floorPaths, bool sharded, bool skipDeploymentCli)
     {
         ValidateCollectorSettings(repositoryRoot);
         var floors = floorPaths.ToHashSet(StringComparer.Ordinal);
@@ -34,9 +38,25 @@ internal static class UnitCoverageInputs
                 throw new InvalidDataException($"TRX '{trx}' must identify one existing test assembly from this build.");
             }
 
-            var project = Path.GetFileNameWithoutExtension(codeBases[0]);
-            var expectedTestAssembly = Path.Combine(repositoryRoot, "tests", project, "bin", "Release", "net10.0", project + ".dll");
-            if (!Path.GetFullPath(codeBases[0]).Equals(expectedTestAssembly, StringComparison.Ordinal) || !seenProjects.Add(project))
+            var testAssembly = Path.GetFullPath(codeBases[0]);
+            var project = Path.GetFileNameWithoutExtension(testAssembly);
+            var releaseDirectory = Path.Combine(repositoryRoot, "tests", project, "bin", "Release");
+            var expectedTestAssembly = Path.Combine(releaseDirectory, "net10.0", project + ".dll");
+            var identity = project;
+            var expectedAssembly = testAssembly.Equals(expectedTestAssembly, StringComparison.Ordinal);
+            if (sharded && project == CameraAgent)
+            {
+                identity = Path.GetFileNameWithoutExtension(trx);
+                var shardDirectory = Path.GetDirectoryName(testAssembly)!;
+                var isolatedDirectory = Path.GetDirectoryName(shardDirectory)!;
+                expectedAssembly = identity is FirstShard or SecondShard &&
+                    Path.GetFileName(shardDirectory).Equals(identity, StringComparison.Ordinal) &&
+                    Path.GetFileName(isolatedDirectory).StartsWith("dev-v1-shards.", StringComparison.Ordinal) &&
+                    Path.GetDirectoryName(isolatedDirectory) == releaseDirectory &&
+                    Hash(testAssembly) == Hash(expectedTestAssembly);
+            }
+
+            if (!expectedAssembly || !seenProjects.Add(identity))
             {
                 throw new InvalidDataException($"Unexpected or repeated Unit project '{project}' in '{trx}'.");
             }
@@ -106,7 +126,18 @@ internal static class UnitCoverageInputs
         }
 
         var expectedProjects = unitProjects
+            .Where(project => !skipDeploymentCli || !string.Equals(project, "HVO.SkyMonitor.Deployment.Cli.Tests", StringComparison.Ordinal))
             .ToHashSet(StringComparer.Ordinal);
+        if (sharded)
+        {
+            if (!expectedProjects.Remove(CameraAgent))
+            {
+                throw new InvalidDataException("CameraAgent.Tests is missing from the Unit project inventory.");
+            }
+
+            expectedProjects.UnionWith([FirstShard, SecondShard]);
+        }
+
         if (!seenProjects.SetEquals(expectedProjects) || reportsByHash.Values.Any(static queue => queue.Count > 0))
         {
             throw new InvalidDataException($"Unit coverage/TRX inventory differs from the selected Unit-bearing project set; missing: {string.Join(", ", expectedProjects.Except(seenProjects))}; unexpected: {string.Join(", ", seenProjects.Except(expectedProjects))}.");

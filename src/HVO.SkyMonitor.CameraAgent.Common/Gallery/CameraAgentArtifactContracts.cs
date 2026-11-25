@@ -55,6 +55,11 @@ public interface ICameraAgentArtifactService
         Guid? displayReference = null);
 }
 
+internal interface IRetainedHistoryArtifactRead : IDisposable
+{
+    ValueTask<CameraAgentArtifactContentResult> OpenContentAsync(Guid artifactId, CancellationToken cancellationToken);
+}
+
 public sealed class CameraAgentArtifactContentStream : Stream
 {
     private readonly Stream _stream;
