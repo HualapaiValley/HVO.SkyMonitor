@@ -210,6 +210,231 @@ public sealed partial class CurrentSkyPageTests
     }
 
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task SustainedMismatchShowsRetainedAssessmentButKeepsMeasuredToolsDisabled(bool assessmentInLayers)
+    {
+        const string withheldReason = "Withheld because the preview and retained layer geometry differ.";
+        const string unavailableReason = "Compatible measured diagnostics are temporarily unavailable.";
+        var fit = await AstrometryEvidenceAsync().ConfigureAwait(false);
+        var image = WithStructuredBase();
+        var exposureStart = fit.Solution!.Assessment.Frame.ExposureStartUtc;
+        var firstCapture = image.DisplayCapture! with
+        {
+            CaptureId = Guid.NewGuid(),
+            ExposureStartedUtc = exposureStart.AddMinutes(-1)
+        };
+        var first = View(image with { DisplayCapture = firstCapture, LatestCapture = firstCapture });
+        var selected = firstCapture with
+        {
+            CaptureId = fit.CaptureId,
+            CaptureSequence = firstCapture.CaptureSequence + 1,
+            ExposureStartedUtc = exposureStart
+        };
+        var retainedLayers = Layered(fit.CaptureId, new string('D', 64), Guid.NewGuid());
+        fit = fit with
+        {
+            CompatibleBaseArtifactId = retainedLayers.BaseArtifactId,
+            DiagnosticsReason = "Compatible retained measured diagnostics."
+        };
+        var measuredLayers = retainedLayers with
+        {
+            Astrometry = fit,
+            Layers = [.. retainedLayers.Layers,
+                new(new string('E', 64), AstrometricDiagnosticPresentation.AssociationsLayer, "measured-associations", 600, false, 1_000_000, "v1", "v1"),
+                new(new string('F', 64), AstrometricDiagnosticPresentation.ResidualsLayer, "measured-residuals", 610, false, 1_000_000, "v1", "v1")]
+        };
+        var baseSlot = image.Stages.Single(slot => slot.Stage == CameraAgentPresentationStage.Combined) with
+        {
+            DisplayArtifactId = retainedLayers.BaseArtifactId,
+            DisplayReferenceId = retainedLayers.BaseArtifactId,
+            PreviewUrl = new($"/api/v1/operations/artifacts/{retainedLayers.BaseArtifactId:D}/preview", UriKind.Relative),
+            PreviewWidth = retainedLayers.WidthPixels,
+            PreviewHeight = retainedLayers.HeightPixels
+        };
+        // The artifact identity matches the accepted mapping. The preview dimensions alone disqualify its geometry.
+        var fallback = SelectedView(baseSlot with { PreviewWidth = baseSlot.PreviewWidth / 2, PreviewHeight = baseSlot.PreviewHeight / 2 });
+        var summary = CameraAgentLatestAstrometry.FromVerified(fit)!;
+        if (assessmentInLayers)
+        {
+            summary = summary with
+            {
+                CaptureId = firstCapture.CaptureId,
+                ArtifactId = Guid.NewGuid(),
+                SolutionIdentitySha256 = new string('A', 64),
+                MidpointUtc = summary.MidpointUtc.AddMinutes(-1)
+            };
+        }
+
+        using var context = new BunitContext();
+        var (service, clock) = ConfigurePolling(context);
+        var current = first;
+        var selectedLayerRead = OperatorUiResult<CameraAgentLayeredPresentation>.Success(assessmentInLayers ? measuredLayers : retainedLayers);
+        var standaloneReads = 0;
+        service.CurrentSkyHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(current));
+        service.PresentationHandler = (id, _) => ValueTask.FromResult(id == selected.CaptureId
+            ? selectedLayerRead
+            : OperatorUiResult<CameraAgentLayeredPresentation>.Success(Layered(id, new string('D', 64))));
+        service.AstrometryHandler = (id, _) =>
+        {
+            if (id != selected.CaptureId)
+                return ValueTask.FromResult(OperatorUiResult<CameraAgentRetainedAstrometry>.Success(new(id, "NotRetained", "assessment-not-retained")));
+            Interlocked.Increment(ref standaloneReads);
+            return ValueTask.FromResult(OperatorUiResult<CameraAgentRetainedAstrometry>.Success(fit));
+        };
+        service.LatestAstrometryHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(new(true, summary)));
+
+        var page = context.Render<CurrentSkyPage>();
+        WaitForFirst(page, clock, first);
+        page.WaitForElement(".sky-layer-canvas--verified");
+        current = fallback;
+        await page.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        Assert.AreEqual(CaptureLink(first), page.Find(".layers-link").GetAttribute("href"));
+        Assert.AreEqual(0, standaloneReads);
+
+        await page.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        page.WaitForAssertion(AssertStandardPreview);
+        page.WaitForAssertion(AssertSelectedAssessmentAndHeadline);
+        Assert.AreEqual(assessmentInLayers ? 0 : 1, standaloneReads);
+
+        selectedLayerRead = OperatorUiResult<CameraAgentLayeredPresentation>.Failure(OperatorUiResultKind.Unavailable, "Layers temporarily unavailable.");
+        await page.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        AssertStandardPreview();
+        AssertSelectedAssessmentAndHeadline();
+        Assert.AreEqual(assessmentInLayers ? 0 : 1, standaloneReads);
+
+        selectedLayerRead = OperatorUiResult<CameraAgentLayeredPresentation>.Success(retainedLayers with
+        {
+            Astrometry = new(selected.CaptureId, "Unavailable", "read-capacity")
+        });
+        await page.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        AssertStandardPreview();
+        AssertSelectedAssessmentAndHeadline();
+        Assert.AreEqual(assessmentInLayers ? 0 : 1, standaloneReads);
+
+        current = SelectedView(baseSlot);
+        selectedLayerRead = OperatorUiResult<CameraAgentLayeredPresentation>.Success(measuredLayers);
+        await page.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        page.WaitForAssertion(() =>
+        {
+            Assert.AreEqual(CaptureLink(fallback), page.Find(".layers-link").GetAttribute("href"));
+            Assert.HasCount(1, page.FindAll(".sky-layer-canvas--verified"));
+            Assert.HasCount(2, page.FindAll(".pixel-sky-calculator button:not([disabled])"));
+            Assert.IsFalse(page.Find("input[data-layer-target='measured-associations']").HasAttribute("disabled"));
+            Assert.IsFalse(page.Find("input[data-layer-target='measured-residuals']").HasAttribute("disabled"));
+            AssertSelectedAssessmentAndHeadline();
+        });
+
+        selectedLayerRead = OperatorUiResult<CameraAgentLayeredPresentation>.Success(retainedLayers with
+        {
+            Astrometry = fit with { CompatibleBaseArtifactId = null, DiagnosticsReason = unavailableReason }
+        });
+        await page.Find("button.refresh-measured-evidence").ClickAsync().ConfigureAwait(false);
+        page.WaitForAssertion(() => AssertMeasuredPlaceholderReasons(unavailableReason));
+
+        CameraAgentCurrentSkyView SelectedView(CameraAgentPresentationSlot combined) => View(image with
+        {
+            DisplayCapture = selected,
+            LatestCapture = selected,
+            Stages = image.Stages.Select(slot => slot.Stage == combined.Stage ? combined : slot).ToArray()
+        });
+
+        void AssertStandardPreview()
+        {
+            Assert.AreEqual(CaptureLink(fallback), page.Find(".layers-link").GetAttribute("href"));
+            Assert.AreEqual(baseSlot.PreviewUrl!.OriginalString, page.Find(".capture-image img").GetAttribute("src"));
+            StringAssert.Contains(page.Find(".sky-layer-unavailable").TextContent, "manifest base does not match", StringComparison.Ordinal);
+            Assert.IsEmpty(page.FindAll(".sky-layer-workspace, input[data-layer-target='measured-associations'], input[data-layer-target='measured-residuals']"));
+            Assert.HasCount(2, page.FindAll(".pixel-sky-calculator button[disabled]"));
+            AssertMeasuredPlaceholderReasons(withheldReason);
+        }
+
+        void AssertMeasuredPlaceholderReasons(string reason)
+        {
+            var labels = page.FindAll(".overlay-group label");
+            foreach (var name in new[] { "Measured stellar associations", "Astrometric residuals" })
+            {
+                var placeholder = labels.Single(label => label.QuerySelector("strong")?.TextContent == name);
+                Assert.IsTrue(placeholder.QuerySelector("input")!.HasAttribute("disabled"));
+                Assert.AreEqual(reason, placeholder.QuerySelector("small")!.TextContent);
+            }
+        }
+
+        void AssertSelectedAssessmentAndHeadline()
+        {
+            Assert.AreEqual("Accepted", page.Find(".astrometry-card .state-chip").TextContent);
+            StringAssert.Contains(page.Find(".astrometry-reason").TextContent, fit.Solution!.Assessment.ReasonCode, StringComparison.Ordinal);
+            StringAssert.Contains(page.Find(".astrometry-provenance").TextContent, $"{fit.CaptureId:D}", StringComparison.Ordinal);
+            var headline = page.Find(".latest-measured-solution");
+            StringAssert.Contains(headline.TextContent, assessmentInLayers ? "For a different capture." : "For the selected capture.", StringComparison.Ordinal);
+            Assert.AreEqual($"/gallery/{summary.CaptureId:D}", headline.QuerySelector("a")!.GetAttribute("href"));
+            Assert.AreEqual(summary.MidpointUtc.ToString("O"), headline.QuerySelector("time")!.GetAttribute("datetime"));
+        }
+    }
+
+    [TestMethod]
+    public async Task SustainedMismatchUsesLayerAssessmentAbsenceWithoutStandaloneReads()
+    {
+        using var context = new BunitContext();
+        var (service, clock) = ConfigurePolling(context);
+        var first = View(WithStructuredBase());
+        var next = Next(first, SecondCaptureId, first.Presentation.DisplayCapture!.CaptureSequence + 1);
+        var current = first;
+        var mismatchedBase = Guid.NewGuid();
+        var layerReads = 0;
+        var standaloneReads = 0;
+        var pending = new TaskCompletionSource<OperatorUiResult<CameraAgentRetainedAstrometry>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        service.CurrentSkyHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(current));
+        service.PresentationHandler = (id, _) =>
+        {
+            if (id == SecondCaptureId) Interlocked.Increment(ref layerReads);
+            return ValueTask.FromResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(
+                Layered(id, new string('D', 64), id == SecondCaptureId ? mismatchedBase : null) with
+                {
+                    Astrometry = new(id, "NotRetained", "assessment-not-retained")
+                }));
+        };
+        service.AstrometryHandler = (_, _) =>
+        {
+            Interlocked.Increment(ref standaloneReads);
+            return new(pending.Task);
+        };
+
+        var page = context.Render<CurrentSkyPage>();
+        WaitForFirst(page, clock, first);
+        current = next;
+        try
+        {
+            await page.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+            Assert.AreEqual(CaptureLink(first), page.Find(".layers-link").GetAttribute("href"));
+            await page.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+            Assert.AreEqual(CaptureLink(next), page.Find(".layers-link").GetAttribute("href"));
+            StringAssert.Contains(page.Find(".sky-layer-unavailable").TextContent, "manifest base does not match", StringComparison.Ordinal);
+            AssertStableAbsence();
+
+            for (var refresh = 0; refresh < 2; refresh++)
+            {
+                await page.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+                AssertStableAbsence();
+            }
+            Assert.AreEqual(4, layerReads);
+        }
+        finally
+        {
+            pending.TrySetResult(OperatorUiResult<CameraAgentRetainedAstrometry>.Success(new(SecondCaptureId, "NotRetained", "assessment-not-retained")));
+        }
+
+        void AssertStableAbsence()
+        {
+            var card = page.Find(".astrometry-card");
+            Assert.AreEqual("Unavailable", card.QuerySelector(".state-chip")!.TextContent);
+            Assert.AreEqual("false", card.GetAttribute("aria-busy"));
+            Assert.AreEqual("No astrometric assessment was retained for this capture.", card.QuerySelector(".astrometry-reason")!.TextContent);
+            Assert.AreEqual(0, standaloneReads);
+        }
+    }
+
+    [TestMethod]
     [DataRow("different-base")]
     [DataRow("ambiguous-derivative")]
     [DataRow("sustained-mismatch")]

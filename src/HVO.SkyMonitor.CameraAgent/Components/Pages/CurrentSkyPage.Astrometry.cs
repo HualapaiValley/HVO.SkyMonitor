@@ -298,7 +298,10 @@ public sealed partial class CurrentSkyPage
         AstrometricAssessmentStatus.BudgetExceeded => "warning",
         _ => "pending"
     };
-    private bool CanCalculate => !_accessDenied && _astrometry?.Mapping is not null &&
+    private string MeasuredDiagnosticsReason => _showingBaseOnlyForMismatch
+        ? "Withheld because the preview and retained layer geometry differ."
+        : _astrometry?.DiagnosticsReason ?? "No compatible accepted result retained";
+    private bool CanCalculate => !_accessDenied && !_showingBaseOnlyForMismatch && _astrometry?.Mapping is not null &&
         _astrometry.Solution?.Assessment.HasMeasuredMapping == true && _astrometry.CaptureId == _runCaptureId && DisplaySlot is { } slot &&
         (slot.ArtifactId == _astrometry.Solution?.Assessment.Frame.SourceArtifactId ||
          _astrometry.CompatibleBaseArtifactId is { } baseId && (slot.DisplayArtifactId == baseId || slot.ArtifactId == baseId));
