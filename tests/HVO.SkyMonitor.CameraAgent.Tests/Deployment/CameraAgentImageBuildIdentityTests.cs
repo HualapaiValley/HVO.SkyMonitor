@@ -7,6 +7,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Deployment;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Deployment")]
 public sealed class CameraAgentImageBuildIdentityTests
 {
     // A build given a version passes it as -p:Version, which Directory.Build.targets checks against the product version

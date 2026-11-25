@@ -14,6 +14,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Silo;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Silo")]
 public sealed class SiloFormatTests
 {
     private const string FixtureDirectory = "silo-catalog-v1";

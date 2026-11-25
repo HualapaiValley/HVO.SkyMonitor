@@ -5,6 +5,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Orbital;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Orbital")]
 public sealed class CelesTrakGpSourceTests
 {
     [TestMethod]

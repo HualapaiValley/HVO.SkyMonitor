@@ -8,6 +8,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.TimeSync;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "TimeSync")]
 public sealed class SntpClientTests
 {
     private static readonly DateTimeOffset Now = new(2026, 9, 30, 12, 0, 0, TimeSpan.Zero);
@@ -236,6 +237,7 @@ public sealed class SntpClientTests
 
 [TestClass]
 [TestCategory("Performance")]
+[TestProperty("Area", "TimeSync")]
 [DoNotParallelize]
 public sealed class SntpClientPerformanceTests
 {

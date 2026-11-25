@@ -3,8 +3,7 @@ using Microsoft.AspNetCore.Identity;
 namespace HVO.SkyMonitor.CameraAgent.Data;
 
 /// <summary>
-/// Camera agent identity user. Simplified compared to LogicHost but keeps
-/// room for future expansion (MFA, passkeys, etc.).
+/// The local CameraAgent identity user.
 /// </summary>
 public sealed class ApplicationUser : IdentityUser
 {

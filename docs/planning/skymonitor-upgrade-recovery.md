@@ -6,6 +6,9 @@ The [install contract section 6](../hvo-install-contract.md#skymonitor-approved-
 owns approved target behavior. This map identifies delivered inputs and remaining
 work; it implements no runtime backend, on-disk migration or new command.
 
+> The retired LogicHost recovery inputs and #1608 study guidance remain in the
+> [pre-retirement implementation map](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/66e6aa237b40c70342815af6e2511122daa56bb6/docs/planning/skymonitor-upgrade-recovery.md).
+
 ## Current cost decision and study history
 
 **#1615 reassessment (2026-10-23): simplify the pending-upgrade protocol on
@@ -16,15 +19,14 @@ comparison and a named completed-PR/job/step/local-ledger sample. It charges the
 inventory/fence/reference/pairing gaps to every option, attributes old-reader
 and post-commit-toggle removal to policy, and keeps the snapshot alternative
 reversible on explicit complexity/pause evidence. This is the current
-implementation direction; the #1607/#1608 studies below retain their historical
-evidence and limits. It authorizes no backend rollout or current gate reduction.
+implementation direction for CameraAgent. The #1607 study below retains its
+original evidence and limits. It authorizes no backend rollout or current gate
+reduction.
 
 The smallest next CameraAgent slice seals the complete recovery inventory and
 predecessor identities so restore never rediscovers roots through candidate
 schema. The pending checkpoint/receipt, all-writer fence and durable
-protected/unprotected transaction still require acceptance. LogicHost retains COPY_ONLY plus coherent
-object/config recovery as its implementation starting point; no delivered
-central upgrade runtime or measured whole-application saving is implied.
+protected/unprotected transaction still require acceptance.
 
 ### Baseline and earlier study recommendations
 
@@ -38,19 +40,13 @@ documents its store exclusions, best-effort counter carry and retained rollback.
 The new target requires full mutable-state/reference coverage, verified external
 facts and an upgrade-only decision boundary instead.
 
-LogicHost already has SQL recovery records/scripts and offline object-store
-maintenance/restore primitives. The [#586 report](../validation/logichost-filesystem-qualification-586.md#final-disposition)
-and [lifecycle preparation](logichost-lifecycle-contract.md) retain their actual
-topology, image and qualification limits. These are reusable evidence, not proof
-of a new SQL/object/config checkpoint implementation.
-
 **Recommendation at this contract stage:** retain the existing backends/layout
 as the study baseline. There is no measured evidence here that changing them
 reduces total complexity or elapsed recovery time. No new filesystem, snapshot
 framework, general backend matrix or routine CI campaign is justified by this
 specification alone. No alternate backend was provisioned or benchmarked here.
 At that contract stage, the cost of completing the required coverage/fencing
-versus one promising alternative remained for #1607/#1608 to assess.
+versus one promising alternative remained for #1607 to assess.
 
 **CameraAgent study decision, #1607 (2026-10-23):**
 [keep the current filesystem/layout and selected-SQLite checkpoint baseline](../validation/cameraagent-filesystem-decision-1607.md).
@@ -62,17 +58,16 @@ The gaps below and the affected stories' own acceptance remain in force.
 
 ## Requirement and Implementation Map
 
-Paths below are repository-relative. They identify implementation seams, not
-authorization to edit another owner's files. #893 owns CLI parity and #1292
-owns host policy; coordinate their contracts without taking their claims.
+Paths below are repository-relative and identify CameraAgent implementation
+seams. Coordinate host-policy changes with #1292.
 
 | Requirement | Delivered inputs / relevant paths | Remaining adoption and qualification |
 | --- | --- | --- |
 | `UPGRADE-RECOVERY-001`: pending-upgrade checkpoint/image pairing; no downgrade | `src/HVO.SkyMonitor.Deployment.Cli/CameraAgentStateSnapshot.cs`, `CameraAgentLifecycle*.cs`, `CameraAgentStateMigration.cs`; `docs/hvo-install-contract.md` section 6 | Replace reverse-readability reliance and retained-image toggling with the exact pending checkpoint/config/catalog/image pair; preserve supported forward inputs. No post-commit grace period or daily command. |
-| `UPGRADE-RECOVERY-002`: complete logical point and non-rewindable facts | `src/HVO.SkyMonitor.Deployment.Cli/CameraAgentStateLayout.cs`, `CameraAgentStateCounters*.cs`; `docs/runbooks/product-instance-layout.md`; LogicHost `src/HVO.SkyMonitor.LogicHost/Data/CentralRecovery*.cs` and `deploy/sql/` | Inventory every DB, recovery file, mutable file/config/key and referenced payload, including external roots. Prove coherent DB/file generations and identity/catalog pairing. Replace broad store exclusions/best-effort carry with minimal verified exceptions or proof that the fence prevents new external facts. SQL Server remains central authority. |
+| `UPGRADE-RECOVERY-002`: complete logical point and non-rewindable facts | `src/HVO.SkyMonitor.Deployment.Cli/CameraAgentStateLayout.cs`, `CameraAgentStateCounters*.cs`; `docs/runbooks/product-instance-layout.md` | Inventory every DB, recovery file, mutable file/config/key and referenced payload, including external roots. Prove coherent DB/file generations and identity/catalog pairing. Replace broad store exclusions/best-effort carry with minimal verified exceptions or proof that the fence prevents new external facts. |
 | `UPGRADE-RECOVERY-003`: all-writer fence, candidate health and durable decision before admission | `src/HVO.SkyMonitor.Deployment.Cli/CameraAgentLifecycle*.cs`; current authenticated lifecycle/drain operations and host health endpoints | Prove every writer and external acknowledgement is fenced. Qualify semantic health, dependency/auth/read checks and isolated persistence/retrieval probe under a timeout. Commit durably before resuming; interrupted decision never rewinds acknowledged work. |
 | `UPGRADE-RECOVERY-004`: durable CameraAgent protected/unprotected path and interruption-safe restore | Snapshot/journal/retention code in `src/HVO.SkyMonitor.Deployment.Cli/`; `tests/HVO.SkyMonitor.Deployment.Cli.Tests/CameraAgentStateSnapshotTests.cs`, `LifecycleContractTests.SnapshotRecovery.cs`, `LifecycleContractTests.RecoveryReads.cs` | Detect actual qualified capability; verify completion or warn and durably record unprotected without demanding backup proof. Missing/partial/damaged/space-exhausted checkpoints never claim protection. Journal/capsule/receipt survive outside reverted roots. Failed unprotected mutation cannot start an old binary. |
-| `UPGRADE-RECOVERY-005`: bounded studies and risk-based evidence | `docs/planning/performance-validation.md`; `docs/validation/logichost-filesystem-qualification-586.md`; `scripts/ci:classify`; `docs/development-v1.md`; [#1615 cost comparison](../validation/upgrade-recovery-cost-1615.md) | #1607/#1608 evidence plus #1615's current-source and recurring-cost reassessment select simpler current primitives first, with a reversible controlled-snapshot alternative. Its exact proposed test replacements/reuse remain subject to subsequent reviewed adoption. |
+| `UPGRADE-RECOVERY-005`: bounded studies and risk-based evidence | `docs/planning/performance-validation.md`; `scripts/ci:classify`; `docs/development-v1.md`; [#1615 cost comparison](../validation/upgrade-recovery-cost-1615.md) | #1607 evidence plus #1615's current-source and recurring-cost reassessment select simpler current primitives first, with a reversible controlled-snapshot alternative. Its exact proposed test replacements/reuse remain subject to subsequent reviewed adoption. |
 
 Existing `PreviousReleaseStoreReadabilityTests` under
 `tests/HVO.SkyMonitor.CameraAgent.Tests/State/` and
@@ -87,20 +82,20 @@ backup/restore remains independently supported and tested.
 ## Ordering and Forward-Only Conversions
 
 The [owner clarification](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1606#issuecomment-6370275612)
-allows #1607/#1608 to be scheduled now or later, but requires their applicable
-recorded keep/change outcome before overlapping persistent-layout/recovery work
+allows #1607 to be scheduled now or later and requires its recorded
+keep/change outcome before overlapping persistent-layout/recovery work
 or a substantial forward migration commits to a path. Each affected story cites
 its decision and supported forward source/target inputs. A bounded,
 evidence-backed keep-current decision satisfies this gate; no new filesystem,
 framework or implementation PR is necessary. This contract's baseline
 recommendation is not a substitute for those recorded study outcomes.
 
-Apply the gate to overlaps in CameraAgent #1059/#1060/#1300 and LogicHost
-#1244/#1245/#589/#591. Unrelated features, clean-install preparation, release
-verification and strict existing-behavior #893 CLI parity remain independent.
+Apply the gate to overlaps in CameraAgent #1059/#1060/#1300. Unrelated features,
+clean-install preparation, release verification and strict existing-behavior
+#893 CLI parity remain independent.
 The owner-requested #1615 follow-up is now recorded in the cost comparison above;
 overlapping stories cite its simplify-first disposition as well as #1606 and
-their applicable #1607/#1608 inputs. This clears reassessment ordering without
+their applicable #1607 inputs. This clears reassessment ordering without
 closing any implementation acceptance or newly restricting supported installs.
 The [execution protocol](agent-execution.md#skymonitor-recovery-ordering-gate)
 requires checking this when selecting work; study timing does not create a
@@ -115,24 +110,17 @@ upgrades still restore their exact paired checkpoint on failure: forward-only
 migration does not remove that protection. No universal waiver or silent
 destructive conversion is authorized; existing required gates remain intact.
 
-## Qualification Children and Remaining Experiment Questions
+## Qualification Study Questions
 
-Both children depend on this contract and then may run independently:
+The [CameraAgent study](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1607)
+asked whether existing SQLite checkpoints plus pinned files and complete
+mutable-state coverage can meet the invariant with less overall work than a
+qualified filesystem snapshot on disposable Linux images. It considered the
+alternative's provisioning, privilege, mount and crash-recovery costs and
+whether one instance can revert independently of a running sibling and shared
+catalog selections.
 
-- [#1607 CameraAgent](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1607):
-  on disposable Linux images, can existing SQLite checkpoints plus pinned files
-  and complete mutable-state coverage meet the invariant with less overall work
-  than a qualified filesystem snapshot? What provisioning, privilege, mount and
-  crash-recovery costs does the best alternative add? Can one instance revert
-  while a running sibling and shared catalog selections remain unchanged?
-- [#1608 LogicHost](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1608):
-  which smallest native SQL Server checkpoint/restore method plus object/config
-  cutoff gives a coherent point? Can existing offline object tools be reused
-  without a full archive per upgrade? What DB log/backup chain, identity/key,
-  service-topology and restore-time costs remain? Feed results into #1244's
-  explicit backup/restore and #1245's upgrade recovery without conflating them.
-
-Time-box each initial investigation/probe to roughly 60–90 minutes. Reuse
+The study time-boxes the initial investigation/probe to roughly 60–90 minutes. Reuse
 existing observations and test only the most promising alternative first.
 Stop early if no credible net benefit remains. Compare total implementation and
 maintenance complexity, dependencies/setup, operator steps, failure modes, test

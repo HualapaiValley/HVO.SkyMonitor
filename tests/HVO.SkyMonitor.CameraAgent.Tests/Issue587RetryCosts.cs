@@ -83,6 +83,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests
 
     [TestClass]
     [TestCategory("Manual")]
+    [TestProperty("Area", "Modules.VirtualSky")]
     public sealed class Issue587StagingCostTests
     {
         [TestMethod]

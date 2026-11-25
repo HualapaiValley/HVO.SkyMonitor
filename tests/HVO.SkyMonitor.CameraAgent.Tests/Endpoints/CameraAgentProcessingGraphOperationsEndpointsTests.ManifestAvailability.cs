@@ -503,6 +503,7 @@ public sealed partial class CameraAgentProcessingGraphOperationsEndpointsTests
 
 [TestClass]
 [TestCategory("Performance")]
+[TestProperty("Area", "Endpoints")]
 [DoNotParallelize]
 public sealed class ManifestAvailabilityPerformanceTests
 {

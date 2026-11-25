@@ -14,6 +14,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Upload;
 
 [TestClass]
 [TestCategory("Integration")]
+[TestProperty("Area", "Upload")]
 public sealed class SqliteArtifactOutboxTests
 {
     private static readonly DateTimeOffset StartUtc = new(2026, 7, 15, 12, 0, 0, TimeSpan.Zero);

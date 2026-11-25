@@ -16,7 +16,7 @@
 #     a run proved something when part of it never executed.
 #   * A line-level count reports the number of lines, not the number of results.
 #
-# This repository already produces exactly that shape, at scripts/test:phase14-component, so
+# The TRX evidence producer writes that shape, so
 # the defect was latent rather than theoretical. See issue #769; the same defect was corrected
 # separately in scripts/test:cameraagent-standalone-211 under #734.
 #

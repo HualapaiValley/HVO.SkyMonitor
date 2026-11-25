@@ -13,6 +13,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "Capture.Processing")]
 [DoNotParallelize]
 public sealed class CaptureSatelliteResourceTests
 {

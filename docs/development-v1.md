@@ -40,7 +40,7 @@ Issues merged into `development/v1` are closed explicitly with the pull request 
 
 The repository pins .NET SDK 10.0.402 in global.json with rollForward: disable;
 local builds, the devcontainer, CI, and SDK container images use that version.
-CameraAgent and LogicHost runtime images use ASP.NET Core 10.0.15 (#2053).
+The CameraAgent runtime image uses ASP.NET Core 10.0.15 (#2053).
 ProcessingRunner's `runtime-deps` base moves to 10.0.14 with #1668 as an OS-layer update only;
 its self-contained .NET runtime and the SDK-bundled runtime remain at 10.0.13 because SDK 10.0.402 is unchanged.
 Microsoft NuGet package pins use 10.0.14. The .NET 10.0.14 runtime security fixes reach ProcessingRunner only with a coordinated SDK update.
@@ -48,7 +48,7 @@ Microsoft NuGet package pins use 10.0.14. The .NET 10.0.14 runtime security fixe
 The branch currently requires:
 
 - **Development v1 / Preflight** on a GitHub-hosted runner: exact-range whitespace and changelog fragment validation, pinned workflow linting, shell syntax, the mandatory documentation fast-path certificate check, the inexpensive CI-control regression checks, coverage baseline policy, the full-history [secret scan](runbooks/ci-pipeline.md#secret-scan), and, when the classifier selects them, the [release script tests](runbooks/ci-pipeline.md#release-script-tests).
-- **Development v1 / Build and Unit** runs its full workload on a self-hosted x64 runner with pinned SDK setup, solution restore, a warning-clean Release build, the [Docker-disabled Unit selection for active test projects](runbooks/ci-pipeline.md#logichost-test-retirement), and [canonical per-file coverage floors](runbooks/ci-pipeline.md#development-v1-per-file-coverage). Collection targets the assemblies owning those floors. Catalog-dependent ReleaseTool and full-suite aggregate/component coverage retain their documented local/full-qualification scope.
+- **Development v1 / Build and Unit** runs its full workload on a self-hosted x64 runner with pinned SDK setup, solution restore, a warning-clean Release build, the [Docker-disabled Unit selection for active test projects](runbooks/ci-pipeline.md#active-test-selection), and [canonical per-file coverage floors](runbooks/ci-pipeline.md#development-v1-per-file-coverage). Collection targets the assemblies owning those floors. Catalog-dependent ReleaseTool and full-suite aggregate/component coverage retain their documented local/full-qualification scope.
 
 The [Pi 5 performance workflow](runbooks/ci-pipeline.md#raspberry-pi-5-performance) runs independently of these checks. Build and Unit excludes the Performance category.
 

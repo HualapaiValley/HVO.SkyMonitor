@@ -19,6 +19,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Services;
 
 [TestClass]
 [TestCategory("Integration")]
+[TestProperty("Area", "Services")]
 public sealed class CameraAgentEnvironmentalUiServiceIntegrationTests
 {
     private static readonly DateTimeOffset Epoch = new(2026, 1, 15, 8, 0, 0, TimeSpan.Zero);

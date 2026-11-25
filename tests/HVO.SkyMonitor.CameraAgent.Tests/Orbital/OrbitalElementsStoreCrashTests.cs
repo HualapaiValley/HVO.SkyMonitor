@@ -9,6 +9,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Orbital;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Orbital")]
 public sealed class OrbitalElementsStoreCrashTests : OrbitalStoreTestBase
 {
     private static readonly OrbitalElementsStoreTestData.Candidate Good = OrbitalElementsStoreTestData.Build("good", "25544");

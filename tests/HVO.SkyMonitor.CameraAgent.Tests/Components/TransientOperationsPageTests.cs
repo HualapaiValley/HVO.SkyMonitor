@@ -11,6 +11,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Ui")]
 public sealed class TransientOperationsPageTests
 {
     private static readonly DateTimeOffset Now = new(2026, 9, 30, 4, 0, 0, TimeSpan.Zero);

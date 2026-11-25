@@ -6,6 +6,7 @@ namespace HVO.SkyMonitor.Tests.Fleet;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Fleet")]
 [DoNotParallelize]
 public sealed class FleetTelemetryTests
 {

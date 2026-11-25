@@ -14,6 +14,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Ui")]
 public sealed class TimeLapsePlayerTests
 {
     private const string Source = "/api/v1/operations/time-lapse-sample";

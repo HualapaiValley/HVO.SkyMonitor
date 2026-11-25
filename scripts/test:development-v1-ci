@@ -198,23 +198,18 @@ run: |
   ./scripts/release:changelog "${args[@]}"
   ./scripts/test:changelog
 """
-logichost_exclusions = (
-    "&FullyQualifiedName!~HVO.SkyMonitor.LogicHost",
-    "&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost",
-)
-unit_filter = "TestCategory=Unit&TestCategory!=Performance" + "".join(logichost_exclusions)
+unit_filter = "TestCategory=Unit&TestCategory!=Performance"
 unit_command = " \\\n".join((
     "            dotnet test HVO.SkyMonitor.v9.slnx",
     "              --no-build",
     "              --configuration Release",
     f'              --filter "{unit_filter}"',
-    "              -p:SkipLogicHostTests=true",
     '              --settings "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings"',
     '              --collect:"XPlat Code Coverage"',
     '              --results-directory "$DEV_V1_EVIDENCE_ROOT/unit"',
     "              --logger trx",
 ))
-unit_selection_error = "exact solution Unit command with Performance and both LogicHost exclusions"
+unit_selection_error = "exact solution Unit command with the positive Unit category and Performance exclusion"
 queue_permissions = "permissions:\n  contents: read\n  pull-requests: read\n  statuses: read\n"
 trusted_checkout = """        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1081,18 +1076,11 @@ with tempfile.TemporaryDirectory(prefix="hvo-changelog-workflow-") as directory:
             raise SystemExit(f"Preflight changelog case {label} did not fail closed: {observed} {result.stderr}")
     print("Preflight changelog merge-parent binding: 5 behavioral cases passed.")
 
-for exclusion in logichost_exclusions:
-    for change, replacement in (("removed", ""), ("equality instead of substring", exclusion.replace("!~", "!=")),
-                                ("OR instead of AND", "|" + exclusion[1:])):
-        candidate = short.replace(exclusion, replacement)
-        if candidate == short or unit_selection_error not in violations(candidate, full):
-            raise SystemExit(f"LogicHost Unit filter mutation was not rejected: {exclusion} {change}")
-        print(f"Rejected LogicHost Unit filter mutation: {exclusion} {change}")
-project_selection = "-p:SkipLogicHostTests=true"
-candidate = short.replace(project_selection, "-p:SkipLogicHostTests=false")
-if candidate == short or unit_selection_error not in violations(candidate, full):
-    raise SystemExit("LogicHost Unit project selection mutation was not rejected")
-print("Rejected disabled LogicHost Unit project selection.")
+for replacement in ("TestCategory=Unit", "TestCategory=Unit|TestCategory!=Performance", "TestCategory=Integration", "TestCategory!=Integration", "TestCategory=Unit&FullyQualifiedName~Narrow"):
+    candidate = short.replace(f'--filter "{unit_filter}"', f'--filter "{replacement}"')
+    if candidate == short or unit_selection_error not in violations(candidate, full):
+        raise SystemExit(f"Unit filter mutation was not rejected: {replacement}")
+    print(f"Rejected Unit filter mutation: {replacement}")
 # The documented reproduction check must compare the inventory without rewriting it.
 runbook = (root / "docs/runbooks/ci-pipeline.md").read_text()
 reproduce = runbook.split("### Reproduce the documentation CI inventory", 1)[1].split("```bash\n", 1)[1].split("\n```", 1)[0]

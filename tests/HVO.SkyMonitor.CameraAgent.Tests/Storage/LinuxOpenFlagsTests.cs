@@ -6,6 +6,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Storage;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Storage")]
 public sealed class LinuxOpenFlagsTests
 {
     [TestMethod]

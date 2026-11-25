@@ -7,6 +7,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Configuration;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Configuration")]
 public class LocalIdentityOptionsTests
 {
     [TestMethod]

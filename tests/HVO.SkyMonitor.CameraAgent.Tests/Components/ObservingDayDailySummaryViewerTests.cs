@@ -21,6 +21,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 /// total-integration wording.
 /// </summary>
 [TestClass]
+[TestProperty("Area", "Ui")]
 public sealed class ObservingDayDailySummaryViewerTests
 {
     private static readonly int[] ExposureSeconds = [10, 20, 30, 40, 50];

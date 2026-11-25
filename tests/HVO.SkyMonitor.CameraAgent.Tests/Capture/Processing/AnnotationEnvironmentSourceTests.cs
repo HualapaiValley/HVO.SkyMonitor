@@ -29,6 +29,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
 [TestClass]
 [TestCategory("Integration")]
+[TestProperty("Area", "Capture.Processing")]
 public sealed class AnnotationEnvironmentSourceTests
 {
     private static readonly string[] DefaultKindsMissing =

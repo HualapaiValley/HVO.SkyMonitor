@@ -22,6 +22,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture.Processing")]
 public sealed class ProcessingNodeOptionsShippedPipelineTests
 {
     private const string W6 = "cameraagent.standalone-w6.json";

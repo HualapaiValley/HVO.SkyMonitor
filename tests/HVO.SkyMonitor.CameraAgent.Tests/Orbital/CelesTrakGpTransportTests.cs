@@ -17,6 +17,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Orbital;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Orbital")]
 public sealed class CelesTrakGpTransportTests
 {
     private static readonly TimeSpan ServerDeadline = TimeSpan.FromSeconds(30);

@@ -21,6 +21,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Storage;
 
 [TestClass]
 [TestCategory("Integration")]
+[TestProperty("Area", "Storage")]
 [DoNotParallelize]
 public sealed class StorageRetentionRootIntegrationTests
 {

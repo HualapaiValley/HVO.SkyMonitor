@@ -25,6 +25,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Calibration;
 
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "Capture.Calibration")]
 [DoNotParallelize]
 [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities",
     Justification = "The retained-evidence harness passes only fixed SQL queries to its helpers.")]
