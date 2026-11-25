@@ -150,7 +150,7 @@ and #1923 contracts differ at the integration source, they supersede these rows 
 | Raw and full-fidelity payloads: raw, linear, calibrated, combined, masters, nightly `.bin` | Silo `p/full/` | Content-addressed; [4.3](#43-object-namespace) |
 | Display renditions: previews, annotated previews, nightly `.jpg`, time-lapse video | Silo `p/display/` | Separate display retention |
 | Metadata products: typed metadata and astrometry solutions | Silo `p/meta/` | Kept with display history |
-| Group manifests: capture, product, view revision, calibration, time-lapse, nightly, import | Silo `m/` | Immutable, one object per revision |
+| Group manifests: capture, product, view revision, calibration, time-lapse, nightly, import | Silo `m/` | Immutable, one published object per revision |
 | Durable metadata journal and checkpoints | Silo `j/`, `c/` | [4.5](#45-durable-metadata-journal) |
 | Bucket ownership and writer fence | Silo `meta/` | Create-only marker; conditional fence |
 | Spool: admitted and produced bytes before verified, persistence-qualified publication | State `spool/` on the same NVMe | Bounded; [5.5](#55-staging-bound-and-pressure-pause) |
