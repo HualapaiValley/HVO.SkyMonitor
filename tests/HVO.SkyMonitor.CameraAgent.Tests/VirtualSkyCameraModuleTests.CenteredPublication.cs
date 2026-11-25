@@ -1,3 +1,6 @@
+using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using HVO.SkyMonitor.AgentCore;
@@ -1396,53 +1399,136 @@ public sealed partial class VirtualSkyCameraModuleTests
                         insertSingle.Parameters.AddWithValue("$utc", clock.UtcNow.UtcTicks);
                         await insertSingle.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
                     }
-                    lockHeld.TrySetResult((writerConnection, writerTransaction));
+                    if (!lockHeld.TrySetResult((writerConnection, writerTransaction)))
+                    {
+                        await writerTransaction.DisposeAsync().ConfigureAwait(false);
+                        await writerConnection.DisposeAsync().ConfigureAwait(false);
+                    }
                 }
-                catch
+                catch (Exception exception)
                 {
                     if (writerTransaction is not null)
                         await writerTransaction.DisposeAsync().ConfigureAwait(false);
                     await writerConnection.DisposeAsync().ConfigureAwait(false);
+                    lockHeld.TrySetException(exception);
                     throw;
                 }
             };
 
-            var beginImmediateEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            var traceInstalled = 0;
+            var beginImmediateContended = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var busyCount = 0;
+            var busyHandlerInstalled = 0;
+            using var publishCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+            var publishToken = publishCts.Token;
+            using var writerReleased = new ManualResetEventSlim(false);
             views.BeforeResolveMissingCenterWriteForTest = connection =>
             {
-                if (Interlocked.Exchange(ref traceInstalled, 1) != 0)
+                if (Interlocked.Exchange(ref busyHandlerInstalled, 1) != 0)
                     return null;
 
-                raw.sqlite3_trace(connection.Handle, (_, statement) =>
+                int originalBusyTimeoutMs;
+                using (var pragma = connection.CreateCommand())
                 {
-                    var sql = statement.utf8_to_string();
-                    if (sql is not null && sql.TrimStart().StartsWith("BEGIN IMMEDIATE", StringComparison.OrdinalIgnoreCase))
-                        beginImmediateEntered.TrySetResult();
-                }, null);
-                return new ClearSqliteTraceScope(connection);
+                    pragma.CommandText = "PRAGMA busy_timeout;";
+                    originalBusyTimeoutMs = Convert.ToInt32(pragma.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture);
+                }
+
+                return new SqliteBusyHandlerScope(connection, originalBusyTimeoutMs, priorInvocations =>
+                {
+                    Interlocked.Increment(ref busyCount);
+                    beginImmediateContended.TrySetResult();
+                    if (publishToken.IsCancellationRequested)
+                        return 0;
+
+                    try
+                    {
+                        if (!writerReleased.Wait(TimeSpan.FromSeconds(10), publishToken))
+                            return 0;
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        return 0;
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        return 0;
+                    }
+
+                    if (publishToken.IsCancellationRequested || priorInvocations >= 64)
+                        return 0;
+                    if (priorInvocations > 0)
+                        Thread.Yield();
+                    return 1;
+                });
             };
 
+            Task? publishTask = null;
+            SqliteConnection? heldConnection = null;
+            SqliteTransaction? heldTransaction = null;
+            var writerClaimed = false;
             try
             {
-                var publishTask = Task.Run(() => windows.PublishReadyAsync(token).AsTask(), token);
-                var (heldConnection, heldTransaction) = await lockHeld.Task.WaitAsync(TimeSpan.FromSeconds(10), token).ConfigureAwait(false);
-                await using (heldConnection.ConfigureAwait(false))
-                await using (heldTransaction.ConfigureAwait(false))
+                publishTask = Task.Run(() => windows.PublishReadyAsync(publishToken).AsTask(), CancellationToken.None);
+                var lockReady = await Task.WhenAny(lockHeld.Task, publishTask)
+                    .WaitAsync(TimeSpan.FromSeconds(10), token).ConfigureAwait(false);
+                if (ReferenceEquals(lockReady, publishTask))
                 {
-                    var completed = await Task.WhenAny(beginImmediateEntered.Task, publishTask)
-                        .WaitAsync(TimeSpan.FromSeconds(10), token).ConfigureAwait(false);
-                    Assert.AreSame(beginImmediateEntered.Task, completed,
-                        "Attempt 8 must reach BEGIN IMMEDIATE while the concurrent Single writer still holds the write transaction.");
-                    Assert.IsFalse(publishTask.IsCompleted,
-                        "Attempt 8 must block waiting on BEGIN IMMEDIATE while the concurrent Single writer holds the write transaction.");
-                    await heldTransaction.CommitAsync(token).ConfigureAwait(false);
+                    await publishTask.ConfigureAwait(false);
+                    Assert.IsTrue(lockHeld.Task.IsCompleted,
+                        "Attempt 8 completed without triggering the concurrent Single writer handoff.");
                 }
+
+                (heldConnection, heldTransaction) = await lockHeld.Task
+                    .WaitAsync(TimeSpan.FromSeconds(10), token).ConfigureAwait(false);
+                writerClaimed = true;
+
+                var completed = await Task.WhenAny(beginImmediateContended.Task, publishTask)
+                    .WaitAsync(TimeSpan.FromSeconds(10), token).ConfigureAwait(false);
+                Assert.AreSame(beginImmediateContended.Task, completed,
+                    "Attempt 8 must encounter SQLITE_BUSY on BEGIN IMMEDIATE while the concurrent Single writer still holds the write transaction.");
+                Assert.IsGreaterThanOrEqualTo(1, Volatile.Read(ref busyCount),
+                    "SQLite must observe at least one real SQLITE_BUSY lock-contention callback on BEGIN IMMEDIATE before the concurrent writer commits.");
+                Assert.IsFalse(publishTask.IsCompleted,
+                    "Attempt 8 must block waiting on BEGIN IMMEDIATE while the concurrent Single writer holds the write transaction.");
+
+                await heldTransaction.CommitAsync(token).ConfigureAwait(false);
+                var committedTransaction = heldTransaction;
+                heldTransaction = null;
+                await committedTransaction.DisposeAsync().ConfigureAwait(false);
+                var committedConnection = heldConnection;
+                heldConnection = null;
+                await committedConnection.DisposeAsync().ConfigureAwait(false);
+                writerReleased.Set();
 
                 await publishTask.WaitAsync(TimeSpan.FromSeconds(10), token).ConfigureAwait(false);
             }
             finally
             {
+                lockHeld.TrySetCanceled();
+                if (!writerClaimed && lockHeld.Task.IsCompletedSuccessfully)
+                {
+                    (heldConnection, heldTransaction) = await lockHeld.Task.ConfigureAwait(false);
+                    writerClaimed = true;
+                }
+
+                if (heldTransaction is not null)
+                {
+                    await DisposeBestEffortAsync(heldTransaction).ConfigureAwait(false);
+                    heldTransaction = null;
+                }
+
+                if (heldConnection is not null)
+                {
+                    await DisposeBestEffortAsync(heldConnection).ConfigureAwait(false);
+                    heldConnection = null;
+                }
+
+                await publishCts.CancelAsync().ConfigureAwait(false);
+                writerReleased.Set();
+
+                if (publishTask is not null)
+                    await JoinBestEffortAsync(publishTask, TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+
                 views.BeforeResolveMissingCenterWriteForTest = null;
                 afterReadLinear = null;
             }
@@ -1498,12 +1584,126 @@ public sealed partial class VirtualSkyCameraModuleTests
             => inner.ReadProductsAfterAsync(camera, afterRevision, maximumCount, cancellationToken);
     }
 
-    private sealed class ClearSqliteTraceScope(SqliteConnection connection) : IDisposable
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Best-effort test teardown must not mask the primary assertion or timeout failure.")]
+    private static async ValueTask DisposeBestEffortAsync(IAsyncDisposable resource)
     {
+        try
+        {
+            await resource.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+        }
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Best-effort bounded join during test teardown must not mask the primary assertion or timeout failure.")]
+    private static async Task JoinBestEffortAsync(Task task, TimeSpan timeout)
+    {
+        if (task.IsCompleted)
+            return;
+
+        try
+        {
+            await task.WaitAsync(timeout, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+        }
+    }
+
+    private sealed unsafe partial class SqliteBusyHandlerScope : IDisposable
+    {
+        private readonly SqliteConnection _connection;
+        private readonly sqlite3 _handle;
+        private readonly int _originalBusyTimeoutMs;
+        private GCHandle _stateHandle;
+        private bool _handleRefAdded;
+        private int _disposed;
+
+        public SqliteBusyHandlerScope(
+            SqliteConnection connection,
+            int originalBusyTimeoutMs,
+            Func<int, int> onBusy)
+        {
+            _connection = connection;
+            _originalBusyTimeoutMs = originalBusyTimeoutMs;
+            _handle = connection.Handle ?? throw new InvalidOperationException("SQLite connection handle is unavailable.");
+
+            _handle.DangerousAddRef(ref _handleRefAdded);
+            try
+            {
+                _stateHandle = GCHandle.Alloc(onBusy);
+                var result = RegisterBusyHandler(
+                    _handle.DangerousGetHandle(),
+                    &OnNativeBusy,
+                    GCHandle.ToIntPtr(_stateHandle));
+                if (result != raw.SQLITE_OK)
+                    throw new InvalidOperationException(FormattableString.Invariant($"sqlite3_busy_handler registration failed with code {result}."));
+            }
+            catch
+            {
+                if (_stateHandle.IsAllocated)
+                    _stateHandle.Free();
+                if (_handleRefAdded)
+                {
+                    _handleRefAdded = false;
+                    _handle.DangerousRelease();
+                }
+
+                throw;
+            }
+        }
+
         public void Dispose()
         {
-            if (connection.State == System.Data.ConnectionState.Open && connection.Handle is not null)
-                raw.sqlite3_trace(connection.Handle, (delegate_trace?)null, null);
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                return;
+
+            try
+            {
+                if (_handleRefAdded && !_handle.IsInvalid && !_handle.IsClosed)
+                {
+                    _ = RegisterBusyHandler(_handle.DangerousGetHandle(), null, nint.Zero);
+                    if (_connection.State == System.Data.ConnectionState.Open && _originalBusyTimeoutMs > 0)
+                        _ = raw.sqlite3_busy_timeout(_handle, _originalBusyTimeoutMs);
+                }
+            }
+            finally
+            {
+                if (_stateHandle.IsAllocated)
+                    _stateHandle.Free();
+                if (_handleRefAdded)
+                {
+                    _handleRefAdded = false;
+                    _handle.DangerousRelease();
+                }
+            }
         }
+
+        [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+        [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Managed exceptions must never cross a native SQLite callback boundary.")]
+        private static int OnNativeBusy(nint statePointer, int priorInvocations)
+        {
+            if (statePointer == nint.Zero)
+                return 0;
+
+            try
+            {
+                var handle = GCHandle.FromIntPtr(statePointer);
+                return handle.Target is Func<int, int> callback ? callback(priorInvocations) : 0;
+            }
+            catch (Exception)
+            {
+                return 0;
+            }
+        }
+
+        [LibraryImport("e_sqlite3", EntryPoint = "sqlite3_busy_handler")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.SafeDirectories)]
+        [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+        private static partial int RegisterBusyHandler(
+            nint db,
+            delegate* unmanaged[Cdecl]<nint, int, int> callback,
+            nint userData);
     }
 }
