@@ -22,7 +22,7 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
     private const string RawIngressMigration = "io.hvo.skymonitor.raw-ingress-migration";
     private const string MinimumCompatibleRevision = "io.hvo.skymonitor.minimum-compatible-revision";
     private const string BetaReaderRevision = "33903f07a1dd86166fc17197df981b32d45013a1";
-    private const string CurrentReaderRevision = "ded7cadc6fe005f8bdda09387e1c3d1337f66e4e";
+    private const string CurrentReaderRevision = "b45b293feede430290d255a332b4c388d2b7f56f";
     private const string SettledBetaReaderRevision = "e7b9af4b98d1521c3939ef5925608a3663c63302";
     private const string ProcessingV10Reader = "ac373b8f9f3f7e02a0281e73b969d224181ae089";
     private const string OriginalEnvironmentalV5Reader = "bc14cc415973f6d106cfe8f1c2fb9bfbedbc9a56";
@@ -279,6 +279,7 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
     [DataRow("1c76d83224bacdcc129041c6d1779eb5f95716cb", DisplayName = "Original processing 12 to combined retention reader")]
     [DataRow("19694b969ae1968254988eb641a9044fa6010bbc", DisplayName = "Centered registration reader to combined retention reader")]
     [DataRow("ee848ab110e094ef888c1aca4225ea9c8be226f6", DisplayName = "Centered-view retention reader to combined retention reader")]
+    [DataRow("ded7cadc6fe005f8bdda09387e1c3d1337f66e4e", DisplayName = "Combined retention reader to window-work queue reader")]
     public void MinimumCompatibleRevisionSelectsCheckpointWithUnchangedRawIngressLabels(string installedBoundary)
     {
         ArgumentNullException.ThrowIfNull(installedBoundary);

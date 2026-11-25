@@ -1102,4 +1102,199 @@ public sealed partial class VirtualSkyCameraModuleTests
             Directory.Delete(root, recursive: true);
         }
     }
+
+    [TestMethod]
+    public async Task CenteredWindowPublicationPreventsFalseTerminalizationWhenSingleOrLinearCommitsOnFinalAttempt()
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-centered-window-final-attempt-race");
+        var token = TestContext.CancellationToken;
+        var start = new DateTimeOffset(2026, 11, 20, 22, 30, 0, TimeSpan.Zero);
+        var clock = new CenteredClock { UtcNow = start };
+        var deviceClock = new ExposureTestTimeProvider(start, autoAdvance: true);
+        var profile = CenteredRuntimeProfile(root, start, CameraPixelFormat.Mono16);
+        Func<ExposureKey, CancellationToken, ValueTask>? afterReadLinear = null;
+        try
+        {
+            using var provider = CenteredRuntimeProvider(root, clock, services =>
+            {
+                services.AddSingleton<CenteredExposureProductReader>();
+                services.AddSingleton<IExposureProductReader>(sp =>
+                    new InterceptingExposureProductReader(
+                        sp.GetRequiredService<CenteredExposureProductReader>(),
+                        (key, ct) => afterReadLinear is null ? ValueTask.CompletedTask : afterReadLinear(key, ct)));
+            });
+            var active = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(provider, profile).ConfigureAwait(false);
+            var schedule = await ReadCenteredPublicationScheduleAsync(provider, token).ConfigureAwait(false);
+            var ingress = provider.GetRequiredService<RawCaptureIngress>();
+            var device = new VirtualSkyCameraModule(deviceClock, CenteredRuntimeCatalog(start), new ProjectedSceneStore(),
+                stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
+            await using var camera = device.ConfigureAwait(false);
+            await device.InitializeAsync(active, token).ConfigureAwait(false);
+            var singles = provider.GetRequiredService<CenteredViewPublicationWorker>();
+            var windows = provider.GetRequiredService<CenteredViewWindowPublicationWorker>();
+            var coordinator = provider.GetRequiredService<CenteredWindowCoordinator>();
+            var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
+            var views = provider.GetRequiredService<SqliteCenteredViews>();
+            var products = provider.GetRequiredService<CenteredExposureProductReader>();
+            var producer = provider.GetRequiredService<ICenteredViewProducer>();
+
+            CameraKey key = default!;
+            CenteredViewStream? stream = null;
+            Guid capture4 = default;
+            Guid capture5 = default;
+            for (var ordinal = 1; ordinal <= 5; ordinal++)
+            {
+                var captured = await CaptureCenteredRuntimeAttemptAsync(ingress, device, deviceClock, clock, active,
+                    start.AddSeconds((ordinal - 1) * 2), 1, token, schedule: schedule).ConfigureAwait(false);
+                var receipt = await ingress.AcceptCenteredAsync(active, captured.Submission, captured.Reservation, token)
+                    .ConfigureAwait(false);
+                key = captured.Reservation.Pending.Key.Camera;
+                stream = CenteredViewLookup.ResolveStream(await ingress.ReadCurrentAsync(key, token).ConfigureAwait(false));
+                Assert.IsNotNull(stream);
+                if (ordinal <= 3)
+                {
+                    await ProcessCenteredRuntimeExposureAsync(provider, active, token).ConfigureAwait(false);
+                    await singles.DrainCameraAsync(key, stream, CancellationToken.None, token).ConfigureAwait(false);
+                }
+                else if (ordinal == 4)
+                {
+                    capture4 = receipt.Manifest.Descriptor.Capture.CaptureId;
+                }
+                else if (ordinal == 5)
+                {
+                    capture5 = receipt.Manifest.Descriptor.Capture.CaptureId;
+                }
+            }
+
+            var windowReader = provider.GetRequiredService<ICenteredWindowReader>();
+            var window4 = await windowReader.ReadAsync(capture4, token).ConfigureAwait(false);
+            var window5 = await windowReader.ReadAsync(capture5, token).ConfigureAwait(false);
+            Assert.IsNotNull(window4);
+            Assert.IsNotNull(window5);
+
+            // Close window 4 before its linear product or Single commits, and advance through 7 retries.
+            clock.UtcNow = window4.DeadlineUtc.AddMilliseconds(1);
+            await coordinator.CloseDueAsync(token).ConfigureAwait(false);
+            for (var attempt = 1; attempt < CenteredViewWindowPublicationWorker.MaximumMissingCenterRetries; attempt++)
+            {
+                await windows.PublishReadyAsync(token).ConfigureAwait(false);
+                clock.UtcNow = clock.UtcNow.Add(CenteredViewWindowPublicationWorker.RetryDelay);
+            }
+
+            // On attempt 8, commit capture 4's center Single AFTER ReadLinearAsync returns and BEFORE the write transaction.
+            string? racedSingle4BaseId = null;
+            afterReadLinear = async (exposureKey, ct) =>
+            {
+                if (exposureKey.CaptureId != capture4 || racedSingle4BaseId is not null)
+                    return;
+                await ProcessCenteredRuntimeExposureAsync(provider, active, ct).ConfigureAwait(false);
+                var linear4 = await products.ReadLinearAsync(exposureKey, ct).ConfigureAwait(false);
+                Assert.IsNotNull(linear4);
+                var execution4 = ProcessingGraphOperationsCoordinator.GetLiveExecutionId(capture4, stream!.GenerationId);
+                var single4 = await producer.PublishSingleAsync(stream, execution4,
+                    linear4.Exposure.Raw.Capture.CaptureSequence, linear4, new(), ct).ConfigureAwait(false);
+                Assert.IsNotNull(single4);
+                racedSingle4BaseId = single4.Base.BaseId;
+            };
+            await windows.PublishReadyAsync(token).ConfigureAwait(false);
+            afterReadLinear = null;
+
+            Assert.IsNotNull(racedSingle4BaseId);
+            using (var connection = await store.OpenCenteredViewsAsync(token).ConfigureAwait(false))
+            using (var cmd = connection.CreateCommand())
+            {
+                cmd.CommandText = """
+                    SELECT live_base_id, retry_utc, terminal_reason, retry_count
+                    FROM processing_centered_view_window_work WHERE window_sha256 = $window;
+                    """;
+                cmd.Parameters.AddWithValue("$window", window4.WindowIdentity);
+                using var workReader = await cmd.ExecuteReaderAsync(token).ConfigureAwait(false);
+                Assert.IsTrue(await workReader.ReadAsync(token).ConfigureAwait(false));
+                Assert.AreEqual(racedSingle4BaseId, workReader.GetString(0));
+                Assert.IsTrue(await workReader.IsDBNullAsync(1, token).ConfigureAwait(false));
+                Assert.IsTrue(await workReader.IsDBNullAsync(2, token).ConfigureAwait(false));
+                Assert.AreEqual((long)(CenteredViewWindowPublicationWorker.MaximumMissingCenterRetries - 1), workReader.GetInt64(3));
+            }
+            Assert.AreEqual(racedSingle4BaseId, await views.ReadLiveCandidateAsync(stream!, token).ConfigureAwait(false));
+            var selected4 = await views.SelectLiveAsync(stream!, racedSingle4BaseId, token).ConfigureAwait(false);
+            Assert.IsNotNull(selected4);
+            Assert.AreEqual(racedSingle4BaseId, selected4.View.Base.BaseId);
+
+            // Now close window 5 while capture 5's linear product is still pending, and advance through 7 retries.
+            if (clock.UtcNow <= window5.DeadlineUtc)
+                clock.UtcNow = window5.DeadlineUtc.AddMilliseconds(1);
+            await coordinator.CloseDueAsync(token).ConfigureAwait(false);
+            for (var attempt = 1; attempt < CenteredViewWindowPublicationWorker.MaximumMissingCenterRetries; attempt++)
+            {
+                await windows.PublishReadyAsync(token).ConfigureAwait(false);
+                clock.UtcNow = clock.UtcNow.Add(CenteredViewWindowPublicationWorker.RetryDelay);
+            }
+
+            // On attempt 8, commit a newer linear product revision for capture 5 (without publishing its Single yet)
+            // after ReadLinearAsync returns and before the write transaction.
+            var committedLinear5 = false;
+            afterReadLinear = async (exposureKey, ct) =>
+            {
+                if (exposureKey.CaptureId != capture5 || committedLinear5)
+                    return;
+                committedLinear5 = true;
+                await ProcessCenteredRuntimeExposureAsync(provider, active, ct).ConfigureAwait(false);
+            };
+            await windows.PublishReadyAsync(token).ConfigureAwait(false);
+            afterReadLinear = null;
+
+            Assert.IsTrue(committedLinear5);
+            using (var connection = await store.OpenCenteredViewsAsync(token).ConfigureAwait(false))
+            using (var cmd = connection.CreateCommand())
+            {
+                cmd.CommandText = """
+                    SELECT live_base_id, retry_utc, terminal_reason, retry_count
+                    FROM processing_centered_view_window_work WHERE window_sha256 = $window;
+                    """;
+                cmd.Parameters.AddWithValue("$window", window5.WindowIdentity);
+                using var workReader = await cmd.ExecuteReaderAsync(token).ConfigureAwait(false);
+                Assert.IsTrue(await workReader.ReadAsync(token).ConfigureAwait(false));
+                Assert.IsTrue(await workReader.IsDBNullAsync(0, token).ConfigureAwait(false));
+                Assert.IsFalse(await workReader.IsDBNullAsync(1, token).ConfigureAwait(false));
+                Assert.IsTrue(await workReader.IsDBNullAsync(2, token).ConfigureAwait(false));
+                Assert.AreEqual((long)(CenteredViewWindowPublicationWorker.MaximumMissingCenterRetries - 1), workReader.GetInt64(3));
+            }
+
+            // Drain capture 5's Single and confirm window 5 publishes cleanly instead of remaining archive-only.
+            await singles.DrainCameraAsync(key, stream, CancellationToken.None, token).ConfigureAwait(false);
+            var single5 = Assert.ContainsSingle(await views.ReadArchiveAsync(capture5, token).ConfigureAwait(false)).Base;
+            await windows.PublishReadyAsync(token).ConfigureAwait(false);
+            Assert.AreEqual(single5.BaseId, await views.ReadLiveCandidateAsync(stream!, token).ConfigureAwait(false));
+            var selected5 = await views.SelectLiveAsync(stream!, single5.BaseId, token).ConfigureAwait(false);
+            Assert.IsNotNull(selected5);
+            Assert.AreEqual(single5.BaseId, selected5.View.Base.BaseId);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private sealed class InterceptingExposureProductReader(
+        IExposureProductReader inner,
+        Func<ExposureKey, CancellationToken, ValueTask> onAfterReadLinear) : IExposureProductReader
+    {
+        public ValueTask<ExposureInputV1?> ReadExposureAsync(ExposureKey key, CancellationToken cancellationToken)
+            => inner.ReadExposureAsync(key, cancellationToken);
+
+        public async ValueTask<LinearExposureLookup?> ReadLinearAsync(ExposureKey key, CancellationToken cancellationToken)
+        {
+            var result = await inner.ReadLinearAsync(key, cancellationToken).ConfigureAwait(false);
+            await onAfterReadLinear(key, cancellationToken).ConfigureAwait(false);
+            return result;
+        }
+
+        public ValueTask<ExposureProductLookup?> ReadProductAsync(
+            ExposureKey key, ExposureProductSlot slot, CancellationToken cancellationToken)
+            => inner.ReadProductAsync(key, slot, cancellationToken);
+
+        public ValueTask<IReadOnlyList<ExposureProductLookup>> ReadProductsAfterAsync(
+            CameraKey camera, long afterRevision, int maximumCount, CancellationToken cancellationToken)
+            => inner.ReadProductsAfterAsync(camera, afterRevision, maximumCount, cancellationToken);
+    }
 }

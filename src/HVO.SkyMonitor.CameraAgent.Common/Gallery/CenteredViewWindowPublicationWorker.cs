@@ -96,29 +96,21 @@ internal sealed partial class CenteredViewWindowPublicationWorker(
             long? settledLinearRevision = linear is { Disposition: not LinearExposureDisposition.Pending, Revision: > 0 }
                 ? linear.Revision
                 : null;
-            var resolution = await views.ReadCenterSingleResolutionAsync(stream, center.Key.CaptureId, settledLinearRevision, token)
+            var observedLinearRevision = linear?.Revision ?? 0;
+            var resolution = await views.ResolveOrCheckpointMissingCenterAsync(
+                id, stream, center.Key.CaptureId, settledLinearRevision, observedLinearRevision,
+                RetryDelay, MaximumMissingCenterRetries, MissingCenterSingleTerminalReason, token)
                 .ConfigureAwait(false);
-            liveBase = resolution.BaseId;
-            if (liveBase is null)
-            {
-                if (resolution.SettledWithoutBase)
-                {
-                    CenterSingleUnavailable(logger, id, center.Key.CaptureId);
-                    await views.CheckpointWindowAsync(id, null, null, MissingCenterSingleTerminalReason, token).ConfigureAwait(false);
-                }
-                else if (await views.CheckpointMissingCenterRetryAsync(id, RetryDelay, MaximumMissingCenterRetries,
-                    MissingCenterSingleTerminalReason, token).ConfigureAwait(false))
-                {
-                    CenterSingleRetryExhausted(logger, id, center.Key.CaptureId, MaximumMissingCenterRetries);
-                }
-                return;
-            }
+            if (resolution.Outcome == SqliteCenteredViews.CenterSingleCheckpointOutcome.SettledWithoutBase)
+                CenterSingleUnavailable(logger, id, center.Key.CaptureId);
+            else if (resolution.Outcome == SqliteCenteredViews.CenterSingleCheckpointOutcome.ExhaustedRetries)
+                CenterSingleRetryExhausted(logger, id, center.Key.CaptureId, MaximumMissingCenterRetries);
+            return;
         }
         // Make the ready base eligible before optional reconstruction. A crash or
         // a missing optional input cannot make a usable base disappear.
         await views.CheckpointWindowAsync(id, liveBase, RetryDelay, null, token).ConfigureAwait(false);
-        if (stack is not null)
-            await layers.RebuildForBaseAsync(stack.Base, token).ConfigureAwait(false);
+        await layers.RebuildForBaseAsync(stack!.Base, token).ConfigureAwait(false);
         await views.CheckpointWindowAsync(id, liveBase, null, null, token).ConfigureAwait(false);
     }
 
@@ -131,6 +123,6 @@ internal sealed partial class CenteredViewWindowPublicationWorker(
     [LoggerMessage(Level = LogLevel.Warning, Message = "Closed window {WindowIdentity} for reference capture {CaptureId} ended without a publishable center single.")]
     private static partial void CenterSingleUnavailable(ILogger logger, string windowIdentity, Guid captureId);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Closed window {WindowIdentity} for reference capture {CaptureId} exhausted {MaximumRetries} retries waiting for its center single.")]
-    private static partial void CenterSingleRetryExhausted(ILogger logger, string windowIdentity, Guid captureId, int maximumRetries);
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Closed window {WindowIdentity} for reference capture {CaptureId} exhausted {MaximumAttempts} attempts waiting for its center single.")]
+    private static partial void CenterSingleRetryExhausted(ILogger logger, string windowIdentity, Guid captureId, int maximumAttempts);
 }

@@ -191,7 +191,8 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
         Assert.IsTrue(plan.Any(step => step.Contains("ix_processing_centered_view_window_due", StringComparison.Ordinal)),
             string.Join(Environment.NewLine, plan));
         Assert.IsFalse(plan.Any(step => step.Contains("ix_processing_centered_windows_reference", StringComparison.Ordinal) ||
-            step.Contains("SCAN processing_centered_windows", StringComparison.Ordinal)),
+            step.Contains("SCAN processing_centered_windows", StringComparison.Ordinal) ||
+            step.Contains("SCAN window", StringComparison.Ordinal)),
             string.Join(Environment.NewLine, plan));
         Assert.IsEmpty(await views.ReadDueWindowPublicationsAsync(8, token).ConfigureAwait(false));
         var stepsAt1000 = MeasureDueWindowVmSteps(connection, Start.UtcTicks, 8);
@@ -318,6 +319,7 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
         var retryingId = new string('2', 64);
         var unqueuedId = new string('3', 64);
         var missingRefId = new string('4', 64);
+        var capacityRefusedId = new string('5', 64);
         var retryTicks = Start.AddSeconds(10).UtcTicks;
 
         using var connection = await fixture.OpenAsync().ConfigureAwait(false);
@@ -329,12 +331,13 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
                 DROP TABLE processing_centered_view_window_work;
                 """ + "\n" + SqliteCaptureProcessingStore.LegacyCenteredViewWindowWorkSchemaSqlForTests + """
                 INSERT INTO processing_centered_windows(window_sha256, deadline_utc_ticks, registration_deadline_utc_ticks,
-                    checkpoint_json, reference_capture_id, closure_json, terminal)
+                    checkpoint_json, reference_capture_id, closure_json, failure_reason, terminal)
                 VALUES
-                    ($completed, $t1, $t2, X'7B7D', '11111111111111111111111111111111', X'7B7D', 1),
-                    ($retrying,  $t1, $t2, X'7B7D', '22222222222222222222222222222222', X'7B7D', 1),
-                    ($unqueued,  $t1, $t2, X'7B7D', '33333333333333333333333333333333', X'7B7D', 1),
-                    ($no_ref,    $t1, $t2, X'7B7D', NULL,                               X'7B7D', 1);
+                    ($completed, $t1, $t2, X'7B7D', '11111111111111111111111111111111', X'7B7D', NULL, 1),
+                    ($retrying,  $t1, $t2, X'7B7D', '22222222222222222222222222222222', X'7B7D', NULL, 1),
+                    ($unqueued,  $t1, $t2, X'7B7D', '33333333333333333333333333333333', X'7B7D', NULL, 1),
+                    ($no_ref,    $t1, $t2, X'7B7D', NULL,                               X'7B7D', NULL, 1),
+                    ($refused,   $t1, $t2, X'7B7D', '55555555555555555555555555555555', NULL,    'window-capacity-exhausted', 1);
                 INSERT INTO processing_centered_view_window_work(window_sha256, live_base_id, retry_utc, terminal_reason)
                 VALUES
                     ($completed, NULL, NULL, 'centered.window-evidence-rejected'),
@@ -344,6 +347,7 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
             setup.Parameters.AddWithValue("$retrying", retryingId);
             setup.Parameters.AddWithValue("$unqueued", unqueuedId);
             setup.Parameters.AddWithValue("$no_ref", missingRefId);
+            setup.Parameters.AddWithValue("$refused", capacityRefusedId);
             setup.Parameters.AddWithValue("$t1", Start.UtcTicks);
             setup.Parameters.AddWithValue("$t2", Start.AddSeconds(30).UtcTicks);
             setup.Parameters.AddWithValue("$retry_ticks", retryTicks);
@@ -384,6 +388,80 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
             cmd.CommandText = sql;
             return await cmd.ExecuteScalarAsync().ConfigureAwait(false);
         }
+    }
+
+    [TestMethod]
+    public async Task CenteredCapacityRefusedWindowResolvesThroughReaderAfterAdmission()
+    {
+        using var fixture = await SchemaFixture.CreateAsync(initializeProcessing: true).ConfigureAwait(false);
+        var token = TestContext.CancellationToken;
+        var clock = new CenteredTestClock { UtcNow = Start };
+        var schedule = Schedule(4, 12);
+        var slots = Enumerable.Range(101, 5).Select(sequence => Exposure(sequence, 2 * (sequence - 101))).ToImmutableArray();
+        var attempt = new ExposureAttemptKey(schedule.Camera, schedule.RunId, 1, Guid.NewGuid());
+        var captureId = Guid.NewGuid();
+        var checkpoint = new CenteredWindowCheckpoint(schedule, slots.Select(slot => slot.Time).ToImmutableArray(), attempt);
+
+        using (var connection = await fixture.OpenAsync().ConfigureAwait(false))
+        using (var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(token).ConfigureAwait(false))
+        {
+            using (var seed = connection.CreateCommand())
+            {
+                seed.Transaction = transaction;
+                seed.CommandText = """
+                    INSERT INTO centered_exposure_runs(run_id, agent_id, camera_id, snapshot_json, snapshot_sha256)
+                    VALUES ($run, $agent, $camera, X'7B7D', 'capacity-refusal-run');
+                    INSERT INTO centered_exposure_attempts(attempt_id, run_id, ordinal, status, capture_id)
+                    VALUES ($attempt, $run, 1, 'observed', $capture);
+                    """;
+                seed.Parameters.AddWithValue("$run", schedule.RunId.ToString("N"));
+                seed.Parameters.AddWithValue("$agent", schedule.Camera.AgentId);
+                seed.Parameters.AddWithValue("$camera", schedule.Camera.CameraId);
+                seed.Parameters.AddWithValue("$attempt", attempt.AttemptId.ToString("N"));
+                seed.Parameters.AddWithValue("$capture", captureId.ToString("N"));
+                await seed.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+            }
+
+            await SqliteCaptureProcessingStore.RecordCenteredCapacityRefusalAsync(transaction, checkpoint, token)
+                .ConfigureAwait(false);
+
+            using (var calendar = connection.CreateCommand())
+            {
+                calendar.Transaction = transaction;
+                calendar.CommandText = """
+                    INSERT INTO processing_centered_attempt_calendar(
+                        attempt_id, run_id, slot, start_ticks, interval_ticks, integration_ticks, cadence, dispatched_ticks, window_sha256)
+                    VALUES ($attempt, $run, 1, $start, $interval, $integration, 'minimum-start-interval', $start, $window);
+                    """;
+                calendar.Parameters.AddWithValue("$attempt", attempt.AttemptId.ToString("N"));
+                calendar.Parameters.AddWithValue("$run", schedule.RunId.ToString("N"));
+                calendar.Parameters.AddWithValue("$start", Start.UtcTicks);
+                calendar.Parameters.AddWithValue("$interval", TimeSpan.FromSeconds(2).Ticks);
+                calendar.Parameters.AddWithValue("$integration", TimeSpan.FromMilliseconds(250).Ticks);
+                calendar.Parameters.AddWithValue("$window", schedule.Identity);
+                await calendar.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+            }
+
+            await CenteredWindowRuntimeJournal.MarkAdmittedAsync(transaction, attempt, Start, token).ConfigureAwait(false);
+            await transaction.CommitAsync(token).ConfigureAwait(false);
+        }
+
+        using var store = new SqliteCaptureProcessingStore(fixture.Options, clock);
+        var reader = new CenteredWindowReader(store);
+        var snapshot = await reader.ReadAsync(captureId, token).ConfigureAwait(false);
+        Assert.IsNotNull(snapshot, "Capacity-refused captures must still resolve through ICenteredWindowReader.");
+        Assert.AreEqual(captureId, snapshot.ReferenceCaptureId);
+        Assert.AreEqual(schedule.Identity, snapshot.WindowIdentity);
+        Assert.AreEqual(schedule.Camera, snapshot.Camera);
+        Assert.AreEqual(schedule.RunId, snapshot.RunId);
+        Assert.IsTrue(snapshot.IsTerminal);
+        Assert.AreEqual("window-capacity-exhausted", snapshot.FailureReason);
+        Assert.IsNull(snapshot.ClosureIdentity);
+
+        var views = new SqliteCenteredViews(store, clock, NullLogger<SqliteCenteredViews>.Instance);
+        CollectionAssert.DoesNotContain(
+            (await views.ReadDueWindowPublicationsAsync(8, token).ConfigureAwait(false)).ToArray(),
+            schedule.Identity);
     }
 
     [TestMethod]

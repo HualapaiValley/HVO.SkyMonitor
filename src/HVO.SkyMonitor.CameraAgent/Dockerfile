@@ -147,11 +147,13 @@ COPY --from=build /app/replay-runner /app/replay-runner
 # Its change makes existing installers checkpoint the paired databases before store conversion;
 # rollback restores that checkpoint rather than handing converted stores to older readers.
 # This revision reads raw schema 17, processing schema 12 and the settled environmental schema 5.
-# The combined layout includes the registration retention index and input diagnostics (#1961)
-# and the six centered-view retention indexes (#2000). Use the pre-sync draft revision as a
-# distinct boundary so the installer checkpoints from either reader at raw 17 and processing 12.
+# The combined layout includes the registration retention index and input diagnostics (#1961),
+# the six centered-view retention indexes (#2000), and the centered-view window-work due index
+# and durable retry_count column (#1991, #1999). Advance the boundary to b45b293f so the
+# installer checkpoints from the prior ded7cadc reader and earlier schema-12 readers at raw 17
+# and processing 12 before startup adoption.
 # The checkpoint preserves the previous reader's processing and environmental stores.
-# Refs #1901, #1919, #1922, #1938.
+# Refs #1901, #1919, #1922, #1938, #1991, #1999.
 # The state-contracts label is the image's state contract (install contract section 6), which
 # release.json's stateContracts.cameraAgent repeats: for each SQLite store an instance keeps,
 # the schema this image writes and the schemas it reads. CameraAgentStateContractsLabelTests
@@ -166,7 +168,7 @@ ARG HVO_SOURCE_REVISION
 ARG HVO_CREATED
 LABEL io.hvo.skymonitor.component="CameraAgent" \
       io.hvo.skymonitor.state-compatibility="cameraagent-state-v2" \
-      io.hvo.skymonitor.minimum-compatible-revision="ded7cadc6fe005f8bdda09387e1c3d1337f66e4e" \
+      io.hvo.skymonitor.minimum-compatible-revision="b45b293feede430290d255a332b4c388d2b7f56f" \
       io.hvo.skymonitor.identity-migration="20260827053715_InitialIdentity" \
       io.hvo.skymonitor.raw-ingress-schema="17" \
       io.hvo.skymonitor.raw-ingress-migration="canonical-v13-v14-v15-v16-to-v17" \

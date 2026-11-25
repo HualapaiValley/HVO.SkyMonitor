@@ -359,7 +359,7 @@ internal sealed class CenteredWindowRuntimeJournal : ICenteredWindowJournal
                 SELECT capture_id FROM centered_exposure_attempts WHERE attempt_id = $attempt)
             WHERE window_sha256 = (
                 SELECT window_sha256 FROM processing_centered_attempt_calendar WHERE attempt_id = $attempt)
-                AND terminal = 0 AND closure_json IS NULL AND reference_capture_id IS NULL;
+                AND closure_json IS NULL AND reference_capture_id IS NULL;
             """;
         command.Parameters.AddWithValue("$attempt", attempt.AttemptId.ToString("N"));
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);

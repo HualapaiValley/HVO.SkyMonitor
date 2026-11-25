@@ -131,7 +131,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         SELECT window.window_sha256, 0
         FROM processing_centered_windows window
         LEFT JOIN processing_centered_view_window_work work ON work.window_sha256 = window.window_sha256
-        WHERE window.terminal = 1 AND window.reference_capture_id IS NOT NULL
+        WHERE window.terminal = 1 AND window.closure_json IS NOT NULL AND window.reference_capture_id IS NOT NULL
             AND work.window_sha256 IS NULL;
         """;
 
