@@ -1,8 +1,11 @@
 using System.Collections.Immutable;
+using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 
 namespace HVO.SkyMonitor.Tests;
@@ -1078,6 +1081,145 @@ public sealed partial class ArchitectureBoundaryTests
 
     [TestMethod]
     [TestCategory("Unit")]
+    public async Task ProjectEvaluationProcessTimeoutKillsProcessTreeAndPreservesDiagnostics()
+    {
+        Assert.AreEqual(TimeSpan.FromMinutes(2), RepositoryGraph.DefaultEvaluationTimeout);
+
+        const string stdoutMarker = "ARCH-TIMEOUT-STDOUT-MARKER";
+        const string stderrMarker = "ARCH-TIMEOUT-STDERR-MARKER";
+        const string operationDescription = "SyntheticHungProject.csproj";
+
+        var fastResult = await RepositoryGraph.RunProcessWithTimeoutAsync(
+            CreateQuickOutputStartInfo("ARCH-OK-STDOUT", "ARCH-OK-STDERR"),
+            "SyntheticFastProject.csproj",
+            TimeSpan.FromSeconds(10),
+            TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.AreEqual(0, fastResult.ExitCode);
+        Assert.Contains("ARCH-OK-STDOUT", fastResult.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("ARCH-OK-STDERR", fastResult.StandardError, StringComparison.Ordinal);
+
+        var elapsed = Stopwatch.StartNew();
+        var exception = await Assert.ThrowsExactlyAsync<TimeoutException>(() =>
+            RepositoryGraph.RunProcessWithTimeoutAsync(
+                CreateHangingChildStartInfo(stdoutMarker, stderrMarker),
+                operationDescription,
+                TimeSpan.FromMilliseconds(750),
+                TestContext.CancellationToken)).ConfigureAwait(false);
+        elapsed.Stop();
+
+        Assert.IsLessThan(
+            TimeSpan.FromSeconds(15),
+            elapsed.Elapsed,
+            $"Timed-out child process took {elapsed.Elapsed.TotalSeconds.ToString("0.##", CultureInfo.InvariantCulture)}s to terminate.");
+        Assert.Contains("ARCH-EVALUATE", exception.Message, StringComparison.Ordinal);
+        Assert.Contains(operationDescription, exception.Message, StringComparison.Ordinal);
+        Assert.Contains(stdoutMarker, exception.Message, StringComparison.Ordinal);
+        Assert.Contains(stderrMarker, exception.Message, StringComparison.Ordinal);
+
+        if (!OperatingSystem.IsWindows())
+        {
+            const string pidPrefix = "child_pid=";
+            var pidStart = exception.Message.IndexOf(pidPrefix, StringComparison.Ordinal);
+            Assert.IsGreaterThanOrEqualTo(0, pidStart, $"Expected grandchild PID marker in timeout message:{Environment.NewLine}{exception.Message}");
+            var digitsStart = pidStart + pidPrefix.Length;
+            var digitsEnd = digitsStart;
+            while (digitsEnd < exception.Message.Length && char.IsAsciiDigit(exception.Message[digitsEnd]))
+            {
+                digitsEnd++;
+            }
+
+            Assert.IsTrue(
+                int.TryParse(exception.Message.AsSpan(digitsStart, digitsEnd - digitsStart), NumberStyles.None, CultureInfo.InvariantCulture, out var grandchildPid),
+                $"Failed to parse grandchild PID from timeout message:{Environment.NewLine}{exception.Message}");
+            Assert.IsTrue(
+                await WaitForProcessGoneAsync(grandchildPid, TimeSpan.FromSeconds(5), TestContext.CancellationToken).ConfigureAwait(false),
+                $"Expected Kill(entireProcessTree: true) to terminate grandchild PID {grandchildPid.ToString(CultureInfo.InvariantCulture)}.");
+        }
+    }
+
+    private static ProcessStartInfo CreateQuickOutputStartInfo(string stdoutText, string stderrText)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            var windowsStartInfo = new ProcessStartInfo("cmd.exe")
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false
+            };
+            windowsStartInfo.ArgumentList.Add("/c");
+            windowsStartInfo.ArgumentList.Add($"echo {stdoutText}& echo {stderrText} 1>&2");
+            return windowsStartInfo;
+        }
+
+        var unixStartInfo = new ProcessStartInfo("/bin/sh")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+        unixStartInfo.ArgumentList.Add("-c");
+        unixStartInfo.ArgumentList.Add($"printf '%s\\n' '{stdoutText}'; printf '%s\\n' '{stderrText}' >&2");
+        return unixStartInfo;
+    }
+
+    private static ProcessStartInfo CreateHangingChildStartInfo(string stdoutMarker, string stderrMarker)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            var windowsStartInfo = new ProcessStartInfo("cmd.exe")
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false
+            };
+            windowsStartInfo.ArgumentList.Add("/c");
+            windowsStartInfo.ArgumentList.Add($"echo {stdoutMarker}& echo {stderrMarker} 1>&2& ping -n 61 127.0.0.1 >nul");
+            return windowsStartInfo;
+        }
+
+        var unixStartInfo = new ProcessStartInfo("/bin/sh")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+        unixStartInfo.ArgumentList.Add("-c");
+        unixStartInfo.ArgumentList.Add(
+            $"sleep 60 & child_pid=$!; printf '%s child_pid=%s\\n' '{stdoutMarker}' \"$child_pid\"; printf '%s\\n' '{stderrMarker}' >&2; wait \"$child_pid\"");
+        return unixStartInfo;
+    }
+
+    private static async Task<bool> WaitForProcessGoneAsync(int pid, TimeSpan maxWait, CancellationToken cancellationToken)
+    {
+        var deadline = Stopwatch.StartNew();
+        while (deadline.Elapsed < maxWait)
+        {
+            try
+            {
+                using var process = Process.GetProcessById(pid);
+                if (process.HasExited)
+                {
+                    return true;
+                }
+            }
+            catch (ArgumentException)
+            {
+                return true;
+            }
+            catch (InvalidOperationException)
+            {
+                return true;
+            }
+
+            await Task.Delay(25, cancellationToken).ConfigureAwait(false);
+        }
+
+        return false;
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
     public void TestSupportDirectionRejectsNonTestConsumersAndNonProductionDependencies()
     {
         const string tool = "Architecture.Tool";
@@ -1617,41 +1759,41 @@ public sealed partial class ArchitectureBoundaryTests
             }
         }
 
-        internal static async Task<ProjectEvaluation> EvaluateProjectAsync(string projectPath, string configuration)
-        {
-            using var process = new Process
-            {
-                StartInfo = new ProcessStartInfo("dotnet")
-                {
-                    WorkingDirectory = Path.GetDirectoryName(projectPath)!,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false
-                }
-            };
-            process.StartInfo.ArgumentList.Add("msbuild");
-            process.StartInfo.ArgumentList.Add(projectPath);
-            process.StartInfo.ArgumentList.Add("-nologo");
-            process.StartInfo.ArgumentList.Add("-nodeReuse:false");
-            process.StartInfo.ArgumentList.Add($"-property:Configuration={configuration}");
-            process.StartInfo.ArgumentList.Add("-getProperty:AssemblyName,TargetPath");
-            process.StartInfo.ArgumentList.Add("-getItem:ProjectReference,PackageReference,FrameworkReference");
-            process.StartInfo.Environment["MSBUILDDISABLENODEREUSE"] = "1";
+        internal static readonly TimeSpan DefaultEvaluationTimeout = TimeSpan.FromMinutes(2);
+        private static readonly TimeSpan PostKillGracePeriod = TimeSpan.FromSeconds(5);
 
-            process.Start();
-            // Drain both pipes concurrently so a failing process can write its full diagnostics.
-            var outputTask = process.StandardOutput.ReadToEndAsync();
-            var errorTask = process.StandardError.ReadToEndAsync();
-            await process.WaitForExitAsync().ConfigureAwait(false);
-            var output = await outputTask.ConfigureAwait(false);
-            var error = await errorTask.ConfigureAwait(false);
-            if (process.ExitCode != 0)
+        internal static Task<ProjectEvaluation> EvaluateProjectAsync(string projectPath, string configuration) =>
+            EvaluateProjectAsync(projectPath, configuration, DefaultEvaluationTimeout);
+
+        internal static async Task<ProjectEvaluation> EvaluateProjectAsync(
+            string projectPath,
+            string configuration,
+            TimeSpan timeout)
+        {
+            var startInfo = new ProcessStartInfo("dotnet")
+            {
+                WorkingDirectory = Path.GetDirectoryName(projectPath)!,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false
+            };
+            startInfo.ArgumentList.Add("msbuild");
+            startInfo.ArgumentList.Add(projectPath);
+            startInfo.ArgumentList.Add("-nologo");
+            startInfo.ArgumentList.Add("-nodeReuse:false");
+            startInfo.ArgumentList.Add($"-property:Configuration={configuration}");
+            startInfo.ArgumentList.Add("-getProperty:AssemblyName,TargetPath");
+            startInfo.ArgumentList.Add("-getItem:ProjectReference,PackageReference,FrameworkReference");
+            startInfo.Environment["MSBUILDDISABLENODEREUSE"] = "1";
+
+            var result = await RunProcessWithTimeoutAsync(startInfo, projectPath, timeout).ConfigureAwait(false);
+            if (result.ExitCode != 0)
             {
                 throw new InvalidOperationException(
-                    $"ARCH-EVALUATE: MSBuild evaluation failed for '{projectPath}'.{Environment.NewLine}{output}{Environment.NewLine}{error}");
+                    $"ARCH-EVALUATE: MSBuild evaluation failed for '{projectPath}'.{Environment.NewLine}{result.StandardOutput}{Environment.NewLine}{result.StandardError}");
             }
 
-            using var document = JsonDocument.Parse(output);
+            using var document = JsonDocument.Parse(result.StandardOutput);
             var root = document.RootElement;
             var assemblyName = root.GetProperty("Properties").GetProperty("AssemblyName").GetString()
                 ?? Path.GetFileNameWithoutExtension(projectPath)!;
@@ -1668,6 +1810,162 @@ public sealed partial class ArchitectureBoundaryTests
             return new ProjectEvaluation(assemblyName, projectReferences, packageReferences, frameworkReferences)
             { TargetPath = root.GetProperty("Properties").GetProperty("TargetPath").GetString()! };
         }
+
+        internal static async Task<ProcessExecutionResult> RunProcessWithTimeoutAsync(
+            ProcessStartInfo startInfo,
+            string operationDescription,
+            TimeSpan timeout,
+            CancellationToken cancellationToken = default)
+        {
+            ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(timeout, TimeSpan.Zero);
+
+            using var process = new Process { StartInfo = startInfo };
+            if (!process.Start())
+            {
+                throw new InvalidOperationException(
+                    $"ARCH-EVALUATE: Failed to start process for '{operationDescription}'.");
+            }
+
+            // Drain both pipes concurrently so a failing or timed-out process can write its full diagnostics.
+            using var drainCts = new CancellationTokenSource();
+            var outputBuffer = new StringBuilder();
+            var errorBuffer = new StringBuilder();
+            var outputTask = DrainStreamAsync(process.StandardOutput, outputBuffer, drainCts.Token);
+            var errorTask = DrainStreamAsync(process.StandardError, errorBuffer, drainCts.Token);
+
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(timeout);
+
+            try
+            {
+                await process.WaitForExitAsync(timeoutCts.Token).ConfigureAwait(false);
+                await Task.WhenAll(outputTask, errorTask).WaitAsync(timeoutCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                var timedOut = !cancellationToken.IsCancellationRequested;
+                TerminateProcessTree(process);
+                await WaitForExitAfterKillAsync(process).ConfigureAwait(false);
+                await DrainOutputsAfterKillAsync(outputTask, errorTask, drainCts).ConfigureAwait(false);
+
+                if (!timedOut)
+                {
+                    throw;
+                }
+
+                var timedOutOutput = SnapshotBuffer(outputBuffer);
+                var timedOutError = SnapshotBuffer(errorBuffer);
+                throw new TimeoutException(
+                    $"ARCH-EVALUATE: Process timed out after {timeout.TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture)}s for '{operationDescription}' and its process tree was terminated." +
+                    $"{Environment.NewLine}StandardOutput:{Environment.NewLine}{timedOutOutput}" +
+                    $"{Environment.NewLine}StandardError:{Environment.NewLine}{timedOutError}");
+            }
+
+            return new ProcessExecutionResult(
+                process.ExitCode,
+                SnapshotBuffer(outputBuffer),
+                SnapshotBuffer(errorBuffer));
+        }
+
+        private static void TerminateProcessTree(Process process)
+        {
+            try
+            {
+                if (!process.HasExited)
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+            }
+            catch (InvalidOperationException)
+            {
+                // Process already exited between the HasExited check and Kill.
+            }
+            catch (Win32Exception) when (process.HasExited)
+            {
+                // Process exited concurrently while terminating the tree.
+            }
+            catch (AggregateException ex) when (ex.InnerExceptions.All(inner => inner is InvalidOperationException or Win32Exception) && process.HasExited)
+            {
+                // Processes in the tree exited concurrently while terminating.
+            }
+        }
+
+        private static async Task WaitForExitAfterKillAsync(Process process)
+        {
+            using var exitCts = new CancellationTokenSource(PostKillGracePeriod);
+            try
+            {
+                await process.WaitForExitAsync(exitCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (exitCts.IsCancellationRequested)
+            {
+                // Bounded post-kill wait expired; continue so the timeout error is still surfaced.
+            }
+        }
+
+        private static async Task DrainOutputsAfterKillAsync(
+            Task outputTask,
+            Task errorTask,
+            CancellationTokenSource drainCts)
+        {
+            try
+            {
+                await Task.WhenAll(outputTask, errorTask).WaitAsync(PostKillGracePeriod).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                await drainCts.CancelAsync().ConfigureAwait(false);
+            }
+        }
+
+        private static async Task DrainStreamAsync(
+            StreamReader reader,
+            StringBuilder destination,
+            CancellationToken cancellationToken)
+        {
+            var buffer = new char[4096];
+            try
+            {
+                while (true)
+                {
+                    var read = await reader.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false);
+                    if (read == 0)
+                    {
+                        break;
+                    }
+
+                    lock (destination)
+                    {
+                        destination.Append(buffer, 0, read);
+                    }
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // Post-kill drain window expired; preserve everything captured so far.
+            }
+            catch (ObjectDisposedException) when (cancellationToken.IsCancellationRequested)
+            {
+                // Process stream closed when Process was disposed after drain cancellation.
+            }
+            catch (IOException) when (cancellationToken.IsCancellationRequested)
+            {
+                // Pipe closed after drain cancellation.
+            }
+        }
+
+        private static string SnapshotBuffer(StringBuilder buffer)
+        {
+            lock (buffer)
+            {
+                return buffer.ToString();
+            }
+        }
+
+        internal sealed record ProcessExecutionResult(
+            int ExitCode,
+            string StandardOutput,
+            string StandardError);
 
         private static string[] GetItemValues(JsonElement items, string itemName, string propertyName) =>
             items.GetProperty(itemName)
