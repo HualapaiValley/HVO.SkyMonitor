@@ -161,7 +161,7 @@ jobs:
     name: Development v1 / Build and Unit
     needs: preflight
     if: github.event_name == 'push' || github.event_name == 'merge_group' || github.event.pull_request.draft == false
-    runs-on: ${{ fromJSON(needs.preflight.outputs.merge_group_run_id != '' && '["ubuntu-24.04"]' || '["self-hosted", "linux", "x64", "hvo-skymonitor-build"]') }}
+    runs-on: ${{ fromJSON(github.event_name == 'push' && needs.preflight.outputs.merge_group_run_id != '' && '["ubuntu-24.04"]' || '["self-hosted", "linux", "x64", "hvo-skymonitor-build"]') }}
     timeout-minutes: 22
     env:
       MERGE_GROUP_RUN_ID: ${{ needs.preflight.outputs.merge_group_run_id }}
@@ -179,7 +179,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Checkout exact commit
-        if: env.MERGE_GROUP_RUN_ID == ''
+        if: github.event_name != 'push' || env.MERGE_GROUP_RUN_ID == ''
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: ${{ github.event_name == 'pull_request' && '0' || '1' }}
@@ -194,22 +194,30 @@ jobs:
           evidence="$DEV_V1_EVIDENCE_ROOT/classification.md"
           classifier="$DEV_V1_EVIDENCE_ROOT/base-classifier"
           output="$DEV_V1_EVIDENCE_ROOT/classifier-output.txt"
+          component_output="$DEV_V1_EVIDENCE_ROOT/component-classifier-output.txt"
           run_full=true
           reason='non-pull-request event requires full validation'
+          run_deployment_cli=true
+          deployment_cli_reason='non-pull-request event requires Deployment.Cli.Tests'
           base=''
           merge="$GITHUB_SHA"
           printf 'Preflight dependency: success\n' > "$evidence"
           : > "$output"
-          if [[ -n "${MERGE_GROUP_RUN_ID:-}" ]]; then
+          : > "$component_output"
+          if [[ "$EVENT_NAME" == push && -n "${MERGE_GROUP_RUN_ID:-}" ]]; then
             run_full=false
             reason='exact push SHA already passed merge-group validation'
+            run_deployment_cli=false
+            deployment_cli_reason='exact push SHA already passed merge-group validation'
             printf 'mergeGroupRunId=%s\n' "$MERGE_GROUP_RUN_ID" >> "$evidence"
           elif [[ "$EVENT_NAME" == pull_request ]]; then
             reason='merge binding unavailable or mismatched'
+            deployment_cli_reason='merge binding unavailable or mismatched'
             parents="$(git rev-list --parents -n 1 HEAD)" || parents=''
             read -r merge_commit base second extra <<< "$parents"
             if [[ "$merge_commit" == "$GITHUB_SHA" && -n "$base" && -n "$PR_HEAD_SHA" && -n "$second" && "$second" == "$PR_HEAD_SHA" && -z "$extra" ]]; then
               reason='base classifier unavailable or failed'
+              deployment_cli_reason='base classifier unavailable or failed'
               if git show "$base:scripts/ci:classify" > "$classifier"; then
                 eligible=true
                 decision=''
@@ -266,11 +274,239 @@ jobs:
                     fi
                   fi
                 fi
+                if [[ "$run_full" == false ]]; then
+                  run_deployment_cli=false
+                  deployment_cli_reason='documentation fast path skips Unit workload'
+                else
+                  deploy_cli_skip_eligible=true
+                  deployment_cli_reason='pull request touches no deployment, delivery, shared, or complete-matrix paths'
+                  for endpoint in "$PR_HEAD_SHA" "$merge_commit"; do
+                    printf '\nComponent classification endpoint: %s\n' "$endpoint" >> "$evidence"
+                    if ! GITHUB_STEP_SUMMARY="$evidence" bash "$classifier" pull_request "$base" "$endpoint" > "$component_output"; then
+                      deploy_cli_skip_eligible=false
+                      deployment_cli_reason='base classifier unavailable or failed'
+                      break
+                    fi
+                    mapfile -t complete_vals < <(grep '^complete=' "$component_output" || true)
+                    mapfile -t delivery_vals < <(grep '^delivery=' "$component_output" || true)
+                    mapfile -t deployment_vals < <(grep '^deployment=' "$component_output" || true)
+                    if [[ ${#complete_vals[@]} -ne 1 || ${#delivery_vals[@]} -ne 1 || ${#deployment_vals[@]} -ne 1 ]]; then
+                      deploy_cli_skip_eligible=false
+                      deployment_cli_reason='component classifier output missing or invalid'
+                      break
+                    fi
+                    complete_val="${complete_vals[0]}"
+                    delivery_val="${delivery_vals[0]}"
+                    deployment_val="${deployment_vals[0]}"
+                    if [[ ( "$complete_val" != complete=true && "$complete_val" != complete=false ) ||
+                          ( "$delivery_val" != delivery=true && "$delivery_val" != delivery=false ) ||
+                          ( "$deployment_val" != deployment=true && "$deployment_val" != deployment=false ) ]]; then
+                      deploy_cli_skip_eligible=false
+                      deployment_cli_reason='component classifier output missing or invalid'
+                      break
+                    fi
+                    if [[ "$complete_val" != complete=false || "$delivery_val" != delivery=false || "$deployment_val" != deployment=false ]]; then
+                      deploy_cli_skip_eligible=false
+                      deployment_cli_reason="selected by ${complete_val}, ${delivery_val}, ${deployment_val}"
+                      break
+                    fi
+                  done
+                  if [[ "$deploy_cli_skip_eligible" == true ]]; then
+                    deploy_floor_rc=0
+                    python3 - "$base" <<'PY_DEPLOY_FLOORS' || deploy_floor_rc=$?
+          import json, math, subprocess, sys
+          base = sys.argv[1]
+          prefixes = ("HVO.SkyMonitor.Deployment.Cli/", "HVO.SkyMonitor.Deployment.Contracts/", "HVO.SkyMonitor.TerminalUi/")
+          pinned_retired = sorted((
+              "HVO.SkyMonitor.AgentCore/ArtifactUploadManifest.cs",
+              "HVO.SkyMonitor.Deployment.Cli/DistributionCatalogAcquirer.cs",
+              "HVO.SkyMonitor.Deployment.Distribution/DistributionVerifier.cs",
+          ))
+          below_aggregate_escapes = frozenset((
+              "HVO.SkyMonitor.AgentCore/ArtifactManifestV2.cs",
+          ))
+          components = ("shared", "cameraagent", "delivery")
+          local_only_allowlist = "tools/HVO.SkyMonitor.Deployment.ReleaseTool/Program.cs"
+          def reject_constant(_):
+              raise ValueError("non-finite JSON constant")
+          def reject_duplicate_keys(pairs):
+              obj = {}
+              for key, value in pairs:
+                  if key in obj:
+                      raise ValueError(f"duplicate JSON key: {key}")
+                  obj[key] = value
+              return obj
+          def is_ratio(value, *, positive=False):
+              if isinstance(value, bool) or not isinstance(value, (int, float)):
+                  return False
+              if isinstance(value, float) and not math.isfinite(value):
+                  return False
+              return (0 < value <= 1) if positive else (0 <= value <= 1)
+          def is_valid_relpath(relpath):
+              if (not isinstance(relpath, str) or not relpath or relpath != relpath.strip()
+                      or "\0" in relpath or "\\" in relpath or "\n" in relpath or "\r" in relpath):
+                  return False
+              parts = relpath.split("/")
+              return len(parts) >= 2 and not any(part in ("", ".", "..") for part in parts)
+          def ls_tree_entries(relpaths):
+              if not relpaths:
+                  return {}
+              wanted = set(relpaths)
+              out = subprocess.check_output(
+                  ["git", "--literal-pathspecs", "ls-tree", "-t", "-z", base, "--", *relpaths]
+              )
+              if out and not out.endswith(b"\0"):
+                  raise ValueError("unterminated git ls-tree -z output")
+              entries = {}
+              for raw in out.split(b"\0")[:-1]:
+                  if not raw:
+                      raise ValueError("empty git ls-tree -z record")
+                  meta, raw_path = raw.split(b"\t", 1)
+                  entry_path = raw_path.decode("utf-8", "surrogateescape")
+                  if entry_path not in wanted:
+                      continue
+                  mode, obj_type, oid = meta.decode("ascii").split(" ")
+                  if entry_path in entries:
+                      raise ValueError(f"duplicate tree entry: {entry_path}")
+                  entries[entry_path] = (mode, obj_type, oid)
+              return entries
+          def is_regular_blob_entry(entry):
+              return entry is not None and entry[0] in ("100644", "100755") and entry[1] == "blob"
+          def read_json_blob(tree_entries, relpath):
+              entry = tree_entries.get(relpath)
+              if not is_regular_blob_entry(entry):
+                  raise ValueError(f"missing or non-regular git blob: {relpath}")
+              raw = subprocess.check_output(["git", "cat-file", "blob", entry[2]])
+              return json.loads(
+                  raw.decode("utf-8"),
+                  parse_constant=reject_constant,
+                  object_pairs_hook=reject_duplicate_keys,
+              )
+          def validate_baseline_schema(data):
+              if not isinstance(data, dict):
+                  return None
+              aggregate = data.get("aggregate")
+              if (not isinstance(aggregate, dict)
+                      or not is_ratio(aggregate.get("line"), positive=True)
+                      or not is_ratio(aggregate.get("branch"), positive=True)
+                      or not is_ratio(aggregate.get("tolerancePercentagePoints"))):
+                  return None
+              files = data.get("files")
+              if not isinstance(files, dict) or not files:
+                  return None
+              for path, floor in files.items():
+                  if not is_valid_relpath(path) or not isinstance(floor, dict):
+                      return None
+                  if not is_ratio(floor.get("line")) or not is_ratio(floor.get("branch")):
+                      return None
+                  if "developmentV1LocalOnlyReason" in floor:
+                      local_only_reason = floor["developmentV1LocalOnlyReason"]
+                      if path != local_only_allowlist or not isinstance(local_only_reason, str) or not local_only_reason.strip():
+                          return None
+              return files
+          def source_relpath(path):
+              return path if path.startswith("tools/") else f"src/{path}"
+          def component_of(path):
+              if path.startswith(("tools/", "HVO.SkyMonitor.Deployment.")):
+                  return "delivery"
+              if path.startswith("HVO.SkyMonitor.CameraAgent"):
+                  return "cameraagent"
+              return "shared"
+          metadata_paths = [
+              "scripts/coverage/baseline.json",
+              "scripts/coverage/policy.json",
+              *(f"scripts/coverage/baseline.{component}.json" for component in components),
+          ]
+          try:
+              metadata_entries = ls_tree_entries(metadata_paths)
+              baseline = read_json_blob(metadata_entries, "scripts/coverage/baseline.json")
+              policy = read_json_blob(metadata_entries, "scripts/coverage/policy.json")
+              component_baselines = {
+                  component: read_json_blob(metadata_entries, f"scripts/coverage/baseline.{component}.json")
+                  for component in components
+              }
+          except Exception:
+              sys.exit(2)
+          if not isinstance(policy, dict):
+              sys.exit(2)
+          retired_list = policy.get("retiredSourcePaths")
+          if (not isinstance(retired_list, list)
+                  or not all(isinstance(item, str) and item.strip() for item in retired_list)
+                  or sorted(retired_list) != pinned_retired):
+              sys.exit(2)
+          retired = set(retired_list)
+          files = validate_baseline_schema(baseline)
+          if files is None:
+              sys.exit(2)
+          component_files = {}
+          for component, data in component_baselines.items():
+              parsed = validate_baseline_schema(data)
+              if parsed is None:
+                  sys.exit(2)
+              component_files[component] = parsed
+          if not all(item in files for item in retired):
+              sys.exit(2)
+          if not all(item in files for item in below_aggregate_escapes):
+              sys.exit(2)
+          all_source_paths = sorted({
+              source_relpath(path)
+              for mapping in (files, *component_files.values())
+              for path in mapping
+          })
+          try:
+              source_entries = ls_tree_entries(all_source_paths)
+          except Exception:
+              sys.exit(2)
+          for mapping in (files, *component_files.values()):
+              for path in mapping:
+                  entry = source_entries.get(source_relpath(path))
+                  if entry is None:
+                      if path not in retired:
+                          sys.exit(2)
+                  elif not is_regular_blob_entry(entry):
+                      sys.exit(2)
+          measurable_floors = 0
+          for path, floor in files.items():
+              entry = source_entries.get(source_relpath(path))
+              if entry is None:
+                  continue
+              owning_component = component_of(path)
+              candidate = component_files[owning_component].get(path)
+              if candidate is None:
+                  sys.exit(2)
+              if not (candidate["line"] >= floor["line"] and candidate["branch"] >= floor["branch"]):
+                  below_reason = candidate.get("belowAggregateReason")
+                  if not (path in below_aggregate_escapes and isinstance(below_reason, str) and below_reason.strip()):
+                      sys.exit(2)
+              if "developmentV1LocalOnlyReason" in floor:
+                  continue
+              if path.startswith(prefixes):
+                  sys.exit(3)
+              if path.startswith("tools/"):
+                  sys.exit(2)
+              measurable_floors += 1
+          if measurable_floors == 0:
+              sys.exit(2)
+          PY_DEPLOY_FLOORS
+                    if [[ "$deploy_floor_rc" -eq 3 ]]; then
+                      deploy_cli_skip_eligible=false
+                      deployment_cli_reason='active Deployment.Cli canonical coverage floor requires Deployment.Cli.Tests'
+                    elif [[ "$deploy_floor_rc" -ne 0 ]]; then
+                      deploy_cli_skip_eligible=false
+                      deployment_cli_reason='coverage baseline or policy validation failed; Deployment.Cli.Tests required'
+                    fi
+                  fi
+                  if [[ "$deploy_cli_skip_eligible" == true ]]; then
+                    run_deployment_cli=false
+                  fi
+                fi
               fi
             fi
           fi
-          printf 'mergeSha=%s\nbaseSha=%s\nprHeadSha=%s\nrunFull=%s\nreason=%s\n' "$merge" "$base" "$PR_HEAD_SHA" "$run_full" "$reason" >> "$evidence"
-          printf 'run_full=%s\nreason=%s\nbase_sha=%s\n' "$run_full" "$reason" "$base" >> "$GITHUB_OUTPUT"
+          printf 'mergeSha=%s\nbaseSha=%s\nprHeadSha=%s\nrunFull=%s\nreason=%s\nrunDeploymentCli=%s\ndeploymentCliReason=%s\n' \
+            "$merge" "$base" "$PR_HEAD_SHA" "$run_full" "$reason" "$run_deployment_cli" "$deployment_cli_reason" >> "$evidence"
+          printf 'run_full=%s\nreason=%s\nbase_sha=%s\nrun_deployment_cli=%s\ndeployment_cli_reason=%s\n' \
+            "$run_full" "$reason" "$base" "$run_deployment_cli" "$deployment_cli_reason" >> "$GITHUB_OUTPUT"
           cat "$evidence"
 
       - name: Setup .NET from global.json
@@ -311,8 +547,18 @@ jobs:
         env:
           DOCKER_HOST: unix:///tmp/hvo-no-docker.sock
           HVO_TERMINAL_RENDERS_DIR: ${{ runner.temp }}/development-v1/terminal-renders
+          WORKLOAD_OUTCOME: ${{ steps.workload.outcome }}
+          RUN_DEPLOYMENT_CLI: ${{ steps.workload.outputs.run_deployment_cli }}
         run: |
-          ./scripts/coverage:development-v1 --settings "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings"
+          coverage_args=()
+          unit_filter="TestCategory=Unit&TestCategory!=Performance"
+          test_project_args=(-p:SkipDeploymentCliTests=false)
+          if [[ "$GITHUB_EVENT_NAME" == pull_request && "$WORKLOAD_OUTCOME" == success && "$RUN_DEPLOYMENT_CLI" == false ]]; then
+            coverage_args+=(--skip-deployment-cli)
+            unit_filter+="&FullyQualifiedName!~HVO.SkyMonitor.Deployment.Cli.Tests"
+            test_project_args=(-p:SkipDeploymentCliTests=true)
+          fi
+          ./scripts/coverage:development-v1 --settings "${coverage_args[@]}" "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings"
           remaining="$((DEV_V1_DEADLINE_EPOCH - $(date +%s)))"
           ((remaining > 0)) || exit 124
           /usr/bin/time -v -o "$DEV_V1_EVIDENCE_ROOT/timing/unit.time" \
@@ -320,7 +566,8 @@ jobs:
             dotnet test HVO.SkyMonitor.v9.slnx \
               --no-build \
               --configuration Release \
-              --filter "TestCategory=Unit&TestCategory!=Performance" \
+              --filter "$unit_filter" \
+              "${test_project_args[@]}" \
               --settings "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings" \
               --collect:"XPlat Code Coverage" \
               --results-directory "$DEV_V1_EVIDENCE_ROOT/unit" \
@@ -329,6 +576,9 @@ jobs:
       - name: Enforce canonical per-file coverage floors
         if: ${{ steps.workload.outcome != 'success' || steps.workload.outputs.run_full != 'false' }}
         id: coverage
+        env:
+          WORKLOAD_OUTCOME: ${{ steps.workload.outcome }}
+          RUN_DEPLOYMENT_CLI: ${{ steps.workload.outputs.run_deployment_cli }}
         run: |
           remaining="$((DEV_V1_DEADLINE_EPOCH - $(date +%s)))"
           ((remaining > 0)) || exit 124
@@ -337,9 +587,13 @@ jobs:
           /usr/bin/time -v -o "$DEV_V1_EVIDENCE_ROOT/timing/coverage.time" \
             timeout --signal=TERM --kill-after=30s "${remaining}s" \
             bash -euo pipefail -c '
+              coverage_args=()
+              if [[ "$GITHUB_EVENT_NAME" == pull_request && "$WORKLOAD_OUTCOME" == success && "$RUN_DEPLOYMENT_CLI" == false ]]; then
+                coverage_args+=(--skip-deployment-cli)
+              fi
               dotnet tool restore
               ./scripts/test:coverage-development-v1
-              ./scripts/coverage:development-v1 "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage"
+              ./scripts/coverage:development-v1 "${coverage_args[@]}" "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage"
             '
 
       # Those screens drawn as SVG, as docs/images/terminal has them, and kept with the evidence below (#1317).
@@ -355,6 +609,8 @@ jobs:
           CLASSIFY_OUTCOME: ${{ steps.workload.outcome }}
           RUN_FULL: ${{ steps.workload.outputs.run_full }}
           WORKLOAD_REASON: ${{ steps.workload.outputs.reason }}
+          RUN_DEPLOYMENT_CLI: ${{ steps.workload.outputs.run_deployment_cli }}
+          DEPLOYMENT_CLI_REASON: ${{ steps.workload.outputs.deployment_cli_reason }}
           CLASSIFIED_BASE: ${{ steps.workload.outputs.base_sha }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           RESTORE_OUTCOME: ${{ steps.restore.outcome }}
@@ -378,16 +634,22 @@ jobs:
           }
           docs_fast_path=false
           reason="${WORKLOAD_REASON:-classification unavailable; full validation required}"
+          deployment_cli_included=true
+          deployment_cli_reason="${DEPLOYMENT_CLI_REASON:-classification unavailable; Deployment.Cli.Tests required}"
           sdk_version=''
           merge_group_run_url=''
-          if [[ "$CLASSIFY_OUTCOME" == success && "$RUN_FULL" == false ]]; then
-            if [[ -n "${MERGE_GROUP_RUN_ID:-}" ]]; then
+          if [[ "$GITHUB_EVENT_NAME" != merge_group && "$CLASSIFY_OUTCOME" == success && "$RUN_FULL" == false ]]; then
+            deployment_cli_included=false
+            if [[ "$GITHUB_EVENT_NAME" == push && -n "${MERGE_GROUP_RUN_ID:-}" ]]; then
               merge_group_run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$MERGE_GROUP_RUN_ID"
               printf 'Build and Unit reused [merge-group validation for %s](%s).\n' "$GITHUB_SHA" "$merge_group_run_url" >> "$GITHUB_STEP_SUMMARY"
             else
               docs_fast_path=true
             fi
           else
+            if [[ "$GITHUB_EVENT_NAME" == pull_request && "$CLASSIFY_OUTCOME" == success && "$RUN_DEPLOYMENT_CLI" == false ]]; then
+              deployment_cli_included=false
+            fi
             sdk_version="$(dotnet --version 2>/dev/null || true)"
           fi
           completed_at="$(date +%s)"
@@ -398,6 +660,8 @@ jobs:
             --arg event "$GITHUB_EVENT_NAME" \
             --argjson docsFastPath "$docs_fast_path" \
             --arg docsFastPathReason "$reason" \
+            --argjson deploymentCliTestsIncluded "$deployment_cli_included" \
+            --arg deploymentCliTestsReason "$deployment_cli_reason" \
             --arg mergeGroupRunUrl "$merge_group_run_url" \
             --arg baseSha "$CLASSIFIED_BASE" \
             --arg prHeadSha "$PR_HEAD_SHA" \
@@ -408,7 +672,7 @@ jobs:
             --argjson build "$(stage_json build "$BUILD_OUTCOME")" \
             --argjson unit "$(stage_json unit "$UNIT_OUTCOME")" \
             --argjson coverage "$(stage_json coverage "$COVERAGE_OUTCOME")" \
-            '{schema:$schema,profile:"development-v1",headSha:$headSha,event:$event,baseSha:$baseSha,prHeadSha:$prHeadSha,mergeSha:$headSha,docsFastPath:$docsFastPath,docsFastPathReason:$docsFastPathReason,preflight:"success",sdkVersion:($sdkVersion|if length==0 then null else . end),runnerElapsedThroughSummaryStartSeconds:$elapsed,targetSeconds:600,workloadBudgetSeconds:1080,hardTimeoutSeconds:1320,unitTrxCount:$trxCount,memoryMetric:"GNU time ru_maxrss: largest single process",stages:[$restore,$build,$unit,$coverage],qualificationWorkflow:"ci.yml",qualificationOnlyChecks:["whole-repository-shellcheck","exhaustive-test-category-discovery"],mergeGroupRunUrl:($mergeGroupRunUrl|if length==0 then null else . end)}' \
+            '{schema:$schema,profile:"development-v1",headSha:$headSha,event:$event,baseSha:$baseSha,prHeadSha:$prHeadSha,mergeSha:$headSha,docsFastPath:$docsFastPath,docsFastPathReason:$docsFastPathReason,deploymentCliTestsIncluded:$deploymentCliTestsIncluded,deploymentCliTestsReason:$deploymentCliTestsReason,preflight:"success",sdkVersion:($sdkVersion|if length==0 then null else . end),runnerElapsedThroughSummaryStartSeconds:$elapsed,targetSeconds:600,workloadBudgetSeconds:1080,hardTimeoutSeconds:1320,unitTrxCount:$trxCount,memoryMetric:"GNU time ru_maxrss: largest single process",stages:[$restore,$build,$unit,$coverage],qualificationWorkflow:"ci.yml",qualificationOnlyChecks:["whole-repository-shellcheck","exhaustive-test-category-discovery"],mergeGroupRunUrl:($mergeGroupRunUrl|if length==0 then null else . end)}' \
             > "$DEV_V1_EVIDENCE_ROOT/manifest.json"
           jq . "$DEV_V1_EVIDENCE_ROOT/manifest.json"
 

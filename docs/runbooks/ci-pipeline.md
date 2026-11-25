@@ -43,8 +43,8 @@ reports belong to full qualification. Preflight also runs
 a file floor, widen tolerance, or add an arbitrary v1 local-only path.
 
 The Docker-disabled Unit selection runs the [active CameraAgent and shared test projects](#active-test-selection)
-and collects coverage once.
-`scripts/coverage:development-v1 --settings OUTPUT` copies
+and collects coverage once. On `development/v1` `pull_request` runs, `Select Build and Unit workload` runs the trusted first-parent copy of `scripts/ci:classify` against both the PR head and checked-out merge tree. When both endpoints classify cleanly with `complete=false`, `delivery=false`, and `deployment=false` (for example, a CameraAgent-only PR that touches no deployment, delivery, shared, linked-input, or CI/workflow/build-contract files; CameraAgent PRs that touch `Deployment.Cli`/`Deployment.Cli.Tests` linked inputs such as `src/HVO.SkyMonitor.CameraAgent/wwwroot/css/themes/hvo-dark.css`, linked CameraAgent sources, `Dockerfile`, or sample/virtual configs, or test-executed runbooks such as `docs/runbooks/cameraagent-silo-runtime.md`, do not skip) and no active canonical coverage floor depends on `Deployment.Cli.Tests`, Build and Unit path-filters `HVO.SkyMonitor.Deployment.Cli.Tests` out (`-p:SkipDeploymentCliTests=true` in `Directory.Build.targets`, plus `&FullyQualifiedName!~HVO.SkyMonitor.Deployment.Cli.Tests`), and passes `--skip-deployment-cli` to `scripts/coverage:development-v1` (#2071). All 27 active canonical per-file coverage floors live in the six shared libraries and remain enforced unconditionally on every PR that runs the Unit workload (the documentation fast path skips the Unit and coverage stages); skip mode never waives an active canonical floor and fails closed (selecting `Deployment.Cli.Tests` in workflow workload selection and rejecting `--skip-deployment-cli` in `scripts/coverage:development-v1` and `scripts/coverage/Program.cs`) if any active canonical floor belongs to `HVO.SkyMonitor.Deployment.Cli`, `HVO.SkyMonitor.Deployment.Contracts`, or `HVO.SkyMonitor.TerminalUi`. On `merge_group` runs, full `push` runs, deployment/delivery/shared/complete-matrix PRs, or any classification failure or endpoint disagreement, `HVO.SkyMonitor.Deployment.Cli.Tests` and all active floors run unconditionally. The retained `hvo-development-v1-ci-v6` manifest records `deploymentCliTestsIncluded` and `deploymentCliTestsReason`.
+`scripts/coverage:development-v1 --settings [--skip-deployment-cli] OUTPUT` copies
 `tests/coverage.runsettings`, derives its assembly Include filter from existing
 canonical floor paths, and sets `SingleHit=true`. Floors measure whether each
 line/branch was hit; repeated hit counts add no evidence and make hot Unit loops
@@ -52,7 +52,8 @@ more expensive. All other collector settings, including canonical test-assembly,
 TestSupport, migration, build-output and attribute exclusions remain intact.
 This avoids instrumenting host assemblies whose coverage is not measured by this
 profile. The generated settings are retained with the raw reports. The merge
-requires one GUID-directory report per active project in `tests/unit-test-projects.json`;
+requires one GUID-directory report per selected active project in `tests/unit-test-projects.json`
+(17 projects by default, or 16 when `--skip-deployment-cli` excludes `HVO.SkyMonitor.Deployment.Cli.Tests`);
 it excludes TRX attachment copies and never searches outside the fresh run root.
 Every input is parsed and checked before ReportGenerator runs: that tool can log
 a malformed input, omit it and still exit zero. Raw records must occupy the

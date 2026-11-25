@@ -8,6 +8,18 @@ if (developmentV1)
     args = args[1..];
 }
 
+var skipDeploymentCli = args.Length > 0 && args[0] == "--skip-deployment-cli";
+if (skipDeploymentCli)
+{
+    if (!developmentV1)
+    {
+        Console.Error.WriteLine("--skip-deployment-cli is only supported with --development-v1.");
+        return 1;
+    }
+
+    args = args[1..];
+}
+
 var validateReportsOnly = args.Length > 0 && args[0] == "--validate-reports";
 if (validateReportsOnly)
 {
@@ -66,6 +78,11 @@ foreach (var (path, threshold) in thresholds.ToArray())
     else if (developmentV1)
     {
         reason = threshold.DevelopmentV1LocalOnlyReason;
+        if (reason is null && skipDeploymentCli && IsDeploymentCliOwnedFloorPath(path))
+        {
+            Console.Error.WriteLine($"Coverage gate failed: --skip-deployment-cli cannot waive active canonical floor '{path}'. Run Deployment.Cli.Tests to enforce every active canonical floor.");
+            return 1;
+        }
     }
 
     if (reason is not null)
@@ -179,7 +196,7 @@ if (validateReportsOnly)
     {
         try
         {
-            UnitCoverageInputs.Validate(repositoryRoot, unitResultsDirectory, args.Skip(1).ToArray(), thresholds.Keys);
+            UnitCoverageInputs.Validate(repositoryRoot, unitResultsDirectory, args.Skip(1).ToArray(), thresholds.Keys, skipDeploymentCli);
         }
         catch (Exception exception) when (exception is InvalidDataException or IOException or System.Xml.XmlException or BadImageFormatException or JsonException)
         {
@@ -415,6 +432,11 @@ static string NormalizeSourcePath(string path)
     var toolsMarker = normalized.LastIndexOf("/tools/", StringComparison.Ordinal);
     return toolsMarker >= 0 ? normalized[(toolsMarker + 1)..] : normalized.TrimStart('/');
 }
+
+static bool IsDeploymentCliOwnedFloorPath(string path)
+    => path.StartsWith("HVO.SkyMonitor.Deployment.Cli/", StringComparison.Ordinal) ||
+       path.StartsWith("HVO.SkyMonitor.Deployment.Contracts/", StringComparison.Ordinal) ||
+       path.StartsWith("HVO.SkyMonitor.TerminalUi/", StringComparison.Ordinal);
 
 static bool SourcePathExists(string repositoryRoot, string path)
 {
