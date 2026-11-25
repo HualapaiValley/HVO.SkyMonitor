@@ -472,7 +472,6 @@ dotnet/
 # Ignore local overrides; retain the two reviewed, secret-free development defaults.
 appsettings.Development.json
 !src/HVO.SkyMonitor.CameraAgent/appsettings.Development.json
-!src/HVO.SkyMonitor.LogicHost/appsettings.Development.json
 appsettings.Test.json
 appsettings.*.local.json
 

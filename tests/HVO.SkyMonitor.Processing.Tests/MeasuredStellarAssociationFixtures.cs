@@ -56,19 +56,30 @@ internal static class MeasuredStellarAssociationFixtures
     }
 
     /// <summary>Stars offset from the zenith by (hour-angle degrees, declination degrees) for an equatorial observer.</summary>
-    public static async Task<ProjectedSceneV1> StarFieldAsync(params (string Id, double EastDegrees, double NorthDegrees, double Magnitude)[] stars)
+    public static Task<ProjectedSceneV1> StarFieldAsync(params (string Id, double EastDegrees, double NorthDegrees, double Magnitude)[] stars)
+        => StarFieldAsync(resolvedSun: false, stars);
+
+    public static async Task<ProjectedSceneV1> StarFieldAsync(
+        bool resolvedSun, params (string Id, double EastDegrees, double NorthDegrees, double Magnitude)[] stars)
     {
         var utc = DateTimeOffset.Parse("2026-08-25T00:00:00Z", CultureInfo.InvariantCulture);
         var siderealHours = AstronomyTime.LocalMeanSiderealDegrees(utc, 0) / 15;
         var visible = await new VisibleSceneBuilder(new InMemoryCelestialCatalog(stars.Select(star =>
             new CelestialCatalogObject(star.Id, star.Id.ToUpperInvariant(),
-                (siderealHours + star.EastDegrees / 15 + 24) % 24, star.NorthDegrees, star.Magnitude)).ToArray()))
+            (siderealHours + star.EastDegrees / 15 + 24) % 24, star.NorthDegrees, star.Magnitude)).ToArray()),
+            planetEphemeris: resolvedSun ? new AstronomyEnginePlanetEphemeris() : null)
             .BuildAsync(new VisibleSceneRequest(utc, new ObserverLocation(0, 0, 0),
                 new ProjectionContext(ProjectionModel.Perspective, Width / 2d, Height / 2d, 400, 400, Width, Height,
                     ProjectionAperture.Rectangular, BoresightAltitudeDegrees: 90),
                 new CatalogQuery(8, 100),
                 new CatalogMetadata("fixture", "1", new Uri("https://example.test/catalog"), new string('C', 64), "test", "v1"),
-                projectionVersion: "perspective-v1")).ConfigureAwait(false);
+                projectionVersion: "perspective-v1",
+                solarSystemBodies: resolvedSun ? [SolarSystemBody.Sun] : [])).ConfigureAwait(false);
+        if (resolvedSun)
+        {
+            visible = visible.WithResolvedBodies([new SolarDiskAppearance(
+                SolarSystemBody.Sun, utc, new AltAzPoint(85, 0), .25, 0, 1, 0, 149600000)]);
+        }
         return ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, visible,
             ProjectedSceneImageTransformV1.Identity(Width, Height),
             new ProjectedSceneSource(CaptureId, ArtifactId, DescriptorIdentity),

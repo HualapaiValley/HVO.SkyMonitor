@@ -36,6 +36,7 @@ internal static class TransientStageEventWriter
         command.Parameters.AddWithValue("$time", recordedUtc.ToUnixTimeMilliseconds());
         if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 0)
         {
+            // The raw stage receipt prevents replay even after retention prunes consumed trail work.
             if (stageKey is "causal-scan" or "candidate-persisted" or "event-finalized" or "central-acknowledged")
                 await RecordCenteredTrailChangeAsync(connection, transaction, rawCaptureRowId, stageKey, state, candidateId,
                     recordedUtc, cancellationToken).ConfigureAwait(false);

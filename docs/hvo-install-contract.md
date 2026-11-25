@@ -5,7 +5,7 @@ Status: **draft 4 with approved SkyMonitor recovery revision**, 2026-10-23. The 
 The revision is a target contract, not a claim that its runtime implementation or qualification has shipped.
 
 This contract is the one install and release experience shared by the HVO products. It covers HVO.RoofController
-and HVO.SkyMonitor: CameraAgent now, and LogicHost when its installer lifecycle exists. Each product implements it in its own
+and HVO.SkyMonitor (CameraAgent). Each product implements it in its own
 repository; it does not create a shared codebase. RoofController 4.1.1 already implements most of it, so where this
 document says "as RoofController does", its implementation is the reference. Conformance work is tracked in each
 repository's epic. Where a rule says **Today**, it records how each product meets it, and the issue that brings a
@@ -145,8 +145,7 @@ Every release carries assets with these names and kinds:
     for binaries. Renaming either side would add a translation that both products already avoid.
   - **Today:** both products name their files this way.
 - **Images** are pushed to `ghcr.io/hualapaivalley/<image>` with tag `<version>`, plus `latest` for the newest final release,
-  and are always referenced by digest. Image names: `roof-controller`, `roof-hat-emulator`, `skymonitor-cameraagent`,
-  and later `skymonitor-logichost`.
+  and are always referenced by digest. Image names: `roof-controller`, `roof-hat-emulator`, and `skymonitor-cameraagent`.
 - **`release.json`** follows RoofController's schema 1:
   - `version`, `tag`, `prerelease`, `commit`, `created`, `repository`;
   - `images.<key>` with `repository`, `tag`, `digest`, `reference` and `platforms`;
@@ -160,7 +159,7 @@ Every release carries assets with these names and kinds:
   | Product | Keys |
   | --- | --- |
   | RoofController | `controller` (`roof-controller`), `hatEmulator` (`roof-hat-emulator`) |
-  | SkyMonitor | `cameraAgent` (`skymonitor-cameraagent`), later `logicHost` (`skymonitor-logichost`) |
+  | SkyMonitor | `cameraAgent` (`skymonitor-cameraagent`) |
 
   - Reason: RoofController's released installers already read `images.controller`, while SkyMonitor has published
     only integration pre-releases, so this choice changes the product that has no released readers. A component's key
@@ -174,11 +173,6 @@ Every release carries assets with these names and kinds:
   - the release tool writes it from the installer's own pin. A reader that does not use it ignores it, so earlier
     installers read such a release unchanged;
   - a Silo-layout install refuses a release that names no Silo image or another one, before changing anything.
-- **LogicHost reader-first preparation** (#1242). Schema 1 additionally supports `images.logicHost` and
-  `componentMetadata.logicHost` for a local identity candidate. The bounded central declaration is repeated in the
-  image's `io.hvo.skymonitor.logichost-release` label. The [candidate format](planning/logichost-offline-candidate.md)
-  defines the exact fields, checks and remaining bundle/trust gates. This additive reader support enables no publication
-  or installation, and does not change the CameraAgent reader or release writer.
 - **Upgrade-note text** follows one terminal-safety rule. The tool that writes `release.json` applies it, and so does
   the installer that reads it. CRLF is normalized to LF first. After that, a note is
   refused if it holds a Unicode control character (Cc) other than LF and TAB, a format character (Cf), a line or
@@ -359,7 +353,7 @@ The protected upgrade boundary is:
    probe with verified output. A live process or HTTP liveness alone is insufficient. Probe writes must be isolated
    or part of the disposable candidate state; probes must not export identities, send provider requests, acknowledge
    production submissions or release results. Name checks, timeout and expected health disposition in the candidate
-   qualification; unavailable required checks fail the decision. CameraAgent standalone health needs no LogicHost.
+   qualification. Unavailable required checks fail the decision.
 5. On success, durably commit the new image/state receipt and recovery decision, then release admission and resume
    acquisition/ingress and workers. **No externally acknowledged new work before this commit.** On failure, stop the
    candidate, validate and restore the complete paired point while fenced, start the matching old image, verify its
@@ -379,8 +373,7 @@ gate. Ordinary ownership, integrity, path and space failures still refuse; this 
 protection. Record the reason and unprotected status durably outside the revert tree before proceeding. Never label
 a partial checkpoint usable. If the unprotected candidate changes state or its effects are uncertain, failure leaves
 the instance fenced for manual recovery or a supported forward repair; never claim snapshot recovery or start an
-old binary on that state. If the disposition cannot be persisted, do not mutate. LogicHost has its own coherent
-SQL/object/config cutoff and qualification; CameraAgent's unprotected allowance does not implicitly extend to it.
+old binary on that state. If the disposition cannot be persisted, do not mutate.
 
 **One logical recovery point.** Include the instance's mutable databases and all DB recovery files (WAL/journal or
 native log/backup chain), referenced raw/archive/derived/calibration/content files, configuration/Compose,
@@ -390,8 +383,7 @@ silently reduce coverage. A native SQLite backup may consolidate committed WAL s
 it must prove that result and remove stale live sidecars safely on restore. Catalogs remain immutable: pin and retain
 the exact selected and historically referenced packages and hashes rather than rewinding a shared `current` pointer.
 Pair the exact image and retained verified installer/runtime programs as well. Sibling instances and shared services
-must remain unchanged. LogicHost remains SQL Server; SQL, objects, configuration, Identity and keys must share one
-fenced cutoff, not independent snapshots taken while another writer runs.
+must remain unchanged.
 
 Preserve **non-rewindable external facts**, provider Retry-After/backoff/halts, exported capture/job/event identities,
 sequence/version floors and credential revocations through a minimal explicit exception/capsule outside the reverted
@@ -403,21 +395,19 @@ counter carry and store exclusions below are baseline behavior, not qualificatio
 
 ### SkyMonitor qualification and adoption
 
-[#1607](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1607) evaluates CameraAgent;
-[#1608](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1608) independently evaluates LogicHost after this
-contract. Both must credit existing evidence, time-box the first study/probe to roughly 60–90 minutes, test the most
-promising alternative first and stop early without a credible net benefit. Keeping the current mechanism is success.
-Measure setup/dependencies, operating steps, failure modes, test upkeep and end-to-end upgrade/recovery time;
-snapshot creation speed alone is insufficient. No backend/layout change is required by this contract.
+[#1607](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1607) evaluates CameraAgent. The study must credit
+existing evidence, time-box the first study/probe to roughly 60–90 minutes, test the most promising alternative
+first and stop early without a credible net benefit. Keeping the current mechanism is success. Measure setup,
+dependencies, operating steps, failure modes, test upkeep and end-to-end upgrade/recovery time. Snapshot creation
+speed alone is insufficient. No backend/layout change is required by this contract.
 
-**Ordering gate (owner clarification, 2026-10-23).** The studies may be scheduled now or later, but their applicable
-recorded keep/change outcome must precede overlapping persistent-layout/recovery work or a substantial forward
-migration. Affected implementation stories cite #1607 for CameraAgent or #1608 for LogicHost, the recorded decision,
-and their declared supported forward inputs before committing to that path. An evidence-backed keep-current result
-clears the gate without a new filesystem, framework or implementation PR. Apply this to the overlapping parts of
-CameraAgent #1059/#1060/#1300 and LogicHost #1244/#1245/#589/#591. Unrelated features, clean-install preparation,
-release verification and strict existing-behavior #893 CLI parity remain independent. Follow the selection check in
-the [execution protocol](planning/agent-execution.md#skymonitor-recovery-ordering-gate).
+**Ordering gate (owner clarification, 2026-10-23).** The study may be scheduled now or later, but its recorded
+keep/change outcome must precede overlapping persistent-layout/recovery work or a substantial forward migration.
+Affected implementation stories cite #1607, the recorded decision, and their declared supported forward inputs
+before committing to that path. An evidence-backed keep-current result clears the gate without a new filesystem,
+framework or implementation PR. Apply this to the overlapping parts of CameraAgent #1059/#1060/#1300. Unrelated
+features, clean-install preparation, release verification and strict existing-behavior #893 CLI parity remain
+independent. Follow the selection check in the [execution protocol](planning/agent-execution.md#skymonitor-recovery-ordering-gate).
 
 **Explicit forward-only conversions.** A separately declared larger DB/file/schema conversion may be forward-only;
 its size alone does not require a reverse migration, old-binary/new-schema compatibility or a new rollback
@@ -517,7 +507,7 @@ its schema in today, and what `io.hvo.skymonitor.state-contracts` and `stateCont
 | Store | Database (under the instance's state root) | Schema marker today | Declared today |
 | --- | --- | --- | --- |
 | `identity` | `identity/cameraagent_identity.db` | The applied EF Core migrations in `__EFMigrationsHistory` (their number is the store's schema) | Writes 1, reads 1 to 1. `io.hvo.skymonitor.identity-migration` also names the newest, `20260827053715_InitialIdentity` |
-| `rawIngress` | `raw/journal/raw-ingress.db` | `PRAGMA user_version` | Beta writes 16 and reads 13 to 16. The private centered foundation source writes 17 and reads 13 to 17. The centered scheduler uses the same raw range and retains processing schema 12 in this journal. The migration contract is `canonical-v13-v14-v15-v16-to-v17` |
+| `rawIngress` | `raw/journal/raw-ingress.db` | `PRAGMA user_version` | `development/v1` writes 17 and accepts canonical schemas 13 through 17. The migration contract is `canonical-v13-v14-v15-v16-to-v17`. The journal also holds the separately versioned processing schema 12 |
 | `artifactOutbox` | `outbox/artifact-outbox.db` in each storage root (`raw`, `archive`, and every FileStorage root) | The `artifact_outbox_schema.version` column | Writes 2, reads 2 to 2 |
 | `fleetStatus` | `raw/.fleet/fleet-status.db` | The `fleet_status_metadata.schema_version` column | Writes 1, reads 1 to 1 |
 | `environmentalOutbox` | `raw/.environment/environmental-observation-outbox.db` | `PRAGMA user_version` | Writes 5, reads 3 to 5. Combined reader boundary `e7b9af4b98d1521c3939ef5925608a3663c63302` selects a paired checkpoint before upgrade from schema 3 or 4, from either single-reader image for #1901 or #1938, or from the earlier private joined reader. Rollback restores the previous image's paired state |
@@ -539,6 +529,11 @@ The reader that combines both changes declares `ded7cadc6fe005f8bdda09387e1c3d13
 The installer selects a paired checkpoint when upgrading from either reader or
 an earlier private schema-12 image, including when the raw, processing, and
 environmental schema numbers are already 17, 12, and 5.
+
+Each supported raw journal version identifies one canonical raw-ingress layout.
+Assign a new raw version to any future change to that layout. Validate and upgrade
+the supported predecessor through the existing transactional raw migration path,
+and update the image's raw schema and migration declarations together.
 
 The environmental v5 journal retains a settled held slot so reopening the same cadence does not acquire it again.
 The first released v5 reader validates the canonical shape before opening for writes. A private rehearsal v5
@@ -674,8 +669,8 @@ does with `hvo-roof`. It sits beside the installer: the installer owns lifecycle
 | --- | --- | --- |
 | Installer | `hvo-roof-install` | `hvo-sky-install` |
 | Runtime client | `hvo-roof` | `hvo-sky` |
-| Images | `roof-controller`, `roof-hat-emulator` | `skymonitor-cameraagent`, `skymonitor-logichost` |
-| Image keys (`release.json`, `stateContracts`) | `controller`, `hatEmulator` | `cameraAgent`, later `logicHost` |
+| Images | `roof-controller`, `roof-hat-emulator` | `skymonitor-cameraagent` |
+| Image keys (`release.json`, `stateContracts`) | `controller`, `hatEmulator` | `cameraAgent` |
 | Config root | `/etc/hvo-roof` | `/etc/hvo-sky` |
 | Data root | `/var/lib/hvo-roof` | `/var/lib/hvo-sky` |
 

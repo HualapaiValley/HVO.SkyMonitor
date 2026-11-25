@@ -53,16 +53,32 @@ uses that binding after admission and calculates paths independently for the
 observed shutter interval. Explicit graph `pinnedInputs` may confirm the same
 snapshot, time pair and expected records. Conflicting options or a different
 selected record produce an unavailable prediction and a retained reason.
-Configure the local snapshot and time pair through CameraAgent’s orbital inputs.
-The package accepts the installed resolver's input bounds. The selected time
-pair must cover the observed shutter interval. Historical replays can use a
-checksum-pinned local override containing supported rows for that interval.
-The prediction step verifies the exact sources and reports an unavailable
-result if a pinned input cannot be resolved. A capture-specific predicted layer is generated
-from the reported interval and rig. Enable the separate Edge transient
-worker to obtain measured trails. The worker consumes raw evidence and
-independent masks. Tests can compare its output with the private optical
-scenario after measurement.
+A successful prediction produces a capture-specific layer for the observed
+interval and rig. Enable the separate Edge transient worker to obtain measured
+trails from raw evidence and independent masks. Tests can compare its output
+with the private optical scenario after measurement.
+
+## Installed CameraAgent inputs and recovery
+
+Use a snapshot that this CameraAgent retrieved through its configured CelesTrak
+refresh and still retains. Check the active `currentManifestSha256` in the
+[orbital status](../runbooks/orbital-elements-refresh.md#status-refresh-and-resume)
+before preparing the package. An older snapshot is usable while the local store
+still retains its exact manifest. The package files supply the virtual renderer.
+The prediction step reads the snapshot separately from CameraAgent's local store.
+
+| Retained prediction reason | Diagnosis and recovery |
+| --- | --- |
+| `PinnedSnapshotUnavailable` | CameraAgent could not resolve the package's exact snapshot manifest from its local store. Follow the recovery action in orbital status for storage or provider problems. For a missing or retired snapshot, prepare a new package from a snapshot retained by this CameraAgent and update any explicit graph pins. If a new retrieval is needed, use the supported Refresh action after the provider floor permits it. A refresh normally produces a new snapshot identity. |
+| `PinnedTimeInputsUnavailable` | The resolved Earth-orientation or leap-second file hash differs from the package pin. In **Observatory & location → Orbital refresh & satellite setup**, expand **Read-only time-data configuration and resolved status** and check both hashes and the coverage for the observed shutter interval. Restore the exact approved files using [all four time override settings](../astronomy/satellite-planning-v1.md#local-time-inputs), or prepare a new package and matching graph pins against a verified pair that covers the planned exposure. |
+
+For an override, set `overrideTimeDataAvailableUtc` in `CaptureSatelliteTracks`
+to the time the exact files were actually available, at or before raw admission.
+Historical test replays can use an override with supported rows for that interval.
+Package and graph changes apply to future captures. Retained predictions keep
+their original inputs and result.
+An unavailable prediction has no renderable tracks. The independent detector's
+no-candidate result describes its assessment of the image.
 
 ## Reproduce the short sequence
 

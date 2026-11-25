@@ -32,14 +32,13 @@ for path, floor in baseline["files"].items():
         raise SystemExit(f"Extend the Unit inventory before adding tools floor {path}")
     active[path] = source
 reports = sorted(results.glob("*/coverage.cobertura.xml"))
-retired_project_prefixes = ("HVO.SkyMonitor.LogicHost.", "HVO.SkyMonitor.CameraAgent.LogicHost.")
 unit_projects = json.loads((root / "tests/unit-test-projects.json").read_text())
 if (not isinstance(unit_projects, list) or not unit_projects
         or any(not isinstance(project, str) or not re.fullmatch(r"[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)+", project)
                or not (root / "tests" / project / f"{project}.csproj").is_file() for project in unit_projects)
         or len(set(unit_projects)) != len(unit_projects)):
     raise SystemExit("Invalid Unit project membership in tests/unit-test-projects.json")
-expected_projects = {project for project in unit_projects if not project.startswith(retired_project_prefixes)}
+expected_projects = set(unit_projects)
 if not reports or len(reports) != len(expected_projects):
     raise SystemExit(f"Expected {len(expected_projects)} fresh Unit reports, found {len(reports)}")
 # Bind originals to distinct Unit projects/attachments and their runtime deps;

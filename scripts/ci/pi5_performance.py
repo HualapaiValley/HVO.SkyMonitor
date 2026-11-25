@@ -92,7 +92,7 @@ def performance_projects(root, matrix):
                 or not project.is_file() or path in seen or not re.fullmatch(r"[0-9]+", count)):
             raise ValueError("Invalid or duplicate Performance discovery row")
         seen.add(path)
-        if "LogicHost" not in name and int(count) > 0:
+        if int(count) > 0:
             yield project, int(count)
 
 

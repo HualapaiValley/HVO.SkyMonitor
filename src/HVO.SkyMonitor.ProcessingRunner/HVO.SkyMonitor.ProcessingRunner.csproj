@@ -15,7 +15,6 @@
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="HVO.SkyMonitor.ProcessingRunner.Tests" />
-    <InternalsVisibleTo Include="HVO.SkyMonitor.LogicHost.IntegrationTests" />
   </ItemGroup>
   <ItemGroup>
     <None Include="..\..\THIRD-PARTY-NOTICES.md" Link="THIRD-PARTY-NOTICES.md">

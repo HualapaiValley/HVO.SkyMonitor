@@ -54,7 +54,7 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.IsNotNull(oldestLease);
             await lanes.CompleteAsync(oldestLease, token).ConfigureAwait(false);
 
-            var artifacts = provider.GetRequiredService<ICameraAgentArtifactService>();
+            var artifacts = provider.GetRequiredService<CameraAgentArtifactService>();
             var splitRepair = repairKind == "split-repair";
             var replaceRejection = repairKind == "replace-rejection";
             var (near, _, _, _) = await StageAssessmentAsync(61, (1, 1), terminal: true).ConfigureAwait(false);

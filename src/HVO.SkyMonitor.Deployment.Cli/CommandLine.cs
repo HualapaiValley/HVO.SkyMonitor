@@ -74,15 +74,6 @@ internal static class CommandLine
     /// </summary>
     internal static readonly IReadOnlyList<CommandDefinition> Commands =
     [
-        new(["preflight"], null, "Validate split-host inventory and probe targets without remote mutation.",
-            ["--inventory", "--mode", "--run-id", "--state-root", "--evidence-root"], ["--json"],
-            "Writes the existing schema-1 preflight manifest and evidence. Rejected inputs preserve prior evidence; accepted failed reruns record failure."),
-        new(["partial-prepare-cleanup"], null, "Inspect or recover an interrupted split-host prepare without creating containers.",
-            ["--inventory", "--mode", "--run-id", "--state-root", "--evidence-root", "--confirm"], ["--dry-run", "--json"],
-            "Requires the retained passed preflight and failed prepare. Specify --dry-run or --confirm RUN-ID; interrupted cleanup resumes with the same inputs."),
-        new(["existing-down"], null, "Stop a retained existing-services split-host run after an authenticated drain.",
-            ["--inventory", "--mode", "--run-id", "--state-root", "--evidence-root", "--confirm"], ["--preserve-state", "--delete-state", "--json"],
-            "Requires passed preflight, prepare and up. Existing services and runtime data are preserved; --delete-state is refused. Interrupted teardown resumes with the same inputs."),
         new(["status"], null, "Show the installed instances, or the one --instance-id names.", InstanceValueOptions, ["--json"]),
         new(["cameraagent", "install"], null,
             "Install a CameraAgent instance, or change an installed one's container limits.",
@@ -112,7 +103,7 @@ internal static class CommandLine
         new(["cameraagent", "upgrade"], null,
             "Move an instance to a release's image (--release) or an immutable one (--image-ref).",
             [.. InstanceValueOptions, "--release", "--image-source", "--image-ref", "--image-archive", "--image-archive-sha256", "--operation-id"],
-            ["--plan", "--dry-run", "--resume", "--restore-only", "--json", "--no-download", DeprecatedMigrationOption, "--allow-quarantined-readiness"],
+            ["--plan", "--dry-run", "--resume", "--restore-only", "--leave-paused", "--json", "--no-download", DeprecatedMigrationOption, "--allow-quarantined-readiness"],
             PlanScratchNote),
         new(["cameraagent", "rollback"], null,
             "Return an instance to the image it ran before its last upgrade.",
@@ -156,14 +147,6 @@ internal static class CommandLine
     private static readonly Dictionary<string, (string? Value, string Description)> OptionHelp = new(StringComparer.Ordinal)
     {
         ["--once"] = (null, "Perform one authenticated lifecycle poll, including any admitted operation, then exit."),
-        ["--inventory"] = ("<file>", "The immutable split-host inventory (schema 8; partial-prepare also accepts retained schema 7)."),
-        ["--preserve-state"] = (null, "Stop applications while preserving existing services and runtime data."),
-        ["--delete-state"] = (null, "Request deletion; existing-services runs refuse this policy before mutation."),
-        ["--mode"] = ("<isolated|persistent>", "The retained deployment mode."),
-        ["--run-id"] = ("<id>", "The retained run ID."),
-        ["--state-root"] = ("<path>", "The retained owner-only state directory."),
-        ["--evidence-root"] = ("<path>", "The retained owner-only evidence directory."),
-        ["--confirm"] = ("<run-id>", "Confirm the requested run ID; cleanup remains limited to resources authorized by that operation."),
         [AnswersOption] = ("<file>", "Read the install from a JSON answers file with \"schemaVersion\": 1."),
         ["--config"] = ("<file>", "Deprecated: read the whole install from a JSON file. Use --answers."),
         ["--instance-id"] = ("<uuid>", "The instance's ID."),
@@ -198,7 +181,7 @@ internal static class CommandLine
         ["--memory"] = ("<size>", "The container's memory limit, such as 4g."),
         ["--confirm-instance-id"] = ("<uuid>", "The instance's ID again, to confirm."),
         ["--confirm-removed-operation-id"] = ("<uuid>", "With --resume: confirm this interrupted purge's tree was removed elsewhere."),
-        ["--operation-id"] = ("<uuid>", "With --resume --restore-only: the interrupted upgrade's operation ID."),
+        ["--operation-id"] = ("<uuid>", "With --restore-only or --leave-paused: the interrupted upgrade's operation ID."),
         [PlanOption] = (null, "Show what the command would change, and change nothing."),
         ["--dry-run"] = (null, "The older name of --plan."),
         ["--resume"] = (null, "Finish an interrupted run of the same command."),
@@ -209,6 +192,7 @@ internal static class CommandLine
         ["--acknowledge-plaintext-http"] = (null, "Accept plain HTTP on a --bind-address other than loopback."),
         ["--no-download"] = (null, "Pull nothing: the image must already be on this host or in an offline archive."),
         ["--restore-only"] = (null, "With --resume --operation-id: restore what an interrupted upgrade left, without upgrading."),
+        ["--leave-paused"] = (null, "With --resume --operation-id: retry the interrupted offline release upgrade without changing capture admission."),
         [DeprecatedMigrationOption] = (null, "Deprecated, and has no effect.")
     };
 
@@ -338,7 +322,7 @@ internal static class CommandLine
             .AppendLine()
             .AppendLine("Options:");
         AppendRows(usage, [
-            .. command.ValueOptions.Concat(command.Flags).Select(option => (command.Name == "partial-prepare-cleanup" && option == "--dry-run" ? ((string? Value, string Description))(null, "Inspect recovery candidates and write private evidence without changing a target.") : OptionHelp[option]) switch
+            .. command.ValueOptions.Concat(command.Flags).Select(option => OptionHelp[option] switch
             {
                 (null, var description) => (option, description),
                 var (value, description) => ($"{option} {value}", description)
@@ -427,9 +411,6 @@ internal static class CommandLine
             // No command runs under a host policy that cannot be trusted, and resolving it changed nothing.
             throw InstallerException.Refused(exception.Message, exception);
         }
-        if (args.Length > 0 && args[0] == "preflight") return PreflightRequest.Parse(args);
-        if (args.Length > 0 && args[0] == "existing-down") return ExistingDownRequest.Parse(args);
-        if (args.Length > 0 && args[0] == "partial-prepare-cleanup") return PartialPrepareRequest.Parse(args);
         var allowTestProductRoot = context.AllowTestProductRoot;
         if (args is ["cameraagent", "lifecycle-worker", ..])
             return LifecycleWorkerRequest.Parse(args, production, allowTestProductRoot);
@@ -833,6 +814,7 @@ internal static class CommandLine
             AllowTestProductRoot = allowTestProductRoot,
             ProductionProductRoot = productionProductRoot,
             RestoreOnly = flags.Contains("--restore-only"),
+            LeavePaused = flags.Contains("--leave-paused"),
             RecoveryOperationId = ParseGuid(Get(values, "--operation-id"), "--operation-id"),
             ImageReference = Get(values, "--image-ref"),
             ImageArchive = Get(values, "--image-archive"),

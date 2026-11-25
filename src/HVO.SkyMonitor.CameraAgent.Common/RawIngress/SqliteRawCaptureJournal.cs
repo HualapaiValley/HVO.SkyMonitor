@@ -843,24 +843,28 @@ internal sealed partial class SqliteRawCaptureJournal(
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    internal const string RawRetentionHoldPredicate = """
+        raw.retention_hold = 1 OR EXISTS (
+            SELECT 1 FROM centered_exposure_attempts attempt
+            WHERE attempt.source_capture_id = raw.capture_id AND attempt.status = 'pending'
+        ) OR EXISTS (
+            SELECT 1 FROM centered_exposure_holds hold
+            WHERE hold.capture_id = raw.capture_id AND hold.expires_unix_ms > $centered_now
+        ) OR EXISTS (
+            SELECT 1 FROM raw_capture_stage_events disposition
+            WHERE disposition.raw_capture_row_id = raw.raw_capture_row_id
+              AND disposition.stage_key GLOB 'raw-evidence-release.*'
+        )
+        """;
+
     internal async Task<IReadOnlyList<RawIngressRetentionHold>> ReadRetentionHoldsAsync(CancellationToken cancellationToken)
     {
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
-        command.CommandText = """
+        command.CommandText = $$"""
             SELECT raw_artifact_id, payload_relative_path, sidecar_relative_path
-            FROM raw_captures
-            WHERE retention_hold = 1 OR EXISTS (
-                SELECT 1 FROM centered_exposure_attempts attempt
-                WHERE attempt.source_capture_id = raw_captures.capture_id
-                  AND attempt.status = 'pending'
-            ) OR EXISTS (
-                SELECT 1 FROM centered_exposure_holds hold
-                WHERE hold.capture_id = raw_captures.capture_id AND hold.expires_unix_ms > $centered_now
-            ) OR EXISTS (
-                SELECT 1 FROM raw_capture_stage_events disposition
-                WHERE disposition.raw_capture_row_id = raw_captures.raw_capture_row_id
-                  AND disposition.stage_key GLOB 'raw-evidence-release.*')
+            FROM raw_captures raw
+            WHERE {{RawRetentionHoldPredicate}}
             ORDER BY agent_id, capture_sequence;
             """;
         command.Parameters.AddWithValue("$centered_now", _utcNow().ToUnixTimeMilliseconds());

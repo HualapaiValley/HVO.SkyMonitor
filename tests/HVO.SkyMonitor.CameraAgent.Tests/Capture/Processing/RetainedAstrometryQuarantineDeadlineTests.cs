@@ -58,7 +58,7 @@ public sealed partial class DurableCaptureProcessingTests
                     return await artifacts.OpenContentAsync(id, cancellation).ConfigureAwait(false);
                 });
 
-            using var reader = new CameraAgentRetainedAstrometryService(store, interruptible.Object);
+            using var reader = CreateUnpooledAstrometryReader(store, interruptible.Object);
             var firstRead = await reader.ReadLatestAcceptedAsync(token).ConfigureAwait(false);
             Assert.IsTrue(firstRead.Completed);
             var displayed = firstRead.Summary;
