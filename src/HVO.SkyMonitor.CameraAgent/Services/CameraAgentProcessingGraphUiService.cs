@@ -44,6 +44,13 @@ internal interface ICameraAgentProcessingGraphUiService
         CapturePipelineConfig pipeline,
         CancellationToken cancellationToken);
 
+    /// <summary>Compiles a candidate pipeline derived from <paramref name="sourceRevisionId"/> without writing anything.</summary>
+    ValueTask<OperatorUiResult<CaptureProcessingPlanPreview>> PreviewAsync(
+        CapturePipelineConfig pipeline,
+        string? sourceRevisionId,
+        CancellationToken cancellationToken)
+        => PreviewAsync(pipeline, cancellationToken);
+
     ValueTask<OperatorUiResult<ProcessingGraphRegistryState>> ActivateAsync(
         string revisionId, long expectedVersion, string idempotencyKey, string? reason, CancellationToken cancellationToken);
 
@@ -58,6 +65,11 @@ internal interface ICameraAgentProcessingGraphUiService
 
     ValueTask<OperatorUiResult<ProcessingGraphRevisionState>> CreateRevisionAsync(
         string name, string revision, CapturePipelineConfig pipeline, string idempotencyKey, string? reason, CancellationToken cancellationToken);
+
+    ValueTask<OperatorUiResult<ProcessingGraphRevisionState>> CreateRevisionAsync(
+        string name, string revision, CapturePipelineConfig pipeline, string idempotencyKey, string? reason,
+        string? sourceRevisionId, CancellationToken cancellationToken)
+        => CreateRevisionAsync(name, revision, pipeline, idempotencyKey, reason, cancellationToken);
 }
 
 /// <summary>One execution as the operator sees it; lease owners and runner internals are not carried.</summary>
@@ -337,12 +349,18 @@ internal sealed class CameraAgentProcessingGraphUiService(
             {
                 return null;
             }
-            var (plan, failure) = await CompileAsync(pipeline, authoredDraft: false, token).ConfigureAwait(false);
+            var (plan, failure) = await CompileAsync(pipeline, authoredDraft: false, sourceRevisionId: revisionId, token).ConfigureAwait(false);
             return new CameraAgentProcessingGraphRevisionDetail(state, pipeline, plan, failure);
         }, "The graph revision could not be read.", cancellationToken, "The graph revision was not found.");
 
+    public ValueTask<OperatorUiResult<CaptureProcessingPlanPreview>> PreviewAsync(
+        CapturePipelineConfig pipeline,
+        CancellationToken cancellationToken)
+        => PreviewAsync(pipeline, sourceRevisionId: null, cancellationToken);
+
     public async ValueTask<OperatorUiResult<CaptureProcessingPlanPreview>> PreviewAsync(
         CapturePipelineConfig pipeline,
+        string? sourceRevisionId,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(pipeline);
@@ -350,7 +368,7 @@ internal sealed class CameraAgentProcessingGraphUiService(
         {
             return Denied<CaptureProcessingPlanPreview>();
         }
-        var (plan, failure) = await CompileAsync(pipeline, authoredDraft: true, cancellationToken).ConfigureAwait(false);
+        var (plan, failure) = await CompileAsync(pipeline, authoredDraft: true, sourceRevisionId, cancellationToken).ConfigureAwait(false);
         return plan is null
             ? OperatorUiResult<CaptureProcessingPlanPreview>.Failure(OperatorUiResultKind.Invalid, failure ?? "The graph definition is invalid.")
             : OperatorUiResult<CaptureProcessingPlanPreview>.Success(plan);
@@ -363,12 +381,14 @@ internal sealed class CameraAgentProcessingGraphUiService(
     private async ValueTask<(CaptureProcessingPlanPreview? Plan, string? Failure)> CompileAsync(
         CapturePipelineConfig pipeline,
         bool authoredDraft,
+        string? sourceRevisionId,
         CancellationToken cancellationToken)
     {
         try
         {
             // Inspect the raw options so duplicate members retain their exact spelling and path.
-            if (ValidateOptions(pipeline) is { } optionsFailure)
+            if (await ValidateOptionsAsync(pipeline, authoredDraft ? sourceRevisionId : null, treatAllAsRetained: !authoredDraft, cancellationToken)
+                .ConfigureAwait(false) is { } optionsFailure)
             {
                 return (null, optionsFailure);
             }
@@ -376,7 +396,7 @@ internal sealed class CameraAgentProcessingGraphUiService(
             var candidate = configuration with { Pipeline = pipeline };
             if (authoredDraft) candidate = IProcessingGraphOperations.PrepareAuthoredDraft(candidate);
             CaptureStoragePolicy.EnsureMatchesProfile(candidate.Pipeline, configuration.Pipeline);
-            return (pipelineFactory.PreviewPlan(candidate), null);
+            return (authoredDraft ? pipelineFactory.PreviewPlan(candidate) : pipelineFactory.PreviewRetainedPlan(candidate), null);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -409,19 +429,65 @@ internal sealed class CameraAgentProcessingGraphUiService(
 
     public ValueTask<OperatorUiResult<ProcessingGraphRevisionState>> CreateRevisionAsync(
         string name, string revision, CapturePipelineConfig pipeline, string idempotencyKey, string? reason, CancellationToken cancellationToken)
+        => CreateRevisionAsync(name, revision, pipeline, idempotencyKey, reason, sourceRevisionId: null, cancellationToken);
+
+    public ValueTask<OperatorUiResult<ProcessingGraphRevisionState>> CreateRevisionAsync(
+        string name, string revision, CapturePipelineConfig pipeline, string idempotencyKey, string? reason,
+        string? sourceRevisionId, CancellationToken cancellationToken)
         => MutateAsync((actor, draft, token) => operations.CreateRevisionAsync(name, revision, draft!, idempotencyKey, actor, reason, token),
-            pipeline, cancellationToken);
+            pipeline, sourceRevisionId, cancellationToken);
 
     private ValueTask<CameraModuleConfig> ReadConfigurationAsync(CancellationToken token)
         => scheduleRuntime?.Snapshot?.Configuration is { } configuration
             ? ValueTask.FromResult(configuration) : configurationAccessor.WaitForConfigurationAsync(token);
 
-    private static string? ValidateOptions(CapturePipelineConfig pipeline)
+    private async ValueTask<string?> ValidateOptionsAsync(
+        CapturePipelineConfig pipeline,
+        string? sourceRevisionId,
+        bool treatAllAsRetained,
+        CancellationToken cancellationToken)
+    {
+        var strictFailure = ValidateOptions(pipeline, allowRetainedStep: null, allowRetainedLegacyDeepSkyFont: false);
+        if (strictFailure is null)
+        {
+            return null;
+        }
+        if (treatAllAsRetained)
+        {
+            return ValidateOptions(pipeline, static _ => true, allowRetainedLegacyDeepSkyFont: true);
+        }
+        if (string.IsNullOrWhiteSpace(sourceRevisionId) ||
+            ValidateOptions(pipeline, static _ => true, allowRetainedLegacyDeepSkyFont: false) is not null)
+        {
+            return strictFailure;
+        }
+        var sourcePipeline = await operations.ReadRevisionPipelineAsync(sourceRevisionId, cancellationToken).ConfigureAwait(false);
+        if (sourcePipeline is null)
+        {
+            return strictFailure;
+        }
+        var retained = sourcePipeline.Steps.Select(RetainedStepSignature).ToHashSet();
+        return ValidateOptions(pipeline, step => retained.Contains(RetainedStepSignature(step)), allowRetainedLegacyDeepSkyFont: false);
+    }
+
+    private static (string Type, string Id, string? RawOptions) RetainedStepSignature(CaptureProcessingStepConfig step)
+        => (step.Type.Trim().ToUpperInvariant(),
+            (string.IsNullOrWhiteSpace(step.Id) ? step.Type : step.Id.Trim()).ToUpperInvariant(),
+            step.Options?.GetRawText());
+
+    private static string? ValidateOptions(
+        CapturePipelineConfig pipeline,
+        Func<CaptureProcessingStepConfig, bool>? allowRetainedStep,
+        bool allowRetainedLegacyDeepSkyFont)
     {
         var diagnostics = pipeline.Steps.SelectMany((step, index) =>
             ProcessingNodeOptionsForm.DescriptorFor(step.Type, step.Options) is { } descriptor
-                ? ProcessingNodeOptionsCodec.Decode(descriptor,
-                    step.Options ?? System.Text.Json.JsonSerializer.SerializeToElement(new { }), $"steps[{index}].options").Diagnostics
+                ? ProcessingNodeOptionsCodec.Decode(
+                    descriptor,
+                    step.Options ?? System.Text.Json.JsonSerializer.SerializeToElement(new { }),
+                    $"steps[{index}].options",
+                    allowQuotedNumbers: allowRetainedStep?.Invoke(step) == true,
+                    allowRetainedLegacyDeepSkyFont: allowRetainedLegacyDeepSkyFont).Diagnostics
                 : System.Collections.Immutable.ImmutableArray<ProcessingGraphDiagnostic>.Empty).ToArray();
         return diagnostics.Length == 0 ? null : string.Join(' ', diagnostics.Select(static item => $"{item.Code} {item.Path}: {item.Message}"));
     }
@@ -469,13 +535,14 @@ internal sealed class CameraAgentProcessingGraphUiService(
     private ValueTask<OperatorUiResult<T>> MutateAsync<T>(
         Func<string, CancellationToken, ValueTask<T>> mutation, CancellationToken cancellationToken)
         where T : class
-        => MutateAsync((actor, _, token) => mutation(actor, token), null, cancellationToken);
+        => MutateAsync((actor, _, token) => mutation(actor, token), null, null, cancellationToken);
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
         Justification = "The operator service logs internal failures and returns fixed sanitized states.")]
     private async ValueTask<OperatorUiResult<T>> MutateAsync<T>(
         Func<string, CapturePipelineConfig?, CancellationToken, ValueTask<T>> mutation,
         CapturePipelineConfig? draft,
+        string? sourceRevisionId,
         CancellationToken cancellationToken)
         where T : class
     {
@@ -489,7 +556,7 @@ internal sealed class CameraAgentProcessingGraphUiService(
         {
             if (draft is not null)
             {
-                if (ValidateOptions(draft) is { } optionsFailure)
+                if (await ValidateOptionsAsync(draft, sourceRevisionId, treatAllAsRetained: false, cancellationToken).ConfigureAwait(false) is { } optionsFailure)
                     return OperatorUiResult<T>.Failure(OperatorUiResultKind.Invalid, optionsFailure);
                 var configuration = await ReadConfigurationAsync(cancellationToken).ConfigureAwait(false);
                 draft = IProcessingGraphOperations.PrepareAuthoredDraft(configuration with { Pipeline = draft }).Pipeline;

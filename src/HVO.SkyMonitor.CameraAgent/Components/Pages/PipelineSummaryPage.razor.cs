@@ -118,6 +118,12 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
             revision.RevisionId, registry.ActiveRevisionId, StringComparison.Ordinal))
         : null;
 
+    private string? NodeConfigHref(CaptureProcessingPlanNode node)
+        => !_showDraft && _registry?.ConfiguredBasicRevisionId is { Length: > 0 } revisionId &&
+            ProcessingNodeOptionsForm.DescriptorFor(node.Alias, node.Options) is not null
+            ? ProcessingNodeConfigPage.NodeConfigHref(revisionId, node.Id)
+            : null;
+
     protected override Task OnInitializedAsync() => LoadAsync();
 
     protected override void OnParametersSet()

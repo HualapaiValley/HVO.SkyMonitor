@@ -168,9 +168,11 @@ public static class PresentationLayerProducers
         MeasuredStellarAssociationsV1? associations = null,
         bool expectedPositionDiagnostics = false,
         HorizonObstructionSceneEligibility? horizon = null,
-        bool includeDeepSky = true)
+        bool includeDeepSky = true,
+        PresentationDeepSkyStyleV1? deepSkyStyle = null)
     => FromProjectedSceneGroupsCore(scene, style, includeMarkers, includeLabels, includeConstellations,
-            includeImageCircle, includeCardinalDirections, associations, expectedPositionDiagnostics, horizon: horizon, includeDeepSky: includeDeepSky);
+            includeImageCircle, includeCardinalDirections, associations, expectedPositionDiagnostics, horizon: horizon,
+            includeDeepSky: includeDeepSky, deepSkyStyle: deepSkyStyle);
 
     internal static PresentationSceneLayerPayloadsV2 FromProjectedSceneGroupsCore(
         ProjectedSceneV1 scene,
@@ -184,7 +186,8 @@ public static class PresentationLayerProducers
         bool expectedPositionDiagnostics = false,
         ScenePresentationStyleV1? selectedStyle = null,
         HorizonObstructionSceneEligibility? horizon = null,
-        bool includeDeepSky = true)
+        bool includeDeepSky = true,
+        PresentationDeepSkyStyleV1? deepSkyStyle = null)
     {
         ArgumentNullException.ThrowIfNull(scene);
         ProjectedSceneJson.Validate(scene);
@@ -372,16 +375,22 @@ public static class PresentationLayerProducers
         }
         var remainingPrimitives = PresentationLayerCompositor.MaximumLayerPrimitives -
             markers.Length - footprintSegments.Count - starTexts.Sum(static block => block.Lines.Count);
+        if (deepSkyStyle is { MaximumLabels: < 0 or > 24 })
+            throw new ArgumentOutOfRangeException(nameof(deepSkyStyle));
+        var effectiveDeepSkyStyle = deepSkyStyle ?? new PresentationDeepSkyStyleV1();
+        var maxDeepSkyLabels = includeLabels
+            ? Math.Min(effectiveDeepSkyStyle.MaximumLabels, Math.Max(0, PresentationLayerPayloadV1.MaximumTextBlocks - starTexts.Count - 1))
+            : 0;
         var curated = !includeDeepSky || scene.DeepSky is null || remainingPrimitives < PresentationDeepSkyLayerProducer.CaptionPrimitives
             ? null : PresentationDeepSkyLayerProducer.Create(scene,
-            new PresentationDeepSkyStyleV1(MaximumLabels: includeLabels
-                ? Math.Min(24, PresentationLayerPayloadV1.MaximumTextBlocks - starTexts.Count - 1) : 0), reservedLabelBounds:
+            effectiveDeepSkyStyle with { MaximumLabels = maxDeepSkyLabels }, reservedLabelBounds:
                 starTexts.Select(block =>
                 {
                     using var font = PresentationFont.Create(block, 0);
                     var bounds = PresentationFont.BackplateBounds(block, width, height, font);
                     return new ResolvedFootprintBounds(bounds.Left, bounds.Top, bounds.Right, bounds.Bottom);
-                }).ToArray(), maximumPrimitives: remainingPrimitives, horizon: horizon?.SelectDeepSky(scene)).Payload;
+                }).ToArray(), maximumPrimitives: remainingPrimitives, horizon: horizon?.SelectDeepSky(scene),
+                sceneStyleIdentitySha256: sceneStyleIdentity).Payload;
         return new(
             PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256, scene.ImageTransform.OutputWidthPixels,
                 scene.ImageTransform.OutputHeightPixels, markers,

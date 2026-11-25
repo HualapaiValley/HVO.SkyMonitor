@@ -397,10 +397,17 @@ public sealed class PipelineSummaryPageTests
             .Returns((string id, CancellationToken token) => graphs.GetRevisionDetailAsync(id, token));
         observed.Setup(service => service.PreviewAsync(It.IsAny<CapturePipelineConfig>(), It.IsAny<CancellationToken>()))
             .Returns((CapturePipelineConfig pipeline, CancellationToken token) => graphs.PreviewAsync(pipeline, token));
+        observed.Setup(service => service.PreviewAsync(It.IsAny<CapturePipelineConfig>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .Returns((CapturePipelineConfig pipeline, string? sourceRevisionId, CancellationToken token) =>
+                graphs.PreviewAsync(pipeline, sourceRevisionId, token));
         observed.Setup(service => service.CreateRevisionAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CapturePipelineConfig>(),
                 It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .Returns(async (string name, string revision, CapturePipelineConfig pipeline, string key, string? reason, CancellationToken token) =>
                 saveResult = await graphs.CreateRevisionAsync(name, revision, pipeline, key, reason, token).ConfigureAwait(false));
+        observed.Setup(service => service.CreateRevisionAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CapturePipelineConfig>(),
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .Returns(async (string name, string revision, CapturePipelineConfig pipeline, string key, string? reason, string? sourceRevisionId, CancellationToken token) =>
+                saveResult = await graphs.CreateRevisionAsync(name, revision, pipeline, key, reason, sourceRevisionId, token).ConfigureAwait(false));
         using var context = CreateContext(schedule, observed.Object);
         var navigation = context.Services.GetRequiredService<NavigationManager>();
         navigation.NavigateTo($"/operations/pipeline/graphs/new?from={Uri.EscapeDataString(revisionId)}");

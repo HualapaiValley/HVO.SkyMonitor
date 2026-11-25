@@ -172,6 +172,31 @@ public sealed class ProcessingGraphDraftModelTests
     }
 
     [TestMethod]
+    public void EnsureRegionalVisibilityWiringDoesNotAddLaterIneligibleAstrometryDependency()
+    {
+        var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
+        var original = new CapturePipelineConfig(
+        [
+            new(ExposureMeasurementProducts.StepAlias, ExposureMeasurementProducts.StepAlias, Order: 4, DependsOn: ["$raw"], Required: false, Enabled: true, Publication: durable),
+            new(RegionalStellarVisibilityProducts.StepAlias, "regional", Order: 30, DependsOn: ["$raw", ExposureMeasurementProducts.StepAlias], Required: false, Enabled: false, Publication: durable),
+            new(CaptureAnalysisOptionDescriptors.CenteredAstrometryAlias, "solve", Order: 40, DependsOn: ["$raw", ExposureMeasurementProducts.StepAlias], Required: false, Enabled: true, Publication: durable)
+        ]);
+
+        var draft = ProcessingGraphDraftModel.FromPipeline(original, "retained", "regional", "2");
+        var regional = draft.Nodes.Single(static row => row.Id == "regional");
+        regional.Enabled = true;
+        draft.EnsureRegionalVisibilityWiring(regional);
+
+        Assert.IsFalse(regional.DependsOn.Contains("solve"),
+            "EnsureRegionalVisibilityWiring must not wire a later astrometry node that is ineligible as a predecessor.");
+        Assert.IsTrue(regional.DependsOn.Contains(ExposureCatalogPredictionProducts.StepAlias));
+        Assert.IsTrue(draft.TryBuild(out var rebuilt, out var errors), string.Join(" ", errors));
+        var rebuiltRegional = rebuilt.Steps.Single(static step => step.Id == "regional");
+        Assert.IsFalse(rebuiltRegional.DependsOn!.Contains("solve", StringComparer.Ordinal));
+        Assert.IsTrue(rebuiltRegional.DependsOn!.Contains(ExposureCatalogPredictionProducts.StepAlias, StringComparer.Ordinal));
+    }
+
+    [TestMethod]
     public void FromPipeline_CarriesSchemaAndDependencyPolicyIntoTheBuiltDraft()
     {
         var legacy = new CapturePipelineConfig(
@@ -186,5 +211,34 @@ public sealed class ProcessingGraphDraftModelTests
         Assert.AreEqual(CapturePipelineDependencyPolicy.LegacyInference, built.DependencyPolicy);
         Assert.AreEqual(CapturePipelineSchemaVersions.LegacyV1, built.SchemaVersion);
         Assert.AreEqual(CapturePipelineSchemaVersions.ExplicitV2, ProcessingGraphDraftModel.Empty().SchemaVersion);
+    }
+
+    [TestMethod]
+    [DataRow("12")]
+    [DataRow("+12")]
+    [DataRow("012")]
+    [DataRow("-0")]
+    public void UntouchedOverlayManifestWithQuotedZOrderSurvivesUnrelatedNodeEditByteForByte(string quotedZOrder)
+    {
+        var manifestJson = $$"""{ "layers": [ { "kind": "scene-constellations", "enabled": false, "zOrder": "{{quotedZOrder}}", "future": 1e+02 } ] }""";
+        var source = new CapturePipelineConfig(
+        [
+            new CaptureProcessingStepConfig("JpegEncoding", "jpeg", 10,
+                JsonDocument.Parse("""{ "jpegQuality": 85 }""").RootElement.Clone(), ["$raw"], Enabled: true),
+            new CaptureProcessingStepConfig("OverlayManifest", "manifest", 20,
+                JsonDocument.Parse(manifestJson).RootElement.Clone(), ["jpeg"], Enabled: true)
+        ]);
+
+        var model = ProcessingGraphDraftModel.FromPipeline(source, "rev-quoted", "night", "2");
+        Assert.IsTrue(model.TryBuild(out var unchanged, out var initialErrors), string.Join(' ', initialErrors));
+        Assert.IsFalse(model.HasGraphChanges(unchanged));
+        Assert.AreEqual(manifestJson, unchanged.Steps[1].Options!.Value.GetRawText());
+
+        model.Nodes[0].OptionsForm!.Set("jpegQuality", "92");
+        Assert.IsTrue(model.TryBuild(out var edited, out var errors), string.Join(' ', errors));
+        Assert.IsTrue(model.HasGraphChanges(edited));
+        Assert.AreEqual(92, edited.Steps[0].Options!.Value.GetProperty("jpegQuality").GetInt32());
+        Assert.AreEqual(manifestJson, edited.Steps[1].Options!.Value.GetRawText(),
+            "An untouched OverlayManifest with retained quoted zOrder and unknown fields must survive byte-for-byte.");
     }
 }

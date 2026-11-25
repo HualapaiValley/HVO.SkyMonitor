@@ -93,7 +93,8 @@ public static class PresentationDeepSkyLayerProducer
         PreviewTransform? previewTransform = null, int? outputWidth = null, int? outputHeight = null,
         IReadOnlyList<ResolvedFootprintBounds>? reservedLabelBounds = null,
         int maximumPrimitives = MaximumPrimitives,
-        HorizonObstructionSceneSelection? horizon = null)
+        HorizonObstructionSceneSelection? horizon = null,
+        string? sceneStyleIdentitySha256 = null)
     {
         ArgumentNullException.ThrowIfNull(scene);
         ProjectedSceneJson.Validate(scene);
@@ -115,7 +116,8 @@ public static class PresentationDeepSkyLayerProducer
             Math.Abs(height - scene.ImageTransform.OutputHeightPixels * transform.ScaleY) > 1e-6)
             throw new ArgumentException("Preview transform must match the retained scene and output dimensions.", nameof(previewTransform));
         if (scene.DeepSky is not { } deepSky)
-            return new(PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256, width, height),
+            return new(PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256, width, height,
+                sceneStyleIdentitySha256: sceneStyleIdentitySha256),
                 ReadOnlyCollection<PresentationDeepSkyObjectDrawingV1>.Empty);
 
         var color = style.Color ?? DefaultColor;
@@ -238,7 +240,7 @@ public static class PresentationDeepSkyLayerProducer
         }
 
         var payload = PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256, width, height,
-            segments: segments, textBlocks: texts);
+            segments: segments, textBlocks: texts, sceneStyleIdentitySha256: sceneStyleIdentitySha256);
         return new(payload, drawings.Select(value => new PresentationDeepSkyObjectDrawingV1(value.Item.Id,
             value.Item.Representation, value.Drawing, labelled.GetValueOrDefault(value.Item.Id))).ToArray().AsReadOnly());
 

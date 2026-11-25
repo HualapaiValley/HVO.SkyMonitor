@@ -63,6 +63,12 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         .ToArray();
 
     public CaptureProcessingPlanPreview PreviewPlan(CameraModuleConfig config)
+        => PreviewPlan(config, CaptureProcessingGraphCompilation.Proposal);
+
+    public CaptureProcessingPlanPreview PreviewRetainedPlan(CameraModuleConfig config)
+        => PreviewPlan(config, CaptureProcessingGraphCompilation.RetainedCapture);
+
+    private CaptureProcessingPlanPreview PreviewPlan(CameraModuleConfig config, CaptureProcessingGraphCompilation compilation)
     {
         ArgumentNullException.ThrowIfNull(config);
         var pipeline = config.Pipeline;
@@ -79,7 +85,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             null,
             null,
             step.Publication)).ToArray();
-        var graph = CreateGraph(config);
+        var graph = CreateGraph(config, "cameraagent-capture-processing", schemaVersion, compilation);
         try
         {
             var configuredById = desired.ToDictionary(static node => node.Id, StringComparer.OrdinalIgnoreCase);
@@ -216,7 +222,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         {
             foreach (var stepConfig in pipelineConfig)
             {
-                var step = CreateStep(stepConfig, identifiers, explicitV2, out var effectiveConfig);
+                var step = CreateStep(stepConfig, identifiers, explicitV2, compilation, out var effectiveConfig);
                 if (explicitV2 && effectiveConfig.Publication is not null &&
                     step is not ICaptureProcessingGraphStep)
                 {
@@ -1413,6 +1419,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         CaptureProcessingStepConfig config,
         HashSet<string> identifiers,
         bool aliasesOnly,
+        CaptureProcessingGraphCompilation compilation,
         out CaptureProcessingStepConfig effectiveConfig)
     {
         var registration = ResolveRegistration(config.Type, aliasesOnly);
@@ -1427,13 +1434,18 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             id,
             registration.ImplementationType.FullName ?? registration.ImplementationType.Name,
             order);
+        var allowRetainedLegacyDeepSkyFont = compilation != CaptureProcessingGraphCompilation.Proposal;
         if (registration.Alias == SceneStylePresentation.StepAlias)
         {
-            var decoded = ProcessingNodeOptionsCodec.Decode(SceneStylePresentation.Descriptor,
-                config.Options ?? JsonSerializer.SerializeToElement(new { }));
+            var decoded = ProcessingNodeOptionsCodec.Decode(
+                SceneStylePresentation.Descriptor,
+                config.Options ?? JsonSerializer.SerializeToElement(new { }),
+                ProcessingNodeOptionsCodec.DefaultPath,
+                allowQuotedNumbers: false,
+                allowRetainedLegacyDeepSkyFont: allowRetainedLegacyDeepSkyFont);
             if (!decoded.IsValid) throw new ValidationException(string.Join(' ', decoded.Diagnostics.Select(item => item.Message)));
         }
-        var options = CreateOptionsInstance(config.Options, registration.OptionsType);
+        var options = CreateOptionsInstance(config.Options, registration.OptionsType, allowRetainedLegacyDeepSkyFont);
         if (options is EnvironmentPresentationLayerProcessingStepOptions environment)
         {
             var acquisition = _serviceProvider.GetRequiredService<IOptions<CameraAgentHostOptions>>().Value.EnvironmentalAcquisition;
@@ -1465,14 +1477,15 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
     private static JsonElement SerializeEffectiveOptions(object options, bool omitLegacyEnabled)
     {
         var serialized = CaptureContractJson.SerializeToElement(options);
+        var sceneLayer = options as ScenePresentationLayerProcessingStepOptions;
         // New optional query/layer controls must not invalidate retained graphs that never enabled them.
         var omitDeepSky = options switch
         {
             ProjectedSceneCaptureProcessingStepOptions query => !query.DeepSkyEnabled,
-            ScenePresentationLayerProcessingStepOptions layer => !layer.IncludeDeepSkyLayer,
+            ScenePresentationLayerProcessingStepOptions layer => !layer.IncludeDeepSkyLayer && !layer.ApplyInlineDeepSkyStyle,
             _ => false
         };
-        if ((!omitLegacyEnabled && !omitDeepSky) || serialized.ValueKind is not JsonValueKind.Object)
+        if ((!omitLegacyEnabled && !omitDeepSky && sceneLayer is null) || serialized.ValueKind is not JsonValueKind.Object)
         {
             return serialized;
         }
@@ -1485,7 +1498,9 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             {
                 if (omitLegacyEnabled && string.Equals(property.Name, "enabled", StringComparison.OrdinalIgnoreCase) ||
                     omitDeepSky && (property.Name.StartsWith("deepSky", StringComparison.OrdinalIgnoreCase) ||
-                        string.Equals(property.Name, "includeDeepSkyLayer", StringComparison.OrdinalIgnoreCase)))
+                        string.Equals(property.Name, "includeDeepSkyLayer", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(property.Name, "applyInlineDeepSkyStyle", StringComparison.OrdinalIgnoreCase)) ||
+                    !omitDeepSky && sceneLayer is not null && IsDefaultExtendedDeepSkyProperty(sceneLayer, property.Name))
                     continue;
                 property.WriteTo(writer);
             }
@@ -1493,6 +1508,12 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         }
         using var document = JsonDocument.Parse(stream.ToArray());
         return document.RootElement.Clone();
+
+        static bool IsDefaultExtendedDeepSkyProperty(ScenePresentationLayerProcessingStepOptions layer, string name) =>
+            string.Equals(name, "deepSkyMaximumLabels", StringComparison.OrdinalIgnoreCase) && layer.DeepSkyMaximumLabels == 24 ||
+            string.Equals(name, "deepSkyMaximumLabelCharacters", StringComparison.OrdinalIgnoreCase) && layer.DeepSkyMaximumLabelCharacters == 24 ||
+            string.Equals(name, "deepSkyLabelCatalogObjects", StringComparison.OrdinalIgnoreCase) && layer.DeepSkyLabelCatalogObjects ||
+            string.Equals(name, "deepSkyMinimumGlyphRadius", StringComparison.OrdinalIgnoreCase) && layer.DeepSkyMinimumGlyphRadius == 7;
     }
 
     private static JsonElement? RedactOptions(JsonElement? options)
@@ -1630,7 +1651,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         }
     }
 
-    internal static object CreateOptionsInstance(JsonElement? element, Type optionsType)
+    internal static object CreateOptionsInstance(JsonElement? element, Type optionsType, bool allowRetainedLegacyDeepSkyFont = false)
     {
         if (optionsType == typeof(EmptyProcessingStepOptions))
         {
@@ -1650,6 +1671,10 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         options ??= Activator.CreateInstance(optionsType)
             ?? throw new InvalidOperationException($"Unable to create options type '{optionsType.Name}'.");
 
+        if (allowRetainedLegacyDeepSkyFont && options is ScenePresentationLayerProcessingStepOptions sceneOptions)
+        {
+            sceneOptions.AllowRetainedLegacyDeepSkyFont = true;
+        }
         Validator.ValidateObject(options, new ValidationContext(options), validateAllProperties: true);
         return options;
     }

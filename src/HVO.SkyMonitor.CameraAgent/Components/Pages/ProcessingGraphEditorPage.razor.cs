@@ -49,7 +49,7 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
     protected override async Task OnInitializedAsync()
     {
         _from = string.IsNullOrWhiteSpace(From) ? null : From.Trim();
-        if (_from is null && Section is "scene-overlay" or "constellations" or "frame-facts" or "weather-cloud-overlay" or "cloud-assessment" or "regional-stellar-visibility" or "calibration" or "projected-scene" or "legacy-annotation" or "cloud-layer" or "environment-layer" or "overlay-manifest" or "predicted-satellite-layer")
+        if (_from is null && ProcessingNodeSectionRegistry.IsKnownSection(Section))
         {
             var registry = await GraphService.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false);
             if (registry.Kind == OperatorUiResultKind.Unauthorized)
@@ -119,7 +119,7 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
         try
         {
             var converted = sceneStyle ? SceneStyleDraftUpgrade.Upgrade(pipeline) : FrameFactsDraftConversion.Convert(pipeline);
-            var preview = await GraphService.PreviewAsync(converted, CancellationToken.None).ConfigureAwait(true);
+            var preview = await GraphService.PreviewAsync(converted, _model.SourceRevisionId, CancellationToken.None).ConfigureAwait(true);
             if (preview.Kind == OperatorUiResultKind.Unauthorized)
             {
                 NavigationManager.NavigateTo("/Account/AccessDenied");
@@ -178,47 +178,44 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
     private bool _focusConversion;
 
     private string OptionsSection(ProcessingGraphDraftModel.NodeRow node)
+        => ProcessingNodeSectionRegistry.OptionsSectionId(_model.Nodes, node);
+
+    private bool HasRichFrameFactsNode
+        => _model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == FrameFactsPresentation.StepAlias);
+
+    private bool HasLegacyFrameFactsConversionNode
+        => _model.Nodes.Any(static node => FrameFactsDraftConversion.IsLegacy(node.Type));
+
+    private bool HasFrameFactsAnchor => HasRichFrameFactsNode || HasLegacyFrameFactsConversionNode;
+
+    private (string Message, string Role)? MissingSectionNotice()
     {
-        var section = node.OptionsForm?.Descriptor.StepAlias switch
+        if (ProcessingNodeSectionRegistry.FindSection(Section) is not { } entry)
         {
-            HVO.SkyMonitor.Processing.FrameFactsPresentation.StepAlias => "frame-facts",
-            "ImageQuality" => "image-quality",
-            "Telemetry" => "capture-telemetry",
-            "VirtualSkyCloudObservation" => "simulated-cloud-observations",
-            "WeatherCloudOverlay" => "weather-cloud-overlay",
-            "CloudAssessment" => "cloud-assessment",
-            RegionalStellarVisibilityProducts.StepAlias => "regional-stellar-visibility",
-            "Calibration" => "calibration",
-            "RollingCombination" => "rolling-combination",
-            "ProjectedScene" => "projected-scene",
-            "AstrometryPrediction" => "astrometry-prediction",
-            "MeasuredStellarAssociations" => "measured-stellar-associations",
-            "MeasuredAstrometry" => "measured-astrometry",
-            "CaptureSatelliteTracks" => "capture-satellite-tracks",
-            "CaptureSatelliteLayer" => "predicted-satellite-layer",
-            "Storage" => "artifact-storage",
-            "Annotation" => "legacy-annotation",
-            "OverlayManifest" => "overlay-manifest",
-            "PresentationMaterializer" => "presentation-materializer",
-            "CloudPresentationLayer" => "cloud-layer",
-            "EnvironmentPresentationLayer" => "environment-layer",
-            "Preview" => "preview",
-            "CalibratedPreview" => "calibrated-preview",
-            "CombinedPreview" => "combined-preview",
-            "JpegEncoding" => "jpeg-encoding",
-            _ => "constellations"
-        };
-        var first = _model.Nodes.FirstOrDefault(row => IsSceneOptions(node)
-            ? IsSceneOptions(row) : row.OptionsForm?.Descriptor.StepAlias == node.OptionsForm?.Descriptor.StepAlias);
-        return ReferenceEquals(node, first) ? section : $"{section}-{_model.Nodes.IndexOf(node)}";
+            return null;
+        }
+        var hasMatchingNode = entry.Slug == "frame-facts"
+            ? HasFrameFactsAnchor
+            : _model.Nodes.Any(node => ProcessingNodeSectionRegistry.MatchesSection(entry.Slug, node.OptionsForm?.Descriptor.StepAlias));
+        if (hasMatchingNode)
+        {
+            return null;
+        }
+        var role = entry.Slug is "calibration" or "cloud-assessment" or "regional-stellar-visibility" or "weather-cloud-overlay" ? "note" : "status";
+        return (entry.MissingNodeMessage, role);
     }
 
     private static bool IsSceneOptions(ProcessingGraphDraftModel.NodeRow node)
-        => node.OptionsForm?.Descriptor.StepAlias is ProcessingNodeOptionsDescriptors.ScenePresentationLayerStepAlias or SceneStylePresentation.StepAlias;
+        => ProcessingNodeSectionRegistry.IsSceneAlias(node.OptionsForm?.Descriptor.StepAlias);
 
     private string? SceneOptionsAnchor(ProcessingGraphDraftModel.NodeRow node)
         => IsSceneOptions(node)
             ? OptionsSection(node).Replace("constellations", "scene-overlay", StringComparison.Ordinal)
+            : null;
+
+    private string? DeepSkyOptionsAnchor(ProcessingGraphDraftModel.NodeRow node)
+        => IsSceneOptions(node)
+            ? OptionsSection(node).Replace("constellations", "deep-sky", StringComparison.Ordinal)
             : null;
 
     private void AddNode()
@@ -229,6 +226,16 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
         }
         _model.AddNode(_newType);
         FormChanged();
+    }
+
+    private void NodeEnabledChanged(ProcessingGraphDraftModel.NodeRow node, bool value)
+    {
+        if (node.Enabled == value)
+        {
+            return;
+        }
+        node.Enabled = value;
+        NodeConfigurationChanged(node);
     }
 
     private void NodeConfigurationChanged(ProcessingGraphDraftModel.NodeRow node)
@@ -268,7 +275,7 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
         var generation = _draftGeneration;
         try
         {
-            var result = await GraphService.PreviewAsync(pipeline, CancellationToken.None).ConfigureAwait(true);
+            var result = await GraphService.PreviewAsync(pipeline, _model.SourceRevisionId, CancellationToken.None).ConfigureAwait(true);
             if (result.Kind == OperatorUiResultKind.Unauthorized)
             {
                 NavigationManager.NavigateTo("/Account/AccessDenied");
@@ -312,7 +319,7 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
         try
         {
             result = await GraphService.CreateRevisionAsync(
-                _model.Name.Trim(), _model.Revision.Trim(), _previewedPipeline, _saveKey!, _model.SourceRevisionId is null ? "operator draft" : $"draft from {_model.SourceRevisionId}", CancellationToken.None).ConfigureAwait(false);
+                _model.Name.Trim(), _model.Revision.Trim(), _previewedPipeline, _saveKey!, _model.SourceRevisionId is null ? "operator draft" : $"draft from {_model.SourceRevisionId}", _model.SourceRevisionId, CancellationToken.None).ConfigureAwait(false);
         }
         finally
         {

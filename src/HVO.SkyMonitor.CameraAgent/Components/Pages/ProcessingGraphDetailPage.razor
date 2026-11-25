@@ -4,6 +4,7 @@
 @using HVO.SkyMonitor.CameraAgent.Authorization
 @using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing
 @using HVO.SkyMonitor.CameraAgent.Services
+@using HVO.SkyMonitor.Processing
 @using Microsoft.AspNetCore.Authorization
 @attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
 @rendermode InteractiveServer
@@ -58,10 +59,16 @@
             <ol class="definition-list">
                 @foreach (var step in _detail.Pipeline.Steps)
                 {
+                    var nodeId = string.IsNullOrWhiteSpace(step.Id) ? step.Type : step.Id.Trim();
+                    var builtIn = ExposureMeasurementProducts.IsSystemManagedStepAlias(step.Type);
+                    var descriptor = builtIn ? null : ProcessingNodeOptionsForm.DescriptorFor(step.Type, step.Options);
                     <li class="@(step.Enabled == false ? "definition-node--disabled" : null)">
-                        <strong>@(step.Id ?? step.Type)</strong>
-                        <span>@step.Type / @(step.Required ? "required" : "optional") / @(step.Enabled == false ? "disabled" : "enabled")@(step.Order is { } order ? $" / order {order}" : "")</span>
-                        <small>@(step.DependsOn is { Count: > 0 } ? $"depends on {string.Join(", ", step.DependsOn)}" : "no declared dependencies")</small>
+                        <div class="definition-node__head">
+                            <strong>@nodeId</strong>
+                            <a class="definition-node__link" href="@ProcessingNodeConfigPage.NodeConfigHref(_detail.State.RevisionId, nodeId)">@(builtIn ? "Inspect built-in stage" : descriptor is not null ? "Configure" : "Inspect")</a>
+                        </div>
+                        <span>@step.Type / @(builtIn ? "built-in stage" : step.Required ? "required" : "optional") / @(step.Enabled == false ? "disabled" : "enabled")@(step.Order is { } order ? $" / order {order}" : "")</span>
+                        <small>@(step.DependsOn is { Count: > 0 } ? $"depends on {string.Join(", ", step.DependsOn)}" : "no declared dependencies")@(descriptor is not null ? $" · {descriptor.Title} ({descriptor.StepVersion})" : builtIn ? " · built-in fixed settings" : " · preserved opaque options")</small>
                     </li>
                 }
             </ol>
