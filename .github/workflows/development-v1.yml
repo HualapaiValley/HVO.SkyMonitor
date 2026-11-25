@@ -337,7 +337,9 @@ jobs:
                   obj[key] = value
               return obj
           def is_ratio(value, *, positive=False):
-              if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+              if isinstance(value, bool) or not isinstance(value, (int, float)):
+                  return False
+              if isinstance(value, float) and not math.isfinite(value):
                   return False
               return (0 < value <= 1) if positive else (0 <= value <= 1)
           def is_valid_relpath(relpath):
@@ -479,14 +481,14 @@ jobs:
               if "developmentV1LocalOnlyReason" in floor:
                   continue
               if path.startswith(prefixes):
-                  sys.exit(1)
+                  sys.exit(3)
               if path.startswith("tools/"):
                   sys.exit(2)
               measurable_floors += 1
           if measurable_floors == 0:
               sys.exit(2)
           PY_DEPLOY_FLOORS
-                    if [[ "$deploy_floor_rc" -eq 1 ]]; then
+                    if [[ "$deploy_floor_rc" -eq 3 ]]; then
                       deploy_cli_skip_eligible=false
                       deployment_cli_reason='active Deployment.Cli canonical coverage floor requires Deployment.Cli.Tests'
                     elif [[ "$deploy_floor_rc" -ne 0 ]]; then

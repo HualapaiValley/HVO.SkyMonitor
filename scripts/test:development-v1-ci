@@ -548,6 +548,9 @@ def violations(short, full, queue=None, extra=None):
                      'component classifier output missing or invalid',
                      'active Deployment.Cli canonical coverage floor requires Deployment.Cli.Tests',
                      'coverage baseline or policy validation failed; Deployment.Cli.Tests required',
+                     'if [[ "$deploy_floor_rc" -eq 3 ]]; then',
+                     'elif [[ "$deploy_floor_rc" -ne 0 ]]; then',
+                     'if isinstance(value, float) and not math.isfinite(value):',
                      'object_pairs_hook=reject_duplicate_keys',
                      'or "\\0" in relpath or "\\\\" in relpath or "\\n" in relpath or "\\r" in relpath',
                      '["git", "--literal-pathspecs", "ls-tree", "-t", "-z", base, "--", *relpaths]',
@@ -562,7 +565,7 @@ def violations(short, full, queue=None, extra=None):
                      'if path != local_only_allowlist or not isinstance(local_only_reason, str) or not local_only_reason.strip():',
                      'if path not in retired:',
                      'elif not is_regular_blob_entry(entry):',
-                     'if path.startswith(prefixes):',
+                     'if path.startswith(prefixes):\n                  sys.exit(3)',
                      'if measurable_floors == 0:',
                      'run_deployment_cli=%s\\ndeployment_cli_reason=%s\\n',
                      'timeout --signal=TERM --kill-after=5s 30s bash "$classifier" --verify-docs-restore "$base"',
@@ -760,6 +763,8 @@ mutations = (
     ("Deployment.Cli.Tests omits complete flag check", short.replace('"$complete_val" != complete=false || ', ''), full),
     ("Deployment.Cli.Tests omits active coverage floor fail-closed check", short.replace("active Deployment.Cli canonical coverage floor requires Deployment.Cli.Tests", "waived"), full),
     ("Deployment.Cli.Tests omits coverage baseline validation fail-closed check", short.replace("coverage baseline or policy validation failed; Deployment.Cli.Tests required", "waived"), full),
+    ("Deployment.Cli.Tests reuses exit code 1 for active floor branch", short.replace('if [[ "$deploy_floor_rc" -eq 3 ]]; then', 'if [[ "$deploy_floor_rc" -eq 1 ]]; then').replace('if path.startswith(prefixes):\n                  sys.exit(3)', 'if path.startswith(prefixes):\n                  sys.exit(1)'), full),
+    ("Deployment.Cli.Tests calls math.isfinite on unbounded integer ratio", short.replace('if isinstance(value, float) and not math.isfinite(value):', 'if not math.isfinite(value):'), full),
     ("Deployment.Cli.Tests omits Deployment.Cli prefix ownership check", short.replace("if path.startswith(prefixes):", "if False:"), full),
     ("Deployment.Cli.Tests allows embedded newlines in coverage paths", short.replace(' or "\\n" in relpath or "\\r" in relpath', ''), full),
     ("Deployment.Cli.Tests allows unterminated ls-tree -z output", short.replace('if out and not out.endswith(b"\\0"):', 'if False:'), full),
@@ -1737,7 +1742,11 @@ exit "$FAKE_EXIT"
     baseline_gt1_floor_ratio["files"]["HVO.SkyMonitor.Astronomy/CameraGeometry.cs"]["line"] = 1.05
     baseline_negative_floor_ratio = json.loads(real_coverage_baseline)
     baseline_negative_floor_ratio["files"]["HVO.SkyMonitor.Astronomy/CameraGeometry.cs"]["branch"] = -0.01
-    baseline_nan_floor_ratio = real_coverage_baseline.replace("0.843690", "NaN", 1)
+    baseline_nan_floor_ratio_obj = json.loads(real_coverage_baseline)
+    baseline_nan_floor_ratio_obj["aggregate"]["line"] = float("nan")
+    baseline_nan_floor_ratio = json.dumps(baseline_nan_floor_ratio_obj, allow_nan=True)
+    baseline_huge_int_floor_ratio = json.loads(real_coverage_baseline)
+    baseline_huge_int_floor_ratio["files"]["HVO.SkyMonitor.Astronomy/CameraGeometry.cs"]["line"] = 10 ** 350
     baseline_unauthorized_local_only_deploy = json.loads(real_coverage_baseline)
     baseline_unauthorized_local_only_deploy["files"]["HVO.SkyMonitor.Deployment.Cli/CommandLine.cs"] = {
         "line": 0.80, "branch": 0.60, "developmentV1LocalOnlyReason": "unauthorized local-only exemption on live Deployment.Cli floor"
@@ -1823,6 +1832,7 @@ exit "$FAKE_EXIT"
         ("out-of-range floor ratio above 1 fails closed", json.dumps(baseline_gt1_floor_ratio), None, deploy_floor_invalid_reason),
         ("out-of-range negative floor ratio fails closed", json.dumps(baseline_negative_floor_ratio), None, deploy_floor_invalid_reason),
         ("non-finite NaN ratio fails closed", baseline_nan_floor_ratio, None, deploy_floor_invalid_reason),
+        ("351-digit integer floor ratio fails closed as validation error", json.dumps(baseline_huge_int_floor_ratio), None, deploy_floor_invalid_reason),
         ("unauthorized developmentV1LocalOnlyReason on live Deployment.Cli floor fails closed", json.dumps(baseline_unauthorized_local_only_deploy), None, deploy_floor_invalid_reason),
         ("null developmentV1LocalOnlyReason on allowlisted ReleaseTool fails closed", json.dumps(baseline_null_local_only_allowlisted), None, deploy_floor_invalid_reason),
         ("blank developmentV1LocalOnlyReason on allowlisted ReleaseTool fails closed", json.dumps(baseline_blank_local_only_allowlisted), None, deploy_floor_invalid_reason),
@@ -1959,7 +1969,7 @@ exit "$FAKE_EXIT"
             lambda: stage_tracked_newline_floor("HVO.SkyMonitor.Astronomy/Line\nBreak.cs"),
         ),
         (
-            "tracked coverage path with embedded CR newline fails closed for coverage:policy parity",
+            "tracked coverage path with embedded CR fails closed under stricter selector path validation",
             lambda: stage_tracked_newline_floor("HVO.SkyMonitor.Astronomy/Return\rBreak.cs"),
         ),
     ):
