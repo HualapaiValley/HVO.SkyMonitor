@@ -1031,6 +1031,88 @@ public sealed class ProcessingNodeConfigPageTests
     }
 
     [TestMethod]
+    public void DedicatedPageLegacyV1DisabledCloudAssessmentResetPreservesDisabledStateThroughPreviewAndSave()
+    {
+        using var context = new BunitContext();
+        var pipeline = new CapturePipelineConfig(
+        [
+            new("CloudAssessment", "cloud", 10,
+                JsonDocument.Parse("""{ "enabled": false, "gridColumns": 8 }""").RootElement.Clone(),
+                ["$raw"])
+        ],
+        CapturePipelineSchemaVersions.LegacyV1,
+        CapturePipelineDependencyPolicy.LegacyInference);
+        var service = Configure(context, pipeline);
+        CapturePipelineConfig? previewed = null;
+        var basePreview = service.Preview!;
+        service.Preview = candidate =>
+        {
+            previewed = candidate;
+            return basePreview(candidate);
+        };
+
+        var cut = context.Render<ProcessingNodeConfigPage>(parameters => parameters
+            .Add(static page => page.RevisionId, "rev-active")
+            .Add(static page => page.NodeId, "cloud"));
+
+        cut.WaitForElement("#node-options-0-gridColumns");
+        Assert.AreEqual("8", cut.Find("#node-options-0-gridColumns").GetAttribute("value"));
+        Assert.IsFalse(cut.Find("#node-options-0-enabled").HasAttribute("checked"));
+        Assert.IsFalse(cut.Find("#node-options-0-reset-defaults").HasAttribute("disabled"),
+            "Reset to code defaults must be enabled when a legacy v1 step has non-default options.");
+
+        cut.Find("#node-options-0-reset-defaults").Click();
+        Assert.AreEqual("16", cut.Find("#node-options-0-gridColumns").GetAttribute("value"));
+        Assert.IsFalse(cut.Find("#node-options-0-enabled").HasAttribute("checked"),
+            "Reset to code defaults must preserve a legacy v1 step's options.enabled=false state.");
+        Assert.IsTrue(cut.Find("#node-options-0-reset-defaults").HasAttribute("disabled"));
+
+        cut.Find("form").Submit();
+        Assert.IsEmpty(cut.FindAll(".config-banner--error[role='alert']"));
+        Assert.IsNotNull(previewed);
+        Assert.AreEqual(CapturePipelineSchemaVersions.LegacyV1, previewed.SchemaVersion);
+        var previewedStep = previewed.Steps.Single(static step => step.Id == "cloud");
+        Assert.AreEqual(16, previewedStep.Options!.Value.GetProperty("gridColumns").GetInt32());
+        Assert.IsFalse(previewedStep.Options.Value.GetProperty("enabled").GetBoolean(),
+            "Preview must retain options.enabled=false for a retained legacy v1 step after Reset.");
+
+        Assert.IsFalse(cut.Find("button.btn-primary").HasAttribute("disabled"));
+        cut.Find("button.btn-primary").Click();
+
+        var savedPipeline = service.Created.Single().Pipeline;
+        Assert.AreEqual(CapturePipelineSchemaVersions.LegacyV1, savedPipeline.SchemaVersion);
+        var savedStep = savedPipeline.Steps.Single(static step => step.Id == "cloud");
+        Assert.AreEqual(16, savedStep.Options!.Value.GetProperty("gridColumns").GetInt32());
+        Assert.IsFalse(savedStep.Options.Value.GetProperty("enabled").GetBoolean(),
+            "Save must retain options.enabled=false for a retained legacy v1 step after Reset.");
+    }
+
+    [TestMethod]
+    public void DedicatedPageLegacyV1DisabledCloudAssessmentAtCodeDefaultsKeepsResetDisabled()
+    {
+        using var context = new BunitContext();
+        var pipeline = new CapturePipelineConfig(
+        [
+            new("CloudAssessment", "cloud", 10,
+                JsonDocument.Parse("""{ "enabled": false }""").RootElement.Clone(),
+                ["$raw"])
+        ],
+        CapturePipelineSchemaVersions.LegacyV1,
+        CapturePipelineDependencyPolicy.LegacyInference);
+        Configure(context, pipeline);
+
+        var cut = context.Render<ProcessingNodeConfigPage>(parameters => parameters
+            .Add(static page => page.RevisionId, "rev-active")
+            .Add(static page => page.NodeId, "cloud"));
+
+        cut.WaitForElement("#node-options-0-gridColumns");
+        Assert.AreEqual("16", cut.Find("#node-options-0-gridColumns").GetAttribute("value"));
+        Assert.IsFalse(cut.Find("#node-options-0-enabled").HasAttribute("checked"));
+        Assert.IsTrue(cut.Find("#node-options-0-reset-defaults").HasAttribute("disabled"),
+            "Reset to code defaults must stay disabled when a legacy v1 step only has options.enabled=false.");
+    }
+
+    [TestMethod]
     public void DedicatedPageRegionalVisibilityToggleDisabledRemovesUnusedPredictionAndReEnableWiresItBack()
     {
         var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);

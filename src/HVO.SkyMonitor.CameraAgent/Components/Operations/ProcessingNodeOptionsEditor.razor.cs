@@ -7,6 +7,8 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Operations;
 
 public sealed partial class ProcessingNodeOptionsEditor : ComponentBase
 {
+    // Exclude "enabled" across both v2 (NodeEnabled) and retained legacy v1 (options.enabled) graphs
+    // so resetting node configuration options never silently re-enables a disabled pipeline step.
     private static readonly HashSet<string> NodeEnabledKeys = new(StringComparer.Ordinal) { "enabled" };
 
     [Parameter, EditorRequired] public string IdPrefix { get; set; } = string.Empty;
@@ -20,6 +22,7 @@ public sealed partial class ProcessingNodeOptionsEditor : ComponentBase
     private bool CanResetToDefaults
         => Form.HasNonDefaultValuesExcluding(NodeEnabledKeys);
 
+    // Preserves the node's enabled/disabled state across both v2 (NodeEnabled) and retained legacy v1 (options.enabled) graphs.
     private async Task ResetAllToDefaultsAsync()
     {
         Form.ResetAllToDefaultsExcluding(NodeEnabledKeys);
