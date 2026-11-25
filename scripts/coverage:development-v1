@@ -4,12 +4,13 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 usage() {
   echo 'Usage: scripts/coverage:development-v1 --settings [--skip-deployment-cli] <output.runsettings>' >&2
-  echo '       scripts/coverage:development-v1 [--skip-deployment-cli] <fresh-unit-results-directory> <coverage-output-directory>' >&2
+  echo '       scripts/coverage:development-v1 [--cameraagent-shards] [--skip-deployment-cli] <fresh-unit-results-directory> <coverage-output-directory>' >&2
   exit 2
 }
 
 settings_mode=false
 skip_deployment_cli=false
+validation_mode=--unit-results
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
     --settings)
@@ -20,6 +21,11 @@ while [[ "$#" -gt 0 ]]; do
     --skip-deployment-cli)
       [[ "$skip_deployment_cli" == false ]] || usage
       skip_deployment_cli=true
+      shift
+      ;;
+    --cameraagent-shards)
+      [[ "$validation_mode" == --unit-results ]] || usage
+      validation_mode=--sharded-unit-results
       shift
       ;;
     --)
@@ -36,7 +42,7 @@ while [[ "$#" -gt 0 ]]; do
 done
 
 if [[ "$settings_mode" == true ]]; then
-  [[ "$#" -eq 1 ]] || usage
+  [[ "$#" -eq 1 && "$validation_mode" == --unit-results ]] || usage
   # Keep the canonical exclusions, but instrument only assemblies owning an
   # active canonical file floor. Host instrumentation cannot affect those
   # files' measurements and would add work to thousands of Unit cases.
@@ -111,8 +117,16 @@ expected_reports="$(jq -se --argjson skipDeploymentCli "$skip_deployment_cli" '
   select(length == 1) | .[0]
   | map(select(($skipDeploymentCli and . == "HVO.SkyMonitor.Deployment.Cli.Tests") | not))
   | length' "$repo_root/tests/unit-test-projects.json")"
+if [[ "$validation_mode" == --sharded-unit-results ]]; then
+  if [[ "${results_dir##*/}" != unit ]]; then
+    echo 'CameraAgent shard verification requires the fresh evidence unit directory.' >&2
+    exit 1
+  fi
+  "$repo_root/scripts/ci:development-v1-unit" --verify "$(dirname "$results_dir")"
+  expected_reports="$((expected_reports + 1))"
+fi
 if (( expected_reports == 0 || ${#reports[@]} != expected_reports )); then
-  printf 'Missing or extra Unit coverage data: expected %s reports (one per selected Unit-bearing project), found %s in %s. Rerun the Development v1 Unit selection with the generated settings and XPlat collection in a fresh directory.\n' \
+  printf 'Missing or extra Unit coverage data: expected %s reports for the selected Unit inputs, found %s in %s. Rerun the Development v1 Unit selection with the generated settings and XPlat collection in a fresh directory.\n' \
     "$expected_reports" "${#reports[@]}" "$results_dir" >&2
   exit 1
 fi
@@ -123,7 +137,7 @@ printf 'Merging %s fresh Unit reports for canonical per-file enforcement.\n' "${
 # ReportGenerator can log an XML error, omit that input and still exit zero.
 # Validate every report and declared branch counter before the merge loses it.
 dotnet run --project "$repo_root/scripts/coverage/HVO.SkyMonitor.CoverageGate.csproj" --disable-build-servers -p:UseSharedCompilation=false -- \
-  --development-v1 "${skip_args[@]}" --validate-reports --unit-results "$results_dir" "$repo_root/scripts/coverage/baseline.json" "${reports[@]}"
+  --development-v1 "${skip_args[@]}" --validate-reports "$validation_mode" "$results_dir" "$repo_root/scripts/coverage/baseline.json" "${reports[@]}"
 if ! dotnet reportgenerator \
   "-reports:$(IFS=';'; echo "${reports[*]}")" \
   "-targetdir:$target_dir" \

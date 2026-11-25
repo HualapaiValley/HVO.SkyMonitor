@@ -496,6 +496,103 @@ shutil.rmtree(results / "zattachment")
 second_trx.unlink()
 write_fixture(composite)
 
+# Both shards must supply a report independently associated with their TRX.
+# Use copied fixture assemblies to verify the same isolation layout used in CI.
+camera_project = "HVO.SkyMonitor.CameraAgent.Tests"
+camera_root = inventory_repo / "tests" / camera_project
+camera_release = camera_root / "bin/Release"
+camera_build = camera_release / "net10.0"
+shutil.copytree(assembly_output, camera_build)
+shutil.copy2(camera_build / "Fixture.Tests.dll", camera_build / f"{camera_project}.dll")
+shutil.copy2(camera_build / "Fixture.Tests.deps.json", camera_build / f"{camera_project}.deps.json")
+(camera_root / f"{camera_project}.csproj").touch()
+unit_inventory.write_text(json.dumps([*unit_projects, camera_project]))
+shard_reports = []
+for index in (1, 2):
+    shard = f"cameraagent-shard-{index}"
+    shard_build = camera_release / "dev-v1-shards.fixture" / shard
+    shutil.copytree(camera_build, shard_build)
+    original = results / shard / "coverage.cobertura.xml"
+    collected = results / f"{shard}-attachment/In/computer/coverage.cobertura.xml"
+    for path_to_copy in (original, collected):
+        path_to_copy.parent.mkdir(parents=True)
+        shutil.copy2(valid, path_to_copy)
+    shard_trx = results / f"{shard}.trx"
+    shard_trx.write_text((results / "fixture.trx").read_text().replace(
+        str(assembly_output / "Fixture.Tests.dll"), str(shard_build / f"{camera_project}.dll")
+    ).replace('runDeploymentRoot="attachment"', f'runDeploymentRoot="{shard}-attachment"'))
+    shard_reports.append(str(original))
+
+sharded_command = [value if value != "--unit-results" else "--sharded-unit-results" for value in validate_inputs]
+
+
+def shard_coverage_case(label, reports, expected, needle, *, skip_deployment_cli=False):
+    global cases
+    command = sharded_command.copy()
+    if skip_deployment_cli:
+        command.insert(command.index("--development-v1") + 1, "--skip-deployment-cli")
+    result = subprocess.run([*command, *reports], capture_output=True, text=True)
+    output = result.stdout + result.stderr
+    if result.returncode != expected or needle not in output:
+        raise SystemExit(f"FAIL {label}: exit={result.returncode}\n{output}")
+    cases += 1
+    print(f"PASS {label}")
+
+
+shard_coverage_case("coverage validates both CameraAgent shards and other Unit projects", shard_reports, 0,
+                    "Verified 3 Unit report identities")
+deployment_project_name = "HVO.SkyMonitor.Deployment.Cli.Tests"
+deployment_root = inventory_repo / "tests" / deployment_project_name
+deployment_build = deployment_root / "bin/Release/net10.0"
+shutil.copytree(assembly_output, deployment_build)
+deployment_dll = deployment_build / f"{deployment_project_name}.dll"
+(deployment_build / "Fixture.Tests.dll").rename(deployment_dll)
+(deployment_build / "Fixture.Tests.deps.json").rename(deployment_dll.with_suffix(".deps.json"))
+(deployment_root / f"{deployment_project_name}.csproj").touch()
+unit_inventory.write_text(json.dumps([*unit_projects, camera_project, deployment_project_name]))
+shard_coverage_case("sharded full inventory requires Deployment.Cli.Tests", shard_reports, 1,
+                    f"missing: {deployment_project_name}")
+shard_coverage_case("sharded path-filtered inventory includes both CameraAgent shards", shard_reports, 0,
+                    "Verified 3 Unit report identities", skip_deployment_cli=True)
+
+deployment_report = results / "deployment-original/coverage.cobertura.xml"
+deployment_attachment = results / "deployment-attachment/In/computer/coverage.cobertura.xml"
+for destination in (deployment_report, deployment_attachment):
+    destination.parent.mkdir(parents=True)
+    shutil.copy2(valid, destination)
+deployment_trx = results / "deployment.trx"
+deployment_trx.write_text((results / "fixture.trx").read_text().replace(
+    str(assembly_output / "Fixture.Tests.dll"), str(deployment_dll),
+).replace('runDeploymentRoot="attachment"', 'runDeploymentRoot="deployment-attachment"'))
+full_sharded_reports = [*shard_reports, str(deployment_report)]
+shard_coverage_case("sharded full inventory includes Deployment.Cli.Tests", full_sharded_reports, 0,
+                    "Verified 4 Unit report identities")
+shard_coverage_case("sharded path-filtered inventory rejects a Deployment.Cli.Tests report", full_sharded_reports, 1,
+                    f"unexpected: {deployment_project_name}", skip_deployment_cli=True)
+deployment_trx.unlink()
+shutil.rmtree(deployment_report.parent)
+shutil.rmtree(results / "deployment-attachment")
+shutil.rmtree(deployment_root)
+unit_inventory.write_text(json.dumps([*unit_projects, camera_project]))
+
+shard_coverage_case("one CameraAgent shard has no original report", shard_reports[:1], 1,
+                    "no matching original coverage report")
+original_shard_trx = shard_trx.read_text()
+shard_trx.unlink()
+shard_coverage_case("one CameraAgent shard has no TRX", shard_reports, 1, "missing: cameraagent-shard-2")
+shard_trx.write_text("<TestRun")
+shard_coverage_case("one CameraAgent shard has malformed TRX", shard_reports, 1, "Coverage input inventory failed")
+shard_trx.write_text(original_shard_trx)
+original.write_text("<coverage")
+shard_coverage_case("one CameraAgent shard has malformed coverage", shard_reports, 1, "Coverage input validation failed")
+for index in (1, 2):
+    shard = f"cameraagent-shard-{index}"
+    (results / f"{shard}.trx").unlink()
+    shutil.rmtree(results / shard)
+    shutil.rmtree(results / f"{shard}-attachment")
+shutil.rmtree(camera_root)
+unit_inventory.write_text(json.dumps(unit_projects))
+
 # Raw coordinates and metadata must describe records the pinned merger reads.
 for label in ("excluded-class", "outside-classes"):
     relocated = copy.deepcopy(composite)

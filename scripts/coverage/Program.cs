@@ -27,7 +27,8 @@ if (validateReportsOnly)
 }
 
 string? unitResultsDirectory = null;
-if (args.Length > 1 && args[0] == "--unit-results")
+var shardedUnitResults = args is ["--sharded-unit-results", ..];
+if (args.Length > 1 && (args[0] == "--unit-results" || shardedUnitResults))
 {
     unitResultsDirectory = args[1];
     args = args[2..];
@@ -196,7 +197,7 @@ if (validateReportsOnly)
     {
         try
         {
-            UnitCoverageInputs.Validate(repositoryRoot, unitResultsDirectory, args.Skip(1).ToArray(), thresholds.Keys, skipDeploymentCli);
+            UnitCoverageInputs.Validate(repositoryRoot, unitResultsDirectory, args.Skip(1).ToArray(), thresholds.Keys, shardedUnitResults, skipDeploymentCli);
         }
         catch (Exception exception) when (exception is InvalidDataException or IOException or System.Xml.XmlException or BadImageFormatException or JsonException)
         {

@@ -198,23 +198,15 @@ run: |
   ./scripts/release:changelog "${args[@]}"
   ./scripts/test:changelog
 """
-unit_filter = "TestCategory=Unit&TestCategory!=Performance"
 deployment_cli_skip_guard = (
     'if [[ "$GITHUB_EVENT_NAME" == pull_request && "$WORKLOAD_OUTCOME" == success && '
     '"$RUN_DEPLOYMENT_CLI" == false ]]; then'
 )
-unit_command = " \\\n".join((
-    "            dotnet test HVO.SkyMonitor.v9.slnx",
-    "              --no-build",
-    "              --configuration Release",
-    '              --filter "$unit_filter"',
-    '              "${test_project_args[@]}"',
-    '              --settings "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings"',
-    '              --collect:"XPlat Code Coverage"',
-    '              --results-directory "$DEV_V1_EVIDENCE_ROOT/unit"',
-    "              --logger trx",
-))
-unit_selection_error = "exact solution Unit command with the positive Unit category, Performance exclusion, and PR-only Deployment.Cli.Tests path-filter"
+unit_command = '            ./scripts/ci:development-v1-unit "${coverage_args[@]}" "$DEV_V1_EVIDENCE_ROOT"'
+coverage_command = '              ./scripts/coverage:development-v1 --cameraagent-shards "${coverage_args[@]}" "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage"'
+unit_driver = (root / "scripts/ci:development-v1-unit").read_text()
+unit_filter_assignment = 'UNIT_FILTER = "TestCategory=Unit&TestCategory!=Performance"'
+unit_filter_error = "Unit driver must select Unit cases and exclude Performance cases"
 directory_build_targets = (root / "Directory.Build.targets").read_text()
 coverage_policy_script = (root / "scripts/coverage:policy").read_text()
 skip_deployment_cli_target = (
@@ -239,7 +231,7 @@ queue_execution = """        env:
         run: BASE_SHA="$(git rev-parse HEAD)" ./scripts/ci:queue-reviewed-head"""
 
 
-def violations(short, full, queue=None, extra=None):
+def violations(short, full, queue=None, extra=None, unit_source=None):
     queue = queue_gate if queue is None else queue
     errors = []
     preflight = job(short, "preflight")
@@ -261,6 +253,9 @@ def violations(short, full, queue=None, extra=None):
         "draft exclusion",
     )
     require(short.count("branches: [development/v1]") == 3, "v1 PR, push and merge queue triggers")
+    short_triggers = short.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
+    require(set(re.findall(r"^  (\w+):", short_triggers, re.M)) == {"pull_request", "push", "merge_group"},
+            "v1 triggers are limited to PRs, pushes and merge groups")
     require(merge_group_trigger in short, "both required checks report on merge queue commits")
     # The queue commit never carries the operator's hvo/reviewed-head status, so a
     # merge_group-only job reports that context after re-checking the queued PR head.
@@ -395,7 +390,7 @@ def violations(short, full, queue=None, extra=None):
     require("continue-on-error:" not in short, "required checks must fail closed")
     for command in (
         "ci:shell-syntax", "test:ci-classification", "test:coordination-guard",
-        "test:pr-review-tools", "test:development-v1-ci",
+        "test:pr-review-tools", "test:development-v1-ci", "test:development-v1-unit",
     ):
         require(f"          ./scripts/{command}\n" in preflight, f"preflight {command}")
     for profile, section, title, executable in (
@@ -460,8 +455,8 @@ def violations(short, full, queue=None, extra=None):
     require("          ./scripts/test:release-scripts\n" in quality, "full Quality retains test:release-scripts")
     require(
         re.findall(r"^\s+dotnet (restore|build|test)\b", build, re.M)
-        == ["restore", "build", "test"],
-        "one restore/build/Unit execution",
+        == ["restore", "build"],
+        "one solution restore/build; Unit executes through the test plan",
     )
     require("dotnet build HVO.SkyMonitor.v9.slnx" in build, "complete solution build")
     require("--configuration Release" in build and "-warnaserror" in build, "Release warnings")
@@ -469,12 +464,8 @@ def violations(short, full, queue=None, extra=None):
     unit = step(build, "Run Docker-disabled Unit selection")
     unit_selection_block = "\n".join((
         "          coverage_args=()",
-        f'          unit_filter="{unit_filter}"',
-        "          test_project_args=(-p:SkipDeploymentCliTests=false)",
         f"          {deployment_cli_skip_guard}",
         "            coverage_args+=(--skip-deployment-cli)",
-        '            unit_filter+="&FullyQualifiedName!~HVO.SkyMonitor.Deployment.Cli.Tests"',
-        "            test_project_args=(-p:SkipDeploymentCliTests=true)",
         "          fi",
         '          ./scripts/coverage:development-v1 --settings "${coverage_args[@]}" "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings"',
     ))
@@ -482,11 +473,14 @@ def violations(short, full, queue=None, extra=None):
         "WORKLOAD_OUTCOME: ${{ steps.workload.outcome }}" in unit
         and "RUN_DEPLOYMENT_CLI: ${{ steps.workload.outputs.run_deployment_cli }}" in unit
         and unit_selection_block in unit
-        and unit.rstrip().endswith("\n" + unit_command),
-        unit_selection_error,
+        and unit.rstrip().endswith("\n" + unit_command)
+        and unit.splitlines().count(unit_command) == 1,
+        "exact Development v1 Unit driver invocation with PR-only Deployment.Cli.Tests path filtering",
     )
     require(skip_deployment_cli_target in directory_build_targets,
             "Directory.Build.targets scopes SkipDeploymentCliTests exclusively to HVO.SkyMonitor.Deployment.Cli.Tests")
+    require((unit_driver if unit_source is None else unit_source).splitlines().count(unit_filter_assignment) == 1,
+            unit_filter_error)
     coverage = step(build, "Enforce canonical per-file coverage floors")
     policy = step(preflight, "Check coverage policy")
     require('        run: ./scripts/coverage:policy "$EVENT_NAME" "$BASE_REF"' in policy and
@@ -511,7 +505,7 @@ def violations(short, full, queue=None, extra=None):
     for command in (
         '              dotnet tool restore',
         '              ./scripts/test:coverage-development-v1',
-        '              ./scripts/coverage:development-v1 "${coverage_args[@]}" "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage"',
+        coverage_command,
     ):
         require(coverage.splitlines().count(command) == 1, f"per-file gate wiring: {command}")
     require('        id: coverage\n' in coverage and 'bash -euo pipefail -c' in coverage,
@@ -640,7 +634,9 @@ def violations(short, full, queue=None, extra=None):
     require(re.search(r"started_at_epoch \+ 1080\)\)", build) is not None and
             re.search(r"^    timeout-minutes: 22$", build, re.M) is not None, "bounded workload and job")
     require("workloadBudgetSeconds:1080,hardTimeoutSeconds:1320,unitTrxCount" in build, "summary matches enforced budgets")
-    require("--logger trx" in build and "if-no-files-found: error" in build, "retained evidence")
+    require("find \"$DEV_V1_EVIDENCE_ROOT/unit\" -name '*.trx'" in build and
+            "path: ${{ runner.temp }}/development-v1/" in build and
+            "if-no-files-found: error" in build, "retained evidence")
     require(build.count("if: always()") == 2, "failure evidence summary and upload")
     require("hvo-development-v1-ci-v6" in build, "versioned short-profile evidence")
     for heavy in ("./scripts/ci:shellcheck", "./scripts/test:ci-shellcheck",
@@ -776,8 +772,8 @@ mutations = (
     ("Deployment.Cli.Tests omits duplicate JSON key rejection", short.replace('object_pairs_hook=reject_duplicate_keys,', ''), full),
     ("Deployment.Cli.Tests accepts symlink git mode in coverage blob check", short.replace('("100644", "100755")', '("100644", "100755", "120000")'), full),
     ("Deployment.Cli.Tests omits missing non-retired source blob check", short.replace('if path not in retired:', 'if False:'), full),
-    ("Deployment.Cli.Tests skips unconditionally", short.replace("test_project_args=(-p:SkipDeploymentCliTests=false)", "test_project_args=(-p:SkipDeploymentCliTests=true)"), full),
-    ("Deployment.Cli.Tests leaves SkipDeploymentCliTests unset on full run", short.replace("test_project_args=(-p:SkipDeploymentCliTests=false)", "test_project_args=()"), full),
+    ("Unit driver skips Deployment.Cli.Tests unconditionally", short.replace(unit_command, unit_command.replace('"${coverage_args[@]}"', "--skip-deployment-cli")), full),
+    ("Unit driver ignores Deployment.Cli.Tests selection", short.replace(unit_command, unit_command.replace('"${coverage_args[@]}" ', "")), full),
     ("merge_group accepts reuse ID in workload selection", short.replace('if [[ "$EVENT_NAME" == push && -n "${MERGE_GROUP_RUN_ID:-}" ]]; then', 'if [[ -n "${MERGE_GROUP_RUN_ID:-}" ]]; then'), full),
     ("merge_group accepts reuse ID in checkout step", short.replace("if: github.event_name != 'push' || env.MERGE_GROUP_RUN_ID == ''", "if: env.MERGE_GROUP_RUN_ID == ''"), full),
     ("merge_group accepts reuse ID in runner selector", short.replace("github.event_name == 'push' && needs.preflight.outputs.merge_group_run_id != ''", "needs.preflight.outputs.merge_group_run_id != ''"), full),
@@ -797,13 +793,14 @@ mutations = (
     ("base-image check gated", short.replace(
         "- name: Check Dockerfile base images", "- name: Check Dockerfile base images\n        if: false"), full),
     ("base-image failure masked", short.replace("run: ./scripts/ci:base-images", "run: ./scripts/ci:base-images || true"), full),
-    ("missing Unit filter", short.replace(f'unit_filter="{unit_filter}"', 'unit_filter=""'), full),
-    ("missing Performance exclusion", short.replace("&TestCategory!=Performance", ""), full),
-    ("coverage not collected", short.replace('--collect:"XPlat Code Coverage"', ""), full),
+    ("Unit driver removed", short.replace(unit_command, "            true"), full),
+    ("Unit failures masked", short.replace(unit_command, unit_command + " || true"), full),
+    ("Unit shard contracts removed", short.replace("./scripts/test:development-v1-unit", "true"), full),
     ("coverage policy removed", short.replace('run: ./scripts/coverage:policy ', 'run: true '), full),
-    ("coverage settings lost", short.replace('--settings "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings"', ""), full),
-    ("coverage gate removed", short.replace('./scripts/coverage:development-v1 "${coverage_args[@]}" "$DEV_V1_EVIDENCE_ROOT/unit"', 'true "$DEV_V1_EVIDENCE_ROOT/unit"'), full),
-    ("coverage failure masked", short.replace('./scripts/coverage:development-v1 "${coverage_args[@]}" "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage"', './scripts/coverage:development-v1 "${coverage_args[@]}" "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage" || true'), full),
+    ("coverage settings lost", short.replace('"$DEV_V1_EVIDENCE_ROOT/coverage.runsettings"', "missing.runsettings"), full),
+    ("coverage gate removed", short.replace(coverage_command, "              true"), full),
+    ("one-part CameraAgent coverage allowed", short.replace(" --cameraagent-shards ", " "), full),
+    ("coverage failure masked", short.replace(coverage_command, coverage_command + " || true"), full),
     ("coverage step conditional", short.replace(workload_condition, "if: false"), full),
     ("direct push eligible for reuse", short.replace(" && github.actor == 'github-merge-queue[bot]'", ""), full),
     ("queue run eligible for reuse", short.replace(queue_push_condition, "if: github.event_name == 'merge_group'"), full),
@@ -811,12 +808,13 @@ mutations = (
     ("coverage errors tolerated", short.replace('        id: coverage', '        continue-on-error: true\n        id: coverage'), full),
     ("coverage regression tests lost", short.replace('./scripts/test:coverage-development-v1', 'true'), full),
     ("coverage timing lost", short.replace('stages:[$restore,$build,$unit,$coverage]', 'stages:[$restore,$build,$unit]'), full),
-    ("integration in fast run", short.replace("TestCategory=Unit", "TestCategory=Integration"), full),
     ("Docker enabled", short.replace("DOCKER_HOST: unix:///tmp/hvo-no-docker.sock", ""), full),
     ("warnings tolerated", short.replace("-warnaserror", ""), full),
     ("draft build", short.replace(" || github.event.pull_request.draft == false", ""), full),
     ("merge queue trigger removed", short.replace(merge_group_trigger, ""), full),
     ("Build and Unit skipped in the queue", short.replace(" || github.event_name == 'merge_group'", ""), full),
+    ("manual dispatch added", short.replace("on:\n", "on:\n  workflow_dispatch:\n", 1), full),
+    ("Build and Unit admits manual dispatch", short.replace(" || github.event.pull_request.draft", " || github.event_name == 'workflow_dispatch' || github.event.pull_request.draft"), full),
     ("queue gate on pull_request", short, full, queue_gate.replace(
         "on:\n  merge_group:", "on:\n  pull_request:\n    branches: [development/v1]\n  merge_group:")),
     ("queue gate on push", short, full, queue_gate.replace(
@@ -1191,11 +1189,15 @@ with tempfile.TemporaryDirectory(prefix="hvo-changelog-workflow-") as directory:
             raise SystemExit(f"Preflight changelog case {label} did not fail closed: {observed} {result.stderr}")
     print("Preflight changelog merge-parent binding: 5 behavioral cases passed.")
 
-for replacement in ("TestCategory=Unit", "TestCategory=Unit|TestCategory!=Performance", "TestCategory=Integration", "TestCategory!=Integration", "TestCategory=Unit&FullyQualifiedName~Narrow"):
-    candidate = short.replace(f'unit_filter="{unit_filter}"', f'unit_filter="{replacement}"')
-    if candidate == short or unit_selection_error not in violations(candidate, full):
-        raise SystemExit(f"Unit filter mutation was not rejected: {replacement}")
-    print(f"Rejected Unit filter mutation: {replacement}")
+# The filter now lives in the shard driver. Preserve the workflow's Unit
+# filter mutation controls at the new entry point for all three test hosts.
+for replacement in ("", "TestCategory=Unit", "TestCategory=Unit|TestCategory!=Performance",
+                    "TestCategory=Integration", "TestCategory!=Integration", "TestCategory=Unit&FullyQualifiedName~Narrow"):
+    candidate = unit_driver.replace(unit_filter_assignment, f'UNIT_FILTER = "{replacement}"')
+    if candidate == unit_driver or unit_filter_error not in violations(short, full, unit_source=candidate):
+        raise SystemExit(f"Unit driver filter mutation was not rejected: {replacement!r}")
+    print(f"Rejected Unit driver filter mutation: {replacement!r}")
+
 # The documented reproduction check must compare the inventory without rewriting it.
 runbook = (root / "docs/runbooks/ci-pipeline.md").read_text()
 reproduce = runbook.split("### Reproduce the documentation CI inventory", 1)[1].split("```bash\n", 1)[1].split("\n```", 1)[0]
@@ -2047,22 +2049,20 @@ sys.exit(proc.returncode)
         raise SystemExit(f"merge_group with nonempty MERGE_GROUP_RUN_ID skipped workload: {mg_lines} {result.stderr}")
     deploy_cases += 1
 
-    # Sol M2: Run Docker-disabled Unit selection explicitly passes -p:SkipDeploymentCliTests=false on full runs
-    # (including merge_group and non-skipped PRs) so an inherited SkipDeploymentCliTests=true env var cannot disable Deployment.Cli.Tests.
+    # The workflow passes the same verified skip decision to settings and the shard driver.
+    # test:development-v1-unit checks how the driver sets the MSBuild and VSTest options.
     unit_step = step(job(short, "build-unit"), "Run Docker-disabled Unit selection")
     unit_script = textwrap.dedent(unit_step.split("        run: |\n", 1)[1])
-    unit_bin = fixture / "unit-bin"
-    unit_bin.mkdir()
     unit_calls = fixture / "unit-calls.jsonl"
-    fake_dotnet = unit_bin / "dotnet"
-    fake_dotnet.write_text("""#!/usr/bin/env python3
-import json, os, sys
-with open(os.environ["UNIT_CALLS"], "a") as handle:
-    handle.write(json.dumps({"cmd": "dotnet", "argv": sys.argv[1:], "env_skip": os.environ.get("SkipDeploymentCliTests")}) + "\\n")
-""")
-    fake_dotnet.chmod(0o700)
     fake_cov_dir = fixture / "unit-repo/scripts"
     fake_cov_dir.mkdir(parents=True)
+    fake_driver = fake_cov_dir / "ci:development-v1-unit"
+    fake_driver.write_text("""#!/usr/bin/env python3
+import json, os, sys
+with open(os.environ["UNIT_CALLS"], "a") as handle:
+    handle.write(json.dumps({"cmd": "driver", "argv": sys.argv[1:]}) + "\\n")
+""")
+    fake_driver.chmod(0o700)
     fake_cov = fake_cov_dir / "coverage:development-v1"
     fake_cov.write_text("""#!/usr/bin/env python3
 import json, os, sys
@@ -2073,22 +2073,20 @@ with open(os.environ["UNIT_CALLS"], "a") as handle:
     (evidence / "timing").mkdir(exist_ok=True)
     (evidence / "unit").mkdir(exist_ok=True)
     for unit_label, unit_event, unit_outcome, unit_run_deploy, expect_skip in (
-        ("merge_group with inherited SkipDeploymentCliTests=true forces false", "merge_group", "success", "false", False),
-        ("push with inherited SkipDeploymentCliTests=true forces false", "push", "success", "false", False),
-        ("pull_request full with inherited SkipDeploymentCliTests=true forces false", "pull_request", "success", "true", False),
-        ("pull_request failed workload with inherited SkipDeploymentCliTests=true forces false", "pull_request", "failure", "false", False),
-        ("pull_request verified skip passes SkipDeploymentCliTests=true", "pull_request", "success", "false", True),
+        ("merge_group forces full selection", "merge_group", "success", "false", False),
+        ("push forces full selection", "push", "success", "false", False),
+        ("pull_request full forces full selection", "pull_request", "success", "true", False),
+        ("pull_request failed workload forces full selection", "pull_request", "failure", "false", False),
+        ("pull_request verified skip reaches the driver", "pull_request", "success", "false", True),
     ):
         unit_calls.write_text("")
         unit_env = dict(
             os.environ,
-            PATH=f"{unit_bin}:{os.environ['PATH']}",
             DEV_V1_EVIDENCE_ROOT=str(evidence),
             DEV_V1_DEADLINE_EPOCH=str(int(time.time()) + 600),
             GITHUB_EVENT_NAME=unit_event,
             WORKLOAD_OUTCOME=unit_outcome,
             RUN_DEPLOYMENT_CLI=unit_run_deploy,
-            SkipDeploymentCliTests="true",
             UNIT_CALLS=str(unit_calls),
         )
         result = subprocess.run(["bash", "-euo", "pipefail", "-c", unit_script], cwd=fixture / "unit-repo",
@@ -2096,23 +2094,13 @@ with open(os.environ["UNIT_CALLS"], "a") as handle:
         if result.returncode != 0:
             raise SystemExit(f"Unit step simulation '{unit_label}' failed: {result.stderr}")
         recorded = [json.loads(line) for line in unit_calls.read_text().splitlines()]
-        if len(recorded) != 2 or recorded[0]["cmd"] != "coverage" or recorded[1]["cmd"] != "dotnet":
+        skip_args = ["--skip-deployment-cli"] if expect_skip else []
+        expected = [
+            {"cmd": "coverage", "argv": ["--settings", *skip_args, str(evidence / "coverage.runsettings")]},
+            {"cmd": "driver", "argv": [*skip_args, str(evidence)]},
+        ]
+        if recorded != expected:
             raise SystemExit(f"Unit step simulation '{unit_label}' unexpected calls: {recorded}")
-        cov_argv = recorded[0]["argv"]
-        dotnet_argv = recorded[1]["argv"]
-        filter_arg = dotnet_argv[dotnet_argv.index("--filter") + 1]
-        if expect_skip:
-            if ("--skip-deployment-cli" not in cov_argv or
-                    "-p:SkipDeploymentCliTests=true" not in dotnet_argv or
-                    "-p:SkipDeploymentCliTests=false" in dotnet_argv or
-                    "&FullyQualifiedName!~HVO.SkyMonitor.Deployment.Cli.Tests" not in filter_arg):
-                raise SystemExit(f"Unit step simulation '{unit_label}' did not apply skip args: {recorded}")
-        else:
-            if ("--skip-deployment-cli" in cov_argv or
-                    "-p:SkipDeploymentCliTests=false" not in dotnet_argv or
-                    "-p:SkipDeploymentCliTests=true" in dotnet_argv or
-                    "Deployment.Cli.Tests" in filter_arg):
-                raise SystemExit(f"Unit step simulation '{unit_label}' failed to force Deployment.Cli.Tests: {recorded}")
         deploy_cases += 1
 
     # Endpoints disagree: PR tip is CameraAgent-only, but merge tree modifies Deployment.Cli.

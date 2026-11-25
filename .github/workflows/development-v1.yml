@@ -101,6 +101,7 @@ jobs:
           ./scripts/test:coordination-guard
           ./scripts/test:pr-review-tools
           ./scripts/test:development-v1-ci
+          ./scripts/test:development-v1-unit
 
       - name: Check coverage policy
         env:
@@ -551,27 +552,15 @@ jobs:
           RUN_DEPLOYMENT_CLI: ${{ steps.workload.outputs.run_deployment_cli }}
         run: |
           coverage_args=()
-          unit_filter="TestCategory=Unit&TestCategory!=Performance"
-          test_project_args=(-p:SkipDeploymentCliTests=false)
           if [[ "$GITHUB_EVENT_NAME" == pull_request && "$WORKLOAD_OUTCOME" == success && "$RUN_DEPLOYMENT_CLI" == false ]]; then
             coverage_args+=(--skip-deployment-cli)
-            unit_filter+="&FullyQualifiedName!~HVO.SkyMonitor.Deployment.Cli.Tests"
-            test_project_args=(-p:SkipDeploymentCliTests=true)
           fi
           ./scripts/coverage:development-v1 --settings "${coverage_args[@]}" "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings"
           remaining="$((DEV_V1_DEADLINE_EPOCH - $(date +%s)))"
           ((remaining > 0)) || exit 124
           /usr/bin/time -v -o "$DEV_V1_EVIDENCE_ROOT/timing/unit.time" \
             timeout --signal=TERM --kill-after=30s "${remaining}s" \
-            dotnet test HVO.SkyMonitor.v9.slnx \
-              --no-build \
-              --configuration Release \
-              --filter "$unit_filter" \
-              "${test_project_args[@]}" \
-              --settings "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings" \
-              --collect:"XPlat Code Coverage" \
-              --results-directory "$DEV_V1_EVIDENCE_ROOT/unit" \
-              --logger trx
+            ./scripts/ci:development-v1-unit "${coverage_args[@]}" "$DEV_V1_EVIDENCE_ROOT"
 
       - name: Enforce canonical per-file coverage floors
         if: ${{ steps.workload.outcome != 'success' || steps.workload.outputs.run_full != 'false' }}
@@ -593,7 +582,7 @@ jobs:
               fi
               dotnet tool restore
               ./scripts/test:coverage-development-v1
-              ./scripts/coverage:development-v1 "${coverage_args[@]}" "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage"
+              ./scripts/coverage:development-v1 --cameraagent-shards "${coverage_args[@]}" "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage"
             '
 
       # Those screens drawn as SVG, as docs/images/terminal has them, and kept with the evidence below (#1317).

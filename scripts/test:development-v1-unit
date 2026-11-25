@@ -1,0 +1,188 @@
+#!/usr/bin/env python3
+
+import contextlib
+import io
+import json
+import os
+from pathlib import Path
+import runpy
+import subprocess
+import tempfile
+import unittest
+from unittest.mock import patch
+from uuid import UUID
+from xml.etree import ElementTree as ET
+
+
+driver = runpy.run_path(str(Path(__file__).resolve().with_name("ci:development-v1-unit")))
+partition = driver["partition"]
+main = driver["main"]
+verify = driver["verify"]
+camera_agent = driver["CAMERA_AGENT"]
+names = ("cameraagent-shard-1", "cameraagent-shard-2")
+
+
+def discovered(number, area, categories=("Unit",)):
+    return {"Id": str(UUID(int=number)), "Name": "CameraSuite.Parameterized", "Areas": [area], "Categories": categories}
+
+
+def write_results(evidence, shard, assembly, cases):
+    namespace = driver["TRX"]["trx"]
+    run = ET.Element("TestRun", xmlns=namespace)
+    definitions = ET.SubElement(run, "TestDefinitions")
+    results = ET.SubElement(run, "Results")
+    entries = ET.SubElement(run, "TestEntries")
+    for number, case in enumerate(cases, 1):
+        execution = str(UUID(int=number))
+        test = ET.SubElement(definitions, "UnitTest", id=case)
+        ET.SubElement(test, "TestMethod", codeBase=str(assembly))
+        ET.SubElement(test, "Execution", id=execution)
+        ET.SubElement(results, "UnitTestResult", testId=case, executionId=execution, outcome="Passed")
+        ET.SubElement(entries, "TestEntry", testId=case, executionId=execution)
+    count = str(len(cases))
+    summary = ET.SubElement(run, "ResultSummary", outcome="Completed")
+    ET.SubElement(summary, "Counters", total=count, passed=count, executed=count)
+    ET.ElementTree(run).write(evidence / "unit" / f"{shard}.trx")
+
+
+class UnitContractTests(unittest.TestCase):
+    def setUp(self):
+        self.cases = [discovered(1, "Capture.Processing"), discovered(2, "Capture.Processing"),
+                      discovered(3, "Modules.VirtualSky"), discovered(4, "Modules.VirtualSky", ("Performance",)),
+                      discovered(5, "Capture.Processing", ("Unit", "Performance"))]
+        self.areas = [["Capture.Processing"], ["Modules.VirtualSky"]]
+
+    def test_partition_accounts_by_case_identity(self):
+        plan = partition(self.areas, self.cases)
+        self.assertEqual(set(plan[names[0]]), {self.cases[0]["Id"], self.cases[1]["Id"]})
+        self.assertEqual(set(plan[names[1]]), {self.cases[2]["Id"]})
+        self.assertFalse(plan[names[0]].keys() & plan[names[1]].keys())
+        self.assertEqual(plan, partition(self.areas, list(reversed(self.cases))))
+        new_class = discovered(6, "Modules.VirtualSky") | {"Name": "NewClass.Method"}
+        self.assertIn(new_class["Id"], partition(self.areas, [*self.cases, new_class])[names[1]])
+
+    def test_partition_rejects_invalid_inventory(self):
+        for label, areas, cases in (
+            ("three shards", [*self.areas, ["Extra"]], self.cases),
+            ("overlap", [self.areas[0], [*self.areas[0], *self.areas[1]]], self.cases),
+            ("unmapped Area", self.areas, [*self.cases, discovered(6, "NewArea")]),
+            ("unmapped class", self.areas, [*self.cases, discovered(6, "Ignored") | {"Areas": []}]),
+            ("duplicate discovery identity", self.areas, [*self.cases, self.cases[0]]),
+            ("unused Area", [[*self.areas[0], "OldArea"], self.areas[1]], self.cases),
+            ("empty shard", self.areas, [self.cases[0], self.cases[3]]),
+        ):
+            with self.subTest(label=label), self.assertRaises(ValueError):
+                partition(areas, cases)
+
+    def test_execution_rejects_missing_malformed_duplicate_and_foreign_results(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            evidence = Path(scratch)
+            (evidence / "unit").mkdir()
+            plan = {name: {"cases": cases, "assembly": str(evidence / name / "Camera.dll")}
+                    for name, cases in partition(self.areas, self.cases).items()}
+            for name, entry in plan.items():
+                write_results(evidence, name, entry["assembly"], list(entry["cases"]))
+            with contextlib.redirect_stdout(io.StringIO()):
+                verify(evidence, plan)
+            second = evidence / "unit" / f"{names[1]}.trx"
+            second.rename(second.with_suffix(".missing"))
+            with self.assertRaises(FileNotFoundError), contextlib.redirect_stdout(io.StringIO()):
+                verify(evidence, plan)
+            second.write_text("<TestRun")
+            with self.assertRaises(ET.ParseError), contextlib.redirect_stdout(io.StringIO()):
+                verify(evidence, plan)
+            entry = plan[names[1]]
+            expected = self.cases[2]["Id"]
+            for label, assembly, cases in (
+                ("missing case", entry["assembly"], []),
+                ("case from first shard", entry["assembly"], [self.cases[0]["Id"]]),
+                ("duplicate result", entry["assembly"], [expected, expected]),
+                ("foreign assembly", plan[names[0]]["assembly"], [expected]),
+            ):
+                with self.subTest(label=label), self.assertRaises(ValueError), contextlib.redirect_stdout(io.StringIO()):
+                    write_results(evidence, names[1], assembly, cases)
+                    verify(evidence, plan)
+
+    def test_full_workload_launches_both_shards_and_all_other_unit_projects(self):
+        self.check_launch()
+
+    def test_path_filtered_workload_skips_deployment_only_in_other_projects(self):
+        self.check_launch(skip_deployment_cli=True)
+
+    def test_other_projects_failure_blocks_workload_with_successful_shards(self):
+        self.check_launch(other_exit_code=7)
+
+    def check_launch(self, skip_deployment_cli=False, other_exit_code=0):
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            release = root / "tests" / camera_agent / "bin/Release/net10.0"
+            release.mkdir(parents=True)
+            (release / "fixture").write_text("fixture")
+            (root / "scripts/ci").mkdir(parents=True)
+            (root / "scripts/ci/cameraagent-unit-shards.json").write_text(json.dumps(self.areas))
+            projects = ["HVO.SkyMonitor.Other.Tests", "HVO.SkyMonitor.More.Tests", "HVO.SkyMonitor.Deployment.Cli.Tests"]
+            solution = ET.Element("Solution")
+            for project in [camera_agent, *projects]:
+                ET.SubElement(solution, "Project", Path=f"tests/{project}/{project}.csproj")
+            ET.SubElement(solution, "Project", Path="src/Host/Host.csproj")
+            ET.ElementTree(solution).write(root / "HVO.SkyMonitor.v9.slnx")
+            # A new test project absent from the Unit inventory still gets the
+            # full filter. If it emits a report, the coverage inventory rejects it.
+            (root / "tests/unit-test-projects.json").write_text(json.dumps([camera_agent, projects[0]]))
+            evidence = root / "evidence"
+            (evidence / "unit").mkdir(parents=True)
+            launches = []
+            waits = []
+
+            class Process:
+                def __init__(self, exit_code):
+                    self.exit_code = exit_code
+
+                def wait(self):
+                    waits.append(len(launches))
+                    return self.exit_code
+
+                def poll(self):
+                    return self.exit_code
+
+            def launch(command):
+                launches.append(command)
+                if len(launches) > 1:
+                    shard = names[len(launches) - 2]
+                    slot = Path(next(item.removeprefix("-p:OutDir=") for item in command if item.startswith("-p:OutDir=")))
+                    self.assertEqual((slot / "fixture").read_text(), "fixture")
+                    cases = [test["Id"] for test in (self.cases[:2] if shard == names[0] else self.cases[2:3])]
+                    write_results(evidence, shard, slot / f"{camera_agent}.dll", cases)
+                return Process(other_exit_code if len(launches) == 1 else 0)
+
+            args = ["--skip-deployment-cli", str(evidence)] if skip_deployment_cli else [str(evidence)]
+            with (patch.dict(main.__globals__, ROOT=root),
+                  patch.dict(os.environ, DOCKER_HOST="unix:///tmp/hvo-no-docker.sock", SkipDeploymentCliTests="true"),
+                  patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(self.cases))),
+                  patch.object(subprocess, "Popen", side_effect=launch), contextlib.redirect_stdout(io.StringIO())):
+                if other_exit_code:
+                    with self.assertRaisesRegex(ValueError, "^Unit selection failed in other-unit$"):
+                        main(args)
+                else:
+                    main(args)
+            self.assertEqual(waits, [3, 3, 3])
+            selected = json.loads((evidence / "other-unit.slnf").read_text())["solution"]["projects"]
+            self.assertEqual(selected, sorted(f"tests/{project}/{project}.csproj" for project in projects))
+            self.assertEqual(len(launches), 3)
+            unit = "TestCategory=Unit&TestCategory!=Performance"
+            other_filter = unit + "&FullyQualifiedName!~HVO.SkyMonitor.Deployment.Cli.Tests" if skip_deployment_cli else unit
+            other_args = [arg for arg in launches[0] if arg.startswith("-p:SkipDeploymentCliTests=")]
+            self.assertEqual(other_args, ["-p:SkipDeploymentCliTests=true" if skip_deployment_cli else "-p:SkipDeploymentCliTests=false"])
+            for command in launches[1:]:
+                self.assertFalse(any(arg.startswith("-p:SkipDeploymentCliTests=") for arg in command))
+            for command, selection in zip(launches, (other_filter, unit + "&(Area=Capture.Processing)", unit + "&(Area=Modules.VirtualSky)")):
+                self.assertEqual(command[command.index("--filter") + 1], selection)
+                self.assertEqual(command[command.index("--settings") + 1], str(evidence / "coverage.runsettings"))
+                self.assertIn("--collect:XPlat Code Coverage", command)
+                self.assertIn("--no-build", command)
+            first_out, second_out = [next(arg for arg in command if arg.startswith("-p:OutDir=")) for command in launches[1:]]
+            self.assertNotEqual(first_out, second_out)
+
+
+if __name__ == "__main__":
+    unittest.main()
