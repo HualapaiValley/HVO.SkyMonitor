@@ -4,15 +4,14 @@ This file records the changes to HVO.SkyMonitor that operators and users notice.
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-`[Unreleased]` records the work merged to `development/v1` since the last release. A release renames `[Unreleased]`
-to its version and adds `docs/upgrade-notes/X.Y.Z.md` (install contract section 3). 0.9.0, the first release, starts
-with the work merged from 2026-10-16 onward; earlier development is recorded in its pull requests.
+Each operator-visible pull request adds one [changelog fragment](changelog.d/README.md).
+The release PR assembles the fragments and remaining Unreleased entries into the
+new version section and adds `docs/upgrade-notes/X.Y.Z.md`. 0.9.0, the first release,
+starts with the work merged from 2026-10-16 onward. Pull requests record earlier development.
 
 ## [Unreleased]
 
 ### Added
-
-- Centered CameraAgent processing graphs can opt into regional stellar-visibility cloud evidence alongside clear-reference cloud assessment, retaining separate per-tile support, reasons, and geometry/focus confidence without reporting a cloud-cover percentage. #1925
 
 - `hvo-sky-install cameraagent install --storage-layout silo` installs a new CameraAgent instance with a pinned stock Silo store on local ext4. The store is private to the instance and bound to it, and capture starts paused until `hvo-sky-install cameraagent first-resume` releases it once the install has completed. The interactive wizard does not ask for the Silo layout; give its options on the command line. `cameraagent silo-verify` checks the store, data-root headroom and the optional archive read-only and reports `ready`, `degraded` or `not-ready`. Other lifecycle commands refuse such an instance. `release.json` names the pinned upstream Silo image as `images.silo`. An offline host stages it with `--silo-image-archive`, verified before loading, and `--silo-archive-*` verifies an optional archive store over HTTPS. See `docs/runbooks/cameraagent-silo-runtime.md`. #1966
 
@@ -35,6 +34,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 - Release tooling can check local LogicHost identity candidates against their archive bytes, checksums and central compatibility declarations without loading or installing them. Refs #1242
 
 ### Changed
+
+- SkyMonitor CI keeps functional tests on the merge path and reports tight timing and allocation checks in a separate Raspberry Pi 5 workflow. The Pi workflow flags timings more than 20% above a rolling baseline. #2060
 
 - SkyMonitor CI and the standard local validation commands now skip the retired LogicHost and combined CameraAgent–LogicHost test suites. The active CI inventory has 16,583 of 17,819 Unit cases and 916 of 1,540 Integration cases. #2048
 
@@ -72,6 +73,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 - CameraAgent shutdown releases its remaining services after a local automation task fails during cancellation. The stop still reports the original failure. #1936
 - CameraAgent can upgrade the beta astrometry journal to centered processing while retaining captures and indexed astrometry history. #1922
 
+- CameraAgent identifies the retained input that blocked centered registration, reports unavailable predecessor history on resumed runs, and keeps retention lookups fast as window history grows. #1961
+
 - CameraAgent refuses new legacy reference-astrometry presets while the active camera profile uses centered exposure (#1919).
 
 - Current Sky clears measured overlays and calculator results when a repaired astrometric fit is quarantined again, while retaining the verified historical result. #1901
@@ -103,6 +106,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 - CameraAgent protects the live VirtualSky compatibility revision from retirement, allows retirement of unused compatibility revisions and unrelated graphs that occupy a compatibility revision name, and creates a replayable successor for an ineligible journal entry. #1901
 
 - CameraAgent keeps the first scheduled environmental reading pending while it recovers the deployment location. It records one reading or explicit outcome for that slot and keeps the outcome across restarts. The environmental schema upgrade takes a paired checkpoint so rollback can restore the older journal. #1938
+
+- CameraAgent spaces out device reads for a held environmental poll while its journal rejects acquisition results and reports the outage once per source. #1943
 
 - The offline LogicHost candidate verifier rejects standalone deep-sky packages such as OpenNGC when declared as the required star catalog. #1896
 

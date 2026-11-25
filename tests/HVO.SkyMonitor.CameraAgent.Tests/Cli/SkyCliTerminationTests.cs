@@ -6,6 +6,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Cli;
 /// <summary>SIGINT, SIGTERM and SIGHUP: the first ends the command, the process still ends, and a second ends it at once.</summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Cli")]
 public sealed class SkyCliTerminationTests
 {
     [TestMethod]

@@ -4,7 +4,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     printf '%s is a shard adapter sourced by scripts/test:deploy-environment.\n' "${BASH_SOURCE[0]}" >&2
     exit 2
 fi
-preflight_filter='TestCategory=Unit&('
+preflight_filter='TestCategory=Unit&TestCategory!=Performance&('
 preflight_filter+='FullyQualifiedName~HVO.SkyMonitor.Deployment.Cli.Tests.PreflightTests|'
 preflight_filter+='FullyQualifiedName~HVO.SkyMonitor.Deployment.Cli.Tests.PreflightInventoryTests|'
 preflight_filter+='FullyQualifiedName~HVO.SkyMonitor.Deployment.Cli.Tests.PreflightAncillaryTests|'

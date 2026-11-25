@@ -7,6 +7,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Orbital;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Orbital")]
 public sealed class OrbitalElementsTelemetryTests : OrbitalStoreTestBase
 {
     private const string Prefix = "skymonitor.cameraagent.orbital_elements.";

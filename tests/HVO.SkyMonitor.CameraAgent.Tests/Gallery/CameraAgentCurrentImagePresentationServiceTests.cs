@@ -10,6 +10,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Gallery;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Gallery")]
 public sealed class CameraAgentCurrentImagePresentationServiceTests
 {
     private static readonly DateTimeOffset Now = new(2026, 8, 30, 12, 0, 0, TimeSpan.Zero);

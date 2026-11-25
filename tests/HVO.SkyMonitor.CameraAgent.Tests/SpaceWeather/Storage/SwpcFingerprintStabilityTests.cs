@@ -15,6 +15,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.SpaceWeather.Storage;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "SpaceWeather")]
 public sealed class SwpcFingerprintStabilityTests
 {
     private static readonly DateTimeOffset Now = new(2026, 10, 20, 12, 0, 0, TimeSpan.Zero);

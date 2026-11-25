@@ -11,6 +11,7 @@
 - Implemented:
 - Excluded or deferred:
 - Compatibility/migration impact:
+- [ ] Operator-visible changes include one fragment per `changelog.d/README.md`, or the fragment is N/A.
 
 ## Issue Ownership
 
@@ -38,6 +39,7 @@
 - [ ] Migrations, architecture, publish, format, package, fault, soak, external,
       or browser gates required by the issue pass.
 - Commands and results:
+- Link generated test counts or local discovery evidence when relevant. See `docs/runbooks/ci-pipeline.md#categories`.
 
 ## Output Evidence
 
@@ -107,9 +109,7 @@ A generic whole-PR approval is not correction-rereview evidence.
       code was not reopened without concrete interaction evidence.
 - [ ] No more than three correction rereviews were requested unless a documented
       non-deferrable blocker required a targeted cap exception.
-- [ ] If a fourth correction rereview would otherwise be needed, one consolidated
-      follow-up issue contains every eligible non-blocking finding and is linked
-      here:
+- [ ] Kepler recorded linked follow-ups for deferred Low findings.
 - [ ] Every review round was appended to the ledger without replacing earlier
       reviewed ranges.
 - [ ] The owner reported review start, milestones, and blockers directly to the
@@ -122,12 +122,17 @@ A generic whole-PR approval is not correction-rereview evidence.
       routed through another session.
 - [ ] Correction commits are pushed without force-push or unrequested amend.
 - [ ] The PR remained draft during review correction and was marked ready only
-      after review convergence, final target-branch synchronization, and
-      required base-sync review or recorded unchanged-base proof.
+      after review convergence on the current head.
+- [ ] Any `development/v1` sync resolved an actual conflict, with the resulting
+      head validated and reviewed. The merge queue tests the combined tree.
+- [ ] After Ready, build/test breaks, High/Medium correctness, and missed
+      acceptance criteria were corrected.
+- [ ] Kepler added post-Ready Lows to matching rolling issues labeled
+      `follow-up` and `low-batch`, up to seven items per issue, with the source PR link and `file:line`
+      for each item. See `docs/planning/agent-execution.md#rolling-low-batches`.
 - [ ] Every planned post-ready head change returned the PR to draft before the
       change and received bounded delta review.
-- [ ] The repository-wide finalization lock was held from final synchronization
-      through protected CI and merge; no outstanding target-branch merge remains.
+- [ ] Kepler followed the finalization procedure for the target branch.
 - [ ] Classifier-selected protected CI ran on the final reviewed current head.
 - [ ] Every required current-head check is green; canceled, timed-out, flaky,
       missing, or stale pre-correction checks are not accepted.
@@ -135,10 +140,8 @@ A generic whole-PR approval is not correction-rereview evidence.
       correction-delta review exist.
 - [ ] For roadmap work, the owning epic will be updated after merge with
       validation, performance, and the exact next action.
-- [ ] The owner will complete authorized merge, confirm issue closure,
-      synchronize local `main`, and safely clean up merged branches/worktrees,
-      preserving unrelated changes; reserved or unauthorized merge is a reported
-      boundary, not permission to bypass it.
+- [ ] Kepler will verify the authorized merge, record issue disposition,
+      and coordinate safe cleanup of merged branches and worktrees.
 - [ ] Completion or transfer will explicitly release the claim with a handoff
       and remove `workflow:in-progress`; a stop will record retention or release.
 - [ ] No further issue will be selected or claimed without user authorization.

@@ -21,6 +21,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 /// WAL reader/writer coexistence that a private cache provides.
 /// </summary>
 [TestClass]
+[TestProperty("Area", "Capture.Processing")]
 public sealed class SqliteCaptureProcessingStoreConcurrencyTests
 {
     private const int BusyTimeoutSeconds = 5;

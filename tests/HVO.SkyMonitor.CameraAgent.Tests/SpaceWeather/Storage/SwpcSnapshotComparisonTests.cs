@@ -5,6 +5,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.SpaceWeather.Storage;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "SpaceWeather")]
 public sealed class SwpcSnapshotComparisonTests
 {
     private static readonly DateTimeOffset Stamp = new(2026, 10, 20, 12, 0, 0, TimeSpan.Zero);

@@ -7,6 +7,7 @@ namespace HVO.SkyMonitor.Tests.CameraAgent.Deployment;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Deployment")]
 public sealed class DeploymentContinuityReaderTests
 {
     private string? root;

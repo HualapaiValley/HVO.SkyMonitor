@@ -10,6 +10,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Hosting")]
 [DoNotParallelize]
 public sealed class ProgramFirstBootOneShotTests
 {

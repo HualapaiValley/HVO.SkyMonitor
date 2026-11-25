@@ -44,6 +44,8 @@ internal sealed partial class SqliteCaptureProcessingStore
     private static readonly Lazy<Dictionary<string, string>> LegacySchema12WithAvailabilityDefinitions =
         new(() => CreateSchemaDefinitions(SchemaBeforeAstrometryIndexSql.Replace(CenteredAvailabilityCutoffIndex,
             LegacyCenteredAvailabilityCutoffIndex, StringComparison.Ordinal)));
+    private static readonly Lazy<Dictionary<string, string>> LegacySchema12BeforeRegistrationStateDefinitions =
+        new(() => CreateSchemaDefinitions(SchemaBeforeRegistrationStateSql));
     private static readonly Lazy<Dictionary<string, string>> LegacySchema12BeforeViewRetentionDefinitions =
         new(() => CreateSchemaDefinitions(SchemaBeforeCenteredViewRetentionIndexesSql));
 
@@ -56,7 +58,8 @@ internal sealed partial class SqliteCaptureProcessingStore
 
     private static bool IsEarlierCenteredSchema(Dictionary<string, string> actual)
         => BeforeViewRetentionIndexes(actual) is { } earlier &&
-           (MatchesSchemaDefinitions(earlier, LegacySchema12BeforeViewRetentionDefinitions.Value) ||
+           (MatchesSchemaDefinitions(earlier, LegacySchema12BeforeRegistrationStateDefinitions.Value) ||
+            MatchesSchemaDefinitions(earlier, LegacySchema12BeforeViewRetentionDefinitions.Value) ||
             MatchesSchemaDefinitions(earlier, PreAstrometrySchema12Definitions.Value) ||
             IsEarlierCenteredAvailabilitySchema(earlier));
 
@@ -84,9 +87,10 @@ internal sealed partial class SqliteCaptureProcessingStore
         if (await ExecuteScalarLongAsync(connection,
                 """
                 SELECT COUNT(*) FROM sqlite_schema
-                WHERE name IN ('ix_processing_outputs_astrometry_lookup', 'ix_processing_centered_view_changes_base');
+                WHERE name IN ('ix_processing_outputs_astrometry_lookup', 'ix_processing_centered_view_changes_base',
+                    'processing_centered_registration_input_failures');
                 """,
-                cancellationToken).ConfigureAwait(false) == 2)
+                cancellationToken).ConfigureAwait(false) == 3)
             return;
 
 #pragma warning disable CA1849 // Microsoft.Data.Sqlite exposes immediate transactions only through the synchronous overload.
@@ -105,6 +109,8 @@ internal sealed partial class SqliteCaptureProcessingStore
         if (!actual.ContainsKey(LegacyAstrometryJournalSchema.LookupIndexName))
             await ExecuteSchemaStatementsAsync(connection, transaction, cancellationToken, AstrometryLookupIndexPrefix)
                 .ConfigureAwait(false);
+        if (!actual.ContainsKey("processing_centered_registration_input_failures"))
+            await AddCenteredRegistrationStateSchemaAsync(transaction, cancellationToken).ConfigureAwait(false);
         if (!actual.ContainsKey(CenteredViewRetentionSchema.IndexNames[0]))
         {
             using var indexes = connection.CreateCommand();

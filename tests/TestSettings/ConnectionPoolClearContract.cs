@@ -84,7 +84,7 @@ namespace HVO.SkyMonitor.TestSettings;
 /// </remarks>
 [TestClass]
 [TestCategory("Unit")]
-public sealed class ConnectionPoolClearContractTests
+public sealed partial class ConnectionPoolClearContractTests
 {
     private const string GlobalClearMethod = "ClearAllPools";
     private const string SqliteConnectionType = "Microsoft.Data.Sqlite.SqliteConnection";
@@ -243,7 +243,18 @@ public sealed class ConnectionPoolClearContractTests
             $"{LinkageHostProject} no longer compiles {LinkageFileName}, so nothing checks whether every test "
                 + "project still receives this contract. A project could then drop it silently, which is the "
                 + "defect this pair exists to make loud.");
+
+        AssertAssemblySpecificContracts();
     }
+
+    /// <summary>
+    /// Extension hook for assembly-specific test contract guards that run alongside the shared
+    /// connection-pool contract without changing discovered test counts. The C# compiler elides
+    /// this declaration and its call site in test assemblies without a partial implementation.
+    /// Currently implemented by <c>HVO.SkyMonitor.CameraAgent.Tests</c> in
+    /// <c>ConnectionPoolClearContractTests.Area.cs</c> to enforce the <c>Area</c> trait taxonomy.
+    /// </summary>
+    static partial void AssertAssemblySpecificContracts();
 
     private static ScanResult Scan(Assembly assembly)
     {

@@ -29,7 +29,7 @@ internal sealed partial class CenteredWindowRegistrationWorker(
             {
                 var workState = await store.ReadCenteredWindowDispositionAsync(work.WindowIdentity, cancellationToken).ConfigureAwait(false);
                 if (workState is { IsTerminal: false })
-                    await RegisterAsync(workState.Closure, cancellationToken).ConfigureAwait(false);
+                    await RegisterAsync(workState, cancellationToken).ConfigureAwait(false);
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
@@ -40,8 +40,9 @@ internal sealed partial class CenteredWindowRegistrationWorker(
         _lastVisited = batch.Count == BatchSize ? batch[^1] : null;
     }
 
-    private async ValueTask RegisterAsync(CenteredWindowClosure closure, CancellationToken cancellationToken)
+    private async ValueTask RegisterAsync(CenteredWindowDisposition state, CancellationToken cancellationToken)
     {
+        var closure = state.Closure;
         var remaining = closure.Schedule.RegistrationDeadlineUtc - timeProvider.GetUtcNow();
         if (remaining <= TimeSpan.Zero)
             return;
@@ -51,16 +52,11 @@ internal sealed partial class CenteredWindowRegistrationWorker(
         try
         {
             var attempt = await CenteredWindowRegistrationResult.ExecuteAsync(closure, source, linked.Token).ConfigureAwait(false);
-            if (attempt.Result is { } result)
+            if (attempt.InputFailure is not null)
+                await RecordInputFailureAsync(closure, attempt, cancellationToken).ConfigureAwait(false);
+            else if (attempt.Result is { } result)
             {
-                var center = closure.Center.Input!;
-                var reference = await source.ReadExposureAsync(center.Key, linked.Token).ConfigureAwait(false);
-                if (reference is null || reference.Key != center.Key ||
-                    CaptureContractJson.ComputeDescriptorSha256(reference.Raw) != center.RawDescriptorSha256)
-                    throw new InvalidDataException("The registration reference differs from the admitted capture.");
-
-                await persistence.PersistCenteredRegistrationAsync(result, reference.Raw, journal, linked.Token)
-                    .ConfigureAwait(false);
+                await PublishAsync(state, result, linked.Token, cancellationToken).ConfigureAwait(false);
             }
             else if (attempt.Outcome.Status != ProcessingOutcomeStatus.RetryableFailure)
             {
@@ -78,6 +74,50 @@ internal sealed partial class CenteredWindowRegistrationWorker(
             await store.FailCenteredRegistrationAsync(closure, "registration.invalid-retained-evidence", journal,
                 cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    private async Task PublishAsync(CenteredWindowDisposition state, CenteredWindowRegistrationResult result,
+        CancellationToken attemptToken, CancellationToken cancellationToken)
+    {
+        var closure = state.Closure;
+        var center = closure.Center.Input!;
+        var rawPin = closure.Center.Products!.RegistrationPin!.Raw;
+        ExposureInputV1? reference;
+        try
+        {
+            reference = await source.ReadExposureAsync(center.Key, attemptToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (CenteredWindowRegistrationResult.IsRetryableInputRead(exception))
+        {
+            attemptToken.ThrowIfCancellationRequested();
+            var failure = CenteredWindowRegistrationResult.UnreadableInput(center.Key, rawPin, exception);
+            await RecordInputFailureAsync(closure, failure, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        attemptToken.ThrowIfCancellationRequested();
+        if (reference is null)
+        {
+            var failure = CenteredWindowRegistrationResult.UnreadableInput(center.Key, rawPin);
+            await RecordInputFailureAsync(closure, failure, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+        if (reference.Key != center.Key || CaptureContractJson.ComputeDescriptorSha256(reference.Raw) != center.RawDescriptorSha256)
+            throw new InvalidDataException("The registration reference differs from the admitted capture.");
+
+        // An output write failure must not inherit a previous input failure once every pin is readable again.
+        if (state.InputFailure is not null)
+            await store.UpdateCenteredRegistrationInputFailureAsync(closure, null, cancellationToken).ConfigureAwait(false);
+        await persistence.PersistCenteredRegistrationAsync(result, reference.Raw, journal, attemptToken).ConfigureAwait(false);
+    }
+
+    private async Task RecordInputFailureAsync(CenteredWindowClosure closure, CenteredWindowRegistrationAttempt attempt,
+        CancellationToken cancellationToken)
+    {
+        var failure = attempt.InputFailure!;
+        if (await store.UpdateCenteredRegistrationInputFailureAsync(closure, failure, cancellationToken).ConfigureAwait(false))
+            ReportUnreadableInput(logger, closure.Schedule.Identity, failure.Exposure.CaptureId,
+                failure.Artifact.ArtifactId, failure.Kind, attempt.InputReadException);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -105,4 +145,9 @@ internal sealed partial class CenteredWindowRegistrationWorker(
 
     [LoggerMessage(EventId = 6192, Level = LogLevel.Warning, Message = "Centered registration for {WindowIdentity} did not publish.")]
     private static partial void ReportFailure(ILogger logger, string windowIdentity, Exception exception);
+
+    [LoggerMessage(EventId = 6193, Level = LogLevel.Warning,
+        Message = "Centered registration for {WindowIdentity} could not read pinned artifact {ArtifactId} from capture {CaptureId} ({FailureKind}).")]
+    private static partial void ReportUnreadableInput(ILogger logger, string windowIdentity, Guid captureId,
+        Guid artifactId, CenteredRegistrationInputFailureKind failureKind, Exception? exception);
 }

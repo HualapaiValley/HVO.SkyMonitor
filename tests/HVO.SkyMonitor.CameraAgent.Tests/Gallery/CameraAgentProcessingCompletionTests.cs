@@ -10,6 +10,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Gallery;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Gallery")]
 [DoNotParallelize]
 public sealed class CameraAgentProcessingCompletionTests
 {

@@ -367,20 +367,20 @@ public sealed partial class LifecycleContractTests
             StringComparison.Ordinal);
     }
 
-    // F3 (PR-1496-R1): a key followed by a long run of spaces is matched in linear time. Before the fix each of these threw
-    // RegexMatchTimeoutException after about a second; plain token did so before #1491 as well.
     [TestMethod]
-    [DataRow("xtoken", 65536)]
-    [DataRow("xtoken", 1048576)]
-    [DataRow("db_password", 65536)]
-    [DataRow("db_password", 1048576)]
-    [DataRow("accessToken", 1048576)]
-    [DataRow("x-api-key", 1048576)]
-    [DataRow("token", 1048576)]
-    // #1509: the secret key spellings, and the quoted passes, which now accept whitespace alone before a value.
-    [DataRow("SecretKey", 1048576)]
-    [DataRow("secret-access-key", 1048576)]
-    public void Diagnostic1491_KeyBeforeLongWhitespaceIsLinear(string key, int spaces)
+    [DataRow("xtoken", 1024)]
+    [DataRow("xtoken", 4096)]
+    [DataRow("db_password", 1024)]
+    [DataRow("db_password", 4096)]
+    [DataRow("accessToken", 4096)]
+    [DataRow("x-api-key", 4096)]
+    [DataRow("token", 4096)]
+    [DataRow("SecretKey", 4096)]
+    [DataRow("secret-access-key", 4096)]
+    public void Diagnostic1491_KeyBeforeWhitespaceKeepsTheTruncatedPrefix(string key, int spaces) =>
+        VerifyDiagnostic1491WhitespacePrefix(key, spaces);
+
+    internal static void VerifyDiagnostic1491WhitespacePrefix(string key, int spaces)
     {
         var diagnostic = key + new string(' ', spaces) + "x";
         var watch = Stopwatch.StartNew();
@@ -415,4 +415,21 @@ public sealed partial class LifecycleContractTests
             Console.SetError(originalError);
         }
     }
+}
+
+public sealed partial class LifecycleRedactionPerformanceTests
+{
+    // PR-1496-R1 F3 covered regex timeouts on long whitespace after these keys.
+    [TestMethod]
+    [DataRow("xtoken", 65536)]
+    [DataRow("xtoken", 1048576)]
+    [DataRow("db_password", 65536)]
+    [DataRow("db_password", 1048576)]
+    [DataRow("accessToken", 1048576)]
+    [DataRow("x-api-key", 1048576)]
+    [DataRow("token", 1048576)]
+    [DataRow("SecretKey", 1048576)]
+    [DataRow("secret-access-key", 1048576)]
+    public void Diagnostic1491_KeyBeforeLongWhitespaceIsLinear(string key, int spaces) =>
+        LifecycleContractTests.VerifyDiagnostic1491WhitespacePrefix(key, spaces);
 }

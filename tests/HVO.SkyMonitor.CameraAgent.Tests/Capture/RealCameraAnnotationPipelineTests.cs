@@ -13,6 +13,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture")]
 public sealed class RealCameraAnnotationPipelineTests
 {
     private static readonly DateTimeOffset Utc = new(2025, 1, 15, 8, 0, 0, TimeSpan.Zero);

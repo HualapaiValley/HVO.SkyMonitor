@@ -13,6 +13,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 /// <summary>One isolated process per baseline/after workload; raw failure evidence is retained.</summary>
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "Modules.VirtualSky")]
 [DoNotParallelize]
 public sealed class VirtualStellarExposureResourceTests
 {

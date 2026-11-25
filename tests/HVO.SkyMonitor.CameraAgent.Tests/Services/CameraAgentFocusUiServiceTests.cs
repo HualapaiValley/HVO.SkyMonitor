@@ -17,6 +17,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Services;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Services")]
 public sealed class CameraAgentFocusUiServiceTests
 {
     private static readonly ManualFocusSessionRequest Request = new(new(TimeSpan.FromMilliseconds(50), 20), 400);

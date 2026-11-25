@@ -863,6 +863,7 @@ release_scripts_paths=(
   "scripts/release:publish-prerelease"
   "scripts/release:version"
   "scripts/release:notes"
+  "scripts/release:changelog"
   "scripts/release:gate"
   "scripts/release:check-environment"
   "scripts/release:publish"
@@ -1044,12 +1045,9 @@ verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Replay/Transport.cs"      
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent.ReplayRunner/Program.cs"         full false false false true false
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Cli/SkyCli.cs"                    full false false false true false
 verify_component_plan "tests/HVO.SkyMonitor.CameraAgent.Tests/CaptureTests.cs"         full false false false true false
-# A project's own category inventory is owned by that project (#853): a count
-# change selects the owning lane, not the complete matrix that editing the audit
-# engine in scripts/test-categories/Program.cs still selects.
-verify_component_plan "tests/HVO.SkyMonitor.CameraAgent.Tests/test-categories.json"    full false false false true false
-verify_component_plan "tests/HVO.SkyMonitor.Astronomy.Tests/test-categories.json"      full false false true true true
-verify_component_plan "tests/HVO.SkyMonitor.Deployment.Cli.Tests/test-categories.json" full true false false false true
+# Adding tests selects the owning lane without changing shared count data.
+verify_component_plan "tests/HVO.SkyMonitor.Astronomy.Tests/DiscoveryTests.cs"          full false false true true true
+verify_component_plan "tests/HVO.SkyMonitor.Deployment.Cli.Tests/DiscoveryTests.cs"     full true false false false true
 verify_component_plan "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/Smoke.cs"      full false false false true false
 verify_component_plan "tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/Ingress.cs"   full false false false true false
 
@@ -1306,9 +1304,11 @@ complete_matrix_paths=(
   "scripts/coverage/baseline.json"
   "scripts/coverage/Program.cs"
   "scripts/test-categories/Program.cs"
+  "scripts/test:test-category-audit"
   "scripts/package:audit"
   "scripts/package-audit/allowlist.json"
   "tests/coverage.runsettings"
+  "tests/unit-test-projects.json"
   "tests/HVO.SkyMonitor.Architecture.Tests/ArchitectureBoundaryTests.cs"
   "Directory.Build.props"
   "Directory.Packages.props"
@@ -1336,6 +1336,8 @@ done
 
 # The retired UI suite was the only project that copied this historical input.
 verify_component_plan "docs/validation/logichost-ui-runtime-signals.json" reduced false false false false false
+verify_component_plan "changelog.d/camera-setup.fixed.md" reduced false false false false false
+verify_component_plan "changelog.d/123.unknown.md" full false true true true true
 
 # An unknown including project still widens a CameraAgent file to the complete
 # matrix, even if the project name resembles one of the retired projects.
