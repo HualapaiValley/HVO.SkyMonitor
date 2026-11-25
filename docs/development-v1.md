@@ -104,9 +104,13 @@ the group's first parents to that tip. It requires exactly two parents per entry
 with a limit of 100 entries. Each second parent must equal an open PR's current
 head targeting this repository's `development/v1`. Earlier entries require a
 unique matching PR association because the diff approval binds the PR number.
-If open PRs share a head and destination, the association cannot identify
-which PR actually entered the queue. The gate rejects that earlier entry. Use
-a single-entry group so GitHub's queue ref identifies the PR directly.
+If another open PR targeting `development/v1` (including a fork PR in this
+public repository) shares an earlier queued PR A's head, the association cannot
+uniquely identify PR A when verifying a later queued PR B (`found 2`); the gate
+rejects PR B's merge group (so GitHub removes PR B from the queue and rebuilds
+the following merge group with the remaining queued PRs, which can fail
+independently if the same ambiguity persists), not PR A itself. Use a
+single-entry group so GitHub's queue ref identifies the PR directly.
 An earlier entry landing during traversal can become the trusted stopping point.
 Fork PRs use commit statuses in the base repository.
 

@@ -66,24 +66,31 @@ SHA that already passed the Development v1 merge-group workflow (Refs #2066).
 
 ## Refresh and review
 
-The certificate becomes trusted after HIGH-tier review and merge into
-`development/v1`. A certificate in a PR cannot approve that PR's workload
-exemption. Refresh the inventory and the certificate together when the SDK,
-projects, inputs, packages or generated imports change.
+The certificate becomes trusted only after HIGH-tier review and merge into
+`development/v1`. A certificate updated in a PR cannot approve that same PR's
+workload exemption. Any PR that changes the pinned SDK, restored project set,
+audited build inputs, NuGet packages, or generated imports must refresh
+`scripts/ci:docs-inventory` and `scripts/ci:restore-import-certificate.json`
+together before merge.
 
-Any change to an audited build input makes the certificate stale. Project
-files, props and targets, package pins, `global.json`, and `.gitattributes` are
-all covered. For stale, drifted, or missing certificates, hosted Preflight and
-full `CI / Quality` fail with
+Any change to an audited build input, `global.json` SDK pin, or restored project
+set makes the certificate stale (project files, props and targets, package pins,
+`global.json`, and `.gitattributes` are all covered). For stale, drifted, or
+missing certificates caught by the SDK-free check, hosted Preflight and full
+`CI / Quality` fail with
 `::error::Documentation CI build inventory is stale or unsafe; refresh scripts/ci:docs-inventory and scripts/ci:restore-import-certificate.json: …`
 until the refresh is committed. For unsafe build inputs (such as a tracked
 symlink, submodule, `.user`/`.rsp` file, or escaped XML), the check fails with
 `::error::Documentation CI build inventory is stale or unsafe; remove the unsafe input or update the audit policy under HIGH-tier review: …`
 because refreshing the certificate fails with the same audit error until the
 unsafe input is removed or the audit policy is changed under HIGH-tier review.
-Even when a base tree carries a stale, drifted or unsafe certificate, Build and
-Unit continues to fail closed and select full validation; it never produces a
-skipped-green required result (Refs #1996).
+Drift in the observed Linux x64 SDK binary, resolved NuGet packages, or
+generated `.nuget.g.props`/`.nuget.g.targets` imports is caught by SDK-backed
+`--verify-docs-restore HEAD` in full-mode `CI / Quality` (failing the job) and
+during `Development v1 / Build and Unit` classification. Even when a base tree
+carries a stale, drifted or unsafe certificate, Build and Unit continues to fail
+closed and select full validation; it never produces a skipped-green required
+result (Refs #1996).
 
 From a clean candidate commit on Linux x64, use the pinned stable SDK and the
 same NuGet sources as Build and Unit. The published Linux x64 SDK distribution
@@ -118,9 +125,15 @@ check the exact committed result with `./scripts/ci:classify
 Run `./scripts/ci:classify --check-docs-inventory HEAD`,
 `scripts/test:ci-classification` and `scripts/test:development-v1-ci`. Run
 `scripts/test:ci-docs-restore-import` under the SDK and lock above for the
-offline positive and negative proof. If the certificate cannot be reproduced,
-the Build and Unit artifact records the reason while full validation remains
-in effect. Full-mode `CI / Quality` runs `scripts/test:ci-docs-restore-import` and
+offline positive and negative proof. If a committed certificate cannot be
+reproduced against the pinned SDK and NuGet sources, full-mode `CI / Quality`
+fails `--verify-docs-restore HEAD` on the checked-out commit (a PR carrying a
+refreshed certificate passes `CI / Quality` before merge), while
+`Development v1 / Build and Unit` checks `--verify-docs-restore "$base"` on the
+trusted base branch—failing closed to full validation and recording the reason
+in its classification artifact until the refreshed certificate is reviewed and
+merged into `development/v1`. Full-mode
+`CI / Quality` runs `scripts/test:ci-docs-restore-import` and
 `./scripts/ci:classify --verify-docs-restore HEAD` automatically under its
 pinned `.NET` SDK (`Run SDK-dependent contract checks`, Refs #1996), so hosted
 Preflight stays SDK-free and the required Build and Unit workload keeps its

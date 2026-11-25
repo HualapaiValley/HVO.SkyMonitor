@@ -674,8 +674,10 @@ def violations(short, full, queue=None, extra=None, unit_source=None):
             "category audit belongs to full qualification")
     require("run: ./scripts/test:test-category-audit" in qualification_build,
             "full Build tests category discovery contracts")
-    # Refs #1747. Atlas assigned the build label only to gh-runner-05/06.
-    # Qualification retains its own label; v1 selects the ready build pair.
+    # Refs #1747. Atlas delivered the initial 8-vCPU build pair (gh-runner-05/06);
+    # see docs/runbooks/ci-runner-capacity.md for the current runner inventory
+    # carrying hvo-skymonitor-build. Qualification retains its own label; v1
+    # selects the hvo-skymonitor-build pool.
     reserved = "[self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]"
     # A selector is either a bare GitHub-hosted image or the exact reserved list;
     # anything else (a self-hosted list carrying an image label, a mapping or an
@@ -685,7 +687,7 @@ def violations(short, full, queue=None, extra=None, unit_source=None):
         value == reserved or re.fullmatch(r"ubuntu-(latest|\d+\.\d+)", value) for value in selectors),
         "every self-hosted qualification job requires hvo-qualification")
     require(re.findall(r"^    runs-on: .+$", build, re.M) == [build_runner],
-            "v1 Build and Unit uses the reserved build pair and hosts only the verified fast path")
+            "v1 Build and Unit uses the hvo-skymonitor-build pool and hosts only the verified fast path")
     require("hvo-qualification" not in short, "v1 profile never requires the qualification label")
     return errors
 
