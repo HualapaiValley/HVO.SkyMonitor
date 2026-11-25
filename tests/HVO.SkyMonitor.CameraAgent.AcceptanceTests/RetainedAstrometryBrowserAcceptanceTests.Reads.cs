@@ -17,7 +17,8 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
     {
         var counted = new AstrometryCountedArtifacts(host.Services.GetRequiredService<ICameraAgentArtifactService>());
         var store = host.Services.GetRequiredService<SqliteCaptureProcessingStore>();
-        using var retained = new CameraAgentRetainedAstrometryService(store, counted);
+        using var retained = new CameraAgentRetainedAstrometryService(store, counted,
+            host.Services.GetRequiredService<CameraAgentArtifactService>().BeginRetainedHistoryRead);
         var baseline = new CameraAgentLayeredPresentationService(store, counted);
         var enabled = new CameraAgentLayeredPresentationService(store, counted,
             persistence: host.Services.GetRequiredService<CaptureProcessingPersistence>(), astrometry: retained);
