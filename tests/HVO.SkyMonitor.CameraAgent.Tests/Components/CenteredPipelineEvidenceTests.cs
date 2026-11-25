@@ -215,6 +215,7 @@ public sealed class CenteredPipelineEvidenceTests
     [DataRow(Satellites, CenteredViewLayerScope.Contributor, nameof(CaptureSatelliteReason.CaptureLocationUnavailable))]
     [DataRow("measured-source-markers", CenteredViewLayerScope.Reference, ExposureMeasurementSourceReasonCodes.CandidateBudgetExceeded)]
     [DataRow(AstrometricDiagnosticPresentation.ResidualsLayer, CenteredViewLayerScope.Reference, AstrometricSolverReasonCodes.AcquisitionOrQualityFailed)]
+    [DataRow(RegionalStellarVisibilityProducts.LayerKind, CenteredViewLayerScope.Reference, RegionalVisibilityReasonCodes.MissingLinearCalibration)]
     public void PublicationRendersLayerReasonInEvidenceCell(string kind, CenteredViewLayerScope scope, string code)
     {
         var reference = Exposures(false)[2];
@@ -236,6 +237,7 @@ public sealed class CenteredPipelineEvidenceTests
     {
         var layerCodes = ProducerReasonConstants(typeof(ExposureMeasurementSourceReasonCodes),
                 typeof(AstrometricSolverReasonCodes), typeof(MeasuredAstrometryAssessmentReasonCodes))
+            .Concat(RegionalVisibilityReasonCodes.KnownGlobal)
             .Concat(Enum.GetNames<CaptureSatelliteReason>())
             .Concat(Enum.GetNames<OrbitalSnapshotUnavailableReason>())
             .Concat(Enum.GetNames<OrbitalPredictionReason>())

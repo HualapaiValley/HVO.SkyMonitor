@@ -47,7 +47,7 @@ public sealed partial class CenteredPublicationEvidence : SiteTimeComponent
     {
         // Layer evidence carries an exact status code. A path appended to one still goes through redaction.
         var code = value?.Trim();
-        if (code is not null && (SatelliteReasonCodes.Contains(code) || code is
+        if (code is not null && (SatelliteReasonCodes.Contains(code) || RegionalVisibilityReasonCodes.KnownGlobal.Contains(code) || code is
             ExposureMeasurementSourceReasonCodes.LinearInputUnavailable or ExposureMeasurementSourceReasonCodes.UnsupportedLinearLayout or
             ExposureMeasurementSourceReasonCodes.IncompatibleLinearOrientation or ExposureMeasurementSourceReasonCodes.UnqualifiedCfaPhase or
             ExposureMeasurementSourceReasonCodes.CandidateBudgetExceeded or ExposureMeasurementSourceReasonCodes.InsufficientBackground or
