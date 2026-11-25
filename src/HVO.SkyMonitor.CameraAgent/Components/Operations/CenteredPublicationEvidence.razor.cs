@@ -2,6 +2,7 @@ using System.Collections.Frozen;
 using System.Globalization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.OrbitalPlanning;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
@@ -78,11 +79,12 @@ public sealed partial class CenteredPublicationEvidence : SiteTimeComponent
             "runtime.no-centered-run" => "No centered acquisition run recorded",
             "runtime.journal-not-ready" => "Acquisition journal is initializing",
             "calendar-predecessor-unavailable" or "exposure-start-outside-tolerance" or "processing-deadline-expired" or
-            "invalid-window-checkpoint" or "window-capacity-exhausted" or "schedule-admission-interrupted" or
+            CenteredWindowFailureReasonCodes.InvalidCheckpoint or CenteredWindowFailureReasonCodes.CapacityExhausted or "schedule-admission-interrupted" or
             "schedule.start-window-closed" or "metering.source-evidence-unavailable" or "window.input-custody-unavailable" or
             "window.registration-pixel-limit" => code,
 
-            "registration-deadline-expired" or "registration.failed" or "registration.invalid-retained-evidence" or
+            CenteredWindowFailureReasonCodes.RegistrationDeadlineExpired or CenteredWindowFailureReasonCodes.RetainedInputUnreadable or
+            "registration.failed" or "registration.invalid-retained-evidence" or
             "registration.legacy-window-pins-unavailable" or "registration.recipe-identity-mismatch" or
             "registration.reference-input-unavailable" or CenteredRegisteredStackRecipe.InvalidPlan or
             CenteredRegisteredStackRecipe.ReferenceUnavailable or CenteredRegisteredStackRecipe.ResourceLimit or

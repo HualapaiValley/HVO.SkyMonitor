@@ -282,10 +282,20 @@ public sealed class CenteredPipelineEvidenceTests
 
         foreach (var code in dottedCodes)
             Assert.AreEqual(code, CenteredPublicationEvidence.Reason(code), $"Structured producer reason {code}");
+
+        var windowFailures = ProducerReasonConstants(typeof(CenteredWindowFailureReasonCodes), BindingFlags.Public | BindingFlags.NonPublic);
+        foreach (var code in windowFailures)
+        {
+            Assert.AreEqual(code, CenteredPublicationEvidence.Reason(code), $"Centered window failure reason {code}");
+            Assert.AreEqual(code, CenteredPublicationEvidence.Reason($"{code}/private"), $"Only the known code should render for {code}");
+        }
     }
 
     private static IEnumerable<string> ProducerReasonConstants(params Type[] types) =>
-        types.SelectMany(static type => type.GetFields(BindingFlags.Public | BindingFlags.Static))
+        types.SelectMany(static type => ProducerReasonConstants(type, BindingFlags.Public));
+
+    private static IEnumerable<string> ProducerReasonConstants(Type type, BindingFlags visibility) =>
+        type.GetFields(visibility | BindingFlags.Static)
             .Where(static field => field.IsLiteral && field.FieldType == typeof(string))
             .Select(static field => (string)field.GetRawConstantValue()!);
 
@@ -376,6 +386,24 @@ public sealed class CenteredPipelineEvidenceTests
         Assert.Contains("2/5 window slots contributed", cut.Markup);
         Assert.Contains("Registration Rejected", cut.Find("[aria-label='Centered window']").TextContent);
         Assert.Contains("Missing Exposure", cut.Find("[aria-label='Centered window']").TextContent);
+    }
+
+    [TestMethod]
+    public void TerminalWindowRendersRetainedInputUnreadableReason()
+    {
+        const string reason = "registration.retained-input-unreadable";
+        var reference = Exposures(false)[2];
+        var window = new CenteredWindowSnapshot(reference.Capture.CaptureId, Checksum, Stream.Camera, Stream.RunId,
+            Start.AddSeconds(15), Start.AddSeconds(15), Checksum, true, reason, null, null, null, [], []);
+        var snapshot = new CenteredPipelineRunningSnapshot(Stream.Camera, Head: reference.Input, Window: window);
+        using var context = new BunitContext();
+
+        var cut = context.Render<CenteredRunningEvidence>(parameters => parameters.Add(component => component.Snapshot, snapshot));
+
+        var facts = cut.Find("[aria-label='Centered window'] .running-facts");
+        Assert.Contains("Registration failed", facts.TextContent);
+        var reasonLabel = facts.QuerySelectorAll("dt").Single(term => term.TextContent == "Reason");
+        Assert.AreEqual(reason, reasonLabel.NextElementSibling?.TextContent);
     }
 
     [TestMethod]
