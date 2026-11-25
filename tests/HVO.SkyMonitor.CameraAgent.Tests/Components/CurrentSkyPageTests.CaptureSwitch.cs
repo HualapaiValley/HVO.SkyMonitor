@@ -59,11 +59,9 @@ public sealed partial class CurrentSkyPageTests
         using var context = new BunitContext();
         var (service, clock) = ConfigurePolling(context);
         var current = first;
-        var invalidation = new TaskCompletionSource<OperatorUiResult<CameraAgentLatestAstrometryRead>>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var staleRead = new TaskCompletionSource<OperatorUiResult<CameraAgentLayeredPresentation>>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var freshRead = new TaskCompletionSource<OperatorUiResult<CameraAgentLayeredPresentation>>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var staleStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var freshStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var invalidation = new DeferredAstrometryRead<CameraAgentLatestAstrometryRead>();
+        var staleRead = new DeferredAstrometryRead<CameraAgentLayeredPresentation>();
+        var freshRead = new DeferredAstrometryRead<CameraAgentLayeredPresentation>();
         var latestReads = 0;
         var incomingFreshReads = 0;
         var unavailable = OperatorUiResult<CameraAgentLayeredPresentation>.Failure(OperatorUiResultKind.Unavailable, "Incoming layer read failed.");
@@ -71,7 +69,7 @@ public sealed partial class CurrentSkyPageTests
         service.LatestAstrometryHandler = (_, _) => ++latestReads switch
         {
             1 => ValueTask.FromResult(OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(new(true, headline))),
-            2 => new(invalidation.Task),
+            2 => invalidation.Read(),
             _ => ValueTask.FromResult(OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(new(true)))
         };
         service.PresentationHandler = (id, _) =>
@@ -79,19 +77,15 @@ public sealed partial class CurrentSkyPageTests
             if (id == firstCapture.CaptureId)
                 return ValueTask.FromResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(measuredLayers));
             Assert.AreEqual(SecondCaptureId, id);
-            staleStarted.TrySetResult();
-            return new(staleRead.Task);
+            return staleRead.Read();
         };
         service.CurrentPresentationHandler = (id, _) =>
         {
             if (id == firstCapture.CaptureId)
                 return ValueTask.FromResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(priorLayers));
             Assert.AreEqual(SecondCaptureId, id);
-            if (Interlocked.Increment(ref incomingFreshReads) == 1)
-            {
-                freshStarted.TrySetResult();
-                return new(freshRead.Task);
-            }
+            if (Interlocked.Increment(ref incomingFreshReads) == 1 && !mismatchedBase)
+                return freshRead.Read();
             return ValueTask.FromResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(
                 Layered(id, new string('B', 64), nextBase)));
         };
@@ -113,25 +107,30 @@ public sealed partial class CurrentSkyPageTests
 
         await page.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
         Assert.AreEqual(2, latestReads);
+        await invalidation.Awaiting.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         current = incoming;
         var refresh = page.Find("button.refresh-link").ClickAsync();
         try
         {
-            await staleStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-            invalidation.SetResult(OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(new(true)
+            await staleRead.Awaiting.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            await Task.Run(() => invalidation.Complete(OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(new(true)
             {
                 PreviousSummaryEvicted = true,
                 SelectedAssessmentInvalidated = invalidateIncoming
-            }));
-            page.WaitForAssertion(() =>
+            }))).ConfigureAwait(false);
+            // Drain ApplyLatestAstrometryReadAsync and the replacement prior-layer read it queues on the renderer.
+            await page.InvokeAsync(static () => { }).ConfigureAwait(false);
+            await page.InvokeAsync(static () => { }).ConfigureAwait(false);
+            await page.InvokeAsync(() =>
             {
                 Assert.AreEqual(CaptureLink(first), page.Find(".layers-link").GetAttribute("href"));
                 Assert.AreEqual(firstImageUrl, page.Find(".sky-layer-canvas img").GetAttribute("src"));
                 Assert.IsTrue(page.Find(".pixel-sky-calculator button").HasAttribute("disabled"));
                 Assert.IsEmpty(page.FindAll(".astrometry-calculator-result, input[data-layer-target='measured-residuals'], input[data-layer-target='measured-associations']"));
-            });
+            }).ConfigureAwait(false);
 
-            staleRead.SetResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(Layered(SecondCaptureId, new string('C', 64), offeredBase)));
+            await Task.Run(() => staleRead.Complete(OperatorUiResult<CameraAgentLayeredPresentation>.Success(
+                Layered(SecondCaptureId, new string('C', 64), offeredBase)))).ConfigureAwait(false);
             if (mismatchedBase)
             {
                 await refresh.ConfigureAwait(false);
@@ -141,8 +140,6 @@ public sealed partial class CurrentSkyPageTests
                 Assert.IsEmpty(page.FindAll(".astrometry-calculator-result, input[data-layer-target='measured-residuals'], input[data-layer-target='measured-associations']"));
                 Assert.AreEqual(0, incomingFreshReads);
 
-                freshRead.SetResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(
-                    Layered(SecondCaptureId, new string('B', 64), nextBase)));
                 await page.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
                 Assert.AreEqual(CaptureLink(incoming), page.Find(".layers-link").GetAttribute("href"));
                 StringAssert.Contains(page.Find(".sky-layer-canvas img").GetAttribute("src"), nextBase.ToString("D"), StringComparison.Ordinal);
@@ -151,7 +148,7 @@ public sealed partial class CurrentSkyPageTests
             }
             if (!invalidateIncoming)
             {
-                var firstCompletion = await Task.WhenAny(refresh, freshStarted.Task).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                var firstCompletion = await Task.WhenAny(refresh, freshRead.Awaiting.Task).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
                 Assert.AreSame(refresh, firstCompletion, "Invalidation of the outgoing capture must not restart an eligible incoming projection.");
                 await refresh.ConfigureAwait(false);
                 Assert.AreEqual(CaptureLink(incoming), page.Find(".layers-link").GetAttribute("href"));
@@ -159,9 +156,9 @@ public sealed partial class CurrentSkyPageTests
                 StringAssert.Contains(page.Find(".sky-layer-canvas img").GetAttribute("src"), nextBase.ToString("D"), StringComparison.Ordinal);
                 return;
             }
-            await freshStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            await freshRead.Awaiting.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             // Drain the renderer work that requested the replacement before checking what it made visible.
-            await page.InvokeAsync(() => { }).ConfigureAwait(false);
+            await page.InvokeAsync(static () => { }).ConfigureAwait(false);
             var expectedLink = CaptureLink(advertisedLayers ? first : incoming);
             var heldLink = page.Find(".layers-link").GetAttribute("href");
             Console.WriteLine($"advertised={advertisedLayers} fresh-read=held expected={expectedLink} displayed={heldLink}");
@@ -169,34 +166,45 @@ public sealed partial class CurrentSkyPageTests
             if (advertisedLayers)
                 Assert.AreEqual(firstImageUrl, page.Find(".sky-layer-canvas img").GetAttribute("src"));
 
-            freshRead.SetResult(unavailable);
+            await Task.Run(() => freshRead.Complete(unavailable)).ConfigureAwait(false);
             await refresh.ConfigureAwait(false);
-            Assert.AreEqual(expectedLink, page.Find(".layers-link").GetAttribute("href"));
-            Assert.IsTrue(page.Find(".pixel-sky-calculator button").HasAttribute("disabled"));
-            if (!advertisedLayers)
+            // Drain the detached layer-read application and its standalone astrometry follow-up before asserting DOM state.
+            await page.InvokeAsync(static () => { }).ConfigureAwait(false);
+            await page.InvokeAsync(static () => { }).ConfigureAwait(false);
+            await page.InvokeAsync(() =>
             {
-                page.WaitForAssertion(() => StringAssert.Contains(page.Find(".sky-layer-unavailable").TextContent,
-                    "Incoming layer read failed.", StringComparison.Ordinal));
+                Assert.AreEqual(expectedLink, page.Find(".layers-link").GetAttribute("href"));
+                Assert.IsTrue(page.Find(".pixel-sky-calculator button").HasAttribute("disabled"));
+                if (!advertisedLayers)
+                {
+                    StringAssert.Contains(page.Find(".sky-layer-unavailable").TextContent,
+                        "Incoming layer read failed.", StringComparison.Ordinal);
+                }
+            }).ConfigureAwait(false);
+            if (!advertisedLayers)
                 return;
-            }
 
             Assert.AreEqual(firstImageUrl, page.Find(".sky-layer-canvas img").GetAttribute("src"));
             Assert.IsEmpty(page.FindAll(".sky-layer-unavailable"));
             await page.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
-            page.WaitForAssertion(() =>
+            await page.InvokeAsync(static () => { }).ConfigureAwait(false);
+            await page.InvokeAsync(() =>
             {
                 Assert.AreEqual(CaptureLink(incoming), page.Find(".layers-link").GetAttribute("href"));
                 Assert.HasCount(1, page.FindAll(".sky-layer-workspace"));
                 StringAssert.Contains(page.Find(".sky-layer-canvas img").GetAttribute("src"), nextBase.ToString("D"), StringComparison.Ordinal);
                 Assert.IsTrue(page.Find(".pixel-sky-calculator button").HasAttribute("disabled"));
-            });
+            }).ConfigureAwait(false);
             Assert.AreEqual(2, incomingFreshReads);
         }
         finally
         {
-            invalidation.TrySetResult(OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(new(true)));
-            staleRead.TrySetResult(unavailable);
-            freshRead.TrySetResult(unavailable);
+            await Task.Run(() =>
+            {
+                invalidation.TryComplete(OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(new(true)));
+                staleRead.TryComplete(unavailable);
+                freshRead.TryComplete(unavailable);
+            }).ConfigureAwait(false);
             await refresh.ConfigureAwait(false);
         }
     }
