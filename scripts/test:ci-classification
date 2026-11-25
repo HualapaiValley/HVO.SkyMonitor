@@ -14,72 +14,92 @@ declare -a parallel_outs=()
 declare -a parallel_errs=()
 declare -a parallel_status=()
 declare -A active_idx_to_pid=()
+declare -A active_idx_to_pgid=()
 
-collect_descendants() {
-  local IFS=$' \t\n'
-  local parent_pid="$1" task_children child_pid
-  local -a direct_children=()
-  if [[ -d "/proc/$parent_pid/task" ]]; then
-    for task_children in "/proc/$parent_pid/task/"*/children; do
-      [[ -r "$task_children" ]] || continue
-      read -ra direct_children < "$task_children" 2>/dev/null || true
-      for child_pid in "${direct_children[@]}"; do
-        [[ -n "$child_pid" ]] || continue
-        printf '%s\n' "$child_pid"
-        collect_descendants "$child_pid"
-      done
-    done
-  elif command -v pgrep >/dev/null 2>&1; then
-    local pgrep_out=""
-    pgrep_out="$(pgrep -P "$parent_pid" 2>/dev/null || true)"
-    if [[ -n "$pgrep_out" ]]; then
-      mapfile -t direct_children <<< "$pgrep_out"
-      for child_pid in "${direct_children[@]}"; do
-        [[ -n "$child_pid" ]] || continue
-        printf '%s\n' "$child_pid"
-        collect_descendants "$child_pid"
-      done
+is_worker_dead() {
+  local pid="$1" stat_line="" proc_state=""
+  if ! kill -0 "$pid" 2>/dev/null; then
+    return 0
+  fi
+  if [[ -r "/proc/$pid/stat" ]]; then
+    IFS= read -r stat_line < "/proc/$pid/stat" 2>/dev/null || return 0
+    proc_state="${stat_line##*) }"
+    proc_state="${proc_state%% *}"
+    if [[ "$proc_state" == Z || "$proc_state" == X ]]; then
+      return 0
+    fi
+  elif command -v ps >/dev/null 2>&1; then
+    proc_state="$(ps -o state= -p "$pid" 2>/dev/null | tr -d '[:space:]')" || return 0
+    if [[ -z "$proc_state" || "$proc_state" == Z* || "$proc_state" == X* ]]; then
+      return 0
     fi
   fi
+  return 1
 }
 
 cleanup() {
+  trap '' INT TERM
+  set +m
   local IFS=$' \t\n'
-  local idx pid desc_out deadline any_alive
-  local -a active_indices=("${!active_idx_to_pid[@]}")
-  local -a active_pids=() all_descendants=() pid_descs=()
+  local idx pid pgid deadline any_alive
+  local -a active_indices=("${!active_idx_to_pgid[@]}")
   if (( ${#active_indices[@]} > 0 )); then
     for idx in "${active_indices[@]}"; do
-      pid="${active_idx_to_pid[$idx]}"
-      active_pids+=("$pid")
-      desc_out="$(collect_descendants "$pid" 2>/dev/null || true)"
-      if [[ -n "$desc_out" ]]; then
-        pid_descs=()
-        mapfile -t pid_descs <<< "$desc_out"
-        all_descendants+=("${pid_descs[@]}")
-      fi
+      pgid="${active_idx_to_pgid[$idx]}"
+      kill -TERM -- "-$pgid" 2>/dev/null || true
     done
-    if (( ${#all_descendants[@]} > 0 )); then
-      kill -TERM "${all_descendants[@]}" 2>/dev/null || true
-    fi
-    kill -TERM "${active_pids[@]}" 2>/dev/null || true
     deadline=$((SECONDS + 2))
     while (( SECONDS < deadline )); do
       any_alive=0
-      for pid in "${active_pids[@]}"; do
-        if kill -0 "$pid" 2>/dev/null; then
+      for idx in "${!active_idx_to_pgid[@]}"; do
+        if [[ -n "${active_idx_to_pid[$idx]+x}" ]]; then
+          pid="${active_idx_to_pid[$idx]}"
+          if is_worker_dead "$pid"; then
+            wait "$pid" 2>/dev/null || true
+            unset 'active_idx_to_pid[$idx]'
+          fi
+        fi
+        pgid="${active_idx_to_pgid[$idx]}"
+        if kill -0 -- "-$pgid" 2>/dev/null; then
           any_alive=1
-          break
+        elif [[ -z "${active_idx_to_pid[$idx]+x}" ]]; then
+          unset 'active_idx_to_pgid[$idx]'
         fi
       done
       (( any_alive == 0 )) && break
       sleep 0.05
     done
-    if (( ${#all_descendants[@]} > 0 )); then
-      kill -KILL "${all_descendants[@]}" 2>/dev/null || true
+    if (( ${#active_idx_to_pgid[@]} > 0 )); then
+      for idx in "${!active_idx_to_pgid[@]}"; do
+        pgid="${active_idx_to_pgid[$idx]}"
+        kill -KILL -- "-$pgid" 2>/dev/null || true
+      done
+      deadline=$((SECONDS + 1))
+      while (( SECONDS < deadline )); do
+        any_alive=0
+        for idx in "${!active_idx_to_pgid[@]}"; do
+          if [[ -n "${active_idx_to_pid[$idx]+x}" ]]; then
+            pid="${active_idx_to_pid[$idx]}"
+            if is_worker_dead "$pid"; then
+              wait "$pid" 2>/dev/null || true
+              unset 'active_idx_to_pid[$idx]'
+            fi
+          fi
+          pgid="${active_idx_to_pgid[$idx]}"
+          if kill -0 -- "-$pgid" 2>/dev/null; then
+            any_alive=1
+          elif [[ -z "${active_idx_to_pid[$idx]+x}" ]]; then
+            unset 'active_idx_to_pgid[$idx]'
+          fi
+        done
+        (( any_alive == 0 )) && break
+        sleep 0.02
+      done
+      for idx in "${!active_idx_to_pgid[@]}"; do
+        unset 'active_idx_to_pgid[$idx]'
+      done
     fi
-    kill -KILL "${active_pids[@]}" 2>/dev/null || true
-    for idx in "${active_indices[@]}"; do
+    for idx in "${!active_idx_to_pid[@]}"; do
       pid="${active_idx_to_pid[$idx]}"
       wait "$pid" 2>/dev/null || true
       unset 'active_idx_to_pid[$idx]'
@@ -99,55 +119,69 @@ elif (( max_jobs > 8 )); then
   max_jobs=8
 fi
 
-parallel_dir="$work_root/.parallel"
-mkdir -p "$parallel_dir"
+parallel_dir="$work_root.p"
+mkdir -m 700 "$parallel_dir"
+export TMPDIR="$parallel_dir/t"
+mkdir -m 700 "$TMPDIR"
 parallel_done_fifo="$parallel_dir/done.fifo"
 mkfifo "$parallel_done_fifo"
 exec 3<>"$parallel_done_fifo"
 
-is_worker_dead() {
-  local pid="$1" stat_line="" proc_state=""
-  if ! kill -0 "$pid" 2>/dev/null; then
-    return 0
+reap_completion_after_first_byte() {
+  local first_char="$1" rest="" rest_rc=0 done_idx="" pid="" status=0
+  if [[ -z "$first_char" || "$first_char" == $'\n' ]]; then
+    printf 'Parallel worker completion channel reported an empty completion message.\n' >&2
+    exit 1
   fi
-  if [[ -r "/proc/$pid/stat" ]]; then
-    IFS= read -r stat_line < "/proc/$pid/stat" 2>/dev/null || return 0
-    proc_state="${stat_line##*) }"
-    proc_state="${proc_state%% *}"
-    if [[ "$proc_state" == Z || "$proc_state" == X ]]; then
-      return 0
-    fi
+  IFS= read -r -u 3 rest || rest_rc=$?
+  if (( rest_rc != 0 )); then
+    printf 'Parallel worker completion channel closed mid-message (read exit %d).\n' "$rest_rc" >&2
+    exit 1
   fi
-  return 1
+  done_idx="${first_char}${rest}"
+  if [[ ! "$done_idx" =~ ^[0-9]+$ || -z "${active_idx_to_pid[$done_idx]+x}" ]]; then
+    printf 'Parallel worker completion channel reported invalid dispatch index: %s\n' "$done_idx" >&2
+    exit 1
+  fi
+  pid="${active_idx_to_pid[$done_idx]}"
+  wait "$pid" || status=$?
+  parallel_status[done_idx]="$status"
+  unset 'active_idx_to_pid[$done_idx]'
+  unset 'active_idx_to_pgid[$done_idx]'
 }
 
-reap_one_parallel_job() {
-  local done_idx="" pid="" status=0 read_rc=0 active_idx="" active_pid=""
-  local -a active_indices=()
-  while true; do
+drain_ready_completions() {
+  local first_char="" read_rc=0
+  while read -r -t 0 -u 3; do
     read_rc=0
-    done_idx=""
-    IFS= read -r -t 1 -u 3 done_idx || read_rc=$?
-    if (( read_rc == 0 )); then
-      break
-    fi
-    if (( read_rc <= 128 )); then
+    first_char=""
+    IFS= read -r -t 1 -N 1 -u 3 first_char || read_rc=$?
+    if (( read_rc == 0 )) || [[ -n "$first_char" ]]; then
+      reap_completion_after_first_byte "$first_char"
+    elif (( read_rc <= 128 )); then
       printf 'Parallel worker completion channel closed unexpectedly (read exit %d).\n' "$read_rc" >&2
       exit 1
+    else
+      break
     fi
+  done
+}
+
+check_dead_workers() {
+  local active_idx="" active_pid="" status=0
+  local -a active_indices=()
+  while true; do
     active_indices=("${!active_idx_to_pid[@]}")
-    if (( ${#active_indices[@]} == 0 )); then
-      printf 'Parallel worker reaper waited with no active workers.\n' >&2
-      exit 1
-    fi
     for active_idx in "${active_indices[@]}"; do
+      [[ -n "${active_idx_to_pid[$active_idx]+x}" ]] || continue
       active_pid="${active_idx_to_pid[$active_idx]}"
       if is_worker_dead "$active_pid"; then
         if read -r -t 0 -u 3; then
+          drain_ready_completions
           continue 2
         fi
         status=0
-        wait "$active_pid" || status=$?
+        wait "$active_pid" 2>/dev/null || status=$?
         printf 'Parallel test group %s (idx %s, pid %s) exited abnormally (exit %d) without reporting completion.\n' \
           "${parallel_names[$active_idx]}" "$active_idx" "$active_pid" "$status" >&2
         if [[ -s "${parallel_outs[$active_idx]}" ]]; then
@@ -156,19 +190,41 @@ reap_one_parallel_job() {
         if [[ -s "${parallel_errs[$active_idx]}" ]]; then
           cat "${parallel_errs[$active_idx]}" >&2
         fi
+        # Retain active_idx_to_pgid[$active_idx] so cleanup() signals and reaps
+        # any reparented grandchildren remaining in this worker's process group.
         unset 'active_idx_to_pid[$active_idx]'
         exit 1
       fi
     done
+    return 0
   done
-  if [[ -z "$done_idx" || -z "${active_idx_to_pid[$done_idx]+x}" ]]; then
-    printf 'Parallel worker completion channel reported invalid dispatch index: %s\n' "$done_idx" >&2
-    exit 1
-  fi
-  pid="${active_idx_to_pid[$done_idx]}"
-  wait "$pid" || status=$?
-  parallel_status[done_idx]="$status"
-  unset 'active_idx_to_pid[$done_idx]'
+}
+
+reap_one_parallel_job() {
+  local first_char="" read_rc=0 before_count=0
+  while true; do
+    if (( ${#active_idx_to_pid[@]} == 0 )); then
+      printf 'Parallel worker reaper waited with no active workers.\n' >&2
+      exit 1
+    fi
+    read_rc=0
+    first_char=""
+    IFS= read -r -t 1 -N 1 -u 3 first_char || read_rc=$?
+    if (( read_rc == 0 )) || [[ -n "$first_char" ]]; then
+      reap_completion_after_first_byte "$first_char"
+      check_dead_workers
+      return 0
+    fi
+    if (( read_rc <= 128 )); then
+      printf 'Parallel worker completion channel closed unexpectedly (read exit %d).\n' "$read_rc" >&2
+      exit 1
+    fi
+    before_count="${#active_idx_to_pid[@]}"
+    check_dead_workers
+    if (( ${#active_idx_to_pid[@]} < before_count )); then
+      return 0
+    fi
+  done
 }
 
 start_parallel_job() {
@@ -180,23 +236,35 @@ start_parallel_job() {
   local idx="${#parallel_pids[@]}"
   local out_file="$parallel_dir/$idx.$name.out"
   local err_file="$parallel_dir/$idx.$name.err"
-  (
-    set +e
+  local worker_tmpdir="$parallel_dir/t$idx"
+  mkdir -m 700 "$worker_tmpdir"
+  local pid=""
+  {
+    set -m
     (
-      set -euo pipefail
-      "$@"
-    ) >"$out_file" 2>"$err_file" 3>&-
-    rc=$?
-    printf '%d\n' "$idx" >&3
-    exit "$rc"
-  ) &
-  local pid="$!"
+      set +m
+      trap - EXIT INT TERM
+      TMPDIR="$worker_tmpdir"
+      export TMPDIR
+      set +e
+      (
+        set -euo pipefail
+        "$@"
+      ) </dev/null >"$out_file" 2>"$err_file" 3>&-
+      rc=$?
+      printf '%d\n' "$idx" >&3 2>/dev/null || true
+      exit "$rc"
+    ) </dev/null &
+    pid="$!"
+    active_idx_to_pid["$idx"]="$pid"
+    active_idx_to_pgid["$idx"]="$pid"
+    set +m
+  } 2>/dev/null
   parallel_pids+=("$pid")
   parallel_names+=("$name")
   parallel_outs+=("$out_file")
   parallel_errs+=("$err_file")
   parallel_status+=("")
-  active_idx_to_pid["$idx"]="$pid"
 }
 
 wait_parallel_jobs() {
@@ -1961,9 +2029,14 @@ run_work_release_shard() {
   shift 2
   local repo="$work_root.release.$shard_id"
   cp -a "$work_root" "$repo"
+  # Pre-seed files already present before release_scripts_paths in the sequential baseline
+  # so their first probes preserve modification (M) diff status.
+  seed_commit_files "$repo" \
+    ".github/workflows/development-v1.yml" \
+    "scripts/ci:classify"
   local release_scripts_cases=0
   local -a paths=("$@") specs=() pairs=()
-  local path i base head output
+  local path i base head output expected_status
   for path in "${paths[@]}"; do
     specs+=("$path|classification fixture"$'\n')
     specs+=("$path|classification fixture"$'\n'"updated classification fixture"$'\n')
@@ -1971,6 +2044,13 @@ run_work_release_shard() {
   batch_commit_pairs pairs "$repo" "$(( ${#paths[@]} * 2 ))" "${specs[@]}"
   for ((i = 0; i < ${#paths[@]} * 2; i++)); do
     read -r base head <<< "${pairs[$i]}"
+    path="${paths[$((i / 2))]}"
+    if (( i % 2 == 1 )) || [[ "$path" == ".github/workflows/development-v1.yml" || "$path" == "scripts/ci:classify" ]]; then
+      expected_status="M"
+    else
+      expected_status="A"
+    fi
+    assert_diff_status "$repo" "$base" "$head" "$expected_status" "$path"
     output="$(classify_in_repo "$repo" pull_request "$base" "$head")"
     assert_release_scripts_output "$output" true
   done
