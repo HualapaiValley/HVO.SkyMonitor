@@ -2,7 +2,7 @@
 
 The HYG production catalog is an operator-built-once deployment artifact.
 Application startup and normal installation never fetch or rebuild catalog data.
-The same verified bundle is copied to LogicHost and every CameraAgent, including
+Install the verified bundle for each CameraAgent, including
 ARM64 targets, and installed without network access.
 
 This runbook covers the HYG 4.2 package `hyg-v4.2-p3-s2-r1` and its shell

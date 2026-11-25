@@ -1,12 +1,4 @@
 <Project>
-  <!-- Skip retired test projects by assembly ownership (#2048). Some tests use
-       shared or historical namespaces that the VSTest name filter cannot exclude. -->
-  <PropertyGroup Condition="'$(SkipLogicHostTests)' == 'true' And
-                            ($([System.String]::Copy('$(MSBuildProjectName)').StartsWith('HVO.SkyMonitor.LogicHost.')) Or
-                             $([System.String]::Copy('$(MSBuildProjectName)').StartsWith('HVO.SkyMonitor.CameraAgent.LogicHost.')))">
-    <IsTestProject>false</IsTestProject>
-  </PropertyGroup>
-
   <!-- Path-filter Deployment.Cli.Tests by assembly ownership on non-deployment development/v1 PR runs (#2071). -->
   <PropertyGroup Condition="'$(SkipDeploymentCliTests)' == 'true' And
                             '$(MSBuildProjectName)' == 'HVO.SkyMonitor.Deployment.Cli.Tests'">

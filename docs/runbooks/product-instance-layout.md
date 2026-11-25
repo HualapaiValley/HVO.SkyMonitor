@@ -10,8 +10,7 @@ instances and catalogs are separate identity domains beneath that root:
 <product-root>/                       # /var/lib/hvo-sky unless the host policy names another
 |-- operations/                       # product-wide runtime operation lock
 |-- catalogs/<catalog-id>/{current,previous,versions/}
-|-- cameraagents/<instance-uuid>/{config,state}   # config/compose holds the instance's Compose files
-`-- logichosts/<instance-uuid>/{config,state}
+`-- cameraagents/<instance-uuid>/{config,state}   # config/compose holds the instance's Compose files
 ```
 
 Persistent deployment rejects any product root other than the production one.
@@ -36,63 +35,34 @@ manifest, phase, and result contracts as described in
 
 ## Instance Identity
 
-Generate one UUID when a CameraAgent or LogicHost instance is first created and
-store its canonical lowercase representation as `instanceId`. The UUID is the
+The installer generates one UUID when it creates a CameraAgent instance and
+stores its canonical lowercase representation as `instanceId`. The UUID is the
 filesystem and Compose-project key. `friendlyName` is mutable display metadata;
 renaming it does not move state, rename containers, or change the authentication
-cookie. `applicationIdentity` explicitly binds the separate current CameraAgent
-agent ID or LogicHost identity. CameraAgent startup rejects an inventory binding
-that differs from the selected module document's `agentId`.
+cookie. `applicationIdentity` binds the CameraAgent agent ID separately from the
+instance ID. Its record and `instance-manifest.json` must agree with the
+installed configuration. Release upgrades retain the instance identity.
 
-`up` creates `instance-manifest.json` and its referenced
-`application-identity.json` binding at the instance root with mode `0600`. The
-manifest binds schema, product, component kind, UUID, creating installation, and
-the current independent application identity through that binding. Bootstrap
-atomically advances only the binding from the declared pre-provisioning agent ID
-to the resulting device ID. An existing manifest must have the exact immutable
-identity fields and its creating installation; an identity binding explicitly
-records `pre-provisioning` with the configured ID or `bound` with both the
-configured and provisioned device IDs. A later `up` validates that binding before
-staging, requires the preserved provisioning gate to be `false` and upload to be
-`true`, and records those remotely read values in phase evidence. Missing,
-malformed, or contradictory bound state fails before staging or Compose
-mutation. The deployment preserves bound provisioning configuration. The
-binding must match its declared/restored lifecycle state; UUID reuse, component
-reuse, or unproved identity rebinding fails closed. Release revision is not
-creation identity and therefore does not change this manifest during upgrades.
-
-Each CameraAgent receives a UUID-derived cookie name, container name, Compose
-project, unique owner-password reference, host port, and explicitly bound agent
-identity. Inventory validation rejects duplicate UUIDs, application identities,
-cookie names, mutable roots on the same host, ports on the same host, unsafe
-ancestry, and unknown catalog references.
-
-Multiple application instances may share one correlated SSH host and Docker
-daemon. Their aliases, UUID roots, ports, Compose projects, container names,
-cookies, application identities, and owner-password references remain distinct.
+Each CameraAgent has a UUID-derived cookie name, container name and Compose
+project, with its own port, state and owner. Existing retired `logichosts`
+entries can still block host-root changes or catalog garbage collection
+because they may hold state or catalog references.
 
 ## Catalog Identity
 
 `catalogId` is a stable logical identifier declared by the catalog specification,
-required as `catalog.id` in manifest version 2, and repeated exactly in inventory,
+required as `catalog.id` in manifest version 2,
 for example `hyg-v42-production`. It is not a random installation UUID and is
 never inferred from a package filename or display name. The approved specifications
 are embedded in `src/HVO.SkyMonitor.Catalog.Sqlite/ApprovedCatalogSpecifications.json`:
 HYG v4.2 assigns `hyg-v42-production` (package lineage `hyg-v4.2-p3-s2-r<N>`) and
 HYG v4.4 assigns `hyg-v44-production` (package lineage `hyg-v4.4-p4-s3-r<N>`).
-Any other ID fails closed. Exact snapshots remain identified by
+The installer validates IDs against the approved specifications. Exact snapshots remain identified by
 package version, schema/preprocessing versions, database SHA-256, byte length,
-and row count. Inventory declares `schemaVersion` and `preprocessingVersion`;
-source bundle, installed manifest, ledger, and active `current` selection must
-match exactly.
+and row count. The source bundle, installed manifest, ledger and selected version must agree.
 
-Every application target selects one `catalogId`. Multiple targets may select
-the same installation root and mount it read-only at `/app/catalog`; another
-target may select a different ID and independent `current`/`previous` pointers.
-Inventory rejects duplicate IDs, duplicate catalog roots, roots outside
-`<productRoot>/catalogs/<catalogId>`, and catalog/application ancestry overlap.
-The catalog phase records target, catalog ID, package version, and checksum.
-Installed hosts pin both `Catalog:RequiredCatalogId` and
+Several CameraAgent instances can use the same verified catalog installation.
+The installer mounts the selected catalog read-only. Installed hosts pin both `Catalog:RequiredCatalogId` and
 `Catalog:RequiredPackageVersion`. Each frame's scene provenance records the
 catalog ID and package version, and changing a selection never rewrites recorded
 frames ([HYG 4.4 catalog snapshot](../catalog/hyg-v44.md)).
@@ -105,10 +75,8 @@ For CameraAgent this includes Identity, the operator settings file
 secrets, protected deployment-location history, schedule/profile revisions, raw
 ingress and capture sequence, frames, processing/outbox state, calibration, and
 local secrets. Restoring only part of that set can invalidate protected data,
-rebind an owner account, or regress durable sequence state. LogicHost backup
-likewise keeps its configuration, certificates/secrets, Data Protection keys,
-and host-local state together; SQL Server, Redis, and object storage follow their
-own application-consistent backup procedures.
+rebind an owner account, or regress durable sequence state. The installed
+lifecycle defines which layouts support backup or restore. [Installer backup and restore](deployment-installer.md#backup-and-restore).
 
 Catalogs are immutable deployment artifacts, not part of an instance backup.
 Record the selected catalog ID, exact package version and database SHA-256, then
@@ -126,17 +94,14 @@ in #1606 is approved target behavior, not a new snapshot backend or a change to
 the host policy enforced today. The single-mount rule and separate instance and
 catalog binds above remain in force; #1292 owns host-policy implementation.
 Do not repartition, format, create subvolumes, relocate SQLite or move instance
-roots to satisfy this documentation change. #1607 and #1608 must first show a
-clear net benefit before recommending a filesystem or layout change.
+roots to satisfy this documentation change. #1607 requires a clear net benefit before recommending a filesystem or layout change.
 
 An upgrade checkpoint must cover the entire instance's mutable DB/files/config,
 identity, key ring and referenced payloads at one fenced point, including any
 configured external storage roots. The explicit backup unit above is a coverage
 inventory, not an instruction to create a full archive on every upgrade. SQLite
 backup copies remain a valid candidate if referenced immutable files are pinned
-and every mutable part is recovered coherently. LogicHost coordinates its SQL
-Server, object roots and host state under its own cutoff; placing only its
-instance directory on a snapshot filesystem does not cover SQL.
+and every mutable part is recovered coherently.
 
 Keep operation journal, protected/unprotected status, checkpoint/image pairing,
 restore progress, final receipt and minimal non-rewindable fact capsule outside

@@ -41,7 +41,7 @@ for name in LogicHost.Tests CameraAgent.LogicHost.Tests; do
   mutate "retired-$name" "/^  unit:/,/^  integration:/ {
     /dotnet test .* --results-directory TestResults\/unit\/cameraagent --logger/ { p; s#HVO.SkyMonitor.CameraAgent.Tests#HVO.SkyMonitor.$name#g; }
   }"
-  expect_fail "the Unit job selects retired LogicHost project tests/HVO.SkyMonitor.$name/" \
+  expect_fail "the Unit job selects tests/HVO.SkyMonitor.$name/HVO.SkyMonitor.$name.csproj" \
     --workflow "$scratch/retired-$name.yml"
 done
 

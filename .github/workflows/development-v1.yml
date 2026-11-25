@@ -389,8 +389,8 @@ jobs:
           RUN_DEPLOYMENT_CLI: ${{ steps.workload.outputs.run_deployment_cli }}
         run: |
           coverage_args=()
-          unit_filter="TestCategory=Unit&TestCategory!=Performance&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost"
-          test_project_args=(-p:SkipLogicHostTests=true)
+          unit_filter="TestCategory=Unit&TestCategory!=Performance"
+          test_project_args=()
           if [[ "$GITHUB_EVENT_NAME" == pull_request && "$WORKLOAD_OUTCOME" == success && "$RUN_DEPLOYMENT_CLI" == false ]]; then
             coverage_args+=(--skip-deployment-cli)
             unit_filter+="&FullyQualifiedName!~HVO.SkyMonitor.Deployment.Cli.Tests"

@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Constants library sourced by scripts/catalog/*.sh, scripts/test:phase14-source-import and the
-# deployment shards; the readers are in other files, which ShellCheck cannot see from here.
+# Shared constants and functions sourced by catalog build, install, and fixture scripts.
 # shellcheck disable=SC2034
 
 readonly HYG_CATALOG_NAME="HYG 4.2"

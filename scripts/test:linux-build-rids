@@ -18,7 +18,6 @@ import tempfile
 ROOT = Path(__file__).resolve().parent.parent
 PROJECTS = [
     "src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj",
-    "src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj",
     "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
     "tests/HVO.SkyMonitor.Catalog.Sqlite.Tests/HVO.SkyMonitor.Catalog.Sqlite.Tests.csproj",
     "src/HVO.SkyMonitor.ProcessingRunner/HVO.SkyMonitor.ProcessingRunner.csproj",

@@ -55,8 +55,8 @@ Inspect the current branch, worktree, recent commits, current tests, durable
 formats, and open PR state. Preserve unrelated changes.
 
 When selecting work overlapping persistent layout, recovery protocols or a
-substantial forward migration, require the recorded #1607 CameraAgent or #1608
-LogicHost keep/change outcome before committing to that path. Each affected
+substantial forward migration, require the recorded #1607 CameraAgent
+keep/change outcome before committing to that path. Each affected
 story cites its decision and supported forward inputs. Keep-current satisfies
 the gate; no new filesystem/framework is mandatory. Follow agent-execution.md's
 SkyMonitor recovery ordering gate, including its 60–90 minute study stop rule.
@@ -85,11 +85,10 @@ why this issue is next, the outcome, the practical benefit, what it unlocks, and
 what is explicitly not included. Avoid architecture jargon where ordinary
 language is sufficient.
 
-Implement the smallest coherent issue slice. Keep CameraAgent and LogicHost
-independent. Put transport-neutral contracts in AgentCore, astronomy in
-Astronomy, pure image algorithms in Imaging, host-neutral recipe execution in
-Processing, edge orchestration in CameraAgent.Common, and central persistence
-and workers in LogicHost.
+Implement the smallest coherent issue slice for standalone CameraAgent. Put
+transport-neutral contracts in AgentCore, astronomy in Astronomy, pure image
+algorithms in Imaging, host-neutral recipe execution in Processing, and edge
+orchestration in CameraAgent.Common.
 
 For durable changes, define compatibility, migration, restart, retry,
 idempotency, quarantine, and retention behavior. For performance-sensitive
