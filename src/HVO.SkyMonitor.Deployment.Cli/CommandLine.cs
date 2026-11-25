@@ -103,7 +103,7 @@ internal static class CommandLine
         new(["cameraagent", "upgrade"], null,
             "Move an instance to a release's image (--release) or an immutable one (--image-ref).",
             [.. InstanceValueOptions, "--release", "--image-source", "--image-ref", "--image-archive", "--image-archive-sha256", "--operation-id"],
-            ["--plan", "--dry-run", "--resume", "--restore-only", "--json", "--no-download", DeprecatedMigrationOption, "--allow-quarantined-readiness"],
+            ["--plan", "--dry-run", "--resume", "--restore-only", "--leave-paused", "--json", "--no-download", DeprecatedMigrationOption, "--allow-quarantined-readiness"],
             PlanScratchNote),
         new(["cameraagent", "rollback"], null,
             "Return an instance to the image it ran before its last upgrade.",
@@ -181,7 +181,7 @@ internal static class CommandLine
         ["--memory"] = ("<size>", "The container's memory limit, such as 4g."),
         ["--confirm-instance-id"] = ("<uuid>", "The instance's ID again, to confirm."),
         ["--confirm-removed-operation-id"] = ("<uuid>", "With --resume: confirm this interrupted purge's tree was removed elsewhere."),
-        ["--operation-id"] = ("<uuid>", "With --resume --restore-only: the interrupted upgrade's operation ID."),
+        ["--operation-id"] = ("<uuid>", "With --restore-only or --leave-paused: the interrupted upgrade's operation ID."),
         [PlanOption] = (null, "Show what the command would change, and change nothing."),
         ["--dry-run"] = (null, "The older name of --plan."),
         ["--resume"] = (null, "Finish an interrupted run of the same command."),
@@ -192,6 +192,7 @@ internal static class CommandLine
         ["--acknowledge-plaintext-http"] = (null, "Accept plain HTTP on a --bind-address other than loopback."),
         ["--no-download"] = (null, "Pull nothing: the image must already be on this host or in an offline archive."),
         ["--restore-only"] = (null, "With --resume --operation-id: restore what an interrupted upgrade left, without upgrading."),
+        ["--leave-paused"] = (null, "With --resume --operation-id: retry the interrupted offline release upgrade without changing capture admission."),
         [DeprecatedMigrationOption] = (null, "Deprecated, and has no effect.")
     };
 
@@ -813,6 +814,7 @@ internal static class CommandLine
             AllowTestProductRoot = allowTestProductRoot,
             ProductionProductRoot = productionProductRoot,
             RestoreOnly = flags.Contains("--restore-only"),
+            LeavePaused = flags.Contains("--leave-paused"),
             RecoveryOperationId = ParseGuid(Get(values, "--operation-id"), "--operation-id"),
             ImageReference = Get(values, "--image-ref"),
             ImageArchive = Get(values, "--image-archive"),

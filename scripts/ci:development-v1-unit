@@ -138,7 +138,7 @@ def other_test_projects(solution):
     return [project for project in projects if project != camera_project]
 
 
-def run(evidence):
+def run(evidence, skip_deployment_cli=False):
     if os.environ.get("DOCKER_HOST") != DOCKER_DISABLED:
         raise ValueError(f"Development v1 Unit requires DOCKER_HOST={DOCKER_DISABLED}")
     area_groups = json.loads((ROOT / "scripts/ci/cameraagent-unit-shards.json").read_text())
@@ -167,7 +167,11 @@ def run(evidence):
     # needs a private copy of the complete output, including native fixtures.
     isolated = Path(tempfile.mkdtemp(prefix="dev-v1-shards.", dir=release))
     plan = {}
-    selections = [("other-unit", [str(solution_filter)], UNIT_FILTER, "trx")]
+    other_filter = UNIT_FILTER
+    if skip_deployment_cli:
+        other_filter += "&FullyQualifiedName!~HVO.SkyMonitor.Deployment.Cli.Tests"
+    other_args = [str(solution_filter), f"-p:SkipDeploymentCliTests={str(skip_deployment_cli).lower()}"]
+    selections = [("other-unit", other_args, other_filter, "trx")]
     for shard, areas in zip(SHARDS, area_groups):
         target = isolated / shard
         shutil.copytree(release / "net10.0", target)
@@ -202,11 +206,13 @@ def run(evidence):
 def main(arguments):
     if len(arguments) == 1:
         run(Path(arguments[0]).resolve())
+    elif len(arguments) == 2 and arguments[0] == "--skip-deployment-cli":
+        run(Path(arguments[1]).resolve(), skip_deployment_cli=True)
     elif len(arguments) == 2 and arguments[0] == "--verify":
         evidence = Path(arguments[1]).resolve()
         verify(evidence, json.loads((evidence / "cameraagent-shard-plan.json").read_text()))
     else:
-        raise ValueError("usage: scripts/ci:development-v1-unit [--verify] EVIDENCE_ROOT")
+        raise ValueError("usage: scripts/ci:development-v1-unit [--skip-deployment-cli | --verify] EVIDENCE_ROOT")
 
 
 if __name__ == "__main__":

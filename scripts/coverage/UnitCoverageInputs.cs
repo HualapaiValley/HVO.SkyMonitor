@@ -12,7 +12,7 @@ internal static class UnitCoverageInputs
     private const string FirstShard = "cameraagent-shard-1";
     private const string SecondShard = "cameraagent-shard-2";
 
-    internal static void Validate(string repositoryRoot, string resultsDirectory, string[] reports, IEnumerable<string> floorPaths, bool sharded)
+    internal static void Validate(string repositoryRoot, string resultsDirectory, string[] reports, IEnumerable<string> floorPaths, bool sharded, bool skipDeploymentCli)
     {
         ValidateCollectorSettings(repositoryRoot);
         var floors = floorPaths.ToHashSet(StringComparer.Ordinal);
@@ -126,6 +126,7 @@ internal static class UnitCoverageInputs
         }
 
         var expectedProjects = unitProjects
+            .Where(project => !skipDeploymentCli || !string.Equals(project, "HVO.SkyMonitor.Deployment.Cli.Tests", StringComparison.Ordinal))
             .ToHashSet(StringComparer.Ordinal);
         if (sharded)
         {

@@ -52,7 +52,30 @@ each shard's TRX against its planned case IDs and rejects omissions, overlap,
 and missing or malformed evidence. Existing platform and prerequisite skips
 remain visible in the TRX. Per-shard wall and CPU measurements are retained in
 the `timing/` directory.
-`scripts/coverage:development-v1 --settings OUTPUT` copies
+
+On `development/v1` PRs that run the Unit workload, Build and Unit runs the
+trusted first-parent copy of `scripts/ci:classify` against the PR head and the
+checked-out merge tree. It passes `--skip-deployment-cli` only when both
+endpoints report `complete=false`, `delivery=false`, and `deployment=false`
+and no active canonical floor depends on `Deployment.Cli.Tests` (#2071).
+Deployment, delivery, shared, and complete-matrix changes keep the project
+selected. The same applies to linked build or test inputs such as
+`hvo-dark.css`, CameraAgent sources, `Dockerfile`, sample and virtual configs,
+and `docs/runbooks/cameraagent-silo-runtime.md`. The skip applies only to the
+other-projects host, which disables `Deployment.Cli.Tests` through
+`SkipDeploymentCliTests` in `Directory.Build.targets` and excludes it in the
+VSTest filter. Both CameraAgent shards still run.
+
+Merge groups, full pushes, and PRs with any classification failure or endpoint
+disagreement select `Deployment.Cli.Tests`. The coverage baseline check also
+requires it whenever an active floor belongs to `HVO.SkyMonitor.Deployment.Cli`,
+`HVO.SkyMonitor.Deployment.Contracts`, or `HVO.SkyMonitor.TerminalUi`. Settings
+generation and the evaluator reject skip mode in those cases. All 27 current
+canonical file floors apply whenever the Unit workload runs. The retained
+`hvo-development-v1-ci-v6` manifest records `deploymentCliTestsIncluded`
+and `deploymentCliTestsReason`.
+
+`scripts/coverage:development-v1 --settings [--skip-deployment-cli] OUTPUT` copies
 `tests/coverage.runsettings`, derives its assembly Include filter from existing
 canonical floor paths, and sets `SingleHit=true`. Floors measure whether each
 line/branch was hit; repeated hit counts add no evidence and make hot Unit loops
@@ -61,8 +84,9 @@ TestSupport, migration, build-output and attribute exclusions remain intact.
 This avoids instrumenting host assemblies whose coverage is not measured by this
 profile. The generated settings are retained with the raw reports. The merge
 requires one GUID-directory report from each CameraAgent shard and one per other
-active project in `tests/unit-test-projects.json`. It excludes TRX attachment
-copies and never searches outside the fresh run root.
+selected project in `tests/unit-test-projects.json`. The full run supplies 18
+reports and the path-filtered run supplies 17. The merge excludes TRX attachment
+copies and searches only the fresh run root.
 Every input is parsed and checked before ReportGenerator runs: that tool can log
 a malformed input, omit it and still exit zero. Raw records must occupy the
 canonical `coverage/packages/package/classes/class` tree, with one class/method
@@ -120,12 +144,28 @@ reconstructed from IL; copied TRX attachment hashes bind identity only.
 
 A source, active floor, SDK, collector or settings change that invalidates the
 pinned inventory fails with a regeneration remedy. After reviewing a fresh,
-complete genuine unsharded Unit collection using the generated v1 settings,
-explicitly regenerate and review the artifact:
+complete genuine Unit collection, explicitly regenerate and review the artifact.
+The generator expects the unsharded full inventory with one report and TRX per
+project. Use a restored Release build to collect that inventory after a stale
+pin is found in either the sharded or the path-filtered gate.
 
 ```bash
+(
+set -euo pipefail
+unsharded_results="$(mktemp -d /tmp/hvo-v1-unsharded.XXXXXXXX)"
+coverage_tmp="$(mktemp -d /tmp/cf.XXXXXX)"
+export TMPDIR="$coverage_tmp" MSBUILDDISABLENODEREUSE=1
+trap 'python3 -c "import shutil, sys; shutil.rmtree(sys.argv[1], ignore_errors=True)" "$coverage_tmp"' EXIT
+./scripts/coverage:development-v1 --settings "$unsharded_results/coverage.runsettings"
+DOCKER_HOST=unix:///tmp/hvo-no-docker.sock \
+  flock --close /tmp/hvo-heavy-gate.lock dotnet test HVO.SkyMonitor.v9.slnx \
+    --no-build --configuration Release -p:SkipDeploymentCliTests=false \
+    --filter 'TestCategory=Unit&TestCategory!=Performance' \
+    --settings "$unsharded_results/coverage.runsettings" \
+    --collect:"XPlat Code Coverage" --results-directory "$unsharded_results" --logger trx
 ./scripts/coverage:line-inventory "$unsharded_results" scripts/coverage/development-v1-lines.json
 git diff -- scripts/coverage/development-v1-lines.json
+)
 ```
 
 This is a maintenance command, never a CI step. CI must not regenerate its
@@ -192,7 +232,7 @@ coverage_tmp="$(mktemp -d /tmp/cf.XXXXXX)"
 chmod 700 "$evidence_root" "$coverage_tmp"
 export evidence_root TMPDIR="$coverage_tmp"
 export DOTNET_CLI_USE_MSBUILD_SERVER=0 MSBUILDDISABLENODEREUSE=1 UseSharedCompilation=false
-trap 'rm -rf "$coverage_tmp"' EXIT
+trap 'python3 -c "import shutil, sys; shutil.rmtree(sys.argv[1], ignore_errors=True)" "$coverage_tmp"' EXIT
 flock -o /tmp/hvo-heavy-gate.lock bash -euo pipefail <<'BASH'
 dotnet tool restore
 dotnet restore HVO.SkyMonitor.v9.slnx --disable-build-servers

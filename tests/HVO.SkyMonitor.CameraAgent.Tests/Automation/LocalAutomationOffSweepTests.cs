@@ -518,7 +518,7 @@ public sealed class LocalAutomationOffSweepTests : OrbitalStoreTestBase
         }
     }
 
-    private sealed class Registry : ILocalAutomationTaskRegistry
+    internal sealed class Registry : ILocalAutomationTaskRegistry
     {
         public bool OffSweep { get; set; } = true;
         public int FollowingCalls { get; private set; }

@@ -49,6 +49,20 @@ public sealed partial class LocalAutomationRunnerService(
         return offSweepWorker is null ? runnerStop : Task.WhenAll(runnerStop, offSweepWorker.StopAsync(cancellationToken));
     }
 
+    public override void Dispose()
+    {
+        try
+        {
+            base.Dispose();
+        }
+        catch (AggregateException exception)
+        {
+            // BackgroundService cancels synchronously here. The provider still needs to reach the
+            // separately registered worker, whose disposal drains active execution and releases authority.
+            DisposalCancellationFailed(logger, exception);
+        }
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         if (!_options.Enabled)
@@ -413,6 +427,9 @@ public sealed partial class LocalAutomationRunnerService(
 
     [LoggerMessage(7423, LogLevel.Warning, "Local automation {DefinitionId} failed to evaluate.")]
     private static partial void DefinitionFailed(ILogger logger, string definitionId, Exception exception);
+
+    [LoggerMessage(7425, LogLevel.Warning, "A local automation cancellation callback failed during runner disposal.")]
+    private static partial void DisposalCancellationFailed(ILogger logger, Exception exception);
 
     [LoggerMessage(7407, LogLevel.Information,
         "Local automation {DefinitionId} on trigger {Trigger} settled with outcome {Outcome}.")]

@@ -72,12 +72,24 @@ public sealed record CenteredRegisteredStackEvidence(string SchemaVersion, strin
     public static CenteredRegisteredStackEvidence Read(ProcessingProduct retained)
     {
         ArgumentNullException.ThrowIfNull(retained);
+        try
+        {
+            return ReadCore(retained);
+        }
+        catch (Exception exception) when (exception is JsonException or ArgumentException)
+        {
+            throw new InvalidDataException("Invalid retained registration evidence.", exception);
+        }
+    }
+
+    private static CenteredRegisteredStackEvidence ReadCore(ProcessingProduct retained)
+    {
         if (retained.Kind != ProcessingProductKind.Metadata || retained.Role != FrameArtifactRole.Metadata ||
             retained.SchemaVersion != CurrentSchemaVersion || retained.MediaType != MediaType || retained.Layout is not null ||
             retained.Payload.Length is < 1 or > 128 * 1024 || retained.ContentIdentitySha256 != retained.ChecksumSha256 ||
             retained.ChecksumSha256 != ProcessingIdentity.ComputePayloadSha256(retained.Payload) ||
-            retained.Recipe.Descriptor.Name != CenteredRegisteredStackRecipe.RecipeName ||
-            retained.Recipe.Descriptor.ImplementationVersion is not
+            retained.Recipe is not { Descriptor: { } descriptor } || descriptor.Name != CenteredRegisteredStackRecipe.RecipeName ||
+            descriptor.ImplementationVersion is not
                 (CenteredRegisteredStackRecipe.LegacyRecipeVersion or CenteredRegisteredStackRecipe.RecipeVersion) ||
             !HasRecipe(retained.Recipe, retained.Recipe.IdentitySha256) ||
             retained.OutputIdentitySha256 != ProcessingIdentity.CreateOutputIdentity(retained.Role, retained.Variant,
@@ -89,7 +101,7 @@ public sealed record CenteredRegisteredStackEvidence(string SchemaVersion, strin
         var evidence = JsonSerializer.Deserialize<CenteredRegisteredStackEvidence>(retained.Payload.Span, CenteredStackPlanV1.Json);
         if (evidence is null || evidence.SchemaVersion != CurrentSchemaVersion || evidence.Plan is null ||
             evidence.PlanSha256 != evidence.Plan.ToAuxiliaryInput().IdentitySha256 ||
-            retained.Recipe.Descriptor.Options.GetProperty("auxiliaryInputs")[0].GetProperty("identitySha256").GetString() != evidence.PlanSha256 ||
+            ReadBoundPlanIdentity(descriptor.Options) != evidence.PlanSha256 ||
             evidence.Units != LinearUnits || !Enum.IsDefined(evidence.Disposition) ||
             evidence.Sources is not { Count: 5 } || evidence.Outputs is null ||
             !CenteredStackPlanV1.Serialize(evidence).AsSpan().SequenceEqual(retained.Payload.Span))
@@ -112,6 +124,13 @@ public sealed record CenteredRegisteredStackEvidence(string SchemaVersion, strin
         evidence.ValidateOutputPins();
         return evidence;
     }
+
+    private static string? ReadBoundPlanIdentity(JsonElement options) =>
+        options.TryGetProperty("auxiliaryInputs", out var auxiliary) &&
+        auxiliary.ValueKind == JsonValueKind.Array && auxiliary.GetArrayLength() > 0 &&
+        auxiliary[0] is { ValueKind: JsonValueKind.Object } binding &&
+        binding.TryGetProperty("identitySha256", out var identity) && identity.ValueKind == JsonValueKind.String
+            ? identity.GetString() : null;
 
     /// <summary>Checks the retained display and support planes against the same published evidence.</summary>
     public void VerifyPlanes(IReadOnlyList<ProcessingProduct> planes, CancellationToken cancellationToken = default)

@@ -171,7 +171,7 @@ queue_push_condition = (
     "github.actor == 'github-merge-queue[bot]'"
 )
 build_runner = (
-    "    runs-on: ${{ fromJSON(needs.preflight.outputs.merge_group_run_id != '' && "
+    "    runs-on: ${{ fromJSON(github.event_name == 'push' && needs.preflight.outputs.merge_group_run_id != '' && "
     "'[\"ubuntu-24.04\"]' || '[\"self-hosted\", \"linux\", \"x64\", \"hvo-skymonitor-build\"]') }}"
 )
 workload_step = "Select Build and Unit workload"
@@ -198,7 +198,23 @@ run: |
   ./scripts/release:changelog "${args[@]}"
   ./scripts/test:changelog
 """
-unit_command = '            ./scripts/ci:development-v1-unit "$DEV_V1_EVIDENCE_ROOT"'
+deployment_cli_skip_guard = (
+    'if [[ "$GITHUB_EVENT_NAME" == pull_request && "$WORKLOAD_OUTCOME" == success && '
+    '"$RUN_DEPLOYMENT_CLI" == false ]]; then'
+)
+unit_command = '            ./scripts/ci:development-v1-unit "${coverage_args[@]}" "$DEV_V1_EVIDENCE_ROOT"'
+coverage_command = '              ./scripts/coverage:development-v1 --cameraagent-shards "${coverage_args[@]}" "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage"'
+unit_driver = (root / "scripts/ci:development-v1-unit").read_text()
+unit_filter_assignment = 'UNIT_FILTER = "TestCategory=Unit&TestCategory!=Performance"'
+unit_filter_error = "Unit driver must select Unit cases and exclude Performance cases"
+directory_build_targets = (root / "Directory.Build.targets").read_text()
+coverage_policy_script = (root / "scripts/coverage:policy").read_text()
+skip_deployment_cli_target = (
+    "<PropertyGroup Condition=\"'$(SkipDeploymentCliTests)' == 'true' And\n"
+    "                            '$(MSBuildProjectName)' == 'HVO.SkyMonitor.Deployment.Cli.Tests'\">\n"
+    "    <IsTestProject>false</IsTestProject>\n"
+    "  </PropertyGroup>"
+)
 queue_permissions = "permissions:\n  contents: read\n  pull-requests: read\n  statuses: read\n"
 trusted_checkout = """        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -215,7 +231,7 @@ queue_execution = """        env:
         run: BASE_SHA="$(git rev-parse HEAD)" ./scripts/ci:queue-reviewed-head"""
 
 
-def violations(short, full, queue=None, extra=None):
+def violations(short, full, queue=None, extra=None, unit_source=None):
     queue = queue_gate if queue is None else queue
     errors = []
     preflight = job(short, "preflight")
@@ -233,12 +249,13 @@ def violations(short, full, queue=None, extra=None):
     require("needs: preflight" in build, "preflight dependency")
     require(
         "if: github.event_name == 'push' || github.event_name == 'merge_group' || "
-        "github.event_name == 'workflow_dispatch' || "
         "github.event.pull_request.draft == false" in build,
         "draft exclusion",
     )
     require(short.count("branches: [development/v1]") == 3, "v1 PR, push and merge queue triggers")
-    require("\n  workflow_dispatch:\n" in short, "manual dispatch runs full v1 validation")
+    short_triggers = short.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
+    require(set(re.findall(r"^  (\w+):", short_triggers, re.M)) == {"pull_request", "push", "merge_group"},
+            "v1 triggers are limited to PRs, pushes and merge groups")
     require(merge_group_trigger in short, "both required checks report on merge queue commits")
     # The queue commit never carries the operator's hvo/reviewed-head status, so a
     # merge_group-only job reports that context after re-checking the queued PR head.
@@ -445,8 +462,25 @@ def violations(short, full, queue=None, extra=None):
     require("--configuration Release" in build and "-warnaserror" in build, "Release warnings")
     require("DOCKER_HOST: unix:///tmp/hvo-no-docker.sock" in build, "Docker-disabled Unit")
     unit = step(build, "Run Docker-disabled Unit selection")
-    require(unit.rstrip().endswith("\n" + unit_command) and unit.splitlines().count(unit_command) == 1,
-            "exact Development v1 Unit driver invocation")
+    unit_selection_block = "\n".join((
+        "          coverage_args=()",
+        f"          {deployment_cli_skip_guard}",
+        "            coverage_args+=(--skip-deployment-cli)",
+        "          fi",
+        '          ./scripts/coverage:development-v1 --settings "${coverage_args[@]}" "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings"',
+    ))
+    require(
+        "WORKLOAD_OUTCOME: ${{ steps.workload.outcome }}" in unit
+        and "RUN_DEPLOYMENT_CLI: ${{ steps.workload.outputs.run_deployment_cli }}" in unit
+        and unit_selection_block in unit
+        and unit.rstrip().endswith("\n" + unit_command)
+        and unit.splitlines().count(unit_command) == 1,
+        "exact Development v1 Unit driver invocation with PR-only Deployment.Cli.Tests path filtering",
+    )
+    require(skip_deployment_cli_target in directory_build_targets,
+            "Directory.Build.targets scopes SkipDeploymentCliTests exclusively to HVO.SkyMonitor.Deployment.Cli.Tests")
+    require((unit_driver if unit_source is None else unit_source).splitlines().count(unit_filter_assignment) == 1,
+            unit_filter_error)
     coverage = step(build, "Enforce canonical per-file coverage floors")
     policy = step(preflight, "Check coverage policy")
     require('        run: ./scripts/coverage:policy "$EVENT_NAME" "$BASE_REF"' in policy and
@@ -454,12 +488,24 @@ def violations(short, full, queue=None, extra=None):
             'BASE_REF: ${{ github.base_ref }}' in policy and '        if:' not in policy and
             'continue-on-error:' not in policy, "coverage policy runs on every v1 event")
     require(unit.splitlines().count(
-        '          ./scripts/coverage:development-v1 --settings "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings"'
+        '          ./scripts/coverage:development-v1 --settings "${coverage_args[@]}" "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings"'
     ) == 1, "Unit coverage settings generation")
+    coverage_skip_block = "\n".join((
+        "              coverage_args=()",
+        f"              {deployment_cli_skip_guard}",
+        "                coverage_args+=(--skip-deployment-cli)",
+        "              fi",
+    ))
+    require(
+        "WORKLOAD_OUTCOME: ${{ steps.workload.outcome }}" in coverage
+        and "RUN_DEPLOYMENT_CLI: ${{ steps.workload.outputs.run_deployment_cli }}" in coverage
+        and coverage_skip_block in coverage,
+        "coverage step skips Deployment.Cli.Tests only on verified PR path-filter",
+    )
     for command in (
         '              dotnet tool restore',
         '              ./scripts/test:coverage-development-v1',
-        '              ./scripts/coverage:development-v1 --cameraagent-shards "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage"',
+        coverage_command,
     ):
         require(coverage.splitlines().count(command) == 1, f"per-file gate wiring: {command}")
     require('        id: coverage\n' in coverage and 'bash -euo pipefail -c' in coverage,
@@ -484,22 +530,98 @@ def violations(short, full, queue=None, extra=None):
     fast = step(build, workload_step)
     for expected in ('id: workload', 'PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}',
                      'EVENT_NAME: ${{ github.event_name }}', 'Preflight dependency: success',
+                     'if [[ "$EVENT_NAME" == push && -n "${MERGE_GROUP_RUN_ID:-}" ]]; then',
                      'git show "$base:scripts/ci:classify"', '"$second" == "$PR_HEAD_SHA"',
                      '"$merge_commit" == "$GITHUB_SHA"', 'docs-fast-only',
-                     '[[ "$EVENT_NAME" == pull_request ]]', 'run_full=true',
+                     '[[ "$EVENT_NAME" == pull_request ]]', 'run_full=true', 'run_deployment_cli=true',
                      'for endpoint in "$PR_HEAD_SHA" "$merge_commit"', '-n "$PR_HEAD_SHA"', '-n "$second"',
                      'if [[ "$eligible" == true ]]; then', 'classifier output missing or invalid',
+                     'bash "$classifier" pull_request "$base" "$endpoint" > "$component_output"',
+                     "grep '^complete='", "grep '^delivery='", "grep '^deployment='",
+                     '"$complete_val" != complete=false || "$delivery_val" != delivery=false || "$deployment_val" != deployment=false',
+                     'component classifier output missing or invalid',
+                     'active Deployment.Cli canonical coverage floor requires Deployment.Cli.Tests',
+                     'coverage baseline or policy validation failed; Deployment.Cli.Tests required',
+                     'if [[ "$deploy_floor_rc" -eq 3 ]]; then',
+                     'elif [[ "$deploy_floor_rc" -ne 0 ]]; then',
+                     'if isinstance(value, float) and not math.isfinite(value):',
+                     'object_pairs_hook=reject_duplicate_keys',
+                     'or "\\0" in relpath or "\\\\" in relpath or "\\n" in relpath or "\\r" in relpath',
+                     '["git", "--literal-pathspecs", "ls-tree", "-t", "-z", base, "--", *relpaths]',
+                     'if out and not out.endswith(b"\\0"):',
+                     'return entry is not None and entry[0] in ("100644", "100755") and entry[1] == "blob"',
+                     'aggregate = data.get("aggregate")',
+                     'if not isinstance(files, dict) or not files:',
+                     'sorted(retired_list) != pinned_retired',
+                     'if not all(item in files for item in retired):',
+                     'if not all(item in files for item in below_aggregate_escapes):',
+                     'if not is_ratio(floor.get("line")) or not is_ratio(floor.get("branch")):',
+                     'if path != local_only_allowlist or not isinstance(local_only_reason, str) or not local_only_reason.strip():',
+                     'if path not in retired:',
+                     'elif not is_regular_blob_entry(entry):',
+                     'if path.startswith(prefixes):\n                  sys.exit(3)',
+                     'if measurable_floors == 0:',
+                     'run_deployment_cli=%s\\ndeployment_cli_reason=%s\\n',
                      'timeout --signal=TERM --kill-after=5s 30s bash "$classifier" --verify-docs-restore "$base"',
                      'printf \'restore_imports_verified=true\\n\' | cmp -s - "$proof"'):
         require(expected in fast, f"exact classification wiring: {expected}")
+    policy_retired_match = re.search(
+        r"\(\.retiredSourcePaths \| sort\) == \(\[(.*?)\] \| sort\)",
+        coverage_policy_script,
+        re.S,
+    )
+    workflow_retired_match = re.search(
+        r"pinned_retired = sorted\(\((.*?)\)\)",
+        fast,
+        re.S,
+    )
+    policy_escapes_match = re.search(
+        r"below_aggregate_escapes=\((.*?)\)",
+        coverage_policy_script,
+        re.S,
+    )
+    workflow_escapes_match = re.search(
+        r"below_aggregate_escapes = frozenset\(\((.*?)\)\)",
+        fast,
+        re.S,
+    )
+    workflow_components_match = re.search(
+        r"components = \(([^)]+)\)",
+        fast,
+    )
+    policy_retired = sorted(re.findall(r'"([^"]+)"', policy_retired_match.group(1))) if policy_retired_match else []
+    workflow_retired = sorted(re.findall(r'"([^"]+)"', workflow_retired_match.group(1))) if workflow_retired_match else []
+    policy_escapes = sorted(re.findall(r"'([^']+)'", policy_escapes_match.group(1))) if policy_escapes_match else []
+    workflow_escapes = sorted(re.findall(r'"([^"]+)"', workflow_escapes_match.group(1))) if workflow_escapes_match else []
+    policy_components = subprocess.check_output(
+        [str(root / "scripts/coverage:component"), "--list-components"], text=True
+    ).splitlines()
+    workflow_components = re.findall(r'"([^"]+)"', workflow_components_match.group(1)) if workflow_components_match else []
+    policy_local_only = re.findall(r'\.key == "([^"]+)"', coverage_policy_script)
+    require(
+        bool(policy_retired) and workflow_retired == policy_retired,
+        "workload selector pinned_retired matches scripts/coverage:policy",
+    )
+    require(
+        bool(policy_escapes) and workflow_escapes == policy_escapes,
+        "workload selector below_aggregate_escapes matches scripts/coverage:policy",
+    )
+    require(
+        bool(policy_components) and workflow_components == policy_components,
+        "workload selector components matches scripts/coverage:component",
+    )
+    require(
+        len(policy_local_only) == 1 and f'local_only_allowlist = "{policy_local_only[0]}"' in fast,
+        "workload selector local_only_allowlist matches scripts/coverage:policy",
+    )
     checkout = step(build, "Checkout exact commit")
     require("fetch-depth: ${{ github.event_name == 'pull_request' && '0' || '1' }}" in checkout and
-            "if: env.MERGE_GROUP_RUN_ID == ''" in checkout and
+            "if: github.event_name != 'push' || env.MERGE_GROUP_RUN_ID == ''" in checkout and
             build.find(workload_step) < build.find("Setup .NET from global.json"),
             "event-specific checkout and classification order")
-    require('docsFastPath:$docsFastPath,docsFastPathReason:$docsFastPathReason,preflight:"success"' in build and
+    require('docsFastPath:$docsFastPath,docsFastPathReason:$docsFastPathReason,deploymentCliTestsIncluded:$deploymentCliTestsIncluded,deploymentCliTestsReason:$deploymentCliTestsReason,preflight:"success"' in build and
             'baseSha:$baseSha,prHeadSha:$prHeadSha,mergeSha:$headSha' in build,
-            "fast decision, commits and preflight in retained manifest")
+            "fast decision, Deployment.Cli.Tests decision, commits and preflight in retained manifest")
     require(0 <= build.find("- name: Run Docker-disabled Unit selection") <
             build.find("- name: Enforce canonical per-file coverage floors") <
             build.find("- name: Write evidence summary"), "coverage runs after Unit and before evidence")
@@ -626,7 +748,35 @@ mutations = (
     ("tip comparison omitted", short.replace('for endpoint in "$PR_HEAD_SHA" "$merge_commit"', 'for endpoint in "$merge_commit"'), full),
     ("merge parent not bound", short.replace('"$second" == "$PR_HEAD_SHA"', '"$second" == "$second"'), full),
     ("base classifier not trusted", short.replace('git show "$base:scripts/ci:classify"', 'git show "HEAD:scripts/ci:classify"'), full),
-    ("fast decision omitted from evidence", short.replace('docsFastPath:$docsFastPath,docsFastPathReason:$docsFastPathReason,preflight:"success"', ""), full),
+    ("fast decision omitted from evidence", short.replace('docsFastPath:$docsFastPath,docsFastPathReason:$docsFastPathReason,deploymentCliTestsIncluded:$deploymentCliTestsIncluded,deploymentCliTestsReason:$deploymentCliTestsReason,preflight:"success"', ""), full),
+    ("Deployment.Cli.Tests decision omitted from evidence", short.replace('deploymentCliTestsIncluded:$deploymentCliTestsIncluded,deploymentCliTestsReason:$deploymentCliTestsReason,', ""), full),
+    ("Deployment.Cli.Tests defaults to skip", short.replace("run_deployment_cli=true", "run_deployment_cli=false", 1), full),
+    ("Deployment.Cli.Tests skips on merge_group in unit step", short.replace(deployment_cli_skip_guard, 'if [[ "$WORKLOAD_OUTCOME" == success && "$RUN_DEPLOYMENT_CLI" == false ]]; then', 1), full),
+    ("Deployment.Cli.Tests skips on merge_group in coverage step", short.replace(f"              {deployment_cli_skip_guard}", '              if [[ "$WORKLOAD_OUTCOME" == success && "$RUN_DEPLOYMENT_CLI" == false ]]; then', 1), full),
+    ("Deployment.Cli.Tests skips on failed workload in unit step", short.replace(deployment_cli_skip_guard, 'if [[ "$GITHUB_EVENT_NAME" == pull_request && "$RUN_DEPLOYMENT_CLI" == false ]]; then', 1), full),
+    ("Deployment.Cli.Tests skips on missing output", short.replace('"$RUN_DEPLOYMENT_CLI" == false', '"$RUN_DEPLOYMENT_CLI" != true', 1), full),
+    ("Deployment.Cli.Tests omits deployment flag check", short.replace(' || "$deployment_val" != deployment=false', ''), full),
+    ("Deployment.Cli.Tests omits complete flag check", short.replace('"$complete_val" != complete=false || ', ''), full),
+    ("Deployment.Cli.Tests omits active coverage floor fail-closed check", short.replace("active Deployment.Cli canonical coverage floor requires Deployment.Cli.Tests", "waived"), full),
+    ("Deployment.Cli.Tests omits coverage baseline validation fail-closed check", short.replace("coverage baseline or policy validation failed; Deployment.Cli.Tests required", "waived"), full),
+    ("Deployment.Cli.Tests reuses exit code 1 for active floor branch", short.replace('if [[ "$deploy_floor_rc" -eq 3 ]]; then', 'if [[ "$deploy_floor_rc" -eq 1 ]]; then').replace('if path.startswith(prefixes):\n                  sys.exit(3)', 'if path.startswith(prefixes):\n                  sys.exit(1)'), full),
+    ("Deployment.Cli.Tests calls math.isfinite on unbounded integer ratio", short.replace('if isinstance(value, float) and not math.isfinite(value):', 'if not math.isfinite(value):'), full),
+    ("Deployment.Cli.Tests omits Deployment.Cli prefix ownership check", short.replace("if path.startswith(prefixes):", "if False:"), full),
+    ("Deployment.Cli.Tests allows embedded newlines in coverage paths", short.replace(' or "\\n" in relpath or "\\r" in relpath', ''), full),
+    ("Deployment.Cli.Tests allows unterminated ls-tree -z output", short.replace('if out and not out.endswith(b"\\0"):', 'if False:'), full),
+    ("Deployment.Cli.Tests omits aggregate coverage schema check", short.replace('aggregate = data.get("aggregate")', 'aggregate = {"line": 0.8, "branch": 0.6, "tolerancePercentagePoints": 0.01}'), full),
+    ("Deployment.Cli.Tests omits floor ratio validation", short.replace('if not is_ratio(floor.get("line")) or not is_ratio(floor.get("branch")):', 'if False:'), full),
+    ("Deployment.Cli.Tests omits local-only allowlist check", short.replace('if path != local_only_allowlist or not isinstance(local_only_reason, str) or not local_only_reason.strip():', 'if not isinstance(local_only_reason, str) or not local_only_reason.strip():'), full),
+    ("Deployment.Cli.Tests omits pinned retired policy check", short.replace(' or sorted(retired_list) != pinned_retired', ''), full),
+    ("Deployment.Cli.Tests omits below_aggregate_escapes check", short.replace('if not all(item in files for item in below_aggregate_escapes):', 'if False:'), full),
+    ("Deployment.Cli.Tests omits duplicate JSON key rejection", short.replace('object_pairs_hook=reject_duplicate_keys,', ''), full),
+    ("Deployment.Cli.Tests accepts symlink git mode in coverage blob check", short.replace('("100644", "100755")', '("100644", "100755", "120000")'), full),
+    ("Deployment.Cli.Tests omits missing non-retired source blob check", short.replace('if path not in retired:', 'if False:'), full),
+    ("Unit driver skips Deployment.Cli.Tests unconditionally", short.replace(unit_command, unit_command.replace('"${coverage_args[@]}"', "--skip-deployment-cli")), full),
+    ("Unit driver ignores Deployment.Cli.Tests selection", short.replace(unit_command, unit_command.replace('"${coverage_args[@]}" ', "")), full),
+    ("merge_group accepts reuse ID in workload selection", short.replace('if [[ "$EVENT_NAME" == push && -n "${MERGE_GROUP_RUN_ID:-}" ]]; then', 'if [[ -n "${MERGE_GROUP_RUN_ID:-}" ]]; then'), full),
+    ("merge_group accepts reuse ID in checkout step", short.replace("if: github.event_name != 'push' || env.MERGE_GROUP_RUN_ID == ''", "if: env.MERGE_GROUP_RUN_ID == ''"), full),
+    ("merge_group accepts reuse ID in runner selector", short.replace("github.event_name == 'push' && needs.preflight.outputs.merge_group_run_id != ''", "needs.preflight.outputs.merge_group_run_id != ''"), full),
     ("inflated summary hard timeout", short.replace("hardTimeoutSeconds:1320", "hardTimeoutSeconds:13200"), full),
     ("inflated workload budget", short.replace("started_at_epoch + 1080", "started_at_epoch + 10800"), full),
     ("inflated hard timeout", short.replace("timeout-minutes: 22", "timeout-minutes: 220"), full),
@@ -647,10 +797,10 @@ mutations = (
     ("Unit failures masked", short.replace(unit_command, unit_command + " || true"), full),
     ("Unit shard contracts removed", short.replace("./scripts/test:development-v1-unit", "true"), full),
     ("coverage policy removed", short.replace('run: ./scripts/coverage:policy ', 'run: true '), full),
-    ("coverage settings lost", short.replace('--settings "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings"', "--settings missing.runsettings"), full),
-    ("coverage gate removed", short.replace('./scripts/coverage:development-v1 --cameraagent-shards "$DEV_V1_EVIDENCE_ROOT/unit"', 'true "$DEV_V1_EVIDENCE_ROOT/unit"'), full),
+    ("coverage settings lost", short.replace('"$DEV_V1_EVIDENCE_ROOT/coverage.runsettings"', "missing.runsettings"), full),
+    ("coverage gate removed", short.replace(coverage_command, "              true"), full),
     ("one-part CameraAgent coverage allowed", short.replace(" --cameraagent-shards ", " "), full),
-    ("coverage failure masked", short.replace('./scripts/coverage:development-v1 --cameraagent-shards "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage"', './scripts/coverage:development-v1 --cameraagent-shards "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage" || true'), full),
+    ("coverage failure masked", short.replace(coverage_command, coverage_command + " || true"), full),
     ("coverage step conditional", short.replace(workload_condition, "if: false"), full),
     ("direct push eligible for reuse", short.replace(" && github.actor == 'github-merge-queue[bot]'", ""), full),
     ("queue run eligible for reuse", short.replace(queue_push_condition, "if: github.event_name == 'merge_group'"), full),
@@ -663,8 +813,8 @@ mutations = (
     ("draft build", short.replace(" || github.event.pull_request.draft == false", ""), full),
     ("merge queue trigger removed", short.replace(merge_group_trigger, ""), full),
     ("Build and Unit skipped in the queue", short.replace(" || github.event_name == 'merge_group'", ""), full),
-    ("manual dispatch removed", short.replace("  workflow_dispatch:\n", ""), full),
-    ("Build and Unit skipped on manual dispatch", short.replace(" || github.event_name == 'workflow_dispatch'", ""), full),
+    ("manual dispatch added", short.replace("on:\n", "on:\n  workflow_dispatch:\n", 1), full),
+    ("Build and Unit admits manual dispatch", short.replace(" || github.event.pull_request.draft", " || github.event_name == 'workflow_dispatch' || github.event.pull_request.draft"), full),
     ("queue gate on pull_request", short, full, queue_gate.replace(
         "on:\n  merge_group:", "on:\n  pull_request:\n    branches: [development/v1]\n  merge_group:")),
     ("queue gate on push", short, full, queue_gate.replace(
@@ -1038,6 +1188,15 @@ with tempfile.TemporaryDirectory(prefix="hvo-changelog-workflow-") as directory:
         elif result.returncode != 1 or observed or "Cannot bind the changelog fragment limit" not in result.stderr:
             raise SystemExit(f"Preflight changelog case {label} did not fail closed: {observed} {result.stderr}")
     print("Preflight changelog merge-parent binding: 5 behavioral cases passed.")
+
+# The filter now lives in the shard driver. Preserve the workflow's Unit
+# filter mutation controls at the new entry point for all three test hosts.
+for replacement in ("", "TestCategory=Unit", "TestCategory=Unit|TestCategory!=Performance",
+                    "TestCategory=Integration", "TestCategory!=Integration", "TestCategory=Unit&FullyQualifiedName~Narrow"):
+    candidate = unit_driver.replace(unit_filter_assignment, f'UNIT_FILTER = "{replacement}"')
+    if candidate == unit_driver or unit_filter_error not in violations(short, full, unit_source=candidate):
+        raise SystemExit(f"Unit driver filter mutation was not rejected: {replacement!r}")
+    print(f"Rejected Unit driver filter mutation: {replacement!r}")
 
 # The documented reproduction check must compare the inventory without rewriting it.
 runbook = (root / "docs/runbooks/ci-pipeline.md").read_text()
@@ -1467,19 +1626,545 @@ exit "$FAKE_EXIT"
                             env=dict(env, EVENT_NAME="push", MERGE_GROUP_RUN_ID="42", PR_HEAD_SHA=""),
                             capture_output=True, text=True)
     if (result.returncode or "run_full=false" not in output.read_text().splitlines() or
+            "run_deployment_cli=false" not in output.read_text().splitlines() or
             "mergeGroupRunId=42" not in (evidence / "classification.md").read_text().splitlines()):
         raise SystemExit(f"Verified merge-group push selected the wrong workload: {output.read_text()} {result.stderr}")
-    # Execute the actual manifest step for both fast paths and missing-output fallback.
+
+    # Issue #2071: Deployment.Cli.Tests path-filtering decisions using the real
+    # trusted base classifier, real Deployment.Cli.Tests.csproj runtime-input links,
+    # and real coverage baseline/policy against PR merges and non-PR events.
+    deploy_cases = 0
+    git("checkout", "-q", "--detach", real_base)
+    real_deploy_cli_tests_csproj = (root / "tests/HVO.SkyMonitor.Deployment.Cli.Tests/HVO.SkyMonitor.Deployment.Cli.Tests.csproj").read_text()
+    real_coverage_baseline = (root / "scripts/coverage/baseline.json").read_text()
+    real_coverage_policy = (root / "scripts/coverage/policy.json").read_text()
+    real_component_baselines = {
+        component: (root / f"scripts/coverage/baseline.{component}.json").read_text()
+        for component in ("shared", "cameraagent", "delivery")
+    }
+    retired_seed_paths = set(json.loads(real_coverage_policy)["retiredSourcePaths"])
+    seed_files_list = [
+        ("src/HVO.SkyMonitor.CameraAgent/Components/Home.razor", "<p>home</p>\n"),
+        ("src/HVO.SkyMonitor.CameraAgent/Dockerfile", "FROM scratch\n"),
+        ("src/HVO.SkyMonitor.CameraAgent/Configuration/OwnerPasswordFileText.cs", "class P {}\n"),
+        ("src/HVO.SkyMonitor.CameraAgent/wwwroot/css/themes/hvo-dark.css", ":root[data-theme=\"hvo-dark\"] { --hvo-body-bg: #0b1018; }\n"),
+        ("docs/runbooks/cameraagent-silo-runtime.md", "# Silo runtime\n"),
+        ("src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj",
+         '<Project><ItemGroup><Compile Include="../HVO.SkyMonitor.CameraAgent/Configuration/OwnerPasswordFileText.cs" /></ItemGroup></Project>\n'),
+        ("tests/HVO.SkyMonitor.Deployment.Cli.Tests/HVO.SkyMonitor.Deployment.Cli.Tests.csproj", real_deploy_cli_tests_csproj),
+        ("src/HVO.SkyMonitor.Deployment.Cli/Program.cs", "class D {}\n"),
+        ("src/HVO.SkyMonitor.AgentCore/Contract.cs", "class C {}\n"),
+        ("scripts/coverage/baseline.json", real_coverage_baseline),
+        ("scripts/coverage/policy.json", real_coverage_policy),
+        *((f"scripts/coverage/baseline.{component}.json", body) for component, body in real_component_baselines.items()),
+    ]
+    seeded_relpaths = {rel for rel, _ in seed_files_list}
+    for raw_baseline in (real_coverage_baseline, *real_component_baselines.values()):
+        for floor_path in json.loads(raw_baseline)["files"]:
+            if floor_path in retired_seed_paths:
+                continue
+            rel = floor_path if floor_path.startswith("tools/") else f"src/{floor_path}"
+            if rel not in seeded_relpaths:
+                seed_files_list.append((rel, f"// seeded {floor_path}\n"))
+                seeded_relpaths.add(rel)
+    seed_files = tuple(seed_files_list)
+    for rel, body in seed_files:
+        target = fixture / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(body)
+    git("add", *(rel for rel, _ in seed_files))
+    git("commit", "-qm", "seed deployment path-filter base")
+    filter_base = git("rev-parse", "HEAD")
+
+    for label, edited_path, event_name, expected_deploy_cli in (
+        ("CameraAgent-only PR skips Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/Components/Home.razor", "pull_request", "false"),
+        ("CameraAgent-only merge_group always runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/Components/Home.razor", "merge_group", "true"),
+        ("CameraAgent-only push always runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/Components/Home.razor", "push", "true"),
+        ("CameraAgent Dockerfile PR runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/Dockerfile", "pull_request", "true"),
+        ("CameraAgent hvo-dark.css PR runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/wwwroot/css/themes/hvo-dark.css", "pull_request", "true"),
+        ("Silo replacement runbook PR runs Deployment.Cli.Tests and is not docs-fast-path skipped", "docs/runbooks/cameraagent-silo-runtime.md", "pull_request", "true"),
+        ("Linked CameraAgent source PR runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/Configuration/OwnerPasswordFileText.cs", "pull_request", "true"),
+        ("Deployment.Cli PR runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.Deployment.Cli/Program.cs", "pull_request", "true"),
+        ("Shared AgentCore PR runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.AgentCore/Contract.cs", "pull_request", "true"),
+        ("Classifier tamper PR runs Deployment.Cli.Tests", "scripts/ci:classify", "pull_request", "true"),
+    ):
+        git("checkout", "-q", "--detach", filter_base)
+        if edited_path == "scripts/ci:classify":
+            (fixture / edited_path).write_text('#!/usr/bin/env bash\nprintf "complete=false\\ndelivery=false\\ndeployment=false\\ndocs_fast_path=false\\ndocs_fast_path_reason=tampered\\n"\n')
+        else:
+            (fixture / edited_path).write_text("updated\n")
+        git("commit", "-qam", label)
+        case_head = git("rev-parse", "HEAD")
+        case_tree = git("rev-parse", "HEAD^{tree}")
+        case_merge = git("commit-tree", case_tree, "-p", filter_base, "-p", case_head, "-m", "merge " + label)
+        git("checkout", "-q", "--detach", case_merge)
+        output.write_text("")
+        case_env = dict(env, GITHUB_SHA=case_merge, EVENT_NAME=event_name,
+                        PR_HEAD_SHA=case_head if event_name == "pull_request" else "", MERGE_GROUP_RUN_ID="")
+        result = subprocess.run(["bash", "-euo", "pipefail", "-c", fast_script], cwd=fixture, env=case_env,
+                                capture_output=True, text=True)
+        lines = output.read_text().splitlines()
+        if result.returncode or "run_full=true" not in lines or f"run_deployment_cli={expected_deploy_cli}" not in lines:
+            raise SystemExit(f"Deployment.Cli path-filter case '{label}' failed: {lines} {result.stderr}")
+        deploy_cases += 1
+
+    # Active Deployment.Cli canonical coverage floor, missing baseline, or malformed baseline/policy fails closed to run_deployment_cli=true.
+    malformed_baseline_missing_files = json.dumps({"aggregate": {"line": 0.8, "branch": 0.6, "tolerancePercentagePoints": 0.01}})
+    malformed_baseline_list_files = json.dumps({"aggregate": {"line": 0.8, "branch": 0.6, "tolerancePercentagePoints": 0.01}, "files": ["HVO.SkyMonitor.Astronomy/CameraGeometry.cs"]})
+    malformed_baseline_non_object_entry = json.dumps({"aggregate": {"line": 0.8, "branch": 0.6, "tolerancePercentagePoints": 0.01}, "files": {"HVO.SkyMonitor.Deployment.Cli/Program.cs": "invalid"}})
+    malformed_policy_dict_retired = json.dumps({"retiredSourcePaths": {"HVO.SkyMonitor.Deployment.Cli/Missing.cs": True}})
+    baseline_with_missing_deploy_floor = json.loads(real_coverage_baseline)
+    baseline_with_missing_deploy_floor["files"]["HVO.SkyMonitor.Deployment.Cli/Missing.cs"] = {"line": 0.80, "branch": 0.70}
+    baseline_with_blank_local_only = json.loads(real_coverage_baseline)
+    baseline_with_blank_local_only["files"]["HVO.SkyMonitor.Deployment.Cli/Program.cs"] = {
+        "line": 0.80, "branch": 0.70, "developmentV1LocalOnlyReason": "   "
+    }
+    baseline_with_non_string_local_only = json.loads(real_coverage_baseline)
+    baseline_with_non_string_local_only["files"]["HVO.SkyMonitor.TerminalUi/Screen.cs"] = {
+        "line": 0.80, "branch": 0.70, "developmentV1LocalOnlyReason": True
+    }
+    active_deploy_baseline = json.loads(real_coverage_baseline)
+    active_deploy_baseline["files"]["HVO.SkyMonitor.Deployment.Cli/CommandLine.cs"] = {"line": 0.80, "branch": 0.60}
+
+    # Sol M1: single-fault malformed coverage baseline/policy inputs that scripts/coverage:policy rejects
+    # must ALSO fail closed in the workload selector rather than selecting run_deployment_cli=false.
+    baseline_missing_aggregate = json.loads(real_coverage_baseline)
+    del baseline_missing_aggregate["aggregate"]
+    baseline_zero_aggregate_line = json.loads(real_coverage_baseline)
+    baseline_zero_aggregate_line["aggregate"]["line"] = 0
+    baseline_out_of_range_aggregate_tol = json.loads(real_coverage_baseline)
+    baseline_out_of_range_aggregate_tol["aggregate"]["tolerancePercentagePoints"] = 1.5
+    baseline_missing_floor_ratio = json.loads(real_coverage_baseline)
+    del baseline_missing_floor_ratio["files"]["HVO.SkyMonitor.Astronomy/CameraGeometry.cs"]["branch"]
+    baseline_string_floor_ratio = json.loads(real_coverage_baseline)
+    baseline_string_floor_ratio["files"]["HVO.SkyMonitor.Astronomy/CameraGeometry.cs"]["line"] = "0.95"
+    baseline_bool_floor_ratio = json.loads(real_coverage_baseline)
+    baseline_bool_floor_ratio["files"]["HVO.SkyMonitor.Astronomy/CameraGeometry.cs"]["branch"] = True
+    baseline_gt1_floor_ratio = json.loads(real_coverage_baseline)
+    baseline_gt1_floor_ratio["files"]["HVO.SkyMonitor.Astronomy/CameraGeometry.cs"]["line"] = 1.05
+    baseline_negative_floor_ratio = json.loads(real_coverage_baseline)
+    baseline_negative_floor_ratio["files"]["HVO.SkyMonitor.Astronomy/CameraGeometry.cs"]["branch"] = -0.01
+    baseline_nan_floor_ratio_obj = json.loads(real_coverage_baseline)
+    baseline_nan_floor_ratio_obj["aggregate"]["line"] = float("nan")
+    baseline_nan_floor_ratio = json.dumps(baseline_nan_floor_ratio_obj, allow_nan=True)
+    baseline_huge_int_floor_ratio = json.loads(real_coverage_baseline)
+    baseline_huge_int_floor_ratio["files"]["HVO.SkyMonitor.Astronomy/CameraGeometry.cs"]["line"] = 10 ** 350
+    baseline_unauthorized_local_only_deploy = json.loads(real_coverage_baseline)
+    baseline_unauthorized_local_only_deploy["files"]["HVO.SkyMonitor.Deployment.Cli/CommandLine.cs"] = {
+        "line": 0.80, "branch": 0.60, "developmentV1LocalOnlyReason": "unauthorized local-only exemption on live Deployment.Cli floor"
+    }
+    baseline_null_local_only_allowlisted = json.loads(real_coverage_baseline)
+    baseline_null_local_only_allowlisted["files"]["tools/HVO.SkyMonitor.Deployment.ReleaseTool/Program.cs"]["developmentV1LocalOnlyReason"] = None
+    baseline_blank_local_only_allowlisted = json.loads(real_coverage_baseline)
+    baseline_blank_local_only_allowlisted["files"]["tools/HVO.SkyMonitor.Deployment.ReleaseTool/Program.cs"]["developmentV1LocalOnlyReason"] = "   "
+    policy_unauthorized_retired = json.loads(real_coverage_policy)
+    policy_unauthorized_retired["retiredSourcePaths"].append("HVO.SkyMonitor.Deployment.Cli/Missing.cs")
+    baseline_missing_pinned_retired = json.loads(real_coverage_baseline)
+    del baseline_missing_pinned_retired["files"]["HVO.SkyMonitor.AgentCore/ArtifactUploadManifest.cs"]
+
+    # Delta3 Sol M1/M2/M3 probes: missing non-retired shared source file, removed required
+    # ArtifactManifestV2.cs canonical floor, component-baseline parity violations, duplicate
+    # JSON object keys, and Git symlink (120000) entries whose target parses as valid JSON.
+    baseline_missing_non_retired_shared = json.loads(real_coverage_baseline)
+    baseline_missing_non_retired_shared["files"]["HVO.SkyMonitor.AgentCore/MissingShared.cs"] = {
+        "line": 0.90, "branch": 0.80
+    }
+    shared_with_missing_non_retired = json.loads(real_component_baselines["shared"])
+    shared_with_missing_non_retired["files"]["HVO.SkyMonitor.AgentCore/MissingShared.cs"] = {
+        "line": 0.90, "branch": 0.80
+    }
+    baseline_missing_artifact_manifest_v2 = json.loads(real_coverage_baseline)
+    del baseline_missing_artifact_manifest_v2["files"]["HVO.SkyMonitor.AgentCore/ArtifactManifestV2.cs"]
+    shared_missing_below_aggregate_reason = json.loads(real_component_baselines["shared"])
+    del shared_missing_below_aggregate_reason["files"]["HVO.SkyMonitor.AgentCore/ArtifactManifestV2.cs"]["belowAggregateReason"]
+    shared_weaker_non_escape_floor = json.loads(real_component_baselines["shared"])
+    shared_weaker_non_escape_floor["files"]["HVO.SkyMonitor.Astronomy/CameraGeometry.cs"]["line"] = 0.50
+
+    def duplicate_floor_key_json(raw_text, floor_key, label):
+        parsed = json.loads(raw_text)
+        if floor_key not in parsed.get("files", {}):
+            raise SystemExit(f"Duplicate floor key fixture missing {floor_key} in {label}")
+        floor_json = json.dumps(parsed["files"][floor_key])
+        pattern = re.compile(rf'({re.escape(json.dumps(floor_key))}\s*:\s*\{{)')
+        mutated, count = pattern.subn(
+            lambda match: f'{json.dumps(floor_key)}: {floor_json},\n    {match.group(1)}',
+            raw_text,
+            count=1,
+        )
+        if count != 1 or mutated == raw_text:
+            raise SystemExit(f"Duplicate floor key fixture did not mutate {label}")
+        json.loads(mutated)
+        return mutated
+
+    baseline_duplicate_floor_key = duplicate_floor_key_json(
+        real_coverage_baseline, "HVO.SkyMonitor.Astronomy/CameraGeometry.cs", "baseline.json"
+    )
+    policy_duplicate_key = (
+        '{\n'
+        '  "retiredSourcePaths": [],\n'
+        '  "retiredSourcePaths": [\n'
+        '    "HVO.SkyMonitor.AgentCore/ArtifactUploadManifest.cs",\n'
+        '    "HVO.SkyMonitor.Deployment.Cli/DistributionCatalogAcquirer.cs",\n'
+        '    "HVO.SkyMonitor.Deployment.Distribution/DistributionVerifier.cs"\n'
+        '  ]\n'
+        '}\n'
+    )
+    shared_duplicate_floor_key = duplicate_floor_key_json(
+        real_component_baselines["shared"], "HVO.SkyMonitor.Astronomy/CameraGeometry.cs", "baseline.shared.json"
+    )
+
+    deploy_floor_active_reason = "deployment_cli_reason=active Deployment.Cli canonical coverage floor requires Deployment.Cli.Tests"
+    deploy_floor_invalid_reason = "deployment_cli_reason=coverage baseline or policy validation failed; Deployment.Cli.Tests required"
+
+    for floor_label, baseline_override, policy_override, expected_reason in (
+        ("active Deployment.Cli floor on base prevents skip", json.dumps(active_deploy_baseline), None, deploy_floor_active_reason),
+        ("missing coverage baseline on base fails closed", False, None, deploy_floor_invalid_reason),
+        ("baseline missing files key fails closed", malformed_baseline_missing_files, None, deploy_floor_invalid_reason),
+        ("baseline non-object files list fails closed", malformed_baseline_list_files, None, deploy_floor_invalid_reason),
+        ("baseline non-object entry in files fails closed", malformed_baseline_non_object_entry, None, deploy_floor_invalid_reason),
+        ("policy retiredSourcePaths object fails closed", json.dumps(baseline_with_missing_deploy_floor), malformed_policy_dict_retired, deploy_floor_invalid_reason),
+        ("blank developmentV1LocalOnlyReason fails closed", json.dumps(baseline_with_blank_local_only), None, deploy_floor_invalid_reason),
+        ("non-string developmentV1LocalOnlyReason fails closed", json.dumps(baseline_with_non_string_local_only), None, deploy_floor_invalid_reason),
+        ("missing aggregate fails closed", json.dumps(baseline_missing_aggregate), None, deploy_floor_invalid_reason),
+        ("non-positive aggregate line ratio fails closed", json.dumps(baseline_zero_aggregate_line), None, deploy_floor_invalid_reason),
+        ("out-of-range aggregate tolerancePercentagePoints fails closed", json.dumps(baseline_out_of_range_aggregate_tol), None, deploy_floor_invalid_reason),
+        ("missing floor ratio fails closed", json.dumps(baseline_missing_floor_ratio), None, deploy_floor_invalid_reason),
+        ("string non-numeric floor ratio fails closed", json.dumps(baseline_string_floor_ratio), None, deploy_floor_invalid_reason),
+        ("boolean non-numeric floor ratio fails closed", json.dumps(baseline_bool_floor_ratio), None, deploy_floor_invalid_reason),
+        ("out-of-range floor ratio above 1 fails closed", json.dumps(baseline_gt1_floor_ratio), None, deploy_floor_invalid_reason),
+        ("out-of-range negative floor ratio fails closed", json.dumps(baseline_negative_floor_ratio), None, deploy_floor_invalid_reason),
+        ("non-finite NaN ratio fails closed", baseline_nan_floor_ratio, None, deploy_floor_invalid_reason),
+        ("351-digit integer floor ratio fails closed as validation error", json.dumps(baseline_huge_int_floor_ratio), None, deploy_floor_invalid_reason),
+        ("unauthorized developmentV1LocalOnlyReason on live Deployment.Cli floor fails closed", json.dumps(baseline_unauthorized_local_only_deploy), None, deploy_floor_invalid_reason),
+        ("null developmentV1LocalOnlyReason on allowlisted ReleaseTool fails closed", json.dumps(baseline_null_local_only_allowlisted), None, deploy_floor_invalid_reason),
+        ("blank developmentV1LocalOnlyReason on allowlisted ReleaseTool fails closed", json.dumps(baseline_blank_local_only_allowlisted), None, deploy_floor_invalid_reason),
+        ("unauthorized retiredSourcePaths addition in policy fails closed", json.dumps(baseline_with_missing_deploy_floor), json.dumps(policy_unauthorized_retired), deploy_floor_invalid_reason),
+        ("missing pinned retired floor in baseline fails closed", json.dumps(baseline_missing_pinned_retired), None, deploy_floor_invalid_reason),
+        ("missing non-retired shared source path floor in baseline fails closed", json.dumps(baseline_missing_non_retired_shared), None, deploy_floor_invalid_reason),
+        ("removed required ArtifactManifestV2.cs canonical floor fails closed", json.dumps(baseline_missing_artifact_manifest_v2), None, deploy_floor_invalid_reason),
+        ("duplicate floor key in baseline.json fails closed", baseline_duplicate_floor_key, None, deploy_floor_invalid_reason),
+        ("duplicate key in policy.json fails closed", None, policy_duplicate_key, deploy_floor_invalid_reason),
+    ):
+        git("checkout", "-q", "--detach", filter_base)
+        if baseline_override is False:
+            git("rm", "-q", "scripts/coverage/baseline.json")
+        elif baseline_override is not None:
+            (fixture / "scripts/coverage/baseline.json").write_text(baseline_override)
+            git("add", "scripts/coverage/baseline.json")
+        if policy_override is not None:
+            (fixture / "scripts/coverage/policy.json").write_text(policy_override)
+            git("add", "scripts/coverage/policy.json")
+        git("commit", "-qm", floor_label)
+        floor_base = git("rev-parse", "HEAD")
+        (fixture / "src/HVO.SkyMonitor.CameraAgent/Components/Home.razor").write_text("ca-only-under-floor\n")
+        git("commit", "-qam", "ca-only change")
+        floor_head = git("rev-parse", "HEAD")
+        floor_tree = git("rev-parse", "HEAD^{tree}")
+        floor_merge = git("commit-tree", floor_tree, "-p", floor_base, "-p", floor_head, "-m", "merge " + floor_label)
+        git("checkout", "-q", "--detach", floor_merge)
+        output.write_text("")
+        case_env = dict(env, GITHUB_SHA=floor_merge, EVENT_NAME="pull_request", PR_HEAD_SHA=floor_head, MERGE_GROUP_RUN_ID="")
+        result = subprocess.run(["bash", "-euo", "pipefail", "-c", fast_script], cwd=fixture, env=case_env,
+                                capture_output=True, text=True)
+        lines = output.read_text().splitlines()
+        if (result.returncode or "run_full=true" not in lines or "run_deployment_cli=true" not in lines or
+                expected_reason not in lines):
+            raise SystemExit(f"Coverage floor fail-closed case '{floor_label}' failed: {lines} {result.stderr}")
+        deploy_cases += 1
+
+    # Additional delta3/delta4 probes exercising component baselines, deleted non-retired
+    # source files (shared and allowlisted local-only), exact Git 120000 symlink entries,
+    # and tracked coverage paths containing embedded newline/CR characters.
+    def run_synthetic_tree_case(case_label, mutator):
+        git("checkout", "-f", "-q", "--detach", filter_base)
+        mutator()
+        base_tree = git("write-tree")
+        case_base = git("commit-tree", base_tree, "-p", filter_base, "-m", "base " + case_label)
+        home_oid = subprocess.run(
+            ["git", "hash-object", "-w", "--stdin"],
+            cwd=fixture, input="ca-only-under-synthetic-tree\n", text=True, check=True, capture_output=True,
+        ).stdout.strip()
+        git("update-index", "--cacheinfo", f"100644,{home_oid},src/HVO.SkyMonitor.CameraAgent/Components/Home.razor")
+        head_tree = git("write-tree")
+        case_head = git("commit-tree", head_tree, "-p", case_base, "-m", "head " + case_label)
+        case_merge = git("commit-tree", head_tree, "-p", case_base, "-p", case_head, "-m", "merge " + case_label)
+        git("update-ref", "--no-deref", "HEAD", case_merge)
+        output.write_text("")
+        case_env = dict(env, GITHUB_SHA=case_merge, EVENT_NAME="pull_request", PR_HEAD_SHA=case_head, MERGE_GROUP_RUN_ID="")
+        result = subprocess.run(["bash", "-euo", "pipefail", "-c", fast_script], cwd=fixture, env=case_env,
+                                capture_output=True, text=True)
+        lines = output.read_text().splitlines()
+        if (result.returncode or "run_full=true" not in lines or "run_deployment_cli=true" not in lines or
+                deploy_floor_invalid_reason not in lines):
+            raise SystemExit(f"Coverage tree parity case '{case_label}' failed: {lines} {result.stderr}")
+
+    def stage_blob(mode, relpath, content):
+        blob_oid = subprocess.run(
+            ["git", "hash-object", "-w", "--stdin"],
+            cwd=fixture, input=content, text=True, check=True, capture_output=True,
+        ).stdout.strip()
+        git("update-index", "--add", "--cacheinfo", f"{mode},{blob_oid},{relpath}")
+
+    def stage_tracked_newline_floor(rel_floor_path):
+        mutated_baseline = json.loads(real_coverage_baseline)
+        mutated_baseline["files"][rel_floor_path] = {"line": 0.90, "branch": 0.80}
+        mutated_shared = json.loads(real_component_baselines["shared"])
+        mutated_shared["files"][rel_floor_path] = {"line": 0.90, "branch": 0.80}
+        stage_blob("100644", f"src/{rel_floor_path}", "// tracked embedded newline path\n")
+        stage_blob("100644", "scripts/coverage/baseline.json", json.dumps(mutated_baseline))
+        stage_blob("100644", "scripts/coverage/baseline.shared.json", json.dumps(mutated_shared))
+
+    for tree_label, mutator in (
+        (
+            "missing non-retired shared source path even when present in both baseline.json and baseline.shared.json fails closed",
+            lambda: (
+                stage_blob("100644", "scripts/coverage/baseline.json", json.dumps(baseline_missing_non_retired_shared)),
+                stage_blob("100644", "scripts/coverage/baseline.shared.json", json.dumps(shared_with_missing_non_retired)),
+            ),
+        ),
+        (
+            "deleted non-retired shared source file with floor intact fails closed",
+            lambda: git("rm", "-q", "--cached", "src/HVO.SkyMonitor.Astronomy/CameraGeometry.cs"),
+        ),
+        (
+            "deleted allowlisted local-only ReleaseTool source file fails closed",
+            lambda: git("rm", "-q", "--cached", "tools/HVO.SkyMonitor.Deployment.ReleaseTool/Program.cs"),
+        ),
+        (
+            "missing component baseline.shared.json fails closed",
+            lambda: git("rm", "-q", "--cached", "scripts/coverage/baseline.shared.json"),
+        ),
+        (
+            "removed belowAggregateReason on ArtifactManifestV2.cs in baseline.shared.json fails closed",
+            lambda: stage_blob("100644", "scripts/coverage/baseline.shared.json", json.dumps(shared_missing_below_aggregate_reason)),
+        ),
+        (
+            "weakened non-escape floor in baseline.shared.json fails closed",
+            lambda: stage_blob("100644", "scripts/coverage/baseline.shared.json", json.dumps(shared_weaker_non_escape_floor)),
+        ),
+        (
+            "duplicate floor key in baseline.shared.json fails closed",
+            lambda: stage_blob("100644", "scripts/coverage/baseline.shared.json", shared_duplicate_floor_key),
+        ),
+        (
+            "git symlink (120000) baseline.json with valid JSON target text fails closed",
+            lambda: stage_blob("120000", "scripts/coverage/baseline.json", real_coverage_baseline),
+        ),
+        (
+            "git symlink (120000) policy.json with valid JSON target text fails closed",
+            lambda: stage_blob("120000", "scripts/coverage/policy.json", real_coverage_policy),
+        ),
+        (
+            "git symlink (120000) baseline.shared.json with valid JSON target text fails closed",
+            lambda: stage_blob("120000", "scripts/coverage/baseline.shared.json", real_component_baselines["shared"]),
+        ),
+        (
+            "git symlink (120000) non-retired shared source file fails closed",
+            lambda: stage_blob("120000", "src/HVO.SkyMonitor.Astronomy/CameraGeometry.cs", "Projection.cs"),
+        ),
+        (
+            "git symlink (120000) retired Deployment.Cli source file fails closed",
+            lambda: stage_blob("120000", "src/HVO.SkyMonitor.Deployment.Cli/DistributionCatalogAcquirer.cs", "Program.cs"),
+        ),
+        (
+            "tracked coverage path with embedded LF newline fails closed for coverage:policy parity",
+            lambda: stage_tracked_newline_floor("HVO.SkyMonitor.Astronomy/Line\nBreak.cs"),
+        ),
+        (
+            "tracked coverage path with embedded CR fails closed under stricter selector path validation",
+            lambda: stage_tracked_newline_floor("HVO.SkyMonitor.Astronomy/Return\rBreak.cs"),
+        ),
+    ):
+        run_synthetic_tree_case(tree_label, mutator)
+        deploy_cases += 1
+    git("checkout", "-f", "-q", "--detach", filter_base)
+
+    # Delta4 Sol L1: fault-inject an unterminated (missing trailing NUL) git ls-tree -z
+    # response on a valid CameraAgent-only PR and confirm the selector fails closed.
+    (fixture / "src/HVO.SkyMonitor.CameraAgent/Components/Home.razor").write_text("ca-only-ls-tree-fault\n")
+    git("commit", "-qam", "ca-only ls-tree fault probe")
+    ls_tree_head = git("rev-parse", "HEAD")
+    ls_tree_tree = git("rev-parse", "HEAD^{tree}")
+    ls_tree_merge = git("commit-tree", ls_tree_tree, "-p", filter_base, "-p", ls_tree_head, "-m", "merge ls-tree fault probe")
+    git("checkout", "-q", "--detach", ls_tree_merge)
+    real_git_bin = shutil.which("git")
+    if not real_git_bin:
+        raise SystemExit("Unable to locate git binary for ls-tree fault injection")
+    ls_tree_fault_bin = fixture / "ls-tree-fault-bin"
+    ls_tree_fault_bin.mkdir()
+    fake_git = ls_tree_fault_bin / "git"
+    fake_git.write_text(f"""#!/usr/bin/env python3
+import os, subprocess, sys
+proc = subprocess.run([{real_git_bin!r}, *sys.argv[1:]], stdout=subprocess.PIPE)
+out = proc.stdout
+mode = os.environ.get("HVO_TEST_TRUNCATE_LS_TREE", "none")
+if "ls-tree" in sys.argv[1:] and out:
+    if mode == "strip_nul" and out.endswith(b"\\0"):
+        out = out[:-1]
+    elif mode == "trailing_unterminated":
+        out = out + b"100644 blob 0000000000000000000000000000000000000000\\tpartial/truncated.cs"
+sys.stdout.buffer.write(out)
+sys.exit(proc.returncode)
+""")
+    fake_git.chmod(0o700)
+    for truncate_mode, expect_deploy, expect_reason in (
+        ("none", "false", None),
+        ("strip_nul", "true", deploy_floor_invalid_reason),
+        ("trailing_unterminated", "true", deploy_floor_invalid_reason),
+    ):
+        output.write_text("")
+        fault_env = dict(
+            env,
+            PATH=f"{ls_tree_fault_bin}:{os.environ['PATH']}",
+            HVO_TEST_TRUNCATE_LS_TREE=truncate_mode,
+            GITHUB_SHA=ls_tree_merge,
+            EVENT_NAME="pull_request",
+            PR_HEAD_SHA=ls_tree_head,
+            MERGE_GROUP_RUN_ID="",
+        )
+        result = subprocess.run(["bash", "-euo", "pipefail", "-c", fast_script], cwd=fixture, env=fault_env,
+                                capture_output=True, text=True)
+        lines = output.read_text().splitlines()
+        if (result.returncode or "run_full=true" not in lines or f"run_deployment_cli={expect_deploy}" not in lines or
+                (expect_reason is not None and expect_reason not in lines)):
+            raise SystemExit(f"ls-tree trailing-NUL fault case (mode={truncate_mode}) failed: {lines} {result.stderr}")
+    deploy_cases += 2
+    git("checkout", "-f", "-q", "--detach", filter_base)
+
+    # Sol M2: merge_group ALWAYS forces run_full=true and run_deployment_cli=true even if MERGE_GROUP_RUN_ID is non-empty.
+    git("checkout", "-q", "--detach", filter_base)
+    (fixture / "src/HVO.SkyMonitor.CameraAgent/Components/Home.razor").write_text("ca-only-merge-group-reuse-id\n")
+    git("commit", "-qam", "ca-only merge_group reuse id")
+    mg_head = git("rev-parse", "HEAD")
+    mg_tree = git("rev-parse", "HEAD^{tree}")
+    mg_merge = git("commit-tree", mg_tree, "-p", filter_base, "-p", mg_head, "-m", "merge_group with reuse id")
+    git("checkout", "-q", "--detach", mg_merge)
+    output.write_text("")
+    mg_env = dict(env, GITHUB_SHA=mg_merge, EVENT_NAME="merge_group", PR_HEAD_SHA="", MERGE_GROUP_RUN_ID="42")
+    result = subprocess.run(["bash", "-euo", "pipefail", "-c", fast_script], cwd=fixture, env=mg_env,
+                            capture_output=True, text=True)
+    mg_lines = output.read_text().splitlines()
+    if (result.returncode or "run_full=true" not in mg_lines or "run_deployment_cli=true" not in mg_lines or
+            "mergeGroupRunId=42" in (evidence / "classification.md").read_text().splitlines()):
+        raise SystemExit(f"merge_group with nonempty MERGE_GROUP_RUN_ID skipped workload: {mg_lines} {result.stderr}")
+    deploy_cases += 1
+
+    # The workflow passes the same verified skip decision to settings and the shard driver.
+    # test:development-v1-unit checks how the driver sets the MSBuild and VSTest options.
+    unit_step = step(job(short, "build-unit"), "Run Docker-disabled Unit selection")
+    unit_script = textwrap.dedent(unit_step.split("        run: |\n", 1)[1])
+    unit_calls = fixture / "unit-calls.jsonl"
+    fake_cov_dir = fixture / "unit-repo/scripts"
+    fake_cov_dir.mkdir(parents=True)
+    fake_driver = fake_cov_dir / "ci:development-v1-unit"
+    fake_driver.write_text("""#!/usr/bin/env python3
+import json, os, sys
+with open(os.environ["UNIT_CALLS"], "a") as handle:
+    handle.write(json.dumps({"cmd": "driver", "argv": sys.argv[1:]}) + "\\n")
+""")
+    fake_driver.chmod(0o700)
+    fake_cov = fake_cov_dir / "coverage:development-v1"
+    fake_cov.write_text("""#!/usr/bin/env python3
+import json, os, sys
+with open(os.environ["UNIT_CALLS"], "a") as handle:
+    handle.write(json.dumps({"cmd": "coverage", "argv": sys.argv[1:]}) + "\\n")
+""")
+    fake_cov.chmod(0o700)
+    (evidence / "timing").mkdir(exist_ok=True)
+    (evidence / "unit").mkdir(exist_ok=True)
+    for unit_label, unit_event, unit_outcome, unit_run_deploy, expect_skip in (
+        ("merge_group forces full selection", "merge_group", "success", "false", False),
+        ("push forces full selection", "push", "success", "false", False),
+        ("pull_request full forces full selection", "pull_request", "success", "true", False),
+        ("pull_request failed workload forces full selection", "pull_request", "failure", "false", False),
+        ("pull_request verified skip reaches the driver", "pull_request", "success", "false", True),
+    ):
+        unit_calls.write_text("")
+        unit_env = dict(
+            os.environ,
+            DEV_V1_EVIDENCE_ROOT=str(evidence),
+            DEV_V1_DEADLINE_EPOCH=str(int(time.time()) + 600),
+            GITHUB_EVENT_NAME=unit_event,
+            WORKLOAD_OUTCOME=unit_outcome,
+            RUN_DEPLOYMENT_CLI=unit_run_deploy,
+            UNIT_CALLS=str(unit_calls),
+        )
+        result = subprocess.run(["bash", "-euo", "pipefail", "-c", unit_script], cwd=fixture / "unit-repo",
+                                env=unit_env, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise SystemExit(f"Unit step simulation '{unit_label}' failed: {result.stderr}")
+        recorded = [json.loads(line) for line in unit_calls.read_text().splitlines()]
+        skip_args = ["--skip-deployment-cli"] if expect_skip else []
+        expected = [
+            {"cmd": "coverage", "argv": ["--settings", *skip_args, str(evidence / "coverage.runsettings")]},
+            {"cmd": "driver", "argv": [*skip_args, str(evidence)]},
+        ]
+        if recorded != expected:
+            raise SystemExit(f"Unit step simulation '{unit_label}' unexpected calls: {recorded}")
+        deploy_cases += 1
+
+    # Endpoints disagree: PR tip is CameraAgent-only, but merge tree modifies Deployment.Cli.
+    git("checkout", "-q", "--detach", filter_base)
+    (fixture / "src/HVO.SkyMonitor.CameraAgent/Components/Home.razor").write_text("ca-only\n")
+    git("commit", "-qam", "ca-only tip")
+    ca_tip = git("rev-parse", "HEAD")
+    (fixture / "src/HVO.SkyMonitor.Deployment.Cli/Program.cs").write_text("merge-added-deploy\n")
+    git("add", "src/HVO.SkyMonitor.Deployment.Cli/Program.cs")
+    disagree_tree = git("write-tree")
+    disagree_merge = git("commit-tree", disagree_tree, "-p", filter_base, "-p", ca_tip, "-m", "disagree merge")
+    git("reset", "--hard", "-q", disagree_merge)
+    output.write_text("")
+    case_env = dict(env, GITHUB_SHA=disagree_merge, EVENT_NAME="pull_request", PR_HEAD_SHA=ca_tip, MERGE_GROUP_RUN_ID="")
+    result = subprocess.run(["bash", "-euo", "pipefail", "-c", fast_script], cwd=fixture, env=case_env,
+                            capture_output=True, text=True)
+    lines = output.read_text().splitlines()
+    if result.returncode or "run_full=true" not in lines or "run_deployment_cli=true" not in lines:
+        raise SystemExit(f"Disagreeing merge endpoint skipped Deployment.Cli.Tests: {lines} {result.stderr}")
+    deploy_cases += 1
+
+    # Malformed / non-boolean / missing / duplicate component classifier outputs fail closed to run_deployment_cli=true.
+    git("checkout", "-q", "--detach", merge)
+    for bad_label, bad_content, bad_exit in (
+        ("missing component flags", "docs_fast_path=false\ndocs_fast_path_reason=outside\n", "0"),
+        ("mixed case complete", "docs_fast_path=false\ndocs_fast_path_reason=outside\ncomplete=False\ndelivery=false\ndeployment=false\n", "0"),
+        ("duplicate delivery", "docs_fast_path=false\ndocs_fast_path_reason=outside\ncomplete=false\ndelivery=false\ndelivery=false\ndeployment=false\n", "0"),
+        ("non-zero after false", "docs_fast_path=false\ndocs_fast_path_reason=outside\ncomplete=false\ndelivery=false\ndeployment=false\n", "2"),
+    ):
+        output.write_text("")
+        bad_env = dict(env, GITHUB_SHA=merge, EVENT_NAME="pull_request", PR_HEAD_SHA=candidate, MERGE_GROUP_RUN_ID="",
+                       FAKE_CONTENT=bad_content, FAKE_EXIT=bad_exit)
+        result = subprocess.run(["bash", "-euo", "pipefail", "-c", fast_script], cwd=fixture, env=bad_env,
+                                capture_output=True, text=True)
+        lines = output.read_text().splitlines()
+        if result.returncode or "run_full=true" not in lines or "run_deployment_cli=true" not in lines:
+            raise SystemExit(f"Fail-closed component case '{bad_label}' skipped Deployment.Cli.Tests: {lines} {result.stderr}")
+        deploy_cases += 1
+
+    # Restore changed_merge for the manifest simulation below.
+    git("checkout", "-q", "--detach", changed_merge)
+    env.update(GITHUB_SHA=changed_merge)
+
+    # Execute the actual manifest step for fast paths, path-filtered PRs, full PRs, merge_group, and missing-output fallback.
     summary_step = step(job(short, "build-unit"), "Write evidence summary")
     summary_script = textwrap.dedent(summary_step.split("        run: |\n", 1)[1])
     (evidence / "unit").mkdir(exist_ok=True)
     (evidence / "timing").mkdir(exist_ok=True)
     summary = fixture / "step-summary.md"
-    for decision, outcome, group_id, expected in (("false", "success", "", True), ("", "failure", "", False),
-                                                   ("false", "success", "42", False)):
-        event, summary_base, summary_head = ("push", "", "") if group_id else ("pull_request", code_base, doc_head)
-        group_url = f"https://github.com/example/repo/actions/runs/{group_id}" if group_id else None
-        env.update(CLASSIFY_OUTCOME=outcome, RUN_FULL=decision, WORKLOAD_REASON="", MERGE_GROUP_RUN_ID=group_id,
+    for decision, outcome, group_id, event_override, run_deploy_cli, expected_fast, expected_deploy in (
+        ("false", "success", "", None, "false", True, False),
+        ("", "failure", "", None, "", False, True),
+        ("false", "success", "42", None, "false", False, False),
+        ("false", "success", "42", "merge_group", "false", False, True),
+        ("true", "success", "", "pull_request", "false", False, False),
+        ("true", "success", "", "pull_request", "true", False, True),
+        ("true", "success", "", "merge_group", "false", False, True),
+    ):
+        event = event_override or ("push" if group_id else "pull_request")
+        summary_base, summary_head = ("", "") if group_id or event != "pull_request" else (code_base, doc_head)
+        group_url = f"https://github.com/example/repo/actions/runs/{group_id}" if (group_id and event == "push") else None
+        env.update(CLASSIFY_OUTCOME=outcome, RUN_FULL=decision, WORKLOAD_REASON="",
+                   RUN_DEPLOYMENT_CLI=run_deploy_cli, DEPLOYMENT_CLI_REASON="",
+                   MERGE_GROUP_RUN_ID=group_id,
                    CLASSIFIED_BASE=summary_base, GITHUB_EVENT_NAME=event, PR_HEAD_SHA=summary_head,
                    GITHUB_SERVER_URL="https://github.com", GITHUB_REPOSITORY="example/repo", GITHUB_STEP_SUMMARY=str(summary),
                    RESTORE_OUTCOME="skipped", BUILD_OUTCOME="skipped", UNIT_OUTCOME="skipped",
@@ -1489,14 +2174,15 @@ exit "$FAKE_EXIT"
         if result.returncode:
             raise SystemExit(f"Manifest simulation failed: {result.stderr}")
         manifest = json.loads((evidence / "manifest.json").read_text())
-        if (manifest["docsFastPath"] is not expected or not manifest["docsFastPathReason"] or
+        if (manifest["docsFastPath"] is not expected_fast or not manifest["docsFastPathReason"] or
+                manifest["deploymentCliTestsIncluded"] is not expected_deploy or not manifest["deploymentCliTestsReason"] or
                 manifest["baseSha"] != summary_base or manifest["prHeadSha"] != summary_head or
                 manifest["mergeSha"] != changed_merge or manifest["schema"] != "hvo-development-v1-ci-v6" or
                 manifest["mergeGroupRunUrl"] != group_url or
-                (decision == "false" and (manifest["sdkVersion"] is not None or manifest["unitTrxCount"] != 0)) or
+                (decision == "false" and event != "merge_group" and (manifest["sdkVersion"] is not None or manifest["unitTrxCount"] != 0)) or
                 (group_url and (group_url not in summary.read_text() or changed_merge not in summary.read_text()))):
             raise SystemExit(f"Invalid manifest evidence: {manifest}")
-    print("Fast workflow shell: 29 decision, binding and trusted-base cases; 3 manifest cases passed.")
+    print(f"Fast workflow shell: 29 decision, binding and trusted-base cases; {deploy_cases} Deployment.Cli path-filter cases; 7 manifest cases passed.")
 
 # Exercise the real final promotion step with an offline gh substitute. Creating
 # a PR must be draft; refreshing one must preserve its state; API errors must fail.

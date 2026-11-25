@@ -8,6 +8,7 @@ using HVO.SkyMonitor.CameraAgent.Tests.Automation;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Orbital;
 
@@ -231,6 +232,90 @@ public sealed class OrbitalElementsCompositionTests : OrbitalStoreTestBase
         {
             release.TrySetResult();
             await worker.WhenIdleAsync().WaitAsync(AutomationShutdownAssertions.Deadline).ConfigureAwait(false);
+            await provider.DisposeAsync().ConfigureAwait(false);
+        }).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA1849:Call async methods when in an async method",
+        Justification = "Synchronous provider disposal is one of the two cleanup paths under test.")]
+    public async Task RegisteredAutomationProviderDisposalWithoutStopDrainsAfterRunnerCancellationFault(bool disposeAsync)
+    {
+        var services = Services(CreateRoot());
+        KeepOnlyAutomationHostedServices(services);
+        var clock = new SignalingTimeProvider(OrbitalElementsStoreTestData.Start);
+        var registry = new LocalAutomationOffSweepTests.Registry();
+        var logger = new OrbitalTestLogger<LocalAutomationRunnerService>();
+        services.AddSingleton<TimeProvider>(clock);
+        services.AddSingleton<ILocalAutomationTaskRegistry>(registry);
+        services.AddSingleton<ILogger<LocalAutomationRunnerService>>(logger);
+        services.AddSingleton<DisposalProbe>();
+        var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        var probe = provider.GetRequiredService<DisposalProbe>();
+        var automation = provider.GetServices<IHostedService>().ToArray();
+        var worker = provider.GetRequiredService<LocalAutomationOffSweepWorker>();
+        var registered = Signal();
+        var cancellationObserved = Signal();
+        var release = Signal();
+        var failure = new InvalidOperationException("test runner cancellation callback");
+        var adapter = AutomationShutdownAssertions.ControlledAdapter(registered, cancellationObserved, release, failure);
+        registry.Execute = async _ =>
+        {
+            await adapter(registry.Token).ConfigureAwait(false);
+            return new(LocalAutomationRunOutcome.Succeeded, "done");
+        };
+        Task? disposal = null;
+        await AutomationShutdownAssertions.PreserveFirstFailureAsync(async () =>
+        {
+            Assert.AreSame(worker, automation[0]);
+            Assert.IsInstanceOfType<LocalAutomationRunnerService>(automation[1]);
+            foreach (var service in automation)
+            {
+                await service.StartAsync(default).ConfigureAwait(false);
+            }
+            var store = provider.GetRequiredService<ILocalAutomationStore>();
+            var saved = await store.SaveAsync(new("a-orbital", "disposal test", true, LocalAutomationTaskKind.OrbitalElementsRefresh,
+                "synthetic", LocalAutomationTriggerKind.Periodic, 7200, 0, "test", "owner", "test"), default).ConfigureAwait(false);
+            Assert.AreEqual(LocalAutomationCommandStatus.Applied, saved.Status, saved.ReasonCode);
+            clock.Advance(TimeSpan.FromHours(2));
+            clock.Advance(await clock.WaitForTimerAsync().ConfigureAwait(false));
+            await registered.Task.WaitAsync(AutomationShutdownAssertions.Deadline).ConfigureAwait(false);
+
+            disposal = Task.Run(async () =>
+            {
+                if (disposeAsync)
+                {
+                    await provider.DisposeAsync().ConfigureAwait(false);
+                }
+                else
+                {
+                    provider.Dispose();
+                }
+            });
+            await cancellationObserved.Task.WaitAsync(AutomationShutdownAssertions.Deadline).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<TimeoutException>(() => disposal.WaitAsync(TimeSpan.FromMilliseconds(250)))
+                .ConfigureAwait(false);
+            Assert.IsFalse(worker.WhenIdleAsync().IsCompleted, "The adapter still owns its reservation.");
+            Assert.IsFalse(probe.Disposed, "The provider must reach the sibling only after the adapter drains.");
+            release.SetResult();
+            await disposal.WaitAsync(AutomationShutdownAssertions.Deadline).ConfigureAwait(false);
+
+            Assert.IsTrue(worker.WhenIdleAsync().IsCompletedSuccessfully);
+            Assert.IsTrue(probe.Disposed, "A callback fault must not interrupt provider disposal.");
+            var diagnostic = Assert.ContainsSingle(logger.Entries.Where(static entry => entry.Exception is AggregateException));
+            Assert.AreEqual(LogLevel.Warning, diagnostic.Level);
+            Assert.AreSame(failure, ((AggregateException)diagnostic.Exception!).Flatten().InnerExceptions.Single());
+        }, async () =>
+        {
+            release.TrySetResult();
+            await worker.WhenIdleAsync().WaitAsync(AutomationShutdownAssertions.Deadline).ConfigureAwait(false);
+            // Await a running disposal without allowing its already-observed exception to replace the assertion.
+            if (disposal is not null)
+            {
+                await disposal.WaitAsync(AutomationShutdownAssertions.Deadline).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+            }
             await provider.DisposeAsync().ConfigureAwait(false);
         }).ConfigureAwait(false);
     }
