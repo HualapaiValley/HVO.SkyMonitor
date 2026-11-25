@@ -42,8 +42,16 @@ reports belong to full qualification. Preflight also runs
 `scripts/coverage:policy`: PRs cannot lower any aggregate/component floor, remove
 a file floor, widen tolerance, or add an arbitrary v1 local-only path.
 
-The Docker-disabled Unit selection runs the [active CameraAgent and shared test projects](#active-test-selection)
-and collects coverage once.
+The Docker-disabled Unit selection runs the [active CameraAgent and shared test projects](#active-test-selection).
+`CameraAgent.Tests` runs in two concurrent test hosts with private Release
+outputs because Coverlet instruments assemblies in place. One solution-filtered
+invocation applies the Unit filter to every other test project in the solution.
+The shard map groups class-level Area traits by measured class time (#2072).
+VSTest must discover a mapped Area for each CameraAgent case. The gate matches
+each shard's TRX against its planned case IDs and rejects omissions, overlap,
+and missing or malformed evidence. Existing platform and prerequisite skips
+remain visible in the TRX. Per-shard wall and CPU measurements are retained in
+the `timing/` directory.
 `scripts/coverage:development-v1 --settings OUTPUT` copies
 `tests/coverage.runsettings`, derives its assembly Include filter from existing
 canonical floor paths, and sets `SingleHit=true`. Floors measure whether each
@@ -52,8 +60,9 @@ more expensive. All other collector settings, including canonical test-assembly,
 TestSupport, migration, build-output and attribute exclusions remain intact.
 This avoids instrumenting host assemblies whose coverage is not measured by this
 profile. The generated settings are retained with the raw reports. The merge
-requires one GUID-directory report per active project in `tests/unit-test-projects.json`;
-it excludes TRX attachment copies and never searches outside the fresh run root.
+requires one GUID-directory report from each CameraAgent shard and one per other
+active project in `tests/unit-test-projects.json`. It excludes TRX attachment
+copies and never searches outside the fresh run root.
 Every input is parsed and checked before ReportGenerator runs: that tool can log
 a malformed input, omit it and still exit zero. Raw records must occupy the
 canonical `coverage/packages/package/classes/class` tree, with one class/method
@@ -111,10 +120,11 @@ reconstructed from IL; copied TRX attachment hashes bind identity only.
 
 A source, active floor, SDK, collector or settings change that invalidates the
 pinned inventory fails with a regeneration remedy. After reviewing a fresh,
-complete genuine Unit collection, explicitly regenerate and review the artifact:
+complete genuine unsharded Unit collection using the generated v1 settings,
+explicitly regenerate and review the artifact:
 
 ```bash
-./scripts/coverage:line-inventory "$evidence_root/unit" scripts/coverage/development-v1-lines.json
+./scripts/coverage:line-inventory "$unsharded_results" scripts/coverage/development-v1-lines.json
 git diff -- scripts/coverage/development-v1-lines.json
 ```
 
@@ -126,7 +136,8 @@ genuine collection provenance and preserve all thresholds.
 Keep generated settings and original reports with that evidence. Unsupported
 collector exclusions/options and active `tools/` floors fail explicitly until the
 inventory model supports them; ReleaseTool's catalog-dependent skip is unchanged.
-All new checks remain in Build and Unit's coverage stage, with no Preflight work.
+Preflight runs the offline shard contract. The full workload verifies live
+discovery, execution and coverage.
 
 An enforced file missing from
 the reports, present without executable line data, or declaring branches without
@@ -188,12 +199,9 @@ dotnet restore HVO.SkyMonitor.v9.slnx --disable-build-servers
 dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release --disable-build-servers -p:UseSharedCompilation=false -warnaserror
 ./scripts/coverage:development-v1 --settings "$evidence_root/coverage.runsettings"
 DOCKER_HOST=unix:///tmp/hvo-no-docker.sock \
-  dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release \
-    --filter 'TestCategory=Unit&TestCategory!=Performance' \
-    --settings "$evidence_root/coverage.runsettings" \
-    --collect:"XPlat Code Coverage" --results-directory "$evidence_root/unit" --logger trx
+  ./scripts/ci:development-v1-unit "$evidence_root"
 ./scripts/test:coverage-development-v1
-./scripts/coverage:development-v1 "$evidence_root/unit" "$evidence_root/coverage"
+./scripts/coverage:development-v1 --cameraagent-shards "$evidence_root/unit" "$evidence_root/coverage"
 BASH
 printf 'Retained coverage evidence: %s\n' "$evidence_root"
 )

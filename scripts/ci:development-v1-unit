@@ -1,0 +1,216 @@
+#!/usr/bin/env python3
+"""Run the Development v1 Unit inventory, with two isolated CameraAgent test hosts."""
+
+import collections
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import uuid
+import xml.etree.ElementTree as ET
+
+
+ROOT = Path(__file__).resolve().parent.parent
+CAMERA_AGENT = "HVO.SkyMonitor.CameraAgent.Tests"
+SHARDS = ("cameraagent-shard-1", "cameraagent-shard-2")
+UNIT_FILTER = "TestCategory=Unit&TestCategory!=Performance"
+DOCKER_DISABLED = "unix:///tmp/hvo-no-docker.sock"
+TRX = {"trx": "http://microsoft.com/schemas/VisualStudio/TeamTest/2010"}
+
+
+def case_id(value):
+    identifier = uuid.UUID(value)
+    if not identifier.int:
+        raise ValueError("empty test case ID")
+    return str(identifier)
+
+
+def partition(area_groups, discovered):
+    if not isinstance(area_groups, list) or len(area_groups) != len(SHARDS):
+        raise ValueError("exactly two CameraAgent Area groups are required")
+    owners = {}
+    for shard, areas in zip(SHARDS, area_groups):
+        if not isinstance(areas, list) or not areas:
+            raise ValueError(f"{shard} must declare at least one Area")
+        for area in areas:
+            if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]*(?:\.[A-Za-z][A-Za-z0-9]*)*", area) or area in owners:
+                raise ValueError(f"invalid or repeated CameraAgent Area {area!r}")
+            owners[area] = shard
+
+    planned = {shard: {} for shard in SHARDS}
+    seen_cases = set()
+    seen_areas = set()
+    for test in discovered:
+        identifier = case_id(test["Id"])
+        name = test["Name"]
+        if identifier in seen_cases or not name:
+            raise ValueError(f"invalid or repeated discovery case {identifier} ({name})")
+        seen_cases.add(identifier)
+        areas = test["Areas"]
+        if len(areas) != 1 or areas[0] not in owners:
+            raise ValueError(f"unmapped CameraAgent Area {areas!r} for {name}")
+        area = areas[0]
+        seen_areas.add(area)
+        categories = {category.casefold() for category in test["Categories"]}
+        if "unit" in categories and "performance" not in categories:
+            planned[owners[area]][identifier] = name
+
+    if set(owners) != seen_areas:
+        raise ValueError(f"CameraAgent shard map contains unused Areas {sorted(set(owners) - seen_areas)}")
+    if not all(planned.values()):
+        raise ValueError("each CameraAgent shard must select Unit cases")
+    return planned
+
+
+def read_results(path, planned, assembly):
+    run = ET.parse(path).getroot()
+    if run.tag != f"{{{TRX['trx']}}}TestRun":
+        raise ValueError(f"{path.name} is not a TRX test run")
+    definitions = {}
+    for test in run.findall("trx:TestDefinitions/trx:UnitTest", TRX):
+        identifier = case_id(test.attrib["id"])
+        method = test.find("trx:TestMethod", TRX)
+        if identifier in definitions or method is None or Path(method.attrib["codeBase"]) != assembly:
+            raise ValueError(f"invalid, repeated, or foreign test definition in {path.name}: {identifier}")
+        definitions[identifier] = case_id(test.find("trx:Execution", TRX).attrib["id"])
+
+    entries = run.findall("trx:TestEntries/trx:TestEntry", TRX)
+    entry_ids = {case_id(entry.attrib["testId"]): case_id(entry.attrib["executionId"]) for entry in entries}
+    if len(entries) != len(entry_ids) or entry_ids != definitions or len(set(definitions.values())) != len(definitions):
+        raise ValueError(f"test entries disagree with unique execution definitions in {path.name}")
+
+    by_id = {}
+    for result in run.findall("trx:Results/trx:UnitTestResult", TRX):
+        identifier = case_id(result.attrib["testId"])
+        outcome = result.attrib["outcome"]
+        if (identifier in by_id or definitions.get(identifier) != case_id(result.attrib["executionId"])
+                or outcome not in {"Passed", "NotExecuted"}):
+            raise ValueError(f"invalid or repeated execution in {path.name}: {identifier} ({outcome})")
+        by_id[identifier] = outcome
+
+    missing = planned.keys() - by_id.keys()
+    extra = by_id.keys() - planned.keys()
+    if missing or extra or definitions.keys() != by_id.keys():
+        raise ValueError(
+            f"{path.name}: {len(missing)} missing and {len(extra)} unexpected Unit cases; "
+            f"sample missing: {[planned[key] for key in sorted(missing)[:5]]}; "
+            f"sample unexpected IDs: {sorted(extra)[:5]}; "
+            f"definition/result mismatch: {len(definitions.keys() ^ by_id.keys())}"
+        )
+
+    counts = collections.Counter(by_id.values())
+    summary = run.find("trx:ResultSummary", TRX)
+    counters = summary.find("trx:Counters", TRX) if summary is not None else None
+    if (counters is None or summary.get("outcome") != "Completed" or int(counters.attrib["total"]) != len(by_id)
+            or int(counters.attrib["passed"]) != counts["Passed"]
+            or int(counters.attrib["executed"]) != counts["Passed"]):
+        raise ValueError(f"result summary counts disagree with individual results in {path.name}")
+    return by_id
+
+
+def verify(evidence, plan):
+    if plan.keys() != set(SHARDS) or any(not value["cases"] for value in plan.values()):
+        raise ValueError("CameraAgent execution plan must contain two nonempty shard inventories")
+    reported = {}
+    for shard in SHARDS:
+        item = plan[shard]
+        results = read_results(evidence / "unit" / f"{shard}.trx", item["cases"], Path(item["assembly"]))
+        overlap = reported.keys() & results.keys()
+        if overlap:
+            raise ValueError(f"{len(overlap)} CameraAgent cases appear in both shard TRXs")
+        reported.update(results)
+        counts = collections.Counter(results.values())
+        print(f"{shard}: {len(results)} accounted cases, {counts['Passed']} passed, "
+              f"{counts['NotExecuted']} runner-reported skips.", flush=True)
+    print(f"CameraAgent shards cover all {len(reported)} discovered Unit cases with zero duplicates or omissions.", flush=True)
+
+
+def other_test_projects(solution):
+    camera_project = f"tests/{CAMERA_AGENT}/{CAMERA_AGENT}.csproj"
+    projects = sorted(project.attrib["Path"] for project in ET.parse(solution).findall(".//Project")
+                      if project.attrib["Path"].startswith("tests/"))
+    if projects.count(camera_project) != 1 or len(set(projects)) != len(projects):
+        raise ValueError("solution must list CameraAgent.Tests and every other test project exactly once")
+    return [project for project in projects if project != camera_project]
+
+
+def run(evidence):
+    if os.environ.get("DOCKER_HOST") != DOCKER_DISABLED:
+        raise ValueError(f"Development v1 Unit requires DOCKER_HOST={DOCKER_DISABLED}")
+    area_groups = json.loads((ROOT / "scripts/ci/cameraagent-unit-shards.json").read_text())
+    discovery = subprocess.run(
+        ["dotnet", "run", "--project", "scripts/test-categories/HVO.SkyMonitor.TestCategoryAudit.csproj",
+         "--configuration", "Release", "--", "--emit-cameraagent-discovery"],
+        check=True, stdout=subprocess.PIPE, text=True,
+    )
+    partitions = partition(area_groups, json.loads(discovery.stdout))
+
+    solution = ROOT / "HVO.SkyMonitor.v9.slnx"
+    solution_filter = evidence / "other-unit.slnf"
+    solution_filter.write_text(json.dumps({"solution": {
+        "path": str(solution),
+        "projects": other_test_projects(solution),
+    }}))
+    settings = evidence / "coverage.runsettings"
+    results = evidence / "unit"
+    timing = evidence / "timing"
+    results.mkdir(exist_ok=True)
+    timing.mkdir(exist_ok=True)
+    if any(results.iterdir()):
+        raise ValueError(f"Unit results directory must be fresh: {results}")
+    release = ROOT / "tests" / CAMERA_AGENT / "bin/Release"
+    # Coverlet changes assemblies in place during collection. Each test host
+    # needs a private copy of the complete output, including native fixtures.
+    isolated = Path(tempfile.mkdtemp(prefix="dev-v1-shards.", dir=release))
+    plan = {}
+    selections = [("other-unit", [str(solution_filter)], UNIT_FILTER, "trx")]
+    for shard, areas in zip(SHARDS, area_groups):
+        target = isolated / shard
+        shutil.copytree(release / "net10.0", target)
+        assembly = target / f"{CAMERA_AGENT}.dll"
+        filter_expression = "|".join(f"Area={area}" for area in areas)
+        plan[shard] = {"assembly": str(assembly), "cases": partitions[shard]}
+        selection = [str(ROOT / "tests" / CAMERA_AGENT / f"{CAMERA_AGENT}.csproj"), f"-p:OutDir={target}/"]
+        selections.append((shard, selection, f"{UNIT_FILTER}&({filter_expression})", f"trx;LogFileName={shard}.trx"))
+    (evidence / "cameraagent-shard-plan.json").write_text(json.dumps(plan, sort_keys=True))
+
+    processes = []
+    try:
+        for name, target_args, selection, logger in selections:
+            command = [
+                "/usr/bin/time", "-v", "-o", str(timing / f"{name}.time"),
+                "dotnet", "test", *target_args, "--no-build", "--configuration", "Release",
+                "--filter", selection, "--settings", str(settings), "--collect:XPlat Code Coverage",
+                "--results-directory", str(results), "--logger", logger,
+            ]
+            processes.append((name, subprocess.Popen(command)))
+        failed = [name for name, process in processes if process.wait()]
+        if failed:
+            raise ValueError(f"Unit selection failed in {', '.join(failed)}")
+        verify(evidence, plan)
+    finally:
+        for _, process in processes:
+            if process.poll() is None:
+                process.terminate()
+                process.wait()
+
+
+def main(arguments):
+    if len(arguments) == 1:
+        run(Path(arguments[0]).resolve())
+    elif len(arguments) == 2 and arguments[0] == "--verify":
+        evidence = Path(arguments[1]).resolve()
+        verify(evidence, json.loads((evidence / "cameraagent-shard-plan.json").read_text()))
+    else:
+        raise ValueError("usage: scripts/ci:development-v1-unit [--verify] EVIDENCE_ROOT")
+
+
+if __name__ == "__main__":
+    try:
+        main(sys.argv[1:])
+    except (AttributeError, KeyError, OSError, TypeError, ValueError, ET.ParseError, subprocess.CalledProcessError) as error:
+        sys.exit(f"Development v1 Unit: {error}")

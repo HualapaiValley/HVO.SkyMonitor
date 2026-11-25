@@ -2,13 +2,19 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+validation_mode=--unit-results
+if [[ "${1:-}" == --cameraagent-shards ]]; then
+  validation_mode=--sharded-unit-results
+  shift
+fi
 if [[ "$#" -ne 2 ]]; then
   echo 'Usage: scripts/coverage:development-v1 --settings <output.runsettings>' >&2
-  echo '       scripts/coverage:development-v1 <fresh-unit-results-directory> <coverage-output-directory>' >&2
+  echo '       scripts/coverage:development-v1 [--cameraagent-shards] <fresh-unit-results-directory> <coverage-output-directory>' >&2
   exit 2
 fi
 
 if [[ "$1" == --settings ]]; then
+  [[ "$validation_mode" == --unit-results ]] || exit 2
   # Keep the canonical exclusions, but instrument only assemblies owning an
   # active canonical file floor. Host instrumentation cannot affect those
   # files' measurements and would add work to thousands of Unit cases.
@@ -66,8 +72,16 @@ reports=("$results_dir"/*/coverage.cobertura.xml)
 expected_reports="$(jq -se '
   select(length == 1) | .[0]
   | length' "$repo_root/tests/unit-test-projects.json")"
+if [[ "$validation_mode" == --sharded-unit-results ]]; then
+  if [[ "${results_dir##*/}" != unit ]]; then
+    echo 'CameraAgent shard verification requires the fresh evidence unit directory.' >&2
+    exit 1
+  fi
+  "$repo_root/scripts/ci:development-v1-unit" --verify "$(dirname "$results_dir")"
+  expected_reports="$((expected_reports + 1))"
+fi
 if (( expected_reports == 0 || ${#reports[@]} != expected_reports )); then
-  printf 'Missing or extra Unit coverage data: expected %s reports (one per selected Unit-bearing project), found %s in %s. Rerun the Development v1 Unit selection with the generated settings and XPlat collection in a fresh directory.\n' \
+  printf 'Missing or extra Unit coverage data: expected %s reports for the selected Unit inputs, found %s in %s. Rerun the Development v1 Unit selection with the generated settings and XPlat collection in a fresh directory.\n' \
     "$expected_reports" "${#reports[@]}" "$results_dir" >&2
   exit 1
 fi
@@ -78,7 +92,7 @@ printf 'Merging %s fresh Unit reports for canonical per-file enforcement.\n' "${
 # ReportGenerator can log an XML error, omit that input and still exit zero.
 # Validate every report and declared branch counter before the merge loses it.
 dotnet run --project "$repo_root/scripts/coverage/HVO.SkyMonitor.CoverageGate.csproj" --disable-build-servers -p:UseSharedCompilation=false -- \
-  --development-v1 --validate-reports --unit-results "$results_dir" "$repo_root/scripts/coverage/baseline.json" "${reports[@]}"
+  --development-v1 --validate-reports "$validation_mode" "$results_dir" "$repo_root/scripts/coverage/baseline.json" "${reports[@]}"
 if ! dotnet reportgenerator \
   "-reports:$(IFS=';'; echo "${reports[*]}")" \
   "-targetdir:$target_dir" \

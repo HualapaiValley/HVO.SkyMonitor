@@ -6,6 +6,7 @@ on:
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   push:
     branches: [development/v1]
+  workflow_dispatch:
   # The merge queue tests each queued PR on a temporary merge_group commit built
   # on the latest base; both required checks must report there too.
   merge_group:
@@ -101,6 +102,7 @@ jobs:
           ./scripts/test:coordination-guard
           ./scripts/test:pr-review-tools
           ./scripts/test:development-v1-ci
+          ./scripts/test:development-v1-unit
 
       - name: Check coverage policy
         env:
@@ -160,7 +162,7 @@ jobs:
   build-unit:
     name: Development v1 / Build and Unit
     needs: preflight
-    if: github.event_name == 'push' || github.event_name == 'merge_group' || github.event.pull_request.draft == false
+    if: github.event_name == 'push' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
     runs-on: ${{ fromJSON(needs.preflight.outputs.merge_group_run_id != '' && '["ubuntu-24.04"]' || '["self-hosted", "linux", "x64", "hvo-skymonitor-build"]') }}
     timeout-minutes: 22
     env:
@@ -317,14 +319,7 @@ jobs:
           ((remaining > 0)) || exit 124
           /usr/bin/time -v -o "$DEV_V1_EVIDENCE_ROOT/timing/unit.time" \
             timeout --signal=TERM --kill-after=30s "${remaining}s" \
-            dotnet test HVO.SkyMonitor.v9.slnx \
-              --no-build \
-              --configuration Release \
-              --filter "TestCategory=Unit&TestCategory!=Performance" \
-              --settings "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings" \
-              --collect:"XPlat Code Coverage" \
-              --results-directory "$DEV_V1_EVIDENCE_ROOT/unit" \
-              --logger trx
+            ./scripts/ci:development-v1-unit "$DEV_V1_EVIDENCE_ROOT"
 
       - name: Enforce canonical per-file coverage floors
         if: ${{ steps.workload.outcome != 'success' || steps.workload.outputs.run_full != 'false' }}
@@ -339,7 +334,7 @@ jobs:
             bash -euo pipefail -c '
               dotnet tool restore
               ./scripts/test:coverage-development-v1
-              ./scripts/coverage:development-v1 "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage"
+              ./scripts/coverage:development-v1 --cameraagent-shards "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage"
             '
 
       # Those screens drawn as SVG, as docs/images/terminal has them, and kept with the evidence below (#1317).

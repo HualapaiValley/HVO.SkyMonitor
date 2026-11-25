@@ -198,18 +198,7 @@ run: |
   ./scripts/release:changelog "${args[@]}"
   ./scripts/test:changelog
 """
-unit_filter = "TestCategory=Unit&TestCategory!=Performance"
-unit_command = " \\\n".join((
-    "            dotnet test HVO.SkyMonitor.v9.slnx",
-    "              --no-build",
-    "              --configuration Release",
-    f'              --filter "{unit_filter}"',
-    '              --settings "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings"',
-    '              --collect:"XPlat Code Coverage"',
-    '              --results-directory "$DEV_V1_EVIDENCE_ROOT/unit"',
-    "              --logger trx",
-))
-unit_selection_error = "exact solution Unit command with the positive Unit category and Performance exclusion"
+unit_command = '            ./scripts/ci:development-v1-unit "$DEV_V1_EVIDENCE_ROOT"'
 queue_permissions = "permissions:\n  contents: read\n  pull-requests: read\n  statuses: read\n"
 trusted_checkout = """        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -244,10 +233,12 @@ def violations(short, full, queue=None, extra=None):
     require("needs: preflight" in build, "preflight dependency")
     require(
         "if: github.event_name == 'push' || github.event_name == 'merge_group' || "
+        "github.event_name == 'workflow_dispatch' || "
         "github.event.pull_request.draft == false" in build,
         "draft exclusion",
     )
     require(short.count("branches: [development/v1]") == 3, "v1 PR, push and merge queue triggers")
+    require("\n  workflow_dispatch:\n" in short, "manual dispatch runs full v1 validation")
     require(merge_group_trigger in short, "both required checks report on merge queue commits")
     # The queue commit never carries the operator's hvo/reviewed-head status, so a
     # merge_group-only job reports that context after re-checking the queued PR head.
@@ -382,7 +373,7 @@ def violations(short, full, queue=None, extra=None):
     require("continue-on-error:" not in short, "required checks must fail closed")
     for command in (
         "ci:shell-syntax", "test:ci-classification", "test:coordination-guard",
-        "test:pr-review-tools", "test:development-v1-ci",
+        "test:pr-review-tools", "test:development-v1-ci", "test:development-v1-unit",
     ):
         require(f"          ./scripts/{command}\n" in preflight, f"preflight {command}")
     for profile, section, title, executable in (
@@ -447,14 +438,15 @@ def violations(short, full, queue=None, extra=None):
     require("          ./scripts/test:release-scripts\n" in quality, "full Quality retains test:release-scripts")
     require(
         re.findall(r"^\s+dotnet (restore|build|test)\b", build, re.M)
-        == ["restore", "build", "test"],
-        "one restore/build/Unit execution",
+        == ["restore", "build"],
+        "one solution restore/build; Unit executes through the test plan",
     )
     require("dotnet build HVO.SkyMonitor.v9.slnx" in build, "complete solution build")
     require("--configuration Release" in build and "-warnaserror" in build, "Release warnings")
     require("DOCKER_HOST: unix:///tmp/hvo-no-docker.sock" in build, "Docker-disabled Unit")
     unit = step(build, "Run Docker-disabled Unit selection")
-    require(unit.rstrip().endswith("\n" + unit_command), unit_selection_error)
+    require(unit.rstrip().endswith("\n" + unit_command) and unit.splitlines().count(unit_command) == 1,
+            "exact Development v1 Unit driver invocation")
     coverage = step(build, "Enforce canonical per-file coverage floors")
     policy = step(preflight, "Check coverage policy")
     require('        run: ./scripts/coverage:policy "$EVENT_NAME" "$BASE_REF"' in policy and
@@ -467,7 +459,7 @@ def violations(short, full, queue=None, extra=None):
     for command in (
         '              dotnet tool restore',
         '              ./scripts/test:coverage-development-v1',
-        '              ./scripts/coverage:development-v1 "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage"',
+        '              ./scripts/coverage:development-v1 --cameraagent-shards "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage"',
     ):
         require(coverage.splitlines().count(command) == 1, f"per-file gate wiring: {command}")
     require('        id: coverage\n' in coverage and 'bash -euo pipefail -c' in coverage,
@@ -520,7 +512,9 @@ def violations(short, full, queue=None, extra=None):
     require(re.search(r"started_at_epoch \+ 1080\)\)", build) is not None and
             re.search(r"^    timeout-minutes: 22$", build, re.M) is not None, "bounded workload and job")
     require("workloadBudgetSeconds:1080,hardTimeoutSeconds:1320,unitTrxCount" in build, "summary matches enforced budgets")
-    require("--logger trx" in build and "if-no-files-found: error" in build, "retained evidence")
+    require("find \"$DEV_V1_EVIDENCE_ROOT/unit\" -name '*.trx'" in build and
+            "path: ${{ runner.temp }}/development-v1/" in build and
+            "if-no-files-found: error" in build, "retained evidence")
     require(build.count("if: always()") == 2, "failure evidence summary and upload")
     require("hvo-development-v1-ci-v6" in build, "versioned short-profile evidence")
     for heavy in ("./scripts/ci:shellcheck", "./scripts/test:ci-shellcheck",
@@ -649,13 +643,14 @@ mutations = (
     ("base-image check gated", short.replace(
         "- name: Check Dockerfile base images", "- name: Check Dockerfile base images\n        if: false"), full),
     ("base-image failure masked", short.replace("run: ./scripts/ci:base-images", "run: ./scripts/ci:base-images || true"), full),
-    ("missing Unit filter", short.replace(f'--filter "{unit_filter}"', ""), full),
-    ("missing Performance exclusion", short.replace("&TestCategory!=Performance", ""), full),
-    ("coverage not collected", short.replace('--collect:"XPlat Code Coverage"', ""), full),
+    ("Unit driver removed", short.replace(unit_command, "            true"), full),
+    ("Unit failures masked", short.replace(unit_command, unit_command + " || true"), full),
+    ("Unit shard contracts removed", short.replace("./scripts/test:development-v1-unit", "true"), full),
     ("coverage policy removed", short.replace('run: ./scripts/coverage:policy ', 'run: true '), full),
-    ("coverage settings lost", short.replace('--settings "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings"', ""), full),
-    ("coverage gate removed", short.replace('./scripts/coverage:development-v1 "$DEV_V1_EVIDENCE_ROOT/unit"', 'true "$DEV_V1_EVIDENCE_ROOT/unit"'), full),
-    ("coverage failure masked", short.replace('./scripts/coverage:development-v1 "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage"', './scripts/coverage:development-v1 "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage" || true'), full),
+    ("coverage settings lost", short.replace('--settings "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings"', "--settings missing.runsettings"), full),
+    ("coverage gate removed", short.replace('./scripts/coverage:development-v1 --cameraagent-shards "$DEV_V1_EVIDENCE_ROOT/unit"', 'true "$DEV_V1_EVIDENCE_ROOT/unit"'), full),
+    ("one-part CameraAgent coverage allowed", short.replace(" --cameraagent-shards ", " "), full),
+    ("coverage failure masked", short.replace('./scripts/coverage:development-v1 --cameraagent-shards "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage"', './scripts/coverage:development-v1 --cameraagent-shards "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage" || true'), full),
     ("coverage step conditional", short.replace(workload_condition, "if: false"), full),
     ("direct push eligible for reuse", short.replace(" && github.actor == 'github-merge-queue[bot]'", ""), full),
     ("queue run eligible for reuse", short.replace(queue_push_condition, "if: github.event_name == 'merge_group'"), full),
@@ -663,12 +658,13 @@ mutations = (
     ("coverage errors tolerated", short.replace('        id: coverage', '        continue-on-error: true\n        id: coverage'), full),
     ("coverage regression tests lost", short.replace('./scripts/test:coverage-development-v1', 'true'), full),
     ("coverage timing lost", short.replace('stages:[$restore,$build,$unit,$coverage]', 'stages:[$restore,$build,$unit]'), full),
-    ("integration in fast run", short.replace("TestCategory=Unit", "TestCategory=Integration"), full),
     ("Docker enabled", short.replace("DOCKER_HOST: unix:///tmp/hvo-no-docker.sock", ""), full),
     ("warnings tolerated", short.replace("-warnaserror", ""), full),
     ("draft build", short.replace(" || github.event.pull_request.draft == false", ""), full),
     ("merge queue trigger removed", short.replace(merge_group_trigger, ""), full),
     ("Build and Unit skipped in the queue", short.replace(" || github.event_name == 'merge_group'", ""), full),
+    ("manual dispatch removed", short.replace("  workflow_dispatch:\n", ""), full),
+    ("Build and Unit skipped on manual dispatch", short.replace(" || github.event_name == 'workflow_dispatch'", ""), full),
     ("queue gate on pull_request", short, full, queue_gate.replace(
         "on:\n  merge_group:", "on:\n  pull_request:\n    branches: [development/v1]\n  merge_group:")),
     ("queue gate on push", short, full, queue_gate.replace(
@@ -1043,11 +1039,6 @@ with tempfile.TemporaryDirectory(prefix="hvo-changelog-workflow-") as directory:
             raise SystemExit(f"Preflight changelog case {label} did not fail closed: {observed} {result.stderr}")
     print("Preflight changelog merge-parent binding: 5 behavioral cases passed.")
 
-for replacement in ("TestCategory=Unit", "TestCategory=Unit|TestCategory!=Performance", "TestCategory=Integration", "TestCategory!=Integration", "TestCategory=Unit&FullyQualifiedName~Narrow"):
-    candidate = short.replace(f'--filter "{unit_filter}"', f'--filter "{replacement}"')
-    if candidate == short or unit_selection_error not in violations(candidate, full):
-        raise SystemExit(f"Unit filter mutation was not rejected: {replacement}")
-    print(f"Rejected Unit filter mutation: {replacement}")
 # The documented reproduction check must compare the inventory without rewriting it.
 runbook = (root / "docs/runbooks/ci-pipeline.md").read_text()
 reproduce = runbook.split("### Reproduce the documentation CI inventory", 1)[1].split("```bash\n", 1)[1].split("\n```", 1)[0]
