@@ -1,8 +1,8 @@
 using System;
-using System;
 using System.Diagnostics.CodeAnalysis;
 using System.Threading;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Imaging;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Frames;
 
@@ -23,7 +23,8 @@ public sealed record LatestFrameSnapshot(
     ReadOnlyMemory<byte> PixelData,
     FrameMetadata? Metadata = null,
     string? RecipeVersion = null,
-    int? SourceArtifactCount = null);
+    int? SourceArtifactCount = null,
+    BayerPattern BayerPattern = BayerPattern.Rggb);
 
 public sealed class LatestFrameAccessor : ILatestFrameAccessor
 {
@@ -65,6 +66,9 @@ public sealed class LatestFrameAccessor : ILatestFrameAccessor
     {
         ArgumentNullException.ThrowIfNull(frame);
         var copy = frame.PixelData.ToArray();
+        var bayerPattern = frame.PixelFormat == CameraPixelFormat.BayerRggb16
+            ? BayerRggb16Demosaicer.ResolvePattern(frame.Layout)
+            : BayerPattern.Rggb;
         var snapshot = new LatestFrameSnapshot(
             frame.TimestampUtc,
             frame.Width,
@@ -73,7 +77,8 @@ public sealed class LatestFrameAccessor : ILatestFrameAccessor
             copy,
             frame.Metadata,
             recipeVersion,
-            sourceArtifactCount);
+            sourceArtifactCount,
+            bayerPattern);
         switch (role)
         {
             case FrameArtifactRole.Raw:

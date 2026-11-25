@@ -246,35 +246,56 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         Assert.AreEqual(5, stack3.Base.Definition.Contributors.Count);
         Assert.AreEqual(4, stack4.Base.Definition.Contributors.Count);
 
-        // Publish a reference-marker layer on stack #3 and stack #4 + a moving trail on exposure #5 so
-        // BOTH overlapping stacks #3 and #4 carry base-scoped reference markers and moving trail SVG coordinates!
-        var refStar3 = new PixelPoint(QualStars[0].X, QualStars[0].Y);
-        var refStar4 = new PixelPoint(QualStars[0].X - 1.25, QualStars[0].Y + 0.75);
-        await PublishQualReferenceMarkerAsync(
-            persistence, layerProducer, admitted[2].Key, admitted[2].Descriptor, stack3.Base.BaseId, layout, refStar3, token)
-            .ConfigureAwait(false);
-        await PublishQualReferenceMarkerAsync(
-            persistence, layerProducer, admitted[3].Key, admitted[3].Descriptor, stack4.Base.BaseId, layout, refStar4, token)
-            .ConfigureAwait(false);
-        var trailStart5 = new PixelPoint(40.0, 56.0);
-        var trailEnd5 = new PixelPoint(72.0, 74.0);
-        await PublishQualTrailAsync(
-            persistence, layerProducer, admitted[4].Key, admitted[4].Descriptor, layout,
-            trailStart5, trailEnd5, token).ConfigureAwait(false);
-
-        if (cfaOriginX != 0 || cfaOriginY != 0)
+        // Compute an independent first-principles pixel-coordinate oracle for an off-axis sky target
+        // exercising ROI origin (cfaOriginX, cfaOriginY), RollAdjustmentDegrees=15°, and HorizontalFlip=true
+        // on the odd-origin mode, verifying the delivered RigProjectionContextFactory agrees to < 0.05 px
+        // and differs by > 10 px from unflipped/unrolled geometry.
+        var nonDefaultOrientation = cfaOriginX != 0 || cfaOriginY != 0;
+        var deliveredProjection = RigProjectionContextFactory.CreateDeliveredView(activeConfig.Rig!, layout);
+        Assert.IsNotNull(deliveredProjection);
+        var targetSky = nonDefaultOrientation
+            ? new AltAzPoint(85.4, 184.0)
+            : new AltAzPoint(89.5, 45.0);
+        var projectedTarget = ProjectorFactory.Create(deliveredProjection.Value).Project(targetSky);
+        Assert.IsNotNull(projectedTarget);
+        var oracleTarget = ComputeIndependentPerspectivePixel(activeConfig.Rig!, layout, targetSky);
+        Assert.AreEqual(oracleTarget.X, projectedTarget.Value.X, 0.05, $"{modeName}: delivered X vs independent trig oracle");
+        Assert.AreEqual(oracleTarget.Y, projectedTarget.Value.Y, 0.05, $"{modeName}: delivered Y vs independent trig oracle");
+        if (nonDefaultOrientation)
         {
             Assert.AreEqual(15.0, activeConfig.Rig!.Orientation!.RollAdjustmentDegrees, 1e-6);
             Assert.IsTrue(activeConfig.Rig.Optics!.HorizontalFlip);
             Assert.AreEqual(15.0, stack3.Base.Definition.Reference.Input.Geometry.Orientation.RollAdjustmentDegrees, 1e-6);
+
+            var unflippedRig = activeConfig.Rig with { Optics = activeConfig.Rig.Optics with { HorizontalFlip = false } };
+            var unrolledRig = activeConfig.Rig with { Orientation = activeConfig.Rig.Orientation with { RollAdjustmentDegrees = 0.0 } };
+            var unflippedPixel = ComputeIndependentPerspectivePixel(unflippedRig, layout, targetSky);
+            var unrolledPixel = ComputeIndependentPerspectivePixel(unrolledRig, layout, targetSky);
+            Assert.IsGreaterThan(10.0, Distance(oracleTarget, unflippedPixel),
+                $"HorizontalFlip must shift rendered sky marker by > 10px: flipped={oracleTarget} unflipped={unflippedPixel}.");
+            Assert.IsGreaterThan(5.0, Distance(oracleTarget, unrolledPixel),
+                $"15-degree roll must shift rendered sky marker by > 5px: rolled={oracleTarget} unrolled={unrolledPixel}.");
         }
+
+        // Publish the sky-projected reference marker on stack #3 and stack #4 BEFORE opening Current Sky,
+        // and hold back the delayed moving trail on exposure #5 until AFTER stack #4 is live!
+        var refMarker3 = oracleTarget;
+        var refMarker4 = new PixelPoint(oracleTarget.X - 1.25, oracleTarget.Y + 0.75);
+        await PublishQualReferenceMarkerAsync(
+            persistence, layerProducer, admitted[2].Key, admitted[2].Descriptor, stack3.Base.BaseId, layout, refMarker3, token)
+            .ConfigureAwait(false);
+        await PublishQualReferenceMarkerAsync(
+            persistence, layerProducer, admitted[3].Key, admitted[3].Descriptor, stack4.Base.BaseId, layout, refMarker4, token)
+            .ConfigureAwait(false);
 
         stack3 = (await views.ReadArchiveAsync(stream, admitted[2].Key.CaptureId, token).ConfigureAwait(false))
             .Single(item => item.Base.BaseId == stack3.Base.BaseId);
         stack4 = (await views.ReadArchiveAsync(stream, admitted[3].Key.CaptureId, token).ConfigureAwait(false))
             .Single(item => item.Base.BaseId == stack4.Base.BaseId);
+        var stack3InitialRevId = stack3.LatestRevisionId;
+        var stack4InitialRevId = stack4.LatestRevisionId;
 
-        // Select Single #3 live first, then advance to Stack #3, then Partial Stack #4.
+        // Select Single #3 live first, then advance to Stack #3 (pre-trail), then Partial Stack #4.
         Assert.IsNotNull(await views.SelectLiveAsync(stream, single3.Base.BaseId, token).ConfigureAwait(false));
 
         await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
@@ -291,7 +312,7 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         page.SetDefaultNavigationTimeout(DefaultTimeoutMilliseconds);
         await LoginAsync(page, CameraAgentKestrelFixture.OwnerEmail, CameraAgentKestrelFixture.OwnerPassword).ConfigureAwait(false);
 
-        // 1. Current Sky: Single #3 (dimensions + JPEG decode + Chromium canvas pixel colors + reference markers)
+        // 1. Current Sky: Single #3 (dimensions + JPEG decode + Chromium canvas pixel colors)
         await page.GotoAsync("/").ConfigureAwait(false);
         await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
         await page.Locator($".sky-layer-workspace[data-centered-base='{single3.Base.BaseId}']").WaitForAsync().ConfigureAwait(false);
@@ -299,21 +320,35 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         await VerifyRenderedImageAndColorsAsync(page, context, bayer, single3.Base.Definition.Preview.PayloadSha256,
             $"{modeName}-current-sky-single3", offsetX: 0, offsetY: 0, token).ConfigureAwait(false);
 
-        // 2. Current Sky: 5-frame Full Stack #3 (colors + SVG trail coordinates matching 5->3 displacement (+2.5, -1.5))
+        // 2. Current Sky: 5-frame Full Stack #3 (pre-trail revision: colors + flipped/rolled reference marker, no trail yet)
         clock.UtcNow = clock.UtcNow.AddSeconds(20);
         Assert.IsNotNull(await views.SelectLiveAsync(stream, stack3.Base.BaseId, token).ConfigureAwait(false));
         await page.Locator($".sky-layer-workspace[data-centered-base='{stack3.Base.BaseId}']").WaitForAsync().ConfigureAwait(false);
         await page.Locator(".sky-layer-canvas--verified").WaitForAsync().ConfigureAwait(false);
         Assert.AreEqual("5 frames", await page.Locator("[data-centered-contributors]").InnerTextAsync().ConfigureAwait(false));
         await VerifyRenderedImageAndColorsAsync(page, context, bayer, stack3.Base.Definition.Preview.PayloadSha256,
-            $"{modeName}-current-sky-stack3", offsetX: 0, offsetY: 0, token).ConfigureAwait(false);
+            $"{modeName}-current-sky-stack3-initial", offsetX: 0, offsetY: 0, token).ConfigureAwait(false);
         var liveRefMarker3 = await ReadBrowserReferenceMarkerAsync(page).ConfigureAwait(false);
-        AssertQualPoint(liveRefMarker3, refStar3, $"{modeName}-current-sky-stack3-ref-marker");
-        var liveTrail3 = await ReadBrowserTrailLineAsync(page).ConfigureAwait(false);
-        AssertQualTrail(liveTrail3, new(trailStart5.X + 2.5, trailStart5.Y - 1.5), new(trailEnd5.X + 2.5, trailEnd5.Y - 1.5),
-            $"{modeName}-current-sky-stack3-trail");
+        AssertQualPoint(liveRefMarker3, refMarker3, $"{modeName}-current-sky-stack3-ref-marker");
+        Assert.AreEqual(0, await page.Locator($".sky-layer-overlay svg g[data-layer-kind='{TransientTrailPresentation.LayerKind}'] line").CountAsync().ConfigureAwait(false),
+            "Initial Stack #3 revision must not carry the delayed exposure #5 trail before it is published.");
 
-        // 3. Current Sky: 4-frame Partial Stack #4 (missing slot +2; colors + distinct SVG trail matching 5->4 (+1.25, -0.75))
+        // Verify Operations (/operations/pipeline -> Running pipeline) reports the initial live-issued Stack #3 revision!
+        await page.GotoAsync("/operations/pipeline").ConfigureAwait(false);
+        await page.GetByRole(AriaRole.Link, new() { Name = "Running pipeline", Exact = true }).ClickAsync().ConfigureAwait(false);
+        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
+        var initialOpsRegion = page.GetByRole(AriaRole.Region, new() { Name = "Live display publication" });
+        await Assertions.Expect(initialOpsRegion).ToBeVisibleAsync().ConfigureAwait(false);
+        var initialOpsText = await initialOpsRegion.InnerTextAsync().ConfigureAwait(false);
+        StringAssert.Contains(initialOpsText, "Capture #3", StringComparison.Ordinal);
+        StringAssert.Contains(initialOpsText, "5/5 window slots contributed", StringComparison.Ordinal);
+        var stack3InitialApiHref = CenteredViewLinks.Revision(admitted[2].Key.CaptureId, stack3.Base.BaseId, stack3InitialRevId);
+        await Assertions.Expect(initialOpsRegion.GetByRole(AriaRole.Link, new() { Name = "Open exact stack revision" }))
+            .ToHaveAttributeAsync("href", stack3InitialApiHref).ConfigureAwait(false);
+
+        // 3. Current Sky: advance live to 4-frame Partial Stack #4 (missing slot +2), THEN publish delayed trail on exposure #5!
+        await page.GotoAsync("/").ConfigureAwait(false);
+        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
         clock.UtcNow = clock.UtcNow.AddSeconds(20);
         Assert.IsNotNull(await views.SelectLiveAsync(stream, stack4.Base.BaseId, token).ConfigureAwait(false));
         await page.Locator($".sky-layer-workspace[data-centered-base='{stack4.Base.BaseId}']").WaitForAsync().ConfigureAwait(false);
@@ -322,17 +357,88 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         await VerifyRenderedImageAndColorsAsync(page, context, bayer, stack4.Base.Definition.Preview.PayloadSha256,
             $"{modeName}-current-sky-partial-stack4", offsetX: -1.25, offsetY: +0.75, token).ConfigureAwait(false);
         var liveRefMarker4 = await ReadBrowserReferenceMarkerAsync(page).ConfigureAwait(false);
-        AssertQualPoint(liveRefMarker4, refStar4, $"{modeName}-current-sky-partial-stack4-ref-marker");
-        var liveTrail4 = await ReadBrowserTrailLineAsync(page).ConfigureAwait(false);
-        AssertQualTrail(liveTrail4, new(trailStart5.X + 1.25, trailStart5.Y - 0.75), new(trailEnd5.X + 1.25, trailEnd5.Y - 0.75),
-            $"{modeName}-current-sky-partial-stack4-trail");
-        Assert.IsGreaterThan(0.9, Math.Abs(liveTrail3.X1 - liveTrail4.X1),
-            "Overlapping stacks #3 and #4 must display distinct base-scoped trail coordinates in Chromium.");
+        AssertQualPoint(liveRefMarker4, refMarker4, $"{modeName}-current-sky-partial-stack4-ref-marker");
         Assert.IsGreaterThan(0.9, Math.Abs(liveRefMarker3.X - liveRefMarker4.X),
             "Overlapping stacks #3 and #4 must display distinct base-scoped reference marker coordinates in Chromium.");
 
-        // 4. Shared Archive Viewer: reopen Single #3, Stack #3, and Partial Stack #4!
-        await page.GotoAsync($"/gallery/{admitted[2].Key.CaptureId:D}?base={single3.Base.BaseId}&revision={single3.LatestRevisionId}")
+        // Delayed enrichment: publish exposure #5 moving trail AFTER #4 is already live -> enriches BOTH #3 (archived) and #4 (live)!
+        var trailStart5 = new PixelPoint(40.0, 56.0);
+        var trailEnd5 = new PixelPoint(72.0, 74.0);
+        await PublishQualTrailAsync(
+            persistence, layerProducer, admitted[4].Key, admitted[4].Descriptor, layout,
+            trailStart5, trailEnd5, token).ConfigureAwait(false);
+
+        stack3 = (await views.ReadArchiveAsync(stream, admitted[2].Key.CaptureId, token).ConfigureAwait(false))
+            .Single(item => item.Base.BaseId == stack3.Base.BaseId);
+        stack4 = (await views.ReadArchiveAsync(stream, admitted[3].Key.CaptureId, token).ConfigureAwait(false))
+            .Single(item => item.Base.BaseId == stack4.Base.BaseId);
+        var stack3EnrichedRevId = stack3.LatestRevisionId;
+        var stack4EnrichedRevId = stack4.LatestRevisionId;
+        Assert.AreNotEqual(stack3InitialRevId, stack3EnrichedRevId, "Delayed trail must create a new revision on archived Stack #3.");
+        Assert.AreNotEqual(stack4InitialRevId, stack4EnrichedRevId, "Delayed trail must create a new revision on live Stack #4.");
+
+        // Current Sky must remain on live Stack #4 (delayed #3 enrichment never replaces live #4) and show #4's trail!
+        var liveTrail4 = await ReadBrowserTrailLineAsync(page).ConfigureAwait(false);
+        Assert.AreEqual(stack4.Base.BaseId,
+            await page.Locator(".sky-layer-workspace").GetAttributeAsync("data-centered-base").ConfigureAwait(false));
+
+        // Read the actual served API views for BOTH initial #3, enriched #3, and enriched #4 to verify
+        // exact (base, revision) resolution and extract the REAL source-#5 registration transforms per base!
+        var stack3EnrichedApiHref = CenteredViewLinks.Revision(admitted[2].Key.CaptureId, stack3.Base.BaseId, stack3EnrichedRevId);
+        var stack4EnrichedApiHref = CenteredViewLinks.Revision(admitted[3].Key.CaptureId, stack4.Base.BaseId, stack4EnrichedRevId);
+        var apiStack3Initial = await ReadApiCenteredViewAsync(context, stack3InitialApiHref).ConfigureAwait(false);
+        var apiStack3Enriched = await ReadApiCenteredViewAsync(context, stack3EnrichedApiHref).ConfigureAwait(false);
+        var apiStack4Enriched = await ReadApiCenteredViewAsync(context, stack4EnrichedApiHref).ConfigureAwait(false);
+
+        Assert.AreEqual(stack3.Base.BaseId, apiStack3Initial.Base.BaseId);
+        Assert.AreEqual(stack3InitialRevId, apiStack3Initial.Revision.RevisionId);
+        Assert.IsFalse(apiStack3Initial.Revision.Layers.Any(layer =>
+                layer.Key.Kind == TransientTrailPresentation.LayerKind && layer.Readiness == CenteredViewReadiness.Ready),
+            "Earlier live-issued #3 revision must remain free of the delayed trail.");
+        Assert.AreEqual(stack3.Base.BaseId, apiStack3Enriched.Base.BaseId);
+        Assert.AreEqual(stack3EnrichedRevId, apiStack3Enriched.Revision.RevisionId);
+        Assert.IsTrue(apiStack3Enriched.Revision.Layers.Any(layer =>
+                layer.Key.Kind == TransientTrailPresentation.LayerKind && layer.Readiness == CenteredViewReadiness.Ready),
+            "Later enriched #3 revision must carry the delayed trail.");
+        Assert.AreEqual(stack4.Base.BaseId, apiStack4Enriched.Base.BaseId);
+        Assert.AreEqual(stack4EnrichedRevId, apiStack4Enriched.Revision.RevisionId);
+
+        var source5TransformOn3 = ReadContributorSimilarity(apiStack3Enriched, admitted[4].Key.CaptureId);
+        var source5TransformOn4 = ReadContributorSimilarity(apiStack4Enriched, admitted[4].Key.CaptureId);
+        Assert.IsGreaterThan(0.9, Math.Abs(source5TransformOn3.Tx - source5TransformOn4.Tx),
+            "Source #5 registration transform must stay scoped to each overlapping base (#3 vs #4).");
+        var expectedTrail3Start = source5TransformOn3.SourceToReference(trailStart5)!.Value;
+        var expectedTrail3End = source5TransformOn3.SourceToReference(trailEnd5)!.Value;
+        var expectedTrail4Start = source5TransformOn4.SourceToReference(trailStart5)!.Value;
+        var expectedTrail4End = source5TransformOn4.SourceToReference(trailEnd5)!.Value;
+        AssertQualTrail(liveTrail4, expectedTrail4Start, expectedTrail4End, $"{modeName}-current-sky-partial-stack4-trail");
+
+        // 4. Operations (/operations/pipeline -> Running pipeline & recorded reference run for #3):
+        // verify live #4 details AND follow recorded #3 publication link to verify both earlier & enriched #3 revisions!
+        await page.GotoAsync("/operations/pipeline").ConfigureAwait(false);
+        await page.GetByRole(AriaRole.Link, new() { Name = "Running pipeline", Exact = true }).ClickAsync().ConfigureAwait(false);
+        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
+        var displayRegion = page.GetByRole(AriaRole.Region, new() { Name = "Live display publication" });
+        await Assertions.Expect(displayRegion).ToBeVisibleAsync().ConfigureAwait(false);
+        var displayText = await displayRegion.InnerTextAsync().ConfigureAwait(false);
+        StringAssert.Contains(displayText, bayer ? "BayerRggb16 (color)" : "Mono16 (mono)", StringComparison.Ordinal);
+        StringAssert.Contains(displayText, bayer ? $"origin ({cfaOriginX}, {cfaOriginY})" : "No CFA", StringComparison.Ordinal);
+        StringAssert.Contains(displayText, "Capture #4", StringComparison.Ordinal);
+        StringAssert.Contains(displayText, "4/5 window slots contributed", StringComparison.Ordinal);
+        StringAssert.Contains(displayText, nameof(CenteredRegistrationMethod.VerifiedCentroidSimilarity), StringComparison.Ordinal);
+        await Assertions.Expect(displayRegion.GetByRole(AriaRole.Link, new() { Name = "Open exact stack revision" }))
+            .ToHaveAttributeAsync("href", stack4EnrichedApiHref).ConfigureAwait(false);
+
+        // Open the recorded reference execution for #3 and follow its enriched Stack #3 publication link!
+        var stack3ExecutionPath = $"/operations/pipeline/executions/{stack3.Base.Definition.Reference.ExecutionId:D}";
+        await page.GotoAsync(stack3ExecutionPath).ConfigureAwait(false);
+        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
+        var recordedEnrichedLink = page.Locator($".run-publication a[href='{stack3EnrichedApiHref}']");
+        await Assertions.Expect(recordedEnrichedLink).ToBeVisibleAsync().ConfigureAwait(false);
+
+        // 5. Shared Archive Viewer: reopen Single #3, earlier Stack #3 (pre-trail), enriched Stack #3 (post-trail),
+        // and Partial Stack #4 — verifying decoded JPEG pixels, colors, dimensions, and base-scoped overlays on EVERY base!
+        await page.GotoAsync(CenteredViewLinks.Archive(admitted[2].Key.CaptureId, single3.Base.BaseId, single3.LatestRevisionId))
             .ConfigureAwait(false);
         await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
         await page.Locator(".sky-layer-canvas--verified").WaitForAsync().ConfigureAwait(false);
@@ -340,27 +446,41 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         await VerifyRenderedImageAndColorsAsync(page, context, bayer, single3.Base.Definition.Preview.PayloadSha256,
             $"{modeName}-archive-single3", offsetX: 0, offsetY: 0, token).ConfigureAwait(false);
 
-        await page.GotoAsync($"/gallery/{admitted[2].Key.CaptureId:D}?base={stack3.Base.BaseId}&revision={stack3.LatestRevisionId}")
+        // Earlier live-issued Stack #3 revision (before delayed trail) resolves exact pair with 0 trail lines!
+        await page.GotoAsync(CenteredViewLinks.Archive(admitted[2].Key.CaptureId, stack3.Base.BaseId, stack3InitialRevId))
             .ConfigureAwait(false);
         await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
         await page.Locator(".sky-layer-canvas--verified").WaitForAsync().ConfigureAwait(false);
         await VerifyRenderedImageAndColorsAsync(page, context, bayer, stack3.Base.Definition.Preview.PayloadSha256,
-            $"{modeName}-archive-stack3", offsetX: 0, offsetY: 0, token).ConfigureAwait(false);
-        var archiveRefMarker3 = await ReadBrowserReferenceMarkerAsync(page).ConfigureAwait(false);
-        AssertQualPoint(archiveRefMarker3, refStar3, $"{modeName}-archive-stack3-ref-marker");
-        var archiveTrail3 = await ReadBrowserTrailLineAsync(page).ConfigureAwait(false);
-        AssertQualTrail(archiveTrail3, new(trailStart5.X + 2.5, trailStart5.Y - 1.5), new(trailEnd5.X + 2.5, trailEnd5.Y - 1.5),
-            $"{modeName}-archive-stack3-trail");
+            $"{modeName}-archive-stack3-initial", offsetX: 0, offsetY: 0, token).ConfigureAwait(false);
+        Assert.AreEqual(0, await page.Locator($".sky-layer-overlay svg g[data-layer-kind='{TransientTrailPresentation.LayerKind}'] line").CountAsync().ConfigureAwait(false),
+            "Archived earlier Stack #3 revision must stay free of the delayed trail.");
 
-        await page.GotoAsync($"/gallery/{admitted[3].Key.CaptureId:D}?base={stack4.Base.BaseId}&revision={stack4.LatestRevisionId}")
+        // Later enriched Stack #3 revision resolves exact pair WITH source #5 trail scoped to base #3!
+        await page.GotoAsync(CenteredViewLinks.Archive(admitted[2].Key.CaptureId, stack3.Base.BaseId, stack3EnrichedRevId))
             .ConfigureAwait(false);
         await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
         await page.Locator(".sky-layer-canvas--verified").WaitForAsync().ConfigureAwait(false);
+        await VerifyRenderedImageAndColorsAsync(page, context, bayer, stack3.Base.Definition.Preview.PayloadSha256,
+            $"{modeName}-archive-stack3-enriched", offsetX: 0, offsetY: 0, token).ConfigureAwait(false);
+        var archiveRefMarker3 = await ReadBrowserReferenceMarkerAsync(page).ConfigureAwait(false);
+        AssertQualPoint(archiveRefMarker3, refMarker3, $"{modeName}-archive-stack3-ref-marker");
+        var archiveTrail3 = await ReadBrowserTrailLineAsync(page).ConfigureAwait(false);
+        AssertQualTrail(archiveTrail3, expectedTrail3Start, expectedTrail3End, $"{modeName}-archive-stack3-trail");
+
+        // Partial Stack #4 archive: verify decoded JPEG pixels, colors, dimensions, reference marker, AND trail!
+        await page.GotoAsync(CenteredViewLinks.Archive(admitted[3].Key.CaptureId, stack4.Base.BaseId, stack4EnrichedRevId))
+            .ConfigureAwait(false);
+        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
+        await page.Locator(".sky-layer-canvas--verified").WaitForAsync().ConfigureAwait(false);
+        await VerifyRenderedImageAndColorsAsync(page, context, bayer, stack4.Base.Definition.Preview.PayloadSha256,
+            $"{modeName}-archive-partial-stack4", offsetX: -1.25, offsetY: +0.75, token).ConfigureAwait(false);
         var archiveRefMarker4 = await ReadBrowserReferenceMarkerAsync(page).ConfigureAwait(false);
-        AssertQualPoint(archiveRefMarker4, refStar4, $"{modeName}-archive-partial-stack4-ref-marker");
+        AssertQualPoint(archiveRefMarker4, refMarker4, $"{modeName}-archive-partial-stack4-ref-marker");
         var archiveTrail4 = await ReadBrowserTrailLineAsync(page).ConfigureAwait(false);
-        AssertQualTrail(archiveTrail4, new(trailStart5.X + 1.25, trailStart5.Y - 0.75), new(trailEnd5.X + 1.25, trailEnd5.Y - 0.75),
-            $"{modeName}-archive-partial-stack4-trail");
+        AssertQualTrail(archiveTrail4, expectedTrail4Start, expectedTrail4End, $"{modeName}-archive-partial-stack4-trail");
+        Assert.IsGreaterThan(0.9, Math.Abs(archiveTrail3.X1 - archiveTrail4.X1),
+            "Overlapping stacks #3 and #4 must project source #5's trail to distinct base-scoped coordinates in archive.");
 
         // Verify direct gallery artifact preview HTTP endpoint (/api/v1/operations/artifacts/{rawId}/preview)
         // preserves delivered CFA phase (including odd-origin (1,1) BGGR) over HTTP!
@@ -379,21 +499,6 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         {
             await rawPreviewResp.DisposeAsync().ConfigureAwait(false);
         }
-
-        // 5. Operations (/operations/pipeline/running): must identify actual input layout, CFA origin, partial stack & revision link!
-        await page.GotoAsync("/operations/pipeline/running").ConfigureAwait(false);
-        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
-        var displayRegion = page.GetByRole(AriaRole.Region, new() { Name = "Live display publication" });
-        await Assertions.Expect(displayRegion).ToBeVisibleAsync().ConfigureAwait(false);
-        var displayText = await displayRegion.InnerTextAsync().ConfigureAwait(false);
-        StringAssert.Contains(displayText, bayer ? "BayerRggb16 (color)" : "Mono16 (mono)", StringComparison.Ordinal);
-        StringAssert.Contains(displayText, bayer ? $"origin ({cfaOriginX}, {cfaOriginY})" : "No CFA", StringComparison.Ordinal);
-        StringAssert.Contains(displayText, "Capture #4", StringComparison.Ordinal);
-        StringAssert.Contains(displayText, "4/5 window slots contributed", StringComparison.Ordinal);
-        StringAssert.Contains(displayText, nameof(CenteredRegistrationMethod.VerifiedCentroidSimilarity), StringComparison.Ordinal);
-        var expectedRevHref = CenteredViewLinks.Revision(admitted[3].Key.CaptureId, stack4.Base.BaseId, stack4.LatestRevisionId);
-        await Assertions.Expect(displayRegion.GetByRole(AriaRole.Link, new() { Name = "Open exact stack revision" }))
-            .ToHaveAttributeAsync("href", expectedRevHref).ConfigureAwait(false);
 
         await diagnostics.CompleteAsync().ConfigureAwait(false);
     }
@@ -543,6 +648,91 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
             return (sr / count, sg / count, sb / count);
         }
     }
+
+    private static async Task<CenteredView> ReadApiCenteredViewAsync(IBrowserContext context, string apiHref)
+    {
+        var response = await context.APIRequest.GetAsync(apiHref).ConfigureAwait(false);
+        try
+        {
+            Assert.AreEqual(200, response.Status, $"Expected 200 OK from {apiHref}.");
+            var view = JsonSerializer.Deserialize<CenteredView>(
+                await response.BodyAsync().ConfigureAwait(false), JsonSerializerOptions.Web);
+            Assert.IsNotNull(view);
+            return view;
+        }
+        finally
+        {
+            await response.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    private static ImageSimilarity ReadContributorSimilarity(CenteredView view, Guid captureId)
+    {
+        var contributor = view.Base.Definition.Contributors.Single(item => item.Exposure.Capture.CaptureId == captureId);
+        Assert.AreEqual(nameof(CenteredRegistrationMethod.VerifiedCentroidSimilarity), contributor.RegistrationMethod);
+        var evidence = contributor.SourceToReference.Deserialize<CenteredStackSourceEvidence>(CenteredAcceptanceJson);
+        Assert.IsNotNull(evidence);
+        Assert.IsNotNull(evidence.Similarity);
+        return evidence.Similarity.Value;
+    }
+
+    private static PixelPoint ComputeIndependentPerspectivePixel(
+        CameraRigConfig rig, FrameLayoutDescriptor layout, AltAzPoint target)
+    {
+        const double degToRad = Math.PI / 180.0;
+        static (double E, double N, double U) ToEnu(double altDeg, double azDeg)
+        {
+            var alt = altDeg * degToRad;
+            var az = azDeg * degToRad;
+            var c = Math.Cos(alt);
+            return (c * Math.Sin(az), c * Math.Cos(az), Math.Sin(alt));
+        }
+
+        static (double E, double N, double U) Norm((double E, double N, double U) v)
+        {
+            var len = Math.Sqrt(v.E * v.E + v.N * v.N + v.U * v.U);
+            return (v.E / len, v.N / len, v.U / len);
+        }
+
+        static double Dot((double E, double N, double U) a, (double E, double N, double U) b) =>
+            a.E * b.E + a.N * b.N + a.U * b.U;
+
+        var f = ToEnu(rig.Orientation.BoresightAltitudeDegrees, rig.Orientation.BoresightAzimuthDegrees);
+        var upRaw = (-f.U * f.E, -f.U * f.N, 1.0 - f.U * f.U);
+        var upLen = Math.Sqrt(upRaw.Item1 * upRaw.Item1 + upRaw.Item2 * upRaw.Item2 + upRaw.Item3 * upRaw.Item3);
+        var up = upLen < 1e-12 ? (0.0, 1.0, 0.0) : (upRaw.Item1 / upLen, upRaw.Item2 / upLen, upRaw.Item3 / upLen);
+        var right = Norm((up.Item2 * f.U - up.Item3 * f.N, up.Item3 * f.E - up.Item1 * f.U, up.Item1 * f.N - up.Item2 * f.E));
+
+        var roll = rig.Orientation.RollAdjustmentDegrees * degToRad;
+        var cosR = Math.Cos(roll);
+        var sinR = Math.Sin(roll);
+        var rolledRight = (right.E * cosR + up.Item1 * sinR, right.N * cosR + up.Item2 * sinR, right.U * cosR + up.Item3 * sinR);
+        var rolledUp = (up.Item1 * cosR - right.E * sinR, up.Item2 * cosR - right.N * sinR, up.Item3 * cosR - right.U * sinR);
+        if (rig.Optics.HorizontalFlip)
+        {
+            rolledRight = (-rolledRight.Item1, -rolledRight.Item2, -rolledRight.Item3);
+        }
+
+        var d = ToEnu(target.AltitudeDegrees, target.AzimuthDegrees);
+        var cx = Dot(d, rolledRight);
+        var cy = Dot(d, rolledUp);
+        var cz = Dot(d, f);
+        Assert.IsGreaterThan(0.0, cz);
+
+        var focalPx = rig.Optics.FocalLengthMillimeters / (rig.Sensor.PixelSizeMicrons / 1000.0);
+        var principalNativeX = rig.Optics.PrincipalPointX ?? rig.Sensor.WidthPixels / 2.0;
+        var principalNativeY = rig.Optics.PrincipalPointY ?? rig.Sensor.HeightPixels / 2.0;
+        var roiX = layout.Readout?.RoiX ?? 0;
+        var roiY = layout.Readout?.RoiY ?? 0;
+        var binX = layout.Readout?.BinX ?? 1;
+        var binY = layout.Readout?.BinY ?? 1;
+        var px = (principalNativeX - roiX + focalPx * (cx / cz)) / binX;
+        var py = (principalNativeY - roiY - focalPx * (cy / cz)) / binY;
+        return new PixelPoint(px, py);
+    }
+
+    private static double Distance(PixelPoint a, PixelPoint b) =>
+        Math.Sqrt((a.X - b.X) * (a.X - b.X) + (a.Y - b.Y) * (a.Y - b.Y));
 
     private static async Task<PixelPoint> ReadBrowserReferenceMarkerAsync(IPage page)
     {

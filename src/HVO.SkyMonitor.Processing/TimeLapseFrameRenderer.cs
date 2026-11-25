@@ -108,35 +108,53 @@ public static class TimeLapseFrameRenderer
         var integration = TimeSpan.FromTicks(sources.Sum(static source => source.Integration.Ticks));
         var packed = layout with { StrideBytes = combined.StrideBytes, ByteLength = combined.PixelData.Length };
         var color = layout.PixelFormat == CameraPixelFormat.BayerRggb16;
+        var bayerPattern = color ? BayerRggb16Demosaicer.ResolvePattern(layout) : BayerPattern.Rggb;
         var pixels = daytime
-            ? FixedDisplayTransfer.Apply(packed, combined.PixelData, options.DayTransfer ?? new(), cancellationToken)
+            ? color && bayerPattern != BayerPattern.Rggb
+                ? FixedDisplayTransfer.ApplyWithDeliveredPhase(packed, combined.PixelData, options.DayTransfer ?? new(), bayerPattern, cancellationToken)
+                : FixedDisplayTransfer.Apply(packed, combined.PixelData, options.DayTransfer ?? new(), cancellationToken)
             : color
                 ? BayerRggb16Demosaicer.DemosaicToRgb24(layout.Width, layout.Height, combined.PixelData, cancellationToken,
-                    stretchOptions: options.NightStretch)
+                    stretchOptions: options.NightStretch, pattern: bayerPattern)
                 : Mono16DisplayStretch.Apply(layout.Width, layout.Height, combined.PixelData, cancellationToken,
                     options: options.NightStretch);
         var imageLayout = new ImageLayout(layout.Width, layout.Height, color ? CameraPixelFormat.Rgb24 : CameraPixelFormat.Mono8,
             layout.Width * (color ? 3 : 1));
         var checksums = sources.Select(source => ProcessingIdentity.ComputePayloadSha256(source.Payload)).ToArray();
         var recipeIdentity = RecipeIdentity(options, rendererVersion);
-        var baseIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(new
+        var selectedLayerIdentities = additionalLayers?.Select(layer => new
         {
-            recipeIdentity,
-            rigIdentity,
-            sourceIds = sources.Select(static source => source.ArtifactId),
-            checksums,
-            latest.ObservationStartedUtc,
-            daytime,
-            outputWidth,
-            outputHeight,
-            selectedLayers = additionalLayers?.Select(layer => new
-            {
-                layer.Payload.ContentIdentitySha256,
-                layer.Enabled,
-                layer.BlendMode,
-                layer.OpacityMillionths
-            })
+            layer.Payload.ContentIdentitySha256,
+            layer.Enabled,
+            layer.BlendMode,
+            layer.OpacityMillionths
         });
+        var baseIdentity = color && bayerPattern != BayerPattern.Rggb
+            ? CaptureContractJson.ComputeCanonicalJsonSha256(new
+            {
+                recipeIdentity,
+                rigIdentity,
+                sourceIds = sources.Select(static source => source.ArtifactId),
+                checksums,
+                latest.ObservationStartedUtc,
+                daytime,
+                outputWidth,
+                outputHeight,
+                selectedLayers = selectedLayerIdentities,
+                deliveredCfa = bayerPattern.ToString()
+            })
+            : CaptureContractJson.ComputeCanonicalJsonSha256(new
+            {
+                recipeIdentity,
+                rigIdentity,
+                sourceIds = sources.Select(static source => source.ArtifactId),
+                checksums,
+                latest.ObservationStartedUtc,
+                daytime,
+                outputWidth,
+                outputHeight,
+                selectedLayers = selectedLayerIdentities
+            });
         var facts = new PresentationMetadataFactsV1(baseIdentity,
             [rig.Sensor.Name, latest.ObservationStartedUtc!.Value.ToString("yyyy-MM-dd HH:mm:ss 'UTC'", CultureInfo.InvariantCulture)],
             ["EXPOSURE", FormattableString.Invariant($"{latest.Integration.TotalSeconds:0.###} s | Gain {latest.Conditions?.Gain ?? 0:0.##}")],

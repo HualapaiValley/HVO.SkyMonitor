@@ -89,13 +89,7 @@ internal sealed class CameraAgentPreviewEncoder : ICameraAgentPreviewEncoder
     }
 
     internal static BayerPattern ResolveBayerPattern(FrameLayoutDescriptor layout) =>
-        (layout.Readout?.CfaOriginX, layout.Readout?.CfaOriginY) switch
-        {
-            (1, 0) => BayerPattern.Grbg,
-            (0, 1) => BayerPattern.Gbrg,
-            (1, 1) => BayerPattern.Bggr,
-            _ => BayerPattern.Rggb
-        };
+        BayerRggb16Demosaicer.ResolvePattern(layout);
 
     internal static (int Width, int Height, ReadOnlyMemory<byte> Payload) Downsample(
         FrameLayoutDescriptor layout,

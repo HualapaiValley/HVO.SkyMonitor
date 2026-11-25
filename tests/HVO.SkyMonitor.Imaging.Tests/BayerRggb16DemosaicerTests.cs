@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Imaging;
 
 namespace HVO.SkyMonitor.Imaging.Tests;
@@ -124,6 +125,48 @@ public sealed class BayerRggb16DemosaicerTests
 
         Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => BayerRggb16Demosaicer.DemosaicToRgb24(
             2, 2, new byte[8], pattern: (BayerPattern)99));
+    }
+
+    [TestMethod]
+    public void ResolvePattern_And_AlgorithmVersionFor_HandleAllCfaOriginsAndDefaults()
+    {
+        Assert.AreEqual(BayerPattern.Rggb, BayerRggb16Demosaicer.ResolvePattern(null));
+
+        var noReadout = new FrameLayoutDescriptor(
+            4, 4, 8, CameraPixelFormat.BayerRggb16, FrameByteOrder.LittleEndian, 12, 16,
+            FrameSamplePacking.ByteAligned, ColorFilterArrayPattern.Rggb, 64, 4095, 32);
+        Assert.AreEqual(BayerPattern.Rggb, BayerRggb16Demosaicer.ResolvePattern(noReadout));
+
+        var nullOrigin = noReadout with
+        {
+            Readout = new FrameReadoutDescriptor(4, 4, 0, 0, 4, 4, 1, 1, FrameBinningAlgorithm.IdentityV1, null, null)
+        };
+        Assert.AreEqual(BayerPattern.Rggb, BayerRggb16Demosaicer.ResolvePattern(nullOrigin));
+
+        foreach (var (originX, originY, expectedPattern, expectedVersion) in new[]
+        {
+            (0, 0, BayerPattern.Rggb, BayerRggb16Demosaicer.AlgorithmVersion),
+            (1, 0, BayerPattern.Grbg, BayerRggb16Demosaicer.GrbgAlgorithmVersion),
+            (0, 1, BayerPattern.Gbrg, BayerRggb16Demosaicer.GbrgAlgorithmVersion),
+            (1, 1, BayerPattern.Bggr, BayerRggb16Demosaicer.BggrAlgorithmVersion),
+            (2, 2, BayerPattern.Rggb, BayerRggb16Demosaicer.AlgorithmVersion),
+            (3, 2, BayerPattern.Grbg, BayerRggb16Demosaicer.GrbgAlgorithmVersion),
+            (2, 3, BayerPattern.Gbrg, BayerRggb16Demosaicer.GbrgAlgorithmVersion),
+            (3, 3, BayerPattern.Bggr, BayerRggb16Demosaicer.BggrAlgorithmVersion)
+        })
+        {
+            var layout = noReadout with
+            {
+                Readout = new FrameReadoutDescriptor(
+                    8, 8, originX, originY, 4, 4, 1, 1, FrameBinningAlgorithm.IdentityV1, originX, originY)
+            };
+            var resolved = BayerRggb16Demosaicer.ResolvePattern(layout);
+            Assert.AreEqual(expectedPattern, resolved, $"Origin ({originX},{originY})");
+            Assert.AreEqual(expectedVersion, BayerRggb16Demosaicer.AlgorithmVersionFor(resolved));
+        }
+
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            BayerRggb16Demosaicer.AlgorithmVersionFor((BayerPattern)99));
     }
 
     [TestMethod]

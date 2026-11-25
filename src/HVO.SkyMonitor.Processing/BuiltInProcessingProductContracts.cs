@@ -368,7 +368,7 @@ internal static class BuiltInProcessingProductContracts
             FixedPreview => PixelDetails("application/x-hvo-packed-image", true,
                 ProcessingRecipeSupport.CreatePackedLayout(primary.Layout!.Width, primary.Layout.Height,
                     primary.Layout.PixelFormat is CameraPixelFormat.Mono16 or CameraPixelFormat.Mono8 ? CameraPixelFormat.Mono8 : CameraPixelFormat.Rgb24),
-                FixedPreviewRecipe.Algorithms(primary.Layout.PixelFormat), primary),
+                FixedPreviewRecipe.Algorithms(primary.Layout), primary),
             EncodedPreview => CreateEncodedPreviewDetails(identity, primary),
             JpegEncoding => CreateJpegDetails(identity, primary),
             Annotation => CreateAnnotationDetails(request, identity, primary),
@@ -426,7 +426,7 @@ internal static class BuiltInProcessingProductContracts
             case CameraPixelFormat.BayerRggb16:
                 format = CameraPixelFormat.Rgb24;
                 algorithms.Add(new("display-stretch", Mono16DisplayStretch.AlgorithmVersion));
-                algorithms.Add(new("rggb-demosaic", BayerRggb16Demosaicer.AlgorithmVersion));
+                algorithms.Add(new("rggb-demosaic", BayerRggb16Demosaicer.AlgorithmVersionFor(BayerRggb16Demosaicer.ResolvePattern(layout))));
                 break;
             case CameraPixelFormat.Mono8:
             case CameraPixelFormat.Rgb24:
@@ -684,7 +684,7 @@ internal static class BuiltInProcessingProductContracts
             case CameraPixelFormat.BayerRggb16:
                 format = CameraPixelFormat.Rgb24;
                 algorithms.Add(new("display-stretch", Mono16DisplayStretch.AlgorithmVersion));
-                algorithms.Add(new("rggb-demosaic", BayerRggb16Demosaicer.AlgorithmVersion));
+                algorithms.Add(new("rggb-demosaic", BayerRggb16Demosaicer.AlgorithmVersionFor(BayerRggb16Demosaicer.ResolvePattern(layout))));
                 break;
             case CameraPixelFormat.Mono8:
             case CameraPixelFormat.Rgb24:

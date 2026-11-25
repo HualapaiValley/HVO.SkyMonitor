@@ -1,9 +1,38 @@
+using HVO.SkyMonitor.AgentCore;
+
 namespace HVO.SkyMonitor.Imaging;
 
-/// <summary>Creates display-only RGB24 derivatives from linear little-endian RGGB RAW16 photosites.</summary>
+/// <summary>Creates display-only RGB24 derivatives from linear little-endian Bayer RAW16 photosites.</summary>
 public static class BayerRggb16Demosaicer
 {
     public const string AlgorithmVersion = "bilinear-rggb16-demosaic-v1";
+    public const string GrbgAlgorithmVersion = "bilinear-grbg16-demosaic-v1";
+    public const string GbrgAlgorithmVersion = "bilinear-gbrg16-demosaic-v1";
+    public const string BggrAlgorithmVersion = "bilinear-bggr16-demosaic-v1";
+
+    /// <summary>Resolves the delivered Bayer phase from readout CFA origin parity, defaulting to RGGB when unspecified.</summary>
+    public static BayerPattern ResolvePattern(FrameLayoutDescriptor? layout) =>
+        (layout?.Readout?.CfaOriginX, layout?.Readout?.CfaOriginY) switch
+        {
+            (int originX, int originY) => (originX & 1, originY & 1) switch
+            {
+                (1, 0) => BayerPattern.Grbg,
+                (0, 1) => BayerPattern.Gbrg,
+                (1, 1) => BayerPattern.Bggr,
+                _ => BayerPattern.Rggb
+            },
+            _ => BayerPattern.Rggb
+        };
+
+    /// <summary>Returns the historical algorithm version for RGGB (0,0) and phase-distinct versions for shifted origins.</summary>
+    public static string AlgorithmVersionFor(BayerPattern pattern) => pattern switch
+    {
+        BayerPattern.Rggb => AlgorithmVersion,
+        BayerPattern.Grbg => GrbgAlgorithmVersion,
+        BayerPattern.Gbrg => GbrgAlgorithmVersion,
+        BayerPattern.Bggr => BggrAlgorithmVersion,
+        _ => throw new ArgumentOutOfRangeException(nameof(pattern))
+    };
 
     /// <summary>Applies one global raw stretch, then bilinearly interpolates missing CFA channels.</summary>
     public static byte[] DemosaicToRgb24(

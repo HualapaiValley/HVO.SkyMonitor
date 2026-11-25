@@ -29,17 +29,36 @@ internal sealed class FixedPreviewRecipe : IProcessingRecipe
             return ValueTask.FromResult(ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.UnsupportedFormat, nameof(input)));
         var options = ProcessingRecipeSupport.ParseOptions<FixedDisplayTransferOptions>(
             identity.Descriptor.Options.GetProperty("parameters"));
-        var pixels = FixedDisplayTransfer.Apply(layout, input.Payload, options, cancellationToken);
+        var pattern = layout.PixelFormat == CameraPixelFormat.BayerRggb16
+            ? BayerRggb16Demosaicer.ResolvePattern(layout)
+            : BayerPattern.Rggb;
+        var pixels = layout.PixelFormat == CameraPixelFormat.BayerRggb16 && pattern != BayerPattern.Rggb
+            ? FixedDisplayTransfer.ApplyWithDeliveredPhase(layout, input.Payload, options, pattern, cancellationToken)
+            : FixedDisplayTransfer.Apply(layout, input.Payload, options, cancellationToken);
         var product = ProcessingRecipeSupport.CreateProduct(FrameArtifactRole.Preview, request.OutputVariant,
             "application/x-hvo-packed-image", ProcessingRecipeSupport.CreatePackedLayout(layout.Width, layout.Height,
                 layout.PixelFormat is CameraPixelFormat.Mono16 or CameraPixelFormat.Mono8 ? CameraPixelFormat.Mono8 : CameraPixelFormat.Rgb24),
-            pixels, identity, Algorithms(layout.PixelFormat), [input], input.Integration, input.Compatibility);
+            pixels, identity, Algorithms(layout), [input], input.Integration, input.Compatibility);
         return ValueTask.FromResult(ProcessingOutcome.Produced(product));
     }
 
-    internal static IReadOnlyList<ProcessingAlgorithmIdentity> Algorithms(CameraPixelFormat format) =>
-        format == CameraPixelFormat.BayerRggb16
-            ? [new("fixed-display-transfer", FixedDisplayTransfer.AlgorithmVersion),
-                new("linear-rggb-reconstruction", LinearBayerReconstruction.AlgorithmVersion)]
-            : [new("fixed-display-transfer", FixedDisplayTransfer.AlgorithmVersion)];
+    internal static IReadOnlyList<ProcessingAlgorithmIdentity> Algorithms(FrameLayoutDescriptor layout)
+    {
+        if (layout.PixelFormat != CameraPixelFormat.BayerRggb16)
+        {
+            return [new("fixed-display-transfer", FixedDisplayTransfer.AlgorithmVersion)];
+        }
+
+        var pattern = BayerRggb16Demosaicer.ResolvePattern(layout);
+        var reconstructionVersion = pattern switch
+        {
+            BayerPattern.Rggb => LinearBayerReconstruction.AlgorithmVersion,
+            BayerPattern.Grbg => $"{LinearBayerReconstruction.AlgorithmVersion}-grbg",
+            BayerPattern.Gbrg => $"{LinearBayerReconstruction.AlgorithmVersion}-gbrg",
+            BayerPattern.Bggr => $"{LinearBayerReconstruction.AlgorithmVersion}-bggr",
+            _ => throw new ArgumentOutOfRangeException(nameof(layout))
+        };
+        return [new("fixed-display-transfer", FixedDisplayTransfer.AlgorithmVersion),
+            new("linear-rggb-reconstruction", reconstructionVersion)];
+    }
 }

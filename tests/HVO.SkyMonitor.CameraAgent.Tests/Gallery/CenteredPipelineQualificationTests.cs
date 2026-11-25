@@ -121,48 +121,74 @@ public sealed class CenteredPipelineQualificationTests
             await processingStore.InitializeAsync(token).ConfigureAwait(false);
             var artifactService = provider.GetRequiredService<ICameraAgentArtifactService>();
 
-            var bggrLayout = CreateLayout(CameraPixelFormat.BayerRggb16, cfaOriginX: 1, cfaOriginY: 1);
+            // 1. Verify all four delivered Bayer CFA phases (RGGB, GRBG, GBRG, BGGR) preserve RGB targets
+            // through both default gallery preview encoding and explicit display-stretch encoding.
+            var encoder = new CameraAgentPreviewEncoder();
+            (int X, int Y, BayerPattern Pattern)[] allPhases =
+            [
+                (0, 0, BayerPattern.Rggb),
+                (1, 0, BayerPattern.Grbg),
+                (0, 1, BayerPattern.Gbrg),
+                (1, 1, BayerPattern.Bggr)
+            ];
+            for (var i = 0; i < allPhases.Length; i++)
+            {
+                var (ox, oy, pattern) = allPhases[i];
+                var phaseLayout = CreateLayout(CameraPixelFormat.BayerRggb16, cfaOriginX: ox, cfaOriginY: oy);
+                var phaseBytes = RenderSyntheticFrame(
+                    CameraPixelFormat.BayerRggb16, ox, oy, 0, 0, FieldStars, includeClippedPatch: false);
+                var phaseRaw = await CommitRawArtifactAsync(
+                    root, journal, phaseLayout, phaseBytes, BaseUtc.AddSeconds(i * 2), token).ConfigureAwait(false);
+
+                var preview = await artifactService.GetPreviewAsync(phaseRaw.Artifact.ArtifactId, token)
+                    .ConfigureAwait(false);
+                Assert.AreEqual(CameraAgentArtifactReadStatus.Found, preview.Status);
+                var decoded = JpegImageCodec.DecodeJpeg(preview.Content, token);
+                Assert.AreEqual(Width, decoded.Width);
+                Assert.AreEqual(Height, decoded.Height);
+                AssertColorPreviewTargets(decoded, $"gallery-artifact-{pattern}-default");
+
+                var stretched = encoder.Encode(
+                    phaseLayout, phaseBytes, Width, 2 * 1024 * 1024, token,
+                    new Mono16DisplayStretchOptions(0.01, 0.999, 0.05));
+                var decodedStretched = JpegImageCodec.DecodeJpeg(stretched.Content, token);
+                AssertColorPreviewTargets(decodedStretched, $"gallery-artifact-{pattern}-stretched");
+            }
+
+            // 2. Cache isolation: commit IDENTICAL raw bytes (same SHA-256) under all 4 CFA origins;
+            // none may collide in the preview cache, and interpreting BGGR bytes as RGGB must invert R/B.
             var bggrBytes = RenderSyntheticFrame(
                 CameraPixelFormat.BayerRggb16, 1, 1, 0, 0, FieldStars, includeClippedPatch: false);
-            var bggrRaw = await CommitRawArtifactAsync(root, journal, bggrLayout, bggrBytes, BaseUtc, token)
-                .ConfigureAwait(false);
+            var samePayloadSha = PayloadChecksum.ComputeSha256(bggrBytes);
+            var cacheChecksums = new Dictionary<BayerPattern, string>();
+            CameraAgentArtifactPreviewResult? rggbFromBggr = null;
+            for (var i = 0; i < allPhases.Length; i++)
+            {
+                var (ox, oy, pattern) = allPhases[i];
+                var aliasLayout = CreateLayout(CameraPixelFormat.BayerRggb16, cfaOriginX: ox, cfaOriginY: oy);
+                var aliasRaw = await CommitRawArtifactAsync(
+                    root, journal, aliasLayout, bggrBytes, BaseUtc.AddSeconds(20 + i * 2), token).ConfigureAwait(false);
+                Assert.AreEqual(samePayloadSha, aliasRaw.Artifact.ChecksumSha256);
 
-            // Same exact raw bytes (identical SHA-256), but declared as (0,0) RGGB: must NOT collide in cache!
-            var rggbLayout = CreateLayout(CameraPixelFormat.BayerRggb16, cfaOriginX: 0, cfaOriginY: 0);
-            var rggbRaw = await CommitRawArtifactAsync(root, journal, rggbLayout, bggrBytes, BaseUtc.AddSeconds(2), token)
-                .ConfigureAwait(false);
-            Assert.AreEqual(bggrRaw.Artifact.ChecksumSha256, rggbRaw.Artifact.ChecksumSha256);
+                var aliasPreview = await artifactService.GetPreviewAsync(aliasRaw.Artifact.ArtifactId, token)
+                    .ConfigureAwait(false);
+                Assert.AreEqual(CameraAgentArtifactReadStatus.Found, aliasPreview.Status);
+                cacheChecksums[pattern] = aliasPreview.ChecksumSha256!;
+                if (pattern == BayerPattern.Rggb)
+                {
+                    rggbFromBggr = aliasPreview;
+                }
+            }
 
-            // 1. Default gallery preview path (CameraAgentPreviewEncoder -> SkiaPreviewEncoder -> BayerRggb16Demosaicer)
-            var bggrPreview = await artifactService.GetPreviewAsync(bggrRaw.Artifact.ArtifactId, token)
-                .ConfigureAwait(false);
-            Assert.AreEqual(CameraAgentArtifactReadStatus.Found, bggrPreview.Status);
-            var decodedBggr = JpegImageCodec.DecodeJpeg(bggrPreview.Content, token);
-            Assert.AreEqual(Width, decodedBggr.Width);
-            Assert.AreEqual(Height, decodedBggr.Height);
-            AssertColorPreviewTargets(decodedBggr, "gallery-artifact-bggr-default");
-
-            // 2. Same SHA-256 bytes with RGGB (0,0) must NOT reuse the BGGR cache entry; R and B invert as expected.
-            var rggbPreview = await artifactService.GetPreviewAsync(rggbRaw.Artifact.ArtifactId, token)
-                .ConfigureAwait(false);
-            Assert.AreEqual(CameraAgentArtifactReadStatus.Found, rggbPreview.Status);
-            Assert.AreNotEqual(bggrPreview.ChecksumSha256, rggbPreview.ChecksumSha256,
-                "Preview cache must isolate identical Bayer payloads with different delivered CFA origins.");
-            var decodedRggb = JpegImageCodec.DecodeJpeg(rggbPreview.Content, token);
+            Assert.AreEqual(4, cacheChecksums.Values.Distinct(StringComparer.Ordinal).Count(),
+                "Preview cache must produce distinct entries for identical Bayer bytes with different CFA origins.");
+            var decodedRggb = JpegImageCodec.DecodeJpeg(rggbFromBggr!.Content, token);
             var swappedRed = MeasureJpegPatch(decodedRggb, RedTarget, radius: 3);
             var swappedBlue = MeasureJpegPatch(decodedRggb, BlueTarget, radius: 3);
             Assert.IsGreaterThan(swappedRed.Red * JpegColorDominanceRatio, swappedRed.Blue,
                 $"RGGB interpretation of BGGR bytes must invert red target, got {swappedRed}.");
             Assert.IsGreaterThan(swappedBlue.Blue * JpegColorDominanceRatio, swappedBlue.Red,
                 $"RGGB interpretation of BGGR bytes must invert blue target, got {swappedBlue}.");
-
-            // 3. Explicit stretch options path (CameraAgentPreviewEncoder with displayOptions != null)
-            var encoder = new CameraAgentPreviewEncoder();
-            var stretched = encoder.Encode(
-                bggrLayout, bggrBytes, Width, 2 * 1024 * 1024, token,
-                new Mono16DisplayStretchOptions(0.01, 0.999, 0.05));
-            var decodedStretched = JpegImageCodec.DecodeJpeg(stretched.Content, token);
-            AssertColorPreviewTargets(decodedStretched, "gallery-artifact-bggr-stretched");
             _ = options;
         }
         finally
@@ -204,12 +230,13 @@ public sealed class CenteredPipelineQualificationTests
             var reader = provider.GetRequiredService<ICenteredViewPresentationReader>();
 
             TestContext.WriteLine(string.Create(CultureInfo.InvariantCulture,
-                $"Qualification profile={profileName} evidenceOrigin=DeterministicRetainedReplay format={format} " +
+                $"Qualification profile={profileName} evidenceOrigin=DeterministicSyntheticNonVirtualReplay format={format} " +
                 $"cfa={layout.CfaPattern} origin=({layout.Readout?.CfaOriginX},{layout.Readout?.CfaOriginY}) " +
                 $"bits={layout.SampleDepthBits}/{layout.ContainerDepthBits} levels=[{layout.BlackLevel},{layout.WhiteLevel}] " +
                 $"roi=({layout.Readout?.RoiX},{layout.Readout?.RoiY},{layout.Width}x{layout.Height}) bin={layout.Readout?.BinX}x{layout.Readout?.BinY} " +
                 $"cadence={Cadence.TotalSeconds:0.###}s tolerances: centroid<={centroidTol:F2}px overlay<={OverlayCoordinateTolerancePixels:F2}px"));
 
+            var artifactService = provider.GetRequiredService<ICameraAgentArtifactService>();
             var admitted = new List<(Guid CaptureId, ExposureKey Key, ReconstructionDescriptor Descriptor, string SourceSha256)>();
             CenteredViewStream? stream = null;
 
@@ -236,15 +263,39 @@ public sealed class CenteredPipelineQualificationTests
                 var exposureKey = new ExposureKey(stream.Camera, stream.RunId, descriptor.Capture.CaptureId);
                 admitted.Add((descriptor.Capture.CaptureId, exposureKey, descriptor, expectedSha));
 
-                // Verify durable raw bytes on disk match source SHA-256 bit-for-bit and are NOT mislabeled as VirtualSky Simulated!
+                // Reopen BOTH the durable journal record AND the actual raw payload bytes from disk,
+                // hashing the reopened payload stream directly and verifying bit-for-bit equality!
                 var reopenedRaw = await ingress.ReadCenteredRawAsync(exposureKey, token).ConfigureAwait(false);
                 Assert.IsNotNull(reopenedRaw);
+                Assert.IsTrue(reopenedRaw.IsCommitted);
+                Assert.AreEqual(descriptor.Capture, reopenedRaw.Manifest.Descriptor.Capture);
+                Assert.AreEqual(descriptor.Layout, reopenedRaw.Manifest.Descriptor.Layout);
+                Assert.AreEqual(descriptor.Timing, reopenedRaw.Manifest.Descriptor.Timing);
+                Assert.AreEqual(descriptor.Controls, reopenedRaw.Manifest.Descriptor.Controls);
                 Assert.AreEqual(expectedSha, reopenedRaw.Manifest.Descriptor.Artifact.ChecksumSha256);
+
+                var openedRaw = await artifactService.OpenContentAsync(descriptor.Artifact.ArtifactId, token)
+                    .ConfigureAwait(false);
+                Assert.AreEqual(CameraAgentArtifactReadStatus.Found, openedRaw.Status);
+                Assert.IsNotNull(openedRaw.Content);
+                byte[] reopenedPayloadBytes;
+                await using (openedRaw.Content.ConfigureAwait(false))
+                {
+                    using var buffer = new MemoryStream(rawBytes.Length);
+                    await openedRaw.Content.CopyToAsync(buffer, token).ConfigureAwait(false);
+                    reopenedPayloadBytes = buffer.ToArray();
+                }
+                Assert.AreEqual(rawBytes.Length, reopenedPayloadBytes.Length);
+                Assert.AreEqual(expectedSha, PayloadChecksum.ComputeSha256(reopenedPayloadBytes),
+                    "SHA-256 computed over actual reopened raw payload bytes must match admitted source bytes.");
+                CollectionAssert.AreEqual(rawBytes, reopenedPayloadBytes,
+                    "Reopened durable raw payload bytes must match admitted raw bytes bit-for-bit.");
+
                 var galleryCapture = await provider.GetRequiredService<ICameraAgentGallery>()
                     .GetCaptureAsync(descriptor.Capture.CaptureId, token).ConfigureAwait(false);
                 Assert.IsNotNull(galleryCapture);
                 Assert.AreNotEqual(GalleryEvidenceOrigin.Simulated, galleryCapture.EvidenceOrigin,
-                    "Non-VirtualSky retained camera captures must remain distinct from VirtualSky simulated evidence.");
+                    "Non-VirtualSky captures must remain distinct from VirtualSky simulated evidence in the durable gallery.");
 
                 // Run real standard processing lane (Calibration/Linear normalization + ExposureMeasurement).
                 await ProcessStandardLaneAsync(provider, active, token).ConfigureAwait(false);
@@ -702,19 +753,20 @@ public sealed class CenteredPipelineQualificationTests
                 Assert.IsGreaterThan(linCoolR * 1.15, linCoolB, $"VirtualSky linear cool star expected B/R > 1.15, got {linCoolB:F1}/{linCoolR:F1}.");
 
                 var bg = MeasureJpegPatch(decoded, bgCenter, radius: 3);
-                var warm = MeasureJpegPatch(decoded, warmCenter, radius: 2);
-                var cool = MeasureJpegPatch(decoded, coolCenter, radius: 2);
-                var warmR = Math.Max(1.0, warm.Red - bg.Red);
-                var warmB = Math.Max(1.0, warm.Blue - bg.Blue);
-                var coolR = Math.Max(1.0, cool.Red - bg.Red);
-                var coolB = Math.Max(1.0, cool.Blue - bg.Blue);
-                Assert.IsGreaterThan(warmB * 1.35, warmR, $"VirtualSky JPEG warm star expected delta R/B > 1.35, got warm={warm} bg={bg}.");
-                Assert.IsGreaterThanOrEqualTo(coolR, coolB, $"VirtualSky JPEG cool star must not invert toward red, got cool={cool} bg={bg}.");
-                Assert.IsGreaterThan(1.30 * (coolR / coolB), warmR / warmB,
-                    $"VirtualSky JPEG warm vs cool R/B chromatic contrast must remain distinct, warm={warm} cool={cool} bg={bg}.");
+                var warm = MeasureJpegPatch(decoded, warmCenter, radius: 1);
+                var cool = MeasureJpegPatch(decoded, coolCenter, radius: 1);
+                var warmR = warm.Red - bg.Red;
+                var warmB = warm.Blue - bg.Blue;
+                var coolR = cool.Red - bg.Red;
+                var coolB = cool.Blue - bg.Blue;
+                Assert.IsGreaterThanOrEqualTo(25.0, warmR, $"VirtualSky JPEG warm star must rise well above background, warm={warm} bg={bg}.");
+                Assert.IsGreaterThan(Math.Max(1.0, warmB) * 1.40, warmR, $"VirtualSky JPEG warm star expected delta R/B > 1.40, got warm={warm} bg={bg}.");
+                // ASI178MC linear B/R at B-V=-0.4 is ~1.27, which maps under gamma=2.2 to ~1.115 in sRGB; require strictly > 1.05 above background!
+                Assert.IsGreaterThanOrEqualTo(25.0, coolB, $"VirtualSky JPEG cool target must rise well above background, cool={cool} bg={bg}.");
+                Assert.IsGreaterThan(Math.Max(1.0, coolR) * 1.05, coolB, $"VirtualSky JPEG cool target expected non-vacuous blue dominance B/R > 1.05, got cool={cool} bg={bg}.");
                 TestContext.WriteLine(string.Create(CultureInfo.InvariantCulture,
                     $"VirtualSky Bayer stack103 linear warm R/B={linWarmR / linWarmB:F2} cool B/R={linCoolB / linCoolR:F2}; " +
-                    $"JPEG warm delta R/B={warmR / warmB:F2} cool delta B/R={coolB / coolR:F2}"));
+                    $"JPEG warm delta R={warmR:F1}/B={warmB:F1} cool delta B={coolB:F1}/R={coolR:F1}"));
             }
         }
         finally
@@ -773,11 +825,27 @@ public sealed class CenteredPipelineQualificationTests
         Assert.ThrowsExactly<AssertFailedException>(() =>
             AssertMonoPreviewEquality(falseColorDecoded, "prospective-false-color-mono"));
 
-        // 4. Prospective failure: wrong transform (applying stack 104's shift to stack 103's trail coordinates).
-        var actual103 = (X1: 42.5, Y1: 54.5, X2: 74.5, Y2: 72.5);
-        AssertTrailSegmentMatchesExpected(actual103, new(42.5, 54.5), new(74.5, 72.5), "negative-control-trail-baseline");
+        // 4. Prospective failure: wrong transform exercised through the REAL ImageSimilarity + preview transform +
+        // GroupedSvgPresentationRenderer code path (swapping stack 104's shift onto stack 103's contributor trail).
+        var sourceTrailStart = new PixelPoint(40.0, 56.0);
+        var sourceTrailEnd = new PixelPoint(72.0, 74.0);
+        var previewTransform = new CenteredViewPreviewTransform(Width, Height, 0, 0, Width, Height, Width, Height);
+        var validTrailSvgLine = RenderMappedTrailThroughProductionSvg(
+            new ImageSimilarity(1, 0, 2.5, -1.5), previewTransform, sourceTrailStart, sourceTrailEnd);
+        AssertTrailSegmentMatchesExpected(
+            validTrailSvgLine,
+            new(sourceTrailStart.X + 2.5, sourceTrailStart.Y - 1.5),
+            new(sourceTrailEnd.X + 2.5, sourceTrailEnd.Y - 1.5),
+            "negative-control-trail-baseline");
+
+        var wrongTransformSvgLine = RenderMappedTrailThroughProductionSvg(
+            new ImageSimilarity(1, 0, 1.25, -0.75), previewTransform, sourceTrailStart, sourceTrailEnd);
         Assert.ThrowsExactly<AssertFailedException>(() =>
-            AssertTrailSegmentMatchesExpected(actual103, new(41.25, 55.25), new(73.25, 73.25), "prospective-wrong-transform"));
+            AssertTrailSegmentMatchesExpected(
+                wrongTransformSvgLine,
+                new(sourceTrailStart.X + 2.5, sourceTrailStart.Y - 1.5),
+                new(sourceTrailEnd.X + 2.5, sourceTrailEnd.Y - 1.5),
+                "prospective-wrong-transform"));
 
         // 5. Prospective failure: naive mixed-CFA mosaic shift by (1,1) without linear reconstruction swaps/blends R and B!
         var shiftedNaive = new byte[bggrBytes.Length];
@@ -796,6 +864,49 @@ public sealed class CenteredPipelineQualificationTests
         var mixedDecoded = new DecodedImage(Width, Height, CameraPixelFormat.Rgb24, Width * 3, mixedRgb, "raw", "test");
         Assert.ThrowsExactly<AssertFailedException>(() =>
             AssertColorPreviewTargets(mixedDecoded, "prospective-mixed-cfa-resampling"));
+    }
+
+    private static (double X1, double Y1, double X2, double Y2) RenderMappedTrailThroughProductionSvg(
+        ImageSimilarity registration,
+        CenteredViewPreviewTransform previewTransform,
+        PixelPoint sourceStart,
+        PixelPoint sourceEnd)
+    {
+        var mappedStart = previewTransform.ToPreview(registration.SourceToReference(sourceStart)!.Value);
+        var mappedEnd = previewTransform.ToPreview(registration.SourceToReference(sourceEnd)!.Value);
+        var payload = PresentationLayerPayloadJson.Create(
+            new string('D', 64),
+            previewTransform.PreviewWidth,
+            previewTransform.PreviewHeight,
+            segments: [new(mappedStart, mappedEnd, 2, new(255, 200, 80))]);
+        var compatibility = new PresentationCompatibilityDescriptor(
+            previewTransform.PreviewWidth, previewTransform.PreviewHeight, new string('F', 64), new string('1', 64));
+        var source = new PresentationProductReference(
+            Guid.NewGuid(), new string('E', 64), PresentationLayerPayloadJson.MediaType, compatibility);
+        var layer = LayeredPresentationJson.CreateLayer(
+            TransientTrailPresentation.LayerKind,
+            source,
+            null,
+            PresentationCoordinateSpace.ScenePixels,
+            PresentationLayerCompositor.AlgorithmVersion,
+            TransientTrailPresentation.ProducerVersion,
+            500,
+            PresentationBlendMode.Normal,
+            1_000_000,
+            true,
+            JsonSerializer.SerializeToElement(new { }));
+        var manifest = LayeredPresentationJson.CreateManifest(source, null, [layer]);
+        var rendered = GroupedSvgPresentationRenderer.Render(manifest, [payload], new string('2', 64));
+        var document = XDocument.Parse(Encoding.UTF8.GetString(rendered.Svg.Span));
+        XNamespace svg = "http://www.w3.org/2000/svg";
+        var group = document.Descendants(svg + "g")
+            .Single(element => element.Attribute("data-layer-kind")?.Value == TransientTrailPresentation.LayerKind);
+        var line = group.Descendants(svg + "line").Single();
+        return (
+            double.Parse(line.Attribute("x1")!.Value, CultureInfo.InvariantCulture),
+            double.Parse(line.Attribute("y1")!.Value, CultureInfo.InvariantCulture),
+            double.Parse(line.Attribute("x2")!.Value, CultureInfo.InvariantCulture),
+            double.Parse(line.Attribute("y2")!.Value, CultureInfo.InvariantCulture));
     }
 
     internal static void AssertColorPreviewTargets(
@@ -1157,19 +1268,37 @@ public sealed class CenteredPipelineQualificationTests
         ];
         var projection = RigProjectionContextFactory.CreateNative(profile.Rig);
         var projector = ProjectorFactory.Create(projection);
-        return new(offsets.Select((offset, index) =>
+        var entries = offsets.Select((offset, index) =>
         {
-            var direction = projector.Unproject(new(projection.PrincipalPointX + offset.X, projection.PrincipalPointY + offset.Y));
+            // Index 0 is an unsaturated warm (red, B-V=+2.0) star; index 1 is an unsaturated cool (blue, B-V=-0.4) star.
+            var colorIndex = index == 0 ? 2.0 : index == 1 ? -0.4 : 0.3 + index % 11 * 0.05;
+            var magnitude = index == 0 ? 0.2 : index == 1 ? 1.4 : 0.4 + index * 0.025;
+            return (Offset: offset, Name: $"qual-wide-{index}", Magnitude: magnitude, ColorIndex: colorIndex);
+        }).ToList();
+        // Add tight unsaturated chromatic companions around both warm (30,-53) and cool (62,-18) targets
+        // so both span a full 8x8 JPEG chroma block without saturating to white.
+        for (var dy = -2; dy <= 2; dy++)
+        {
+            for (var dx = -2; dx <= 2; dx++)
+            {
+                if (dx == 0 && dy == 0)
+                {
+                    continue;
+                }
+                entries.Add((new PixelPoint(30 + dx, -53 + dy), $"qual-warm-{dx}_{dy}", 0.4, 2.0));
+                entries.Add((new PixelPoint(62 + dx, -18 + dy), $"qual-cool-{dx}_{dy}", 0.2, -0.4));
+            }
+        }
+
+        return new(entries.Select(entry =>
+        {
+            var direction = projector.Unproject(new(projection.PrincipalPointX + entry.Offset.X, projection.PrincipalPointY + entry.Offset.Y));
             Assert.IsNotNull(direction);
             var ofDate = CoordinateTransforms.HorizontalToEquatorial(direction.Value,
                 start, profile.Observatory.LatitudeDegrees, profile.Observatory.LongitudeDegrees);
             var star = EquatorialPrecession.PrecessToJ2000(ofDate, start);
-            // Index 0 is a warm (red, B-V=+2.0) star; index 1 is a cool (blue, B-V=-0.4) star.
-            var colorIndex = index == 0 ? 2.0 : index == 1 ? -0.4 : 0.3 + index % 11 * 0.05;
-            var magnitude = index is 0 or 1 ? 0.1 : 0.4 + index * 0.025;
-            var name = $"qual-wide-{index}";
-            return new CelestialCatalogObject(name, name, star.RightAscensionHours, star.DeclinationDegrees,
-                magnitude, colorIndex);
+            return new CelestialCatalogObject(entry.Name, entry.Name, star.RightAscensionHours, star.DeclinationDegrees,
+                entry.Magnitude, entry.ColorIndex);
         }));
     }
 
