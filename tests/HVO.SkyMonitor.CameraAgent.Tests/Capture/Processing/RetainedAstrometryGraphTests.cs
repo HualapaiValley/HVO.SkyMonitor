@@ -38,7 +38,7 @@ public sealed partial class DurableCaptureProcessingTests
             command.CommandText = "DROP INDEX ix_processing_outputs_astrometry_lookup;";
             await command.ExecuteNonQueryAsync().ConfigureAwait(false);
             Assert.AreSame(cold, await store.ReadAstrometryCandidatesAsync(CancellationToken.None).ConfigureAwait(false));
-            using var reader = new HVO.SkyMonitor.CameraAgent.Common.Gallery.CameraAgentRetainedAstrometryService(store,
+            using var reader = CreateUnpooledAstrometryReader(store,
                 new Moq.Mock<HVO.SkyMonitor.CameraAgent.Common.Gallery.ICameraAgentArtifactService>(Moq.MockBehavior.Strict).Object);
             var result = await reader.ReadLatestAcceptedAsync(CancellationToken.None).ConfigureAwait(false);
             Assert.IsTrue(result.Completed);

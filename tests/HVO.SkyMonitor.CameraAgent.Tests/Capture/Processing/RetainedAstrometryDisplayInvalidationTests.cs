@@ -68,7 +68,7 @@ public sealed partial class DurableCaptureProcessingTests
                     }
                     return await artifacts.OpenContentAsync(id, cancellation).ConfigureAwait(false);
                 });
-            using var latestReader = new CameraAgentRetainedAstrometryService(store, checkpoint.Object);
+            using var latestReader = CreateUnpooledAstrometryReader(store, checkpoint.Object);
             var service = CameraAgentOperatorUiServiceTests.CreateAuthorizedRetainedAstrometryService(latestReader, layerService);
             var expectedOlder = CameraAgentLatestAstrometry.FromVerified(
                 await selectedReader.GetAsync(older.Capture.CaptureId, token).ConfigureAwait(false));
