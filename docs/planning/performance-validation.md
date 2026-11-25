@@ -733,7 +733,7 @@ the `local-process` adapter against the central host with the real runner
 binary. It recorded cold and warm start, drain throughput with 1, 2, and 4
 instances, scale-to-zero and cleanup timing, and host CPU/memory in
 `TestResults/elastic-providers/<revision>/elastic-provider-evidence.json`.
-[Historical procedure](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/66e6aa237b40c70342815af6e2511122daa56bb6/docs/planning/performance-validation.md#elastic-provider-evidence-430).
+[Historical test](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/fdd5b67b2af2cd1e90a1e56425240e81669d2764/tests/HVO.SkyMonitor.LogicHost.IntegrationTests/ElasticProviderPerformanceEvidenceTests.cs).
 
 ## Space-weather refresh composition (Refs #1398)
 

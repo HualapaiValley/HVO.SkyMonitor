@@ -89,7 +89,7 @@ inputs:
 | Star residuals and persistent masks | `TransientStarMaskStrategyTests.W1W2PersistentProjectedStarMaskEvidence` renders full-resolution W1/W2 stars and asserts the persistent projected mask leaves zero extracted components; the focused temporal test separately pins mask composition semantics |
 | Saturation topology | `TransientDetectorInputTests.RggbSaturationMaskPreservesAnyPhotositeClippingHiddenByCellAverage`, temporal saturation-mask exclusion, and the fragmented-flare matrix case |
 | Mask integrity and bounds | temporal tamper, incomplete-mask, non-persistent-mask, and malformed-context tests |
-| Direct/reconstructed conformance (historical) | The [pre-retirement central adapter test](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/66e6aa237b40c70342815af6e2511122daa56bb6/docs/validation/virtual-transient-scenarios.md) compares background pixels/masks/descriptors, extraction receipts/candidates, and assessment bytes |
+| Direct/reconstructed conformance (historical) | The [pre-retirement central adapter test](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/fdd5b67b2af2cd1e90a1e56425240e81669d2764/tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests/LogicHostProcessingConformanceTests.cs) compared background pixels/masks/descriptors, extraction receipts/candidates, and assessment bytes |
 | Detector disabled | `TransientTemporalBackgroundTests.OffDoesNotConstructTemporalWindow` verifies the disabled path retains no window. `TransientTemporalActivationPerformanceTests.DisabledActivationDoesNotAllocatePerCall` measures zero current-thread bytes over 1,000 warmed calls. |
 | Reprocessing | `TransientAssessmentTests.ReprocessingPreservesHistoryAndOnlySupersedesExplicitSameProducerAssessment` |
 
