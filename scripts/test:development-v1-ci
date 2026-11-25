@@ -19,6 +19,7 @@ import copy
 import unittest.mock
 import functools
 import itertools
+import multiprocessing
 import os
 import pathlib
 import re
@@ -209,6 +210,10 @@ unit_filter_assignment = 'UNIT_FILTER = "TestCategory=Unit&TestCategory!=Perform
 unit_filter_error = "Unit driver must select Unit cases and exclude Performance cases"
 directory_build_targets = (root / "Directory.Build.targets").read_text()
 coverage_policy_script = (root / "scripts/coverage:policy").read_text()
+expected_queue_workflow = (root / "tests/fixtures/development-v1-ci/merge-queue-reviewed-head.expected.txt").read_text()
+policy_components = subprocess.check_output(
+    [str(root / "scripts/coverage:component"), "--list-components"], text=True
+).splitlines()
 skip_deployment_cli_target = (
     "<PropertyGroup Condition=\"'$(SkipDeploymentCliTests)' == 'true' And\n"
     "                            '$(MSBuildProjectName)' == 'HVO.SkyMonitor.Deployment.Cli.Tests'\">\n"
@@ -371,7 +376,7 @@ def violations(short, full, queue=None, extra=None, unit_source=None):
     for required in required_names:
         require(names.count(normalized_name(required)) == 1,
                 f"globally unique required job name: {required}")
-    require(queue == (root / "tests/fixtures/development-v1-ci/merge-queue-reviewed-head.expected.txt").read_text(),
+    require(queue == expected_queue_workflow,
             "queue whole workflow matches approved source")
     require(queue.split("\npermissions:\n", 1)[-1].split("\njobs:\n", 1)[0].strip() ==
             queue_permissions.split("\n", 1)[1].strip() and
@@ -609,9 +614,6 @@ def violations(short, full, queue=None, extra=None, unit_source=None):
     workflow_retired = sorted(re.findall(r'"([^"]+)"', workflow_retired_match.group(1))) if workflow_retired_match else []
     policy_escapes = sorted(re.findall(r"'([^']+)'", policy_escapes_match.group(1))) if policy_escapes_match else []
     workflow_escapes = sorted(re.findall(r'"([^"]+)"', workflow_escapes_match.group(1))) if workflow_escapes_match else []
-    policy_components = subprocess.check_output(
-        [str(root / "scripts/coverage:component"), "--list-components"], text=True
-    ).splitlines()
     workflow_components = re.findall(r'"([^"]+)"', workflow_components_match.group(1)) if workflow_components_match else []
     policy_local_only = re.findall(r'\.key == "([^"]+)"', coverage_policy_script)
     require(
@@ -1159,9 +1161,20 @@ with tempfile.TemporaryDirectory(prefix="hvo-yaml-parser-") as directory:
     if result.returncode != 0 or result.stdout.strip() != "PyYAML available":
         raise SystemExit(f"Hosted yamllint parser fallback failed: {result.stderr}")
     print("PyYAML availability controls: absent parser fails; hosted pipx fallback passes.")
-for name, candidate, qualification, *queue in mutations:
-    if not violations(candidate, qualification, *queue):
-        raise SystemExit(f"Mutation was not rejected: {name}")
+def _check_mutation(item):
+    name, candidate, qualification, *queue = item
+    return None if violations(candidate, qualification, *queue) else name
+
+
+mutation_workers = min(os.cpu_count() or 2, 4)
+if mutation_workers > 1:
+    with multiprocessing.get_context("fork").Pool(mutation_workers) as pool:
+        mutation_failures = pool.map(_check_mutation, mutations, chunksize=8)
+else:
+    mutation_failures = list(map(_check_mutation, mutations))
+for survived in mutation_failures:
+    if survived is not None:
+        raise SystemExit(f"Mutation was not rejected: {survived}")
 changelog = step(job(short, "preflight"), "Validate changelog fragments")
 for label, original, replacement in (
     ("limit removed", 'args+=(--base "$first")', ":"),
