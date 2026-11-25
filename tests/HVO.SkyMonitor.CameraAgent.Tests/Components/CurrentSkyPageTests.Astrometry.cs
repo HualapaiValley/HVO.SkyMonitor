@@ -489,6 +489,7 @@ public sealed partial class CurrentSkyPageTests
     // lets the test observe its final state without sleeps or a race against a detached read task.
     private sealed class DeferredAstrometryRead<T> : IValueTaskSource<OperatorUiResult<T>>
     {
+        private readonly Lock _gate = new();
         private Action<object?>? _continuation;
         private object? _state;
         private OperatorUiResult<T>? _result;
@@ -496,21 +497,78 @@ public sealed partial class CurrentSkyPageTests
         private bool _completed;
         internal TaskCompletionSource Awaiting { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public ValueTask<OperatorUiResult<T>> Read() => new(this, 0);
-        public ValueTaskSourceStatus GetStatus(short token) => _completed ? ValueTaskSourceStatus.Succeeded : ValueTaskSourceStatus.Pending;
-        public OperatorUiResult<T> GetResult(short token) => _error is { } error ? throw error : _result!;
+        public ValueTaskSourceStatus GetStatus(short token)
+        {
+            lock (_gate)
+            {
+                return !_completed
+                    ? ValueTaskSourceStatus.Pending
+                    : _error is not null
+                        ? ValueTaskSourceStatus.Faulted
+                        : ValueTaskSourceStatus.Succeeded;
+            }
+        }
+        public OperatorUiResult<T> GetResult(short token)
+        {
+            lock (_gate)
+            {
+                return _error is { } error ? throw error : _result!;
+            }
+        }
         public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags)
         {
-            _continuation = continuation;
-            _state = state;
+            Action<object?>? immediate = null;
+            object? stateToRun = null;
+            lock (_gate)
+            {
+                if (_completed)
+                {
+                    immediate = continuation;
+                    stateToRun = state;
+                }
+                else
+                {
+                    _continuation = continuation;
+                    _state = state;
+                }
+            }
             Awaiting.TrySetResult();
+            immediate?.Invoke(stateToRun);
         }
         public void Complete(OperatorUiResult<T>? result = null, Exception? error = null)
         {
-            Assert.IsNotNull(_continuation, "The pending read must be awaiting delivery.");
-            _result = result;
-            _error = error;
-            _completed = true;
-            _continuation(_state);
+            Action<object?>? continuation;
+            object? state;
+            lock (_gate)
+            {
+                Assert.IsNotNull(_continuation, "The pending read must be awaiting delivery.");
+                Assert.IsFalse(_completed, "The pending read was already completed.");
+                _result = result;
+                _error = error;
+                _completed = true;
+                continuation = _continuation;
+                state = _state;
+                _continuation = null;
+                _state = null;
+            }
+            continuation(state);
+        }
+        public bool TryComplete(OperatorUiResult<T> result)
+        {
+            Action<object?>? continuation;
+            object? state;
+            lock (_gate)
+            {
+                if (_completed) return false;
+                _result = result;
+                _completed = true;
+                continuation = _continuation;
+                state = _state;
+                _continuation = null;
+                _state = null;
+            }
+            continuation?.Invoke(state);
+            return true;
         }
     }
 

@@ -6,9 +6,10 @@ using System.Xml.Linq;
 
 var categories = new[] { "Unit", "Integration", "Manual", "Soak", "External", "Hardware", "Performance" };
 var emitMatrix = args is ["--emit-matrix"];
-if (args.Length != 0 && !emitMatrix)
+var emitCameraAgentDiscovery = args is ["--emit-cameraagent-discovery"];
+if (args.Length != 0 && !emitMatrix && !emitCameraAgentDiscovery)
 {
-    await Console.Error.WriteLineAsync("Usage: hvo-test-category-audit [--emit-matrix]").ConfigureAwait(false);
+    await Console.Error.WriteLineAsync("Usage: hvo-test-category-audit [--emit-matrix | --emit-cameraagent-discovery]").ConfigureAwait(false);
     return 2;
 }
 
@@ -17,6 +18,19 @@ try
     var root = FindRepositoryRoot();
     var projects = LoadProjects(root);
     var unitProjects = LoadUnitProjects(root, projects);
+    if (emitCameraAgentDiscovery)
+    {
+        const string cameraAgent = "HVO.SkyMonitor.CameraAgent.Tests";
+        if (!unitProjects.Contains(cameraAgent))
+        {
+            throw new InvalidDataException($"{cameraAgent} is missing from the Unit project inventory.");
+        }
+
+        var tests = await DiscoverAsync(root, cameraAgent, projects[cameraAgent]).ConfigureAwait(false);
+        await Console.Out.WriteLineAsync(JsonSerializer.Serialize(tests.OrderBy(static test => test.Id))).ConfigureAwait(false);
+        return 0;
+    }
+
     var failures = await CheckSourcesAsync(root, categories).ConfigureAwait(false);
     var report = new SortedDictionary<string, Dictionary<string, int>>(StringComparer.Ordinal);
 
@@ -316,8 +330,15 @@ static void AddTests(JsonElement payload, Dictionary<Guid, DiscoveredTest> tests
             .SelectMany(static property => property.GetProperty("Value").EnumerateArray())
             .Select(static category => category.GetString() ?? throw new InvalidDataException("VSTest discovery returned a null test category."))
             .Distinct(StringComparer.Ordinal).ToArray();
+        var areas = test.GetProperty("Properties").EnumerateArray()
+            .Where(static property => property.GetProperty("Key").GetProperty("Id").ValueEquals("TestObject.Traits"))
+            .SelectMany(static property => property.GetProperty("Value").EnumerateArray())
+            .Where(static trait => trait.GetProperty("Key").ValueEquals("Area"))
+            .Select(static trait => trait.GetProperty("Value").GetString() ??
+                throw new InvalidDataException("VSTest discovery returned a null Area trait."))
+            .ToArray();
         var name = nameElement.GetString()!;
-        if (!tests.TryAdd(id, new DiscoveredTest(name, categories)))
+        if (!tests.TryAdd(id, new DiscoveredTest(id, name, categories, areas)))
         {
             throw new InvalidDataException($"VSTest discovery reused case ID '{id}' for '{name}' in '{project}'.");
         }
@@ -335,7 +356,7 @@ static string FindRepositoryRoot()
     return directory?.FullName ?? throw new DirectoryNotFoundException("Unable to locate the repository root.");
 }
 
-internal sealed record DiscoveredTest(string Name, string[] Categories);
+internal sealed record DiscoveredTest(Guid Id, string Name, string[] Categories, string[] Areas);
 
 internal static partial class CategoryPatterns
 {

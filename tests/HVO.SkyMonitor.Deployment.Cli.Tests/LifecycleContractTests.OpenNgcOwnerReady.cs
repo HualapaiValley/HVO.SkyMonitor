@@ -173,7 +173,8 @@ public sealed partial class LifecycleContractTests
                 var contract = ProductionCatalog.Get(fixture.Manifest.Catalog.CatalogId);
                 return Reply(new
                 {
-                    checks = new[] { new { name = "catalog", data = new
+                    status = "Healthy",
+                    checks = new[] { new { name = "catalog", status = "Healthy", data = new
                     {
                         contract.CatalogId, contract.CatalogVersion, contract.SchemaVersion,
                         contract.PreprocessingVersion, contract.RowCount

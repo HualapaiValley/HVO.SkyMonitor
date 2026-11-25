@@ -67,7 +67,16 @@ public sealed class LocalAutomationOffSweepWorker : BackgroundService
             drained = _idle.Task;
             cancellation = _scriptStop.CancelAsync();
         }
-        await cancellation.ConfigureAwait(false);
+        try
+        {
+            await cancellation.ConfigureAwait(false);
+        }
+        catch (AggregateException)
+        {
+            // Once cancellation has faulted, report it only after this attempt releases its authority.
+            await drained.ConfigureAwait(false);
+            throw;
+        }
         await drained.WaitAsync(cancellationToken).ConfigureAwait(false);
         return true;
     }
