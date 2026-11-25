@@ -5,6 +5,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Modules.VirtualSky")]
 public sealed class ProjectedSceneStoreTests
 {
     [TestMethod]

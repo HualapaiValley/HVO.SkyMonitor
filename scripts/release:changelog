@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+"""Validate pending changelog fragments or assemble a final release section."""
+
+import argparse
+from collections import defaultdict
+from dataclasses import dataclass
+from datetime import date
+import os
+from pathlib import Path
+import re
+import stat
+import subprocess
+import sys
+import tempfile
+import unicodedata
+
+ROOT = Path(__file__).resolve().parent.parent
+SECTIONS = ("Added", "Changed", "Deprecated", "Removed", "Fixed", "Security")
+SECTION_BY_NAME = {section.lower(): section for section in SECTIONS}
+FRAGMENT_NAME = re.compile(r"([a-z0-9]+(?:-[a-z0-9]+)*)\.([a-z]+)\.md")
+ENTRY = re.compile(r"- \S[^\n]*(?:\n  \S[^\n]*)*\n")
+ISSUE = re.compile(r" (?:#[1-9][0-9]*|\(#[1-9][0-9]*\))\n\Z")
+VERSION = re.compile(r"(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2}")
+REPOSITORY = "https://github.com/HualapaiValley/HVO.SkyMonitor"
+
+
+@dataclass(frozen=True)
+class Fragment:
+    path: Path
+    section: str
+    text: str
+
+
+def read_fragments(directory):
+    if directory.is_symlink() or not directory.is_dir():
+        raise ValueError("changelog.d must be a directory.")
+    fragments = []
+    seen = set()
+    for path in sorted(directory.iterdir()):
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"{path.name!r}: changelog.d accepts regular files only.")
+        if path.name == "README.md":
+            continue
+        match = FRAGMENT_NAME.fullmatch(path.name)
+        if match is None or match[2] not in SECTION_BY_NAME:
+            raise ValueError(f"{path.name!r}: expected <id>.<section>.md with a Keep a Changelog section.")
+        identifier, section = match.groups()
+        if identifier in seen:
+            raise ValueError(f"{path.name}: duplicate changelog fragment ID '{identifier}'.")
+        seen.add(identifier)
+        try:
+            text = path.read_bytes().decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ValueError(f"{path.name}: cannot decode fragment as UTF-8.") from error
+        issue = ISSUE.search(text)
+        if (not ENTRY.fullmatch(text) or issue is None or issue.start() <= 2
+                or any(line.rstrip() != line for line in text.splitlines())
+                or any(unicodedata.category(char) in {"Cc", "Cf"} for char in text if char != "\n")):
+            raise ValueError(f"{path.name}: expected one Markdown bullet ending with an issue reference and a newline.")
+        fragments.append(Fragment(path, SECTION_BY_NAME[section], text))
+    return fragments
+
+
+def check_pr_limit(base):
+    if not re.fullmatch(r"[0-9a-f]{40}", base):
+        raise ValueError("--base requires the full PR base commit SHA.")
+    changed = subprocess.run(
+        ["git", "diff", "--name-only", "--no-renames", "--diff-filter=AMT", "-z",
+         base, "HEAD", "--", "changelog.d"],
+        cwd=ROOT, check=True, capture_output=True,
+    ).stdout.split(b"\0")
+    fragments = [os.fsdecode(path) for path in changed if path not in (b"", b"changelog.d/README.md")]
+    if len(fragments) > 1:
+        raise ValueError("Each PR may add or change one changelog fragment. Found " + ", ".join(fragments) + ".")
+
+
+def assemble(changelog, fragments, version, release_date):
+    if "\r" in changelog:
+        raise ValueError("CHANGELOG.md must use LF line endings.")
+    headings = list(re.finditer(r"^## (.+)$", changelog, re.MULTILINE))
+    if (not headings or headings[0][1] != "[Unreleased]"
+            or any(heading[1] == "[Unreleased]" for heading in headings[1:])):
+        raise ValueError("CHANGELOG.md must begin its version sections with one ## [Unreleased] heading.")
+    if re.search(rf"^(?:## )?\[{re.escape(version)}\](?:[ :]|$)", changelog, re.MULTILINE):
+        raise ValueError(f"CHANGELOG.md already has a {version} heading or link.")
+
+    unreleased = headings[0]
+    references = re.search(r"^\[Unreleased\]: .+$", changelog, re.MULTILINE)
+    end = headings[1].start() if len(headings) > 1 else references.start() if references else len(changelog)
+    legacy = changelog[unreleased.end():end]
+    history = changelog[end:]
+    groups = defaultdict(list)
+    sections = list(re.finditer(r"^### (.+)$", legacy, re.MULTILINE))
+    preamble = legacy[:sections[0].start() if sections else len(legacy)].strip("\n")
+    for index, section in enumerate(sections):
+        if section[1] not in SECTIONS:
+            raise ValueError(f"Unknown Unreleased section '{section[1]}'.")
+        section_end = sections[index + 1].start() if index + 1 < len(sections) else len(legacy)
+        entry = legacy[section.end():section_end].strip("\n")
+        if entry.strip():
+            groups[section[1]].append(entry)
+    for fragment in fragments:
+        groups[fragment.section].append(fragment.text.rstrip("\n"))
+
+    if not preamble.strip() and not groups:
+        raise ValueError("There are no Unreleased entries or fragments to assemble.")
+    note_blocks = [preamble] if preamble.strip() else []
+    for section in SECTIONS:
+        if groups.get(section):
+            note_blocks.append(f"### {section}\n\n" + "\n\n".join(groups[section]))
+    release = f"## [{version}] - {release_date}\n\n" + "\n\n".join(note_blocks) + "\n\n"
+    if references:
+        new_links = (f"[Unreleased]: {REPOSITORY}/compare/v{version}...development/v1\n"
+                     f"[{version}]: {REPOSITORY}/releases/tag/v{version}")
+        history = re.sub(r"^\[Unreleased\]: .+$", lambda _: new_links, history, count=1, flags=re.MULTILINE)
+    return changelog[:unreleased.end()] + "\n\n" + release + history
+
+
+def write_release(path, original, updated, fragments):
+    # Publish the assembled notes before deleting any input. If cleanup is
+    # interrupted, the release worktree still has all entries in CHANGELOG.md.
+    if path.read_bytes() != original or any(
+            fragment.path.read_bytes() != fragment.text.encode("utf-8") for fragment in fragments):
+        raise ValueError("Changelog inputs changed during assembly. Try again with the current files.")
+    with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".changelog-", delete=False) as temp:
+        temp_path = Path(temp.name)
+        try:
+            os.fchmod(temp.fileno(), stat.S_IMODE(path.stat().st_mode))
+            temp.write(updated.encode("utf-8"))
+            temp.close()
+            temp_path.replace(path)
+        finally:
+            temp_path.unlink(missing_ok=True)
+    for fragment in fragments:
+        fragment.path.unlink()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--check", action="store_true", help="validate fragment filenames and content")
+    mode.add_argument("--dry-run", action="store_true", help="print the assembled changelog without writing files")
+    parser.add_argument("--base", help="PR base SHA for checking the one-fragment limit with --check")
+    parser.add_argument("--date", help="final release date (YYYY-MM-DD)")
+    parser.add_argument("version", nargs="?", help="final release version (X.Y.Z)")
+    args = parser.parse_args()
+    if args.check:
+        if args.version or args.date:
+            parser.error("--check does not take a release version or date.")
+    elif args.base is not None or not args.version or not args.date:
+        parser.error("assembly takes VERSION --date YYYY-MM-DD and optionally --dry-run.")
+
+    try:
+        fragments = read_fragments(ROOT / "changelog.d")
+        if args.check:
+            if args.base is not None:
+                check_pr_limit(args.base)
+            print(f"Validated {len(fragments)} changelog fragment(s).")
+            return 0
+
+        if not VERSION.fullmatch(args.version):
+            raise ValueError("Expected a final release version X.Y.Z.")
+        if date.fromisoformat(args.date).isoformat() != args.date:
+            raise ValueError("Expected a release date in YYYY-MM-DD form.")
+        path = ROOT / "CHANGELOG.md"
+        if path.is_symlink() or not path.is_file():
+            raise ValueError("CHANGELOG.md must be a regular file.")
+        original = path.read_bytes()
+        updated = assemble(original.decode("utf-8"), fragments, args.version, args.date)
+        if args.dry_run:
+            sys.stdout.write(updated)
+            print(f"Would consume {len(fragments)} changelog fragment(s).", file=sys.stderr)
+        else:
+            write_release(path, original, updated, fragments)
+            print(f"Assembled {args.version} and consumed {len(fragments)} changelog fragment(s).")
+        return 0
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        print(f"release:changelog: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

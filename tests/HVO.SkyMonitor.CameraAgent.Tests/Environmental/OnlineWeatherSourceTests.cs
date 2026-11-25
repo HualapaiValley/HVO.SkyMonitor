@@ -7,6 +7,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Environmental;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Environmental")]
 public sealed class OnlineWeatherSourceTests
 {
     private const string Nws = """{"properties":{"timestamp":"2026-11-08T06:00:00Z","temperature":{"value":20,"unitCode":"wmoUnit:degC"},"relativeHumidity":{"value":40,"unitCode":"wmoUnit:percent"},"barometricPressure":{"value":90000,"unitCode":"wmoUnit:Pa"},"windSpeed":{"value":36,"unitCode":"wmoUnit:km_h-1"},"windDirection":{"value":180,"unitCode":"wmoUnit:degree_(angle)"}}}""";

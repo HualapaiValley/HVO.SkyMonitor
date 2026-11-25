@@ -61,6 +61,7 @@ public sealed partial class ProjectedSceneStagingStoreTests
 
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "Modules.VirtualSky")]
 public sealed class ProjectedSceneStagingKernelFaultTests
 {
     [TestMethod]

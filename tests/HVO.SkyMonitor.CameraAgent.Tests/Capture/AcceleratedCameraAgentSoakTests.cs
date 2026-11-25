@@ -15,6 +15,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture;
 
 [TestClass]
 [TestCategory("Soak")]
+[TestProperty("Area", "Capture")]
 public sealed class AcceleratedCameraAgentSoakTests
 {
     [TestMethod]

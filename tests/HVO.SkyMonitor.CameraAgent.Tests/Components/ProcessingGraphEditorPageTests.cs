@@ -11,6 +11,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Ui")]
 public sealed class ProcessingGraphEditorPageTests
 {
     private static readonly string[] RawOnly = ["$raw"];

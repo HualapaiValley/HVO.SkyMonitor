@@ -104,10 +104,8 @@ if ((${#targets[@]} == 0)); then
 fi
 
 resolved=()
-lint_targets=()
 # resolve_one assigns these by name through printf -v, which static analysis cannot see.
 lexical='' canonical=''
-bounded_targets=()
 declare -A seen=()
 resolution_output="$(mktemp)"
 cleanup_files+=("$resolution_output")
@@ -156,28 +154,11 @@ for target in "${targets[@]}"; do
     }
     seen[$canonical]=1
     resolved+=("$path")
-    # scripts/test:deploy-environment is linted without -x. It sources the lifecycle
-    # library and twelve shard bodies (#875 stage 2), and -x would analyze that whole
-    # union in one process: measured 16.8 GB peak RSS on a 16 GB hosted runner, the
-    # shutdown that closed PR #874. Every file it sources is a tracked shell file that
-    # the derived selector already lists and this gate already lints with -x on its
-    # own (largest: 2.9 GB), so omitting -x on the harness loses no coverage; it only
-    # avoids analyzing the same files a second time inside one process.
-    if [[ "$target" == 'scripts/test:deploy-environment' ]]; then
-        bounded_targets+=("$path")
-    else
-        lint_targets+=("$path")
-    fi
 done
 
 failed=()
-for path in "${lint_targets[@]}"; do
+for path in "${resolved[@]}"; do
     if ! "$shellcheck_bin" -x --severity=warning "$path"; then
-        failed+=("${path#"$REPO_ROOT/"}")
-    fi
-done
-for path in "${bounded_targets[@]}"; do
-    if ! "$shellcheck_bin" --severity=warning "$path"; then
         failed+=("${path#"$REPO_ROOT/"}")
     fi
 done
@@ -186,18 +167,6 @@ if ((${#failed[@]} > 0)); then
         "$SHELLCHECK_VERSION" "${#failed[@]}" "${#resolved[@]}" >&2
     printf '  %s\n' "${failed[@]}" >&2
     exit 1
-fi
-if ((${#bounded_targets[@]} > 1)); then
-    printf 'ShellCheck bounded-source set is invalid; observed %d entries.\n' "${#bounded_targets[@]}" >&2
-    exit 1
-fi
-if [[ -z "$targets_file" && ${#bounded_targets[@]} -ne 1 ]]; then
-    printf 'The authoritative derived set did not contain the tracked bounded-source deployment harness.\n' >&2
-    exit 1
-fi
-if ((${#bounded_targets[@]} == 1)); then
-    printf 'ShellCheck bounded-source mode: %s is linted without -x; the files it sources are linted with -x as their own derived targets.\n' \
-        "${bounded_targets[0]#"$REPO_ROOT/"}"
 fi
 printf 'ShellCheck %s warning enforcement passed for %d derived shell file(s).\n' \
     "$SHELLCHECK_VERSION" "${#resolved[@]}"

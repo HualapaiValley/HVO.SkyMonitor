@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# infra:start - Start application containers that use shared hvo-docker services.
+# infra:start - Start the standalone CameraAgent development container.
 # Usage: ./scripts/infra:start [--reset [SERVICE...]] [--rebuild [SERVICE...]] [SERVICE...]
 
 set -euo pipefail
@@ -25,7 +25,7 @@ if [[ "$runtime_root_was_set" == true ]]; then
     HVO_RUNTIME_DATA_ROOT="$runtime_root_override"
 fi
 
-readonly APP_SERVICES=(logichost cameraagent)
+readonly APP_SERVICES=(cameraagent)
 RUNTIME_DATA_ROOT="$(realpath -ms "${HVO_RUNTIME_DATA_ROOT:-$REPO_ROOT/data}")"
 readonly RUNTIME_DATA_ROOT
 if [[ -z "$RUNTIME_DATA_ROOT" || "$RUNTIME_DATA_ROOT" == "/" ]]; then
@@ -37,9 +37,6 @@ LOCAL_UID="$(id -u)"
 export LOCAL_UID
 LOCAL_GID="$(id -g)"
 export LOCAL_GID
-HVO_OBJECT_STORE_ROOT="$(realpath -ms "${HVO_OBJECT_STORE_ROOT:-$RUNTIME_DATA_ROOT/object-store}")"
-readonly HVO_OBJECT_STORE_ROOT
-export HVO_OBJECT_STORE_ROOT
 hvo_acquire_application_state_lock "$RUNTIME_DATA_ROOT"
 hvo_require_restore_marker_access start
 
@@ -72,8 +69,6 @@ validate_runtime_directory() {
 reset_runtime_directory() {
     local directory="$1"
     case "$directory" in
-        "$RUNTIME_DATA_ROOT/logichost/dataprotection"|\
-        "$RUNTIME_DATA_ROOT/logichost/home"|\
         "$RUNTIME_DATA_ROOT/cameraagent/identity"|\
         "$RUNTIME_DATA_ROOT/cameraagent/dataprotection"|\
         "$RUNTIME_DATA_ROOT/cameraagent/provisioning"|\
@@ -87,11 +82,6 @@ reset_runtime_directory() {
     validate_runtime_directory "$directory"
     rm -rf -- "$directory"
     prepare_runtime_directory "$directory"
-}
-
-clean_logichost_data() {
-    reset_runtime_directory "$RUNTIME_DATA_ROOT/logichost/dataprotection"
-    reset_runtime_directory "$RUNTIME_DATA_ROOT/logichost/home"
 }
 
 clean_cameraagent_data() {
@@ -152,39 +142,19 @@ if [[ ${#START_SERVICES[@]} -eq 0 ]]; then
     fi
 fi
 if [[ ${#RESET_SERVICES[@]} -gt 0 ]]; then
-    for service in "${RESET_SERVICES[@]}"; do
-        if [[ "$service" == "logichost" ]]; then
-            validate_runtime_directory "$RUNTIME_DATA_ROOT/logichost/dataprotection"
-            validate_runtime_directory "$RUNTIME_DATA_ROOT/logichost/home"
-        else
-            validate_runtime_directory "$RUNTIME_DATA_ROOT/cameraagent/identity"
-            validate_runtime_directory "$RUNTIME_DATA_ROOT/cameraagent/dataprotection"
-            validate_runtime_directory "$RUNTIME_DATA_ROOT/cameraagent/provisioning"
-            validate_runtime_directory "$RUNTIME_DATA_ROOT/agent"
-            validate_runtime_directory "$RUNTIME_DATA_ROOT/archive"
-        fi
-    done
-    for service in "${RESET_SERVICES[@]}"; do
-        docker compose -f docker-compose.apps.yml rm -sf "$service"
-        if [[ "$service" == "logichost" ]]; then
-            clean_logichost_data
-        else
-            clean_cameraagent_data
-        fi
-    done
+    validate_runtime_directory "$RUNTIME_DATA_ROOT/cameraagent/identity"
+    validate_runtime_directory "$RUNTIME_DATA_ROOT/cameraagent/dataprotection"
+    validate_runtime_directory "$RUNTIME_DATA_ROOT/cameraagent/provisioning"
+    validate_runtime_directory "$RUNTIME_DATA_ROOT/agent"
+    validate_runtime_directory "$RUNTIME_DATA_ROOT/archive"
+    docker compose -f docker-compose.apps.yml rm -sf cameraagent
+    clean_cameraagent_data
     REBUILD_SERVICES+=("${RESET_SERVICES[@]}")
 fi
 if [[ ${#REBUILD_SERVICES[@]} -gt 0 ]]; then
     docker compose -f docker-compose.apps.yml build "${REBUILD_SERVICES[@]}"
 fi
 
-prepare_runtime_directory "$RUNTIME_DATA_ROOT/logichost/dataprotection"
-prepare_runtime_directory "$RUNTIME_DATA_ROOT/logichost/home"
-prepare_runtime_directory "$HVO_OBJECT_STORE_ROOT"
-prepare_runtime_directory "$HVO_OBJECT_STORE_ROOT/skymonitor-artifacts"
-prepare_runtime_directory "$HVO_OBJECT_STORE_ROOT/skymonitor-diagnostics"
-chmod 0750 "$HVO_OBJECT_STORE_ROOT" "$HVO_OBJECT_STORE_ROOT/skymonitor-artifacts" \
-    "$HVO_OBJECT_STORE_ROOT/skymonitor-diagnostics"
 prepare_runtime_directory "$RUNTIME_DATA_ROOT/catalog"
 prepare_runtime_directory "$RUNTIME_DATA_ROOT/cameraagent/identity"
 prepare_runtime_directory "$RUNTIME_DATA_ROOT/cameraagent/dataprotection"
@@ -193,4 +163,4 @@ prepare_runtime_directory "$RUNTIME_DATA_ROOT/agent"
 prepare_runtime_directory "$RUNTIME_DATA_ROOT/archive"
 docker compose -f docker-compose.apps.yml up -d "${START_SERVICES[@]}"
 
-echo "Application containers started. Shared dependencies remain managed on hvo-docker."
+echo "CameraAgent started."

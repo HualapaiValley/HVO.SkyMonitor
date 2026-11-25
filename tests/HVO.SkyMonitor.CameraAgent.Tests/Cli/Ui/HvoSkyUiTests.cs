@@ -16,6 +16,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Cli.Ui;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Cli")]
 [UnsupportedOSPlatform("windows")]
 public sealed class HvoSkyUiTests
 {

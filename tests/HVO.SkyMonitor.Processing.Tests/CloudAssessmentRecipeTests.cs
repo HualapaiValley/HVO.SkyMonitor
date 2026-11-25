@@ -196,6 +196,92 @@ public sealed class CloudAssessmentRecipeTests
             CloudAssessmentReasonCodes.IncompatibleClearReference);
     }
 
+    [TestMethod]
+    [DataRow(8, 1, ProcessingReasonCodes.InvalidLayout)]
+    [DataRow(64, 65, ProcessingReasonCodes.InvalidOptions)]
+    public async Task GridBeyondImageOrOptionLimitsProducesNoAssessment(int columns, int rows, string reason)
+    {
+        var current = CreateArtifact("current", Guid.NewGuid(), static (x, y) => (ushort)(1000 + x * 100 + y * 10));
+        var clear = CreateArtifact("clear", Guid.NewGuid(), static (x, y) => (ushort)(1000 + x * 100 + y * 10));
+        var request = CreateRequest(current, clear) with
+        {
+            Options = JsonSerializer.SerializeToElement(new CloudAssessmentOptions(GridColumns: columns, GridRows: rows))
+        };
+
+        var outcome = await new ProcessingRecipeExecutor().ExecuteAsync(request).ConfigureAwait(false);
+
+        Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, outcome.Status);
+        Assert.AreEqual(reason, outcome.ReasonCode);
+        Assert.IsEmpty(outcome.Products);
+    }
+
+    [TestMethod]
+    public async Task AssessmentEditsPreserveRetainedEvidenceAndEnforceMaximumGrid()
+    {
+        static int ClearSignal(int x, int y) => 1000 + x * 100 + y * 10;
+        var current = CreateArtifact("current", Guid.NewGuid(), static (x, y) => x % 32 == 0
+            ? ushort.MaxValue : (ushort)(ClearSignal(x, y) * (x < 32 ? 0.9 : 0.5)), width: 64, height: 64);
+        var clear = CreateArtifact("clear", Guid.NewGuid(), static (x, y) => (ushort)ClearSignal(x, y), width: 64, height: 64);
+        var currentBytes = current.Payload.ToArray();
+        var clearBytes = clear.Payload.ToArray();
+        var options = new CloudAssessmentOptions(GridColumns: 2, GridRows: 1, MinimumReferenceSignal: 1, MinimumSamplesPerTile: 2);
+        var request = CreateRequest(current, clear);
+        var executor = new ProcessingRecipeExecutor();
+
+        async Task<(ProcessingProduct Product, CloudAssessmentV1 Assessment)> ExecuteAsync(
+            CloudAssessmentOptions effectiveOptions, string? outputVariant = null)
+        {
+            var outcome = await executor.ExecuteAsync(request with
+            {
+                Options = JsonSerializer.SerializeToElement(effectiveOptions),
+                OutputVariant = outputVariant ?? request.OutputVariant
+            }).ConfigureAwait(false);
+            Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status, outcome.ReasonCode);
+            var product = Assert.ContainsSingle(outcome.Products);
+            var parsed = CloudAssessmentJson.Parse(product.Payload);
+            Assert.IsTrue(parsed.Validation.IsValid, parsed.Validation.ReasonCode);
+            CollectionAssert.AreEqual(new[] { current.ArtifactId, clear.ArtifactId }, product.SourceArtifactIds.ToArray());
+            return (product, parsed.Assessment!);
+        }
+
+        var (original, baseline) = await ExecuteAsync(options).ConfigureAwait(false);
+        Assert.AreEqual(CloudAssessmentStatus.Quantified, baseline.Status);
+        Assert.AreEqual(500_000, baseline.CoverageMillionths);
+        Assert.AreEqual(baseline.AssessmentIdentitySha256, original.ContentIdentitySha256);
+
+        var (thresholdProduct, threshold) = await ExecuteAsync(
+            options with { TransmissionThresholdMillionths = 950_000 }).ConfigureAwait(false);
+        Assert.AreEqual(1_000_000, threshold.CoverageMillionths);
+        Assert.AreNotEqual(original.Recipe.IdentitySha256, thresholdProduct.Recipe.IdentitySha256);
+        Assert.AreNotEqual(original.ChecksumSha256, thresholdProduct.ChecksumSha256);
+
+        var (boundedProduct, bounded) = await ExecuteAsync(options with { GridColumns = 64, GridRows = 64 }).ConfigureAwait(false);
+        Assert.HasCount(4096, bounded.Regions);
+        Assert.IsTrue(boundedProduct.Payload.Length <= 1024 * 1024);
+        Assert.IsNull(bounded.CoverageMillionths, "One-sample tiles cannot estimate transmission.");
+
+        var (_, saturated) = await ExecuteAsync(options with { MaximumSaturatedFractionMillionths = 0 }).ConfigureAwait(false);
+        Assert.AreEqual(CloudAssessmentStatus.Contaminated, saturated.Status);
+        Assert.Contains(CloudAssessmentReasonCodes.SaturationContamination, saturated.ReasonCodes);
+        Assert.IsNull(saturated.CoverageMillionths);
+        var (_, signal) = await ExecuteAsync(options with { MinimumReferenceSignal = ushort.MaxValue }).ConfigureAwait(false);
+        Assert.IsNull(signal.CoverageMillionths);
+        var (_, samples) = await ExecuteAsync(options with { MinimumSamplesPerTile = int.MaxValue }).ConfigureAwait(false);
+        Assert.IsNull(samples.CoverageMillionths);
+        var (_, noMask) = await ExecuteAsync(options with { IncludeMask = false }).ConfigureAwait(false);
+        Assert.IsNull(noMask.Mask);
+        var (routed, _) = await ExecuteAsync(options, "cloud-custom").ConfigureAwait(false);
+        Assert.AreEqual("cloud-custom", routed.Variant);
+        Assert.AreNotEqual(original.OutputIdentitySha256, routed.OutputIdentitySha256);
+        Assert.AreEqual(original.ChecksumSha256, routed.ChecksumSha256);
+
+        var (restored, _) = await ExecuteAsync(options).ConfigureAwait(false);
+        Assert.AreEqual(original.OutputIdentitySha256, restored.OutputIdentitySha256);
+        CollectionAssert.AreEqual(original.Payload.ToArray(), restored.Payload.ToArray());
+        CollectionAssert.AreEqual(currentBytes, current.Payload.ToArray());
+        CollectionAssert.AreEqual(clearBytes, clear.Payload.ToArray());
+    }
+
     private static ProcessingExecutionRequest CreateRequest(
         ProcessingArtifact current,
         ProcessingArtifact? clear,
@@ -233,11 +319,11 @@ public sealed class CloudAssessmentRecipeTests
     private static ProcessingArtifact CreateArtifact(
         string variant,
         Guid id,
-        Func<int, int, ushort> value)
+        Func<int, int, ushort> value,
+        int width = 4,
+        int height = 2)
     {
-        const int width = 4;
-        const int height = 2;
-        const int stride = width * 2;
+        var stride = width * 2;
         var payload = new byte[stride * height];
         for (var y = 0; y < height; y++)
         {

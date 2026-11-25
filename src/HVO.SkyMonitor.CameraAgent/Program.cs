@@ -72,8 +72,55 @@ public class Program
         "/Account/Manage/SetPassword"
     };
 
+    /// <summary>
+    /// The one-shot mode the installer runs before a Silo-layout instance's capture service first starts (#1966): read
+    /// the same configuration the service reads, persist the first-boot pause with the raw-ingress schema, print its
+    /// durable status as one JSON line and exit, without a web host, camera module or capture loop.
+    /// </summary>
+    private static readonly System.Text.Json.JsonSerializerOptions FirstBootJson = new(System.Text.Json.JsonSerializerDefaults.Web);
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The one-shot initializer reports every failure as a refusal line and a non-zero exit.")]
+    private static async Task<int> InitializeFirstBootStateAsync(string[] args)
+    {
+        try
+        {
+            var builder = WebApplication.CreateBuilder(args);
+            DeploymentLocalSettings.AddConfiguredFile(builder.Configuration, builder.Environment.ContentRootPath);
+            DeploymentKeyPerFile.AddConfiguredDirectory(builder.Configuration);
+            var options = builder.Configuration.GetSection("CameraAgent").Get<HVO.SkyMonitor.CameraAgent.Common.Options.CameraAgentHostOptions>() ?? new HVO.SkyMonitor.CameraAgent.Common.Options.CameraAgentHostOptions();
+            var seed = options.FirstBootPause.Identity
+                ?? throw new InvalidOperationException("No first-boot pause is configured.");
+            var status = await HVO.SkyMonitor.CameraAgent.Common.Capture.FirstBootStateInitializer.InitializeAsync(
+                options.RawIngressRoot, options.RawIngressSqliteBusyTimeoutSeconds, seed, CancellationToken.None).ConfigureAwait(false);
+            await Console.Out.WriteLineAsync(System.Text.Json.JsonSerializer.Serialize(new
+            {
+                outcome = "seeded",
+                id = status.Id,
+                status.Seeded,
+                status.InForce,
+                status.Resumed,
+                status.State,
+                status.Version
+            }, FirstBootJson)).ConfigureAwait(false);
+            return 0;
+        }
+        catch (Exception exception)
+        {
+            await Console.Out.WriteLineAsync(
+                "{\"outcome\":\"refused\",\"reason\":\"first-boot-state-" +
+                (exception is InvalidDataException ? "conflict" : "unavailable") + "\"}").ConfigureAwait(false);
+            return 2;
+        }
+    }
+
     public static async Task Main(string[] args)
     {
+        if (args.Contains(HVO.SkyMonitor.CameraAgent.Common.Capture.FirstBootStateInitializer.Argument, StringComparer.Ordinal))
+        {
+            Environment.ExitCode = await InitializeFirstBootStateAsync(
+                args.Where(static argument => argument != HVO.SkyMonitor.CameraAgent.Common.Capture.FirstBootStateInitializer.Argument).ToArray()).ConfigureAwait(false);
+            return;
+        }
         var builder = WebApplication.CreateBuilder(args);
         var localSettings = DeploymentLocalSettings.AddConfiguredFile(builder.Configuration, builder.Environment.ContentRootPath);
         DeploymentKeyPerFile.AddConfiguredDirectory(builder.Configuration);

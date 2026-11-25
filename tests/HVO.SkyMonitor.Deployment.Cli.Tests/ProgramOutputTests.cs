@@ -20,14 +20,13 @@ public sealed class ProgramOutputTests
         Usage: hvo-sky-install <command> [options]
 
         Commands:
-          preflight
-          partial-prepare-cleanup
-          existing-down
           status
           cameraagent install
           cameraagent lifecycle-worker
           cameraagent recover-owner
           cameraagent preflight
+          cameraagent first-resume
+          cameraagent silo-verify
           cameraagent reset-state
           cameraagent upgrade
           cameraagent rollback
@@ -52,37 +51,43 @@ public sealed class ProgramOutputTests
         Install a CameraAgent instance, or change an installed one's container limits.
 
         Options:
-          --answers <file>                 Read the install from a JSON answers file with "schemaVersion": 1.
-          --config <file>                  Deprecated: read the whole install from a JSON file. Use --answers.
-          --instance-id <uuid>             The instance's ID.
-          --friendly-name <name>           The instance's display name.
-          --owner-email <email>            The owner's email, also a sign-in name (default owner@cameraagent.local).
-          --bind-address <address>         The address CameraAgent listens on (default 127.0.0.1).
-          --port <port>                    The port CameraAgent listens on (default 5130).
-          --product-root <path>            The product root (default: this host's production product root).
-          --catalog-bundle <path>          The catalog bundle folder.
-          --release <folder>               The release folder, holding the release's release.json and SHA256SUMS.
-          --image-source <source>          With --release: archive (default) loads its offline image archive; registry pulls its image.
-          --image-ref <image>              An immutable image, sha256:<id> or <repository>@sha256:<digest>, instead of a release's.
-          --image-archive <path>           With --image-ref: the image archive to load it from.
-          --image-archive-sha256 <sha256>  The image archive's SHA-256, required with --image-archive.
-          --password-file <path>           An owner-only file holding the owner's temporary password.
-          --latitude <degrees>             The camera's latitude (default 0).
-          --longitude <degrees>            The camera's longitude (default 0).
-          --elevation <metres>             The camera's elevation (default 0).
-          --time-zone <zone>               The camera's IANA time zone (default UTC).
-          --replay-profile <profile>       Where archived replay runs: in-process (default) or local-runner.
-          --illumination-mode <mode>       VirtualSky lighting: LegacyScalarSolar (default), SolarDriven or ControlledNight.
-          --cpus <count>                   The container's CPU limit.
-          --memory <size>                  The container's memory limit, such as 4g.
-          --plan                           Show what the command would change, and change nothing.
-          --dry-run                        The older name of --plan.
-          --resume                         Finish an interrupted run of the same command.
-          --json                           Write the result, or the error, as JSON.
-          --generate-password              Generate the owner's temporary password into an owner-only file.
-          --acknowledge-plaintext-http     Accept plain HTTP on a --bind-address other than loopback.
-          --no-download                    Pull nothing: the image must already be on this host or in an offline archive.
-          -h, --help                       Show this help.
+          --answers <file>                       Read the install from a JSON answers file with "schemaVersion": 1.
+          --config <file>                        Deprecated: read the whole install from a JSON file. Use --answers.
+          --instance-id <uuid>                   The instance's ID.
+          --friendly-name <name>                 The instance's display name.
+          --owner-email <email>                  The owner's email, also a sign-in name (default owner@cameraagent.local).
+          --bind-address <address>               The address CameraAgent listens on (default 127.0.0.1).
+          --port <port>                          The port CameraAgent listens on (default 5130).
+          --product-root <path>                  The product root (default: this host's production product root).
+          --catalog-bundle <path>                The catalog bundle folder.
+          --release <folder>                     The release folder, holding the release's release.json and SHA256SUMS.
+          --image-source <source>                With --release: archive (default) loads its offline image archive; registry pulls its image.
+          --image-ref <image>                    An immutable image, sha256:<id> or <repository>@sha256:<digest>, instead of a release's.
+          --image-archive <path>                 With --image-ref: the image archive to load it from.
+          --image-archive-sha256 <sha256>        The image archive's SHA-256, required with --image-archive.
+          --password-file <path>                 An owner-only file holding the owner's temporary password.
+          --latitude <degrees>                   The camera's latitude (default 0).
+          --longitude <degrees>                  The camera's longitude (default 0).
+          --elevation <metres>                   The camera's elevation (default 0).
+          --time-zone <zone>                     The camera's IANA time zone (default UTC).
+          --replay-profile <profile>             Where archived replay runs: in-process (default) or local-runner.
+          --illumination-mode <mode>             VirtualSky lighting: LegacyScalarSolar (default), SolarDriven or ControlledNight.
+          --cpus <count>                         The container's CPU limit.
+          --memory <size>                        The container's memory limit, such as 4g.
+          --storage-layout <layout>              A new instance's storage: filesystem (default) or silo, a clean install with a stock Silo store.
+          --silo-image-archive <path>            With silo: a docker save archive of the pinned Silo image, verified before it is loaded.
+          --silo-archive-endpoint <url>          With silo: the optional archive Silo's https:// endpoint, verified read-only.
+          --silo-archive-bucket <name>           The archive bucket, which must be versioned.
+          --silo-archive-ca-file <path>          A PEM certificate authority the archive endpoint must chain to.
+          --silo-archive-credential-file <path>  An owner-only file with the archive access key ID and secret on two lines.
+          --plan                                 Show what the command would change, and change nothing.
+          --dry-run                              The older name of --plan.
+          --resume                               Finish an interrupted run of the same command.
+          --json                                 Write the result, or the error, as JSON.
+          --generate-password                    Generate the owner's temporary password into an owner-only file.
+          --acknowledge-plaintext-http           Accept plain HTTP on a --bind-address other than loopback.
+          --no-download                          Pull nothing: the image must already be on this host or in an offline archive.
+          -h, --help                             Show this help.
 
         A new install makes an instance ID when --instance-id is not given. Only --cpus, --memory, --release, --image-source, --catalog-bundle and --no-download may accompany --answers. --config cannot be combined with the other value options. A plan writes no product file, lock or Compose file; a database caught mid-transaction is read through a private temporary copy that is removed.
         """;
@@ -108,6 +113,8 @@ public sealed class ProgramOutputTests
           cameraagent lifecycle-worker   Run the independent drain/restart verifier for one installed CameraAgent; no host-power commands.
           cameraagent recover-owner      Give an instance's owner a new temporary password.
           cameraagent preflight          Check, changing nothing, that an instance's state can run its image or --image-ref.
+          cameraagent first-resume       Resume a new Silo-layout instance's capture once, only while its installer first-boot pause is still the latest command.
+          cameraagent silo-verify        Check, changing nothing, a Silo-layout instance's store, binding, listeners, data root, headroom, archive and first-boot pause.
           cameraagent reset-state        Delete an uninstalled instance's local runtime state, keeping its configuration.
           cameraagent upgrade            Move an instance to a release's image (--release) or an immutable one (--image-ref).
           cameraagent rollback           Return an instance to the image it ran before its last upgrade.
@@ -216,6 +223,9 @@ public sealed class ProgramOutputTests
 
     [TestMethod]
     [DataRow("bogus", "Unknown command 'bogus'.")]
+    [DataRow("preflight", "Unknown command 'preflight'.")]
+    [DataRow("partial-prepare-cleanup", "Unknown command 'partial-prepare-cleanup'.")]
+    [DataRow("existing-down", "Unknown command 'existing-down'.")]
     [DataRow("", "Missing command.")]
     [DataRow("help status", "Unexpected argument 'status' after 'help'.")]
     [DataRow("--version status", "Unexpected argument 'status' after '--version'.")]

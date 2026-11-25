@@ -59,16 +59,12 @@ hvo_prepare_runtime_parent() {
     }
     if [[ -e "$runtime_root" || -L "$runtime_root" ]]; then
         hvo_validate_existing_private_directory "$runtime_root" 'Runtime data root' "$current_uid" || return 1
-        local host_parent
-        for host_parent in "$runtime_root/logichost" "$runtime_root/cameraagent"; do
-            if [[ -e "$host_parent" || -L "$host_parent" ]]; then
-                hvo_validate_existing_private_directory \
-                    "$host_parent" 'Application-state host parent' "$current_uid" || return 1
-            fi
-        done
+        local host_parent="$runtime_root/cameraagent"
+        if [[ -e "$host_parent" || -L "$host_parent" ]]; then
+            hvo_validate_existing_private_directory \
+                "$host_parent" 'Application-state host parent' "$current_uid" || return 1
+        fi
     fi
-    # shellcheck disable=SC2034 # Output of this library: scripts/infra:restore-app-state reads it after sourcing.
-    HVO_RUNTIME_PARENT="$parent"
     HVO_APPLICATION_LOCK_PATH="$parent/.hvo-application-state.lock"
     HVO_RESTORE_MARKER_PATH="$parent/.hvo-application-state-restore.transaction"
 }
@@ -164,6 +160,6 @@ hvo_require_restore_marker_access() {
             return 0
         fi
     fi
-    printf 'An application-state restore transaction is pending; run infra:restore-app-state with the selected archive to recover it.\n' >&2
+    printf 'An application-state restore transaction is pending; recover it with the revision that created it.\n' >&2
     return 1
 }

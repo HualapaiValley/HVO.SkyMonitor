@@ -23,6 +23,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Services;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Services")]
 public sealed class CameraAgentSpaceWeatherUiServiceTests
 {
     private const string Owner = "owner-id";

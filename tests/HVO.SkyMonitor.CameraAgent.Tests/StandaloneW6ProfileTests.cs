@@ -17,6 +17,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Configuration")]
 public sealed class StandaloneW6ProfileTests
 {
     private static readonly string[] ScenePresentationDependencies = ["projected-scene"];

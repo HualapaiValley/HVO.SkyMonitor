@@ -17,6 +17,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Modules.VirtualSky")]
 [DoNotParallelize]
 public sealed class VirtualMeasuredStarScenarioTests
 {

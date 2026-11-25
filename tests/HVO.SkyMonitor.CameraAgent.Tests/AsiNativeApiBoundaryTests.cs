@@ -4,6 +4,7 @@ using HVO.SkyMonitor.CameraAgent.Modules.Zwo;
 namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 [TestClass]
+[TestProperty("Area", "Modules.Zwo")]
 public sealed class AsiNativeApiBoundaryTests
 {
     [TestMethod]

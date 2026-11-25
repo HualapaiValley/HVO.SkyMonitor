@@ -2,13 +2,6 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Attach -> Logic Host (pick)",
-            "type": "coreclr",
-            "request": "attach",
-            "processId": "${command:pickProcess}",
-            "justMyCode": false
-        },
-        {
             "name": "Attach -> Camera Agent (pick)",
             "type": "coreclr",
             "request": "attach",

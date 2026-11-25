@@ -5,6 +5,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Environmental;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Environmental")]
 public sealed class EnvironmentalPerformanceWorkloadTests
 {
     // These ordered values define the historical #209 v1 workload, independently of later enum additions.

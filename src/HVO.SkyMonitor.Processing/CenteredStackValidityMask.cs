@@ -11,6 +11,9 @@ public static class CenteredStackValidityMask
     public const string SchemaVersion = "centered-stack-validity-mask-v1";
     public const string MediaType = "application/x-hvo-centered-source-validity";
 
+    private const int DigestCacheSize = 32;
+    private static readonly MaskDigest?[] AllValidDigests = new MaskDigest?[DigestCacheSize];
+
     /// <summary>
     /// Capture the supplied aperture/calibration support before closure. Use one byte per delivered sample (0 or 1).
     /// The recipe additionally applies the independently declared raw and linear white thresholds.
@@ -38,7 +41,21 @@ public static class CenteredStackValidityMask
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var remaining = SampleCount(raw, linear);
+        var count = SampleCount(raw, linear);
+        var hash = GetAllValidDigest(count, cancellationToken);
+        return CenteredStackArtifactPin.FromHeader(Header(raw, linear, hash), hash);
+    }
+
+    private static string GetAllValidDigest(int sampleCount, CancellationToken cancellationToken)
+    {
+        // The payload is exclusively ones, so its digest depends only on length. The pin's
+        // artifact and envelope still depend on the two exact per-exposure headers.
+        var slot = HashCode.Combine(sampleCount) & (DigestCacheSize - 1);
+        var cached = Volatile.Read(ref AllValidDigests[slot]);
+        if (cached?.SampleCount == sampleCount)
+            return cached.Sha256;
+
+        var remaining = sampleCount;
         Span<byte> block = stackalloc byte[4096];
         block.Fill(1);
         using var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
@@ -50,8 +67,11 @@ public static class CenteredStackValidityMask
             remaining -= count;
         }
         var hash = Convert.ToHexString(hasher.GetHashAndReset());
-        return CenteredStackArtifactPin.FromHeader(Header(raw, linear, hash), hash);
+        Volatile.Write(ref AllValidDigests[slot], new MaskDigest(sampleCount, hash));
+        return hash;
     }
+
+    private sealed record MaskDigest(int SampleCount, string Sha256);
 
     /// <summary>Materializes the implicit mask after the corresponding raw and linear custody has been authenticated.</summary>
     public static ProcessingArtifact CreateAllValid(CenteredStackArtifactHeader raw, CenteredStackArtifactHeader linear,

@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Processing;
 
@@ -14,6 +15,17 @@ public sealed record CenteredWindowSlotSnapshot(int Offset, DateTimeOffset Expec
     public CenteredRegistrationReason? RegistrationOutcome { get; init; }
 }
 
+[JsonConverter(typeof(JsonStringEnumConverter<CenteredRegistrationInputFailureKind>))]
+public enum CenteredRegistrationInputFailureKind
+{
+    Unavailable,
+    ReadError
+}
+
+/// <summary>Identifies the frozen input that prevented registration before its deadline.</summary>
+public sealed record CenteredRegistrationInputFailure(ExposureKey Exposure, CenteredStackArtifactPin Artifact,
+    CenteredRegistrationInputFailureKind Kind);
+
 public sealed record CenteredWindowSnapshot(Guid ReferenceCaptureId, string WindowIdentity, CameraKey Camera, Guid RunId,
     DateTimeOffset DeadlineUtc, DateTimeOffset? EvidenceCutoffUtc, string? ClosureIdentity,
     bool IsTerminal, string? FailureReason, Guid? EvidenceArtifactId, string? PlanSha256,
@@ -21,6 +33,9 @@ public sealed record CenteredWindowSnapshot(Guid ReferenceCaptureId, string Wind
     ImmutableArray<CenteredWindowSlotSnapshot> Slots)
 {
     public string? GenerationId { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CenteredRegistrationInputFailure? RegistrationInputFailure { get; init; }
 }
 
 /// <summary>
@@ -72,7 +87,8 @@ internal sealed class CenteredWindowReader(SqliteCaptureProcessingStore store, C
             publication?.EvidenceArtifactId, publication?.PlanSha256, publication?.StackDisposition,
             publication?.ContributingCaptureIds ?? [], slots)
         {
-            GenerationId = schedule.GenerationId
+            GenerationId = schedule.GenerationId,
+            RegistrationInputFailure = closed is { IsTerminal: true } ? closed.InputFailure : null
         };
     }
 

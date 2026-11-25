@@ -13,7 +13,7 @@ for contract in \
     '    needs: [changes, catalog-contracts]' \
     '    needs: [changes, unit, integration, architecture]' \
     '    needs: coverage' \
-    '    needs: [changes, quality, catalog-contracts, catalog-reproducibility, deployment-contracts, build, architecture, coverage-policy, migrations-cameraagent, migrations-logichost, unit, integration, coverage, shared-libraries, cameraagent-component, logichost-component, combined-integration, delivery-component]'; do
+    '    needs: [changes, quality, catalog-contracts, catalog-reproducibility, deployment-contracts, build, architecture, coverage-policy, migrations-cameraagent, unit, integration, coverage, shared-libraries, cameraagent-component, delivery-component]'; do
     grep -Fqx "$contract" "$workflow" ||
         fail "CI workflow dependency shape changed; update ci:timing-report and its fixtures: $contract"
 done
@@ -39,6 +39,23 @@ jq -e '.jobs[] | select(.name == "Required CI") | .dependencyReadyToStartSeconds
 
 work_root="$(mktemp -d)"
 trap 'rm -rf "$work_root"' EXIT
+
+# Current runs omit the retired classifier keys and jobs. Required CI readiness
+# still uses the surviving dependencies. The historical fixtures above keep both.
+mkdir -p "$work_root/current"
+cp "$fixtures/pr-845/run.json" "$work_root/current/run.json"
+jq '.jobs |= map(select(.name != "LogicHost Migrations" and .name != "LogicHost Component" and
+                       .name != "Combined Protocol & Integration")) | .total_count = (.jobs | length)' \
+    "$fixtures/pr-845/jobs.json" > "$work_root/current/jobs.json"
+sed -E 's/ (logichost|combined)=(true|false)//g' "$fixtures/pr-845/classification.log" \
+    > "$work_root/current/classification.log"
+current_report="$("$tool" --fixture "$work_root/current")"
+jq -e '
+    (.classification.plan | (has("logichost") or has("combined")) | not) and
+    any(.jobs[]; .name == "Required CI" and .dependencyReadyToStartSeconds == 3 and
+        (.dependencies | length == 15 and index("Coverage") != null))
+' <<< "$current_report" >/dev/null || fail 'Retired dependencies or flags changed timing for a current run.'
+
 mkdir -p "$work_root/bin"
 cat > "$work_root/bin/gh" <<'GH'
 #!/usr/bin/env bash

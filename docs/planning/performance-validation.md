@@ -44,7 +44,7 @@ milestone. Do not rerun a phase benchmark for an unrelated tier A/B change.
 
 | ID | Workload | Reference input and default scale | Use |
 | --- | --- | --- | --- |
-| `W0` | 64 x 48 deterministic Mono16, one object | `deploy/split-host/workloads/w0-virtual-mono16.json`; seed 2025, maximum 10 results, shot noise disabled, fixed profile/config hash | Fast fault injection and state transitions only |
+| `W0` | 64 x 48 deterministic Mono16, one object | Fixed 64 × 48 virtual fixture; seed 2025, maximum 10 results, shot noise disabled | Fast fault injection and state transitions only |
 | `W1` | ASI174 1936 x 1216 Mono16, 4,708,352 raw bytes | `virtual-asi174.full.json` and `hualapai-asi174-conformance-v1.json`; 5 warm-up plus 30 measured operations for an in-process algorithm | Canonical monochrome full-frame path |
 | `W2` | ASI178 3096 x 2080 RGGB16, 12,879,360 raw bytes; 19,319,040-byte RGB24 preview | `virtual-asi178mc.full.json` with fixed fixture time/options/seed; 5 warm-up plus 30 measured operations for an in-process algorithm | Large color/CFA full-frame and memory path |
 | `W3M` | 10,000 metadata-only durable records | Manifests, lane references, jobs, dependencies, or history rows with no payload duplication | Scan, index, claim, recovery, and pagination behavior |
@@ -81,28 +81,8 @@ warm-up, and measured stages. Terms such as configured generation rate,
 representative DAG, recovery margin, and material latency must be replaced by
 values in that manifest.
 
-The split-host `measure` phase is an executable deployment harness for W1/W2.
-`deploy/split-host/workloads/canonical-workloads.json`, not inventory, pins each
-profile path, source/config/options identities, dimensions, format, seed, exact
-five-operation warm-up, 30 measured operations, and concurrency. Both W1 and W2
-set `"stellarCandidateSelection": "Exhaustive"`, so their measured star depth is
-the profile's own 32,768-candidate query and never the target's operator scene
-object limit; that opt-out is part of the pinned options hash. The phase
-activates the selected profile, restarts the target, and uses authenticated
-pause/resume capture control to delimit both windows. After each pause it rejects
-in-flight overshoot, proves the exact ordered sequence/capture-ID set, and waits
-for local queue drain plus central frame, artifact, checksum, derivative, and
-provenance convergence. Raw proof binds each local raw artifact ID, checksum, and
-byte length to the central Raw artifact for the same sequence and capture ID. It
-resets collectors and captures an empty baseline only
-after warm-up convergence; the final snapshot is taken only after measured-set
-convergence. Warm-up and measured correctness/drain identities are retained
-separately. Boundary-specific command attempts and idempotency keys are durable;
-recovery reconciles live capture-control state and recorded capture boundaries
-without replaying a completed workload. Failure handling attempts a fresh safety
-pause for every possibly resumed target and records `capture-may-be-running`
-while retaining cleanup credentials when that pause cannot be verified. Only the measured window contributes telemetry, timing,
-queue/backlog, and Docker resource snapshots. The deployment contract runs this same fixed representative hook;
+The former end-to-end split-host performance harness is retained at its original revision. [Historical procedure](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/66e6aa237b40c70342815af6e2511122daa56bb6/docs/planning/performance-validation.md#2-canonical-workloads).
+
 Tier M candidate evidence applies the trial/reporting rules below.
 
 An issue may add a named workload when these do not represent its access
@@ -204,22 +184,20 @@ reference as an active owner. Phase 10 and issue-116 evidence generated before
 that change is not comparable for the P4 `RetentionReleased` field and must be
 regenerated from a clean candidate head; all such evidence lives under the
 ignored `TestResults/` tree, so no committed document changes.
-Processing runner evidence (#428): `ProcessingRunnerPerformanceEvidenceTests`
+Historical LogicHost processing runner evidence (#428). `ProcessingRunnerPerformanceEvidenceTests`
 (Manual, LogicHost integration project) records cold and warm start stages,
 registration and claim latency, input/product transfer bytes, and W1
 `encoded-preview` throughput in process versus through `processing-runner-v1`,
 plus the runner-placed backlog observed with no runner. Output is
 revision-scoped under `TestResults/processing-runner/<revision>/` and the
-runtime signals are pinned in
-`docs/validation/central-runner-runtime-signals.json`.
+runtime signals are in the [retired runner signal contract](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/66e6aa237b40c70342815af6e2511122daa56bb6/docs/validation/central-runner-runtime-signals.json).
 
-Fair scheduling evidence (#429): `ProcessingFairnessPerformanceEvidenceTests`
+Historical LogicHost fair scheduling evidence (#429). `ProcessingFairnessPerformanceEvidenceTests`
 (Manual, LogicHost integration project) drains deterministic 5-, 10-, and
 100-camera arrival streams under a per-observatory entitlement with concurrent
 claim loops and records Jain's fairness index, claim and queue latency,
 throughput, CPU, memory, and lease-loss recovery under
-`TestResults/processing-fairness/<revision>/`; signals are pinned in
-`docs/validation/central-fairness-runtime-signals.json`.
+`TestResults/processing-fairness/<revision>/`. See the [retired fairness signal contract](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/66e6aa237b40c70342815af6e2511122daa56bb6/docs/validation/central-fairness-runtime-signals.json).
 
 Execution-evidence export evidence (#537):
 `ExecutionEvidenceExportPerformanceTests` (Manual, CameraAgent test project)
@@ -741,7 +719,7 @@ line/90 percent branch floors, and renderer/catalog paths retain 90/85 floors. T
 native JPEG wrapper retains 95/80 because defensive null/failure branches inside
 successful Skia factory and codec calls cannot be induced deterministically.
 
-ReportGenerator is the single authoritative merger. CI collects 19 explicit
+ReportGenerator is the single authoritative merger. CI collects the configured
 Unit, Integration, and architecture reports from the active test projects, creates one canonical Cobertura
 report, and enforces and publishes that same result. Pull requests cannot remove
 risk paths, lower thresholds, or widen tolerance relative to the target branch.
@@ -750,11 +728,12 @@ regressions are corrected rather than accepted through a generic disposition.
 
 ## Elastic provider evidence (#430)
 
-`ElasticProviderPerformanceEvidenceTests` (Manual) drives the `local-process`
-adapter against a Kestrel-hosted LogicHost with the real runner binary and
-records cold and warm start, drain throughput with 1, 2, and 4 instances,
-scale-to-zero and cleanup timing, and host CPU/memory to
+The pre-retirement `ElasticProviderPerformanceEvidenceTests` (Manual) drove
+the `local-process` adapter against the central host with the real runner
+binary. It recorded cold and warm start, drain throughput with 1, 2, and 4
+instances, scale-to-zero and cleanup timing, and host CPU/memory in
 `TestResults/elastic-providers/<revision>/elastic-provider-evidence.json`.
+[Historical procedure](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/66e6aa237b40c70342815af6e2511122daa56bb6/docs/planning/performance-validation.md#elastic-provider-evidence-430).
 
 ## Space-weather refresh composition (Refs #1398)
 

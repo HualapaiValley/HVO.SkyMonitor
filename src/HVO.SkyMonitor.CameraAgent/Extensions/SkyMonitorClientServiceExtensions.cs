@@ -1,4 +1,5 @@
 using System;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Configuration;
 using HVO.SkyMonitor.CameraAgent.Http;
 using Microsoft.Extensions.Configuration;
@@ -28,7 +29,7 @@ public static class SkyMonitorClientServiceExtensions
             .ConfigureHttpClient((provider, client) =>
             {
                 var options = provider.GetRequiredService<IOptionsMonitor<SkyMonitorClientOptions>>().CurrentValue;
-                client.BaseAddress = options.ResolveBaseUri();
+                client.BaseAddress = options.BaseUrl;
             })
             .AddHttpMessageHandler<CentralIdentityDelegatingHandler>();
     }
@@ -66,8 +67,12 @@ public static class SkyMonitorClientServiceExtensions
 
         services.AddOptions<SkyMonitorClientOptions>()
             .Bind(configuration.GetSection(SkyMonitorClientOptions.SectionName))
-            .Validate(static options => options.TryResolveBaseUri(out _), "SkyMonitor:BaseUrl must be a valid absolute URI.")
-            .Validate(static options => options.TryResolvePublicBaseUri(out _), "SkyMonitor:PublicBaseUrl must be a valid absolute URI.")
+            .Validate<IOptions<CameraAgentHostOptions>>(static (options, host) =>
+                (options.BaseUrl is null && host.Value.CentralIntegration.Mode == CentralIntegrationMode.Disabled) ||
+                options.TryResolveBaseUri(out _), "SkyMonitor:BaseUrl must be a valid absolute URI.")
+            .Validate<IOptions<CameraAgentHostOptions>>(static (options, host) =>
+                (options.PublicBaseUrl is null && host.Value.CentralIntegration.Mode == CentralIntegrationMode.Disabled) ||
+                options.TryResolvePublicBaseUri(out _), "SkyMonitor:PublicBaseUrl must be a valid absolute URI.")
             .ValidateOnStart();
     }
 }

@@ -24,6 +24,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty(CameraAgentTestAreas.PropertyName, CameraAgentTestAreas.Ui)]
 public sealed class CenteredPipelineEvidenceTests
 {
     private static readonly DateTimeOffset Start = new(2026, 11, 20, 4, 0, 0, TimeSpan.Zero);

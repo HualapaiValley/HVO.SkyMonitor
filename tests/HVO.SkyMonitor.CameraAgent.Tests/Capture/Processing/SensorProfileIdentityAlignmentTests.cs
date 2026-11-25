@@ -10,6 +10,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 /// selected capture's. These pin that the live producers agree, so a configured sensor is never rejected as foreign.
 /// </summary>
 [TestClass]
+[TestProperty("Area", "Capture.Processing")]
 public sealed class SensorProfileIdentityAlignmentTests
 {
     [TestMethod]

@@ -56,6 +56,7 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
 
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "Capture.Calibration")]
 public sealed class CalibrationQuarantineKernelFaultTests
 {
     [TestMethod]

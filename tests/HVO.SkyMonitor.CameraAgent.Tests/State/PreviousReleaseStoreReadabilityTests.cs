@@ -35,6 +35,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.State;
 /// </remarks>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Sqlite")]
 [DoNotParallelize]
 public sealed class PreviousReleaseStoreReadabilityTests
 {

@@ -5,6 +5,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Transients;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Transients")]
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 public sealed class TransientEvidenceProvenanceTests
 {

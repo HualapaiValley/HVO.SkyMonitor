@@ -7,6 +7,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Orbital;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Orbital")]
 public sealed class CelesTrakGpNormalizerTests
 {
     // Pinned identities of the valid fixture's candidate at RetrievedUtc with the default synthetic validators. A change

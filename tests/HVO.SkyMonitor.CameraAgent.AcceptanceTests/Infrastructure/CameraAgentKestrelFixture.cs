@@ -181,6 +181,7 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
             ["DeviceProvisioning:StateDirectory"] = provisioningRoot,
             ["CentralIdentity:ServiceUrl"] = "http://127.0.0.1:1/",
             ["SkyMonitor:BaseUrl"] = "http://127.0.0.1:1",
+            ["SkyMonitor:PublicBaseUrl"] = "http://127.0.0.1:1",
             ["Logging:LogLevel:Default"] = "Warning",
             ["Serilog:MinimumLevel:Default"] = "Warning"
         };

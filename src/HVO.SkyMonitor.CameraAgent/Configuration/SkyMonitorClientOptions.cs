@@ -11,15 +11,13 @@ public sealed class SkyMonitorClientOptions
     public const string SectionName = "SkyMonitor";
     public const string HttpClientName = "SkyMonitor.Api";
 
-    private const string DefaultBaseUrl = "http://logichost:8080";
-
     /// <summary>
     /// Base URL for the SkyMonitor service (e.g., https://skymonitor.local:5174).
     /// </summary>
-    public Uri BaseUrl { get; set; } = new(DefaultBaseUrl, UriKind.Absolute);
+    public Uri? BaseUrl { get; set; }
 
     /// <summary>
-    /// Browser-reachable LogicHost base URL used for operator links.
+    /// Browser-reachable central service base URL used for operator links.
     /// </summary>
     public Uri? PublicBaseUrl { get; set; }
 

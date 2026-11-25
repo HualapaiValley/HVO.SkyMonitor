@@ -18,6 +18,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.SpaceWeather;
 /// <summary>Offline Tier C evidence; reports the #1489 evidence-based ceilings without tuning or treating them as assertions.</summary>
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "SpaceWeather")]
 [DoNotParallelize]
 public sealed class SpaceWeatherRefreshPerformanceTests
 {

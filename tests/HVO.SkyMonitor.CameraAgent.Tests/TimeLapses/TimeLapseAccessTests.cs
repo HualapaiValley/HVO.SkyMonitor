@@ -21,6 +21,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.TimeLapses;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "TimeLapses")]
 public sealed class TimeLapseAccessTests
 {
     [TestMethod]

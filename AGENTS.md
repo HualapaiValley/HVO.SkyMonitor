@@ -49,8 +49,9 @@ waiver, elapsed time, and a correction cap cannot substitute for required Sol/
 Opus CLEAN reports on the candidate. Missing required review means BLOCKED.
 
 Only **High and Medium review findings block**; classify a Critical finding as
-High. Lows become linked follow-up issues through Kepler and do not force
-another correction round. Incompleteness or missing required evidence always
+High. Kepler tracks Lows through linked follow-ups. Post-Ready Lows follow the
+[rolling Low-batch policy](docs/planning/agent-execution.md#rolling-low-batches).
+Incompleteness or missing required evidence always
 blocks, is at least Medium, and is **never Low** or deferrable. Required tests
 and CI checks remain gates independently of finding severity. CLEAN requires
 complete scope and no unresolved High/Medium findings; any remaining Lows must
@@ -63,9 +64,11 @@ have follow-up tracking.
   `Development v1 / Preflight` and `Development v1 / Build and Unit`: lightweight
   control checks, one Release build, and Docker-disabled Unit selection for the
   active test projects. The ready-PR documentation fast path described in
-  `docs/development-v1.md` skips the solution build and Unit workload. Push and
-  merge-group workloads remain full. Full qualification in `ci.yml` belongs to
-  `main`/`release/**` and explicitly requested qualification. Do not dispatch it
+  `docs/development-v1.md` skips the solution build and Unit workload. Merge
+  groups and unverified pushes run the full workload. A queue-generated push
+  can reuse a passing merge-group result for the exact same SHA. Full
+  qualification in `ci.yml` belongs to `main`/`release/**` and explicitly
+  requested qualification. Do not dispatch it
   for an ordinary v1 PR merely because `scripts/ci:classify` reports `complete=true`, including
   on a base-sync delta. See `docs/development-v1.md` for this branch-specific
   contract, which takes precedence over generic protected-CI wording below.
@@ -91,11 +94,11 @@ have follow-up tracking.
   ./scripts/test:pr-review-tools
   DOCKER_HOST=unix:///tmp/hvo-no-docker.sock \
     dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release \
-      --filter 'TestCategory=Unit&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost' \
-      -p:SkipLogicHostTests=true --settings tests/coverage.runsettings --collect:"XPlat Code Coverage"
+      --filter 'TestCategory=Unit&TestCategory!=Performance' \
+      --settings tests/coverage.runsettings --collect:"XPlat Code Coverage"
   dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release \
-    --filter 'TestCategory=Integration&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost' \
-    -p:SkipLogicHostTests=true --settings tests/coverage.runsettings --collect:"XPlat Code Coverage"
+    --filter 'TestCategory=Integration' \
+    --settings tests/coverage.runsettings --collect:"XPlat Code Coverage"
   ```
 - `scripts/test:ci-classification`, `scripts/test:coordination-guard` and
   `scripts/test:pr-review-tools` are the CI-control guards, and
@@ -121,7 +124,12 @@ have follow-up tracking.
   both sides always satisfied separately can still be violated by their union,
   so the review is the wrong instrument and the gate is the right one.
 - Reproduce the exact category/project evidence, architecture/publish, migration, and canonical coverage gates with `docs/runbooks/ci-pipeline.md` and `.github/workflows/ci.yml`.
-- Unit selection is positive and passes with an invalid Docker endpoint. Integration selection is a separate required gate and requires Docker for the Testcontainers assemblies.
+- Unit selection is positive and passes with an invalid Docker endpoint. Integration selection is a separate gate. Docker-backed CameraAgent acceptance requires a disposable Docker environment.
+- Full qualification publishes discovered case counts by assembly and category
+  in the Build job summary. After a Release build, reproduce it with
+  `dotnet run --project scripts/test-categories/HVO.SkyMonitor.TestCategoryAudit.csproj --configuration Release`.
+  `tests/unit-test-projects.json` records Unit assembly membership for test selection
+  and coverage. Update it when a project gains or loses its Unit selection.
 - Run a focused MSTest with `dotnet test <project> --filter "FullyQualifiedName~Namespace.Class.Method"`.
 - `tests/coverage.runsettings` excludes test assemblies, `TestSupport`, migrations, and build output; keep coverage configuration aligned when adding projects.
 - Use the risk-tiered validation ladder in `docs/planning/agent-execution.md`:
@@ -153,40 +161,39 @@ have follow-up tracking.
 
 ## Architecture Boundaries
 
-- Read `docs/roadmap.md` for portfolio initiatives, stable `RM-###` IDs, and future direction. `docs/project-plan.md` remains authoritative for architecture, virtual-first requirements, phase order, and completion; it forbids references between `CameraAgent` and `LogicHost`.
+- Read `docs/roadmap.md` for portfolio initiatives, stable `RM-###` IDs, and future direction. `docs/project-plan.md` remains authoritative for architecture, virtual-first requirements, phase order, and completion. CameraAgent is the application host.
 - `AgentCore` contains stable transport-neutral camera, rig, frame, and artifact contracts only; do not add ASP.NET, EF Core, object-storage SDK, SkiaSharp, or camera-SDK dependencies.
 - `HVO.SkyMonitor.Processing` (introduced under issue #93) owns host-neutral recipe definitions and execution contracts, and host-neutral, source-neutral fact models; it may reference AgentCore, Astronomy, and Imaging but no host or persistence infrastructure.
 - `HVO.SkyMonitor.Common` contains reusable ASP.NET security, identity, API, middleware, and observability infrastructure only; do not move capture, recipe, image, edge-workflow, or central-workflow ownership into it.
-- `HVO.SkyMonitor.Storage.FileSystem` (introduced under issue #592) owns only host-neutral root confinement, symlink/reparse protection, atomic publication, durable file/directory synchronization, and bounded cleanup/error primitives. It must not own CameraAgent or LogicHost storage contracts, capture/object identity, manifests, persistence policy, ASP.NET, EF Core, SQLite, or provider SDKs. Register it explicitly in the solution graph, architecture rules, coverage policy, and CI component classifier.
+- `HVO.SkyMonitor.Storage.FileSystem` (introduced under issue #592) owns only host-neutral root confinement, symlink/reparse protection, atomic publication, durable file/directory synchronization, and bounded cleanup/error primitives. Keep host storage contracts, capture/object identity, manifests, persistence policy, ASP.NET, EF Core, SQLite, and provider SDKs in their owning projects. Register it explicitly in the solution graph, architecture rules, coverage policy, and CI component classifier.
 - `CameraAgent.Common` owns edge capture orchestration: module registration/factory, SQLite/file durable ingress, durable lanes, local storage, outbox, retention, telemetry, and configuration loading. The `CameraAgent` host registers this through `AddCameraAgentInfrastructure` and hosts the local UI/API/identity.
 - `HVO.SkyMonitor.CameraAgent.Replay` owns the authenticated bounded local transport and immutable projection for explicitly requested archived replay; `HVO.SkyMonitor.CameraAgent.ReplayRunner` is its self-contained local executable. CameraAgent retains durable job, lease, and publication authority, and newly acquired/live work never dispatches to the replay runner.
-- `LogicHost` is the central ASP.NET host; it owns SQL Server/Redis/provider-neutral object-storage services and provider adapters and runs EF migrations plus seed data at startup. Its `IObjectStore` contract never becomes the CameraAgent storage contract.
-- New reusable astronomy/projection behavior belongs in `HVO.SkyMonitor.Astronomy`, and reusable image algorithms in `HVO.SkyMonitor.Imaging`; do not create host-specific projection math. Astronomy catalogs are versioned read-only SQLite snapshots deployed locally to LogicHost and every CameraAgent, never part of the shared SQL Server schema.
-- Concrete read-only catalog persistence belongs in the optional `HVO.SkyMonitor.Catalog.Sqlite` infrastructure adapter shared by both hosts. It may reference Astronomy contracts; Astronomy must remain storage-neutral and must not reference the adapter.
+- New reusable astronomy/projection behavior belongs in `HVO.SkyMonitor.Astronomy`, and reusable image algorithms in `HVO.SkyMonitor.Imaging`; do not create host-specific projection math. Astronomy catalogs are versioned read-only SQLite snapshots deployed locally to each CameraAgent.
+- Concrete read-only catalog persistence belongs in the optional `HVO.SkyMonitor.Catalog.Sqlite` infrastructure adapter used by CameraAgent and deployment tools. It may reference Astronomy contracts; Astronomy must remain storage-neutral and must not reference the adapter.
 
 ## Runtime and Infrastructure
 
-- SQL Server, Redis, and Mailpit are persistent shared services on `hvo-docker`; configure their endpoints and credentials in the ignored `.env` using `.env.template`. LogicHost object storage is a LogicHost-local filesystem root at `HVO_OBJECT_STORE_ROOT`, not a shared service.
-- Use `./scripts/infra:start [logichost|cameraagent]` rather than raw Compose for application containers. `--reset` only deletes application container state and rebuilding refreshes the image.
-- Run hosts directly through `./scripts/with-env dotnet run --project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj` and `./scripts/with-env dotnet run --project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj`. Compose exposes them at ports `5174` and `5130` respectively.
-- LogicHost Data Protection keys and CameraAgent local Identity, Data Protection, and provisioning files are runtime state under `data/`, `App_Data/`, `DataProtection-Keys/`, and the configured `DeviceProvisioning:StateDirectory`; do not add them to commits.
+- Use `./scripts/infra:start [cameraagent]` for the local development container. `--reset` clears the captured and local Identity state of that development instance. `--rebuild` refreshes its image. The container listens on port `5130`.
+- Run CameraAgent directly through `./scripts/with-env dotnet run --project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj`.
+- CameraAgent local Identity, Data Protection, and provisioning files are runtime state under `data/`, `App_Data/`, `DataProtection-Keys/` and the configured `DeviceProvisioning:StateDirectory`. Keep them outside commits.
 - Keep local secrets in user secrets, `.env`, or `.devcontainer/devcontainer.local.env`. These are intentionally ignored; `.env.template` contains the supported local defaults.
 
 ## Tests and UI
 
-- LogicHost integration tests start SQL Server, Redis, and Mailpit through Testcontainers and use the real filesystem object-store provider; CameraAgent integration tests reuse that central-host fixture and wire in-process HTTP handlers.
+- CameraAgent integration tests use an in-process host and isolated local state. Docker-backed acceptance tests use disposable standalone instances.
 - CameraAgent module/pipeline configuration comes from `cameraagent.sample.json` and the `CameraAgent` configuration section. Preserve configuration-driven module discovery and explicit pipeline graphs that use stable step aliases rather than adding host-specific branches.
 - For Blazor components with logic, keep markup, code-behind, scoped CSS, and optional scoped JS in sibling `.razor`, `.razor.cs`, `.razor.css`, and `.razor.js` files. Root/layout components must render `data-theme="hvo-dark"` on `<html>`.
 
 ## Changelog
 
-- A pull request that changes what an operator or user notices adds a line under `## [Unreleased]` in `CHANGELOG.md`.
+- A pull request that changes what an operator or user notices adds one [changelog fragment](changelog.d/README.md).
   This covers the installer, UI, API, configuration, deployment, images, and the logs and metrics operators act on.
-- Put the line under the Keep a Changelog heading that fits: `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed` or
-  `Security`. Write it for an operator, and end it with the issue number.
+- Choose the Keep a Changelog section in the filename. Write one bullet for an operator
+  and end it with the issue number. Run `./scripts/release:changelog --check`.
 - Internal refactoring, tests, CI and agent-process changes add no entry.
-- Cutting a release renames `[Unreleased]` and adds `docs/upgrade-notes/X.Y.Z.md`. That is the release procedure of the
-  install contract (section 3), not part of an ordinary pull request.
+- The release PR assembles the fragments and remaining Unreleased entries into
+  `CHANGELOG.md` and adds `docs/upgrade-notes/X.Y.Z.md`. Follow the
+  [release runbook](docs/runbooks/releases.md#cutting-a-release).
 
 ## Roadmap Execution
 
@@ -269,8 +276,10 @@ have follow-up tracking.
 - Before a draft PR, complete the declared scope, local validation, and the
   original-requirement evidence mapping. Kepler creates the draft; draft checks
   pass on its exact head before independent formal review begins (Roy t594s3390).
-  Ready-state CI must not advance until formal review converges on the current
-  PR head and real merge/product conflicts are resolved, tested, and reviewed.
+  Ready-state CI requires formal review convergence and resolution, testing,
+  and review of any real merge/product conflicts. The queue may carry an already
+  published diff approval through a verified clean sync under
+  [Roy's recorded C4 decision](docs/development/policy/skymonitor.md#c4-policy-authorization).
   Target-tip movement alone requires no synchronization, re-testing, or new review.
 - Initial review covers the full merge-base-to-candidate diff and original
   requirements. Correction review covers the prior-reviewed-head delta and
@@ -284,11 +293,13 @@ have follow-up tracking.
   these profiles never reduce LOW's one Sol or HIGH's Sol-and-Opus requirement.
 - For the operated `development/v1` merge queue, Kepler revalidates the
   **CURRENT PR HEAD SHA**, complete requirement evidence, required formal
-  CLEAN reviews, passing required CI, and resolved conversations. Kepler alone
-  publishes `hvo/reviewed-head` on that exact head and then enqueues with
-  GraphQL `enqueuePullRequest`, checking the expected head. Under the queue,
-  `gh pr merge --merge` warns and does **not** enqueue. Coding threads stop at
-  handoff; they do not perform any of these PR/status/queue operations.
+  CLEAN reviews for its approved diff, passing required CI, and resolved
+  conversations. Kepler alone publishes `hvo/reviewed-head` on that exact head,
+  including for carries authorized by [Roy's C4 decision](docs/development/policy/skymonitor.md#c4-policy-authorization).
+  Kepler supersedes prior approvals when stamping a newly reviewed revision.
+  Kepler then enqueues with GraphQL `enqueuePullRequest`, checking the expected
+  head. Under the queue, `gh pr merge --merge` warns and does **not** enqueue.
+  Coding threads stop at handoff; they do not perform any of these PR/status/queue operations.
 - Direct merge and auto-merge are separate fallback routes, used only by Kepler
   when the queue is unavailable or an operator explicitly selects the fallback.
   They retain the same completeness, exact-candidate reviews, checks, and
@@ -304,12 +315,16 @@ have follow-up tracking.
   separately; this documentation changes no executable gate.
 - Actual CONFLICTING merges and real product conflicts still need resolution.
   Kepler keeps/returns the PR to draft and returns the work to its coding owner.
-  Preserve existing conflict resolutions and reviewed history. Any changed
-  candidate, including an integration merge, needs applicable local evidence
-  and the required tier's reviewers CLEAN on that SHA before Kepler advances it.
-  An unchanged-diff/base proof can inform review but cannot copy old reviews or
-  a reviewed-head status to a new candidate. Target-tip movement with an
-  unchanged PR head does not trigger this loop.
+  Preserve existing conflict resolutions and reviewed history. A candidate with
+  a PR edit or conflict resolution needs applicable local evidence and the
+  required tier's reviewers CLEAN on its new SHA before Kepler advances it.
+  For the operated queue, [Roy's C4 decision](docs/development/policy/skymonitor.md#c4-policy-authorization)
+  authorizes the [reviewed-diff proof](docs/development-v1.md#diff-bound-review-approval)
+  to carry a versioned approval through a verified clean merge-only sync from
+  `development/v1`. The formal reports remain tied to the reviewed SHA. Kepler
+  revalidates integration evidence, required CI and conversations on the current
+  PR head. Target-tip movement with an unchanged PR head does not trigger the
+  correction loop.
 - Performance-sensitive work requires reproducible baseline/after evidence for relevant I/O, CPU, allocations/working set, throughput, latency, and backlog. Unexplained regression blocks merge.
 - Validate produced outputs through checksums, numerical invariants, provenance, lineage, and durable state where applicable. Inspect logs, metrics, traces, and health behavior for host/worker changes.
 - If work stops or blocks, leave the resumable handoff required by the execution protocol and update the owning roadmap epic with the exact next action.

@@ -110,13 +110,15 @@ public sealed partial class LifecycleContractTests
         Assert.AreEqual(CameraAgentStateDiagnostics.Reason(name + "=" + (credential ? "<redacted>" : Diagnostic1509Secret)), shown);
     }
 
-    // PR-1521-R2 F3: each space-only value joined by quoted parts to the next made every later match scan the rest of the text
-    // again. Each character is now scanned for one value at most, so a megabyte of them takes milliseconds, not many seconds.
     [TestMethod]
+    [Timeout(120_000)]
     [DataRow("db_password\t\"a\"\\\" ", "db_password\t<redacted>")]
     [DataRow("db_password\t'a'\\' ", "db_password\t<redacted>")]
     [DataRow("db_password \"a\"\\\" ", "db_password <redacted>")]
-    public void Diagnostic1509_JoinedQuotedValuesAreRedactedInLinearTime(string unit, string expected)
+    public void Diagnostic1509_JoinedQuotedValuesAreRedacted(string unit, string expected) =>
+        _ = VerifyDiagnostic1509JoinedQuotedValues(unit, expected);
+
+    internal static long VerifyDiagnostic1509JoinedQuotedValues(string unit, string expected)
     {
         var text = string.Concat(Enumerable.Repeat(unit, 50_000));
         var watch = Stopwatch.StartNew();
@@ -124,7 +126,7 @@ public sealed partial class LifecycleContractTests
         watch.Stop();
         Console.WriteLine($"{JsonSerializer.Serialize(unit)} x 50,000: {watch.ElapsedMilliseconds} ms");
         Assert.AreEqual(expected, redacted);
-        Assert.IsLessThanOrEqualTo(3_000L, watch.ElapsedMilliseconds);
+        return watch.ElapsedMilliseconds;
     }
 
     // PR-1508-R1 F2: both top-level writers redact a usage error too, and this one used to lose the word after its first option.
@@ -165,4 +167,19 @@ public sealed partial class LifecycleContractTests
         }
         Assert.IsEmpty(failures, string.Join(Environment.NewLine, failures));
     }
+}
+
+[TestClass]
+[TestCategory("Performance")]
+[DoNotParallelize]
+public sealed partial class LifecycleRedactionPerformanceTests
+{
+    // PR-1521-R2 F3 covered quadratic rescans of joined quoted values.
+    [TestMethod]
+    [Timeout(120_000)]
+    [DataRow("db_password\t\"a\"\\\" ", "db_password\t<redacted>")]
+    [DataRow("db_password\t'a'\\' ", "db_password\t<redacted>")]
+    [DataRow("db_password \"a\"\\\" ", "db_password <redacted>")]
+    public void Diagnostic1509_JoinedQuotedValuesAreRedactedInLinearTime(string unit, string expected) =>
+        Assert.IsLessThanOrEqualTo(3_000L, LifecycleContractTests.VerifyDiagnostic1509JoinedQuotedValues(unit, expected));
 }

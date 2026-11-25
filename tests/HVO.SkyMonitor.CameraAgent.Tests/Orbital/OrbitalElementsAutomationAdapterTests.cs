@@ -6,6 +6,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Orbital;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Orbital")]
 public sealed class OrbitalElementsAutomationAdapterTests : OrbitalStoreTestBase
 {
     private static LocalAutomationDefinition Definition(

@@ -7,6 +7,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Automation;
 // Refs #1782. Queued Stop is tested separately so it cannot mask definition withdrawal.
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Automation")]
 [DoNotParallelize]
 public sealed class LocalAutomationQueuedWithdrawalTests
 {
