@@ -676,6 +676,109 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
     }
 
     [TestMethod]
+    public async Task RevisionDetailAndRetainedDraftRejectTrailingNulQuotedDecimalWithWrongType()
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-retained-nul-decimal");
+        try
+        {
+            using var provider = ProcessingGraphOperationsTests.CreateRemainingOptionsProvider(root);
+            var validPipeline = new CapturePipelineConfig(
+            [
+                new("ProjectedScene", "scene", 10, null, ["$raw"], Enabled: true),
+                new("ScenePresentationLayer", "scene-layer", 20,
+                    JsonDocument.Parse("""{"maximumLabelMagnitude":"+1.5"}""").RootElement.Clone(), ["scene"], Enabled: true)
+            ]);
+            var config = ProcessingGraphOperationsTests.CreateProjectedSceneConfiguration() with
+            {
+                Pipeline = validPipeline
+            };
+            await provider.GetRequiredService<IRawCaptureIngress>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+            var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
+            var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
+            var initial = await operations.EnsureConfiguredBasicAsync(config, CancellationToken.None).ConfigureAwait(false);
+            var baselineSnapshot = await operations.ReadRevisionSnapshotAsync(initial.ActiveRevisionId, CancellationToken.None).ConfigureAwait(false);
+
+            var nulOptions = JsonDocument.Parse("""{"maximumLabelMagnitude":"+1.5\u0000"}""").RootElement.Clone();
+            var nulPipeline = new CapturePipelineConfig(
+            [
+                new("ProjectedScene", "scene", 10, null, ["$raw"], Enabled: true),
+                new("ScenePresentationLayer", "scene-layer", 20, nulOptions, ["scene"], Enabled: true)
+            ]);
+            var nulPipelineText = System.Text.Encoding.UTF8.GetString(baselineSnapshot.PipelineJson)
+                .Replace("\"\\u002B1.5\"", "\"+1.5\\u0000\"", StringComparison.Ordinal);
+            Assert.AreNotEqual(System.Text.Encoding.UTF8.GetString(baselineSnapshot.PipelineJson), nulPipelineText);
+            var nulSnapshot = baselineSnapshot with
+            {
+                State = baselineSnapshot.State with
+                {
+                    RevisionId = new string('a', 64),
+                    Name = "retained-nul-decimal",
+                    Revision = "1",
+                    Lifecycle = ProcessingGraphRevisionLifecycle.Draft,
+                    DefinitionIdentitySha256 = new string('1', 64),
+                    SharedPlanIdentitySha256 = new string('2', 64),
+                    LocalPlanIdentitySha256 = new string('3', 64)
+                },
+                Pipeline = nulPipeline,
+                PipelineJson = System.Text.Encoding.UTF8.GetBytes(nulPipelineText)
+            };
+            var seeded = await store.InsertNamedRevisionAsync(
+                nulSnapshot, "seed-retained-nul-decimal", "owner-id", null, CancellationToken.None).ConfigureAwait(false);
+            var storedNulPipeline = await operations.ReadRevisionPipelineAsync(seeded.RevisionId, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(storedNulPipeline);
+            Assert.AreEqual("+1.5\0",
+                storedNulPipeline.Steps.Single(static step => step.Id == "scene-layer").Options!.Value
+                    .GetProperty("maximumLabelMagnitude").GetString());
+
+            var accessor = new CameraAgentConfigurationAccessor();
+            accessor.SetConfiguration(config);
+            var user = new ClaimsPrincipal(new ClaimsIdentity(
+            [
+                new Claim(ClaimTypes.NameIdentifier, "owner-id"),
+                new Claim(CanonicalCredentialClaims.AccountTypeClaim, CanonicalCredentialClaims.UserAccountType)
+            ], Microsoft.AspNetCore.Identity.IdentityConstants.ApplicationScheme));
+            var authorization = new Mock<IAuthorizationService>(MockBehavior.Strict);
+            authorization.Setup(auth => auth.AuthorizeAsync(user, null, It.IsAny<string>()))
+                .ReturnsAsync(AuthorizationResult.Success());
+            var service = new CameraAgentProcessingGraphUiService(
+                new StubAuthenticationStateProvider(user),
+                authorization.Object,
+                operations,
+                factory,
+                accessor,
+                null,
+                new ProcessingExecutionPagesTests.FixedTimeProvider(Now),
+                NullLogger<CameraAgentProcessingGraphUiService>.Instance);
+
+            var detail = await service.GetRevisionDetailAsync(seeded.RevisionId, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsTrue(detail.IsSuccess, detail.Message);
+            Assert.IsNull(detail.Value!.Plan);
+            Assert.IsNotNull(detail.Value.PlanFailure);
+            StringAssert.Contains(detail.Value.PlanFailure, "processing.options.wrong-type", StringComparison.Ordinal);
+            StringAssert.Contains(detail.Value.PlanFailure, "steps[1].options.maximumLabelMagnitude", StringComparison.Ordinal);
+
+            var retainedPreview = await service.PreviewAsync(storedNulPipeline, seeded.RevisionId, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(OperatorUiResultKind.Invalid, retainedPreview.Kind);
+            StringAssert.Contains(retainedPreview.Message!, "processing.options.wrong-type", StringComparison.Ordinal);
+            StringAssert.Contains(retainedPreview.Message!, "steps[1].options.maximumLabelMagnitude", StringComparison.Ordinal);
+
+            var retainedCreate = await service.CreateRevisionAsync(
+                "nul-draft", "2", storedNulPipeline, "nul-create-key", null, seeded.RevisionId, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(OperatorUiResultKind.Invalid, retainedCreate.Kind);
+            StringAssert.Contains(retainedCreate.Message!, "processing.options.wrong-type", StringComparison.Ordinal);
+            StringAssert.Contains(retainedCreate.Message!, "steps[1].options.maximumLabelMagnitude", StringComparison.Ordinal);
+
+            var registry = await operations.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsFalse(registry.Revisions.Any(static revision => revision.Name == "nul-draft"));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
     [DataRow("ScenePresentationLayer", "{\"constellationLineThickness\":0}", "processing.options.out-of-range")]
     [DataRow("ScenePresentationLayer", "{\"constellationLineThickness\":\"2\"}", "processing.options.wrong-type")]
     [DataRow("ScenePresentationLayer", "{\"constellationLineRed\":256}", "processing.options.out-of-range")]

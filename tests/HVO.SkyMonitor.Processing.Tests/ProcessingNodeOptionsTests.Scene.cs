@@ -275,4 +275,70 @@ public sealed partial class ProcessingNodeOptionsTests
             Json("""{"deepSkyMinimumSizeArcminutes": 10, "deepSkyMaximumSizeArcminutes": 10}"""));
         Assert.IsTrue(equal.IsValid);
     }
+
+    [TestMethod]
+    public void RetainedQuotedNumericParsingRejectsNulCharacters()
+    {
+        foreach (var badRealToken in new[] { "2.5\\u0000", "+2.5\\u0000", "\\u00002.5", "2\\u0000.5" })
+        {
+            var sceneDiagnostic = ProcessingNodeOptionsCodec.Decode(
+                Scene,
+                Json($$"""{"maximumLabelMagnitude":"{{badRealToken}}"}"""),
+                ProcessingNodeOptionsCodec.DefaultPath,
+                allowQuotedNumbers: true).Diagnostics.Single();
+            Assert.AreEqual(ProcessingOptionReasonCodes.WrongType, sceneDiagnostic.Code, badRealToken);
+            Assert.AreEqual("effectiveOptions.maximumLabelMagnitude", sceneDiagnostic.Path, badRealToken);
+
+            var projectedDiagnostic = ProcessingNodeOptionsCodec.Decode(
+                ProjectedSceneOptionDescriptors.Descriptor,
+                Json($$"""{"deepSkyMaximumSizeArcminutes":"{{badRealToken}}"}"""),
+                ProcessingNodeOptionsCodec.DefaultPath,
+                allowQuotedNumbers: true).Diagnostics.Single();
+            Assert.AreEqual(ProcessingOptionReasonCodes.WrongType, projectedDiagnostic.Code, badRealToken);
+            Assert.AreEqual("effectiveOptions.deepSkyMaximumSizeArcminutes", projectedDiagnostic.Path, badRealToken);
+
+            var rollingDiagnostic = ProcessingNodeOptionsCodec.Decode(
+                RollingCombinationOptionDescriptors.Descriptor,
+                Json($$"""{"maximumIntegrationMilliseconds":"{{badRealToken}}"}"""),
+                ProcessingNodeOptionsCodec.DefaultPath,
+                allowQuotedNumbers: true).Diagnostics.Single();
+            Assert.AreEqual(ProcessingOptionReasonCodes.WrongType, rollingDiagnostic.Code, badRealToken);
+            Assert.AreEqual("effectiveOptions.maximumIntegrationMilliseconds", rollingDiagnostic.Path, badRealToken);
+        }
+
+        foreach (var badWholeToken in new[] { "12\\u0000", "+12\\u0000", "\\u000012" })
+        {
+            var layerDiagnostic = ProcessingNodeOptionsCodec.Decode(
+                OverlayManifestOptionDescriptors.Layer,
+                Json($$"""{"kind":"scene-constellations","zOrder":"{{badWholeToken}}"}"""),
+                ProcessingNodeOptionsCodec.DefaultPath,
+                allowQuotedNumbers: true).Diagnostics.Single();
+            Assert.AreEqual(ProcessingOptionReasonCodes.WrongType, layerDiagnostic.Code, badWholeToken);
+            Assert.AreEqual("effectiveOptions.zOrder", layerDiagnostic.Path, badWholeToken);
+
+            var radiusDiagnostic = ProcessingNodeOptionsCodec.Decode(
+                Scene,
+                Json($$"""{"markerRadius":"{{badWholeToken}}"}"""),
+                ProcessingNodeOptionsCodec.DefaultPath,
+                allowQuotedNumbers: true).Diagnostics.Single();
+            Assert.AreEqual(ProcessingOptionReasonCodes.WrongType, radiusDiagnostic.Code, badWholeToken);
+            Assert.AreEqual("effectiveOptions.markerRadius", radiusDiagnostic.Path, badWholeToken);
+
+            var byteDiagnostic = ProcessingNodeOptionsCodec.Decode(
+                Scene,
+                Json($$"""{"markerValue":"{{badWholeToken}}"}"""),
+                ProcessingNodeOptionsCodec.DefaultPath,
+                allowQuotedNumbers: true).Diagnostics.Single();
+            Assert.AreEqual(ProcessingOptionReasonCodes.WrongType, byteDiagnostic.Code, badWholeToken);
+            Assert.AreEqual("effectiveOptions.markerValue", byteDiagnostic.Path, badWholeToken);
+
+            var colorDiagnostic = ProcessingNodeOptionsCodec.Decode(
+                Scene,
+                Json($$"""{"deepSkyRed":"{{badWholeToken}}"}"""),
+                ProcessingNodeOptionsCodec.DefaultPath,
+                allowQuotedNumbers: true).Diagnostics.Single();
+            Assert.AreEqual(ProcessingOptionReasonCodes.WrongType, colorDiagnostic.Code, badWholeToken);
+            Assert.AreEqual("effectiveOptions.deepSkyRed", colorDiagnostic.Path, badWholeToken);
+        }
+    }
 }
