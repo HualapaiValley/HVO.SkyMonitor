@@ -53,6 +53,10 @@ public sealed partial class CaptureSatelliteIntegrationTests
                 var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
                 var node = await store.ReadNodeAsync(receipt.Manifest.Descriptor.Capture.CaptureId, "satellite", CancellationToken.None).ConfigureAwait(false);
                 Assert.IsNotNull(node);
+                Assert.IsNotNull(node.Inputs);
+                var selectedInput = Assert.ContainsSingle(node.Inputs.Where(static input => input.Selected));
+                Assert.AreEqual(receipt.Manifest.Descriptor.Artifact.ArtifactId, selectedInput.ArtifactId);
+                Assert.AreEqual(receipt.Manifest.Descriptor.Artifact.Variant, selectedInput.Variant);
                 Assert.HasCount(3, node.Outputs);
                 var layerNode = await store.ReadNodeAsync(receipt.Manifest.Descriptor.Capture.CaptureId, "satellite-layer", CancellationToken.None).ConfigureAwait(false);
                 Assert.IsNotNull(layerNode);

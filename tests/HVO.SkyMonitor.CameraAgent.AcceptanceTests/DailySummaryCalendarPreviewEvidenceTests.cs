@@ -158,11 +158,12 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
     [TestMethod]
     public async Task FailedPreviewResponseIsRetainedAsUnavailableProductImage()
     {
+        const string previewBody = "PREVIEW_BODY_SENTINEL_1916";
         await using var run = await InducedRun.StartAsync(TestContext);
         // Only the browser's preview responses fail; the authenticated re-read still reaches the real endpoint.
         await run.Page.RouteAsync(
             url => new Uri(url).AbsolutePath == run.PreviewPath,
-            route => route.FulfillAsync(new() { Status = 503, ContentType = "text/plain", Body = "PREVIEW_BODY_SENTINEL_1916" }));
+            route => route.FulfillAsync(new() { Status = 503, ContentType = "text/plain", Body = previewBody }));
 
         // The image element is visible in its sized frame until its error replaces it, so the unchanged wait could
         // observe it first; waiting for the tile's own failure marker makes the induced outcome deterministic.
@@ -173,12 +174,19 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
         Assert.AreEqual(run.DayPath, report.UrlAtFailure.Split('?')[0]);
         Assert.IsTrue(report.Observation.PreviewFailedMarker);
         Assert.IsNull(report.AtFailure.Markup["calendarCell"], "the Calendar is gone after navigation");
-        StringAssert.Contains(report.CalendarCellAtClick!, "datetime=\"2026-10-01\"", StringComparison.Ordinal);
-        StringAssert.Contains(report.CalendarCellAtClick!, "data-nightly-state=\"Partial\"", StringComparison.Ordinal);
-        Assert.IsTrue(report.Observation.PreviewRequests.Any(static request => request.Status == 503 && request.ContentType == "text/plain"));
-        Assert.IsTrue(report.Observation.Probe!.Available, "the server still serves the image, so the failure was the browser's response");
-        StringAssert.Contains(report.AtFailure.Markup["dayTile"]!, "product-slot__failed", StringComparison.Ordinal);
-        await run.AssertRetainedEvidenceAsync(report, "PREVIEW_BODY_SENTINEL_1916");
+        var calendarCell = report.CalendarCellAtClick;
+        Assert.IsNotNull(calendarCell, "the clicked Calendar cell is retained across navigation");
+        StringAssert.Contains(calendarCell, "datetime=\"2026-10-01\"", StringComparison.Ordinal);
+        StringAssert.Contains(calendarCell, "data-nightly-state=\"Partial\"", StringComparison.Ordinal);
+        Assert.IsTrue(report.Observation.PreviewRequests.Any(static request =>
+            request is { Outcome: "response", Status: 503, ContentType: "text/plain" }));
+        var probe = report.Observation.Probe;
+        Assert.IsNotNull(probe, "the failure report retains the authenticated re-read");
+        Assert.IsTrue(probe.Available, "the server still serves the image, so the failure was the browser's response");
+        var dayTile = report.AtFailure.Markup["dayTile"];
+        Assert.IsNotNull(dayTile, "the day tile is retained at failure");
+        StringAssert.Contains(dayTile, "product-slot__failed", StringComparison.Ordinal);
+        await run.AssertRetainedEvidenceAsync(report, previewBody);
     }
 
     [TestMethod]

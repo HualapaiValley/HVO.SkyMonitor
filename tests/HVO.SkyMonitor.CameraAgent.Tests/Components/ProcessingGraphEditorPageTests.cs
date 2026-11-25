@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using System.Text.Json;
+using AngleSharp.Html.Dom;
 using Bunit;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
@@ -123,6 +124,45 @@ public sealed class ProcessingGraphEditorPageTests
         CollectionAssert.AreEqual(ReorderedIds, ids);
         // telemetry now sits first, so it can no longer name preview as an input.
         Assert.HasCount(1, cut.FindAll(".node-row")[0].QuerySelectorAll(".node-row__dependencies input"));
+    }
+
+    [TestMethod]
+    public void RowHeaderTypeSelectReplacesTheOptionsForARetainedAlias()
+    {
+        const string retainedAlias = "ProjectedScene";
+        const string replacementAlias = "CombinedPreview";
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        var service = new ProcessingExecutionPagesTests.GraphUiService
+        {
+            StepAliases = [replacementAlias],
+            RevisionDetail = new CameraAgentProcessingGraphRevisionDetail(
+                ProcessingGraphPagesTests.Registry().Revisions[1],
+                new CapturePipelineConfig([new(retainedAlias, "scene", DependsOn: ["$raw"], Required: false, Enabled: true)]),
+                null,
+                null)
+        };
+        context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(service);
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/pipeline/graphs/new?from=rev-validated");
+
+        var cut = context.Render<ProcessingGraphEditorPage>();
+
+        var header = cut.WaitForElement(".node-row__head");
+        var typeSelect = (IHtmlSelectElement)header.QuerySelector("select[aria-label='Node type']")!;
+        Assert.AreEqual(retainedAlias, typeSelect.Value);
+        Assert.IsNotNull(typeSelect.QuerySelector($"option[value='{retainedAlias}']"));
+        Assert.IsNotNull(cut.Find(".node-options-section[aria-label='Projected scene query']"));
+
+        typeSelect.Change(replacementAlias);
+
+        var row = cut.Find($".node-row[data-node-alias='{replacementAlias}']");
+        var updatedSelect = (IHtmlSelectElement)row.QuerySelector(".node-row__head select[aria-label='Node type']")!;
+        Assert.AreEqual(replacementAlias, updatedSelect.Value);
+        Assert.IsNull(updatedSelect.QuerySelector($"option[value='{retainedAlias}']"));
+        Assert.AreEqual("scene", row.QuerySelector(".node-row__head input[aria-label='Node identifier']")?.GetAttribute("value"));
+        Assert.IsNotNull(row.QuerySelector(".node-row__head button[aria-label='Remove scene']"));
+        Assert.IsNull(row.QuerySelector(".node-options-section[aria-label='Projected scene query']"));
+        Assert.IsNotNull(row.QuerySelector(".node-options-section[aria-label='Combined preview']"));
     }
 
     [TestMethod]

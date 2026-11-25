@@ -68,8 +68,9 @@ public sealed class CaptureSatelliteBindingTests
         var fixture = new CaptureSatelliteFixture(rawVariant: rawVariant);
         var descriptor = fixture.Descriptor;
         Assert.AreNotEqual(descriptor.Timing.RequestedStartUtc, descriptor.Timing.ExposureStartedUtc);
-        Assert.AreNotEqual(descriptor.Timing.ExposureEndedUtc - descriptor.Timing.ExposureStartedUtc,
-            descriptor.Controls.EffectiveExposure);
+        var observedExposure = descriptor.Timing.ExposureEndedUtc - descriptor.Timing.ExposureStartedUtc;
+        Assert.AreNotEqual(observedExposure, descriptor.Controls.RequestedExposure);
+        Assert.AreNotEqual(observedExposure, descriptor.Controls.EffectiveExposure);
         var raw = AsFrameArtifact(descriptor, fixture.Raw.Payload);
         var source = CaptureSatelliteTracksProcessingStep.CreateSource(fixture.Configuration, raw, descriptor);
         var expected = new ProcessingExecutionRequest(CaptureOrbitalPredictionRecipe.Name,
@@ -111,6 +112,11 @@ public sealed class CaptureSatelliteBindingTests
         Assert.IsNotNull(publicProduct);
         Assert.AreEqual(product.OutputIdentitySha256, publicProduct.OutputIdentitySha256);
         Assert.AreEqual(product.ChecksumSha256, publicProduct.ChecksumSha256);
+
+        await cancellation.CancelAsync().ConfigureAwait(false);
+        var cancelled = await Assert.ThrowsExactlyAsync<OperationCanceledException>(() =>
+            CaptureSatelliteProducts.PredictAsync(fixture.Evidence, source, outputVariant, cancellationToken).AsTask()).ConfigureAwait(false);
+        Assert.AreEqual(cancellationToken, cancelled.CancellationToken);
     }
 
     [TestMethod]

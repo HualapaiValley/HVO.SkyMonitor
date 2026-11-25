@@ -87,6 +87,7 @@ public sealed class CenteredPipelineEvidenceTests
     [DataRow("calendar-predecessor-unavailable", "calendar-predecessor-unavailable")]
     [DataRow("centered.product-failed/var/lib/hvo/raw", "Source production failed")]
     [DataRow("linear.not-a-real-producer-code", "Withheld")]
+    [DataRow("visibility.not-a-real-producer-code", "Withheld")]
     [DataRow("registration.resource-limit.extra", "Withheld")]
     [DataRow("registration.unknown/var/lib/hvo/raw", "Withheld")]
     [DataRow("/var/lib/hvo/raw", "Withheld")]

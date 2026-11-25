@@ -1614,12 +1614,10 @@ public sealed partial class VirtualSkyCameraModuleTests
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Best-effort bounded join during test teardown must not mask the primary assertion or timeout failure.")]
     private static async Task JoinBestEffortAsync(Task task, TimeSpan timeout)
     {
-        if (task.IsCompleted)
-            return;
-
         try
         {
-            await task.WaitAsync(timeout, CancellationToken.None).ConfigureAwait(false);
+            // Await completed tasks too so a task that faulted before teardown is observed.
+            await task.WaitAsync(timeout).ConfigureAwait(false);
         }
         catch (Exception)
         {

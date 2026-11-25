@@ -323,16 +323,16 @@ public sealed class NamedOrbitalPassCaptureTests
         => CaptureAndVerifyPredictionAsync(clouds, wrongExpectedRecord, crossesSelectionBoundary, metadataCase, shutterDelayTicks, bayer);
 
     [TestMethod]
-    [DataRow(false, "PinnedSnapshotUnavailable")]
-    [DataRow(true, "PinnedSnapshotUnavailable")]
-    [DataRow(false, "PinnedTimeInputsUnavailable")]
-    [DataRow(true, "PinnedTimeInputsUnavailable")]
-    public Task UnavailableNamedPassInputsRetainStatusWithoutTracks(bool bayer, string reason)
+    [DataRow(false, CaptureSatelliteReason.PinnedSnapshotUnavailable)]
+    [DataRow(true, CaptureSatelliteReason.PinnedSnapshotUnavailable)]
+    [DataRow(false, CaptureSatelliteReason.PinnedTimeInputsUnavailable)]
+    [DataRow(true, CaptureSatelliteReason.PinnedTimeInputsUnavailable)]
+    public Task UnavailableNamedPassInputsRetainStatusWithoutTracks(bool bayer, CaptureSatelliteReason reason)
         => CaptureAndVerifyPredictionAsync(clouds: false, wrongExpectedRecord: false, crossesSelectionBoundary: false,
             metadataCase: null, shutterDelayTicks: 5_000L, bayer: bayer, unavailablePinReason: reason);
 
     private async Task CaptureAndVerifyPredictionAsync(bool clouds, bool wrongExpectedRecord, bool crossesSelectionBoundary,
-        string? metadataCase, long shutterDelayTicks, bool bayer, string? unavailablePinReason = null)
+        string? metadataCase, long shutterDelayTicks, bool bayer, CaptureSatelliteReason? unavailablePinReason = null)
     {
         var root = Path.Combine(Path.GetTempPath(), "hvo-named-shutter-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -383,7 +383,7 @@ public sealed class NamedOrbitalPassCaptureTests
             var invalidTiming = metadataCase is "missing-shutter" or "contradictory-shutter";
             var retainedCoarsePlan = metadataCase == "retained-coarse-plan";
             var malformedLineage = metadataCase is not null && !ordinaryTransient && !invalidTiming && !retainedCoarsePlan;
-            var missingSnapshot = unavailablePinReason == "PinnedSnapshotUnavailable";
+            var missingSnapshot = unavailablePinReason == CaptureSatelliteReason.PinnedSnapshotUnavailable;
             var bright = input.Tracks[(3, CatalogNumbers[0])];
             CaptureLoopSubmission submission;
             var provider = CreateProvider(ingressRoot, clock, new InMemoryCelestialCatalog([]), input);
@@ -499,14 +499,14 @@ public sealed class NamedOrbitalPassCaptureTests
 
             // Resolve the admitted scene from the durable raw sidecar using newly opened services.
             FilePin? leapOverride = null;
-            if (unavailablePinReason == "PinnedTimeInputsUnavailable")
+            if (unavailablePinReason == CaptureSatelliteReason.PinnedTimeInputsUnavailable)
             {
                 // Keep the same usable leap rows but resolve a different exact file from the package pin.
                 byte[] leaps = [.. input.Time.ExportLeapSeconds(), (byte)'\n'];
-                var path = Path.Combine(root, "actual-leaps");
-                await File.WriteAllBytesAsync(path, leaps, ct).ConfigureAwait(false);
-                leapOverride = new(path, Hash(leaps));
-                Assert.AreNotEqual(input.Time.LeapSecondsSha256, leapOverride.Sha256);
+                leapOverride = new(Path.Combine(root, "actual-leaps"), Hash(leaps));
+                Assert.AreNotEqual(input.Time.LeapSecondsSha256, leapOverride.Sha256,
+                    "The usable leap-second override must differ from the retained pin.");
+                await File.WriteAllBytesAsync(leapOverride.Path, leaps, ct).ConfigureAwait(false);
             }
             var reopened = CreateProvider(ingressRoot, new ExposureTestTimeProvider(clock.GetUtcNow()),
                 new InMemoryCelestialCatalog([]), input, leapOverride);
@@ -574,7 +574,7 @@ public sealed class NamedOrbitalPassCaptureTests
             TestContext.WriteLine($"observed={shutter:O} descriptor={descriptorStart:O} mapping={manifest.Scene?.VirtualExposure?.TimeMapping} " +
                 $"integration={manifest.Scene?.TransientScenario?.IntegrationStartUtc:O} prediction={prediction.Exposure.StartUtc:O} " +
                 $"reason={prediction.Reason} renderable={prediction.Renderable} tracks={prediction.TrackCount}");
-            var expectedReason = unavailablePinReason ?? (invalidTiming ? "NamedPassPredictionTimingUnavailable" :
+            var expectedReason = unavailablePinReason?.ToString() ?? (invalidTiming ? "NamedPassPredictionTimingUnavailable" :
                 malformedLineage ? "NamedPassPredictionLineageUnavailable" :
                 retainedCoarsePlan ? "NamedPassPredictionTimingMismatch" :
                 crossesSelectionBoundary ? "PinnedRecordSelectionMismatch" :
