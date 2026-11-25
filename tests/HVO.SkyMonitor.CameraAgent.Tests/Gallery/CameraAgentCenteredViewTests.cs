@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using System.Security.Claims;
@@ -1247,15 +1248,25 @@ public sealed partial class CameraAgentArtifactServiceTests
             var firstReadTask = reader.ReadAsync(enriched.Base.BaseId, enriched.Revision.RevisionId, callerCts.Token).AsTask();
             await probe.WaitForAllOperationsEnteredAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
 
-            // Cancel the caller: each readTask cancels synchronously on the token while DisposeAsync blocks
-            // synchronously on a ManualResetEventSlim. ReadAsync must surface cancellation immediately.
-            await callerCts.CancelAsync().ConfigureAwait(false);
+            // Cancel the caller synchronously on a dedicated non-ThreadPool thread: each readTask cancels on the token
+            // while DisposeAsync blocks synchronously on a ManualResetEventSlim. Both Cancel() and ReadAsync must return promptly.
+            var (_, cancelElapsed) = await RunOnDedicatedThreadAsync(
+                threadId =>
+                {
+                    probe.SetCancellingThreadId(threadId);
+                    callerCts.Cancel();
+                    return true;
+                }).ConfigureAwait(false);
+            Assert.IsLessThan(TimeSpan.FromSeconds(2), cancelElapsed,
+                "Synchronous caller cancellation must return promptly without blocking on detached DisposeAsync.");
             await Assert.ThrowsAsync<OperationCanceledException>(() => firstReadTask.WaitAsync(TimeSpan.FromSeconds(5)))
                 .ConfigureAwait(false);
-            Assert.IsFalse(probe.IsDisposeReleased,
+            Assert.AreEqual(0, probe.CompletedDisposeCount,
                 "Caller cancellation must return before synchronously blocking detached DisposeAsync finishes.");
 
             await probe.WaitForAllDisposesEnteredAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.AreEqual(0, probe.DisposesOnCancellingThread,
+                "Detached read DisposeAsync must not execute on the caller's cancelling thread.");
             Assert.AreEqual(0, reader.AvailableLayerReadPermits,
                 "Gate permits must stay held until detached read disposal completes.");
 
@@ -1337,13 +1348,23 @@ public sealed partial class CameraAgentArtifactServiceTests
 
         try
         {
-            var directCleanupTask = CenteredViewPresentationReader.DisposeLateOpenedContentAsync(
-                Task.FromResult(directResult),
-                directGate);
+            var callingThreadId = 0;
+            var (directCleanupTask, directElapsed) = await RunOnDedicatedThreadAsync(
+                threadId =>
+                {
+                    callingThreadId = threadId;
+                    return CenteredViewPresentationReader.DisposeLateOpenedContentAsync(
+                        Task.FromResult(directResult),
+                        directGate);
+                }).ConfigureAwait(false);
 
-            Assert.IsFalse(directDisposeGate.IsSet,
+            Assert.IsLessThan(TimeSpan.FromSeconds(2), directElapsed,
                 "DisposeLateOpenedContentAsync must return immediately without executing sync-blocking DisposeAsync inline.");
+            Assert.IsFalse(directStream.DisposeCompleted,
+                "Sync-blocking DisposeAsync must not have completed before the test releases the gate.");
             await directDisposeEntered.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.AreNotEqual(callingThreadId, directStream.DisposeThreadId,
+                "Offloaded late-open DisposeAsync must execute on a background thread, not inline on the caller's thread.");
             Assert.IsFalse(directCleanupTask.IsCompleted);
             Assert.AreEqual(0, directGate.AvailablePermits,
                 "Gate permit must remain held while offloaded late-open DisposeAsync is blocked.");
@@ -1424,13 +1445,25 @@ public sealed partial class CameraAgentArtifactServiceTests
             var firstReadTask = reader.ReadAsync(enriched.Base.BaseId, enriched.Revision.RevisionId, callerCts.Token).AsTask();
             await probe.WaitForAllOperationsEnteredAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
 
-            await callerCts.CancelAsync().ConfigureAwait(false);
+            var (_, cancelElapsed) = await RunOnDedicatedThreadAsync(
+                threadId =>
+                {
+                    probe.SetCancellingThreadId(threadId);
+                    callerCts.Cancel();
+                    return true;
+                }).ConfigureAwait(false);
+            Assert.IsLessThan(TimeSpan.FromSeconds(2), cancelElapsed,
+                "Synchronous caller cancellation must return promptly on the late-open path.");
             await Assert.ThrowsAsync<OperationCanceledException>(() => firstReadTask.WaitAsync(TimeSpan.FromSeconds(5)))
                 .ConfigureAwait(false);
+            Assert.AreEqual(0, probe.CompletedDisposeCount,
+                "Late-open sync-blocking DisposeAsync must not complete before being released.");
 
             // Release the 4 late opens; their wrapped streams enter synchronously blocking DisposeAsync while holding permits.
             probe.ReleaseLateOpens();
             await probe.WaitForAllDisposesEnteredAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.AreEqual(0, probe.DisposesOnCancellingThread,
+                "Late-open DisposeAsync must not execute on the caller's cancelling thread.");
             Assert.AreEqual(0, reader.AvailableLayerReadPermits);
 
             var secondReadTask = reader.ReadAsync(enriched.Base.BaseId, enriched.Revision.RevisionId, CancellationToken.None).AsTask();
@@ -1456,6 +1489,244 @@ public sealed partial class CameraAgentArtifactServiceTests
             await WaitForConditionAsync(
                 () => reader.AvailableLayerReadPermits == permitCount,
                 TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task CenteredPresentationReaderDoesNotRunBlockingDisposeOnCancellingThreadWhenInlineCompletionFiresDuringCancelAsync(
+        bool stallAtOpen)
+    {
+        using var fixture = await ArtifactFixture.CreateAsync().ConfigureAwait(false);
+        const int permitCount = CenteredViewPresentationReader.DefaultMaximumConcurrentLayerReads;
+        var (views, enriched) = await CreateMultiLayerCenteredViewAsync(
+            fixture,
+            layerCount: permitCount,
+            stallAtOpen ? "gen-m1-inline-open" : "gen-m1-inline-read",
+            CancellationToken.None).ConfigureAwait(false);
+
+        var previewArtifactId = enriched.Base.Definition.Preview.Product.ArtifactId;
+        var layerArtifactIds = enriched.Revision.Manifest.Layers
+            .Select(static layer => layer.SourceProduct.ArtifactId)
+            .ToArray();
+
+        using var probe = await InlineCancelCompletionProbeArtifactService.CreateAsync(
+            fixture.Service,
+            previewArtifactId,
+            layerArtifactIds,
+            stallAtOpen).ConfigureAwait(false);
+        var reader = new CenteredViewPresentationReader(
+            views,
+            probe,
+            TimeProvider.System,
+            CenteredViewPresentationReader.DefaultOptionalLayerReadTimeout,
+            permitCount,
+            CameraAgentLayeredPresentationService.MaximumSourcePayloadBytes,
+            CenteredViewPresentationReader.DefaultOverallOptionalLayersReadTimeout);
+
+        try
+        {
+            using var callerCts = new CancellationTokenSource();
+            Task<CameraAgentLayeredPresentationResult>? firstReadTask = null;
+
+            // Register BEFORE ReadAsync so LIFO cancellation runs ReadAsync's linked-token callbacks first
+            // (detaching DisposeLateOpenedContentAsync / DisposeAfterReadAsync), and runs THIS callback
+            // second on the caller's synchronous Cancel() thread, completing the stalled open/read inline.
+            using var inlineCompletionRegistration = callerCts.Token.Register(() =>
+            {
+                SpinWait.SpinUntil(() => firstReadTask is { IsCompleted: true }, TimeSpan.FromSeconds(2));
+                using var settle = new ManualResetEventSlim(false);
+                settle.Wait(30);
+                probe.CompletePendingOperationsInline();
+            });
+
+            firstReadTask = reader.ReadAsync(enriched.Base.BaseId, enriched.Revision.RevisionId, callerCts.Token).AsTask();
+            await probe.WaitForAllOperationsEnteredAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+            var (_, cancelElapsed) = await RunOnDedicatedThreadAsync(
+                threadId =>
+                {
+                    probe.SetCancellingThreadId(threadId);
+                    callerCts.Cancel();
+                    return true;
+                }).ConfigureAwait(false);
+
+            Assert.IsLessThan(TimeSpan.FromSeconds(2), cancelElapsed,
+                "Synchronous callerCts.Cancel() must return promptly even when inline completion fires during cancellation.");
+            await Assert.ThrowsAsync<OperationCanceledException>(() => firstReadTask.WaitAsync(TimeSpan.FromSeconds(5)))
+                .ConfigureAwait(false);
+
+            await probe.WaitForAllDisposesEnteredAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.AreEqual(0, probe.DisposesOnCancellingThread,
+                "Zero DisposeAsync calls may run on the caller's synchronous cancelling thread.");
+            Assert.AreEqual(0, probe.CompletedDisposeCount,
+                "Blocking DisposeAsync must still be waiting on the background thread before release.");
+            Assert.AreEqual(0, reader.AvailableLayerReadPermits,
+                "Gate permits must stay held until offloaded DisposeAsync finishes.");
+
+            probe.ReleaseDisposes();
+            await probe.ReleaseAndDrainAsync().ConfigureAwait(false);
+            await WaitForConditionAsync(
+                () => reader.AvailableLayerReadPermits == permitCount,
+                TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+        finally
+        {
+            await probe.ReleaseAndDrainAsync().ConfigureAwait(false);
+            Assert.AreEqual(0, probe.OpenStreamCount);
+            Assert.AreEqual(0, reader.PendingLayerReadWaiterCount);
+            await WaitForConditionAsync(
+                () => reader.AvailableLayerReadPermits == permitCount,
+                TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [TestMethod]
+    public async Task CenteredPresentationReaderSwallowsDetachedReadDisposeExceptionAndReleasesResourcesAsync()
+    {
+        using var fixture = await ArtifactFixture.CreateAsync().ConfigureAwait(false);
+        const int permitCount = CenteredViewPresentationReader.DefaultMaximumConcurrentLayerReads;
+        var (views, enriched) = await CreateMultiLayerCenteredViewAsync(
+            fixture,
+            layerCount: permitCount,
+            "gen-l2-read-dispose-throw",
+            CancellationToken.None).ConfigureAwait(false);
+
+        var sentinelMessage = $"Simulated detached read dispose IO failure ({Guid.NewGuid():N}).";
+        var unobservedSentinelExceptions = new List<Exception>();
+        void OnUnobserved(object? sender, UnobservedTaskExceptionEventArgs args)
+        {
+            if (args.Exception.Flatten().InnerExceptions.Any(ex =>
+                    ex.Message.Contains(sentinelMessage, StringComparison.Ordinal)))
+            {
+                lock (unobservedSentinelExceptions)
+                {
+                    unobservedSentinelExceptions.Add(args.Exception);
+                }
+                args.SetObserved();
+            }
+        }
+
+        TaskScheduler.UnobservedTaskException += OnUnobserved;
+        try
+        {
+            // Part 1: Direct unit test of DisposeAfterReadAsync with a throwing DisposeAsync on both
+            // canceled and completed readTask states. Removing the inner catch at DisposeAfterReadAsync
+            // faults cleanupTask and fails this test deterministically.
+            var sampleLayerId = enriched.Revision.Manifest.Layers[0].SourceProduct.ArtifactId;
+            foreach (var readTask in new Task[]
+                     {
+                         Task.FromCanceled(new CancellationToken(canceled: true)),
+                         Task.CompletedTask
+                     })
+            {
+                var gate = new CenteredViewPresentationReader.LayerReadGate(1);
+                Assert.IsTrue(await gate.TryAcquireAsync(CancellationToken.None).ConfigureAwait(false));
+                var budget = new CenteredViewPresentationReader.PayloadBudget(1024);
+                Assert.IsTrue(budget.TryReserve(256));
+
+                var opened = await fixture.Service.OpenContentAsync(sampleLayerId, CancellationToken.None).ConfigureAwait(false);
+                Assert.IsNotNull(opened.Content);
+                using var disposeGate = new ManualResetEventSlim(true);
+                var disposeEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                var throwingStream = new BlockingTestDisposeStream(
+                    opened.Content,
+                    disposeGate,
+                    disposeEntered,
+                    exceptionOnDispose: new IOException(sentinelMessage));
+                var wrappedContent = new CameraAgentArtifactContentStream(
+                    throwingStream,
+                    opened.Content.ArtifactId,
+                    opened.Content.CaptureId,
+                    opened.Content.Role,
+                    opened.Content.MediaType,
+                    opened.Content.ByteLength,
+                    opened.Content.ChecksumSha256,
+                    opened.Content.FileName,
+                    opened.Content.Descriptor,
+                    opened.Content.EncodedWidth,
+                    opened.Content.EncodedHeight);
+
+                var cleanupTask = CenteredViewPresentationReader.DisposeAfterReadAsync(
+                    readTask,
+                    wrappedContent,
+                    budget,
+                    reservedBytes: 256,
+                    gate);
+
+                await disposeEntered.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                await cleanupTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                Assert.AreEqual(TaskStatus.RanToCompletion, cleanupTask.Status,
+                    "DisposeAfterReadAsync must swallow non-fatal DisposeAsync exceptions instead of faulting.");
+                Assert.AreEqual(1024, budget.RemainingBytes,
+                    "Payload budget must be released even when detached read DisposeAsync throws.");
+                Assert.AreEqual(1, gate.AvailablePermits,
+                    "Gate permit must be released even when detached read DisposeAsync throws.");
+            }
+
+            // Part 2: End-to-end ReadAsync path with detached read DisposeAsync throwing a sentinel IOException.
+            var previewArtifactId = enriched.Base.Definition.Preview.Product.ArtifactId;
+            var layerArtifactIds = enriched.Revision.Manifest.Layers
+                .Select(static layer => layer.SourceProduct.ArtifactId)
+                .ToHashSet();
+
+            using var probe = new CanceledSyncDisposeProbeArtifactService(
+                fixture.Service,
+                previewArtifactId,
+                layerArtifactIds,
+                permitCount,
+                stallAtOpen: false,
+                exceptionOnDisposeFactory: () => new IOException(sentinelMessage));
+            var reader = new CenteredViewPresentationReader(
+                views,
+                probe,
+                TimeProvider.System,
+                CenteredViewPresentationReader.DefaultOptionalLayerReadTimeout,
+                permitCount,
+                CameraAgentLayeredPresentationService.MaximumSourcePayloadBytes,
+                CenteredViewPresentationReader.DefaultOverallOptionalLayersReadTimeout);
+
+            try
+            {
+                using var callerCts = new CancellationTokenSource();
+                var firstReadTask = reader.ReadAsync(enriched.Base.BaseId, enriched.Revision.RevisionId, callerCts.Token).AsTask();
+                await probe.WaitForAllOperationsEnteredAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+                await callerCts.CancelAsync().ConfigureAwait(false);
+                await Assert.ThrowsAsync<OperationCanceledException>(() => firstReadTask.WaitAsync(TimeSpan.FromSeconds(5)))
+                    .ConfigureAwait(false);
+
+                await probe.WaitForAllDisposesEnteredAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                probe.ReleaseDisposes();
+                await probe.ReleaseAndDrainAsync().ConfigureAwait(false);
+                await WaitForConditionAsync(
+                    () => reader.AvailableLayerReadPermits == permitCount,
+                    TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+                var recovered = await reader.ReadAsync(enriched.Base.BaseId, enriched.Revision.RevisionId, CancellationToken.None)
+                    .AsTask().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                Assert.AreEqual(CameraAgentLayeredPresentationStatus.Found, recovered.Status);
+                Assert.IsNotNull(recovered.Presentation);
+                Assert.HasCount(permitCount, recovered.Presentation.Layers);
+            }
+            finally
+            {
+                await probe.ReleaseAndDrainAsync().ConfigureAwait(false);
+            }
+
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            lock (unobservedSentinelExceptions)
+            {
+                Assert.IsEmpty(unobservedSentinelExceptions,
+                    "Swallowed read-path DisposeAsync exceptions must produce zero unobserved task exceptions.");
+            }
+        }
+        finally
+        {
+            TaskScheduler.UnobservedTaskException -= OnUnobserved;
         }
     }
 
@@ -1558,6 +1829,32 @@ public sealed partial class CameraAgentArtifactServiceTests
         {
             await probe.ReleaseAndDrainAsync().ConfigureAwait(false);
         }
+    }
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Forwards any dedicated-thread exception to the awaiting test task.")]
+    private static Task<(T Result, TimeSpan Elapsed)> RunOnDedicatedThreadAsync<T>(Func<int, T> action)
+    {
+        var tcs = new TaskCompletionSource<(T Result, TimeSpan Elapsed)>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() =>
+        {
+            var threadId = Environment.CurrentManagedThreadId;
+            var started = Stopwatch.GetTimestamp();
+            try
+            {
+                var result = action(threadId);
+                tcs.TrySetResult((result, Stopwatch.GetElapsedTime(started)));
+            }
+            catch (Exception ex)
+            {
+                tcs.TrySetException(ex);
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "CenteredPresentationReader-DedicatedCaller"
+        };
+        thread.Start();
+        return tcs.Task;
     }
 
     private static async Task WaitForConditionAsync(Func<bool> predicate, TimeSpan timeout)
@@ -2916,7 +3213,8 @@ public sealed partial class CameraAgentArtifactServiceTests
         Guid previewArtifactId,
         HashSet<Guid> layerArtifactIds,
         int expectedOperationCount,
-        bool stallAtOpen) : ICameraAgentArtifactService, IDisposable
+        bool stallAtOpen,
+        Func<Exception>? exceptionOnDisposeFactory = null) : ICameraAgentArtifactService, IDisposable
     {
         private readonly ManualResetEventSlim _syncDisposeGate = new(false);
         private readonly TaskCompletionSource _allOperationsEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -2929,12 +3227,18 @@ public sealed partial class CameraAgentArtifactServiceTests
         private int _secondCallLayerOpens;
         private int _operationsEntered;
         private int _disposesEntered;
+        private int _disposesCompleted;
+        private int _cancellingThreadId;
+        private int _disposesOnCancellingThread;
         private int _openStreams;
         private int _disposeReleased;
 
-        public bool IsDisposeReleased => Volatile.Read(ref _disposeReleased) != 0;
+        public int CompletedDisposeCount => Volatile.Read(ref _disposesCompleted);
+        public int DisposesOnCancellingThread => Volatile.Read(ref _disposesOnCancellingThread);
         public int SecondCallLayerOpens => Volatile.Read(ref _secondCallLayerOpens);
         public int OpenStreamCount => Volatile.Read(ref _openStreams);
+
+        public void SetCancellingThreadId(int threadId) => Volatile.Write(ref _cancellingThreadId, threadId);
 
         public Task WaitForAllOperationsEnteredAsync() => _allOperationsEntered.Task;
         public Task WaitForAllDisposesEnteredAsync() => _allDisposesEntered.Task;
@@ -2993,7 +3297,7 @@ public sealed partial class CameraAgentArtifactServiceTests
             }
 
             Interlocked.Increment(ref _openStreams);
-            var stream = new CanceledSyncDisposeStream(content, this);
+            var stream = new CanceledSyncDisposeStream(content, this, exceptionOnDisposeFactory);
             var wrapped = new CameraAgentArtifactContentResult(
                 opened.Status,
                 new CameraAgentArtifactContentStream(
@@ -3028,6 +3332,11 @@ public sealed partial class CameraAgentArtifactServiceTests
 
         private void OnDisposeEntered()
         {
+            var expectedThreadId = Volatile.Read(ref _cancellingThreadId);
+            if (expectedThreadId != 0 && Environment.CurrentManagedThreadId == expectedThreadId)
+            {
+                Interlocked.Increment(ref _disposesOnCancellingThread);
+            }
             if (Interlocked.Increment(ref _disposesEntered) >= expectedOperationCount)
             {
                 _allDisposesEntered.TrySetResult();
@@ -3036,6 +3345,7 @@ public sealed partial class CameraAgentArtifactServiceTests
 
         private void OnDisposeCompleted()
         {
+            Interlocked.Increment(ref _disposesCompleted);
             if (Interlocked.Decrement(ref _openStreams) == 0 && Volatile.Read(ref _disposeReleased) != 0)
             {
                 _drained.TrySetResult();
@@ -3057,7 +3367,8 @@ public sealed partial class CameraAgentArtifactServiceTests
 
         private sealed class CanceledSyncDisposeStream(
             CameraAgentArtifactContentStream innerContent,
-            CanceledSyncDisposeProbeArtifactService owner) : Stream
+            CanceledSyncDisposeProbeArtifactService owner,
+            Func<Exception>? exceptionOnDisposeFactory) : Stream
         {
             private int _disposed;
 
@@ -3097,6 +3408,263 @@ public sealed partial class CameraAgentArtifactServiceTests
 
             public override async ValueTask DisposeAsync()
             {
+                Exception? toThrow = null;
+                if (Interlocked.Exchange(ref _disposed, 1) == 0)
+                {
+                    owner.OnDisposeEntered();
+                    owner._syncDisposeGate.Wait(TimeSpan.FromSeconds(10), CancellationToken.None);
+                    await innerContent.DisposeAsync().ConfigureAwait(false);
+                    owner.OnDisposeCompleted();
+                    toThrow = exceptionOnDisposeFactory?.Invoke();
+                }
+                await base.DisposeAsync().ConfigureAwait(false);
+                if (toThrow is not null)
+                {
+                    throw toThrow;
+                }
+            }
+        }
+    }
+
+    private sealed class InlineCancelCompletionProbeArtifactService : ICameraAgentArtifactService, IDisposable
+    {
+        private readonly CameraAgentArtifactService _inner;
+        private readonly Guid _previewArtifactId;
+        private readonly bool _stallAtOpen;
+        private readonly Dictionary<Guid, CameraAgentArtifactContentResult> _preOpenedLayers;
+        private readonly Lock _pendingLock = new();
+        private readonly List<(TaskCompletionSource<CameraAgentArtifactContentResult> Tcs, CameraAgentArtifactContentResult Result)> _pendingOpens = [];
+        private readonly List<TaskCompletionSource<int>> _pendingReads = [];
+        private readonly ManualResetEventSlim _syncDisposeGate = new(false);
+        private readonly TaskCompletionSource _allOperationsEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _allDisposesEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _drained = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly int _expectedOperationCount;
+        private int _operationsEntered;
+        private int _disposesEntered;
+        private int _disposesCompleted;
+        private int _cancellingThreadId;
+        private int _disposesOnCancellingThread;
+        private int _openStreams;
+        private int _disposeReleased;
+
+        private InlineCancelCompletionProbeArtifactService(
+            CameraAgentArtifactService inner,
+            Guid previewArtifactId,
+            bool stallAtOpen,
+            int expectedOperationCount)
+        {
+            _inner = inner;
+            _previewArtifactId = previewArtifactId;
+            _stallAtOpen = stallAtOpen;
+            _preOpenedLayers = new Dictionary<Guid, CameraAgentArtifactContentResult>(expectedOperationCount);
+            _expectedOperationCount = expectedOperationCount;
+            _openStreams = expectedOperationCount;
+        }
+
+        public static async Task<InlineCancelCompletionProbeArtifactService> CreateAsync(
+            CameraAgentArtifactService inner,
+            Guid previewArtifactId,
+            Guid[] layerArtifactIds,
+            bool stallAtOpen)
+        {
+            var probe = new InlineCancelCompletionProbeArtifactService(
+                inner,
+                previewArtifactId,
+                stallAtOpen,
+                layerArtifactIds.Length);
+            foreach (var artifactId in layerArtifactIds)
+            {
+                var opened = await inner.OpenContentAsync(artifactId, CancellationToken.None).ConfigureAwait(false);
+                Assert.IsNotNull(opened.Content);
+                var stream = new InlineBlockingDisposeStream(opened.Content, probe);
+                probe._preOpenedLayers[artifactId] = new CameraAgentArtifactContentResult(
+                    opened.Status,
+                    new CameraAgentArtifactContentStream(
+                        stream,
+                        opened.Content.ArtifactId,
+                        opened.Content.CaptureId,
+                        opened.Content.Role,
+                        opened.Content.MediaType,
+                        opened.Content.ByteLength,
+                        opened.Content.ChecksumSha256,
+                        opened.Content.FileName,
+                        opened.Content.Descriptor,
+                        opened.Content.EncodedWidth,
+                        opened.Content.EncodedHeight));
+            }
+            return probe;
+        }
+
+        public int CompletedDisposeCount => Volatile.Read(ref _disposesCompleted);
+        public int DisposesOnCancellingThread => Volatile.Read(ref _disposesOnCancellingThread);
+        public int OpenStreamCount => Volatile.Read(ref _openStreams);
+
+        public void SetCancellingThreadId(int threadId) => Volatile.Write(ref _cancellingThreadId, threadId);
+
+        public Task WaitForAllOperationsEnteredAsync() => _allOperationsEntered.Task;
+        public Task WaitForAllDisposesEnteredAsync() => _allDisposesEntered.Task;
+
+        public void CompletePendingOperationsInline()
+        {
+            (TaskCompletionSource<CameraAgentArtifactContentResult> Tcs, CameraAgentArtifactContentResult Result)[] opens;
+            TaskCompletionSource<int>[] reads;
+            lock (_pendingLock)
+            {
+                opens = [.. _pendingOpens];
+                _pendingOpens.Clear();
+                reads = [.. _pendingReads];
+                _pendingReads.Clear();
+            }
+
+            foreach (var (tcs, result) in opens)
+            {
+                tcs.TrySetResult(result);
+            }
+            foreach (var tcs in reads)
+            {
+                tcs.TrySetCanceled();
+            }
+        }
+
+        public void ReleaseDisposes()
+        {
+            Interlocked.Exchange(ref _disposeReleased, 1);
+            _syncDisposeGate.Set();
+            if (Volatile.Read(ref _openStreams) == 0)
+            {
+                _drained.TrySetResult();
+            }
+        }
+
+        public async Task ReleaseAndDrainAsync()
+        {
+            CompletePendingOperationsInline();
+            ReleaseDisposes();
+            if (Volatile.Read(ref _openStreams) > 0)
+            {
+                await _drained.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            }
+        }
+
+        public ValueTask<CameraAgentArtifactContentResult> OpenContentAsync(Guid artifactId, CancellationToken cancellationToken)
+        {
+            if (artifactId == _previewArtifactId || !_preOpenedLayers.TryGetValue(artifactId, out var wrapped))
+            {
+                return _inner.OpenContentAsync(artifactId, cancellationToken);
+            }
+
+            if (_stallAtOpen)
+            {
+                // Intentionally omit RunContinuationsAsynchronously so CompletePendingOperationsInline
+                // runs continuations inline on the caller's cancelling thread.
+                var openTcs = new TaskCompletionSource<CameraAgentArtifactContentResult>();
+                lock (_pendingLock)
+                {
+                    _pendingOpens.Add((openTcs, wrapped));
+                }
+                OnOperationEntered();
+                return new ValueTask<CameraAgentArtifactContentResult>(openTcs.Task);
+            }
+
+            return ValueTask.FromResult(wrapped);
+        }
+
+        private ValueTask<int> RegisterPendingRead()
+        {
+            // Intentionally omit RunContinuationsAsynchronously so CompletePendingOperationsInline
+            // runs continuations inline on the caller's cancelling thread.
+            var readTcs = new TaskCompletionSource<int>();
+            lock (_pendingLock)
+            {
+                _pendingReads.Add(readTcs);
+            }
+            OnOperationEntered();
+            return new ValueTask<int>(readTcs.Task);
+        }
+
+        private void OnOperationEntered()
+        {
+            if (Interlocked.Increment(ref _operationsEntered) >= _expectedOperationCount)
+            {
+                _allOperationsEntered.TrySetResult();
+            }
+        }
+
+        private void OnDisposeEntered()
+        {
+            var expectedThreadId = Volatile.Read(ref _cancellingThreadId);
+            if (expectedThreadId != 0 && Environment.CurrentManagedThreadId == expectedThreadId)
+            {
+                Interlocked.Increment(ref _disposesOnCancellingThread);
+            }
+            if (Interlocked.Increment(ref _disposesEntered) >= _expectedOperationCount)
+            {
+                _allDisposesEntered.TrySetResult();
+            }
+        }
+
+        private void OnDisposeCompleted()
+        {
+            Interlocked.Increment(ref _disposesCompleted);
+            if (Interlocked.Decrement(ref _openStreams) == 0 && Volatile.Read(ref _disposeReleased) != 0)
+            {
+                _drained.TrySetResult();
+            }
+        }
+
+        public ValueTask<CameraAgentArtifactContentResult> OpenReplayOutputContentAsync(Guid executionId, Guid artifactId, CancellationToken cancellationToken) =>
+            _inner.OpenReplayOutputContentAsync(executionId, artifactId, cancellationToken);
+
+        public ValueTask<CameraAgentArtifactPreviewResult> GetPreviewAsync(Guid artifactId, CancellationToken cancellationToken, Guid? displayReference = null) =>
+            _inner.GetPreviewAsync(artifactId, cancellationToken, displayReference);
+
+        public void Dispose()
+        {
+            CompletePendingOperationsInline();
+            ReleaseDisposes();
+            foreach (var item in _preOpenedLayers.Values)
+            {
+                item.Content?.Dispose();
+            }
+            _syncDisposeGate.Dispose();
+        }
+
+        private sealed class InlineBlockingDisposeStream(
+            CameraAgentArtifactContentStream innerContent,
+            InlineCancelCompletionProbeArtifactService owner) : Stream
+        {
+            private int _disposed;
+
+            public override bool CanRead => true;
+            public override bool CanSeek => false;
+            public override bool CanWrite => false;
+            public override long Length => innerContent.ByteLength;
+            public override long Position { get => 0; set => throw new NotSupportedException(); }
+            public override void Flush() { }
+            public override int Read(byte[] buffer, int offset, int count) =>
+                ReadAsync(buffer.AsMemory(offset, count)).AsTask().GetAwaiter().GetResult();
+            public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>
+                owner.RegisterPendingRead();
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+            public override void SetLength(long value) => throw new NotSupportedException();
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+            protected override void Dispose(bool disposing)
+            {
+                if (Interlocked.Exchange(ref _disposed, 1) == 0)
+                {
+                    if (disposing)
+                    {
+                        innerContent.Dispose();
+                    }
+                    owner.OnDisposeCompleted();
+                }
+                base.Dispose(disposing);
+            }
+
+            public override async ValueTask DisposeAsync()
+            {
                 if (Interlocked.Exchange(ref _disposed, 1) == 0)
                 {
                     owner.OnDisposeEntered();
@@ -3116,6 +3684,11 @@ public sealed partial class CameraAgentArtifactServiceTests
         Exception? exceptionOnDispose) : Stream
     {
         private int _disposed;
+        private int _disposeThreadId;
+        private int _disposeCompleted;
+
+        public int DisposeThreadId => Volatile.Read(ref _disposeThreadId);
+        public bool DisposeCompleted => Volatile.Read(ref _disposeCompleted) != 0;
 
         public override bool CanRead => true;
         public override bool CanSeek => false;
@@ -3144,9 +3717,11 @@ public sealed partial class CameraAgentArtifactServiceTests
             var shouldThrow = false;
             if (Interlocked.Exchange(ref _disposed, 1) == 0)
             {
+                Volatile.Write(ref _disposeThreadId, Environment.CurrentManagedThreadId);
                 disposeEntered.TrySetResult();
                 syncDisposeGate.Wait(TimeSpan.FromSeconds(10), CancellationToken.None);
                 await innerContent.DisposeAsync().ConfigureAwait(false);
+                Volatile.Write(ref _disposeCompleted, 1);
                 shouldThrow = exceptionOnDispose is not null;
             }
             await base.DisposeAsync().ConfigureAwait(false);

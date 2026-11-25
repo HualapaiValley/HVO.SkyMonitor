@@ -407,7 +407,8 @@ internal sealed class CenteredViewPresentationReader : ICenteredViewPresentation
                     var result = await openTask.ConfigureAwait(false);
                     if (result.Content is { } content)
                     {
-                        await content.DisposeAsync().ConfigureAwait(false);
+                        await Task.Run(() => content.DisposeAsync().AsTask(), CancellationToken.None)
+                            .ConfigureAwait(false);
                     }
                 }
                 catch (Exception exception) when (exception is not (StackOverflowException or OutOfMemoryException))
@@ -422,7 +423,7 @@ internal sealed class CenteredViewPresentationReader : ICenteredViewPresentation
             CancellationToken.None);
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Best-effort disposal and budget release after a timed-out layer read must never surface unobserved task exceptions.")]
-    private static Task DisposeAfterReadAsync(
+    internal static Task DisposeAfterReadAsync(
         Task readTask,
         CameraAgentArtifactContentStream content,
         PayloadBudget budget,
@@ -443,7 +444,8 @@ internal sealed class CenteredViewPresentationReader : ICenteredViewPresentation
                 {
                     try
                     {
-                        await content.DisposeAsync().ConfigureAwait(false);
+                        await Task.Run(() => content.DisposeAsync().AsTask(), CancellationToken.None)
+                            .ConfigureAwait(false);
                     }
                     catch (Exception exception) when (exception is not (StackOverflowException or OutOfMemoryException))
                     {
@@ -623,9 +625,11 @@ internal sealed class CenteredViewPresentationReader : ICenteredViewPresentation
         }
     }
 
-    private sealed class PayloadBudget(int maximumBytes)
+    internal sealed class PayloadBudget(int maximumBytes)
     {
         private int _remaining = maximumBytes;
+
+        public int RemainingBytes => Volatile.Read(ref _remaining);
 
         public bool TryReserve(int bytes)
         {
