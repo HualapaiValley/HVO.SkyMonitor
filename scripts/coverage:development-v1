@@ -104,6 +104,9 @@ fi
 
 [[ "$#" -eq 2 ]] || usage
 results_dir="$1"
+while [[ "$results_dir" == */ && "$results_dir" != / ]]; do
+  results_dir="${results_dir%/}"
+done
 target_dir="$2"
 skip_args=()
 if [[ "$skip_deployment_cli" == true ]]; then

@@ -145,7 +145,7 @@ def run(evidence, skip_deployment_cli=False):
     discovery = subprocess.run(
         ["dotnet", "run", "--project", "scripts/test-categories/HVO.SkyMonitor.TestCategoryAudit.csproj",
          "--configuration", "Release", "--", "--emit-cameraagent-discovery"],
-        check=True, stdout=subprocess.PIPE, text=True,
+        cwd=ROOT, check=True, stdout=subprocess.PIPE, text=True,
     )
     partitions = partition(area_groups, json.loads(discovery.stdout))
 
