@@ -215,19 +215,21 @@ operations manual's change-management rules for a live host. An upgrade pauses c
    needs `docker buildx` 0.8 or later (`skymonitor01` has 0.38.0), which the installer uses to read the image from the
    registry before it pulls anything, and must be signed in to `ghcr.io` while the package is private.
 
-5. Check the result, and keep the rollback command at hand:
+5. Check the running image and application readiness.
 
    ```bash
    ./hvo-sky-install-linux-arm64 status --instance-id <uuid>
    # The release record, under the product root (/var/lib/hvo-sky by default):
    cat /var/lib/hvo-sky/cameraagents/<uuid>/state/deployment/image-distribution.json
-   # Only if the upgrade has to be undone:
-   ./hvo-sky-install-linux-arm64 cameraagent rollback --instance-id <uuid>
    ```
+
+   For an interrupted upgrade, follow [Restore Only After an Interrupted Upgrade](deployment-installer.md#restore-only-after-an-interrupted-upgrade).
+   After commit, preserve the current captures and records and use a supported forward repair
+   or the [explicit backup and restore procedure](deployment-installer.md#backup-and-restore).
 
 An instance installed from an `--image-ref` has no release record. Its first upgrade from a release shows every
 upgrade note up to the target and says that the installed version is not recorded. From then on, the installer
-refuses an upgrade to an older version: only `rollback` goes back.
+refuses an upgrade to an older version.
 
 The installer refuses a release folder whose files disagree, and changes nothing when it does. It refuses when:
 

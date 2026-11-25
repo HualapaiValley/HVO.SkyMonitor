@@ -143,7 +143,7 @@ public sealed partial class LifecycleContractTests
                     NoDownload = true
                 },
                 "The candidate image is already active."),
-            ("no-previous", installed, installed.Request(LifecycleOperationKind.Rollback), "No previous image is retained for rollback."),
+            ("manual-rollback", installed, installed.Request(LifecycleOperationKind.Rollback), CameraAgentLifecycleManager.ManualRollbackGuidance),
             ("reinstall-installed", installed, installed.Request(LifecycleOperationKind.Reinstall), "Reinstall requires a preserved uninstalled instance."),
             ("purge-installed", installed,
                 installed.Request(LifecycleOperationKind.Purge) with { ConfirmationInstanceId = installed.InstanceId },

@@ -12,14 +12,17 @@ public sealed partial class LifecycleContractTests
 {
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    [DataRow(LifecycleOperationKind.Rollback, InstanceLifecycleCondition.Installed)]
-    [DataRow(LifecycleOperationKind.Reinstall, InstanceLifecycleCondition.Uninstalled)]
-    [DataRow(LifecycleOperationKind.Upgrade, InstanceLifecycleCondition.Installed)]
-    [DataRow(LifecycleOperationKind.CatalogRollback, InstanceLifecycleCondition.Installed)]
-    public async Task SiloLayout_UnsupportedOperation_RefusesBeforeMutation(LifecycleOperationKind kind, InstanceLifecycleCondition condition)
+    [DataRow(LifecycleOperationKind.Rollback, InstanceLifecycleCondition.Installed, false, false)]
+    [DataRow(LifecycleOperationKind.Rollback, InstanceLifecycleCondition.Installed, true, false)]
+    [DataRow(LifecycleOperationKind.Rollback, InstanceLifecycleCondition.Installed, false, true)]
+    [DataRow(LifecycleOperationKind.Reinstall, InstanceLifecycleCondition.Uninstalled, false, false)]
+    [DataRow(LifecycleOperationKind.Upgrade, InstanceLifecycleCondition.Installed, false, false)]
+    [DataRow(LifecycleOperationKind.CatalogRollback, InstanceLifecycleCondition.Installed, false, false)]
+    public async Task SiloLayout_UnsupportedOperation_RefusesBeforeMutation(
+        LifecycleOperationKind kind, InstanceLifecycleCondition condition, bool plan, bool resume)
     {
         using var fixture = await SiloFixtureAsync(condition);
-        var request = fixture.Request(kind);
+        var request = fixture.Request(kind) with { DryRun = plan, Resume = resume };
         if (kind == LifecycleOperationKind.Upgrade)
             request = request with { ImageReference = $"sha256:{new string('5', 64)}", NoDownload = true };
         var before = FileSystemActivity.Snapshot(fixture.Root);
@@ -32,8 +35,7 @@ public sealed partial class LifecycleContractTests
         Assert.IsTrue(refused.IsRefusal, refused.Message);
         Assert.AreEqual(CameraAgentLifecycleManager.SiloLayoutUnsupported, refused.Message);
         FileSystemActivity.AssertUnchanged(before, FileSystemActivity.Snapshot(fixture.Root), $"{kind} changed a Silo-layout instance");
-        Assert.AreEqual(0, fixture.Runner.ComposeUpCount);
-        Assert.AreEqual(0, fixture.Runner.ComposeDownCount);
+        Assert.AreEqual(0, fixture.Runner.InvocationCount);
         Assert.AreEqual(0, lifecycle.PauseCount);
     }
 

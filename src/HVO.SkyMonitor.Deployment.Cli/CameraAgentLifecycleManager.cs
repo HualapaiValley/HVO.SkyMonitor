@@ -48,12 +48,11 @@ internal sealed partial class CameraAgentLifecycleManager
         var result = await ExecuteCoreAsync(request, processRunner, lifecycleClientFactory, ownerClientFactory,
             uid, gid, output, error, acquireReleaseImage ?? ReleaseAcquirer.AcquireImageAsync, cancellationToken).ConfigureAwait(false);
         if (result.Plan is null || request.InstanceId is not { } id ||
-            request.Operation is not (LifecycleOperationKind.Upgrade or LifecycleOperationKind.Rollback or
+            request.Operation is not (LifecycleOperationKind.Upgrade or
                 LifecycleOperationKind.Uninstall or LifecycleOperationKind.Reinstall or LifecycleOperationKind.Purge)) return result;
         var paths = InstallationPaths.Create(request.ProductRoot, id, ProductionCatalog.DefaultCatalogId);
         var manifest = await ReadManifestAsync(paths.ManifestPath, cancellationToken).ConfigureAwait(false);
-        var imageId = request.Operation == LifecycleOperationKind.Rollback ? manifest.PreviousImage!.ImageId : manifest.Image.ImageId;
-        var programs = await PathPrograms.PlanAsync(paths, request.ProductionProductRoot, request.Release, imageId,
+        var programs = await PathPrograms.PlanAsync(paths, request.ProductionProductRoot, request.Release, manifest.Image.ImageId,
             request.Operation, cancellationToken).ConfigureAwait(false);
         return programs.Count == 0 ? result : result with { Plan = DeploymentPlan.Of([.. result.Plan.Items, .. programs]) };
     }
@@ -113,6 +112,11 @@ internal sealed partial class CameraAgentLifecycleManager
         }
         if (request.Operation is not null && uid == 0)
             throw InstallerException.Refused("Run lifecycle operations as the Docker-capable runtime user, not as root.");
+        if (request.Operation == LifecycleOperationKind.Rollback && !request.Resume)
+        {
+            var usesSiloLayout = await DeclaresSiloLayoutAsync(paths.ManifestPath, cancellationToken).ConfigureAwait(false);
+            throw InstallerException.Refused(usesSiloLayout ? SiloLayoutUnsupported : ManualRollbackGuidance);
+        }
         // A restore's target may be absent or half replaced, so it starts from the archive, not the instance manifest.
         if (request.Operation == LifecycleOperationKind.Restore)
         {
@@ -137,8 +141,6 @@ internal sealed partial class CameraAgentLifecycleManager
             EnsureRecordedOwner(request, manifest.RuntimeUid, manifest.RuntimeGid, uid, gid, $"Instance {instanceId:D} records");
         }
         paths = paths.WithCatalog(manifest.Catalog.CatalogId);
-        if (request.Operation == LifecycleOperationKind.Rollback && manifest.PreviousImage is { } previous)
-            await PathPrograms.VerifyRollbackAsync(paths, request.ProductionProductRoot, previous.ImageId, cancellationToken).ConfigureAwait(false);
         if (request.Operation == LifecycleOperationKind.Upgrade && request.Release is not null && !request.RestoreOnly)
             _ = await PathPrograms.PlanAsync(paths, request.ProductionProductRoot, request.Release, string.Empty,
                 request.Operation, cancellationToken, request.LeavePaused ? signedImage?.VerifiedRelease : null).ConfigureAwait(false);
@@ -147,6 +149,9 @@ internal sealed partial class CameraAgentLifecycleManager
                 request.Operation, cancellationToken).ConfigureAwait(false);
         var result = await ReadResultAsync(paths.ResultPath, cancellationToken).ConfigureAwait(false);
         var retainedOperation = await ReadOperationAsync(paths.LifecycleStatePath, cancellationToken).ConfigureAwait(false);
+        EnsureLegacyRollbackSettlement(request, manifest, retainedOperation);
+        if (request.Operation == LifecycleOperationKind.Rollback)
+            await PathPrograms.VerifyRollbackAsync(paths, request.ProductionProductRoot, manifest.Image.ImageId, cancellationToken).ConfigureAwait(false);
         var allowTransactionalDrift = AllowsTransactionalDrift(request, retainedOperation);
         EnsureCorrelated(paths, instanceId, manifest, result, allowTransactionalDrift);
         if (allowTransactionalDrift) EnsureTransactionalCorrelation(retainedOperation!, manifest, result);
@@ -179,23 +184,8 @@ internal sealed partial class CameraAgentLifecycleManager
         if (request.Operation is null)
         {
             await ValidateComposeAuthorityAsync(docker, compose, manifest, cancellationToken).ConfigureAwait(false);
-            var runtime = await docker.InspectContainerAsync(compose.ContainerName, cancellationToken).ConfigureAwait(false);
-            var runnerRuntime = compose.ReplayRunnerContainerName is null
-                ? null
-                : await docker.InspectContainerAsync(compose.ReplayRunnerContainerName, cancellationToken).ConfigureAwait(false);
-            var outcome = runtime.Exists && runtime.ImageId != manifest.Image.ImageId ||
-                          runnerRuntime is { Exists: true } && runnerRuntime.ImageId != manifest.Image.ImageId
-                ? "drifted"
-                : "status";
-            return Result(
-                null,
-                outcome,
-                null,
-                paths,
-                manifest,
-                daemon,
-                runtime.Running && (runnerRuntime?.Running ?? true),
-                runtime.Healthy && (runnerRuntime?.Healthy ?? true));
+            return await ObserveRuntimeAsync(Result(null, "status", null, paths, manifest, daemon, null, null),
+                docker, compose, cancellationToken).ConfigureAwait(false);
         }
         // Every refusal that can be decided before the first write is decided here, for the command and its plan alike,
         // so a refusal says truthfully that nothing changed (#1315).
@@ -214,7 +204,10 @@ internal sealed partial class CameraAgentLifecycleManager
         var written = ReadWrittenState(paths);
         try
         {
-            return WithHostLimitWarnings(await LockedAsync().ConfigureAwait(false), hostLimits);
+            var settled = await LockedAsync().ConfigureAwait(false);
+            if (!request.DryRun && settled is { Running: true, Healthy: true })
+                settled = await ObserveSettledRuntimeAsync(settled, docker, compose, cancellationToken).ConfigureAwait(false);
+            return WithHostLimitWarnings(settled, hostLimits);
         }
         catch (InstallerException exception) when (exception.IsRefusal && !request.DryRun)
         {
@@ -243,6 +236,7 @@ internal sealed partial class CameraAgentLifecycleManager
             paths = paths.WithCatalog(manifest.Catalog.CatalogId);
             result = await ReadResultAsync(paths.ResultPath, cancellationToken).ConfigureAwait(false);
             retainedOperation = await ReadOperationAsync(paths.LifecycleStatePath, cancellationToken).ConfigureAwait(false);
+            EnsureLegacyRollbackSettlement(request, manifest, retainedOperation);
             allowTransactionalDrift = AllowsTransactionalDrift(request, retainedOperation);
             EnsureCorrelated(paths, instanceId, manifest, result, allowTransactionalDrift);
             if (allowTransactionalDrift) EnsureTransactionalCorrelation(retainedOperation!, manifest, result);
@@ -317,6 +311,46 @@ internal sealed partial class CameraAgentLifecycleManager
                     : OperationLock.Acquire(path, cancellationToken: cancellationToken);
             }
         }
+    }
+
+    internal const string ManualRollbackGuidance =
+        "CameraAgent checkpoint recovery ends at upgrade commit. Preserve the current captures and records. " +
+        "For a committed upgrade, use a supported forward repair or the explicit backup and restore procedure. " +
+        "For a pending upgrade, see 'Restore Only After an Interrupted Upgrade' in the deployment installer runbook.";
+
+    private static async Task<bool> DeclaresSiloLayoutAsync(string manifestPath, CancellationToken cancellationToken)
+    {
+        // A fresh rollback always refuses. Read only the layout declaration to select guidance even when other
+        // retained records are unavailable.
+        try
+        {
+            await using var stream = SafeFileSystem.OpenOwnerFileRead(manifestPath);
+            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
+            return document.RootElement.ValueKind == JsonValueKind.Object &&
+                   document.RootElement.TryGetProperty("componentSchemaVersion", out var schema) &&
+                   schema.ValueKind == JsonValueKind.String && schema.ValueEquals(SiloRuntimeProfile.ComponentSchemaVersion);
+        }
+        catch (Exception exception) when (exception is InstallerException or IOException or UnauthorizedAccessException or JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static void EnsureLegacyRollbackSettlement(
+        LifecycleRequest request, InstanceManifest manifest, LifecycleOperationState? operation)
+    {
+        if (request.Operation != LifecycleOperationKind.Rollback) return;
+        if (request.Resume && operation is
+            {
+                Kind: LifecycleOperationKind.Rollback, Phase: LifecycleOperationPhase.Committed,
+                Status: not InstallationStatus.Completed, MutationStarted: true, CandidateImage: not null
+            } && operation.InstanceId == manifest.InstanceId && operation.OperationId == manifest.LastLifecycleOperationId &&
+            operation.CandidateImage == manifest.Image && operation.RequestSha256 == request.ComputeRequestSha256()) return;
+
+        var guidance = operation is { Kind: LifecycleOperationKind.Rollback, MutationStarted: true }
+            ? "The legacy rollback requires transaction-aware recovery. Keep the journals and stores intact and contact support."
+            : ManualRollbackGuidance;
+        throw InstallerException.Refused(guidance);
     }
 
     private static async Task<(LifecycleResult Result, string VerifiedOwner)> RestoreOnlyAsync(
@@ -671,8 +705,7 @@ internal sealed partial class CameraAgentLifecycleManager
         var upgradeNotes = !rollback && request.TargetRelease is { } targetRelease
             ? UpgradeNotes.Plan(
                 await UpgradeNotes.InstalledVersionAsync(paths, manifest.Image, cancellationToken).ConfigureAwait(false),
-                targetRelease,
-                manifest.InstanceId)
+                targetRelease)
             : null;
         if (upgradeNotes is not null)
         {

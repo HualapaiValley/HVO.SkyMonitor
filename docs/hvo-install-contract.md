@@ -225,7 +225,7 @@ HVO.RoofController#127):
 | --- | --- |
 | *(none)* / `install` | Install; interactive on a terminal, otherwise from flags or `--answers` |
 | `upgrade [--version V]` | Upgrade to the latest release or to `V` (section 6) |
-| `rollback` | RoofController: return to the release recorded as previous. SkyMonitor target: recover the pending upgrade's paired checkpoint; no arbitrary downgrade or post-commit grace period (section 6) |
+| `rollback` | RoofController returns to the release recorded as previous. CameraAgent gives recovery guidance. Its upgrade command owns pending checkpoint recovery (section 6). |
 | `backup` / `restore FILE` | A self-verifying archive of the product's own data, with a manifest, that only its owner can read (below) |
 | `uninstall [--purge --confirm HOST --backup\|--no-backup]` | Remove what was installed; `--purge` also removes data |
 | `status` | What is installed here, its versions and health |
@@ -250,17 +250,13 @@ HVO.RoofController#127):
   adding RoofController's `cli.folder` setting. The release's installer goes in both `/usr/local/sbin/hvo-sky-install`
   and `~/.local/bin/hvo-sky-install`. Both kinds are checked against release.json and SHA256SUMS, published atomically
   with mode `0755`, reported by `--plan`, and projected into `install-programs.json` beside the install record. Upgrade keeps replaced files as
-  `.previous`; rollback republishes the verified files retained for the previous image, without the release folder.
-  This describes today's lifecycle. Under the approved section 6 target, those retained programs belong to the
-  pending checkpoint/image pair and do not authorize a post-commit binary downgrade.
+  `.previous`. The retained programs belong to the pending checkpoint and image pair described in section 6.
   - SkyMonitor keeps per-image program sets and cached files under the instance's deployment state. The machine
     install-record sidecar is their summary, consistent with D10. The schema-1 `install.json` keeps exactly its released
     members: older strict readers, including a kept `.previous` installer, can still read it for recovery. The separate
     sidecar uses the same atomic write and file/directory fsync discipline. Old installers leave PATH programs and the
     sidecar alone. An image-only install has no release programs to publish.
-    A rollback to an image without a retained set removes the owned runtime client and keeps the maintenance
-    installer, rather than assuming an unverified manual copy is that image's client. Shared command paths take the
-    version last published by an install, upgrade or rollback.
+    Shared command paths take the version last published from a verified release.
   - SkyMonitor removes a last-owner runtime client on uninstall and restores it on reinstall. Unlike RoofController,
     it retains the installer for a preserved instance's `reinstall`; purge removes the last-owner installer copies
     and `.previous`, after the deletion is durably completed. Interrupted program cleanup remains resumable from
@@ -366,6 +362,11 @@ There is no daily/periodic snapshot command, arbitrary downgrade command, repeat
 last-checkpoint grace period. Explicit `backup` / `restore` remains separate; a full recovery archive is not an
 automatic prerequisite for every upgrade.
 
+CameraAgent's legacy manual rollback and its plan refuse a new operation and direct the operator to the original
+pending-upgrade recovery procedure, a supported forward repair, or explicit backup and restore as applicable.
+Installer status reports process liveness and application readiness separately.
+[CameraAgent lifecycle runbook](runbooks/deployment-installer.md#cameraagent-lifecycle)
+
 **CameraAgent protected or operator-managed.** If qualified capability is unavailable or checkpoint creation or
 verification fails, clearly warn before candidate mutation that this upgrade is **unprotected** and backup/manual
 restore is the operator's responsibility. Allow it without forcing a backup, requiring proof or adding an approval
@@ -438,6 +439,9 @@ identity/boundary justification. **Existing required gates remain in force until
 adopts that routing.** This contract adds no every-PR filesystem matrix and runs no new qualification campaign.
 
 ### RoofController policy and SkyMonitor legacy behavior
+
+This subsection describes RoofController and the historical SkyMonitor installer.
+For current CameraAgent recovery, see the pending-upgrade procedure above.
 
 - **Before upgrading**, the installer prints the upgrade notes of every release between the installed and the target
   version. It refuses an older target and points to `rollback`.
@@ -635,11 +639,10 @@ describes the delivered #1340 mechanism, superseded as a target obligation by #1
     warning on standard error and in the logs. Everything else that refuses an install still refuses a rollback.
   - Reason: an unbounded container can starve the host it shares, but refusing a rollback could leave an operator
     with no way back from a failed release.
-  - **Today:** both products behave this way: RoofController (HVO.RoofController#151) and SkyMonitor (#1357), at
-    install, upgrade and rollback. SkyMonitor's rollback, its `--resume` and its `upgrade --restore-only` write the
-    warning to the operation's install log. Docker refuses a container with a CPU limit on a host without CPU quota
-    support, so every SkyMonitor rollback and recovery start there withholds the CPU limits and keeps the others, as
-    RoofController gives only the limits Docker can enforce; the limits stay recorded.
+  - RoofController applies that policy to rollback. SkyMonitor applies it to pending-upgrade recovery starts
+    and records restore-only warnings in the operation's install log. On a host without CPU quota support,
+    the recovery model withholds the CPU limit and keeps the other recorded limits. The instance retains its
+    full resource settings.
 - **Roof controller.** Its limits are on by default because its container's supervisor turns the drive relays off
   whenever the controller exits or crash-loops (HVO.RoofController#138):
   - It writes relay-off and verifies the register by reading it back.
