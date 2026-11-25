@@ -15,6 +15,8 @@ declare -a parallel_errs=()
 declare -a parallel_status=()
 declare -A active_idx_to_pid=()
 declare -A active_idx_to_pgid=()
+launching_worker=0
+pending_signal_exit=""
 
 is_worker_dead() {
   local pid="$1" stat_line="" proc_state=""
@@ -108,9 +110,20 @@ cleanup() {
   exec 3>&- 2>/dev/null || true
   rm -rf "$work_root" "$fast_root" "$fast_root".* "$work_root".*
 }
+handle_signal() {
+  local code="$1"
+  if (( launching_worker )); then
+    if [[ -z "$pending_signal_exit" ]]; then
+      pending_signal_exit="$code"
+    fi
+    return 0
+  fi
+  trap '' INT TERM
+  exit "${pending_signal_exit:-$code}"
+}
 trap cleanup EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
+trap 'handle_signal 130' INT
+trap 'handle_signal 143' TERM
 
 max_jobs="$(nproc 2>/dev/null || printf '2\n')"
 if [[ ! "$max_jobs" =~ ^[0-9]+$ ]] || (( max_jobs < 2 )); then
@@ -239,6 +252,7 @@ start_parallel_job() {
   local worker_tmpdir="$parallel_dir/t$idx"
   mkdir -m 700 "$worker_tmpdir"
   local pid=""
+  launching_worker=1
   {
     set -m
     (
@@ -260,6 +274,11 @@ start_parallel_job() {
     active_idx_to_pgid["$idx"]="$pid"
     set +m
   } 2>/dev/null
+  launching_worker=0
+  if [[ -n "$pending_signal_exit" ]]; then
+    trap '' INT TERM
+    exit "$pending_signal_exit"
+  fi
   parallel_pids+=("$pid")
   parallel_names+=("$name")
   parallel_outs+=("$out_file")
@@ -3552,6 +3571,223 @@ run_workflow_shape() {
   }
 }
 
+run_harness_signal_cleanup() {
+  python3 - "$repo_root/scripts/test:ci-classification" <<'PY'
+import errno
+import os
+import pathlib
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+
+script_path = pathlib.Path(sys.argv[1])
+script_text = script_path.read_text()
+if "\nresult_jobs=(\n" not in script_text:
+    raise SystemExit("Unable to locate parallel harness preamble boundary")
+preamble = script_text.split("\nresult_jobs=(\n", 1)[0]
+fork_marker = "    ) </dev/null &\n"
+if preamble.count(fork_marker) != 1:
+    raise SystemExit(f"Expected 1 worker fork marker in harness preamble, found {preamble.count(fork_marker)}")
+
+active = {"proc": None, "worker_pgid": None}
+
+def _cleanup_active():
+    proc = active["proc"]
+    if proc is not None and proc.poll() is None:
+        try:
+            proc.terminate()
+            proc.wait(timeout=1.5)
+        except Exception:
+            try:
+                proc.kill()
+                proc.wait(timeout=2)
+            except Exception:
+                pass
+    pgid = active["worker_pgid"]
+    if pgid is not None:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+def _on_signal(signum, _frame):
+    _cleanup_active()
+    raise SystemExit(128 + signum)
+
+signal.signal(signal.SIGTERM, _on_signal)
+signal.signal(signal.SIGINT, _on_signal)
+
+def pgid_survivors(pgid):
+    alive = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            stat = pathlib.Path(f"/proc/{entry}/stat").read_text()
+            after = stat.rsplit(")", 1)[1].split()
+            state, pgrp = after[0], int(after[2])
+            if pgrp == pgid and state not in ("Z", "X"):
+                alive.append(int(entry))
+        except OSError:
+            pass
+    return alive
+
+worker_body = """
+run_probe_worker() {
+  sleep 60 &
+  local c1="$!"
+  (
+    sleep 60 &
+    printf '%d %d\\n' "$BASHPID" "$!" > "$HVO_PROBE_DIR/nested.pids"
+    wait
+  ) &
+  while [[ ! -s "$HVO_PROBE_DIR/nested.pids" ]]; do
+    sleep 0.01
+  done
+  printf '%d %d\\n' "$BASHPID" "$c1" > "$HVO_PROBE_DIR/worker.pids"
+  : > "$HVO_PROBE_DIR/worker_ready.flag"
+  wait
+}
+start_parallel_job probe_worker run_probe_worker
+wait_parallel_jobs
+"""
+
+root_dir = pathlib.Path(tempfile.mkdtemp(prefix="hvo-sig-"))
+try:
+    # 1. Launch-window deferral regression (SIGTERM and SIGINT between fork and PGID registration)
+    for sig, expected_rc in ((signal.SIGTERM, 143), (signal.SIGINT, 130)):
+        case_dir = root_dir / f"window-{sig.name.lower()}"
+        case_tmp = case_dir / "tmp"
+        probe_dir = case_dir / "probe"
+        case_tmp.mkdir(parents=True, mode=0o700)
+        probe_dir.mkdir(parents=True, mode=0o700)
+        resume_fifo = probe_dir / "resume.fifo"
+        os.mkfifo(resume_fifo)
+        hook = (
+            fork_marker
+            + '    exec 4<>"$HVO_PROBE_DIR/resume.fifo"\n'
+            + '    printf \'%d\\n\' "$!" > "$HVO_PROBE_DIR/worker.pid"\n'
+            + '    : > "$HVO_PROBE_DIR/paused.flag"\n'
+            + '    read -r -t 5 -u 4 _ || true\n'
+            + '    exec 4>&-\n'
+        )
+        harness = case_dir / "harness.sh"
+        harness.write_text(preamble.replace(fork_marker, hook, 1) + worker_body)
+        env = os.environ.copy()
+        env["TMPDIR"] = str(case_tmp)
+        env["HVO_PROBE_DIR"] = str(probe_dir)
+        active["proc"] = None
+        active["worker_pgid"] = None
+        proc = subprocess.Popen(
+            ["bash", str(harness)],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        active["proc"] = proc
+        try:
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline:
+                if (probe_dir / "paused.flag").exists() and (probe_dir / "worker_ready.flag").exists():
+                    break
+                if proc.poll() is not None:
+                    raise SystemExit(f"Launch-window probe exited early ({proc.returncode}): {proc.stderr.read()}")
+                time.sleep(0.01)
+            if not ((probe_dir / "paused.flag").exists() and (probe_dir / "worker_ready.flag").exists()):
+                raise SystemExit(f"Launch-window probe timed out waiting for pause/ready ({sig.name})")
+            worker_pgid = int((probe_dir / "worker.pid").read_text().strip())
+            active["worker_pgid"] = worker_pgid
+            before = pgid_survivors(worker_pgid)
+            if len(before) < 4:
+                raise SystemExit(f"Expected >=4 live processes in worker pgid {worker_pgid}, saw {before}")
+            os.kill(proc.pid, sig)
+            time.sleep(0.03)
+            try:
+                fd = os.open(resume_fifo, os.O_WRONLY | os.O_NONBLOCK)
+                try:
+                    os.write(fd, b"go\n")
+                finally:
+                    os.close(fd)
+            except OSError as exc:
+                if exc.errno not in (errno.ENXIO, errno.EPIPE):
+                    raise
+            rc = proc.wait(timeout=10)
+            if rc != expected_rc:
+                raise SystemExit(f"Launch-window {sig.name} expected exit {expected_rc}, got {rc}: {proc.stderr.read()}")
+            survivors = pgid_survivors(worker_pgid)
+            if survivors:
+                raise SystemExit(f"Launch-window {sig.name} left surviving processes in pgid {worker_pgid}: {survivors}")
+            leaked = [p.name for p in case_tmp.iterdir()]
+            if leaked:
+                raise SystemExit(f"Launch-window {sig.name} leaked TMPDIR entries: {leaked}")
+        finally:
+            _cleanup_active()
+            active["proc"] = None
+            active["worker_pgid"] = None
+
+    # 2. Rapid back-to-back SIGINT regression (must disarm INT/TERM before exit -> cleanup)
+    for trial in range(5):
+        case_dir = root_dir / f"rapid-{trial}"
+        case_tmp = case_dir / "tmp"
+        probe_dir = case_dir / "probe"
+        case_tmp.mkdir(parents=True, mode=0o700)
+        probe_dir.mkdir(parents=True, mode=0o700)
+        harness = case_dir / "harness.sh"
+        harness.write_text(preamble + worker_body)
+        env = os.environ.copy()
+        env["TMPDIR"] = str(case_tmp)
+        env["HVO_PROBE_DIR"] = str(probe_dir)
+        active["proc"] = None
+        active["worker_pgid"] = None
+        proc = subprocess.Popen(
+            ["bash", str(harness)],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        active["proc"] = proc
+        try:
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline:
+                if (probe_dir / "worker_ready.flag").exists():
+                    break
+                if proc.poll() is not None:
+                    raise SystemExit(f"Rapid-SIGINT trial {trial} exited early ({proc.returncode}): {proc.stderr.read()}")
+                time.sleep(0.01)
+            if not (probe_dir / "worker_ready.flag").exists():
+                raise SystemExit(f"Rapid-SIGINT trial {trial} timed out waiting for worker")
+            worker_pid = int((probe_dir / "worker.pids").read_text().split()[0])
+            worker_pgid = os.getpgid(worker_pid)
+            active["worker_pgid"] = worker_pgid
+            for _ in range(3):
+                try:
+                    os.kill(proc.pid, signal.SIGINT)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.00005)
+            rc = proc.wait(timeout=10)
+            if rc != 130:
+                raise SystemExit(f"Rapid-SIGINT trial {trial} expected exit 130, got {rc}: {proc.stderr.read()}")
+            survivors = pgid_survivors(worker_pgid)
+            if survivors:
+                raise SystemExit(f"Rapid-SIGINT trial {trial} left surviving processes in pgid {worker_pgid}: {survivors}")
+            leaked = [p.name for p in case_tmp.iterdir()]
+            if leaked:
+                raise SystemExit(f"Rapid-SIGINT trial {trial} leaked TMPDIR entries: {leaked}")
+        finally:
+            _cleanup_active()
+            active["proc"] = None
+            active["worker_pgid"] = None
+finally:
+    shutil.rmtree(root_dir, ignore_errors=True)
+PY
+}
+
 # ==============================================================================
 # Dispatch all independent groups through the bounded parallel worker pool.
 # ==============================================================================
@@ -3593,6 +3829,7 @@ start_parallel_job required_ci_1 run_required_ci_part_1
 start_parallel_job required_sigpipe_mode expect_required_no_sigpipe mode
 start_parallel_job required_sigpipe_changes expect_required_no_sigpipe changes
 start_parallel_job workflow_shape run_workflow_shape
+start_parallel_job harness_signal_cleanup run_harness_signal_cleanup
 
 wait_parallel_jobs
 
