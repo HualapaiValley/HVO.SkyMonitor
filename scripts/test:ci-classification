@@ -386,12 +386,14 @@ for name, original, replacement in (
         raise SystemExit(f"Could not construct the certificate fixture mutation {name}")
     (directory / f"classifier-{name}").write_text(classifier.replace(original, replacement))
 PY
-for certificate_case in builtin-sdk web-sdk solution-folder-project external-sdk versioned-sdk multiple-sdks \
+for certificate_case in builtin-sdk web-sdk solution-folder-project slnx-folder-strasse-pair external-sdk versioned-sdk multiple-sdks \
   sdk-element nested-sdk props-sdk explicit-sdk-import global-package package-download lowercase-package \
   executable-certificate symlink-certificate stale-source-hash mismatched-sdk-version missing-global-json \
   global-json-sdk-paths global-json-extra-top-key global-json-utf16 missing-project-record extra-project-record \
   missing-coverage-project-record nested-solution-project nested-solution-folder \
-  slnx-folder-no-slashes slnx-folder-dup-case slnx-folder-dotdot; do
+  slnx-folder-no-slashes slnx-folder-dup-case slnx-folder-dotdot \
+  slnx-folder-reserved-con slnx-folder-reserved-con-ext slnx-folder-reserved-lpt1 \
+  slnx-folder-reserved-clock slnx-folder-del-char slnx-folder-c1-control; do
   git -C "$fast_root" reset -q --hard "$fast_base"
   mkdir -p "$fast_root/scripts/ci" "$fast_root/docs/runbooks"
   cp "$repo_root/scripts/ci/restore-imports.py" "$fast_root/scripts/ci/restore-imports.py"
@@ -454,10 +456,46 @@ for certificate_case in builtin-sdk web-sdk solution-folder-project external-sdk
       printf '<Project Sdk="Microsoft.NET.Sdk" />\n' > "$fast_root/tests/Second/Second.csproj"
       printf '<Solution><Folder Name="/Tests/"><Project Path="tests/Example/Example.csproj" /></Folder><Folder Name="/tests/"><Project Path="tests/Second/Second.csproj" /></Folder></Solution>\n' > "$fast_root/HVO.SkyMonitor.v9.slnx"
       ;;
+    slnx-folder-strasse-pair)
+      mkdir -p "$fast_root/tests/Second"
+      printf '<Project Sdk="Microsoft.NET.Sdk" />\n' > "$fast_root/tests/Second/Second.csproj"
+      python3 -I -c 'import pathlib, sys; pathlib.Path(sys.argv[1]).write_text("<Solution><Folder Name=\"/Stra\u00dfe/\"><Project Path=\"tests/Example/Example.csproj\" /></Folder><Folder Name=\"/STRASSE/\"><Project Path=\"tests/Second/Second.csproj\" /></Folder></Solution>\n", encoding="utf-8")' "$fast_root/HVO.SkyMonitor.v9.slnx"
+      certificate_expected=verify-restore
+      ;;
     slnx-folder-dotdot)
       mkdir -p "$fast_root/tests/Second"
       printf '<Project Sdk="Microsoft.NET.Sdk" />\n' > "$fast_root/tests/Second/Second.csproj"
       printf '<Solution><Project Path="tests/Example/Example.csproj" /><Folder Name="/Tests/../"><Project Path="tests/Second/Second.csproj" /></Folder></Solution>\n' > "$fast_root/HVO.SkyMonitor.v9.slnx"
+      ;;
+    slnx-folder-reserved-con)
+      mkdir -p "$fast_root/tests/Second"
+      printf '<Project Sdk="Microsoft.NET.Sdk" />\n' > "$fast_root/tests/Second/Second.csproj"
+      printf '<Solution><Project Path="tests/Example/Example.csproj" /><Folder Name="/CON/"><Project Path="tests/Second/Second.csproj" /></Folder></Solution>\n' > "$fast_root/HVO.SkyMonitor.v9.slnx"
+      ;;
+    slnx-folder-reserved-con-ext)
+      mkdir -p "$fast_root/tests/Second"
+      printf '<Project Sdk="Microsoft.NET.Sdk" />\n' > "$fast_root/tests/Second/Second.csproj"
+      printf '<Solution><Project Path="tests/Example/Example.csproj" /><Folder Name="/con.txt/"><Project Path="tests/Second/Second.csproj" /></Folder></Solution>\n' > "$fast_root/HVO.SkyMonitor.v9.slnx"
+      ;;
+    slnx-folder-reserved-lpt1)
+      mkdir -p "$fast_root/tests/Second"
+      printf '<Project Sdk="Microsoft.NET.Sdk" />\n' > "$fast_root/tests/Second/Second.csproj"
+      printf '<Solution><Project Path="tests/Example/Example.csproj" /><Folder Name="/Sub/LPT1.log/"><Project Path="tests/Second/Second.csproj" /></Folder></Solution>\n' > "$fast_root/HVO.SkyMonitor.v9.slnx"
+      ;;
+    slnx-folder-reserved-clock)
+      mkdir -p "$fast_root/tests/Second"
+      printf '<Project Sdk="Microsoft.NET.Sdk" />\n' > "$fast_root/tests/Second/Second.csproj"
+      printf '<Solution><Project Path="tests/Example/Example.csproj" /><Folder Name="/CLOCK$/"><Project Path="tests/Second/Second.csproj" /></Folder></Solution>\n' > "$fast_root/HVO.SkyMonitor.v9.slnx"
+      ;;
+    slnx-folder-del-char)
+      mkdir -p "$fast_root/tests/Second"
+      printf '<Project Sdk="Microsoft.NET.Sdk" />\n' > "$fast_root/tests/Second/Second.csproj"
+      python3 -I -c 'import pathlib, sys; pathlib.Path(sys.argv[1]).write_text("<Solution><Project Path=\"tests/Example/Example.csproj\" /><Folder Name=\"/A\x7fB/\"><Project Path=\"tests/Second/Second.csproj\" /></Folder></Solution>\n", encoding="utf-8")' "$fast_root/HVO.SkyMonitor.v9.slnx"
+      ;;
+    slnx-folder-c1-control)
+      mkdir -p "$fast_root/tests/Second"
+      printf '<Project Sdk="Microsoft.NET.Sdk" />\n' > "$fast_root/tests/Second/Second.csproj"
+      python3 -I -c 'import pathlib, sys; pathlib.Path(sys.argv[1]).write_text("<Solution><Project Path=\"tests/Example/Example.csproj\" /><Folder Name=\"/A\x80B/\"><Project Path=\"tests/Second/Second.csproj\" /></Folder></Solution>\n", encoding="utf-8")' "$fast_root/HVO.SkyMonitor.v9.slnx"
       ;;
     missing-coverage-project-record)
       mkdir -p "$fast_root/scripts/coverage"
@@ -471,7 +509,7 @@ for certificate_case in builtin-sdk web-sdk solution-folder-project external-sdk
   inventory_paths=(HVO.SkyMonitor.v9.slnx tests/Example)
   [[ "$certificate_case" == missing-global-json ]] || inventory_paths+=(global.json)
   case "$certificate_case" in
-    solution-folder-project|missing-project-record|nested-solution-project|nested-solution-folder|slnx-folder-no-slashes|slnx-folder-dup-case|slnx-folder-dotdot) inventory_paths+=(tests/Second) ;;
+    solution-folder-project|slnx-folder-strasse-pair|missing-project-record|nested-solution-project|nested-solution-folder|slnx-folder-no-slashes|slnx-folder-dup-case|slnx-folder-dotdot|slnx-folder-reserved-con|slnx-folder-reserved-con-ext|slnx-folder-reserved-lpt1|slnx-folder-reserved-clock|slnx-folder-del-char|slnx-folder-c1-control) inventory_paths+=(tests/Second) ;;
   esac
   [[ "$certificate_case" != missing-coverage-project-record ]] || inventory_paths+=(scripts/coverage/HVO.SkyMonitor.CoverageGate.csproj)
   git -C "$fast_root" ls-tree -rz HEAD -- "${inventory_paths[@]}" | python3 -I -c '
@@ -494,8 +532,10 @@ digest = "0" * 64
 imports = {"sha256": digest, "imports": []}
 project_entry = {"graphSha256": digest, "sources": [], "props": imports, "targets": imports}
 projects = {"tests/Example/Example.csproj": project_entry}
-if case in ("solution-folder-project", "nested-solution-project", "nested-solution-folder",
-            "slnx-folder-no-slashes", "slnx-folder-dup-case", "slnx-folder-dotdot"):
+if case in ("solution-folder-project", "slnx-folder-strasse-pair", "nested-solution-project", "nested-solution-folder",
+            "slnx-folder-no-slashes", "slnx-folder-dup-case", "slnx-folder-dotdot",
+            "slnx-folder-reserved-con", "slnx-folder-reserved-con-ext", "slnx-folder-reserved-lpt1",
+            "slnx-folder-reserved-clock", "slnx-folder-del-char", "slnx-folder-c1-control"):
     projects["tests/Second/Second.csproj"] = project_entry
 if case == "extra-project-record":
     projects["tests/Extra/Extra.csproj"] = project_entry
@@ -544,7 +584,7 @@ PY
         grep -Fxq '::error::Documentation CI build inventory is stale or unsafe; remove the unsafe input or update the audit policy under HIGH-tier review: global.json is not UTF-8' "$fast_root/.git/cert-check-err" ;;
       missing-project-record|extra-project-record|missing-coverage-project-record)
         grep -Fxq '::error::Documentation CI build inventory is stale or unsafe; refresh scripts/ci:docs-inventory and scripts/ci:restore-import-certificate.json: restore import certificate project set differs from committed solution' "$fast_root/.git/cert-check-err" ;;
-      nested-solution-project|nested-solution-folder|slnx-folder-no-slashes|slnx-folder-dup-case|slnx-folder-dotdot)
+      nested-solution-project|nested-solution-folder|slnx-folder-no-slashes|slnx-folder-dup-case|slnx-folder-dotdot|slnx-folder-reserved-con|slnx-folder-reserved-con-ext|slnx-folder-reserved-lpt1|slnx-folder-reserved-clock|slnx-folder-del-char|slnx-folder-c1-control)
         grep -Fxq '::error::Documentation CI build inventory is stale or unsafe; remove the unsafe input or update the audit policy under HIGH-tier review: unknown solution entry' "$fast_root/.git/cert-check-err" ;;
       executable-certificate|symlink-certificate|stale-source-hash)
         grep -Fq '::error::Documentation CI build inventory is stale or unsafe; refresh scripts/ci:docs-inventory and scripts/ci:restore-import-certificate.json:' "$fast_root/.git/cert-check-err" ;;
@@ -552,7 +592,7 @@ PY
         grep -Fq '::error::Documentation CI build inventory is stale or unsafe; remove the unsafe input or update the audit policy under HIGH-tier review:' "$fast_root/.git/cert-check-err" ;;
     esac
     case "$certificate_case" in
-      global-json-sdk-paths|global-json-extra-top-key|global-json-utf16|nested-solution-project|nested-solution-folder|slnx-folder-no-slashes|slnx-folder-dup-case|slnx-folder-dotdot)
+      global-json-sdk-paths|global-json-extra-top-key|global-json-utf16|nested-solution-project|nested-solution-folder|slnx-folder-no-slashes|slnx-folder-dup-case|slnx-folder-dotdot|slnx-folder-reserved-con|slnx-folder-reserved-con-ext|slnx-folder-reserved-lpt1|slnx-folder-reserved-clock|slnx-folder-del-char|slnx-folder-c1-control)
         direct_source_hash="$(sha256sum < "$fast_root/scripts/ci:docs-inventory")"
         if (cd "$fast_root" && python3 -I scripts/ci/restore-imports.py check-source "$certificate_base" "${direct_source_hash%% *}") > "$fast_root/.git/direct-cert-out" 2> "$fast_root/.git/direct-cert-err"; then
           printf 'validate_certificate accepted invalid case directly: %s\n' "$certificate_case" >&2
@@ -563,7 +603,7 @@ PY
             grep -Fxq 'docs inventory audit: unknown SDK resolver configuration' "$fast_root/.git/direct-cert-err" ;;
           global-json-utf16)
             grep -Fxq 'docs inventory audit: global.json is not UTF-8' "$fast_root/.git/direct-cert-err" ;;
-          nested-solution-project|nested-solution-folder|slnx-folder-no-slashes|slnx-folder-dup-case|slnx-folder-dotdot)
+          nested-solution-project|nested-solution-folder|slnx-folder-no-slashes|slnx-folder-dup-case|slnx-folder-dotdot|slnx-folder-reserved-con|slnx-folder-reserved-con-ext|slnx-folder-reserved-lpt1|slnx-folder-reserved-clock|slnx-folder-del-char|slnx-folder-c1-control)
             grep -Fxq 'docs inventory audit: unknown solution entry' "$fast_root/.git/direct-cert-err" ;;
         esac
         ;;
@@ -633,6 +673,69 @@ for missing_cert_case in package-download global-package unsupported-sdk global-
   fi
   grep -Fxq "$expected_missing_cert_err" "$fast_root/.git/missing-cert-err" || {
     printf 'Unexpected missing-cert diagnostic for %s:\n%s\n' "$missing_cert_case" "$(cat "$fast_root/.git/missing-cert-err")" >&2
+    exit 1
+  }
+done
+# Even with SDK-less projects and a matching legacy inventory (no restore
+# certificate), unsafe global.json must fail closed in both Preflight and
+# docs_fast_path classification.
+for legacy_global_case in sdk-paths utf16; do
+  git -C "$fast_root" reset -q --hard "$fast_base"
+  mkdir -p "$fast_root/docs/runbooks"
+  printf 'original\n' > "$fast_root/docs/runbooks/legacy-global.md"
+  case "$legacy_global_case" in
+    sdk-paths)
+      printf '{"sdk":{"version":"10.0.402","rollForward":"disable","allowPrerelease":false,"paths":["./missing-sdk"]}}\n' > "$fast_root/global.json"
+      expected_legacy_global_err='::error::Documentation CI build inventory is stale or unsafe; remove the unsafe input or update the audit policy under HIGH-tier review: unknown SDK resolver configuration'
+      ;;
+    utf16)
+      python3 -I -c 'import pathlib, sys; pathlib.Path(sys.argv[1]).write_bytes("{\"sdk\":{\"version\":\"10.0.402\",\"rollForward\":\"disable\",\"allowPrerelease\":false}}\n".encode("utf-16"))' "$fast_root/global.json"
+      expected_legacy_global_err='::error::Documentation CI build inventory is stale or unsafe; remove the unsafe input or update the audit policy under HIGH-tier review: global.json is not UTF-8'
+      ;;
+  esac
+  git -C "$fast_root" add . && git -C "$fast_root" commit -qm "legacy-global $legacy_global_case"
+  legacy_global_base="$(git -C "$fast_root" rev-parse HEAD)"
+  if (cd "$fast_root" && "$classifier" --check-docs-inventory "$legacy_global_base") > "$fast_root/.git/legacy-global-out" 2> "$fast_root/.git/legacy-global-err"; then
+    printf 'Legacy inventory gate accepted unsafe global.json case: %s\n' "$legacy_global_case" >&2
+    exit 1
+  fi
+  grep -Fxq "$expected_legacy_global_err" "$fast_root/.git/legacy-global-err" || {
+    printf 'Unexpected legacy-global diagnostic for %s:\n%s\n' "$legacy_global_case" "$(cat "$fast_root/.git/legacy-global-err")" >&2
+    exit 1
+  }
+  printf 'changed\n' >> "$fast_root/docs/runbooks/legacy-global.md"
+  git -C "$fast_root" commit -qam "docs-after-legacy-global-$legacy_global_case"
+  fast_reason 'project inventory unavailable' "$legacy_global_base" "$(git -C "$fast_root" rev-parse HEAD)"
+done
+# Removing both inventory files must still surface unsafe global.json inputs
+# rather than masking them behind a refresh-only certificate-unavailable message,
+# while clean missing-inventory trees still report refresh.
+for both_missing_case in sdk-paths utf16 clean-sdk; do
+  git -C "$fast_root" reset -q --hard "$fast_base"
+  git -C "$fast_root" rm -q scripts/ci:docs-inventory
+  printf '<Project Sdk="Microsoft.NET.Sdk" />\n' > "$fast_root/tests/Example/Example.csproj"
+  case "$both_missing_case" in
+    sdk-paths)
+      printf '{"sdk":{"version":"10.0.402","rollForward":"disable","allowPrerelease":false,"paths":["./missing-sdk"]}}\n' > "$fast_root/global.json"
+      expected_both_missing_err='::error::Documentation CI build inventory is stale or unsafe; remove the unsafe input or update the audit policy under HIGH-tier review: unknown SDK resolver configuration'
+      ;;
+    utf16)
+      python3 -I -c 'import pathlib, sys; pathlib.Path(sys.argv[1]).write_bytes("{\"sdk\":{\"version\":\"10.0.402\",\"rollForward\":\"disable\",\"allowPrerelease\":false}}\n".encode("utf-16"))' "$fast_root/global.json"
+      expected_both_missing_err='::error::Documentation CI build inventory is stale or unsafe; remove the unsafe input or update the audit policy under HIGH-tier review: global.json is not UTF-8'
+      ;;
+    clean-sdk)
+      cp "$repo_root/global.json" "$fast_root/global.json"
+      expected_both_missing_err='::error::Documentation CI build inventory is stale or unsafe; refresh scripts/ci:docs-inventory and scripts/ci:restore-import-certificate.json: certificate unavailable'
+      ;;
+  esac
+  git -C "$fast_root" add . && git -C "$fast_root" commit -qm "both-missing $both_missing_case"
+  both_missing_base="$(git -C "$fast_root" rev-parse HEAD)"
+  if (cd "$fast_root" && "$classifier" --check-docs-inventory "$both_missing_base") > "$fast_root/.git/both-missing-out" 2> "$fast_root/.git/both-missing-err"; then
+    printf 'Mandatory docs certificate gate accepted missing-both case: %s\n' "$both_missing_case" >&2
+    exit 1
+  fi
+  grep -Fxq "$expected_both_missing_err" "$fast_root/.git/both-missing-err" || {
+    printf 'Unexpected missing-both diagnostic for %s:\n%s\n' "$both_missing_case" "$(cat "$fast_root/.git/both-missing-err")" >&2
     exit 1
   }
 done

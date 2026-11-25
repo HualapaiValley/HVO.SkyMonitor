@@ -116,6 +116,47 @@ def git_regular_blob(commit, path, missing_reason):
     return subprocess.check_output(["git", "cat-file", "blob", f"{commit}:{path}"])
 
 
+RESERVED_FOLDER_NAMES = frozenset({
+    "CON", "PRN", "AUX", "NUL", "CLOCK$",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+})
+
+
+def ordinal_ignore_case(text):
+    out = []
+    for c in text:
+        code = ord(c)
+        if code in (0x0131, 0x017F):
+            out.append(c)
+        elif 0x10D70 <= code <= 0x10D85:
+            out.append(chr(code - 0x20))
+        else:
+            upper = c.upper()
+            if len(upper) == 1:
+                out.append(upper)
+            else:
+                title = c.title()
+                out.append(title if len(title) == 1 else c)
+    return "".join(out)
+
+
+def is_valid_folder_name(folder_name):
+    if (len(folder_name) < 3 or
+            not folder_name.startswith("/") or
+            not folder_name.endswith("/") or
+            any(c in folder_name for c in '\\:*?"<>|') or
+            any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in folder_name)):
+        return False
+    for segment in folder_name[1:-1].split("/"):
+        if not segment.strip() or segment in (".", ".."):
+            return False
+        stem = segment.rsplit(".", 1)[0] if "." in segment else segment
+        if stem.isascii() and stem.upper() in RESERVED_FOLDER_NAMES:
+            return False
+    return True
+
+
 def solution_projects(solution_blob):
     solution_root = ET.fromstring(solution_blob.decode("utf-8-sig"))
     require(solution_root.tag == "Solution" and not solution_root.attrib, "unknown solution format")
@@ -137,16 +178,10 @@ def solution_projects(solution_blob):
             add_project(child)
         elif child.tag == "Folder":
             folder_name = child.attrib.get("Name", "")
-            segments = folder_name[1:-1].split("/") if len(folder_name) >= 3 else []
-            folder_key = folder_name.casefold()
+            folder_key = ordinal_ignore_case(folder_name)
             require(
                 set(child.attrib) == {"Name"} and
-                len(folder_name) >= 3 and
-                folder_name.startswith("/") and
-                folder_name.endswith("/") and
-                not any(c in folder_name for c in '\\:*?"<>|') and
-                all(ord(c) >= 32 for c in folder_name) and
-                all(segment.strip() and segment not in (".", "..") for segment in segments) and
+                is_valid_folder_name(folder_name) and
                 folder_key not in seen_folders,
                 "unknown solution entry",
             )

@@ -189,4 +189,60 @@ for drift in missing malformed config inventory; do
   fi
   grep -Fq '::error::Documentation CI build inventory is stale or unsafe; refresh scripts/ci:docs-inventory and scripts/ci:restore-import-certificate.json:' "$fixture/check-err"
 done
-printf 'Offline restore certificate passed: valid base, seven replay drift cases, missing dotnet and four mandatory-failure fallback cases.\n'
+
+# Verify live .NET SDK slnx <Folder Name="..."> parity between dotnet sln list
+# and restore-imports.py (reserved device names, DEL/C1 controls, OrdinalIgnoreCase).
+git -C "$fixture" reset -q --hard "$reviewed"
+mkdir -p "$fixture/tests/Second"
+cp "$fixture/tests/Example/Example.csproj" "$fixture/tests/Second/Second.csproj"
+python3 - "$fixture" <<'PY'
+import importlib.util
+import pathlib
+import subprocess
+import sys
+
+root = pathlib.Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location("restore_imports", root / "scripts/ci/restore-imports.py")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+cases = [
+    ("valid-single", ["/Tests/"]),
+    ("valid-multi", ["/Tests/Sub/"]),
+    ("valid-com0", ["/COM0/"]),
+    ("valid-lpt0", ["/LPT0/"]),
+    ("valid-strasse-pair", ["/Stra\u00dfe/", "/STRASSE/"]),
+    ("invalid-no-slashes", ["Tests"]),
+    ("invalid-empty-seg", ["/A//B/"]),
+    ("invalid-dup-case", ["/Tests/", "/tests/"]),
+    ("invalid-con", ["/CON/"]),
+    ("invalid-con-txt", ["/con.txt/"]),
+    ("invalid-prn", ["/PRN/"]),
+    ("invalid-aux", ["/AUX/"]),
+    ("invalid-nul", ["/NUL/"]),
+    ("invalid-com1", ["/COM1/"]),
+    ("invalid-lpt1", ["/LPT1/"]),
+    ("invalid-clock", ["/CLOCK$/"]),
+    ("invalid-del", ["/A\x7fB/"]),
+    ("invalid-c1-80", ["/A\x80B/"]),
+    ("invalid-c1-9f", ["/A\x9fB/"]),
+]
+projects = ["tests/Example/Example.csproj", "tests/Second/Second.csproj"]
+slnx = root / "parity.slnx"
+for label, names in cases:
+    folders = "".join(f'<Folder Name="{n}"><Project Path="{projects[i]}" /></Folder>' for i, n in enumerate(names))
+    blob = f"<Solution>{folders}</Solution>\n".encode("utf-8")
+    slnx.write_bytes(blob)
+    dotnet_ok = subprocess.run(
+        ["dotnet", "sln", str(slnx), "list"],
+        cwd=root, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    ).returncode == 0
+    try:
+        mod.solution_projects(blob)
+        py_ok = True
+    except mod.ProofError:
+        py_ok = False
+    if dotnet_ok != py_ok:
+        raise SystemExit(f"slnx folder parity mismatch on {label}: dotnet={dotnet_ok} py={py_ok}")
+PY
+printf 'Offline restore certificate passed: valid base, seven replay drift cases, missing dotnet, four mandatory-failure fallback cases and 19 live slnx folder parity cases.\n'
