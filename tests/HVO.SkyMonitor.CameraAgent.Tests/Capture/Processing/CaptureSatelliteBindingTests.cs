@@ -1,3 +1,4 @@
+using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -21,7 +22,7 @@ public sealed class CaptureSatelliteBindingTests
     {
         var fixture = new CaptureOrbitalPredictionFixture();
         var descriptor = fixture.Descriptor;
-        var raw = AsFrameArtifact(fixture);
+        var raw = AsFrameArtifact(descriptor, fixture.Raw.Payload);
         var availability = retrospective
             ? fixture.Availability with
             {
@@ -60,11 +61,64 @@ public sealed class CaptureSatelliteBindingTests
     }
 
     [TestMethod]
+    public async Task ShippedPredictionRequestPreservesExactCaptureBinding()
+    {
+        const string rawVariant = "retained-camera-raw";
+        const string outputVariant = "camera-satellite-prediction";
+        var fixture = new CaptureSatelliteFixture(rawVariant: rawVariant);
+        var descriptor = fixture.Descriptor;
+        Assert.AreNotEqual(descriptor.Timing.RequestedStartUtc, descriptor.Timing.ExposureStartedUtc);
+        Assert.AreNotEqual(descriptor.Timing.ExposureEndedUtc - descriptor.Timing.ExposureStartedUtc,
+            descriptor.Controls.EffectiveExposure);
+        var raw = AsFrameArtifact(descriptor, fixture.Raw.Payload);
+        var source = CaptureSatelliteTracksProcessingStep.CreateSource(fixture.Configuration, raw, descriptor);
+        var expected = new ProcessingExecutionRequest(CaptureOrbitalPredictionRecipe.Name,
+            JsonSerializer.SerializeToElement(new { }), new(ProcessingInputKind.Raw, FrameArtifactRole.Raw, rawVariant),
+            [source], outputVariant, InputArtifactId: descriptor.Artifact.ArtifactId);
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.CancellationToken);
+        var cancellationToken = cancellation.Token;
+        ProcessingExecutionRequest? dispatched = null;
+
+        var product = await CaptureSatelliteProducts.PredictAsync(fixture.Evidence, source, outputVariant,
+            (recipe, request, token) =>
+            {
+                Assert.AreEqual(cancellationToken, token, "Prediction must forward the caller's cancellation token.");
+                Assert.AreEqual(expected.InputArtifactId, request.InputArtifactId, "The request must pin the exact raw artifact.");
+                var dispatchedSource = Assert.ContainsSingle(request.Inputs);
+                Assert.AreEqual(descriptor.Timing.ExposureStartedUtc, dispatchedSource.ObservationStartedUtc,
+                    "Prediction must use the observed exposure start.");
+                Assert.AreEqual(descriptor.Timing.ExposureEndedUtc, dispatchedSource.ObservationEndedUtc,
+                    "Prediction must use the observed exposure end.");
+                dispatched = request;
+                return new ProcessingRecipeExecutor([recipe]).ExecuteAsync(request, token);
+            }, cancellationToken).ConfigureAwait(false);
+
+        Assert.IsNotNull(dispatched);
+        Assert.IsTrue(JsonElement.DeepEquals(expected.Options, dispatched.Options));
+        var actualSource = Assert.ContainsSingle(dispatched.Inputs);
+        Assert.AreSame(source, actualSource);
+        // Record equality compares JSON and list backing storage, which the assertions above cover by content.
+        Assert.AreEqual(expected, dispatched with { Options = expected.Options, Inputs = expected.Inputs });
+        Assert.AreEqual(descriptor.Capture.CaptureId, actualSource.CaptureId);
+        Assert.AreEqual(descriptor.Capture.CaptureSequence, actualSource.CaptureSequence);
+        Assert.AreEqual(CaptureContractJson.ComputeDescriptorSha256(descriptor), actualSource.DescriptorIdentitySha256);
+        Assert.AreEqual(descriptor.Artifact.CreatedUtc, actualSource.CreatedUtc);
+        Assert.IsNotNull(product);
+        Assert.AreEqual(descriptor.Artifact.ArtifactId, Assert.ContainsSingle(product.SourceArtifactIds));
+
+        var publicProduct = await CaptureSatelliteProducts.PredictAsync(fixture.Evidence, source, outputVariant,
+            cancellationToken).ConfigureAwait(false);
+        Assert.IsNotNull(publicProduct);
+        Assert.AreEqual(product.OutputIdentitySha256, publicProduct.OutputIdentitySha256);
+        Assert.AreEqual(product.ChecksumSha256, publicProduct.ChecksumSha256);
+    }
+
+    [TestMethod]
     public async Task GenericRawSourceCannotSubstituteForDescriptorExactSource()
     {
         var fixture = new CaptureOrbitalPredictionFixture();
         var source = CameraAgentRecipeExecutionAdapter.CreateArtifact(
-            ProcessingConformanceFixture.CameraConfig, AsFrameArtifact(fixture),
+            ProcessingConformanceFixture.CameraConfig, AsFrameArtifact(fixture.Descriptor, fixture.Raw.Payload),
             fixture.Descriptor.Artifact.Variant, reconstructionDescriptor: fixture.Descriptor);
         var adapter = new CameraAgentRecipeExecutionAdapter(
             new ProcessingRecipeExecutor([new CaptureOrbitalPredictionRecipe(fixture.Input(), fixture.Time)]));
@@ -77,12 +131,11 @@ public sealed class CaptureSatelliteBindingTests
         Assert.IsEmpty(outcome.Products);
     }
 
-    private static FrameArtifact AsFrameArtifact(CaptureOrbitalPredictionFixture fixture)
+    private static FrameArtifact AsFrameArtifact(ReconstructionDescriptor descriptor, ReadOnlyMemory<byte> payload)
     {
-        var descriptor = fixture.Descriptor;
         var layout = descriptor.Layout;
         var frame = new CameraFrame(descriptor.Timing.ExposureStartedUtc, layout.Width, layout.Height,
-            layout.PixelFormat, fixture.Raw.Payload,
+            layout.PixelFormat, payload,
             new(descriptor.Controls.EffectiveExposure, descriptor.Controls.EffectiveGain, 0), layout.StrideBytes)
         { Layout = layout };
         return new(descriptor.Artifact.ArtifactId, descriptor.Artifact.Role, frame, descriptor.Artifact.SourceArtifactIds);
