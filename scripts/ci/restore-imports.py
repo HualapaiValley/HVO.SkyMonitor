@@ -76,15 +76,20 @@ def raise_walk_error(error):
     raise error
 
 
+GLOBAL_JSON_KEYS = {"sdk"}
+GLOBAL_JSON_SDK_KEYS = {"version", "rollForward", "allowPrerelease"}
+
+
 def read_sdk_pin(data):
     settings = parse(data)
-    require(type(settings) is dict and set(settings) == {"sdk"}, "unknown SDK resolver configuration")
+    require(type(settings) is dict and set(settings) == GLOBAL_JSON_KEYS, "unknown SDK resolver configuration")
     version_pin = settings["sdk"]
-    require(type(version_pin) is dict, "unknown SDK resolver configuration")
-    version = version_pin.get("version")
+    require(type(version_pin) is dict and set(version_pin) == GLOBAL_JSON_SDK_KEYS,
+            "unknown SDK resolver configuration")
+    version = version_pin["version"]
     require(type(version) is str and re.fullmatch(r"10\.0\.[0-9]+", version) and
-            version_pin.get("rollForward") == "disable" and
-            version_pin.get("allowPrerelease") is False, "SDK pin unavailable or unsupported")
+            version_pin["rollForward"] == "disable" and
+            version_pin["allowPrerelease"] is False, "SDK pin unavailable or unsupported")
     return version
 
 
@@ -94,19 +99,38 @@ def git_regular_blob(commit, path, missing_reason):
     return subprocess.check_output(["git", "cat-file", "blob", f"{commit}:{path}"])
 
 
-def committed_expected_projects(commit):
-    solution_blob = git_regular_blob(commit, SOLUTION, "solution is unavailable or non-regular")
+def solution_projects(solution_blob):
     solution_root = ET.fromstring(solution_blob.decode("utf-8-sig"))
-    require(solution_root.tag == "Solution", "unknown solution format")
+    require(solution_root.tag == "Solution" and not solution_root.attrib, "unknown solution format")
     expected_projects = set()
-    for node in solution_root.iter("Project"):
-        value = node.attrib.get("Path", "").replace("\\", "/")
-        require(value and not value.startswith("/"), "unresolved solution project")
+
+    def add_project(node):
+        require(len(node) == 0 and set(node.attrib) == {"Path"}, "unknown solution entry")
+        value = node.attrib["Path"].replace("\\", "/")
+        require(value and not value.startswith("/") and not any(c in value for c in ("$", "*", "?", ";")),
+                "unresolved solution project")
         target = posixpath.normpath(value)
         require(target != ".." and not target.startswith("../") and target not in expected_projects,
                 "solution project outside committed inventory")
         expected_projects.add(target)
+
+    for child in solution_root:
+        if child.tag == "Project":
+            add_project(child)
+        elif child.tag == "Folder":
+            require(set(child.attrib) == {"Name"} and bool(child.attrib["Name"].strip()), "unknown solution entry")
+            for entry in child:
+                require(entry.tag == "Project", "unknown solution entry")
+                add_project(entry)
+        else:
+            raise ProofError("unknown solution entry")
     require(expected_projects, "solution has no projects")
+    return expected_projects
+
+
+def committed_expected_projects(commit):
+    solution_blob = git_regular_blob(commit, SOLUTION, "solution is unavailable or non-regular")
+    expected_projects = solution_projects(solution_blob)
     coverage_entry = subprocess.check_output(["git", "ls-tree", commit, "--", COVERAGE_PROJECT])
     if coverage_entry:
         require(coverage_entry.startswith((b"100644 blob ", b"100755 blob ")), "non-regular build input")
@@ -271,8 +295,7 @@ def collect_restore(checkout, expected):
     version = subprocess.check_output([dotnet, "--version"], cwd=checkout, env=env, timeout=15).decode().strip()
     require(version == sdk["version"], "executing SDK differs from the committed SDK pin")
     restore_targets = [SOLUTION]
-    expected_projects = {posixpath.normpath(node.attrib["Path"].replace("\\", "/"))
-                         for node in ET.parse(checkout / SOLUTION).iter("Project")}
+    expected_projects = solution_projects((checkout / SOLUTION).read_bytes())
     if (checkout / COVERAGE_PROJECT).is_file():
         restore_targets.append(COVERAGE_PROJECT)
         expected_projects.add(COVERAGE_PROJECT)

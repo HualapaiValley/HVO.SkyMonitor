@@ -233,19 +233,30 @@ solution = "HVO.SkyMonitor.v9.slnx"
 if solution not in entries or not entries[solution][0].startswith(b"100644 blob "):
     fail("solution is unavailable or non-regular")
 solution_root = read_xml(solution)
-if solution_root.tag != "Solution": fail("unknown solution format")
+if solution_root.tag != "Solution" or solution_root.attrib: fail("unknown solution format")
 projects = set()
-for node in solution_root.iter():
-    if node.tag not in ("Solution", "Folder", "Project"):
+def add_solution_project(node):
+    if len(node) != 0:
         fail("unknown solution entry")
-    if node.tag == "Project":
-        value = node.attrib.get("Path", "").replace("\\", "/")
-        if set(node.attrib) != {"Path"} or not value or any(c in value for c in ("$", "*", "?", ";")) or value.startswith("/"):
-            fail("unresolved solution project")
-        target = posixpath.normpath(value)
-        if target == ".." or target.startswith("../") or target not in entries or target in projects:
-            fail("solution project outside committed inventory")
-        projects.add(target)
+    value = node.attrib.get("Path", "").replace("\\", "/")
+    if set(node.attrib) != {"Path"} or not value or any(c in value for c in ("$", "*", "?", ";")) or value.startswith("/"):
+        fail("unresolved solution project")
+    target = posixpath.normpath(value)
+    if target == ".." or target.startswith("../") or target not in entries or target in projects:
+        fail("solution project outside committed inventory")
+    projects.add(target)
+for child in solution_root:
+    if child.tag == "Project":
+        add_solution_project(child)
+    elif child.tag == "Folder":
+        if set(child.attrib) != {"Name"} or not child.attrib["Name"].strip():
+            fail("unknown solution entry")
+        for entry in child:
+            if entry.tag != "Project":
+                fail("unknown solution entry")
+            add_solution_project(entry)
+    else:
+        fail("unknown solution entry")
 if not projects: fail("solution has no projects")
 pending = [(n, True) for n in projects]
 pending += [(n, n.lower().endswith(".csproj")) for n in entries if n.lower().endswith((".csproj", ".props", ".targets", ".xml"))]
@@ -739,8 +750,17 @@ if [[ "$event_name" == "--check-docs-inventory" ]]; then
         check_kind="unsafe"
         if [[ -z "$(git ls-tree "$base_sha" -- "$restore_certificate_path" 2>/dev/null)" ]] &&
            [[ "$check_reason" == "restore generated package imports are uncertified" || "$check_reason" == "SDK generated restore imports are uncertified" ]]; then
-          check_kind="refresh"
+          if audit_fast_inventory "$base_sha" restore-source > /dev/null 2> "$check_error"; then
+            check_kind="refresh"
+          else
+            restore_source_reason="$(sed -n 's/^docs inventory audit: //p' "$check_error" | tail -n 1)"
+            if [[ "$restore_source_reason" =~ ^[a-zA-Z0-9\ .,/\-]+$ ]]; then
+              check_reason="$restore_source_reason"
+            fi
+          fi
         fi
+      elif [[ "$check_reason" == "unknown SDK resolver configuration" || "$check_reason" == "SDK pin unavailable or unsupported" ]]; then
+        check_kind="unsafe"
       fi
     elif ! cmp -s "$check_expected" "$check_actual"; then
       check_reason="certificate differs from the audited inputs"
