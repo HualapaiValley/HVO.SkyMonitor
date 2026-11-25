@@ -15,6 +15,7 @@ fi
 "$yaml_python" - "$repo_root" <<'PY'
 import json
 import ast
+import concurrent.futures
 import copy
 import unittest.mock
 import functools
@@ -1163,16 +1164,26 @@ with tempfile.TemporaryDirectory(prefix="hvo-yaml-parser-") as directory:
     print("PyYAML availability controls: absent parser fails; hosted pipx fallback passes.")
 def _check_mutation(item):
     name, candidate, qualification, *queue = item
-    return None if violations(candidate, qualification, *queue) else name
+    try:
+        return ("ok", None if violations(candidate, qualification, *queue) else name)
+    except BaseException as exc:
+        return ("error", name, f"{type(exc).__name__}: {exc}")
 
 
 mutation_workers = min(os.cpu_count() or 2, 4)
 if mutation_workers > 1:
-    with multiprocessing.get_context("fork").Pool(mutation_workers) as pool:
-        mutation_failures = pool.map(_check_mutation, mutations, chunksize=8)
+    with concurrent.futures.ProcessPoolExecutor(
+        max_workers=mutation_workers,
+        mp_context=multiprocessing.get_context("fork"),
+    ) as executor:
+        mutation_results = list(executor.map(_check_mutation, mutations, chunksize=8))
 else:
-    mutation_failures = list(map(_check_mutation, mutations))
-for survived in mutation_failures:
+    mutation_results = list(map(_check_mutation, mutations))
+for result in mutation_results:
+    if result[0] == "error":
+        _, name, detail = result
+        raise SystemExit(f"Mutation check failed unexpectedly for {name}: {detail}")
+    survived = result[1]
     if survived is not None:
         raise SystemExit(f"Mutation was not rejected: {survived}")
 changelog = step(job(short, "preflight"), "Validate changelog fragments")

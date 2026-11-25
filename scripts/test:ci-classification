@@ -12,17 +12,83 @@ declare -a parallel_pids=()
 declare -a parallel_names=()
 declare -a parallel_outs=()
 declare -a parallel_errs=()
-declare -A parallel_status=()
-parallel_running=0
+declare -a parallel_status=()
+declare -A active_idx_to_pid=()
+
+collect_descendants() {
+  local parent_pid="$1" task_children child_pid
+  local -a direct_children=()
+  if [[ -d "/proc/$parent_pid/task" ]]; then
+    for task_children in "/proc/$parent_pid/task/"*/children; do
+      [[ -r "$task_children" ]] || continue
+      read -ra direct_children < "$task_children" 2>/dev/null || true
+      for child_pid in "${direct_children[@]}"; do
+        [[ -n "$child_pid" ]] || continue
+        printf '%s\n' "$child_pid"
+        collect_descendants "$child_pid"
+      done
+    done
+  elif command -v pgrep >/dev/null 2>&1; then
+    local pgrep_out=""
+    pgrep_out="$(pgrep -P "$parent_pid" 2>/dev/null || true)"
+    if [[ -n "$pgrep_out" ]]; then
+      mapfile -t direct_children <<< "$pgrep_out"
+      for child_pid in "${direct_children[@]}"; do
+        [[ -n "$child_pid" ]] || continue
+        printf '%s\n' "$child_pid"
+        collect_descendants "$child_pid"
+      done
+    fi
+  fi
+}
 
 cleanup() {
-  local pid
-  for pid in "${parallel_pids[@]}"; do
-    kill "$pid" 2>/dev/null || true
-  done
-  rm -rf "$work_root" "$fast_root"
+  local idx pid desc_out deadline any_alive
+  local -a active_indices=("${!active_idx_to_pid[@]}")
+  local -a active_pids=() all_descendants=() pid_descs=()
+  if (( ${#active_indices[@]} > 0 )); then
+    for idx in "${active_indices[@]}"; do
+      pid="${active_idx_to_pid[$idx]}"
+      active_pids+=("$pid")
+      desc_out="$(collect_descendants "$pid" 2>/dev/null || true)"
+      if [[ -n "$desc_out" ]]; then
+        pid_descs=()
+        mapfile -t pid_descs <<< "$desc_out"
+        all_descendants+=("${pid_descs[@]}")
+      fi
+    done
+    if (( ${#all_descendants[@]} > 0 )); then
+      kill -TERM "${all_descendants[@]}" 2>/dev/null || true
+    fi
+    kill -TERM "${active_pids[@]}" 2>/dev/null || true
+    deadline=$((SECONDS + 2))
+    while (( SECONDS < deadline )); do
+      any_alive=0
+      for pid in "${active_pids[@]}"; do
+        if kill -0 "$pid" 2>/dev/null; then
+          any_alive=1
+          break
+        fi
+      done
+      (( any_alive == 0 )) && break
+      sleep 0.05
+    done
+    if (( ${#all_descendants[@]} > 0 )); then
+      kill -KILL "${all_descendants[@]}" 2>/dev/null || true
+    fi
+    kill -KILL "${active_pids[@]}" 2>/dev/null || true
+    for idx in "${active_indices[@]}"; do
+      pid="${active_idx_to_pid[$idx]}"
+      wait "$pid" 2>/dev/null || true
+      unset 'active_idx_to_pid[$idx]'
+    done
+  fi
+  exec 3>&- 2>/dev/null || true
+  rm -rf "$work_root" "$fast_root" "$fast_root".* "$work_root".*
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 max_jobs="$(nproc 2>/dev/null || printf '2\n')"
 if [[ ! "$max_jobs" =~ ^[0-9]+$ ]] || (( max_jobs < 2 )); then
@@ -33,41 +99,65 @@ fi
 
 parallel_dir="$work_root/.parallel"
 mkdir -p "$parallel_dir"
+parallel_done_fifo="$parallel_dir/done.fifo"
+mkfifo "$parallel_done_fifo"
+exec 3<>"$parallel_done_fifo"
 
 reap_one_parallel_job() {
-  local done_pid="" status=0
-  wait -n -p done_pid || status=$?
-  if [[ -n "$done_pid" ]]; then
-    parallel_status["$done_pid"]="$status"
+  local done_idx="" pid="" status=0
+  if ! IFS= read -r -u 3 done_idx; then
+    printf 'Parallel worker completion channel closed unexpectedly.\n' >&2
+    exit 1
   fi
-  parallel_running=$((parallel_running - 1))
+  if [[ -z "$done_idx" || -z "${active_idx_to_pid[$done_idx]+x}" ]]; then
+    printf 'Parallel worker completion channel reported invalid dispatch index: %s\n' "$done_idx" >&2
+    exit 1
+  fi
+  pid="${active_idx_to_pid[$done_idx]}"
+  wait "$pid" || status=$?
+  parallel_status[done_idx]="$status"
+  unset 'active_idx_to_pid[$done_idx]'
 }
 
 start_parallel_job() {
   local name="$1"
   shift
-  while (( parallel_running >= max_jobs )); do
+  while (( ${#active_idx_to_pid[@]} >= max_jobs )); do
     reap_one_parallel_job
   done
   local idx="${#parallel_pids[@]}"
   local out_file="$parallel_dir/$idx.$name.out"
   local err_file="$parallel_dir/$idx.$name.err"
-  ( "$@" ) >"$out_file" 2>"$err_file" &
-  parallel_pids+=("$!")
+  (
+    set +e
+    (
+      set -euo pipefail
+      "$@"
+    ) >"$out_file" 2>"$err_file" 3>&-
+    rc=$?
+    printf '%d\n' "$idx" >&3
+    exit "$rc"
+  ) &
+  local pid="$!"
+  parallel_pids+=("$pid")
   parallel_names+=("$name")
   parallel_outs+=("$out_file")
   parallel_errs+=("$err_file")
-  ((parallel_running += 1))
+  parallel_status+=("")
+  active_idx_to_pid["$idx"]="$pid"
 }
 
 wait_parallel_jobs() {
   local failed=0 i status
-  while (( parallel_running > 0 )); do
+  while (( ${#active_idx_to_pid[@]} > 0 )); do
     reap_one_parallel_job
   done
   for ((i = 0; i < ${#parallel_pids[@]}; i++)); do
-    status="${parallel_status[${parallel_pids[$i]}]:-1}"
-    if (( status != 0 )); then
+    status="${parallel_status[$i]:-}"
+    if [[ -z "$status" ]]; then
+      printf 'Parallel test group %s was not reaped.\n' "${parallel_names[$i]}" >&2
+      failed=1
+    elif (( status != 0 )); then
       printf 'Parallel test group %s failed (exit %d):\n' "${parallel_names[$i]}" "$status" >&2
       cat "${parallel_outs[$i]}" >&2
       cat "${parallel_errs[$i]}" >&2
@@ -185,13 +275,47 @@ update_file_in() {
   git -C "$repo" commit --quiet -m "Update $path"
 }
 
+# Commit a set of initial fixture files in one git fast-import pass so
+# subsequent batch_commit_files calls exercise modification (M) diffs.
+seed_commit_files() {
+  local repo="$1"
+  shift
+  (( $# > 0 )) || return 0
+  local start_sha path content="seeded fixture base"$'\n' byte_len new_sha
+  start_sha="$(git -C "$repo" rev-parse HEAD)"
+  byte_len="$(LC_ALL=C printf '%s' "$content" | wc -c)"
+  {
+    printf 'commit refs/heads/fast-seed\n'
+    printf 'mark :1\n'
+    printf 'committer CI Classification Test <ci-classification@example.invalid> 1700000000 +0000\n'
+    printf 'data 4\nseed\n'
+    printf 'from %s\n' "$start_sha"
+    for path in "$@"; do
+      printf 'M 100644 inline "%s"\n' "$path"
+      printf 'data %d\n%s\n' "$byte_len" "$content"
+    done
+    printf 'done\n'
+  } | git -C "$repo" fast-import --quiet
+  new_sha="$(git -C "$repo" rev-parse refs/heads/fast-seed)"
+  git -C "$repo" update-ref HEAD "$new_sha"
+  git -C "$repo" branch -q -D fast-seed
+}
+
 # Build a chain of single-file commits in one git fast-import pass.
 # Each spec is "<path>|<content>". Emits "<base_sha> <head_sha>" per spec.
 batch_commit_files() {
   local repo="$1"
   shift
-  local start_sha spec path content mark=0 byte_len
+  if (( $# == 0 )); then
+    printf 'batch_commit_files requires at least one spec.\n' >&2
+    return 1
+  fi
+  local start_sha spec path content mark=0 byte_len rev_out idx
+  local -a spec_paths=() shas=()
   start_sha="$(git -C "$repo" rev-parse HEAD)"
+  for spec in "$@"; do
+    spec_paths+=("${spec%%|*}")
+  done
   {
     for spec in "$@"; do
       path="${spec%%|*}"
@@ -210,10 +334,23 @@ batch_commit_files() {
     done
     printf 'done\n'
   } | git -C "$repo" fast-import --quiet
-  local -a shas=()
-  mapfile -t shas < <(git -C "$repo" rev-list --reverse "${start_sha}..refs/heads/fast-batch")
+  rev_out="$(git -C "$repo" rev-list --reverse "${start_sha}..refs/heads/fast-batch")"
+  if [[ -n "$rev_out" ]]; then
+    mapfile -t shas <<< "$rev_out"
+  fi
+  if (( ${#shas[@]} != $# )); then
+    git -C "$repo" branch -q -D fast-batch 2>/dev/null || true
+    printf 'batch_commit_files produced %d commits for %d specs in %s\n' "${#shas[@]}" "$#" "$repo" >&2
+    return 1
+  fi
   local prev="$start_sha" sha
-  for sha in "${shas[@]}"; do
+  for ((idx = 0; idx < ${#shas[@]}; idx++)); do
+    sha="${shas[$idx]}"
+    if git -C "$repo" diff --quiet "$prev" "$sha"; then
+      git -C "$repo" branch -q -D fast-batch 2>/dev/null || true
+      printf 'batch_commit_files produced a no-op commit for %s (%s..%s)\n' "${spec_paths[$idx]}" "$prev" "$sha" >&2
+      return 1
+    fi
     printf '%s %s\n' "$prev" "$sha"
     prev="$sha"
   done
@@ -221,22 +358,52 @@ batch_commit_files() {
   git -C "$repo" branch -q -D fast-batch
 }
 
-# Verify a batch of component plan rows ("path|mode|deployment|complete|shared|cameraagent|delivery")
+# Populate caller's array variable with "<base_sha> <head_sha>" pairs from batch_commit_files.
+# Fails closed if batch_commit_files exits non-zero or emits a different pair count than expected.
+batch_commit_pairs() {
+  local -n _batch_out_pairs="$1"
+  local repo="$2" expected_count="$3"
+  shift 3
+  local batch_out=""
+  if ! batch_out="$(batch_commit_files "$repo" "$@")"; then
+    printf 'batch_commit_files failed in %s\n' "$repo" >&2
+    return 1
+  fi
+  _batch_out_pairs=()
+  if [[ -n "$batch_out" ]]; then
+    mapfile -t _batch_out_pairs <<< "$batch_out"
+  fi
+  if (( ${#_batch_out_pairs[@]} != expected_count )); then
+    printf 'batch_commit_files returned %d pairs in %s, expected %d\n' \
+      "${#_batch_out_pairs[@]}" "$repo" "$expected_count" >&2
+    return 1
+  fi
+}
+
+# Verify a batch of component plan rows ("path|mode|deployment|complete|shared|cameraagent|delivery[|status]")
 # using one fast-import pass and one classifier invocation per row.
 verify_component_plan_batch() {
   local repo="$1"
   shift
   local -a rows=("$@") specs=() pairs=()
-  local i path expected_mode expected_deployment expected_complete expected_shared expected_cameraagent expected_delivery
-  local base head output
+  local i path expected_mode expected_deployment expected_complete expected_shared expected_cameraagent expected_delivery expected_status
+  local base head output actual_status
   for ((i = 0; i < ${#rows[@]}; i++)); do
     IFS='|' read -r path _ <<< "${rows[$i]}"
     specs+=("$path|classification fixture $i"$'\n')
   done
-  mapfile -t pairs < <(batch_commit_files "$repo" "${specs[@]}")
+  batch_commit_pairs pairs "$repo" "${#rows[@]}" "${specs[@]}"
   for ((i = 0; i < ${#rows[@]}; i++)); do
-    IFS='|' read -r path expected_mode expected_deployment expected_complete expected_shared expected_cameraagent expected_delivery <<< "${rows[$i]}"
+    expected_status=""
+    IFS='|' read -r path expected_mode expected_deployment expected_complete expected_shared expected_cameraagent expected_delivery expected_status <<< "${rows[$i]}"
     read -r base head <<< "${pairs[$i]}"
+    if [[ -n "$expected_status" ]]; then
+      actual_status="$(git -C "$repo" diff --name-status "$base" "$head")"
+      if [[ "$actual_status" != "$expected_status"$'\t'"$path" ]]; then
+        printf 'Expected diff status %s for %s, received %s\n' "$expected_status" "$path" "$actual_status" >&2
+        exit 1
+      fi
+    fi
     output="$(classify_in_repo "$repo" pull_request "$base" "$head")"
     assert_plan_output "$output" "$expected_mode" "$expected_deployment"
     assert_components_output "$output" "$expected_complete" "$expected_shared" "$expected_cameraagent" "$expected_delivery"
@@ -279,7 +446,6 @@ fast_real_git="$(command -v git)"
 # Prepare certificate-case seed repository (with mutant classifiers and base files).
 cert_seed_root="$fast_root.cert-seed"
 cp -a "$fast_root" "$cert_seed_root"
-trap 'cleanup; rm -rf "$cert_seed_root" "$fast_root".* "$work_root".*' EXIT
 python3 - "$classifier" "$cert_seed_root/.git" <<'PY'
 import pathlib
 import sys
@@ -673,6 +839,11 @@ DIRECT_CHECK_CASES = SLNX_INVALID_CASES | {"global-json-sdk-paths", "global-json
 DIGEST_ZERO = "0" * 64
 
 
+def require(condition, message):
+    if not condition:
+        raise SystemExit(message)
+
+
 def git(*args, binary=False):
     res = subprocess.run(
         ["git", "-C", str(repo), *args],
@@ -909,28 +1080,28 @@ for case in cases:
         err_lines = check.stderr.splitlines()
         if case == "mismatched-sdk-version":
             want = "::error::Documentation CI build inventory is stale or unsafe; refresh scripts/ci:docs-inventory and scripts/ci:restore-import-certificate.json: restore import certificate SDK version differs from global.json"
-            assert want in err_lines, f"{case}: {check.stderr!r}"
+            require(want in err_lines, f"{case}: {check.stderr!r}")
         elif case == "missing-global-json":
             want = "::error::Documentation CI build inventory is stale or unsafe; refresh scripts/ci:docs-inventory and scripts/ci:restore-import-certificate.json: committed global.json SDK pin unavailable"
-            assert want in err_lines, f"{case}: {check.stderr!r}"
+            require(want in err_lines, f"{case}: {check.stderr!r}")
         elif case in ("global-json-sdk-paths", "global-json-extra-top-key"):
             want = "::error::Documentation CI build inventory is stale or unsafe; remove the unsafe input or update the audit policy under HIGH-tier review: unknown SDK resolver configuration"
-            assert want in err_lines, f"{case}: {check.stderr!r}"
+            require(want in err_lines, f"{case}: {check.stderr!r}")
         elif case == "global-json-utf16":
             want = "::error::Documentation CI build inventory is stale or unsafe; remove the unsafe input or update the audit policy under HIGH-tier review: global.json is not UTF-8"
-            assert want in err_lines, f"{case}: {check.stderr!r}"
+            require(want in err_lines, f"{case}: {check.stderr!r}")
         elif case in ("missing-project-record", "extra-project-record", "missing-coverage-project-record"):
             want = "::error::Documentation CI build inventory is stale or unsafe; refresh scripts/ci:docs-inventory and scripts/ci:restore-import-certificate.json: restore import certificate project set differs from committed solution"
-            assert want in err_lines, f"{case}: {check.stderr!r}"
+            require(want in err_lines, f"{case}: {check.stderr!r}")
         elif case in SLNX_INVALID_CASES:
             want = "::error::Documentation CI build inventory is stale or unsafe; remove the unsafe input or update the audit policy under HIGH-tier review: unknown solution entry"
-            assert want in err_lines, f"{case}: {check.stderr!r}"
+            require(want in err_lines, f"{case}: {check.stderr!r}")
         elif case in ("executable-certificate", "symlink-certificate", "stale-source-hash"):
             want = "::error::Documentation CI build inventory is stale or unsafe; refresh scripts/ci:docs-inventory and scripts/ci:restore-import-certificate.json:"
-            assert want in check.stderr, f"{case}: {check.stderr!r}"
+            require(want in check.stderr, f"{case}: {check.stderr!r}")
         else:
             want = "::error::Documentation CI build inventory is stale or unsafe; remove the unsafe input or update the audit policy under HIGH-tier review:"
-            assert want in check.stderr, f"{case}: {check.stderr!r}"
+            require(want in check.stderr, f"{case}: {check.stderr!r}")
 
         if case in DIRECT_CHECK_CASES:
             direct = subprocess.run(
@@ -941,11 +1112,11 @@ for case in cases:
                 raise SystemExit(f"validate_certificate accepted invalid case directly: {case}")
             direct_lines = direct.stderr.splitlines()
             if case in ("global-json-sdk-paths", "global-json-extra-top-key"):
-                assert "docs inventory audit: unknown SDK resolver configuration" in direct_lines, f"{case}: {direct.stderr!r}"
+                require("docs inventory audit: unknown SDK resolver configuration" in direct_lines, f"{case}: {direct.stderr!r}")
             elif case == "global-json-utf16":
-                assert "docs inventory audit: global.json is not UTF-8" in direct_lines, f"{case}: {direct.stderr!r}"
+                require("docs inventory audit: global.json is not UTF-8" in direct_lines, f"{case}: {direct.stderr!r}")
             else:
-                assert "docs inventory audit: unknown solution entry" in direct_lines, f"{case}: {direct.stderr!r}"
+                require("docs inventory audit: unknown solution entry" in direct_lines, f"{case}: {direct.stderr!r}")
 
     with (repo / "docs/runbooks/certified.md").open("a", encoding="utf-8") as fh:
         fh.write("changed\n")
@@ -1353,7 +1524,10 @@ EOF
   (cd "$repo" && GITHUB_STEP_SUMMARY="$evidence_file" "$classifier" pull_request "$fast_base" HEAD docs-fast-only >/dev/null)
   grep -Fq 'docs/second.md' "$evidence_file"
   grep -Fq 'Fast path paths examined: 2' "$evidence_file"
-  ! grep -Fq 'Mode: **' "$evidence_file"
+  if grep -Fq 'Mode: **' "$evidence_file"; then
+    printf 'Docs-fast-only summary unexpectedly included Mode output:\n%s\n' "$(cat "$evidence_file")" >&2
+    exit 1
+  fi
   ((fast_cases += 1))
   # Mandatory certificate-maintenance gate controls.
   (cd "$repo" && "$classifier" --check-docs-inventory "$fast_base") > "$repo/.git/check-clean-out" 2> "$repo/.git/check-clean-err"
@@ -1515,10 +1689,10 @@ run_work_allow_and_secret() {
 
   # Restore-import verifier and offline proof changes select full mode (#1996).
   local -a restore_pairs=()
-  mapfile -t restore_pairs < <(batch_commit_files "$repo" \
+  batch_commit_pairs restore_pairs "$repo" 2 \
     "scripts/ci/restore-imports.py|classification fixture"$'\n' \
-    "scripts/test:ci-docs-restore-import|classification fixture"$'\n')
-  for ((i = 0; i < ${#restore_pairs[@]}; i++)); do
+    "scripts/test:ci-docs-restore-import|classification fixture"$'\n'
+  for ((i = 0; i < 2; i++)); do
     read -r base head <<< "${restore_pairs[$i]}"
     output="$(classify_in_repo "$repo" pull_request "$base" "$head")"
     assert_plan_output "$output" full false
@@ -1553,7 +1727,7 @@ run_work_allow_and_secret() {
     specs+=("$path|classification fixture"$'\n'"updated classification fixture"$'\n')
   done
   specs+=("src/HVO.SkyMonitor.CameraAgent/Components/Unrelated.razor|classification fixture"$'\n')
-  mapfile -t pairs < <(batch_commit_files "$repo" "${specs[@]}")
+  batch_commit_pairs pairs "$repo" "$(( ${#secret_scan_contract_paths[@]} * 2 + 1 ))" "${specs[@]}"
   for ((i = 0; i < ${#secret_scan_contract_paths[@]} * 2; i++)); do
     read -r base head <<< "${pairs[$i]}"
     output="$(classify_in_repo "$repo" pull_request "$base" "$head")"
@@ -1634,8 +1808,8 @@ run_work_release_shard() {
     specs+=("$path|classification fixture"$'\n')
     specs+=("$path|classification fixture"$'\n'"updated classification fixture"$'\n')
   done
-  mapfile -t pairs < <(batch_commit_files "$repo" "${specs[@]}")
-  for ((i = 0; i < ${#pairs[@]}; i++)); do
+  batch_commit_pairs pairs "$repo" "$(( ${#paths[@]} * 2 ))" "${specs[@]}"
+  for ((i = 0; i < ${#paths[@]} * 2; i++)); do
     read -r base head <<< "${pairs[$i]}"
     output="$(classify_in_repo "$repo" pull_request "$base" "$head")"
     assert_release_scripts_output "$output" true
@@ -1651,8 +1825,8 @@ run_work_release_shard() {
       neg_specs+=("$path|classification fixture"$'\n')
       neg_specs+=("$path|classification fixture"$'\n'"updated classification fixture"$'\n')
     done
-    mapfile -t neg_pairs < <(batch_commit_files "$repo" "${neg_specs[@]}")
-    for ((i = 1; i < ${#neg_pairs[@]}; i += 2)); do
+    batch_commit_pairs neg_pairs "$repo" "$(( ${#neg_paths[@]} * 2 ))" "${neg_specs[@]}"
+    for ((i = 1; i < ${#neg_paths[@]} * 2; i += 2)); do
       read -r base head <<< "${neg_pairs[$i]}"
       output="$(classify_in_repo "$repo" pull_request "$base" "$head")"
       assert_release_scripts_output "$output" false
@@ -1695,8 +1869,8 @@ run_work_catalog_recipe() {
     specs+=("$path|classification fixture"$'\n')
     specs+=("$path|classification fixture"$'\n'"updated classification fixture"$'\n')
   done
-  mapfile -t pairs < <(batch_commit_files "$repo" "${specs[@]}")
-  for ((i = 0; i < ${#pairs[@]}; i++)); do
+  batch_commit_pairs pairs "$repo" "$(( ${#catalog_recipe_paths[@]} * 2 ))" "${specs[@]}"
+  for ((i = 0; i < ${#catalog_recipe_paths[@]} * 2; i++)); do
     read -r base head <<< "${pairs[$i]}"
     path="${catalog_recipe_paths[$((i / 2))]}"
     output="$(classify_in_repo "$repo" pull_request "$base" "$head")"
@@ -1720,8 +1894,8 @@ run_work_catalog_recipe() {
     neg_specs+=("$path|classification fixture"$'\n')
     neg_specs+=("$path|classification fixture"$'\n'"updated classification fixture"$'\n')
   done
-  mapfile -t neg_pairs < <(batch_commit_files "$repo" "${neg_specs[@]}")
-  for ((i = 1; i < ${#neg_pairs[@]}; i += 2)); do
+  batch_commit_pairs neg_pairs "$repo" "$(( ${#neg_paths[@]} * 2 ))" "${neg_specs[@]}"
+  for ((i = 1; i < ${#neg_paths[@]} * 2; i += 2)); do
     read -r base head <<< "${neg_pairs[$i]}"
     output="$(classify_in_repo "$repo" pull_request "$base" "$head")"
     assert_catalog_recipe_output "$output" false
@@ -1790,6 +1964,23 @@ run_work_catalog_recipe() {
 run_work_components_pre_csproj() {
   local repo="$work_root.comp-pre"
   cp -a "$work_root" "$repo"
+  # Pre-seed files that already existed before these assertions in the sequential baseline
+  # so their batched commits preserve modification (M) diff status.
+  seed_commit_files "$repo" \
+    "src/HVO.SkyMonitor.Catalog.Sqlite/Catalog.cs" \
+    "tools/HVO.SkyMonitor.Deployment.ReleaseTool/Program.cs" \
+    "scripts/release:cameraagent-publish" \
+    "scripts/release:check-cameraagent-publish" \
+    "scripts/cameraagent-release.targets" \
+    "scripts/test:cameraagent-r2r" \
+    "scripts/release:gate" \
+    "scripts/release:publish" \
+    "scripts/release:assets" \
+    "scripts/release:prerelease-gate" \
+    "scripts/release:publish-prerelease" \
+    "scripts/test:release-install" \
+    "scripts/test:release-scripts" \
+    "scripts/lib/releases.sh"
   local -a component_rows=(
     ".agents/skills/pr-lifecycle/resources/SKILL.md|full|false|true|true|true|true"
     "tools/HVO.SkyMonitor.VirtualSkyPoc/Program.cs|full|false|true|true|true|true"
@@ -1868,8 +2059,8 @@ run_work_components_pre_csproj() {
   for ((i = 0; i < ${#installer_paths[@]}; i++)); do
     specs+=("${installer_paths[$i]}|installer fixture $i"$'\n')
   done
-  mapfile -t pairs < <(batch_commit_files "$repo" "${specs[@]}")
-  for ((i = 0; i < ${#pairs[@]}; i++)); do
+  batch_commit_pairs pairs "$repo" "${#installer_paths[@]}" "${specs[@]}"
+  for ((i = 0; i < ${#installer_paths[@]}; i++)); do
     read -r base head <<< "${pairs[$i]}"
     output="$(classify_in_repo "$repo" pull_request "$base" "$head")"
     assert_plan_output "$output" full true
@@ -1922,7 +2113,7 @@ run_work_links_shard() {
   done
 
   if (( ${#specs[@]} > 0 )); then
-    mapfile -t pairs < <(batch_commit_files "$repo" "${specs[@]}")
+    batch_commit_pairs pairs "$repo" "${#specs[@]}" "${specs[@]}"
     local pair_idx=0 kind base head wildcard_flags including_flags linked_flags flag
     for ((i = 0; i < ${#kinds[@]}; i++)); do
       kind="${kinds[$i]}"
@@ -1961,6 +2152,20 @@ run_work_links_shard() {
 run_work_projdirs_and_complete() {
   local repo="$work_root.proj-complete"
   cp -a "$work_root_csproj" "$repo"
+  # Pre-seed files that already existed before these assertions in the sequential baseline
+  # so their batched commits preserve modification (M) diff status.
+  seed_commit_files "$repo" \
+    ".github/workflows/ci.yml" \
+    ".github/workflows/release.yml" \
+    ".github/workflows/prerelease.yml" \
+    ".github/workflows/release-image.yml" \
+    "scripts/ci:classify" \
+    "scripts/ci:require" \
+    "scripts/test:ci-classification" \
+    "Directory.Build.props" \
+    "tests/fixtures/catalog/hyg-v42-bright-stars.sqlite" \
+    "docs/validation/cameraagent-transient-fault-matrix.json" \
+    "tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/VirtualSkyPipelineTests.cs"
   # Verify enumerator widenings (src/ projects and links outside src/tests/tools).
   local -a link_including_projects=() src_project_names=()
   mapfile -t link_including_projects < <(printf '%s\n' "${link_records[@]}" | cut -d'|' -f1 | sort -u)
@@ -1996,7 +2201,7 @@ run_work_projdirs_and_complete() {
       "$project_directory_count" >&2
     exit 1
   fi
-  mapfile -t probe_pairs < <(batch_commit_files "$repo" "${probe_specs[@]}")
+  batch_commit_pairs probe_pairs "$repo" "${#probe_dirs[@]}" "${probe_specs[@]}"
   local i base head probe_output
   for ((i = 0; i < ${#probe_dirs[@]}; i++)); do
     read -r base head <<< "${probe_pairs[$i]}"
@@ -2009,9 +2214,9 @@ run_work_projdirs_and_complete() {
   done
 
   verify_component_plan_batch "$repo" \
-    "THIRD-PARTY-NOTICES.md|full|false|true|true|true|true" \
-    "changelog.d/camera-setup.fixed.md|reduced|false|false|false|false|false" \
-    "changelog.d/123.unknown.md|full|false|true|true|true|true"
+    "THIRD-PARTY-NOTICES.md|full|false|true|true|true|true|M" \
+    "changelog.d/camera-setup.fixed.md|reduced|false|false|false|false|false|A" \
+    "changelog.d/123.unknown.md|full|false|true|true|true|true|A"
 
   local -a complete_matrix_paths=(
     ".github/workflows/ci.yml"
@@ -2055,8 +2260,8 @@ run_work_projdirs_and_complete() {
   for ((i = 0; i < ${#complete_matrix_paths[@]}; i++)); do
     cm_specs+=("${complete_matrix_paths[$i]}|complete matrix fixture $i"$'\n')
   done
-  mapfile -t cm_pairs < <(batch_commit_files "$repo" "${cm_specs[@]}")
-  for ((i = 0; i < ${#cm_pairs[@]}; i++)); do
+  batch_commit_pairs cm_pairs "$repo" "${#complete_matrix_paths[@]}" "${cm_specs[@]}"
+  for ((i = 0; i < ${#complete_matrix_paths[@]}; i++)); do
     read -r base head <<< "${cm_pairs[$i]}"
     probe_output="$(classify_in_repo "$repo" pull_request "$base" "$head")"
     assert_components_output "$probe_output" true true true true
@@ -2072,40 +2277,58 @@ run_work_projdirs_and_complete() {
   git -C "$repo" add -- "tests/$unknown_project/$unknown_project.csproj"
   git -C "$repo" commit --quiet -m 'Add an unclassified project that links a CameraAgent source'
   verify_component_plan_batch "$repo" \
-    "$linked_cameraagent_source|full|false|true|true|true|true"
+    "$linked_cameraagent_source|full|false|true|true|true|true|M"
 }
 
 run_work_deploy_fallback_cli() {
   local repo="$work_root.deploy-fallback"
   cp -a "$work_root_csproj" "$repo"
+  # Pre-seed linked inputs and files that already existed in the sequential baseline
+  # so every modification case (including RetainedIntegrityFormat.cs) exercises an M diff.
+  seed_commit_files "$repo" \
+    "src/HVO.SkyMonitor.CameraAgent/Dockerfile" \
+    "src/HVO.SkyMonitor.CameraAgent/cameraagent.sample.json" \
+    "src/HVO.SkyMonitor.CameraAgent/virtual-asi174.full.json" \
+    "src/HVO.SkyMonitor.CameraAgent/virtual-asi178mc.full.json" \
+    "src/HVO.SkyMonitor.CameraAgent/Configuration/OwnerPasswordFileText.cs" \
+    "src/HVO.SkyMonitor.CameraAgent/Configuration/LocalIdentityOptions.cs" \
+    "src/HVO.SkyMonitor.CameraAgent/wwwroot/css/themes/hvo-dark.css" \
+    "docs/runbooks/cameraagent-silo-runtime.md" \
+    "src/HVO.SkyMonitor.CameraAgent.Common/DeploymentLocation/RetainedIntegrityFormat.cs" \
+    "Directory.Build.targets" \
+    ".github/workflows/development-v1.yml" \
+    "scripts/coverage/Program.cs" \
+    "tests/unit-test-projects.json" \
+    "scripts/catalog:install" \
+    "tests/fixtures/catalog/hyg-v42-bright-stars.sqlite"
   local secret_scan_contract_cases=0 release_scripts_cases=0 catalog_recipe_cases=0
   local i base head output
 
   # CameraAgent Dockerfile/config + Development v1 Deployment.Cli.Tests path-filtering (#2071).
   verify_component_plan_batch "$repo" \
-    "src/HVO.SkyMonitor.CameraAgent/Dockerfile|full|true|false|false|true|false" \
-    "src/HVO.SkyMonitor.CameraAgent/cameraagent.sample.json|full|true|false|false|true|false" \
-    "src/HVO.SkyMonitor.CameraAgent/Dockerfile|full|true|false|false|true|false" \
-    "src/HVO.SkyMonitor.CameraAgent/cameraagent.sample.json|full|true|false|false|true|false" \
-    "src/HVO.SkyMonitor.CameraAgent/virtual-asi174.full.json|full|true|false|false|true|false" \
-    "src/HVO.SkyMonitor.CameraAgent/virtual-asi178mc.full.json|full|true|false|false|true|false" \
-    "src/HVO.SkyMonitor.CameraAgent/Configuration/OwnerPasswordFileText.cs|full|false|false|false|true|true" \
-    "src/HVO.SkyMonitor.CameraAgent/Configuration/LocalIdentityOptions.cs|full|false|false|false|true|true" \
-    "src/HVO.SkyMonitor.CameraAgent/wwwroot/css/themes/hvo-dark.css|full|false|false|false|true|true" \
-    "docs/runbooks/cameraagent-silo-runtime.md|full|false|true|true|true|true" \
-    "src/HVO.SkyMonitor.CameraAgent.Common/DeploymentLocation/RetainedIntegrityFormat.cs|full|false|false|false|true|true" \
-    "Directory.Build.targets|full|false|true|true|true|true" \
-    ".github/workflows/development-v1.yml|full|false|true|true|true|true" \
-    "scripts/coverage:development-v1|full|false|true|true|true|true" \
-    "scripts/coverage/Program.cs|full|false|true|true|true|true" \
-    "scripts/coverage/UnitCoverageInputs.cs|full|false|true|true|true|true" \
-    "tests/unit-test-projects.json|full|false|true|true|true|true"
+    "src/HVO.SkyMonitor.CameraAgent/Dockerfile|full|true|false|false|true|false|M" \
+    "src/HVO.SkyMonitor.CameraAgent/cameraagent.sample.json|full|true|false|false|true|false|M" \
+    "src/HVO.SkyMonitor.CameraAgent/Dockerfile|full|true|false|false|true|false|M" \
+    "src/HVO.SkyMonitor.CameraAgent/cameraagent.sample.json|full|true|false|false|true|false|M" \
+    "src/HVO.SkyMonitor.CameraAgent/virtual-asi174.full.json|full|true|false|false|true|false|M" \
+    "src/HVO.SkyMonitor.CameraAgent/virtual-asi178mc.full.json|full|true|false|false|true|false|M" \
+    "src/HVO.SkyMonitor.CameraAgent/Configuration/OwnerPasswordFileText.cs|full|false|false|false|true|true|M" \
+    "src/HVO.SkyMonitor.CameraAgent/Configuration/LocalIdentityOptions.cs|full|false|false|false|true|true|M" \
+    "src/HVO.SkyMonitor.CameraAgent/wwwroot/css/themes/hvo-dark.css|full|false|false|false|true|true|M" \
+    "docs/runbooks/cameraagent-silo-runtime.md|full|false|true|true|true|true|M" \
+    "src/HVO.SkyMonitor.CameraAgent.Common/DeploymentLocation/RetainedIntegrityFormat.cs|full|false|false|false|true|true|M" \
+    "Directory.Build.targets|full|false|true|true|true|true|M" \
+    ".github/workflows/development-v1.yml|full|false|true|true|true|true|M" \
+    "scripts/coverage:development-v1|full|false|true|true|true|true|A" \
+    "scripts/coverage/Program.cs|full|false|true|true|true|true|M" \
+    "scripts/coverage/UnitCoverageInputs.cs|full|false|true|true|true|true|A" \
+    "tests/unit-test-projects.json|full|false|true|true|true|true|M"
 
   # CameraAgent-only Home.razor across pull_request, merge_group, push.
   local -a home_pairs=()
-  mapfile -t home_pairs < <(batch_commit_files "$repo" \
+  batch_commit_pairs home_pairs "$repo" 2 \
     "src/HVO.SkyMonitor.CameraAgent/Components/Home.razor|classification fixture"$'\n' \
-    "src/HVO.SkyMonitor.CameraAgent/Components/Home.razor|updated classification fixture"$'\n')
+    "src/HVO.SkyMonitor.CameraAgent/Components/Home.razor|updated classification fixture"$'\n'
   read -r base head <<< "${home_pairs[1]}"
   output="$(classify_in_repo "$repo" pull_request "$base" "$head")"
   assert_plan_output "$output" full false
@@ -2140,8 +2363,8 @@ run_work_deploy_fallback_cli() {
   for ((i = 0; i < ${#deployment_paths[@]}; i++)); do
     dep_specs+=("${deployment_paths[$i]}|deployment fixture $i"$'\n')
   done
-  mapfile -t dep_pairs < <(batch_commit_files "$repo" "${dep_specs[@]}")
-  for ((i = 0; i < ${#dep_pairs[@]}; i++)); do
+  batch_commit_pairs dep_pairs "$repo" "${#deployment_paths[@]}" "${dep_specs[@]}"
+  for ((i = 0; i < ${#deployment_paths[@]}; i++)); do
     read -r base head <<< "${dep_pairs[$i]}"
     output="$(classify_in_repo "$repo" pull_request "$base" "$head")"
     assert_plan_output "$output" full true
@@ -2169,7 +2392,7 @@ run_work_deploy_fallback_cli() {
     tgt_specs+=("$tpath|targeted seed $i"$'\n')
     tgt_specs+=("$tpath|targeted updated $i"$'\n')
   done
-  mapfile -t tgt_pairs < <(batch_commit_files "$repo" "${tgt_specs[@]}")
+  batch_commit_pairs tgt_pairs "$repo" "$(( ${#targeted_rows[@]} * 2 ))" "${tgt_specs[@]}"
   for ((i = 0; i < ${#targeted_rows[@]}; i++)); do
     IFS='|' read -r tpath tcat tinst <<< "${targeted_rows[$i]}"
     read -r base head <<< "${tgt_pairs[$((i * 2 + 1))]}"
