@@ -158,7 +158,17 @@ def is_valid_folder_name(folder_name):
 
 
 def solution_projects(solution_blob):
-    solution_root = ET.fromstring(solution_blob.decode("utf-8-sig"))
+    text = solution_blob.decode("utf-8-sig")
+    require(not re.search(r"&#|%[0-9a-fA-F]{2}", text), "escaped build input requires manual review")
+    # Match the source audit before ElementTree normalizes literal attribute whitespace.
+    attributes = re.finditer(
+        r"""<!--.*?-->|<!\[CDATA\[.*?\]\]>|<\?.*?\?>|"""
+        r"""<(?:Folder\s+Name|Project\s+Path)\s*=\s*(["'])(.*?)\1""",
+        text, re.DOTALL,
+    )
+    require(not any(re.search(r"[\t\r\n]", match[2] or "") for match in attributes),
+            "solution attribute contains control whitespace")
+    solution_root = ET.fromstring(text)
     require(solution_root.tag == "Solution" and not solution_root.attrib, "unknown solution format")
     expected_projects = set()
     seen_folders = set()

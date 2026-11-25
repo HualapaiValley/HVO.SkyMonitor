@@ -6,8 +6,9 @@ fixture uses analytic diffuse profiles, controlled point/line confounders,
 independent sample noise and known translations. Code units are synthetic;
 these data establish no absolute photometry, morphology or sensitivity claim.
 
-Run `python3 oracle.py <directory>` and compare the emitted manifest. Binary
-series are five 20 s exposures in slot order, each with contiguous little-endian
+Run `python3 oracle.py <directory>` and compare the emitted manifest with
+[`../processing/measured-deep-sky-v1.json`](../processing/measured-deep-sky-v1.json).
+Binary series are five 20 s exposures in slot order, each with contiguous little-endian
 uint16 R, G, B planes, 96 × 96. Translations are defined by the generator in
 pixel-edge coordinates. Register to slot 2. The fixture driver carries its own
 translations; source location and expected identities belong to the scorer.

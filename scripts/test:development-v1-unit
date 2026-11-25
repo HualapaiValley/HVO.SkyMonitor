@@ -139,7 +139,7 @@ class UnitContractTests(unittest.TestCase):
     def test_other_projects_failure_blocks_workload_with_successful_shards(self):
         self.check_launch(other_exit_code=7)
 
-    def test_discovery_subprocess_uses_repo_root_cwd_from_other_working_directory(self):
+    def test_discovery_and_tests_use_repo_root_from_other_working_directory(self):
         self.check_launch(run_from_other_cwd=True)
 
     def check_launch(self, skip_deployment_cli=False, other_exit_code=0, run_from_other_cwd=False):
@@ -188,7 +188,8 @@ class UnitContractTests(unittest.TestCase):
                     self.assertFalse((Path.cwd() / project_arg).exists())
                 return subprocess.CompletedProcess(command, 0, json.dumps(self.cases))
 
-            def launch(command):
+            def launch(command, *, cwd=None):
+                self.assertEqual(cwd, root)
                 launches.append(command)
                 if len(launches) > 1:
                     shard = names[len(launches) - 2]
@@ -331,7 +332,12 @@ class CoverageWrapperContractTests(unittest.TestCase):
                 self.assertEqual(calls[0]["argv"], ["--verify", str(evidence)])
 
                 gate_argv = calls[1]["argv"]
-                gate_tail = gate_argv[gate_argv.index("--") + 1:]
+                command_prefix = [
+                    "run", "--project", str(repo / "scripts/coverage/HVO.SkyMonitor.CoverageGate.csproj"),
+                    "--disable-build-servers", "-p:UseSharedCompilation=false", "--",
+                ]
+                self.assertEqual(gate_argv[:len(command_prefix)], command_prefix)
+                gate_tail = gate_argv[len(command_prefix):]
                 expected_prefix = ["--development-v1"]
                 if expect_skip:
                     expected_prefix.append("--skip-deployment-cli")
