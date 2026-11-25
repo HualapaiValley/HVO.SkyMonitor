@@ -167,7 +167,7 @@ is_fast_doc_path() {
 # and blob identities. Changes disable the exemption until reviewed.
 audit_fast_inventory() {
   python3 -I - "$1" "${2:-}" <<'PY_AUDIT'
-import os, posixpath, re, subprocess, sys, xml.etree.ElementTree as ET
+import json, os, posixpath, re, subprocess, sys, xml.etree.ElementTree as ET
 
 commit = sys.argv[1]
 restore_source = sys.argv[2] == "restore-source"
@@ -179,6 +179,33 @@ def git(*args):
         return subprocess.run(["git", *args], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True).stdout
     except (OSError, subprocess.CalledProcessError):
         fail("Git could not read the committed input tree")
+
+def unique_object(pairs):
+    result = dict(pairs)
+    if len(result) != len(pairs):
+        fail("duplicate certificate or restore data keys")
+    return result
+
+def validate_global_json(raw):
+    if raw.startswith((b"\x00\x00\xfe\xff", b"\xff\xfe\x00\x00", b"\xff\xfe", b"\xfe\xff")) or b"\x00" in raw:
+        fail("global.json is not UTF-8")
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        fail("global.json is not UTF-8")
+    try:
+        settings = json.loads(text, object_pairs_hook=unique_object)
+    except ValueError:
+        fail("unknown SDK resolver configuration")
+    if type(settings) is not dict or set(settings) != {"sdk"}:
+        fail("unknown SDK resolver configuration")
+    version_pin = settings["sdk"]
+    if type(version_pin) is not dict or set(version_pin) != {"version", "rollForward", "allowPrerelease"}:
+        fail("unknown SDK resolver configuration")
+    version = version_pin["version"]
+    if (type(version) is not str or not re.fullmatch(r"10\.0\.[0-9]+", version) or
+            version_pin["rollForward"] != "disable" or version_pin["allowPrerelease"] is not False):
+        fail("SDK pin unavailable or unsupported")
 
 def read_xml(name):
     raw = git("cat-file", "blob", commit + ":" + name)
@@ -212,7 +239,46 @@ try:
 except (ValueError, UnicodeError):
     fail("unreadable tree entry")
 
+RESERVED_FOLDER_NAMES = frozenset({
+    "CON", "PRN", "AUX", "NUL", "CLOCK$",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+})
+
+def ordinal_ignore_case(text):
+    out = []
+    for c in text:
+        code = ord(c)
+        if code in (0x0131, 0x017F):
+            out.append(c)
+        elif 0x10D70 <= code <= 0x10D85:
+            out.append(chr(code - 0x20))
+        else:
+            upper = c.upper()
+            if len(upper) == 1:
+                out.append(upper)
+            else:
+                title = c.title()
+                out.append(title if len(title) == 1 else c)
+    return "".join(out)
+
+def is_valid_folder_name(folder_name):
+    if (len(folder_name) < 3 or
+            not folder_name.startswith("/") or
+            not folder_name.endswith("/") or
+            any(c in folder_name for c in '\\:*?"<>|') or
+            any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in folder_name)):
+        return False
+    for segment in folder_name[1:-1].split("/"):
+        if not segment.strip() or segment in (".", ".."):
+            return False
+        stem = segment.rsplit(".", 1)[0] if "." in segment else segment
+        if stem.isascii() and stem.upper() in RESERVED_FOLDER_NAMES:
+            return False
+    return True
+
 restore_inputs = set()
+global_json_files = []
 for name, (metadata, _) in entries.items():
     if metadata.startswith(b"120000 "):
         fail("tracked symlink requires manual review")
@@ -221,10 +287,18 @@ for name, (metadata, _) in entries.items():
     lower = name.lower()
     if lower.endswith((".user", ".rsp")) or posixpath.basename(lower).startswith("directory.solution."):
         fail("tracked automatic MSBuild input requires manual review")
+    if posixpath.basename(lower) == "global.json":
+        global_json_files.append(name)
     if restore_source and (posixpath.basename(lower) in (
         "global.json", "nuget.config", "packages.config", "packages.lock.json", ".gitattributes", "dotnet-tools.json"
     )):
         restore_inputs.add(name)
+
+for name in sorted(global_json_files):
+    global_meta, _ = entries[name]
+    if not global_meta.startswith((b"100644 blob ", b"100755 blob ")):
+        fail("non-regular build input")
+    validate_global_json(git("cat-file", "blob", commit + ":" + name))
 
 # Certify the exact solution the workflow restores and builds. Unknown solution
 # syntax or project paths cannot establish the exemption.
@@ -232,19 +306,34 @@ solution = "HVO.SkyMonitor.v9.slnx"
 if solution not in entries or not entries[solution][0].startswith(b"100644 blob "):
     fail("solution is unavailable or non-regular")
 solution_root = read_xml(solution)
-if solution_root.tag != "Solution": fail("unknown solution format")
+if solution_root.tag != "Solution" or solution_root.attrib: fail("unknown solution format")
 projects = set()
-for node in solution_root.iter():
-    if node.tag not in ("Solution", "Folder", "Project"):
+folders = set()
+def add_solution_project(node):
+    if len(node) != 0:
         fail("unknown solution entry")
-    if node.tag == "Project":
-        value = node.attrib.get("Path", "").replace("\\", "/")
-        if set(node.attrib) != {"Path"} or not value or any(c in value for c in ("$", "*", "?", ";")) or value.startswith("/"):
-            fail("unresolved solution project")
-        target = posixpath.normpath(value)
-        if target == ".." or target.startswith("../") or target not in entries or target in projects:
-            fail("solution project outside committed inventory")
-        projects.add(target)
+    value = node.attrib.get("Path", "").replace("\\", "/")
+    if set(node.attrib) != {"Path"} or not value or any(c in value for c in ("$", "*", "?", ";")) or value.startswith("/"):
+        fail("unresolved solution project")
+    target = posixpath.normpath(value)
+    if target == ".." or target.startswith("../") or target not in entries or target in projects:
+        fail("solution project outside committed inventory")
+    projects.add(target)
+for child in solution_root:
+    if child.tag == "Project":
+        add_solution_project(child)
+    elif child.tag == "Folder":
+        folder_name = child.attrib.get("Name", "")
+        folder_key = ordinal_ignore_case(folder_name)
+        if set(child.attrib) != {"Name"} or not is_valid_folder_name(folder_name) or folder_key in folders:
+            fail("unknown solution entry")
+        folders.add(folder_key)
+        for entry in child:
+            if entry.tag != "Project":
+                fail("unknown solution entry")
+            add_solution_project(entry)
+    else:
+        fail("unknown solution entry")
 if not projects: fail("solution has no projects")
 pending = [(n, True) for n in projects]
 pending += [(n, n.lower().endswith(".csproj")) for n in entries if n.lower().endswith((".csproj", ".props", ".targets", ".xml"))]
@@ -365,7 +454,10 @@ restore_tool_from_base() (
   local command="$1" trust_sha="$2" source_hash="$3" tool
   tool="$(mktemp)" || return 1
   trap 'rm -f "$tool"' EXIT
-  git show "$trust_sha:scripts/ci/restore-imports.py" > "$tool" || return 1
+  if ! git show "$trust_sha:scripts/ci/restore-imports.py" > "$tool" 2>/dev/null; then
+    printf 'docs inventory audit: restore import verifier unavailable\n' >&2
+    return 1
+  fi
   python3 -I "$tool" "$command" "$trust_sha" "$source_hash"
 )
 
@@ -373,22 +465,27 @@ fast_inventory_for_tree() {
   local commit="$1" trust_sha="$2" entry inventory checksum
   entry="$(git ls-tree "$trust_sha" -- "$restore_certificate_path")" || return 1
   if [[ -z "$entry" ]]; then
-    audit_fast_inventory "$commit"
-    return $?
+    audit_fast_inventory "$commit" || return 2
+    return 0
   fi
-  [[ "$entry" == '100644 blob '* ]] || return 1
+  if [[ "$entry" != '100644 blob '* ]]; then
+    printf 'docs inventory audit: restore import certificate must be a regular non-executable file\n' >&2
+    return 1
+  fi
   docs_restore_required=true
-  inventory="$(audit_fast_inventory "$commit" restore-source)" || return 1
+  inventory="$(audit_fast_inventory "$commit" restore-source)" || return 2
   checksum="$(printf '%s\n' "$inventory" | sha256sum)" || return 1
   restore_tool_from_base check-source "$trust_sha" "${checksum%% *}" || return 1
   printf '%s\n' "$inventory"
 }
 
 fast_doc_link_state() {
-  local expected actual
+  local expected actual expected_entry
   expected="$(mktemp)" || return 2
   actual="$(mktemp)" || { rm -f "$expected"; return 2; }
-  if ! git show "$base_sha:scripts/ci:docs-inventory" > "$expected" ||
+  expected_entry="$(git ls-tree "$base_sha" -- scripts/ci:docs-inventory 2>/dev/null)" || { rm -f "$expected" "$actual"; return 2; }
+  if [[ "$expected_entry" != '100644 blob '* ]] ||
+     ! git show "$base_sha:scripts/ci:docs-inventory" > "$expected" ||
      ! fast_inventory_for_tree "$head_sha" "$base_sha" > "$actual"; then
     rm -f "$expected" "$actual"
     return 2
@@ -623,8 +720,8 @@ select_components() {
 }
 
 if [[ "$event_name" == "--print-docs-inventory" ]]; then
-  fast_inventory_for_tree "$base_sha" "$base_sha"
-  exit $?
+  fast_inventory_for_tree "$base_sha" "$base_sha" || exit 1
+  exit 0
 fi
 
 if [[ "$event_name" == "--print-docs-restore-source" ]]; then
@@ -633,7 +730,9 @@ if [[ "$event_name" == "--print-docs-restore-source" ]]; then
 fi
 
 if [[ "$event_name" == "--verify-docs-restore" ]]; then
-  if inventory="$(fast_inventory_for_tree "$base_sha" "$base_sha")" &&
+  if verify_entry="$(git ls-tree "$base_sha" -- scripts/ci:docs-inventory 2>/dev/null)" &&
+     [[ "$verify_entry" == '100644 blob '* ]] &&
+     inventory="$(fast_inventory_for_tree "$base_sha" "$base_sha")" &&
      git show "$base_sha:scripts/ci:docs-inventory" | cmp -s <(printf '%s\n' "$inventory") - &&
      checksum="$(printf '%s\n' "$inventory" | sha256sum)" &&
      restore_tool_from_base verify "$base_sha" "${checksum%% *}"; then
@@ -643,23 +742,66 @@ if [[ "$event_name" == "--verify-docs-restore" ]]; then
   exit 1
 fi
 
-if [[ "$event_name" == "--warn-docs-inventory" ]]; then
-  warn_expected="$(mktemp)" || { printf '::warning::Documentation CI inventory check could not run.\n'; exit 0; }
-  warn_actual="$(mktemp)" || { rm -f "$warn_expected"; printf '::warning::Documentation CI inventory check could not run.\n'; exit 0; }
-  warn_error="$(mktemp)" || { rm -f "$warn_expected" "$warn_actual"; printf '::warning::Documentation CI inventory check could not run.\n'; exit 0; }
-  warn_reason=""
-  if ! git show "$base_sha:scripts/ci:docs-inventory" > "$warn_expected" 2>/dev/null; then
-    warn_reason="certificate unavailable"
-  elif ! fast_inventory_for_tree "$base_sha" "$base_sha" > "$warn_actual" 2> "$warn_error"; then
-    warn_reason="$(sed -n 's/^docs inventory audit: //p' "$warn_error" | tail -n 1)"
-    [[ "$warn_reason" =~ ^[a-zA-Z0-9\ .,/\-]+$ ]] || warn_reason="audit could not complete"
-  elif ! cmp -s "$warn_expected" "$warn_actual"; then
-    warn_reason="certificate differs from the audited inputs"
+if [[ "$event_name" == "--check-docs-inventory" ]]; then
+  if [[ "$#" -ne 2 || -z "$base_sha" ]] || ! git cat-file -e "${base_sha}^{commit}" 2>/dev/null; then
+    printf '::error::Documentation CI build inventory check failed: commit unavailable\n' >&2
+    exit 1
   fi
-  if [[ -n "$warn_reason" ]]; then
-    printf '::warning::Documentation CI build inventory is stale or unsafe; full validation will run: %s\n' "$warn_reason"
+  check_expected="$(mktemp)" || { printf '::error::Documentation CI build inventory check could not run.\n' >&2; exit 1; }
+  check_actual="$(mktemp)" || { rm -f "$check_expected"; printf '::error::Documentation CI build inventory check could not run.\n' >&2; exit 1; }
+  check_error="$(mktemp)" || { rm -f "$check_expected" "$check_actual"; printf '::error::Documentation CI build inventory check could not run.\n' >&2; exit 1; }
+  trap 'rm -f "$check_expected" "$check_actual" "$check_error"' EXIT
+  check_reason=""
+  check_kind="refresh"
+  if ! check_entry="$(git ls-tree "$base_sha" -- scripts/ci:docs-inventory 2>/dev/null)" || [[ -z "$check_entry" ]]; then
+    check_reason="certificate unavailable"
+  elif [[ "$check_entry" != '100644 blob '* ]]; then
+    check_reason="certificate must be a regular non-executable file"
+  elif ! git show "$base_sha:scripts/ci:docs-inventory" > "$check_expected" 2>/dev/null; then
+    check_reason="certificate unavailable"
   fi
-  rm -f "$warn_expected" "$warn_actual" "$warn_error"
+  if [[ -n "$check_reason" ]]; then
+    if ! audit_fast_inventory "$base_sha" restore-source > /dev/null 2> "$check_error"; then
+      unsafe_reason="$(sed -n 's/^docs inventory audit: //p' "$check_error" | tail -n 1)"
+      [[ "$unsafe_reason" =~ ^[a-zA-Z0-9\ .,/\-]+$ ]] || unsafe_reason="audit could not complete"
+      check_reason="$unsafe_reason"
+      check_kind="unsafe"
+    fi
+  else
+    check_rc=0
+    fast_inventory_for_tree "$base_sha" "$base_sha" > "$check_actual" 2> "$check_error" || check_rc=$?
+    if [[ "$check_rc" -ne 0 ]]; then
+      check_reason="$(sed -n 's/^docs inventory audit: //p' "$check_error" | tail -n 1)"
+      [[ "$check_reason" =~ ^[a-zA-Z0-9\ .,/\-]+$ ]] || check_reason="audit could not complete"
+      if [[ "$check_rc" -eq 2 ]]; then
+        check_kind="unsafe"
+        if [[ -z "$(git ls-tree "$base_sha" -- "$restore_certificate_path" 2>/dev/null)" ]] &&
+           [[ "$check_reason" == "restore generated package imports are uncertified" || "$check_reason" == "SDK generated restore imports are uncertified" ]]; then
+          if audit_fast_inventory "$base_sha" restore-source > /dev/null 2> "$check_error"; then
+            check_kind="refresh"
+          else
+            restore_source_reason="$(sed -n 's/^docs inventory audit: //p' "$check_error" | tail -n 1)"
+            if [[ "$restore_source_reason" =~ ^[a-zA-Z0-9\ .,/\-]+$ ]]; then
+              check_reason="$restore_source_reason"
+            fi
+          fi
+        fi
+      elif [[ "$check_reason" == "unknown SDK resolver configuration" || "$check_reason" == "SDK pin unavailable or unsupported" || "$check_reason" == "global.json is not UTF-8" ]]; then
+        check_kind="unsafe"
+      fi
+    elif ! cmp -s "$check_expected" "$check_actual"; then
+      check_reason="certificate differs from the audited inputs"
+    fi
+  fi
+  if [[ -n "$check_reason" ]]; then
+    if [[ "$check_kind" == "unsafe" ]]; then
+      printf '::error::Documentation CI build inventory is stale or unsafe; remove the unsafe input or update the audit policy under HIGH-tier review: %s\n' "$check_reason" >&2
+    else
+      printf '::error::Documentation CI build inventory is stale or unsafe; refresh scripts/ci:docs-inventory and scripts/ci:restore-import-certificate.json: %s\n' "$check_reason" >&2
+    fi
+    exit 1
+  fi
+  printf 'Documentation CI build inventory is current and audited.\n'
   exit 0
 fi
 

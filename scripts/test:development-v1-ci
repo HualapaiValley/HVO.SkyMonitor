@@ -15,10 +15,12 @@ fi
 "$yaml_python" - "$repo_root" <<'PY'
 import json
 import ast
+import concurrent.futures
 import copy
 import unittest.mock
 import functools
 import itertools
+import multiprocessing
 import os
 import pathlib
 import re
@@ -209,6 +211,10 @@ unit_filter_assignment = 'UNIT_FILTER = "TestCategory=Unit&TestCategory!=Perform
 unit_filter_error = "Unit driver must select Unit cases and exclude Performance cases"
 directory_build_targets = (root / "Directory.Build.targets").read_text()
 coverage_policy_script = (root / "scripts/coverage:policy").read_text()
+expected_queue_workflow = (root / "tests/fixtures/development-v1-ci/merge-queue-reviewed-head.expected.txt").read_text()
+policy_components = subprocess.check_output(
+    [str(root / "scripts/coverage:component"), "--list-components"], text=True
+).splitlines()
 skip_deployment_cli_target = (
     "<PropertyGroup Condition=\"'$(SkipDeploymentCliTests)' == 'true' And\n"
     "                            '$(MSBuildProjectName)' == 'HVO.SkyMonitor.Deployment.Cli.Tests'\">\n"
@@ -371,7 +377,7 @@ def violations(short, full, queue=None, extra=None, unit_source=None):
     for required in required_names:
         require(names.count(normalized_name(required)) == 1,
                 f"globally unique required job name: {required}")
-    require(queue == (root / "tests/fixtures/development-v1-ci/merge-queue-reviewed-head.expected.txt").read_text(),
+    require(queue == expected_queue_workflow,
             "queue whole workflow matches approved source")
     require(queue.split("\npermissions:\n", 1)[-1].split("\njobs:\n", 1)[0].strip() ==
             queue_permissions.split("\n", 1)[1].strip() and
@@ -412,6 +418,22 @@ def violations(short, full, queue=None, extra=None, unit_source=None):
     base_images = step(preflight, "Check Dockerfile base images")
     require(base_images.strip() == "run: ./scripts/ci:base-images",
             "base-image check is unconditional and fail-closed")
+    docs_cert = step(preflight, "Check documentation fast-path certificate")
+    require(docs_cert.strip() == "run: ./scripts/ci:classify --check-docs-inventory HEAD",
+            "Preflight documentation fast-path certificate gate is unconditional and fail-closed")
+    full_static = step(quality, "Run static and lightweight contract checks")
+    require("          ./scripts/ci:classify --check-docs-inventory HEAD\n" in full_static and
+            "        if:" not in full_static and "continue-on-error:" not in full_static,
+            "full Quality enforces the documentation fast-path certificate gate")
+    sdk_contracts = step(quality, "Run SDK-dependent contract checks")
+    require("if: needs.changes.outputs.mode == 'full'" in sdk_contracts and
+            "          ./scripts/test:assemble-cameraagent-final-head-535\n" in sdk_contracts and
+            "          ./scripts/test:ci-docs-restore-import\n" in sdk_contracts and
+            "          ./scripts/ci:classify --verify-docs-restore HEAD\n" in sdk_contracts and
+            "continue-on-error:" not in sdk_contracts,
+            "full Quality runs the offline restore-imports proof and real certificate replay in its SDK-capable lane")
+    require("--warn-docs-inventory" not in short and "--warn-docs-inventory" not in full,
+            "mandatory certificate maintenance gate must not fall back to a warning")
     changelog = step(preflight, "Validate changelog fragments")
     require(textwrap.dedent(changelog).strip() == changelog_contract.strip(), changelog_error)
     full_changelog = step(quality, "Validate changelog fragments")
@@ -593,9 +615,6 @@ def violations(short, full, queue=None, extra=None, unit_source=None):
     workflow_retired = sorted(re.findall(r'"([^"]+)"', workflow_retired_match.group(1))) if workflow_retired_match else []
     policy_escapes = sorted(re.findall(r"'([^']+)'", policy_escapes_match.group(1))) if policy_escapes_match else []
     workflow_escapes = sorted(re.findall(r'"([^"]+)"', workflow_escapes_match.group(1))) if workflow_escapes_match else []
-    policy_components = subprocess.check_output(
-        [str(root / "scripts/coverage:component"), "--list-components"], text=True
-    ).splitlines()
     workflow_components = re.findall(r'"([^"]+)"', workflow_components_match.group(1)) if workflow_components_match else []
     policy_local_only = re.findall(r'\.key == "([^"]+)"', coverage_policy_script)
     require(
@@ -640,6 +659,7 @@ def violations(short, full, queue=None, extra=None, unit_source=None):
     require(build.count("if: always()") == 2, "failure evidence summary and upload")
     require("hvo-development-v1-ci-v6" in build, "versioned short-profile evidence")
     for heavy in ("./scripts/ci:shellcheck", "./scripts/test:ci-shellcheck",
+                  "./scripts/test:ci-docs-restore-import",
                   "scripts/test-categories/HVO.SkyMonitor.TestCategoryAudit.csproj",
                   "TestCategory=Integration", "gh workflow run ci.yml"):
         require(heavy not in short, f"qualification work in short run: {heavy}")
@@ -793,6 +813,22 @@ mutations = (
     ("base-image check gated", short.replace(
         "- name: Check Dockerfile base images", "- name: Check Dockerfile base images\n        if: false"), full),
     ("base-image failure masked", short.replace("run: ./scripts/ci:base-images", "run: ./scripts/ci:base-images || true"), full),
+    ("Preflight docs cert gate removed", short.replace("run: ./scripts/ci:classify --check-docs-inventory HEAD", "run: true"), full),
+    ("Preflight docs cert gate gated", short.replace(
+        "- name: Check documentation fast-path certificate", "- name: Check documentation fast-path certificate\n        if: false"), full),
+    ("Preflight docs cert gate masked", short.replace(
+        "run: ./scripts/ci:classify --check-docs-inventory HEAD", "run: ./scripts/ci:classify --check-docs-inventory HEAD || true"), full),
+    ("Preflight docs cert gate weakened to warning", short.replace(
+        "--check-docs-inventory", "--warn-docs-inventory"), full),
+    ("full Quality docs cert gate removed", short, full.replace(
+        "./scripts/ci:classify --check-docs-inventory HEAD", ":")),
+    ("full Quality restore-import proof removed", short, full.replace(
+        "./scripts/test:ci-docs-restore-import", ":")),
+    ("full Quality real restore-import replay removed", short, full.replace(
+        "./scripts/ci:classify --verify-docs-restore HEAD", ":")),
+    ("full Quality restore-import proof masked", short, full.replace(
+        "- name: Run SDK-dependent contract checks", "- name: Run SDK-dependent contract checks\n        continue-on-error: true")),
+    ("restore-import proof added to short v1 workflow", short + "\n          ./scripts/test:ci-docs-restore-import\n", full),
     ("Unit driver removed", short.replace(unit_command, "            true"), full),
     ("Unit failures masked", short.replace(unit_command, unit_command + " || true"), full),
     ("Unit shard contracts removed", short.replace("./scripts/test:development-v1-unit", "true"), full),
@@ -1126,9 +1162,30 @@ with tempfile.TemporaryDirectory(prefix="hvo-yaml-parser-") as directory:
     if result.returncode != 0 or result.stdout.strip() != "PyYAML available":
         raise SystemExit(f"Hosted yamllint parser fallback failed: {result.stderr}")
     print("PyYAML availability controls: absent parser fails; hosted pipx fallback passes.")
-for name, candidate, qualification, *queue in mutations:
-    if not violations(candidate, qualification, *queue):
-        raise SystemExit(f"Mutation was not rejected: {name}")
+def _check_mutation(item):
+    name, candidate, qualification, *queue = item
+    try:
+        return ("ok", None if violations(candidate, qualification, *queue) else name)
+    except BaseException as exc:
+        return ("error", name, f"{type(exc).__name__}: {exc}")
+
+
+mutation_workers = min(os.cpu_count() or 2, 4)
+if mutation_workers > 1:
+    with concurrent.futures.ProcessPoolExecutor(
+        max_workers=mutation_workers,
+        mp_context=multiprocessing.get_context("fork"),
+    ) as executor:
+        mutation_results = list(executor.map(_check_mutation, mutations, chunksize=8))
+else:
+    mutation_results = list(map(_check_mutation, mutations))
+for result in mutation_results:
+    if result[0] == "error":
+        _, name, detail = result
+        raise SystemExit(f"Mutation check failed unexpectedly for {name}: {detail}")
+    survived = result[1]
+    if survived is not None:
+        raise SystemExit(f"Mutation was not rejected: {survived}")
 changelog = step(job(short, "preflight"), "Validate changelog fragments")
 for label, original, replacement in (
     ("limit removed", 'args+=(--base "$first")', ":"),

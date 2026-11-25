@@ -94,6 +94,9 @@ jobs:
       - name: Check managed and native SkiaSharp alignment
         run: ./scripts/test:skiasharp-pins
 
+      - name: Check documentation fast-path certificate
+        run: ./scripts/ci:classify --check-docs-inventory HEAD
+
       - name: Check CI control contracts
         run: |
           ./scripts/ci:shell-syntax
