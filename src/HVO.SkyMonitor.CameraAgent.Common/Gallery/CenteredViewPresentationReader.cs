@@ -51,6 +51,7 @@ internal sealed class CenteredViewPresentationReader : ICenteredViewPresentation
     private readonly int _maximumConcurrentLayerReads;
     private readonly int _maximumSourcePayloadBytes;
     private readonly Func<int, byte[]> _allocateBuffer;
+    private readonly LayerReadGate _layerReadGate;
 
     public CenteredViewPresentationReader(
         ICenteredViewReadIndex index,
@@ -95,6 +96,7 @@ internal sealed class CenteredViewPresentationReader : ICenteredViewPresentation
         _maximumConcurrentLayerReads = maximumConcurrentLayerReads;
         _maximumSourcePayloadBytes = maximumSourcePayloadBytes;
         _allocateBuffer = bufferAllocator ?? (static length => new byte[length]);
+        _layerReadGate = new LayerReadGate(maximumConcurrentLayerReads);
     }
 
     public async ValueTask<CameraAgentArtifactContentResult> OpenPreviewAsync(
@@ -122,6 +124,7 @@ internal sealed class CenteredViewPresentationReader : ICenteredViewPresentation
     public async ValueTask<CameraAgentLayeredPresentationResult> ReadAsync(
         string baseId, string revisionId, CancellationToken cancellationToken = default)
     {
+        using var overallDeadline = new CancellationTokenSource(_overallOptionalLayersReadTimeout, _timeProvider);
         var view = await ReadViewAsync(baseId, revisionId, cancellationToken).ConfigureAwait(false);
         if (view is null)
             return new(CameraAgentLayeredPresentationStatus.NotRetained);
@@ -141,13 +144,11 @@ internal sealed class CenteredViewPresentationReader : ICenteredViewPresentation
             var referenceCaptureId = view.Base.Definition.Reference.Capture.CaptureId;
             var validLayers = new List<PresentationLayerV1>(manifest.Layers.Count);
             var payloads = new List<PresentationLayerPayloadV1>(manifest.Layers.Count);
-            if (manifest.Layers.Count > 0)
+            if (manifest.Layers.Count > 0 && !overallDeadline.IsCancellationRequested)
             {
-                using var overallDeadline = new CancellationTokenSource(_overallOptionalLayersReadTimeout, _timeProvider);
                 using var overallBounded = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, overallDeadline.Token);
                 var overallToken = overallBounded.Token;
                 var budget = new PayloadBudget(_maximumSourcePayloadBytes);
-                var gate = new LayerReadGate(_maximumConcurrentLayerReads);
                 var results = new PresentationLayerPayloadV1?[manifest.Layers.Count];
                 var workerCount = Math.Min(manifest.Layers.Count, _maximumConcurrentLayerReads);
                 var nextIndex = -1;
@@ -189,12 +190,12 @@ internal sealed class CenteredViewPresentationReader : ICenteredViewPresentation
                             manifest,
                             referenceCaptureId,
                             budget,
-                            gate,
                             overallToken,
                             cancellationToken).ConfigureAwait(false);
                     }
                 }
             }
+            cancellationToken.ThrowIfCancellationRequested();
 
             var effectiveManifest = validLayers.Count == manifest.Layers.Count
                 ? manifest
@@ -225,14 +226,13 @@ internal sealed class CenteredViewPresentationReader : ICenteredViewPresentation
         OverlayManifestV1 manifest,
         Guid referenceCaptureId,
         PayloadBudget budget,
-        LayerReadGate gate,
         CancellationToken overallToken,
         CancellationToken callerCancellationToken)
     {
         if (layer.CoordinateSpace != PresentationCoordinateSpace.ScenePixels)
             return null;
 
-        if (!await gate.TryAcquireAsync(overallToken).ConfigureAwait(false))
+        if (!await _layerReadGate.TryAcquireAsync(overallToken).ConfigureAwait(false))
         {
             callerCancellationToken.ThrowIfCancellationRequested();
             return null;
@@ -260,12 +260,12 @@ internal sealed class CenteredViewPresentationReader : ICenteredViewPresentation
             catch (OperationCanceledException)
             {
                 permitOwned = false;
-                _ = DisposeLateOpenedContentAsync(openTask, gate);
+                _ = DisposeLateOpenedContentAsync(openTask, _layerReadGate);
                 throw;
             }
-            if (opened.Content is not { } openedContent || opened.Status != CameraAgentArtifactReadStatus.Found)
+            content = opened.Content;
+            if (content is null || opened.Status != CameraAgentArtifactReadStatus.Found)
                 return null;
-            content = openedContent;
             if (content.MediaType != layer.SourceProduct.MediaType || content.Role != FrameArtifactRole.Metadata ||
                 content.CaptureId != referenceCaptureId)
                 return null;
@@ -292,7 +292,7 @@ internal sealed class CenteredViewPresentationReader : ICenteredViewPresentation
                 content = null;
                 reservedBytes = 0;
                 permitOwned = false;
-                _ = DisposeAfterReadAsync(readTask, detachedStream, budget, detachedBytes, gate);
+                _ = DisposeAfterReadAsync(readTask, detachedStream, budget, detachedBytes, _layerReadGate);
                 throw;
             }
             var payload = PresentationLayerPayloadJson.Parse(bytes).Payload;
@@ -322,22 +322,72 @@ internal sealed class CenteredViewPresentationReader : ICenteredViewPresentation
         {
             try
             {
-                if (content is not null)
-                {
-                    await content.DisposeAsync().ConfigureAwait(false);
-                }
-            }
-            finally
-            {
                 if (!committed && reservedBytes > 0)
                 {
                     budget.Release(reservedBytes);
                 }
-                if (permitOwned)
+                if (content is not null)
                 {
-                    gate.Release();
+                    var disposedInTime = await TryDisposeOptionalLayerContentAsync(
+                        content,
+                        _layerReadGate,
+                        layerToken).ConfigureAwait(false);
+                    if (!disposedInTime)
+                    {
+                        permitOwned = false;
+                    }
                 }
             }
+            finally
+            {
+                if (permitOwned)
+                {
+                    _layerReadGate.Release();
+                }
+            }
+        }
+    }
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Best-effort disposal of an optional layer stream must never discard an otherwise valid base or layer result or surface unobserved task exceptions.")]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed", Justification = "Stalled optional layer stream disposal is detached while retaining the concurrency gate permit until disposal actually completes.")]
+    private static async ValueTask<bool> TryDisposeOptionalLayerContentAsync(
+        CameraAgentArtifactContentStream content,
+        LayerReadGate gate,
+        CancellationToken layerToken)
+    {
+        var disposeTask = Task.Run(() => content.DisposeAsync().AsTask(), CancellationToken.None);
+        try
+        {
+            await disposeTask.WaitAsync(layerToken).ConfigureAwait(false);
+            return true;
+        }
+        catch (OperationCanceledException) when (layerToken.IsCancellationRequested)
+        {
+            _ = ReleaseGateAfterDisposeAsync(disposeTask, gate);
+            return false;
+        }
+        catch (Exception exception) when (exception is not (StackOverflowException or OutOfMemoryException))
+        {
+            return true;
+        }
+    }
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Best-effort detached disposal of an optional layer stream must never surface unobserved task exceptions.")]
+    private static async Task ReleaseGateAfterDisposeAsync(
+        Task disposeTask,
+        LayerReadGate gate)
+    {
+        try
+        {
+            await disposeTask.ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not (StackOverflowException or OutOfMemoryException))
+        {
+            // Detached optional layer disposal already degraded cleanly.
+        }
+        finally
+        {
+            gate.Release();
         }
     }
 
@@ -354,7 +404,7 @@ internal sealed class CenteredViewPresentationReader : ICenteredViewPresentation
                 await content.DisposeAsync().ConfigureAwait(false);
             }
         }
-        catch (Exception)
+        catch (Exception exception) when (exception is not (StackOverflowException or OutOfMemoryException))
         {
             // Timed-out optional layer open already degraded cleanly.
         }
@@ -376,7 +426,7 @@ internal sealed class CenteredViewPresentationReader : ICenteredViewPresentation
         {
             await readTask.ConfigureAwait(false);
         }
-        catch (Exception)
+        catch (Exception exception) when (exception is not (StackOverflowException or OutOfMemoryException))
         {
             // Timed-out optional layer read already degraded cleanly.
         }
@@ -386,11 +436,14 @@ internal sealed class CenteredViewPresentationReader : ICenteredViewPresentation
             {
                 await content.DisposeAsync().ConfigureAwait(false);
             }
-            catch (Exception)
+            catch (Exception exception) when (exception is not (StackOverflowException or OutOfMemoryException))
             {
             }
-            budget.Release(reservedBytes);
-            gate.Release();
+            finally
+            {
+                budget.Release(reservedBytes);
+                gate.Release();
+            }
         }
     }
 

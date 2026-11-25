@@ -615,29 +615,33 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         // Ordinary VirtualSky capture (with all real background workers running!) advances naturally
         // across at least two distinct live references (R1 -> R2, R2 != R1) without depending on a
         // racy contributors=5 wall-clock window, then reopens the exact advanced live view in the archive.
-        var referenceLocator = page.Locator("[data-centered-reference^='#']");
-        await referenceLocator.WaitForAsync(new() { Timeout = 30_000 }).ConfigureAwait(false);
-        await page.Locator(".sky-layer-canvas--verified").WaitForAsync(new() { Timeout = 30_000 }).ConfigureAwait(false);
-        // Sample the initial reference and displayed base atomically in one JS turn so live progression
-        // between two Playwright round trips cannot skew firstReference against firstBaseId.
-        var initial = await page.EvaluateAsync<JsonElement>(
+        // Capture the initial ready snapshot inside the readiness poll itself so a live capture advance
+        // between readiness polling and a separate EvaluateAsync cannot yield a null base ID.
+        await using var initialHandle = await page.WaitForFunctionAsync(
             """
             () => {
                 const refEl = document.querySelector('[data-centered-reference]');
                 const ws = document.querySelector('.sky-layer-workspace');
-                return {
-                    reference: refEl?.getAttribute('data-centered-reference') ?? null,
-                    baseId: ws?.getAttribute('data-centered-base') ?? null
-                };
+                const canvas = document.querySelector('.sky-layer-canvas--verified');
+                if (!refEl || !ws || !canvas) return null;
+                const reference = refEl.getAttribute('data-centered-reference');
+                const baseId = ws.getAttribute('data-centered-base');
+                if (!reference || !reference.startsWith('#') || !baseId) return null;
+                return { reference, baseId };
             }
-            """).ConfigureAwait(false);
+            """,
+            null,
+            new PageWaitForFunctionOptions { Timeout = 30_000 }).ConfigureAwait(false);
+        var initial = await initialHandle.JsonValueAsync<JsonElement>().ConfigureAwait(false);
         var firstReference = initial.GetProperty("reference").GetString();
         var firstBaseId = initial.GetProperty("baseId").GetString();
         Assert.IsFalse(string.IsNullOrWhiteSpace(firstReference));
         Assert.IsFalse(string.IsNullOrWhiteSpace(firstBaseId));
         var firstSequence = long.Parse(firstReference.AsSpan(1), System.Globalization.CultureInfo.InvariantCulture);
 
-        await page.WaitForFunctionAsync(
+        // Capture the advanced live snapshot inside the readiness poll itself so live progression cannot
+        // skew or null out the displayed base/revision against the archive link href.
+        await using var advancedHandle = await page.WaitForFunctionAsync(
             """
             (firstRef) => {
                 const refEl = document.querySelector('[data-centered-reference]');
@@ -645,39 +649,30 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
                 const canvas = document.querySelector('.sky-layer-canvas--verified');
                 const img = document.querySelector('.sky-layer-canvas > img');
                 const detail = document.querySelector('.figure-actions a');
-                if (!refEl || !ws || !canvas || !img || !img.complete || !detail) return false;
-                const refAttr = refEl.getAttribute('data-centered-reference');
+                if (!refEl || !ws || !canvas || !img || !img.complete || !detail) return null;
+                const reference = refEl.getAttribute('data-centered-reference');
                 const baseId = ws.getAttribute('data-centered-base');
                 const revisionId = ws.getAttribute('data-centered-revision');
-                const href = detail.getAttribute('href') ?? '';
-                return !!refAttr && refAttr.startsWith('#') && refAttr !== firstRef &&
-                    !!baseId && !!revisionId &&
-                    href.includes(`base=${baseId}`) && href.includes(`revision=${revisionId}`);
+                const detailHref = detail.getAttribute('href') ?? '';
+                if (!reference || !reference.startsWith('#') || reference === firstRef ||
+                    !baseId || !revisionId ||
+                    !detailHref.includes(`base=${baseId}`) || !detailHref.includes(`revision=${revisionId}`)) {
+                    return null;
+                }
+                return {
+                    reference,
+                    baseId,
+                    revisionId,
+                    detailHref,
+                    complete: img.complete,
+                    naturalWidth: img.naturalWidth,
+                    naturalHeight: img.naturalHeight
+                };
             }
             """,
             firstReference,
             new PageWaitForFunctionOptions { Timeout = 45_000 }).ConfigureAwait(false);
-
-        // Sample the advanced live frame atomically in one JS turn so live progression cannot skew
-        // the displayed base/revision against the archive link href.
-        var advanced = await page.EvaluateAsync<JsonElement>(
-            """
-            () => {
-                const refEl = document.querySelector('[data-centered-reference]');
-                const ws = document.querySelector('.sky-layer-workspace');
-                const img = document.querySelector('.sky-layer-canvas > img');
-                const detail = document.querySelector('.figure-actions a');
-                return {
-                    reference: refEl?.getAttribute('data-centered-reference') ?? null,
-                    baseId: ws?.getAttribute('data-centered-base') ?? null,
-                    revisionId: ws?.getAttribute('data-centered-revision') ?? null,
-                    detailHref: detail?.getAttribute('href') ?? null,
-                    complete: !!img && img.complete,
-                    naturalWidth: img?.naturalWidth ?? 0,
-                    naturalHeight: img?.naturalHeight ?? 0
-                };
-            }
-            """).ConfigureAwait(false);
+        var advanced = await advancedHandle.JsonValueAsync<JsonElement>().ConfigureAwait(false);
 
         var secondReference = advanced.GetProperty("reference").GetString();
         var displayedBaseId = advanced.GetProperty("baseId").GetString();

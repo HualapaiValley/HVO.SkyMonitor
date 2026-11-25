@@ -2062,15 +2062,22 @@ public sealed partial class CurrentSkyPageTests
         await cut.Find("#current-sky-view-large").ClickAsync().ConfigureAwait(false);
 
         // Archive overlay read completes while viewer is open -> retained, not mutated mid-fullscreen.
+        var rendersBeforeOverlay = cut.RenderCount;
         releaseOverlay.SetResult(OperatorUiResult<CameraAgentCenteredPresentationRead>.Success(
             new(CameraAgentLayeredPresentationStatus.Found, ProjectCenteredPresentation(single103), null)));
-        await cut.InvokeAsync(() => { }).ConfigureAwait(false);
+        cut.WaitForAssertion(() =>
+        {
+            Assert.IsTrue(cut.Instance.HasDeferredCenteredPresentation,
+                "Deferred archived overlay result must be stored while the fullscreen viewer is open.");
+            Assert.IsGreaterThan(rendersBeforeOverlay, cut.RenderCount);
+        });
         Assert.IsEmpty(cut.FindAll(".sky-layer-workspace"));
 
         // Close fullscreen viewer -> deferred archive overlay applies immediately with exact saved selection!
         await cut.Instance.ViewerClosedAsync().ConfigureAwait(false);
         cut.WaitForAssertion(() =>
         {
+            Assert.IsFalse(cut.Instance.HasDeferredCenteredPresentation);
             Assert.AreEqual(single103.Revision.RevisionId, cut.Find(".sky-layer-workspace").GetAttribute("data-centered-revision"));
             Assert.IsTrue(cut.Find("[data-layer-kind='star-annotations'] input").HasAttribute("checked"));
             Assert.IsFalse(cut.Find("[data-layer-kind='scene-constellations'] input").HasAttribute("checked"));

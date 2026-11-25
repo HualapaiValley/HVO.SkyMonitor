@@ -62,6 +62,8 @@ public sealed partial class CurrentSkyPage
     private (string BaseId, string RevisionId)? _centeredPresentationInFlight;
     private DeferredCenteredPresentation? _deferredCenteredPresentation;
 
+    internal bool HasDeferredCenteredPresentation => _deferredCenteredPresentation is not null;
+
     private bool IsCenteredLive => !IsArchived && (_centeredLiveContext is not null || _centeredDisplay is not null);
     private bool IsCenteredArchived => IsArchived && _centeredArchive is not null;
     private bool IsCenteredMode => IsCenteredLive || IsCenteredArchived;
