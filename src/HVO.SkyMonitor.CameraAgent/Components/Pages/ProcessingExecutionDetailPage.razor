@@ -69,6 +69,34 @@
                 {
                     <section class="run-notice warning" role="note"><span class="status-icon warning" aria-hidden="true"></span><div><strong>Independent candidate evidence retained</strong><p>Recorded local transient milestones are separate from the image pipeline. No central confirmation is implied.</p></div><a href="/transients/@_transient.Events.First(static stage => stage.CandidateId is not null).CandidateId">View candidate</a></section>
                 }
+                @if (_view.CenteredPublications is { } publications)
+                {
+                    <section class="detail-card" aria-label="Recorded display publications">
+                        <header class="panel-heading"><h2>Recorded display publications</h2></header>
+                        @if (publications.ExecutionVersion is { } version)
+                        {
+                            <p>Acquisition execution version <code>@version</code></p>
+                        }
+                        @foreach (var publication in publications.Views)
+                        {
+                            <div class="run-publication">
+                                @if (publication.View is { } view)
+                                {
+                                    <a href="@CenteredPublicationEvidence.ArchiveUrl(view)">@publication.Role · @CenteredPublicationEvidence.Label(publication.Base.Definition.Kind)</a>
+                                    <span> · Generation <code>@publication.Base.Definition.Stream.GenerationId</code></span>
+                                    <details>
+                                        <summary>Inspect recorded revision</summary>
+                                        <CenteredPublicationEvidence View="view" ShowArchiveLink="false" />
+                                    </details>
+                                }
+                                else
+                                {
+                                    <span>@publication.Role · @CenteredPublicationEvidence.Label(publication.Base.Definition.Kind) · revision <code>@publication.RevisionId</code> unavailable</span>
+                                }
+                            </div>
+                        }
+                    </section>
+                }
                 <section class="graph-card" aria-label="Capture-time dependency graph"><ExecutionRunDiagram @key="execution.ExecutionId" Nodes="@_view.Nodes" GraphTitle="@($"Pipeline revision {GraphRevisionLabel}")" TransientEvents="@(_transient?.Events ?? [])" TransientEnabled="@(TransientEnabled || _transient?.Events.Count > 0)" TransientUnavailable="@_transientUnavailable" SelectedNodeId="@_selectedNodeId" NodeSelected="SelectNode" SelectedTransientKey="@(_selectedTransient is null ? null : ExecutionRunDiagram.StageKey(_selectedTransient))" TransientSelected="SelectTransient" />
                 </section>
                 <section id="run-inspector" class="run-inspector detail-card" aria-label="Selected stage">

@@ -1,0 +1,34 @@
+@page "/operations/pipeline/running"
+@layout OperationsLayout
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@rendermode InteractiveServer
+
+<PageTitle>Running pipeline</PageTitle>
+
+<OperationsPageHeading Eyebrow="Processing" Title="Running pipeline" HeadingId="pipeline-running-heading"
+                       Description="Inspect recorded acquisition, the current display reference, and the evidence published with it.">
+    <Actions>
+        <button type="button" class="button secondary" disabled="@_loading" @onclick="RefreshAsync">Refresh</button>
+    </Actions>
+</OperationsPageHeading>
+
+<nav class="running-links" aria-label="Pipeline views">
+    <a href="/operations/pipeline">Configured pipeline</a>
+    <a href="/operations/pipeline/running" aria-current="page">Running pipeline</a>
+    <a href="/operations/pipeline/executions">Processing executions</a>
+</nav>
+
+@if (_loading && _snapshot is null)
+{
+    <PageStateNotice Kind="PageStateNotice.PageStateKind.Loading" Title="Reading pipeline evidence" />
+}
+else if (_snapshot?.UnavailableReason is { } reason)
+{
+    <PageStateNotice Kind="PageStateNotice.PageStateKind.Info" Title="Centered pipeline evidence unavailable" Message="@reason" />
+}
+else if (_snapshot is { } snapshot)
+{
+    <CenteredRunningEvidence Snapshot="snapshot" />
+}
