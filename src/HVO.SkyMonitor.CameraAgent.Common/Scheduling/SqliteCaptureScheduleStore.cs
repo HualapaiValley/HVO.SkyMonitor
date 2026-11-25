@@ -86,6 +86,8 @@ public sealed class SqliteCaptureScheduleStore(
     IOptions<CameraAgentHostOptions> options,
     TimeProvider timeProvider) : IDisposable
 {
+    internal const int RecentExpansionLimit = 64;
+
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
         Converters = { new JsonStringEnumConverter() }
@@ -226,6 +228,7 @@ public sealed class SqliteCaptureScheduleStore(
                     };
                 }
             }
+            await RetirePreviewsAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             _fileConfigurationProfileSha256 = fileSha256;
             return snapshot;
@@ -688,6 +691,7 @@ public sealed class SqliteCaptureScheduleStore(
                         ("$reason", unavailable.ReasonCode),
                         ("$solar", unavailable.SolarAlgorithmVersion)).ConfigureAwait(false);
                 }
+                await RetirePreviewsAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
             }
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
@@ -696,6 +700,33 @@ public sealed class SqliteCaptureScheduleStore(
             _gate.Release();
         }
     }
+
+    private static Task<int> RetirePreviewsAsync(
+        SqliteConnection connection, SqliteTransaction transaction, CancellationToken cancellationToken)
+        // Keep the latest materialization for each active/pending revision and supported algorithm.
+        // The journal retains each capture's exact admission basis in its manifest independently of this cache.
+        => ExecuteAsync(connection, transaction, """
+            WITH protected AS (
+                SELECT MAX(rowid) AS rowid
+                FROM capture_schedule_expansions
+                WHERE revision_id IN (
+                    SELECT active_revision_id FROM capture_schedule_state WHERE state_key = 1
+                    UNION ALL
+                    SELECT pending_revision_id FROM capture_schedule_state WHERE state_key = 1
+                )
+                  AND expansion_algorithm_version IN ($preview, $admission)
+                GROUP BY revision_id, expansion_algorithm_version
+            )
+            DELETE FROM capture_schedule_expansions
+            WHERE rowid IN (
+                SELECT rowid FROM capture_schedule_expansions
+                WHERE rowid NOT IN (SELECT rowid FROM protected)
+                ORDER BY rowid DESC LIMIT -1 OFFSET $recent
+            );
+            """, cancellationToken,
+            ("$preview", CaptureScheduleIntervalExpander.AlgorithmVersion),
+            ("$admission", CaptureScheduleIntervalExpander.AdmissionAlgorithmVersion),
+            ("$recent", RecentExpansionLimit));
 
     public Task<CaptureSchedulePreview?> TryReadPreviewAsync(
         CaptureScheduleRevisionSnapshot revision,

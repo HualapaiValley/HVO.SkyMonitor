@@ -7,6 +7,7 @@ using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using Microsoft.Data.Sqlite;
 using HVO.SkyMonitor.Processing;
 
@@ -249,7 +250,8 @@ internal sealed partial class SqliteCaptureProcessingStore
         CancellationToken cancellationToken,
         Action<ProcessingGraphRevisionSnapshot>? ensureCompatible = null)
         => (await InsertNamedRevisionCommandAsync(revision, idempotencyKey, actor, reason,
-            ensureCompatible, referenceAstrometryRequestSha256: null, cancellationToken).ConfigureAwait(false)).State;
+            ensureCompatible is null ? null : (candidate, _) => ensureCompatible(candidate),
+            referenceAstrometryRequestSha256: null, cancellationToken).ConfigureAwait(false)).State;
 
     internal ValueTask<ProcessingGraphRevisionSnapshot> InsertReferenceAstrometryRevisionAsync(
         ProcessingGraphRevisionSnapshot revision,
@@ -257,7 +259,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         string actor,
         string? reason,
         string requestSha256,
-        Action<ProcessingGraphRevisionSnapshot> ensureCompatible,
+        Action<ProcessingGraphRevisionSnapshot, LocalCaptureProfileDefinition?> ensureCompatible,
         CancellationToken cancellationToken)
         => InsertNamedRevisionCommandAsync(revision, idempotencyKey, actor, reason,
             ensureCompatible, requestSha256, cancellationToken);
@@ -267,7 +269,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         string idempotencyKey,
         string actor,
         string? reason,
-        Action<ProcessingGraphRevisionSnapshot>? ensureCompatible,
+        Action<ProcessingGraphRevisionSnapshot, LocalCaptureProfileDefinition?>? ensureCompatible,
         string? referenceAstrometryRequestSha256,
         CancellationToken cancellationToken)
     {
@@ -289,7 +291,15 @@ internal sealed partial class SqliteCaptureProcessingStore
         }
         // A committed acknowledgement precedes current-policy checks, just as validate/activate/rollback do.
         // The command fingerprint above still rejects a different request reusing the key.
-        ensureCompatible?.Invoke(revision);
+        if (ensureCompatible is not null)
+        {
+            // The immediate transaction also fences schedule activation while the draft and receipt are written.
+            var durableProfile = referenceAstrometryPreset
+                ? (await SqliteCaptureScheduleStore.ReadSnapshotAsync(connection, transaction, cancellationToken)
+                    .ConfigureAwait(false))?.ActiveRevision.Profile
+                : null;
+            ensureCompatible(revision, durableProfile);
+        }
         var inserted = await InsertRevisionAsync(
             connection, transaction, revision, ProcessingGraphRevisionLifecycle.Draft, cancellationToken).ConfigureAwait(false);
         // A repeat may acknowledge the same immutable revision, but may not change how it was created.

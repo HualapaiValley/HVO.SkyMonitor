@@ -1260,6 +1260,7 @@ public sealed partial class RawCaptureIngressTests
     [DataRow("long-root")]
     [DataRow("legacy-long-stage")]
     [DataRow("selected-without-export")]
+    [DataRow("relocated-root")]
     public async Task CenteredTwoRootArchiveListsOnlyExactStorageReceiptAndReclaimsIt(string scenario)
     {
         var root = CreateRoot();
@@ -1648,6 +1649,26 @@ public sealed partial class RawCaptureIngressTests
             var handled = await worker.WaitAsync(token).ConfigureAwait(false);
             Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, handled.Outcome, handled.Reason);
             await lanes.CompleteAsync(claimed, token).ConfigureAwait(false);
+            if (scenario == "relocated-root")
+            {
+                var moved = Path.Combine(detached, "moved-archive");
+                Directory.Move(archive, moved);
+                try
+                {
+                    var movedPayload = Path.Combine(moved, stored.RelativePath);
+                    Assert.IsTrue(File.Exists(FileSystemFrameStorageService.ArchiveReceiptPath(movedPayload)));
+                    CollectionAssert.AreEqual(pixels, await File.ReadAllBytesAsync(movedPayload, token).ConfigureAwait(false));
+                    using var restarted = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+                    Assert.IsEmpty(restarted.List(archive, day, FrameArtifactRole.Preview, 10));
+                    Assert.IsEmpty(restarted.List(moved, day, FrameArtifactRole.Preview, 10));
+                    Assert.IsEmpty(restarted.ReadArchiveIndex(moved, day, FrameArtifactRole.Preview, null, token).ToArray());
+                }
+                finally
+                {
+                    Directory.Move(moved, archive);
+                }
+                Assert.AreEqual(stored, storage.List(archive, day, FrameArtifactRole.Preview, 10).Single());
+            }
             if (longRoot)
                 return;
             var index = Directory.GetFiles(Path.Combine(archive, "index"), "*.jsonl").Single();

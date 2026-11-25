@@ -1392,6 +1392,32 @@ supersession and recovery paths.
 Rollback continues to use the retained previous image identity and never
 consults a release train.
 
+### Local archive publication and root availability
+
+Local archive readiness follows acknowledged publication. CameraAgent
+confirms the exact committed artifact and its materialization before exposing
+a current copy. A centered archive receipt binds the copy to its original
+storage root. Moving the directory to a different configured path leaves
+that copy hidden. Restoring the original mount and path allows CameraAgent to
+verify the same receipt again. A released, unmarked file-only archive remains
+readable when its applicable journal is genuinely absent.
+
+When a separate archive root's index or journal cannot be read, the gallery
+skips that root's affected entries and logs warning event 2026
+(`Skipped invalid or incomplete stored-frame entry`) with the index path.
+The products list can still return other available entries. Lookup and content
+requests return 404 for copies whose publication cannot be verified. A missing
+index directory appears empty, as it does before the first export. If a root
+unexpectedly disappears from the archive, check the configured storage path,
+mount availability, permissions and warning log. Recover the original journal
+or mount to restore access to current copies.
+
+The LogicHost delivery-queue correction from the original centered acquisition
+review is retired. The optional Silo archive tracks the ordering requirement
+in [#1969](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1969).
+Archive confirmation refers to a locally committed publication whose exact
+dependencies have been verified at the archive.
+
 ### Archived replay across a lifecycle transition
 
 Lifecycle state (`/api/internal/deployment/lifecycle/state`) reports archived
@@ -2741,17 +2767,18 @@ paired with the previous image. The corrected reader refuses a private v5 journa
 without the settlement column. Restore the verified paired v4 checkpoint before
 using the corrected reader with state from that rehearsal.
 
-The private centered foundation join is a source-only checkpoint with raw
-schema 17, processing schema 10 and corrected environmental schema 5. It
-carries the same combined minimum `e7b9af4b98d1521c3939ef5925608a3663c63302`.
-Its raw schema and migration labels independently select the paired checkpoint
-from the corrected raw-16 reader. The earlier private joined reader also
-differs at the minimum-compatible-revision.
+CameraAgent images built from `development/v1` declare raw schema 17 and
+`canonical-v13-v14-v15-v16-to-v17`. Startup validates the canonical raw layout
+selected by the journal version. The declared migration accepts canonical
+schemas 13 through 16 and upgrades them to 17. The raw schema and migration
+labels select the paired checkpoint for adoption from raw 16. A future
+different raw layout requires a new version and a declared migration through
+the same path.
 
 The centered scheduling and storage stage declared `1c76d83224bacdcc129041c6d1779eb5f95716cb`
-for raw 17, processing 12 and the settled environmental v5 reader. The minimum change also selects
-the paired checkpoint from the earlier private raw-17 publisher when both
-images declare the same raw and environmental schema numbers.
+for raw 17, processing 12 and the settled environmental v5 reader. The minimum
+change selects the paired checkpoint from the earlier centered foundation
+with processing 10 even though both images declare raw 17 and environmental 5.
 
 The publisher activation reused this storage boundary.
 
@@ -2761,6 +2788,7 @@ when the installed image already uses raw schema 17 and environmental schema 5.
 Rollback to an earlier image restores that image's checkpoint. The raw schema label
 covers the shared journal's raw tables. CameraAgent validates the processing layout
 separately when it opens that journal.
+Processing has its own version marker in the shared raw journal.
 
 - Canonical processing schemas 5 through 9 upgrade to 12. Schema 10 also supports
   the released astrometry layout with its partial lookup index and the known centered
