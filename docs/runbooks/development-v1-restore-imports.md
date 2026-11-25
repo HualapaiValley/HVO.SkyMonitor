@@ -127,9 +127,12 @@ Run `./scripts/ci:classify --check-docs-inventory HEAD`,
 `scripts/test:ci-docs-restore-import` under the SDK and lock above for the
 offline positive and negative proof. If a committed certificate cannot be
 reproduced against the pinned SDK and NuGet sources, full-mode `CI / Quality`
-fails `--verify-docs-restore HEAD` until the refreshed certificate is reviewed
-and merged, while `Development v1 / Build and Unit` fails closed to full
-validation and records the reason in its classification artifact. Full-mode
+fails `--verify-docs-restore HEAD` on the checked-out commit (a PR carrying a
+refreshed certificate passes `CI / Quality` before merge), while
+`Development v1 / Build and Unit` checks `--verify-docs-restore "$base"` on the
+trusted base branch—failing closed to full validation and recording the reason
+in its classification artifact until the refreshed certificate is reviewed and
+merged into `development/v1`. Full-mode
 `CI / Quality` runs `scripts/test:ci-docs-restore-import` and
 `./scripts/ci:classify --verify-docs-restore HEAD` automatically under its
 pinned `.NET` SDK (`Run SDK-dependent contract checks`, Refs #1996), so hosted

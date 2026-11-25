@@ -96,9 +96,11 @@ tracks. A no-candidate result from the independent trail detector describes the
 image assessment.
 
 - **`PinnedSnapshotUnavailable`** means the exact pinned manifest could not be
-  read from the local orbital store. Compare the package's
-  `snapshotManifest.sha256` (and any explicit `pinnedInputs.snapshotManifestSha256`)
-  with `currentManifestSha256` in [orbital status](orbital-elements-refresh.md#status-refresh-and-resume).
+  read from the local orbital store. Compare the `manifestSha256` field inside
+  the manifest file named by `snapshotManifest.path` (also retained on the
+  capture as `namedPassPredictionV1.inputs.snapshotManifestSha256`), or any
+  explicit `pinnedInputs.snapshotManifestSha256`, with `currentManifestSha256`
+  in [orbital status](orbital-elements-refresh.md#status-refresh-and-resume).
   `currentManifestSha256` identifies only the currently active snapshot, so a
   mismatch does not by itself indicate failure: an older manifest remains usable
   while retained in the local store, whereas a missing, retired, or unreadable

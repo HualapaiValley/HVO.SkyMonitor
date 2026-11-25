@@ -107,9 +107,10 @@ unique matching PR association because the diff approval binds the PR number.
 If another open PR targeting `development/v1` (including a fork PR in this
 public repository) shares an earlier queued PR A's head, the association cannot
 uniquely identify PR A when verifying a later queued PR B (`found 2`); the gate
-rejects the later queued PR B's group (so the queue dequeues PR B and entries
-behind it), not PR A itself. Use a single-entry group so GitHub's queue ref
-identifies the PR directly.
+rejects PR B's merge group (so GitHub removes PR B from the queue and rebuilds
+the following merge group with the remaining queued PRs, which can fail
+independently if the same ambiguity persists), not PR A itself. Use a
+single-entry group so GitHub's queue ref identifies the PR directly.
 An earlier entry landing during traversal can become the trusted stopping point.
 Fork PRs use commit statuses in the base repository.
 
