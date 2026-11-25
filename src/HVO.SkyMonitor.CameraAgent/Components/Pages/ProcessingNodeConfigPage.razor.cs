@@ -234,7 +234,7 @@ public sealed partial class ProcessingNodeConfigPage : ComponentBase, IDisposabl
         _busy = true;
         try
         {
-            var result = await GraphService.PreviewAsync(pipeline, token).ConfigureAwait(true);
+            var result = await GraphService.PreviewAsync(pipeline, sourceRevisionId, token).ConfigureAwait(true);
             if (IsStale(generation, token) || !MatchesActiveDraft(sourceRevisionId, nodeId))
             {
                 return;
@@ -297,6 +297,7 @@ public sealed partial class ProcessingNodeConfigPage : ComponentBase, IDisposabl
                 snapshot.Pipeline,
                 _saveKey!,
                 snapshot.SourceRevisionId is null ? "node configuration draft" : $"node '{snapshot.NodeId}' draft from {snapshot.SourceRevisionId}",
+                snapshot.SourceRevisionId,
                 token).ConfigureAwait(true);
         }
         catch (OperationCanceledException) when (_disposed || token.IsCancellationRequested)

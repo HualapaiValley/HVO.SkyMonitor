@@ -106,6 +106,10 @@
                     <select id="@inputId" class="form-select" aria-describedby="@(inputId + "-help")" value="@Form.Get(option.Key)" @onchange="args => ChangedAsync(option.Key, args.Value?.ToString() ?? string.Empty)">
                         @foreach (var choice in option.AllowedValues) { <option value="@choice">@choice</option> }
                     </select>
+                    @if (Form.InvalidSourceNotice(option.Key) is { } sourceNotice)
+                    {
+                        <p id="@(inputId + "-source-notice")" class="option-source-notice" role="status">@sourceNotice</p>
+                    }
                     break;
                 case ProcessingOptionKind.NullableWholeNumber:
                 case ProcessingOptionKind.NullableRealNumber:

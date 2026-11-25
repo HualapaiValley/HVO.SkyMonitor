@@ -61,7 +61,8 @@ internal sealed class ProcessingGraphDraftModel
                 DependsOn = new HashSet<string>(step.DependsOn ?? [], StringComparer.Ordinal),
                 Options = step.Options,
                 Publication = step.Publication,
-                SystemManagedStep = ExposureMeasurementProducts.IsSystemManagedStepAlias(step.Type) ? step : null
+                SystemManagedStep = ExposureMeasurementProducts.IsSystemManagedStepAlias(step.Type) ? step : null,
+                IsRetainedFromSource = true
             });
         }
         // Compare the source projection, so merely opening a draft cannot change the graph.
@@ -146,9 +147,27 @@ internal sealed class ProcessingGraphDraftModel
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var node in Nodes)
         {
-            if (node.OptionsForm is { } form && !form.TryBuild(out _, out var diagnostics))
+            if (node.HasOptionEdits)
             {
-                problems.AddRange(diagnostics.Select(diagnostic => $"{diagnostic.Code} node '{node.Id}' {diagnostic.Path}: {diagnostic.Message}"));
+                if (node.OptionsForm is { } form && !form.TryBuild(out _, out var diagnostics))
+                {
+                    problems.AddRange(diagnostics.Select(diagnostic => $"{diagnostic.Code} node '{node.Id}' {diagnostic.Path}: {diagnostic.Message}"));
+                }
+            }
+            else if (node.Options is { } retainedOptions &&
+                ProcessingNodeOptionsForm.DescriptorFor(node.Type, retainedOptions) is { } descriptor)
+            {
+                // Untouched nodes retained from an existing revision may carry quoted numeric spellings
+                // accepted by runtime AllowReadingFromString; preserve them without blocking unrelated edits.
+                var decoded = ProcessingNodeOptionsCodec.Decode(
+                    descriptor,
+                    retainedOptions,
+                    ProcessingNodeOptionsCodec.DefaultPath,
+                    allowQuotedNumbers: node.IsRetainedFromSource);
+                if (!decoded.IsValid)
+                {
+                    problems.AddRange(decoded.Diagnostics.Select(diagnostic => $"{diagnostic.Code} node '{node.Id}' {diagnostic.Path}: {diagnostic.Message}"));
+                }
             }
             if (string.IsNullOrWhiteSpace(node.Id))
             {
@@ -240,6 +259,8 @@ internal sealed class ProcessingGraphDraftModel
         public bool HasOptions => Options is not null;
         public bool IsSystemManaged => ExposureMeasurementProducts.IsSystemManagedStepAlias(Type);
         public CaptureProcessingStepConfig? SystemManagedStep { get; init; }
+        public bool IsRetainedFromSource { get; init; }
+        public bool HasOptionEdits => _optionsForm is { HasEdits: true };
         private ProcessingNodeOptionsForm? _optionsForm;
         public ProcessingNodeOptionsForm? OptionsForm
         {
@@ -255,7 +276,7 @@ internal sealed class ProcessingGraphDraftModel
         }
 
         public JsonElement? BuildOptions()
-            => OptionsForm is { } form && form.TryBuild(out var edited, out _) ? edited : Options;
+            => HasOptionEdits && OptionsForm is { } form && form.TryBuild(out var edited, out _) ? edited : Options;
 
         public void ToggleDependency(string dependency, bool selected)
         {

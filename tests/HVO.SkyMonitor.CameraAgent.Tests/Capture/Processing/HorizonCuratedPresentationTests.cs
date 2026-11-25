@@ -206,10 +206,48 @@ public sealed class HorizonCuratedPresentationTests
         Assert.IsFalse(fontDescriptor.AllowedValues.Contains("PlexRegular", StringComparer.Ordinal),
             "PlexRegular is prohibited in v3 payloads and must not be advertised by deepSkyFont.");
 
-        var invalidOptions = new ScenePresentationLayerProcessingStepOptions { DeepSkyFont = "PlexRegular" };
-        var validationResults = new List<System.ComponentModel.DataAnnotations.ValidationResult>();
-        Assert.IsFalse(System.ComponentModel.DataAnnotations.Validator.TryValidateObject(
-            invalidOptions, new System.ComponentModel.DataAnnotations.ValidationContext(invalidOptions), validationResults, validateAllProperties: true));
+        foreach (var activeInvalid in new[]
+        {
+            new ScenePresentationLayerProcessingStepOptions { IncludeDeepSkyLayer = true, DeepSkyFont = "PlexRegular" },
+            new ScenePresentationLayerProcessingStepOptions { ApplyInlineDeepSkyStyle = true, DeepSkyFont = "PlexRegular" },
+            new ScenePresentationLayerProcessingStepOptions { DeepSkyFont = "PlexBold" }
+        })
+        {
+            var validationResults = new List<System.ComponentModel.DataAnnotations.ValidationResult>();
+            Assert.IsFalse(System.ComponentModel.DataAnnotations.Validator.TryValidateObject(
+                activeInvalid, new System.ComponentModel.DataAnnotations.ValidationContext(activeInvalid), validationResults, validateAllProperties: true));
+        }
+
+        // Pre-upgrade saved graphs with inactive deep-sky styling and legacy PlexRegular remain valid.
+        var inactiveLegacy = new ScenePresentationLayerProcessingStepOptions
+        {
+            IncludeDeepSkyLayer = false,
+            ApplyInlineDeepSkyStyle = false,
+            DeepSkyFont = "PlexRegular"
+        };
+        Assert.IsTrue(System.ComponentModel.DataAnnotations.Validator.TryValidateObject(
+            inactiveLegacy, new System.ComponentModel.DataAnnotations.ValidationContext(inactiveLegacy), [], validateAllProperties: true));
+
+        // Even if a retained graph carries PlexRegular while active, render-time fallback normalizes safely to MonoRegular.
+        var fallbackContext = Context(fixture, replay: false);
+        var fallbackStep = CreateSceneStep(alias, new()
+        {
+            IncludeDeepSkyLayer = independentLayer,
+            ApplyInlineDeepSkyStyle = !independentLayer,
+            DeepSkyLabels = true,
+            DeepSkyFont = "PlexRegular",
+            AllowRetainedLegacyDeepSkyFont = true
+        }, services);
+        await fallbackStep.ProcessAsync(fallbackContext, CancellationToken.None).ConfigureAwait(false);
+        var fallbackProducts = fallbackContext.ProcessingOutcomes.SelectMany(static outcome => outcome.Products).ToArray();
+        var fallbackTarget = independentLayer
+            ? fallbackProducts.Single(static product => product.Variant == "scene-deep-sky-v1")
+            : fallbackProducts.Single(static product => product.Variant == "scene-annotation-layer-v1");
+        var fallbackParsed = PresentationLayerPayloadJson.Parse(fallbackTarget.Payload);
+        Assert.IsTrue(fallbackParsed.IsValid);
+        fallbackParsed.Payload!.ValidateStructure();
+        Assert.AreEqual(PresentationFontFaceV3.MonoRegular,
+            fallbackParsed.Payload.TextBlocks.Single(static block => block.Lines.Contains("M31", StringComparer.Ordinal)).Appearance!.Body.Face);
 
         var layout = new ImageLayout(484, 304, CameraPixelFormat.Mono8, 484);
         var basePixels = new byte[layout.RequiredByteLength];
@@ -273,7 +311,8 @@ public sealed class HorizonCuratedPresentationTests
             DeepSkyRed = options.DeepSkyRed,
             DeepSkyGreen = options.DeepSkyGreen,
             DeepSkyBlue = options.DeepSkyBlue,
-            DeepSkyFont = options.DeepSkyFont
+            DeepSkyFont = options.DeepSkyFont,
+            AllowRetainedLegacyDeepSkyFont = options.AllowRetainedLegacyDeepSkyFont
         }, services);
     }
 

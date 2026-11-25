@@ -148,4 +148,29 @@ public sealed class ProcessingGraphDraftModelTests
         Assert.AreEqual(CapturePipelineSchemaVersions.LegacyV1, built.SchemaVersion);
         Assert.AreEqual(CapturePipelineSchemaVersions.ExplicitV2, ProcessingGraphDraftModel.Empty().SchemaVersion);
     }
+
+    [TestMethod]
+    public void UntouchedOverlayManifestWithQuotedZOrderSurvivesUnrelatedNodeEditByteForByte()
+    {
+        const string manifestJson = """{ "layers": [ { "kind": "scene-constellations", "enabled": false, "zOrder": "12", "future": 1e+02 } ] }""";
+        var source = new CapturePipelineConfig(
+        [
+            new CaptureProcessingStepConfig("JpegEncoding", "jpeg", 10,
+                JsonDocument.Parse("""{ "jpegQuality": 85 }""").RootElement.Clone(), ["$raw"], Enabled: true),
+            new CaptureProcessingStepConfig("OverlayManifest", "manifest", 20,
+                JsonDocument.Parse(manifestJson).RootElement.Clone(), ["jpeg"], Enabled: true)
+        ]);
+
+        var model = ProcessingGraphDraftModel.FromPipeline(source, "rev-quoted", "night", "2");
+        Assert.IsTrue(model.TryBuild(out var unchanged, out var initialErrors), string.Join(' ', initialErrors));
+        Assert.IsFalse(model.HasGraphChanges(unchanged));
+        Assert.AreEqual(manifestJson, unchanged.Steps[1].Options!.Value.GetRawText());
+
+        model.Nodes[0].OptionsForm!.Set("jpegQuality", "92");
+        Assert.IsTrue(model.TryBuild(out var edited, out var errors), string.Join(' ', errors));
+        Assert.IsTrue(model.HasGraphChanges(edited));
+        Assert.AreEqual(92, edited.Steps[0].Options!.Value.GetProperty("jpegQuality").GetInt32());
+        Assert.AreEqual(manifestJson, edited.Steps[1].Options!.Value.GetRawText(),
+            "An untouched OverlayManifest with retained quoted zOrder and unknown fields must survive byte-for-byte.");
+    }
 }

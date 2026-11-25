@@ -783,6 +783,145 @@ public sealed class ProcessingNodeConfigPageTests
         }
     }
 
+    [TestMethod]
+    public async Task EditingUnrelatedNodePreservesRetainedOverlayManifestQuotedZOrderByteForByteThroughPreviewAndSave()
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-quoted-zorder-e2e");
+        try
+        {
+            const string manifestJson = """{ "outputVariant": "overlay-manifest-v1", "basePreviewVariant": "combined-preview", "layers": [ { "kind": "scene-constellations", "enabled": false, "zOrder": "12", "future": 1e+02 } ] }""";
+            using var provider = ProcessingGraphOperationsTests.CreateRemainingOptionsProvider(root);
+            var pipeline = new CapturePipelineConfig(
+            [
+                new("Calibration", "calibration", 10, null, ["$raw"], Enabled: true),
+                new("RollingCombination", "rolling", 20, null, ["calibration"], Enabled: true),
+                new("CombinedPreview", "preview", 30, null, ["rolling"], Enabled: true),
+                new("ProjectedScene", "scene", 40, null, ["$raw"], Enabled: true),
+                new("ScenePresentationLayer", "scene-layer", 50, null, ["scene"], Enabled: true),
+                new("EnvironmentPresentationLayer", "env-layer", 60,
+                    JsonDocument.Parse("""{ "widthPixels": 1936, "heightPixels": 1216 }""").RootElement.Clone(), ["scene", "preview"], Enabled: true),
+                new("OverlayManifest", "manifest", 70,
+                    JsonDocument.Parse(manifestJson).RootElement.Clone(), ["preview", "scene-layer", "env-layer"], Enabled: true),
+                new("PresentationMaterializer", "materializer", 75,
+                    null, ["preview", "manifest", "scene-layer", "env-layer"], Enabled: true),
+                new("JpegEncoding", "jpeg", 80,
+                    JsonDocument.Parse("""{ "jpegQuality": 85 }""").RootElement.Clone(), ["materializer"], Enabled: true)
+            ]);
+            var profile = SchedulePageTests.Profile();
+            var config = new CameraModuleConfig(
+                new ObservatoryLocation(35.0, -114.0, 1000, "UTC"),
+                profile.Module,
+                profile.Rig,
+                pipeline,
+                AgentId: "quoted-zorder-e2e")
+            {
+                Schedule = profile.Schedule
+            };
+            await provider.GetRequiredService<IRawCaptureIngress>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+            var initial = await operations.EnsureConfiguredBasicAsync(config, CancellationToken.None).ConfigureAwait(false);
+            var storedInitialPipeline = await operations.ReadRevisionPipelineAsync(initial.ActiveRevisionId, CancellationToken.None).ConfigureAwait(false);
+            var storedInitialManifestRaw = storedInitialPipeline!.Steps.Single(static step => step.Id == "manifest").Options!.Value.GetRawText();
+            StringAssert.Contains(storedInitialManifestRaw, "\"zOrder\":\"12\"", StringComparison.Ordinal);
+            StringAssert.Contains(storedInitialManifestRaw, "\"future\":1e+02", StringComparison.Ordinal);
+
+            using var context = new BunitContext();
+            context.JSInterop.Mode = JSRuntimeMode.Loose;
+            var auth = context.AddAuthorization();
+            auth.SetAuthorized("owner");
+            auth.SetPolicies(CameraAgentAuthorizationPolicyNames.OperationsReadV1, CameraAgentAuthorizationPolicyNames.OperationsMutateV1);
+            var owner = new ClaimsPrincipal(new ClaimsIdentity(
+                [new Claim(ClaimTypes.NameIdentifier, "config-owner"),
+                 new Claim(CanonicalCredentialClaims.AccountTypeClaim, CanonicalCredentialClaims.UserAccountType)],
+                Microsoft.AspNetCore.Identity.IdentityConstants.ApplicationScheme));
+            context.Services.AddSingleton<AuthenticationStateProvider>(new StubAuthProvider(owner));
+            var accessor = new CameraAgentConfigurationAccessor();
+            accessor.SetConfiguration(config);
+            context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(services => new CameraAgentProcessingGraphUiService(
+                services.GetRequiredService<AuthenticationStateProvider>(),
+                services.GetRequiredService<IAuthorizationService>(),
+                operations,
+                provider.GetRequiredService<ICaptureProcessingPipelineFactory>(),
+                accessor,
+                null,
+                TimeProvider.System,
+                NullLogger<CameraAgentProcessingGraphUiService>.Instance));
+
+            var cut = context.Render<ProcessingNodeConfigPage>(parameters => parameters
+                .Add(static page => page.RevisionId, initial.ActiveRevisionId)
+                .Add(static page => page.NodeId, "jpeg"));
+
+            var quality = cut.WaitForElement("#node-options-8-jpegQuality");
+            Assert.AreEqual("85", quality.GetAttribute("value"));
+            await quality.ChangeAsync(new() { Value = "92" }).ConfigureAwait(false);
+            await cut.Find("form").SubmitAsync().ConfigureAwait(false);
+            cut.WaitForAssertion(() => Assert.IsFalse(cut.Find("button.btn-primary").HasAttribute("disabled")));
+            await cut.Find("button.btn-primary").ClickAsync(new()).ConfigureAwait(false);
+            cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "saved as an immutable revision", StringComparison.Ordinal));
+
+            var registry = await operations.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false);
+            var draft = registry.Revisions.Single(revision => revision.RevisionId != initial.ActiveRevisionId);
+            var savedPipeline = await operations.ReadRevisionPipelineAsync(draft.RevisionId, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(savedPipeline);
+            Assert.AreEqual(92, savedPipeline.Steps.Single(static step => step.Id == "jpeg").Options!.Value.GetProperty("jpegQuality").GetInt32());
+            Assert.AreEqual(storedInitialManifestRaw, savedPipeline.Steps.Single(static step => step.Id == "manifest").Options!.Value.GetRawText(),
+                "Untouched OverlayManifest with quoted zOrder and unknown JSON fields must survive preview and save byte-for-byte.");
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static readonly string[] ExpectedDeepSkyFonts = ["MonoRegular", "MonoBold"];
+
+    [TestMethod]
+    [DataRow("ScenePresentationLayer")]
+    [DataRow("SceneStylePresentationLayerV1")]
+    public void LegacyInactivePlexRegularFontIsOmittedFromPickerSurfacedAsRepairableAndAllowsUnrelatedEdits(string alias)
+    {
+        using var context = new BunitContext();
+        const string sourceJson = """{ "includeDeepSkyLayer": false, "deepSkyFont": "PlexRegular", "future": [1e+02] }""";
+        var pipeline = new CapturePipelineConfig(
+        [
+            new("ProjectedScene", "scene", 10, null, ["$raw"], Enabled: true),
+            new(alias, "overlay", 20, JsonDocument.Parse(sourceJson).RootElement.Clone(), ["scene"], Enabled: true)
+        ]);
+        var service = Configure(context, pipeline);
+
+        var cut = context.Render<ProcessingNodeConfigPage>(parameters => parameters
+            .Add(static page => page.RevisionId, "rev-active")
+            .Add(static page => page.NodeId, "overlay"));
+
+        var select = cut.WaitForElement("#node-options-1-deepSkyFont");
+        var options = select.QuerySelectorAll("option").Select(static item => item.GetAttribute("value")).ToArray();
+        CollectionAssert.AreEqual(ExpectedDeepSkyFonts, options, "PlexRegular must stay out of the deep-sky font picker.");
+        StringAssert.Contains(cut.Find("#node-options-1-deepSkyFont-source-notice").TextContent, "PlexRegular", StringComparison.Ordinal);
+        Assert.IsFalse(cut.Find("#node-options-1-reset-defaults").HasAttribute("disabled"), "Reset must be enabled to repair legacy PlexRegular.");
+
+        // Unrelated edit succeeds without breaking on untouched inactive PlexRegular.
+        cut.Find("#node-options-1-constellationLineThickness").Change("4");
+        cut.Find("form").Submit();
+        Assert.IsFalse(cut.Find("button.btn-primary").HasAttribute("disabled"));
+        cut.Find("button.btn-primary").Click();
+        var unrelatedSaved = service.Created.Single().Pipeline.Steps[1].Options!.Value;
+        Assert.AreEqual(4, unrelatedSaved.GetProperty("constellationLineThickness").GetInt32());
+        Assert.AreEqual("PlexRegular", unrelatedSaved.GetProperty("deepSkyFont").GetString());
+        Assert.AreEqual("[1e+02]", unrelatedSaved.GetProperty("future").GetRawText());
+
+        // Clicking Reset repairs deepSkyFont to MonoRegular, disables Reset, and clears the legacy notice.
+        cut.Find("#node-options-1-reset-defaults").Click();
+        Assert.IsTrue(cut.Find("#node-options-1-reset-defaults").HasAttribute("disabled"));
+        Assert.IsEmpty(cut.FindAll("#node-options-1-deepSkyFont-source-notice"));
+        cut.Find("form").Submit();
+        Assert.IsFalse(cut.Find("button.btn-primary").HasAttribute("disabled"));
+        cut.Find("button.btn-primary").Click();
+        var repaired = service.Created[^1].Pipeline.Steps[1].Options!.Value;
+        Assert.AreEqual("MonoRegular", repaired.GetProperty("deepSkyFont").GetString());
+        Assert.AreEqual("[1e+02]", repaired.GetProperty("future").GetRawText());
+    }
+
     private static ProcessingExecutionPagesTests.GraphUiService Configure(BunitContext context, CapturePipelineConfig pipeline)
     {
         context.JSInterop.Mode = JSRuntimeMode.Loose;

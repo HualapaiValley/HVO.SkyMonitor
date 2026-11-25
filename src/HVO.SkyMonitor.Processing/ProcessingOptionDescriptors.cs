@@ -556,7 +556,7 @@ public sealed class ProcessingOptionDescriptor
             ProcessingOptionValue.FromColor(defaultValue));
 
     /// <summary>Why <paramref name="value"/> is not a valid value of this option, or <see langword="null"/>.</summary>
-    internal (string Code, string Message)? Check(ProcessingOptionValue value)
+    internal (string Code, string Message)? Check(ProcessingOptionValue value, bool allowQuotedNumbers = false)
     {
         if (value.Kind != Kind)
         {
@@ -573,7 +573,11 @@ public sealed class ProcessingOptionDescriptor
                 try
                 {
                     using var document = JsonDocument.Parse(row);
-                    var decoded = ProcessingNodeOptionsCodec.Decode(RowDescriptor!, document.RootElement);
+                    var decoded = ProcessingNodeOptionsCodec.Decode(
+                        RowDescriptor!,
+                        document.RootElement,
+                        ProcessingNodeOptionsCodec.DefaultPath,
+                        allowQuotedNumbers);
                     if (!decoded.IsValid)
                         return (decoded.Diagnostics[0].Code, decoded.Diagnostics[0].Message);
                     var identity = decoded.Get(RowIdentityKey!);

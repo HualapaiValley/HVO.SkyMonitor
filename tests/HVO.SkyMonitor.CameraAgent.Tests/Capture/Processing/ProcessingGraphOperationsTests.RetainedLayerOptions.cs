@@ -227,12 +227,32 @@ public sealed partial class ProcessingGraphOperationsTests
             var thickness3Hash = PlanHash("""{"includeDeepSkyLayer":true,"deepSkyLineThickness":3}""", out var thickness3Options);
             var offLabelsFalseHash = PlanHash("""{"includeDeepSkyLayer":false,"deepSkyLabels":false}""", out var offLabelsFalseOptions);
             var offRed10Hash = PlanHash("""{"includeDeepSkyLayer":false,"deepSkyRed":10}""", out var offRed10Options);
+            var offPlexRegularHash = PlanHash("""{"includeDeepSkyLayer":false,"deepSkyFont":"PlexRegular"}""", out var offPlexRegularOptions);
 
-            // (i), (iv), (v): includeDeepSkyLayer=false with pre-existing deepSky* fields stays byte-identical to default.
+            // (i), (iv), (v), (vi): includeDeepSkyLayer=false with pre-existing deepSky* fields (including legacy PlexRegular) stays byte-identical to default.
             Assert.AreEqual(defaultHash, offLabelsFalseHash);
             Assert.AreEqual(defaultHash, offRed10Hash);
+            Assert.AreEqual(defaultHash, offPlexRegularHash);
             Assert.AreEqual(defaultOptions.GetRawText(), offLabelsFalseOptions.GetRawText());
             Assert.AreEqual(defaultOptions.GetRawText(), offRed10Options.GetRawText());
+            Assert.AreEqual(defaultOptions.GetRawText(), offPlexRegularOptions.GetRawText());
+
+            // Active proposals with PlexRegular fail closed, while retained compilation stays crash-free.
+            foreach (var activePlexJson in new[]
+            {
+                """{"includeDeepSkyLayer":true,"deepSkyFont":"PlexRegular"}""",
+                """{"applyInlineDeepSkyStyle":true,"deepSkyFont":"PlexRegular"}"""
+            })
+            {
+                var activePlexPipeline = new CapturePipelineConfig(
+                [
+                    new("ProjectedScene", "scene", 10, null, ["$raw"], Enabled: true),
+                    new(alias, "overlay", 20, JsonDocument.Parse(activePlexJson).RootElement.Clone(), ["scene"], Enabled: true)
+                ], CapturePipelineSchemaVersions.ExplicitV2, CapturePipelineDependencyPolicy.RejectEnabledDependent);
+                Assert.ThrowsExactly<ValidationException>(() => factory.CreateGraph(baseConfig with { Pipeline = activePlexPipeline }));
+                var retainedActive = factory.CreateRetainedGraph(baseConfig with { Pipeline = activePlexPipeline });
+                retainedActive.DisposeSteps();
+            }
             Assert.IsFalse(defaultOptions.EnumerateObject().Any(static prop =>
                 prop.Name.StartsWith("deepSky", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(prop.Name, "includeDeepSkyLayer", StringComparison.OrdinalIgnoreCase) ||
@@ -287,8 +307,10 @@ public sealed partial class ProcessingGraphOperationsTests
     [TestMethod]
     [DataRow("ScenePresentationLayer", """{"includeDeepSkyLayer":true,"deepSkyLineThickness":3}""")]
     [DataRow("ScenePresentationLayer", """{"includeDeepSkyLayer":false,"deepSkyLabels":false,"deepSkyRed":10}""")]
+    [DataRow("ScenePresentationLayer", """{"includeDeepSkyLayer":false,"deepSkyFont":"PlexRegular"}""")]
     [DataRow("SceneStylePresentationLayerV1", """{"includeDeepSkyLayer":true,"deepSkyLineThickness":3}""")]
     [DataRow("SceneStylePresentationLayerV1", """{"includeDeepSkyLayer":false,"deepSkyLabels":false,"deepSkyRed":10}""")]
+    [DataRow("SceneStylePresentationLayerV1", """{"includeDeepSkyLayer":false,"deepSkyFont":"PlexRegular"}""")]
     public async Task UpgradedSavedDeepSkyNamedRevisionAvoidsSupersessionForActivationRollbackReplayAndLiveLane(
         string alias,
         string legacyOptionsJson)

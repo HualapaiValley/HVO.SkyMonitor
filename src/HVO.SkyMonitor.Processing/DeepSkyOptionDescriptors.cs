@@ -6,6 +6,9 @@ namespace HVO.SkyMonitor.Processing;
 /// <summary>Deep-sky controls consumed by the existing immutable scene overlay revision path.</summary>
 public static class DeepSkyOptionDescriptors
 {
+    /// <summary>Legacy deep-sky font value accepted by pre-upgrade graphs; omitted from new UI choices.</summary>
+    internal const string LegacyDeepSkyFont = "PlexRegular";
+
     public static ImmutableArray<ProcessingOptionDescriptor> Presentation { get; } =
     [
         ProcessingOptionDescriptor.Toggle("includeDeepSkyLayer", "includeDeepSkyLayer", "Separate deep-sky layer",

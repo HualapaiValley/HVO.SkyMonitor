@@ -14,6 +14,7 @@ public sealed class ProcessingNodeOptionsForm
     private readonly Dictionary<string, List<ProcessingNodeOptionsForm>> _rows = new(StringComparer.Ordinal);
     private readonly HashSet<string> _edited = new(StringComparer.Ordinal);
     private readonly HashSet<string> _invalidSourceKeys = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _invalidSourceValues = new(StringComparer.Ordinal);
 
     public ProcessingNodeOptionsForm(ProcessingNodeOptionsDescriptor descriptor, JsonElement? source)
     {
@@ -29,6 +30,11 @@ public sealed class ProcessingNodeOptionsForm
             if (!decoded.IsValid)
             {
                 _invalidSourceKeys.Add(option.Key);
+                if (option.Kind is ProcessingOptionKind.Choice or ProcessingOptionKind.Font or ProcessingOptionKind.Glyph &&
+                    TryReadRawStringInput(option, Source, out var rawChoice))
+                {
+                    _invalidSourceValues[option.Key] = rawChoice;
+                }
             }
             if (option.Kind == ProcessingOptionKind.RowCollection)
             {
@@ -57,7 +63,19 @@ public sealed class ProcessingNodeOptionsForm
 
     public ProcessingNodeOptionsDescriptor Descriptor { get; }
     public IReadOnlyList<ProcessingGraphDiagnostic> Diagnostics { get; private set; } = [];
+    public bool HasEdits => _edited.Count > 0;
     private JsonElement Source => _source ?? JsonSerializer.SerializeToElement(new { });
+
+    public string? InvalidSourceNotice(string key)
+    {
+        if (!_invalidSourceKeys.Contains(key) || _edited.Contains(key))
+        {
+            return null;
+        }
+        return _invalidSourceValues.TryGetValue(key, out var raw)
+            ? $"Saved value '{raw}' is no longer supported; choose a supported option or click Reset to code defaults."
+            : null;
+    }
 
     // The descriptor is bound to the actual producer version. A future producer cannot silently reuse this panel.
     public static ProcessingNodeOptionsDescriptor? DescriptorFor(string alias, JsonElement? options = null)
@@ -274,6 +292,27 @@ public sealed class ProcessingNodeOptionsForm
         }
 
         return [];
+    }
+
+    private static bool TryReadRawStringInput(ProcessingOptionDescriptor option, JsonElement source, out string text)
+    {
+        text = string.Empty;
+        if (option.Members.Length != 1 || source.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+        var container = source;
+        if (option.ParentMember is not null &&
+            (!TryGetMemberIgnoreCase(source, option.ParentMember, out container) || container.ValueKind != JsonValueKind.Object))
+        {
+            return false;
+        }
+        if (!TryGetMemberIgnoreCase(container, option.Members[0], out var value) || value.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+        text = value.GetString() ?? string.Empty;
+        return text.Length > 0;
     }
 
     private static bool TryReadTolerantScalarInput(ProcessingOptionDescriptor option, JsonElement source, out string input)

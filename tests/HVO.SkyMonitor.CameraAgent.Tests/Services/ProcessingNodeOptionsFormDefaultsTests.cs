@@ -265,4 +265,44 @@ public sealed class ProcessingNodeOptionsFormDefaultsTests
         Assert.IsFalse(enabledOnlyForm.IsAtDefault("layers"));
         Assert.IsTrue(enabledOnlyForm.HasNonDefaultValues);
     }
+
+    [TestMethod]
+    public void InvalidSourceValueDisplayingAsDefaultKeepsResetEnabledUntilRepaired()
+    {
+        // Quoted numeric value equal to default (800000) displays as "800000"; _invalidSourceKeys must still keep Reset enabled.
+        var quotedSource = JsonDocument.Parse(
+            """{ "constellationOpacityMillionths": "800000", "future": [1e+02] }""").RootElement.Clone();
+        var manifestForm = new ProcessingNodeOptionsForm(OverlayManifestOptionDescriptors.Descriptor, quotedSource);
+        Assert.AreEqual("800000", manifestForm.Get("constellationOpacityMillionths"));
+        Assert.IsFalse(manifestForm.IsAtDefault("constellationOpacityMillionths"));
+        Assert.IsTrue(manifestForm.HasNonDefaultValues);
+
+        manifestForm.ResetAllToDefaults();
+        Assert.IsTrue(manifestForm.IsAtDefault("constellationOpacityMillionths"));
+        Assert.IsFalse(manifestForm.HasNonDefaultValues);
+        Assert.IsTrue(manifestForm.TryBuild(out var manifestRepaired, out var manifestErrors), string.Join(' ', manifestErrors));
+        Assert.AreEqual(JsonValueKind.Number, manifestRepaired!.Value.GetProperty("constellationOpacityMillionths").ValueKind);
+        Assert.AreEqual(800_000, manifestRepaired.Value.GetProperty("constellationOpacityMillionths").GetInt32());
+        Assert.AreEqual("[1e+02]", manifestRepaired.Value.GetProperty("future").GetRawText());
+
+        // Legacy deepSkyFont ("PlexRegular") displays as default ("MonoRegular"); _invalidSourceKeys keeps Reset enabled and notice visible.
+        foreach (var descriptor in new[] { ProcessingNodeOptionsDescriptors.ScenePresentationLayer, SceneStylePresentation.Descriptor })
+        {
+            var legacySource = JsonDocument.Parse(
+                """{ "includeDeepSkyLayer": false, "deepSkyFont": "PlexRegular", "future": [1e+02] }""").RootElement.Clone();
+            var sceneForm = new ProcessingNodeOptionsForm(descriptor, legacySource);
+            Assert.AreEqual("MonoRegular", sceneForm.Get("deepSkyFont"));
+            Assert.IsFalse(sceneForm.IsAtDefault("deepSkyFont"), descriptor.DescriptorId);
+            Assert.IsTrue(sceneForm.HasNonDefaultValues, descriptor.DescriptorId);
+            StringAssert.Contains(sceneForm.InvalidSourceNotice("deepSkyFont")!, "PlexRegular", StringComparison.Ordinal);
+
+            sceneForm.ResetAllToDefaults();
+            Assert.IsTrue(sceneForm.IsAtDefault("deepSkyFont"), descriptor.DescriptorId);
+            Assert.IsFalse(sceneForm.HasNonDefaultValues, descriptor.DescriptorId);
+            Assert.IsNull(sceneForm.InvalidSourceNotice("deepSkyFont"), descriptor.DescriptorId);
+            Assert.IsTrue(sceneForm.TryBuild(out var sceneRepaired, out var sceneErrors), string.Join(' ', sceneErrors));
+            Assert.AreEqual("MonoRegular", sceneRepaired!.Value.GetProperty("deepSkyFont").GetString());
+            Assert.AreEqual("[1e+02]", sceneRepaired.Value.GetProperty("future").GetRawText());
+        }
+    }
 }

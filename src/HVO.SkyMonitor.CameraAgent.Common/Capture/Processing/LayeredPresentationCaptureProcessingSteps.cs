@@ -570,6 +570,9 @@ internal class ScenePresentationLayerProcessingStepOptions : IValidatableObject
     public byte DeepSkyBlue { get; init; } = 120;
     public string DeepSkyFont { get; init; } = "MonoRegular";
 
+    [System.Text.Json.Serialization.JsonIgnore]
+    internal bool AllowRetainedLegacyDeepSkyFont { get; set; }
+
     internal PresentationDeepSkyStyleV1 ToDeepSkyStyle() => new(
         MaximumLabels: DeepSkyLabels ? DeepSkyMaximumLabels : 0,
         MaximumLabelCharacters: DeepSkyMaximumLabelCharacters,
@@ -579,7 +582,11 @@ internal class ScenePresentationLayerProcessingStepOptions : IValidatableObject
         Color: new(DeepSkyRed, DeepSkyGreen, DeepSkyBlue),
         DrawOutlines: DeepSkyOutlines,
         LineThickness: DeepSkyLineThickness,
-        LabelFace: Enum.Parse<PresentationFontFaceV3>(DeepSkyFont));
+        LabelFace: DeepSkyFont switch
+        {
+            "MonoBold" => PresentationFontFaceV3.MonoBold,
+            _ => PresentationFontFaceV3.MonoRegular
+        });
 
     [Required, MaxLength(128)] public string AnnotationOutputVariant { get; init; } = "scene-annotation-layer-v1";
     [Required, MaxLength(128)] public string CardinalOutputVariant { get; init; } = "scene-cardinal-layer-v1";
@@ -611,7 +618,9 @@ internal class ScenePresentationLayerProcessingStepOptions : IValidatableObject
     public bool ExpectedPositionDiagnostics { get; init; } = true;
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
-        if (DeepSkyFont is not ("MonoRegular" or "MonoBold"))
+        var deepSkyActive = IncludeDeepSkyLayer || ApplyInlineDeepSkyStyle;
+        if (DeepSkyFont is not ("MonoRegular" or "MonoBold") &&
+            !(DeepSkyFont == "PlexRegular" && (!deepSkyActive || AllowRetainedLegacyDeepSkyFont)))
             yield return new ValidationResult("Select an available packaged deep-sky label font.", [nameof(DeepSkyFont)]);
         if (IncludeDeepSkyLayer && new[] { AnnotationOutputVariant, CardinalOutputVariant, ImageCircleOutputVariant, ConstellationOutputVariant, DeepSkyOutputVariant }.Distinct(StringComparer.Ordinal).Count() != 5)
             yield return new ValidationResult("Scene layer variants must be distinct.");

@@ -128,13 +128,67 @@ public sealed partial class ProcessingNodeOptionsTests
     [DataRow("deepSkyLabelCatalogObjects", "null", ProcessingOptionReasonCodes.WrongType)]
     [DataRow("deepSkyMinimumGlyphRadius", "1", ProcessingOptionReasonCodes.OutOfRange)]
     [DataRow("deepSkyMinimumGlyphRadius", "33", ProcessingOptionReasonCodes.OutOfRange)]
-    [DataRow("deepSkyFont", "\"PlexRegular\"", ProcessingOptionReasonCodes.NotAllowed)]
     [DataRow("deepSkyFont", "\"PlexBold\"", ProcessingOptionReasonCodes.NotAllowed)]
     public void DeepSkyPresentationValidationRejectsInvalidValues(string member, string token, string reason)
     {
         var diagnostic = ProcessingNodeOptionsCodec.Decode(Scene, Json($$"""{"{{member}}":{{token}}}""")).Diagnostics.Single();
         Assert.AreEqual(reason, diagnostic.Code);
         Assert.AreEqual($"effectiveOptions.{member}", diagnostic.Path);
+    }
+
+    [TestMethod]
+    public void DeepSkyFontPreservesInactiveLegacyPlexRegularAndRejectsActiveOrEditedPlexRegular()
+    {
+        foreach (var descriptor in new[] { Scene, SceneStylePresentation.Descriptor })
+        {
+            // Legacy saved graphs with inactive deep-sky styling preserve PlexRegular without failing decode or unrelated edits.
+            var inactive = Json("""{"includeDeepSkyLayer":false,"deepSkyFont":"PlexRegular","future":[1e+02]}""");
+            Assert.IsTrue(ProcessingNodeOptionsCodec.Decode(descriptor, inactive).IsValid, descriptor.DescriptorId);
+            Assert.IsTrue(ProcessingNodeOptionsCodec.Decode(descriptor, Json("""{"deepSkyFont":"PlexRegular"}""")).IsValid, descriptor.DescriptorId);
+
+            var unrelatedEdit = ProcessingNodeOptionsCodec.Encode(descriptor, inactive, new Dictionary<string, ProcessingOptionValue>
+            {
+                ["constellationLineThickness"] = ProcessingOptionValue.FromWholeNumber(4)
+            });
+            Assert.IsTrue(unrelatedEdit.IsValid, string.Join(' ', unrelatedEdit.Diagnostics));
+            Assert.AreEqual("PlexRegular", unrelatedEdit.Options!.Value.GetProperty("deepSkyFont").GetString());
+            Assert.AreEqual("[1e+02]", unrelatedEdit.Options.Value.GetProperty("future").GetRawText());
+
+            // Active deep-sky proposals and explicit edits selecting PlexRegular are rejected.
+            foreach (var activeJson in new[]
+            {
+                """{"includeDeepSkyLayer":true,"deepSkyFont":"PlexRegular"}""",
+                """{"applyInlineDeepSkyStyle":true,"deepSkyFont":"PlexRegular"}"""
+            })
+            {
+                var activeDiag = ProcessingNodeOptionsCodec.Decode(descriptor, Json(activeJson)).Diagnostics.Single();
+                Assert.AreEqual(ProcessingOptionReasonCodes.NotAllowed, activeDiag.Code);
+                Assert.AreEqual("effectiveOptions.deepSkyFont", activeDiag.Path);
+
+                // Retained-capture compatibility mode still allows compiling a pre-upgrade saved graph.
+                Assert.IsTrue(ProcessingNodeOptionsCodec.Decode(descriptor, Json(activeJson),
+                    ProcessingNodeOptionsCodec.DefaultPath, allowQuotedNumbers: false, allowRetainedLegacyDeepSkyFont: true).IsValid);
+            }
+
+            var editedFont = ProcessingNodeOptionsCodec.Encode(descriptor, Json("{}"), new Dictionary<string, ProcessingOptionValue>
+            {
+                ["deepSkyFont"] = ProcessingOptionValue.FromFont("PlexRegular")
+            });
+            Assert.IsFalse(editedFont.IsValid);
+            Assert.AreEqual(ProcessingOptionReasonCodes.NotAllowed, editedFont.Diagnostics.Single().Code);
+        }
+
+        // Retained quoted numeric tolerance accepts runtime-valid quoted zOrder while keeping range and type checks.
+        var quotedManifest = Json("""{"layers":[{"kind":"scene-constellations","enabled":false,"zOrder":"12","future":1e+02}]}""");
+        Assert.IsFalse(ProcessingNodeOptionsCodec.Decode(OverlayManifestOptionDescriptors.Descriptor, quotedManifest).IsValid);
+        Assert.IsTrue(ProcessingNodeOptionsCodec.Decode(OverlayManifestOptionDescriptors.Descriptor, quotedManifest,
+            ProcessingNodeOptionsCodec.DefaultPath, allowQuotedNumbers: true).IsValid);
+        Assert.AreEqual(ProcessingOptionReasonCodes.OutOfRange, ProcessingNodeOptionsCodec.Decode(OverlayManifestOptionDescriptors.Descriptor,
+            Json("""{"layers":[{"kind":"scene-constellations","zOrder":"9999"}]}"""),
+            ProcessingNodeOptionsCodec.DefaultPath, allowQuotedNumbers: true).Diagnostics.Single().Code);
+        Assert.AreEqual(ProcessingOptionReasonCodes.WrongType, ProcessingNodeOptionsCodec.Decode(OverlayManifestOptionDescriptors.Descriptor,
+            Json("""{"layers":[{"kind":"scene-constellations","zOrder":"abc"}]}"""),
+            ProcessingNodeOptionsCodec.DefaultPath, allowQuotedNumbers: true).Diagnostics.Single().Code);
     }
 
     [TestMethod]

@@ -119,7 +119,7 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
         try
         {
             var converted = sceneStyle ? SceneStyleDraftUpgrade.Upgrade(pipeline) : FrameFactsDraftConversion.Convert(pipeline);
-            var preview = await GraphService.PreviewAsync(converted, CancellationToken.None).ConfigureAwait(true);
+            var preview = await GraphService.PreviewAsync(converted, _model.SourceRevisionId, CancellationToken.None).ConfigureAwait(true);
             if (preview.Kind == OperatorUiResultKind.Unauthorized)
             {
                 NavigationManager.NavigateTo("/Account/AccessDenied");
@@ -259,7 +259,7 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
         var generation = _draftGeneration;
         try
         {
-            var result = await GraphService.PreviewAsync(pipeline, CancellationToken.None).ConfigureAwait(true);
+            var result = await GraphService.PreviewAsync(pipeline, _model.SourceRevisionId, CancellationToken.None).ConfigureAwait(true);
             if (result.Kind == OperatorUiResultKind.Unauthorized)
             {
                 NavigationManager.NavigateTo("/Account/AccessDenied");
@@ -303,7 +303,7 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
         try
         {
             result = await GraphService.CreateRevisionAsync(
-                _model.Name.Trim(), _model.Revision.Trim(), _previewedPipeline, _saveKey!, _model.SourceRevisionId is null ? "operator draft" : $"draft from {_model.SourceRevisionId}", CancellationToken.None).ConfigureAwait(false);
+                _model.Name.Trim(), _model.Revision.Trim(), _previewedPipeline, _saveKey!, _model.SourceRevisionId is null ? "operator draft" : $"draft from {_model.SourceRevisionId}", _model.SourceRevisionId, CancellationToken.None).ConfigureAwait(false);
         }
         finally
         {
