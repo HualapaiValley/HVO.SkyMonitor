@@ -171,7 +171,7 @@ queue_push_condition = (
     "github.actor == 'github-merge-queue[bot]'"
 )
 build_runner = (
-    "    runs-on: ${{ fromJSON(needs.preflight.outputs.merge_group_run_id != '' && "
+    "    runs-on: ${{ fromJSON(github.event_name == 'push' && needs.preflight.outputs.merge_group_run_id != '' && "
     "'[\"ubuntu-24.04\"]' || '[\"self-hosted\", \"linux\", \"x64\", \"hvo-skymonitor-build\"]') }}"
 )
 workload_step = "Select Build and Unit workload"
@@ -469,11 +469,11 @@ def violations(short, full, queue=None, extra=None):
     unit_selection_block = "\n".join((
         "          coverage_args=()",
         f'          unit_filter="{unit_filter}"',
-        "          test_project_args=()",
+        "          test_project_args=(-p:SkipDeploymentCliTests=false)",
         f"          {deployment_cli_skip_guard}",
         "            coverage_args+=(--skip-deployment-cli)",
         '            unit_filter+="&FullyQualifiedName!~HVO.SkyMonitor.Deployment.Cli.Tests"',
-        "            test_project_args+=(-p:SkipDeploymentCliTests=true)",
+        "            test_project_args=(-p:SkipDeploymentCliTests=true)",
         "          fi",
         '          ./scripts/coverage:development-v1 --settings "${coverage_args[@]}" "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings"',
     ))
@@ -535,6 +535,7 @@ def violations(short, full, queue=None, extra=None):
     fast = step(build, workload_step)
     for expected in ('id: workload', 'PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}',
                      'EVENT_NAME: ${{ github.event_name }}', 'Preflight dependency: success',
+                     'if [[ "$EVENT_NAME" == push && -n "${MERGE_GROUP_RUN_ID:-}" ]]; then',
                      'git show "$base:scripts/ci:classify"', '"$second" == "$PR_HEAD_SHA"',
                      '"$merge_commit" == "$GITHUB_SHA"', 'docs-fast-only',
                      '[[ "$EVENT_NAME" == pull_request ]]', 'run_full=true', 'run_deployment_cli=true',
@@ -545,13 +546,15 @@ def violations(short, full, queue=None, extra=None):
                      '"$complete_val" != complete=false || "$delivery_val" != delivery=false || "$deployment_val" != deployment=false',
                      'component classifier output missing or invalid',
                      'active canonical coverage floor or baseline requires Deployment.Cli.Tests',
+                     'if not isinstance(baseline, dict) or not isinstance(policy, dict):',
+                     'if not isinstance(files, dict) or not files or not isinstance(retired_list, list):',
                      'run_deployment_cli=%s\\ndeployment_cli_reason=%s\\n',
                      'timeout --signal=TERM --kill-after=5s 30s bash "$classifier" --verify-docs-restore "$base"',
                      'printf \'restore_imports_verified=true\\n\' | cmp -s - "$proof"'):
         require(expected in fast, f"exact classification wiring: {expected}")
     checkout = step(build, "Checkout exact commit")
     require("fetch-depth: ${{ github.event_name == 'pull_request' && '0' || '1' }}" in checkout and
-            "if: env.MERGE_GROUP_RUN_ID == ''" in checkout and
+            "if: github.event_name != 'push' || env.MERGE_GROUP_RUN_ID == ''" in checkout and
             build.find(workload_step) < build.find("Setup .NET from global.json"),
             "event-specific checkout and classification order")
     require('docsFastPath:$docsFastPath,docsFastPathReason:$docsFastPathReason,deploymentCliTestsIncluded:$deploymentCliTestsIncluded,deploymentCliTestsReason:$deploymentCliTestsReason,preflight:"success"' in build and
@@ -691,7 +694,11 @@ mutations = (
     ("Deployment.Cli.Tests omits deployment flag check", short.replace(' || "$deployment_val" != deployment=false', ''), full),
     ("Deployment.Cli.Tests omits complete flag check", short.replace('"$complete_val" != complete=false || ', ''), full),
     ("Deployment.Cli.Tests omits active coverage floor fail-closed check", short.replace("active canonical coverage floor or baseline requires Deployment.Cli.Tests", "waived"), full),
-    ("Deployment.Cli.Tests skips unconditionally", short.replace("test_project_args=()", "test_project_args=(-p:SkipDeploymentCliTests=true)"), full),
+    ("Deployment.Cli.Tests skips unconditionally", short.replace("test_project_args=(-p:SkipDeploymentCliTests=false)", "test_project_args=(-p:SkipDeploymentCliTests=true)"), full),
+    ("Deployment.Cli.Tests leaves SkipDeploymentCliTests unset on full run", short.replace("test_project_args=(-p:SkipDeploymentCliTests=false)", "test_project_args=()"), full),
+    ("merge_group accepts reuse ID in workload selection", short.replace('if [[ "$EVENT_NAME" == push && -n "${MERGE_GROUP_RUN_ID:-}" ]]; then', 'if [[ -n "${MERGE_GROUP_RUN_ID:-}" ]]; then'), full),
+    ("merge_group accepts reuse ID in checkout step", short.replace("if: github.event_name != 'push' || env.MERGE_GROUP_RUN_ID == ''", "if: env.MERGE_GROUP_RUN_ID == ''"), full),
+    ("merge_group accepts reuse ID in runner selector", short.replace("github.event_name == 'push' && needs.preflight.outputs.merge_group_run_id != ''", "needs.preflight.outputs.merge_group_run_id != ''"), full),
     ("inflated summary hard timeout", short.replace("hardTimeoutSeconds:1320", "hardTimeoutSeconds:13200"), full),
     ("inflated workload budget", short.replace("started_at_epoch + 1080", "started_at_epoch + 10800"), full),
     ("inflated hard timeout", short.replace("timeout-minutes: 22", "timeout-minutes: 220"), full),
@@ -1601,19 +1608,43 @@ exit "$FAKE_EXIT"
             raise SystemExit(f"Deployment.Cli path-filter case '{label}' failed: {lines} {result.stderr}")
         deploy_cases += 1
 
-    # Active Deployment.Cli canonical coverage floor or missing baseline fails closed to run_deployment_cli=true.
-    for floor_label, mutate_baseline in (
-        ("active Deployment.Cli floor on base prevents skip", True),
-        ("missing coverage baseline on base fails closed", False),
+    # Active Deployment.Cli canonical coverage floor, missing baseline, or malformed baseline/policy fails closed to run_deployment_cli=true.
+    malformed_baseline_missing_files = json.dumps({"aggregate": {"line": 0.8, "branch": 0.6}})
+    malformed_baseline_list_files = json.dumps({"files": ["HVO.SkyMonitor.Astronomy/CameraGeometry.cs"]})
+    malformed_baseline_non_object_entry = json.dumps({"files": {"HVO.SkyMonitor.Deployment.Cli/Program.cs": "invalid"}})
+    malformed_policy_dict_retired = json.dumps({"retiredSourcePaths": {"HVO.SkyMonitor.Deployment.Cli/Missing.cs": True}})
+    baseline_with_missing_deploy_floor = json.loads(real_coverage_baseline)
+    baseline_with_missing_deploy_floor["files"]["HVO.SkyMonitor.Deployment.Cli/Missing.cs"] = {"line": 0.80, "branch": 0.70}
+    baseline_with_blank_local_only = json.loads(real_coverage_baseline)
+    baseline_with_blank_local_only["files"]["HVO.SkyMonitor.Deployment.Cli/Program.cs"] = {
+        "line": 0.80, "branch": 0.70, "developmentV1LocalOnlyReason": "   "
+    }
+    baseline_with_non_string_local_only = json.loads(real_coverage_baseline)
+    baseline_with_non_string_local_only["files"]["HVO.SkyMonitor.TerminalUi/Screen.cs"] = {
+        "line": 0.80, "branch": 0.70, "developmentV1LocalOnlyReason": True
+    }
+    active_deploy_baseline = json.loads(real_coverage_baseline)
+    active_deploy_baseline["files"]["HVO.SkyMonitor.Deployment.Cli/Program.cs"] = {"line": 0.80, "branch": 0.70}
+
+    for floor_label, baseline_override, policy_override in (
+        ("active Deployment.Cli floor on base prevents skip", json.dumps(active_deploy_baseline), None),
+        ("missing coverage baseline on base fails closed", False, None),
+        ("baseline missing files key fails closed", malformed_baseline_missing_files, None),
+        ("baseline non-object files list fails closed", malformed_baseline_list_files, None),
+        ("baseline non-object entry in files fails closed", malformed_baseline_non_object_entry, None),
+        ("policy retiredSourcePaths object fails closed", json.dumps(baseline_with_missing_deploy_floor), malformed_policy_dict_retired),
+        ("blank developmentV1LocalOnlyReason fails closed", json.dumps(baseline_with_blank_local_only), None),
+        ("non-string developmentV1LocalOnlyReason fails closed", json.dumps(baseline_with_non_string_local_only), None),
     ):
         git("checkout", "-q", "--detach", filter_base)
-        if mutate_baseline:
-            mutated = json.loads(real_coverage_baseline)
-            mutated["files"]["HVO.SkyMonitor.Deployment.Cli/Program.cs"] = {"line": 0.80, "branch": 0.70}
-            (fixture / "scripts/coverage/baseline.json").write_text(json.dumps(mutated))
-            git("add", "scripts/coverage/baseline.json")
-        else:
+        if baseline_override is False:
             git("rm", "-q", "scripts/coverage/baseline.json")
+        elif baseline_override is not None:
+            (fixture / "scripts/coverage/baseline.json").write_text(baseline_override)
+            git("add", "scripts/coverage/baseline.json")
+        if policy_override is not None:
+            (fixture / "scripts/coverage/policy.json").write_text(policy_override)
+            git("add", "scripts/coverage/policy.json")
         git("commit", "-qm", floor_label)
         floor_base = git("rev-parse", "HEAD")
         (fixture / "src/HVO.SkyMonitor.CameraAgent/Components/Home.razor").write_text("ca-only-under-floor\n")
@@ -1630,6 +1661,92 @@ exit "$FAKE_EXIT"
         if (result.returncode or "run_full=true" not in lines or "run_deployment_cli=true" not in lines or
                 "deployment_cli_reason=active canonical coverage floor or baseline requires Deployment.Cli.Tests" not in lines):
             raise SystemExit(f"Coverage floor fail-closed case '{floor_label}' failed: {lines} {result.stderr}")
+        deploy_cases += 1
+
+    # Sol M2: merge_group ALWAYS forces run_full=true and run_deployment_cli=true even if MERGE_GROUP_RUN_ID is non-empty.
+    git("checkout", "-q", "--detach", filter_base)
+    (fixture / "src/HVO.SkyMonitor.CameraAgent/Components/Home.razor").write_text("ca-only-merge-group-reuse-id\n")
+    git("commit", "-qam", "ca-only merge_group reuse id")
+    mg_head = git("rev-parse", "HEAD")
+    mg_tree = git("rev-parse", "HEAD^{tree}")
+    mg_merge = git("commit-tree", mg_tree, "-p", filter_base, "-p", mg_head, "-m", "merge_group with reuse id")
+    git("checkout", "-q", "--detach", mg_merge)
+    output.write_text("")
+    mg_env = dict(env, GITHUB_SHA=mg_merge, EVENT_NAME="merge_group", PR_HEAD_SHA="", MERGE_GROUP_RUN_ID="42")
+    result = subprocess.run(["bash", "-euo", "pipefail", "-c", fast_script], cwd=fixture, env=mg_env,
+                            capture_output=True, text=True)
+    mg_lines = output.read_text().splitlines()
+    if (result.returncode or "run_full=true" not in mg_lines or "run_deployment_cli=true" not in mg_lines or
+            "mergeGroupRunId=42" in (evidence / "classification.md").read_text().splitlines()):
+        raise SystemExit(f"merge_group with nonempty MERGE_GROUP_RUN_ID skipped workload: {mg_lines} {result.stderr}")
+    deploy_cases += 1
+
+    # Sol M2: Run Docker-disabled Unit selection explicitly passes -p:SkipDeploymentCliTests=false on full runs
+    # (including merge_group and non-skipped PRs) so an inherited SkipDeploymentCliTests=true env var cannot disable Deployment.Cli.Tests.
+    unit_step = step(job(short, "build-unit"), "Run Docker-disabled Unit selection")
+    unit_script = textwrap.dedent(unit_step.split("        run: |\n", 1)[1])
+    unit_bin = fixture / "unit-bin"
+    unit_bin.mkdir()
+    unit_calls = fixture / "unit-calls.jsonl"
+    fake_dotnet = unit_bin / "dotnet"
+    fake_dotnet.write_text("""#!/usr/bin/env python3
+import json, os, sys
+with open(os.environ["UNIT_CALLS"], "a") as handle:
+    handle.write(json.dumps({"cmd": "dotnet", "argv": sys.argv[1:], "env_skip": os.environ.get("SkipDeploymentCliTests")}) + "\\n")
+""")
+    fake_dotnet.chmod(0o700)
+    fake_cov_dir = fixture / "unit-repo/scripts"
+    fake_cov_dir.mkdir(parents=True)
+    fake_cov = fake_cov_dir / "coverage:development-v1"
+    fake_cov.write_text("""#!/usr/bin/env python3
+import json, os, sys
+with open(os.environ["UNIT_CALLS"], "a") as handle:
+    handle.write(json.dumps({"cmd": "coverage", "argv": sys.argv[1:]}) + "\\n")
+""")
+    fake_cov.chmod(0o700)
+    (evidence / "timing").mkdir(exist_ok=True)
+    (evidence / "unit").mkdir(exist_ok=True)
+    for unit_label, unit_event, unit_outcome, unit_run_deploy, expect_skip in (
+        ("merge_group with inherited SkipDeploymentCliTests=true forces false", "merge_group", "success", "false", False),
+        ("push with inherited SkipDeploymentCliTests=true forces false", "push", "success", "false", False),
+        ("pull_request full with inherited SkipDeploymentCliTests=true forces false", "pull_request", "success", "true", False),
+        ("pull_request failed workload with inherited SkipDeploymentCliTests=true forces false", "pull_request", "failure", "false", False),
+        ("pull_request verified skip passes SkipDeploymentCliTests=true", "pull_request", "success", "false", True),
+    ):
+        unit_calls.write_text("")
+        unit_env = dict(
+            os.environ,
+            PATH=f"{unit_bin}:{os.environ['PATH']}",
+            DEV_V1_EVIDENCE_ROOT=str(evidence),
+            DEV_V1_DEADLINE_EPOCH=str(int(time.time()) + 600),
+            GITHUB_EVENT_NAME=unit_event,
+            WORKLOAD_OUTCOME=unit_outcome,
+            RUN_DEPLOYMENT_CLI=unit_run_deploy,
+            SkipDeploymentCliTests="true",
+            UNIT_CALLS=str(unit_calls),
+        )
+        result = subprocess.run(["bash", "-euo", "pipefail", "-c", unit_script], cwd=fixture / "unit-repo",
+                                env=unit_env, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise SystemExit(f"Unit step simulation '{unit_label}' failed: {result.stderr}")
+        recorded = [json.loads(line) for line in unit_calls.read_text().splitlines()]
+        if len(recorded) != 2 or recorded[0]["cmd"] != "coverage" or recorded[1]["cmd"] != "dotnet":
+            raise SystemExit(f"Unit step simulation '{unit_label}' unexpected calls: {recorded}")
+        cov_argv = recorded[0]["argv"]
+        dotnet_argv = recorded[1]["argv"]
+        filter_arg = dotnet_argv[dotnet_argv.index("--filter") + 1]
+        if expect_skip:
+            if ("--skip-deployment-cli" not in cov_argv or
+                    "-p:SkipDeploymentCliTests=true" not in dotnet_argv or
+                    "-p:SkipDeploymentCliTests=false" in dotnet_argv or
+                    "&FullyQualifiedName!~HVO.SkyMonitor.Deployment.Cli.Tests" not in filter_arg):
+                raise SystemExit(f"Unit step simulation '{unit_label}' did not apply skip args: {recorded}")
+        else:
+            if ("--skip-deployment-cli" in cov_argv or
+                    "-p:SkipDeploymentCliTests=false" not in dotnet_argv or
+                    "-p:SkipDeploymentCliTests=true" in dotnet_argv or
+                    "Deployment.Cli.Tests" in filter_arg):
+                raise SystemExit(f"Unit step simulation '{unit_label}' failed to force Deployment.Cli.Tests: {recorded}")
         deploy_cases += 1
 
     # Endpoints disagree: PR tip is CameraAgent-only, but merge tree modifies Deployment.Cli.
@@ -1683,13 +1800,14 @@ exit "$FAKE_EXIT"
         ("false", "success", "", None, "false", True, False),
         ("", "failure", "", None, "", False, True),
         ("false", "success", "42", None, "false", False, False),
+        ("false", "success", "42", "merge_group", "false", False, True),
         ("true", "success", "", "pull_request", "false", False, False),
         ("true", "success", "", "pull_request", "true", False, True),
         ("true", "success", "", "merge_group", "false", False, True),
     ):
         event = event_override or ("push" if group_id else "pull_request")
         summary_base, summary_head = ("", "") if group_id or event != "pull_request" else (code_base, doc_head)
-        group_url = f"https://github.com/example/repo/actions/runs/{group_id}" if group_id else None
+        group_url = f"https://github.com/example/repo/actions/runs/{group_id}" if (group_id and event == "push") else None
         env.update(CLASSIFY_OUTCOME=outcome, RUN_FULL=decision, WORKLOAD_REASON="",
                    RUN_DEPLOYMENT_CLI=run_deploy_cli, DEPLOYMENT_CLI_REASON="",
                    MERGE_GROUP_RUN_ID=group_id,
@@ -1707,10 +1825,10 @@ exit "$FAKE_EXIT"
                 manifest["baseSha"] != summary_base or manifest["prHeadSha"] != summary_head or
                 manifest["mergeSha"] != changed_merge or manifest["schema"] != "hvo-development-v1-ci-v6" or
                 manifest["mergeGroupRunUrl"] != group_url or
-                (decision == "false" and (manifest["sdkVersion"] is not None or manifest["unitTrxCount"] != 0)) or
+                (decision == "false" and event != "merge_group" and (manifest["sdkVersion"] is not None or manifest["unitTrxCount"] != 0)) or
                 (group_url and (group_url not in summary.read_text() or changed_merge not in summary.read_text()))):
             raise SystemExit(f"Invalid manifest evidence: {manifest}")
-    print(f"Fast workflow shell: 29 decision, binding and trusted-base cases; {deploy_cases} Deployment.Cli path-filter cases; 6 manifest cases passed.")
+    print(f"Fast workflow shell: 29 decision, binding and trusted-base cases; {deploy_cases} Deployment.Cli path-filter cases; 7 manifest cases passed.")
 
 # Exercise the real final promotion step with an offline gh substitute. Creating
 # a PR must be draft; refreshing one must preserve its state; API errors must fail.

@@ -285,6 +285,40 @@ for link in "<None Include='../../../docs/runbooks/example.md' />" "<None Includ
   git -C "$fast_root" commit -qam link-change
   fast_reason 'project inventory unavailable' "$link_base" "$(git -C "$fast_root" rev-parse HEAD)"
 done
+# Case-sensitive negative control for the Silo replacement runbook exemption (#2071):
+# is_fast_doc_path excludes only exact lowercase docs/runbooks/cameraagent-silo-runtime.md,
+# so audit_fast_inventory must accept only that exact case and reject case variants.
+for runbook_rel in \
+  "docs/runbooks/cameraagent-silo-runtime.md" \
+  "docs/runbooks/CameraAgent-Silo-Runtime.md" \
+  "DOCS/runbooks/cameraagent-silo-runtime.md"; do
+  git -C "$fast_root" reset -q --hard "$fast_base"
+  mkdir -p "$fast_root/$(dirname "$runbook_rel")"
+  printf '# Silo runtime\n' > "$fast_root/$runbook_rel"
+  printf '<Project><ItemGroup><None Include="../../%s" Link="Shared/silo.md" /></ItemGroup></Project>\n' "$runbook_rel" > "$fast_root/tests/Example/Example.csproj"
+  git -C "$fast_root" add . && git -C "$fast_root" commit -qm "runbook case $runbook_rel"
+  case_base="$(git -C "$fast_root" rev-parse HEAD)"
+  if [[ "$runbook_rel" == "docs/runbooks/cameraagent-silo-runtime.md" ]]; then
+    (cd "$fast_root" && "$classifier" --print-docs-inventory "$case_base") > "$fast_root/.git/runbook-inventory"
+    ((fast_cases += 1))
+  else
+    if (cd "$fast_root" && "$classifier" --print-docs-inventory "$case_base") > "$fast_root/.git/runbook-inventory" 2> "$fast_root/.git/runbook-error"; then
+      printf 'Case-variant runbook %s was erroneously exempted by docs inventory audit.\n' "$runbook_rel" >&2
+      exit 1
+    fi
+    grep -Fxq 'docs inventory audit: build input references eligible documentation' "$fast_root/.git/runbook-error" || {
+      printf 'Unexpected audit error for %s: %s\n' "$runbook_rel" "$(cat "$fast_root/.git/runbook-error")" >&2
+      exit 1
+    }
+    printf 'updated\n' >> "$fast_root/$runbook_rel"
+    git -C "$fast_root" commit -qam "edit case-variant $runbook_rel"
+    if [[ "$runbook_rel" == "docs/runbooks/CameraAgent-Silo-Runtime.md" ]]; then
+      fast_reason 'project inventory unavailable' "$case_base" "$(git -C "$fast_root" rev-parse HEAD)"
+    else
+      fast_reason 'path outside documentation allowlist' "$case_base" "$(git -C "$fast_root" rev-parse HEAD)"
+    fi
+  fi
+done
 # Relative imported items use the consuming project directory in MSBuild. The
 # audit refuses uncertainty, including partial directory globs.
 for audit_case in direct_partial direct_padded direct_semicolon imported_partial imported_glob imported_root; do

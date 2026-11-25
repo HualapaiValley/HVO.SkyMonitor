@@ -161,7 +161,7 @@ jobs:
     name: Development v1 / Build and Unit
     needs: preflight
     if: github.event_name == 'push' || github.event_name == 'merge_group' || github.event.pull_request.draft == false
-    runs-on: ${{ fromJSON(needs.preflight.outputs.merge_group_run_id != '' && '["ubuntu-24.04"]' || '["self-hosted", "linux", "x64", "hvo-skymonitor-build"]') }}
+    runs-on: ${{ fromJSON(github.event_name == 'push' && needs.preflight.outputs.merge_group_run_id != '' && '["ubuntu-24.04"]' || '["self-hosted", "linux", "x64", "hvo-skymonitor-build"]') }}
     timeout-minutes: 22
     env:
       MERGE_GROUP_RUN_ID: ${{ needs.preflight.outputs.merge_group_run_id }}
@@ -179,7 +179,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Checkout exact commit
-        if: env.MERGE_GROUP_RUN_ID == ''
+        if: github.event_name != 'push' || env.MERGE_GROUP_RUN_ID == ''
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: ${{ github.event_name == 'pull_request' && '0' || '1' }}
@@ -204,7 +204,7 @@ jobs:
           printf 'Preflight dependency: success\n' > "$evidence"
           : > "$output"
           : > "$component_output"
-          if [[ -n "${MERGE_GROUP_RUN_ID:-}" ]]; then
+          if [[ "$EVENT_NAME" == push && -n "${MERGE_GROUP_RUN_ID:-}" ]]; then
             run_full=false
             reason='exact push SHA already passed merge-group validation'
             run_deployment_cli=false
@@ -321,9 +321,24 @@ jobs:
               policy = json.loads(subprocess.check_output(["git", "show", f"{base}:scripts/coverage/policy.json"]))
           except Exception:
               sys.exit(2)
-          retired = set(policy.get("retiredSourcePaths", ()))
-          for path, floor in baseline.get("files", {}).items():
-              if not path.startswith(prefixes) or floor.get("developmentV1LocalOnlyReason") is not None:
+          if not isinstance(baseline, dict) or not isinstance(policy, dict):
+              sys.exit(2)
+          files = baseline.get("files")
+          retired_list = policy.get("retiredSourcePaths")
+          if not isinstance(files, dict) or not files or not isinstance(retired_list, list):
+              sys.exit(2)
+          if not all(isinstance(item, str) and item.strip() for item in retired_list):
+              sys.exit(2)
+          retired = set(retired_list)
+          for path, floor in files.items():
+              if not isinstance(path, str) or not path.strip() or not isinstance(floor, dict):
+                  sys.exit(2)
+              if "developmentV1LocalOnlyReason" in floor and floor["developmentV1LocalOnlyReason"] is not None:
+                  local_only_reason = floor["developmentV1LocalOnlyReason"]
+                  if not isinstance(local_only_reason, str) or not local_only_reason.strip():
+                      sys.exit(2)
+                  continue
+              if not path.startswith(prefixes):
                   continue
               exists = subprocess.run(["git", "cat-file", "-e", f"{base}:src/{path}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
               if exists or path not in retired:
@@ -390,11 +405,11 @@ jobs:
         run: |
           coverage_args=()
           unit_filter="TestCategory=Unit&TestCategory!=Performance"
-          test_project_args=()
+          test_project_args=(-p:SkipDeploymentCliTests=false)
           if [[ "$GITHUB_EVENT_NAME" == pull_request && "$WORKLOAD_OUTCOME" == success && "$RUN_DEPLOYMENT_CLI" == false ]]; then
             coverage_args+=(--skip-deployment-cli)
             unit_filter+="&FullyQualifiedName!~HVO.SkyMonitor.Deployment.Cli.Tests"
-            test_project_args+=(-p:SkipDeploymentCliTests=true)
+            test_project_args=(-p:SkipDeploymentCliTests=true)
           fi
           ./scripts/coverage:development-v1 --settings "${coverage_args[@]}" "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings"
           remaining="$((DEV_V1_DEADLINE_EPOCH - $(date +%s)))"
@@ -476,9 +491,9 @@ jobs:
           deployment_cli_reason="${DEPLOYMENT_CLI_REASON:-classification unavailable; Deployment.Cli.Tests required}"
           sdk_version=''
           merge_group_run_url=''
-          if [[ "$CLASSIFY_OUTCOME" == success && "$RUN_FULL" == false ]]; then
+          if [[ "$GITHUB_EVENT_NAME" != merge_group && "$CLASSIFY_OUTCOME" == success && "$RUN_FULL" == false ]]; then
             deployment_cli_included=false
-            if [[ -n "${MERGE_GROUP_RUN_ID:-}" ]]; then
+            if [[ "$GITHUB_EVENT_NAME" == push && -n "${MERGE_GROUP_RUN_ID:-}" ]]; then
               merge_group_run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$MERGE_GROUP_RUN_ID"
               printf 'Build and Unit reused [merge-group validation for %s](%s).\n' "$GITHUB_SHA" "$merge_group_run_url" >> "$GITHUB_STEP_SUMMARY"
             else
