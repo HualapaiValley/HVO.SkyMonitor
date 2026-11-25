@@ -1,0 +1,9 @@
+.running-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .5rem 1rem;
+}
+
+.running-links [aria-current="page"] {
+    font-weight: 650;
+}

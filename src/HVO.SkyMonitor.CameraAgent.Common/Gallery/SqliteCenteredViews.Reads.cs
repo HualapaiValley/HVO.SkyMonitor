@@ -146,7 +146,7 @@ internal sealed partial class SqliteCenteredViews
             JOIN processing_centered_view_bases b ON b.base_id = m.base_id
             WHERE m.exposure_id = $exposure AND m.registered_order > $after
             ORDER BY m.registered_order LIMIT $limit;
-            """, ("$exposure", Identity(exposure)), ("$after", afterOrder), ("$limit", limit));
+            """, ("$exposure", ExposureIdentity(exposure)), ("$after", afterOrder), ("$limit", limit));
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         var values = new List<(CenteredViewBase, long)>(limit);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))

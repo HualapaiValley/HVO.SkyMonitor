@@ -112,7 +112,7 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
             !await orbital.AddReferenceAsync(manifest.ManifestSha256, work.Holder, cancellationToken).ConfigureAwait(false))
         {
             if (frozen) throw new InvalidDataException("A previously pinned satellite snapshot is no longer retained.");
-            input = input with { Plan = null, UnavailableReason = "SnapshotRetiredBeforePin" };
+            input = input with { Plan = null, UnavailableReason = nameof(CaptureSatelliteReason.SnapshotRetiredBeforePin) };
         }
         await CaptureProcessingPersistence.WriteAtomicallyAsync(root, path, CaptureSatelliteProducts.SerializeInput(input),
             null, cancellationToken).ConfigureAwait(false);

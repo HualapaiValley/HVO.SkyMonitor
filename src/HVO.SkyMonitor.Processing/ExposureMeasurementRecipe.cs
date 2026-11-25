@@ -6,6 +6,19 @@ using HVO.SkyMonitor.Imaging;
 
 namespace HVO.SkyMonitor.Processing;
 
+/// <summary>Disposition codes written into measured source evidence.</summary>
+public static class ExposureMeasurementSourceReasonCodes
+{
+    public const string LinearInputUnavailable = "linear-input-unavailable";
+    public const string UnsupportedLinearLayout = "unsupported-linear-layout";
+    public const string IncompatibleLinearOrientation = "incompatible-linear-orientation";
+    public const string UnqualifiedCfaPhase = "unqualified-cfa-phase";
+    public const string CandidateBudgetExceeded = "candidate-budget-exceeded";
+    public const string InsufficientBackground = "insufficient-background";
+    public const string AllCandidatesRejected = "all-candidates-rejected";
+    public const string NoCandidates = "no-candidates";
+}
+
 internal static class ExposureSampleCodes
 {
     internal static ExposureClippingV1 Clipping(FrameLayoutDescriptor layout)
@@ -21,8 +34,6 @@ internal static class ExposureSampleCodes
 
 internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
 {
-    private const string UnqualifiedSource = "linear-input-unavailable";
-    private const string NoSources = "no-candidates";
     internal const string TrailedSource = "trailed-source";
 
     // Interpolated CFA luminance shares raw samples within a 3-by-3 footprint. Nine disjoint
@@ -166,19 +177,19 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
         if (sensorClipping.StoredWhite is not { } sensorWhite)
             return Unavailable(sensorClipping.Reason!);
         if (linear?.Layout is not { } layout)
-            return Unavailable(UnqualifiedSource);
+            return Unavailable(ExposureMeasurementSourceReasonCodes.LinearInputUnavailable);
         if (layout.PixelFormat is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16) ||
             layout.Width < 16 || layout.Height < 16 || (long)layout.Width * layout.Height > StellarDetector.MaximumSupportedPixels)
-            return Unavailable("unsupported-linear-layout");
+            return Unavailable(ExposureMeasurementSourceReasonCodes.UnsupportedLinearLayout);
         if (outputClipping?.StoredWhite is not { } outputWhite)
-            return Unavailable(outputClipping?.Reason ?? UnqualifiedSource);
+            return Unavailable(outputClipping?.Reason ?? ExposureMeasurementSourceReasonCodes.LinearInputUnavailable);
         if (!string.Equals(raw.Compatibility.Orientation, linear.Compatibility.Orientation, StringComparison.Ordinal))
-            return Unavailable("incompatible-linear-orientation");
+            return Unavailable(ExposureMeasurementSourceReasonCodes.IncompatibleLinearOrientation);
 
         var cfa = layout.PixelFormat == CameraPixelFormat.BayerRggb16;
         var pattern = cfa ? LocalPattern(layout) : null;
         if (cfa && pattern is null)
-            return Unavailable("unqualified-cfa-phase");
+            return Unavailable(ExposureMeasurementSourceReasonCodes.UnqualifiedCfaPhase);
 
         var (samples, clipped, valid) = Prepare(raw, linear, sensorWhite, outputWhite, pattern, aperture, cancellationToken);
         var options = MeasuredStellarAssociationRecipe.MeasurementOptions(layout.PixelFormat);
@@ -187,11 +198,13 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
         var (status, reason) = measured switch
         {
             { Status: StellarMeasurementStatus.CandidateBudgetExceeded } =>
-                (ExposureMeasurementStatus.Unsuitable, "candidate-budget-exceeded"),
-            { AvailableBackgroundTileCount: 0 } => (ExposureMeasurementStatus.Unsuitable, "insufficient-background"),
+                (ExposureMeasurementStatus.Unsuitable, ExposureMeasurementSourceReasonCodes.CandidateBudgetExceeded),
+            { AvailableBackgroundTileCount: 0 } =>
+                (ExposureMeasurementStatus.Unsuitable, ExposureMeasurementSourceReasonCodes.InsufficientBackground),
             { Detections.Count: > 0 } => (ExposureMeasurementStatus.Usable, (string?)null),
-            { CandidateCount: > 0 } => (ExposureMeasurementStatus.Unsuitable, "all-candidates-rejected"),
-            _ => (ExposureMeasurementStatus.Empty, (string?)NoSources)
+            { CandidateCount: > 0 } =>
+                (ExposureMeasurementStatus.Unsuitable, ExposureMeasurementSourceReasonCodes.AllCandidatesRejected),
+            _ => (ExposureMeasurementStatus.Empty, ExposureMeasurementSourceReasonCodes.NoCandidates)
         };
         var stars = new ExposureSourcesV1(status, reason, measured.CandidateCount, measured.AvailableBackgroundTileCount,
             measured.SettingsIdentitySha256.ToUpperInvariant(), pattern, measured.Detections, measured.Exclusions);
@@ -411,7 +424,11 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
     internal static string? FocusUnavailableReason(ExposureSourcesV1 sources, FrameLayoutDescriptor? layout)
     {
         if (sources.Status == ExposureMeasurementStatus.Unavailable ||
-            sources is { Status: ExposureMeasurementStatus.Unsuitable, Reason: "candidate-budget-exceeded" or "insufficient-background" })
+            sources is
+            {
+                Status: ExposureMeasurementStatus.Unsuitable,
+                Reason: ExposureMeasurementSourceReasonCodes.CandidateBudgetExceeded or ExposureMeasurementSourceReasonCodes.InsufficientBackground
+            })
             return sources.Reason;
         return layout?.Readout is { } readout && readout.BinX != readout.BinY ? "anisotropic-readout" : null;
     }

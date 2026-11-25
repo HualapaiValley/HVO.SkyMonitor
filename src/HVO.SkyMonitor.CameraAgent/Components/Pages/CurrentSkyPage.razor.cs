@@ -1065,7 +1065,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
 
     private static string LayerGroup(string kind) => kind switch
     {
-        "MeasuredTransientTrails" or AstrometricDiagnosticPresentation.AssociationsLayer => "Measured",
+        "measured-deep-sky" or "MeasuredTransientTrails" or AstrometricDiagnosticPresentation.AssociationsLayer => "Measured",
         "scene-deep-sky" or "scene-annotation" or "star-annotations" or "scene-constellations" or "constellations" or "scene-cardinals" or "cardinal-directions" => "Sky context",
         _ => "Diagnostics"
     };
@@ -1097,6 +1097,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         "measured-source-markers" => "measured linear detections on the exact reference exposure",
         AstrometricDiagnosticPresentation.ResidualsLayer => "measured minus fitted prediction / actual 1× pixel vectors; rings locate fitted positions; no uncertainty band",
         "MeasuredTransientTrails" => "durable measured trails / positional uncertainty unavailable; no uncertainty band",
+        "measured-deep-sky" => "Qualified identifications from registered stack pixels",
         OrbitalTrackPresentation.LayerKind or "predicted-satellites" => "predicted / exact exposure segment; geometry only, not a detection or visibility claim",
         "scene-annotation" or "star-annotations" => "expected / may include catalog stars, Sun/Moon outlines and curated deep-sky labels/outlines; not measured associations",
         "scene-constellations" or "constellations" => "expected / HYG topology",
@@ -1372,6 +1373,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         "measured-source-markers" => "Measured source markers",
         AstrometricDiagnosticPresentation.ResidualsLayer => "Astrometric residuals",
         "MeasuredTransientTrails" => "Measured transient trails",
+        "measured-deep-sky" => "Measured deep-sky associations",
         OrbitalTrackPresentation.LayerKind or "predicted-satellites" => "Predicted satellite tracks",
         "scene-annotation" or "star-annotations" => "Sky annotations",
         "scene-cardinals" or "cardinal-directions" => "Cardinal directions",

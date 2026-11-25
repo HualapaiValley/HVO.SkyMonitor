@@ -6,6 +6,29 @@ using HVO.SkyMonitor.Imaging;
 
 namespace HVO.SkyMonitor.Processing;
 
+/// <summary>Named reasons retained in capture satellite status evidence.</summary>
+public enum CaptureSatelliteReason
+{
+    NamedPassPredictionLineageUnavailable,
+    NamedPassPredictionTimingUnavailable,
+    NamedPassPredictionTimingMismatch,
+    NamedPassPredictionInputsMismatch,
+    TimeAvailabilityUnknown,
+    TimeNotOriginallyAvailable,
+    ReadoutGeometryUnavailable,
+    CaptureLocationUnavailable,
+    PinnedSnapshotUnavailable,
+    PinnedTimeInputsUnavailable,
+    TimeCoverageUnavailable,
+    ExposureWindowBudget,
+    CaptureReadoutProfileMismatch,
+    SnapshotNotOriginallyAvailable,
+    SelectionCandidateBudget,
+    PinnedRecordSelectionMismatch,
+    SnapshotRetiredBeforePin,
+    NoExposureSegments
+}
+
 /// <summary>Immutable local evidence with an exact snapshot reference or embedded records, and actual model time bytes.</summary>
 public sealed record CaptureSatelliteInputV1(string SchemaVersion, ReconstructionDescriptor Descriptor,
     CameraRigConfig Rig, ObserverLocation? Observer, ReadOnlyMemory<byte>? Plan, ReadOnlyMemory<byte>? SnapshotManifest, ReadOnlyMemory<byte>? SnapshotRecords,
@@ -27,6 +50,8 @@ public sealed record CaptureSatelliteStatusV1(string SchemaVersion, string Input
 /// <summary>Shared reconstruction/publication composition; no host, storage, scheduler or current pointers.</summary>
 public static class CaptureSatelliteProducts
 {
+    public const string TimeInputsUnavailablePrefix = "TimeInputsUnavailable:";
+    public const string PresentationWithheldPrefix = "PresentationWithheld:";
     public const string InputSchema = "hvo-capture-satellite-evidence-v1";
     public const string StatusSchema = "hvo-capture-satellite-status-v1";
     public const string SourceSchema = "hvo-predicted-satellite-source-v1";
@@ -203,7 +228,7 @@ public static class CaptureSatelliteProducts
             }
             catch (ArgumentException)
             {
-                status = status with { Reason = "PresentationWithheld:" + status.Reason };
+                status = status with { Reason = PresentationWithheldPrefix + status.Reason };
             }
         }
         var statusProduct = Metadata("capture-satellite-status", variant + "-status", StatusSchema, StatusMediaType,
@@ -245,7 +270,8 @@ public static class CaptureSatelliteProducts
         var manifest = ReadSnapshotManifest(input);
         return new(StatusSchema, identity, output?.Status.ToString() ?? "Unavailable",
             input.UnavailableReason ?? (output!.Input.SnapshotUnavailableReason?.ToString() ??
-                (output.Tracks.Count == 0 && output.Status == OrbitalExecutionStatus.Complete ? "NoExposureSegments" : output.Reason.ToString())),
+                (output.Tracks.Count == 0 && output.Status == OrbitalExecutionStatus.Complete
+                    ? nameof(CaptureSatelliteReason.NoExposureSegments) : output.Reason.ToString())),
             output?.Tracks.Count ?? 0, "ConfiguredRig", input.VirtualShutter is { } shutter
                 ? new(shutter.ScenarioStartUtc, shutter.ScenarioEndUtc)
                 : new(input.Descriptor.Timing.ExposureStartedUtc, input.Descriptor.Timing.ExposureEndedUtc),

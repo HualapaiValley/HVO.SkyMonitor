@@ -1310,7 +1310,7 @@ public sealed partial class CurrentSkyPage
 
     private static string CenteredLayerGroup(string kind) => kind switch
     {
-        "MeasuredTransientTrails" or "measured-source-markers" or AstrometricDiagnosticPresentation.AssociationsLayer => "Measured",
+        "measured-deep-sky" or "MeasuredTransientTrails" or "measured-source-markers" or AstrometricDiagnosticPresentation.AssociationsLayer => "Measured",
         "scene-deep-sky" or "scene-annotation" or "star-annotations" or "scene-constellations" or "constellations" or "scene-cardinals" or "cardinal-directions" => "Sky context",
         _ => "Diagnostics"
     };

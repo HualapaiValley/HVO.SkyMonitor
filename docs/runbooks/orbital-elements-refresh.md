@@ -857,12 +857,9 @@ the instance root back exactly as it was archived, so the orbital store comes ba
 of the backup, with its floor, halt and attempt history. A halt, floor or attempt
 recorded after the backup is lost, and nothing carries it forward. An archive taken
 before the store existed restores no store at all, so the instance starts with an
-empty one, with no floor and no halt. This is unlike an installer upgrade or rollback:
-their snapshots, and the automatic recovery of a failed candidate, never touch
-`.orbital-elements/` (see [Rollback](#rollback)). A restore of an older backup does
-rewind it, so the replacement checks apply: at least two hours since the last attempt,
-and any halt resolved. Before you restore an archive older than the latest halt or
-attempt:
+empty one, with no floor and no halt. Upgrade checkpoints and pending-upgrade
+recovery leave `.orbital-elements/` in place (see [Rollback](#rollback)). Before
+you restore an archive older than the latest halt or attempt:
 
 1. While the instance still runs, record the status fields listed in step 1 of
    [Removing Orbital Data](#removing-orbital-data).
@@ -880,16 +877,10 @@ attempt:
 ## Rollback
 
 **Installer snapshots never touch the orbital store.** A migrating upgrade's database
-snapshot, the automatic recovery of a failed candidate, and
-`hvo-sky-install cameraagent rollback` restore only the stores in the installer's
-snapshot set. The orbital store is declared in the image's state contract
-(`orbitalElements`, writes 1, reads 1 to 1) but deliberately left out of that set
-(`docs/hvo-install-contract.md` section 6). The floor, halt and history recorded
-before a rollback therefore survive it, and the release rolled back to cannot request
-inside the floor or after a refusal. `cameraagent restore` of an older backup is
-different: it does rewind the store (see [Backup And Restore](#backup-and-restore)),
-so the replacement checks apply before refresh is enabled again: at least two hours
-since the last attempt, and any halt resolved.
+snapshot covers the installer's snapshot set. The image declares `orbitalElements`
+with writes 1 and reads 1 to 1. Pending-upgrade recovery preserves the orbital
+store's floor, halt and request history. For an explicit restore, follow the
+provider-state steps under [Backup And Restore](#backup-and-restore).
 
 `OrbitalElementsRefresh` is a value appended to the closed `LocalAutomationTaskKind`
 enumeration. It is stored by name in `<RawIngressRoot>/.automation/local-automations.db`.
@@ -901,25 +892,11 @@ A CameraAgent build from before #528 cannot parse that name, and it fails closed
   recent runs across all definitions, so the automations view fails too.
 - The runner's sweep fails, which stops every local automation, not only orbital
   refresh.
-- Removing the definition before rolling back is not enough, because the retained
-  revisions and runs still embed the task kind.
+- Retained revisions and runs still embed the task kind after definition removal.
 
-Supported paths:
-
-1. **Upgrade forward (preferred).** Fix the problem in a newer build, which reads all
-   of the existing state.
-2. **Documented archive and disposition** (when a rollback cannot be avoided):
-   1. Stop the CameraAgent.
-   2. Archive `<RawIngressRoot>/.automation/`, including the `-wal`/`-shm` sidecars,
-      to owner-controlled storage.
-   3. Record its checksum and the disposition in the deployment ledger.
-   4. Move the directory aside.
-   5. Start the older build. It recreates an empty automation store, so local
-      automation definitions are absent until you restore or recreate them.
-   6. Leave `.orbital-elements/` in place. An older build never opens it, so the floor,
-      halt and history survive for the roll-forward.
-   7. On roll-forward, choose explicitly between the archived automation store and the
-      one created during the rollback. Never merge them by editing.
+After upgrade commit, preserve the automation journal and orbital store. Use a
+forward repair that reads the existing state or follow the explicit backup and
+restore procedure. [CameraAgent lifecycle](deployment-installer.md#cameraagent-lifecycle)
 
 Never delete history, edit rows or lower counters in either store. The triggers
 refuse most of these changes, and working around them would break the idempotency,

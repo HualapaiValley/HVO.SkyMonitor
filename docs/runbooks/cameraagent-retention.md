@@ -114,6 +114,20 @@ expiration as event 2546. Event 2548 counts expired bases skipped because their
 definitions lack a readable preview identity and identifies the first such base.
 Exact links to successfully pruned revisions return HTTP 404.
 
+After pruning bases, the same sweep checks measured-trail work by source
+exposure. It removes consumed records when the source has reached the UTC-day
+cutoff, its raw files and holds are gone, no retained view uses the exposure,
+and any qualified linear products and centered previews have left the
+processing store. An exposure with pending or deferred trail work keeps its
+records until the worker settles them. A retained stack keeps the trail records
+of all its contributors, even after a contributor's single view expires.
+
+The sweep pages through 128 trail work records at a time and commits at most 128
+deletes per transaction, releasing the lifecycle locks between batches. This
+also clears eligible records left by earlier sweeps. Event 2549 reports the
+number removed. The original transient stage receipts persist, so a retry or
+restart cannot enqueue the same settled event again.
+
 SQLite reuses free journal pages on later writes. This sweep does not vacuum
 the journal or return the free pages to the filesystem. The shared journal
 adopts the retention indexes on startup. Use the paired pre-upgrade checkpoint

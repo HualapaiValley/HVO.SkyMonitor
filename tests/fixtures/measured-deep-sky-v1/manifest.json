@@ -1,0 +1,86 @@
+{
+  "training-diffuse": {
+    "sha256": "89862f1a3c26cb4ca197760882afd124819061288562cf24fef2e2c6a27a6e2e",
+    "centroid": [
+      42.5,
+      45.5
+    ]
+  },
+  "training-blank": {
+    "sha256": "25232d67b5018fab6a8a2adc80b5d57d6d6b6331f246608e81c351aa9346f99f",
+    "centroid": [
+      42.5,
+      45.5
+    ]
+  },
+  "training-psf": {
+    "sha256": "a2bc40234a6caa0f0df861b563303d1abda8bac565d9145a4478ced7559fd652",
+    "centroid": [
+      42.5,
+      45.5
+    ]
+  },
+  "training-blend": {
+    "sha256": "e78882c7d847251e92d550078ab514bb70220f0011ee6376b1c0142490bd79ec",
+    "centroid": [
+      42.5,
+      45.5
+    ]
+  },
+  "training-trail": {
+    "sha256": "b316e86cac1aa4b04472493b6393dc5376eeba6cfbcda16855015d2124d3f24b",
+    "centroid": [
+      42.5,
+      45.5
+    ]
+  },
+  "training-seam": {
+    "sha256": "747cf5a5ce815345ae3a40be1cf259ec09e447940aa869d28260b9e1b6ce742c",
+    "centroid": [
+      42.5,
+      45.5
+    ]
+  },
+  "held-out-diffuse": {
+    "sha256": "5be2b36cec8f6edbb0a99f91a0b37fe6ade3fcb545c7e496e3872c2a9eec75b5",
+    "centroid": [
+      62.5,
+      32.5
+    ]
+  },
+  "held-out-blank": {
+    "sha256": "dcb9bbed7c2285124a77a5f57b7de68773adbb4985badeef552b4e3b105d3497",
+    "centroid": [
+      62.5,
+      32.5
+    ]
+  },
+  "held-out-psf": {
+    "sha256": "5f247f0e84fe192dd8c732a6316288a6f60d92cc9c274cbee9b5714003ae1353",
+    "centroid": [
+      62.5,
+      32.5
+    ]
+  },
+  "held-out-blend": {
+    "sha256": "0a578a824ee844acf1743aa3cd9fa90c3b5ab0320b7cfb8f586cdd30518896bc",
+    "centroid": [
+      62.5,
+      32.5
+    ]
+  },
+  "held-out-trail": {
+    "sha256": "c5a5827fa293b91914ea529abcb7d5e365698a415a3013f4f83dd9c5ec241f3b",
+    "centroid": [
+      62.5,
+      32.5
+    ]
+  },
+  "held-out-seam": {
+    "sha256": "31180916d65c7356a60521d35c63edb057d268818708cb67105fce5bed495353",
+    "centroid": [
+      62.5,
+      32.5
+    ]
+  }
+}

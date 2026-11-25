@@ -1,0 +1,31 @@
+.running-evidence {
+    margin-block: 1rem;
+    padding: 1rem;
+    border: 1px solid var(--hvo-border, #394454);
+    border-radius: .5rem;
+}
+
+.running-facts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr));
+    gap: .75rem 1.25rem;
+}
+
+.running-facts dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
+.running-table {
+    overflow-x: auto;
+}
+
+.running-table table {
+    width: 100%;
+}
+
+.running-table :is(th, td) {
+    padding: .5rem .75rem;
+    vertical-align: top;
+    text-align: left;
+}

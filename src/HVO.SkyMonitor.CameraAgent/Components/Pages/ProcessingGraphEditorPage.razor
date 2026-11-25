@@ -72,9 +72,9 @@
                             {
                                 <div class="node-row__head">
                                     <label>Identifier<input class="form-control" aria-label="Node identifier" @bind="node.Id" @bind:after="FormChanged" /></label>
-                                    <label>Type<select class="form-select" aria-label="Node type" @bind="node.Type" @bind:after="FormChanged">@if (!GraphService.StepAliases.Contains(node.Type, StringComparer.Ordinal)) { <option value="@node.Type">@node.Type</option> }@foreach (var alias in GraphService.StepAliases) { <option value="@alias">@alias</option> }</select></label>
+                                    <label>Type<select class="form-select" aria-label="Node type" @bind="node.Type" @bind:after="() => NodeConfigurationChanged(node)">@if (!GraphService.StepAliases.Contains(node.Type, StringComparer.Ordinal)) { <option value="@node.Type">@node.Type</option> }@foreach (var alias in GraphService.StepAliases) { <option value="@alias">@alias</option> }</select></label>
                                     <label class="check"><input type="checkbox" @bind="node.Required" @bind:after="FormChanged" /> Required</label>
-                                    <label class="check"><input type="checkbox" @bind="node.Enabled" @bind:after="FormChanged" /> Enabled</label>
+                                    <label class="check"><input type="checkbox" @bind="node.Enabled" @bind:after="() => NodeConfigurationChanged(node)" /> Enabled</label>
                                     <span class="node-row__actions">
                                         <button type="button" class="btn btn-sm btn-outline-light" aria-label="Move @node.Id up" disabled="@(index == 0)" @onclick="() => Move(node, -1)">Move up</button>
                                         <button type="button" class="btn btn-sm btn-outline-light" aria-label="Move @node.Id down" disabled="@(index == _model.Nodes.Count - 1)" @onclick="() => Move(node, 1)">Move down</button>
@@ -103,7 +103,7 @@
                                         {
                                             <ProcessingNodeOptionsEditor IdPrefix="@($"node-options-{index}")" Form="optionsForm" Changed="FormChanged"
                                                 NodeEnabled="@(_model.SchemaVersion == CapturePipelineSchemaVersions.ExplicitV2 ? node.Enabled : null)"
-                                                NodeEnabledChanged="value => node.Enabled = value" />
+                                                NodeEnabledChanged="value => { node.Enabled = value; NodeConfigurationChanged(node); }" />
                                         }
                                     </section>
                                 }
@@ -190,6 +190,10 @@
         @if (Section == "cloud-assessment" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == "CloudAssessment"))
         {
             <p role="note">This graph has no cloud assessment node. Add CloudAssessment with an explicit raw or calibrated image dependency to configure it. Clear-reference provisioning stays unchanged; saving, validation and activation remain separate.</p>
+        }
+        @if (Section == "regional-stellar-visibility" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == RegionalStellarVisibilityProducts.StepAlias))
+        {
+            <p role="note">This graph has no regional stellar visibility node. Add RegionalStellarVisibility to configure per-tile star visibility evidence alongside clear-reference cloud assessment; saving, validation and activation remain separate.</p>
         }
         @if (Section == "weather-cloud-overlay" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == "WeatherCloudOverlay"))
         {

@@ -149,7 +149,7 @@ internal sealed partial class CenteredViewProducer
         return (channels, planes[^1].Payload);
     }
 
-    private static void RequireWindowBinding(CenteredWindowClosure closure, CenteredWindowPublication publication,
+    internal static void RequireWindowBinding(CenteredWindowClosure closure, CenteredWindowPublication publication,
         CenteredRegisteredStackEvidence evidence)
     {
         var plan = evidence.Plan;

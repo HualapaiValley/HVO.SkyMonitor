@@ -586,19 +586,20 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
     /// those are shown rather than an empty graph.
     /// </summary>
     internal static IReadOnlyList<CaptureProcessingPlanNode> CanvasNodes(CaptureProcessingPlanPreview plan)
-        => plan.DesiredNodes.Count == 0 ? plan.EffectiveNodes : plan.DesiredNodes;
+        => plan.DesiredNodes.Count == 0 ? plan.EffectiveNodes :
+            [.. plan.DesiredNodes, .. plan.EffectiveNodes.Where(node =>
+                !plan.DesiredNodes.Any(desired => string.Equals(desired.Id, node.Id, StringComparison.OrdinalIgnoreCase)))];
 
     internal static bool UsesDefaultSteps(CaptureProcessingPlanPreview plan)
         => plan.DesiredNodes.Count == 0 && plan.EffectiveNodes.Count > 0;
 
     /// <summary>
-    /// Places the steps on the grid. A legacy step without declared dependencies is drawn from the dependencies
-    /// CameraAgent inferred for it, which the effective graph records.
+    /// Draw enabled edges from the compiled plan and retain declared edges for disabled branches.
     /// </summary>
     internal static IReadOnlyList<PipelineGraphPlacement> Arrange(CaptureProcessingPlanPreview plan)
     {
         var nodes = CanvasNodes(plan)
-            .Select(node => node.Dependencies is null && Effective(plan, node.Id) is { } effective
+            .Select(node => Effective(plan, node.Id) is { } effective
                 ? node with { Dependencies = effective.Dependencies }
                 : node)
             .ToArray();
@@ -748,7 +749,7 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
     internal static IReadOnlyList<PipelineCheck> Validate(CaptureProcessingPlanPreview plan)
     {
         var checks = new List<PipelineCheck>();
-        var nodes = plan.DesiredNodes;
+        var nodes = CanvasNodes(plan);
         if (UsesDefaultSteps(plan))
         {
             checks.Add(new("No steps are configured, so CameraAgent runs its default steps.", null));
@@ -777,7 +778,7 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
                 .Select(dependency => (node.Id, Dependency: dependency)))
             .FirstOrDefault();
         checks.Add(dangling.Id is null
-            ? new("Every dependency names a configured step or the raw frame.", true)
+            ? new("Every dependency names an available step identity or the raw frame.", true)
             : new($"{dangling.Id} depends on {dangling.Dependency}, which is not configured.", false));
         checks.Add(IsAcyclic(nodes)
             ? new("Dependencies form an acyclic graph.", true)
@@ -825,7 +826,8 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
     }
 
     private static string NodeClass(CaptureProcessingPlanNode node, bool active)
-        => string.Concat("ops-pipeline-node step", active ? " active" : "", node.Enabled ? "" : " off", node.Required ? "" : " optional");
+        => string.Concat("ops-pipeline-node step", active ? " active" : "", node.Enabled ? "" : " off",
+            ExposureMeasurementProducts.IsSystemManagedStepAlias(node.Alias) ? " fixed" : node.Required ? "" : " optional");
 
     private static string EdgeClass(PipelineCanvasEdge edge, string? selectedKey)
     {
@@ -883,11 +885,11 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
             => string.Concat(Count(count), " ", count == 1 ? one : many, " waiting");
     }
 
-    private static string RawConsumers(IReadOnlyList<PipelineGraphPlacement> placements, PipelineCanvas canvas)
+    private static string RawConsumers(CaptureProcessingPlanPreview plan, PipelineCanvas canvas)
     {
-        var names = placements
-            .Where(static placement => placement.Dependencies.Any(PipelineGraphLayout.IsRawInput))
-            .Select(static placement => Label(placement.Node.Id))
+        var names = plan.EffectiveNodes
+            .Where(static node => node.Dependencies?.Any(PipelineGraphLayout.IsRawInput) == true)
+            .Select(static node => Label(node.Id))
             .ToList();
         if (canvas.Stages.Count > 0)
         {
@@ -912,15 +914,20 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
     };
 
     private static string StepFacts(CaptureProcessingPlanNode node)
-        => string.Concat(node.Alias, " / ", node.Required ? "required" : "optional", node.Enabled ? "" : " / off");
+        => ExposureMeasurementProducts.IsSystemManagedStepAlias(node.Alias) ? StepKind(node) :
+            string.Concat(node.Alias, " / ", node.Required ? "required" : "optional", node.Enabled ? "" : " / off");
 
     private static string StepKind(CaptureProcessingPlanNode node)
-        => ExposureMeasurementProducts.IsSystemManagedStepAlias(node.Alias) ? "Fixed step" :
+        => IsExposureMeasurement(node) ? "Fixed measurement" :
+            ExposureMeasurementProducts.IsSystemManagedStepAlias(node.Alias) ? "Fixed step" :
             string.Concat(node.Required ? "Required step" : "Optional step", node.Enabled ? "" : " / off");
+
+    private static bool IsExposureMeasurement(CaptureProcessingPlanNode node)
+        => string.Equals(node.Alias, ExposureMeasurementProducts.StepAlias, StringComparison.OrdinalIgnoreCase);
 
     private static string StepDescription(CaptureProcessingPlanNode node)
     {
-        if (string.Equals(node.Alias, ExposureMeasurementProducts.StepAlias, StringComparison.OrdinalIgnoreCase))
+        if (IsExposureMeasurement(node))
         {
             return "Records raw brightness, measured centroids and half-flux diameter for each exposure as inputs permit.";
         }
@@ -941,7 +948,8 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
     {
         if (node.Dependencies is { } declared)
         {
-            return declared.Count == 0 ? "None" : string.Join(", ", declared.Select(Input));
+            var dependencies = Effective(plan, node.Id)?.Dependencies ?? declared;
+            return dependencies.Count == 0 ? "None" : string.Join(", ", dependencies.Select(Input));
         }
         var inferred = Effective(plan, node.Id)?.Dependencies;
         return inferred is { Count: > 0 }
@@ -951,6 +959,13 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
 
     private static string Input(string dependency)
         => PipelineGraphLayout.IsRawInput(dependency) ? "Raw frame" : dependency;
+
+    private static string Consumers(CaptureProcessingPlanPreview plan, string producerId)
+    {
+        var consumers = plan.EffectiveNodes.Where(node => node.Dependencies?.Contains(producerId, StringComparer.OrdinalIgnoreCase) == true)
+            .Select(static node => node.Id).ToArray();
+        return consumers.Length == 0 ? "None in the effective graph" : string.Join(", ", consumers);
+    }
 
     private static string Outputs(CaptureProcessingPlanPreview plan, CaptureProcessingPlanNode node)
     {

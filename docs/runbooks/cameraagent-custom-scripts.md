@@ -64,10 +64,11 @@ covered field creates a new target. Old definitions/occurrences are unavailable
 until deliberately revised, rather than reinterpreted. Definition revision and
 occurrence/run hashes retain that identity through the existing journal. The
 hashing of existing task kinds is unchanged. The local automation store migrates
-schema 3 to 4 for script-stop attribution; adoption checkpoints the paired state,
-and rollback restores that checkpoint for the previous reader. Older binaries
-cannot read the appended enum value in retained revisions: downgrade after use
-is unsupported, even if the current definition is removed.
+schema 3 to 4 for script-stop attribution. Pending-upgrade recovery restores the
+checkpoint paired with the previous reader. Older binaries cannot read the
+appended enum value in retained revisions, even after removal of the current
+definition. After commit, use a supported forward repair or the explicit backup
+and restore procedure. [CameraAgent lifecycle](deployment-installer.md#cameraagent-lifecycle)
 
 At most 16 registrations, 48-character identifiers, 64 KiB UTF-8 content and 16
 positional arguments of 256 characters are accepted. Argument kinds are `Text`,
