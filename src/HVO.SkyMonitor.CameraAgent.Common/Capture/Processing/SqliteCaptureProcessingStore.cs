@@ -252,12 +252,14 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
     private const string AstrometryLookupIndexSql = LegacyAstrometryJournalSchema.LookupIndexDefinition + ";";
     private const string SchemaBeforeCenteredViewRetentionIndexesSql =
         SchemaBeforeRegistrationStateSql + "\n" + CenteredRegistrationStateSchemaSql;
+    private const string SchemaBeforeWindowWorkQueueSql =
+        SchemaBeforeCenteredViewRetentionIndexesSql + "\n" + CenteredViewRetentionSchema.IndexSql;
     private static string SchemaBeforeAstrometryIndexSql =>
         SchemaBeforeRegistrationStateSql.Replace(AstrometryLookupIndexSql, string.Empty, StringComparison.Ordinal);
     private static readonly string ViewsBeforeRuntimeSchemaSql = SchemaBeforeAstrometryIndexSql
         .Replace("version = 12", "version = 11", StringComparison.Ordinal)
         .Replace("VALUES (1, 12)", "VALUES (1, 11)", StringComparison.Ordinal)
-        .Replace(CenteredViewRuntimeSchemaSql, string.Empty, StringComparison.Ordinal);
+        .Replace(LegacyCenteredViewRuntimeSchemaSql, string.Empty, StringComparison.Ordinal);
     private static readonly string LegacySchema11Sql = ViewsBeforeRuntimeSchemaSql
         .Replace(CenteredWindowSchemaSql, LegacyCenteredWindowCheckpointSchemaSql, StringComparison.Ordinal);
     private static readonly string LegacySchema10Sql = ViewsBeforeRuntimeSchemaSql
@@ -4083,7 +4085,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         }
     }
 
-    private const string SchemaBeforeRegistrationStateSql = """
+    private const string SchemaCoreBeforeCenteredRuntimeSql = """
         CREATE TABLE capture_processing_schema(
             schema_key INTEGER PRIMARY KEY CHECK(schema_key = 1),
             version INTEGER NOT NULL CHECK(version = 12)
@@ -4459,8 +4461,13 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         CREATE UNIQUE INDEX ix_processing_graph_delivery_facts_settlement
             ON processing_graph_delivery_facts(proposal_id)
             WHERE fact_kind IN ('Accepted', 'Rejected', 'Expired');
-        """ + "\n" + CenteredWindowSchemaSql + "\n" + CenteredViewSchemaSql + "\n" + CenteredViewRuntimeSchemaSql;
+        """ + "\n" + CenteredWindowSchemaSql + "\n" + CenteredViewSchemaSql;
 
-    private const string SchemaSql = SchemaBeforeCenteredViewRetentionIndexesSql + "\n" + CenteredViewRetentionSchema.IndexSql;
+    private const string SchemaBeforeRegistrationStateSql =
+        SchemaCoreBeforeCenteredRuntimeSql + "\n" + LegacyCenteredViewRuntimeSchemaSql;
+
+    private const string SchemaSql =
+        SchemaCoreBeforeCenteredRuntimeSql + "\n" + CenteredViewRuntimeSchemaSql + "\n" +
+        CenteredRegistrationStateSchemaSql + "\n" + CenteredViewRetentionSchema.IndexSql;
 
 }

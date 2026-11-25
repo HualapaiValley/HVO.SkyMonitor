@@ -526,13 +526,16 @@ its schema in today, and what `io.hvo.skymonitor.state-contracts` and `stateCont
 The centered scheduling and storage stage used minimum-compatible revision
 `1c76d83224bacdcc129041c6d1779eb5f95716cb`. The registration retention and diagnostic
 reader used `19694b969ae1968254988eb641a9044fa6010bbc` (#1961). The centered-view journal
-retention reader used `ee848ab110e094ef888c1aca4225ea9c8be226f6` (#2000). Each change
-extends the schema-12 object set that earlier readers validate.
+retention reader used `ee848ab110e094ef888c1aca4225ea9c8be226f6` (#2000). The reader
+that combined #1961 and #2000 used `ded7cadc6fe005f8bdda09387e1c3d1337f66e4e`. Each
+change extends the schema-12 object set that earlier readers validate.
 
-The reader that combines both changes declares `ded7cadc6fe005f8bdda09387e1c3d1337f66e4e`.
-The installer selects a paired checkpoint when upgrading from either reader or
-an earlier private schema-12 image, including when the raw, processing, and
-environmental schema numbers are already 17, 12, and 5.
+The current centered-view window-work queue reader adds `ix_processing_centered_view_window_due`
+and `retry_count` on `processing_centered_view_window_work` (#1991, #1999) and declares
+`b45b293feede430290d255a332b4c388d2b7f56f`. The installer selects a paired checkpoint
+when upgrading from `ded7cadc6fe005f8bdda09387e1c3d1337f66e4e` or any earlier private
+schema-12 image, including when the raw, processing, and environmental schema numbers
+are already 17, 12, and 5.
 
 Each supported raw journal version identifies one canonical raw-ingress layout.
 Assign a new raw version to any future change to that layout. Validate and upgrade

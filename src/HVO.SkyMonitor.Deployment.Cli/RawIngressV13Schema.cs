@@ -54,6 +54,7 @@ internal static class RawIngressV13Schema
         "ix_processing_centered_view_archive_reference", "processing_centered_view_cursors",
         "processing_centered_view_retry", "ix_processing_centered_view_retry_due",
         "processing_centered_view_window_work", "ix_processing_centered_view_window_live_base",
+        "ix_processing_centered_view_window_due",
         "processing_centered_view_trail_work", "ix_processing_centered_view_trail_due", "ix_processing_centered_view_trail_capture",
         "processing_centered_windows", "ix_processing_centered_windows_pending", "ix_processing_centered_windows_reference",
         "ix_processing_centered_windows_publication_retention", "processing_centered_registration_input_failures",

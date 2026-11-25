@@ -70,7 +70,7 @@ internal sealed partial class SqliteCaptureProcessingStore
     {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = CenteredViewSchemaSql + "\n" + CenteredViewRuntimeSchemaSql + "\n" + CenteredViewRetentionSchema.IndexSql;
+        command.CommandText = CenteredViewSchemaSql + "\n" + CenteredViewRuntimeSchemaSql + "\n" + CenteredViewRetentionSchema.IndexSql + "\n" + BackfillPendingWindowWorkSql;
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -79,7 +79,7 @@ internal sealed partial class SqliteCaptureProcessingStore
     {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = CenteredViewRuntimeSchemaSql + "\n" + CenteredViewRetentionSchema.IndexSql;
+        command.CommandText = CenteredViewRuntimeSchemaSql + "\n" + CenteredViewRetentionSchema.IndexSql + "\n" + BackfillPendingWindowWorkSql;
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -126,7 +126,43 @@ internal sealed partial class SqliteCaptureProcessingStore
             ON processing_centered_windows(reference_capture_id) WHERE reference_capture_id IS NOT NULL;
         """;
 
-    private const string CenteredViewRuntimeSchemaSql = """
+    private const string BackfillPendingWindowWorkSql = """
+        INSERT OR IGNORE INTO processing_centered_view_window_work(window_sha256, retry_utc)
+        SELECT window.window_sha256, 0
+        FROM processing_centered_windows window
+        LEFT JOIN processing_centered_view_window_work work ON work.window_sha256 = window.window_sha256
+        WHERE window.terminal = 1 AND window.closure_json IS NOT NULL AND window.reference_capture_id IS NOT NULL
+            AND work.window_sha256 IS NULL;
+        """;
+
+    private const string LegacyCenteredViewWindowWorkSchemaSql = """
+        CREATE TABLE processing_centered_view_window_work (
+            window_sha256 TEXT PRIMARY KEY NOT NULL REFERENCES processing_centered_windows(window_sha256),
+            live_base_id TEXT REFERENCES processing_centered_view_bases(base_id),
+            retry_utc INTEGER,
+            terminal_reason TEXT,
+            CHECK(retry_utc IS NULL OR terminal_reason IS NULL)
+        ) STRICT;
+        CREATE INDEX ix_processing_centered_view_window_live_base
+            ON processing_centered_view_window_work(live_base_id) WHERE live_base_id IS NOT NULL;
+        """;
+
+    private const string CenteredViewWindowWorkSchemaSql = """
+        CREATE TABLE processing_centered_view_window_work (
+            window_sha256 TEXT PRIMARY KEY NOT NULL REFERENCES processing_centered_windows(window_sha256),
+            live_base_id TEXT REFERENCES processing_centered_view_bases(base_id),
+            retry_utc INTEGER,
+            terminal_reason TEXT,
+            retry_count INTEGER NOT NULL DEFAULT 0 CHECK(retry_count >= 0),
+            CHECK(retry_utc IS NULL OR terminal_reason IS NULL)
+        ) STRICT;
+        CREATE INDEX ix_processing_centered_view_window_live_base
+            ON processing_centered_view_window_work(live_base_id) WHERE live_base_id IS NOT NULL;
+        CREATE INDEX ix_processing_centered_view_window_due
+            ON processing_centered_view_window_work(retry_utc, window_sha256) WHERE retry_utc IS NOT NULL;
+        """;
+
+    private const string CenteredViewRuntimePrefixSql = """
         CREATE INDEX ix_processing_centered_view_archive_reference
             ON processing_centered_view_bases(reference_id);
         CREATE TABLE processing_centered_view_cursors (
@@ -144,15 +180,9 @@ internal sealed partial class SqliteCaptureProcessingStore
         ) STRICT;
         CREATE INDEX ix_processing_centered_view_retry_due
             ON processing_centered_view_retry(agent_id, camera_id, retry_utc, revision);
-        CREATE TABLE processing_centered_view_window_work (
-            window_sha256 TEXT PRIMARY KEY NOT NULL REFERENCES processing_centered_windows(window_sha256),
-            live_base_id TEXT REFERENCES processing_centered_view_bases(base_id),
-            retry_utc INTEGER,
-            terminal_reason TEXT,
-            CHECK(retry_utc IS NULL OR terminal_reason IS NULL)
-        ) STRICT;
-        CREATE INDEX ix_processing_centered_view_window_live_base
-            ON processing_centered_view_window_work(live_base_id) WHERE live_base_id IS NOT NULL;
+        """;
+
+    private const string CenteredViewRuntimeSuffixSql = """
         CREATE TABLE processing_centered_view_trail_work (
             revision INTEGER PRIMARY KEY AUTOINCREMENT,
             capture_id TEXT NOT NULL,
@@ -170,6 +200,12 @@ internal sealed partial class SqliteCaptureProcessingStore
         CREATE INDEX ix_processing_centered_view_trail_capture
             ON processing_centered_view_trail_work(capture_id, revision);
         """;
+
+    private const string LegacyCenteredViewRuntimeSchemaSql =
+        CenteredViewRuntimePrefixSql + "\n" + LegacyCenteredViewWindowWorkSchemaSql + "\n" + CenteredViewRuntimeSuffixSql;
+
+    private const string CenteredViewRuntimeSchemaSql =
+        CenteredViewRuntimePrefixSql + "\n" + CenteredViewWindowWorkSchemaSql + "\n" + CenteredViewRuntimeSuffixSql;
 
     private const string CenteredViewSchemaSql = """
         CREATE TABLE processing_centered_view_bases (

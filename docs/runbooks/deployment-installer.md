@@ -2796,14 +2796,17 @@ artifact envelope or linear layout keeps its original closure identity and recei
 Registration and archive recomputation require current, fully bound pins and the
 current registration recipe.
 
-**Centered-view journal retention (Ref #2000).** The reader that first added its
-six indexes in the shared raw journal declared `ee848ab110e094ef888c1aca4225ea9c8be226f6`.
-Earlier processing-schema-12 readers validate the schema objects exactly. The
-reader that combines #1961 and #2000 declares `ded7cadc6fe005f8bdda09387e1c3d1337f66e4e`
-so upgrades from either reader select a paired checkpoint, as do upgrades from
-earlier private builds declaring `1c76d83224bacdcc129041c6d1779eb5f95716cb`.
-The raw and processing schema numbers stay at 17 and 12. Pending-upgrade
-recovery restores the state paired with the older image.
+**Centered-view journal retention and window-work queue (Refs #2000, #1991, #1999).**
+The reader that first added the six retention indexes in the shared raw journal declared
+`ee848ab110e094ef888c1aca4225ea9c8be226f6`, and the reader that combined #1961 and #2000
+declared `ded7cadc6fe005f8bdda09387e1c3d1337f66e4e`. Earlier processing-schema-12 readers
+validate the schema objects exactly. The current reader adds
+`ix_processing_centered_view_window_due` and `retry_count` on
+`processing_centered_view_window_work` and declares
+`b45b293feede430290d255a332b4c388d2b7f56f` so upgrades from
+`ded7cadc6fe005f8bdda09387e1c3d1337f66e4e` or any earlier private schema-12 build select
+a paired checkpoint before startup adoption. The raw and processing schema numbers stay
+at 17 and 12. Pending-upgrade recovery restores the state paired with the older image.
 
 **Legacy migration rule, still enforced by current tests.** A CameraAgent schema change must stay readable by the previous release for one release: add
 first, remove in a later release. The unit test `PreviousReleaseStoreReadabilityTests` holds every CameraAgent SQLite

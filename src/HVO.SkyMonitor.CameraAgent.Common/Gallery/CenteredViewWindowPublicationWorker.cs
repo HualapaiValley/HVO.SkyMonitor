@@ -15,8 +15,10 @@ internal sealed partial class CenteredViewWindowPublicationWorker(
     CenteredViewSourceLayers layers, TimeProvider clock,
     ILogger<CenteredViewWindowPublicationWorker> logger) : BackgroundService
 {
+    internal const int MaximumMissingCenterRetries = 8;
+    internal const string MissingCenterSingleTerminalReason = "centered.window-center-single-unavailable";
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(2);
-    private static readonly TimeSpan RetryDelay = TimeSpan.FromSeconds(15);
+    internal static readonly TimeSpan RetryDelay = TimeSpan.FromSeconds(15);
     private static readonly CenteredViewPreviewOptions PreviewOptions = new();
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -90,19 +92,25 @@ internal sealed partial class CenteredViewWindowPublicationWorker(
         var liveBase = stack?.Base.BaseId;
         if (liveBase is null)
         {
-            var archive = await views.ReadArchiveAsync(stream, center.Key.CaptureId, token).ConfigureAwait(false);
-            liveBase = archive.SingleOrDefault(item => item.Base.Definition.Kind == CenteredViewKind.Single)?.Base.BaseId;
-        }
-        if (liveBase is null)
-        {
-            await views.CheckpointWindowAsync(id, null, RetryDelay, null, token).ConfigureAwait(false);
+            var linear = await products.ReadLinearAsync(center.Key, token).ConfigureAwait(false);
+            long? settledLinearRevision = linear is { Disposition: not LinearExposureDisposition.Pending, Revision: > 0 }
+                ? linear.Revision
+                : null;
+            var observedLinearRevision = linear?.Revision ?? 0;
+            var resolution = await views.ResolveOrCheckpointMissingCenterAsync(
+                id, stream, center.Key.CaptureId, settledLinearRevision, observedLinearRevision,
+                RetryDelay, MaximumMissingCenterRetries, MissingCenterSingleTerminalReason, token)
+                .ConfigureAwait(false);
+            if (resolution.Outcome == SqliteCenteredViews.CenterSingleCheckpointOutcome.SettledWithoutBase)
+                CenterSingleUnavailable(logger, id, center.Key.CaptureId);
+            else if (resolution.Outcome == SqliteCenteredViews.CenterSingleCheckpointOutcome.ExhaustedRetries)
+                CenterSingleRetryExhausted(logger, id, center.Key.CaptureId, MaximumMissingCenterRetries);
             return;
         }
         // Make the ready base eligible before optional reconstruction. A crash or
         // a missing optional input cannot make a usable base disappear.
         await views.CheckpointWindowAsync(id, liveBase, RetryDelay, null, token).ConfigureAwait(false);
-        if (stack is not null)
-            await layers.RebuildForBaseAsync(stack.Base, token).ConfigureAwait(false);
+        await layers.RebuildForBaseAsync(stack!.Base, token).ConfigureAwait(false);
         await views.CheckpointWindowAsync(id, liveBase, null, null, token).ConfigureAwait(false);
     }
 
@@ -111,4 +119,10 @@ internal sealed partial class CenteredViewWindowPublicationWorker(
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "The centered view for closed window {WindowIdentity} could not publish.")]
     private static partial void WindowFailed(ILogger logger, string windowIdentity, Exception exception);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Closed window {WindowIdentity} for reference capture {CaptureId} ended without a publishable center single.")]
+    private static partial void CenterSingleUnavailable(ILogger logger, string windowIdentity, Guid captureId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Closed window {WindowIdentity} for reference capture {CaptureId} exhausted {MaximumAttempts} attempts waiting for its center single.")]
+    private static partial void CenterSingleRetryExhausted(ILogger logger, string windowIdentity, Guid captureId, int maximumAttempts);
 }

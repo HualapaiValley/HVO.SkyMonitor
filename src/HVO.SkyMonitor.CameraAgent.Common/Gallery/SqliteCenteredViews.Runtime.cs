@@ -83,22 +83,183 @@ internal sealed partial class SqliteCenteredViews
         return await command.ExecuteScalarAsync(token).ConfigureAwait(false) is not null;
     }
 
+    internal const string DueWindowPublicationsSql = """
+        SELECT work.window_sha256
+        FROM processing_centered_view_window_work work
+        JOIN processing_centered_windows window ON window.window_sha256 = work.window_sha256
+        WHERE work.retry_utc IS NOT NULL AND work.retry_utc <= $now
+            AND window.terminal = 1 AND window.closure_json IS NOT NULL AND window.reference_capture_id IS NOT NULL
+        ORDER BY window.deadline_utc_ticks, work.window_sha256
+        LIMIT $limit;
+        """;
+
+    internal enum CenterSingleCheckpointOutcome
+    {
+        FoundBase,
+        DeferredForNewerRevision,
+        ScheduledRetry,
+        SettledWithoutBase,
+        ExhaustedRetries,
+        AlreadySettled
+    }
+
+    internal readonly record struct CenterSingleCheckpointResult(CenterSingleCheckpointOutcome Outcome, string? BaseId);
+
     internal async ValueTask<IReadOnlyList<string>> ReadDueWindowPublicationsAsync(int limit, CancellationToken token)
     {
         using var connection = await OpenAsync(token).ConfigureAwait(false);
-        using var command = CreateCommand(connection, null, """
-            SELECT window.window_sha256
-            FROM processing_centered_windows window
-            LEFT JOIN processing_centered_view_window_work work ON work.window_sha256 = window.window_sha256
-            WHERE window.terminal = 1 AND window.reference_capture_id IS NOT NULL
-                AND (work.window_sha256 IS NULL OR work.retry_utc <= $now)
-            ORDER BY window.deadline_utc_ticks, window.window_sha256 LIMIT $limit;
-            """, ("$now", clock.GetUtcNow().UtcTicks), ("$limit", limit));
+        using var command = CreateCommand(connection, null, DueWindowPublicationsSql,
+            ("$now", clock.GetUtcNow().UtcTicks), ("$limit", limit));
         using var reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false);
         var values = new List<string>(limit);
         while (await reader.ReadAsync(token).ConfigureAwait(false))
             values.Add(reader.GetString(0));
         return values;
+    }
+
+    internal Func<SqliteConnection, IDisposable?>? BeforeResolveMissingCenterWriteForTest { get; set; }
+
+    private SqliteTransaction BeginResolveMissingCenterWrite(SqliteConnection connection)
+    {
+        var hook = BeforeResolveMissingCenterWriteForTest;
+        if (hook is null)
+            return BeginWrite(connection);
+
+        SqliteTransaction? transaction = null;
+        try
+        {
+            using var writeHookScope = hook(connection);
+            transaction = BeginWrite(connection);
+            return transaction;
+        }
+        catch
+        {
+            transaction?.Dispose();
+            throw;
+        }
+    }
+
+    internal async ValueTask<CenterSingleCheckpointResult> ResolveOrCheckpointMissingCenterAsync(
+        string windowId, CenteredViewStream stream, Guid referenceCaptureId, long? settledLinearRevision,
+        long observedLinearRevision, TimeSpan retryAfter, int maximumRetries, string terminalReason,
+        CancellationToken token)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumRetries);
+        var streamId = StreamId(stream);
+        using var connection = await OpenAsync(token).ConfigureAwait(false);
+        using var transaction = BeginResolveMissingCenterWrite(connection);
+        string? baseId = null;
+        var currentLinearRevision = 0L;
+        var settledWithoutBase = false;
+        using (var read = CreateCommand(connection, transaction, """
+            SELECT
+                (SELECT b.base_id
+                 FROM processing_centered_view_bases b
+                 WHERE b.stream_id = $stream AND b.reference_id = $reference
+                   AND b.kind = $single AND b.recomputed_from IS NULL
+                 LIMIT 1),
+                COALESCE((SELECT MAX(p.revision)
+                          FROM centered_exposure_products p
+                          WHERE p.capture_id = $captureHex AND p.schema_version = $linearSchema), 0),
+                CASE WHEN $linearRevision IS NOT NULL
+                    AND COALESCE((SELECT c.consumed_revision
+                                  FROM processing_centered_view_cursors c
+                                  WHERE c.agent_id = $agent AND c.camera_id = $camera), 0) >= $linearRevision
+                    AND NOT EXISTS (
+                        SELECT 1 FROM processing_centered_view_retry r
+                        WHERE r.agent_id = $agent AND r.camera_id = $camera AND r.revision = $linearRevision
+                    )
+                    AND NOT EXISTS (
+                        SELECT 1 FROM centered_exposure_products p
+                        WHERE p.capture_id = $captureHex AND p.schema_version = $linearSchema
+                          AND p.revision > $linearRevision
+                    )
+                    THEN 1 ELSE 0 END;
+            """,
+            ("$stream", streamId), ("$reference", referenceCaptureId), ("$single", (int)CenteredViewKind.Single),
+            ("$agent", stream.Camera.AgentId), ("$camera", stream.Camera.CameraId),
+            ("$linearRevision", settledLinearRevision),
+            ("$captureHex", referenceCaptureId.ToString("N")),
+            ("$linearSchema", CenteredExposureProductReader.LinearSchemaVersion)))
+        using (var reader = await read.ExecuteReaderAsync(token).ConfigureAwait(false))
+        {
+            if (await reader.ReadAsync(token).ConfigureAwait(false))
+            {
+                baseId = ReadNullableText(reader, 0);
+                currentLinearRevision = reader.GetInt64(1);
+                settledWithoutBase = baseId is null && reader.GetInt64(2) != 0;
+            }
+        }
+
+        if (baseId is not null)
+        {
+            await ExecuteAsync(connection, transaction, """
+                INSERT INTO processing_centered_view_window_work(window_sha256, live_base_id, retry_utc, terminal_reason)
+                VALUES ($window, $base, NULL, NULL)
+                ON CONFLICT(window_sha256) DO UPDATE SET
+                    live_base_id = COALESCE(excluded.live_base_id, live_base_id),
+                    retry_utc = NULL,
+                    terminal_reason = NULL
+                WHERE retry_utc IS NOT NULL;
+                """, token, ("$window", windowId), ("$base", baseId)).ConfigureAwait(false);
+            await transaction.CommitAsync(token).ConfigureAwait(false);
+            return new(CenterSingleCheckpointOutcome.FoundBase, baseId);
+        }
+
+        var now = clock.GetUtcNow();
+        if (currentLinearRevision > observedLinearRevision)
+        {
+            await ExecuteAsync(connection, transaction, """
+                INSERT OR IGNORE INTO processing_centered_view_window_work(window_sha256, retry_utc)
+                VALUES ($window, $now);
+                """, token, ("$window", windowId), ("$now", now.UtcTicks)).ConfigureAwait(false);
+            await transaction.CommitAsync(token).ConfigureAwait(false);
+            return new(CenterSingleCheckpointOutcome.DeferredForNewerRevision, null);
+        }
+
+        if (settledWithoutBase)
+        {
+            using var settle = CreateCommand(connection, transaction, """
+                INSERT INTO processing_centered_view_window_work(window_sha256, live_base_id, retry_utc, terminal_reason)
+                VALUES ($window, NULL, NULL, $reason)
+                ON CONFLICT(window_sha256) DO UPDATE SET
+                    retry_utc = NULL,
+                    terminal_reason = $reason
+                WHERE retry_utc IS NOT NULL
+                RETURNING terminal_reason IS NOT NULL;
+                """, ("$window", windowId), ("$reason", terminalReason));
+            var settled = await settle.ExecuteScalarAsync(token).ConfigureAwait(false) is 1L;
+            await transaction.CommitAsync(token).ConfigureAwait(false);
+            return new(settled ? CenterSingleCheckpointOutcome.SettledWithoutBase : CenterSingleCheckpointOutcome.AlreadySettled, null);
+        }
+
+        var nextRetry = (now + retryAfter).UtcTicks;
+        using var retry = CreateCommand(connection, transaction, """
+            INSERT INTO processing_centered_view_window_work(window_sha256, live_base_id, retry_utc, terminal_reason, retry_count)
+            VALUES (
+                $window,
+                NULL,
+                CASE WHEN 1 >= $maxRetries THEN NULL ELSE $retry END,
+                CASE WHEN 1 >= $maxRetries THEN $reason ELSE NULL END,
+                1
+            )
+            ON CONFLICT(window_sha256) DO UPDATE SET
+                retry_utc = CASE WHEN retry_count + 1 >= $maxRetries THEN NULL ELSE $retry END,
+                terminal_reason = CASE WHEN retry_count + 1 >= $maxRetries THEN $reason ELSE NULL END,
+                retry_count = retry_count + 1
+            WHERE retry_utc IS NOT NULL
+            RETURNING terminal_reason IS NOT NULL;
+            """,
+            ("$window", windowId), ("$retry", nextRetry), ("$maxRetries", maximumRetries), ("$reason", terminalReason));
+        var result = await retry.ExecuteScalarAsync(token).ConfigureAwait(false);
+        await transaction.CommitAsync(token).ConfigureAwait(false);
+        var outcome = result switch
+        {
+            1L => CenterSingleCheckpointOutcome.ExhaustedRetries,
+            0L => CenterSingleCheckpointOutcome.ScheduledRetry,
+            _ => CenterSingleCheckpointOutcome.AlreadySettled
+        };
+        return new(outcome, null);
     }
 
     internal async ValueTask CheckpointWindowAsync(string windowId, string? liveBaseId,

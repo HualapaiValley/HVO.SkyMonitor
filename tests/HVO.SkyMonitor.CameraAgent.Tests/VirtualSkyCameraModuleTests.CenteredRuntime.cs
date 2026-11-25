@@ -1151,13 +1151,16 @@ public sealed partial class VirtualSkyCameraModuleTests
     }
 
     private static ServiceProvider CenteredRuntimeProvider(string root, TimeProvider clock,
-        Action<IServiceCollection>? configure = null, int? maximumAttempts = null, bool detectTransients = false)
+        Action<IServiceCollection>? configure = null, int? maximumAttempts = null, bool detectTransients = false,
+        long? maximumPreviewSourceBytes = null)
     {
         var settings = new Dictionary<string, string?>();
         if (maximumAttempts is { } limit)
             settings["CameraAgent:CaptureDistribution:MaximumAttempts"] = limit.ToString(System.Globalization.CultureInfo.InvariantCulture);
         if (detectTransients)
             settings["CameraAgent:TransientDetection:Mode"] = "Edge";
+        if (maximumPreviewSourceBytes is { } sourceBytes)
+            settings["CameraAgent:ArtifactRead:MaximumPreviewSourceBytes"] = sourceBytes.ToString(System.Globalization.CultureInfo.InvariantCulture);
         return ProcessingGraphOperationsTests.CreateProvider(root, settings, timeProvider: clock, configureServices: services =>
         {
             HVO.SkyMonitor.CameraAgent.Program.AddCameraModules(services);
