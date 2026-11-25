@@ -203,6 +203,63 @@ public sealed partial class ProcessingNodeOptionsTests
                 Json($$"""{"layers":[{"kind":"scene-constellations","zOrder":"{{badToken}}"}]}"""),
                 ProcessingNodeOptionsCodec.DefaultPath, allowQuotedNumbers: true).Diagnostics.Single().Code, badToken);
         }
+
+        // Retained quoted decimal tolerance accepts leading-'+' spellings accepted by .NET AllowReadingFromString
+        // while keeping strict mode, whitespace/sign guards, and range validation enforced.
+        foreach (var (quotedToken, expectedValue) in new[] { ("+2.5", 2.5), ("+.5", 0.5), ("+1e2", 100.0), ("+6", 6.0), ("+0", 0.0) })
+        {
+            var projectedJson = Json($$"""{"deepSkyMaximumSizeArcminutes":"{{quotedToken}}"}""");
+            Assert.AreEqual(ProcessingOptionReasonCodes.WrongType,
+                ProcessingNodeOptionsCodec.Decode(ProjectedSceneOptionDescriptors.Descriptor, projectedJson).Diagnostics.Single().Code,
+                quotedToken);
+            var retainedProjected = ProcessingNodeOptionsCodec.Decode(
+                ProjectedSceneOptionDescriptors.Descriptor,
+                projectedJson,
+                ProcessingNodeOptionsCodec.DefaultPath,
+                allowQuotedNumbers: true);
+            Assert.IsTrue(retainedProjected.IsValid, $"{quotedToken}: {string.Join(' ', retainedProjected.Diagnostics)}");
+            Assert.AreEqual(expectedValue, retainedProjected.Get("deepSkyMaximumSizeArcminutes").Value.AsRealNumber(), quotedToken);
+
+            var sceneJson = Json($$"""{"maximumLabelMagnitude":"{{quotedToken}}"}""");
+            Assert.AreEqual(ProcessingOptionReasonCodes.WrongType,
+                ProcessingNodeOptionsCodec.Decode(Scene, sceneJson).Diagnostics.Single().Code,
+                quotedToken);
+            var retainedScene = ProcessingNodeOptionsCodec.Decode(
+                Scene,
+                sceneJson,
+                ProcessingNodeOptionsCodec.DefaultPath,
+                allowQuotedNumbers: true);
+            if (expectedValue <= 30.0)
+            {
+                Assert.IsTrue(retainedScene.IsValid, $"{quotedToken}: {string.Join(' ', retainedScene.Diagnostics)}");
+                Assert.AreEqual(expectedValue, retainedScene.Get("maximumLabelMagnitude").Value.AsRealNumber(), quotedToken);
+            }
+            else
+            {
+                Assert.AreEqual(ProcessingOptionReasonCodes.OutOfRange, retainedScene.Diagnostics.Single().Code, quotedToken);
+            }
+
+            if (expectedValue > 0.0)
+            {
+                var rollingJson = Json($$"""{"maximumIntegrationMilliseconds":"{{quotedToken}}"}""");
+                Assert.AreEqual(ProcessingOptionReasonCodes.WrongType,
+                    ProcessingNodeOptionsCodec.Decode(RollingCombinationOptionDescriptors.Descriptor, rollingJson).Diagnostics.Single().Code,
+                    quotedToken);
+                var retainedRolling = ProcessingNodeOptionsCodec.Decode(
+                    RollingCombinationOptionDescriptors.Descriptor,
+                    rollingJson,
+                    ProcessingNodeOptionsCodec.DefaultPath,
+                    allowQuotedNumbers: true);
+                Assert.IsTrue(retainedRolling.IsValid, $"{quotedToken}: {string.Join(' ', retainedRolling.Diagnostics)}");
+                Assert.AreEqual(expectedValue, retainedRolling.Get("maximumIntegrationMilliseconds").Value.AsNullableRealNumber(), quotedToken);
+            }
+        }
+        foreach (var badRealToken in new[] { "++1", "+ 1", "+", " +1.5", "+1.5 " })
+        {
+            Assert.AreEqual(ProcessingOptionReasonCodes.WrongType, ProcessingNodeOptionsCodec.Decode(Scene,
+                Json($$"""{"maximumLabelMagnitude":"{{badRealToken}}"}"""),
+                ProcessingNodeOptionsCodec.DefaultPath, allowQuotedNumbers: true).Diagnostics.Single().Code, badRealToken);
+        }
     }
 
     [TestMethod]

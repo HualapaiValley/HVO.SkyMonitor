@@ -560,6 +560,122 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
     }
 
     [TestMethod]
+    public async Task RetainedQuotedNumberAllowanceRejectsTypeChangedStepWithSameIdAndIdenticalOptions()
+    {
+        var quotedOptions = JsonDocument.Parse("""{"asinhStrength":"4"}""").RootElement.Clone();
+        var sourcePipeline = new CapturePipelineConfig(
+        [
+            new("CombinedPreview", "preview", 10, quotedOptions, ["$raw"], Enabled: true)
+        ]);
+        var typeChangedCandidate = new CapturePipelineConfig(
+        [
+            new("CalibratedPreview", "preview", 10, quotedOptions, ["$raw"], Enabled: true)
+        ]);
+
+        var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
+        operations.Setup(value => value.ReadRevisionPipelineAsync("rev-source", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(sourcePipeline);
+        var factory = new Mock<ICaptureProcessingPipelineFactory>(MockBehavior.Strict);
+        var service = CreateService(operations.Object, authorized: true, factory.Object);
+
+        var preview = await service.PreviewAsync(typeChangedCandidate, "rev-source", CancellationToken.None).ConfigureAwait(false);
+        var created = await service.CreateRevisionAsync("draft", "2", typeChangedCandidate, "create-type-changed", null, "rev-source", CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(OperatorUiResultKind.Invalid, preview.Kind);
+        Assert.AreEqual(OperatorUiResultKind.Invalid, created.Kind);
+        StringAssert.Contains(preview.Message!, "processing.options.wrong-type", StringComparison.Ordinal);
+        StringAssert.Contains(created.Message!, "processing.options.wrong-type", StringComparison.Ordinal);
+        factory.VerifyNoOtherCalls();
+        operations.Verify(value => value.CreateRevisionAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CapturePipelineConfig>(),
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    [DataRow("+6")]
+    [DataRow("+2.5")]
+    public async Task RevisionDetailAndRetainedDraftCompileAndPreserveLeadingPlusQuotedDecimalOptions(string quotedMagnitude)
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-retained-plus-decimal");
+        try
+        {
+            var sceneLayerJson = $$"""{ "maximumLabelMagnitude": "{{quotedMagnitude}}", "future": 1e+02 }""";
+            using var provider = ProcessingGraphOperationsTests.CreateRemainingOptionsProvider(root);
+            var pipeline = new CapturePipelineConfig(
+            [
+                new("ProjectedScene", "scene", 10, null, ["$raw"], Enabled: true),
+                new("ScenePresentationLayer", "scene-layer", 20, JsonDocument.Parse(sceneLayerJson).RootElement.Clone(), ["scene"], Enabled: true)
+            ]);
+            var config = ProcessingGraphOperationsTests.CreateProjectedSceneConfiguration() with
+            {
+                Pipeline = pipeline
+            };
+            await provider.GetRequiredService<IRawCaptureIngress>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+            var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
+            var initial = await operations.EnsureConfiguredBasicAsync(config, CancellationToken.None).ConfigureAwait(false);
+            var storedInitialPipeline = await operations.ReadRevisionPipelineAsync(initial.ActiveRevisionId, CancellationToken.None).ConfigureAwait(false);
+            var storedInitialOptions = storedInitialPipeline!.Steps.Single(static step => step.Id == "scene-layer").Options!.Value;
+            var storedInitialRaw = storedInitialOptions.GetRawText();
+            var storedMagnitude = storedInitialOptions.GetProperty("maximumLabelMagnitude");
+            Assert.AreEqual(JsonValueKind.String, storedMagnitude.ValueKind);
+            Assert.AreEqual(quotedMagnitude, storedMagnitude.GetString());
+
+            var accessor = new CameraAgentConfigurationAccessor();
+            accessor.SetConfiguration(config);
+            var user = new ClaimsPrincipal(new ClaimsIdentity(
+            [
+                new Claim(ClaimTypes.NameIdentifier, "owner-id"),
+                new Claim(CanonicalCredentialClaims.AccountTypeClaim, CanonicalCredentialClaims.UserAccountType)
+            ], Microsoft.AspNetCore.Identity.IdentityConstants.ApplicationScheme));
+            var authorization = new Mock<IAuthorizationService>(MockBehavior.Strict);
+            authorization.Setup(auth => auth.AuthorizeAsync(user, null, It.IsAny<string>()))
+                .ReturnsAsync(AuthorizationResult.Success());
+            var service = new CameraAgentProcessingGraphUiService(
+                new StubAuthenticationStateProvider(user),
+                authorization.Object,
+                operations,
+                factory,
+                accessor,
+                null,
+                new ProcessingExecutionPagesTests.FixedTimeProvider(Now),
+                NullLogger<CameraAgentProcessingGraphUiService>.Instance);
+
+            var detail = await service.GetRevisionDetailAsync(initial.ActiveRevisionId, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsTrue(detail.IsSuccess, detail.Message);
+            Assert.IsNotNull(detail.Value!.Plan, $"Retained revision with maximumLabelMagnitude='{quotedMagnitude}' must compile on Graph Revision Details; failure={detail.Value.PlanFailure}");
+            Assert.IsNull(detail.Value.PlanFailure);
+
+            using var context = new BunitContext();
+            context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(service);
+            var cut = context.Render<ProcessingGraphDetailPage>(parameters => parameters
+                .Add(static page => page.RevisionId, initial.ActiveRevisionId));
+            cut.WaitForElement(".definition-list");
+            StringAssert.Contains(cut.Markup, "Effective graph", StringComparison.Ordinal);
+            Assert.IsFalse(cut.Markup.Contains("does not compile today", StringComparison.Ordinal));
+
+            // Strict mode without sourceRevisionId still rejects the quoted decimal token.
+            var strictPreview = await service.PreviewAsync(storedInitialPipeline, CancellationToken.None).ConfigureAwait(false);
+            var strictCreate = await service.CreateRevisionAsync("strict", "2", storedInitialPipeline, "strict-key", null, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(OperatorUiResultKind.Invalid, strictPreview.Kind);
+            Assert.AreEqual(OperatorUiResultKind.Invalid, strictCreate.Kind);
+            StringAssert.Contains(strictPreview.Message!, "processing.options.wrong-type", StringComparison.Ordinal);
+            StringAssert.Contains(strictCreate.Message!, "processing.options.wrong-type", StringComparison.Ordinal);
+
+            // Retained draft preview and save with sourceRevisionId preserve the untouched quoted decimal step byte-for-byte.
+            var retainedPreview = await service.PreviewAsync(storedInitialPipeline, initial.ActiveRevisionId, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsTrue(retainedPreview.IsSuccess, retainedPreview.Message);
+            var retainedCreated = await service.CreateRevisionAsync("retained", "2", storedInitialPipeline, "retained-key", null, initial.ActiveRevisionId, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsTrue(retainedCreated.IsSuccess, retainedCreated.Message);
+            var savedPipeline = await operations.ReadRevisionPipelineAsync(retainedCreated.Value!.RevisionId, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(storedInitialRaw, savedPipeline!.Steps.Single(static step => step.Id == "scene-layer").Options!.Value.GetRawText());
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
     [DataRow("ScenePresentationLayer", "{\"constellationLineThickness\":0}", "processing.options.out-of-range")]
     [DataRow("ScenePresentationLayer", "{\"constellationLineThickness\":\"2\"}", "processing.options.wrong-type")]
     [DataRow("ScenePresentationLayer", "{\"constellationLineRed\":256}", "processing.options.out-of-range")]

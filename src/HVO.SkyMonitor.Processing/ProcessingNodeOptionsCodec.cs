@@ -542,7 +542,7 @@ public static class ProcessingNodeOptionsCodec
                 if (allowQuotedNumbers && token.ValueKind == JsonValueKind.String)
                 {
                     var text = token.GetString();
-                    if (string.IsNullOrEmpty(text) || char.IsWhiteSpace(text[0]) || char.IsWhiteSpace(text[^1]) || text[0] == '+')
+                    if (string.IsNullOrEmpty(text) || char.IsWhiteSpace(text[0]) || char.IsWhiteSpace(text[^1]))
                     {
                         return null;
                     }

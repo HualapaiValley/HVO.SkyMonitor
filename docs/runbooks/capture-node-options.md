@@ -155,12 +155,16 @@ its existing enum binding (names or defined numeric values).
 Use **Preview plan** in a CameraAgent graph draft as a preflight before saving
 an imported or retained graph. Preview and save validate raw option tokens
 before graph compilation or persistence and report the exact option path.
-For a quoted numeric token, explicitly correct the field in the typed panel or
-remove the quotes in the source JSON. For duplicate names, remove all but the
-intended member in the source JSON before importing it again. Preview once more
-and then save a new immutable revision. This preflight does not activate a graph,
-execute a node, or rewrite the source revision. Graph compilation alone is not
-this preflight: its runtime normalization may accept these source spellings.
+When starting from a retained revision, unchanged quoted numbers on untouched
+steps are preserved byte-for-byte while saving unrelated edits; strict
+validation applies to any added, renamed, type-changed, or option-edited step.
+For a quoted numeric token on a new or modified step, explicitly correct the
+field in the typed panel or remove the quotes in the source JSON. For duplicate
+names, remove all but the intended member in the source JSON before importing it
+again. Preview once more and then save a new immutable revision. This preflight
+does not activate a graph, execute a node, or rewrite the source revision. Graph
+compilation alone is not this preflight: its runtime normalization may accept
+these source spellings.
 
 These scalar panels preserve association/label-policy settings, astrometry
 catalog/clock/prior/solver inputs, satellite catalog/work-bound/time settings and

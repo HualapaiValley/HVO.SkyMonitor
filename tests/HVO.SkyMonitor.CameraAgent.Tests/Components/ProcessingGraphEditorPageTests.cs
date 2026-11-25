@@ -252,6 +252,103 @@ public sealed class ProcessingGraphEditorPageTests
         }
     }
 
+    [TestMethod]
+    [DataRow("+6")]
+    [DataRow("+2.5")]
+    public async Task GraphEditorE2E_UntouchedSceneLayerWithLeadingPlusQuotedDecimalSurvivesUnrelatedJpegEditThroughPreviewAndSave(string quotedMagnitude)
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-editor-plus-decimal");
+        try
+        {
+            var sceneLayerJson = $$"""{ "maximumLabelMagnitude": "{{quotedMagnitude}}", "future": 1e+02 }""";
+            using var provider = ProcessingGraphOperationsTests.CreateRemainingOptionsProvider(root);
+            var pipeline = new CapturePipelineConfig(
+            [
+                new("Calibration", "calibration", 10, null, ["$raw"], Enabled: true),
+                new("RollingCombination", "rolling", 20, null, ["calibration"], Enabled: true),
+                new("CombinedPreview", "preview", 30, null, ["rolling"], Enabled: true),
+                new("ProjectedScene", "scene", 40, null, ["$raw"], Enabled: true),
+                new("ScenePresentationLayer", "scene-layer", 50,
+                    JsonDocument.Parse(sceneLayerJson).RootElement.Clone(), ["scene"], Enabled: true),
+                new("EnvironmentPresentationLayer", "env-layer", 60,
+                    JsonDocument.Parse("""{ "widthPixels": 1936, "heightPixels": 1216 }""").RootElement.Clone(), ["scene", "preview"], Enabled: true),
+                new("OverlayManifest", "manifest", 70,
+                    null, ["preview", "scene-layer", "env-layer"], Enabled: true),
+                new("PresentationMaterializer", "materializer", 75,
+                    null, ["preview", "manifest", "scene-layer", "env-layer"], Enabled: true),
+                new("JpegEncoding", "jpeg", 80,
+                    JsonDocument.Parse("""{ "jpegQuality": 85 }""").RootElement.Clone(), ["materializer"], Enabled: true)
+            ]);
+            var profile = SchedulePageTests.Profile();
+            var config = new CameraModuleConfig(
+                new ObservatoryLocation(35.0, -114.0, 1000, "UTC"),
+                profile.Module,
+                profile.Rig,
+                pipeline,
+                AgentId: "editor-plus-decimal-e2e")
+            {
+                Schedule = profile.Schedule
+            };
+            await provider.GetRequiredService<IRawCaptureIngress>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+            var initial = await operations.EnsureConfiguredBasicAsync(config, CancellationToken.None).ConfigureAwait(false);
+            var storedInitialPipeline = await operations.ReadRevisionPipelineAsync(initial.ActiveRevisionId, CancellationToken.None).ConfigureAwait(false);
+            var storedInitialSceneOptions = storedInitialPipeline!.Steps.Single(static step => step.Id == "scene-layer").Options!.Value;
+            var storedInitialSceneRaw = storedInitialSceneOptions.GetRawText();
+            var storedMagnitude = storedInitialSceneOptions.GetProperty("maximumLabelMagnitude");
+            Assert.AreEqual(JsonValueKind.String, storedMagnitude.ValueKind);
+            Assert.AreEqual(quotedMagnitude, storedMagnitude.GetString());
+            StringAssert.Contains(storedInitialSceneRaw, "\"future\":1e+02", StringComparison.Ordinal);
+
+            using var context = new BunitContext();
+            context.JSInterop.Mode = JSRuntimeMode.Loose;
+            var auth = context.AddAuthorization();
+            auth.SetAuthorized("owner");
+            auth.SetPolicies(CameraAgentAuthorizationPolicyNames.OperationsReadV1, CameraAgentAuthorizationPolicyNames.OperationsMutateV1);
+            var owner = new ClaimsPrincipal(new ClaimsIdentity(
+                [new Claim(ClaimTypes.NameIdentifier, "editor-owner"),
+                 new Claim(CanonicalCredentialClaims.AccountTypeClaim, CanonicalCredentialClaims.UserAccountType)],
+                Microsoft.AspNetCore.Identity.IdentityConstants.ApplicationScheme));
+            context.Services.AddSingleton<AuthenticationStateProvider>(new StubAuthProvider(owner));
+            var accessor = new CameraAgentConfigurationAccessor();
+            accessor.SetConfiguration(config);
+            context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(services => new CameraAgentProcessingGraphUiService(
+                services.GetRequiredService<AuthenticationStateProvider>(),
+                services.GetRequiredService<IAuthorizationService>(),
+                operations,
+                provider.GetRequiredService<ICaptureProcessingPipelineFactory>(),
+                accessor,
+                null,
+                TimeProvider.System,
+                NullLogger<CameraAgentProcessingGraphUiService>.Instance));
+
+            var navigation = context.Services.GetRequiredService<NavigationManager>();
+            navigation.NavigateTo($"/operations/pipeline/graphs/new?from={Uri.EscapeDataString(initial.ActiveRevisionId)}");
+            var cut = context.Render<ProcessingGraphEditorPage>();
+
+            var quality = cut.WaitForElement(".node-row[data-node-alias='JpegEncoding'] input[id$='-jpegQuality']");
+            Assert.AreEqual("85", quality.GetAttribute("value"));
+            await quality.ChangeAsync(new ChangeEventArgs { Value = "92" }).ConfigureAwait(false);
+            await cut.Find("form").SubmitAsync().ConfigureAwait(false);
+            cut.WaitForElement(".editor-preview .plan-view");
+            cut.WaitForAssertion(() => Assert.IsFalse(cut.Find(".editor-actions .btn-primary").HasAttribute("disabled")));
+            await cut.Find(".editor-actions .btn-primary").ClickAsync(new()).ConfigureAwait(false);
+            cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "saved as an immutable revision", StringComparison.Ordinal));
+
+            var registry = await operations.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false);
+            var draft = registry.Revisions.Single(revision => revision.RevisionId != initial.ActiveRevisionId);
+            var savedPipeline = await operations.ReadRevisionPipelineAsync(draft.RevisionId, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(savedPipeline);
+            Assert.AreEqual(92, savedPipeline.Steps.Single(static step => step.Id == "jpeg").Options!.Value.GetProperty("jpegQuality").GetInt32());
+            Assert.AreEqual(storedInitialSceneRaw, savedPipeline.Steps.Single(static step => step.Id == "scene-layer").Options!.Value.GetRawText(),
+                "Graph editor preview and save must preserve an untouched ScenePresentationLayer step with leading-'+' quoted decimal options byte-for-byte.");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     private sealed class StubAuthProvider(ClaimsPrincipal principal) : AuthenticationStateProvider
     {
         public override Task<AuthenticationState> GetAuthenticationStateAsync() => Task.FromResult(new AuthenticationState(principal));
