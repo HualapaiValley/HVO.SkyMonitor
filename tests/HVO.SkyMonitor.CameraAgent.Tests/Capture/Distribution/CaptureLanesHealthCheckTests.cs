@@ -8,6 +8,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Distribution;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture.Distribution")]
 public sealed class CaptureLanesHealthCheckTests
 {
     private static readonly string[] ExpectedDataKeys =

@@ -7,6 +7,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.OrbitalPlanning;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "OrbitalPlanning")]
 public sealed class CameraAgentPinnedOrbitalTimeSourceTests
 {
     public TestContext TestContext { get; set; } = null!;

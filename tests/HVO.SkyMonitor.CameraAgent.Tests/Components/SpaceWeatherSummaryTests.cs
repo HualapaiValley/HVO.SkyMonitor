@@ -13,6 +13,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Ui")]
 public sealed class SpaceWeatherSummaryTests
 {
     private static readonly string[] SummaryOrder = ["WARK09/1", "WARK05/2"];

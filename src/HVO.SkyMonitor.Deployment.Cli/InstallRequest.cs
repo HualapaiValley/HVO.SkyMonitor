@@ -63,6 +63,29 @@ internal sealed record InstallRequest
     public CameraAgentReplayProfile ReplayProfile { get; init; } = CameraAgentReplayProfile.InProcess;
 
     /// <summary>
+    /// The storage layout of a new instance (#1966). <see cref="CameraAgentStorageLayout.Filesystem"/> is the default and
+    /// every installation before it; <see cref="CameraAgentStorageLayout.Silo"/> is admitted only for a new instance.
+    /// </summary>
+    public CameraAgentStorageLayout StorageLayout { get; init; } = CameraAgentStorageLayout.Filesystem;
+
+    /// <summary>An operator-staged <c>docker save</c> archive of the pinned stock Silo image, verified before it is loaded.</summary>
+    public string? SiloImageArchive { get; init; }
+
+    /// <summary>The optional archive Silo's HTTPS endpoint, verified read-only at install (#1966); replication is #1969.</summary>
+    public string? SiloArchiveEndpoint { get; init; }
+
+    public string? SiloArchiveBucket { get; init; }
+
+    /// <summary>A PEM file of the certificate authority the archive endpoint must chain to.</summary>
+    public string? SiloArchiveCaFile { get; init; }
+
+    /// <summary>An owner-only file holding the archive access key ID and secret on two lines.</summary>
+    public string? SiloArchiveCredentialFile { get; init; }
+
+    [JsonIgnore]
+    public bool HasSiloArchive => SiloArchiveEndpoint is not null;
+
+    /// <summary>
     /// An explicit VirtualSky illumination mode. Omission retains the historical camera configuration and request
     /// identities, including for installations resumed or re-run with an older answers file.
     /// </summary>
@@ -116,6 +139,29 @@ internal sealed record InstallRequest
         if (!Enum.IsDefined(ReplayProfile))
         {
             throw new InstallUsageException("--replay-profile must be in-process or local-runner.");
+        }
+        if (!Enum.IsDefined(StorageLayout))
+        {
+            throw new InstallUsageException("--storage-layout must be filesystem or silo.");
+        }
+        if (StorageLayout == CameraAgentStorageLayout.Silo && ReplayProfile != CameraAgentReplayProfile.InProcess)
+        {
+            throw new InstallUsageException("--storage-layout silo supports only --replay-profile in-process.");
+        }
+        var archiveOptions = new[] { SiloArchiveEndpoint, SiloArchiveBucket, SiloArchiveCaFile, SiloArchiveCredentialFile };
+        if (StorageLayout != CameraAgentStorageLayout.Silo &&
+            (SiloImageArchive is not null || archiveOptions.Any(static value => value is not null)))
+        {
+            throw new InstallUsageException("--silo-image-archive and the --silo-archive options need --storage-layout silo.");
+        }
+        if (archiveOptions.Any(static value => value is not null) && archiveOptions.Any(static value => value is null))
+        {
+            throw new InstallUsageException(
+                "--silo-archive-endpoint, --silo-archive-bucket, --silo-archive-ca-file and --silo-archive-credential-file go together.");
+        }
+        if (SiloArchiveEndpoint is not null)
+        {
+            SiloArchiveProbe.ValidateEndpoint(SiloArchiveEndpoint, SiloArchiveBucket!);
         }
         if (string.IsNullOrWhiteSpace(FriendlyName))
         {

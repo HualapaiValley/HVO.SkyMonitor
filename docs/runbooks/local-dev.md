@@ -121,7 +121,7 @@ Use the exact SDK and canonical commands from the
 ```bash
 DOCKER_HOST=unix:///tmp/hvo-no-docker.sock \
   dotnet test HVO.SkyMonitor.v9.slnx \
-    --filter 'TestCategory=Unit&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost' \
+    --filter 'TestCategory=Unit&TestCategory!=Performance&FullyQualifiedName!~HVO.SkyMonitor.LogicHost&FullyQualifiedName!~HVO.SkyMonitor.CameraAgent.LogicHost' \
     -p:SkipLogicHostTests=true
 
 dotnet test HVO.SkyMonitor.v9.slnx \
@@ -129,9 +129,8 @@ dotnet test HVO.SkyMonitor.v9.slnx \
   -p:SkipLogicHostTests=true
 ```
 
-Integration selection requires Docker. Manual and Soak remain opt-in; External
-validation is owned by its separate workflow; no Hardware MSTest cases
-currently exist.
+Integration selection requires Docker. Manual, Soak, Performance, and Hardware
+remain opt-in. External validation runs in its separate workflow.
 
 Validate infrastructure and active documentation commands with:
 

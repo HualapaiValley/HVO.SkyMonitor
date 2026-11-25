@@ -15,6 +15,20 @@ internal sealed partial class CameraAgentLifecycleManager
     public static Task<LifecycleResult> ExecuteAsync(LifecycleRequest request, CancellationToken cancellationToken)
         => ExecuteAsync(request, new ProcessRunner(), null, null, NativeLinux.getuid(), NativeLinux.getgid(), cancellationToken);
 
+    /// <summary>
+    /// Whether this asynchronous flow may read a Silo-layout instance manifest (#1966). Only the operations the first Silo
+    /// release supports for such an instance set it: uninstall, purge and status. Every other reader refuses the
+    /// manifest before mutation, as every installer released before #1966 does through its component schema.
+    /// </summary>
+    private static readonly AsyncLocal<bool> SiloLayoutAdmitted = new();
+
+    internal const string SiloLayoutUnsupported =
+        "This instance uses the Silo storage layout; the first Silo release supports only status, first-resume, " +
+        "silo-verify, uninstall and purge for it. Nothing was changed.";
+
+    internal static bool AdmitsSiloLayout(LifecycleOperationKind? operation)
+        => operation is null or LifecycleOperationKind.Uninstall or LifecycleOperationKind.Purge;
+
     internal static async Task<LifecycleResult> ExecuteAsync(
         LifecycleRequest request,
         IProcessRunner processRunner,
@@ -26,6 +40,7 @@ internal sealed partial class CameraAgentLifecycleManager
         TextWriter? output = null,
         TextWriter? error = null)
     {
+        SiloLayoutAdmitted.Value = AdmitsSiloLayout(request.Operation);
         var result = await ExecuteCoreAsync(request, processRunner, lifecycleClientFactory, ownerClientFactory,
             uid, gid, output, error, cancellationToken).ConfigureAwait(false);
         if (result.Plan is null || request.InstanceId is not { } id ||
@@ -2359,7 +2374,8 @@ internal sealed partial class CameraAgentLifecycleManager
 
     private static string SafeMessage(Exception exception) => exception is InstallerException ? exception.Message : string.Empty;
 
-    internal static async Task<InstanceManifest> ReadManifestAsync(string path, CancellationToken cancellationToken)
+    internal static async Task<InstanceManifest> ReadManifestAsync(
+        string path, CancellationToken cancellationToken, bool allowSiloLayout = false)
     {
         await using var stream = SafeFileSystem.OpenOwnerFileRead(path);
         InstanceManifest manifest;
@@ -2383,11 +2399,12 @@ internal sealed partial class CameraAgentLifecycleManager
         {
             throw new InstallerException("The retained instance manifest is invalid JSON.", exception);
         }
-        ValidateCanonicalManifest(manifest);
+        ValidateCanonicalManifest(manifest, allowSiloLayout);
         return manifest;
     }
 
-    internal static async Task<InstallationResult> ReadResultAsync(string path, CancellationToken cancellationToken)
+    internal static async Task<InstallationResult> ReadResultAsync(
+        string path, CancellationToken cancellationToken, bool allowSiloLayout = false)
     {
         await using var stream = SafeFileSystem.OpenOwnerFileRead(path);
         InstallationResult result;
@@ -2407,7 +2424,10 @@ internal sealed partial class CameraAgentLifecycleManager
             !HasValue(result.PasswordFile) || !HasValue(result.ProductRoot) || !HasValue(result.InstanceRoot) ||
             !HasValue(result.ConfigRoot) || !HasValue(result.StateRoot) || result.RuntimeUid == 0 ||
             !Enum.IsDefined(result.ReplayProfile) ||
-            result.ComposeTemplateVersion != ComposeDeployment.TemplateVersionFor((CameraAgentReplayProfile)result.ReplayProfile) ||
+            result.ComposeTemplateVersion != ComposeDeployment.TemplateVersionFor((CameraAgentReplayProfile)result.ReplayProfile) &&
+            !((allowSiloLayout || SiloLayoutAdmitted.Value) &&
+              result.ComposeTemplateVersion == SiloRuntimeProfile.ComposeTemplateVersion &&
+              result.ReplayProfile == HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess) ||
             !double.IsFinite(result.LatitudeDegrees) || !double.IsFinite(result.LongitudeDegrees) ||
             !double.IsFinite(result.ElevationMeters) || !HasValue(result.TimeZoneId) ||
             !IsSha256(result.ConfigurationSha256) || !IsSha256(result.RigProfileSha256) ||
@@ -2529,10 +2549,20 @@ internal sealed partial class CameraAgentLifecycleManager
             throw new InstallerException("The lifecycle control credential does not match the retained instance manifest.");
     }
 
-    internal static void ValidateCanonicalManifest(InstanceManifest manifest)
+    internal static void ValidateCanonicalManifest(InstanceManifest manifest, bool allowSiloLayout = false)
     {
+        var siloLayout = string.Equals(manifest.ComponentSchemaVersion, SiloRuntimeProfile.ComponentSchemaVersion, StringComparison.Ordinal);
+        if (siloLayout && !(allowSiloLayout || SiloLayoutAdmitted.Value))
+            throw InstallerException.Refused(SiloLayoutUnsupported);
+        if (siloLayout ? !IsCanonicalSilo(manifest) : manifest.Silo is not null)
+            throw new InstallerException("The retained instance manifest is invalid or unsupported.");
+        // A Silo-layout instance runs the same CameraAgent image contract; only its Compose model differs.
+        var componentSchema = siloLayout ? "cameraagent-install-v1" : manifest.ComponentSchemaVersion;
+        var composeTemplate = siloLayout
+            ? SiloRuntimeProfile.ComposeTemplateVersion
+            : ComposeDeployment.TemplateVersionFor((CameraAgentReplayProfile)manifest.ReplayProfile);
         if (manifest.SchemaVersion != DeploymentSchemaVersions.InstanceManifest ||
-            manifest.Product != "HVO.SkyMonitor" || manifest.ComponentSchemaVersion != "cameraagent-install-v1" ||
+            manifest.Product != "HVO.SkyMonitor" || componentSchema != "cameraagent-install-v1" ||
             manifest.Component != DeploymentComponent.CameraAgent || manifest.InstanceId == Guid.Empty ||
             manifest.InstallationId == Guid.Empty || manifest.ApplicationIdentity == Guid.Empty ||
             !HasValue(manifest.FriendlyName) || !HasValue(manifest.DeploymentLocationId) ||
@@ -2542,8 +2572,7 @@ internal sealed partial class CameraAgentLifecycleManager
             !double.IsFinite(manifest.ElevationMeters) || manifest.RuntimeUid == 0 ||
             !HasValue(manifest.ProductRoot) || !HasValue(manifest.ConfigRoot) || !HasValue(manifest.StateRoot) ||
             !Enum.IsDefined(manifest.ReplayProfile) ||
-            manifest.ComposeTemplateVersion != ComposeDeployment.TemplateVersionFor(
-                (CameraAgentReplayProfile)manifest.ReplayProfile) ||
+            manifest.ComposeTemplateVersion != composeTemplate ||
             !IsSha256(manifest.ConfigurationSha256) || !IsSha256(manifest.RigProfileSha256) ||
             !IsSha256(manifest.ScheduleSha256) || !HasValue(manifest.RigProfileName) ||
             !HasValue(manifest.RigProfileVersion) || !HasValue(manifest.ScheduleSchemaVersion) ||
@@ -2557,13 +2586,13 @@ internal sealed partial class CameraAgentLifecycleManager
             !IsSha256(manifest.LifecycleControlTokenSha256) ||
             !IsCanonicalImage(
                 manifest.Image,
-                manifest.ComponentSchemaVersion,
+                componentSchema,
                 manifest.DockerDaemon?.Architecture,
                 manifest.ReplayProfile == HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner) ||
             manifest.PreviousImage is not null &&
             !IsCanonicalImage(
                 manifest.PreviousImage,
-                manifest.ComponentSchemaVersion,
+                componentSchema,
                 manifest.DockerDaemon?.Architecture,
                 manifest.ReplayProfile == HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner) ||
             (manifest.PreviousImage is null) != (manifest.PreviousComposeModelSha256 is null) ||
@@ -2576,6 +2605,50 @@ internal sealed partial class CameraAgentLifecycleManager
             !Enum.IsDefined(manifest.LifecycleCondition) || manifest.CreatedUtc == default)
         {
             throw new InstallerException("The retained instance manifest is invalid or unsupported.");
+        }
+    }
+
+    /// <summary>The Silo block of a Silo-layout manifest names exactly this instance's pinned store and data root.</summary>
+    private static bool IsCanonicalSilo(InstanceManifest manifest)
+    {
+        if (manifest.Silo is not { } silo ||
+            manifest.ReplayProfile != HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess ||
+            manifest.PreviousImage is not null) return false;
+        var instanceRoot = Directory.GetParent(manifest.StateRoot)?.FullName;
+        return instanceRoot is not null &&
+               silo.StateContract == SiloRuntimeProfile.StateContract &&
+               silo.ImageReference == SiloRuntimeProfile.ImageReference &&
+               silo.ImageRelease == SiloRuntimeProfile.Release &&
+               silo.ImageIndexDigest == SiloRuntimeProfile.IndexDigest &&
+               silo.ImageRevision == SiloRuntimeProfile.SourceRevision &&
+               silo.ImagePlatformDigest == SiloRuntimeProfile.PlatformDigestFor(manifest.DockerDaemon?.Architecture) &&
+               SiloImagePin.ForArchitecture(manifest.DockerDaemon?.Architecture) is { } platform &&
+               SiloImagePin.AcceptedImageIds(platform).Contains(silo.ImageId, StringComparer.Ordinal) &&
+               silo.DataRoot == Path.Combine(instanceRoot, SiloRuntimeProfile.DataDirectoryName) &&
+               silo.DataRootFileSystem == SiloRuntimeProfile.RequiredFileSystem && HasValue(silo.DataRootDevice) &&
+               silo.Bucket == SiloRuntimeProfile.BucketFor(manifest.InstanceId) &&
+               silo.StoreId == SiloRuntimeProfile.StoreIdFor(manifest.InstanceId) &&
+               silo.StorageBindingId == SiloRuntimeProfile.StorageBindingIdFor(manifest.InstanceId, silo.StoreId, silo.Bucket) &&
+               silo.WriterGeneration == SiloRuntimeProfile.WriterGeneration &&
+               SiloRuntimeProfile.AccessKeyPattern().IsMatch(silo.WriterAccessKeyId) &&
+               SiloRuntimeProfile.VersionIdPattern().IsMatch(silo.MarkerVersionId) && IsSha256(silo.MarkerSha256) &&
+               SiloRuntimeProfile.VersionIdPattern().IsMatch(silo.FenceVersionId) && IsSha256(silo.FenceSha256) &&
+               silo.FirstBootPauseId != Guid.Empty && silo.DiskSyncOnWrite &&
+               (silo.Archive is null || IsCanonicalSiloArchive(silo.Archive));
+    }
+
+    private static bool IsCanonicalSiloArchive(SiloArchiveIdentity archive)
+    {
+        try
+        {
+            var endpoint = SiloArchiveProbe.ValidateEndpoint(archive.Endpoint + "/", archive.Bucket);
+            return endpoint.GetLeftPart(UriPartial.Authority) == archive.Endpoint &&
+                   IsSha256(archive.AuthoritySha256) && IsSha256(archive.ServerCertificateSha256) &&
+                   !string.IsNullOrEmpty(archive.AccessKeyId) && archive.VerifiedUtc != default;
+        }
+        catch (InstallUsageException)
+        {
+            return false;
         }
     }
 
@@ -2941,7 +3014,7 @@ internal sealed partial class CameraAgentLifecycleManager
             foreach (var manifestPath in Directory.EnumerateFiles(agentsRoot, "instance-manifest.json", SearchOption.AllDirectories)
                          .Order(StringComparer.Ordinal))
             {
-                var manifest = await ReadManifestAsync(manifestPath, cancellationToken).ConfigureAwait(false);
+                var manifest = await ReadManifestAsync(manifestPath, cancellationToken, allowSiloLayout: true).ConfigureAwait(false);
                 instances.Add($"{manifest.InstanceId:D}:{manifest.LifecycleCondition}:{manifest.Image.ImageId}:{manifest.Catalog.PackageVersion}");
             }
         }

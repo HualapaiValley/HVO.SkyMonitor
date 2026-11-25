@@ -29,6 +29,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Authentication;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Hosting")]
 public sealed class CameraAgentApiKeyAuthenticationTests
 {
     private const string ReadPath = "/api/v1/operations/test/read";

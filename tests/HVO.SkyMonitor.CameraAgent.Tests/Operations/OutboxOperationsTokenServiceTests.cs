@@ -7,6 +7,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Operations;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Operations")]
 public sealed class OutboxOperationsTokenServiceTests
 {
     [TestMethod]

@@ -5,6 +5,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.TimeSync;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "TimeSync")]
 public sealed class SntpPacketTests
 {
     private const ulong Nonce = 0x0123_4567_89AB_CDEF;

@@ -16,49 +16,9 @@ public sealed class WeatherCloudOverlayRecipeTests
     [TestMethod]
     public async Task ExplicitPreviewAssessmentAndEnvironmentProduceAnnotatedPreview()
     {
-        var environmentInput = new CloudAssessmentEnvironmentV1(
-            CloudAssessmentEnvironmentV1.CurrentSchemaVersion,
-            CaptureSolarRegime.Night,
-            EnvironmentalObservationMatchStatus.Missing,
-            null,
-            null,
-            false);
-        var environmentPayload = JsonSerializer.SerializeToUtf8Bytes(CaptureContractJson.Canonicalize(
-            CaptureContractJson.SerializeToElement(environmentInput)));
-        var environmentIdentity = ProcessingIdentity.ComputePayloadSha256(environmentPayload);
-        var preview = CreatePreview();
-        var assessmentArtifact = CreateAssessment(environmentInput with
-        {
-            InputIdentitySha256 = environmentIdentity
-        });
-        ProcessingAuxiliaryInput[] auxiliary =
-        [
-            new(
-                "assessment",
-                ProcessingAuxiliaryInputKind.Artifact,
-                ProcessingInputSelector.RecipeResult(
-                    FrameArtifactRole.Metadata,
-                    assessmentArtifact.Variant,
-                    assessmentArtifact.RecipeIdentitySha256),
-                ArtifactId: assessmentArtifact.ArtifactId),
-            new(
-                "environment",
-                ProcessingAuxiliaryInputKind.CanonicalJson,
-                SchemaVersion: CloudAssessmentEnvironmentV1.CurrentSchemaVersion,
-                IdentitySha256: environmentIdentity,
-                Payload: environmentPayload)
-        ];
-        var request = new ProcessingExecutionRequest(
-            BuiltInProcessingRecipes.WeatherCloudOverlay,
-            JsonSerializer.SerializeToElement(new WeatherCloudOverlayOptions(DrawLabels: false)),
-            ProcessingInputSelector.RecipeResult(
-                FrameArtifactRole.Preview,
-                preview.Variant,
-                preview.RecipeIdentitySha256),
-            [preview, assessmentArtifact],
-            "weather-cloud-overlay-v1",
-            AuxiliaryInputs: auxiliary,
-            InputArtifactId: preview.ArtifactId);
+        var preview = CreatePreview(4, 2);
+        var request = CreateRequest(preview, new WeatherCloudOverlayOptions(DrawLabels: false));
+        var assessmentArtifact = request.Inputs[1];
 
         var outcome = await new ProcessingRecipeExecutor().ExecuteAsync(request).ConfigureAwait(false);
 
@@ -100,7 +60,92 @@ public sealed class WeatherCloudOverlayRecipeTests
         }, annotatedOutcome.Products.Single());
     }
 
-    private static ProcessingArtifact CreatePreview()
+    [TestMethod]
+    public async Task StyleEditsChangeOverlayPixelsAndRestoringOptionsReproducesRetainedOutput()
+    {
+        var options = new WeatherCloudOverlayOptions();
+        var request = CreateRequest(CreatePreview(64, 32), options);
+        var previewBytes = request.Inputs[0].Payload.ToArray();
+        var assessmentBytes = request.Inputs[1].Payload.ToArray();
+        var executor = new ProcessingRecipeExecutor();
+
+        async Task<ProcessingProduct> ExecuteAsync(WeatherCloudOverlayOptions style)
+        {
+            var effective = request with { Options = JsonSerializer.SerializeToElement(style) };
+            var outcome = await executor.ExecuteAsync(effective).ConfigureAwait(false);
+            Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status, outcome.ReasonCode);
+            var product = Assert.ContainsSingle(outcome.Products);
+            ProcessingRecipeTests.AssertProductMatchesContract(effective, product);
+            return product;
+        }
+
+        var original = await ExecuteAsync(options).ConfigureAwait(false);
+        var shortLabels = await ExecuteAsync(options with { MaximumLabelCharacters = 4 }).ConfigureAwait(false);
+        var hidden = await ExecuteAsync(options with { DrawLabels = false }).ConfigureAwait(false);
+        var zero = await ExecuteAsync(options with { MaximumLabelCharacters = 0 }).ConfigureAwait(false);
+        var thick = await ExecuteAsync(options with { DrawLabels = false, LineThickness = 4 }).ConfigureAwait(false);
+
+        Assert.AreNotEqual(original.ChecksumSha256, shortLabels.ChecksumSha256);
+        Assert.AreNotEqual(original.ChecksumSha256, hidden.ChecksumSha256);
+        Assert.AreEqual(hidden.ChecksumSha256, zero.ChecksumSha256);
+        Assert.AreNotEqual(hidden.ChecksumSha256, thick.ChecksumSha256);
+        Assert.AreNotEqual(hidden.OutputIdentitySha256, thick.OutputIdentitySha256);
+
+        var restored = await ExecuteAsync(options).ConfigureAwait(false);
+        Assert.AreEqual(original.OutputIdentitySha256, restored.OutputIdentitySha256);
+        CollectionAssert.AreEqual(original.Payload.ToArray(), restored.Payload.ToArray());
+        CollectionAssert.AreEqual(previewBytes, request.Inputs[0].Payload.ToArray());
+        CollectionAssert.AreEqual(assessmentBytes, request.Inputs[1].Payload.ToArray());
+    }
+
+    private static ProcessingExecutionRequest CreateRequest(ProcessingArtifact preview, WeatherCloudOverlayOptions options)
+    {
+        var environmentInput = new CloudAssessmentEnvironmentV1(
+            CloudAssessmentEnvironmentV1.CurrentSchemaVersion,
+            CaptureSolarRegime.Night,
+            EnvironmentalObservationMatchStatus.Missing,
+            null,
+            null,
+            false);
+        var environmentPayload = JsonSerializer.SerializeToUtf8Bytes(CaptureContractJson.Canonicalize(
+            CaptureContractJson.SerializeToElement(environmentInput)));
+        var environmentIdentity = ProcessingIdentity.ComputePayloadSha256(environmentPayload);
+        var assessmentArtifact = CreateAssessment(environmentInput with
+        {
+            InputIdentitySha256 = environmentIdentity
+        });
+        ProcessingAuxiliaryInput[] auxiliary =
+        [
+            new(
+                "assessment",
+                ProcessingAuxiliaryInputKind.Artifact,
+                ProcessingInputSelector.RecipeResult(
+                    FrameArtifactRole.Metadata,
+                    assessmentArtifact.Variant,
+                    assessmentArtifact.RecipeIdentitySha256),
+                ArtifactId: assessmentArtifact.ArtifactId),
+            new(
+                "environment",
+                ProcessingAuxiliaryInputKind.CanonicalJson,
+                SchemaVersion: CloudAssessmentEnvironmentV1.CurrentSchemaVersion,
+                IdentitySha256: environmentIdentity,
+                Payload: environmentPayload)
+        ];
+        return new ProcessingExecutionRequest(
+            BuiltInProcessingRecipes.WeatherCloudOverlay,
+            JsonSerializer.SerializeToElement(options),
+            ProcessingInputSelector.RecipeResult(
+                FrameArtifactRole.Preview,
+                preview.Variant,
+                preview.RecipeIdentitySha256),
+            [preview, assessmentArtifact],
+            "weather-cloud-overlay-v1",
+            AuxiliaryInputs: auxiliary,
+            InputArtifactId: preview.ArtifactId);
+
+    }
+
+    private static ProcessingArtifact CreatePreview(int width, int height)
         => new(
             Guid.Parse("30000000-0000-0000-0000-000000000001"),
             FrameArtifactRole.Preview,
@@ -108,10 +153,10 @@ public sealed class WeatherCloudOverlayRecipeTests
             new string('A', 64),
             "application/x-hvo-packed-image",
             new FrameLayoutDescriptor(
-                4, 2, 4, CameraPixelFormat.Mono8,
+                width, height, width, CameraPixelFormat.Mono8,
                 FrameByteOrder.NotApplicable, 8, 8, FrameSamplePacking.ByteAligned,
-                ColorFilterArrayPattern.None, null, byte.MaxValue, 8),
-            new byte[8],
+                ColorFilterArrayPattern.None, null, byte.MaxValue, width * height),
+            new byte[width * height],
             DateTimeOffset.Parse("2026-01-15T06:00:00Z", System.Globalization.CultureInfo.InvariantCulture),
             TimeSpan.FromSeconds(1),
             Compatibility);

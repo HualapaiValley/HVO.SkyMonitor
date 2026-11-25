@@ -20,6 +20,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 [TestClass]
 [TestCategory("Integration")]
+[TestProperty("Area", "Background")]
 public sealed class RetentionBackgroundServiceTests
 {
     [TestMethod]
@@ -1534,6 +1535,7 @@ public sealed class RetentionBackgroundServiceTests
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Background")]
 public sealed class RetentionBackgroundServiceYieldTests
 {
     [TestMethod]

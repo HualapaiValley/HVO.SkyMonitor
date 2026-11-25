@@ -7,6 +7,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Authorization;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Hosting")]
 [SupportedOSPlatform("linux")]
 public sealed class OwnerRecoveryTransportTests
 {

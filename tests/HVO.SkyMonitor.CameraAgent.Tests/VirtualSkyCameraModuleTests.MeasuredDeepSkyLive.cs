@@ -21,6 +21,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", CameraAgentTestAreas.ModulesVirtualSky)]
 [DoNotParallelize]
 [SuppressMessage("Performance", "CA1515", Justification = "MSTest requires a public test class.")]
 public sealed class MeasuredDeepSkyLiveTests

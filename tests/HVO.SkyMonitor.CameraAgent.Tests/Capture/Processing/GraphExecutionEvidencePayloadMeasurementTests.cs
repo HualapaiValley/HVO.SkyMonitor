@@ -29,6 +29,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 /// </summary>
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "Capture.Processing")]
 [DoNotParallelize]
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 public sealed class GraphExecutionEvidencePayloadMeasurementTests

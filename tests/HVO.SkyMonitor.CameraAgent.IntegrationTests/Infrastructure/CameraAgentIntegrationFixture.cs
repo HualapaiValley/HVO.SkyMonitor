@@ -28,9 +28,21 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
     private string? _storageRoot;
     private CatalogFixtureInstallation? _catalogFixture;
 
-    public async Task InitializeAsync(Action<IServiceCollection>? configureServices = null)
+    /// <summary>Keeps the storage root when the fixture is disposed, so a second host can restart on the same state.</summary>
+    public bool KeepStorageOnDispose { get; set; }
+
+    /// <summary>
+    /// Whether initialization completes the seeded owner's bootstrap directly. A test of the real owner-bootstrap
+    /// transition leaves the owner exactly as CameraAgent seeded it.
+    /// </summary>
+    public bool PrepareOwner { get; set; } = true;
+
+    public async Task InitializeAsync(
+        Action<IServiceCollection>? configureServices = null,
+        IReadOnlyDictionary<string, string?>? settings = null,
+        string? storageRoot = null)
     {
-        _storageRoot = Path.Combine(Path.GetTempPath(), $"hvo-cameraagent-standalone-integration-{Guid.NewGuid():N}");
+        _storageRoot = storageRoot ?? Path.Combine(Path.GetTempPath(), $"hvo-cameraagent-standalone-integration-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_storageRoot);
         var provisioningRoot = Path.Combine(_storageRoot, "provisioning");
         Directory.CreateDirectory(provisioningRoot);
@@ -60,6 +72,10 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
         {
             builder.UseEnvironment("Development");
             var overrides = BuildConfigurationOverrides(provisioningRoot);
+            foreach (var setting in settings ?? new Dictionary<string, string?>())
+            {
+                overrides[setting.Key] = setting.Value;
+            }
             foreach (var setting in overrides.Where(static setting =>
                          setting.Key.StartsWith("LocalIdentity:", StringComparison.Ordinal)))
             {
@@ -93,11 +109,15 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
         var ownerManager = scope.ServiceProvider.GetRequiredService<Microsoft.AspNetCore.Identity.UserManager<ApplicationUser>>();
         var owner = await ownerManager.FindByEmailAsync("owner@cameraagent.integration").ConfigureAwait(false)
             ?? throw new InvalidOperationException("The CameraAgent integration owner was not seeded.");
-        owner.PasswordChangeRequired = false;
-        var ownerUpdate = await ownerManager.UpdateAsync(owner).ConfigureAwait(false);
-        if (!ownerUpdate.Succeeded)
+        OwnerId = owner.Id;
+        if (PrepareOwner)
         {
-            throw new InvalidOperationException("The CameraAgent integration owner could not be prepared.");
+            owner.PasswordChangeRequired = false;
+            var ownerUpdate = await ownerManager.UpdateAsync(owner).ConfigureAwait(false);
+            if (!ownerUpdate.Succeeded)
+            {
+                throw new InvalidOperationException("The CameraAgent integration owner could not be prepared.");
+            }
         }
         DeviceId = (await scope.ServiceProvider.GetRequiredService<IDeviceIdentityStore>()
             .GetOrCreateAsync(CancellationToken.None).ConfigureAwait(false)).DeviceId;
@@ -143,12 +163,14 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
 
     public string DeviceId { get; private set; } = string.Empty;
 
+    public string OwnerId { get; private set; } = string.Empty;
+
     public void Dispose()
     {
         _agentFactory?.Dispose();
         _agentBaseFactory?.Dispose();
         _catalogFixture?.Dispose();
-        if (_storageRoot is not null && Directory.Exists(_storageRoot))
+        if (!KeepStorageOnDispose && _storageRoot is not null && Directory.Exists(_storageRoot))
         {
             Directory.Delete(_storageRoot, recursive: true);
         }

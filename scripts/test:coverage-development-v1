@@ -267,11 +267,13 @@ if result.returncode != 0:
     raise SystemExit(f"Inventory fixture build failed: {result.stdout}{result.stderr}")
 shutil.copy2(assembly_output / f"{assembly_name}.dll", assembly_output / "Fixture.Tests.dll")
 shutil.copy2(assembly_output / f"{assembly_name}.deps.json", assembly_output / "Fixture.Tests.deps.json")
-(inventory_repo / "tests/Fixture.Tests/test-categories.json").write_text('{"Unit":1}')
-for retired_project in ("HVO.SkyMonitor.LogicHost.Tests", "HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests"):
-    retired_inventory = inventory_repo / "tests" / retired_project / "test-categories.json"
-    retired_inventory.parent.mkdir()
-    retired_inventory.write_text('{"Unit":4}')
+unit_inventory = inventory_repo / "tests/unit-test-projects.json"
+unit_projects = ["Fixture.Tests", "HVO.SkyMonitor.LogicHost.Tests", "HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests"]
+for project in unit_projects:
+    project_file = inventory_repo / "tests" / project / f"{project}.csproj"
+    project_file.parent.mkdir(exist_ok=True)
+    project_file.touch()
+unit_inventory.write_text(json.dumps(unit_projects))
 shutil.copy2(root / "tests/coverage.runsettings", inventory_repo / "tests/coverage.runsettings")
 fixture_scripts = inventory_repo / "scripts"
 fixture_scripts.mkdir()
@@ -392,6 +394,38 @@ fixture_gate = fixture_scripts / "coverage/bin/Debug/net10.0/HVO.SkyMonitor.Cove
 (launcher / "dotnet").chmod(0o700)
 wrapper_env = dict(os.environ, PATH=str(launcher) + os.pathsep + os.environ["PATH"])
 
+# Invoke the compiled input validator directly so the wrapper's report-count
+# check cannot mask a membership rejection. Use the same valid reports for
+# the maintenance producer and require that it leave no output on failure.
+invalid_pin = scratch / "invalid-membership-pin.json"
+validate_inputs = [real_dotnet, str(fixture_gate), "--development-v1", "--validate-reports",
+                   "--unit-results", str(results), str(fixture_scripts / "coverage/baseline.json"), str(valid)]
+generate_inventory = [str(fixture_scripts / "coverage:line-inventory"), str(results), str(invalid_pin)]
+membership_readers = (
+    ("coverage input validator", validate_inputs),
+    ("line inventory producer", generate_inventory),
+)
+membership_error = "Invalid Unit project membership in tests/unit-test-projects.json"
+for label, membership in (
+    ("null list", None),
+    ("empty list", []),
+    ("duplicate project", [*unit_projects, unit_projects[0]]),
+    ("null project", [*unit_projects, None]),
+    ("empty project", [*unit_projects, ""]),
+    ("project path", [f"./{unit_projects[0]}", *unit_projects[1:]]),
+    ("missing project file", [*unit_projects, "Missing.Tests"]),
+):
+    unit_inventory.write_text(json.dumps(membership))
+    for reader, command in membership_readers:
+        result = subprocess.run(command, capture_output=True, text=True)
+        if result.returncode != 1 or membership_error not in result.stderr:
+            raise SystemExit(f"FAIL {reader} accepted or misdiagnosed {label}: exit={result.returncode}\n{result.stdout}{result.stderr}")
+        cases += 1
+        print(f"PASS {reader} rejects {label} in Unit project membership")
+    if invalid_pin.exists():
+        raise SystemExit(f"FAIL line inventory producer wrote a pin for {label}")
+unit_inventory.write_text(json.dumps(unit_projects))
+
 # Both genuine root forms pass; rewritten roots in ANY contributor fail before
 # ReportGenerator can report a successful parse while silently dropping its hits.
 for source_root in (str(inventory_repo / "src") + "/", str(source_dir), str(source_dir) + "/"):
@@ -420,7 +454,8 @@ second_output = second_project / "bin/Release/net10.0"
 shutil.copytree(assembly_output, second_output)
 shutil.copy2(second_output / "Fixture.Tests.dll", second_output / "ZFixture.Tests.dll")
 shutil.copy2(second_output / "Fixture.Tests.deps.json", second_output / "ZFixture.Tests.deps.json")
-(second_project / "test-categories.json").write_text('{"Unit":1}')
+(second_project / "ZFixture.Tests.csproj").touch()
+unit_inventory.write_text(json.dumps([*unit_projects, "ZFixture.Tests"]))
 second_report = results / "zzz/coverage.cobertura.xml"
 second_report.parent.mkdir()
 second_attachment = results / "zattachment/In/computer/coverage.cobertura.xml"
@@ -455,6 +490,7 @@ dependencies_file.write_text(json.dumps(dependencies))
 wrapper_case("classless report with empty roots and no included assemblies is valid", 0, "Coverage gate passed.")
 # These are private temporary fixtures owned by this test.
 shutil.rmtree(second_project)
+unit_inventory.write_text(json.dumps(unit_projects))
 shutil.rmtree(second_report.parent)
 shutil.rmtree(results / "zattachment")
 second_trx.unlink()

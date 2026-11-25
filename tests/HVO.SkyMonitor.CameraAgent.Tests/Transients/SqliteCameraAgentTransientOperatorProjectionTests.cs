@@ -14,6 +14,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Transients;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Transients")]
 public sealed class SqliteCameraAgentTransientOperatorProjectionTests
 {
     private static readonly DateTimeOffset Epoch = new(2026, 7, 20, 12, 0, 0, TimeSpan.Zero);

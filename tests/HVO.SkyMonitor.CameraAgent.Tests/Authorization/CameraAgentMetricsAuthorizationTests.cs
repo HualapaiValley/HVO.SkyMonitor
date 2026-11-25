@@ -29,6 +29,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Authorization;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Hosting")]
 public sealed class CameraAgentMetricsAuthorizationTests
 {
     private const string MetricName = "hvo_cameraagent_metrics_auth_probe";

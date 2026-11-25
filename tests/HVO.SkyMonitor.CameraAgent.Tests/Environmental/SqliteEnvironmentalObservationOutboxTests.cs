@@ -15,6 +15,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Environmental;
 
 [TestClass]
 [TestCategory("Integration")]
+[TestProperty("Area", "Environmental")]
 // Six of this class's seven pool clears are load-bearing, and they are why the class opts out of
 // parallelisation rather than losing them: one makes a simulated restart genuine, since a pooled
 // connection would otherwise survive it, and five bracket the raw DDL the schema-rejection tests apply,

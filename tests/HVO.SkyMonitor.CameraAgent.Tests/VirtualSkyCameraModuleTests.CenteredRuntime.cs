@@ -32,7 +32,7 @@ public sealed partial class VirtualSkyCameraModuleTests
         var start = new DateTimeOffset(2026, 11, 20, 22, 30, 0, TimeSpan.Zero);
         var clock = new CenteredClock { UtcNow = start };
         var deviceClock = new ExposureTestTimeProvider(start, autoAdvance: true);
-        var profile = CenteredRuntimeProfile(root, start, format);
+        var profile = CenteredRuntimeProfile(root, start, format, size: wideField ? 224 : 160);
         var catalog = wideField ? CenteredRuntimeWideCatalog(start, profile) : CenteredRuntimeCatalog(start);
         var expectedDisposition = format == CameraPixelFormat.BayerRggb16 && !wideField
             ? CenteredStackDisposition.SingleExposure : CenteredStackDisposition.Registered;
@@ -280,7 +280,7 @@ public sealed partial class VirtualSkyCameraModuleTests
         var start = new DateTimeOffset(2026, 11, 20, 22, 30, 0, TimeSpan.Zero);
         var clock = new CenteredClock { UtcNow = start };
         var deviceClock = new ExposureTestTimeProvider(start, autoAdvance: true);
-        var profile = CenteredRuntimeProfile(root, start, CameraPixelFormat.Mono16);
+        var profile = CenteredRuntimeProfile(root, start, CameraPixelFormat.Mono16, size: 128);
         var fault = new CenteredRuntimeFault();
         var ids = new List<ExposureKey>();
         string? terminalReason = null;
@@ -650,7 +650,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                     using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
                     await connection.OpenAsync(token).ConfigureAwait(false);
                     using var command = connection.CreateCommand();
-                    command.CommandText = """
+                    command.CommandText = SqliteCaptureProcessingSchemaTests.DropCenteredRegistrationStateSql + "\n" + """
                         DROP INDEX ix_processing_outputs_astrometry_lookup;
                         UPDATE processing_centered_attempt_calendar SET admitted_ticks = $legacy WHERE attempt_id = $attempt;
                         """ + "\n" + (priorAvailabilityBuild
@@ -1168,16 +1168,16 @@ public sealed partial class VirtualSkyCameraModuleTests
         });
     }
 
-    private static CameraModuleConfig CenteredRuntimeProfile(string root, DateTimeOffset start, CameraPixelFormat format)
+    private static CameraModuleConfig CenteredRuntimeProfile(string root, DateTimeOffset start, CameraPixelFormat format, int size = 224)
     {
         var baseline = StoragePolicyRawIngressIntegrationTests.Profile(root);
-        var camera = CreateConfig(format, 224, 224);
+        var camera = CreateConfig(format, size, size);
         var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
         var storage = baseline.Pipeline.Steps.Single(step => step.Type == "Storage");
         var readout = format == CameraPixelFormat.Mono16
-            ? new SensorReadoutProfile(new SensorCrop(0, 0, 224, 224), 1, 1, FrameBinningAlgorithm.IdentityV1,
+            ? new SensorReadoutProfile(new SensorCrop(0, 0, size, size), 1, 1, FrameBinningAlgorithm.IdentityV1,
                 CameraPixelFormat.Mono16, 12, 16, FrameSamplePacking.ByteAligned, FrameStoredCodeTransform.RightAlignedV1,
-                FrameLevelCodeSpace.NativeSample, 0, 4095, 448)
+                FrameLevelCodeSpace.NativeSample, 0, 4095, size * sizeof(ushort))
             : null;
         return camera with
         {

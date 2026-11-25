@@ -259,6 +259,26 @@ internal static class SafeFileSystem
         return Convert.ToHexStringLower(hash);
     }
 
+    /// <summary>
+    /// Whether <paramref name="path"/> is already an owner-only regular file holding exactly <paramref name="content"/>.
+    /// Anything else, including a file that cannot be read or validated, is not.
+    /// </summary>
+    public static bool HoldsOwnerText(string path, string content)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+        if (!File.Exists(path)) return false;
+        try
+        {
+            using var stream = OpenOwnerFileRead(path);
+            using var reader = new StreamReader(stream, new UTF8Encoding(false, true));
+            return string.Equals(reader.ReadToEnd(), content, StringComparison.Ordinal);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InstallerException or DecoderFallbackException)
+        {
+            return false;
+        }
+    }
+
     public static void WriteTextAtomic(string path, string content)
     {
         var directory = Path.GetDirectoryName(path)

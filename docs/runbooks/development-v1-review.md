@@ -205,21 +205,35 @@ Kepler records the review and finding dispositions under the lifecycle skill.
 
 A PR is converged only when:
 
-- current head equals the latest reviewed head;
+- the current head equals the latest reviewed head or qualifies for the
+  [operated queue's verified clean-sync carry](../development-v1.md#diff-bound-review-approval);
 - every finding has a verified terminal disposition;
 - every finding thread is resolved;
 - deferred findings link to valid follow-up issues;
 - acceptance criteria are verified;
-- the required tier's reports are CLEAN on the current head and completeness is established.
+- the required tier's reports are CLEAN on the same reviewed SHA and completeness is established.
 
 Kepler records convergence before marking the PR ready, subject to the lifecycle skill.
 
 ## CI And Merge
 
-If Development v1 CI finds a real code defect, Kepler returns the PR to draft. Correct it and obtain the full tier’s required CLEAN reviews on the changed head after draft checks pass; a focused exceptional review cannot replace them. An infrastructure failure does not create a code finding and follows the current bounded retry policy.
+After Ready, build or test breaks, High or Medium correctness findings, and
+missed acceptance criteria require correction. Kepler returns the PR to draft
+for these corrections. Obtain the required CLEAN reviews on the changed head
+after draft checks pass. Kepler adds Low findings, including style,
+documentation polish, and other improvements, to
+[rolling issues labeled `follow-up` and `low-batch`](../planning/agent-execution.md#rolling-low-batches).
+Infrastructure failures follow the bounded retry policy.
+
+Sync with `git merge --no-ff origin/development/v1` only to resolve an actual
+Git or product conflict. Validate and review the resulting head. The merge
+queue tests the combined tree.
+
+Link the [generated discovery report or Unit evidence](ci-pipeline.md#categories)
+when test counts are relevant to review.
 
 Merge when review is converged, all conversations and actual conflicts are resolved,
-the current head is reviewed, and required Development v1 checks pass. Follow
+and required Development v1 checks pass on the current head. Follow
 the repository lifecycle skill's finalization reservation and exact-head checks;
 the reservation does not change the branch's CI profile or require a full-matrix dispatch.
 

@@ -5,4 +5,5 @@ self-hosted-runner:
     - hvo-skymonitor-build
     - hvo-qualification
     - hvo-skymonitor-arm64
+    - pi5
     - m5-mac

@@ -24,6 +24,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 /// </summary>
 [TestClass]
 [TestCategory("Integration")]
+[TestProperty("Area", "Background")]
 [DoNotParallelize]
 public sealed class RetentionBackgroundServiceTimeZoneTests
 {
