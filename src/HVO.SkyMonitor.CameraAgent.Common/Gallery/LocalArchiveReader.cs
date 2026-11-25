@@ -17,6 +17,8 @@ internal sealed class LocalArchiveReader(
     IOptions<CameraAgentHostOptions> options,
     Func<CameraModuleConfig?> activeConfiguration)
 {
+    internal Action<string, DateOnly, CancellationToken>? BeforeArchiveIndexRead { get; set; }
+
     internal async ValueTask<IndexedArchiveFrame?> FindAsync(
         SqliteConnection journal, Guid artifactId, CancellationToken cancellationToken)
     {
@@ -24,6 +26,46 @@ internal sealed class LocalArchiveReader(
             .ConfigureAwait(false))
             return frame;
         return null;
+    }
+
+    internal async IAsyncEnumerable<IndexedArchiveFrame> FindCandidatesAsync(
+        Guid artifactId,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        if (!configuration.IsConfigured || storage is not FileSystemFrameStorageService filesystem)
+            yield break;
+
+        var host = options.Value;
+        var config = activeConfiguration() ??
+            await configuration.WaitForConfigurationAsync(cancellationToken).ConfigureAwait(false);
+        var indexes = CameraAgentStorageResolver.Resolve(config, host)
+            .Where(location => !StorageRootIdentity.AreEqual(location.Root, host.RawIngressRoot))
+            .SelectMany(location => filesystem.GetArchiveIndexDates(location.Root)
+                .Select(day => (location.Root, Day: day)))
+            .OrderByDescending(static index => index.Day);
+
+        foreach (var (root, day) in indexes)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            BeforeArchiveIndexRead?.Invoke(root, day, cancellationToken);
+            foreach (var frame in filesystem.ReadArchiveIndex(root, day, null, artifactId, cancellationToken))
+                yield return frame;
+        }
+    }
+
+    internal static async ValueTask<bool> IsShadowedByJournalAsync(
+        SqliteConnection journal, IndexedArchiveFrame frame, CancellationToken cancellationToken)
+    {
+        using var authority = journal.CreateCommand();
+        authority.CommandText = """
+            SELECT EXISTS (SELECT 1 FROM processing_outputs WHERE artifact_id = $artifact)
+                OR EXISTS (SELECT 1 FROM raw_captures WHERE raw_artifact_id = $artifact
+                            OR ($standalone = 1 AND capture_id = $capture));
+            """;
+        authority.Parameters.AddWithValue("$artifact", frame.Manifest.Descriptor.Artifact.ArtifactId.ToString("N"));
+        authority.Parameters.AddWithValue("$capture", frame.Manifest.Descriptor.Capture.CaptureId.ToString("N"));
+        authority.Parameters.AddWithValue("$standalone", frame.Standalone ? 1 : 0);
+        return await authority.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not 0L;
     }
 
     internal async ValueTask<IReadOnlyList<IndexedArchiveFrame>> ReadPageAsync(

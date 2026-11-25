@@ -33,6 +33,41 @@ public sealed partial class GalleryDetail : SiteTimeComponent, IAsyncDisposable
     [SuppressMessage("Design", "CA1056:Uri properties should not be strings", Justification = "The raw query value is validated as an application-local return URL before use.")]
     public string? ReturnUrl { get; set; }
 
+    [Parameter, SupplyParameterFromQuery(Name = "base")]
+    public string? BaseId { get; set; }
+
+    [Parameter, SupplyParameterFromQuery(Name = "baseId")]
+    public string? LegacyBaseId { get; set; }
+
+    [Parameter, SupplyParameterFromQuery(Name = "revision")]
+    public string? RevisionId { get; set; }
+
+    [Parameter, SupplyParameterFromQuery(Name = "revisionId")]
+    public string? LegacyRevisionId { get; set; }
+
+    [Parameter, SupplyParameterFromQuery(Name = "selection")]
+    public string? SelectionId { get; set; }
+
+    private string? EffectiveBaseId => !string.IsNullOrWhiteSpace(BaseId) ? BaseId : LegacyBaseId;
+    private string? EffectiveRevisionId => !string.IsNullOrWhiteSpace(RevisionId) ? RevisionId : LegacyRevisionId;
+
+    private CameraAgentCenteredArchiveRequest? BuildCenteredArchiveRequest()
+    {
+        Guid? parsedSelection = null;
+        if (!string.IsNullOrWhiteSpace(SelectionId))
+        {
+            parsedSelection = Guid.TryParse(SelectionId.Trim(), out var parsed)
+                ? parsed
+                : Guid.Empty;
+        }
+
+        return !string.IsNullOrWhiteSpace(EffectiveBaseId) ||
+            !string.IsNullOrWhiteSpace(EffectiveRevisionId) ||
+            parsedSelection is not null
+            ? new CameraAgentCenteredArchiveRequest(EffectiveBaseId, EffectiveRevisionId, parsedSelection)
+            : null;
+    }
+
     private string BackUrl
     {
         get
@@ -74,7 +109,10 @@ public sealed partial class GalleryDetail : SiteTimeComponent, IAsyncDisposable
         var captureId = CaptureId;
         try
         {
-            var result = await OperatorService.GetCaptureDetailViewAsync(captureId, cancellation.Token);
+            var centeredRequest = BuildCenteredArchiveRequest();
+            var result = centeredRequest is null
+                ? await OperatorService.GetCaptureDetailViewAsync(captureId, cancellation.Token)
+                : await OperatorService.GetCaptureDetailViewAsync(captureId, centeredRequest, cancellation.Token);
             if (generation != Volatile.Read(ref _generation))
             {
                 return;

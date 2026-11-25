@@ -2,15 +2,18 @@ using System.Data;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Sqlite;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Gallery;
@@ -158,6 +161,135 @@ public sealed partial class CameraAgentArtifactServiceTests
 
         ValueTask<CameraAgentArtifactContentResult> OpenAsync(Guid artifactId, CancellationToken token) =>
             history?.OpenContentAsync(artifactId, token) ?? fixture.Service.OpenContentAsync(artifactId, token);
+    }
+
+    [TestMethod]
+    public async Task StalledOverlayArtifactReadHashDoesNotBlockConcurrentBasePreviewReadAsync()
+    {
+        using var fixture = await ArtifactFixture.CreateAsync().ConfigureAwait(false);
+        var raw = await fixture.AddRawAsync().ConfigureAwait(false);
+        var preview = await fixture.AddOutputAsync(
+            raw.Manifest,
+            FrameArtifactRole.Preview,
+            mediaType: "image/jpeg").ConfigureAwait(false);
+        var overlay = await fixture.AddOutputAsync(
+            raw.Manifest,
+            FrameArtifactRole.Metadata,
+            payloadSeed: 42,
+            mediaType: PresentationLayerPayloadJson.MediaType,
+            recipeName: "overlay-layer-probe",
+            variant: "overlay-probe").ConfigureAwait(false);
+
+        var overlayHashEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseOverlayHash = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Service.PayloadChecksumReader = async (stream, artifactId, token) =>
+        {
+            if (artifactId == overlay.ArtifactId)
+            {
+                overlayHashEntered.TrySetResult();
+                await releaseOverlayHash.Task.WaitAsync(TimeSpan.FromSeconds(5), token).ConfigureAwait(false);
+            }
+            return await PayloadChecksum.ComputeSha256Async(stream, token).ConfigureAwait(false);
+        };
+
+        var overlayReadTask = fixture.Service.OpenContentAsync(overlay.ArtifactId, CancellationToken.None).AsTask();
+        await overlayHashEntered.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        Assert.IsFalse(overlayReadTask.IsCompleted);
+
+        // Concurrent base preview content read AND GetPreviewAsync MUST complete immediately
+        // without waiting on the stalled overlay read/hash!
+        var previewContentResult = await fixture.Service.OpenContentAsync(preview.ArtifactId, CancellationToken.None)
+            .AsTask().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentArtifactReadStatus.Found, previewContentResult.Status);
+        await using (previewContentResult.Content!.ConfigureAwait(false))
+        {
+            CollectionAssert.AreEqual(preview.Payload, await ReadAllAsync(previewContentResult.Content!).ConfigureAwait(false));
+        }
+
+        var previewResult = await fixture.Service.GetPreviewAsync(preview.ArtifactId, CancellationToken.None)
+            .AsTask().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentArtifactReadStatus.Found, previewResult.Status);
+        CollectionAssert.AreEqual(preview.Payload, previewResult.Content.ToArray());
+        Assert.IsFalse(overlayReadTask.IsCompleted, "Overlay read should still be gated while preview reads completed.");
+
+        releaseOverlayHash.SetResult();
+        var overlayResult = await overlayReadTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentArtifactReadStatus.Found, overlayResult.Status);
+        await using (overlayResult.Content!.ConfigureAwait(false))
+        {
+            CollectionAssert.AreEqual(overlay.Payload, await ReadAllAsync(overlayResult.Content!).ConfigureAwait(false));
+        }
+    }
+
+    [TestMethod]
+    public async Task StalledLegacyArchiveIndexScanOnLookupMissDoesNotBlockConcurrentPreviewReadAsync()
+    {
+        using var fixture = await ArtifactFixture.CreateAsync().ConfigureAwait(false);
+        var raw = await fixture.AddRawAsync().ConfigureAwait(false);
+        var preview = await fixture.AddOutputAsync(
+            raw.Manifest,
+            FrameArtifactRole.Preview,
+            mediaType: "image/jpeg").ConfigureAwait(false);
+
+        var archiveRoot = Path.Combine(fixture.Root, "legacy-archive-b");
+        var indexDir = Path.Combine(archiveRoot, "storage-a", "index");
+        Directory.CreateDirectory(indexDir);
+        await File.WriteAllTextAsync(Path.Combine(indexDir, "frames_2026-01-01.jsonl"), string.Empty)
+            .ConfigureAwait(false);
+
+        var config = StoragePolicyRawIngressIntegrationTests.Profile(archiveRoot);
+        var accessor = new CameraAgentConfigurationAccessor();
+        accessor.SetConfiguration(config);
+        using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+        var hostOptions = Options.Create(new CameraAgentHostOptions
+        {
+            RawIngressRoot = fixture.Root,
+            RawIngressReserveBytes = 0,
+            RawIngressSqliteBusyTimeoutSeconds = 1
+        });
+        var localArchive = new LocalArchiveReader(storage, accessor, hostOptions, () => config);
+        var archiveScanEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var releaseArchiveScan = new ManualResetEventSlim(false);
+        localArchive.BeforeArchiveIndexRead = (_, _, ct) =>
+        {
+            archiveScanEntered.TrySetResult();
+            releaseArchiveScan.Wait(TimeSpan.FromSeconds(5), ct);
+        };
+
+        using var service = new CameraAgentArtifactService(
+            hostOptions,
+            fixture.ProcessingStore,
+            new CameraAgentPreviewEncoder(),
+            localArchive: localArchive);
+
+        var missTask = Task.Run(() => service.OpenContentAsync(Guid.NewGuid(), CancellationToken.None).AsTask());
+        try
+        {
+            await archiveScanEntered.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.IsFalse(missTask.IsCompleted, "Lookup-miss legacy archive index scan should still be stalled.");
+
+            // Concurrent committed preview content read AND GetPreviewAsync MUST complete well under 500 ms
+            // while the lookup-miss legacy archive scan is stalled on disk I/O!
+            var previewContentResult = await service.OpenContentAsync(preview.ArtifactId, CancellationToken.None)
+                .AsTask().WaitAsync(TimeSpan.FromMilliseconds(500)).ConfigureAwait(false);
+            Assert.AreEqual(CameraAgentArtifactReadStatus.Found, previewContentResult.Status);
+            await using (previewContentResult.Content!.ConfigureAwait(false))
+            {
+                CollectionAssert.AreEqual(preview.Payload, await ReadAllAsync(previewContentResult.Content!).ConfigureAwait(false));
+            }
+
+            var previewResult = await service.GetPreviewAsync(preview.ArtifactId, CancellationToken.None)
+                .AsTask().WaitAsync(TimeSpan.FromMilliseconds(500)).ConfigureAwait(false);
+            Assert.AreEqual(CameraAgentArtifactReadStatus.Found, previewResult.Status);
+            CollectionAssert.AreEqual(preview.Payload, previewResult.Content.ToArray());
+            Assert.IsFalse(missTask.IsCompleted, "Lookup-miss archive scan should remain stalled while preview reads completed.");
+        }
+        finally
+        {
+            releaseArchiveScan.Set();
+            var missResult = await missTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.AreEqual(CameraAgentArtifactReadStatus.NotFound, missResult.Status);
+        }
     }
 
     [TestMethod]
@@ -855,7 +987,7 @@ public sealed partial class CameraAgentArtifactServiceTests
         }
     }
 
-    private sealed class ArtifactFixture : IDisposable
+    internal sealed class ArtifactFixture : IDisposable
     {
         private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
         private readonly SqliteRawCaptureJournal _journal;
@@ -1146,7 +1278,7 @@ public sealed partial class CameraAgentArtifactServiceTests
         }
     }
 
-    private sealed record StoredArtifact(
+    internal sealed record StoredArtifact(
         Guid ArtifactId,
         byte[] Payload,
         string ChecksumSha256,

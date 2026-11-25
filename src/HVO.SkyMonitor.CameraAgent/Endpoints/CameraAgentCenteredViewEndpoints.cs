@@ -25,6 +25,11 @@ internal static class CameraAgentCenteredViewEndpoints
             .Produces(StatusCodes.Status304NotModified)
             .ProducesProblem(StatusCodes.Status404NotFound);
 
+        var exactBase = endpoints.MapGroup("/api/v1/operations/gallery/{referenceCaptureId:guid}/views/{baseId}")
+            .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsReadV1)
+            .WithTags("CameraAgent Gallery");
+        exactBase.MapMethods("/preview", [HttpMethods.Get, HttpMethods.Head], WriteBoundBasePreviewAsync);
+
         var exact = endpoints.MapGroup("/api/v1/operations/gallery/{referenceCaptureId:guid}/views/{baseId}/{revisionId}")
             .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsReadV1)
             .WithTags("CameraAgent Gallery");
@@ -34,6 +39,25 @@ internal static class CameraAgentCenteredViewEndpoints
         exact.MapMethods("/preview", [HttpMethods.Get, HttpMethods.Head], WriteBoundPreviewAsync);
         exact.MapMethods("/overlay.svg", [HttpMethods.Get, HttpMethods.Head], WriteBoundPresentationAsync);
         return endpoints;
+    }
+
+    private static async Task WriteBoundBasePreviewAsync(Guid referenceCaptureId, string baseId,
+        HttpContext context, ICenteredViewReadIndex index, ICenteredViewPresentationReader reader, CancellationToken cancellationToken)
+    {
+        if (!CenteredViewLinks.IsIdentity(baseId))
+        {
+            context.Response.StatusCode = StatusCodes.Status404NotFound;
+            return;
+        }
+        var viewBase = await index.ReadBaseAsync(baseId, cancellationToken).ConfigureAwait(false);
+        if (viewBase is null || viewBase.Definition.Reference.Capture.CaptureId != referenceCaptureId)
+        {
+            context.Response.StatusCode = StatusCodes.Status404NotFound;
+            return;
+        }
+        var content = await reader.OpenBasePreviewAsync(baseId, cancellationToken).ConfigureAwait(false);
+        await CameraAgentArtifactEndpoints.WriteOpenedContentAsync(context, content, cancellationToken, allowInline: true)
+            .ConfigureAwait(false);
     }
 
     private static async ValueTask<CenteredView?> ReadBoundViewAsync(Guid referenceCaptureId, string baseId,

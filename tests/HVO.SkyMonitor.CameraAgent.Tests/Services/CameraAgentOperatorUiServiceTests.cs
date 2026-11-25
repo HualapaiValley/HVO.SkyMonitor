@@ -35,7 +35,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Services;
 [TestClass]
 [TestCategory("Unit")]
 [TestProperty("Area", "Services")]
-public sealed class CameraAgentOperatorUiServiceTests
+public sealed partial class CameraAgentOperatorUiServiceTests
 {
     [TestMethod]
     [DataRow("denied", "Unauthorized")]
@@ -905,7 +905,11 @@ public sealed class CameraAgentOperatorUiServiceTests
         ITransientRuntimeManagement? transientRuntime = null,
         ICameraAgentProcessingCompletion? processingCompletion = null,
         CurrentSkyRefreshSetting? currentSkyRefresh = null,
-        ICameraAgentRetainedAstrometryService? retainedAstrometry = null) => new(
+        ICameraAgentRetainedAstrometryService? retainedAstrometry = null,
+        ICenteredViewLookup? centeredViewLookup = null,
+        ICenteredViewReadIndex? centeredViewIndex = null,
+        ICenteredViewPublisher? centeredViewPublisher = null,
+        ICenteredViewPresentationReader? centeredViewPresentation = null) => new(
             authentication,
             authorization,
             operationsProvider: null!,
@@ -932,7 +936,11 @@ public sealed class CameraAgentOperatorUiServiceTests
             rawIngressState: rawIngressState,
             captureProcessingState: captureProcessingState,
             processingCompletion: processingCompletion,
-            currentSkyRefresh: currentSkyRefresh, retainedAstrometry: retainedAstrometry);
+            currentSkyRefresh: currentSkyRefresh, retainedAstrometry: retainedAstrometry,
+            centeredViewLookup: centeredViewLookup,
+            centeredViewIndex: centeredViewIndex,
+            centeredViewPublisher: centeredViewPublisher,
+            centeredViewPresentation: centeredViewPresentation);
 
     private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider
     {

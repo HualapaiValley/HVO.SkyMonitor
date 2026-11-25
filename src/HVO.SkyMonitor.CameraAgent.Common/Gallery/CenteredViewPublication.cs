@@ -163,6 +163,9 @@ public interface ICenteredViewReadIndex
     ValueTask<CenteredViewStream?> ReadReferenceStreamAsync(
         CameraKey camera, Guid referenceCaptureId, CancellationToken cancellationToken = default);
 
+    ValueTask<CenteredViewBase?> ReadBaseAsync(string baseId, CancellationToken cancellationToken = default) =>
+        ValueTask.FromResult<CenteredViewBase?>(null);
+
     ValueTask<CenteredView?> ReadRevisionAsync(string baseId, string revisionId, CancellationToken cancellationToken = default);
 
     ValueTask<IReadOnlyList<CenteredViewRevision>> ReadRevisionsAsync(

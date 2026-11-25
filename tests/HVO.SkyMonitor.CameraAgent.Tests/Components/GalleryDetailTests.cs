@@ -832,6 +832,103 @@ public sealed class GalleryDetailTests
         await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
     }
 
+    [TestMethod]
+    public void DetailBindsCenteredBaseRevisionLegacyAndSelectionQueryParameters()
+    {
+        var capture = OperatorUiTestData.Capture();
+        var primaryBase = new string('A', 64);
+        var legacyBase = new string('B', 64);
+        var primaryRev = new string('C', 64);
+        var legacyRev = new string('D', 64);
+        var selectionId = Guid.Parse("19230000-0000-0000-0000-000000007777");
+
+        AssertRequest($"/gallery/{capture.CaptureId:D}?base={primaryBase}&revision={primaryRev}",
+            expectedBase: primaryBase, expectedRevision: primaryRev, expectedSelection: null);
+        AssertRequest($"/gallery/{capture.CaptureId:D}?baseId={legacyBase}&revisionId={legacyRev}",
+            expectedBase: legacyBase, expectedRevision: legacyRev, expectedSelection: null);
+        AssertRequest($"/gallery/{capture.CaptureId:D}?base={primaryBase}&baseId={legacyBase}&revision={primaryRev}&revisionId={legacyRev}",
+            expectedBase: primaryBase, expectedRevision: primaryRev, expectedSelection: null);
+        AssertRequest($"/gallery/{capture.CaptureId:D}?selection={selectionId:D}",
+            expectedBase: null, expectedRevision: null, expectedSelection: selectionId);
+
+        void AssertRequest(string url, string? expectedBase, string? expectedRevision, Guid? expectedSelection)
+        {
+            using var context = new BunitContext();
+            ConfigureGraphService(context);
+            context.JSInterop.Mode = JSRuntimeMode.Loose;
+            CameraAgentCenteredArchiveRequest? observed = null;
+            var service = new TestOperatorUiService
+            {
+                CenteredDetailViewHandler = (id, request, _) =>
+                {
+                    Assert.AreEqual(capture.CaptureId, id);
+                    observed = request;
+                    return ValueTask.FromResult(OperatorUiResult<CameraAgentCaptureDetailView>.Success(
+                        new(capture, new(CameraAgentPresentationStage.Raw, OperatorUiTestData.CurrentImage().Stages))));
+                }
+            };
+            context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
+            var navigation = context.Services.GetRequiredService<NavigationManager>();
+            navigation.NavigateTo(url);
+
+            var cut = context.Render<GalleryDetail>(parameters =>
+                parameters.Add(page => page.CaptureId, capture.CaptureId));
+
+            cut.WaitForAssertion(() => Assert.IsNotNull(observed));
+            Assert.AreEqual(expectedBase, observed!.BaseId);
+            Assert.AreEqual(expectedRevision, observed.RevisionId);
+            Assert.AreEqual(expectedSelection, observed.SelectionId);
+        }
+    }
+
+    [TestMethod]
+    public void DetailHandlesMalformedSelectionQueryParameterWithExplicitUnavailableNotice()
+    {
+        using var context = new BunitContext();
+        ConfigureGraphService(context);
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        var capture = OperatorUiTestData.Capture();
+        CameraAgentCenteredArchiveRequest? observed = null;
+        var service = new TestOperatorUiService
+        {
+            CenteredDetailViewHandler = (id, request, _) =>
+            {
+                Assert.AreEqual(capture.CaptureId, id);
+                observed = request;
+                var archive = new CameraAgentCenteredArchiveView(
+                    id,
+                    [],
+                    null,
+                    null,
+                    CameraAgentLayeredPresentationStatus.NotRetained,
+                    null,
+                    null,
+                    "The requested saved personal selection is invalid.",
+                    null);
+                return ValueTask.FromResult(OperatorUiResult<CameraAgentCaptureDetailView>.Success(
+                    new(capture, new(CameraAgentPresentationStage.Raw, OperatorUiTestData.CurrentImage().Stages))
+                    {
+                        CenteredArchive = archive
+                    }));
+            }
+        };
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
+        var navigation = context.Services.GetRequiredService<NavigationManager>();
+        navigation.NavigateTo($"/gallery/{capture.CaptureId:D}?selection=not-a-guid");
+
+        var cut = context.Render<GalleryDetail>(parameters =>
+            parameters.Add(page => page.CaptureId, capture.CaptureId));
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.IsNotNull(observed);
+            Assert.IsTrue(observed!.HasExplicitTarget);
+            Assert.AreEqual(Guid.Empty, observed.SelectionId);
+            StringAssert.Contains(cut.Find(".centered-selection-error").TextContent, "saved personal selection is invalid", StringComparison.Ordinal);
+            Assert.IsEmpty(cut.FindAll(".sky-layer-workspace"));
+        });
+    }
+
     private sealed class NoPollingTimeProvider : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => OperatorUiTestData.Now;

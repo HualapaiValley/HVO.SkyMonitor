@@ -148,7 +148,9 @@ public sealed partial class CameraAgentArtifactServiceTests
             Assert.AreEqual("scene-deep-sky", Assert.ContainsSingle(withoutMeasured.Presentation!.Layers).Kind);
         }
 
-        // Reusing an existing artifact ID with the other layer's immutable content identity must fail at readback.
+        // Reusing an existing artifact ID with the other layer's immutable content identity must reject that optional
+        // layer at readback without leaking its payload, while keeping the verified base and independent expected layer
+        // displayable under #1923's base-first optional-layer contract.
         var mismatchedDrawable = LayeredPresentationJson.CreateLayer(qualified.Key.Kind,
             drawable.SourceProduct with { ArtifactId = expectedEvidence.ArtifactId }, null,
             PresentationCoordinateSpace.ScenePixels, PresentationLayerCompositor.AlgorithmVersion,
@@ -157,9 +159,15 @@ public sealed partial class CameraAgentArtifactServiceTests
             qualified with { EvidenceOrder = staged.EvidenceOrder + 3, Drawable = mismatchedDrawable }, token).ConfigureAwait(false);
         Assert.IsNotNull(mismatched);
         var refused = await reader.ReadAsync(baseId, mismatched.Revision.RevisionId, token).ConfigureAwait(false);
-        Assert.AreEqual(CameraAgentLayeredPresentationStatus.Malformed, refused.Status);
-        Assert.AreEqual(CameraAgentLayeredPresentationStatus.Found,
-            (await reader.ReadAsync(baseId, measuredRevision, token).ConfigureAwait(false)).Status);
+        Assert.AreEqual(CameraAgentLayeredPresentationStatus.Found, refused.Status);
+        Assert.IsNotNull(refused.Presentation);
+        Assert.AreEqual("scene-deep-sky", Assert.ContainsSingle(refused.Presentation.Layers).Kind);
+        var refusedSvg = Encoding.UTF8.GetString(refused.Presentation.Svg.Span);
+        StringAssert.Contains(refusedSvg, "data-layer-kind=\"scene-deep-sky\"", StringComparison.Ordinal);
+        Assert.IsFalse(refusedSvg.Contains("data-layer-kind=\"measured-deep-sky\"", StringComparison.Ordinal));
+        var validMeasured = await reader.ReadAsync(baseId, measuredRevision, token).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentLayeredPresentationStatus.Found, validMeasured.Status);
+        CollectionAssert.AreEqual(DeepSkyLayerKinds, validMeasured.Presentation!.Layers.Select(layer => layer.Kind).ToArray());
 
         var opened = await reader.OpenPreviewAsync(baseId, measuredRevision, token).ConfigureAwait(false);
         Assert.AreEqual(CameraAgentArtifactReadStatus.Found, opened.Status);

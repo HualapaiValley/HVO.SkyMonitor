@@ -173,6 +173,15 @@ public sealed partial class CurrentSkyPage
             prefetch.Invalidate();
         if (_runCaptureId != identity.CaptureId) return false;
 
+        if (IsCenteredMode)
+        {
+            if (Matches(_astrometry, identity) || RetainedIdentity(_astrometry) is null)
+            {
+                ClearAstrometry();
+            }
+            return false;
+        }
+
         var layered = _layers?.Astrometry;
         var matchingEvidence = Matches(layered, identity) || Matches(_astrometry, identity);
         var hasVerifiedEvidence = RetainedIdentity(layered) is not null || RetainedIdentity(_astrometry) is not null;
@@ -298,13 +307,19 @@ public sealed partial class CurrentSkyPage
         AstrometricAssessmentStatus.BudgetExceeded => "warning",
         _ => "pending"
     };
-    private string MeasuredDiagnosticsReason => _showingBaseOnlyForMismatch
+    private string MeasuredDiagnosticsReason => !IsCenteredMode && _showingBaseOnlyForMismatch
         ? "Withheld because the preview and retained layer geometry differ."
         : _astrometry?.DiagnosticsReason ?? "No compatible accepted result retained";
-    private bool CanCalculate => !_accessDenied && !_showingBaseOnlyForMismatch && _astrometry?.Mapping is not null &&
-        _astrometry.Solution?.Assessment.HasMeasuredMapping == true && _astrometry.CaptureId == _runCaptureId && DisplaySlot is { } slot &&
-        (slot.ArtifactId == _astrometry.Solution?.Assessment.Frame.SourceArtifactId ||
-         _astrometry.CompatibleBaseArtifactId is { } baseId && (slot.DisplayArtifactId == baseId || slot.ArtifactId == baseId));
+    private bool CanCalculate => !_accessDenied && _astrometry?.Mapping is not null &&
+        _astrometry.Solution?.Assessment.HasMeasuredMapping == true && _astrometry.CaptureId == _runCaptureId &&
+        ((!IsCenteredMode && !_showingBaseOnlyForMismatch && DisplaySlot is { } slot &&
+          (slot.ArtifactId == _astrometry.Solution?.Assessment.Frame.SourceArtifactId ||
+           _astrometry.CompatibleBaseArtifactId is { } baseId && (slot.DisplayArtifactId == baseId || slot.ArtifactId == baseId))) ||
+         (IsCenteredMode && _centeredDisplay is { } centered &&
+          centered.View.Base.Definition.Reference.Capture.CaptureId == _astrometry.CaptureId &&
+          centered.View.Base.Definition.Reference.Input.Raw.Artifact.ArtifactId == _astrometry.Solution?.Assessment.Frame.SourceArtifactId &&
+          centered.View.Base.Definition.Preview.Transform.ReferenceWidth == _astrometry.WidthPixels &&
+          centered.View.Base.Definition.Preview.Transform.ReferenceHeight == _astrometry.HeightPixels));
     private string CalculatorAvailability => CanCalculate
         ? "Source output pixels (zero-based); equatorial coordinates are mean of date at the capture midpoint. Geometric horizon; no refraction. Never updates rig calibration."
         : "Requires an accepted retained mapping and an exact source mapping to the selected image. Never updates rig calibration.";
@@ -333,7 +348,7 @@ public sealed partial class CurrentSkyPage
     }
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Optional retained evidence cannot fail the image view.")]
-    private async Task LoadAstrometryAsync(Guid captureId, long generation, CancellationToken cancellation)
+    private async Task LoadAstrometryAsync(Guid captureId, long generation, CancellationToken cancellation, CenteredViewArtifact? evidencePin = null)
     {
         if (_astrometry?.Solution is not null || _astrometryLoading || _accessDenied || cancellation.IsCancellationRequested) return;
         _astrometryLoading = true;
@@ -342,7 +357,7 @@ public sealed partial class CurrentSkyPage
         {
             using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5), TimeProvider);
             using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellation, deadline.Token);
-            var result = await OperatorService.GetRetainedAstrometryAsync(captureId, bounded.Token).ConfigureAwait(false);
+            var result = await OperatorService.GetRetainedAstrometryAsync(captureId, evidencePin, bounded.Token).ConfigureAwait(false);
             var observed = result.Value?.Solution?.Assessment.HasMeasuredMapping == true
                 ? await ValidateAstrometryPublicationAsync(captureId, result, result.Value, bounded.Token).ConfigureAwait(false)
                 : new(result);
@@ -351,7 +366,12 @@ public sealed partial class CurrentSkyPage
                 // Authorization revocation is never hidden by a late response or by a changed capture.
                 if (observed.Kind == OperatorUiResultKind.Unauthorized) { RevokeAccess(); return; }
                 if (revision != _astrometryReadRevision || generation != _layerGeneration || captureId != _runCaptureId || _disposeStarted != 0 || _accessDenied || cancellation.IsCancellationRequested) return;
+                if (IsCenteredMode && _centeredAstrometryEvidence != evidencePin) return;
                 var eligible = IsCurrentAstrometryObservation(observed) ? observed.Value : null;
+                if (evidencePin is not null && eligible is { Solution: not null } && eligible.ArtifactId != evidencePin.ArtifactId)
+                {
+                    eligible = new(captureId, "Unavailable", "centered-evidence-pin-mismatch");
+                }
                 ApplyAstrometry(captureId, eligible ?? new(captureId, "Unavailable", "retained-read-unavailable"));
                 StateHasChanged();
             });
@@ -362,6 +382,7 @@ public sealed partial class CurrentSkyPage
             await InvokeAsync(() =>
             {
                 if (revision != _astrometryReadRevision || generation != _layerGeneration || captureId != _runCaptureId || _disposeStarted != 0 || _accessDenied) return;
+                if (IsCenteredMode && _centeredAstrometryEvidence != evidencePin) return;
                 ApplyAstrometry(captureId, new(captureId, "Unavailable", "retained-read-unavailable"));
                 StateHasChanged();
             });

@@ -216,7 +216,10 @@ internal sealed record CameraAgentTransientPolicyStatus(
 public sealed record CameraAgentCaptureDetailView(
     CameraAgentGalleryCapture Capture,
     CameraAgentCapturePresentation Presentation,
-    CameraAgentCurrentSkyFacts? Facts = null);
+    CameraAgentCurrentSkyFacts? Facts = null)
+{
+    public CameraAgentCenteredArchiveView? CenteredArchive { get; init; }
+}
 
 // Current Sky reads the presentation and the durable facts of the displayed
 // capture together; facts may be unavailable while the image still shows.
@@ -234,6 +237,9 @@ internal sealed record CameraAgentCurrentSkyView(
 
     /// <summary>The operator's minimum time between image changes.</summary>
     public TimeSpan MinimumRefreshInterval { get; init; } = TimeSpan.FromSeconds(CurrentSkyRefreshSetting.DefaultSeconds);
+
+    /// <summary>Present when a centered live pipeline run is active for the selected camera profile.</summary>
+    public CameraAgentCenteredLiveView? Centered { get; init; }
 }
 
 // Current operational facts are separate from the retained capture's historical acquisition/profile facts.
@@ -278,12 +284,22 @@ internal interface ICameraAgentOperatorUiService
         Guid captureId,
         CancellationToken cancellationToken);
 
+    ValueTask<OperatorUiResult<CameraAgentCaptureDetailView>> GetCaptureDetailViewAsync(
+        Guid captureId,
+        CameraAgentCenteredArchiveRequest? centeredRequest,
+        CancellationToken cancellationToken)
+        => GetCaptureDetailViewAsync(captureId, cancellationToken);
+
     ValueTask<OperatorUiResult<CameraAgentLatestAstrometryRead>> GetLatestAcceptedAstrometryAsync(
         CancellationToken cancellationToken, CameraAgentLatestAstrometry? previousSummary = null,
         CameraAgentAstrometryAssessmentIdentity? selectedAssessment = null)
         => ValueTask.FromResult(OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(new(true)));
     ValueTask<OperatorUiResult<CameraAgentRetainedAstrometry>> GetRetainedAstrometryAsync(Guid captureId, CancellationToken cancellationToken)
         => ValueTask.FromResult(OperatorUiResult<CameraAgentRetainedAstrometry>.Success(new(captureId, "NotRetained", "assessment-not-retained")));
+
+    ValueTask<OperatorUiResult<CameraAgentRetainedAstrometry>> GetRetainedAstrometryAsync(
+        Guid captureId, CenteredViewArtifact? evidence, CancellationToken cancellationToken)
+        => GetRetainedAstrometryAsync(captureId, cancellationToken);
 
     ValueTask<OperatorUiResult<CameraAgentAstrometryPublicationState>> ReadAstrometryPublicationStateAsync(
         CameraAgentAstrometryAssessmentIdentity identity, CancellationToken cancellationToken)
@@ -308,6 +324,28 @@ internal interface ICameraAgentOperatorUiService
             OperatorUiResultKind.Conflict, "The selected composition is unavailable."));
 
     ValueTask<OperatorUiResult<CameraAgentCurrentSkyView>> GetCurrentSkyViewAsync(CancellationToken cancellationToken);
+
+    ValueTask<OperatorUiResult<CameraAgentCurrentSkyView>> GetCurrentSkyViewAsync(
+        CenteredLiveMode mode,
+        CancellationToken cancellationToken)
+        => GetCurrentSkyViewAsync(cancellationToken);
+
+    ValueTask<OperatorUiResult<CameraAgentCenteredPresentationRead>> GetCenteredPresentationAsync(
+        string baseId,
+        string revisionId,
+        CancellationToken cancellationToken)
+        => ValueTask.FromResult(OperatorUiResult<CameraAgentCenteredPresentationRead>.Success(
+            new(CameraAgentLayeredPresentationStatus.NotRetained, null, null)));
+
+    ValueTask<OperatorUiResult<CenteredViewSavedSelection>> SaveCenteredViewSelectionAsync(
+        Guid referenceCaptureId,
+        string baseId,
+        string revisionId,
+        IReadOnlyList<string> enabledLayerIds,
+        CancellationToken cancellationToken)
+        => ValueTask.FromResult(OperatorUiResult<CenteredViewSavedSelection>.Failure(
+            OperatorUiResultKind.Unavailable,
+            "Saving a centered view selection is unavailable."));
 
     ValueTask<OperatorUiResult<CameraAgentCaptureTransientView>> GetCaptureTransientAsync(
         Guid captureId, CancellationToken cancellationToken);
@@ -367,7 +405,7 @@ internal interface ICameraAgentOperatorUiService
         CancellationToken cancellationToken);
 }
 
-internal sealed class CameraAgentOperatorUiService(
+internal sealed partial class CameraAgentOperatorUiService(
     AuthenticationStateProvider authenticationStateProvider,
     IAuthorizationService authorizationService,
     CameraAgentOperationsSummaryProvider operationsProvider,
@@ -398,7 +436,11 @@ internal sealed class CameraAgentOperatorUiService(
     IProcessingLaneQuarantineOperations? processingLaneQuarantine = null,
     ICameraAgentProcessingCompletion? processingCompletion = null,
     CurrentSkyRefreshSetting? currentSkyRefresh = null,
-    ICameraAgentRetainedAstrometryService? retainedAstrometry = null) : ICameraAgentOperatorUiService
+    ICameraAgentRetainedAstrometryService? retainedAstrometry = null,
+    ICenteredViewLookup? centeredViewLookup = null,
+    ICenteredViewReadIndex? centeredViewIndex = null,
+    ICenteredViewPublisher? centeredViewPublisher = null,
+    ICenteredViewPresentationReader? centeredViewPresentation = null) : ICameraAgentOperatorUiService
 {
     private const int MaximumQuarantineItems = 8;
     private const int QuarantineReadSize = 50;
@@ -827,12 +869,19 @@ internal sealed class CameraAgentOperatorUiService(
         }
     }
 
+    public ValueTask<OperatorUiResult<CameraAgentCaptureDetailView>> GetCaptureDetailViewAsync(
+        Guid captureId,
+        CancellationToken cancellationToken)
+        => GetCaptureDetailViewAsync(captureId, centeredRequest: null, cancellationToken);
+
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
     public async ValueTask<OperatorUiResult<CameraAgentCaptureDetailView>> GetCaptureDetailViewAsync(
         Guid captureId,
+        CameraAgentCenteredArchiveRequest? centeredRequest,
         CancellationToken cancellationToken)
     {
-        if (!await IsAuthorizedAsync(CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false))
+        var principal = await GetAuthorizedReadPrincipalAsync().ConfigureAwait(false);
+        if (principal is null)
         {
             return Denied<CameraAgentCaptureDetailView>();
         }
@@ -864,7 +913,15 @@ internal sealed class CameraAgentOperatorUiService(
                     CombinedLineageUnavailable = combined.Availability != CameraAgentPresentationSlotAvailability.Missing
                 };
             }
-            return OperatorUiResult<CameraAgentCaptureDetailView>.Success(new(capture, presentation, facts));
+            var centeredArchive = await ReadCenteredArchiveAsync(
+                captureId,
+                centeredRequest,
+                CameraAgentCredentialAccess.GetOwnerId(principal),
+                cancellationToken).ConfigureAwait(false);
+            return OperatorUiResult<CameraAgentCaptureDetailView>.Success(new(capture, presentation, facts)
+            {
+                CenteredArchive = centeredArchive
+            });
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -904,20 +961,46 @@ internal sealed class CameraAgentOperatorUiService(
         }
     }
 
+    public ValueTask<OperatorUiResult<CameraAgentCurrentSkyView>> GetCurrentSkyViewAsync(CancellationToken cancellationToken)
+        => GetCurrentSkyViewAsync(CenteredLiveMode.Centered, cancellationToken);
+
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
-    public async ValueTask<OperatorUiResult<CameraAgentCurrentSkyView>> GetCurrentSkyViewAsync(CancellationToken cancellationToken)
+    public async ValueTask<OperatorUiResult<CameraAgentCurrentSkyView>> GetCurrentSkyViewAsync(
+        CenteredLiveMode mode,
+        CancellationToken cancellationToken)
     {
-        var presentation = await GetCurrentImagePresentationAsync(cancellationToken).ConfigureAwait(false);
-        if (!presentation.IsSuccess || presentation.Value is null)
+        if (!await IsAuthorizedAsync(CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false))
         {
-            return OperatorUiResult<CameraAgentCurrentSkyView>.Failure(presentation.Kind, presentation.Message ?? "The current sky image is temporarily unavailable.");
+            return Denied<CameraAgentCurrentSkyView>();
         }
-        var (current, pending) = await ResolveCompleteDisplayAsync(presentation.Value, cancellationToken).ConfigureAwait(false);
+
+        if (centeredViewLookup is not null && centeredViewIndex is not null && centeredViewPresentation is not null)
+        {
+            var centeredResult = await TryGetCenteredCurrentSkyViewAsync(mode, cancellationToken).ConfigureAwait(false);
+            if (centeredResult is not null)
+            {
+                return centeredResult;
+            }
+        }
+
+        CameraAgentCurrentImagePresentation currentImage;
+        try
+        {
+            currentImage = await currentImagePresentation.GetAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "CameraAgent current-image presentation read failed.");
+            return Unavailable<CameraAgentCurrentSkyView>("The current sky image is temporarily unavailable.");
+        }
+
+        var (current, pending) = await ResolveCompleteDisplayAsync(currentImage, cancellationToken).ConfigureAwait(false);
         var minimumRefresh = TimeSpan.FromSeconds(currentSkyRefresh?.Seconds ?? CurrentSkyRefreshSetting.DefaultSeconds);
-        var operations = new CameraAgentCurrentSkyOperations(
-            _hostOptions.CentralIntegration.Mode == CentralIntegrationMode.Enabled,
-            _hostOptions.CentralIntegration.Mode == CentralIntegrationMode.Enabled && _hostOptions.CaptureDistribution.UploadEnabled,
-            rawIngressState?.LastReconciliation, captureProcessingState?.LastReconciliation);
+        var operations = CreateCurrentSkyOperations();
         var displayed = current.DisplayCapture ?? current.LatestCapture;
         if (displayed is null)
         {
@@ -925,24 +1008,48 @@ internal sealed class CameraAgentOperatorUiService(
         }
         var combinedArtifactId = current.Stages
             .FirstOrDefault(static slot => slot.Stage == CameraAgentPresentationStage.Combined)?.ArtifactId;
+        var (facts, factsUnavailableReason) = await ReadCachedFactsAsync(displayed.CaptureId, combinedArtifactId, cancellationToken)
+            .ConfigureAwait(false);
+        return View(facts, factsUnavailableReason);
+
+        OperatorUiResult<CameraAgentCurrentSkyView> View(CameraAgentCurrentSkyFacts? facts, string? factsUnavailableReason)
+            => OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(current, facts, factsUnavailableReason, operations)
+            {
+                ProcessingPending = pending,
+                MinimumRefreshInterval = minimumRefresh
+            });
+    }
+
+    private CameraAgentCurrentSkyOperations CreateCurrentSkyOperations() => new(
+        _hostOptions.CentralIntegration.Mode == CentralIntegrationMode.Enabled,
+        _hostOptions.CentralIntegration.Mode == CentralIntegrationMode.Enabled && _hostOptions.CaptureDistribution.UploadEnabled,
+        rawIngressState?.LastReconciliation,
+        captureProcessingState?.LastReconciliation);
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
+    private async ValueTask<(CameraAgentCurrentSkyFacts? Facts, string? UnavailableReason)> ReadCachedFactsAsync(
+        Guid captureId,
+        Guid? combinedArtifactId,
+        CancellationToken cancellationToken)
+    {
         // Facts are immutable once a capture is committed, so a circuit that
         // polls every few seconds re-reads them only when the capture changes.
         // Availability and cloud facts can still change for a displayed capture, so the memo expires.
-        if (_cachedFacts is { } cached && cached.Facts.CaptureId == displayed.CaptureId && cached.CombinedArtifactId == combinedArtifactId &&
+        if (_cachedFacts is { } cached && cached.Facts.CaptureId == captureId && cached.CombinedArtifactId == combinedArtifactId &&
             timeProvider.GetUtcNow() - cached.ReadUtc < FactsCacheLifetime)
         {
-            return View(cached.Facts, null);
+            return (cached.Facts, null);
         }
         try
         {
-            var capture = await gallery.GetCaptureAsync(displayed.CaptureId, cancellationToken).ConfigureAwait(false);
+            var capture = await gallery.GetCaptureAsync(captureId, cancellationToken).ConfigureAwait(false);
             if (capture is null)
             {
-                return View(null, "The displayed capture is no longer retained.");
+                return (null, "The displayed capture is no longer retained.");
             }
             var facts = CameraAgentCurrentSkyFactsProjector.Project(capture, observingDays.Current, combinedArtifactId);
             _cachedFacts = (facts, combinedArtifactId, timeProvider.GetUtcNow());
-            return View(facts, null);
+            return (facts, null);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -951,15 +1058,8 @@ internal sealed class CameraAgentOperatorUiService(
         catch (Exception exception)
         {
             logger.LogWarning(exception, "CameraAgent current sky facts read failed.");
-            return View(null, "Capture facts are temporarily unavailable.");
+            return (null, "Capture facts are temporarily unavailable.");
         }
-
-        OperatorUiResult<CameraAgentCurrentSkyView> View(CameraAgentCurrentSkyFacts? facts, string? factsUnavailableReason)
-            => OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(current, facts, factsUnavailableReason, operations)
-            {
-                ProcessingPending = pending,
-                MinimumRefreshInterval = minimumRefresh
-            });
     }
 
     // Current Sky moves only to a capture whose overlays are settled: retained, or never coming because its processing
@@ -1214,15 +1314,22 @@ internal sealed class CameraAgentOperatorUiService(
             : new(OperatorUiResultKind.Unavailable, read, "The latest accepted measured result is temporarily unavailable.");
     }
 
+    public ValueTask<OperatorUiResult<CameraAgentRetainedAstrometry>> GetRetainedAstrometryAsync(Guid captureId, CancellationToken cancellationToken)
+        => GetRetainedAstrometryAsync(captureId, evidence: null, cancellationToken);
+
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The authenticated read returns only fixed failure states.")]
-    public async ValueTask<OperatorUiResult<CameraAgentRetainedAstrometry>> GetRetainedAstrometryAsync(Guid captureId, CancellationToken cancellationToken)
+    public async ValueTask<OperatorUiResult<CameraAgentRetainedAstrometry>> GetRetainedAstrometryAsync(
+        Guid captureId, CenteredViewArtifact? evidence, CancellationToken cancellationToken)
     {
         if (!await IsAuthorizedAsync(CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false))
             return Denied<CameraAgentRetainedAstrometry>();
         try
         {
-            var value = retainedAstrometry is null ? new CameraAgentRetainedAstrometry(captureId, "NotRetained", "assessment-not-retained")
-                : await retainedAstrometry.GetAsync(captureId, cancellationToken).ConfigureAwait(false);
+            var value = retainedAstrometry is null
+                ? new CameraAgentRetainedAstrometry(captureId, "NotRetained", "assessment-not-retained")
+                : evidence is not null
+                    ? await retainedAstrometry.GetExactAsync(captureId, evidence, cancellationToken).ConfigureAwait(false)
+                    : await retainedAstrometry.GetAsync(captureId, cancellationToken).ConfigureAwait(false);
             return value.CaptureId == captureId
                 ? OperatorUiResult<CameraAgentRetainedAstrometry>.Success(value)
                 : Unavailable<CameraAgentRetainedAstrometry>("The retained assessment identity does not match this capture.");
