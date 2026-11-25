@@ -2522,8 +2522,17 @@ pause can be acknowledged before it ends. A later re-initialization takes a leas
 
 The sweep of every deletion path, with why each remaining one cannot touch data a restore depends on, is in the #1314 correction-round-2
 ledger. `--resume` keeps the pause from its recovery through its retry: the previous image restarts with capture
-still paused, and the retry's candidate starts under the same pause. Capture resumes only once the retry has decided
-the swap.
+still paused, and the retry's candidate starts under the same pause.
+
+An ordinary signed retry must prove the original operation's changed Pause, even if the interruption happened
+after CameraAgent recorded it and before the installer recorded the drain. An unprovable or superseded pause
+holds the retry. A successful signed retry commits the image under the retained pause and settles admission with
+one durable resume identity through the authenticated atomic ownership check. An ownership conflict preserves
+current admission and reports `completed-admission-preserved`. If the candidate confirms the route is absent,
+the installer completes file settlement and reports `completed-admission-preserved-unsupported-atomic-resume`.
+The owner can then use the ordinary authenticated capture controls. Other failures to prove settlement leave the
+commit pending for the same signed `--resume` request. Once the installer records an admission disposition, retry
+finishes file settlement without dispatching another command.
 
 **A restore loses later database changes.** Restoring a snapshot writes this warning to standard error before it
 changes anything (with `--json`, a one-line `state-snapshot-restore` event):
@@ -2689,8 +2698,9 @@ directory above it, up to the product root:
 
 A power loss can therefore never leave a reference, or a completion record, to a file whose directory entry was lost.
 
-An interrupted operation whose snapshot is recorded but not yet restored recovers onto that snapshot, whatever the
-candidate left behind. Every recovery authenticates that snapshot before it changes any container: `--resume` of an
+For operator-image operations, an interrupted operation whose snapshot is recorded but not yet restored recovers onto
+that snapshot. The signed upgrade replacement guard is described under [recovery](#restore-only-after-an-interrupted-upgrade).
+Every recovery authenticates the snapshot before it changes any container: `--resume` of an
 upgrade or a rollback (a rollback previews its retained snapshot for the preflight but still restores its own first),
 `--restore-only`, and the automatic recovery of a failed candidate, which leaves the candidate running rather than
 stopping it to find the snapshot damaged. `--restore-only` serves upgrades only and refuses a rollback before anything
@@ -2868,6 +2878,59 @@ version once the upgrade completes (see [Release Install](#release-install)). An
 `release.json`, so it shows no notes, withdraws the release record, and leaves the next upgrade without an installed
 version. A rollback restores the record of the image it returns to, so the older-target refusal applies again.
 
+### Completing the interrupted RC2 archive upgrade with admission preserved
+
+The published RC2 application cannot atomically confirm that a version-matching
+pause still belongs to the interrupted installer. For the exact legacy RC2
+offline archive request, a separately verified and authorized successor
+installer supports `upgrade --resume --leave-paused --operation-id` with the
+original release directory and operation ID. It requires the healthy verified
+predecessor on its already-restored checkpoint and the original changed pause.
+An accepted same-version owner pause before retry admission takes precedence.
+The original restore plan must match the sealed checkpoint. Fleet heartbeat
+must be disabled, with its database and SQLite sidecars absent.
+
+The retry reuses the pause through both candidate checks and the deliberate
+restart. It settles the original RC2 release and publishes that release's
+verified programs. It sends no pause or resume command. The completed result
+reports the observed admission and the latest authenticated command's order,
+actor and key fingerprint for a separate owner decision. The receipt retains
+its historical observation across retries. Repeating the exact command verifies
+the original and retry checkpoints and reports current admission.
+
+While completion is in progress, the fenced journal requires the same successor
+and disposition. The initial fence can be replayed if the original predecessor,
+restored checkpoint and pause still verify. Ordinary `--resume` cannot claim
+the legacy pause and leaves the original journal available for this command.
+If failure occurs before the candidate starts, the installer restarts the
+predecessor on the unchanged stores. After candidate startup, failed recovery
+replaces stores only if the stopped candidate's latest command, capture boundary
+and Identity store still match the retry checkpoint. A later owner command,
+new captures, credential changes or an unprovable boundary hold recovery with
+its stores and checkpoints preserved. Retain that evidence for separately
+authorized recovery. The stock installer refuses the in-flight journal.
+
+After a quiet failure, the successor verifies the predecessor, the available
+checkpoints, Fleet absence and current admission. It records terminal
+`restored-predecessor-admission-preserved` with no admission command. Use the
+compatible successor installer for later lifecycle operations and its
+`lifecycle-worker` for Drain and scheduled Restart. The predecessor's ordinary
+owner controls remain available for capture admission. Stock RC2 cannot read
+the successor's leave-paused journal. If startup or verification
+was interrupted after the restart was recorded, rerun the exact successor
+`--resume --leave-paused` request to finish verification and settlement. An exact
+replay of terminal failure reports the current admission without retrying the
+candidate.
+
+Stock maintenance may prune the original working checkpoint after completion.
+An exact replay then refuses because the original proof is missing. A separately
+authorized, verified owner-only evidence copy retains that checkpoint outside
+stock pruning while the manifest continues to name the retry checkpoint for rollback.
+
+The normal release wrapper still requires the installer distributed with its
+verified release. The original release artifacts and their attestations remain
+the authority for the RC2 payload and programs.
+
 ### Restore Only After an Interrupted Upgrade
 
 Ordinary `upgrade --resume` retries the upgrade, including the database snapshot
@@ -2885,9 +2948,38 @@ hvo-sky-install cameraagent upgrade \
 
 Retain the original image reference, archive checksum, `--no-download`, and
 compatibility acknowledgement exactly as supplied to that upgrade. The command
-checks the original request hash and operation UUID; it does not acquire or
-inspect the candidate image. This first recovery slice supports operator-image
-upgrades only, not `--release` upgrades, rollback, or catalog operations.
+checks the original request hash and operation UUID.
+
+For an interrupted upgrade from a verified offline release archive, invoke a
+separately verified, compatible native installer directly:
+
+```bash
+/path/to/verified/hvo-sky-install cameraagent upgrade \
+  --instance-id <original-instance-uuid> \
+  --release <original-canonical-release-folder> --image-source archive \
+  --resume --restore-only --operation-id <interrupted-operation-uuid>
+```
+
+Use the original release folder at the same path with its original manifest,
+checksums, host programs and archive. Supply any other original request options
+that were used. The command checks the folder and archive locally and matches the
+resolved candidate identity recorded in the journal. The predecessor must already
+be running on the authenticated restored checkpoint and provide the authenticated
+atomic restore-only endpoint. The endpoint requires the original changed pause
+to be the last accepted capture command in the same transaction that changes
+admission. A later accepted pause can take ownership even when capture was already
+paused and its version stayed the same. Requests for a registry source or the
+quarantine-readiness override are refused.
+
+The published v0.9.1-rc.2 installer predates signed restore-only. A compatible
+successor recognizes the published RC2 checksums and the original RC2 journal.
+A predecessor with only version-fenced resume, including the RC2 runtime, is
+refused with capture still paused. A separate installer binary cannot supply the
+missing server-side check. Verify any successor executable by its own provenance
+and keep it outside the RC2 folder. `install.sh` launches the verified installer
+from the release it checks. Use the matching release installer and assets for a
+new release upgrade. Restore-only leaves the installed commands, release record,
+container and restored checkpoint in place.
 
 The original manifest/result and operation snapshots must agree exactly, including
 the prior rollback history. Owner-only bounded snapshot reads, canonical configuration
@@ -2900,7 +2992,7 @@ Changed state, candidate-running, absent/unhealthy original runtime, foreign adm
 expired/rejected credentials, and committed or partially committed candidates fail
 closed. No backup archive, including a leftover partial archive, authorizes recovery.
 
-An upgrade that recorded a database snapshot is recovered onto it. The snapshot is
+An operator-image upgrade that recorded a database snapshot is recovered onto it. The snapshot is
 authenticated, and the original image's boundaries are checked against its copies
 rather than the live stores, before anything changes. A snapshot that fails
 authentication refuses before any container is touched. Restore-only then stops
@@ -2944,6 +3036,51 @@ capacity, reports progress, has no fixed deadline, and discards its partial arch
 on cancellation; issue [#1044](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1044)
 keeps the qualification of a large (61 GiB) instance. Do not manually edit the
 lifecycle journal or reduce an approved memory override to work around a limit.
+
+Each startup verification during an image upgrade or rollback allows five minutes
+for `/alive`, application `/health` and the expected catalog. Camera initialization
+can be deferred while a populated instance verifies retained evidence. For example,
+the RC2 startup reported an unhealthy deployment location at the former 180-second
+deadline and initialized the camera at about 190 seconds. A deferred check still
+has to become ready before the deadline. Health verification is followed by the
+protected identity and Docker checks.
+
+Automatic recovery has four minutes for its diagnostic, checkpoint and restart
+work. After the predecessor starts, recovery gets a separate eleven-minute
+ceiling for readiness, identity and container verification, and admission
+settlement. A timeout leaves the retained operation for recovery. Use the exact
+signed request and the compatible successor installer with `--resume` to
+finish a pending automatic recovery.
+
+Before automatic signed recovery replaces a checkpoint, the installer verifies
+that the candidate and its writers are stopped. Changes to capture commands,
+raw capture progress, Fleet reports or Fleet metadata hold replacement. The
+Fleet allocation counter can advance independently and is carried forward.
+Signed restore-only compares raw capture progress against the authenticated
+checkpoint independently of Fleet, and verifies the persisted Fleet schema
+marker when the checkpoint includes that store. A held journal uses a version
+that stock RC2 refuses. Keep the retained stores and checkpoint for separately
+authorized recovery.
+
+If an authorized checkpoint replacement is interrupted, the exact successor
+retry reuses the recorded plan and counter floors while the verified writers
+remain stopped. If no checkpoint was needed and the candidate is still running,
+the exact retry verifies and stops the candidate and its replay runner before
+restarting the predecessor on the retained stores. If a Paused receipt became
+durable before the first drain observation was recorded, recovery can prove
+that receipt from the raw journal without issuing another Pause.
+
+After the predecessor is healthy, automatic recovery resumes only a pause it
+still owns. An authenticated 404 or 405 from the atomic-resume capability probe
+settles as `restored-predecessor-admission-preserved-unsupported-atomic-resume`.
+The owner can use ordinary capture controls on the paused predecessor. A pause
+that was never established or was superseded by an owner command settles as
+`restored-predecessor-admission-preserved`, keeping the current admission.
+Both dispositions are terminal and allow later lifecycle commands with the
+compatible successor installer, including Drain and scheduled Restart through
+its `lifecycle-worker`. Stock RC2 cannot read the successor's automatic recovery
+journal. Authentication, transport or incomplete
+verification leaves settlement pending for the exact request and installer.
 
 The protected installation-verification GET used by both the pre-mutation owner
 state read and full installation identity verification has one finite **120-second

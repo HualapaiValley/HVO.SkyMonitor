@@ -18,11 +18,12 @@ internal sealed partial class CameraAgentLifecycleManager
         InstallationPaths paths,
         InstanceManifest manifest,
         LifecycleOperationKind kind,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        VerifiedRelease? admittedRelease = null)
     {
         if (kind is LifecycleOperationKind.Upgrade or LifecycleOperationKind.Rollback or LifecycleOperationKind.Reinstall)
             await PathPrograms.SettleAsync(paths, request.ProductionProductRoot, request.Release, manifest.Image.ImageId,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken, admittedRelease).ConfigureAwait(false);
         else if (kind == LifecycleOperationKind.Uninstall)
             await PathPrograms.RemoveAsync(paths, request.ProductionProductRoot, purge: false, cancellationToken).ConfigureAwait(false);
         return await InstallRecordStore.SettleInstanceAsync(
