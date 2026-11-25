@@ -976,6 +976,61 @@ public sealed class ProcessingNodeConfigPageTests
     }
 
     [TestMethod]
+    public void DedicatedPageDisabledRegionalVisibilityResetPreservesDisabledStateAndDependencies()
+    {
+        using var context = new BunitContext();
+        var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
+        var pipeline = new CapturePipelineConfig(
+        [
+            new(ExposureMeasurementProducts.StepAlias, ExposureMeasurementProducts.StepAlias, 4, null, ["$raw"], Required: false, Enabled: true, Publication: durable),
+            new(CaptureAnalysisOptionDescriptors.CenteredAstrometryAlias, "solve", 20, null,
+                ["$raw", ExposureMeasurementProducts.StepAlias], Required: false, Enabled: true, Publication: durable),
+            new(RegionalStellarVisibilityProducts.StepAlias, "regional", 30,
+                JsonDocument.Parse("""{ "gridColumns": 6 }""").RootElement.Clone(),
+                ["$raw", ExposureMeasurementProducts.StepAlias],
+                Required: false, Enabled: false, Publication: durable)
+        ]);
+        var service = Configure(context, pipeline);
+
+        var cut = context.Render<ProcessingNodeConfigPage>(parameters => parameters
+            .Add(static page => page.RevisionId, "rev-active")
+            .Add(static page => page.NodeId, "regional"));
+
+        cut.WaitForElement("#node-options-2-gridColumns");
+        Assert.AreEqual("6", cut.Find("#node-options-2-gridColumns").GetAttribute("value"));
+        Assert.IsFalse(cut.Find("#node-options-2-enabled").HasAttribute("checked"));
+        Assert.IsFalse(cut.Find("#node-options-2-reset-defaults").HasAttribute("disabled"));
+        Assert.IsFalse(cut.FindAll(".node-switcher__item").Any(static item =>
+            item.TextContent.Contains(ExposureCatalogPredictionProducts.StepAlias, StringComparison.Ordinal)));
+
+        // Resetting options on a disabled regional node resets parameters while keeping the node disabled and unwired.
+        cut.Find("#node-options-2-reset-defaults").Click();
+        Assert.AreEqual("4", cut.Find("#node-options-2-gridColumns").GetAttribute("value"));
+        Assert.IsFalse(cut.Find("#node-options-2-enabled").HasAttribute("checked"),
+            "Reset to code defaults must preserve a disabled node's Enabled=false state.");
+        Assert.IsTrue(cut.Find("#node-options-2-reset-defaults").HasAttribute("disabled"));
+        Assert.IsFalse(cut.FindAll(".node-switcher__item").Any(static item =>
+            item.TextContent.Contains(ExposureCatalogPredictionProducts.StepAlias, StringComparison.Ordinal)),
+            "Resetting a disabled regional node must not add ExposureCatalogPrediction.");
+
+        cut.Find("form").Submit();
+        Assert.IsEmpty(cut.FindAll(".config-banner--error[role='alert']"));
+        Assert.IsFalse(cut.Find("button.btn-primary").HasAttribute("disabled"));
+        cut.Find("button.btn-primary").Click();
+
+        var savedPipeline = service.Created.Single().Pipeline;
+        Assert.IsFalse(savedPipeline.Steps.Any(static step =>
+            string.Equals(step.Type, ExposureCatalogPredictionProducts.StepAlias, StringComparison.OrdinalIgnoreCase)));
+        var savedStep = savedPipeline.Steps.Single(static step => step.Id == "regional");
+        Assert.AreEqual(false, savedStep.Enabled);
+        Assert.AreEqual(4, savedStep.Options!.Value.GetProperty("gridColumns").GetInt32());
+        Assert.IsFalse(savedStep.Options.Value.TryGetProperty("enabled", out _),
+            "Reset to code defaults must not materialize an enabled option override.");
+        Assert.IsFalse(savedStep.DependsOn!.Contains(ExposureCatalogPredictionProducts.StepAlias, StringComparer.Ordinal));
+        Assert.IsFalse(savedStep.DependsOn!.Contains("solve", StringComparer.Ordinal));
+    }
+
+    [TestMethod]
     public void DedicatedPageRegionalVisibilityToggleDisabledRemovesUnusedPredictionAndReEnableWiresItBack()
     {
         var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);

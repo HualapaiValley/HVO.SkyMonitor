@@ -7,6 +7,8 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Operations;
 
 public sealed partial class ProcessingNodeOptionsEditor : ComponentBase
 {
+    private static readonly HashSet<string> NodeEnabledKeys = new(StringComparer.Ordinal) { "enabled" };
+
     [Parameter, EditorRequired] public string IdPrefix { get; set; } = string.Empty;
     [Parameter, EditorRequired] public ProcessingNodeOptionsForm Form { get; set; } = default!;
     [Parameter] public EventCallback Changed { get; set; }
@@ -16,22 +18,11 @@ public sealed partial class ProcessingNodeOptionsEditor : ComponentBase
     [Parameter] public string? DeepSkyAnchorId { get; set; }
 
     private bool CanResetToDefaults
-        => Form.HasNonDefaultValues ||
-            (NodeEnabled.HasValue &&
-             Form.Descriptor.Find("enabled") is { } enabledOption &&
-             NodeEnabled.Value != enabledOption.DefaultValue.AsToggle());
+        => Form.HasNonDefaultValuesExcluding(NodeEnabledKeys);
 
     private async Task ResetAllToDefaultsAsync()
     {
-        Form.ResetAllToDefaults();
-        if (NodeEnabled.HasValue && Form.Descriptor.Find("enabled") is { } enabledOption)
-        {
-            var defaultEnabled = enabledOption.DefaultValue.AsToggle();
-            if (NodeEnabled.Value != defaultEnabled)
-            {
-                await NodeEnabledChanged.InvokeAsync(defaultEnabled).ConfigureAwait(false);
-            }
-        }
+        Form.ResetAllToDefaultsExcluding(NodeEnabledKeys);
         await Changed.InvokeAsync().ConfigureAwait(false);
     }
 

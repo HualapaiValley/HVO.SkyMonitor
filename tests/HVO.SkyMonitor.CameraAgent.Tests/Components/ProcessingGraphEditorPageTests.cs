@@ -573,6 +573,146 @@ public sealed class ProcessingGraphEditorPageTests
     }
 
     [TestMethod]
+    public void GraphEditorDisabledRegionalVisibilityResetPreservesDisabledStateAndDependencies()
+    {
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
+        var pipeline = new CapturePipelineConfig(
+        [
+            new(ExposureMeasurementProducts.StepAlias, ExposureMeasurementProducts.StepAlias, 4, null, ["$raw"], Required: false, Enabled: true, Publication: durable),
+            new(CaptureAnalysisOptionDescriptors.CenteredAstrometryAlias, "solve", 20, null,
+                ["$raw", ExposureMeasurementProducts.StepAlias], Required: false, Enabled: true, Publication: durable),
+            new(RegionalStellarVisibilityProducts.StepAlias, "regional", 30,
+                JsonDocument.Parse("""{ "gridColumns": 6 }""").RootElement.Clone(),
+                ["$raw", ExposureMeasurementProducts.StepAlias],
+                Required: false, Enabled: false, Publication: durable)
+        ]);
+        var service = CreateEditorService(pipeline);
+        context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(service);
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/pipeline/graphs/new?from=rev-active");
+
+        var cut = context.Render<ProcessingGraphEditorPage>();
+        var regionalRow = cut.WaitForElement($"li.node-row[data-node-alias='{RegionalStellarVisibilityProducts.StepAlias}']");
+        Assert.AreEqual("6", regionalRow.QuerySelector("input[id$='-gridColumns']")!.GetAttribute("value"));
+        Assert.IsFalse(regionalRow.QuerySelector("input[id$='-enabled']")!.HasAttribute("checked"));
+        Assert.IsFalse(FindMainRowEnabledCheckbox(regionalRow).HasAttribute("checked"));
+        Assert.IsFalse(regionalRow.QuerySelector("button[id$='-reset-defaults']")!.HasAttribute("disabled"));
+        Assert.IsEmpty(cut.FindAll($"li.node-row[data-node-alias='{ExposureCatalogPredictionProducts.StepAlias}']"));
+
+        // Resetting options on a disabled regional node resets parameters while keeping the node disabled and unwired.
+        regionalRow.QuerySelector("button[id$='-reset-defaults']")!.Click();
+        regionalRow = cut.Find($"li.node-row[data-node-alias='{RegionalStellarVisibilityProducts.StepAlias}']");
+        Assert.AreEqual("4", regionalRow.QuerySelector("input[id$='-gridColumns']")!.GetAttribute("value"));
+        Assert.IsFalse(regionalRow.QuerySelector("input[id$='-enabled']")!.HasAttribute("checked"),
+            "Reset to code defaults must preserve a disabled node's Enabled=false state.");
+        Assert.IsFalse(FindMainRowEnabledCheckbox(regionalRow).HasAttribute("checked"),
+            "Main-row Enabled checkbox must stay unchecked after Reset to code defaults.");
+        Assert.IsTrue(regionalRow.QuerySelector("button[id$='-reset-defaults']")!.HasAttribute("disabled"));
+        Assert.IsEmpty(cut.FindAll($"li.node-row[data-node-alias='{ExposureCatalogPredictionProducts.StepAlias}']"),
+            "Resetting a disabled regional node must not add ExposureCatalogPrediction.");
+
+        cut.Find("form").Submit();
+        Assert.IsEmpty(cut.FindAll(".editor-banner--error[role='alert']"));
+        cut.WaitForAssertion(() => Assert.IsNotNull(cut.Find("svg[role='group']")));
+        Assert.IsFalse(cut.Find(".editor-actions button.btn-primary").HasAttribute("disabled"));
+        cut.Find(".editor-actions button.btn-primary").Click();
+
+        var savedPipeline = service.Created.Single().Pipeline;
+        Assert.IsFalse(savedPipeline.Steps.Any(static step =>
+            string.Equals(step.Type, ExposureCatalogPredictionProducts.StepAlias, StringComparison.OrdinalIgnoreCase)));
+        var savedStep = savedPipeline.Steps.Single(static step => step.Id == "regional");
+        Assert.AreEqual(false, savedStep.Enabled);
+        Assert.AreEqual(4, savedStep.Options!.Value.GetProperty("gridColumns").GetInt32());
+        Assert.IsFalse(savedStep.Options.Value.TryGetProperty("enabled", out _),
+            "Reset to code defaults must not materialize an enabled option override.");
+        Assert.IsFalse(savedStep.DependsOn!.Contains(ExposureCatalogPredictionProducts.StepAlias, StringComparer.Ordinal));
+        Assert.IsFalse(savedStep.DependsOn!.Contains("solve", StringComparer.Ordinal));
+    }
+
+    [TestMethod]
+    public void GraphEditorRegionalVisibilityMainRowEnabledCheckboxPrunesUnusedPredictionAndReWiresPredecessors()
+    {
+        var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
+        var enabledPipeline = new CapturePipelineConfig(
+        [
+            new(ExposureMeasurementProducts.StepAlias, ExposureMeasurementProducts.StepAlias, 4, null, ["$raw"], Required: false, Enabled: true, Publication: durable),
+            new(ExposureCatalogPredictionProducts.StepAlias, ExposureCatalogPredictionProducts.StepAlias, 5, null, ["$raw"], Required: false, Enabled: true, Publication: durable),
+            new(CaptureAnalysisOptionDescriptors.CenteredAstrometryAlias, "solve", 20, null,
+                ["$raw", ExposureMeasurementProducts.StepAlias], Required: false, Enabled: true, Publication: durable),
+            new(RegionalStellarVisibilityProducts.StepAlias, "regional", 30, null,
+                ["$raw", ExposureMeasurementProducts.StepAlias, ExposureCatalogPredictionProducts.StepAlias],
+                Required: false, Enabled: true, Publication: durable)
+        ]);
+
+        // 1. Disabling via the main-row Enabled checkbox (ProcessingGraphEditorPage.razor:84) prunes unused ExposureCatalogPrediction.
+        CapturePipelineConfig disabledPipeline;
+        using (var disableContext = new BunitContext())
+        {
+            disableContext.JSInterop.Mode = JSRuntimeMode.Loose;
+            var service = CreateEditorService(enabledPipeline);
+            disableContext.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(service);
+            disableContext.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/pipeline/graphs/new?from=rev-active");
+
+            var cut = disableContext.Render<ProcessingGraphEditorPage>();
+            cut.WaitForElement($"li.node-row[data-node-alias='{ExposureCatalogPredictionProducts.StepAlias}']");
+            var regionalRow = cut.Find($"li.node-row[data-node-alias='{RegionalStellarVisibilityProducts.StepAlias}']");
+            FindMainRowEnabledCheckbox(regionalRow).Change(false);
+
+            Assert.IsEmpty(cut.FindAll($"li.node-row[data-node-alias='{ExposureCatalogPredictionProducts.StepAlias}']"),
+                "Disabling the last regional consumer via the row checkbox must remove the unused ExposureCatalogPrediction row.");
+
+            cut.Find("form").Submit();
+            Assert.IsEmpty(cut.FindAll(".editor-banner--error[role='alert']"));
+            Assert.IsFalse(cut.Find(".editor-actions button.btn-primary").HasAttribute("disabled"));
+            cut.Find(".editor-actions button.btn-primary").Click();
+
+            disabledPipeline = service.Created.Single().Pipeline;
+            Assert.IsFalse(disabledPipeline.Steps.Any(static step =>
+                string.Equals(step.Type, ExposureCatalogPredictionProducts.StepAlias, StringComparison.OrdinalIgnoreCase)));
+            var savedRegional = disabledPipeline.Steps.Single(static step => step.Id == "regional");
+            Assert.AreEqual(false, savedRegional.Enabled);
+            Assert.IsFalse(savedRegional.DependsOn!.Contains(ExposureCatalogPredictionProducts.StepAlias, StringComparer.Ordinal));
+        }
+
+        // 2. Re-enabling via the main-row Enabled checkbox wires ExposureCatalogPrediction and eligible predecessor solve cleanly.
+        using (var enableContext = new BunitContext())
+        {
+            enableContext.JSInterop.Mode = JSRuntimeMode.Loose;
+            var service = CreateEditorService(disabledPipeline);
+            enableContext.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(service);
+            enableContext.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/pipeline/graphs/new?from=rev-active");
+
+            var cut = enableContext.Render<ProcessingGraphEditorPage>();
+            var regionalRow = cut.WaitForElement($"li.node-row[data-node-alias='{RegionalStellarVisibilityProducts.StepAlias}']");
+            Assert.IsEmpty(cut.FindAll($"li.node-row[data-node-alias='{ExposureCatalogPredictionProducts.StepAlias}']"));
+            FindMainRowEnabledCheckbox(regionalRow).Change(true);
+
+            Assert.IsNotEmpty(cut.FindAll($"li.node-row[data-node-alias='{ExposureCatalogPredictionProducts.StepAlias}']"),
+                "Re-enabling the regional consumer via the row checkbox must wire ExposureCatalogPrediction back.");
+
+            cut.Find("form").Submit();
+            Assert.IsEmpty(cut.FindAll(".editor-banner--error[role='alert']"));
+            Assert.IsFalse(cut.Find(".editor-actions button.btn-primary").HasAttribute("disabled"));
+            cut.Find(".editor-actions button.btn-primary").Click();
+
+            var reEnabledPipeline = service.Created.Single().Pipeline;
+            Assert.IsTrue(reEnabledPipeline.Steps.Any(static step =>
+                string.Equals(step.Type, ExposureCatalogPredictionProducts.StepAlias, StringComparison.OrdinalIgnoreCase)));
+            var savedRegional = reEnabledPipeline.Steps.Single(static step => step.Id == "regional");
+            Assert.AreNotEqual(false, savedRegional.Enabled);
+            Assert.IsTrue(savedRegional.DependsOn!.Contains(ExposureCatalogPredictionProducts.StepAlias, StringComparer.Ordinal));
+            Assert.IsTrue(savedRegional.DependsOn!.Contains("solve", StringComparer.Ordinal),
+                "Re-enabling the regional consumer via the row checkbox must wire the eligible solve predecessor.");
+        }
+    }
+
+    private static AngleSharp.Dom.IElement FindMainRowEnabledCheckbox(AngleSharp.Dom.IElement nodeRow)
+        => nodeRow.QuerySelectorAll(".node-row__head label.check")
+            .Single(static label => label.TextContent.Contains("Enabled", StringComparison.Ordinal))
+            .QuerySelector("input[type='checkbox']")!;
+
+    [TestMethod]
     public void GraphEditorRegionalVisibilityToggleDisabledRemovesUnusedPredictionAndReEnableWiresItBack()
     {
         var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
