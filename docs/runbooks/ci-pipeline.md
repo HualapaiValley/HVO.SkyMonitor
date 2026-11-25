@@ -231,20 +231,37 @@ records restore 10 s, build 382 s, Unit 550 s and coverage 50 s: 992 s of the
 1,080 s workload budget, leaving 88 s before checkout/setup overhead. This
 contended sample is distinct from the local totals above. The 1,080 s budget,
 22-minute hard timeout and unconditional coverage regressions are retained;
-Roy selected additional or relocated self-hosted runner capacity in t421s2656.
-Atlas completed that work on 2026-11-12 at 9:04–9:05 AM PST: `gh-runner-05`
-and `gh-runner-06` each have 8 vCPU and are the only runners carrying
-`hvo-skymonitor-build`. The full Build and Unit workload selects exactly
-`[self-hosted, linux, x64, hvo-skymonitor-build]`; runners 01–04 and other job
-selectors are unchanged. Capacity delivery is ready. Keep the 1,080 s soft
-budget and 22-minute hard timeout unchanged while collecting new timings.
-Workflow rollback returns this job to `[self-hosted, linux, x64, hvo-skymonitor]`;
-Atlas retains `ROLLBACK.md` for the runner-side procedure.
+Roy selected additional self-hosted capacity in t421s2656. Atlas delivered the
+initial 8-vCPU pair on 2026-11-12. The full Build and Unit workload selects
+`[self-hosted, linux, x64, hvo-skymonitor-build]`. The
+[runner capacity runbook](ci-runner-capacity.md#build-and-unit-allocation) records
+the current label observation and the runner-side rollback reference.
 A later [run 43086895061, attempt 1](https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/43086895061/attempts/1)
 reached exit 124 during Unit: restore 4 s, build 212 s and Unit 862 s by step
 timestamps; coverage never started. This demonstrates workload-budget pressure
 outside the coverage self-tests, so making those tests conditional cannot by
 itself prevent that timeout. Refs #1747.
+
+In ten consecutive completed `merge_group` runs from November 24–25, 2026 UTC,
+seven passed Build and Unit with 41–317 s to spare. This uses GitHub job step
+timestamps from the start of `Record workload start` to the end of coverage
+and includes checkout and SDK setup. The slowest pass used 1,039 s and the fastest
+used 763 s. The three failures reached exit 124, as recorded in the uploaded
+timing files. [Sample start](https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/45460866965)
+· [Sample end](https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/45519472722)
+· [Slowest pass](https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/45506691952)
+· [Fastest pass](https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/45497771619)
+
+| Runner | Stage that reached the deadline | Evidence |
+| --- | --- | --- |
+| `gh-runner-05` | Coverage | [45460866965](https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/45460866965) |
+| `gh-runner-01` | Unit | [45502793559](https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/45502793559) |
+| `gh-runner-01` | Unit | [45516304735](https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/45516304735) |
+
+This is an operational sample across different commits and runners. Use the
+`development-v1-<run-id>-<attempt>` artifact's `manifest.json` and `timing/*.time`
+to identify the stage and exit status when a later run reaches the existing
+deadline. Keep coverage regressions required for every full workload.
 
 ## Development v1 documentation fast path
 
@@ -279,6 +296,14 @@ unique `github.run_id` and disable in-progress cancellation. A unique group
 also prevents GitHub from replacing a pending queue run. The separate
 reviewed-head workflow uses no concurrency group. Its runs can proceed
 independently. Refs #2060.
+
+Seven consecutive successful queue-generated pushes on November 24–25, 2026 UTC
+reused exact-SHA merge-group validation on GitHub-hosted runners. The three
+immediately preceding pushes were cancelled before Build and Unit received a
+runner. The push concurrency group still cancels older runs on
+`development/v1`. A push that needs full validation competes for the build pool
+until superseded or completed. [First sampled push](https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/45416424061)
+· [Last sampled push](https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/45522117380)
 
 | Workflow | Triggers | Concurrency |
 | --- | --- | --- |
