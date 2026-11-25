@@ -251,6 +251,19 @@ itself prevent that timeout. Refs #1747.
 
 A ready PR still runs the required Build and Unit job after successful hosted Preflight. Its full-history checkout verifies the merge parents and runs the first parent's `scripts/ci:classify` against both the PR head and checked-out merge tree. Both endpoints must pass the base-controlled source inventory audit. For SDK or package restore inputs, the job also requires a successful proof against the [reviewed restore-import certificate](development-v1-restore-imports.md). A missing result, mismatch or failed proof selects full validation. The artifact retains the exact path list, decision, reason and Preflight dependency. The narrow allowlist and exclusions are documented in [Development v1](../development-v1.md). Refs #1989 and #1995.
 
+### Reproduce the documentation CI inventory
+
+Use the [combined refresh procedure](development-v1-restore-imports.md#refresh-and-review) for any inventory change. With a current restore certificate, this read-only check reproduces the inventory from the committed tree and compares it byte for byte with the checked-out copy.
+
+```bash
+(
+  set -o pipefail
+  ./scripts/ci:classify --print-docs-inventory HEAD | cmp - scripts/ci:docs-inventory
+)
+```
+
+The generator follows committed explicit MSBuild imports regardless of suffix. It rejects unknown imports, tracked symlinks and submodules, automatic user and response inputs, repository-root or docs-rooted projects, escaped paths, unsafe globs and references to eligible documentation. Review its output and the build-input diff together. Check that each import resolves to the intended committed file, all implicit inputs are accounted for, and eligible documentation remains outside the build and test inputs. A failed audit or stale certificate selects full validation, and hosted Preflight reports a non-failing warning with the source audit reason. The mandatory certificate-maintenance gate is tracked in #1996.
+
 ## Development v1 post-merge pushes
 
 Preflight runs its normal checks on every `development/v1` push. For pushes
@@ -296,19 +309,6 @@ independently. Refs #2060.
 | `release-image.yml` | Reusable workflow called by release and prerelease | No group of its own. |
 | `release.yml` | Final and release-candidate tags | Group by tag ref. Publish and Latest Image share a release-wide group. Keep running work. |
 | `stellarium.yml` | Schedule, dispatch | One oracle group. Keep running work. |
-
-### Reproduce the documentation CI inventory
-
-Use the [combined refresh procedure](development-v1-restore-imports.md#refresh-and-review) for any inventory change. With a current restore certificate, this read-only check reproduces the inventory from the committed tree and compares it byte for byte with the checked-out copy.
-
-```bash
-(
-  set -o pipefail
-  ./scripts/ci:classify --print-docs-inventory HEAD | cmp - scripts/ci:docs-inventory
-)
-```
-
-The generator follows committed explicit MSBuild imports regardless of suffix. It rejects unknown imports, tracked symlinks and submodules, automatic user and response inputs, repository-root or docs-rooted projects, escaped paths, unsafe globs and references to eligible documentation. Review its output and the build-input diff together. Check that each import resolves to the intended committed file, all implicit inputs are accounted for, and eligible documentation remains outside the build and test inputs. A failed audit or stale certificate selects full validation, and hosted Preflight reports a non-failing warning with the source audit reason. The mandatory certificate-maintenance gate is tracked in #1996.
 
 ## Development v1 Preflight Budget
 
@@ -962,7 +962,7 @@ reference the generated report or the relevant TRX and retain the selected
 checks' results. Add or remove a project from the membership file when it gains
 or loses its Unit selection.
 
-`External` is implemented by the pinned, networkless Stellarium workflow rather than an empty MSTest check. The accelerated `Soak` case and real-duration soak are independently selectable in `.github/workflows/cameraagent-soak.yml`. Hardware cases remain separately selectable and is not published as a CI check until a suitable device runner exists.
+`External` is implemented by the pinned, networkless Stellarium workflow rather than an empty MSTest check. The accelerated `Soak` case and real-duration soak are independently selectable in `.github/workflows/cameraagent-soak.yml`. Hardware cases remain separately selectable and are not published as CI checks until a suitable device runner exists.
 
 ### Performance tests
 
