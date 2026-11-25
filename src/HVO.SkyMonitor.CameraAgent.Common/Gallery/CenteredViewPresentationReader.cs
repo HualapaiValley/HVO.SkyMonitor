@@ -99,6 +99,10 @@ internal sealed class CenteredViewPresentationReader : ICenteredViewPresentation
         _layerReadGate = new LayerReadGate(maximumConcurrentLayerReads);
     }
 
+    internal int PendingLayerReadWaiterCount => _layerReadGate.PendingWaiterCount;
+
+    internal int AvailableLayerReadPermits => _layerReadGate.AvailablePermits;
+
     public async ValueTask<CameraAgentArtifactContentResult> OpenPreviewAsync(
         string baseId, string revisionId, CancellationToken cancellationToken = default)
     {
@@ -392,66 +396,94 @@ internal sealed class CenteredViewPresentationReader : ICenteredViewPresentation
     }
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Best-effort disposal of a timed-out optional layer stream must never surface unobserved task exceptions.")]
-    private static async Task DisposeLateOpenedContentAsync(
+    internal static Task DisposeLateOpenedContentAsync(
         Task<CameraAgentArtifactContentResult> openTask,
-        LayerReadGate gate)
-    {
-        try
-        {
-            var result = await openTask.ConfigureAwait(false);
-            if (result.Content is { } content)
+        LayerReadGate gate) =>
+        Task.Run(
+            async () =>
             {
-                await content.DisposeAsync().ConfigureAwait(false);
-            }
-        }
-        catch (Exception exception) when (exception is not (StackOverflowException or OutOfMemoryException))
-        {
-            // Timed-out optional layer open already degraded cleanly.
-        }
-        finally
-        {
-            gate.Release();
-        }
-    }
+                try
+                {
+                    var result = await openTask.ConfigureAwait(false);
+                    if (result.Content is { } content)
+                    {
+                        await content.DisposeAsync().ConfigureAwait(false);
+                    }
+                }
+                catch (Exception exception) when (exception is not (StackOverflowException or OutOfMemoryException))
+                {
+                    // Timed-out optional layer open already degraded cleanly.
+                }
+                finally
+                {
+                    gate.Release();
+                }
+            },
+            CancellationToken.None);
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Best-effort disposal and budget release after a timed-out layer read must never surface unobserved task exceptions.")]
-    private static async Task DisposeAfterReadAsync(
+    private static Task DisposeAfterReadAsync(
         Task readTask,
         CameraAgentArtifactContentStream content,
         PayloadBudget budget,
         int reservedBytes,
-        LayerReadGate gate)
-    {
-        try
-        {
-            await readTask.ConfigureAwait(false);
-        }
-        catch (Exception exception) when (exception is not (StackOverflowException or OutOfMemoryException))
-        {
-            // Timed-out optional layer read already degraded cleanly.
-        }
-        finally
-        {
-            try
+        LayerReadGate gate) =>
+        Task.Run(
+            async () =>
             {
-                await content.DisposeAsync().ConfigureAwait(false);
-            }
-            catch (Exception exception) when (exception is not (StackOverflowException or OutOfMemoryException))
-            {
-            }
-            finally
-            {
-                budget.Release(reservedBytes);
-                gate.Release();
-            }
-        }
-    }
+                try
+                {
+                    await readTask.ConfigureAwait(false);
+                }
+                catch (Exception exception) when (exception is not (StackOverflowException or OutOfMemoryException))
+                {
+                    // Timed-out optional layer read already degraded cleanly.
+                }
+                finally
+                {
+                    try
+                    {
+                        await content.DisposeAsync().ConfigureAwait(false);
+                    }
+                    catch (Exception exception) when (exception is not (StackOverflowException or OutOfMemoryException))
+                    {
+                    }
+                    finally
+                    {
+                        budget.Release(reservedBytes);
+                        gate.Release();
+                    }
+                }
+            },
+            CancellationToken.None);
 
-    private sealed class LayerReadGate(int maximumPermits)
+    internal sealed class LayerReadGate(int maximumPermits)
     {
         private readonly Lock _gate = new();
-        private readonly Queue<Waiter> _waiters = new();
+        private readonly LinkedList<Waiter> _waiters = new();
         private int _available = maximumPermits;
+
+        public int AvailablePermits
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _available;
+                }
+            }
+        }
+
+        public int PendingWaiterCount
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _waiters.Count;
+                }
+            }
+        }
 
         public ValueTask<bool> TryAcquireAsync(CancellationToken cancellationToken)
         {
@@ -469,7 +501,7 @@ internal sealed class CenteredViewPresentationReader : ICenteredViewPresentation
                     return ValueTask.FromResult(true);
                 }
                 waiter = new Waiter(this);
-                _waiters.Enqueue(waiter);
+                waiter.SetNodeLocked(_waiters.AddLast(waiter));
             }
 
             if (cancellationToken.CanBeCanceled)
@@ -489,9 +521,11 @@ internal sealed class CenteredViewPresentationReader : ICenteredViewPresentation
             CancellationTokenRegistration registrationToDispose = default;
             lock (_gate)
             {
-                while (_waiters.Count > 0)
+                while (_waiters.First is { } first)
                 {
-                    var candidate = _waiters.Dequeue();
+                    _waiters.RemoveFirst();
+                    var candidate = first.Value;
+                    candidate.ClearNodeLocked();
                     if (candidate.TryGrantLocked(out registrationToDispose))
                     {
                         toGrant = candidate;
@@ -509,13 +543,26 @@ internal sealed class CenteredViewPresentationReader : ICenteredViewPresentation
             toGrant?.Complete(granted: true);
         }
 
+        private void RemoveLocked(LinkedListNode<Waiter> node)
+        {
+            if (node.List == _waiters)
+            {
+                _waiters.Remove(node);
+            }
+        }
+
         private sealed class Waiter(LayerReadGate owner)
         {
             private readonly TaskCompletionSource<bool> _tcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            private LinkedListNode<Waiter>? _node;
             private CancellationTokenRegistration _registration;
             private bool _completed;
 
             public Task<bool> Task => _tcs.Task;
+
+            public void SetNodeLocked(LinkedListNode<Waiter> node) => _node = node;
+
+            public void ClearNodeLocked() => _node = null;
 
             public void AttachRegistration(CancellationTokenRegistration registration)
             {
@@ -560,6 +607,11 @@ internal sealed class CenteredViewPresentationReader : ICenteredViewPresentation
                         return;
                     }
                     _completed = true;
+                    if (_node is { } node)
+                    {
+                        owner.RemoveLocked(node);
+                        _node = null;
+                    }
                     registration = _registration;
                     _registration = default;
                 }
