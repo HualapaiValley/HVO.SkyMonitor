@@ -13,6 +13,7 @@ public sealed partial class ProcessingNodeOptionsEditor : ComponentBase
     [Parameter] public bool? NodeEnabled { get; set; }
     [Parameter] public EventCallback<bool> NodeEnabledChanged { get; set; }
     [Parameter] public bool ShowResetToDefaults { get; set; }
+    [Parameter] public string? DeepSkyAnchorId { get; set; }
 
     private bool CanResetToDefaults
         => Form.HasNonDefaultValues ||

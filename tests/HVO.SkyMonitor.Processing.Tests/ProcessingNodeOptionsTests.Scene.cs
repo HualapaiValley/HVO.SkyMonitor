@@ -11,7 +11,7 @@ public sealed partial class ProcessingNodeOptionsTests
         var source = Json("""{ "DrawMarkers" : true, "constellationIds": [ "Ori", "UMa" ], "markerValue":null, "labelValue":17, "imageCircleValue":null, "cardinalValue":128, "expectedPositionDiagnostics":true, "future":{"x":1e+02} }""");
         var decoded = ProcessingNodeOptionsCodec.Decode(descriptor, source);
         Assert.IsTrue(decoded.IsValid);
-        Assert.HasCount(version == SceneVersion ? 29 : 17, decoded.Options);
+        Assert.HasCount(version == SceneVersion ? 30 : 17, decoded.Options);
         Assert.AreEqual(6, decoded.Get("markerRadius").Value.AsWholeNumber());
         Assert.AreEqual(2, decoded.Get("labelScale").Value.AsWholeNumber());
         Assert.AreEqual(24, decoded.Get("maximumLabelCharacters").Value.AsWholeNumber());
@@ -85,6 +85,7 @@ public sealed partial class ProcessingNodeOptionsTests
             var defaults = ProcessingNodeOptionsCodec.Decode(descriptor, source);
             Assert.IsTrue(defaults.IsValid, descriptor.DescriptorId);
             Assert.IsFalse(defaults.Get("includeDeepSkyLayer").Value.AsToggle());
+            Assert.IsFalse(defaults.Get("applyInlineDeepSkyStyle").Value.AsToggle());
             Assert.IsTrue(defaults.Get("deepSkyLabels").Value.AsToggle());
             Assert.AreEqual(24, defaults.Get("deepSkyMaximumLabels").Value.AsWholeNumber());
             Assert.AreEqual(24, defaults.Get("deepSkyMaximumLabelCharacters").Value.AsWholeNumber());
@@ -98,25 +99,28 @@ public sealed partial class ProcessingNodeOptionsTests
 
             var edited = ProcessingNodeOptionsCodec.Encode(descriptor, source, new Dictionary<string, ProcessingOptionValue>
             {
+                ["applyInlineDeepSkyStyle"] = ProcessingOptionValue.FromToggle(true),
                 ["deepSkyMaximumLabels"] = ProcessingOptionValue.FromWholeNumber(6),
                 ["deepSkyMaximumLabelCharacters"] = ProcessingOptionValue.FromWholeNumber(12),
                 ["deepSkyLabelCatalogObjects"] = ProcessingOptionValue.FromToggle(false),
                 ["deepSkyMinimumGlyphRadius"] = ProcessingOptionValue.FromWholeNumber(11),
                 ["deepSkyColor"] = ProcessingOptionValue.FromColor(new(100, 180, 240)),
-                ["deepSkyFont"] = ProcessingOptionValue.FromFont("PlexRegular")
+                ["deepSkyFont"] = ProcessingOptionValue.FromFont("MonoBold")
             });
             Assert.IsTrue(edited.IsValid, string.Join(' ', edited.Diagnostics));
             Assert.AreEqual("[1e+02]", edited.Options!.Value.GetProperty("future").GetRawText());
+            Assert.IsTrue(edited.Options.Value.GetProperty("applyInlineDeepSkyStyle").GetBoolean());
             Assert.AreEqual(6, edited.Options.Value.GetProperty("deepSkyMaximumLabels").GetInt32());
             Assert.AreEqual(12, edited.Options.Value.GetProperty("deepSkyMaximumLabelCharacters").GetInt32());
             Assert.IsFalse(edited.Options.Value.GetProperty("deepSkyLabelCatalogObjects").GetBoolean());
             Assert.AreEqual(11, edited.Options.Value.GetProperty("deepSkyMinimumGlyphRadius").GetInt32());
             Assert.AreEqual(100, edited.Options.Value.GetProperty("deepSkyRed").GetInt32());
-            Assert.AreEqual("PlexRegular", edited.Options.Value.GetProperty("deepSkyFont").GetString());
+            Assert.AreEqual("MonoBold", edited.Options.Value.GetProperty("deepSkyFont").GetString());
         }
     }
 
     [TestMethod]
+    [DataRow("applyInlineDeepSkyStyle", "null", ProcessingOptionReasonCodes.WrongType)]
     [DataRow("deepSkyMaximumLabels", "-1", ProcessingOptionReasonCodes.OutOfRange)]
     [DataRow("deepSkyMaximumLabels", "25", ProcessingOptionReasonCodes.OutOfRange)]
     [DataRow("deepSkyMaximumLabelCharacters", "-1", ProcessingOptionReasonCodes.OutOfRange)]
@@ -124,6 +128,7 @@ public sealed partial class ProcessingNodeOptionsTests
     [DataRow("deepSkyLabelCatalogObjects", "null", ProcessingOptionReasonCodes.WrongType)]
     [DataRow("deepSkyMinimumGlyphRadius", "1", ProcessingOptionReasonCodes.OutOfRange)]
     [DataRow("deepSkyMinimumGlyphRadius", "33", ProcessingOptionReasonCodes.OutOfRange)]
+    [DataRow("deepSkyFont", "\"PlexRegular\"", ProcessingOptionReasonCodes.NotAllowed)]
     [DataRow("deepSkyFont", "\"PlexBold\"", ProcessingOptionReasonCodes.NotAllowed)]
     public void DeepSkyPresentationValidationRejectsInvalidValues(string member, string token, string reason)
     {

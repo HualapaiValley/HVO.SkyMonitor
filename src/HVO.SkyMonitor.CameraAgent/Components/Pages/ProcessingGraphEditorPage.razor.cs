@@ -178,12 +178,7 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
     private bool _focusConversion;
 
     private string OptionsSection(ProcessingGraphDraftModel.NodeRow node)
-    {
-        var section = ProcessingNodeSectionRegistry.SectionForAlias(node.OptionsForm?.Descriptor.StepAlias);
-        var first = _model.Nodes.FirstOrDefault(row => IsSceneOptions(node)
-            ? IsSceneOptions(row) : row.OptionsForm?.Descriptor.StepAlias == node.OptionsForm?.Descriptor.StepAlias);
-        return ReferenceEquals(node, first) ? section : $"{section}-{_model.Nodes.IndexOf(node)}";
-    }
+        => ProcessingNodeSectionRegistry.OptionsSectionId(_model.Nodes, node);
 
     private bool HasRichFrameFactsNode
         => _model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == FrameFactsPresentation.StepAlias);
@@ -211,11 +206,16 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
     }
 
     private static bool IsSceneOptions(ProcessingGraphDraftModel.NodeRow node)
-        => node.OptionsForm?.Descriptor.StepAlias is ProcessingNodeOptionsDescriptors.ScenePresentationLayerStepAlias or SceneStylePresentation.StepAlias;
+        => ProcessingNodeSectionRegistry.IsSceneAlias(node.OptionsForm?.Descriptor.StepAlias);
 
     private string? SceneOptionsAnchor(ProcessingGraphDraftModel.NodeRow node)
         => IsSceneOptions(node)
             ? OptionsSection(node).Replace("constellations", "scene-overlay", StringComparison.Ordinal)
+            : null;
+
+    private string? DeepSkyOptionsAnchor(ProcessingGraphDraftModel.NodeRow node)
+        => IsSceneOptions(node)
+            ? OptionsSection(node).Replace("constellations", "deep-sky", StringComparison.Ordinal)
             : null;
 
     private void AddNode()

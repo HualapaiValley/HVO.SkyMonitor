@@ -11,6 +11,10 @@
     @foreach (var option in Form.Descriptor.Options)
     {
         var inputId = $"{IdPrefix}-{option.Key}";
+        @if (option.Key == "includeDeepSkyLayer" && !string.IsNullOrWhiteSpace(DeepSkyAnchorId))
+        {
+            <h4 id="@DeepSkyAnchorId" class="node-options-subheading">Deep-sky overlay style and labels</h4>
+        }
         <div class="option-field @(option.Kind == ProcessingOptionKind.RowCollection ? "option-field--rows" : null)">
             @if (option.Kind is not (ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection or ProcessingOptionKind.ChoiceCollection or ProcessingOptionKind.RowCollection))
             {

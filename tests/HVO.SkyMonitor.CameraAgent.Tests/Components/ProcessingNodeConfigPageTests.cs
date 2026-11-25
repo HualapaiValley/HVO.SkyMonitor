@@ -657,6 +657,7 @@ public sealed class ProcessingNodeConfigPageTests
         Assert.IsNotEmpty(sceneCut.FindAll(".option-errors[role='alert'] li"));
         Assert.IsTrue(sceneCut.Find("button.btn-primary").HasAttribute("disabled"));
 
+        sceneCut.Find("#node-options-1-applyInlineDeepSkyStyle").Change(true);
         sceneCut.Find("#node-options-1-deepSkyMaximumLabels").Change("8");
         sceneCut.Find("#node-options-1-deepSkyMaximumLabelCharacters").Change("14");
         sceneCut.Find("#node-options-1-deepSkyLabelCatalogObjects").Change(false);
@@ -664,12 +665,13 @@ public sealed class ProcessingNodeConfigPageTests
         sceneCut.Find("#node-options-1-deepSkyLineThickness").Change("4");
         sceneCut.Find("#node-options-1-deepSkyLabelScale").Change("3");
         sceneCut.Find("#node-options-1-deepSkyColor").Change("#40c0ff");
-        sceneCut.Find("#node-options-1-deepSkyFont").Change("PlexRegular");
+        sceneCut.Find("#node-options-1-deepSkyFont").Change("MonoBold");
         sceneCut.Find("form").Submit();
         Assert.IsFalse(sceneCut.Find("button.btn-primary").HasAttribute("disabled"));
         sceneCut.Find("button.btn-primary").Click();
 
         var savedScene = service.Created.Single().Pipeline.Steps[1].Options!.Value;
+        Assert.IsTrue(savedScene.GetProperty("applyInlineDeepSkyStyle").GetBoolean());
         Assert.AreEqual(8, savedScene.GetProperty("deepSkyMaximumLabels").GetInt32());
         Assert.AreEqual(14, savedScene.GetProperty("deepSkyMaximumLabelCharacters").GetInt32());
         Assert.IsFalse(savedScene.GetProperty("deepSkyLabelCatalogObjects").GetBoolean());
@@ -679,7 +681,7 @@ public sealed class ProcessingNodeConfigPageTests
         Assert.AreEqual(64, savedScene.GetProperty("deepSkyRed").GetInt32());
         Assert.AreEqual(192, savedScene.GetProperty("deepSkyGreen").GetInt32());
         Assert.AreEqual(255, savedScene.GetProperty("deepSkyBlue").GetInt32());
-        Assert.AreEqual("PlexRegular", savedScene.GetProperty("deepSkyFont").GetString());
+        Assert.AreEqual("MonoBold", savedScene.GetProperty("deepSkyFont").GetString());
         Assert.AreEqual("[1e+02]", savedScene.GetProperty("future").GetRawText());
 
         // Reset restores deep-sky defaults while keeping unknown fields.
@@ -702,6 +704,83 @@ public sealed class ProcessingNodeConfigPageTests
         queryCut.Find("form").Submit();
         Assert.IsNotEmpty(queryCut.FindAll(".option-errors[role='alert'] li"));
         Assert.IsTrue(queryCut.Find("button.btn-primary").HasAttribute("disabled"));
+    }
+
+    [TestMethod]
+    [DataRow("ScenePresentationLayer")]
+    [DataRow("SceneStylePresentationLayerV1")]
+    public void CurrentSkyDeepSkyLinkTargetsAnchorOnPresentGraphAndShowsMissingNoticeWhenAbsent(string alias)
+    {
+        using var presentContext = new BunitContext();
+        Configure(presentContext, new CapturePipelineConfig(
+        [
+            new("ProjectedScene", "scene", 10, null, ["$raw"], Enabled: true),
+            new(alias, "overlay", 20, null, ["scene"], Enabled: true)
+        ]));
+        presentContext.Services.GetRequiredService<NavigationManager>()
+            .NavigateTo("/operations/pipeline/graphs/new?section=deep-sky#deep-sky");
+        var presentCut = presentContext.Render<ProcessingGraphEditorPage>();
+        presentCut.WaitForElement("#deep-sky");
+        Assert.IsFalse(
+            presentCut.FindAll("p[role='status']").Any(static notice =>
+                notice.TextContent.Contains("no supported scene overlay node for deep-sky styling", StringComparison.Ordinal)),
+            "Present scene overlay graph must not render a missing-node notice.");
+
+        using var missingContext = new BunitContext();
+        Configure(missingContext, new CapturePipelineConfig(
+        [
+            new("Annotation", "legacy-annot", 10, null, ["$raw"], Enabled: true)
+        ]));
+        missingContext.Services.GetRequiredService<NavigationManager>()
+            .NavigateTo("/operations/pipeline/graphs/new?section=deep-sky#deep-sky");
+        var missingCut = missingContext.Render<ProcessingGraphEditorPage>();
+        missingCut.WaitForElement("#legacy-annotation");
+        Assert.IsEmpty(missingCut.FindAll("#deep-sky"), "A graph without a scene overlay node must not render #deep-sky.");
+        Assert.IsTrue(
+            missingCut.FindAll("p[role='status']").Any(static notice =>
+                notice.TextContent.Contains("no supported scene overlay node for deep-sky styling", StringComparison.Ordinal)),
+            "Expected deep-sky missing-node notice on a graph without a scene overlay node.");
+    }
+
+    [TestMethod]
+    public void FullEditorHrefUsesIndexedSectionAnchorForDuplicateAliasesAndMixedSceneNodes()
+    {
+        using var context = new BunitContext();
+        var pipeline = new CapturePipelineConfig(
+        [
+            new("Preview", "preview-primary", 10, null, ["$raw"], Enabled: true),
+            new("Preview", "preview-secondary", 20, null, ["$raw"], Enabled: true),
+            new("ScenePresentationLayer", "scene-legacy", 30, null, ["$raw"], Enabled: true),
+            new(SceneStylePresentation.StepAlias, "scene-styled", 40, null, ["$raw"], Enabled: true)
+        ]);
+        Configure(context, pipeline);
+
+        // Verify the full editor renders the exact section IDs we expect.
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/pipeline/graphs/new?from=rev-active");
+        var editor = context.Render<ProcessingGraphEditorPage>();
+        editor.WaitForElement("#preview");
+        Assert.IsNotNull(editor.Find("#preview-1"));
+        Assert.IsNotNull(editor.Find("#constellations"));
+        Assert.IsNotNull(editor.Find("#constellations-3"));
+        editor.Dispose();
+
+        // Verify each dedicated node page's FullEditorHref matches the full editor's actual section ID.
+        AssertFullEditorHref("preview-primary", "/operations/pipeline/graphs/new?from=rev-active#preview");
+        AssertFullEditorHref("preview-secondary", "/operations/pipeline/graphs/new?from=rev-active#preview-1");
+        AssertFullEditorHref("scene-legacy", "/operations/pipeline/graphs/new?from=rev-active#constellations");
+        AssertFullEditorHref("scene-styled", "/operations/pipeline/graphs/new?from=rev-active#constellations-3");
+
+        void AssertFullEditorHref(string nodeId, string expectedHref)
+        {
+            var cut = context.Render<ProcessingNodeConfigPage>(parameters => parameters
+                .Add(static page => page.RevisionId, "rev-active")
+                .Add(static page => page.NodeId, nodeId));
+            cut.WaitForElement(".config-form");
+            var fullEditorLink = cut.FindAll("a").Single(static link =>
+                link.TextContent.Contains("Open in full graph editor", StringComparison.Ordinal));
+            Assert.AreEqual(expectedHref, fullEditorLink.GetAttribute("href"));
+            cut.Dispose();
+        }
     }
 
     private static ProcessingExecutionPagesTests.GraphUiService Configure(BunitContext context, CapturePipelineConfig pipeline)

@@ -22,7 +22,7 @@ internal sealed class SceneStylePresentationCaptureProcessingStep(
                 ImageCircleColor = new(options.ImageCircleRed, options.ImageCircleGreen, options.ImageCircleBlue)
             }, options.LabelFont, options.CardinalFont, options.PointGlyph),
             markers, labels, constellations, circle, cardinals, measured, expected, horizon,
-            includeDeepSky: !options.IncludeDeepSkyLayer, deepSkyStyle: options.ToDeepSkyStyle());
+            includeDeepSky: !options.IncludeDeepSkyLayer, deepSkyStyle: options.ApplyInlineDeepSkyStyle ? options.ToDeepSkyStyle() : null);
 }
 
 internal sealed class SceneStylePresentationStepOptions : ScenePresentationLayerProcessingStepOptions

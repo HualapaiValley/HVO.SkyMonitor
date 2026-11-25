@@ -117,7 +117,8 @@
                                             <ProcessingNodeOptionsEditor IdPrefix="@($"node-options-{index}")" Form="optionsForm" Changed="FormChanged"
                                                 NodeEnabled="@(_model.SchemaVersion == CapturePipelineSchemaVersions.ExplicitV2 ? node.Enabled : null)"
                                                 NodeEnabledChanged="value => node.Enabled = value"
-                                                ShowResetToDefaults="true" />
+                                                ShowResetToDefaults="true"
+                                                DeepSkyAnchorId="@DeepSkyOptionsAnchor(node)" />
                                         }
                                     </section>
                                 }

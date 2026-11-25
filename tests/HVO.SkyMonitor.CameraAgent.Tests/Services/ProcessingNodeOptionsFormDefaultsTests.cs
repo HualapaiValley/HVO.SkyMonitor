@@ -156,4 +156,113 @@ public sealed class ProcessingNodeOptionsFormDefaultsTests
         Assert.IsTrue(form.TryBuild(out var afterClear, out _));
         Assert.AreEqual(0, afterClear!.Value.GetProperty("layers").GetArrayLength());
     }
+
+    [TestMethod]
+    public void ResettingOverlayManifestWithQuotedNumericRowFieldsPreservesRowsAndUnknownMembers()
+    {
+        const string sourceJson = """
+            {
+              "layers": [
+                { "kind": "scene-constellations", "enabled": false, "zOrder": "12", "future": 1e+02 },
+                { "kind": "environment", "enabled": true, "zOrder": "34", "extra": { "keep": true } }
+              ]
+            }
+            """;
+        var source = JsonDocument.Parse(sourceJson).RootElement.Clone();
+        var form = new ProcessingNodeOptionsForm(OverlayManifestOptionDescriptors.Descriptor, source);
+
+        Assert.HasCount(2, form.Rows("layers"), "Quoted numeric row fields must not discard the retained row collection.");
+        Assert.AreEqual("12", form.Rows("layers")[0].Get("zOrder"));
+        Assert.AreEqual("34", form.Rows("layers")[1].Get("zOrder"));
+        Assert.IsFalse(form.IsAtDefault("layers"));
+        Assert.IsTrue(form.HasNonDefaultValues);
+
+        form.ResetAllToDefaults();
+
+        Assert.IsTrue(form.IsAtDefault("layers"));
+        Assert.IsFalse(form.HasNonDefaultValues);
+        Assert.IsTrue(form.TryBuild(out var rebuilt, out var errors), string.Join(' ', errors));
+
+        var layers = rebuilt!.Value.GetProperty("layers");
+        Assert.AreEqual(2, layers.GetArrayLength());
+        Assert.AreEqual("scene-constellations", layers[0].GetProperty("kind").GetString());
+        Assert.IsTrue(layers[0].GetProperty("enabled").GetBoolean());
+        Assert.AreEqual(JsonValueKind.Null, layers[0].GetProperty("zOrder").ValueKind);
+        Assert.AreEqual("1e+02", layers[0].GetProperty("future").GetRawText());
+        Assert.AreEqual("environment", layers[1].GetProperty("kind").GetString());
+        Assert.IsTrue(layers[1].GetProperty("enabled").GetBoolean());
+        Assert.AreEqual(JsonValueKind.Null, layers[1].GetProperty("zOrder").ValueKind);
+        Assert.AreEqual("{ \"keep\": true }", layers[1].GetProperty("extra").GetRawText());
+    }
+
+    [TestMethod]
+    public void PredictedSatelliteTracksRowUsesProducerDefaultOffForIsAtDefaultAndReset()
+    {
+        // (a) Enabled satellite row with no unknown members: Reset turns it OFF (producer default false) and marks IsAtDefault true.
+        var enabledSource = JsonDocument.Parse(
+            """{ "layers": [ { "kind": "PredictedSatelliteTracks", "enabled": true, "zOrder": 5 } ] }""").RootElement.Clone();
+        var enabledForm = new ProcessingNodeOptionsForm(OverlayManifestOptionDescriptors.Descriptor, enabledSource);
+        Assert.AreEqual("Off", enabledForm.Rows("layers")[0].DefaultDisplay("enabled"));
+        Assert.IsFalse(enabledForm.IsAtDefault("layers"));
+        Assert.IsTrue(enabledForm.HasNonDefaultValues);
+
+        enabledForm.ResetAllToDefaults();
+        Assert.IsTrue(enabledForm.IsAtDefault("layers"));
+        Assert.IsFalse(enabledForm.HasNonDefaultValues);
+        Assert.IsTrue(enabledForm.TryBuild(out var enabledReset, out var enabledErrors), string.Join(' ', enabledErrors));
+        var enabledRuntime = enabledReset!.Value.Deserialize<HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.OverlayManifestProcessingStepOptions>(JsonSerializerOptions.Web)!;
+        var enabledSelection = enabledRuntime.Layers.Single(static row => row.Kind == OrbitalTrackPresentation.LayerKind);
+        Assert.IsFalse(enabledSelection.Enabled);
+        Assert.IsNull(enabledSelection.ZOrder);
+
+        // (a2) Already-disabled satellite row reports IsAtDefault true and stays OFF after Reset.
+        var disabledSource = JsonDocument.Parse(
+            """{ "layers": [ { "kind": "PredictedSatelliteTracks", "enabled": false } ] }""").RootElement.Clone();
+        var disabledForm = new ProcessingNodeOptionsForm(OverlayManifestOptionDescriptors.Descriptor, disabledSource);
+        Assert.IsTrue(disabledForm.IsAtDefault("layers"));
+        Assert.IsFalse(disabledForm.HasNonDefaultValues);
+        disabledForm.ResetAllToDefaults();
+        Assert.IsTrue(disabledForm.IsAtDefault("layers"));
+        Assert.IsTrue(disabledForm.TryBuild(out var disabledReset, out _));
+        var disabledRuntime = disabledReset!.Value.Deserialize<HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.OverlayManifestProcessingStepOptions>(JsonSerializerOptions.Web)!;
+        Assert.IsFalse(disabledRuntime.Layers.Single().Enabled);
+
+        // (a3) Satellite row with omitted enabled member (which binds to true at runtime) reports non-default and resets to enabled:false.
+        var omittedSource = JsonDocument.Parse(
+            """{ "layers": [ { "kind": "PredictedSatelliteTracks" } ] }""").RootElement.Clone();
+        var omittedForm = new ProcessingNodeOptionsForm(OverlayManifestOptionDescriptors.Descriptor, omittedSource);
+        Assert.IsFalse(omittedForm.IsAtDefault("layers"));
+        omittedForm.ResetAllToDefaults();
+        Assert.IsTrue(omittedForm.IsAtDefault("layers"));
+        Assert.IsTrue(omittedForm.TryBuild(out var omittedReset, out _));
+        var omittedRuntime = omittedReset!.Value.Deserialize<HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.OverlayManifestProcessingStepOptions>(JsonSerializerOptions.Web)!;
+        Assert.IsFalse(omittedRuntime.Layers.Single().Enabled);
+
+        // (b) Satellite row with unknown members preserves unknown members while resetting enabled to false and zOrder to null.
+        var unknownSource = JsonDocument.Parse(
+            """{ "layers": [ { "kind": "PredictedSatelliteTracks", "enabled": true, "zOrder": 5, "future": [1e+02] } ] }""").RootElement.Clone();
+        var unknownForm = new ProcessingNodeOptionsForm(OverlayManifestOptionDescriptors.Descriptor, unknownSource);
+        Assert.IsFalse(unknownForm.IsAtDefault("layers"));
+        Assert.IsTrue(unknownForm.HasNonDefaultValues);
+
+        unknownForm.ResetAllToDefaults();
+        Assert.IsTrue(unknownForm.IsAtDefault("layers"));
+        Assert.IsFalse(unknownForm.HasNonDefaultValues);
+        Assert.IsTrue(unknownForm.TryBuild(out var unknownReset, out var unknownErrors), string.Join(' ', unknownErrors));
+        var rowJson = unknownReset!.Value.GetProperty("layers")[0];
+        Assert.AreEqual("PredictedSatelliteTracks", rowJson.GetProperty("kind").GetString());
+        Assert.IsFalse(rowJson.GetProperty("enabled").GetBoolean());
+        Assert.AreEqual(JsonValueKind.Null, rowJson.GetProperty("zOrder").ValueKind);
+        Assert.AreEqual("[1e+02]", rowJson.GetProperty("future").GetRawText());
+        var unknownRuntime = unknownReset.Value.Deserialize<HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.OverlayManifestProcessingStepOptions>(JsonSerializerOptions.Web)!;
+        Assert.IsFalse(unknownRuntime.Layers.Single().Enabled);
+        Assert.IsNull(unknownRuntime.Layers.Single().ZOrder);
+
+        // (c) Enabled satellite row without zOrder still reports IsAtDefault false so Reset stays enabled.
+        var enabledOnlySource = JsonDocument.Parse(
+            """{ "layers": [ { "kind": "PredictedSatelliteTracks", "enabled": true } ] }""").RootElement.Clone();
+        var enabledOnlyForm = new ProcessingNodeOptionsForm(OverlayManifestOptionDescriptors.Descriptor, enabledOnlySource);
+        Assert.IsFalse(enabledOnlyForm.IsAtDefault("layers"));
+        Assert.IsTrue(enabledOnlyForm.HasNonDefaultValues);
+    }
 }

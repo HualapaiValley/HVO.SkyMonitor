@@ -179,7 +179,7 @@ internal class ScenePresentationLayerCaptureProcessingStep(
         bool markers, bool labels, bool constellations, bool circle, bool cardinals,
         MeasuredStellarAssociationsV1? measured, bool expected, HorizonObstructionSceneEligibility? horizon) =>
         PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, style, markers, labels, constellations, circle, cardinals, measured, expected, horizon,
-            includeDeepSky: !Options.IncludeDeepSkyLayer, deepSkyStyle: Options.ToDeepSkyStyle());
+            includeDeepSky: !Options.IncludeDeepSkyLayer, deepSkyStyle: Options.ApplyInlineDeepSkyStyle ? Options.ToDeepSkyStyle() : null);
 }
 
 internal sealed class CloudPresentationLayerCaptureProcessingStep(
@@ -553,6 +553,9 @@ internal class ScenePresentationLayerProcessingStepOptions : IValidatableObject
 {
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
     public bool IncludeDeepSkyLayer { get; init; }
+    /// <summary>Explicit graph opt-in so saved graphs with <see cref="IncludeDeepSkyLayer"/> disabled keep their original inline rendering and plan identity.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool ApplyInlineDeepSkyStyle { get; init; }
     [Required, MaxLength(128)] public string DeepSkyOutputVariant { get; init; } = "scene-deep-sky-v1";
     public bool DeepSkyLabels { get; init; } = true;
     [Range(0, 24)] public int DeepSkyMaximumLabels { get; init; } = 24;
@@ -577,13 +580,6 @@ internal class ScenePresentationLayerProcessingStepOptions : IValidatableObject
         DrawOutlines: DeepSkyOutlines,
         LineThickness: DeepSkyLineThickness,
         LabelFace: Enum.Parse<PresentationFontFaceV3>(DeepSkyFont));
-
-    internal bool HasCustomDeepSkyStyle() =>
-        !DeepSkyLabels || DeepSkyMaximumLabels != 24 || DeepSkyMaximumLabelCharacters != 24 ||
-        !DeepSkyLabelCatalogObjects || !DeepSkyOutlines || DeepSkyLabelScale != 1 ||
-        DeepSkyLineThickness != 2 || DeepSkyMinimumGlyphRadius != 7 ||
-        DeepSkyRed != 255 || DeepSkyGreen != 196 || DeepSkyBlue != 120 ||
-        !string.Equals(DeepSkyFont, "MonoRegular", StringComparison.Ordinal);
 
     [Required, MaxLength(128)] public string AnnotationOutputVariant { get; init; } = "scene-annotation-layer-v1";
     [Required, MaxLength(128)] public string CardinalOutputVariant { get; init; } = "scene-cardinal-layer-v1";
@@ -615,7 +611,7 @@ internal class ScenePresentationLayerProcessingStepOptions : IValidatableObject
     public bool ExpectedPositionDiagnostics { get; init; } = true;
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
-        if (DeepSkyFont is not ("MonoRegular" or "MonoBold" or "PlexRegular"))
+        if (DeepSkyFont is not ("MonoRegular" or "MonoBold"))
             yield return new ValidationResult("Select an available packaged deep-sky label font.", [nameof(DeepSkyFont)]);
         if (IncludeDeepSkyLayer && new[] { AnnotationOutputVariant, CardinalOutputVariant, ImageCircleOutputVariant, ConstellationOutputVariant, DeepSkyOutputVariant }.Distinct(StringComparer.Ordinal).Count() != 5)
             yield return new ValidationResult("Scene layer variants must be distinct.");

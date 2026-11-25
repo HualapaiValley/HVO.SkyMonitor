@@ -30,6 +30,9 @@ internal static class ProcessingNodeSectionRegistry
         new("constellations", "Constellations",
             [ProcessingNodeOptionsDescriptors.ScenePresentationLayerStepAlias, SceneStylePresentation.StepAlias],
             "This graph has no supported scene overlay node. Add ScenePresentationLayer with its ProjectedScene input to configure visibility, sizes and constellation style."),
+        new("deep-sky", "Deep-sky overlay",
+            [ProcessingNodeOptionsDescriptors.ScenePresentationLayerStepAlias, SceneStylePresentation.StepAlias],
+            "This graph has no supported scene overlay node for deep-sky styling. Add ScenePresentationLayer or SceneStylePresentationLayerV1 with its ProjectedScene input to configure deep-sky style and label settings; saving, validation and activation remain separate."),
         new("frame-facts", "Frame Facts",
             [FrameFactsPresentation.StepAlias],
             "This graph has no Frame Facts node. Add FrameFactsPresentationLayerV1 with its ProjectedScene and combined-preview inputs, and explicitly opt manifest/materializer consumers in before previewing the plan."),
@@ -132,6 +135,35 @@ internal static class ProcessingNodeSectionRegistry
         => FindSection(section) is { } entry &&
             !string.IsNullOrWhiteSpace(stepAlias) &&
             entry.Aliases.Any(alias => string.Equals(alias, stepAlias, StringComparison.OrdinalIgnoreCase));
+
+    public static bool IsSceneAlias(string? stepAlias)
+        => stepAlias is ProcessingNodeOptionsDescriptors.ScenePresentationLayerStepAlias or SceneStylePresentation.StepAlias;
+
+    public static string OptionsSectionId(IReadOnlyList<ProcessingGraphDraftModel.NodeRow> nodes, ProcessingGraphDraftModel.NodeRow node)
+    {
+        ArgumentNullException.ThrowIfNull(nodes);
+        ArgumentNullException.ThrowIfNull(node);
+        var alias = node.OptionsForm?.Descriptor.StepAlias;
+        var section = SectionForAlias(alias);
+        var isScene = IsSceneAlias(alias);
+        ProcessingGraphDraftModel.NodeRow? first = null;
+        var index = -1;
+        for (var i = 0; i < nodes.Count; i++)
+        {
+            var row = nodes[i];
+            if (first is null && (isScene
+                ? IsSceneAlias(row.OptionsForm?.Descriptor.StepAlias)
+                : string.Equals(row.OptionsForm?.Descriptor.StepAlias, alias, StringComparison.Ordinal)))
+            {
+                first = row;
+            }
+            if (ReferenceEquals(row, node))
+            {
+                index = i;
+            }
+        }
+        return ReferenceEquals(node, first) || index < 0 ? section : $"{section}-{index}";
+    }
 
     public static BuiltInStageSummary DescribeBuiltInStage(string stepAlias)
     {

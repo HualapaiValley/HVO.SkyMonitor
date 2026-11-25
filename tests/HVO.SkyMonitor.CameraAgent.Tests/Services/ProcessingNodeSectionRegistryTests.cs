@@ -81,6 +81,16 @@ public sealed class ProcessingNodeSectionRegistryTests
     }
 
     [TestMethod]
+    public void DeepSkySectionMatchesBothSceneAliasesAndNotLegacyAnnotation()
+    {
+        Assert.IsTrue(ProcessingNodeSectionRegistry.IsKnownSection("deep-sky"));
+        Assert.IsTrue(ProcessingNodeSectionRegistry.MatchesSection("deep-sky", ProcessingNodeOptionsDescriptors.ScenePresentationLayerStepAlias));
+        Assert.IsTrue(ProcessingNodeSectionRegistry.MatchesSection("deep-sky", SceneStylePresentation.StepAlias));
+        Assert.IsFalse(ProcessingNodeSectionRegistry.MatchesSection("deep-sky", "Annotation"));
+        Assert.IsFalse(ProcessingNodeSectionRegistry.MatchesSection("deep-sky", "ProjectedScene"));
+    }
+
+    [TestMethod]
     [DataRow(null, "linear-normalization-none-v1")]
     [DataRow("""{"strategy":"None"}""", "linear-normalization-none-v1")]
     [DataRow("""{"strategy":"SyntheticReferences"}""", "reference-calibration-linear16-v2")]

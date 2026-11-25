@@ -78,8 +78,8 @@ public sealed partial class ProcessingNodeConfigPage : ComponentBase, IDisposabl
 
     private string FullEditorHref => _resolvedRevisionId is null
         ? "/operations/pipeline/graphs/new"
-        : _node?.OptionsForm is { } form
-            ? $"/operations/pipeline/graphs/new?from={Uri.EscapeDataString(_resolvedRevisionId)}#{ProcessingNodeSectionRegistry.SectionForAlias(form.Descriptor.StepAlias)}"
+        : _node?.OptionsForm is not null
+            ? $"/operations/pipeline/graphs/new?from={Uri.EscapeDataString(_resolvedRevisionId)}#{ProcessingNodeSectionRegistry.OptionsSectionId(_model.Nodes, _node)}"
             : $"/operations/pipeline/graphs/new?from={Uri.EscapeDataString(_resolvedRevisionId)}";
 
     internal static string NodeConfigHref(string revisionId, string nodeId)
