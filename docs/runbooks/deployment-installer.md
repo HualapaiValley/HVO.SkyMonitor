@@ -2757,13 +2757,6 @@ paired with the previous image. The corrected reader refuses a private v5 journa
 without the settlement column. Restore the verified paired v4 checkpoint before
 using the corrected reader with state from that rehearsal.
 
-The private centered foundation join is a source-only checkpoint with raw
-schema 17, processing schema 10 and corrected environmental schema 5. It
-carries the same combined minimum `e7b9af4b98d1521c3939ef5925608a3663c63302`.
-Its raw schema and migration labels independently select the paired checkpoint
-from the corrected raw-16 reader. The earlier private joined reader also
-differs at the minimum-compatible-revision.
-
 CameraAgent images built from `development/v1` declare raw schema 17 and
 `canonical-v13-v14-v15-v16-to-v17`. Startup validates the canonical raw layout
 selected by the journal version. The declared migration accepts canonical
@@ -2773,15 +2766,11 @@ different raw layout requires a new version and a declared migration through
 the same path.
 
 The centered scheduling and storage stage declared `1c76d83224bacdcc129041c6d1779eb5f95716cb`
-for raw 17, processing 12 and the settled environmental v5 reader. The minimum change also selects
-the paired checkpoint from the earlier private raw-17 publisher when both
-images declare the same raw and environmental schema numbers.
+for raw 17, processing 12 and the settled environmental v5 reader. The minimum
+change selects the paired checkpoint from the earlier centered foundation
+with processing 10 even though both images declare raw 17 and environmental 5.
 
 The publisher activation reused this storage boundary.
-
-The scheduling and storage stage also changes the minimum from the centered
-foundation's processing schema 10, where raw schema 17 and environmental schema 5
-were already in use.
 
 **Centered processing compatibility (Refs #1921, #1922 and #1961).** The changed
 `minimum-compatible-revision` selects a paired checkpoint before startup, including
