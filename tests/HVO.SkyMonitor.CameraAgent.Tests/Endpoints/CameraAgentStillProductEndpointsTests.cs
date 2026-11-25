@@ -18,6 +18,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Endpoints")]
 [DoNotParallelize]
 public sealed class CameraAgentStillProductEndpointsTests
 {

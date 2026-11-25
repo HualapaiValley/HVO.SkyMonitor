@@ -33,6 +33,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Ui")]
 public sealed class PipelineSummaryPageTests
 {
     private const string ActiveId = "profile-00000002-ABCDEF123456";

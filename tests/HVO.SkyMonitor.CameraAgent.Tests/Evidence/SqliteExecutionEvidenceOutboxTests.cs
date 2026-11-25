@@ -13,6 +13,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Evidence;
 /// </summary>
 [TestClass]
 [TestCategory("Integration")]
+[TestProperty("Area", "Evidence")]
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 public sealed class SqliteExecutionEvidenceOutboxTests
 {

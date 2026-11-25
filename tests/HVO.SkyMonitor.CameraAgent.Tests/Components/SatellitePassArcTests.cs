@@ -13,6 +13,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 /// <summary>Consumer projection checks on retained prediction bytes, not numerical or optical-visibility oracles.</summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Ui")]
 public sealed class SatellitePassArcTests
 {
     private static readonly ProjectionContext Hemisphere = new(ProjectionModel.EquidistantFisheye,

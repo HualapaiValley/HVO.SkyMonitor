@@ -10,6 +10,7 @@ using HVO.SkyMonitor.TestSupport;
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture;
 
 [TestClass]
+[TestProperty("Area", "Capture")]
 public sealed class CameraAgentProcessingConformanceTests
 {
     [TestMethod]

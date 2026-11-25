@@ -19,6 +19,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.OpticalCalibration;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "OpticalCalibration")]
 public sealed class VirtualOpticalCalibrationReviewServiceTests
 {
     private const int Size = 512;

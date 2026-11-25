@@ -10,6 +10,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Silo;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Silo")]
 public sealed class SiloRecoveryTests
 {
     private static readonly int[] RemappedCaptures = [6, 7, 8];

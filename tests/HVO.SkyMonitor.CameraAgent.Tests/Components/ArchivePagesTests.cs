@@ -16,6 +16,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Ui")]
 public sealed class ArchivePagesTests
 {
     private static readonly ObservingDayCalendar Phoenix = ObservingDayCalendar.Create("America/Phoenix");

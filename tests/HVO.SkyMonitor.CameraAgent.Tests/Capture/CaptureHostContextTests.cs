@@ -16,6 +16,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture")]
 public sealed class CaptureHostContextTests
 {
     [TestMethod]

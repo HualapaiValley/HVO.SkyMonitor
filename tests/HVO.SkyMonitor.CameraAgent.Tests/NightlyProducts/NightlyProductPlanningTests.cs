@@ -8,6 +8,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.NightlyProducts;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "NightlyProducts")]
 public sealed class NightlyProductPlanningTests
 {
     [TestMethod]

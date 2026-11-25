@@ -4,6 +4,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Storage;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Storage")]
 public sealed class CameraAgentFileSystemTests
 {
     private string _root = null!;

@@ -28,6 +28,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 /// <summary>The exact same source runs against baseline and candidate; no compact-contract APIs are used.</summary>
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "Capture")]
 [DoNotParallelize]
 public sealed class Issue1055SceneCompactionEvidenceTests
 {
