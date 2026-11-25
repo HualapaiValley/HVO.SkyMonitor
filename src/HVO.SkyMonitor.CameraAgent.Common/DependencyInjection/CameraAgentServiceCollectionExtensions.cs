@@ -359,10 +359,16 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<CameraAgentArtifactService>();
         services.AddSingleton<ICameraAgentArtifactService>(provider => provider.GetRequiredService<CameraAgentArtifactService>());
         services.AddSingleton<ICameraAgentLayeredPresentationService, CameraAgentLayeredPresentationService>();
+        services.TryAddSingleton<ICenteredMeasuredDeepSky>(provider => new CenteredMeasuredDeepSky(
+            provider.GetRequiredService<ICenteredViewReadIndex>(), provider.GetRequiredService<ICenteredViewPublisher>(),
+            provider.GetRequiredService<ICenteredWindowRegistrationSource>(), provider.GetRequiredService<CaptureProcessingPersistence>(),
+            provider.GetRequiredService<ICelestialCatalog>(), provider.GetRequiredService<RawCaptureIngress>()));
         services.AddSingleton<SqliteCenteredViews>();
         services.AddSingleton<ICenteredViewReadIndex>(provider => provider.GetRequiredService<SqliteCenteredViews>());
         services.AddSingleton<ICenteredViewPublisher>(provider => provider.GetRequiredService<SqliteCenteredViews>());
         services.AddSingleton<ICenteredViewProducer, CenteredViewProducer>();
+        services.AddSingleton<CenteredMeasuredDeepSkyScheduler>();
+        services.AddHostedService(provider => provider.GetRequiredService<CenteredMeasuredDeepSkyScheduler>());
         services.AddSingleton<ICenteredViewLayerProducer, CenteredViewLayerProducer>();
         services.AddSingleton<ICenteredViewPresentationReader, CenteredViewPresentationReader>();
         services.AddSingleton<ICenteredViewLookup, CenteredViewLookup>();

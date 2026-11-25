@@ -39,14 +39,18 @@ public sealed partial class CaptureScalarOptionsEditorTests
         context.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/pipeline/graphs/new?section=projected-scene#projected-scene");
         var cut = context.Render<ProcessingGraphEditorPage>();
         var panel = cut.Find("#projected-scene[aria-label='Projected scene query']");
-        Assert.HasCount(13, panel.QuerySelectorAll("input"));
-        foreach (var field in new[] { "maximumMagnitude", "maximumResults", "includeConstellationEndpointStars" })
+        const string measuredKey = "assessMeasuredDeepSky";
+        Assert.HasCount(14, panel.QuerySelectorAll("input"));
+        foreach (var field in new[] { "maximumMagnitude", "maximumResults", "includeConstellationEndpointStars", measuredKey })
         {
             var id = "node-options-0-" + field;
             Assert.IsNotEmpty(cut.Find("label[for='" + id + "']").TextContent);
             Assert.AreEqual(id + "-help", cut.Find("#" + id).GetAttribute("aria-describedby"));
             Assert.IsNotEmpty(cut.Find("#" + id + "-help").TextContent);
         }
+        var measured = cut.Find("#node-options-0-" + measuredKey);
+        Assert.AreEqual("checkbox", measured.GetAttribute("type"));
+        Assert.IsFalse(measured.HasAttribute("checked"));
         StringAssert.Contains(panel.TextContent, "physical predicted-scene", StringComparison.Ordinal);
         StringAssert.Contains(panel.TextContent, "VirtualSky uses its separate module settings", StringComparison.Ordinal);
         StringAssert.Contains(cut.Find("#node-options-0-maximumMagnitude-help").TextContent, "-30–30 mag", StringComparison.Ordinal);
