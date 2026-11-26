@@ -303,16 +303,31 @@ public static class MeasuredStellarAssociationJson
     }
 
     /// <summary>
-    /// Computes the canonical uppercase SHA-256 identity of a projected scene's pixel-mapping geometry and orientation
-    /// (coordinate convention, optical projection parameters excluding algorithm-label variation, and image transform).
+    /// Computes the canonical uppercase SHA-256 identity of a projected scene's celestial-to-pixel mapping geometry
+    /// (effective observation/render epoch, observer location, atmospheric refraction, coordinate convention, optical
+    /// projection parameters excluding algorithm-label variation, and image transform).
     /// </summary>
     public static string ComputeProjectionGeometryIdentitySha256(ProjectedSceneV1 scene)
     {
         ArgumentNullException.ThrowIfNull(scene);
+        var o = scene.Observer;
+        var r = scene.Refraction;
         var p = scene.Projection;
         var t = scene.ImageTransform;
         var canonical = new
         {
+            effectiveUtcTicks = scene.EffectiveUtc.UtcTicks,
+            observer = new
+            {
+                latitudeDegrees = NormalizeZero(o.LatitudeDegrees),
+                longitudeDegrees = NormalizeZero(o.LongitudeDegrees),
+                elevationMeters = NormalizeZero(o.ElevationMeters)
+            },
+            refraction = new
+            {
+                enabled = r.Enabled,
+                minimumAltitudeDegrees = NormalizeZero(r.MinimumAltitudeDegrees)
+            },
             coordinateConvention = scene.CoordinateConvention.ToString(),
             projection = new
             {
@@ -325,7 +340,7 @@ public static class MeasuredStellarAssociationJson
                 principalPointY = NormalizeZero(p.PrincipalPointY),
                 focalLengthXPixels = NormalizeZero(p.FocalLengthXPixels),
                 focalLengthYPixels = NormalizeZero(p.FocalLengthYPixels),
-                imageCircleRadiusPixels = p.ImageCircleRadiusPixels is { } r ? NormalizeZero(r) : (double?)null,
+                imageCircleRadiusPixels = p.ImageCircleRadiusPixels is { } radius ? NormalizeZero(radius) : (double?)null,
                 boresightAltitudeDegrees = NormalizeZero(p.BoresightAltitudeDegrees),
                 boresightAzimuthDegrees = NormalizeZero(p.BoresightAzimuthDegrees),
                 rollDegrees = NormalizeZero(p.RollDegrees),
@@ -411,7 +426,7 @@ public static class MeasuredStellarAssociationJson
             !Text(scene.CatalogName) || !Text(scene.CatalogVersion) || !Sha256(scene.CatalogChecksumSha256) ||
             !Text(scene.CalibrationVersion) || !Text(scene.ProjectionAlgorithmVersion) || !Text(scene.AstronomyAlgorithmVersion) ||
             (isV1 && scene.ProjectionGeometryIdentitySha256 is not null) ||
-            (scene.ProjectionGeometryIdentitySha256 is { } geometrySha && !Sha256(geometrySha)))
+            (!isV1 && !Sha256(scene.ProjectionGeometryIdentitySha256)))
             return Invalid(InvalidContract, nameof(value.Scene));
         var measurement = value.Measurement;
         if (measurement is null || !Text(measurement.AlgorithmVersion) || !Sha256(measurement.SettingsIdentitySha256) ||
@@ -570,8 +585,10 @@ public static class MeasuredStellarAssociationJson
         return MeasuredStellarAssociationValidationResult.Success;
     }
 
+    internal const double MaximumPlanetWindowPixels = 64;
+
     internal static double PlanetMaximumWindow(MeasuredStellarAssociationSettingsV1 settings, double propagatedSigmaPixels) =>
-        Math.Max(settings.MaximumWindowPixels, Math.Min(64, settings.WindowSigmas * propagatedSigmaPixels));
+        Math.Max(settings.MaximumWindowPixels, Math.Min(MaximumPlanetWindowPixels, settings.WindowSigmas * propagatedSigmaPixels));
 
     internal static bool IsPointSourcePlanetBody(SolarSystemBody body) => body is
         SolarSystemBody.Mercury or SolarSystemBody.Venus or SolarSystemBody.Mars or

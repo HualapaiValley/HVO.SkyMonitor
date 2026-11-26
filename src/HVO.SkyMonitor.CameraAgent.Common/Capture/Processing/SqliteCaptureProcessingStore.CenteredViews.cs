@@ -108,12 +108,38 @@ internal sealed partial class SqliteCaptureProcessingStore
             FROM centered_exposure_products product
             JOIN centered_exposure_attempts attempt ON attempt.capture_id = product.capture_id
             JOIN centered_exposure_runs run ON run.run_id = attempt.run_id
+            LEFT JOIN processing_outputs output ON output.output_identity_sha256 = product.output_identity
             WHERE product.capture_id = $capture AND run.run_id = $run
                 AND run.agent_id = $agent AND run.camera_id = $camera
                 AND product.execution_id = $execution
                 AND product.schema_version IN ($v1, $v2, $dispV1, $dispV2)
-                AND (product.variant IN ($variant, $measuredVariant) OR product.producer = $producer)
-            ORDER BY product.revision
+                AND (
+                    product.schema_version IN ($dispV1, $dispV2)
+                    OR (
+                        output.output_identity_sha256 IS NOT NULL
+                        AND json_valid(CAST(output.descriptor_json AS TEXT))
+                        AND COALESCE(
+                            json_extract(CAST(output.descriptor_json AS TEXT), '$.artifact.recipe.name'),
+                            json_extract(CAST(output.descriptor_json AS TEXT), '$.descriptor.artifact.recipe.name'),
+                            json_extract(CAST(output.descriptor_json AS TEXT), '$.Artifact.Recipe.Name')
+                        ) = $recipe
+                    )
+                    OR output.output_identity_sha256 IS NULL
+                )
+            ORDER BY
+                CASE
+                    WHEN output.output_identity_sha256 IS NOT NULL
+                        AND json_valid(CAST(output.descriptor_json AS TEXT))
+                        AND COALESCE(
+                            json_extract(CAST(output.descriptor_json AS TEXT), '$.artifact.recipe.name'),
+                            json_extract(CAST(output.descriptor_json AS TEXT), '$.descriptor.artifact.recipe.name'),
+                            json_extract(CAST(output.descriptor_json AS TEXT), '$.Artifact.Recipe.Name')
+                        ) = $recipe THEN 0
+                    WHEN product.schema_version IN ($dispV1, $dispV2) THEN 1
+                    WHEN product.variant IN ($variant, $measuredVariant) OR product.producer = $producer THEN 2
+                    ELSE 3
+                END,
+                product.revision
             LIMIT 1;
             """;
         SqliteRawCaptureJournal.AddExposureParameters(productCommand, key);
@@ -125,6 +151,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         productCommand.Parameters.AddWithValue("$variant", ExposureAssociationProducts.Variant);
         productCommand.Parameters.AddWithValue("$measuredVariant", "measured-stellar-associations-v1");
         productCommand.Parameters.AddWithValue("$producer", ExposureAssociationProducts.StepAlias);
+        productCommand.Parameters.AddWithValue("$recipe", ExposureAssociationProducts.RecipeName);
         using var productReader = await productCommand.ExecuteReaderAsync(token).ConfigureAwait(false);
         return await productReader.ReadAsync(token).ConfigureAwait(false)
             ? new CenteredAuthoritativeAssociationWriter(productReader.GetString(0), productReader.GetString(1))

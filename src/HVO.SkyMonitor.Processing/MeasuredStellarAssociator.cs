@@ -236,9 +236,11 @@ public static class MeasuredStellarAssociator
                 preMatch[index] = MeasuredStellarAssociationReasonCodes.CrowdedPrediction;
                 continue;
             }
-            // If an exclusion footprint (e.g. saturated-excessive) already covers the planet's predicted position,
-            // withhold the planet before matching so it cannot claim a nearby moon or star inside its search window.
-            if (isPlanet && ExclusionContaining(target.Pixel, exclusions, settings.ExclusionMarginPixels) is { } containingExclusion)
+            // If an exclusion footprint (e.g. saturated-excessive) covers the planet's predicted position AND its
+            // peak lies within the planet's own search window, withhold the planet before matching so it cannot claim
+            // a nearby moon or star inside its search window, without allowing a distant trail or extended region
+            // whose axis-aligned bounding box spans over the planet to suppress a cleanly detected planet.
+            if (isPlanet && ExclusionContaining(target.Pixel, exclusions, targetMaxWindows[index], settings.ExclusionMarginPixels) is { } containingExclusion)
             {
                 preMatch[index] = MeasuredStellarAssociationReasonCodes.MeasurementExcludedPrefix + containingExclusion.ReasonCode;
                 continue;
@@ -411,7 +413,12 @@ public static class MeasuredStellarAssociator
         bool HasPlausibleCompetingTarget(int planetIndex, int detectionIndex, double planetDistance)
         {
             var detection = detections[detectionIndex];
-            foreach (var other in predictionGrid.Near(detection.Pixel))
+            // Expand the spatial-grid query to cover the full combined covariance window (accounting for wide
+            // detection centroid covariance as well as target pointing/ephemeris windows) and ambiguity radius.
+            var competitorSearchRadius = Math.Max(
+                Math.Max(settings.MaximumWindowPixels, MeasuredStellarAssociationJson.MaximumPlanetWindowPixels),
+                Math.Min(settings.OffsetRadiusPixels, settings.AmbiguityRatio * planetDistance));
+            foreach (var other in predictionGrid.Near(detection.Pixel, competitorSearchRadius))
             {
                 if (other == planetIndex || targetAssigned[other] >= 0) continue;
                 var otherDistance = Math.Sqrt(DistanceSquared(targets[other].Pixel, detection.Pixel));
@@ -459,15 +466,18 @@ public static class MeasuredStellarAssociator
     }
 
     private static StellarMeasurementExclusion? ExclusionContaining(
-        PixelPoint point, IReadOnlyList<StellarMeasurementExclusion> exclusions, double exclusionMarginPixels)
+        PixelPoint point, IReadOnlyList<StellarMeasurementExclusion> exclusions, double maximumWindowPixels, double exclusionMarginPixels)
     {
         StellarMeasurementExclusion? best = null;
         var bestDistance = double.MaxValue;
+        var maxPeakDistanceSquared = maximumWindowPixels * maximumWindowPixels;
         foreach (var exclusion in exclusions)
         {
             if (exclusion.Footprint is not { } footprint || !footprint.Contains(point, exclusionMarginPixels))
                 continue;
             var distance = DistanceSquared(exclusion.Peak, point);
+            if (distance > maxPeakDistanceSquared)
+                continue;
             if (best is null || distance < bestDistance)
             {
                 best = exclusion;
@@ -831,6 +841,33 @@ public static class MeasuredStellarAssociator
                 for (var x = cx - 1; x <= cx + 1; x++)
                     if (cells.TryGetValue((x, y), out var list))
                         found.AddRange(list);
+            found.Sort();
+            return found;
+        }
+
+        public List<int> Near(PixelPoint point, double radius)
+        {
+            var r = Math.Max(0, radius);
+            var minX = (long)Math.Floor((point.X - r) / cellSize);
+            var maxX = (long)Math.Floor((point.X + r) / cellSize);
+            var minY = (long)Math.Floor((point.Y - r) / cellSize);
+            var maxY = (long)Math.Floor((point.Y + r) / cellSize);
+            var found = new List<int>();
+            var spanX = maxX - minX + 1;
+            var spanY = maxY - minY + 1;
+            if (spanX > 0 && spanY > 0 && spanX <= cells.Count / Math.Max(1, spanY))
+            {
+                for (var y = minY; y <= maxY; y++)
+                    for (var x = minX; x <= maxX; x++)
+                        if (cells.TryGetValue((x, y), out var list))
+                            found.AddRange(list);
+            }
+            else
+            {
+                foreach (var ((x, y), list) in cells)
+                    if (x >= minX && x <= maxX && y >= minY && y <= maxY)
+                        found.AddRange(list);
+            }
             found.Sort();
             return found;
         }

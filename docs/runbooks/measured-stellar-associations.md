@@ -27,11 +27,14 @@ Catalog predictions never assert detections. Solar-system and curated catalog
 presentation retain their own semantics.
 
 Products bind raw capture/artifact/descriptor/recipe/layout, scene identity,
-catalog version/checksum, calibration/projection/astronomy algorithms,
-measurement settings/reconstruction and association/label-policy settings.
-CameraAgent publication and replay preserve these facts. Scene payload checksum
-and scene content identity are distinct. Replay rejects a mismatched checksum or
-identity.
+projection geometry identity hash (covering observation/render epoch, observer,
+refraction, coordinate convention, optical projection, and image transform so
+cross-scene reuse enforces matching geometry and render/observation epoch
+compatibility), catalog version/checksum, calibration/projection/astronomy
+algorithms, measurement settings/reconstruction and association/label-policy
+settings. CameraAgent publication and replay preserve these facts. Scene payload
+checksum and scene content identity are distinct. Replay rejects a mismatched
+checksum or identity.
 
 ## Saved scene-overlay drafts
 

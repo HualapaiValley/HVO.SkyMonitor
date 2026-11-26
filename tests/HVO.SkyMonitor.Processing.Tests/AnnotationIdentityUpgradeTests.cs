@@ -135,6 +135,14 @@ public sealed class AnnotationIdentityUpgradeTests
         var v1WithGeometry = v1Baseline with { Scene = starOnlyV2.Scene };
         Assert.IsFalse(MeasuredStellarAssociationJson.Validate(v1WithGeometry).IsValid);
 
+        // Opus L3: v2 requires a valid uppercase 64-hex ProjectionGeometryIdentitySha256 (missing/malformed rejected).
+        var v2MissingGeometry = starOnlyV2 with { Scene = starOnlyV2.Scene with { ProjectionGeometryIdentitySha256 = null } };
+        var v2MalformedGeometry = starOnlyV2 with { Scene = starOnlyV2.Scene with { ProjectionGeometryIdentitySha256 = "abc123" } };
+        var v2LowercaseGeometry = starOnlyV2 with { Scene = starOnlyV2.Scene with { ProjectionGeometryIdentitySha256 = new string('a', 64) } };
+        Assert.IsFalse(MeasuredStellarAssociationJson.Validate(v2MissingGeometry).IsValid);
+        Assert.IsFalse(MeasuredStellarAssociationJson.Validate(v2MalformedGeometry).IsValid);
+        Assert.IsFalse(MeasuredStellarAssociationJson.Validate(v2LowercaseGeometry).IsValid);
+
         var parsedCurrent = MeasuredStellarAssociationJson.Parse(assocProduct.Payload).Associations!;
         var v1WithPlanets = parsedCurrent with { SchemaVersion = MeasuredStellarAssociationsV1.V1SchemaVersion };
         Assert.IsFalse(MeasuredStellarAssociationJson.Validate(v1WithPlanets).IsValid);

@@ -668,8 +668,9 @@ public static class PresentationLayerProducers
             return false;
 
         if (associations.PointSourcePlanets is { } planetEvidence &&
-            !planetEvidence.ProjectionMappingVersion.StartsWith(
-                $"{scene.Projection.Model}:{scene.Projection.CalibrationVersion}:", StringComparison.Ordinal))
+            (planetEvidence.EffectiveUtc != scene.EffectiveUtc ||
+             !planetEvidence.ProjectionMappingVersion.StartsWith(
+                 $"{scene.Projection.Model}:{scene.Projection.CalibrationVersion}:", StringComparison.Ordinal)))
             return false;
 
         // Require compatible delivered-image pixel coordinates for every shared predicted/associated object before
