@@ -95,6 +95,60 @@ public sealed class MotorFocusSessionTests
     }
 
     [TestMethod]
+    [DataRow(106, 1000)] // The starting position is inside the backlash allowance.
+    [DataRow(311, 1000)] // The nominal first sample is one step below the safe sweep start.
+    [DataRow(100, 512)]  // Only one start fits five samples and full backlash take-up.
+    public async Task Sweep_NearLowerLimitRetainsFullBacklashTakeUpAndSampleSpacing(int initial, int maximum)
+    {
+        const int minimum = 100;
+        const int backlash = 12;
+        const int best = 312;
+        var fixture = await FocusOwnerFixture.CreateAsync().ConfigureAwait(false);
+        await using var scope = fixture.ConfigureAwait(false);
+        await fixture.PublishVirtualSkyAsync(focus: new VirtualSimulatedFocusOptions
+        {
+            MinimumPosition = minimum,
+            MaximumPosition = maximum,
+            BestPosition = best
+        }).ConfigureAwait(false);
+        var motor = new VirtualMotorizedFocuser(new(MinimumPosition: minimum, MaximumPosition: maximum,
+            InitialPosition: initial, BacklashSteps: backlash));
+        using var clock = AdvanceMotor(motor);
+        using var owner = Coordinator(fixture, motor);
+
+        await owner.StartAsync(Sweep, "alice", CancellationToken.None).ConfigureAwait(false);
+        var ended = await FocusWait.EndedAsync(owner).ConfigureAwait(false);
+
+        Assert.AreEqual(ManualFocusReasonCodes.AutofocusComplete, ended.EndReason, ended.LastFailure);
+        CollectionAssert.AreEqual(new int?[] { 112, 212, best, 412, 512, best },
+            ended.History.Select(sample => sample.MotorPosition).ToArray());
+        Assert.IsTrue(ended.History.All(sample => sample.SimulatedFocusPosition == sample.MotorPosition),
+            "The virtual optical coordinate must match every sampled motor coordinate after take-up.");
+        Assert.AreEqual(best, ended.Motor!.AppliedPosition);
+        Assert.AreEqual(best, motor.OpticalPosition);
+        Assert.IsTrue(await fixture.CaptureAdmittedWithinAsync(Timeout).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task Sweep_RejectsTravelOneStepShortOfFullBacklashTakeUpBeforeMoving()
+    {
+        var fixture = await FocusOwnerFixture.CreateAsync().ConfigureAwait(false);
+        await using var scope = fixture.ConfigureAwait(false);
+        var camera = await fixture.PublishScriptedAsync().ConfigureAwait(false);
+        var motor = new VirtualMotorizedFocuser(new(MinimumPosition: 100, MaximumPosition: 511,
+            InitialPosition: 106, BacklashSteps: 12));
+        using var owner = Coordinator(fixture, motor);
+
+        await Assert.ThrowsExactlyAsync<ManualFocusSessionValidationException>(
+            () => owner.StartAsync(Sweep, "alice", CancellationToken.None)).ConfigureAwait(false);
+
+        Assert.AreEqual(106, motor.State.Position);
+        Assert.IsFalse(motor.State.IsMoving);
+        Assert.AreEqual(0, camera.Previews);
+        Assert.IsTrue(await fixture.CaptureAdmittedWithinAsync(Timeout).ConfigureAwait(false));
+    }
+
+    [TestMethod]
     [DataRow("cancel")]
     [DataRow("preview-failure")]
     [DataRow("observer-lost")]

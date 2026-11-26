@@ -100,7 +100,7 @@
                 <label><input id="satellite-show-path" type="checkbox" @bind="_showPath" /> Predicted path</label>
                 <label><input id="satellite-show-labels" type="checkbox" @bind="_showLabels" /> Time labels</label>
                 <label><input id="satellite-show-rig" type="checkbox" @bind="_showRigPreview" /> Configured-rig portion</label>
-                @if (_arc?.Context.ObstructionRig?.HorizonObstruction is not null)
+                @if (_arc?.Context.ObstructionRig?.HorizonObstruction is not null && _arc?.Obstruction?.FirstOrDefault() is not null)
                 {
                     <label><input id="satellite-apply-horizon" type="checkbox" @bind="_applySiteHorizon" /> Apply site horizon to angular view</label>
                 }

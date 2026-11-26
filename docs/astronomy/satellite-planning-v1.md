@@ -46,9 +46,11 @@ model version. Day means Sun altitude at or above 0°, night means at or below
 capture-policy thresholds or satellite-visibility decisions. Refraction,
 observer-height horizon dip and custom obstructions are not applied.
 
-The Moon's topocentric geometric altitude and illuminated disk fraction use the
-existing offline disk ephemeris at the same anchor time and original observer,
-including the recorded elevation. Lunar illumination describes the Moon itself.
+The offline disk ephemeris gives the Moon's topocentric geometric altitude for
+the original observer, including the recorded elevation. The illuminated disk
+fraction comes from Astronomy Engine's Earth-centered (geocentric) illumination
+calculation at the same anchor time. Satellite sunlight comes from the orbital
+prediction.
 
 Only declared anchors inside the retained arc's connected segments are evaluated.
 Missing ephemerides or invalid/unavailable positions display Unknown; unresolved
