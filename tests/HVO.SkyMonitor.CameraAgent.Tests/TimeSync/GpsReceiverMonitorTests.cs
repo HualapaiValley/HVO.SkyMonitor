@@ -10,6 +10,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.TimeSync;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "TimeSync")]
 public sealed class GpsReceiverMonitorTests
 {
     private static readonly DateTimeOffset Epoch = new(2026, 11, 12, 12, 0, 0, TimeSpan.Zero);
