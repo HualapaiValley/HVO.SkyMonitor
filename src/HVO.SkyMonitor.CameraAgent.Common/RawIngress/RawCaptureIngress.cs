@@ -1183,8 +1183,8 @@ internal sealed partial class RawCaptureIngress :
             lease,
             actualOutcome,
             System.Diagnostics.Stopwatch.GetElapsedTime(started));
+        await RefreshLaneStateAsync(CancellationToken.None).ConfigureAwait(false);
         await RefreshHeldStateAsync(cancellationToken).ConfigureAwait(false);
-        await RefreshLaneStateAsync(cancellationToken).ConfigureAwait(false);
         return actualOutcome;
     }
 

@@ -5,6 +5,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Silo.S3;
@@ -17,6 +18,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.IntegrationTests.Silo;
 
@@ -24,9 +26,12 @@ public sealed partial class SiloStockStoreTests
 {
     [TestMethod]
     [TestCategory("Integration")]
-    [DataRow(false, "evidence-invalid")]
-    [DataRow(true, "evidence-unavailable")]
-    public async Task VisibleRawPublicationReleasesLiveLaneEvidenceQuarantines(bool claimBeforeLoss, string reason)
+    [DataRow(false, "evidence-invalid", false, false)]
+    [DataRow(true, "evidence-unavailable", false, false)]
+    [DataRow(true, "evidence-unavailable", false, true)]
+    [DataRow(true, "evidence-unavailable", true, false)]
+    public async Task VisibleRawPublicationReleasesLiveLaneEvidenceQuarantines(
+        bool claimBeforeLoss, string reason, bool failAfterPublication, bool quarantineUnrelated)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.CancellationToken);
         deadline.CancelAfter(TimeSpan.FromMinutes(3));
@@ -47,6 +52,7 @@ public sealed partial class SiloStockStoreTests
         var settings = InstalledSettings(binding, endpoint, writer, Guid.NewGuid(), RandomHex(24));
         settings["CameraAgent:CaptureDistribution:SecondaryLanes:0:Name"] = "retry";
         settings["CameraAgent:CaptureDistribution:SecondaryLanes:0:Enabled"] = "true";
+        settings["CameraAgent:CaptureDistribution:SecondaryLanes:0:Required"] = "true";
         settings["CameraAgent:CaptureDistribution:SecondaryLanes:1:Name"] = "unrelated";
         settings["CameraAgent:CaptureDistribution:SecondaryLanes:1:Enabled"] = "true";
 
@@ -93,15 +99,22 @@ public sealed partial class SiloStockStoreTests
         Assert.AreEqual(SiloStagedState.Recorded,
             (await storage.State.ReadGroupAsync(id.ToString("N"), "raw-1", token).ConfigureAwait(false))?.State);
 
-        var definitions = services.GetRequiredService<CaptureLanePolicy>().Definitions;
+        var policy = services.GetRequiredService<CaptureLanePolicy>();
+        var definitions = policy.Definitions;
         var standard = definitions.Single(static lane => lane.Name == "standard");
         var retry = await ClaimAsync("retry").ConfigureAwait(false);
-        var unrelated = await ClaimAsync("unrelated").ConfigureAwait(false);
-        await ingress.FailAsync(retry, CaptureLaneHandlerResult.Terminal("evidence-invalid"), token).ConfigureAwait(false);
-        await ingress.FailAsync(unrelated, CaptureLaneHandlerResult.Terminal("handler-failure"), token).ConfigureAwait(false);
+        if (quarantineUnrelated)
+        {
+            var unrelated = await ClaimAsync("unrelated").ConfigureAwait(false);
+            await ingress.FailAsync(unrelated, CaptureLaneHandlerResult.Terminal("handler-failure"), token).ConfigureAwait(false);
+        }
         var standardLease = claimBeforeLoss ? await ClaimAsync("standard").ConfigureAwait(false) : null;
+        if (!failAfterPublication)
+            await ingress.FailAsync(retry, CaptureLaneHandlerResult.Terminal("evidence-invalid"), token).ConfigureAwait(false);
+
         File.Delete(capture.StoredFrame.AbsolutePath);
         File.Delete(Path.ChangeExtension(capture.StoredFrame.AbsolutePath, ".json"));
+        var result = CaptureLaneHandlerResult.Terminal(reason);
         if (standardLease is null)
         {
             Assert.IsNull(await ingress.ClaimAsync(standard, "silo-test", config, token).ConfigureAwait(false));
@@ -109,30 +122,59 @@ public sealed partial class SiloStockStoreTests
         }
         else
         {
-            var result = await services.GetRequiredService<StandardCaptureLaneHandler>().HandleAsync(standardLease.Context, token)
+            result = await services.GetRequiredService<StandardCaptureLaneHandler>().HandleAsync(standardLease.Context, token)
                 .ConfigureAwait(false);
-            Assert.AreEqual(reason, result.Reason);
-            Assert.AreEqual(CaptureLaneHandlerOutcome.TerminalFailure, await ingress.FailAsync(standardLease, result, token).ConfigureAwait(false));
+            Assert.AreEqual(CaptureLaneHandlerResult.Terminal(reason), result);
+            if (!failAfterPublication)
+                Assert.AreEqual(CaptureLaneHandlerOutcome.TerminalFailure, await ingress.FailAsync(standardLease, result, token).ConfigureAwait(false));
             Assert.AreEqual(("committed", (string?)null), await ReadRawDispositionAsync(root, id, token).ConfigureAwait(false));
         }
 
         using var connection = await OpenRawJournalAsync(root, token).ConfigureAwait(false);
-        Assert.AreEqual(("quarantined", reason), (await ReadLaneAsync("standard").ConfigureAwait(false)).Disposition);
-        Assert.AreEqual(1L, StandardQuarantineCount());
+        if (!failAfterPublication)
+        {
+            Assert.AreEqual(("quarantined", reason), (await ReadLaneAsync("standard").ConfigureAwait(false)).Disposition);
+            Assert.AreEqual(1L, StandardQuarantineCount());
+            var hostOptions = services.GetRequiredService<IOptions<CameraAgentHostOptions>>().Value;
+            var laneStore = new SqliteCaptureLaneStore(root, hostOptions.RawIngressSqliteBusyTimeoutSeconds,
+                hostOptions.CaptureDistribution, policy, services.GetRequiredService<TimeProvider>(), new NullCaptureLaneFaultInjector());
+            await Assert.ThrowsExactlyAsync<CaptureLaneBackpressureException>(() => laneStore.EnsureCanAcceptAsync(1, token).AsTask())
+                .ConfigureAwait(false);
+            Assert.AreEqual(2L, await CountRequiredLanesAtPressureAsync(2).ConfigureAwait(false));
+        }
+
         Assert.IsNull((await ingress.PublishSiloAdmissionsAsync(16, token).ConfigureAwait(false)).Status);
         Assert.AreEqual(SiloStagedState.Visible,
             (await storage.State.ReadGroupAsync(id.ToString("N"), "raw-1", token).ConfigureAwait(false))?.State);
         var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 5, usesSilo: true);
         Assert.IsFalse(await journal.HasPendingSiloAdmissionAsync(id, token).ConfigureAwait(false));
         Assert.AreEqual(("committed", (string?)null), await ReadRawDispositionAsync(root, id, token).ConfigureAwait(false));
+        if (failAfterPublication)
+        {
+            Assert.IsNotNull(standardLease);
+            Assert.AreEqual("leased", (await ReadLaneAsync("standard").ConfigureAwait(false)).Disposition.State);
+            Assert.AreEqual("leased", (await ReadLaneAsync("retry").ConfigureAwait(false)).Disposition.State);
+            Assert.AreEqual(CaptureLaneHandlerOutcome.Abandoned, await ingress.FailAsync(standardLease, result, token).ConfigureAwait(false));
+            Assert.AreEqual(CaptureLaneHandlerOutcome.RetryableFailure,
+                await ingress.FailAsync(retry, CaptureLaneHandlerResult.Terminal("evidence-invalid"), token).ConfigureAwait(false));
+        }
+
         var restored = await ReadLaneAsync("standard").ConfigureAwait(false);
         Assert.AreEqual(("abandoned", "raw-evidence-revalidated"), restored.Disposition);
         Assert.IsTrue(restored.Completed);
         var released = await ReadLaneAsync("retry").ConfigureAwait(false);
         Assert.AreEqual((("pending", (string?)null), 0, false), released);
-        Assert.AreEqual((("quarantined", "handler-failure"), 1, false), await ReadLaneAsync("unrelated").ConfigureAwait(false));
-        Assert.AreEqual(1L, await CountSiloRestorationEventsAsync(connection, id, token).ConfigureAwait(false));
+        if (quarantineUnrelated)
+            Assert.AreEqual((("quarantined", "handler-failure"), 1, false), await ReadLaneAsync("unrelated").ConfigureAwait(false));
+        Assert.AreEqual(failAfterPublication ? 2L : 1L, await CountSiloRestorationEventsAsync(connection, id, token).ConfigureAwait(false));
         Assert.AreEqual(0L, StandardQuarantineCount(), "Live settlement must refresh lane state.");
+        Assert.AreEqual(2L, await CountRequiredLanesAtPressureAsync(0).ConfigureAwait(false));
+        if (!quarantineUnrelated)
+        {
+            var snapshot = services.GetRequiredService<CaptureLaneState>().Snapshot;
+            Assert.AreEqual(CaptureLaneAvailability.Healthy, snapshot.Availability);
+            Assert.AreEqual("accepting", snapshot.Reason);
+        }
 
         var fresh = await ingress.AcceptAsync(config, RecoverySubmission(), token).ConfigureAwait(false);
         Assert.AreEqual(RawIngressOutcome.Committed, fresh?.Outcome);
@@ -142,6 +184,17 @@ public sealed partial class SiloStockStoreTests
 
         long StandardQuarantineCount() => services.GetRequiredService<CaptureLaneState>().Snapshot.Lanes
             .Single(static lane => lane.Lane == "standard").QuarantineCount;
+
+        async Task<long> CountRequiredLanesAtPressureAsync(int pressure)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT COUNT(*) FROM capture_lane_definitions
+                WHERE enabled = 1 AND required = 1 AND pressure_state = $pressure;
+                """;
+            command.Parameters.AddWithValue("$pressure", pressure);
+            return (long)(await command.ExecuteScalarAsync(token).ConfigureAwait(false))!;
+        }
 
         async Task<CaptureLaneLease> ClaimAsync(string name)
         {

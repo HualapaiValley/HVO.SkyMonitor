@@ -157,21 +157,23 @@ internal sealed partial class SqliteRawCaptureJournal
             if (await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is long rowId)
             {
                 command.Parameters.AddWithValue("$raw", rowId);
-                command.Parameters.AddWithValue("$now", _utcNow().ToUnixTimeMilliseconds());
+                var now = _utcNow();
+                command.Parameters.AddWithValue("$now", now.ToUnixTimeMilliseconds());
                 command.CommandText = """
                     UPDATE raw_captures SET state = 'committed', failure_reason = NULL
                     WHERE raw_capture_row_id = $raw AND state IN ('missing_evidence', 'quarantined');
                     """;
                 evidenceRestored = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
-                lanesReleased = await ReleaseEvidenceLaneQuarantinesAsync(command, cancellationToken).ConfigureAwait(false);
+                lanesReleased = await RestoreEvidenceLanesAsync(command, leasedWorkId: null, cancellationToken)
+                    .ConfigureAwait(false);
+                if (lanesReleased)
+                {
+                    await SqliteCaptureLaneStore.RecomputeRequiredPressureAsync(
+                        connection, transaction, _distributionOptions, now, cancellationToken).ConfigureAwait(false);
+                }
                 if (evidenceRestored || lanesReleased)
                 {
-                    command.CommandText = """
-                        INSERT INTO raw_capture_stage_events(raw_capture_row_id, stage_key, state, source, event_unix_ms)
-                        VALUES ($raw, $stage, 'evidence-restored', 'silo-publication', $now);
-                        """;
-                    command.Parameters.AddWithValue("$stage", $"raw-evidence-silo-restored.{Guid.NewGuid():N}");
-                    await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                    await RecordSiloEvidenceRestorationAsync(command, cancellationToken).ConfigureAwait(false);
                 }
             }
         }
@@ -182,6 +184,16 @@ internal sealed partial class SqliteRawCaptureJournal
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return evidenceRestored || lanesReleased;
+    }
+
+    internal static async Task RecordSiloEvidenceRestorationAsync(SqliteCommand command, CancellationToken cancellationToken)
+    {
+        command.CommandText = """
+            INSERT INTO raw_capture_stage_events(raw_capture_row_id, stage_key, state, source, event_unix_ms)
+            VALUES ($raw, $stage, 'evidence-restored', 'silo-publication', $now);
+            """;
+        command.Parameters.AddWithValue("$stage", $"raw-evidence-silo-restored.{Guid.NewGuid():N}");
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     internal async Task<bool> HasPendingSiloAdmissionAsync(Guid captureId, CancellationToken cancellationToken)

@@ -45,6 +45,7 @@ internal sealed partial class RawCaptureIngress
                     cancellationToken).ConfigureAwait(false);
                 if (action == RawEvidenceReleaseAction.Revalidate && !receipt.Duplicate)
                     _processingStore?.NotifyRawEvidenceRevalidated(target.CaptureId);
+                await RefreshLaneStateAsync(CancellationToken.None).ConfigureAwait(false);
                 activity?.SetTag("duplicate", receipt.Duplicate);
                 activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
                 RequireReconciliation();

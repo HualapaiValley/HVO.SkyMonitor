@@ -210,9 +210,11 @@ public sealed partial class SiloStockStoreTests
             {
                 await AssertSiloTransientReservationAsync(scope.ServiceProvider, rawEntry, readFault, raw.ServedFrom, root, token)
                     .ConfigureAwait(false);
-                await scope.ServiceProvider.GetRequiredService<SiloStorageWorker>().StopAsync(token).ConfigureAwait(false);
+                await StopSiloStorageWorkerAsync(scope.ServiceProvider, token).ConfigureAwait(false);
                 await AssertSiloTimeLapseRetentionAndPublicationAsync(scope.ServiceProvider, root, token).ConfigureAwait(false);
             }
+            if (!centered && !exerciseRecovery)
+                await StopSiloStorageWorkerAsync(scope.ServiceProvider, token).ConfigureAwait(false);
             readFault.Set(raw.ServedFrom, ReadFault.Damaged);
             Assert.AreEqual(CameraAgentArtifactReadStatus.Conflict,
                 (await artifacts.OpenContentAsync(artifactId, token).ConfigureAwait(false)).Status);
@@ -352,6 +354,11 @@ public sealed partial class SiloStockStoreTests
     private static async Task StopSiloCaptureWorkersAsync(IServiceProvider services, CancellationToken token)
     {
         await services.GetServices<IHostedService>().OfType<CameraCaptureService>().Single().StopAsync(token).ConfigureAwait(false);
+        await StopSiloStorageWorkerAsync(services, token).ConfigureAwait(false);
+    }
+
+    private static async Task StopSiloStorageWorkerAsync(IServiceProvider services, CancellationToken token)
+    {
         var storageWorker = services.GetRequiredService<SiloStorageWorker>();
         await storageWorker.StopAsync(token).ConfigureAwait(false);
         Assert.IsTrue(storageWorker.ExecuteTask?.IsCompletedSuccessfully,

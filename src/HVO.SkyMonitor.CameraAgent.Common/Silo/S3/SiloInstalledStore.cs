@@ -8,7 +8,8 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Silo.S3;
 internal sealed class SiloInstalledStore : IDisposable
 {
     private const int MaximumBindingBytes = 4096;
-    private readonly AmazonS3Client _client;
+    private readonly AmazonS3Client? _client;
+    private readonly Func<CancellationToken, ValueTask<bool>> _hasVersioning;
     private readonly SiloInstalledSettings _settings;
 
     public SiloInstalledStore(SiloInstalledSettings settings)
@@ -18,14 +19,24 @@ internal sealed class SiloInstalledStore : IDisposable
             SiloStoreClass.Local, SiloRetrieval.Online, PersistenceQualified: true);
         var client = SiloS3ObjectStore.CreateClient(settings.Endpoint, settings.AccessKey, settings.SecretKey);
         _client = client;
-        Store = new SiloS3ObjectStore(client, descriptor, TimeSpan.FromSeconds(30));
+        var store = new SiloS3ObjectStore(client, descriptor, TimeSpan.FromSeconds(30));
+        Store = store;
+        _hasVersioning = store.HasVersioningAsync;
     }
 
-    public SiloS3ObjectStore Store { get; }
+    internal SiloInstalledStore(SiloInstalledSettings settings, ISiloObjectStore store,
+        Func<CancellationToken, ValueTask<bool>> hasVersioning)
+    {
+        _settings = settings;
+        Store = store;
+        _hasVersioning = hasVersioning;
+    }
+
+    public ISiloObjectStore Store { get; }
 
     public async ValueTask VerifyAsync(CancellationToken cancellationToken)
     {
-        if (!await Store.HasVersioningAsync(cancellationToken).ConfigureAwait(false))
+        if (!await _hasVersioning(cancellationToken).ConfigureAwait(false))
             throw BindingRefused("The installed Silo bucket is not versioned.");
 
         using var marker = await ReadBindingDocumentAsync(CameraAgentSiloBinding.MarkerKey, cancellationToken).ConfigureAwait(false);
@@ -67,5 +78,5 @@ internal sealed class SiloInstalledStore : IDisposable
 
     private static SiloConflictException BindingRefused(string message) => new("silo.installed-binding-refused", message);
 
-    public void Dispose() => _client.Dispose();
+    public void Dispose() => _client?.Dispose();
 }

@@ -24,6 +24,13 @@ internal sealed class SiloInstalledStorage : ICameraAgentSiloVerification, IDisp
 
     public SiloInstalledStorage(SiloInstalledSettings settings, IOptions<CameraAgentHostOptions> options, TimeProvider clock,
         ISiloFaults? faults = null, Func<ISiloObjectStore, ISiloObjectStore>? decorateReadStore = null)
+        : this(settings, options, clock, faults, decorateReadStore, installedStore: null, payloadSpool: null)
+    {
+    }
+
+    internal SiloInstalledStorage(SiloInstalledSettings settings, IOptions<CameraAgentHostOptions> options, TimeProvider clock,
+        ISiloFaults? faults, Func<ISiloObjectStore, ISiloObjectStore>? decorateReadStore, SiloInstalledStore? installedStore,
+        ISiloPayloadSpool? payloadSpool)
     {
         var rawRoot = Path.GetFullPath(options.Value.RawIngressRoot);
         Directory.CreateDirectory(rawRoot);
@@ -34,8 +41,8 @@ internal sealed class SiloInstalledStorage : ICameraAgentSiloVerification, IDisp
         {
             Binding = settings.Binding;
             _publicationStateExisted = File.Exists(_root.PublicationDatabasePath);
-            Spool = new(_root, settings.MaximumStagedBytes, settings.MaximumStagedFiles);
-            _installed = new(settings);
+            Spool = payloadSpool ?? new SiloFilePayloadSpool(_root, settings.MaximumStagedBytes, settings.MaximumStagedFiles);
+            _installed = installedStore ?? new(settings);
             State = new(_root.PublicationDatabasePath, Binding, clock);
             Index = new(_root.IndexDatabasePath, Binding, clock);
             Catalog = new(Index, new SiloStoreSet(decorateReadStore?.Invoke(_installed.Store) ?? _installed.Store), SiloNoAuthorityEvidence.Instance, faults);
@@ -60,7 +67,7 @@ internal sealed class SiloInstalledStorage : ICameraAgentSiloVerification, IDisp
 
     public SiloPublisher Publisher { get; }
 
-    public SiloFilePayloadSpool Spool { get; }
+    public ISiloPayloadSpool Spool { get; }
 
     internal PhysicalRoot PhysicalState => _root.Root;
 

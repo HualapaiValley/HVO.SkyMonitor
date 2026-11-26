@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Data.Sqlite;
@@ -176,8 +177,10 @@ internal sealed partial class SqliteRawCaptureJournal
                 WHERE raw_capture_row_id = $raw;
                 """;
             await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-            await ReleaseEvidenceLaneQuarantinesAsync(command, cancellationToken).ConfigureAwait(false);
+            await RestoreEvidenceLanesAsync(command, leasedWorkId: null, cancellationToken).ConfigureAwait(false);
         }
+        await SqliteCaptureLaneStore.RecomputeRequiredPressureAsync(
+            connection, transaction, _distributionOptions, occurred, cancellationToken).ConfigureAwait(false);
         _faultInjector.Inject(RawIngressFaultPoint.BeforeJournalTransactionCommit);
         if (usesSilo && action == RawEvidenceReleaseAction.Revalidate)
         {
@@ -192,7 +195,8 @@ internal sealed partial class SqliteRawCaptureJournal
         return new(false, new(action, actor, reason, occurred));
     }
 
-    private static async Task<bool> ReleaseEvidenceLaneQuarantinesAsync(SqliteCommand command, CancellationToken cancellationToken)
+    internal static async Task<bool> RestoreEvidenceLanesAsync(
+        SqliteCommand command, long? leasedWorkId, CancellationToken cancellationToken)
     {
         // Standard execution failures remain terminal. Other lanes retry the recovered input with their original age and deadline.
         command.CommandText = """
@@ -204,9 +208,11 @@ internal sealed partial class SqliteRawCaptureJournal
                 lease_token = NULL, lease_owner = NULL, lease_expires_unix_ms = NULL,
                 completed_unix_ms = CASE WHEN lane_name = 'standard' THEN $now ELSE NULL END,
                 updated_unix_ms = $now
-            WHERE raw_capture_row_id = $raw AND state = 'quarantined'
-              AND failure_reason IN ('evidence-unavailable', 'evidence-invalid');
+            WHERE raw_capture_row_id = $raw AND (
+                ($leasedWork IS NULL AND state = 'quarantined' AND failure_reason IN ('evidence-unavailable', 'evidence-invalid'))
+                OR (work_id = $leasedWork AND state = 'leased'));
             """;
+        command.Parameters.AddWithValue("$leasedWork", leasedWorkId is { } workId ? workId : DBNull.Value);
         return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) > 0;
     }
 }

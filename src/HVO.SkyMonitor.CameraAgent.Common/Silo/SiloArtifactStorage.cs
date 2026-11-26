@@ -98,6 +98,14 @@ internal sealed class SiloArtifactStorage(SiloInstalledStorage storage, TimeProv
         return IsArtifactRetainedAsync(id, cancellationToken);
     }
 
+    internal async ValueTask<bool> HasRawEvidenceAsync(ReconstructionDescriptor descriptor, CancellationToken cancellationToken)
+    {
+        var artifactId = descriptor.Artifact.ArtifactId;
+        return await HasMemberAsync(artifactId, CaptureContractJson.ComputeDescriptorSha256(descriptor), cancellationToken)
+                   .ConfigureAwait(false) &&
+               await HasMemberAsync(artifactId, RawEvidenceRevision, cancellationToken).ConfigureAwait(false);
+    }
+
     public ValueTask<bool> HasMemberAsync(Guid artifactId, string revision, CancellationToken cancellationToken) =>
         storage.BindingVerified
             ? storage.Index.HasVisibleMemberAsync(artifactId.ToString("D"), revision, cancellationToken)

@@ -288,7 +288,7 @@ internal sealed partial class RawCaptureIngress
         await AtomicPublisher.PublishAsync(_silo!.PhysicalState, SiloIntentPath(entry.ArtifactId), PublishMode.Replace,
             (stream, token) => stream.WriteAsync(bytes, token).AsTask(), cancellationToken).ConfigureAwait(false);
         if (await ReclaimSiloStagingAsync(entry, siloVisible, cancellationToken).ConfigureAwait(false))
-            await RefreshLaneStateAsync(cancellationToken).ConfigureAwait(false);
+            await RefreshLaneStateAsync(CancellationToken.None).ConfigureAwait(false);
     }
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Silo raw admission row {RowId} could not be published")]
