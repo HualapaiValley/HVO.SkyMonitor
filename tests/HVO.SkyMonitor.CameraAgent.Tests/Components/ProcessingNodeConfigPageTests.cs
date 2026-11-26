@@ -1185,6 +1185,74 @@ public sealed class ProcessingNodeConfigPageTests
         }
     }
 
+    [TestMethod]
+    public void ConfigPageSwitcherDisablesNavigationForUnsavedAutoAddedNodesAndHandlesMissingNodeCleanly()
+    {
+        const string measurementAlias = ExposureMeasurementProducts.StepAlias;
+        const string predictionAlias = ExposureCatalogPredictionProducts.StepAlias;
+        var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
+        var pipelineWithoutPrediction = new CapturePipelineConfig(
+        [
+            new(measurementAlias, measurementAlias, 4, null, ["$raw"], Required: false, Enabled: true, Publication: durable),
+            new(RegionalStellarVisibilityProducts.StepAlias, "regional", 30, null,
+                ["$raw", measurementAlias], Required: false, Enabled: false, Publication: durable)
+        ]);
+
+        using var context = new BunitContext();
+        Configure(context, pipelineWithoutPrediction);
+
+        // 1. Enabling regional auto-adds ExposureCatalogPrediction in memory; the switcher must not link to a missing node in rev-active.
+        var cut = context.Render<ProcessingNodeConfigPage>(parameters => parameters
+            .Add(static page => page.RevisionId, "rev-active")
+            .Add(static page => page.NodeId, "regional"));
+        cut.WaitForElement("#node-options-1-enabled");
+        cut.Find("#node-options-1-enabled").Change(true);
+
+        var switcherItems = cut.FindAll(".node-switcher__item");
+        var measurementItem = switcherItems.Single(item => item.TextContent.Contains(measurementAlias, StringComparison.Ordinal));
+        Assert.AreEqual("A", measurementItem.TagName);
+        Assert.AreEqual($"/operations/pipeline/graphs/rev-active/nodes/{measurementAlias}", measurementItem.GetAttribute("href"));
+
+        var regionalItem = switcherItems.Single(item => item.TextContent.Contains("regional", StringComparison.Ordinal));
+        Assert.AreEqual("A", regionalItem.TagName);
+        Assert.AreEqual("page", regionalItem.GetAttribute("aria-current"));
+
+        var predictionItem = switcherItems.Single(item => item.TextContent.Contains(predictionAlias, StringComparison.Ordinal));
+        Assert.AreNotEqual("A", predictionItem.TagName,
+            "An unsaved auto-added node missing from rev-active must not render as a navigating anchor in the switcher.");
+        Assert.IsNull(predictionItem.GetAttribute("href"));
+        Assert.AreEqual("true", predictionItem.GetAttribute("aria-disabled"));
+        StringAssert.Contains(predictionItem.ClassName, "node-switcher__item--unsaved", StringComparison.Ordinal);
+        StringAssert.Contains(predictionItem.TextContent, "Unsaved draft", StringComparison.Ordinal);
+
+        // 2. Navigating directly to a missing node renders the clean fallback list without broken switcher/form state,
+        //    and switching to a valid node in the revision recovers cleanly.
+        cut.Render(parameters => parameters
+            .Add(static page => page.RevisionId, "rev-active")
+            .Add(static page => page.NodeId, predictionAlias));
+        cut.WaitForElement(".missing-node-list");
+        StringAssert.Contains(cut.Markup, "Filter or overlay not found", StringComparison.Ordinal);
+        Assert.IsEmpty(cut.FindAll(".node-switcher"));
+        Assert.IsEmpty(cut.FindAll(".config-form"));
+        var fallbackHrefs = cut.FindAll(".missing-node-list a")
+            .Select(static link => link.GetAttribute("href"))
+            .ToArray();
+        CollectionAssert.AreEquivalent(
+            new[]
+            {
+                $"/operations/pipeline/graphs/rev-active/nodes/{measurementAlias}",
+                "/operations/pipeline/graphs/rev-active/nodes/regional"
+            },
+            fallbackHrefs);
+
+        cut.Render(parameters => parameters
+            .Add(static page => page.RevisionId, "rev-active")
+            .Add(static page => page.NodeId, "regional"));
+        cut.WaitForElement(".config-form");
+        Assert.IsEmpty(cut.FindAll(".missing-node-list"));
+        Assert.AreEqual("page", cut.Find(".node-switcher__item--current").GetAttribute("aria-current"));
+    }
+
     private static ProcessingExecutionPagesTests.GraphUiService Configure(BunitContext context, CapturePipelineConfig pipeline)
     {
         context.JSInterop.Mode = JSRuntimeMode.Loose;

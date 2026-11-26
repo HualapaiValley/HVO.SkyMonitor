@@ -20,7 +20,16 @@ internal sealed class ProcessingGraphDraftModel
     public string? SourceRevisionId { get; private set; }
     private string? _initialDefinition;
     private CapturePipelineConfig? _sourcePipeline;
+    private HashSet<string> _sourceNodeIds = new(StringComparer.OrdinalIgnoreCase);
     private bool _reordered;
+
+    public bool ExistsInSourceRevision(NodeRow node)
+    {
+        ArgumentNullException.ThrowIfNull(node);
+        return !string.IsNullOrWhiteSpace(SourceRevisionId) &&
+               !string.IsNullOrWhiteSpace(node.Id) &&
+               _sourceNodeIds.Contains(node.Id.Trim());
+    }
 
     public bool HasGraphChanges(CapturePipelineConfig pipeline)
         => _initialDefinition is null || _initialDefinition != JsonSerializer.Serialize(pipeline);
@@ -29,6 +38,7 @@ internal sealed class ProcessingGraphDraftModel
     {
         var converted = FromPipeline(pipeline, SourceRevisionId, Name, Revision);
         converted._initialDefinition = _initialDefinition;
+        converted._sourceNodeIds = new HashSet<string>(_sourceNodeIds, StringComparer.OrdinalIgnoreCase);
         return converted;
     }
 
@@ -53,9 +63,14 @@ internal sealed class ProcessingGraphDraftModel
         };
         foreach (var step in pipeline.Steps)
         {
+            var nodeId = string.IsNullOrWhiteSpace(step.Id) ? step.Type : step.Id.Trim();
+            if (!string.IsNullOrWhiteSpace(sourceRevisionId) && !string.IsNullOrWhiteSpace(nodeId))
+            {
+                model._sourceNodeIds.Add(nodeId.Trim());
+            }
             model.Nodes.Add(new NodeRow
             {
-                Id = string.IsNullOrWhiteSpace(step.Id) ? step.Type : step.Id.Trim(),
+                Id = nodeId,
                 Type = step.Type,
                 Required = step.Required,
                 Enabled = step.Enabled ?? true,

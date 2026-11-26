@@ -4,6 +4,7 @@
 .node-switcher { display: flex; flex-wrap: wrap; gap: .4rem; }
 .node-switcher__item { display: inline-flex; align-items: center; min-height: 36px; padding: .25rem .7rem; border: 1px solid var(--hvo-border-muted); border-radius: .35rem; color: var(--hvo-muted-strong); background: var(--hvo-surface-elevated); text-decoration: none; font-size: .82rem; }
 .node-switcher__item--current { border-color: var(--hvo-info-fg); color: var(--hvo-info-fg); font-weight: 600; }
+.node-switcher__item--unsaved { border-style: dashed; color: var(--hvo-muted-weak); opacity: .85; cursor: default; }
 .config-banner { padding: .85rem 1rem; border-left: 3px solid var(--hvo-success-strong); background: var(--hvo-surface-elevated); display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: center; }
 .config-banner--error { border-color: var(--hvo-danger-strong); background: var(--hvo-danger-bg); }
 .config-banner a { color: var(--hvo-info-fg); }

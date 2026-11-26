@@ -241,4 +241,42 @@ public sealed class ProcessingGraphDraftModelTests
         Assert.AreEqual(manifestJson, edited.Steps[1].Options!.Value.GetRawText(),
             "An untouched OverlayManifest with retained quoted zOrder and unknown fields must survive byte-for-byte.");
     }
+
+    [TestMethod]
+    public void ExistsInSourceRevision_DistinguishesSavedNodesFromUnsavedAndRenamedNodes()
+    {
+        var empty = ProcessingGraphDraftModel.Empty();
+        empty.AddNode("Preview");
+        Assert.IsFalse(empty.ExistsInSourceRevision(empty.Nodes[0]));
+
+        var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
+        var source = new CapturePipelineConfig(
+        [
+            new(ExposureMeasurementProducts.StepAlias, ExposureMeasurementProducts.StepAlias, 4, null, ["$raw"], Required: false, Enabled: true, Publication: durable),
+            new("Preview", "preview", 10, null, ["$raw"], Enabled: true)
+        ]);
+        var draft = ProcessingGraphDraftModel.FromPipeline(source, "rev-active", "night", "2");
+        Assert.IsTrue(draft.ExistsInSourceRevision(draft.Nodes[0]));
+        Assert.IsTrue(draft.ExistsInSourceRevision(draft.Nodes[1]));
+
+        draft.AddNode(RegionalStellarVisibilityProducts.StepAlias);
+        var regional = draft.Nodes.Single(static row => row.Type == RegionalStellarVisibilityProducts.StepAlias);
+        var prediction = draft.Nodes.Single(static row => row.Type == ExposureCatalogPredictionProducts.StepAlias);
+        Assert.IsFalse(draft.ExistsInSourceRevision(regional), "Newly added editable node does not exist in the source revision.");
+        Assert.IsFalse(draft.ExistsInSourceRevision(prediction), "Auto-added ExposureCatalogPrediction does not exist in the source revision.");
+
+        draft.Nodes[1].Id = "preview-renamed";
+        Assert.IsFalse(draft.ExistsInSourceRevision(draft.Nodes[1]), "Renamed node ID does not exist in the source revision.");
+        draft.Nodes[1].Id = "PREVIEW";
+        Assert.IsTrue(draft.ExistsInSourceRevision(draft.Nodes[1]), "Source revision lookup matches case-insensitively like the config page.");
+
+        var converted = draft.WithConvertedPipeline(new CapturePipelineConfig(
+        [
+            new(ExposureMeasurementProducts.StepAlias, ExposureMeasurementProducts.StepAlias, 4, null, ["$raw"], Required: false, Enabled: true, Publication: durable),
+            new(ExposureCatalogPredictionProducts.StepAlias, ExposureCatalogPredictionProducts.StepAlias, 5, null, ["$raw"], Required: false, Enabled: true, Publication: durable)
+        ]));
+        Assert.IsTrue(converted.ExistsInSourceRevision(converted.Nodes[0]));
+        Assert.IsFalse(converted.ExistsInSourceRevision(converted.Nodes[1]),
+            "WithConvertedPipeline must retain the original source revision's node set.");
+    }
 }

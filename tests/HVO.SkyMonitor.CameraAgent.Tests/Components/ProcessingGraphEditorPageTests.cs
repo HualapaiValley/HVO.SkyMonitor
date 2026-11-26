@@ -991,6 +991,74 @@ public sealed class ProcessingGraphEditorPageTests
         }
     }
 
+    [TestMethod]
+    public void GraphEditorHidesInspectLinkForUnsavedAutoAddedBuiltInStageWhileKeepingSavedStageLinkEnabled()
+    {
+        const string measurementAlias = ExposureMeasurementProducts.StepAlias;
+        const string predictionAlias = ExposureCatalogPredictionProducts.StepAlias;
+        var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
+
+        // 1. Source revision contains ExposureMeasurement and disabled regional, without ExposureCatalogPrediction.
+        using (var unsavedContext = new BunitContext())
+        {
+            unsavedContext.JSInterop.Mode = JSRuntimeMode.Loose;
+            var pipelineWithoutPrediction = new CapturePipelineConfig(
+            [
+                new(measurementAlias, measurementAlias, 4, null, ["$raw"], Required: false, Enabled: true, Publication: durable),
+                new(RegionalStellarVisibilityProducts.StepAlias, "regional", 30, null,
+                    ["$raw", measurementAlias], Required: false, Enabled: false, Publication: durable)
+            ]);
+            var service = CreateEditorService(pipelineWithoutPrediction);
+            service.StepAliases = ["Preview", RegionalStellarVisibilityProducts.StepAlias];
+            unsavedContext.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(service);
+            unsavedContext.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/pipeline/graphs/new?from=rev-active");
+
+            var cut = unsavedContext.Render<ProcessingGraphEditorPage>();
+            var regionalRow = cut.WaitForElement($"li.node-row[data-node-alias='{RegionalStellarVisibilityProducts.StepAlias}']");
+            FindMainRowEnabledCheckbox(regionalRow).Change(true);
+
+            // Saved built-in stage keeps its Inspect built-in stage link.
+            var savedBuiltInLink = cut.Find($"li.node-row[data-node-alias='{measurementAlias}'] .node-row--builtin a");
+            Assert.AreEqual("Inspect built-in stage", savedBuiltInLink.TextContent.Trim());
+            Assert.AreEqual($"/operations/pipeline/graphs/rev-active/nodes/{measurementAlias}", savedBuiltInLink.GetAttribute("href"));
+
+            // Auto-added unsaved built-in stage must not render a broken inspect link to rev-active.
+            var unsavedBuiltInRow = cut.Find($"li.node-row[data-node-alias='{predictionAlias}'] .node-row--builtin");
+            Assert.IsEmpty(unsavedBuiltInRow.QuerySelectorAll("a"),
+                "Auto-added ExposureCatalogPrediction does not exist in rev-active and must not render a broken inspect link.");
+            StringAssert.Contains(unsavedBuiltInRow.TextContent, "unsaved draft", StringComparison.OrdinalIgnoreCase);
+
+            // Newly added configurable node also omits Configure on its own page until saved.
+            cut.Find("select[aria-label='New node type']").Change("Preview");
+            cut.FindAll("button").Single(static button => button.TextContent.Trim() == "Add node").Click();
+            var addedPreviewRow = cut.Find("li.node-row[data-node-alias='Preview']");
+            Assert.IsEmpty(addedPreviewRow.QuerySelectorAll("a.node-options-page-link"),
+                "Newly added editable node does not exist in rev-active and must not render a broken dedicated-page link.");
+            Assert.IsNotEmpty(cut.FindAll($"li.node-row[data-node-alias='{RegionalStellarVisibilityProducts.StepAlias}'] a.node-options-page-link"),
+                "Saved editable node must retain its Configure on its own page link.");
+        }
+
+        // 2. When ExposureCatalogPrediction already exists in the source revision, its Inspect built-in stage link stays enabled.
+        using (var savedContext = new BunitContext())
+        {
+            savedContext.JSInterop.Mode = JSRuntimeMode.Loose;
+            var pipelineWithPrediction = new CapturePipelineConfig(
+            [
+                new(measurementAlias, measurementAlias, 4, null, ["$raw"], Required: false, Enabled: true, Publication: durable),
+                new(predictionAlias, predictionAlias, 5, null, ["$raw"], Required: false, Enabled: true, Publication: durable),
+                new(RegionalStellarVisibilityProducts.StepAlias, "regional", 30, null,
+                    ["$raw", measurementAlias, predictionAlias], Required: false, Enabled: true, Publication: durable)
+            ]);
+            savedContext.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(CreateEditorService(pipelineWithPrediction));
+            savedContext.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/pipeline/graphs/new?from=rev-active");
+
+            var cut = savedContext.Render<ProcessingGraphEditorPage>();
+            var predictionLink = cut.WaitForElement($"li.node-row[data-node-alias='{predictionAlias}'] .node-row--builtin a");
+            Assert.AreEqual("Inspect built-in stage", predictionLink.TextContent.Trim());
+            Assert.AreEqual($"/operations/pipeline/graphs/rev-active/nodes/{predictionAlias}", predictionLink.GetAttribute("href"));
+        }
+    }
+
     private static ProcessingExecutionPagesTests.GraphUiService CreateEditorService(CapturePipelineConfig pipeline)
     {
         var registry = ProcessingGraphPagesTests.Registry();
