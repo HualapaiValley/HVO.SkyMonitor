@@ -31,6 +31,31 @@ public sealed class StructuredProcessingProductManifestTests
 
     [TestMethod]
     [TestCategory("Unit")]
+    [DataRow(MeasuredDeepSkyStackV1.MediaType, MeasuredDeepSkyStackV1.CurrentSchemaVersion)]
+    [DataRow(RegionalStellarVisibilityProducts.MediaType, RegionalStellarVisibilityProducts.SchemaVersion)]
+    public void ManifestAcceptsRegisteredStructuredProductContracts(string mediaType, string schemaVersion)
+    {
+        var template = CreateManifest();
+        var manifest = template with
+        {
+            Descriptor = template.Descriptor with
+            {
+                Artifact = template.Descriptor.Artifact with { MediaType = mediaType },
+                ProductSchemaVersion = schemaVersion
+            }
+        };
+
+        Assert.IsTrue(StructuredProcessingProductContracts.IsSupportedMediaType(mediaType));
+        Assert.IsTrue(manifest.Validate().IsValid);
+        var unsupported = manifest with
+        {
+            Descriptor = manifest.Descriptor with { ProductSchemaVersion = "unsupported-v1" }
+        };
+        Assert.IsFalse(unsupported.Validate().IsValid);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
     public void IdempotencyExcludesStoragePathAndIncludesProductIdentity()
     {
         var manifest = CreateManifest();

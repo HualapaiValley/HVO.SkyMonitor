@@ -58,7 +58,7 @@ internal sealed class CaptureSatelliteFixture
         var effectiveExposure = TimeSpan.FromMilliseconds(4900);
         Descriptor = new(new("satellite-fixture", "satellite-fixture", 1, Guid.Parse("16410000-0000-0000-0000-000000000001")),
             new(start.AddMilliseconds(-250), start, end, end.AddMilliseconds(10), end.AddMilliseconds(20)),
-            new(TimeSpan.FromSeconds(5), effectiveExposure, 1, 1, null, null, null, null),
+            new(TimeSpan.FromMilliseconds(5100), effectiveExposure, 1, 1, null, null, null, null),
             new(Profile(CameraRigProfileIdentity.ComputeSha256(rig)), Profile(new('A', 64)), Profile(new('B', 64)),
                 Profile(new('C', 64)), Profile(new('D', 64))), layout,
             new(Guid.Parse("16410000-0000-0000-0000-000000000002"), FrameArtifactRole.Raw, "StandaloneFixture", rawVariant,
