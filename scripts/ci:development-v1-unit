@@ -191,7 +191,7 @@ def run(evidence, skip_deployment_cli=False):
                 "--filter", selection, "--settings", str(settings), "--collect:XPlat Code Coverage",
                 "--results-directory", str(results), "--logger", logger,
             ]
-            processes.append((name, subprocess.Popen(command)))
+            processes.append((name, subprocess.Popen(command, cwd=ROOT)))
         failed = [name for name, process in processes if process.wait()]
         if failed:
             raise ValueError(f"Unit selection failed in {', '.join(failed)}")

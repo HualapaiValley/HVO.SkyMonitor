@@ -1039,6 +1039,10 @@ certificate_cases=(
   slnx-folder-no-slashes slnx-folder-dup-case slnx-folder-dotdot
   slnx-folder-reserved-con slnx-folder-reserved-con-ext slnx-folder-reserved-lpt1
   slnx-folder-reserved-clock slnx-folder-del-char slnx-folder-c1-control
+  slnx-{folder,project}-{tab,cr,lf,escaped-tab,escaped-cr,escaped-lf}
+  slnx-{folder,project}-xmlns-{tab,cr,lf}
+  slnx-doctype slnx-doctype-entity
+  slnx-attribute-formatting
 )
 
 run_fast_cert_shard() {
@@ -1063,13 +1067,33 @@ count_file = pathlib.Path(sys.argv[4])
 cases = sys.argv[5:]
 
 SECOND_CSPROJ = '<Project Sdk="Microsoft.NET.Sdk" />\n'
+SLNX_WHITESPACE = {
+    "tab": "\t", "cr": "\r", "lf": "\n",
+    "escaped-tab": "&#9;", "escaped-cr": "&#xD;", "escaped-lf": "&#10;",
+}
+SLNX_WHITESPACE_CASES = {
+    f"slnx-{entry}-{kind}": (entry, whitespace)
+    for entry in ("folder", "project")
+    for kind, whitespace in SLNX_WHITESPACE.items()
+} | {
+    f"slnx-{entry}-xmlns-{kind}": (entry, SLNX_WHITESPACE[kind])
+    for entry in ("folder", "project")
+    for kind in ("tab", "cr", "lf")
+}
+SLNX_DECLARATION_CASES = {
+    "slnx-doctype": ("<!DOCTYPE Solution>", "tests/Example/Example.csproj"),
+    "slnx-doctype-entity": (
+        '<!DOCTYPE Solution [<!ENTITY project "tests/Example/Example.csproj">]>', "&project;",
+    ),
+}
 SECOND_PROJECT_CASES = frozenset({
     "solution-folder-project", "slnx-folder-strasse-pair", "missing-project-record",
     "nested-solution-project", "nested-solution-folder",
     "slnx-folder-no-slashes", "slnx-folder-dup-case", "slnx-folder-dotdot",
     "slnx-folder-reserved-con", "slnx-folder-reserved-con-ext", "slnx-folder-reserved-lpt1",
     "slnx-folder-reserved-clock", "slnx-folder-del-char", "slnx-folder-c1-control",
-})
+    "slnx-attribute-formatting",
+}) | SLNX_WHITESPACE_CASES.keys()
 SECOND_RECORD_CASES = SECOND_PROJECT_CASES - {"missing-project-record"}
 SLNX_INVALID_CASES = frozenset({
     "nested-solution-project", "nested-solution-folder",
@@ -1077,7 +1101,14 @@ SLNX_INVALID_CASES = frozenset({
     "slnx-folder-reserved-con", "slnx-folder-reserved-con-ext", "slnx-folder-reserved-lpt1",
     "slnx-folder-reserved-clock", "slnx-folder-del-char", "slnx-folder-c1-control",
 })
-DIRECT_CHECK_CASES = SLNX_INVALID_CASES | {"global-json-sdk-paths", "global-json-extra-top-key", "global-json-utf16"}
+SLNX_ERRORS = dict.fromkeys(SLNX_INVALID_CASES, "unknown solution entry") | {
+    case: ("escaped build input requires manual review" if whitespace.startswith("&#")
+           else "solution attribute contains control whitespace")
+    for case, (_, whitespace) in SLNX_WHITESPACE_CASES.items()
+} | dict.fromkeys(SLNX_DECLARATION_CASES, "document type declarations require manual review")
+DIRECT_CHECK_CASES = SLNX_ERRORS.keys() | {
+    "global-json-sdk-paths", "global-json-extra-top-key", "global-json-utf16",
+}
 DIGEST_ZERO = "0" * 64
 
 
@@ -1112,6 +1143,7 @@ for case in cases:
     project = '<Project Sdk="Microsoft.NET.Sdk"><Import Project="shared.props" /></Project>'
     props = '<Project><ItemGroup><PackageReference Include="Fixture" Version="1.0.0" /></ItemGroup></Project>'
     expected = "false"
+    second_project = "tests/Second/Second.csproj"
 
     if case == "builtin-sdk":
         expected = "verify-restore"
@@ -1252,6 +1284,39 @@ for case in cases:
             '<Solution><Project Path="tests/Example/Example.csproj" /><Folder Name="/A\x80B/"><Project Path="tests/Second/Second.csproj" /></Folder></Solution>\n',
             encoding="utf-8",
         )
+    elif case in SLNX_WHITESPACE_CASES or case == "slnx-attribute-formatting":
+        entry, whitespace = SLNX_WHITESPACE_CASES.get(case, ("formatting", " "))
+        folder_name = f"/Second{whitespace}Group/" if entry == "folder" else "/Second Group/"
+        namespace = 'xmlns:x="urn:x" '
+        folder_namespace = namespace if "-xmlns-" in case and entry == "folder" else ""
+        project_namespace = namespace if "-xmlns-" in case and entry == "project" else ""
+        if case == "slnx-attribute-formatting":
+            folder_namespace = namespace + "\r\n\t\t"
+            project_namespace = "xmlns=''\n\t\t\t"
+            expected = "verify-restore"
+        # Commit the space-normalized alias so accepting it would certify a different project.
+        second_project = "tests/Second/Second Project.csproj"
+        project_path = second_project.replace(" ", whitespace) if entry == "project" else second_project
+        (repo / second_project).parent.mkdir(parents=True, exist_ok=True)
+        (repo / second_project).write_text(SECOND_CSPROJ, encoding="utf-8")
+        (repo / "HVO.SkyMonitor.v9.slnx").write_text(
+            '<Solution>\r\n'
+            '\t<!-- <Folder Name="/Ignored\tName/" /> -->\n'
+            '\t<?probe <Project Path="ignored\rpath.csproj" /> ?>\n'
+            '\t<![CDATA[<Folder Name="/Ignored\nName/" />]]>\n'
+            '\t<Project Path="tests/Example/Example.csproj" />\n'
+            f'\t<Folder\n\t\t{folder_namespace}Name = "{folder_name}">\n'
+            f"\t\t<Project\t{project_namespace}Path\r\n\t\t\t=\t'{project_path}' />\n"
+            '\t</Folder>\n'
+            '</Solution>\n',
+            encoding="utf-8",
+        )
+    elif case in SLNX_DECLARATION_CASES:
+        declaration, project_path = SLNX_DECLARATION_CASES[case]
+        (repo / "HVO.SkyMonitor.v9.slnx").write_text(
+            f'{declaration}\n<Solution><Project Path="{project_path}" /></Solution>\n',
+            encoding="utf-8",
+        )
     elif case == "missing-coverage-project-record":
         (repo / "scripts/coverage").mkdir(parents=True, exist_ok=True)
         (repo / "scripts/coverage/HVO.SkyMonitor.CoverageGate.csproj").write_text(SECOND_CSPROJ, encoding="utf-8")
@@ -1284,7 +1349,7 @@ for case in cases:
     project_entry = {"graphSha256": DIGEST_ZERO, "sources": [], "props": imports, "targets": imports}
     projects = {"tests/Example/Example.csproj": project_entry}
     if case in SECOND_RECORD_CASES:
-        projects["tests/Second/Second.csproj"] = project_entry
+        projects[second_project] = project_entry
     if case == "extra-project-record":
         projects["tests/Extra/Extra.csproj"] = project_entry
     certificate = {
@@ -1335,8 +1400,8 @@ for case in cases:
         elif case in ("missing-project-record", "extra-project-record", "missing-coverage-project-record"):
             want = "::error::Documentation CI build inventory is stale or unsafe; refresh scripts/ci:docs-inventory and scripts/ci:restore-import-certificate.json: restore import certificate project set differs from committed solution"
             require(want in err_lines, f"{case}: {check.stderr!r}")
-        elif case in SLNX_INVALID_CASES:
-            want = "::error::Documentation CI build inventory is stale or unsafe; remove the unsafe input or update the audit policy under HIGH-tier review: unknown solution entry"
+        elif case in SLNX_ERRORS:
+            want = "::error::Documentation CI build inventory is stale or unsafe; remove the unsafe input or update the audit policy under HIGH-tier review: " + SLNX_ERRORS[case]
             require(want in err_lines, f"{case}: {check.stderr!r}")
         elif case in ("executable-certificate", "symlink-certificate", "stale-source-hash"):
             want = "::error::Documentation CI build inventory is stale or unsafe; refresh scripts/ci:docs-inventory and scripts/ci:restore-import-certificate.json:"
@@ -1358,7 +1423,7 @@ for case in cases:
             elif case == "global-json-utf16":
                 require("docs inventory audit: global.json is not UTF-8" in direct_lines, f"{case}: {direct.stderr!r}")
             else:
-                require("docs inventory audit: unknown solution entry" in direct_lines, f"{case}: {direct.stderr!r}")
+                require(f"docs inventory audit: {SLNX_ERRORS[case]}" in direct_lines, f"{case}: {direct.stderr!r}")
 
     with (repo / "docs/runbooks/certified.md").open("a", encoding="utf-8") as fh:
         fh.write("changed\n")
@@ -3573,7 +3638,6 @@ run_workflow_shape() {
 
 run_harness_signal_cleanup() {
   python3 - "$repo_root/scripts/test:ci-classification" <<'PY'
-import errno
 import os
 import pathlib
 import shutil
@@ -3605,7 +3669,7 @@ cleanup_probe = (
 )
 instrumented_preamble = preamble.replace(cleanup_marker, cleanup_probe, 1)
 
-active = {"proc": None, "worker_pgid": None, "probe_dir": None, "resume_fifo": None}
+active = {"proc": None, "worker_pgid": None, "probe_dir": None, "resume_fd": None}
 
 
 def pgid_survivors(pgid):
@@ -3680,17 +3744,12 @@ def _collect_worker_pgids(skip_pgrp):
     return pgids
 
 
-def _unblock_fifo(fifo_path, payload=b"abort\n"):
-    if fifo_path is None:
-        return
-    try:
-        fd = os.open(fifo_path, os.O_WRONLY | os.O_NONBLOCK)
+def _abort_hook():
+    if active["resume_fd"] is not None:
         try:
-            os.write(fd, payload)
-        finally:
-            os.close(fd)
-    except OSError:
-        pass
+            os.write(active["resume_fd"], b"abort\n")
+        except OSError:
+            pass
 
 
 def _cleanup_active():
@@ -3702,7 +3761,12 @@ def _cleanup_active():
             proc.terminate()
         except Exception:
             pass
-        _unblock_fifo(active["resume_fifo"], b"abort\n")
+        _abort_hook()
+        # Resume a stopped hook once TERM is pending and the abort is buffered.
+        try:
+            proc.send_signal(signal.SIGCONT)
+        except OSError:
+            pass
         try:
             proc.wait(timeout=1.5)
         except Exception:
@@ -3712,7 +3776,7 @@ def _cleanup_active():
             except Exception:
                 pass
     else:
-        _unblock_fifo(active["resume_fifo"], b"abort\n")
+        _abort_hook()
     pgids.update(_collect_worker_pgids(my_pgrp))
     if pgids:
         deadline = time.monotonic() + 1.0
@@ -3739,6 +3803,16 @@ def _on_signal(signum, _frame):
 
 signal.signal(signal.SIGTERM, _on_signal)
 signal.signal(signal.SIGINT, _on_signal)
+
+# Exercise an abort write after the reader closes.
+read_fd, write_fd = os.pipe()
+os.close(read_fd)
+active["resume_fd"] = write_fd
+try:
+    _abort_hook()
+finally:
+    active["resume_fd"] = None
+    os.close(write_fd)
 
 
 def parse_hook_state(state_path):
@@ -3786,9 +3860,14 @@ wait_parallel_jobs
 
 root_dir = pathlib.Path(tempfile.mkdtemp(prefix="hvo-sig-"))
 try:
-    # 1. Launch-window deferral regression (SIGTERM and SIGINT between fork and PGID registration)
-    for sig, expected_rc in ((signal.SIGTERM, 143), (signal.SIGINT, 130)):
-        case_dir = root_dir / f"window-{sig.name.lower()}"
+    # 1. Signal deferral after fork, including outer cleanup before the hook opens its FIFO.
+    for label, sig, expected_rc in (
+        ("window-sigterm", signal.SIGTERM, 143),
+        ("window-sigint", signal.SIGINT, 130),
+        ("early-abort", signal.SIGTERM, 97),
+    ):
+        early_abort = label == "early-abort"
+        case_dir = root_dir / label
         case_tmp = case_dir / "tmp"
         probe_dir = case_dir / "probe"
         case_tmp.mkdir(parents=True, mode=0o700)
@@ -3797,8 +3876,10 @@ try:
         trap_log = probe_dir / "cleanup_traps.log"
         hook_state_path = probe_dir / "hook_exit.state"
         os.mkfifo(resume_fifo)
+        pause_before_open = '    kill -STOP "$BASHPID"\n' if early_abort else ""
         hook = (
             fork_marker
+            + pause_before_open
             + '    exec 4<>"$HVO_PROBE_DIR/resume.fifo"\n'
             + '    printf \'%d\\n\' "$!" > "$HVO_PROBE_DIR/worker.pid.tmp"\n'
             + '    mv "$HVO_PROBE_DIR/worker.pid.tmp" "$HVO_PROBE_DIR/worker.pid"\n'
@@ -3826,82 +3907,87 @@ try:
         active["proc"] = None
         active["worker_pgid"] = None
         active["probe_dir"] = probe_dir
-        active["resume_fifo"] = resume_fifo
-        with harness_out.open("w") as out_fh, harness_err.open("w") as err_fh:
-            proc = subprocess.Popen(
-                ["bash", str(harness)],
-                env=env,
-                stdout=out_fh,
-                stderr=err_fh,
-            )
-        active["proc"] = proc
+        # Keep the FIFO open from before the fork so cleanup can buffer an
+        # abort even if the hook has yet to open its own descriptor.
+        resume_fd = os.open(resume_fifo, os.O_RDWR | os.O_NONBLOCK)
+        active["resume_fd"] = resume_fd
         try:
+            with harness_out.open("w") as out_fh, harness_err.open("w") as err_fh:
+                proc = subprocess.Popen(
+                    ["bash", str(harness)],
+                    env=env,
+                    stdout=out_fh,
+                    stderr=err_fh,
+                )
+            active["proc"] = proc
             deadline = time.monotonic() + 10.0
             while time.monotonic() < deadline:
-                if (probe_dir / "paused.flag").exists() and (probe_dir / "worker_ready.flag").exists():
-                    break
+                if (probe_dir / "worker_ready.flag").exists():
+                    if early_abort:
+                        stopped = os.waitid(os.P_PID, proc.pid, os.WSTOPPED | os.WNOHANG)
+                        if stopped is not None and stopped.si_status == signal.SIGSTOP:
+                            break
+                    elif (probe_dir / "paused.flag").exists():
+                        break
                 if proc.poll() is not None:
                     raise SystemExit(
-                        f"Launch-window probe exited early ({proc.returncode}); "
+                        f"{label} probe exited early ({proc.returncode}); "
                         f"hook_state={parse_hook_state(hook_state_path)!r}; "
                         f"stderr={harness_err.read_text()!r}"
                     )
                 time.sleep(0.01)
-            if not ((probe_dir / "paused.flag").exists() and (probe_dir / "worker_ready.flag").exists()):
-                raise SystemExit(f"Launch-window probe timed out waiting for pause/ready ({sig.name})")
-            worker_pgid = int((probe_dir / "worker.pid").read_text().strip())
+            else:
+                raise SystemExit(f"{label} probe timed out waiting for pause/ready")
+            worker_pid = int((probe_dir / "worker.pids").read_text().split()[0])
+            worker_pgid = os.getpgid(worker_pid)
             active["worker_pgid"] = worker_pgid
             before = pgid_survivors(worker_pgid)
             if len(before) < 4:
                 raise SystemExit(f"Expected >=4 live processes in worker pgid {worker_pgid}, saw {before}")
-            try:
-                os.kill(proc.pid, sig)
-            except ProcessLookupError:
-                pass
+            if early_abort:
+                _cleanup_active()
+                rc = proc.returncode
             else:
+                os.kill(proc.pid, sig)
                 time.sleep(0.03)
-                try:
-                    fd = os.open(resume_fifo, os.O_WRONLY | os.O_NONBLOCK)
-                    try:
-                        os.write(fd, b"go\n")
-                    finally:
-                        os.close(fd)
-                except OSError as exc:
-                    if exc.errno not in (errno.ENXIO, errno.EPIPE):
-                        raise
-            rc = proc.wait(timeout=10)
+                os.write(resume_fd, b"go\n")
+                rc = proc.wait(timeout=10)
             hook_state = parse_hook_state(hook_state_path)
             if rc != expected_rc:
                 raise SystemExit(
-                    f"Launch-window {sig.name} expected exit {expected_rc}, got {rc}; "
+                    f"{label} expected exit {expected_rc}, got {rc}; "
                     f"hook_state={hook_state!r}; stderr={harness_err.read_text()!r}"
                 )
             expected_hook = {
                 "read_rc": "0",
-                "token": "go",
+                "token": "abort" if early_abort else "go",
                 "launching": "1",
-                "pending": str(expected_rc),
+                "pending": str(128 + sig),
                 "reg_pid": "0",
                 "reg_pgid": "0",
             }
             if hook_state != expected_hook:
                 raise SystemExit(
-                    f"Launch-window {sig.name} handshake did not prove pre-registration deferral: "
+                    f"{label} handshake did not prove pre-registration deferral: "
                     f"expected {expected_hook!r}, got {hook_state!r}"
                 )
-            assert_traps_disarmed(trap_log, f"Launch-window {sig.name} deferred exit")
+            if not early_abort:
+                assert_traps_disarmed(trap_log, f"{label} deferred exit")
             survivors = pgid_survivors(worker_pgid)
             if survivors:
-                raise SystemExit(f"Launch-window {sig.name} left surviving processes in pgid {worker_pgid}: {survivors}")
+                raise SystemExit(f"{label} left surviving processes in pgid {worker_pgid}: {survivors}")
             leaked = [p.name for p in case_tmp.iterdir()]
             if leaked:
-                raise SystemExit(f"Launch-window {sig.name} leaked TMPDIR entries: {leaked}")
+                raise SystemExit(f"{label} leaked TMPDIR entries: {leaked}")
         finally:
-            _cleanup_active()
+            try:
+                _cleanup_active()
+            finally:
+                active["resume_fd"] = None
+                os.close(resume_fd)
             active["proc"] = None
             active["worker_pgid"] = None
             active["probe_dir"] = None
-            active["resume_fifo"] = None
 
     # 2. Direct handle_signal disarm + rapid back-to-back SIGINT smoke regression
     direct_cases = [("direct-sigterm", signal.SIGTERM, 143, 1)] + [
@@ -3925,7 +4011,6 @@ try:
         active["proc"] = None
         active["worker_pgid"] = None
         active["probe_dir"] = probe_dir
-        active["resume_fifo"] = None
         with harness_out.open("w") as out_fh, harness_err.open("w") as err_fh:
             proc = subprocess.Popen(
                 ["bash", str(harness)],
@@ -3969,7 +4054,6 @@ try:
             active["proc"] = None
             active["worker_pgid"] = None
             active["probe_dir"] = None
-            active["resume_fifo"] = None
 finally:
     shutil.rmtree(root_dir, ignore_errors=True)
 PY

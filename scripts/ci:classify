@@ -207,7 +207,7 @@ def validate_global_json(raw):
             version_pin["rollForward"] != "disable" or version_pin["allowPrerelease"] is not False):
         fail("SDK pin unavailable or unsupported")
 
-def read_xml(name):
+def read_xml(name, *, solution=False):
     raw = git("cat-file", "blob", commit + ":" + name)
     try:
         text = raw.decode("utf-8-sig")
@@ -224,6 +224,20 @@ def read_xml(name):
         fail("document type declarations require manual review")
     if re.search(r"&#|%[0-9a-fA-F]{2}", text):
         fail("escaped build input requires manual review")
+    if solution:
+        # ElementTree normalizes literal attribute whitespace to spaces.
+        # Inspect all quoted values before parsing, including after namespace declarations.
+        tags = re.finditer(
+            r"""<!--.*?-->|<!\[CDATA\[.*?\]\]>|<\?.*?\?>|"""
+            r"""(<(?![!?/])(?:[^<>"']|"[^"]*"|'[^']*')*>)""",
+            text, re.DOTALL,
+        )
+        if any(
+            re.search(r"[\t\r\n]", value)
+            for tag in tags if tag[1] is not None
+            for _, value in re.findall(r"""(["'])(.*?)\1""", tag[1], re.DOTALL)
+        ):
+            fail("solution attribute contains control whitespace")
     try:
         return ET.fromstring(text)
     except (ET.ParseError, ValueError):
@@ -305,7 +319,7 @@ for name in sorted(global_json_files):
 solution = "HVO.SkyMonitor.v9.slnx"
 if solution not in entries or not entries[solution][0].startswith(b"100644 blob "):
     fail("solution is unavailable or non-regular")
-solution_root = read_xml(solution)
+solution_root = read_xml(solution, solution=True)
 if solution_root.tag != "Solution" or solution_root.attrib: fail("unknown solution format")
 projects = set()
 folders = set()
