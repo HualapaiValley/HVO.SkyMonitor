@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using Microsoft.Data.Sqlite;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 
@@ -166,27 +167,17 @@ internal sealed partial class SqliteRawCaptureJournal
                 WHERE raw_capture_row_id = $raw AND state NOT IN ('completed', 'abandoned');
                 UPDATE raw_captures SET retention_hold = 1 WHERE raw_capture_row_id = $raw;
                 """;
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
         else
         {
-            // Standard execution failures remain terminal. Other lanes may retry the recovered immutable input;
-            // their original age/deadline still applies. Unrelated quarantines never match this transition.
             command.CommandText = """
                 UPDATE raw_captures SET state = 'committed', failure_reason = NULL, retention_hold = 1
                 WHERE raw_capture_row_id = $raw;
-                UPDATE capture_lane_work
-                SET state = CASE WHEN lane_name = 'standard' THEN 'abandoned' ELSE 'pending' END,
-                    failure_reason = CASE WHEN lane_name = 'standard' THEN 'raw-evidence-revalidated' ELSE NULL END,
-                    attempt_count = CASE WHEN lane_name = 'standard' THEN attempt_count ELSE 0 END,
-                    available_unix_ms = $now,
-                    lease_token = NULL, lease_owner = NULL, lease_expires_unix_ms = NULL,
-                    completed_unix_ms = CASE WHEN lane_name = 'standard' THEN $now ELSE NULL END,
-                    updated_unix_ms = $now
-                WHERE raw_capture_row_id = $raw AND state = 'quarantined'
-                  AND failure_reason IN ('evidence-unavailable', 'evidence-invalid');
                 """;
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            await ReleaseEvidenceLaneQuarantinesAsync(command, cancellationToken).ConfigureAwait(false);
         }
-        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         _faultInjector.Inject(RawIngressFaultPoint.BeforeJournalTransactionCommit);
         if (usesSilo && action == RawEvidenceReleaseAction.Revalidate)
         {
@@ -199,5 +190,23 @@ internal sealed partial class SqliteRawCaptureJournal
         }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return new(false, new(action, actor, reason, occurred));
+    }
+
+    private static async Task<bool> ReleaseEvidenceLaneQuarantinesAsync(SqliteCommand command, CancellationToken cancellationToken)
+    {
+        // Standard execution failures remain terminal. Other lanes retry the recovered input with their original age and deadline.
+        command.CommandText = """
+            UPDATE capture_lane_work
+            SET state = CASE WHEN lane_name = 'standard' THEN 'abandoned' ELSE 'pending' END,
+                failure_reason = CASE WHEN lane_name = 'standard' THEN 'raw-evidence-revalidated' ELSE NULL END,
+                attempt_count = CASE WHEN lane_name = 'standard' THEN attempt_count ELSE 0 END,
+                available_unix_ms = $now,
+                lease_token = NULL, lease_owner = NULL, lease_expires_unix_ms = NULL,
+                completed_unix_ms = CASE WHEN lane_name = 'standard' THEN $now ELSE NULL END,
+                updated_unix_ms = $now
+            WHERE raw_capture_row_id = $raw AND state = 'quarantined'
+              AND failure_reason IN ('evidence-unavailable', 'evidence-invalid');
+            """;
+        return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) > 0;
     }
 }

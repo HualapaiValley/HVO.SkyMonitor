@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Net;
 using System.Security.Cryptography;
 using Amazon.S3;
 using Amazon.S3.Model;
@@ -66,6 +67,23 @@ public sealed partial class SiloStockStoreTests
 
     private static async Task CreateVersionedBucketAsync(AmazonS3Client client, string bucket, CancellationToken token)
     {
+        // The health endpoint can answer before the authenticated S3 API accepts requests.
+        using var readiness = CancellationTokenSource.CreateLinkedTokenSource(token);
+        readiness.CancelAfter(TimeSpan.FromSeconds(20));
+        while (true)
+        {
+            try
+            {
+                await client.ListBucketsAsync(new ListBucketsRequest(), readiness.Token).ConfigureAwait(false);
+                break;
+            }
+            catch (AmazonS3Exception exception) when (exception.StatusCode == HttpStatusCode.ServiceUnavailable &&
+                exception.ErrorCode == "XMinioServerNotInitialized")
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(100), readiness.Token).ConfigureAwait(false);
+            }
+        }
+
         await client.PutBucketAsync(new PutBucketRequest { BucketName = bucket }, token).ConfigureAwait(false);
         await client.PutBucketVersioningAsync(new PutBucketVersioningRequest
         {

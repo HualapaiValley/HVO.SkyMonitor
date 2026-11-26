@@ -287,7 +287,8 @@ internal sealed partial class RawCaptureIngress
         var bytes = JsonSerializer.SerializeToUtf8Bytes(intent);
         await AtomicPublisher.PublishAsync(_silo!.PhysicalState, SiloIntentPath(entry.ArtifactId), PublishMode.Replace,
             (stream, token) => stream.WriteAsync(bytes, token).AsTask(), cancellationToken).ConfigureAwait(false);
-        await ReclaimSiloStagingAsync(entry, siloVisible, cancellationToken).ConfigureAwait(false);
+        if (await ReclaimSiloStagingAsync(entry, siloVisible, cancellationToken).ConfigureAwait(false))
+            await RefreshLaneStateAsync(cancellationToken).ConfigureAwait(false);
     }
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Silo raw admission row {RowId} could not be published")]
@@ -296,7 +297,7 @@ internal sealed partial class RawCaptureIngress
     private Task MarkSiloEvidenceMissingAsync(RawIngressJournalEntry entry, CancellationToken cancellationToken) =>
         _journal.MarkEvidenceFailureAsync(entry.CaptureId, "missing_evidence", "silo-staged-evidence-missing", cancellationToken);
 
-    private async Task ReclaimSiloStagingAsync(RawIngressJournalEntry entry, bool siloVisible, CancellationToken cancellationToken)
+    private async Task<bool> ReclaimSiloStagingAsync(RawIngressJournalEntry entry, bool siloVisible, CancellationToken cancellationToken)
     {
         var paths = _files.GetPaths(entry.ExposureStartedUtc, entry.ArtifactId);
         if (paths.PayloadRelativePath != entry.PayloadRelativePath || paths.SidecarRelativePath != entry.SidecarRelativePath)
@@ -316,14 +317,17 @@ internal sealed partial class RawCaptureIngress
             }
         }
         _faultInjector.AfterSiloStagingReclaimed();
-        if (await _journal.SettleSiloAdmissionAsync(entry.CaptureId, entry.ManifestSha256, siloVisible, cancellationToken).ConfigureAwait(false))
+        var restored = await _journal.SettleSiloAdmissionAsync(entry.CaptureId, entry.ManifestSha256, siloVisible, cancellationToken)
+            .ConfigureAwait(false);
+        if (restored)
         {
-            // Recheck health on the next admission. A failed initialization already requested reconciliation.
+            // Recheck raw health on the next admission. A failed initialization already requested reconciliation.
             if (Volatile.Read(ref _initialized)) RequireReconciliation();
             Volatile.Write(ref _evidenceUnavailable, false);
             _processingStore?.NotifyRawEvidenceRevalidated(entry.CaptureId);
         }
         ReleaseSiloRawIntent(entry.ArtifactId);
+        return restored;
     }
 
     private async ValueTask<ArtifactManifestV2> ReadSiloRetryManifestAsync(Guid artifactId, string payloadSha256, long length,

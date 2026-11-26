@@ -143,19 +143,37 @@ internal sealed partial class SqliteRawCaptureJournal
         command.Parameters.AddWithValue("$capture", captureId.ToString("N"));
         command.Parameters.AddWithValue("$hash", manifestSha256);
         var evidenceRestored = false;
+        var lanesReleased = false;
         if (siloVisible)
         {
             // Check the current disposition in SQLite because publication releases the raw lifecycle lock.
             command.CommandText = """
-                UPDATE raw_captures AS raw SET state = 'committed', failure_reason = NULL
+                SELECT raw.raw_capture_row_id FROM raw_captures raw
+                JOIN silo_raw_admissions pending ON pending.raw_capture_row_id = raw.raw_capture_row_id
                 WHERE capture_id = $capture AND manifest_sha256 = $hash
-                    AND state IN ('missing_evidence', 'quarantined')
-                    AND EXISTS (SELECT 1 FROM silo_raw_admissions pending
-                        WHERE pending.raw_capture_row_id = raw.raw_capture_row_id)
                     AND NOT EXISTS (SELECT 1 FROM raw_capture_stage_events event
                         WHERE event.raw_capture_row_id = raw.raw_capture_row_id AND event.stage_key = 'raw-evidence-written-off');
                 """;
-            evidenceRestored = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
+            if (await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is long rowId)
+            {
+                command.Parameters.AddWithValue("$raw", rowId);
+                command.Parameters.AddWithValue("$now", _utcNow().ToUnixTimeMilliseconds());
+                command.CommandText = """
+                    UPDATE raw_captures SET state = 'committed', failure_reason = NULL
+                    WHERE raw_capture_row_id = $raw AND state IN ('missing_evidence', 'quarantined');
+                    """;
+                evidenceRestored = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
+                lanesReleased = await ReleaseEvidenceLaneQuarantinesAsync(command, cancellationToken).ConfigureAwait(false);
+                if (evidenceRestored || lanesReleased)
+                {
+                    command.CommandText = """
+                        INSERT INTO raw_capture_stage_events(raw_capture_row_id, stage_key, state, source, event_unix_ms)
+                        VALUES ($raw, $stage, 'evidence-restored', 'silo-publication', $now);
+                        """;
+                    command.Parameters.AddWithValue("$stage", $"raw-evidence-silo-restored.{Guid.NewGuid():N}");
+                    await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                }
+            }
         }
         command.CommandText = """
             DELETE FROM silo_raw_admissions WHERE raw_capture_row_id = (
@@ -163,7 +181,7 @@ internal sealed partial class SqliteRawCaptureJournal
             """;
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        return evidenceRestored;
+        return evidenceRestored || lanesReleased;
     }
 
     internal async Task<bool> HasPendingSiloAdmissionAsync(Guid captureId, CancellationToken cancellationToken)

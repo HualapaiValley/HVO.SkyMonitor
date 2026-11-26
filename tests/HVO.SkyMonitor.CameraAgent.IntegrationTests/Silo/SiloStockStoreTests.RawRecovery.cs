@@ -2,11 +2,17 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Silo;
+using HVO.SkyMonitor.CameraAgent.Common.Silo.S3;
 using HVO.SkyMonitor.CameraAgent.IntegrationTests.Infrastructure;
+using HVO.SkyMonitor.CameraAgent.Tests.NightlyProducts;
+using HVO.SkyMonitor.Common.Configuration;
+using HVO.SkyMonitor.Deployment.Contracts;
+using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -16,6 +22,165 @@ namespace HVO.SkyMonitor.CameraAgent.IntegrationTests.Silo;
 
 public sealed partial class SiloStockStoreTests
 {
+    [TestMethod]
+    [TestCategory("Integration")]
+    [DataRow(false, "evidence-invalid")]
+    [DataRow(true, "evidence-unavailable")]
+    public async Task VisibleRawPublicationReleasesLiveLaneEvidenceQuarantines(bool claimBeforeLoss, string reason)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromMinutes(3));
+        var token = deadline.Token;
+        var instance = Guid.NewGuid();
+        var binding = new SiloStorageBinding(instance.ToString("D"), CameraAgentSiloBinding.StoreIdFor(instance),
+            CameraAgentSiloBinding.BucketFor(instance));
+        var access = RandomHex(12);
+        var secret = RandomHex(24);
+        var container = BuildStockContainer(access, secret, "on");
+        await using var containerLease = container.ConfigureAwait(false);
+        await container.StartAsync(token).ConfigureAwait(false);
+        var endpoint = Endpoint(container);
+        using var admin = SiloS3ObjectStore.CreateClient(endpoint, access, secret);
+        await CreateVersionedBucketAsync(admin, binding.Bucket, token).ConfigureAwait(false);
+        var writer = await CreateWriterAsync(container, binding, token).ConfigureAwait(false);
+        await InstallBindingAsync(admin, binding, writer.Access, token).ConfigureAwait(false);
+        var settings = InstalledSettings(binding, endpoint, writer, Guid.NewGuid(), RandomHex(24));
+        settings["CameraAgent:CaptureDistribution:SecondaryLanes:0:Name"] = "retry";
+        settings["CameraAgent:CaptureDistribution:SecondaryLanes:0:Enabled"] = "true";
+        settings["CameraAgent:CaptureDistribution:SecondaryLanes:1:Name"] = "unrelated";
+        settings["CameraAgent:CaptureDistribution:SecondaryLanes:1:Enabled"] = "true";
+
+        var root = Directory.CreateTempSubdirectory("silo-lane-recovery-").FullName;
+        var fault = new InterruptRawRecovery();
+        using var host = new CameraAgentIntegrationFixture();
+        var keyDirectory = Directory.CreateDirectory(Path.Combine(root, "settings")).FullName;
+        foreach (var (key, value) in settings)
+            await File.WriteAllTextAsync(Path.Combine(keyDirectory, key.Replace(":", "__", StringComparison.Ordinal)), value, token)
+                .ConfigureAwait(false);
+        var priorKeyDirectory = Environment.GetEnvironmentVariable(DeploymentKeyPerFile.DirectoryVariable);
+        var priorSettingsPath = Environment.GetEnvironmentVariable(DeploymentLocalSettings.PathVariable);
+        try
+        {
+            Environment.SetEnvironmentVariable(DeploymentKeyPerFile.DirectoryVariable, keyDirectory);
+            Environment.SetEnvironmentVariable(DeploymentLocalSettings.PathVariable, Path.Combine(root, DeploymentLocalSettings.FileName));
+            await host.InitializeAsync(services =>
+            {
+                services.RemoveAll<IHostedService>();
+                services.AddSingleton<ISiloFaults>(fault);
+            }, settings, root).ConfigureAwait(false);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(DeploymentKeyPerFile.DirectoryVariable, priorKeyDirectory);
+            Environment.SetEnvironmentVariable(DeploymentLocalSettings.PathVariable, priorSettingsPath);
+        }
+        using var scope = host.CreateCameraAgentScope();
+        var services = scope.ServiceProvider;
+        var storage = services.GetRequiredService<SiloInstalledStorage>();
+        var ingress = services.GetRequiredService<RawCaptureIngress>();
+        var config = NightlyProductFixture.Configuration() with
+        {
+            Pipeline = new([new("ProjectedScene", "scene", DependsOn: ["$raw"])],
+                CapturePipelineSchemaVersions.ExplicitV2, CapturePipelineDependencyPolicy.RejectEnabledDependent)
+        };
+        services.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(config);
+        await storage.VerifyReadinessAsync(token).ConfigureAwait(false);
+        var capture = await ingress.AcceptAsync(config, RecoverySubmission(), token).ConfigureAwait(false);
+        Assert.IsNotNull(capture);
+        var id = capture.Manifest.Descriptor.Capture.CaptureId;
+        fault.InterruptPublication(SiloFaultPoint.AfterSegmentCommitted);
+        Assert.AreEqual("silo-raw-admission-failed", (await ingress.PublishSiloAdmissionsAsync(16, token).ConfigureAwait(false)).Status);
+        Assert.AreEqual(SiloStagedState.Recorded,
+            (await storage.State.ReadGroupAsync(id.ToString("N"), "raw-1", token).ConfigureAwait(false))?.State);
+
+        var definitions = services.GetRequiredService<CaptureLanePolicy>().Definitions;
+        var standard = definitions.Single(static lane => lane.Name == "standard");
+        var retry = await ClaimAsync("retry").ConfigureAwait(false);
+        var unrelated = await ClaimAsync("unrelated").ConfigureAwait(false);
+        await ingress.FailAsync(retry, CaptureLaneHandlerResult.Terminal("evidence-invalid"), token).ConfigureAwait(false);
+        await ingress.FailAsync(unrelated, CaptureLaneHandlerResult.Terminal("handler-failure"), token).ConfigureAwait(false);
+        var standardLease = claimBeforeLoss ? await ClaimAsync("standard").ConfigureAwait(false) : null;
+        File.Delete(capture.StoredFrame.AbsolutePath);
+        File.Delete(Path.ChangeExtension(capture.StoredFrame.AbsolutePath, ".json"));
+        if (standardLease is null)
+        {
+            Assert.IsNull(await ingress.ClaimAsync(standard, "silo-test", config, token).ConfigureAwait(false));
+            Assert.AreEqual(("quarantined", "lane-evidence-invalid"), await ReadRawDispositionAsync(root, id, token).ConfigureAwait(false));
+        }
+        else
+        {
+            var result = await services.GetRequiredService<StandardCaptureLaneHandler>().HandleAsync(standardLease.Context, token)
+                .ConfigureAwait(false);
+            Assert.AreEqual(reason, result.Reason);
+            Assert.AreEqual(CaptureLaneHandlerOutcome.TerminalFailure, await ingress.FailAsync(standardLease, result, token).ConfigureAwait(false));
+            Assert.AreEqual(("committed", (string?)null), await ReadRawDispositionAsync(root, id, token).ConfigureAwait(false));
+        }
+
+        using var connection = await OpenRawJournalAsync(root, token).ConfigureAwait(false);
+        Assert.AreEqual(("quarantined", reason), (await ReadLaneAsync("standard").ConfigureAwait(false)).Disposition);
+        Assert.AreEqual(1L, StandardQuarantineCount());
+        Assert.IsNull((await ingress.PublishSiloAdmissionsAsync(16, token).ConfigureAwait(false)).Status);
+        Assert.AreEqual(SiloStagedState.Visible,
+            (await storage.State.ReadGroupAsync(id.ToString("N"), "raw-1", token).ConfigureAwait(false))?.State);
+        var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 5, usesSilo: true);
+        Assert.IsFalse(await journal.HasPendingSiloAdmissionAsync(id, token).ConfigureAwait(false));
+        Assert.AreEqual(("committed", (string?)null), await ReadRawDispositionAsync(root, id, token).ConfigureAwait(false));
+        var restored = await ReadLaneAsync("standard").ConfigureAwait(false);
+        Assert.AreEqual(("abandoned", "raw-evidence-revalidated"), restored.Disposition);
+        Assert.IsTrue(restored.Completed);
+        var released = await ReadLaneAsync("retry").ConfigureAwait(false);
+        Assert.AreEqual((("pending", (string?)null), 0, false), released);
+        Assert.AreEqual((("quarantined", "handler-failure"), 1, false), await ReadLaneAsync("unrelated").ConfigureAwait(false));
+        Assert.AreEqual(1L, await CountSiloRestorationEventsAsync(connection, id, token).ConfigureAwait(false));
+        Assert.AreEqual(0L, StandardQuarantineCount(), "Live settlement must refresh lane state.");
+
+        var fresh = await ingress.AcceptAsync(config, RecoverySubmission(), token).ConfigureAwait(false);
+        Assert.AreEqual(RawIngressOutcome.Committed, fresh?.Outcome);
+        Assert.AreEqual(0L, StandardQuarantineCount());
+        Assert.AreEqual(fresh!.Manifest.Descriptor.Capture.CaptureId,
+            (await ClaimAsync("standard").ConfigureAwait(false)).Context.RawCapture.Manifest.Descriptor.Capture.CaptureId);
+
+        long StandardQuarantineCount() => services.GetRequiredService<CaptureLaneState>().Snapshot.Lanes
+            .Single(static lane => lane.Lane == "standard").QuarantineCount;
+
+        async Task<CaptureLaneLease> ClaimAsync(string name)
+        {
+            var lane = definitions.Single(lane => lane.Name == name);
+            var lease = await ingress.ClaimAsync(lane, "silo-test", config, token).ConfigureAwait(false);
+            Assert.IsNotNull(lease);
+            return lease;
+        }
+
+        async Task<((string State, string? FailureReason) Disposition, int Attempts, bool Completed)> ReadLaneAsync(string lane)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT work.state, work.failure_reason, work.attempt_count, work.completed_unix_ms
+                FROM capture_lane_work work JOIN raw_captures raw ON raw.raw_capture_row_id = work.raw_capture_row_id
+                WHERE raw.capture_id = $capture AND work.lane_name = $lane;
+                """;
+            command.Parameters.AddWithValue("$capture", id.ToString("N"));
+            command.Parameters.AddWithValue("$lane", lane);
+            using var reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false);
+            Assert.IsTrue(await reader.ReadAsync(token).ConfigureAwait(false));
+            var failure = await reader.IsDBNullAsync(1, token).ConfigureAwait(false) ? null : reader.GetString(1);
+            var completed = !await reader.IsDBNullAsync(3, token).ConfigureAwait(false);
+            return ((reader.GetString(0), failure), reader.GetInt32(2), completed);
+        }
+    }
+
+    private static CaptureLoopSubmission RecoverySubmission()
+    {
+        var exposure = TimeSpan.FromSeconds(1);
+        var start = DateTimeOffset.UtcNow - exposure;
+        var setpoint = new CaptureSetpoint(exposure, 1, null, null);
+        const int size = NightlyProductFixture.Size;
+        var frame = new CameraFrame(start, size, size, CameraPixelFormat.Mono16, new byte[size * size * 2],
+            new FrameMetadata(exposure, setpoint.Gain, 10, "silo-lane-recovery"));
+        return new(new CaptureRequest(start, exposure, CaptureMode.Still, setpoint),
+            new CaptureResult(frame, setpoint, TimeSpan.Zero, CaptureMode.Still, false), start, exposure, exposure);
+    }
+
     private static async Task<RawIngressJournalEntry> InterruptRawReclamationAsync(IServiceProvider services,
         SiloInstalledStorage storage, SqliteRawCaptureJournal journal, ReconstructionDescriptor template,
         InterruptRawRecovery fault, CancellationToken token)
@@ -82,6 +247,7 @@ public sealed partial class SiloStockStoreTests
         await AssertCommittedRawRecoversAsync("quarantined", SiloFaultPoint.AfterSegmentCommitted, token).ConfigureAwait(false);
         await AssertQuarantinedWriteOffReclaimsAsync(services, storage, journal, template, root, fault, token).ConfigureAwait(false);
         await AssertRawPublicationIsolatesFailuresAsync(services, storage, journal, template, fault, token).ConfigureAwait(false);
+        await AssertPreCommitQuarantineRetainsStagingAsync(services, storage, journal, template, fault, token).ConfigureAwait(false);
 
         async Task AssertRecoveredRawAsync(Guid artifactId, CancellationToken cancellationToken)
         {
@@ -187,6 +353,33 @@ public sealed partial class SiloStockStoreTests
         }
     }
 
+    private static async Task AssertPreCommitQuarantineRetainsStagingAsync(IServiceProvider services, SiloInstalledStorage storage,
+        SqliteRawCaptureJournal journal, ReconstructionDescriptor template, InterruptRawRecovery fault, CancellationToken token)
+    {
+        var ingress = services.GetRequiredService<RawCaptureIngress>();
+        var config = await services.GetRequiredService<ICameraAgentConfigurationLoader>().LoadAsync(token).ConfigureAwait(false);
+        var receipt = await ingress.AcceptAsync(config, MakeRawSubmission(template, RecoveryTimestamp(template)), token).ConfigureAwait(false);
+        Assert.IsNotNull(receipt);
+        var descriptor = receipt.Manifest.Descriptor;
+        var id = descriptor.Capture.CaptureId;
+        var groupId = id.ToString("N");
+        var payload = receipt.StoredFrame.AbsolutePath;
+        var sidecar = Path.ChangeExtension(payload, ".json");
+        fault.InterruptPublication(SiloFaultPoint.AfterManifestQualified);
+        Assert.AreEqual("silo-raw-admission-failed", (await ingress.PublishSiloAdmissionsAsync(16, token).ConfigureAwait(false)).Status);
+        Assert.AreEqual(SiloStagedState.ManifestQualified, (await storage.State.ReadGroupAsync(groupId, "raw-1", token).ConfigureAwait(false))?.State);
+        await journal.MarkEvidenceFailureAsync(id, "quarantined", "silo-test-lane-quarantine", token).ConfigureAwait(false);
+        Assert.IsNull((await ingress.PublishSiloAdmissionsAsync(16, token).ConfigureAwait(false)).Status);
+        Assert.AreEqual(SiloStagedState.Abandoned, (await storage.State.ReadGroupAsync(groupId, "raw-1", token).ConfigureAwait(false))?.State);
+        Assert.IsFalse(await journal.HasPendingSiloAdmissionAsync(id, token).ConfigureAwait(false));
+        var row = await journal.ReadSiloAdmissionByArtifactAsync(descriptor.Artifact.ArtifactId, token).ConfigureAwait(false);
+        Assert.IsNotNull(row);
+        Assert.AreEqual("quarantined", row.State);
+        Assert.IsFalse(row.EvidenceWrittenOff);
+        Assert.IsTrue(File.Exists(payload));
+        Assert.IsTrue(File.Exists(sidecar));
+    }
+
     private static async Task AssertQuarantinedWriteOffReclaimsAsync(IServiceProvider services, SiloInstalledStorage storage,
         SqliteRawCaptureJournal journal, ReconstructionDescriptor template, string root, InterruptRawRecovery fault, CancellationToken token)
     {
@@ -269,13 +462,7 @@ public sealed partial class SiloStockStoreTests
     private static async Task<(string State, string? FailureReason)> ReadRawDispositionAsync(string root, Guid captureId,
         CancellationToken token)
     {
-        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
-        {
-            DataSource = Path.Combine(root, "journal", "raw-ingress.db"),
-            Mode = SqliteOpenMode.ReadOnly,
-            Pooling = false
-        }.ToString());
-        await connection.OpenAsync(token).ConfigureAwait(false);
+        using var connection = await OpenRawJournalAsync(root, token).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.CommandText = "SELECT state, failure_reason FROM raw_captures WHERE capture_id = $capture;";
         command.Parameters.AddWithValue("$capture", captureId.ToString("N"));
@@ -283,6 +470,39 @@ public sealed partial class SiloStockStoreTests
         Assert.IsTrue(await reader.ReadAsync(token).ConfigureAwait(false));
         var reason = await reader.IsDBNullAsync(1, token).ConfigureAwait(false) ? null : reader.GetString(1);
         return (reader.GetString(0), reason);
+    }
+
+    private static async Task<SqliteConnection> OpenRawJournalAsync(string root, CancellationToken token)
+    {
+        var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = Path.Combine(root, "journal", "raw-ingress.db"),
+            Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false
+        }.ToString());
+        try
+        {
+            await connection.OpenAsync(token).ConfigureAwait(false);
+            return connection;
+        }
+        catch
+        {
+            connection.Dispose();
+            throw;
+        }
+    }
+
+    private static async Task<long> CountSiloRestorationEventsAsync(SqliteConnection connection, Guid captureId, CancellationToken token)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT COUNT(*) FROM raw_capture_stage_events event
+            JOIN raw_captures raw ON raw.raw_capture_row_id = event.raw_capture_row_id
+            WHERE raw.capture_id = $capture AND event.stage_key GLOB 'raw-evidence-silo-restored.*'
+                AND event.state = 'evidence-restored' AND event.source = 'silo-publication';
+            """;
+        command.Parameters.AddWithValue("$capture", captureId.ToString("N"));
+        return (long)(await command.ExecuteScalarAsync(token).ConfigureAwait(false))!;
     }
 
     private static string ReclaimIntentPath(string directory, Guid artifactId) => Path.Combine(directory, artifactId.ToString("N") + ".json");

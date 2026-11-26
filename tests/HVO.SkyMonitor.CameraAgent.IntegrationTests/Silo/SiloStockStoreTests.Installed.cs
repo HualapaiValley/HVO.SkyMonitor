@@ -168,7 +168,11 @@ public sealed partial class SiloStockStoreTests
                     nodeId = "LocalStorage"
                 })));
                 Assert.IsTrue((await WaitForReopenAsync(storage, archiveId, "1", token).ConfigureAwait(false)).Reopenable);
-                if (!color)
+                if (color)
+                {
+                    await StopSiloCaptureWorkersAsync(scope.ServiceProvider, token).ConfigureAwait(false);
+                }
+                else
                 {
                     var config = await scope.ServiceProvider.GetRequiredService<ICameraAgentConfigurationLoader>().LoadAsync(token)
                         .ConfigureAwait(false);
@@ -290,9 +294,7 @@ public sealed partial class SiloStockStoreTests
 
     private static async Task AssertCenteredVisibilityAsync(IServiceProvider services, CenteredView view, CancellationToken token)
     {
-        var hosted = services.GetServices<IHostedService>();
-        await hosted.OfType<CameraCaptureService>().Single().StopAsync(token).ConfigureAwait(false);
-        await services.GetRequiredService<SiloStorageWorker>().StopAsync(token).ConfigureAwait(false);
+        await StopSiloCaptureWorkersAsync(services, token).ConfigureAwait(false);
         var views = services.GetRequiredService<SqliteCenteredViews>();
         while ((await views.PublishSiloChangesAsync(8, token).ConfigureAwait(false)).More) { }
 
@@ -345,6 +347,15 @@ public sealed partial class SiloStockStoreTests
         var index = services.GetRequiredService<SiloInstalledStorage>().Index;
         Assert.IsNull(await index.ReadPublicationAsync(baseId, malformed.Revision.RevisionId, token).ConfigureAwait(false));
         Assert.IsNotNull(await views.ReadRevisionAsync(baseId, following.Revision.RevisionId, token).ConfigureAwait(false));
+    }
+
+    private static async Task StopSiloCaptureWorkersAsync(IServiceProvider services, CancellationToken token)
+    {
+        await services.GetServices<IHostedService>().OfType<CameraCaptureService>().Single().StopAsync(token).ConfigureAwait(false);
+        var storageWorker = services.GetRequiredService<SiloStorageWorker>();
+        await storageWorker.StopAsync(token).ConfigureAwait(false);
+        Assert.IsTrue(storageWorker.ExecuteTask?.IsCompletedSuccessfully,
+            "Silo publication must stop before the installed storage is disposed.");
     }
 
     private static async Task AssertRawWriteOffDrainsAsync(IServiceProvider services, SiloInstalledStorage storage,

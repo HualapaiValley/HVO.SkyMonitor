@@ -219,7 +219,9 @@ public sealed partial class SiloStockStoreTests
 
     private static async Task AssertSiloReplayPinsAsync(IServiceProvider services, Guid captureId, string root, CancellationToken token)
     {
-        await services.GetRequiredService<ProcessingReplayWorker>().StopAsync(token).ConfigureAwait(false);
+        var worker = services.GetRequiredService<ProcessingReplayWorker>();
+        await worker.StopAsync(token).ConfigureAwait(false);
+        Assert.IsTrue(worker.ExecuteTask?.IsCompletedSuccessfully, "Stopping replay must complete its background task cleanly.");
         var store = services.GetRequiredService<SqliteCaptureProcessingStore>();
         var source = await store.ReadReplaySourceAsync(captureId, null, token).ConfigureAwait(false);
         var rawId = source.RawCapture.Manifest.Descriptor.Artifact.ArtifactId;
