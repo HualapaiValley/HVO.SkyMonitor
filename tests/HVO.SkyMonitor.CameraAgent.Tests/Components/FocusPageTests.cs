@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Reflection;
 using Bunit;
 using HVO.SkyMonitor.AgentCore;
@@ -96,6 +97,38 @@ public sealed class FocusPageTests
         Assert.IsEmpty(cut.FindAll(".focus-trend circle"));
         StringAssert.Contains(cut.Find(".focus-simulated legend").TextContent, "not a motor", StringComparison.Ordinal);
         StringAssert.Contains(cut.Find(".focus-fidelity").TextContent, Simulated.Limitation, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void RegisteredFocuser_RendersTemperatureWithInvariantDecimalSeparator()
+    {
+        var previous = CultureInfo.CurrentCulture;
+        try
+        {
+            CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("fr-FR");
+            var service = new FakeFocusService(Status(ManualFocusSessionSnapshot.Idle) with
+            {
+                Focuser = new(new(0, 100, 4), new(true, 10, null, false, 12.5))
+            });
+            using var context = CreateContext(service, out _, focuserRegistered: true);
+            var cut = context.Render<FocusPage>();
+            StringAssert.Contains(cut.Find(".focus-motor [role=status]").TextContent, "12.5 °C", StringComparison.Ordinal);
+        }
+        finally { CultureInfo.CurrentCulture = previous; }
+    }
+
+    [TestMethod]
+    public void InterruptedSweep_WithoutSamples_ShowsInMemoryResultInSessionDetail()
+    {
+        var motor = new MotorFocusStatus(new(0, 100, 4), new(true, 10, null, false, 12.5));
+        var ended = Ended(ManualFocusReasonCodes.StoppedByOperator) with
+        {
+            Motor = new(new(SweepSpacing: 5), motor, motor.State, Recovery: "Starting position verified.")
+        };
+        var service = new FakeFocusService(Status(ended) with { Focuser = motor });
+        using var context = CreateContext(service, out _, focuserRegistered: true);
+        var cut = context.Render<FocusPage>();
+        Assert.AreEqual("Ended by the operator. Result is in memory only.", cut.Find("#focus-session-detail").TextContent.Trim());
     }
 
     [TestMethod]

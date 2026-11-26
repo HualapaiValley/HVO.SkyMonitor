@@ -7,6 +7,8 @@ using HVO.SkyMonitor.Deployment.Contracts;
 using HVO.SkyMonitor.Fleet.Contracts;
 using HVO.SkyMonitor.Imaging;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Moq;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Focus;
 
@@ -18,6 +20,52 @@ public sealed class MotorFocusSessionTests
     private static readonly ManualFocusPreviewSettings Settings = new(TimeSpan.FromSeconds(1), 20);
     private static readonly ManualFocusSessionRequest Sweep = new(Settings, Motor: new(SweepSpacing: 100));
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(10);
+
+    [TestMethod]
+    [DataRow(300, null, null)]
+    [DataRow(null, -200, null)]
+    [DataRow(null, null, 100)]
+    public async Task FirstMove_WithdrawnBeforeAnyTravel_VerifiesStartAndReopensCapture(int? absolute, int? steps, int? spacing)
+    {
+        var fleet = new FleetRuntimeState(TimeProvider.System);
+        fleet.ModuleAvailable();
+        var fixture = await FocusOwnerFixture.CreateAsync(fleet).ConfigureAwait(false);
+        await using var scope = fixture.ConfigureAwait(false);
+        await fixture.PublishVirtualSkyAsync().ConfigureAwait(false);
+        var motor = NewMotor();
+        var logger = new Mock<ILogger<ManualFocusSessionCoordinator>>();
+        logger.Setup(log => log.IsEnabled(It.IsAny<LogLevel>())).Returns(true);
+        using var owner = Coordinator(fixture, motor, logger: logger.Object);
+        await owner.StartAsync(new(Settings, Motor: new(absolute, steps, spacing)), "alice", CancellationToken.None).ConfigureAwait(false);
+
+        // Leave the virtual clock stopped so the admitted move cannot advance before revocation.
+        using var deadline = new CancellationTokenSource(Timeout);
+        while (!motor.State.IsMoving) await Task.Delay(1, deadline.Token).ConfigureAwait(false);
+        Assert.IsTrue(await fixture.Ownership.RevokeAsync(Timeout).ConfigureAwait(false));
+        var ended = await FocusWait.EndedAsync(owner, Timeout).ConfigureAwait(false);
+
+        Assert.AreEqual(ManualFocusReasonCodes.CameraWithdrawn, ended.EndReason);
+        AssertVerifiedRestore(ended, motor);
+        Assert.AreEqual(CaptureAdmissionState.Running, fixture.Admission.Snapshot.State);
+        Assert.IsTrue(await fixture.CaptureAdmittedWithinAsync(Timeout).ConfigureAwait(false));
+        Assert.AreEqual("ready", fleet.Snapshot.Capture.Reason);
+        Assert.IsFalse(logger.Invocations.Any(call => call.Method.Name == nameof(ILogger.Log) && call.Arguments[1] is EventId { Id: 4705 }));
+    }
+
+    [TestMethod]
+    public async Task Move_AtUpperLimit_ClampsRoundedOpticalPositionToModelMaximum()
+    {
+        var fixture = await FocusOwnerFixture.CreateAsync().ConfigureAwait(false);
+        await using var scope = fixture.ConfigureAwait(false);
+        // For this range, adding the span back to the minimum rounds above 0.1.
+        var model = new VirtualSimulatedFocusOptions { MinimumPosition = -0.2, MaximumPosition = 0.1, DefaultPosition = 0, BestPosition = 0 };
+        await fixture.PublishVirtualSkyAsync(focus: model).ConfigureAwait(false);
+        var motor = new VirtualMotorizedFocuser(new(MaximumPosition: 1000, InitialPosition: 1000));
+        using var owner = Coordinator(fixture, motor);
+        var started = await owner.StartAsync(new(Settings, Motor: new(AbsolutePosition: 1000)), "alice", CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(model.MaximumPosition, started.SimulatedFocusPosition);
+        Assert.AreEqual(ManualFocusReasonCodes.MotorMoveComplete, (await FocusWait.EndedAsync(owner).ConfigureAwait(false)).EndReason);
+    }
 
     [TestMethod]
     public async Task Sweep_MeasuresComparableFramesAndVerifiesTheBacklashCorrectedReturn()
@@ -321,6 +369,24 @@ public sealed class MotorFocusSessionTests
     }
 
     [TestMethod]
+    public async Task UnavailableAdmission_RefusesMotorBoundariesDuringFocusHold()
+    {
+        var fixture = await FocusOwnerFixture.CreateAsync().ConfigureAwait(false);
+        await using var scope = fixture.ConfigureAwait(false);
+        var admission = fixture.Admission;
+        await admission.WithFocusHoldAsync(async () =>
+        {
+            await admission.FailFocusClosedAsync().ConfigureAwait(false);
+            Assert.AreEqual(CaptureAdmissionState.Unavailable, admission.Snapshot.State);
+            foreach (var kind in new[] { CaptureBoundaryKind.Motor, CaptureBoundaryKind.MotorCleanup })
+            {
+                await Assert.ThrowsExactlyAsync<CaptureAdmissionUnavailableException>(() => admission.ExecuteBoundaryAsync<bool>(
+                    kind, _ => throw new AssertFailedException("Unavailable admission ran motor work."), CancellationToken.None)).ConfigureAwait(false);
+            }
+        }, CancellationToken.None).ConfigureAwait(false);
+    }
+
+    [TestMethod]
     public async Task MoveAndStep_ValidateBeforeMotionAndHonorAnExistingCaptureAndOperatorPause()
     {
         var fixture = await FocusOwnerFixture.CreateAsync().ConfigureAwait(false);
@@ -415,7 +481,7 @@ public sealed class MotorFocusSessionTests
         _ => motor.AdvanceBy(TimeSpan.MaxValue), null, TimeSpan.Zero, TimeSpan.FromMilliseconds(2));
 
     private static ManualFocusSessionCoordinator Coordinator(FocusOwnerFixture fixture, IMotorizedFocuser motor,
-        ManualFocusSessionLimits? limits = null, ManualFocusSessionStore? store = null) =>
+        ManualFocusSessionLimits? limits = null, ManualFocusSessionStore? store = null, ILogger<ManualFocusSessionCoordinator>? logger = null) =>
         new(new CameraModuleManualFocusPreviewSource(fixture.Ownership, fixture.Admission, TimeProvider.System, motor),
-            TimeProvider.System, limits, store);
+            TimeProvider.System, limits, store, logger);
 }

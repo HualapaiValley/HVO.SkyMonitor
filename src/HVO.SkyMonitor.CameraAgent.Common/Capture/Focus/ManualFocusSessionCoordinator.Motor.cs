@@ -89,30 +89,36 @@ public sealed partial class ManualFocusSessionCoordinator
         var restored = false;
         try
         {
-            using var cleanup = new CancellationTokenSource(_limits.StopWaitTimeout, _timeProvider);
-            (final, restored) = await source.AtBoundaryAsync(CaptureBoundaryKind.MotorCleanup, session.ModuleGeneration, async (_, _, ct) =>
+            final = motor.State;
+            if (AtStart(final))
             {
-                var state = motor.State;
-                if (AtStart(state)) return (state, true);
-                try
+                restored = true;
+            }
+            else
+            {
+                using var cleanup = new CancellationTokenSource(_limits.StopWaitTimeout, _timeProvider);
+                (final, restored) = await source.AtBoundaryAsync(CaptureBoundaryKind.MotorCleanup, session.ModuleGeneration, async (_, _, ct) =>
                 {
-                    if (optical is { } originalOptical && motor.Capabilities.BacklashSteps > 0)
+                    try
                     {
-                        // Approach the original optical coordinate from below, then put back its original play.
-                        await MoveAsync(motor, Math.Max(motor.Capabilities.MinimumPosition,
-                            originalOptical - motor.Capabilities.BacklashSteps), ct).ConfigureAwait(false);
-                        await MoveAsync(motor, originalOptical, ct).ConfigureAwait(false);
+                        if (optical is { } originalOptical && motor.Capabilities.BacklashSteps > 0)
+                        {
+                            // Approach the original optical coordinate from below, then put back its original play.
+                            await MoveAsync(motor, Math.Max(motor.Capabilities.MinimumPosition,
+                                originalOptical - motor.Capabilities.BacklashSteps), ct).ConfigureAwait(false);
+                            await MoveAsync(motor, originalOptical, ct).ConfigureAwait(false);
+                        }
+                        await MoveAsync(motor, initial, ct).ConfigureAwait(false);
+                        var state = motor.State;
+                        return (state, AtStart(state));
                     }
-                    await MoveAsync(motor, initial, ct).ConfigureAwait(false);
-                    state = motor.State;
-                    return (state, AtStart(state));
-                }
-                catch
-                {
-                    await AbortMotorAsync(motor).ConfigureAwait(false);
-                    throw;
-                }
-            }, cleanup.Token).ConfigureAwait(false);
+                    catch
+                    {
+                        await AbortMotorAsync(motor).ConfigureAwait(false);
+                        throw;
+                    }
+                }, cleanup.Token).ConfigureAwait(false);
+            }
         }
         catch (Exception exception)
         {
