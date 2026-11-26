@@ -317,7 +317,7 @@ public sealed class MeasuredAssociationPresentationTests
         var v1AllStarOnly = starOnlyV2 with
         {
             SchemaVersion = MeasuredStellarAssociationsV1.V1SchemaVersion,
-            Scene = starOnlyV2.Scene with { ProjectionGeometryIdentitySha256 = null },
+            Scene = starOnlyV2.Scene with { ProjectionGeometryIdentitySha256 = null, EffectiveUtc = null },
             Method = new(MeasuredStellarAssociator.V1AlgorithmVersion, new(), StellarLabelPolicy.V1Version, new()),
             PointSourcePlanets = null
         };

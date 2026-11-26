@@ -75,7 +75,9 @@ public sealed record MeasuredStellarAssociationSceneV1(
     [property: JsonRequired] string ProjectionAlgorithmVersion,
     [property: JsonRequired] string AstronomyAlgorithmVersion,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? ProjectionGeometryIdentitySha256 = null);
+    string? ProjectionGeometryIdentitySha256 = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    DateTimeOffset? EffectiveUtc = null);
 
 /// <summary>Image-wide measurement facts. Per-source evidence is carried by the association and detection entries.</summary>
 public sealed record MeasuredStellarMeasurementV1(
@@ -303,9 +305,10 @@ public static class MeasuredStellarAssociationJson
     }
 
     /// <summary>
-    /// Computes the canonical uppercase SHA-256 identity of a projected scene's celestial-to-pixel mapping geometry
-    /// (effective observation/render epoch, observer location, atmospheric refraction, coordinate convention, optical
-    /// projection parameters excluding algorithm-label variation, and image transform).
+    /// Computes the canonical uppercase SHA-256 identity of a projected scene's static celestial-to-pixel mapping
+    /// geometry (observer location, atmospheric refraction, coordinate convention, optical projection parameters
+    /// excluding algorithm-label variation, and image transform). Observation/render epoch compatibility is verified
+    /// separately against a physically grounded sidereal sky-motion bound.
     /// </summary>
     public static string ComputeProjectionGeometryIdentitySha256(ProjectedSceneV1 scene)
     {
@@ -316,7 +319,6 @@ public static class MeasuredStellarAssociationJson
         var t = scene.ImageTransform;
         var canonical = new
         {
-            effectiveUtcTicks = scene.EffectiveUtc.UtcTicks,
             observer = new
             {
                 latitudeDegrees = NormalizeZero(o.LatitudeDegrees),
@@ -425,8 +427,8 @@ public static class MeasuredStellarAssociationJson
         if (scene is null || !Sha256(scene.SceneIdentitySha256) || !Enum.IsDefined(scene.Kind) ||
             !Text(scene.CatalogName) || !Text(scene.CatalogVersion) || !Sha256(scene.CatalogChecksumSha256) ||
             !Text(scene.CalibrationVersion) || !Text(scene.ProjectionAlgorithmVersion) || !Text(scene.AstronomyAlgorithmVersion) ||
-            (isV1 && scene.ProjectionGeometryIdentitySha256 is not null) ||
-            (!isV1 && !Sha256(scene.ProjectionGeometryIdentitySha256)))
+            (isV1 && (scene.ProjectionGeometryIdentitySha256 is not null || scene.EffectiveUtc is not null)) ||
+            (!isV1 && (!Sha256(scene.ProjectionGeometryIdentitySha256) || scene.EffectiveUtc is not { } sceneEffectiveUtc || sceneEffectiveUtc == default)))
             return Invalid(InvalidContract, nameof(value.Scene));
         var measurement = value.Measurement;
         if (measurement is null || !Text(measurement.AlgorithmVersion) || !Sha256(measurement.SettingsIdentitySha256) ||
@@ -462,6 +464,7 @@ public static class MeasuredStellarAssociationJson
         if (value.Associations is null || value.UnmatchedPredictions is null || value.UnassociatedDetections is null ||
             planets is not null && (planets.Associations is null || planets.UnmatchedPredictions is null ||
                 planetAssociationCount + planetUnmatchedCount == 0 || planets.EffectiveUtc == default ||
+                (scene.EffectiveUtc is { } expectedEpoch && planets.EffectiveUtc != expectedEpoch) ||
                 !Text(planets.EphemerisModelVersion) || !Text(planets.ProjectionMappingVersion) ||
                 !Finite(planets.PredictionSigmaPixels) ||
                 Math.Abs(planets.PredictionSigmaPixels - method.Settings.PredictionSigmaPixels) > 1e-6 ||

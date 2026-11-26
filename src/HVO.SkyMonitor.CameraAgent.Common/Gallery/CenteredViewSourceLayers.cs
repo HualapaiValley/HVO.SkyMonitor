@@ -14,13 +14,21 @@ internal sealed class CenteredViewSourceLayers(
         DateTimeOffset observedUtc, CancellationToken token)
     {
         var bindings = await store.ReadCenteredLayerBindingsAsync(generation, token).ConfigureAwait(false);
-        var authoritativeWriter = bindings is null &&
-            (CenteredViewLayerBindings.IsSceneExpectedNotDetectedSlot(source.Slot) ||
-             MeasuredStellarAssociationsV1.IsSupportedSchemaVersion(CenteredViewLayerBindings.SourceSchema(source.Slot.SchemaVersion)))
-            ? await store.ReadAuthoritativeAssociationWriterAsync(source.Exposure, source.Slot.ExecutionId, token)
-                .ConfigureAwait(false)
-            : null;
-        var resolved = ResolveBindings(bindings, source.Slot, authoritativeWriter);
+        CenteredProductSemanticProvenanceV1? semantics = null;
+        var authoritativeWriter = CenteredAuthoritativeAssociationResolution.Unresolved;
+        if (bindings is null)
+        {
+            semantics = await store.ReadCenteredProductSemanticsAsync(source.Exposure, source.Slot, token)
+                .ConfigureAwait(false);
+            if (CenteredViewLayerBindings.IsSceneExpectedNotDetectedSlot(source.Slot, semantics) ||
+                MeasuredStellarAssociationsV1.IsSupportedSchemaVersion(CenteredViewLayerBindings.SourceSchema(source.Slot.SchemaVersion)))
+            {
+                var writer = await store.ReadAuthoritativeAssociationWriterAsync(source.Exposure, source.Slot.ExecutionId, token)
+                    .ConfigureAwait(false);
+                authoritativeWriter = CenteredAuthoritativeAssociationResolution.FromLookup(writer);
+            }
+        }
+        var resolved = ResolveBindings(bindings, source.Slot, authoritativeWriter, semantics);
         if (resolved.Count == 0)
             return;
 
@@ -60,22 +68,40 @@ internal sealed class CenteredViewSourceLayers(
             if (bindings is not { Count: 0 })
             {
                 var authoritativeWriter = bindings is null
-                    ? await store.ReadAuthoritativeAssociationWriterAsync(exposure.Input.Key, exposure.ExecutionId, token)
-                        .ConfigureAwait(false)
-                    : null;
+                    ? CenteredAuthoritativeAssociationResolution.FromLookup(
+                        await store.ReadAuthoritativeAssociationWriterAsync(exposure.Input.Key, exposure.ExecutionId, token)
+                            .ConfigureAwait(false))
+                    : CenteredAuthoritativeAssociationResolution.Unresolved;
                 long after = 0;
                 while (true)
                 {
-                    var sources = await store.ReadCenteredViewSourcesAsync(exposure.Input.Key, exposure.ExecutionId, after, PageSize, token)
-                        .ConfigureAwait(false);
-                    foreach (var source in sources)
+                    if (bindings is null)
                     {
-                        foreach (var binding in ResolveBindings(bindings, source.Slot, authoritativeWriter))
-                            await PublishAsync(viewBase, binding, source, exposure.ExposureEndedUtc, token).ConfigureAwait(false);
-                        after = source.Revision!.Value;
+                        var entries = await store.ReadCenteredViewSourcesWithSemanticsAsync(
+                                exposure.Input.Key, exposure.ExecutionId, after, PageSize, token)
+                            .ConfigureAwait(false);
+                        foreach (var (source, semantics) in entries)
+                        {
+                            foreach (var binding in ResolveBindings(bindings, source.Slot, authoritativeWriter, semantics))
+                                await PublishAsync(viewBase, binding, source, exposure.ExposureEndedUtc, token).ConfigureAwait(false);
+                            after = source.Revision!.Value;
+                        }
+                        if (entries.Count < PageSize)
+                            break;
                     }
-                    if (sources.Count < PageSize)
-                        break;
+                    else
+                    {
+                        var sources = await store.ReadCenteredViewSourcesAsync(exposure.Input.Key, exposure.ExecutionId, after, PageSize, token)
+                            .ConfigureAwait(false);
+                        foreach (var source in sources)
+                        {
+                            foreach (var binding in ResolveBindings(bindings, source.Slot, authoritativeWriter, semantics: null))
+                                await PublishAsync(viewBase, binding, source, exposure.ExposureEndedUtc, token).ConfigureAwait(false);
+                            after = source.Revision!.Value;
+                        }
+                        if (sources.Count < PageSize)
+                            break;
+                    }
                 }
             }
             if (trails is not null)
@@ -102,8 +128,9 @@ internal sealed class CenteredViewSourceLayers(
     private static IReadOnlyList<CenteredViewLayerBinding> ResolveBindings(
         IReadOnlyDictionary<(string Producer, string Schema, string Variant), IReadOnlyList<CenteredViewLayerBinding>>? bindings,
         ExposureProductSlot slot,
-        CenteredAuthoritativeAssociationWriter? authoritativeWriter = null) =>
+        CenteredAuthoritativeAssociationResolution authoritativeWriter = default,
+        CenteredProductSemanticProvenanceV1? semantics = null) =>
         bindings is null
-            ? CenteredViewLayerBindings.ReadLegacySlot(slot, authoritativeWriter)
+            ? CenteredViewLayerBindings.ReadLegacySlot(slot, authoritativeWriter, semantics)
             : bindings.GetValueOrDefault((slot.Producer, CenteredViewLayerBindings.SourceSchema(slot.SchemaVersion), slot.Variant)) ?? [];
 }

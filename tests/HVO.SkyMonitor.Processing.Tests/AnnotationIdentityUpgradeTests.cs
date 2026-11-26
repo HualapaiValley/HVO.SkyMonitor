@@ -122,7 +122,7 @@ public sealed class AnnotationIdentityUpgradeTests
         var v1Baseline = starOnlyV2 with
         {
             SchemaVersion = MeasuredStellarAssociationsV1.V1SchemaVersion,
-            Scene = starOnlyV2.Scene with { ProjectionGeometryIdentitySha256 = null },
+            Scene = starOnlyV2.Scene with { ProjectionGeometryIdentitySha256 = null, EffectiveUtc = null },
             Method = new(MeasuredStellarAssociator.V1AlgorithmVersion, new(), StellarLabelPolicy.V1Version, new())
         };
         var v1Bytes = MeasuredStellarAssociationJson.Serialize(v1Baseline);
@@ -134,14 +134,20 @@ public sealed class AnnotationIdentityUpgradeTests
 
         var v1WithGeometry = v1Baseline with { Scene = starOnlyV2.Scene };
         Assert.IsFalse(MeasuredStellarAssociationJson.Validate(v1WithGeometry).IsValid);
+        var v1WithEpoch = v1Baseline with { Scene = v1Baseline.Scene with { EffectiveUtc = starOnlyScene.EffectiveUtc } };
+        Assert.IsFalse(MeasuredStellarAssociationJson.Validate(v1WithEpoch).IsValid);
 
-        // Opus L3: v2 requires a valid uppercase 64-hex ProjectionGeometryIdentitySha256 (missing/malformed rejected).
+        // Opus L3 + M1: v2 requires both a valid uppercase 64-hex ProjectionGeometryIdentitySha256 and a valid EffectiveUtc.
         var v2MissingGeometry = starOnlyV2 with { Scene = starOnlyV2.Scene with { ProjectionGeometryIdentitySha256 = null } };
         var v2MalformedGeometry = starOnlyV2 with { Scene = starOnlyV2.Scene with { ProjectionGeometryIdentitySha256 = "abc123" } };
         var v2LowercaseGeometry = starOnlyV2 with { Scene = starOnlyV2.Scene with { ProjectionGeometryIdentitySha256 = new string('a', 64) } };
+        var v2MissingEpoch = starOnlyV2 with { Scene = starOnlyV2.Scene with { EffectiveUtc = null } };
+        var v2DefaultEpoch = starOnlyV2 with { Scene = starOnlyV2.Scene with { EffectiveUtc = default(DateTimeOffset) } };
         Assert.IsFalse(MeasuredStellarAssociationJson.Validate(v2MissingGeometry).IsValid);
         Assert.IsFalse(MeasuredStellarAssociationJson.Validate(v2MalformedGeometry).IsValid);
         Assert.IsFalse(MeasuredStellarAssociationJson.Validate(v2LowercaseGeometry).IsValid);
+        Assert.IsFalse(MeasuredStellarAssociationJson.Validate(v2MissingEpoch).IsValid);
+        Assert.IsFalse(MeasuredStellarAssociationJson.Validate(v2DefaultEpoch).IsValid);
 
         var parsedCurrent = MeasuredStellarAssociationJson.Parse(assocProduct.Payload).Associations!;
         var v1WithPlanets = parsedCurrent with { SchemaVersion = MeasuredStellarAssociationsV1.V1SchemaVersion };

@@ -170,7 +170,8 @@ public static class ExposureAssociationProducts
         if (!ExposureMeasurementProducts.Same(binding.MeasurementIdentitySha256, retained.ContentIdentitySha256) ||
             !ExposureMeasurementProducts.Same(binding.SceneIdentitySha256, prediction.ContentIdentitySha256) ||
             (evidence.SchemaVersion == MeasuredStellarAssociationsV1.CurrentSchemaVersion &&
-             !ExposureMeasurementProducts.Same(evidence.Scene.ProjectionGeometryIdentitySha256, expectedGeometry)) ||
+             (!ExposureMeasurementProducts.Same(evidence.Scene.ProjectionGeometryIdentitySha256, expectedGeometry) ||
+              evidence.Scene.EffectiveUtc != scene.EffectiveUtc)) ||
             !ExposureMeasurementProducts.Same(evidence.Measurement.SettingsIdentitySha256, measurement.Sources.SettingsSha256) ||
             evidence.Method.Settings != binding.Settings || evidence.Method.LabelPolicy != binding.LabelPolicy ||
             evidence.Measurement.DetectionCount != measurement.Sources.Detections.Count ||

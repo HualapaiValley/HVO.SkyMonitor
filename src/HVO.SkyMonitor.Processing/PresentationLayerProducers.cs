@@ -640,6 +640,46 @@ public static class PresentationLayerProducers
     }
 
     private const double CompatibleSceneCoordinateTolerancePixels = 0.5;
+    // Earth's sidereal rotation rate: 2*pi / 86164.0905 s (~7.292115855e-5 rad/s, ~15.041 arcsec/s).
+    private const double EarthSiderealAngularRateRadiansPerSecond = 2.0 * Math.PI / 86164.0905;
+    // Hard upper cap on allowed epoch difference even for tiny-focal-length all-sky optics while cleanly accepting
+    // real request-to-shutter latency (hundreds of milliseconds) and sub-millisecond timing truncation.
+    private const double MaximumCompatibleEpochSkewSeconds = 30.0;
+
+    internal static bool AreEpochsCompatibleForScene(
+        DateTimeOffset associationEpoch, DateTimeOffset sceneEpoch, ProjectedSceneV1 scene)
+    {
+        var deltaSeconds = Math.Abs((sceneEpoch - associationEpoch).TotalSeconds);
+        if (!double.IsFinite(deltaSeconds) || deltaSeconds > MaximumCompatibleEpochSkewSeconds)
+            return false;
+        var maxScalePixelsPerRadian = MaximumDeliveredPixelScalePerRadian(scene);
+        return EarthSiderealAngularRateRadiansPerSecond * deltaSeconds * maxScalePixelsPerRadian
+            <= CompatibleSceneCoordinateTolerancePixels;
+    }
+
+    private static double MaximumDeliveredPixelScalePerRadian(ProjectedSceneV1 scene)
+    {
+        var p = scene.Projection;
+        var t = scene.ImageTransform;
+        var fx = p.FocalLengthXPixels / Math.Max(1, t.BinX);
+        var fy = p.FocalLengthYPixels / Math.Max(1, t.BinY);
+        var maxFocal = Math.Max(fx, fy);
+        var minFocal = Math.Min(p.FocalLengthXPixels, p.FocalLengthYPixels);
+        var maxDx = Math.Max(p.PrincipalPointX, p.WidthPixels - p.PrincipalPointX);
+        var maxDy = Math.Max(p.PrincipalPointY, p.HeightPixels - p.PrincipalPointY);
+        var maxRadius = double.Hypot(maxDx, maxDy);
+        if (p.Aperture == ProjectionAperture.Circular && p.ImageCircleRadiusPixels is { } circleRadius)
+            maxRadius = Math.Min(maxRadius, circleRadius);
+        var normalizedRadiusSq = minFocal > 0 ? (maxRadius / minFocal) * (maxRadius / minFocal) : 0;
+        var modelFactor = p.Model switch
+        {
+            ProjectionModel.Perspective => 1.0 + normalizedRadiusSq,
+            ProjectionModel.StereographicFisheye => 1.0 + 0.25 * normalizedRadiusSq,
+            _ => 1.0
+        };
+        var distortionFactor = p.RadialDistortionK1 != 0 ? 1.0 + 3.0 * Math.Abs(p.RadialDistortionK1) * normalizedRadiusSq : 1.0;
+        return maxFocal * modelFactor * distortionFactor;
+    }
 
     internal static bool AssociationsBindScene(
         MeasuredStellarAssociationsV1 associations, ProjectedSceneV1 scene, bool allowCompatibleExposureAssociations)
@@ -664,11 +704,13 @@ public static class PresentationLayerProducers
             scene.ImageTransform != ProjectedSceneImageTransformV1.Identity(associations.Source.WidthPixels, associations.Source.HeightPixels) ||
             !string.Equals(associations.Scene.CalibrationVersion, scene.Projection.CalibrationVersion, StringComparison.Ordinal) ||
             associations.Scene.ProjectionGeometryIdentitySha256 is not { } expectedGeometry ||
-            !string.Equals(expectedGeometry, MeasuredStellarAssociationJson.ComputeProjectionGeometryIdentitySha256(scene), StringComparison.OrdinalIgnoreCase))
+            !string.Equals(expectedGeometry, MeasuredStellarAssociationJson.ComputeProjectionGeometryIdentitySha256(scene), StringComparison.OrdinalIgnoreCase) ||
+            associations.Scene.EffectiveUtc is not { } associationEpoch ||
+            !AreEpochsCompatibleForScene(associationEpoch, scene.EffectiveUtc, scene))
             return false;
 
         if (associations.PointSourcePlanets is { } planetEvidence &&
-            (planetEvidence.EffectiveUtc != scene.EffectiveUtc ||
+            (!AreEpochsCompatibleForScene(planetEvidence.EffectiveUtc, scene.EffectiveUtc, scene) ||
              !planetEvidence.ProjectionMappingVersion.StartsWith(
                  $"{scene.Projection.Model}:{scene.Projection.CalibrationVersion}:", StringComparison.Ordinal)))
             return false;

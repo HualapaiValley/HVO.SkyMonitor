@@ -20,6 +20,7 @@ internal sealed record CenteredProductSettlement(
 {
     internal Guid? ArtifactId { get; init; }
     internal string? ContentIdentitySha256 { get; init; }
+    internal CenteredProductSemanticProvenanceV1? Semantics { get; init; }
 }
 
 internal sealed class CenteredExposureProductReader(
@@ -129,12 +130,21 @@ internal sealed class CenteredExposureProductReader(
         if (node.Step is CalibrationCaptureProcessingStep)
             return [CreateLinearSettlement(key, raw, node, status, reason, outputs.SingleOrDefault(), inputs)];
 
-        var settlements = outputs.Select(output => new CenteredProductSettlement(key, node.Id,
-            output.ProductSchemaVersion ?? ArtifactManifestV2.CurrentSchemaVersion, output.Artifact.Variant,
-            output.OutputIdentitySha256, output.Artifact.ChecksumSha256, ExposureProductAvailability.Available, null, null)
+        var settlements = outputs.Select(output =>
         {
-            ArtifactId = output.ArtifactId,
-            ContentIdentitySha256 = output.ContentIdentitySha256
+            var schema = output.ProductSchemaVersion ?? ArtifactManifestV2.CurrentSchemaVersion;
+            var recipe = output.Artifact.Recipe;
+            var semantics = ProjectedSceneV1.IsSupportedSchemaVersion(schema)
+                ? null
+                : CenteredViewLayerBindings.CreateSemanticProvenance(
+                    node, schema, output.Artifact.Variant, recipe?.Name, recipe?.ImplementationVersion);
+            return new CenteredProductSettlement(key, node.Id, schema, output.Artifact.Variant,
+                output.OutputIdentitySha256, output.Artifact.ChecksumSha256, ExposureProductAvailability.Available, null, null)
+            {
+                ArtifactId = output.ArtifactId,
+                ContentIdentitySha256 = output.ContentIdentitySha256,
+                Semantics = semantics
+            };
         }).ToList();
         AddUnproducedViewProducts(key, node, status, reason, settlements);
         return settlements;
@@ -171,9 +181,16 @@ internal sealed class CenteredExposureProductReader(
                 !CenteredViewLayerBindings.SupportsSchema(schema) || settlements.Any(product => product.Variant == output.Variant))
                 continue;
 
+            var semantics = CenteredViewLayerBindings.CreateSemanticProvenance(
+                node, schema, output.Variant,
+                output.SharedRecipe?.Name ?? output.RecipeName,
+                output.SharedRecipe?.ImplementationVersion);
             settlements.Add(new(key, node.Id, CenteredViewLayerBindings.DispositionPrefix + schema, output.Variant, null, null,
                 status == DurableProcessingNodeStatus.TerminalFailure ? ExposureProductAvailability.Failed : ExposureProductAvailability.Unavailable,
-                reason ?? "product.configured-output-not-retained", null));
+                reason ?? "product.configured-output-not-retained", null)
+            {
+                Semantics = semantics
+            });
         }
     }
 

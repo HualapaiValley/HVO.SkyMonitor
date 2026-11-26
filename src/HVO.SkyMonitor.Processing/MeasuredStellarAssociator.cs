@@ -398,7 +398,11 @@ public static class MeasuredStellarAssociator
                 return MeasuredStellarAssociationReasonCodes.Ambiguous;
             if (windows[targetIndex].Count > 0)
                 return MeasuredStellarAssociationReasonCodes.ClaimedByOther;
-            if (ExcludedBy(expectedPixel, exclusions, targetMaxWindows[targetIndex], settings.ExclusionMarginPixels) is { } exclusion)
+            var isPlanetTarget = targetIndex >= stars.Length;
+            var exclusion = isPlanetTarget
+                ? ExcludedByPlanet(expectedPixel, exclusions, targetMaxWindows[targetIndex], settings.ExclusionMarginPixels)
+                : ExcludedBy(expectedPixel, exclusions, targetMaxWindows[targetIndex], settings.ExclusionMarginPixels);
+            if (exclusion is not null)
                 return MeasuredStellarAssociationReasonCodes.MeasurementExcludedPrefix + exclusion.ReasonCode;
             var offsetRadius = targetOffsetRadii[targetIndex];
             if (detectionGrid.Near(expectedPixel).Any(candidate =>
@@ -413,6 +417,11 @@ public static class MeasuredStellarAssociator
         bool HasPlausibleCompetingTarget(int planetIndex, int detectionIndex, double planetDistance)
         {
             var detection = detections[detectionIndex];
+            // An ultra-wide plateau whose combined WindowSigmas-sigma window exceeds MaximumPlanetWindowPixels (64 px)
+            // cannot be safely adjudicated against competing stars beyond 64 px; fail closed as ambiguous.
+            if (settings.WindowSigmas * CombinedUncertaintyMajorSigma(detection, targetCovariances[planetIndex]) >
+                MeasuredStellarAssociationJson.MaximumPlanetWindowPixels)
+                return true;
             // Expand the spatial-grid query to cover the full combined covariance window (accounting for wide
             // detection centroid covariance as well as target pointing/ephemeris windows) and ambiguity radius.
             var competitorSearchRadius = Math.Max(
@@ -425,8 +434,11 @@ public static class MeasuredStellarAssociator
                 if (other < stars.Length)
                 {
                     var starCov = GetStarPointingCovariance(other);
+                    var starCombinedSigma = CombinedUncertaintyMajorSigma(detection, starCov);
+                    if (settings.WindowSigmas * starCombinedSigma > MeasuredStellarAssociationJson.MaximumPlanetWindowPixels)
+                        return true;
                     var starCombinedLimit = MeasuredStellarAssociationJson.PlanetMaximumWindow(
-                        settings, CombinedUncertaintyMajorSigma(detection, starCov));
+                        settings, starCombinedSigma);
                     if (otherDistance <= starCombinedLimit)
                     {
                         var (starNorm, _) = EvaluateResidual(
@@ -440,8 +452,11 @@ public static class MeasuredStellarAssociator
                 }
                 else
                 {
+                    var otherCombinedSigma = CombinedUncertaintyMajorSigma(detection, targetCovariances[other]);
+                    if (settings.WindowSigmas * otherCombinedSigma > MeasuredStellarAssociationJson.MaximumPlanetWindowPixels)
+                        return true;
                     var otherCombinedLimit = MeasuredStellarAssociationJson.PlanetMaximumWindow(
-                        settings, CombinedUncertaintyMajorSigma(detection, targetCovariances[other]));
+                        settings, otherCombinedSigma);
                     if (otherDistance <= otherCombinedLimit)
                     {
                         var (otherNorm, _) = EvaluateResidual(
@@ -465,23 +480,56 @@ public static class MeasuredStellarAssociator
         }
     }
 
+    private static PixelPoint FootprintCenter(StellarFootprintBounds footprint) =>
+        new((footprint.MinX + footprint.MaxX + 1) * 0.5, (footprint.MinY + footprint.MaxY + 1) * 0.5);
+
+    private static double LocalExclusionDistanceSquared(
+        StellarMeasurementExclusion exclusion, PixelPoint point, StellarFootprintBounds? footprint)
+    {
+        var peakDistance = DistanceSquared(exclusion.Peak, point);
+        return footprint is { } bounds
+            ? Math.Min(peakDistance, DistanceSquared(FootprintCenter(bounds), point))
+            : peakDistance;
+    }
+
     private static StellarMeasurementExclusion? ExclusionContaining(
         PixelPoint point, IReadOnlyList<StellarMeasurementExclusion> exclusions, double maximumWindowPixels, double exclusionMarginPixels)
     {
         StellarMeasurementExclusion? best = null;
         var bestDistance = double.MaxValue;
-        var maxPeakDistanceSquared = maximumWindowPixels * maximumWindowPixels;
+        var maxDistanceSquared = maximumWindowPixels * maximumWindowPixels;
         foreach (var exclusion in exclusions)
         {
             if (exclusion.Footprint is not { } footprint || !footprint.Contains(point, exclusionMarginPixels))
                 continue;
-            var distance = DistanceSquared(exclusion.Peak, point);
-            if (distance > maxPeakDistanceSquared)
+            var distance = LocalExclusionDistanceSquared(exclusion, point, footprint);
+            if (distance > maxDistanceSquared)
                 continue;
             if (best is null || distance < bestDistance)
             {
                 best = exclusion;
                 bestDistance = distance;
+            }
+        }
+        return best;
+    }
+
+    private static StellarMeasurementExclusion? ExcludedByPlanet(
+        PixelPoint point, IReadOnlyList<StellarMeasurementExclusion> exclusions, double maximumWindowPixels, double exclusionMarginPixels)
+    {
+        StellarMeasurementExclusion? best = null;
+        var bestRank = (Contained: false, Distance: double.MaxValue);
+        var limit = maximumWindowPixels * maximumWindowPixels;
+        foreach (var exclusion in exclusions)
+        {
+            var contained = exclusion.Footprint is { } footprint && footprint.Contains(point, exclusionMarginPixels);
+            var distance = LocalExclusionDistanceSquared(exclusion, point, contained ? exclusion.Footprint : null);
+            if (distance > limit) continue;
+            if (best is null || contained && !bestRank.Contained ||
+                contained == bestRank.Contained && distance < bestRank.Distance)
+            {
+                best = exclusion;
+                bestRank = (contained, distance);
             }
         }
         return best;

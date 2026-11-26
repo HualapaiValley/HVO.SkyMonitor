@@ -1826,6 +1826,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             update.Transaction = transaction;
             if (operation.Kind == "delete")
             {
+                await PreserveCenteredProductSemanticsBeforeDeleteAsync(transaction, output, cancellationToken)
+                    .ConfigureAwait(false);
                 update.CommandText = """
                     UPDATE centered_exposure_products SET disposition = 'Expired', reason = 'retention-expired'
                     WHERE output_identity = $output;

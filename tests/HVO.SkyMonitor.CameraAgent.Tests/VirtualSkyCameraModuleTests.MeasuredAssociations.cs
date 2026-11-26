@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
@@ -987,6 +988,9 @@ public sealed partial class VirtualSkyCameraModuleTests
         };
         profile = profile with
         {
+            Rig = format == CameraPixelFormat.Mono16 && profile.Rig.Readout is not null
+                ? profile.Rig with { Readout = profile.Rig.Readout with { BlackLevel = 64 } }
+                : profile.Rig,
             Module = new("VirtualSky", JsonSerializer.SerializeToElement(new
             {
                 seed = 5267,
@@ -995,6 +999,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                 backgroundElectronsPerSecond = 25,
                 readNoiseStandardDeviation = 4.0,
                 shotNoiseEnabled = true,
+                asi174Sensor = new { enabled = format == CameraPixelFormat.Mono16, blackLevelAdu = 64.0 },
                 asi178Sensor = new { enabled = format == CameraPixelFormat.BayerRggb16 },
                 solarSystemBodies = JupiterBodyNames
             })),
@@ -1032,7 +1037,7 @@ public sealed partial class VirtualSkyCameraModuleTests
             await module.InitializeAsync(active, token).ConfigureAwait(false);
             var resources = provider.GetRequiredService<CaptureProjectedSceneStager>().FrozenResources;
             var reservation = await ingress.ReserveCenteredAsync(active, resources, null, token).ConfigureAwait(false);
-            var setpoint = new CaptureSetpoint(TimeSpan.FromSeconds(1), 1, null, null);
+            var setpoint = new CaptureSetpoint(TimeSpan.FromSeconds(1), format == CameraPixelFormat.Mono16 ? 150 : 1, null, null);
             await ingress.DispatchCenteredAsync(reservation.Pending.Key, setpoint, null, "m7-scoring", token).ConfigureAwait(false);
             var req = new CaptureRequest(start, TimeSpan.FromSeconds(1), CaptureMode.Still, setpoint)
             {
@@ -1080,11 +1085,197 @@ public sealed partial class VirtualSkyCameraModuleTests
             // Unclaimed source preserved without catalog identity.
             Assert.IsTrue(evidence.UnassociatedDetections.Any(static d =>
                 d.ReasonCode == MeasuredStellarAssociationReasonCodes.NoCatalogPrediction));
+
+            // Astra D4-M4: Verify candidate-bound SNR accuracy directly on the FINAL rendered Mono16/Bayer VirtualSky
+            // pixel buffer against an independent sky-annulus + aperture reference SNR computed from those final pixels.
+            var finalFrame = cap.Frame!;
+            var finalLayout = finalFrame.Layout!;
+            var finalWidth = finalLayout.Width;
+            var finalHeight = finalLayout.Height;
+            var finalProj = RigProjectionContextFactory.CreateDeliveredView(active.Rig, finalLayout)!.Value;
+            var validAperture = new bool[finalWidth * finalHeight];
+            var rawDouble = new double[finalWidth * finalHeight];
+            var frameSpan = finalFrame.PixelData.Span;
+            for (var y = 0; y < finalHeight; y++)
+            {
+                var row = frameSpan.Slice(y * finalLayout.StrideBytes, finalWidth * 2);
+                for (var x = 0; x < finalWidth; x++)
+                {
+                    var idx = y * finalWidth + x;
+                    rawDouble[idx] = BinaryPrimitives.ReadUInt16LittleEndian(row.Slice(x * 2, 2));
+                    validAperture[idx] = finalProj.ContainsSample(x + 0.5, y + 0.5);
+                }
+            }
+            double[] evalPixels;
+            if (format == CameraPixelFormat.BayerRggb16)
+            {
+                var reconstructed = LinearBayerReconstruction.Reconstruct(rawDouble, validAperture, finalWidth, finalHeight, BayerPattern.Rggb)
+                    .ToLuminance();
+                evalPixels = reconstructed.Pixels.ToArray();
+                validAperture = reconstructed.ValidMask.ToArray();
+            }
+            else
+            {
+                evalPixels = rawDouble;
+            }
+            var measOptions = MeasuredStellarAssociationRecipe.MeasurementOptions(format);
+            var segMinFloor = measOptions.MinimumPeakAboveBackground * measOptions.SegmentationSigma / measOptions.PeakSigma;
+            var growRadius = Math.Max(2, (int)Math.Ceiling(2 * measOptions.WindowSigmaPixels));
+            var snrTolerance = format == CameraPixelFormat.Mono16 ? 0.15 : 0.20;
+            var maxSnrRelErr = 0.0;
+
+            var scoredSources = evidence.Associations
+                .Select(static a => (Id: a.CatalogId, X: a.MeasuredX, Y: a.MeasuredY, Flux: a.Flux, Snr: a.SignalToNoise))
+                .Append((Id: jupiter.ObjectId, X: jupiter.MeasuredX, Y: jupiter.MeasuredY, Flux: jupiter.Flux, Snr: jupiter.SignalToNoise))
+                .ToArray();
+            foreach (var src in scoredSources)
+            {
+                Assert.IsNotNull(src.Snr, $"{format} {src.Id} must report measured SNR.");
+                var (refBg, refNoise, refFlux, refPixels, refSnr) = ComputeIndependentVirtualSkyPixelSnr(
+                    evalPixels, validAperture, finalWidth, finalHeight, src.X, src.Y,
+                    measOptions.SegmentationSigma, segMinFloor, growRadius);
+                var snrRelErr = Math.Abs(src.Snr.Value - refSnr) / refSnr;
+                maxSnrRelErr = Math.Max(maxSnrRelErr, snrRelErr);
+                TestContext.WriteLine(
+                    $"[VirtualSky-SNR {format}] {src.Id}: measuredSnr={src.Snr.Value:F2}, refSnr={refSnr:F2}, " +
+                    $"relErr={snrRelErr:P2} (refBg={refBg:F2}, refNoise={refNoise:F3}, refFlux={refFlux:F1}, measFlux={src.Flux:F1}, nAp={refPixels})");
+                Assert.IsLessThanOrEqualTo(snrTolerance, snrRelErr,
+                    $"{format} {src.Id} final-pixel SNR relative error {snrRelErr:P2} (measured={src.Snr.Value:F2}, ref={refSnr:F2}) exceeded {snrTolerance:P0}.");
+            }
+            TestContext.WriteLine($"[VirtualSky-SNR {format}] SUMMARY maxSnrRelErr={maxSnrRelErr:P2} (tolerance={snrTolerance:P0}, sources={scoredSources.Length})");
         }
         finally
         {
             Directory.Delete(root, recursive: true);
         }
+    }
+
+    /// <summary>
+    /// Independently computes local sky background, sigma-clipped MAD noise, and grown-aperture SNR directly from
+    /// the final rendered VirtualSky pixel buffer around a measured source without consulting StellarSourceMeasurer.
+    /// </summary>
+    private static (double Background, double NoiseSigma, double Flux, int AperturePixels, double Snr)
+        ComputeIndependentVirtualSkyPixelSnr(
+            double[] pixels, bool[] valid, int width, int height, double cx, double cy,
+            double segmentationSigma, double segMinFloor, int growRadius)
+    {
+        // 1. Local sky annulus [8..16] px around the source, iteratively 3-sigma clipped for robust background & noise.
+        var annulus = new List<double>();
+        var xMin = Math.Max(0, (int)Math.Floor(cx) - 16);
+        var xMax = Math.Min(width - 1, (int)Math.Ceiling(cx) + 16);
+        var yMin = Math.Max(0, (int)Math.Floor(cy) - 16);
+        var yMax = Math.Min(height - 1, (int)Math.Ceiling(cy) + 16);
+        for (var y = yMin; y <= yMax; y++)
+        {
+            var dy = y + 0.5 - cy;
+            for (var x = xMin; x <= xMax; x++)
+            {
+                if (!valid[y * width + x]) continue;
+                var dx = x + 0.5 - cx;
+                var r2 = dx * dx + dy * dy;
+                if (r2 >= 64.0 && r2 <= 256.0)
+                    annulus.Add(pixels[y * width + x]);
+            }
+        }
+        Assert.IsGreaterThanOrEqualTo(64, annulus.Count, "Independent sky annulus must have sufficient valid samples.");
+
+        var clipped = annulus.ToList();
+        double bg = 0, sigma = 0;
+        for (var iter = 0; iter < 5; iter++)
+        {
+            clipped.Sort();
+            bg = clipped[clipped.Count / 2];
+            var devs = clipped.Select(v => Math.Abs(v - bg)).OrderBy(static d => d).ToArray();
+            sigma = 1.4826 * devs[devs.Length / 2];
+            if (!(sigma > 0)) break;
+            var next = clipped.Where(v => Math.Abs(v - bg) <= 3.0 * sigma).ToList();
+            if (next.Count == clipped.Count || next.Count < 32) break;
+            clipped = next;
+        }
+        // Final unbiased clipped sample standard deviation for smooth accuracy even on integer-quantized low-noise tiles.
+        var mean = clipped.Average();
+        var stdDev = Math.Sqrt(clipped.Sum(v => (v - mean) * (v - mean)) / (clipped.Count - 1));
+        var refNoise = sigma > 0 ? stdDev : Math.Max(stdDev, 1e-6);
+
+        // 2. Local connected component above threshold grown by growRadius directly on the final pixels.
+        var box = 12;
+        var bx0 = Math.Max(0, (int)Math.Floor(cx) - box);
+        var by0 = Math.Max(0, (int)Math.Floor(cy) - box);
+        var bx1 = Math.Min(width - 1, (int)Math.Ceiling(cx) + box);
+        var by1 = Math.Min(height - 1, (int)Math.Ceiling(cy) + box);
+        var bw = bx1 - bx0 + 1;
+        var bh = by1 - by0 + 1;
+        var threshold = Math.Max(segmentationSigma * refNoise, segMinFloor);
+        var above = new bool[bw * bh];
+        for (var wy = 0; wy < bh; wy++)
+            for (var wx = 0; wx < bw; wx++)
+            {
+                var idx = (by0 + wy) * width + (bx0 + wx);
+                above[wy * bw + wx] = valid[idx] && pixels[idx] - bg > threshold;
+            }
+
+        // Seed 8-connected flood fill at the local peak within 2 px of (cx, cy).
+        var seedWx = -1;
+        var seedWy = -1;
+        var bestVal = double.NegativeInfinity;
+        for (var wy = 0; wy < bh; wy++)
+            for (var wx = 0; wx < bw; wx++)
+            {
+                if (!above[wy * bw + wx]) continue;
+                var dx = bx0 + wx + 0.5 - cx;
+                var dy = by0 + wy + 0.5 - cy;
+                if (dx * dx + dy * dy <= 9.0)
+                {
+                    var val = pixels[(by0 + wy) * width + (bx0 + wx)];
+                    if (val > bestVal) { bestVal = val; seedWx = wx; seedWy = wy; }
+                }
+            }
+        Assert.IsGreaterThanOrEqualTo(0, seedWx, "Source peak must exceed threshold in final pixel buffer.");
+
+        var own = new bool[bw * bh];
+        var stack = new Stack<(int X, int Y)>();
+        own[seedWy * bw + seedWx] = true;
+        stack.Push((seedWx, seedWy));
+        while (stack.Count > 0)
+        {
+            var (x, y) = stack.Pop();
+            for (var dy = -1; dy <= 1; dy++)
+                for (var dx = -1; dx <= 1; dx++)
+                {
+                    var nx = x + dx;
+                    var ny = y + dy;
+                    if (nx < 0 || ny < 0 || nx >= bw || ny >= bh) continue;
+                    var local = ny * bw + nx;
+                    if (!own[local] && above[local]) { own[local] = true; stack.Push((nx, ny)); }
+                }
+        }
+
+        double flux = 0;
+        var count = 0;
+        for (var wy = 0; wy < bh; wy++)
+        {
+            for (var wx = 0; wx < bw; wx++)
+            {
+                var inGrown = false;
+                for (var dy = -growRadius; dy <= growRadius && !inGrown; dy++)
+                {
+                    var ny = wy + dy;
+                    if (ny < 0 || ny >= bh) continue;
+                    for (var dx = -growRadius; dx <= growRadius; dx++)
+                    {
+                        var nx = wx + dx;
+                        if (nx >= 0 && nx < bw && own[ny * bw + nx]) { inGrown = true; break; }
+                    }
+                }
+                if (!inGrown) continue;
+                var idx = (by0 + wy) * width + (bx0 + wx);
+                if (!valid[idx]) continue;
+                flux += pixels[idx] - bg;
+                count++;
+            }
+        }
+        var refSnr = flux / (refNoise * Math.Sqrt(count));
+        return (bg, refNoise, flux, count, refSnr);
     }
 
     [TestMethod]
@@ -1273,13 +1464,12 @@ public sealed partial class VirtualSkyCameraModuleTests
         var profile = CenteredRuntimeProfile(root, start, CameraPixelFormat.Mono16);
         var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
         var loc = profile.DeploymentLocation!;
+        // Sole near-polar star (NO off-pole star!) so even over +2 hours its pixel position moves < 0.5 px,
+        // proving IsCompatibleWithScene fails closed strictly via the physical epoch check rather than pixel delta.
         var poleEq = EquatorialPrecession.PrecessToJ2000(new EquatorialPoint(0.0, 89.99), start);
         var poleStar = new CelestialCatalogObject("star:m1-polar", "M1 Polar",
             poleEq.RightAscensionHours, poleEq.DeclinationDegrees, 0.3, 0.65);
-        var offPoleStar = new CelestialCatalogObject("star:m1-offpole", "M1 OffPole",
-            (AstronomyTime.LocalMeanSiderealDegrees(start, loc.LongitudeDegrees) / 15d + 1.5) % 24,
-            loc.LatitudeDegrees + 10, 0.5, 0.65);
-        var predCatalog = new TestMetadataCatalog([poleStar, offPoleStar]);
+        var predCatalog = new TestMetadataCatalog([poleStar]);
         var renderCatalog = new InMemoryCelestialCatalog([poleStar]);
         profile = profile with
         {
@@ -1352,9 +1542,715 @@ public sealed partial class VirtualSkyCameraModuleTests
                 receipt.Manifest.CenteredExposure!, receipt.Manifest.Descriptor, new(), start.AddHours(2), token).ConfigureAwait(false);
             Assert.IsNotNull(sameEpochScene);
             Assert.IsNotNull(shiftedEpochScene);
+            // Confirm the sole near-polar star moved < 0.5 px over +2h so coordinate delta alone cannot reject it.
+            var samePole = Assert.ContainsSingle(sameEpochScene.Objects);
+            var shiftedPole = Assert.ContainsSingle(shiftedEpochScene.Objects);
+            Assert.AreEqual("star:m1-polar", samePole.Id);
+            Assert.IsLessThan(0.5, double.Hypot(shiftedPole.Pixel.X - samePole.Pixel.X, shiftedPole.Pixel.Y - samePole.Pixel.Y),
+                "Sole near-polar star must move < 0.5 px over +2h to isolate the epoch check.");
             Assert.IsTrue(ExposureAssociationProducts.IsCompatibleWithScene(assocArtifact, evidence, sameEpochScene));
             Assert.IsFalse(ExposureAssociationProducts.IsCompatibleWithScene(assocArtifact, evidence, shiftedEpochScene),
-                "CenteredExposureSceneProvider presentation scene at a +2h shifted virtual render epoch must be rejected.");
+                "CenteredExposureSceneProvider presentation scene at a +2h shifted virtual render epoch must be rejected via epoch check.");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [DataRow(137, 0)]
+    [DataRow(137, 4321)]
+    [DataRow(0, 4321)]
+    public async Task UseExposureAssociationsSucceedsWithProductionShutterSkewAndSubMillisecondTiming(
+        int shutterDelayMilliseconds,
+        int subMillisecondTicks)
+    {
+        // Opus M1: in production VirtualSky captures, VirtualSkyCameraModule renders at RequestedStartUtc + exposure/2
+        // (including any sub-millisecond ticks) while ExposureCatalogPrediction uses the ms-truncated shutter midpoint
+        // (differing by e.g. 137 ms and/or sub-ms ticks). Both scene-overlay and annotated MUST succeed (Completed).
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory($"hvo-opm1-{shutterDelayMilliseconds}-{subMillisecondTicks}");
+        var token = TestContext.CancellationToken;
+        var baseStart = new DateTimeOffset(2026, 11, 20, 22, 30, 0, TimeSpan.Zero);
+        var requestedStart = baseStart.AddTicks(subMillisecondTicks);
+        var shutterStart = requestedStart.AddMilliseconds(shutterDelayMilliseconds);
+        var clock = new CenteredClock { UtcNow = requestedStart };
+        var deviceClock = new ExposureTestTimeProvider(shutterStart, autoAdvance: true);
+        var profile = CenteredRuntimeProfile(root, baseStart, CameraPixelFormat.Mono16);
+        var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
+        var location = profile.DeploymentLocation!;
+        var ra = AstronomyTime.LocalMeanSiderealDegrees(baseStart, location.LongitudeDegrees) / 15d;
+        var matchedStar = new CelestialCatalogObject("star:opm1-matched", "OpM1 Matched", ra, location.LatitudeDegrees, 0.2, 0.65);
+        var absentStar = new CelestialCatalogObject("star:opm1-absent", "OpM1 Absent", (ra + 1.5) % 24, location.LatitudeDegrees + 15, 0.6, 0.65);
+        var jupiterPos = new SolarSystemPosition(new EquatorialPoint((ra - 1.0 + 24) % 24, location.LatitudeDegrees - 15), -1.8);
+        var ephemeris = new FixedPlanetEphemeris(new Dictionary<SolarSystemBody, SolarSystemPosition>
+        {
+            [SolarSystemBody.Jupiter] = jupiterPos
+        }, "opm1-ephem-v1");
+        var predictionCatalog = new TestMetadataCatalog([matchedStar, absentStar]);
+        var renderCatalog = new InMemoryCelestialCatalog([matchedStar]);
+
+        var sceneWithPlanet = profile.Pipeline.Steps.Single(static s => s.Type == "ProjectedScene") with
+        {
+            Options = JsonSerializer.SerializeToElement(new ProjectedSceneCaptureProcessingStepOptions
+            {
+                MaximumMagnitude = 6.5,
+                MaximumResults = 2000,
+                SolarSystemBodies = [SolarSystemBody.Jupiter]
+            })
+        };
+        profile = profile with
+        {
+            Module = new("VirtualSky", JsonSerializer.SerializeToElement(new
+            {
+                seed = 52681,
+                illuminationMode = "ControlledNight",
+                magnitudeZeroElectronsPerSecond = 3000,
+                backgroundElectronsPerSecond = 25,
+                readNoiseStandardDeviation = 4.0,
+                shotNoiseEnabled = true,
+                solarSystemBodies = JupiterBodyNames
+            })),
+            Pipeline = profile.Pipeline with
+            {
+                Steps =
+                [
+                    .. profile.Pipeline.Steps.Where(static s => s.Type != "ProjectedScene"),
+                    sceneWithPlanet,
+                    new("MeasuredStellarAssociations", "associated", DependsOn: ["scene"], Required: false, Publication: durable),
+                    new("Preview", "preview", DependsOn: ["$raw"], Required: false, Publication: durable,
+                        Options: JsonSerializer.SerializeToElement(new { outputVariant = "opm1-preview" })),
+                    new("ScenePresentationLayer", "scene-overlay", DependsOn: ["scene", "associated"], Required: false, Publication: durable,
+                        Options: JsonSerializer.SerializeToElement(new ScenePresentationLayerProcessingStepOptions
+                        {
+                            UseExposureAssociations = true,
+                            IncludeExpectedNotDetectedLayer = true,
+                            ExpectedPositionDiagnostics = false,
+                            LabelScale = 1,
+                            MaximumLabelMagnitude = 6.5
+                        })),
+                    new("Annotation", "annotated", DependsOn: ["preview", "scene", "associated"], Required: false, Publication: durable,
+                        Options: JsonSerializer.SerializeToElement(new
+                        {
+                            requireProjectedSceneDependency = true,
+                            useExposureAssociations = true,
+                            expectedPositionDiagnostics = false,
+                            maximumLabelMagnitude = 6.5
+                        }))
+                ]
+            }
+        };
+
+        try
+        {
+            var locationSeed = new DeploymentLocationSeed(
+                location.LocationId, location.Source, null,
+                location.EffectiveFromUtc, location.EffectiveUntilUtc,
+                new(location.LatitudeDegrees, location.LongitudeDegrees, location.ElevationMeters, location.TimeZoneId));
+            using var provider = CenteredRuntimeProvider(root, clock, services =>
+            {
+                services.AddSingleton<IDeploymentLocationProtector, DataProtectionDeploymentLocationProtector>();
+                services.AddSingleton<ICelestialCatalog>(predictionCatalog);
+                services.AddSingleton<IPlanetEphemeris>(ephemeris);
+            });
+            await provider.GetRequiredService<RawCaptureIngress>().InitializeAsync(token).ConfigureAwait(false);
+            var initializedLocation = await provider.GetRequiredService<IDeploymentLocationStore>()
+                .InitializeAsync(locationSeed, token).ConfigureAwait(false);
+            profile = profile with { DeploymentLocation = initializedLocation };
+            var active = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(provider, profile).ConfigureAwait(false);
+            var ingress = provider.GetRequiredService<RawCaptureIngress>();
+            var module = new VirtualSkyCameraModule(deviceClock, renderCatalog, new ProjectedSceneStore(),
+                planetEphemeris: ephemeris,
+                stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
+            await using var camera = module.ConfigureAwait(false);
+            await module.InitializeAsync(active, token).ConfigureAwait(false);
+            var resources = provider.GetRequiredService<CaptureProjectedSceneStager>().FrozenResources;
+            var reservation = await ingress.ReserveCenteredAsync(active, resources, null, token).ConfigureAwait(false);
+            var setpoint = new CaptureSetpoint(TimeSpan.FromSeconds(1), 1, null, null);
+            await ingress.DispatchCenteredAsync(reservation.Pending.Key, setpoint, null, "opm1-test", token).ConfigureAwait(false);
+            var request = new CaptureRequest(requestedStart, TimeSpan.FromSeconds(1), CaptureMode.Still, setpoint)
+            {
+                BoundGraphRevisionId = reservation.Revision.State.RevisionId,
+                BoundGraph = reservation.Revision.Pipeline
+            };
+            var captured = await module.CaptureBoundAsync(reservation.Pending.Key, request, token).ConfigureAwait(false);
+            clock.UtcNow = captured.AcquisitionTiming!.ReadoutCompletedUtc.AddMilliseconds(1);
+            var receipt = await ingress.AcceptCenteredAsync(active,
+                new(request, captured, requestedStart, request.TargetInterval, request.TargetInterval),
+                reservation, token).ConfigureAwait(false);
+            var captureId = receipt.Manifest.Descriptor.Capture.CaptureId;
+            await ProcessCenteredRuntimeExposureAsync(provider, active, token).ConfigureAwait(false);
+
+            var key = new ExposureKey(reservation.Pending.Key.Camera, reservation.Pending.Key.RunId, captureId);
+            var linear = await provider.GetRequiredService<IExposureProductReader>().ReadLinearAsync(key, token).ConfigureAwait(false);
+            var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
+            var detail = await store.ReadExecutionDetailAsync(linear!.Product!.Slot.ExecutionId, token).ConfigureAwait(false);
+            Assert.IsNotNull(detail);
+
+            var persistence = provider.GetRequiredService<CaptureProcessingPersistence>();
+            var renderSceneOut = Assert.ContainsSingle(detail.Nodes.Single(static n => n.NodeId == "scene").Outputs);
+            var renderScene = ProjectedSceneJson.Parse((await persistence.ReadCenteredViewParentAsync(captureId, renderSceneOut.ArtifactId, token).ConfigureAwait(false)).Payload).Scene!;
+            var assocOut = Assert.ContainsSingle(detail.Nodes.Single(static n => n.NodeId == "associated").Outputs);
+            var assocEvidence = MeasuredStellarAssociationJson.Parse((await persistence.ReadCenteredViewParentAsync(captureId, assocOut.ArtifactId, token).ConfigureAwait(false)).Payload).Associations!;
+
+            // Confirm the two scenes genuinely have distinct EffectiveUtc timestamps due to shutter delay / sub-ms truncation!
+            Assert.AreNotEqual(renderScene.EffectiveUtc.UtcTicks, assocEvidence.Scene.EffectiveUtc!.Value.UtcTicks,
+                "Production VirtualSky render epoch and ms-truncated ExposureCatalogPrediction epoch must genuinely differ.");
+            Assert.AreNotEqual(renderScene.SceneIdentitySha256, assocEvidence.Scene.SceneIdentitySha256);
+
+            // Both scene-overlay and annotated MUST succeed (Completed, NOT TerminalFailure)!
+            var sceneOverlayNode = detail.Nodes.Single(static n => n.NodeId == "scene-overlay");
+            Assert.AreEqual(nameof(DurableProcessingNodeStatus.Completed), sceneOverlayNode.Status, sceneOverlayNode.Reason);
+            var starLayerOut = sceneOverlayNode.Outputs.Single(static o => o.Variant == "scene-annotation-layer-v1");
+            var starPayload = PresentationLayerPayloadJson.Parse(
+                (await persistence.ReadCenteredViewParentAsync(captureId, starLayerOut.ArtifactId, token).ConfigureAwait(false)).Payload).Payload!;
+            Assert.IsTrue(starPayload.TextBlocks.Any(static b => b.Lines[0] == "OpM1 Matched"));
+            Assert.IsTrue(starPayload.TextBlocks.Any(static b => b.Lines[0] == "Jupiter"));
+            Assert.IsFalse(starPayload.TextBlocks.Any(static b => b.Lines[0].Contains("OpM1 Absent", StringComparison.Ordinal)));
+
+            var annotatedNode = detail.Nodes.Single(static n => n.NodeId == "annotated");
+            Assert.AreEqual(nameof(DurableProcessingNodeStatus.Completed), annotatedNode.Status, annotatedNode.Reason);
+            Assert.ContainsSingle(annotatedNode.Outputs);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task MissingGraphRecoveryNeverGrantsOrdinaryMeasuredAssociationAuthorityOverCenteredDiagnostics()
+    {
+        // Astra D4-M1: with the frozen graph unavailable and processing_execution_nodes.outputs_json cleared,
+        // an ordinary measured-stellar-associations product (default OR custom variant, retained OR expired after
+        // processing_outputs deletion) must NEVER gain authority over centered diagnostics, whereas a genuine custom
+        // ExposureStellarAssociations writer (retained OR expired) still recovers cleanly.
+        var token = TestContext.CancellationToken;
+        var start = new DateTimeOffset(2026, 11, 20, 22, 30, 0, TimeSpan.Zero);
+        var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
+
+        // 1. Ordinary measured-stellar-associations (both default and custom variant; both retained and expired):
+        foreach (var ordinaryVariant in new[] { "measured-stellar-associations-v1", "ordinary-custom-assoc" })
+            foreach (var expireOutput in new[] { false, true })
+                foreach (var clearProvenanceBeforeExpiry in new[] { false, true })
+                {
+                    if (!expireOutput && clearProvenanceBeforeExpiry)
+                        continue; // Also tests pre-upgrade legacy row (provenance_json NULL) preserved at deletion time.
+                    var tag = $"{(ordinaryVariant == "measured-stellar-associations-v1" ? "def" : "cst")}-{(expireOutput ? "exp" : "ret")}{(clearProvenanceBeforeExpiry ? "-leg" : "")}";
+                    var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory($"hvo-d4m1-ord-{tag}");
+                    try
+                    {
+                        var clock = new CenteredClock { UtcNow = start };
+                        var deviceClock = new ExposureTestTimeProvider(start, autoAdvance: true);
+                        var profile = CenteredRuntimeProfile(root, start, CameraPixelFormat.Mono16);
+                        var loc = profile.DeploymentLocation!;
+                        var ra = AstronomyTime.LocalMeanSiderealDegrees(start, loc.LongitudeDegrees) / 15d;
+                        var star1 = new CelestialCatalogObject("star:d4m1-1", "D4M1 One", ra, loc.LatitudeDegrees, 0.4, 0.65);
+                        var predCat = new TestMetadataCatalog([star1]);
+                        var rendCat = new InMemoryCelestialCatalog([]);
+                        profile = profile with
+                        {
+                            Module = new("VirtualSky", JsonSerializer.SerializeToElement(new
+                            {
+                                seed = 52641,
+                                illuminationMode = "ControlledNight",
+                                magnitudeZeroElectronsPerSecond = 3000,
+                                backgroundElectronsPerSecond = 25,
+                                readNoiseStandardDeviation = 4.0,
+                                shotNoiseEnabled = true
+                            })),
+                            Pipeline = profile.Pipeline with
+                            {
+                                Steps =
+                                [
+                                    .. profile.Pipeline.Steps,
+                                    new("ScenePresentationLayer", "scene-overlay", DependsOn: ["scene"], Required: false, Publication: durable,
+                                        Options: JsonSerializer.SerializeToElement(new ScenePresentationLayerProcessingStepOptions
+                                        {
+                                            IncludeExpectedNotDetectedLayer = true
+                                        }))
+                                ]
+                            }
+                        };
+                        var seed = new DeploymentLocationSeed(loc.LocationId, loc.Source, null,
+                            loc.EffectiveFromUtc, loc.EffectiveUntilUtc,
+                            new(loc.LatitudeDegrees, loc.LongitudeDegrees, loc.ElevationMeters, loc.TimeZoneId));
+                        using var provider = CenteredRuntimeProvider(root, clock, services =>
+                        {
+                            services.AddSingleton<IDeploymentLocationProtector, DataProtectionDeploymentLocationProtector>();
+                            services.AddSingleton<ICelestialCatalog>(predCat);
+                        });
+                        await provider.GetRequiredService<RawCaptureIngress>().InitializeAsync(token).ConfigureAwait(false);
+                        var initLoc = await provider.GetRequiredService<IDeploymentLocationStore>().InitializeAsync(seed, token).ConfigureAwait(false);
+                        profile = profile with { DeploymentLocation = initLoc };
+                        var active = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(provider, profile).ConfigureAwait(false);
+                        var ingress = provider.GetRequiredService<RawCaptureIngress>();
+                        var module = new VirtualSkyCameraModule(deviceClock, rendCat, new ProjectedSceneStore(),
+                            stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
+                        await using var cam = module.ConfigureAwait(false);
+                        await module.InitializeAsync(active, token).ConfigureAwait(false);
+                        var resources = provider.GetRequiredService<CaptureProjectedSceneStager>().FrozenResources;
+                        var reservation = await ingress.ReserveCenteredAsync(active, resources, null, token).ConfigureAwait(false);
+                        var setpoint = new CaptureSetpoint(TimeSpan.FromSeconds(1), 1, null, null);
+                        await ingress.DispatchCenteredAsync(reservation.Pending.Key, setpoint, null, "d4m1-ord", token).ConfigureAwait(false);
+                        var req = new CaptureRequest(start, TimeSpan.FromSeconds(1), CaptureMode.Still, setpoint)
+                        {
+                            BoundGraphRevisionId = reservation.Revision.State.RevisionId,
+                            BoundGraph = reservation.Revision.Pipeline
+                        };
+                        var cap = await module.CaptureBoundAsync(reservation.Pending.Key, req, token).ConfigureAwait(false);
+                        clock.UtcNow = cap.AcquisitionTiming!.ReadoutCompletedUtc.AddMilliseconds(1);
+                        var receipt = await ingress.AcceptCenteredAsync(active, new(req, cap, start, req.TargetInterval, req.TargetInterval), reservation, token).ConfigureAwait(false);
+                        var capId = receipt.Manifest.Descriptor.Capture.CaptureId;
+                        await ProcessCenteredRuntimeExposureAsync(provider, active, token).ConfigureAwait(false);
+
+                        var key = new ExposureKey(reservation.Pending.Key.Camera, reservation.Pending.Key.RunId, capId);
+                        var linear = await provider.GetRequiredService<IExposureProductReader>().ReadLinearAsync(key, token).ConfigureAwait(false);
+                        var executionId = linear!.Product!.Slot.ExecutionId;
+                        var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
+                        var persistence = provider.GetRequiredService<CaptureProcessingPersistence>();
+                        var detail = await store.ReadExecutionDetailAsync(executionId, token).ConfigureAwait(false);
+                        var sceneOut = Assert.ContainsSingle(detail!.Nodes.Single(static n => n.NodeId == "scene").Outputs);
+                        var sceneArt = await persistence.ReadCenteredViewParentAsync(capId, sceneOut.ArtifactId, token).ConfigureAwait(false);
+                        var parsedScene = ProjectedSceneJson.Parse(sceneArt.Payload).Scene!;
+                        var rawDesc = receipt.Manifest.Descriptor;
+                        var rawStub = new ProcessingArtifact(rawDesc.Artifact.ArtifactId, rawDesc.Artifact.Role, rawDesc.Artifact.Variant,
+                            ProcessingIdentity.CreateRecipeIdentity(rawDesc.Artifact.Recipe).IdentitySha256, rawDesc.Artifact.MediaType,
+                            rawDesc.Layout, ReadOnlyMemory<byte>.Empty, rawDesc.Artifact.CreatedUtc, rawDesc.Controls.EffectiveExposure,
+                            CameraAgentRecipeExecutionAdapter.CreateCompatibility(rawDesc))
+                        {
+                            CaptureId = capId,
+                            DescriptorIdentitySha256 = CaptureContractJson.ComputeDescriptorSha256(rawDesc)
+                        };
+                        var ordinaryEvidence = new MeasuredStellarAssociationsV1(
+                            MeasuredStellarAssociationsV1.CurrentSchemaVersion,
+                            new(capId, rawDesc.Artifact.ArtifactId, CaptureContractJson.ComputeDescriptorSha256(rawDesc).ToUpperInvariant(),
+                                FrameArtifactRole.Raw, rawDesc.Artifact.Variant, rawStub.RecipeIdentitySha256.ToUpperInvariant(),
+                                rawDesc.Layout.PixelFormat, rawDesc.Layout.Width, rawDesc.Layout.Height),
+                            new(parsedScene.SceneIdentitySha256.ToUpperInvariant(), parsedScene.Kind, parsedScene.Catalog.Name,
+                                parsedScene.Catalog.Version, parsedScene.Catalog.ChecksumSha256.ToUpperInvariant(),
+                                parsedScene.Projection.CalibrationVersion, parsedScene.Projection.AlgorithmVersion,
+                                parsedScene.AstronomyAlgorithmVersion,
+                                MeasuredStellarAssociationJson.ComputeProjectionGeometryIdentitySha256(parsedScene),
+                                parsedScene.EffectiveUtc),
+                            new(StellarSourceMeasurer.AlgorithmVersion, new string('A', 64), MeasuredStellarAssociationRecipe.MonoReconstruction,
+                                StellarMeasurementStatus.Completed, 1000, 4, 0, 0, 0),
+                            new(MeasuredStellarAssociator.AlgorithmVersion, new(), StellarLabelPolicy.Version, new()),
+                            [], [], []);
+                        var ordinaryRecipe = ProcessingIdentity.CreateRecipeIdentity(
+                            new ProcessingRecipeDefinition(BuiltInProcessingRecipes.MeasuredStellarAssociations, "1.0.0",
+                                MeasuredStellarAssociationRecipe.CurrentImplementationVersion, ProcessingOperationKind.Analyzer),
+                            JsonSerializer.SerializeToElement(new { }));
+                        var ordinaryBytes = MeasuredStellarAssociationJson.Serialize(ordinaryEvidence);
+                        var ordinaryProd = ProcessingRecipeSupport.CreateProduct(FrameArtifactRole.Metadata, ordinaryVariant,
+                            StructuredProcessingProductContracts.MeasuredStellarAssociationsMediaType, null, ordinaryBytes, ordinaryRecipe,
+                            [new("measured-stellar-associator", MeasuredStellarAssociator.AlgorithmVersion)],
+                            [rawStub], rawStub.Integration, rawStub.Compatibility, ProcessingProductKind.Metadata,
+                            MeasuredStellarAssociationsV1.CurrentSchemaVersion, ordinaryEvidence.AssociationIdentitySha256);
+                        await persistence.PersistCenteredViewProductAsync(rawDesc, ordinaryProd, token).ConfigureAwait(false);
+                        var ordinaryArtId = ProcessingIdentity.CreateArtifactId(ordinaryProd.OutputIdentitySha256);
+                        var ordinarySemantics = new CenteredProductSemanticProvenanceV1(
+                            CenteredProductSemanticProvenanceV1.CurrentSchemaVersion,
+                            MeasuredStellarAssociationCaptureProcessingStep.Alias,
+                            BuiltInProcessingRecipes.MeasuredStellarAssociations,
+                            MeasuredStellarAssociationRecipe.CurrentImplementationVersion,
+                            []);
+
+                        using (var conn = await store.OpenCenteredViewsAsync(token).ConfigureAwait(false))
+                        {
+                            using (var ins = conn.CreateCommand())
+                            {
+                                ins.CommandText = """
+                                    INSERT INTO centered_exposure_products(agent_id, camera_id, capture_id, execution_id, producer,
+                                        schema_version, variant, output_identity, artifact_id, payload_sha256, content_identity_sha256,
+                                        disposition, reason, provenance_json)
+                                    VALUES ($agent, $camera, $capture, $exec, 'ordinary-assoc', $schema, $variant, $output, $art,
+                                        $payload, $content, 'Available', NULL, $prov);
+                                    """;
+                                ins.Parameters.AddWithValue("$agent", key.Camera.AgentId);
+                                ins.Parameters.AddWithValue("$camera", key.Camera.CameraId);
+                                ins.Parameters.AddWithValue("$capture", capId.ToString("N"));
+                                ins.Parameters.AddWithValue("$exec", executionId.ToString("N"));
+                                ins.Parameters.AddWithValue("$schema", MeasuredStellarAssociationsV1.CurrentSchemaVersion);
+                                ins.Parameters.AddWithValue("$variant", ordinaryVariant);
+                                ins.Parameters.AddWithValue("$output", ordinaryProd.OutputIdentitySha256);
+                                ins.Parameters.AddWithValue("$art", ordinaryArtId.ToString("N"));
+                                ins.Parameters.AddWithValue("$payload", ordinaryProd.ChecksumSha256);
+                                ins.Parameters.AddWithValue("$content", ordinaryProd.ContentIdentitySha256!);
+                                ins.Parameters.AddWithValue("$prov", clearProvenanceBeforeExpiry ? (object)DBNull.Value : ordinarySemantics.Serialize());
+                                Assert.AreEqual(1, await ins.ExecuteNonQueryAsync(token).ConfigureAwait(false));
+                            }
+                            using (var clr = conn.CreateCommand())
+                            {
+                                clr.CommandText = "UPDATE processing_execution_nodes SET outputs_json = '[]' WHERE execution_id = $exec;";
+                                clr.Parameters.AddWithValue("$exec", executionId.ToString("N"));
+                                await clr.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+                            }
+                        }
+
+                        if (expireOutput)
+                        {
+                            // Run the REAL retention-deletion path (CompleteLifecycleOperationAsync("delete")).
+                            var lifecycleOp = new ProcessingLifecycleOperation(
+                                $"expire-{tag}", "delete", ordinaryProd.OutputIdentitySha256, null, null,
+                                "expired", "retention-expired", ordinaryBytes.Length,
+                                clock.UtcNow.ToUnixTimeMilliseconds(), "planned");
+                            Assert.IsTrue(await store.PlanLifecycleOperationAsync(lifecycleOp, token).ConfigureAwait(false));
+                            await store.CompleteLifecycleOperationAsync(lifecycleOp, token).ConfigureAwait(false);
+                        }
+
+                        // Authoritative writer MUST be null; ordinary product MUST NEVER bind or suppress scene diagnostic!
+                        var resolvedWriter = await store.ReadAuthoritativeAssociationWriterAsync(key, executionId, token).ConfigureAwait(false);
+                        Assert.IsNull(resolvedWriter, $"{tag}: ordinary measured-stellar-associations must NEVER be selected as authoritative writer.");
+
+                        var views = provider.GetRequiredService<SqliteCenteredViews>();
+                        var viewProducer = provider.GetRequiredService<ICenteredViewProducer>();
+                        var sourceLayers = provider.GetRequiredService<CenteredViewSourceLayers>();
+                        var sources = await store.ReadCenteredViewSourcesAsync(key, executionId, 0, 64, token).ConfigureAwait(false);
+                        var ordinaryLookup = sources.Single(s => s.Slot.Producer == "ordinary-assoc" && s.Slot.Variant == ordinaryVariant);
+                        var sceneExpectedLookup = sources.Single(static s => s.Slot.Producer == "scene-overlay" && s.Slot.Variant == "expected-not-detected-layer-v1");
+
+                        var missingGen = $"missing-d4m1-ord-{tag}";
+                        var stream = new CenteredViewStream(key.Camera, key.RunId, missingGen);
+                        var baseView = await viewProducer.PublishSingleAsync(stream, executionId,
+                            rawDesc.Capture.CaptureSequence, linear, new(), token).ConfigureAwait(false);
+                        Assert.IsNotNull(baseView);
+
+                        // Exercise BOTH RebuildForProductAsync AND RebuildForBaseAsync independently from empty centered-view state!
+                        await sourceLayers.RebuildForProductAsync(ordinaryLookup, missingGen, clock.UtcNow, token).ConfigureAwait(false);
+                        await sourceLayers.RebuildForProductAsync(sceneExpectedLookup, missingGen, clock.UtcNow, token).ConfigureAwait(false);
+                        var afterProduct = await views.ReadLatestSingleAsync(stream, token).ConfigureAwait(false);
+                        Assert.IsNotNull(afterProduct);
+                        Assert.IsFalse(afterProduct.Revision.Layers.Any(static l => l.Key.Kind == MeasuredAssociationPresentation.MeasuredLayerKind),
+                            $"{tag}: ordinary association must not bind measured-stellar-associations.");
+                        var diagAfterProduct = afterProduct.Revision.Layers.Single(static l => l.Key.Kind == MeasuredAssociationPresentation.ExpectedNotDetectedLayerKind);
+                        Assert.AreEqual(sceneExpectedLookup.Product!.ArtifactId, diagAfterProduct.Evidence!.ArtifactId,
+                            $"{tag}: legitimate scene-overlay expected-not-detected must remain bound.");
+
+                        await ClearCenteredViewsAsync(store, token).ConfigureAwait(false);
+                        var baseOnlyView = await viewProducer.PublishSingleAsync(stream, executionId,
+                            rawDesc.Capture.CaptureSequence, linear, new(), token).ConfigureAwait(false);
+                        Assert.IsNotNull(baseOnlyView);
+                        await sourceLayers.RebuildForBaseAsync(baseOnlyView.Base, token).ConfigureAwait(false);
+                        var afterBase = await views.ReadLatestSingleAsync(stream, token).ConfigureAwait(false);
+                        Assert.IsNotNull(afterBase);
+                        Assert.IsFalse(afterBase.Revision.Layers.Any(static l => l.Key.Kind == MeasuredAssociationPresentation.MeasuredLayerKind),
+                            $"{tag}: RebuildForBaseAsync must not bind ordinary association.");
+                        var diagAfterBase = afterBase.Revision.Layers.Single(static l => l.Key.Kind == MeasuredAssociationPresentation.ExpectedNotDetectedLayerKind);
+                        Assert.AreEqual(sceneExpectedLookup.Product.ArtifactId, diagAfterBase.Evidence!.ArtifactId,
+                            $"{tag}: RebuildForBaseAsync must preserve legitimate scene-overlay diagnostic.");
+                    }
+                    finally
+                    {
+                        Directory.Delete(root, recursive: true);
+                    }
+                }
+
+        // 2. Genuine custom ExposureStellarAssociations writer (custom node + custom variant) AFTER processing_outputs expiry
+        //    AND processing_execution_nodes.outputs_json cleared MUST still recover as authoritative writer!
+        {
+            var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-d4m1-genuine-exp");
+            try
+            {
+                var clock = new CenteredClock { UtcNow = start };
+                var deviceClock = new ExposureTestTimeProvider(start, autoAdvance: true);
+                var profile = CenteredRuntimeProfile(root, start, CameraPixelFormat.Mono16);
+                var loc = profile.DeploymentLocation!;
+                var ra = AstronomyTime.LocalMeanSiderealDegrees(start, loc.LongitudeDegrees) / 15d;
+                var star1 = new CelestialCatalogObject("star:d4m1-g1", "D4M1 Genuine", ra, loc.LatitudeDegrees, 0.4, 0.65);
+                var predCat = new TestMetadataCatalog([star1]);
+                var rendCat = new InMemoryCelestialCatalog([star1]);
+                profile = profile with
+                {
+                    Module = new("VirtualSky", JsonSerializer.SerializeToElement(new
+                    {
+                        seed = 52642,
+                        illuminationMode = "ControlledNight",
+                        magnitudeZeroElectronsPerSecond = 3000,
+                        backgroundElectronsPerSecond = 25,
+                        readNoiseStandardDeviation = 4.0,
+                        shotNoiseEnabled = true
+                    })),
+                    Pipeline = profile.Pipeline with
+                    {
+                        Steps =
+                        [
+                            .. profile.Pipeline.Steps,
+                            new("MeasuredStellarAssociations", "associated", DependsOn: ["scene"], Required: false,
+                                Options: JsonSerializer.SerializeToElement(new { outputVariant = "custom-exposure-assoc" }),
+                                Publication: durable),
+                            new("ScenePresentationLayer", "scene-overlay", DependsOn: ["scene", "associated"], Required: false, Publication: durable,
+                                Options: JsonSerializer.SerializeToElement(new ScenePresentationLayerProcessingStepOptions
+                                {
+                                    UseExposureAssociations = true,
+                                    IncludeExpectedNotDetectedLayer = true
+                                }))
+                        ]
+                    }
+                };
+                var seed = new DeploymentLocationSeed(loc.LocationId, loc.Source, null,
+                    loc.EffectiveFromUtc, loc.EffectiveUntilUtc,
+                    new(loc.LatitudeDegrees, loc.LongitudeDegrees, loc.ElevationMeters, loc.TimeZoneId));
+                using var provider = CenteredRuntimeProvider(root, clock, services =>
+                {
+                    services.AddSingleton<IDeploymentLocationProtector, DataProtectionDeploymentLocationProtector>();
+                    services.AddSingleton<ICelestialCatalog>(predCat);
+                });
+                await provider.GetRequiredService<RawCaptureIngress>().InitializeAsync(token).ConfigureAwait(false);
+                var initLoc = await provider.GetRequiredService<IDeploymentLocationStore>().InitializeAsync(seed, token).ConfigureAwait(false);
+                profile = profile with { DeploymentLocation = initLoc };
+                var active = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(provider, profile).ConfigureAwait(false);
+                var ingress = provider.GetRequiredService<RawCaptureIngress>();
+                var module = new VirtualSkyCameraModule(deviceClock, rendCat, new ProjectedSceneStore(),
+                    stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
+                await using var cam = module.ConfigureAwait(false);
+                await module.InitializeAsync(active, token).ConfigureAwait(false);
+                var resources = provider.GetRequiredService<CaptureProjectedSceneStager>().FrozenResources;
+                var reservation = await ingress.ReserveCenteredAsync(active, resources, null, token).ConfigureAwait(false);
+                var setpoint = new CaptureSetpoint(TimeSpan.FromSeconds(1), 1, null, null);
+                await ingress.DispatchCenteredAsync(reservation.Pending.Key, setpoint, null, "d4m1-gen", token).ConfigureAwait(false);
+                var req = new CaptureRequest(start, TimeSpan.FromSeconds(1), CaptureMode.Still, setpoint)
+                {
+                    BoundGraphRevisionId = reservation.Revision.State.RevisionId,
+                    BoundGraph = reservation.Revision.Pipeline
+                };
+                var cap = await module.CaptureBoundAsync(reservation.Pending.Key, req, token).ConfigureAwait(false);
+                clock.UtcNow = cap.AcquisitionTiming!.ReadoutCompletedUtc.AddMilliseconds(1);
+                var receipt = await ingress.AcceptCenteredAsync(active, new(req, cap, start, req.TargetInterval, req.TargetInterval), reservation, token).ConfigureAwait(false);
+                var capId = receipt.Manifest.Descriptor.Capture.CaptureId;
+                await ProcessCenteredRuntimeExposureAsync(provider, active, token).ConfigureAwait(false);
+
+                var key = new ExposureKey(reservation.Pending.Key.Camera, reservation.Pending.Key.RunId, capId);
+                var linear = await provider.GetRequiredService<IExposureProductReader>().ReadLinearAsync(key, token).ConfigureAwait(false);
+                var executionId = linear!.Product!.Slot.ExecutionId;
+                var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
+                var sourcesBefore = await store.ReadCenteredViewSourcesAsync(key, executionId, 0, 64, token).ConfigureAwait(false);
+                var assocSource = sourcesBefore.Single(static s => s.Slot.Producer == "associated" && s.Slot.Variant == "custom-exposure-assoc");
+
+                // Clear processing_execution_nodes.outputs_json AND delete processing_outputs via retention expiry!
+                using (var conn = await store.OpenCenteredViewsAsync(token).ConfigureAwait(false))
+                {
+                    using var clr = conn.CreateCommand();
+                    clr.CommandText = "UPDATE processing_execution_nodes SET outputs_json = '[]' WHERE execution_id = $exec;";
+                    clr.Parameters.AddWithValue("$exec", executionId.ToString("N"));
+                    await clr.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+                }
+                var expireOp = new ProcessingLifecycleOperation(
+                    "expire-genuine-custom", "delete", assocSource.Product!.OutputIdentitySha256, null, null,
+                    "expired", "retention-expired", 1024, clock.UtcNow.ToUnixTimeMilliseconds(), "planned");
+                Assert.IsTrue(await store.PlanLifecycleOperationAsync(expireOp, token).ConfigureAwait(false));
+                await store.CompleteLifecycleOperationAsync(expireOp, token).ConfigureAwait(false);
+
+                // Even after outputs_json cleared AND processing_outputs deleted, durable provenance_json recovers the custom writer!
+                var recoveredWriter = await store.ReadAuthoritativeAssociationWriterAsync(key, executionId, token).ConfigureAwait(false);
+                Assert.IsNotNull(recoveredWriter);
+                Assert.AreEqual("associated", recoveredWriter.Value.Producer);
+                Assert.AreEqual("custom-exposure-assoc", recoveredWriter.Value.Variant);
+
+                // Scene diagnostic remains suppressed and expired authoritative slot settles as unavailable/expired (never stolen by scene-overlay).
+                var views = provider.GetRequiredService<SqliteCenteredViews>();
+                var viewProducer = provider.GetRequiredService<ICenteredViewProducer>();
+                var sourceLayers = provider.GetRequiredService<CenteredViewSourceLayers>();
+                var missingGen = "missing-d4m1-genuine-exp";
+                var stream = new CenteredViewStream(key.Camera, key.RunId, missingGen);
+                var baseView = await viewProducer.PublishSingleAsync(stream, executionId,
+                    receipt.Manifest.Descriptor.Capture.CaptureSequence, linear, new(), token).ConfigureAwait(false);
+                Assert.IsNotNull(baseView);
+                await sourceLayers.RebuildForBaseAsync(baseView.Base, token).ConfigureAwait(false);
+                var rebuilt = await views.ReadLatestSingleAsync(stream, token).ConfigureAwait(false);
+                Assert.IsNotNull(rebuilt);
+                var expectedLayer = rebuilt.Revision.Layers.Single(static l => l.Key.Kind == MeasuredAssociationPresentation.ExpectedNotDetectedLayerKind);
+                Assert.AreEqual(CenteredViewReadiness.Incompatible, expectedLayer.Readiness,
+                    "Expired authoritative ExposureStellarAssociations must not be overwritten by scene-overlay diagnostic.");
+                Assert.IsNull(expectedLayer.Drawable,
+                    "Expired authoritative ExposureStellarAssociations must not expose scene-overlay diagnostic drawable.");
+                StringAssert.StartsWith(expectedLayer.Reason, "centered.product-expired", StringComparison.Ordinal,
+                    "Expired authoritative ExposureStellarAssociations must record centered.product-expired reason.");
+            }
+            finally
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    private static async Task ClearCenteredViewsAsync(SqliteCaptureProcessingStore store, CancellationToken token)
+    {
+        using var conn = await store.OpenCenteredViewsAsync(token).ConfigureAwait(false);
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            DELETE FROM processing_centered_view_selections;
+            DELETE FROM processing_centered_view_intervals;
+            DELETE FROM processing_centered_view_members;
+            DELETE FROM processing_centered_view_revisions;
+            DELETE FROM processing_centered_view_changes;
+            DELETE FROM processing_centered_view_bases;
+            """;
+        await cmd.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    [DataRow("custom-variant", "scene-annotation-layer-v1", "archive-diag", false)]
+    [DataRow("custom-variant-legacy-provenance-cleared", "scene-annotation-layer-v1", "archive-diag", true)]
+    [DataRow("renamed-diagnostic-reuses-annotation-alias", "custom-stars-layer-v1", "scene-annotation-layer-v1", false)]
+    [DataRow("renamed-diagnostic-reuses-annotation-alias-legacy-provenance-cleared", "custom-stars-layer-v1", "scene-annotation-layer-v1", true)]
+    public async Task MissingGraphRecoveryPreservesCustomAndLegacyAliasedExpectedNotDetectedDiagnosticRole(
+        string scenarioName,
+        string annotationVariant,
+        string expectedNotDetectedVariant,
+        bool clearProvenanceJson)
+    {
+        // Astra D4-M2: without the frozen graph (and even with outputs_json cleared):
+        // (a) a custom diagnostic variant ("archive-diag") must recover cleanly as disabled expected-not-detected;
+        // (b) a renamed diagnostic output reusing the legacy alias "scene-annotation-layer-v1" (when annotation output
+        //     was renamed to "custom-stars-layer-v1") must reopen as disabled expected-not-detected (NOT enabled star-annotations).
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-d4m2-" + scenarioName);
+        var token = TestContext.CancellationToken;
+        var start = new DateTimeOffset(2026, 11, 20, 22, 30, 0, TimeSpan.Zero);
+        var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
+        try
+        {
+            var clock = new CenteredClock { UtcNow = start };
+            var deviceClock = new ExposureTestTimeProvider(start, autoAdvance: true);
+            var profile = CenteredRuntimeProfile(root, start, CameraPixelFormat.Mono16);
+            var loc = profile.DeploymentLocation!;
+            var ra = AstronomyTime.LocalMeanSiderealDegrees(start, loc.LongitudeDegrees) / 15d;
+            var star1 = new CelestialCatalogObject("star:d4m2-1", "D4M2 Star", ra, loc.LatitudeDegrees, 0.4, 0.65);
+            var predCat = new TestMetadataCatalog([star1]);
+            var rendCat = new InMemoryCelestialCatalog([star1]);
+            profile = profile with
+            {
+                Module = new("VirtualSky", JsonSerializer.SerializeToElement(new
+                {
+                    seed = 52643,
+                    illuminationMode = "ControlledNight",
+                    magnitudeZeroElectronsPerSecond = 3000,
+                    backgroundElectronsPerSecond = 25,
+                    readNoiseStandardDeviation = 4.0,
+                    shotNoiseEnabled = true
+                })),
+                Pipeline = profile.Pipeline with
+                {
+                    Steps =
+                    [
+                        .. profile.Pipeline.Steps,
+                        new("ScenePresentationLayer", "scene-overlay", DependsOn: ["scene"], Required: false, Publication: durable,
+                            Options: JsonSerializer.SerializeToElement(new ScenePresentationLayerProcessingStepOptions
+                            {
+                                AnnotationOutputVariant = annotationVariant,
+                                IncludeExpectedNotDetectedLayer = true,
+                                ExpectedNotDetectedOutputVariant = expectedNotDetectedVariant
+                            }))
+                    ]
+                }
+            };
+            var seed = new DeploymentLocationSeed(loc.LocationId, loc.Source, null,
+                loc.EffectiveFromUtc, loc.EffectiveUntilUtc,
+                new(loc.LatitudeDegrees, loc.LongitudeDegrees, loc.ElevationMeters, loc.TimeZoneId));
+            using var provider = CenteredRuntimeProvider(root, clock, services =>
+            {
+                services.AddSingleton<IDeploymentLocationProtector, DataProtectionDeploymentLocationProtector>();
+                services.AddSingleton<ICelestialCatalog>(predCat);
+            });
+            await provider.GetRequiredService<RawCaptureIngress>().InitializeAsync(token).ConfigureAwait(false);
+            var initLoc = await provider.GetRequiredService<IDeploymentLocationStore>().InitializeAsync(seed, token).ConfigureAwait(false);
+            profile = profile with { DeploymentLocation = initLoc };
+            var active = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(provider, profile).ConfigureAwait(false);
+            var ingress = provider.GetRequiredService<RawCaptureIngress>();
+            var module = new VirtualSkyCameraModule(deviceClock, rendCat, new ProjectedSceneStore(),
+                stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
+            await using var cam = module.ConfigureAwait(false);
+            await module.InitializeAsync(active, token).ConfigureAwait(false);
+            var resources = provider.GetRequiredService<CaptureProjectedSceneStager>().FrozenResources;
+            var reservation = await ingress.ReserveCenteredAsync(active, resources, null, token).ConfigureAwait(false);
+            var setpoint = new CaptureSetpoint(TimeSpan.FromSeconds(1), 1, null, null);
+            await ingress.DispatchCenteredAsync(reservation.Pending.Key, setpoint, null, "d4m2-test", token).ConfigureAwait(false);
+            var req = new CaptureRequest(start, TimeSpan.FromSeconds(1), CaptureMode.Still, setpoint)
+            {
+                BoundGraphRevisionId = reservation.Revision.State.RevisionId,
+                BoundGraph = reservation.Revision.Pipeline
+            };
+            var cap = await module.CaptureBoundAsync(reservation.Pending.Key, req, token).ConfigureAwait(false);
+            clock.UtcNow = cap.AcquisitionTiming!.ReadoutCompletedUtc.AddMilliseconds(1);
+            var receipt = await ingress.AcceptCenteredAsync(active, new(req, cap, start, req.TargetInterval, req.TargetInterval), reservation, token).ConfigureAwait(false);
+            var capId = receipt.Manifest.Descriptor.Capture.CaptureId;
+            await ProcessCenteredRuntimeExposureAsync(provider, active, token).ConfigureAwait(false);
+
+            var key = new ExposureKey(reservation.Pending.Key.Camera, reservation.Pending.Key.RunId, capId);
+            var linear = await provider.GetRequiredService<IExposureProductReader>().ReadLinearAsync(key, token).ConfigureAwait(false);
+            var executionId = linear!.Product!.Slot.ExecutionId;
+            var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
+            var views = provider.GetRequiredService<SqliteCenteredViews>();
+            var viewProducer = provider.GetRequiredService<ICenteredViewProducer>();
+            var sourceLayers = provider.GetRequiredService<CenteredViewSourceLayers>();
+
+            // Clear processing_execution_nodes.outputs_json (and optionally provenance_json to exercise descriptor fallback too!).
+            using (var conn = await store.OpenCenteredViewsAsync(token).ConfigureAwait(false))
+            {
+                using (var clr = conn.CreateCommand())
+                {
+                    clr.CommandText = "UPDATE processing_execution_nodes SET outputs_json = '[]' WHERE execution_id = $exec;";
+                    clr.Parameters.AddWithValue("$exec", executionId.ToString("N"));
+                    await clr.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+                }
+                if (clearProvenanceJson)
+                {
+                    using var clrProv = conn.CreateCommand();
+                    clrProv.CommandText = "UPDATE centered_exposure_products SET provenance_json = NULL WHERE execution_id = $exec AND producer = 'scene-overlay';";
+                    clrProv.Parameters.AddWithValue("$exec", executionId.ToString("N"));
+                    await clrProv.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+                }
+            }
+
+            var sources = await store.ReadCenteredViewSourcesAsync(key, executionId, 0, 64, token).ConfigureAwait(false);
+            var diagSource = sources.Single(s => s.Slot.Producer == "scene-overlay" && s.Slot.Variant == expectedNotDetectedVariant);
+            var annotSource = sources.Single(s => s.Slot.Producer == "scene-overlay" && s.Slot.Variant == annotationVariant);
+
+            foreach (var mode in new[] { "product", "base" })
+            {
+                await ClearCenteredViewsAsync(store, token).ConfigureAwait(false);
+                var missingGen = $"missing-d4m2-{scenarioName}-{mode}";
+                Assert.IsNull(await store.ReadCenteredLayerBindingsAsync(missingGen, token).ConfigureAwait(false));
+                var stream = new CenteredViewStream(key.Camera, key.RunId, missingGen);
+                var baseView = await viewProducer.PublishSingleAsync(stream, executionId,
+                    receipt.Manifest.Descriptor.Capture.CaptureSequence, linear, new(), token).ConfigureAwait(false);
+                Assert.IsNotNull(baseView);
+
+                if (mode == "product")
+                {
+                    await sourceLayers.RebuildForProductAsync(diagSource, missingGen, clock.UtcNow, token).ConfigureAwait(false);
+                    await sourceLayers.RebuildForProductAsync(annotSource, missingGen, clock.UtcNow, token).ConfigureAwait(false);
+                }
+                else
+                {
+                    await sourceLayers.RebuildForBaseAsync(baseView.Base, token).ConfigureAwait(false);
+                }
+
+                var view = await views.ReadLatestSingleAsync(stream, token).ConfigureAwait(false);
+                Assert.IsNotNull(view);
+
+                var diagLayer = view.Revision.Layers.SingleOrDefault(static l => l.Key.Kind == MeasuredAssociationPresentation.ExpectedNotDetectedLayerKind);
+                Assert.IsNotNull(diagLayer, $"{scenarioName}/{mode}: custom/renamed diagnostic layer must NOT disappear without graph.");
+                Assert.AreEqual(CenteredViewReadiness.Ready, diagLayer.Readiness, $"{scenarioName}/{mode}: {diagLayer.Reason}");
+                Assert.IsNotNull(diagLayer.Drawable, $"{scenarioName}/{mode}");
+                Assert.IsFalse(diagLayer.Drawable.EnabledByDefault,
+                    $"{scenarioName}/{mode}: diagnostic layer must reopen DISABLED by default, NEVER enabled.");
+                Assert.AreEqual(diagSource.Product!.ArtifactId, diagLayer.Evidence!.ArtifactId, $"{scenarioName}/{mode}");
+
+                var starLayer = view.Revision.Layers.SingleOrDefault(static l => l.Key.Kind == "star-annotations");
+                if (starLayer is not null)
+                {
+                    Assert.AreNotEqual(diagSource.Product.ArtifactId, starLayer.Evidence!.ArtifactId,
+                        $"{scenarioName}/{mode}: renamed diagnostic reusing 'scene-annotation-layer-v1' must NEVER reopen as star-annotations.");
+                }
+                if (!clearProvenanceJson)
+                {
+                    // With durable provenance_json intact, even a renamed annotation output ("custom-stars-layer-v1") recovers cleanly!
+                    Assert.IsNotNull(starLayer, $"{scenarioName}/{mode}: renamed annotation output must recover cleanly from durable semantics.");
+                    Assert.AreEqual(annotSource.Product!.ArtifactId, starLayer.Evidence!.ArtifactId, $"{scenarioName}/{mode}");
+                    Assert.IsTrue(starLayer.Drawable!.EnabledByDefault, $"{scenarioName}/{mode}");
+                }
+            }
         }
         finally
         {

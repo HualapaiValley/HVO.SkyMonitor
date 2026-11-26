@@ -65,6 +65,137 @@ internal sealed partial class SqliteCaptureProcessingStore
         return items;
     }
 
+    private const string CenteredProductWithSemanticsProjection = """
+        SELECT product.revision, product.capture_id, run.run_id, run.agent_id, run.camera_id,
+               product.execution_id, product.producer, product.schema_version, product.variant,
+               product.output_identity, product.disposition, product.reason, product.provenance_json,
+               product.artifact_id, product.payload_sha256, product.content_identity_sha256,
+               output.availability_state, output.availability_reason,
+               raw.raw_artifact_id, raw.descriptor_sha256, raw.payload_sha256,
+               output.descriptor_json, node.outputs_json
+        FROM centered_exposure_products product
+        JOIN centered_exposure_attempts attempt ON attempt.capture_id = product.capture_id
+        JOIN centered_exposure_runs run ON run.run_id = attempt.run_id
+        JOIN raw_captures raw ON raw.capture_id = product.capture_id
+        LEFT JOIN processing_outputs output ON output.output_identity_sha256 = product.output_identity
+        LEFT JOIN processing_execution_nodes node ON node.execution_id = product.execution_id AND node.node_id = product.producer
+        """;
+
+    internal async ValueTask<IReadOnlyList<(ExposureProductLookup Lookup, CenteredProductSemanticProvenanceV1? Semantics)>>
+        ReadCenteredViewSourcesWithSemanticsAsync(
+            ExposureKey key, Guid executionId, long after, int limit, CancellationToken token)
+    {
+        using var connection = await OpenCenteredViewsAsync(token).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = CenteredProductWithSemanticsProjection + "\n" + """
+            WHERE product.capture_id = $capture AND run.run_id = $run AND run.agent_id = $agent AND run.camera_id = $camera
+                AND product.execution_id = $execution AND product.revision > $after
+            ORDER BY product.revision LIMIT $limit;
+            """;
+        SqliteRawCaptureJournal.AddExposureParameters(command, key);
+        command.Parameters.AddWithValue("$execution", executionId.ToString("N"));
+        command.Parameters.AddWithValue("$after", after);
+        command.Parameters.AddWithValue("$limit", limit);
+        using var reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false);
+        var items = new List<(ExposureProductLookup, CenteredProductSemanticProvenanceV1?)>(limit);
+        while (await reader.ReadAsync(token).ConfigureAwait(false))
+        {
+            var lookup = ReadCenteredLookup(reader, out _);
+            var provenanceJson = await reader.IsDBNullAsync(12, token).ConfigureAwait(false)
+                ? null : await reader.GetFieldValueAsync<byte[]>(12, token).ConfigureAwait(false);
+            var descriptorJson = await reader.IsDBNullAsync(21, token).ConfigureAwait(false)
+                ? null : await reader.GetFieldValueAsync<byte[]>(21, token).ConfigureAwait(false);
+            var outputsJson = await reader.IsDBNullAsync(22, token).ConfigureAwait(false)
+                ? null : reader.GetString(22);
+            var semantics = ResolveProductSemantics(provenanceJson, descriptorJson, outputsJson, lookup.Slot.Variant);
+            items.Add((lookup, semantics));
+        }
+        return items;
+    }
+
+    internal async ValueTask<CenteredProductSemanticProvenanceV1?> ReadCenteredProductSemanticsAsync(
+        ExposureKey key, ExposureProductSlot slot, CancellationToken token)
+    {
+        using var connection = await OpenCenteredViewsAsync(token).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT product.provenance_json, output.descriptor_json, node.outputs_json
+            FROM centered_exposure_products product
+            JOIN centered_exposure_attempts attempt ON attempt.capture_id = product.capture_id
+            JOIN centered_exposure_runs run ON run.run_id = attempt.run_id
+            LEFT JOIN processing_outputs output ON output.output_identity_sha256 = product.output_identity
+            LEFT JOIN processing_execution_nodes node ON node.execution_id = product.execution_id AND node.node_id = product.producer
+            WHERE product.capture_id = $capture AND run.run_id = $run AND run.agent_id = $agent AND run.camera_id = $camera
+                AND product.execution_id = $execution AND product.producer = $producer
+                AND product.schema_version = $schema AND product.variant = $variant
+            LIMIT 1;
+            """;
+        SqliteRawCaptureJournal.AddExposureParameters(command, key);
+        command.Parameters.AddWithValue("$execution", slot.ExecutionId.ToString("N"));
+        command.Parameters.AddWithValue("$producer", slot.Producer);
+        command.Parameters.AddWithValue("$schema", slot.SchemaVersion);
+        command.Parameters.AddWithValue("$variant", slot.Variant);
+        using var reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false);
+        if (!await reader.ReadAsync(token).ConfigureAwait(false))
+            return null;
+        var provenanceJson = await reader.IsDBNullAsync(0, token).ConfigureAwait(false)
+            ? null : await reader.GetFieldValueAsync<byte[]>(0, token).ConfigureAwait(false);
+        var descriptorJson = await reader.IsDBNullAsync(1, token).ConfigureAwait(false)
+            ? null : await reader.GetFieldValueAsync<byte[]>(1, token).ConfigureAwait(false);
+        var outputsJson = await reader.IsDBNullAsync(2, token).ConfigureAwait(false)
+            ? null : reader.GetString(2);
+        return ResolveProductSemantics(provenanceJson, descriptorJson, outputsJson, slot.Variant);
+    }
+
+    private static CenteredProductSemanticProvenanceV1? ResolveProductSemantics(
+        byte[]? provenanceJson, byte[]? descriptorJson, string? outputsJson, string variant) =>
+        CenteredProductSemanticProvenanceV1.TryParse(provenanceJson)
+            ?? CenteredProductSemanticProvenanceV1.TryParseFromDescriptorJson(descriptorJson)
+            ?? CenteredProductSemanticProvenanceV1.TryParseFromNodeOutputsJson(outputsJson, variant);
+
+    private static async ValueTask PreserveCenteredProductSemanticsBeforeDeleteAsync(
+        SqliteTransaction transaction, string outputIdentity, CancellationToken cancellationToken)
+    {
+        var connection = transaction.Connection!;
+        var toPreserve = new List<(long Revision, byte[] SemanticsJson)>();
+        using (var select = connection.CreateCommand())
+        {
+            select.Transaction = transaction;
+            select.CommandText = """
+                SELECT product.revision, output.descriptor_json
+                FROM centered_exposure_products product
+                JOIN processing_outputs output ON output.output_identity_sha256 = product.output_identity
+                WHERE product.output_identity = $output
+                    AND product.provenance_json IS NULL
+                    AND product.schema_version <> $linear
+                    AND product.schema_version NOT IN (SELECT value FROM json_each($scenes));
+                """;
+            select.Parameters.AddWithValue("$output", outputIdentity);
+            select.Parameters.AddWithValue("$linear", CenteredExposureProductReader.LinearSchemaVersion);
+            select.Parameters.AddWithValue("$scenes", System.Text.Json.JsonSerializer.Serialize(HVO.SkyMonitor.Astronomy.ProjectedSceneV1.SupportedSchemaVersions));
+            using var reader = await select.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                var descriptorJson = await reader.IsDBNullAsync(1, cancellationToken).ConfigureAwait(false)
+                    ? null : await reader.GetFieldValueAsync<byte[]>(1, cancellationToken).ConfigureAwait(false);
+                if (CenteredProductSemanticProvenanceV1.TryParseFromDescriptorJson(descriptorJson) is { } semantics)
+                    toPreserve.Add((reader.GetInt64(0), semantics.Serialize()));
+            }
+        }
+        foreach (var (revision, semanticsJson) in toPreserve)
+        {
+            using var update = connection.CreateCommand();
+            update.Transaction = transaction;
+            update.CommandText = """
+                UPDATE centered_exposure_products SET provenance_json = $provenance
+                WHERE revision = $revision AND provenance_json IS NULL;
+                """;
+            update.Parameters.AddWithValue("$provenance", semanticsJson);
+            update.Parameters.AddWithValue("$revision", revision);
+            await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
     internal async ValueTask<CenteredAuthoritativeAssociationWriter?> ReadAuthoritativeAssociationWriterAsync(
         ExposureKey key, Guid executionId, CancellationToken token)
     {
@@ -78,10 +209,10 @@ internal sealed partial class SqliteCaptureProcessingStore
                 WHERE node.execution_id = $execution
                     AND COALESCE(json_extract(output.value, '$.variant'), json_extract(output.value, '$.Variant')) IS NOT NULL
                     AND (
-                        json_extract(output.value, '$.recipe.name') = $recipe
-                        OR json_extract(output.value, '$.Recipe.Name') = $recipe
+                        COALESCE(json_extract(output.value, '$.recipe.name'), json_extract(output.value, '$.Recipe.Name')) = $recipe
                         OR (
-                            COALESCE(json_extract(output.value, '$.schemaVersion'), json_extract(output.value, '$.SchemaVersion')) IN ($v1, $v2)
+                            COALESCE(json_extract(output.value, '$.recipe.name'), json_extract(output.value, '$.Recipe.Name')) IS NULL
+                            AND COALESCE(json_extract(output.value, '$.schemaVersion'), json_extract(output.value, '$.SchemaVersion')) IN ($v1, $v2)
                             AND (
                                 node.node_id = $producer
                                 OR COALESCE(json_extract(output.value, '$.variant'), json_extract(output.value, '$.Variant')) = $variant
@@ -114,29 +245,40 @@ internal sealed partial class SqliteCaptureProcessingStore
                 AND product.execution_id = $execution
                 AND product.schema_version IN ($v1, $v2, $dispV1, $dispV2)
                 AND (
-                    product.schema_version IN ($dispV1, $dispV2)
-                    OR (
-                        output.output_identity_sha256 IS NOT NULL
-                        AND json_valid(CAST(output.descriptor_json AS TEXT))
-                        AND COALESCE(
+                    CASE
+                        WHEN product.provenance_json IS NOT NULL
+                            AND json_valid(CAST(product.provenance_json AS TEXT))
+                            AND json_extract(CAST(product.provenance_json AS TEXT), '$.schemaVersion') = $semSchema
+                        THEN (
+                            json_extract(CAST(product.provenance_json AS TEXT), '$.recipeName') = $recipe
+                            OR json_extract(CAST(product.provenance_json AS TEXT), '$.stepAlias') = $producer
+                        )
+                        WHEN output.output_identity_sha256 IS NOT NULL
+                            AND json_valid(CAST(output.descriptor_json AS TEXT))
+                            AND COALESCE(
+                                json_extract(CAST(output.descriptor_json AS TEXT), '$.artifact.recipe.name'),
+                                json_extract(CAST(output.descriptor_json AS TEXT), '$.descriptor.artifact.recipe.name'),
+                                json_extract(CAST(output.descriptor_json AS TEXT), '$.Artifact.Recipe.Name')
+                            ) IS NOT NULL
+                        THEN COALESCE(
                             json_extract(CAST(output.descriptor_json AS TEXT), '$.artifact.recipe.name'),
                             json_extract(CAST(output.descriptor_json AS TEXT), '$.descriptor.artifact.recipe.name'),
                             json_extract(CAST(output.descriptor_json AS TEXT), '$.Artifact.Recipe.Name')
                         ) = $recipe
-                    )
-                    OR output.output_identity_sha256 IS NULL
+                        ELSE (
+                            product.schema_version IN ($dispV1, $dispV2)
+                            OR product.producer = $producer
+                            OR product.variant = $variant
+                        )
+                    END
                 )
             ORDER BY
                 CASE
-                    WHEN output.output_identity_sha256 IS NOT NULL
-                        AND json_valid(CAST(output.descriptor_json AS TEXT))
-                        AND COALESCE(
-                            json_extract(CAST(output.descriptor_json AS TEXT), '$.artifact.recipe.name'),
-                            json_extract(CAST(output.descriptor_json AS TEXT), '$.descriptor.artifact.recipe.name'),
-                            json_extract(CAST(output.descriptor_json AS TEXT), '$.Artifact.Recipe.Name')
-                        ) = $recipe THEN 0
-                    WHEN product.schema_version IN ($dispV1, $dispV2) THEN 1
-                    WHEN product.variant IN ($variant, $measuredVariant) OR product.producer = $producer THEN 2
+                    WHEN product.provenance_json IS NOT NULL
+                        AND json_valid(CAST(product.provenance_json AS TEXT))
+                        AND json_extract(CAST(product.provenance_json AS TEXT), '$.schemaVersion') = $semSchema THEN 0
+                    WHEN output.output_identity_sha256 IS NOT NULL THEN 1
+                    WHEN product.schema_version IN ($dispV1, $dispV2) THEN 2
                     ELSE 3
                 END,
                 product.revision
@@ -149,9 +291,9 @@ internal sealed partial class SqliteCaptureProcessingStore
         productCommand.Parameters.AddWithValue("$dispV1", CenteredViewLayerBindings.DispositionPrefix + MeasuredStellarAssociationsV1.V1SchemaVersion);
         productCommand.Parameters.AddWithValue("$dispV2", CenteredViewLayerBindings.DispositionPrefix + MeasuredStellarAssociationsV1.CurrentSchemaVersion);
         productCommand.Parameters.AddWithValue("$variant", ExposureAssociationProducts.Variant);
-        productCommand.Parameters.AddWithValue("$measuredVariant", "measured-stellar-associations-v1");
         productCommand.Parameters.AddWithValue("$producer", ExposureAssociationProducts.StepAlias);
         productCommand.Parameters.AddWithValue("$recipe", ExposureAssociationProducts.RecipeName);
+        productCommand.Parameters.AddWithValue("$semSchema", CenteredProductSemanticProvenanceV1.CurrentSchemaVersion);
         using var productReader = await productCommand.ExecuteReaderAsync(token).ConfigureAwait(false);
         return await productReader.ReadAsync(token).ConfigureAwait(false)
             ? new CenteredAuthoritativeAssociationWriter(productReader.GetString(0), productReader.GetString(1))
