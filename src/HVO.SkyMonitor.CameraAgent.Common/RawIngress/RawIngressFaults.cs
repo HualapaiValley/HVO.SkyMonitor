@@ -41,6 +41,9 @@ internal interface IRawIngressFaultInjector
 
     void BeforeCenteredDispatchCommit() { }
 
+    // Silo reclaims staging after admission has already committed.
+    void AfterSiloStagingReclaimed() { }
+
     // Reconciliation reads a stored payload's bytes, to verify its checksum, only through the stream this opens.
     Stream OpenPayloadForVerification(string path) => RawIngressReconciler.OpenPayload(path);
 }

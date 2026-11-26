@@ -117,8 +117,6 @@ internal sealed record RawIngressJournalEntry(
 {
     public CenteredExposureBindingV1? CenteredExposure { get; init; }
 
-    internal long AdmissionRowId { get; init; }
-
     internal long AdmissionRevalidationCount { get; init; }
 }
 

@@ -54,7 +54,8 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
         internal FileStamp? Stamp { get; set; }
         internal bool Observed { get; set; }
     }
-    private sealed record Intent(string Key, bool Tree, long Generation, string? Planned = null, string? Source = null, bool Denied = false);
+    private sealed record Intent(string Key, bool Tree, long Generation, string? Planned = null, string? Source = null, bool Denied = false,
+        string? ReclaimedStagingSha256 = null);
     private sealed record Checkpoint(string Epoch, string Nonce, string Binding, long Generation, string Chain, long Count, bool Qualified,
         DateTimeOffset VerifiedUntilUtc = default, bool CleanShutdown = false);
 
@@ -357,6 +358,8 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
     internal static IDisposable BeginWrite(string path, ReadOnlyMemory<byte> bytes)
         => Tracked(path) ? Begin([(path, false, Convert.ToHexString(SHA256.HashData(bytes.Span)), null)]) : Empty.Instance;
     internal static IDisposable BeginDelete(string path) => Tracked(path) ? Begin([(path, false, null, null)]) : Empty.Instance;
+    internal static IDisposable BeginSiloStagingDelete(string sidecarPath, string manifestSha256) =>
+        Begin([(sidecarPath, false, null, null)], reclaimedStagingSha256: manifestSha256);
     internal static IDisposable BeginTrees(params string[] paths) => Begin(paths.Select(path => (path, true, (string?)null, (string?)null)));
     internal static IDisposable BeginJournalMetadataWrite() => RegistrationLease.Enter();
     internal static IDisposable BeginTreeMove(string source, string destination)
@@ -378,7 +381,8 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
     }
     private static bool Tracked(string path) => path.EndsWith(".json", StringComparison.Ordinal);
 
-    private static Multiple Begin(IEnumerable<(string Path, bool Tree, string? Planned, string? Source)> plans)
+    private static Multiple Begin(IEnumerable<(string Path, bool Tree, string? Planned, string? Source)> plans,
+        string? reclaimedStagingSha256 = null)
     {
         if (Current.Value is { Active: true }) BeforeNestedMutationForTest?.Invoke();
         var registration = RegistrationLease.Enter();
@@ -402,7 +406,7 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
                     sourceKey = FileKey(owner._root, plan.Source) + Path.DirectorySeparatorChar;
                 }
                 var intent = new Intent(FileKey(owner._root, full) + (plan.Tree ? Path.DirectorySeparatorChar : string.Empty),
-                    plan.Tree, 0, plan.Planned, sourceKey);
+                    plan.Tree, 0, plan.Planned, sourceKey, ReclaimedStagingSha256: reclaimedStagingSha256);
                 if (!grouped.TryGetValue(owner, out var list)) grouped[owner] = list = [];
                 list.Add(intent);
             }
@@ -619,6 +623,12 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
             foreach (var key in keys) denied |= UnexpectedBefore(new Intent(key, false, intent.Generation));
             return denied;
         }
+        // A qualified Silo publication or write-off owns this local staging deletion. The supplied
+        // digest must match any retained expectation before we can discard missing or damaged staging.
+        if (intent.ReclaimedStagingSha256 is { } reclaimed &&
+            (ReadEntry(intent.Key) is not { Kind: not 0 } staging ||
+                string.Equals(reclaimed, Convert.ToHexString(staging.Digest), StringComparison.Ordinal)))
+            return false;
         var current = _readCurrent(intent.Key);
         var expected = ReadEntry(intent.Key);
         // A nested prune may delete the file just published by its still-open

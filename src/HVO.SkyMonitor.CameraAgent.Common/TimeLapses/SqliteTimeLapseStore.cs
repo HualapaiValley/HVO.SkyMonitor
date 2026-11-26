@@ -423,8 +423,12 @@ internal sealed partial class SqliteTimeLapseStore(IOptions<CameraAgentHostOptio
         {
             if (++plans > MaximumPendingJobs) throw new InvalidDataException("Time-lapse retention holds exceed the queue bound.");
             var plan = DeserializeVerified<CameraAgentTimeLapseSourcePlan>(reader.GetString(0), reader.GetString(1));
-            holds.AddRange(plan.Sources.Select(source => new ProcessingRetentionHold(source.Descriptor.Artifact.ArtifactId,
-                source.PayloadRelativePath, source.SidecarRelativePath)));
+            foreach (var source in plan.Sources)
+            {
+                var id = source.Descriptor.Artifact.ArtifactId;
+                holds.Add(silo is null ? new(id, source.PayloadRelativePath, source.SidecarRelativePath)
+                    : new(id, SiloArtifactStorage.RawReference(id, ".bin"), SiloArtifactStorage.RawReference(id, ".json")));
+            }
         }
         return holds.Distinct().ToArray();
     }

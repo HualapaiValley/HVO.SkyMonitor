@@ -18,6 +18,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Silo.S3;
+using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.IntegrationTests.Infrastructure;
 using HVO.SkyMonitor.Common.Configuration;
 using HVO.SkyMonitor.Deployment.Contracts;
@@ -35,7 +36,7 @@ public sealed partial class SiloStockStoreTests
 
     [TestMethod]
     [TestCategory("Integration")]
-    public Task InstalledMonoCameraReclaimsWrittenOffAdmissionsAndRestoresNonRawProducts() =>
+    public Task InstalledMonoCameraRecoversRawAdmissionsAndReopensLocalProducts() =>
         VerifyInstalledCameraAsync(color: false, centered: false);
 
     [TestMethod]
@@ -67,13 +68,17 @@ public sealed partial class SiloStockStoreTests
         var writer = await CreateWriterAsync(container, binding, token).ConfigureAwait(false);
         await InstallBindingAsync(admin, binding, writer.Access, token).ConfigureAwait(false);
         var settings = InstalledSettings(binding, Endpoint(container), writer, pause, lifecycleToken);
+        var exerciseRecovery = !centered && !color;
         if (!centered)
             settings["CameraAgent:Silo:MaximumStagedFiles"] = "2";
+        if (exerciseRecovery)
+            settings["CameraAgent:TransientDetection:Mode"] = "Edge";
         var root = Directory.CreateTempSubdirectory("silo-capture-").FullName;
         var fault = new InterruptManifestPublication();
         var priorKeyDirectory = Environment.GetEnvironmentVariable(DeploymentKeyPerFile.DirectoryVariable);
         var priorSettingsPath = Environment.GetEnvironmentVariable(DeploymentLocalSettings.PathVariable);
         Func<string, string>? configureCamera = centered ? json => CenteredConfiguration(json, color) : color ? ColorConfiguration : null;
+        CameraAgentIntegrationFixture? restarted = null;
 
         try
         {
@@ -84,12 +89,18 @@ public sealed partial class SiloStockStoreTests
             Environment.SetEnvironmentVariable(DeploymentKeyPerFile.DirectoryVariable, keyDirectory);
             Environment.SetEnvironmentVariable(DeploymentLocalSettings.PathVariable, Path.Combine(root, DeploymentLocalSettings.FileName));
             var pending = await CaptureUntilInterruptedAsync(root, settings, lifecycleToken, pause, configureCamera, fault, token).ConfigureAwait(false);
-            using var restarted = new CameraAgentIntegrationFixture { KeepStorageOnDispose = true };
+            restarted = new CameraAgentIntegrationFixture { KeepStorageOnDispose = true };
             var readFault = new ExactReadFault();
+            var recoveryFault = new InterruptRawRecovery();
             await restarted.InitializeAsync(services =>
             {
                 if (!centered) RemoveCaptureWorkers(services, stopCamera: true);
                 services.AddSingleton<Func<ISiloObjectStore, ISiloObjectStore>>(store => new FaultingReadStore(store, readFault));
+                if (exerciseRecovery)
+                {
+                    services.AddSingleton<ISiloFaults>(recoveryFault);
+                    services.AddSingleton<IRawIngressFaultInjector>(recoveryFault);
+                }
             }, settings, root, configureCamera).ConfigureAwait(false);
             using var scope = restarted.CreateCameraAgentScope();
             var storage = scope.ServiceProvider.GetRequiredService<SiloInstalledStorage>();
@@ -110,6 +121,7 @@ public sealed partial class SiloStockStoreTests
             }
             var raw = reopened.Items.Single(static item => item.Role.Kind == SiloIdentityKind.Member &&
                 item.Role.Revision != SiloArtifactStorage.RawEvidenceRevision);
+            Assert.IsNotNull(raw.ServedFrom);
             var artifactId = Guid.ParseExact(raw.Role.Id, "D");
             var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 5, usesSilo: true);
             var rawEntry = await journal.ReadSiloAdmissionByArtifactAsync(artifactId, token).ConfigureAwait(false);
@@ -186,9 +198,17 @@ public sealed partial class SiloStockStoreTests
                     await AssertInstalledViewReadOutcomesAsync(restarted, verifier, readFault, view, required.ServedFrom, token)
                         .ConfigureAwait(false);
                     await AssertCenteredVisibilityAsync(scope.ServiceProvider, view, token).ConfigureAwait(false);
+                    await AssertSiloReplayPinsAsync(scope.ServiceProvider, reference, root, token).ConfigureAwait(false);
+                    await AssertSiloNightlyPublicationAsync(scope.ServiceProvider, root, token).ConfigureAwait(false);
                 }
             }
-            Assert.IsNotNull(raw.ServedFrom);
+            if (exerciseRecovery)
+            {
+                await AssertSiloTransientReservationAsync(scope.ServiceProvider, rawEntry, readFault, raw.ServedFrom, root, token)
+                    .ConfigureAwait(false);
+                await scope.ServiceProvider.GetRequiredService<SiloStorageWorker>().StopAsync(token).ConfigureAwait(false);
+                await AssertSiloTimeLapseRetentionAndPublicationAsync(scope.ServiceProvider, root, token).ConfigureAwait(false);
+            }
             readFault.Set(raw.ServedFrom, ReadFault.Damaged);
             Assert.AreEqual(CameraAgentArtifactReadStatus.Conflict,
                 (await artifacts.OpenContentAsync(artifactId, token).ConfigureAwait(false)).Status);
@@ -208,16 +228,24 @@ public sealed partial class SiloStockStoreTests
             Assert.AreEqual(HttpStatusCode.Gone, failed.StatusCode);
             var failedHistory = await failed.Content.ReadFromJsonAsync<CameraAgentSiloVerificationResult>(token).ConfigureAwait(false);
             Assert.IsTrue(failedHistory?.MissingRoles > 0);
-            if (!centered && !color)
+            if (exerciseRecovery)
             {
                 var rawManifest = CaptureContractJson.ParseManifest(rawEntry.ManifestJson).Document!.Manifest;
                 await AssertRawWriteOffDrainsAsync(scope.ServiceProvider, storage, journal, rawManifest.Descriptor, token)
                     .ConfigureAwait(false);
                 await AssertSiloCalibrationAsync(scope.ServiceProvider, rawManifest.Descriptor, root, token).ConfigureAwait(false);
+                var recovery = await InterruptRawReclamationAsync(scope.ServiceProvider, storage, journal, rawManifest.Descriptor,
+                    recoveryFault, token).ConfigureAwait(false);
+                scope.Dispose();
+                var stopped = restarted;
+                restarted = null;
+                stopped.Dispose();
+                await AssertStartupReclaimsRawAsync(settings, root, recovery, journal, rawManifest.Descriptor, token).ConfigureAwait(false);
             }
         }
         finally
         {
+            restarted?.Dispose();
             Environment.SetEnvironmentVariable(DeploymentKeyPerFile.DirectoryVariable, priorKeyDirectory);
             Environment.SetEnvironmentVariable(DeploymentLocalSettings.PathVariable, priorSettingsPath);
             Directory.Delete(root, recursive: true);
@@ -295,6 +323,25 @@ public sealed partial class SiloStockStoreTests
         Assert.AreEqual("silo-centered-view-unpublishable", result.Status);
         Assert.IsNull(await views.ReadRevisionAsync(baseId, blocked.Revision.RevisionId, token).ConfigureAwait(false));
         Assert.IsNotNull(await views.ReadRevisionAsync(baseId, later.Revision.RevisionId, token).ConfigureAwait(false));
+
+        var malformed = await views.PublishLayerAsync(baseId, healthy with { EvidenceOrder = 4 }, token).ConfigureAwait(false);
+        var following = await views.PublishLayerAsync(baseId, healthy with { EvidenceOrder = 5 }, token).ConfigureAwait(false);
+        Assert.IsNotNull(malformed);
+        Assert.IsNotNull(following);
+        var processing = services.GetRequiredService<SqliteCaptureProcessingStore>();
+        using (var connection = await processing.OpenCenteredViewsAsync(token).ConfigureAwait(false))
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE processing_centered_view_revisions SET manifest = '{' WHERE base_id = $base AND revision_id = $revision;";
+            command.Parameters.AddWithValue("$base", baseId);
+            command.Parameters.AddWithValue("$revision", malformed.Revision.RevisionId);
+            Assert.AreEqual(1, await command.ExecuteNonQueryAsync(token).ConfigureAwait(false));
+        }
+        result = await views.PublishSiloChangesAsync(8, token).ConfigureAwait(false);
+        Assert.AreEqual("silo-centered-view-publication-failed", result.Status);
+        var index = services.GetRequiredService<SiloInstalledStorage>().Index;
+        Assert.IsNull(await index.ReadPublicationAsync(baseId, malformed.Revision.RevisionId, token).ConfigureAwait(false));
+        Assert.IsNotNull(await views.ReadRevisionAsync(baseId, following.Revision.RevisionId, token).ConfigureAwait(false));
     }
 
     private static async Task AssertRawWriteOffDrainsAsync(IServiceProvider services, SiloInstalledStorage storage,
@@ -304,12 +351,12 @@ public sealed partial class SiloStockStoreTests
         var ingress = services.GetRequiredService<RawCaptureIngress>();
         var config = await services.GetRequiredService<ICameraAgentConfigurationLoader>().LoadAsync(token).ConfigureAwait(false);
         var timestamp = DateTimeOffset.UtcNow.Subtract(template.Controls.EffectiveExposure).AddSeconds(-5);
-        var firstSubmission = MakeSubmission(timestamp);
+        var firstSubmission = MakeRawSubmission(template, timestamp);
         var first = await ingress.AcceptAsync(config, firstSubmission, token).ConfigureAwait(false);
         Assert.IsNotNull(first);
         var pressure = ingress.SiloPressureRelease;
         Assert.IsNotNull(pressure);
-        var refusedSubmission = MakeSubmission(timestamp.AddSeconds(1));
+        var refusedSubmission = MakeRawSubmission(template, timestamp.AddSeconds(1));
         await Assert.ThrowsExactlyAsync<CaptureLaneBackpressureException>(async () =>
             await ingress.AcceptAsync(config, refusedSubmission, token).ConfigureAwait(false)).ConfigureAwait(false);
         var retry = await ingress.AcceptAsync(config, firstSubmission, token).ConfigureAwait(false);
@@ -322,6 +369,7 @@ public sealed partial class SiloStockStoreTests
             "operator-approved-loss", token).ConfigureAwait(false);
         await ingress.PublishSiloAdmissionsAsync(16, token).ConfigureAwait(false);
         await pressure.WaitAsync(token).ConfigureAwait(false);
+        Assert.IsFalse(File.Exists(Path.ChangeExtension(first.StoredFrame.AbsolutePath, ".json")));
 
         var second = await ingress.AcceptAsync(config, refusedSubmission, token).ConfigureAwait(false);
         Assert.IsNotNull(second);
@@ -336,26 +384,26 @@ public sealed partial class SiloStockStoreTests
         Assert.IsFalse(File.Exists(second.StoredFrame.AbsolutePath));
         Assert.IsTrue((await storage.Catalog.ReopenAsync(capture.ToString("N"), "raw-1", token).ConfigureAwait(false)).Reopenable);
         await AssertRetainedAstrometryAsync(services, config, refusedSubmission, second, token).ConfigureAwait(false);
+    }
 
-        CaptureLoopSubmission MakeSubmission(DateTimeOffset at)
+    private static CaptureLoopSubmission MakeRawSubmission(ReconstructionDescriptor template, DateTimeOffset at)
+    {
+        var exposure = template.Controls.EffectiveExposure;
+        var setpoint = new CaptureSetpoint(exposure, template.Controls.EffectiveGain, null, null);
+        var layout = template.Layout with
         {
-            var exposure = template.Controls.EffectiveExposure;
-            var setpoint = new CaptureSetpoint(exposure, template.Controls.EffectiveGain, null, null);
-            var layout = template.Layout with
-            {
-                SampleDepthBits = 16,
-                BlackLevel = 0,
-                WhiteLevel = ushort.MaxValue,
-                Readout = null,
-                StoredCodeTransform = FrameStoredCodeTransform.IdentityV1,
-                LevelCodeSpace = FrameLevelCodeSpace.StoredContainer
-            };
-            var frame = new CameraFrame(at, layout.Width, layout.Height, layout.PixelFormat, new byte[checked((int)layout.ByteLength)],
-                new FrameMetadata(exposure, setpoint.Gain, double.NaN, "integration-test"), layout.StrideBytes)
-            { Layout = layout };
-            return new(new CaptureRequest(at, exposure, CaptureMode.Still, setpoint),
-                new CaptureResult(frame, setpoint, TimeSpan.Zero, CaptureMode.Still, false), at, exposure, TimeSpan.Zero);
-        }
+            SampleDepthBits = 16,
+            BlackLevel = 0,
+            WhiteLevel = ushort.MaxValue,
+            Readout = null,
+            StoredCodeTransform = FrameStoredCodeTransform.IdentityV1,
+            LevelCodeSpace = FrameLevelCodeSpace.StoredContainer
+        };
+        var frame = new CameraFrame(at, layout.Width, layout.Height, layout.PixelFormat, new byte[checked((int)layout.ByteLength)],
+            new FrameMetadata(exposure, setpoint.Gain, double.NaN, "integration-test"), layout.StrideBytes)
+        { Layout = layout };
+        return new(new CaptureRequest(at, exposure, CaptureMode.Still, setpoint),
+            new CaptureResult(frame, setpoint, TimeSpan.Zero, CaptureMode.Still, false), at, exposure, TimeSpan.Zero);
     }
 
     private static async Task AssertSiloCalibrationAsync(IServiceProvider services, ReconstructionDescriptor raw, string root,
@@ -523,6 +571,7 @@ public sealed partial class SiloStockStoreTests
     {
         foreach (var registration in services.Where(descriptor => descriptor.ServiceType == typeof(IHostedService) &&
             (descriptor.ImplementationType?.GenericTypeArguments.Contains(typeof(CaptureDistributionService)) == true ||
+                descriptor.ImplementationFactory is Func<IServiceProvider, TransientWorkerService> ||
                 stopCamera && descriptor.ImplementationType == typeof(CameraCaptureService))).ToArray())
             services.Remove(registration);
     }

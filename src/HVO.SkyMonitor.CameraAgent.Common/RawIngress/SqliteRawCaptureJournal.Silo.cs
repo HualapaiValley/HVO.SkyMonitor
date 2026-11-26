@@ -74,23 +74,41 @@ internal sealed partial class SqliteRawCaptureJournal
     }
 
     internal async Task<IReadOnlyList<RawIngressJournalEntry>> ReadPendingSiloAdmissionsAsync(int limit,
-        CancellationToken cancellationToken, long afterRowId = 0)
+        CancellationToken cancellationToken)
     {
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.CommandText = $"""
-            SELECT {SiloRawEntryColumns}, pending.raw_capture_row_id,
+            SELECT {SiloRawEntryColumns},
                 EXISTS (SELECT 1 FROM raw_capture_stage_events event
                     WHERE event.raw_capture_row_id = raw.raw_capture_row_id AND event.stage_key = 'raw-evidence-written-off')
             FROM silo_raw_admissions pending JOIN raw_captures raw ON raw.raw_capture_row_id = pending.raw_capture_row_id
-            WHERE pending.raw_capture_row_id > $after ORDER BY pending.raw_capture_row_id LIMIT $limit;
+            ORDER BY pending.raw_capture_row_id LIMIT $limit;
             """;
         command.Parameters.AddWithValue("$limit", limit);
-        command.Parameters.AddWithValue("$after", afterRowId);
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         var entries = new List<RawIngressJournalEntry>();
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-            entries.Add(ReadEntry(reader) with { AdmissionRowId = reader.GetInt64(16), EvidenceWrittenOff = reader.GetBoolean(17) });
+            entries.Add(ReadEntry(reader) with { EvidenceWrittenOff = reader.GetBoolean(16) });
+        return entries;
+    }
+
+    internal async Task<IReadOnlyList<(long RowId, string ArtifactId)>> ReadPendingSiloAdmissionKeysAsync(
+        long afterRowId, int limit, CancellationToken cancellationToken)
+    {
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT pending.raw_capture_row_id, raw.raw_artifact_id
+            FROM silo_raw_admissions pending JOIN raw_captures raw ON raw.raw_capture_row_id = pending.raw_capture_row_id
+            WHERE pending.raw_capture_row_id > $after ORDER BY pending.raw_capture_row_id LIMIT $limit;
+            """;
+        command.Parameters.AddWithValue("$after", afterRowId);
+        command.Parameters.AddWithValue("$limit", limit);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        var entries = new List<(long, string)>();
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            entries.Add((reader.GetInt64(0), reader.GetString(1)));
         return entries;
     }
 

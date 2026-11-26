@@ -1,9 +1,12 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
+using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.Storage.FileSystem;
+using Microsoft.Extensions.Logging;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 
@@ -129,24 +132,31 @@ internal sealed partial class RawCaptureIngress
         return _silo is null ? holds : [.. holds, .. await _journal.ReadSiloAdmissionHoldsAsync(cancellationToken).ConfigureAwait(false)];
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "Each failed admission is retained for retry while the scan advances to independent admissions.")]
     internal async ValueTask<(bool More, string? Status)> PublishSiloAdmissionsAsync(int limit, CancellationToken cancellationToken)
     {
         if (_silo is null || !SiloAdmissionsReady) return (false, null);
-        var entries = await _journal.ReadPendingSiloAdmissionsAsync(limit, cancellationToken, _siloAdmissionCursor).ConfigureAwait(false);
+        var entries = await _journal.ReadPendingSiloAdmissionKeysAsync(_siloAdmissionCursor, limit, cancellationToken).ConfigureAwait(false);
         var lifecycle = RawIngressLifecycleLock.ForRoot(_options.RawIngressRoot);
-        foreach (var listed in entries)
+        foreach (var (rowId, artifactId) in entries)
         {
             string? status;
             await lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                status = await PublishSiloAdmissionAsync(listed, lifecycle, cancellationToken).ConfigureAwait(false);
+                status = await PublishSiloAdmissionAsync(Guid.ParseExact(artifactId, "N"), lifecycle, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException && !cancellationToken.IsCancellationRequested)
+            {
+                LogSiloAdmissionFailure(_logger, rowId, exception);
+                status = exception is SiloStoreUnavailableException ? "silo-store-unavailable" : "silo-raw-admission-failed";
             }
             finally
             {
                 lifecycle.Release();
             }
-            _siloAdmissionCursor = listed.AdmissionRowId;
+            _siloAdmissionCursor = rowId;
             _siloAdmissionScanStatus ??= status;
         }
         if (SiloPressureRelease is not null || entries.Count > 0)
@@ -161,33 +171,46 @@ internal sealed partial class RawCaptureIngress
         return (more, result);
     }
 
-    private async ValueTask<string?> PublishSiloAdmissionAsync(RawIngressJournalEntry listed, SemaphoreSlim lifecycle,
+    private async ValueTask<string?> PublishSiloAdmissionAsync(Guid artifactId, SemaphoreSlim lifecycle,
         CancellationToken cancellationToken)
     {
         var silo = _silo!;
         // An operator may have changed the disposition after the batch was read.
-        var entry = await _journal.ReadSiloAdmissionByArtifactAsync(listed.ArtifactId, cancellationToken).ConfigureAwait(false)
+        var entry = await _journal.ReadSiloAdmissionByArtifactAsync(artifactId, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidDataException("A pending Silo admission has no journal identity.");
         var groupId = entry.CaptureId.ToString("N");
         var revision = "raw-1";
-        var staged = await silo.State.ReadGroupAsync(groupId, revision, cancellationToken).ConfigureAwait(false);
-        if (staged?.State == SiloStagedState.Abandoned && entry.AdmissionRevalidationCount > 0)
+        var state = (await silo.State.ReadGroupAsync(groupId, revision, cancellationToken).ConfigureAwait(false))?.State;
+        if (state == SiloStagedState.Abandoned && entry.AdmissionRevalidationCount > 0)
         {
             revision = "raw-revalidated-" + entry.AdmissionRevalidationCount.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            staged = await silo.State.ReadGroupAsync(groupId, revision, cancellationToken).ConfigureAwait(false);
+            state = (await silo.State.ReadGroupAsync(groupId, revision, cancellationToken).ConfigureAwait(false))?.State;
         }
 
-        if (staged?.State != SiloStagedState.Visible && (entry.EvidenceWrittenOff || entry.State == "quarantined"))
+        if (state is not (SiloStagedState.Recorded or SiloStagedState.Visible) &&
+            (entry.EvidenceWrittenOff || entry.State == "quarantined"))
         {
-            await silo.Publisher.AbandonIfUncommittedAsync(groupId, revision, "raw-evidence-refused", cancellationToken).ConfigureAwait(false);
-            await _journal.SettleSiloAdmissionAsync(entry.CaptureId, entry.ManifestSha256, cancellationToken).ConfigureAwait(false);
-            return null;
+            if (await silo.Publisher.AbandonIfUncommittedAsync(groupId, revision, "raw-evidence-refused", cancellationToken).ConfigureAwait(false))
+            {
+                if (entry.State == "quarantined")
+                    await _journal.SettleSiloAdmissionAsync(entry.CaptureId, entry.ManifestSha256, cancellationToken).ConfigureAwait(false);
+                else
+                    await RecordSiloReclaimIntentAndReclaimAsync(entry, cancellationToken).ConfigureAwait(false);
+                return null;
+            }
+            state = (await silo.State.ReadGroupAsync(groupId, revision, cancellationToken).ConfigureAwait(false))?.State;
         }
-        if (staged?.State != SiloStagedState.Visible && entry.State != "committed")
-            return "silo-staged-evidence-missing";
-
-        if (staged?.State != SiloStagedState.Visible)
+        else if (state == SiloStagedState.ManifestQualified && entry.State != "committed")
         {
+            // An interrupted P3 can still own a pending journal segment. Resolve it before relying on local evidence.
+            state = await silo.Publisher.ReconcileGroupStateAsync(groupId, revision, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (state is not (SiloStagedState.Recorded or SiloStagedState.Visible))
+        {
+            if (entry.State != "committed")
+                return "silo-staged-evidence-missing";
+
             var parsed = CaptureContractJson.ParseManifest(entry.ManifestJson);
             if (!parsed.IsValid || parsed.Document?.Manifest is not { } manifest ||
                 CaptureContractJson.ComputeManifestSha256(entry.ManifestJson) != entry.ManifestSha256)
@@ -223,7 +246,10 @@ internal sealed partial class RawCaptureIngress
             {
                 return "silo-publication-spool-full";
             }
+        }
 
+        if (state != SiloStagedState.Visible)
+        {
             SiloPublicationOutcome outcome;
             lifecycle.Release();
             try
@@ -238,13 +264,21 @@ internal sealed partial class RawCaptureIngress
                 return outcome.BlockedCode ?? "silo-admission-publication-pending";
         }
 
-        var intent = new SiloRawIntent(entry.ArtifactId, entry.ExposureStartedUtc, Reclaim: true);
-        var bytes = JsonSerializer.SerializeToUtf8Bytes(intent);
-        await AtomicPublisher.PublishAsync(silo.PhysicalState, SiloIntentPath(entry.ArtifactId), PublishMode.Replace,
-            (stream, token) => stream.WriteAsync(bytes, token).AsTask(), cancellationToken).ConfigureAwait(false);
-        await ReclaimSiloStagingAsync(entry, cancellationToken).ConfigureAwait(false);
+        await RecordSiloReclaimIntentAndReclaimAsync(entry, cancellationToken).ConfigureAwait(false);
         return null;
     }
+
+    private async Task RecordSiloReclaimIntentAndReclaimAsync(RawIngressJournalEntry entry, CancellationToken cancellationToken)
+    {
+        var intent = new SiloRawIntent(entry.ArtifactId, entry.ExposureStartedUtc, Reclaim: true);
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(intent);
+        await AtomicPublisher.PublishAsync(_silo!.PhysicalState, SiloIntentPath(entry.ArtifactId), PublishMode.Replace,
+            (stream, token) => stream.WriteAsync(bytes, token).AsTask(), cancellationToken).ConfigureAwait(false);
+        await ReclaimSiloStagingAsync(entry, cancellationToken).ConfigureAwait(false);
+    }
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Silo raw admission row {RowId} could not be published")]
+    private static partial void LogSiloAdmissionFailure(ILogger logger, long rowId, Exception exception);
 
     private Task MarkSiloEvidenceMissingAsync(RawIngressJournalEntry entry, CancellationToken cancellationToken) =>
         _journal.MarkEvidenceFailureAsync(entry.CaptureId, "missing_evidence", "silo-staged-evidence-missing", cancellationToken);
@@ -259,12 +293,16 @@ internal sealed partial class RawCaptureIngress
         root.Verify(paths.PayloadAbsolutePath, "silo-raw-reclaim");
         root.Verify(paths.SidecarAbsolutePath, "silo-raw-reclaim");
         var directory = Path.GetDirectoryName(paths.PayloadAbsolutePath)!;
-        if (Directory.Exists(directory))
+        using (RetainedIntegrityLedger.BeginSiloStagingDelete(paths.SidecarAbsolutePath, entry.ManifestSha256))
         {
-            File.Delete(paths.PayloadAbsolutePath);
-            File.Delete(paths.SidecarAbsolutePath);
-            DurableSync.Directory(directory);
+            if (Directory.Exists(directory))
+            {
+                File.Delete(paths.PayloadAbsolutePath);
+                File.Delete(paths.SidecarAbsolutePath);
+                DurableSync.Directory(directory);
+            }
         }
+        _faultInjector.AfterSiloStagingReclaimed();
         await _journal.SettleSiloAdmissionAsync(entry.CaptureId, entry.ManifestSha256, cancellationToken).ConfigureAwait(false);
         ReleaseSiloRawIntent(entry.ArtifactId);
     }

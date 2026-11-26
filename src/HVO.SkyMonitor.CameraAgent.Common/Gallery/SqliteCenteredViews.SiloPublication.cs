@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.CameraAgent.Common.Silo;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using HVO.SkyMonitor.Storage.FileSystem;
 using Microsoft.Extensions.Logging;
@@ -13,46 +14,76 @@ internal sealed partial class SqliteCenteredViews
 
     private sealed record SiloViewChange(CenteredView View, long Order, bool Live, DateTimeOffset CommittedUtc, string? Previous);
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "Each failed change is retained for retry while the scan advances to independent changes.")]
     internal async ValueTask<(bool More, string? Status)> PublishSiloChangesAsync(int limit, CancellationToken cancellationToken)
     {
         if (silo is null) return (false, null);
         var cursor = await silo.ReadViewCursorAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        string? status = null;
         var deferred = ReadDeferredSiloViews(limit);
         foreach (var order in deferred)
         {
-            var change = (await ReadSiloViewChangesAsync(order - 1, 1, cancellationToken).ConfigureAwait(false)).SingleOrDefault();
-            if (change is null || change.Order != order)
-                throw new InvalidDataException("A deferred Silo view change has no local registration.");
-            if (await PublishSiloViewChangeAsync(change, cancellationToken).ConfigureAwait(false))
+            try
             {
-                var path = silo.PhysicalState.Resolve(DeferredSiloViewPath(order));
-                File.Delete(path);
-                DurableSync.Directory(Path.GetDirectoryName(path)!);
+                var row = (await ReadSiloViewChangesAsync(order - 1, 1, cancellationToken).ConfigureAwait(false)).SingleOrDefault();
+                if (row.Order != order)
+                    throw new InvalidDataException("A deferred Silo view change has no local registration.");
+                if (row.Change is { } change && await PublishSiloViewChangeAsync(change, cancellationToken).ConfigureAwait(false))
+                {
+                    var path = silo.PhysicalState.Resolve(DeferredSiloViewPath(order));
+                    File.Delete(path);
+                    DurableSync.Directory(Path.GetDirectoryName(path)!);
+                }
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException && !cancellationToken.IsCancellationRequested)
+            {
+                RecordFailure(order, exception);
             }
             _deferredSiloViewCursor = order;
         }
         if (deferred.Length < limit) _deferredSiloViewCursor = 0;
 
         var changes = await ReadSiloViewChangesAsync(cursor, limit, cancellationToken).ConfigureAwait(false);
-        foreach (var change in changes)
+        foreach (var (order, change) in changes)
         {
-            if (!await PublishSiloViewChangeAsync(change, cancellationToken).ConfigureAwait(false))
+            if (!await TryPublishAsync(order, change).ConfigureAwait(false))
             {
-                var relativePath = DeferredSiloViewPath(change.Order);
+                var relativePath = DeferredSiloViewPath(order);
                 if (!File.Exists(silo.PhysicalState.Resolve(relativePath)))
                 {
                     await AtomicPublisher.PublishAsync(silo.PhysicalState, relativePath, PublishMode.CreateNew,
                         static (_, _) => Task.CompletedTask, cancellationToken).ConfigureAwait(false);
                 }
             }
-            await silo.WriteViewCursorAsync(change.Order, cancellationToken).ConfigureAwait(false);
+            await silo.WriteViewCursorAsync(order, cancellationToken).ConfigureAwait(false);
         }
         var directory = silo.PhysicalState.Resolve(DeferredSiloViewsDirectory);
         var blocked = Directory.Exists(directory) && Directory.EnumerateFiles(directory, "*.pending").Any();
-        return (changes.Count == limit, blocked ? "silo-centered-view-unpublishable" : null);
+        return (changes.Count == limit, status ?? (blocked ? "silo-centered-view-unpublishable" : null));
 
-        async Task<List<SiloViewChange>> ReadSiloViewChangesAsync(long after, int count, CancellationToken token)
+        async ValueTask<bool> TryPublishAsync(long order, SiloViewChange? change)
+        {
+            if (change is null) return false;
+            try
+            {
+                return await PublishSiloViewChangeAsync(change, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException && !cancellationToken.IsCancellationRequested)
+            {
+                RecordFailure(order, exception);
+                return false;
+            }
+        }
+
+        void RecordFailure(long order, Exception exception)
+        {
+            LogSiloViewFailure(logger, order, exception);
+            status ??= exception is SiloStoreUnavailableException ? "silo-store-unavailable" : "silo-centered-view-publication-failed";
+        }
+
+        async Task<List<(long Order, SiloViewChange? Change)>> ReadSiloViewChangesAsync(long after, int count, CancellationToken token)
         {
             using var command = CreateCommand(connection, null, """
                 SELECT b.base_id, b.definition, b.registered_utc,
@@ -66,11 +97,22 @@ internal sealed partial class SqliteCenteredViews
                 JOIN processing_centered_view_bases b ON b.base_id = c.base_id
                 WHERE c.change_order > $cursor ORDER BY c.change_order LIMIT $limit;
                 """, ("$cursor", after), ("$limit", count));
-            var result = new List<SiloViewChange>();
+            var result = new List<(long, SiloViewChange?)>();
             using var reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false);
             while (await reader.ReadAsync(token).ConfigureAwait(false))
-                result.Add(new(ReadView(reader), reader.GetInt64(8), reader.GetBoolean(9),
-                    new DateTimeOffset(reader.GetInt64(10), TimeSpan.Zero), ReadNullableText(reader, 11)));
+            {
+                var order = reader.GetInt64(8);
+                try
+                {
+                    result.Add((order, new(ReadView(reader), order, reader.GetBoolean(9),
+                        new DateTimeOffset(reader.GetInt64(10), TimeSpan.Zero), ReadNullableText(reader, 11))));
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException && !token.IsCancellationRequested)
+                {
+                    RecordFailure(order, exception);
+                    result.Add((order, null));
+                }
+            }
             return result;
         }
     }
@@ -139,6 +181,9 @@ internal sealed partial class SqliteCenteredViews
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Silo centered view {BaseId}/{RevisionId} is deferred with outcome {Outcome}")]
     private static partial void LogDeferredSiloView(ILogger logger, string baseId, string revisionId, string outcome);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Silo centered view change {Order} could not be published")]
+    private static partial void LogSiloViewFailure(ILogger logger, long order, Exception exception);
 
     private async ValueTask<bool> IsSiloViewVisibleAsync(string baseId, string revisionId, CancellationToken cancellationToken) =>
         silo is null || silo.BindingVerified &&

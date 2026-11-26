@@ -1813,8 +1813,8 @@ internal sealed class SqliteTransientCandidateJournal : ITransientCandidateJourn
     }
 
     private static bool IsSourceEvidenceException(Exception exception)
-        => exception is IOException or InvalidDataException or UnauthorizedAccessException or
-            TransientCandidateIdentityConflictException;
+        => exception is not SiloStoreUnavailableException &&
+            exception is IOException or InvalidDataException or UnauthorizedAccessException or TransientCandidateIdentityConflictException;
 
     private static bool IsSnapshotDecodeException(Exception exception)
         => exception is InvalidDataException or InvalidCastException or FormatException or OverflowException;
