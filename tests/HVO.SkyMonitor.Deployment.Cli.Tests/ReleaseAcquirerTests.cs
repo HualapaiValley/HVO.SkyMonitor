@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.Security.Cryptography;
 using HVO.SkyMonitor.Deployment;
 using HVO.SkyMonitor.Deployment.Contracts;
@@ -223,6 +224,7 @@ public sealed class ReleaseAcquirerTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task CreateFifoOrInconclusive_WhenCommandMissing_IsInconclusive()
     {
         var root = Directory.CreateTempSubdirectory("hvo-mkfifo-guard-");
@@ -242,15 +244,64 @@ public sealed class ReleaseAcquirerTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task CreateFifoOrInconclusive_WhenTargetAlreadyExists_FailsInsteadOfSkipping()
+    public async Task CreateFifoOrInconclusive_WhenCommandNotExecutable_IsInconclusive()
     {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-noexec-");
+        try
+        {
+            var nonExecutable = Path.Combine(root.FullName, "mkfifo-noexec");
+            await File.WriteAllTextAsync(nonExecutable, "#!/bin/sh\nexit 0\n");
+            File.SetUnixFileMode(nonExecutable, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            var fifoPath = Path.Combine(root.FullName, "release.json");
+
+            await Assert.ThrowsExactlyAsync<AssertInconclusiveException>(
+                () => CreateFifoOrInconclusiveAsync(fifoPath, nonExecutable));
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task CreateFifoOrInconclusive_WhenCommandParentIsRegularFile_FailsInsteadOfSkipping()
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-enotdir-");
+        try
+        {
+            var regularFile = Path.Combine(root.FullName, "not-a-directory");
+            await File.WriteAllTextAsync(regularFile, "file");
+            var invalidCommand = Path.Combine(regularFile, "mkfifo");
+            var fifoPath = Path.Combine(root.FullName, "release.json");
+
+            await Assert.ThrowsExactlyAsync<AssertFailedException>(
+                () => CreateFifoOrInconclusiveAsync(fifoPath, invalidCommand));
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("already-exists")]
+    [DataRow("EPERM")]
+    [DataRow("not supported")]
+    [DataRow("Operation not permitted")]
+    public async Task CreateFifoOrInconclusive_WhenTargetAlreadyExists_FailsInsteadOfSkipping(string directoryName)
+    {
+        ArgumentNullException.ThrowIfNull(directoryName);
         var root = Directory.CreateTempSubdirectory("hvo-mkfifo-existing-");
         try
         {
             // Verify mkfifo itself works on this host first so a restricted environment remains inconclusive cleanly.
             await CreateFifoOrInconclusiveAsync(Path.Combine(root.FullName, "probe.fifo"));
 
-            var existingFile = Path.Combine(root.FullName, "already-exists");
+            var directory = Path.Combine(root.FullName, directoryName);
+            Directory.CreateDirectory(directory);
+            var existingFile = Path.Combine(directory, "release.json");
             await File.WriteAllTextAsync(existingFile, "occupied");
 
             await Assert.ThrowsExactlyAsync<AssertFailedException>(
@@ -263,28 +314,110 @@ public sealed class ReleaseAcquirerTests
     }
 
     [TestMethod]
-    [DataRow(127, "", true)]
-    [DataRow(126, "", true)]
-    [DataRow(1, "mkfifo: cannot create fifo '/tmp/x': Operation not permitted", true)]
-    [DataRow(1, "mkfifo: cannot create fifo '/tmp/x': Operation not supported", true)]
-    [DataRow(1, "mkfifo: cannot create fifo '/tmp/x': Function not implemented", true)]
-    [DataRow(1, "mkfifo: cannot create fifo '/tmp/x': Permission denied", true)]
-    [DataRow(1, "mkfifo: cannot create fifo '/tmp/x': Read-only file system", true)]
-    [DataRow(1, "mkfifo: failed (EPERM)", true)]
-    [DataRow(1, "mkfifo: cannot create fifo '/tmp/fileperm/x': File exists", false)]
-    [DataRow(1, "mkfifo: cannot create fifo '/tmp/missing/x': No such file or directory", false)]
-    public void IsRestrictedFifoError_ClassifiesRestrictedAndUnexpectedErrors(int exitCode, string stderr, bool expected)
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task CreateFifoOrInconclusive_WhenCommandHangs_FailsWithinTimeout()
     {
-        ArgumentNullException.ThrowIfNull(stderr);
-        Assert.AreEqual(expected, IsRestrictedFifoError(exitCode, stderr));
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-hang-");
+        try
+        {
+            var script = Path.Combine(root.FullName, "hang.sh");
+            await File.WriteAllTextAsync(script, "#!/bin/sh\nexec sleep 30\n");
+            File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            var fifoPath = Path.Combine(root.FullName, "release.json");
+
+            var stopwatch = Stopwatch.StartNew();
+            var failure = await Assert.ThrowsExactlyAsync<AssertFailedException>(
+                () => CreateFifoOrInconclusiveAsync(fifoPath, script, TimeSpan.FromMilliseconds(250)));
+            stopwatch.Stop();
+
+            StringAssert.Contains(failure.Message, "timed out", StringComparison.Ordinal);
+            Assert.IsLessThan(5.0, stopwatch.Elapsed.TotalSeconds, $"Expected bounded timeout, took {stopwatch.Elapsed}.");
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
     }
 
-    private static async Task CreateFifoOrInconclusiveAsync(string path, string command = "mkfifo")
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task CreateFifoOrInconclusive_WhenChildHoldsRedirectedPipesOpen_FailsWithinTimeout()
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-pipe-");
+        try
+        {
+            var script = Path.Combine(root.FullName, "hold-pipes.sh");
+            await File.WriteAllTextAsync(script, "#!/bin/sh\n(sleep 2) &\nexit 0\n");
+            File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            var fifoPath = Path.Combine(root.FullName, "release.json");
+
+            var stopwatch = Stopwatch.StartNew();
+            var failure = await Assert.ThrowsExactlyAsync<AssertFailedException>(
+                () => CreateFifoOrInconclusiveAsync(fifoPath, script, TimeSpan.FromMilliseconds(250)));
+            stopwatch.Stop();
+
+            StringAssert.Contains(failure.Message, "remained open", StringComparison.Ordinal);
+            Assert.IsLessThan(5.0, stopwatch.Elapsed.TotalSeconds, $"Expected bounded pipe drain timeout, took {stopwatch.Elapsed}.");
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [DataRow(1, true)]
+    [DataRow(2, true)]
+    [DataRow(13, true)]
+    [DataRow(5, false)]
+    [DataRow(12, false)]
+    [DataRow(20, false)]
+    [DataRow(24, false)]
+    public void IsUnavailableCommandStartError_OnlySkipsAvailabilityAndPermissionErrors(int nativeErrorCode, bool expected)
+        => Assert.AreEqual(expected, IsUnavailableCommandStartError(nativeErrorCode));
+
+    [TestMethod]
+    [DataRow(127, "", null, true)]
+    [DataRow(126, "", null, true)]
+    [DataRow(1, "mkfifo: cannot create fifo '/tmp/x': Operation not permitted", "/tmp/x", true)]
+    [DataRow(1, "mkfifo: cannot create fifo '/tmp/x': Operation not supported", "/tmp/x", true)]
+    [DataRow(1, "mkfifo: cannot create fifo '/tmp/x': Function not implemented", "/tmp/x", true)]
+    [DataRow(1, "mkfifo: cannot create fifo '/tmp/x': Permission denied", "/tmp/x", true)]
+    [DataRow(1, "mkfifo: cannot create fifo '/tmp/x': Read-only file system", "/tmp/x", true)]
+    [DataRow(1, "mkfifo: failed (EPERM)", null, true)]
+    [DataRow(1, "mkfifo: cannot create fifo '/tmp/EPERM/release.json': File exists", "/tmp/EPERM/release.json", false)]
+    [DataRow(1, "mkfifo: cannot create fifo '/tmp/not supported/release.json': File exists", "/tmp/not supported/release.json", false)]
+    [DataRow(1, "mkfifo: cannot create fifo '/tmp/Operation not permitted:x/release.json': No space left on device", "/tmp/Operation not permitted:x/release.json", false)]
+    [DataRow(1, "mkfifo: '/tmp/EPERM/release.json'", "/tmp/EPERM/release.json", false)]
+    [DataRow(1, "mkfifo: cannot create fifo '/tmp/fileperm/x': File exists", "/tmp/fileperm/x", false)]
+    [DataRow(1, "mkfifo: cannot create fifo '/tmp/missing/x': No such file or directory", "/tmp/missing/x", false)]
+    public void IsRestrictedFifoError_ClassifiesRestrictedAndUnexpectedErrors(
+        int exitCode,
+        string stderr,
+        string? targetPath,
+        bool expected)
+    {
+        ArgumentNullException.ThrowIfNull(stderr);
+        Assert.AreEqual(expected, IsRestrictedFifoError(exitCode, stderr, targetPath));
+    }
+
+    private const int PosixOperationNotPermitted = 1;
+    private const int PosixNoSuchFileOrDirectory = 2;
+    private const int PosixPermissionDenied = 13;
+    private static readonly TimeSpan DefaultFifoCommandTimeout = TimeSpan.FromSeconds(10);
+
+    private static async Task CreateFifoOrInconclusiveAsync(
+        string path,
+        string command = "mkfifo",
+        TimeSpan? timeout = null)
     {
         if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS() && !OperatingSystem.IsFreeBSD())
         {
             Assert.Inconclusive("FIFO creation requires a POSIX test environment.");
         }
+
+        var effectiveTimeout = timeout ?? DefaultFifoCommandTimeout;
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(effectiveTimeout, TimeSpan.Zero);
 
         var startInfo = new ProcessStartInfo(command)
         {
@@ -299,31 +432,69 @@ public sealed class ReleaseAcquirerTests
         {
             process = Process.Start(startInfo);
         }
+        catch (Win32Exception exception) when (IsUnavailableCommandStartError(exception.NativeErrorCode))
+        {
+            Assert.Inconclusive($"'{command}' is unavailable in this test environment (errno {exception.NativeErrorCode}): {exception.Message}");
+            return;
+        }
         catch (Win32Exception exception)
         {
-            Assert.Inconclusive($"'{command}' is unavailable in this test environment: {exception.Message}");
+            Assert.Fail($"'{command}' failed to start unexpectedly (errno {exception.NativeErrorCode}): {exception.Message}");
             return;
         }
 
         if (process is null)
         {
-            Assert.Inconclusive($"'{command}' could not be started in this test environment.");
+            Assert.Fail($"'{command}' failed to start unexpectedly (Process.Start returned null).");
             return;
         }
 
         using (process)
         {
-            var standardOutputTask = process.StandardOutput.ReadToEndAsync();
-            var standardErrorTask = process.StandardError.ReadToEndAsync();
-            await process.WaitForExitAsync();
-            _ = await standardOutputTask;
-            var standardError = (await standardErrorTask).Trim();
+            using var pipeCts = new CancellationTokenSource();
+            var stopwatch = Stopwatch.StartNew();
+            var standardOutputTask = process.StandardOutput.ReadToEndAsync(pipeCts.Token);
+            var standardErrorTask = process.StandardError.ReadToEndAsync(pipeCts.Token);
+
+            using var exitCts = new CancellationTokenSource(effectiveTimeout);
+            try
+            {
+                await process.WaitForExitAsync(exitCts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                await KillAndReapProcessTreeAsync(process);
+                await CancelAndClosePipesAsync(process, pipeCts, standardOutputTask, standardErrorTask);
+                Assert.Fail(
+                    $"'{command}' timed out after {effectiveTimeout.TotalMilliseconds.ToString("0", CultureInfo.InvariantCulture)} ms while creating FIFO '{path}'.");
+                return;
+            }
+
+            var remaining = effectiveTimeout - stopwatch.Elapsed;
+            var drainTimeout = remaining > TimeSpan.FromMilliseconds(50)
+                ? remaining
+                : TimeSpan.FromMilliseconds(50);
+            string standardError;
+            try
+            {
+                await Task.WhenAll(standardOutputTask, standardErrorTask).WaitAsync(drainTimeout);
+                standardError = (await standardErrorTask).Trim();
+            }
+            catch (TimeoutException)
+            {
+                await KillAndReapProcessTreeAsync(process);
+                await CancelAndClosePipesAsync(process, pipeCts, standardOutputTask, standardErrorTask);
+                Assert.Fail(
+                    $"'{command}' exited with code {process.ExitCode}, but its redirected output streams remained open past the {effectiveTimeout.TotalMilliseconds.ToString("0", CultureInfo.InvariantCulture)} ms timeout.");
+                return;
+            }
+
             if (process.ExitCode == 0)
             {
                 return;
             }
 
-            if (IsRestrictedFifoError(process.ExitCode, standardError))
+            if (IsRestrictedFifoError(process.ExitCode, standardError, path))
             {
                 Assert.Inconclusive($"'{command}' cannot create a FIFO in this restricted or non-POSIX test environment (exit {process.ExitCode}): {standardError}");
             }
@@ -332,20 +503,128 @@ public sealed class ReleaseAcquirerTests
         }
     }
 
-    private static bool IsRestrictedFifoError(int exitCode, string standardError)
-        => exitCode is 126 or 127
-           || standardError.Contains("operation not permitted", StringComparison.OrdinalIgnoreCase)
-           || standardError.Contains("operation not supported", StringComparison.OrdinalIgnoreCase)
-           || standardError.Contains("not supported", StringComparison.OrdinalIgnoreCase)
-           || standardError.Contains("function not implemented", StringComparison.OrdinalIgnoreCase)
-           || standardError.Contains("permission denied", StringComparison.OrdinalIgnoreCase)
-           || standardError.Contains("read-only file system", StringComparison.OrdinalIgnoreCase)
-           || standardError.Contains("EPERM", StringComparison.Ordinal)
-           || standardError.Contains("ENOTSUP", StringComparison.Ordinal)
-           || standardError.Contains("EOPNOTSUPP", StringComparison.Ordinal)
-           || standardError.Contains("ENOSYS", StringComparison.Ordinal)
-           || standardError.Contains("EACCES", StringComparison.Ordinal)
-           || standardError.Contains("EROFS", StringComparison.Ordinal);
+    private static bool IsUnavailableCommandStartError(int nativeErrorCode)
+        => nativeErrorCode is PosixOperationNotPermitted or PosixNoSuchFileOrDirectory or PosixPermissionDenied;
+
+    private static bool IsRestrictedFifoError(int exitCode, string standardError, string? targetPath = null)
+    {
+        if (exitCode is 126 or 127)
+        {
+            return true;
+        }
+
+        foreach (var rawLine in standardError.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+        {
+            var reason = ExtractDiagnosticReason(rawLine, targetPath);
+            if (reason.Contains("operation not permitted", StringComparison.OrdinalIgnoreCase)
+                || reason.Contains("operation not supported", StringComparison.OrdinalIgnoreCase)
+                || reason.Contains("not supported", StringComparison.OrdinalIgnoreCase)
+                || reason.Contains("function not implemented", StringComparison.OrdinalIgnoreCase)
+                || reason.Contains("permission denied", StringComparison.OrdinalIgnoreCase)
+                || reason.Contains("read-only file system", StringComparison.OrdinalIgnoreCase)
+                || ContainsErrnoToken(reason, "EPERM")
+                || ContainsErrnoToken(reason, "ENOTSUP")
+                || ContainsErrnoToken(reason, "EOPNOTSUPP")
+                || ContainsErrnoToken(reason, "ENOSYS")
+                || ContainsErrnoToken(reason, "EACCES")
+                || ContainsErrnoToken(reason, "EROFS"))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static string ExtractDiagnosticReason(string line, string? targetPath)
+    {
+        var sanitized = string.IsNullOrEmpty(targetPath)
+            ? line
+            : line.Replace(targetPath, string.Empty, StringComparison.Ordinal);
+        var lastColon = sanitized.LastIndexOf(':');
+        return (lastColon >= 0 ? sanitized[(lastColon + 1)..] : sanitized).Trim();
+    }
+
+    private static bool ContainsErrnoToken(string reason, string token)
+    {
+        var start = 0;
+        while ((start = reason.IndexOf(token, start, StringComparison.Ordinal)) >= 0)
+        {
+            var beforeOk = start == 0 || !char.IsLetterOrDigit(reason[start - 1]);
+            var end = start + token.Length;
+            var afterOk = end == reason.Length || !char.IsLetterOrDigit(reason[end]);
+            if (beforeOk && afterOk)
+            {
+                return true;
+            }
+
+            start = end;
+        }
+
+        return false;
+    }
+
+    private static async Task KillAndReapProcessTreeAsync(Process process)
+    {
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+                using var reapCts = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+                await process.WaitForExitAsync(reapCts.Token);
+            }
+        }
+        catch (InvalidOperationException)
+        {
+        }
+        catch (Win32Exception)
+        {
+        }
+        catch (NotSupportedException)
+        {
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private static async Task CancelAndClosePipesAsync(
+        Process process,
+        CancellationTokenSource pipeCts,
+        Task<string> standardOutputTask,
+        Task<string> standardErrorTask)
+    {
+        await pipeCts.CancelAsync();
+        TryCloseStream(process.StandardOutput);
+        TryCloseStream(process.StandardError);
+        ObserveFaults(standardOutputTask);
+        ObserveFaults(standardErrorTask);
+    }
+
+    private static void TryCloseStream(StreamReader reader)
+    {
+        try
+        {
+            reader.Close();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        catch (IOException)
+        {
+        }
+        catch (InvalidOperationException)
+        {
+        }
+    }
+
+    private static void ObserveFaults(Task task)
+        => _ = task.ContinueWith(
+            static completed => _ = completed.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
 
     private static InstallRequest Request(string? release) => new()
     {

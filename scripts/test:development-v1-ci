@@ -1738,18 +1738,18 @@ exit "$FAKE_EXIT"
     git("commit", "-qm", "seed deployment path-filter base")
     filter_base = git("rev-parse", "HEAD")
 
-    for label, edited_path, event_name, expected_deploy_cli in (
-        ("CameraAgent-only PR skips Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/Components/Home.razor", "pull_request", "false"),
-        ("CameraAgent-only merge_group always runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/Components/Home.razor", "merge_group", "true"),
-        ("CameraAgent-only push always runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/Components/Home.razor", "push", "true"),
-        ("CameraAgent Dockerfile PR runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/Dockerfile", "pull_request", "true"),
-        ("CameraAgent hvo-dark.css PR runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/wwwroot/css/themes/hvo-dark.css", "pull_request", "true"),
-        ("Silo replacement runbook PR runs Deployment.Cli.Tests and is not docs-fast-path skipped", "docs/runbooks/cameraagent-silo-runtime.md", "pull_request", "true"),
-        ("THIRD-PARTY-NOTICES.md PR runs Deployment.Cli.Tests and is not docs-fast-path skipped", "THIRD-PARTY-NOTICES.md", "pull_request", "true"),
-        ("Linked CameraAgent source PR runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/Configuration/OwnerPasswordFileText.cs", "pull_request", "true"),
-        ("Deployment.Cli PR runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.Deployment.Cli/Program.cs", "pull_request", "true"),
-        ("Shared AgentCore PR runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.AgentCore/Contract.cs", "pull_request", "true"),
-        ("Classifier tamper PR runs Deployment.Cli.Tests", "scripts/ci:classify", "pull_request", "true"),
+    for label, edited_path, event_name, expected_deploy_cli, expected_reason in (
+        ("CameraAgent-only PR skips Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/Components/Home.razor", "pull_request", "false", None),
+        ("CameraAgent-only merge_group always runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/Components/Home.razor", "merge_group", "true", None),
+        ("CameraAgent-only push always runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/Components/Home.razor", "push", "true", None),
+        ("CameraAgent Dockerfile PR runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/Dockerfile", "pull_request", "true", None),
+        ("CameraAgent hvo-dark.css PR runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/wwwroot/css/themes/hvo-dark.css", "pull_request", "true", None),
+        ("Silo replacement runbook PR runs Deployment.Cli.Tests and is not docs-fast-path skipped", "docs/runbooks/cameraagent-silo-runtime.md", "pull_request", "true", "reason=path outside documentation allowlist"),
+        ("THIRD-PARTY-NOTICES.md PR runs Deployment.Cli.Tests and is not docs-fast-path skipped", "THIRD-PARTY-NOTICES.md", "pull_request", "true", "reason=path outside documentation allowlist"),
+        ("Linked CameraAgent source PR runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/Configuration/OwnerPasswordFileText.cs", "pull_request", "true", None),
+        ("Deployment.Cli PR runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.Deployment.Cli/Program.cs", "pull_request", "true", None),
+        ("Shared AgentCore PR runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.AgentCore/Contract.cs", "pull_request", "true", None),
+        ("Classifier tamper PR runs Deployment.Cli.Tests", "scripts/ci:classify", "pull_request", "true", None),
     ):
         git("checkout", "-q", "--detach", filter_base)
         if edited_path == "scripts/ci:classify":
@@ -1767,7 +1767,8 @@ exit "$FAKE_EXIT"
         result = subprocess.run(["bash", "-euo", "pipefail", "-c", fast_script], cwd=fixture, env=case_env,
                                 capture_output=True, text=True)
         lines = output.read_text().splitlines()
-        if result.returncode or "run_full=true" not in lines or f"run_deployment_cli={expected_deploy_cli}" not in lines:
+        if (result.returncode or "run_full=true" not in lines or f"run_deployment_cli={expected_deploy_cli}" not in lines or
+                (expected_reason is not None and expected_reason not in lines)):
             raise SystemExit(f"Deployment.Cli path-filter case '{label}' failed: {lines} {result.stderr}")
         deploy_cases += 1
 

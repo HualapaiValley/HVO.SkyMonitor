@@ -336,6 +336,7 @@ public sealed class ProgramOutputTests
     [TestMethod]
     [DataRow(true, true, true, 200, "Runtime running=True, alive=True, healthy=True (/health HTTP 200)")]
     [DataRow(true, true, false, 503, "Runtime running=True, alive=True, healthy=False (/health HTTP 503)")]
+    [DataRow(true, false, false, 503, "Runtime running=True, alive=False, healthy=False (/health HTTP 503)")]
     [DataRow(true, true, null, null, "Runtime running=True, alive=True, healthy=unknown")]
     [DataRow(false, false, false, null, "Runtime running=False, alive=False, healthy=False")]
     [DataRow(false, null, null, null, "Runtime running=False, alive=unknown, healthy=unknown")]
@@ -394,10 +395,10 @@ public sealed class ProgramOutputTests
             ObservedUtc: observedUtc,
             LatestCommandOrder: 9,
             LatestCommandKeySha256: keySha256,
-            LatestTarget: "Paused",
+            LatestTarget: "Running",
             LatestActor: "installer:upgrade",
             LatestChanged: true,
-            LatestResultVersion: 7,
+            LatestResultVersion: 6,
             LatestCompletedUtc: completedUtc);
         var plan = DeploymentPlan.Of([new DeploymentPlanItem(DeploymentPlanAction.Change, "container", "cameraagent", "upgrade")]);
         var catalog = new CatalogInstallationIdentity(
@@ -438,7 +439,7 @@ public sealed class ProgramOutputTests
             "Deep-sky catalog: openngc / openngc-v1.0-r1",
             "Runtime running=True, alive=True, healthy=False (/health HTTP 503)",
             $"Capture admission preserved: Paused at version 7, sequence 42, observed {observedUtc:O}.",
-            $"Latest capture command #9 (key SHA-256 {keySha256}, Paused, changed=True) by installer:upgrade at {completedUtc:O}, version 7.",
+            $"Latest capture command #9 (key SHA-256 {keySha256}, Running, changed=True) by installer:upgrade at {completedUtc:O}, version 6.",
             "Preserved: /var/lib/hvo-sky/cameraagents/a/state",
             "Preserved: /var/lib/hvo-sky/cameraagents/a/captures",
             $"Resume: hvo-sky-install cameraagent upgrade --instance-id {instanceId:D} --resume",
