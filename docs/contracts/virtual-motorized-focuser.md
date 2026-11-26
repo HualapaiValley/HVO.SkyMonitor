@@ -11,9 +11,9 @@ on those installations. Physical motor and unattended qualification are separate
 
 The same authorized operator starts, observes and stops manual and motorized
 sessions through `ManualFocusSessionCoordinator`. An absolute move or relative
-step ends at its requested coordinate. Autofocus holds normal exposures from
-the first drain through final verification or recovery. This can cost capture
-windows but avoids admitting exposures taken at trial focus positions. The
+step ends at its requested coordinate. Moves, steps, and autofocus hold normal
+exposures from the first drain through final verification or recovery. This
+can cost capture windows but avoids exposures at trial focus positions. The
 Focus page discloses the hold. Scheduled work follows its ordinary admission
 and cadence rules. Other preview and calibration exposures receive a conflict.
 
@@ -22,10 +22,14 @@ the pinned camera generation. The command gate is released between operations,
 so operator pause, schedule and lifecycle changes remain effective. Releasing
 the focus hold respects the current admission state. Stop, host shutdown,
 lost observation, safety/operation deadlines and module withdrawal interrupt
-the operation. Teardown aborts motion with an independent cleanup token.
-Failure or cancellation attempts to restore the initial motor coordinate
-under the same generation. The virtual device additionally verifies the
-original optical position, including backlash. If restoration cannot be
+the operation. An installer lifecycle claim or armed restart fences new work.
+On failure or cancellation, the session retains its focus hold and attempts
+to restore the initial motor coordinate on the pinned generation, even during
+a lifecycle hold. Cleanup can run while capture is paused and is refused if
+admission is unavailable. The restore uses `StopWaitTimeout`. If a move fails
+or times out, the session awaits an abort inside the boundary with a fresh
+stop timeout. The virtual device verifies the original optical position,
+including backlash. If restoration cannot be
 verified, normal admission stays closed until restart recovery. Before
 restarting, the operator must resolve the disconnect or stall and verify
 the intended focus. The simulator starts from its configured initial state.

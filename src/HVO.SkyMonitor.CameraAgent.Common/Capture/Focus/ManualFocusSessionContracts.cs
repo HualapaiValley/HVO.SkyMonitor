@@ -351,6 +351,14 @@ public static class ManualFocusReasonCodes
     public const string PreviewUnmeasurable = "preview-unmeasurable";
     public const string LoopFailed = "loop-failed";
 
+    public const string AutofocusComplete = "autofocus-complete";
+    public const string MotorMoveComplete = "motor-move-complete";
+    public const string AutofocusInvalidSample = "autofocus-invalid-sample";
+    public const string AutofocusUnbracketed = "autofocus-unbracketed";
+    public const string AutofocusVerificationFailed = "autofocus-verification-failed";
+    public const string MotorMoveFailed = "motor-move-failed";
+    public const string MotorPositionUnverified = "motor-position-unverified";
+
     public const string NoModule =
         "The camera module is not running, so no focus preview can be taken. Wait for capture to start, then try again.";
 

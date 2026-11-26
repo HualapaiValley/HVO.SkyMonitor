@@ -30,7 +30,7 @@
         <h2 id="motor-heading">Motorized focuser</h2>
         <p role="status">@(motor.State.Connected ? motor.State.Stalled ? "Stalled" : motor.State.IsMoving ? $"Moving to {motor.State.TargetPosition}" : "Connected" : "Disconnected")
             · Position @motor.State.Position steps · Limits @motor.Limits.MinimumPosition–@motor.Limits.MaximumPosition
-            · Backlash @motor.Limits.BacklashSteps steps · @(motor.State.TemperatureCelsius is { } temp ? $"{temp:G} °C" : "Temperature unavailable")</p>
+            · Backlash @motor.Limits.BacklashSteps steps · @(motor.State.TemperatureCelsius is { } temp ? $"{temp.ToString("G", Culture)} °C" : "Temperature unavailable")</p>
         <fieldset disabled="@(!CanRunMotor)">
             <legend>Position and sweep</legend>
             <label>Target (steps) <input id="motor-target" type="number" min="@motor.Limits.MinimumPosition" max="@motor.Limits.MaximumPosition" @bind="_motorTarget" /></label>
@@ -45,14 +45,14 @@
                     disabled="@(_stepSize <= 0 || 4L * _stepSize + motor.Limits.BacklashSteps > motor.Limits.MaximumPosition - motor.Limits.MinimumPosition)"
                     @onclick="() => StartMotorAsync(new(SweepSpacing: _stepSize))">Run autofocus</button>
         </fieldset>
-        <p>Autofocus defers normal exposures while it measures five positions and verifies the best HFD. Save the session to retain its evidence.</p>
+        <p>Moves, steps, and autofocus hold normal exposures until the operation finishes. Autofocus measures five positions and verifies the best HFD. Save the session to retain its evidence.</p>
         @if (Session.Motor is { } result)
         {
             <p role="status">@Session.LastFailure @result.Recovery @(result.AppliedPosition is { } applied ? $"Applied position {applied} steps." : null)</p>
         }
     </section>
 }
-else if (_status is not null)
+else if (!_focuserRegistered)
 {
 <div class="focus-boundary" role="note">
     <strong>Manual focus only.</strong> Loosen, adjust, and secure the lens at the camera. CameraAgent measures image
@@ -245,7 +245,7 @@ else if (_status is not null)
     </div>
 </section>
 
-@if (_status?.Focuser is null)
+@if (!_focuserRegistered)
 {
 <section class="ops-panel ops-grid" aria-labelledby="focus-procedure-heading">
     <header class="ops-panel-heading">

@@ -29,7 +29,10 @@ public sealed class FocusPageTests
         ManualFocusReasonCodes.StoppedByOperator, ManualFocusReasonCodes.SafetyTimeout, ManualFocusReasonCodes.ObserverLost,
         ManualFocusReasonCodes.HostStopping, ManualFocusReasonCodes.CameraWithdrawn, ManualFocusReasonCodes.AdmissionUnavailable,
         ManualFocusReasonCodes.RepeatedFailures, ManualFocusReasonCodes.SampleDeadlineExceeded,
-        ManualFocusReasonCodes.PreviewUnmeasurable, ManualFocusReasonCodes.LoopFailed
+        ManualFocusReasonCodes.PreviewUnmeasurable, ManualFocusReasonCodes.LoopFailed,
+        ManualFocusReasonCodes.AutofocusComplete, ManualFocusReasonCodes.MotorMoveComplete, ManualFocusReasonCodes.AutofocusInvalidSample,
+        ManualFocusReasonCodes.AutofocusUnbracketed, ManualFocusReasonCodes.AutofocusVerificationFailed,
+        ManualFocusReasonCodes.MotorMoveFailed, ManualFocusReasonCodes.MotorPositionUnverified
     ];
 
     private static readonly CameraSimulatedFocusModel Model =
@@ -106,9 +109,9 @@ public sealed class FocusPageTests
         {
             Focuser = new(new(0, 100, 4), new(true, 10, null, false, 12.5))
         });
-        using var context = CreateContext(service, out _);
+        using var context = CreateContext(service, out _, focuserRegistered: true);
         var cut = context.Render<FocusPage>();
-        Assert.IsEmpty(cut.FindAll(".focus-boundary, #focus-position"));
+        Assert.IsEmpty(cut.FindAll(".focus-boundary, #focus-procedure-heading, #focus-position"));
         StringAssert.Contains(cut.Find(".focus-motor").TextContent, "Backlash 4", StringComparison.Ordinal);
         cut.Find("#motor-step-size").Change("26");
         Assert.IsTrue(cut.Find("#motor-in").HasAttribute("disabled"));
@@ -529,6 +532,23 @@ public sealed class FocusPageTests
     }
 
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public void LoadingAndFailedStatus_ShowManualOnlyNoteAccordingToRegistration(bool registered)
+    {
+        var response = new TaskCompletionSource<OperatorUiResult<FocusUiStatus>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var context = CreateContext(new FakeFocusService(null) { StatusResponse = response.Task }, out _, registered);
+        var cut = context.Render<FocusPage>();
+        Assert.AreEqual(!registered, cut.FindAll(".focus-boundary").Any());
+        Assert.IsEmpty(cut.FindAll("#motor-move"));
+
+        response.SetResult(OperatorUiResult<FocusUiStatus>.Failure(OperatorUiResultKind.Unavailable, "Focus status unavailable."));
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find(".focus-message").TextContent, "Focus status unavailable.", StringComparison.Ordinal));
+        Assert.AreEqual(!registered, cut.FindAll(".focus-boundary").Any());
+        Assert.IsEmpty(cut.FindAll("#motor-move"));
+    }
+
+    [TestMethod]
     public void UnauthorizedStatus_NavigatesToAccessDenied()
     {
         var service = new FakeFocusService(null);
@@ -587,7 +607,7 @@ public sealed class FocusPageTests
 
     private static string Normalize(string text) => string.Join(' ', text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
 
-    private static BunitContext CreateContext(FakeFocusService service, out ManualTimeProvider time)
+    private static BunitContext CreateContext(FakeFocusService service, out ManualTimeProvider time, bool focuserRegistered = false)
     {
         var context = new BunitContext();
         context.JSInterop.SetupModule("./Components/Pages/FocusPage.razor.js").SetupVoid("bindPicker", _ => true).SetVoidResult();
@@ -595,6 +615,8 @@ public sealed class FocusPageTests
         context.Services.AddSingleton<ICameraAgentFocusUiService>(service);
         context.Services.AddSingleton<TimeProvider>(time);
         context.Services.AddSingleton(new CircuitConnectionState());
+        if (focuserRegistered)
+            context.Services.AddSingleton<IMotorizedFocuser>(new VirtualMotorizedFocuser(new()));
         context.SetRendererInfo(new RendererInfo("Server", isInteractive: true));
         return context;
     }
@@ -658,6 +680,8 @@ public sealed class FocusPageTests
 
         public OperatorUiResultKind ObserveKind { get; init; } = OperatorUiResultKind.Success;
 
+        public Task<OperatorUiResult<FocusUiStatus>>? StatusResponse { get; init; }
+
         public int StatusReads { get; private set; }
 
         public int SavedReads { get; private set; }
@@ -674,6 +698,7 @@ public sealed class FocusPageTests
         public ValueTask<OperatorUiResult<FocusUiStatus>> GetStatusAsync(CancellationToken cancellationToken)
         {
             StatusReads++;
+            if (StatusResponse is { } response) return new(response.WaitAsync(cancellationToken));
             return ValueTask.FromResult(_status is null
                 ? OperatorUiResult<FocusUiStatus>.Failure(OperatorUiResultKind.Unauthorized, "Authorization is required.")
                 : OperatorUiResult<FocusUiStatus>.Success(_status));

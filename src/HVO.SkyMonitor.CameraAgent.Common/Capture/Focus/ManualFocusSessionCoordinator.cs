@@ -402,7 +402,7 @@ public sealed partial class ManualFocusSessionCoordinator : IHostedService, IDis
             {
                 using var observed = CancellationTokenSource.CreateLinkedTokenSource(token, session.ObserverDeadline!.Token);
                 await RunMotorAsync(session, observed.Token).ConfigureAwait(false);
-                endReason = session.Motor.Command.SweepSpacing.HasValue ? "autofocus-complete" : "motor-move-complete";
+                endReason = session.Motor.Command.SweepSpacing.HasValue ? ManualFocusReasonCodes.AutofocusComplete : ManualFocusReasonCodes.MotorMoveComplete;
             }
             else
             {

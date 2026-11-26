@@ -36,6 +36,7 @@ public sealed partial class FocusPage : SiteTimeComponent, IAsyncDisposable
     private bool _denied;
     private long _commandGeneration;
 
+    private bool _focuserRegistered;
     private FocusUiStatus? _status;
     private IReadOnlyList<ManualFocusSessionRecordSummary> _saved = [];
     private string? _savedListKey;
@@ -71,6 +72,7 @@ public sealed partial class FocusPage : SiteTimeComponent, IAsyncDisposable
     private DotNetObjectReference<FocusPage>? _reference;
     private bool _bindPicker;
 
+    [Inject] internal IServiceProvider ServiceProvider { get; set; } = default!;
     [Inject] internal ICameraAgentFocusUiService FocusService { get; set; } = default!;
     [Inject] internal TimeProvider TimeProvider { get; set; } = default!;
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
@@ -91,7 +93,7 @@ public sealed partial class FocusPage : SiteTimeComponent, IAsyncDisposable
         Position
     }
 
-    private OperationsSection Section => OperationsSectionCatalog.ForFocuser(OperationsSectionCatalog.Get("focus"), _status?.Focuser is not null);
+    private OperationsSection Section => OperationsSectionCatalog.ForFocuser(OperationsSectionCatalog.Get("focus"), _focuserRegistered);
 
     private bool CanRunMotor => CanStartSession && _status?.Focuser?.State is { Connected: true, Stalled: false, IsMoving: false };
 
@@ -185,7 +187,7 @@ public sealed partial class FocusPage : SiteTimeComponent, IAsyncDisposable
         {
             ManualFocusRetentionState.Saved => " Result saved.",
             ManualFocusRetentionState.Discarded => " Result discarded.",
-            _ => Session.History.Count > 0 ? " Result is in memory only." : string.Empty
+            _ => HasEvidence ? " Result is in memory only." : string.Empty
         })
     };
 
@@ -325,6 +327,7 @@ public sealed partial class FocusPage : SiteTimeComponent, IAsyncDisposable
 
     protected override async Task OnInitializedAsync()
     {
+        _focuserRegistered = ServiceProvider.GetService<IServiceProviderIsService>()?.IsService(typeof(IMotorizedFocuser)) == true;
         _lifetime = new CancellationTokenSource();
         await RefreshAsync(_lifetime.Token);
         if (_denied)
@@ -903,8 +906,13 @@ public sealed partial class FocusPage : SiteTimeComponent, IAsyncDisposable
 
     internal static string EndText(string? reason) => reason switch
     {
-        "autofocus-complete" => "Autofocus applied the verified HFD minimum.",
-        "motor-move-complete" => "Focuser reached the requested position.",
+        ManualFocusReasonCodes.AutofocusComplete => "Autofocus applied the verified HFD minimum.",
+        ManualFocusReasonCodes.MotorMoveComplete => "Focuser reached the requested position.",
+        ManualFocusReasonCodes.AutofocusInvalidSample => "The sweep needs valid, comparable measurements of the same star.",
+        ManualFocusReasonCodes.AutofocusUnbracketed => "The sweep did not find a distinct HFD minimum between its endpoints.",
+        ManualFocusReasonCodes.AutofocusVerificationFailed => "The return exposure did not confirm the HFD minimum.",
+        ManualFocusReasonCodes.MotorMoveFailed => "The focuser could not complete the move.",
+        ManualFocusReasonCodes.MotorPositionUnverified => "The focuser did not confirm its settled position.",
         ManualFocusReasonCodes.StoppedByOperator => "Ended by the operator.",
         ManualFocusReasonCodes.SafetyTimeout => "The safety limit ended the session.",
         ManualFocusReasonCodes.ObserverLost => "The owner stopped observing (page closed, connection lost, or access removed), so the session ended.",

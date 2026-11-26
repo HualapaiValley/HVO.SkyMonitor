@@ -36,8 +36,8 @@ public sealed class CameraModuleManualFocusPreviewSource(
         long? expectedGeneration, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(settings);
-        return AtBoundaryAsync(expectedGeneration, (lease, preview, token) =>
-            CaptureAsync(lease, preview, settings, simulatedFocusPosition, token), cancellationToken, motorOperation: false);
+        return AtBoundaryAsync(CaptureBoundaryKind.Exposure, expectedGeneration, (lease, preview, token) =>
+            CaptureAsync(lease, preview, settings, simulatedFocusPosition, token), cancellationToken);
     }
 
     internal async Task<ManualFocusPreview> CaptureAsync(CameraModuleLease lease, ICameraFocusPreviewCapture preview,
@@ -53,17 +53,18 @@ public sealed class CameraModuleManualFocusPreviewSource(
             requestedUtc, timeProvider.GetUtcNow(), imageCircle);
     }
 
-    internal async Task<T> AtBoundaryAsync<T>(long? expectedGeneration,
+    internal async Task<T> AtBoundaryAsync<T>(CaptureBoundaryKind kind, long? expectedGeneration,
         Func<CameraModuleLease, ICameraFocusPreviewCapture, CancellationToken, Task<T>> operation,
-        CancellationToken cancellationToken, bool motorOperation = true)
+        CancellationToken cancellationToken)
     {
-        await EnsureAdmissionAvailableAsync(cancellationToken).ConfigureAwait(false);
+        if (kind != CaptureBoundaryKind.MotorCleanup)
+            await EnsureAdmissionAvailableAsync(cancellationToken).ConfigureAwait(false);
         if (admission.Snapshot.State == CaptureAdmissionState.Unavailable) throw AdmissionUnavailable();
         if (!ownership.TryAcquire(out var lease))
             throw new ManualFocusSessionUnavailableException(ManualFocusReasonCodes.CameraWithdrawn, ManualFocusReasonCodes.NoModule);
         using (lease)
         {
-            if (expectedGeneration is { } expected && lease.Generation != expected)
+            if ((kind != CaptureBoundaryKind.Exposure || expectedGeneration.HasValue) && lease.Generation != expectedGeneration)
                 throw Withdrawn();
             if (lease.Module is not ICameraFocusPreviewCapture preview)
                 throw new ManualFocusSessionUnavailableException(ManualFocusReasonCodes.CameraWithdrawn,
@@ -77,9 +78,7 @@ public sealed class CameraModuleManualFocusPreviewSource(
                     if (admission.Snapshot.State == CaptureAdmissionState.Unavailable) throw AdmissionUnavailable();
                     return await operation(lease, preview, token).ConfigureAwait(false);
                 }
-                return motorOperation
-                    ? await admission.ExecuteMotorBoundaryAsync(Execute, linked.Token).ConfigureAwait(false)
-                    : await admission.ExecuteCaptureBoundaryAsync(Execute, linked.Token).ConfigureAwait(false);
+                return await admission.ExecuteBoundaryAsync(kind, Execute, linked.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (lease.Revoked.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
             {

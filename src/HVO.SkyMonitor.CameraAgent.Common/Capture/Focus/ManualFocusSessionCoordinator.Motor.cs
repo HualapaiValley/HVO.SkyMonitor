@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using HVO.SkyMonitor.AgentCore;
+using Microsoft.Extensions.Logging;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Focus;
 
@@ -36,7 +37,8 @@ public sealed partial class ManualFocusSessionCoordinator
             throw new ManualFocusSessionValidationException("A simulated optical model requires a virtual focuser.");
         var limits = motor.Capabilities;
         var fraction = (simulator.OpticalPosition - limits.MinimumPosition) / (double)(limits.MaximumPosition - limits.MinimumPosition);
-        return model.MinimumPosition + fraction * (model.MaximumPosition - model.MinimumPosition);
+        return Math.Clamp(model.MinimumPosition + fraction * (model.MaximumPosition - model.MinimumPosition),
+            model.MinimumPosition, model.MaximumPosition);
     }
 
     private Task RunMotorAsync(Session session, CancellationToken token)
@@ -87,11 +89,12 @@ public sealed partial class ManualFocusSessionCoordinator
         var restored = false;
         try
         {
-            final = motor.State;
-            if (!AtStart(final))
+            using var cleanup = new CancellationTokenSource(_limits.StopWaitTimeout, _timeProvider);
+            (final, restored) = await source.AtBoundaryAsync(CaptureBoundaryKind.MotorCleanup, session.ModuleGeneration, async (_, _, ct) =>
             {
-                using var cleanup = new CancellationTokenSource(_limits.StopWaitTimeout, _timeProvider);
-                final = await source.AtBoundaryAsync(session.ModuleGeneration, async (_, _, ct) =>
+                var state = motor.State;
+                if (AtStart(state)) return (state, true);
+                try
                 {
                     if (optical is { } originalOptical && motor.Capabilities.BacklashSteps > 0)
                     {
@@ -101,10 +104,15 @@ public sealed partial class ManualFocusSessionCoordinator
                         await MoveAsync(motor, originalOptical, ct).ConfigureAwait(false);
                     }
                     await MoveAsync(motor, initial, ct).ConfigureAwait(false);
-                    return motor.State;
-                }, cleanup.Token).ConfigureAwait(false);
-            }
-            restored = AtStart(final);
+                    state = motor.State;
+                    return (state, AtStart(state));
+                }
+                catch
+                {
+                    await AbortMotorAsync(motor).ConfigureAwait(false);
+                    throw;
+                }
+            }, cleanup.Token).ConfigureAwait(false);
         }
         catch (Exception exception)
         {
@@ -112,7 +120,11 @@ public sealed partial class ManualFocusSessionCoordinator
             final = null;
             if (_logger is not null) LogLoopFailed(_logger, exception, session.Id);
         }
-        if (!restored) await source.Admission.FailFocusClosedAsync().ConfigureAwait(false);
+        if (!restored)
+        {
+            await source.Admission.FailFocusClosedAsync().ConfigureAwait(false);
+            if (_logger is not null) LogRestorationUnverified(_logger, session.Id);
+        }
         lock (_sync)
         {
             session.Motor = session.Motor! with
@@ -140,14 +152,14 @@ public sealed partial class ManualFocusSessionCoordinator
             samples[i] = (await MotorOperationAsync(session, source, motor, position,
                 i == 0 ? position - limits.BacklashSteps : null, true, token).ConfigureAwait(false))!;
             if (!samples[i].Measurement.HasMeasurement || samples[i].ComparisonGroupId != samples[0].ComparisonGroupId)
-                throw new ManualFocusSessionUnavailableException("autofocus-invalid-sample",
+                throw new ManualFocusSessionUnavailableException(ManualFocusReasonCodes.AutofocusInvalidSample,
                     "The sweep needs valid measurements of the same star under comparable preview conditions.");
         }
         var widths = samples.Select(sample => sample.Measurement.HalfFluxDiameterPixels!.Value).ToArray();
         var best = Array.IndexOf(widths, widths.Min());
         if (best == 0 || best == widths.Length - 1 ||
             Enumerable.Range(1, widths.Length - 1).Any(i => i <= best ? widths[i] >= widths[i - 1] : widths[i] <= widths[i - 1]))
-            throw new ManualFocusSessionUnavailableException("autofocus-unbracketed",
+            throw new ManualFocusSessionUnavailableException(ManualFocusReasonCodes.AutofocusUnbracketed,
                 "The HFD measurements did not bracket a distinct minimum. Adjust the starting position or sweep spacing.");
         var selected = samples[best].MotorPosition!.Value;
         // Repeat the same approach direction to reproduce optical focus despite backlash.
@@ -156,7 +168,7 @@ public sealed partial class ManualFocusSessionCoordinator
         if (verified?.ComparisonGroupId != samples[best].ComparisonGroupId ||
             verified?.Measurement.HalfFluxDiameterPixels is not { } hfd ||
             hfd >= Math.Min(widths[best - 1], widths[best + 1]))
-            throw new ManualFocusSessionUnavailableException("autofocus-verification-failed",
+            throw new ManualFocusSessionUnavailableException(ManualFocusReasonCodes.AutofocusVerificationFailed,
                 "The return exposure did not confirm the measured HFD minimum.");
         return selected;
     }
@@ -168,7 +180,7 @@ public sealed partial class ManualFocusSessionCoordinator
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, deadline.Token);
         try
         {
-            return await source.AtBoundaryAsync<ManualFocusSample?>(session.ModuleGeneration, async (lease, preview, ct) =>
+            return await source.AtBoundaryAsync<ManualFocusSample?>(CaptureBoundaryKind.Motor, session.ModuleGeneration, async (lease, preview, ct) =>
             {
                 try
                 {
@@ -196,8 +208,7 @@ public sealed partial class ManualFocusSessionCoordinator
                 }
                 catch
                 {
-                    using var cleanup = new CancellationTokenSource(_limits.StopWaitTimeout, _timeProvider);
-                    await motor.AbortAsync(cleanup.Token).ConfigureAwait(false);
+                    await AbortMotorAsync(motor).ConfigureAwait(false);
                     throw;
                 }
             }, linked.Token).ConfigureAwait(false);
@@ -209,11 +220,21 @@ public sealed partial class ManualFocusSessionCoordinator
         }
     }
 
+    [LoggerMessage(EventId = 4705, Level = LogLevel.Warning,
+        Message = "Focus session {SessionId} could not verify the starting position. Capture admission is closed.")]
+    private static partial void LogRestorationUnverified(ILogger logger, string sessionId);
+
+    private async Task AbortMotorAsync(IMotorizedFocuser motor)
+    {
+        using var cleanup = new CancellationTokenSource(_limits.StopWaitTimeout, _timeProvider);
+        await motor.AbortAsync(cleanup.Token).ConfigureAwait(false);
+    }
+
     private static async Task MoveAsync(IMotorizedFocuser motor, int target, CancellationToken token)
     {
         var result = await motor.MoveAsync(target, token).ConfigureAwait(false);
         if (result.Outcome != MotorizedFocuserMoveOutcome.Completed)
-            throw new ManualFocusSessionUnavailableException("motor-move-failed", $"Focuser move ended as {result.Outcome}.");
+            throw new ManualFocusSessionUnavailableException(ManualFocusReasonCodes.MotorMoveFailed, $"Focuser move ended as {result.Outcome}.");
         token.ThrowIfCancellationRequested();
         VerifyPosition(result.State, target);
     }
@@ -221,6 +242,6 @@ public sealed partial class ManualFocusSessionCoordinator
     private static void VerifyPosition(MotorizedFocuserState state, int target)
     {
         if (!state.Connected || state.IsMoving || state.Stalled || state.Position != target)
-            throw new ManualFocusSessionUnavailableException("motor-position-unverified", "The focuser did not confirm its settled target position.");
+            throw new ManualFocusSessionUnavailableException(ManualFocusReasonCodes.MotorPositionUnverified, "The focuser did not confirm its settled target position.");
     }
 }
