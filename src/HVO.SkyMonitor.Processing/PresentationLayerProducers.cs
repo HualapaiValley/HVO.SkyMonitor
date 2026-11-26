@@ -99,7 +99,7 @@ public sealed record PresentationMetadataFactsProductV1(
 /// <summary>Host-neutral producers that consume canonical facts, never base image pixels.</summary>
 public static class PresentationLayerProducers
 {
-    public const string SceneProducerVersion = "projected-scene-presentation-v13-plain-circle-bounded-expected-labels";
+    public const string SceneProducerVersion = "projected-scene-presentation-v15-plain-circle-bounded-point-source-labels";
 
     /// <summary>
     /// Output-pixel clearance between a resolved footprint's limb and its drawn outline, and the floor of the
@@ -169,10 +169,12 @@ public static class PresentationLayerProducers
         bool expectedPositionDiagnostics = false,
         HorizonObstructionSceneEligibility? horizon = null,
         bool includeDeepSky = true,
-        PresentationDeepSkyStyleV1? deepSkyStyle = null)
+        PresentationDeepSkyStyleV1? deepSkyStyle = null,
+        bool allowCompatibleExposureAssociations = false)
     => FromProjectedSceneGroupsCore(scene, style, includeMarkers, includeLabels, includeConstellations,
             includeImageCircle, includeCardinalDirections, associations, expectedPositionDiagnostics, horizon: horizon,
-            includeDeepSky: includeDeepSky, deepSkyStyle: deepSkyStyle);
+            includeDeepSky: includeDeepSky, deepSkyStyle: deepSkyStyle,
+            allowCompatibleExposureAssociations: allowCompatibleExposureAssociations);
 
     internal static PresentationSceneLayerPayloadsV2 FromProjectedSceneGroupsCore(
         ProjectedSceneV1 scene,
@@ -187,7 +189,8 @@ public static class PresentationLayerProducers
         ScenePresentationStyleV1? selectedStyle = null,
         HorizonObstructionSceneEligibility? horizon = null,
         bool includeDeepSky = true,
-        PresentationDeepSkyStyleV1? deepSkyStyle = null)
+        PresentationDeepSkyStyleV1? deepSkyStyle = null,
+        bool allowCompatibleExposureAssociations = false)
     {
         ArgumentNullException.ThrowIfNull(scene);
         ProjectedSceneJson.Validate(scene);
@@ -195,7 +198,7 @@ public static class PresentationLayerProducers
         var sceneStyleIdentity = selectedStyle?.IdentitySha256;
         if (associations is not null &&
             (!MeasuredStellarAssociationJson.Validate(associations).IsValid ||
-             !string.Equals(associations.Scene.SceneIdentitySha256, scene.SceneIdentitySha256, StringComparison.OrdinalIgnoreCase)))
+             !AssociationsBindScene(associations, scene, allowCompatibleExposureAssociations)))
             throw new ArgumentException("The measured associations do not describe this projected scene.", nameof(associations));
         style = style is null
             ? new PresentationAnnotationStyleV1(ConstellationIds: [])
@@ -339,9 +342,14 @@ public static class PresentationLayerProducers
             var labelled = annotatedObjects.Select(static item => (item.Id, item.DisplayName, item.Pixel, item.Magnitude))
                 .Concat(footprintOnly.Select(static item => (Id: item.Footprint.Id, DisplayName: item.Footprint.DisplayName,
                     Pixel: item.Anchor, Magnitude: item.Footprint.Appearance?.VisualMagnitude ?? double.MaxValue))).ToArray();
-            // Footprint-only labels are solar-system bodies, which the policy leaves untouched.
+            // Resolved-footprint solar-system bodies stay outside point-source label gating.
             var labeled = StellarLabelPolicy.Apply(labelled
-                .Select(static item => new ProjectedAnnotationObject(item.Id, item.DisplayName, item.Pixel)).ToArray(),
+                .Select(item => new ProjectedAnnotationObject(item.Id, item.DisplayName, item.Pixel)
+                {
+                    FootprintParts = footprints.TryGetValue(item.Id, out var fp) && fp.Parts.Count > 0
+                        ? [new ResolvedFootprintPart(true, [item.Pixel])]
+                        : null
+                }).ToArray(),
                 associations, expectedPositionDiagnostics)
                 .Where(static item => item.DrawLabel)
                 .ToDictionary(static item => item.Id, StringComparer.Ordinal);
@@ -629,5 +637,21 @@ public static class PresentationLayerProducers
                 ? new(assessment.Grid.Columns, assessment.Grid.Rows, PresentationTileMaskV1.RowMajorLsbFirst,
                     deficitBits, lineThickness, deficitColor ?? new PresentationColor(255, 192, 64))
                 : null);
+    }
+
+    internal static bool AssociationsBindScene(
+        MeasuredStellarAssociationsV1 associations, ProjectedSceneV1 scene, bool allowCompatibleExposureAssociations)
+    {
+        if (string.Equals(associations.Scene.SceneIdentitySha256, scene.SceneIdentitySha256, StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (!allowCompatibleExposureAssociations)
+            return false;
+        return associations.Scene.Kind == ProjectedSceneKind.Predicted &&
+            associations.Source.CaptureId == scene.Source.CaptureId &&
+            associations.Source.ArtifactId == scene.Source.ArtifactId &&
+            string.Equals(associations.Source.DescriptorIdentitySha256, scene.Source.ArtifactIdentitySha256, StringComparison.OrdinalIgnoreCase) &&
+            associations.Source.WidthPixels == scene.ImageTransform.OutputWidthPixels &&
+            associations.Source.HeightPixels == scene.ImageTransform.OutputHeightPixels &&
+            string.Equals(associations.Scene.CalibrationVersion, scene.Projection.CalibrationVersion, StringComparison.Ordinal);
     }
 }

@@ -109,4 +109,41 @@ public sealed partial class CurrentSkyPageTests
             Assert.IsFalse(expected.QuerySelector("input")!.HasAttribute("checked"));
         });
     }
+
+    [TestMethod]
+    public void CenteredCurrentSkyRendersTruthfulEmptyAndParentInvalidReasons()
+    {
+        using var context = new BunitContext();
+        var (service, clock) = ConfigurePolling(context);
+        var reference = CenteredExposure(105, clock.GetUtcNow().AddSeconds(-10));
+        var compatibility = new PresentationCompatibilityDescriptor(640, 480, new string('B', 64), new string('C', 64));
+        var view = CenteredStack(
+            reference,
+            [CenteredExposure(104, reference.ExposureStartedUtc.AddSeconds(-1)), reference,
+             CenteredExposure(106, reference.ExposureStartedUtc.AddSeconds(1))],
+            1,
+            [
+                new(new(MeasuredAssociationPresentation.MeasuredLayerKind, CenteredViewLayerScope.Reference, reference.Capture.CaptureId),
+                    1, EvidencePin("measured-invalid"), OperatorUiTestData.Now, CenteredViewReadiness.Incompatible,
+                    "centered.association-parent-invalid", null),
+                new(new(MeasuredAssociationPresentation.ExpectedNotDetectedLayerKind, CenteredViewLayerScope.Reference, reference.Capture.CaptureId),
+                    2, EvidencePin("expected-filtered"), OperatorUiTestData.Now, CenteredViewReadiness.AssessedEmpty,
+                    MeasuredAssociationPresentation.EmptyExpectedFilteredReason, null)
+            ],
+            compatibility);
+        service.CenteredCurrentSkyHandler = (_, _) =>
+            ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(
+                CenteredSkyView(view, reference, CenteredViewLiveState.Ready, clock.GetUtcNow())));
+
+        var cut = context.Render<CurrentSkyPage>();
+        cut.WaitForAssertion(() =>
+        {
+            var measured = cut.Find($"[aria-label='Measured layers'] [data-layer-kind='{MeasuredAssociationPresentation.MeasuredLayerKind}']");
+            StringAssert.Contains(measured.TextContent, "measured association parent verification failed", StringComparison.Ordinal);
+
+            var expected = cut.Find($"[aria-label='Diagnostics layers'] [data-layer-kind='{MeasuredAssociationPresentation.ExpectedNotDetectedLayerKind}']");
+            StringAssert.Contains(expected.TextContent, "unmatched predictions excluded by display filter or aperture", StringComparison.Ordinal);
+            Assert.IsFalse(expected.TextContent.Contains("all expected catalog predictions matched", StringComparison.Ordinal));
+        });
+    }
 }

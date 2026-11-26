@@ -110,7 +110,7 @@ public sealed class ProcessingNodeOptionsForm
             "CAPTURESATELLITETRACKS" => CaptureSatelliteOptionDescriptors.Tracks.StepVersion,
             "CAPTURESATELLITELAYER" => CaptureSatelliteOptionDescriptors.Layer.StepVersion,
             "STORAGE" => StorageOptionDescriptors.Descriptor.StepVersion,
-            "ANNOTATION" => "projected-annotation-v4",
+            "ANNOTATION" => AnnotationOptionDescriptors.Descriptor.StepVersion,
             "OVERLAYMANIFEST" => OverlayManifestOptionDescriptors.Descriptor.StepVersion,
             "PRESENTATIONMATERIALIZER" => PresentationMaterializerOptionDescriptors.Descriptor.StepVersion,
             "CLOUDPRESENTATIONLAYER" => PresentationLayerProducers.CloudProducerVersion,

@@ -1302,8 +1302,11 @@ public sealed partial class CurrentSkyPage
             "centered.segments-outside-registration" => "segments outside registered domain",
             "centered.rich-text-preview-too-small" => "preview too small for corner text",
             "centered.trail-geometry-unavailable" => "trail geometry unavailable",
-            "measured.no-detected-sources" => "no measured sources on this reference exposure",
-            "expected.all-predictions-matched" => "all expected catalog predictions matched",
+            MeasuredAssociationPresentation.EmptyMeasuredReason => "no measured sources on this reference exposure",
+            MeasuredAssociationPresentation.EmptyExpectedAllMatchedReason => "all expected catalog predictions matched",
+            MeasuredAssociationPresentation.EmptyExpectedFilteredReason => "unmatched predictions excluded by display filter or aperture",
+            MeasuredAssociationPresentation.EmptyExpectedNoPredictionsReason => "no expected catalog predictions in scene",
+            "centered.association-parent-invalid" => "measured association parent verification failed",
             MeasuredStellarAssociationReasonCodes.MeasurementIncomplete => "exposure measurement incomplete",
             _ => reason.StartsWith("centered.", StringComparison.Ordinal)
                 ? OperationsPage.SplitWords(reason["centered.".Length..].Replace('-', ' '))

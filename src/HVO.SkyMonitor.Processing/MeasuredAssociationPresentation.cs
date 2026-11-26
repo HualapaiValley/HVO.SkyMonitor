@@ -176,6 +176,31 @@ public static class MeasuredAssociationPresentation
             associations.AssociationIdentitySha256, width, height, items, markerRadius, labelScale, maxLabelChars);
     }
 
+    public const string EmptyMeasuredReason = "measured.no-detected-sources";
+    public const string EmptyExpectedAllMatchedReason = "expected.all-predictions-matched";
+    public const string EmptyExpectedFilteredReason = "expected.unmatched-filtered-from-display";
+    public const string EmptyExpectedNoPredictionsReason = "expected.no-catalog-predictions";
+
+    /// <summary>
+    /// Classifies why an expected-not-detected layer has zero drawable items strictly from the analytical association
+    /// evidence. Never claims all predictions matched when unmatched or label-ineligible predictions exist.
+    /// </summary>
+    public static string ClassifyEmptyExpectedLayerReason(MeasuredStellarAssociationsV1 associations)
+    {
+        ArgumentNullException.ThrowIfNull(associations);
+        var planetAssociations = associations.PointSourcePlanets?.Associations;
+        var planetUnmatched = associations.PointSourcePlanets?.UnmatchedPredictions;
+        var totalPredictions = associations.Associations.Count + associations.UnmatchedPredictions.Count +
+            (planetAssociations?.Count ?? 0) + (planetUnmatched?.Count ?? 0);
+        if (totalPredictions == 0)
+            return EmptyExpectedNoPredictionsReason;
+        var hasUnconfirmed = associations.UnmatchedPredictions.Count > 0 ||
+            associations.Associations.Any(static item => !item.LabelEligible) ||
+            (planetUnmatched?.Count ?? 0) > 0 ||
+            (planetAssociations?.Any(static item => !item.LabelEligible) ?? false);
+        return hasUnconfirmed ? EmptyExpectedFilteredReason : EmptyExpectedAllMatchedReason;
+    }
+
     /// <summary>
     /// Creates the separately selectable diagnostic layer from a projected scene and optional measured associations.
     /// When no measured associations are bound, every clear catalog star and point-source planet within the magnitude
@@ -185,7 +210,8 @@ public static class MeasuredAssociationPresentation
         ProjectedSceneV1 scene,
         MeasuredStellarAssociationsV1? associations = null,
         PresentationAnnotationStyleV1? style = null,
-        HorizonObstructionSceneEligibility? horizon = null)
+        HorizonObstructionSceneEligibility? horizon = null,
+        bool allowCompatibleExposureAssociations = false)
     {
         ArgumentNullException.ThrowIfNull(scene);
         ProjectedSceneJson.Validate(scene);
@@ -193,9 +219,10 @@ public static class MeasuredAssociationPresentation
         if (associations is not null)
         {
             if (!MeasuredStellarAssociationJson.Validate(associations).IsValid ||
-                !string.Equals(associations.Scene.SceneIdentitySha256, scene.SceneIdentitySha256, StringComparison.OrdinalIgnoreCase))
+                !PresentationLayerProducers.AssociationsBindScene(associations, scene, allowCompatibleExposureAssociations))
                 throw new ArgumentException("The measured associations do not describe this projected scene.", nameof(associations));
-            if (horizon is null)
+            if (horizon is null &&
+                string.Equals(associations.Scene.SceneIdentitySha256, scene.SceneIdentitySha256, StringComparison.OrdinalIgnoreCase))
                 return CreateExpectedNotDetectedPayload(associations, scene, style);
         }
 

@@ -18,7 +18,7 @@ namespace HVO.SkyMonitor.Processing.Tests;
 [SuppressMessage("Performance", "CA1861:Avoid constant arrays as arguments", Justification = "Single-use expected test values are clearer inline.")]
 public sealed partial class ProcessingNodeOptionsTests
 {
-    private const string SceneVersion = "projected-scene-presentation-v13-plain-circle-bounded-expected-labels";
+    private const string SceneVersion = "projected-scene-presentation-v15-plain-circle-bounded-point-source-labels";
     private const string Color = "constellationLineColor";
     private const string Thickness = "constellationLineThickness";
     private static readonly ProcessingNodeOptionsDescriptor Scene = ProcessingNodeOptionsDescriptors.ScenePresentationLayer;

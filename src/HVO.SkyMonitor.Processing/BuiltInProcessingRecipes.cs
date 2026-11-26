@@ -715,7 +715,7 @@ internal sealed class AnnotationRecipe : IProcessingRecipe
     internal const string ProjectedSceneAuxiliaryInputName = "projected-scene";
 
     public ProcessingRecipeDefinition Definition { get; } = new(
-        BuiltInProcessingRecipes.Annotation, "1.0.0", "projected-annotation-v4",
+        BuiltInProcessingRecipes.Annotation, "1.0.0", "projected-annotation-v5",
         ProcessingOperationKind.Transform);
 
     public JsonElement NormalizeOptions(JsonElement options)
@@ -875,13 +875,14 @@ internal sealed class AnnotationRecipe : IProcessingRecipe
         var source = matches[0].source;
         if (matches.Length != 1 || source.ProductKind != ProcessingProductKind.Metadata ||
             !string.Equals(source.MediaType, StructuredProcessingProductContracts.MeasuredStellarAssociationsMediaType, StringComparison.Ordinal) ||
-            !string.Equals(source.SchemaVersion, MeasuredStellarAssociationsV1.CurrentSchemaVersion, StringComparison.Ordinal))
+            !MeasuredStellarAssociationsV1.IsSupportedSchemaVersion(source.SchemaVersion))
         {
             failure = ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.InvalidMeasuredStellarAssociations, nameof(request.AuxiliaryInputs));
             return false;
         }
         var parsed = MeasuredStellarAssociationJson.Parse(source.Payload);
         if (!parsed.Validation.IsValid || parsed.Associations is not { } product ||
+            !string.Equals(product.SchemaVersion, source.SchemaVersion, StringComparison.Ordinal) ||
             (source.ContentIdentitySha256 is { } content &&
              !string.Equals(content, product.AssociationIdentitySha256, StringComparison.OrdinalIgnoreCase)))
         {
@@ -895,13 +896,29 @@ internal sealed class AnnotationRecipe : IProcessingRecipe
             .SingleOrDefault();
         var sceneIdentity = scene?.ContentIdentitySha256;
         if (input.CaptureId is null && sceneIdentity is null ||
-            input.CaptureId is { } captureId && product.Source.CaptureId != captureId ||
-            sceneIdentity is not null &&
-            !string.Equals(sceneIdentity, product.Scene.SceneIdentitySha256, StringComparison.OrdinalIgnoreCase))
+            input.CaptureId is { } captureId && product.Source.CaptureId != captureId)
         {
             failure = ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.MeasuredStellarAssociationsSourceMismatch,
                 nameof(product.Source));
             return false;
+        }
+        if (sceneIdentity is not null &&
+            !string.Equals(sceneIdentity, product.Scene.SceneIdentitySha256, StringComparison.OrdinalIgnoreCase))
+        {
+            var compatibleExposureAssociation = false;
+            if (source.RecipeDescriptor?.Name == ExposureAssociationProducts.RecipeName && scene is not null)
+            {
+                var parsedScene = HVO.SkyMonitor.Astronomy.ProjectedSceneJson.Parse(scene.Payload);
+                compatibleExposureAssociation = parsedScene.IsValid && parsedScene.Scene is { } verifiedScene &&
+                    string.Equals(verifiedScene.SceneIdentitySha256, sceneIdentity, StringComparison.OrdinalIgnoreCase) &&
+                    ExposureAssociationProducts.IsCompatibleWithScene(source, product, verifiedScene);
+            }
+            if (!compatibleExposureAssociation)
+            {
+                failure = ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.MeasuredStellarAssociationsSourceMismatch,
+                    nameof(product.Source));
+                return false;
+            }
         }
         associations = product;
         return true;

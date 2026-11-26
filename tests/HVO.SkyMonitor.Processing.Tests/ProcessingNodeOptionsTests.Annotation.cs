@@ -55,11 +55,11 @@ public sealed partial class ProcessingNodeOptionsTests
     public void AnnotationDescriptorBindsOnlyTheExactRegisteredImplementationAndEffectiveMembers()
     {
         var descriptor = AnnotationOptionDescriptors.Descriptor;
-        Assert.AreEqual("projected-annotation-v4", descriptor.StepVersion);
+        Assert.AreEqual("projected-annotation-v5", descriptor.StepVersion);
         Assert.IsTrue(BuiltInProcessingRecipes.TryGetDefinition(BuiltInProcessingRecipes.Annotation, out var recipe));
         Assert.AreEqual(recipe!.ImplementationVersion, descriptor.StepVersion);
         Assert.AreSame(descriptor, ProcessingNodeOptionsCatalog.BuiltIn.Resolve("aNnOtAtIoN", descriptor.StepVersion).Descriptor);
-        foreach (var version in new[] { "projected-annotation-v3", "projected-annotation-v5", "projected-scene-annotation-v3", "Projected-annotation-v4" })
+        foreach (var version in new[] { "projected-annotation-v3", "projected-annotation-v4", "projected-annotation-v6", "projected-scene-annotation-v3", "Projected-annotation-v5" })
         {
             var resolution = ProcessingNodeOptionsCatalog.BuiltIn.Resolve("Annotation", version);
             Assert.AreEqual(ProcessingNodeOptionsResolutionStatus.UnsupportedVersion, resolution.Status);

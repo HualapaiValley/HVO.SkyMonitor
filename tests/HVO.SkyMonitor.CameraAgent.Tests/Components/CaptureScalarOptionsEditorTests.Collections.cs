@@ -87,7 +87,7 @@ public sealed partial class CaptureScalarOptionsEditorTests
 
     [TestMethod]
     [DataRow("projected-scene-presentation-v12-plain-circle-markers")]
-    [DataRow("projected-scene-presentation-v13-plain-circle-bounded-expected-labels")]
+    [DataRow("projected-scene-presentation-v15-plain-circle-bounded-point-source-labels")]
     public void BothSceneLayerVersionsUseTheSameOrderedSelectionControls(string version)
     {
         using var context = new BunitContext();

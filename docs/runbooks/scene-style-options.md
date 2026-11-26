@@ -39,7 +39,7 @@ existing rules. Deep-sky qualification captions keep their fixed palette and
 fonts even when object label colours/fonts are edited. Satellites, Frame Facts,
 time-lapses and catalog query selection do not adopt these settings.
 
-The producer is `projected-scene-presentation-v14-explicit-style`; its exact
+The producer is `projected-scene-presentation-v15-explicit-style`; its exact
 shared descriptor is `scene-style-presentation-options-v1`. New layers use
 `presentation-layer-payload-v5-scene-style` and
 `typed-presentation-compositor-v8-scene-style`, retaining the style identity,

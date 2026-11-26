@@ -38,8 +38,9 @@ identity.
 The saved `ScenePresentationLayer` v12 descriptor preserves its declared version
 and option bytes for inspection/editing. It does **not install a historical
 producer**. The current implementation is
-`projected-scene-presentation-v13-plain-circle-bounded-expected-labels`;
-its label policy suppresses unmeasured stellar labels. Retained artifact recipes
+`projected-scene-presentation-v15-plain-circle-bounded-point-source-labels`;
+its label policy suppresses unmeasured star and point-source planet (Mercury–Neptune)
+labels while leaving resolved Sun/Moon discs untouched. Retained artifact recipes
 and algorithm stamps identify the actual implementation.
 
 A portable v12 draft compiles to its declared v12 plan identity; that is not

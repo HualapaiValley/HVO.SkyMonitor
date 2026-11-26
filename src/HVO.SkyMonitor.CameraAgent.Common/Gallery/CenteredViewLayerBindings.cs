@@ -34,9 +34,10 @@ internal static class CenteredViewLayerBindings
         [Markers, Annotation, MeasuredAssociations, ExpectedNotDetected, Cardinals, ImageCircle, Constellations, DeepSky, CloudMask, CloudLabel, RegionalVisibility, Environment, Residuals, Satellites];
 
     internal static bool SupportsSchema(string? schema) => schema is ExposureMeasurementProducts.SchemaVersion or
-        MeasuredStellarAssociationsV1.CurrentSchemaVersion or
         RegionalStellarVisibilityProducts.SchemaVersion or
-        MeasuredAstrometrySolutionV1.CurrentSchemaVersion || PresentationLayerPayloadV1.SupportsSchema(schema);
+        MeasuredAstrometrySolutionV1.CurrentSchemaVersion ||
+        MeasuredStellarAssociationsV1.IsSupportedSchemaVersion(schema) ||
+        PresentationLayerPayloadV1.SupportsSchema(schema);
 
     internal static string SourceSchema(string schema) => schema.StartsWith(DispositionPrefix, StringComparison.Ordinal)
         ? schema[DispositionPrefix.Length..] : schema;
@@ -44,7 +45,9 @@ internal static class CenteredViewLayerBindings
     internal static IReadOnlyList<CenteredViewLayerBinding> ReadLegacySlot(ExposureProductSlot slot) => SourceSchema(slot.SchemaVersion) switch
     {
         ExposureMeasurementProducts.SchemaVersion when slot.Variant == ExposureMeasurementProducts.Variant => [Markers],
-        MeasuredStellarAssociationsV1.CurrentSchemaVersion => [MeasuredAssociations, ExpectedNotDetected],
+        var schema when MeasuredStellarAssociationsV1.IsSupportedSchemaVersion(schema) &&
+            (slot.Variant == ExposureAssociationProducts.Variant || slot.Producer == ExposureAssociationProducts.StepAlias) =>
+            [MeasuredAssociations, ExpectedNotDetected],
         RegionalStellarVisibilityProducts.SchemaVersion => [RegionalVisibility],
         MeasuredAstrometrySolutionV1.CurrentSchemaVersion => [Residuals],
         var schema when PresentationLayerPayloadV1.SupportsSchema(schema) => slot.Variant switch
@@ -68,6 +71,11 @@ internal static class CenteredViewLayerBindings
         ProcessingGraphDefinition graph)
     {
         var result = new Dictionary<(string, string, string), IReadOnlyList<CenteredViewLayerBinding>>();
+        // ExposureStellarAssociations is the single authoritative centered producer of expected-not-detected
+        // when configured; prevent a second scene-presentation writer from racing or overwriting it.
+        var hasAuthoritativeAssociations = graph.Nodes.Any(static node =>
+            node.Enabled && node.StepAlias == ExposureAssociationProducts.StepAlias);
+        var boundLayers = new HashSet<(CenteredViewLayerScope Scope, string Kind)>();
         foreach (var node in graph.Nodes.Where(node => node.Enabled))
         {
             var ports = PortBindings(node.StepAlias);
@@ -76,21 +84,22 @@ internal static class CenteredViewLayerBindings
                 var output = node.Outputs[index];
                 if (output.SchemaVersion is not { } schema || !SupportsSchema(schema))
                     continue;
-                IReadOnlyList<CenteredViewLayerBinding> bindings;
+                IReadOnlyList<CenteredViewLayerBinding> candidates;
                 if (node.StepAlias is "ScenePresentationLayer" or SceneStylePresentation.StepAlias &&
                     output.Recipe?.ImplementationVersion == MeasuredAssociationPresentation.ExpectedNotDetectedVersion)
                 {
-                    bindings = [ExpectedNotDetected];
+                    candidates = hasAuthoritativeAssociations ? [] : [ExpectedNotDetected];
                 }
                 else if (index < ports.Count)
                 {
-                    bindings = ports[index];
+                    candidates = ports[index];
                 }
                 else
                 {
                     continue;
                 }
-                if (bindings.Count > 0)
+                var bindings = candidates.Where(binding => boundLayers.Add((binding.Scope, binding.Style.Kind))).ToArray();
+                if (bindings.Length > 0)
                     result.Add((node.Id, schema, output.Variant), bindings);
             }
         }

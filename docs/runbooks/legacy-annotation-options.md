@@ -15,7 +15,7 @@ archived replay using that revision keep its former styling and identity.
 ## Runtime effectiveness inventory
 
 The shared Processing descriptor binds only registered alias `Annotation`
-(case insensitive), exact implementation **`projected-annotation-v4`**. The
+(case insensitive), exact implementation **`projected-annotation-v5`**. The
 operator's `RecipeVersion` string (default `projected-scene-annotation-v3`) is a
 retained artifact label, not the implementation version. Neither it nor the
 algorithm identities change when opening the panel.

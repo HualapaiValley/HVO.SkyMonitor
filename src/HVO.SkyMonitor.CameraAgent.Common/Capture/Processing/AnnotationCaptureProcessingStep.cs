@@ -60,13 +60,13 @@ internal sealed class AnnotationCaptureProcessingStep(
     private static CaptureProcessingDependencyRequirement MeasuredAssociationsRequirement { get; } = new(
         new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata },
         new HashSet<string>(StringComparer.Ordinal) { BuiltInProcessingRecipes.MeasuredStellarAssociations },
-        new HashSet<string>(StringComparer.Ordinal) { MeasuredStellarAssociationsV1.CurrentSchemaVersion },
+        new HashSet<string>(MeasuredStellarAssociationsV1.SupportedSchemaVersions, StringComparer.Ordinal),
         Required: false);
 
     private static CaptureProcessingDependencyRequirement ExposureMeasuredAssociationsRequirement { get; } = new(
         new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata },
         new HashSet<string>(StringComparer.Ordinal) { BuiltInProcessingRecipes.MeasuredStellarAssociations, ExposureAssociationProducts.RecipeName },
-        new HashSet<string>(StringComparer.Ordinal) { MeasuredStellarAssociationsV1.CurrentSchemaVersion },
+        new HashSet<string>(MeasuredStellarAssociationsV1.SupportedSchemaVersions, StringComparer.Ordinal),
         Required: false);
 
     public override async ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
@@ -280,7 +280,7 @@ internal sealed class AnnotationCaptureProcessingStep(
         }
         var measuredProduct = context.GetDependencyProducts().SingleOrDefault(static product =>
             product.Kind == ProcessingProductKind.Metadata &&
-            string.Equals(product.SchemaVersion, MeasuredStellarAssociationsV1.CurrentSchemaVersion, StringComparison.Ordinal));
+            MeasuredStellarAssociationsV1.IsSupportedSchemaVersion(product.SchemaVersion));
         if (measuredProduct is not null)
         {
             var measured = CameraAgentRecipeExecutionAdapter.CreateArtifact(context, measuredProduct);

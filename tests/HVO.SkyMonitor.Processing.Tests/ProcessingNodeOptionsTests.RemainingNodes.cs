@@ -3,8 +3,8 @@ namespace HVO.SkyMonitor.Processing.Tests;
 public sealed partial class ProcessingNodeOptionsTests
 {
     [TestMethod]
-    [DataRow("MeasuredStellarAssociations", "measured-stellar-associations-v1", "outputVariant", "null")]
-    [DataRow("MeasuredStellarAssociations", "measured-stellar-associations-v1", "enabled", "1")]
+    [DataRow("MeasuredStellarAssociations", "measured-stellar-associations-v2", "outputVariant", "null")]
+    [DataRow("MeasuredStellarAssociations", "measured-stellar-associations-v2", "enabled", "1")]
     [DataRow("MeasuredAstrometry", "measured-astrometry-v1", "captureStride", "59")]
     [DataRow("MeasuredAstrometry", "measured-astrometry-v1", "captureStride", "1000001")]
     [DataRow("MeasuredAstrometry", "measured-astrometry-v1", "captureStride", "60.5")]
@@ -28,7 +28,7 @@ public sealed partial class ProcessingNodeOptionsTests
     }
 
     [TestMethod]
-    [DataRow("MeasuredStellarAssociations", "measured-stellar-associations-v1", "outputVariant", "measured-stellar-associations-v1")]
+    [DataRow("MeasuredStellarAssociations", "measured-stellar-associations-v2", "outputVariant", "measured-stellar-associations-v1")]
     [DataRow("MeasuredAstrometry", "measured-astrometry-v1", "outputVariant", "measured-astrometry-v1")]
     [DataRow("CaptureSatelliteTracks", "capture-satellite-products-v1", "outputVariant", "capture-satellites-v1")]
     [DataRow("CaptureSatelliteLayer", "predicted-satellite-tracks-v1", "inputVariant", "capture-satellites-v1")]

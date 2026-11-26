@@ -123,7 +123,7 @@ internal class ScenePresentationLayerCaptureProcessingStep(
             Options.UseExposureAssociations
                 ? new HashSet<string>(StringComparer.Ordinal) { BuiltInProcessingRecipes.MeasuredStellarAssociations, ExposureAssociationProducts.RecipeName }
                 : new HashSet<string>(StringComparer.Ordinal) { BuiltInProcessingRecipes.MeasuredStellarAssociations },
-            new HashSet<string>(StringComparer.Ordinal) { MeasuredStellarAssociationsV1.CurrentSchemaVersion },
+            new HashSet<string>(MeasuredStellarAssociationsV1.SupportedSchemaVersions, StringComparer.Ordinal),
             Required: false)
     ];
 
@@ -136,14 +136,27 @@ internal class ScenePresentationLayerCaptureProcessingStep(
             ?? throw new InvalidDataException("The projected-scene dependency is invalid.");
         var source = CameraAgentRecipeExecutionAdapter.CreateArtifact(context, sceneProduct);
         var measuredProduct = dependencyProducts.SingleOrDefault(static product =>
-            product.SchemaVersion == MeasuredStellarAssociationsV1.CurrentSchemaVersion);
+            MeasuredStellarAssociationsV1.IsSupportedSchemaVersion(product.SchemaVersion));
         var measured = measuredProduct is null
             ? null
             : MeasuredStellarAssociationJson.Parse(measuredProduct.Payload).Associations
                 ?? throw new InvalidDataException("The measured stellar-association dependency is invalid.");
-        ProcessingArtifact[] starSources = measuredProduct is null
+        var measuredArtifact = measuredProduct is null
+            ? null
+            : CameraAgentRecipeExecutionAdapter.CreateArtifact(context, measuredProduct);
+        var allowCompatibleExposureAssociations = false;
+        if (measured is not null && measuredArtifact is not null &&
+            Options.UseExposureAssociations &&
+            measuredProduct!.Recipe.Descriptor.Name == ExposureAssociationProducts.RecipeName &&
+            !string.Equals(measured.Scene.SceneIdentitySha256, scene.SceneIdentitySha256, StringComparison.OrdinalIgnoreCase))
+        {
+            if (!ExposureAssociationProducts.IsCompatibleWithScene(measuredArtifact, measured, scene))
+                throw new InvalidDataException("The exposure-association dependency does not bind this capture's projected scene.");
+            allowCompatibleExposureAssociations = true;
+        }
+        ProcessingArtifact[] starSources = measuredArtifact is null
             ? [source]
-            : [source, CameraAgentRecipeExecutionAdapter.CreateArtifact(context, measuredProduct)];
+            : [source, measuredArtifact];
         var style = new PresentationAnnotationStyleV1(
             Options.MarkerRadius, Options.LabelScale, Options.MaximumLabelCharacters, Options.MaximumLabelMagnitude,
             Options.ConstellationLineThickness, Options.ConstellationIds,
@@ -162,7 +175,8 @@ internal class ScenePresentationLayerCaptureProcessingStep(
         }
         var payloads = Produce(
             scene, style, Options.DrawMarkers, Options.DrawLabels, Options.DrawConstellationLines,
-            Options.DrawImageCircle, Options.DrawCardinalDirections, measured, Options.ExpectedPositionDiagnostics, horizon);
+            Options.DrawImageCircle, Options.DrawCardinalDirections, measured, Options.ExpectedPositionDiagnostics, horizon,
+            allowCompatibleExposureAssociations);
         var annotation = PresentationProcessingProducts.CreateLayerProduct(
             payloads.StarAnnotations, Options.AnnotationOutputVariant, starSources, ProducerVersion, horizon?.IdentitySha256);
         var cardinals = PresentationProcessingProducts.CreateLayerProduct(
@@ -180,7 +194,8 @@ internal class ScenePresentationLayerCaptureProcessingStep(
         }
         if (Options.IncludeExpectedNotDetectedLayer)
         {
-            var expectedNotDetected = MeasuredAssociationPresentation.CreateExpectedNotDetectedPayload(scene, measured, style, horizon);
+            var expectedNotDetected = MeasuredAssociationPresentation.CreateExpectedNotDetectedPayload(
+                scene, measured, style, horizon, allowCompatibleExposureAssociations);
             LayeredPresentationCaptureProcessing.Add(context, PresentationProcessingProducts.CreateLayerProduct(
                 expectedNotDetected, Options.EffectiveExpectedNotDetectedOutputVariant, starSources,
                 MeasuredAssociationPresentation.ExpectedNotDetectedVersion, horizon?.IdentitySha256));
@@ -189,9 +204,11 @@ internal class ScenePresentationLayerCaptureProcessingStep(
     }
     protected virtual PresentationSceneLayerPayloadsV2 Produce(ProjectedSceneV1 scene, PresentationAnnotationStyleV1 style,
         bool markers, bool labels, bool constellations, bool circle, bool cardinals,
-        MeasuredStellarAssociationsV1? measured, bool expected, HorizonObstructionSceneEligibility? horizon) =>
+        MeasuredStellarAssociationsV1? measured, bool expected, HorizonObstructionSceneEligibility? horizon,
+        bool allowCompatibleExposureAssociations = false) =>
         PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, style, markers, labels, constellations, circle, cardinals, measured, expected, horizon,
-            includeDeepSky: !Options.IncludeDeepSkyLayer, deepSkyStyle: Options.ApplyInlineDeepSkyStyle ? Options.ToDeepSkyStyle() : null);
+            includeDeepSky: !Options.IncludeDeepSkyLayer, deepSkyStyle: Options.ApplyInlineDeepSkyStyle ? Options.ToDeepSkyStyle() : null,
+            allowCompatibleExposureAssociations: allowCompatibleExposureAssociations);
 }
 
 internal sealed class CloudPresentationLayerCaptureProcessingStep(

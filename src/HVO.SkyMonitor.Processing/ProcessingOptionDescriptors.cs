@@ -837,12 +837,12 @@ public static class ProcessingNodeOptionsDescriptors
     public static ProcessingNodeOptionsDescriptor ScenePresentationLayer { get; } = new(
         "scene-presentation-layer-options-v2",
         ScenePresentationLayerStepAlias,
-        "projected-scene-presentation-v13-plain-circle-bounded-expected-labels",
+        "projected-scene-presentation-v15-plain-circle-bounded-point-source-labels",
         ScenePresentationLayerV12.Title,
         ScenePresentationLayerV12.Help,
         ScenePresentationLayerV12.Options.AddRange(DeepSkyOptionDescriptors.Presentation).Add(ProcessingOptionDescriptor.Toggle(
             "expectedPositionDiagnostics", "expectedPositionDiagnostics", "Show expected star names",
-            "Label catalog positions with (expected) when measured associations are unavailable. Turning this off keeps only qualified measured star labels.", true)));
+            "Label catalog positions with (expected) when measured associations are unavailable. Turning this off keeps only qualified measured star and point-source planet labels.", true)));
 
     public static ImmutableArray<ProcessingNodeOptionsDescriptor> All =>
         [ScenePresentationLayerV12, ScenePresentationLayer, SceneStylePresentation.Descriptor, FrameFactsPresentationOptionDescriptors.Descriptor,

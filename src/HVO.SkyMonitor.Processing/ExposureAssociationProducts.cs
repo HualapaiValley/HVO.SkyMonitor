@@ -9,7 +9,8 @@ public static class ExposureAssociationProducts
 {
     public const string StepAlias = "ExposureStellarAssociations";
     public const string RecipeName = "associate-exposure-measurement";
-    public const string ImplementationVersion = "associate-exposure-measurement-v1";
+    internal const string V1ImplementationVersion = "associate-exposure-measurement-v1";
+    public const string ImplementationVersion = "associate-exposure-measurement-v2";
     public const string Variant = "exposure-stellar-associations-v1";
 
     public static ProcessingRecipeDefinition Definition { get; } =
@@ -71,17 +72,72 @@ public static class ExposureAssociationProducts
 
     internal static bool Matches(ProcessingArtifact artifact, ProcessingArtifact raw)
     {
-        if (artifact.RecipeDescriptor is not { Name: RecipeName, SemanticVersion: "1.0.0", ImplementationVersion: ImplementationVersion } producer ||
+        if (artifact.RecipeDescriptor is not { Name: RecipeName, SemanticVersion: "1.0.0" } producer ||
+            !MatchesVersionForSchema(producer.ImplementationVersion, artifact.SchemaVersion) ||
             artifact.SourceArtifactIds is not { Count: 3 } lineage ||
             lineage.Distinct().Count() != 3 || lineage[0] != raw.ArtifactId || artifact.CaptureId != raw.CaptureId)
             return false;
+        return MatchesBinding(artifact, raw.ArtifactId, lineage);
+    }
+
+    internal static bool MatchesVersionForSchema(string implementationVersion, string? schemaVersion) =>
+        (implementationVersion, schemaVersion) switch
+        {
+            (ImplementationVersion, MeasuredStellarAssociationsV1.CurrentSchemaVersion) => true,
+            (V1ImplementationVersion, MeasuredStellarAssociationsV1.V1SchemaVersion) => true,
+            _ => false
+        };
+
+    /// <summary>
+    /// Verifies that an exposure-association artifact (bound to the independent ExposureCatalogPrediction scene) is
+    /// cryptographically and semantically compatible with another projected scene of the exact same raw exposure
+    /// (such as a VirtualSky authoritative render scene on an ordinary graph with UseExposureAssociations enabled).
+    /// </summary>
+    public static bool IsCompatibleWithScene(
+        ProcessingArtifact artifact,
+        MeasuredStellarAssociationsV1 associations,
+        ProjectedSceneV1 scene)
+    {
+        ArgumentNullException.ThrowIfNull(artifact);
+        ArgumentNullException.ThrowIfNull(associations);
+        ArgumentNullException.ThrowIfNull(scene);
+        if (artifact.ProductKind != ProcessingProductKind.Metadata ||
+            artifact.Role != FrameArtifactRole.Metadata ||
+            !string.Equals(artifact.MediaType, StructuredProcessingProductContracts.MeasuredStellarAssociationsMediaType, StringComparison.Ordinal) ||
+            !MeasuredStellarAssociationsV1.IsSupportedSchemaVersion(artifact.SchemaVersion) ||
+            !string.Equals(artifact.SchemaVersion, associations.SchemaVersion, StringComparison.Ordinal) ||
+            !ExposureMeasurementProducts.Same(artifact.ContentIdentitySha256, associations.AssociationIdentitySha256) ||
+            artifact.RecipeDescriptor is not { Name: RecipeName, SemanticVersion: "1.0.0" } producer ||
+            !MatchesVersionForSchema(producer.ImplementationVersion, artifact.SchemaVersion) ||
+            !ExposureMeasurementProducts.Same(ProcessingIdentity.CreateRecipeIdentity(producer).IdentitySha256, artifact.RecipeIdentitySha256) ||
+            artifact.SourceArtifactIds is not { Count: 3 } lineage ||
+            lineage.Distinct().Count() != 3 ||
+            lineage[0] != scene.Source.ArtifactId ||
+            artifact.CaptureId != scene.Source.CaptureId ||
+            !MatchesBinding(artifact, scene.Source.ArtifactId, lineage, associations.Scene.SceneIdentitySha256))
+            return false;
+
+        return associations.Scene.Kind == ProjectedSceneKind.Predicted &&
+            associations.Source.CaptureId == scene.Source.CaptureId &&
+            associations.Source.ArtifactId == scene.Source.ArtifactId &&
+            ExposureMeasurementProducts.Same(associations.Source.DescriptorIdentitySha256, scene.Source.ArtifactIdentitySha256) &&
+            associations.Source.WidthPixels == scene.ImageTransform.OutputWidthPixels &&
+            associations.Source.HeightPixels == scene.ImageTransform.OutputHeightPixels &&
+            string.Equals(associations.Scene.CalibrationVersion, scene.Projection.CalibrationVersion, StringComparison.Ordinal);
+    }
+
+    private static bool MatchesBinding(
+        ProcessingArtifact artifact, Guid rawArtifactId, IReadOnlyList<Guid> lineage, string? expectedSceneIdentitySha256 = null)
+    {
         try
         {
-            var binding = ProcessingRecipeSupport.ParseOptions<AssociationBinding>(producer.Options);
-            return binding.RawArtifactId == raw.ArtifactId &&
+            var binding = ProcessingRecipeSupport.ParseOptions<AssociationBinding>(artifact.RecipeDescriptor!.Options);
+            return binding.RawArtifactId == rawArtifactId &&
                 binding.MeasurementArtifactId == lineage[1] && binding.PredictionArtifactId == lineage[2] &&
                 binding.MeasurementIdentitySha256 is { Length: 64 } && binding.MeasurementIdentitySha256.All(Uri.IsHexDigit) &&
                 binding.SceneIdentitySha256 is { Length: 64 } && binding.SceneIdentitySha256.All(Uri.IsHexDigit) &&
+                (expectedSceneIdentitySha256 is null ||
+                 ExposureMeasurementProducts.Same(binding.SceneIdentitySha256, expectedSceneIdentitySha256)) &&
                 artifact.ArtifactId == ProcessingIdentity.CreateArtifactId(ProcessingIdentity.CreateOutputIdentity(
                     artifact.Role, artifact.Variant, artifact.RecipeIdentitySha256, lineage));
         }

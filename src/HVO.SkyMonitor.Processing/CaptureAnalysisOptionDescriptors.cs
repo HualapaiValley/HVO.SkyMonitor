@@ -18,7 +18,7 @@ public static class CaptureAnalysisOptionDescriptors
         ]);
 
     public static ProcessingNodeOptionsDescriptor StellarAssociations { get; } = new(
-        "measured-stellar-association-options-v1", "MeasuredStellarAssociations", "measured-stellar-associations-v1",
+        "measured-stellar-association-options-v1", "MeasuredStellarAssociations", MeasuredStellarAssociationRecipe.CurrentImplementationVersion,
         "Measured stellar associations",
         "Measure raw stars against this capture's retained projected scene. Association thresholds and label policy are preserved. Saving creates a draft; validate and activate it separately.",
         [

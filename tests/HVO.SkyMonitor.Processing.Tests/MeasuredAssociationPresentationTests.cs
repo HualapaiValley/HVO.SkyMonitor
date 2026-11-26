@@ -105,4 +105,47 @@ public sealed class MeasuredAssociationPresentationTests
         Assert.IsEmpty(outsideLayer.Markers);
         Assert.IsEmpty(outsideLayer.TextBlocks);
     }
+
+    [TestMethod]
+    public async Task ClassifyEmptyExpectedLayerReasonDistinguishesAllMatchedFilteredAndNoPredictions()
+    {
+        var scene = await StarFieldAsync(("star:bright", 0, 0, 1.5), ("star:faint", 8, -6, 7.8)).ConfigureAwait(false);
+        var allMatched = AllEligible(scene);
+        Assert.AreEqual(MeasuredAssociationPresentation.EmptyExpectedAllMatchedReason,
+            MeasuredAssociationPresentation.ClassifyEmptyExpectedLayerReason(allMatched));
+
+        // Faint unmatched prediction (> 6.5 mag) produces zero drawable markers, yet must NOT claim all matched.
+        var faintUnmatched = allMatched with
+        {
+            Measurement = allMatched.Measurement with { DetectionCount = 1 },
+            Associations = [allMatched.Associations.Single(static a => a.CatalogId == "star:bright")],
+            UnmatchedPredictions =
+            [
+                new("star:faint", 7.8,
+                    allMatched.Associations.Single(static a => a.CatalogId == "star:faint").ExpectedX,
+                    allMatched.Associations.Single(static a => a.CatalogId == "star:faint").ExpectedY,
+                    MeasuredStellarAssociationReasonCodes.NoMeasuredSource)
+            ],
+            UnassociatedDetections = []
+        };
+        var filteredLayer = MeasuredAssociationPresentation.CreateExpectedNotDetectedPayload(faintUnmatched, scene);
+        Assert.IsEmpty(filteredLayer.Markers);
+        Assert.AreEqual(MeasuredAssociationPresentation.EmptyExpectedFilteredReason,
+            MeasuredAssociationPresentation.ClassifyEmptyExpectedLayerReason(faintUnmatched));
+
+        // Outside-aperture unmatched prediction also produces zero drawable markers and must NOT claim all matched.
+        var outsideAperture = faintUnmatched with
+        {
+            UnmatchedPredictions = [faintUnmatched.UnmatchedPredictions[0] with { Magnitude = 2.0, ReasonCode = MeasuredStellarAssociationReasonCodes.OutsideAperture }]
+        };
+        Assert.IsEmpty(MeasuredAssociationPresentation.CreateExpectedNotDetectedPayload(outsideAperture, scene).Markers);
+        Assert.AreEqual(MeasuredAssociationPresentation.EmptyExpectedFilteredReason,
+            MeasuredAssociationPresentation.ClassifyEmptyExpectedLayerReason(outsideAperture));
+
+        // Empty scene with zero predictions reports no-catalog-predictions.
+        var emptyScene = await StarFieldAsync().ConfigureAwait(false);
+        var emptyAssoc = AllEligible(emptyScene);
+        Assert.AreEqual(MeasuredAssociationPresentation.EmptyExpectedNoPredictionsReason,
+            MeasuredAssociationPresentation.ClassifyEmptyExpectedLayerReason(emptyAssoc));
+    }
 }

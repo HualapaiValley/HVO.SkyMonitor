@@ -39,6 +39,14 @@ internal sealed partial class CaptureProcessingPersistence
         return (CreateProcessingArtifact(output, restored), ExposureMeasurementProducts.Read(restored.Product));
     }
 
+    internal async ValueTask<(ProcessingArtifact Artifact, ExposureMeasurementV1 Measurement)> ReadCenteredViewMeasurementParentAsync(
+        Guid captureId, Guid artifactId, CancellationToken cancellationToken)
+    {
+        var output = await RequireOutputAsync(artifactId, captureId, cancellationToken).ConfigureAwait(false);
+        var restored = await RestoreOutputAsync(output, cancellationToken).ConfigureAwait(false);
+        return (CreateProcessingArtifact(output, restored), ExposureMeasurementProducts.Read(restored.Product));
+    }
+
     internal async ValueTask<(ProcessingArtifact Artifact, RegionalStellarVisibilityV1 Visibility)> ReadCenteredViewRegionalVisibilityAsync(
         Guid captureId, CenteredViewArtifact pin, CancellationToken cancellationToken)
     {

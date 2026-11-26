@@ -4,3 +4,4 @@ using System.Runtime.CompilerServices;
 [assembly: InternalsVisibleTo("HVO.SkyMonitor.CameraAgent.Common")]
 // Issue #1839: the binding regression inspects the request and cancellation token at dispatch.
 [assembly: InternalsVisibleTo("HVO.SkyMonitor.CameraAgent.Tests")]
+[assembly: InternalsVisibleTo("HVO.SkyMonitor.Processing.Tests")]

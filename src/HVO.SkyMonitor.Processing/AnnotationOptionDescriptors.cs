@@ -15,7 +15,7 @@ public static class AnnotationOptionDescriptors
     public static ProcessingNodeOptionsDescriptor Descriptor { get; } = new(
         "annotation-options-v1",
         "Annotation",
-        "projected-annotation-v4",
+        "projected-annotation-v5",
         "Legacy annotation",
         "Select and style the existing Annotation output and retained-fact corner lines. Constellation intensity affects Mono8 previews; constellation color affects RGB previews. Rich templates use the explicit Frame Facts conversion. Save, validate and explicitly activate a new graph revision; retained images stay unchanged.",
         [

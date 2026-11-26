@@ -120,6 +120,7 @@ public static class StructuredProcessingProductContracts
             (RegionalStellarVisibilityProducts.MediaType, RegionalStellarVisibilityProducts.SchemaVersion) => true,
             (MeasuredAstrometryJson.MediaType, MeasuredAstrometrySolutionV1.CurrentSchemaVersion) => true,
             (MeasuredAstrometryJson.ContextMediaType, MeasuredAstrometryContextV1.CurrentSchemaVersion) => true,
+            (MeasuredStellarAssociationsMediaType, MeasuredStellarAssociationsV1.V1SchemaVersion) => true,
             (MeasuredStellarAssociationsMediaType, MeasuredStellarAssociationsV1.CurrentSchemaVersion) => true,
             (ExposureMeasurementProducts.MediaType, ExposureMeasurementProducts.SchemaVersion) => true,
             (MeasuredDeepSkyStackV1.MediaType, MeasuredDeepSkyStackV1.CurrentSchemaVersion) => true,

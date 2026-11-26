@@ -8,7 +8,7 @@ public sealed partial class ProcessingNodeOptionsTests
         var descriptor = SceneStylePresentation.Descriptor;
         Assert.AreEqual("scene-style-presentation-options-v1", descriptor.DescriptorId);
         Assert.AreEqual("SceneStylePresentationLayerV1", descriptor.StepAlias);
-        Assert.AreEqual("projected-scene-presentation-v14-explicit-style", descriptor.StepVersion);
+        Assert.AreEqual("projected-scene-presentation-v15-explicit-style", descriptor.StepVersion);
         Assert.AreSame(descriptor, ProcessingNodeOptionsCatalog.BuiltIn.Resolve(descriptor.StepAlias.ToUpperInvariant(), descriptor.StepVersion).Descriptor);
         Assert.AreEqual(ProcessingNodeOptionsResolutionStatus.UnsupportedVersion,
             ProcessingNodeOptionsCatalog.BuiltIn.Resolve(descriptor.StepAlias, descriptor.StepVersion + "-future").Status);

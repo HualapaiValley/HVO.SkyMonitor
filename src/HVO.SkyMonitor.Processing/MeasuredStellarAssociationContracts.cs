@@ -87,7 +87,7 @@ public sealed record MeasuredStellarMeasurementV1(
     [property: JsonRequired] int DetectionCount,
     [property: JsonRequired] int ExclusionCount);
 
-/// <summary>Declared expected-window matcher thresholds in output-image pixels. Nothing is fitted.</summary>
+/// <summary>Declared expected-window matcher thresholds in output-image pixels and angular planet priors. Nothing is fitted.</summary>
 public sealed record MeasuredStellarAssociationSettingsV1(
     [property: JsonRequired] double PredictionSigmaPixels = .5,
     [property: JsonRequired] double WindowSigmas = 3,
@@ -99,13 +99,32 @@ public sealed record MeasuredStellarAssociationSettingsV1(
     [property: JsonRequired] double EdgeMarginPixels = 6,
     [property: JsonRequired] double ExclusionMarginPixels = 1)
 {
+    public const double DefaultPlanetEphemerisUncertaintyArcseconds = 30;
+    public const double DefaultPlanetPointingUncertaintyArcseconds = 60;
+
+    /// <summary>Optional angular ephemeris uncertainty (1-sigma arcseconds) propagated through the delivered-image projection.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double? PlanetEphemerisUncertaintyArcseconds { get; init; }
+
+    /// <summary>Optional angular pointing/calibration uncertainty (1-sigma arcseconds) propagated through the delivered-image projection.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double? PlanetPointingUncertaintyArcseconds { get; init; }
+
+    internal double EffectivePlanetEphemerisUncertaintyArcseconds =>
+        PlanetEphemerisUncertaintyArcseconds ?? DefaultPlanetEphemerisUncertaintyArcseconds;
+
+    internal double EffectivePlanetPointingUncertaintyArcseconds =>
+        PlanetPointingUncertaintyArcseconds ?? DefaultPlanetPointingUncertaintyArcseconds;
+
     public void Validate()
     {
         if (!Bounded(PredictionSigmaPixels, 1e-3, 64) || !Bounded(WindowSigmas, .5, 10) ||
             !Bounded(MaximumWindowPixels, .1, 64) || !Bounded(AmbiguityRatio, 1, 10) ||
             !Bounded(CrowdingRadiusPixels, 0, 256) || !Bounded(CrowdingMagnitudeDifference, 0, 30) ||
             !Bounded(OffsetRadiusPixels, MaximumWindowPixels, 256) || !Bounded(EdgeMarginPixels, 0, 256) ||
-            !Bounded(ExclusionMarginPixels, 0, 64))
+            !Bounded(ExclusionMarginPixels, 0, 64) ||
+            PlanetEphemerisUncertaintyArcseconds is { } ephem && !Bounded(ephem, 0, 3600) ||
+            PlanetPointingUncertaintyArcseconds is { } pointing && !Bounded(pointing, 0, 3600))
             throw new ArgumentOutOfRangeException(nameof(MeasuredStellarAssociationSettingsV1));
     }
 
@@ -185,6 +204,7 @@ public sealed record MeasuredPointSourcePlanetAssociationV1(
     [property: JsonRequired] double MeasuredY,
     [property: JsonRequired] double ResidualPixels,
     [property: JsonRequired] double NormalizedResidualSquared,
+    [property: JsonRequired] double PropagatedPredictionSigmaPixels,
     [property: JsonRequired] double CombinedUncertaintyPixels,
     [property: JsonRequired] double Flux,
     [property: JsonRequired] double? SignalToNoise,
@@ -209,14 +229,17 @@ public sealed record MeasuredPointSourcePlanetUnmatchedPredictionV1(
     [property: JsonRequired] string ReasonCode);
 
 /// <summary>
-/// Exposure-time ephemeris, compatible mapping, and one-to-one measured association evidence for point-source
-/// solar-system planets (Mercury through Neptune). Omitted when a projected scene contains no point-source planets.
+/// Exposure-time ephemeris, compatible mapping, angular uncertainty priors, and one-to-one measured association
+/// evidence for point-source solar-system planets (Mercury through Neptune). Omitted when a projected scene contains
+/// no point-source planets.
 /// </summary>
 public sealed record MeasuredPointSourcePlanetEvidenceV1(
     [property: JsonRequired] DateTimeOffset EffectiveUtc,
     [property: JsonRequired] string EphemerisModelVersion,
     [property: JsonRequired] string ProjectionMappingVersion,
     [property: JsonRequired] double PredictionSigmaPixels,
+    [property: JsonRequired] double EphemerisUncertaintyArcseconds,
+    [property: JsonRequired] double PointingUncertaintyArcseconds,
     [property: JsonRequired] IReadOnlyList<MeasuredPointSourcePlanetAssociationV1> Associations,
     [property: JsonRequired] IReadOnlyList<MeasuredPointSourcePlanetUnmatchedPredictionV1> UnmatchedPredictions);
 
@@ -237,7 +260,13 @@ public sealed record MeasuredStellarAssociationsV1(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     MeasuredPointSourcePlanetEvidenceV1? PointSourcePlanets = null)
 {
-    public const string CurrentSchemaVersion = "measured-stellar-associations-v1";
+    public const string V1SchemaVersion = "measured-stellar-associations-v1";
+    public const string CurrentSchemaVersion = "measured-stellar-associations-v2";
+
+    public static IReadOnlyList<string> SupportedSchemaVersions { get; } = [V1SchemaVersion, CurrentSchemaVersion];
+
+    public static bool IsSupportedSchemaVersion(string? schemaVersion) =>
+        schemaVersion is V1SchemaVersion or CurrentSchemaVersion;
 
     [JsonIgnore]
     public string AssociationIdentitySha256 => MeasuredStellarAssociationJson.ComputeIdentitySha256(this);
@@ -309,8 +338,9 @@ public static class MeasuredStellarAssociationJson
     public static MeasuredStellarAssociationValidationResult Validate(MeasuredStellarAssociationsV1 value)
     {
         ArgumentNullException.ThrowIfNull(value);
-        if (!string.Equals(value.SchemaVersion, MeasuredStellarAssociationsV1.CurrentSchemaVersion, StringComparison.Ordinal))
+        if (!MeasuredStellarAssociationsV1.IsSupportedSchemaVersion(value.SchemaVersion))
             return Invalid(UnsupportedSchema, nameof(value.SchemaVersion));
+        var isV1 = string.Equals(value.SchemaVersion, MeasuredStellarAssociationsV1.V1SchemaVersion, StringComparison.Ordinal);
         var source = value.Source;
         if (source is null || source.CaptureId == Guid.Empty || source.ArtifactId == Guid.Empty ||
             !Sha256(source.DescriptorIdentitySha256) || source.Role != FrameArtifactRole.Raw ||
@@ -349,6 +379,10 @@ public static class MeasuredStellarAssociationJson
             return Invalid(InvalidContract, nameof(value.Method));
         }
         var planets = value.PointSourcePlanets;
+        if (isV1 && (planets is not null ||
+            method.Settings.PlanetEphemerisUncertaintyArcseconds is not null ||
+            method.Settings.PlanetPointingUncertaintyArcseconds is not null))
+            return Invalid(InvalidContract, nameof(value.PointSourcePlanets));
         var planetAssociationCount = planets?.Associations?.Count ?? 0;
         var planetUnmatchedCount = planets?.UnmatchedPredictions?.Count ?? 0;
         if (value.Associations is null || value.UnmatchedPredictions is null || value.UnassociatedDetections is null ||
@@ -356,7 +390,11 @@ public static class MeasuredStellarAssociationJson
                 planetAssociationCount + planetUnmatchedCount == 0 || planets.EffectiveUtc == default ||
                 !Text(planets.EphemerisModelVersion) || !Text(planets.ProjectionMappingVersion) ||
                 !Finite(planets.PredictionSigmaPixels) ||
-                Math.Abs(planets.PredictionSigmaPixels - method.Settings.PredictionSigmaPixels) > 1e-6) ||
+                Math.Abs(planets.PredictionSigmaPixels - method.Settings.PredictionSigmaPixels) > 1e-6 ||
+                !Finite(planets.EphemerisUncertaintyArcseconds) ||
+                Math.Abs(planets.EphemerisUncertaintyArcseconds - method.Settings.EffectivePlanetEphemerisUncertaintyArcseconds) > 1e-6 ||
+                !Finite(planets.PointingUncertaintyArcseconds) ||
+                Math.Abs(planets.PointingUncertaintyArcseconds - method.Settings.EffectivePlanetPointingUncertaintyArcseconds) > 1e-6) ||
             value.Associations.Count + value.UnmatchedPredictions.Count + planetAssociationCount + planetUnmatchedCount >
                 ProjectedSceneJson.MaximumObjectCount ||
             value.Associations.Count + planetAssociationCount + value.UnassociatedDetections.Count != measurement.DetectionCount ||
@@ -415,11 +453,14 @@ public static class MeasuredStellarAssociationJson
                     !detectionIndexes.Add(item.DetectionIndex) || !Finite(item.Magnitude) ||
                     !Pixel(item.ExpectedX, source.WidthPixels) || !Pixel(item.ExpectedY, source.HeightPixels) ||
                     !Pixel(item.MeasuredX, source.WidthPixels) || !Pixel(item.MeasuredY, source.HeightPixels) ||
-                    !NonNegative(item.ResidualPixels) || item.ResidualPixels > method.Settings.MaximumWindowPixels + 1e-6 ||
+                    !NonNegative(item.ResidualPixels) ||
+                    !Finite(item.PropagatedPredictionSigmaPixels) ||
+                    item.PropagatedPredictionSigmaPixels < method.Settings.PredictionSigmaPixels - 1e-6 ||
+                    item.ResidualPixels > PlanetMaximumWindow(method.Settings, item.PropagatedPredictionSigmaPixels) + 1e-6 ||
                     !NonNegative(item.NormalizedResidualSquared) ||
                     item.NormalizedResidualSquared > method.Settings.WindowSigmas * method.Settings.WindowSigmas + 1e-6 ||
                     !Finite(item.CombinedUncertaintyPixels) ||
-                    item.CombinedUncertaintyPixels < method.Settings.PredictionSigmaPixels - 1e-6 ||
+                    item.CombinedUncertaintyPixels < item.PropagatedPredictionSigmaPixels - 1e-6 ||
                     !Finite(item.Flux) || item.SignalToNoise is { } snr && !Finite(snr) ||
                     (item.CovarianceXX is null) != (item.CovarianceYY is null) ||
                     (item.CovarianceXX is null) != (item.CovarianceXY is null) ||
@@ -469,6 +510,9 @@ public static class MeasuredStellarAssociationJson
             return Invalid(InvalidContract, nameof(value.Measurement.Status));
         return MeasuredStellarAssociationValidationResult.Success;
     }
+
+    internal static double PlanetMaximumWindow(MeasuredStellarAssociationSettingsV1 settings, double propagatedSigmaPixels) =>
+        Math.Max(settings.MaximumWindowPixels, Math.Min(64, settings.WindowSigmas * propagatedSigmaPixels));
 
     internal static bool IsPointSourcePlanetBody(SolarSystemBody body) => body is
         SolarSystemBody.Mercury or SolarSystemBody.Venus or SolarSystemBody.Mars or

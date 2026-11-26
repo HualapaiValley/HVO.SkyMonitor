@@ -20,10 +20,13 @@ internal sealed class MeasuredStellarAssociationRecipe : IProcessingRecipe
     internal const string SceneAuxiliaryInputName = BuiltInProcessingRecipes.MeasuredStellarAssociationsSceneInputName;
     internal const string MonoReconstruction = "mono-linear-v1";
 
+    internal const string V1ImplementationVersion = "measured-stellar-associations-v1";
+    internal const string CurrentImplementationVersion = "measured-stellar-associations-v2";
+
     public ProcessingRecipeDefinition Definition { get; } = new(
         BuiltInProcessingRecipes.MeasuredStellarAssociations,
         "1.0.0",
-        "measured-stellar-associations-v1",
+        CurrentImplementationVersion,
         ProcessingOperationKind.Analyzer);
 
     public JsonElement NormalizeOptions(JsonElement options)
