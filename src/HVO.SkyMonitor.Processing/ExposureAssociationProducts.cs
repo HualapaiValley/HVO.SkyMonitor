@@ -164,10 +164,13 @@ public static class ExposureAssociationProducts
             !ExposureMeasurementProducts.Same(evidence.AssociationIdentitySha256, association.ContentIdentitySha256))
             throw new InvalidDataException("The association differs from the retained exposure inputs.");
 
-        _ = ExposureCatalogPredictionProducts.Read(prediction, raw, measurement.Input);
+        var scene = ExposureCatalogPredictionProducts.Read(prediction, raw, measurement.Input);
         var binding = ProcessingRecipeSupport.ParseOptions<AssociationBinding>(association.RecipeDescriptor!.Options);
+        var expectedGeometry = MeasuredStellarAssociationJson.ComputeProjectionGeometryIdentitySha256(scene);
         if (!ExposureMeasurementProducts.Same(binding.MeasurementIdentitySha256, retained.ContentIdentitySha256) ||
             !ExposureMeasurementProducts.Same(binding.SceneIdentitySha256, prediction.ContentIdentitySha256) ||
+            (evidence.SchemaVersion == MeasuredStellarAssociationsV1.CurrentSchemaVersion &&
+             !ExposureMeasurementProducts.Same(evidence.Scene.ProjectionGeometryIdentitySha256, expectedGeometry)) ||
             !ExposureMeasurementProducts.Same(evidence.Measurement.SettingsIdentitySha256, measurement.Sources.SettingsSha256) ||
             evidence.Method.Settings != binding.Settings || evidence.Method.LabelPolicy != binding.LabelPolicy ||
             evidence.Measurement.DetectionCount != measurement.Sources.Detections.Count ||

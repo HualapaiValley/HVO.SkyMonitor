@@ -662,7 +662,9 @@ public static class PresentationLayerProducers
             associations.Source.HeightPixels != scene.ImageTransform.OutputHeightPixels ||
             scene.CoordinateConvention != ProjectedSceneCoordinateConvention.ContinuousTopLeftPixelEdge ||
             scene.ImageTransform != ProjectedSceneImageTransformV1.Identity(associations.Source.WidthPixels, associations.Source.HeightPixels) ||
-            !string.Equals(associations.Scene.CalibrationVersion, scene.Projection.CalibrationVersion, StringComparison.Ordinal))
+            !string.Equals(associations.Scene.CalibrationVersion, scene.Projection.CalibrationVersion, StringComparison.Ordinal) ||
+            associations.Scene.ProjectionGeometryIdentitySha256 is not { } expectedGeometry ||
+            !string.Equals(expectedGeometry, MeasuredStellarAssociationJson.ComputeProjectionGeometryIdentitySha256(scene), StringComparison.OrdinalIgnoreCase))
             return false;
 
         if (associations.PointSourcePlanets is { } planetEvidence &&

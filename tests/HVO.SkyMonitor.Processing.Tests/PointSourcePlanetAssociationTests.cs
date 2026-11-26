@@ -178,7 +178,8 @@ public sealed class PointSourcePlanetAssociationTests
     public async Task JointOneToOneConflictBetweenStarAndPlanetNeverDoubleAssignsDetection()
     {
         var ephemeris = new AstronomyEnginePlanetEphemeris();
-        // Place star:close ~2.4 px from Jupiter; disable crowding so both predictions compete for one PSF placed closer to Jupiter.
+        // 1. Strict non-steal contract: place star:close ~2.4 px from Jupiter and render ONE lone PSF inside BOTH
+        //    the star's declared pointing window and Jupiter's window. Neither double-assigns, and Jupiter is withheld as Ambiguous.
         var (scene, jupiter) = await BuildPlanetSceneAsync(ephemeris, SolarSystemBody.Jupiter,
             [("star:close", 2.4, 0, 2.0)]).ConfigureAwait(false);
         var closeStar = scene.Objects.Single(static item => item.Id == "star:close");
@@ -187,20 +188,76 @@ public sealed class PointSourcePlanetAssociationTests
         var settings = new MeasuredStellarAssociationSettingsV1(
             PredictionSigmaPixels: 1.5, WindowSigmas: 3.0, MaximumWindowPixels: 3.0,
             AmbiguityRatio: 1.0, CrowdingRadiusPixels: 0.5, OffsetRadiusPixels: 4.0);
+        var optionsJson = JsonSerializer.Serialize(new MeasuredStellarAssociationRecipeOptions(settings, new()), JsonSerializerOptions.Web);
 
-        var outcome = await new ProcessingRecipeExecutor().ExecuteAsync(
-            Request(source, scene, JsonSerializer.Serialize(new MeasuredStellarAssociationRecipeOptions(settings, new()), JsonSerializerOptions.Web))).ConfigureAwait(false);
+        var outcome = await new ProcessingRecipeExecutor().ExecuteAsync(Request(source, scene, optionsJson)).ConfigureAwait(false);
 
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status, outcome.ReasonCode);
         var evidence = MeasuredStellarAssociationJson.Parse(outcome.Products.Single().Payload).Associations!;
         Assert.IsNotNull(evidence.PointSourcePlanets);
-        var planet = Assert.ContainsSingle(evidence.PointSourcePlanets.Associations);
-        Assert.AreEqual("solar-system:Jupiter", planet.ObjectId);
-        Assert.IsEmpty(evidence.Associations);
-        var claimed = Assert.ContainsSingle(evidence.UnmatchedPredictions);
-        Assert.AreEqual(closeStar.Id, claimed.CatalogId);
-        Assert.AreEqual(MeasuredStellarAssociationReasonCodes.ClaimedByOther, claimed.ReasonCode);
-        Assert.IsEmpty(evidence.UnassociatedDetections);
+        Assert.IsEmpty(evidence.PointSourcePlanets.Associations,
+            "Jupiter must be withheld when a lone detection also lies inside an unassigned competing star's pointing window.");
+        Assert.IsEmpty(evidence.Associations,
+            "The worse-fitting competing star must not retroactively claim the contested detection either.");
+        var unmatchedPlanet = Assert.ContainsSingle(evidence.PointSourcePlanets.UnmatchedPredictions);
+        Assert.AreEqual("solar-system:Jupiter", unmatchedPlanet.ObjectId);
+        Assert.AreEqual(MeasuredStellarAssociationReasonCodes.Ambiguous, unmatchedPlanet.ReasonCode);
+        var unmatchedStar = Assert.ContainsSingle(evidence.UnmatchedPredictions);
+        Assert.AreEqual(closeStar.Id, unmatchedStar.CatalogId);
+        Assert.AreEqual(MeasuredStellarAssociationReasonCodes.Ambiguous, unmatchedStar.ReasonCode);
+        Assert.ContainsSingle(evidence.UnassociatedDetections);
+        Assert.AreEqual(MeasuredStellarAssociationReasonCodes.NearIneligiblePrediction, evidence.UnassociatedDetections[0].ReasonCode);
+
+        // 2. Clean win when the competing star sits outside its declared pointing window (separated by 6.0 px > 3*1.5 = 4.5 px).
+        var (separatedScene, separatedJupiter) = await BuildPlanetSceneAsync(ephemeris, SolarSystemBody.Jupiter,
+            [("star:far", 6.0, 0, 2.0)]).ConfigureAwait(false);
+        var farStar = separatedScene.Objects.Single(static item => item.Id == "star:far");
+        var jupiterOnlySource = RawArtifact(
+            RenderSources(Width, Height, [(new PixelPoint(separatedJupiter.Pixel.X + 0.4, separatedJupiter.Pixel.Y), 6000d)]),
+            CameraPixelFormat.Mono16, Width, Height);
+        var separatedOutcome = await new ProcessingRecipeExecutor().ExecuteAsync(
+            Request(jupiterOnlySource, separatedScene, optionsJson)).ConfigureAwait(false);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, separatedOutcome.Status, separatedOutcome.ReasonCode);
+        var separatedEvidence = MeasuredStellarAssociationJson.Parse(separatedOutcome.Products.Single().Payload).Associations!;
+        var wonJupiter = Assert.ContainsSingle(separatedEvidence.PointSourcePlanets!.Associations);
+        Assert.AreEqual("solar-system:Jupiter", wonJupiter.ObjectId);
+        Assert.IsTrue(wonJupiter.LabelEligible);
+        Assert.IsEmpty(separatedEvidence.Associations);
+        Assert.AreEqual(farStar.Id, Assert.ContainsSingle(separatedEvidence.UnmatchedPredictions).CatalogId);
+        Assert.IsEmpty(separatedEvidence.UnassociatedDetections);
+
+        // 3. Clean 1-to-1 joint match when BOTH the star and Jupiter are detected (distinct DetectionIndexes):
+        //    (a) Full Mono16 pixel pipeline with two cleanly separated PSFs (16 px apart).
+        var (pairScene, pairJupiter) = await BuildPlanetSceneAsync(ephemeris, SolarSystemBody.Jupiter,
+            [("star:pair", 16.0, 0, 2.0)]).ConfigureAwait(false);
+        var pairStar = pairScene.Objects.Single(static item => item.Id == "star:pair");
+        var bothSource = RawArtifact(
+            RenderSources(Width, Height, [(pairJupiter.Pixel, 7500d), (pairStar.Pixel, 4500d)]),
+            CameraPixelFormat.Mono16, Width, Height);
+        var bothOutcome = await new ProcessingRecipeExecutor().ExecuteAsync(
+            Request(bothSource, pairScene, optionsJson)).ConfigureAwait(false);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, bothOutcome.Status, bothOutcome.ReasonCode);
+        var bothEvidence = MeasuredStellarAssociationJson.Parse(bothOutcome.Products.Single().Payload).Associations!;
+        var matchedStar = Assert.ContainsSingle(bothEvidence.Associations);
+        var matchedPlanet = Assert.ContainsSingle(bothEvidence.PointSourcePlanets!.Associations);
+        Assert.AreEqual(pairStar.Id, matchedStar.CatalogId);
+        Assert.AreEqual("solar-system:Jupiter", matchedPlanet.ObjectId);
+        Assert.AreNotEqual(matchedStar.DetectionIndex, matchedPlanet.DetectionIndex);
+        Assert.IsEmpty(bothEvidence.UnassociatedDetections);
+
+        //    (b) Close overlapping windows (2.4 px apart) when BOTH detections exist: each matches its own detection 1-to-1
+        //        and the matched star never falsely blocks the present planet.
+        var bothCloseEntries = MeasuredStellarAssociator.Associate(
+            scene,
+            [
+                new StellarDetection(0, jupiter.Pixel, 7500, 500, 1.1, 1.1, 1000, 5) { SignalToNoise = 90, CentroidCovariance = new(0.01, 0, 0.01) },
+                new StellarDetection(1, closeStar.Pixel, 4500, 350, 1.1, 1.1, 1000, 5) { SignalToNoise = 60, CentroidCovariance = new(0.01, 0, 0.01) }
+            ],
+            [], measurementCompleted: true, settings, new(), CancellationToken.None);
+        Assert.AreEqual(closeStar.Id, Assert.ContainsSingle(bothCloseEntries.Associations).CatalogId);
+        Assert.AreEqual("solar-system:Jupiter", Assert.ContainsSingle(bothCloseEntries.PointSourcePlanets!.Associations).ObjectId);
+        Assert.AreNotEqual(bothCloseEntries.Associations[0].DetectionIndex, bothCloseEntries.PointSourcePlanets.Associations[0].DetectionIndex);
+        Assert.IsEmpty(bothCloseEntries.UnassociatedDetections);
     }
 
     [TestMethod]
@@ -799,6 +856,223 @@ public sealed class PointSourcePlanetAssociationTests
     }
 
     [TestMethod]
+    public async Task AbsentPlanetNeverClaimsOffsetCatalogStarInMono16FixtureOrAnnotationLayer()
+    {
+        // Astra D1 exact Mono16 pixel fixture: f=5000 px, one catalog star 4.6 px from predicted Jupiter, zero planets
+        // rendered, star PSF centroid shifted 3.1 px toward Jupiter (within the star's 60" pointing window ~4.61 px).
+        var ephemeris = new AstronomyEnginePlanetEphemeris();
+        var position = ephemeris.GetPosition(SolarSystemBody.Jupiter, ExposureMidpointUtc);
+        var jupiterAltAz = CoordinateTransforms.EquatorialToHorizontal(
+            EquatorialPrecession.PrecessJ2000(position.EquatorialJ2000, ExposureMidpointUtc),
+            ExposureMidpointUtc, Site.LatitudeDegrees, Site.LongitudeDegrees);
+        var proj = new ProjectionContext(ProjectionModel.Perspective, Width / 2d, Height / 2d,
+            5000, 5000, Width, Height, ProjectionAperture.Rectangular,
+            BoresightAltitudeDegrees: jupiterAltAz.AltitudeDegrees,
+            BoresightAzimuthDegrees: jupiterAltAz.AzimuthDegrees);
+        var starAltAz = ProjectorFactory.Create(proj).Unproject(new(Width / 2d + 4.6, Height / 2d))!.Value;
+        var starEq = EquatorialPrecession.PrecessToJ2000(
+            CoordinateTransforms.HorizontalToEquatorial(starAltAz, ExposureMidpointUtc, Site.LatitudeDegrees, Site.LongitudeDegrees),
+            ExposureMidpointUtc);
+        var catalog = new InMemoryCelestialCatalog([
+            new CelestialCatalogObject("star:offset-mono16", "Offset Star", starEq.RightAscensionHours, starEq.DeclinationDegrees, 2.0)
+        ]);
+        var visible = await new VisibleSceneBuilder(catalog, null, ephemeris)
+            .BuildAsync(new VisibleSceneRequest(ExposureMidpointUtc, Site, proj, new CatalogQuery(6.5, 100),
+                new CatalogMetadata("fixture", "1", new Uri("https://example.test/catalog"), new string('C', 64), "test", "v1"),
+                projectionVersion: "perspective-v1", solarSystemBodies: [SolarSystemBody.Jupiter])).ConfigureAwait(false);
+        var scene = ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, visible,
+            ProjectedSceneImageTransformV1.Identity(Width, Height),
+            new ProjectedSceneSource(CaptureId, ArtifactId, DescriptorIdentity), "calibration-v1", "perspective-v1");
+        var star = scene.Objects.Single(static o => o.Id == "star:offset-mono16");
+        var jupiter = scene.Objects.Single(static o => o.Id == "solar-system:Jupiter");
+        var shiftedCentroid = new PixelPoint(star.Pixel.X - 3.1, star.Pixel.Y);
+        var source = RawArtifact(RenderSources(Width, Height, [(shiftedCentroid, 6000d)]),
+            CameraPixelFormat.Mono16, Width, Height);
+
+        var outcome = await new ProcessingRecipeExecutor().ExecuteAsync(Request(source, scene)).ConfigureAwait(false);
+
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status, outcome.ReasonCode);
+        var evidence = MeasuredStellarAssociationJson.Parse(outcome.Products.Single().Payload).Associations!;
+        Assert.IsNotNull(evidence.PointSourcePlanets);
+        Assert.IsEmpty(evidence.PointSourcePlanets.Associations,
+            "Absent Jupiter must never claim a lone catalog star shifted 3.1 px toward Jupiter inside the star's pointing window.");
+        Assert.IsFalse(evidence.PointSourcePlanets.Associations.Any(static p => p.LabelEligible));
+        var unmatchedPlanet = Assert.ContainsSingle(evidence.PointSourcePlanets.UnmatchedPredictions);
+        Assert.AreEqual("solar-system:Jupiter", unmatchedPlanet.ObjectId);
+        Assert.AreEqual(MeasuredStellarAssociationReasonCodes.Ambiguous, unmatchedPlanet.ReasonCode);
+        var unmatchedStar = Assert.ContainsSingle(evidence.UnmatchedPredictions);
+        Assert.AreEqual("star:offset-mono16", unmatchedStar.CatalogId);
+        Assert.AreEqual(MeasuredStellarAssociationReasonCodes.OffsetMeasuredSource, unmatchedStar.ReasonCode);
+        Assert.ContainsSingle(evidence.UnassociatedDetections);
+
+        // Verify rendered annotation layers never draw a false "Jupiter" label.
+        var starAnnotations = PresentationLayerProducers.FromProjectedSceneGroupsV2(
+            scene,
+            includeConstellations: false,
+            includeImageCircle: false,
+            includeCardinalDirections: false,
+            associations: evidence,
+            expectedPositionDiagnostics: false).StarAnnotations;
+        Assert.IsFalse(starAnnotations.TextBlocks.Any(static b =>
+            b.Lines.Any(static line => line.Contains("Jupiter", StringComparison.OrdinalIgnoreCase))),
+            $"Scene annotation layer drew a false Jupiter label: [{string.Join(", ", starAnnotations.TextBlocks.Select(b => b.Lines[0]))}]");
+
+        var measuredLayer = MeasuredAssociationPresentation.CreateMeasuredPayload(evidence, scene);
+        Assert.IsFalse(measuredLayer.TextBlocks.Any(static b =>
+            b.Lines.Any(static line => line.Contains("Jupiter", StringComparison.OrdinalIgnoreCase))),
+            $"Measured presentation layer drew a false Jupiter label: [{string.Join(", ", measuredLayer.TextBlocks.Select(b => b.Lines[0]))}]");
+        Assert.IsLessThan(2.0, double.Hypot(shiftedCentroid.X - jupiter.Pixel.X, shiftedCentroid.Y - jupiter.Pixel.Y));
+    }
+
+    [TestMethod]
+    [DataRow(3000.0)]
+    [DataRow(5000.0)]
+    [DataRow(8532.0)]
+    public async Task ProbeSweepAlongStarToPlanetLineNeverEmitsFalsePlanetLabelInsideCompetingStarWindow(double focalLength)
+    {
+        // Opus M1 probe sweep: offset 0 -> 3 sigma along the star->planet line at f=3000, f=5000, and f=8532.
+        // Nowhere inside the competing star's declared pointing window may absent Jupiter become associated or LabelEligible.
+        var ephemeris = new AstronomyEnginePlanetEphemeris();
+        var position = ephemeris.GetPosition(SolarSystemBody.Jupiter, ExposureMidpointUtc);
+        var jupiterAltAz = CoordinateTransforms.EquatorialToHorizontal(
+            EquatorialPrecession.PrecessJ2000(position.EquatorialJ2000, ExposureMidpointUtc),
+            ExposureMidpointUtc, Site.LatitudeDegrees, Site.LongitudeDegrees);
+        var proj = new ProjectionContext(ProjectionModel.Perspective, Width / 2d, Height / 2d,
+            focalLength, focalLength, Width, Height, ProjectionAperture.Rectangular,
+            BoresightAltitudeDegrees: jupiterAltAz.AltitudeDegrees,
+            BoresightAzimuthDegrees: jupiterAltAz.AzimuthDegrees);
+        var settings = new MeasuredStellarAssociationSettingsV1();
+        var pointingSigmaRad = settings.EffectivePlanetPointingUncertaintyArcseconds * Math.PI / (180.0 * 3600.0);
+        var starSigmaPx = double.Hypot(settings.PredictionSigmaPixels, focalLength * pointingSigmaRad);
+        var starSeparationPx = Math.Max(4.6, Math.Round(settings.WindowSigmas * starSigmaPx + 0.4, 2));
+        var starAltAz = ProjectorFactory.Create(proj).Unproject(new(Width / 2d + starSeparationPx, Height / 2d))!.Value;
+        var starEq = EquatorialPrecession.PrecessToJ2000(
+            CoordinateTransforms.HorizontalToEquatorial(starAltAz, ExposureMidpointUtc, Site.LatitudeDegrees, Site.LongitudeDegrees),
+            ExposureMidpointUtc);
+        var visible = await new VisibleSceneBuilder(
+                new InMemoryCelestialCatalog([new("star:sweep", "Sweep Star", starEq.RightAscensionHours, starEq.DeclinationDegrees, 2.0)]),
+                null, ephemeris)
+            .BuildAsync(new VisibleSceneRequest(ExposureMidpointUtc, Site, proj, new CatalogQuery(6.5, 100),
+                new CatalogMetadata("fixture", "1", new Uri("https://example.test/catalog"), new string('C', 64), "test", "v1"),
+                projectionVersion: "perspective-v1", solarSystemBodies: [SolarSystemBody.Jupiter])).ConfigureAwait(false);
+        var scene = ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, visible,
+            ProjectedSceneImageTransformV1.Identity(Width, Height),
+            new ProjectedSceneSource(CaptureId, ArtifactId, DescriptorIdentity), "calibration-v1", "perspective-v1");
+        var star = scene.Objects.Single(static o => o.Id == "star:sweep");
+        var jupiter = scene.Objects.Single(static o => o.Id == "solar-system:Jupiter");
+
+        // Sweep both at exact 4.6 px separation (where star pointing window overlaps Jupiter at f=5000/8532)
+        // and at starSeparationPx (where positive control at Jupiter sits just outside the star's 3-sigma pointing window).
+        foreach (var step in Enumerable.Range(0, 31))
+        {
+            var sigmaFraction = step * 0.1; // 0.0 sigma .. 3.0 sigma
+            var shiftPx = sigmaFraction * starSigmaPx;
+            var detectionPixel = new PixelPoint(star.Pixel.X - shiftPx, star.Pixel.Y);
+            var detection = new StellarDetection(0, detectionPixel, 6000, 400, 1.2, 1.2, 1000, 5)
+            {
+                SignalToNoise = 80,
+                CentroidCovariance = new(0.01, 0, 0.01)
+            };
+            var entries = MeasuredStellarAssociator.Associate(
+                scene, [detection], [], measurementCompleted: true, settings, new(), CancellationToken.None);
+            Assert.IsEmpty(entries.PointSourcePlanets!.Associations,
+                $"f={focalLength}, shift={sigmaFraction:F1}σ ({shiftPx:F3} px): absent Jupiter must never steal detection inside star pointing window.");
+        }
+
+        // Positive control: a real Jupiter detection at Jupiter's own pixel (starSeparationPx > 3σ from star) matches cleanly.
+        var jupiterDetection = new StellarDetection(0, jupiter.Pixel, 9000, 600, 1.2, 1.2, 1000, 5)
+        {
+            SignalToNoise = 95,
+            CentroidCovariance = new(0.01, 0, 0.01)
+        };
+        var presentEntries = MeasuredStellarAssociator.Associate(
+            scene, [jupiterDetection], [], measurementCompleted: true, settings, new(), CancellationToken.None);
+        var presentPlanet = Assert.ContainsSingle(presentEntries.PointSourcePlanets!.Associations);
+        Assert.IsTrue(presentPlanet.LabelEligible);
+
+        // Also sweep with fixed 4.6 px star-planet separation (Astra/Opus narrow-field scenario).
+        var closeAltAz = ProjectorFactory.Create(proj).Unproject(new(Width / 2d + 4.6, Height / 2d))!.Value;
+        var closeEq = EquatorialPrecession.PrecessToJ2000(
+            CoordinateTransforms.HorizontalToEquatorial(closeAltAz, ExposureMidpointUtc, Site.LatitudeDegrees, Site.LongitudeDegrees),
+            ExposureMidpointUtc);
+        var closeVisible = await new VisibleSceneBuilder(
+                new InMemoryCelestialCatalog([new("star:close46", "Close Star", closeEq.RightAscensionHours, closeEq.DeclinationDegrees, 2.0)]),
+                null, ephemeris)
+            .BuildAsync(new VisibleSceneRequest(ExposureMidpointUtc, Site, proj, new CatalogQuery(6.5, 100),
+                new CatalogMetadata("fixture", "1", new Uri("https://example.test/catalog"), new string('C', 64), "test", "v1"),
+                projectionVersion: "perspective-v1", solarSystemBodies: [SolarSystemBody.Jupiter])).ConfigureAwait(false);
+        var closeScene = ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, closeVisible,
+            ProjectedSceneImageTransformV1.Identity(Width, Height),
+            new ProjectedSceneSource(CaptureId, ArtifactId, DescriptorIdentity), "calibration-v1", "perspective-v1");
+        var closeStar = closeScene.Objects.Single(static o => o.Id == "star:close46");
+        foreach (var step in Enumerable.Range(0, 31))
+        {
+            var sigmaFraction = step * 0.1;
+            var shiftPx = sigmaFraction * starSigmaPx;
+            var detectionPixel = new PixelPoint(closeStar.Pixel.X - shiftPx, closeStar.Pixel.Y);
+            var detection = new StellarDetection(0, detectionPixel, 6000, 400, 1.2, 1.2, 1000, 5)
+            {
+                SignalToNoise = 80,
+                CentroidCovariance = new(0.01, 0, 0.01)
+            };
+            var entries = MeasuredStellarAssociator.Associate(
+                closeScene, [detection], [], measurementCompleted: true, settings, new(), CancellationToken.None);
+            Assert.IsEmpty(entries.PointSourcePlanets!.Associations,
+                $"f={focalLength} (4.6 px sep), shift={sigmaFraction:F1}σ ({shiftPx:F3} px): absent Jupiter must never claim detection.");
+        }
+    }
+
+    [TestMethod]
+    public async Task ExcludedBrightPlanetFootprintDoesNotClaimNearbyMoonOrStarInsideSearchWindow()
+    {
+        // Opus L1: when a saturated bright planet's predicted position is covered by an exclusion footprint
+        // (e.g. saturated-excessive), the pre-match loop withholds the planet with measurement-excluded:<reason>
+        // so it cannot claim a nearby uncataloged moon or star detection inside its search window.
+        var ephemeris = new AstronomyEnginePlanetEphemeris();
+        var (scene, jupiter) = await BuildPlanetSceneAsync(ephemeris, SolarSystemBody.Jupiter, []).ConfigureAwait(false);
+        var settings = new MeasuredStellarAssociationSettingsV1(
+            PredictionSigmaPixels: 0.5, WindowSigmas: 3.0, MaximumWindowPixels: 4.0, OffsetRadiusPixels: 6.0);
+        var nearbyMoonPixel = new PixelPoint(jupiter.Pixel.X + 2.5, jupiter.Pixel.Y);
+        var moonDetection = new StellarDetection(0, nearbyMoonPixel, 2200, 180, 1.1, 1.1, 1000, 5)
+        {
+            SignalToNoise = 35,
+            CentroidCovariance = new(0.02, 0, 0.02)
+        };
+        var px = (int)Math.Floor(jupiter.Pixel.X);
+        var py = (int)Math.Floor(jupiter.Pixel.Y);
+        var saturatedExclusion = new StellarMeasurementExclusion(
+            jupiter.Pixel, 64_000, 49, StellarExclusionReasons.SaturatedExcessive)
+        {
+            Footprint = new StellarFootprintBounds(px - 2, py - 2, px + 2, py + 2)
+        };
+
+        var entries = MeasuredStellarAssociator.Associate(
+            scene, [moonDetection], [saturatedExclusion], measurementCompleted: true,
+            settings, new(), CancellationToken.None);
+
+        Assert.IsNotNull(entries.PointSourcePlanets);
+        Assert.IsEmpty(entries.PointSourcePlanets.Associations,
+            "An excluded bright planet must never claim a nearby moon/star inside its search window.");
+        var unmatched = Assert.ContainsSingle(entries.PointSourcePlanets.UnmatchedPredictions);
+        Assert.AreEqual("solar-system:Jupiter", unmatched.ObjectId);
+        Assert.AreEqual(
+            MeasuredStellarAssociationReasonCodes.MeasurementExcludedPrefix + StellarExclusionReasons.SaturatedExcessive,
+            unmatched.ReasonCode);
+        var unassoc = Assert.ContainsSingle(entries.UnassociatedDetections);
+        Assert.AreEqual(0, unassoc.DetectionIndex);
+        Assert.AreEqual(MeasuredStellarAssociationReasonCodes.NearIneligiblePrediction, unassoc.ReasonCode);
+
+        var raw = RawArtifact(Field(Width, Height), CameraPixelFormat.Mono16, Width, Height);
+        var evidence = MeasuredStellarAssociationRecipe.CreateEvidence(raw, raw.Layout!, CaptureId, DescriptorIdentity, scene,
+            new(StellarSourceMeasurer.AlgorithmVersion, new string('2', 64), MeasuredStellarAssociationRecipe.MonoReconstruction,
+                StellarMeasurementStatus.Completed, 1000, 5, 2, 1, 1),
+            settings, new(), entries);
+        Assert.IsTrue(MeasuredStellarAssociationJson.Validate(evidence).IsValid);
+        var gated = StellarLabelPolicy.Apply(ProjectedSceneAnnotation.CreateObjects(scene, 6.5), evidence);
+        Assert.IsFalse(gated.Single(static o => o.Id == "solar-system:Jupiter").DrawLabel);
+    }
+
+    [TestMethod]
     public async Task CrossSceneCompatibilityRejectsHorizontallyMirroredAndCoordinateMismatchedScenes()
     {
         // Astra D2: IsCompatibleWithScene and AssociationsBindScene must reject horizontally mirrored or
@@ -895,6 +1169,135 @@ public sealed class PointSourcePlanetAssociationTests
         };
         shiftedRender = shiftedRender with { SceneIdentitySha256 = ProjectedSceneJson.ComputeIdentity(shiftedRender) };
         Assert.IsFalse(ExposureAssociationProducts.IsCompatibleWithScene(assocArtifact, evidence, shiftedRender));
+    }
+
+    [TestMethod]
+    public async Task CrossSceneCompatibilityRejectsSymmetryAxisFlipsAndRotationsWithSoleSharedObject()
+    {
+        // Astra D2 exact repro: 192x192 frame with Jupiter lying on the mirror/symmetry axis (96, 96) as the SOLE
+        // shared object between the prediction scene and the render scene, plus a prediction-only star at (120, 80)
+        // omitted from the render scene. Shared-object pixel agreement alone leaves Jupiter invariant at (96, 96),
+        // so orientation/geometry identity must reject HorizontalFlip, VerticalMirror, projection vertical flip,
+        // and 180-degree rotations before any diagnostic marker can be drawn at (120, 80).
+        var ephemeris = new AstronomyEnginePlanetEphemeris();
+        var position = ephemeris.GetPosition(SolarSystemBody.Jupiter, ExposureMidpointUtc);
+        var jupiterAltAz = CoordinateTransforms.EquatorialToHorizontal(
+            EquatorialPrecession.PrecessJ2000(position.EquatorialJ2000, ExposureMidpointUtc),
+            ExposureMidpointUtc, Site.LatitudeDegrees, Site.LongitudeDegrees);
+        var baseProj = new ProjectionContext(ProjectionModel.Perspective, Width / 2d, Height / 2d, 500, 500, Width, Height,
+            ProjectionAperture.Rectangular, BoresightAltitudeDegrees: jupiterAltAz.AltitudeDegrees,
+            BoresightAzimuthDegrees: jupiterAltAz.AzimuthDegrees, RollDegrees: 0, HorizontalFlip: false);
+        var predOnlyAltAz = ProjectorFactory.Create(baseProj).Unproject(new(120, 80))!.Value;
+        var predOnlyEq = EquatorialPrecession.PrecessToJ2000(
+            CoordinateTransforms.HorizontalToEquatorial(predOnlyAltAz, ExposureMidpointUtc, Site.LatitudeDegrees, Site.LongitudeDegrees),
+            ExposureMidpointUtc);
+        var predOnlyStar = new CelestialCatalogObject("star:pred-only", "Pred Only Star",
+            predOnlyEq.RightAscensionHours, predOnlyEq.DeclinationDegrees, 1.8);
+        var meta = new CatalogMetadata("fixture", "1", new Uri("https://example.test/catalog"), new string('C', 64), "test", "v1");
+
+        // Prediction scene has Jupiter on symmetry axis (96, 96) AND prediction-only star at (120, 80).
+        var predVisible = await new VisibleSceneBuilder(new InMemoryCelestialCatalog([predOnlyStar]), null, ephemeris)
+            .BuildAsync(new VisibleSceneRequest(ExposureMidpointUtc, Site, baseProj, new CatalogQuery(6.5, 100), meta,
+                projectionVersion: "calibration-v1", solarSystemBodies: [SolarSystemBody.Jupiter])).ConfigureAwait(false);
+        var predStarObj = predVisible.Objects.Single(static o => o.Id == "star:pred-only");
+        Assert.AreEqual(120.0, predStarObj.Pixel.X, 0.05);
+        Assert.AreEqual(80.0, predStarObj.Pixel.Y, 0.05);
+
+        // Render raw frame containing ONLY Jupiter (so star:pred-only is unmatched and would appear in expected-not-detected).
+        var jupiterObj = predVisible.Objects.Single(static o => o.Id == "solar-system:Jupiter");
+        Assert.AreEqual(Width / 2d, jupiterObj.Pixel.X, 0.05);
+        Assert.AreEqual(Height / 2d, jupiterObj.Pixel.Y, 0.05);
+        var rawSamples = RenderSources(Width, Height, [(jupiterObj.Pixel, 7000d)]);
+        var rawBase = RawArtifact(rawSamples, CameraPixelFormat.Mono16, Width, Height);
+        var raw = rawBase with
+        {
+            Layout = rawBase.Layout! with
+            {
+                BlackLevel = 0,
+                StoredCodeTransform = FrameStoredCodeTransform.IdentityV1,
+                LevelCodeSpace = FrameLevelCodeSpace.StoredContainer
+            },
+            CreatedUtc = ExposureMidpointUtc,
+            ObservationStartedUtc = ExposureMidpointUtc.AddMilliseconds(-500),
+            ObservationEndedUtc = ExposureMidpointUtc.AddMilliseconds(500)
+        };
+        var executor = new ProcessingRecipeExecutor();
+        var linearOutcome = await executor.ExecuteAsync(new ProcessingExecutionRequest(
+            BuiltInProcessingRecipes.LinearNormalization,
+            JsonSerializer.SerializeToElement(new LinearNormalizationOptions()),
+            ProcessingInputSelector.Raw(raw.Variant), [raw], "qualified-linear-v1")).ConfigureAwait(false);
+        var linear = ToArtifact(linearOutcome.Products.Single(), raw);
+        var expectedInput = new ExposureMeasurementInputV1(
+            new(CaptureId, raw.ArtifactId, DescriptorIdentity, ProcessingIdentity.ComputePayloadSha256(raw.Payload), raw.RecipeIdentitySha256, null, raw.Layout!),
+            new(CaptureId, linear.ArtifactId, DescriptorIdentity, ProcessingIdentity.ComputePayloadSha256(linear.Payload), linear.RecipeIdentitySha256, linear.ContentIdentitySha256, linear.Layout!),
+            ExposureCalibrationDisposition.NormalizationOnly, null, "orientation-v1",
+            RigOrientation: new(baseProj.BoresightAltitudeDegrees, baseProj.BoresightAzimuthDegrees, baseProj.RollDegrees),
+            ApertureProjection: baseProj, Exposure: new(new("agent", "cam"), Guid.NewGuid(), CaptureId),
+            OpticalCalibrationVersion: "calibration-v1", Step3Disposition: LinearExposureDisposition.QualifiedNormalizationOnly, Step3Revision: 1);
+        var step4 = await executor.ExecuteAsync(ExposureMeasurementProducts.Request(expectedInput, raw, linear)).ConfigureAwait(false);
+        var step4Artifact = ToArtifact(step4.Products.Single(), raw);
+
+        var source = new ProjectedSceneSource(CaptureId, raw.ArtifactId, DescriptorIdentity);
+        var predScene = ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, predVisible,
+            ProjectedSceneImageTransformV1.Identity(Width, Height), source, "calibration-v1", "calibration-v1");
+        var sceneOutcome = await executor.ExecuteAsync(ExposureCatalogPredictionProducts.Request(raw, predScene)).ConfigureAwait(false);
+        var sceneArtifact = ToArtifact(sceneOutcome.Products.Single(), raw);
+        var associated = ExposureAssociationProducts.Associate(raw, step4Artifact, expectedInput, sceneArtifact, ExposureAssociationProducts.Variant);
+        var assocArtifact = ToArtifact(associated.Products.Single(), raw);
+        var evidence = MeasuredStellarAssociationJson.Parse(assocArtifact.Payload).Associations!;
+        Assert.ContainsSingle(evidence.PointSourcePlanets!.Associations);
+        Assert.AreEqual("star:pred-only", Assert.ContainsSingle(evidence.UnmatchedPredictions).CatalogId);
+
+        async Task<ProjectedSceneV1> BuildSoleJupiterRenderSceneAsync(
+            ProjectionContext proj, ProjectedSceneImageTransformV1? transform = null)
+        {
+            var renderVisible = await new VisibleSceneBuilder(new InMemoryCelestialCatalog([]), null, ephemeris)
+                .BuildAsync(new VisibleSceneRequest(ExposureMidpointUtc, Site, proj, new CatalogQuery(6.5, 100), meta,
+                    projectionVersion: "rig-projection-v1", solarSystemBodies: [SolarSystemBody.Jupiter])).ConfigureAwait(false);
+            var renderScene = ProjectedSceneJson.Create(ProjectedSceneKind.VirtualRenderAuthoritative, renderVisible,
+                transform ?? ProjectedSceneImageTransformV1.Identity(Width, Height), source, "calibration-v1", "rig-projection-v1");
+            // Confirm Jupiter is the SOLE object in renderScene AND remains invariant at (96, 96) on the symmetry axis.
+            var soleObj = Assert.ContainsSingle(renderScene.Objects);
+            Assert.AreEqual("solar-system:Jupiter", soleObj.Id);
+            Assert.AreEqual(Width / 2d, soleObj.Pixel.X, 0.05);
+            Assert.AreEqual(Height / 2d, soleObj.Pixel.Y, 0.05);
+            return renderScene;
+        }
+
+        // Control: matching projection & orientation returns true and places the prediction-only star marker at (120, 80).
+        var matchingControl = await BuildSoleJupiterRenderSceneAsync(baseProj).ConfigureAwait(false);
+        Assert.IsTrue(ExposureAssociationProducts.IsCompatibleWithScene(assocArtifact, evidence, matchingControl));
+        var controlDiag = MeasuredAssociationPresentation.CreateExpectedNotDetectedPayload(
+            matchingControl, evidence, allowCompatibleExposureAssociations: true);
+        var controlMarker = Assert.ContainsSingle(controlDiag.Markers);
+        Assert.AreEqual(120.0, controlMarker.Center.X, 0.05);
+        Assert.AreEqual(80.0, controlMarker.Center.Y, 0.05);
+
+        // Symmetry-axis orientation mismatches where Jupiter stays invariant at (96, 96): ALL MUST FAIL CLOSED!
+        var mismatchedScenes = new (string Label, ProjectedSceneV1 Scene)[]
+        {
+            ("Projection.HorizontalFlip=true", await BuildSoleJupiterRenderSceneAsync(baseProj with { HorizontalFlip = true }).ConfigureAwait(false)),
+            ("ImageTransform.HorizontalMirror=true", await BuildSoleJupiterRenderSceneAsync(baseProj, ProjectedSceneImageTransformV1.Identity(Width, Height) with { HorizontalMirror = true }).ConfigureAwait(false)),
+            ("ImageTransform.VerticalMirror=true", await BuildSoleJupiterRenderSceneAsync(baseProj, ProjectedSceneImageTransformV1.Identity(Width, Height) with { VerticalMirror = true }).ConfigureAwait(false)),
+            ("Projection.VerticalFlip(HorizontalFlip+Roll180)", await BuildSoleJupiterRenderSceneAsync(baseProj with { HorizontalFlip = true, RollDegrees = 180 }).ConfigureAwait(false)),
+            ("Projection.RollDegrees=180", await BuildSoleJupiterRenderSceneAsync(baseProj with { RollDegrees = 180 }).ConfigureAwait(false)),
+            ("ImageTransform.Rotation=Degrees180", await BuildSoleJupiterRenderSceneAsync(baseProj, ProjectedSceneImageTransformV1.Identity(Width, Height) with { Rotation = ProjectedSceneQuarterRotation.Degrees180 }).ConfigureAwait(false))
+        };
+
+        foreach (var (label, badScene) in mismatchedScenes)
+        {
+            Assert.IsFalse(ExposureAssociationProducts.IsCompatibleWithScene(assocArtifact, evidence, badScene),
+                $"{label}: IsCompatibleWithScene must reject symmetry-axis orientation mismatch.");
+            Assert.ThrowsExactly<ArgumentException>(() =>
+                MeasuredAssociationPresentation.CreateExpectedNotDetectedPayload(
+                    badScene, evidence, allowCompatibleExposureAssociations: true),
+                $"{label}: diagnostic layer must refuse to draw prediction-only star at unmirrored (120, 80).");
+            Assert.ThrowsExactly<ArgumentException>(() =>
+                PresentationLayerProducers.FromProjectedSceneGroupsV2(
+                    badScene, associations: evidence, expectedPositionDiagnostics: false,
+                    allowCompatibleExposureAssociations: true),
+                $"{label}: scene presentation layer must reject incompatible orientation.");
+        }
     }
 
     [TestMethod]

@@ -116,11 +116,13 @@ public sealed class AnnotationIdentityUpgradeTests
         Assert.AreNotEqual(v14StyleLayer.OutputIdentitySha256, v15StyleLayer.OutputIdentitySha256);
 
         // 4. Historical v1 star-only association payload still parses, validates, and gates labels cleanly, while a
-        //    v1 payload smuggling pointSourcePlanets is rejected.
+        //    v1 payload smuggling pointSourcePlanets or v2 projectionGeometryIdentitySha256 is rejected.
         var starOnlyScene = await MeasuredStellarAssociationFixtures.StarFieldAsync(("star:legacy", 0, 0, 1.5)).ConfigureAwait(false);
-        var v1Baseline = MeasuredStellarAssociationFixtures.AllEligible(starOnlyScene) with
+        var starOnlyV2 = MeasuredStellarAssociationFixtures.AllEligible(starOnlyScene);
+        var v1Baseline = starOnlyV2 with
         {
             SchemaVersion = MeasuredStellarAssociationsV1.V1SchemaVersion,
+            Scene = starOnlyV2.Scene with { ProjectionGeometryIdentitySha256 = null },
             Method = new(MeasuredStellarAssociator.V1AlgorithmVersion, new(), StellarLabelPolicy.V1Version, new())
         };
         var v1Bytes = MeasuredStellarAssociationJson.Serialize(v1Baseline);
@@ -129,6 +131,9 @@ public sealed class AnnotationIdentityUpgradeTests
         Assert.AreEqual(MeasuredStellarAssociationsV1.V1SchemaVersion, v1Reparsed.Associations!.SchemaVersion);
         var gatedWithV1 = StellarLabelPolicy.Apply(ProjectedSceneAnnotation.CreateObjects(starOnlyScene, 6.5), v1Reparsed.Associations);
         Assert.IsTrue(gatedWithV1.Single(static o => o.Id == "star:legacy").DrawLabel);
+
+        var v1WithGeometry = v1Baseline with { Scene = starOnlyV2.Scene };
+        Assert.IsFalse(MeasuredStellarAssociationJson.Validate(v1WithGeometry).IsValid);
 
         var parsedCurrent = MeasuredStellarAssociationJson.Parse(assocProduct.Payload).Associations!;
         var v1WithPlanets = parsedCurrent with { SchemaVersion = MeasuredStellarAssociationsV1.V1SchemaVersion };

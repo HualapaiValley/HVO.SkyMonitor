@@ -65,46 +65,70 @@ internal sealed partial class SqliteCaptureProcessingStore
         return items;
     }
 
-    internal async ValueTask<bool> HasAuthoritativeExposureAssociationsAsync(
+    internal async ValueTask<CenteredAuthoritativeAssociationWriter?> ReadAuthoritativeAssociationWriterAsync(
         ExposureKey key, Guid executionId, CancellationToken token)
     {
         using var connection = await OpenCenteredViewsAsync(token).ConfigureAwait(false);
-        using var command = connection.CreateCommand();
-        command.CommandText = """
-            SELECT EXISTS(
-                SELECT 1
-                FROM centered_exposure_products product
-                JOIN centered_exposure_attempts attempt ON attempt.capture_id = product.capture_id
-                JOIN centered_exposure_runs run ON run.run_id = attempt.run_id
-                WHERE product.capture_id = $capture AND run.run_id = $run
-                    AND run.agent_id = $agent AND run.camera_id = $camera
-                    AND product.execution_id = $execution
-                    AND product.schema_version IN ($v1, $v2, $dispV1, $dispV2)
-                    AND (product.variant IN ($variant, $measuredVariant) OR product.producer = $producer)
-            ) OR EXISTS(
-                SELECT 1
+        using (var nodeCommand = connection.CreateCommand())
+        {
+            nodeCommand.CommandText = """
+                SELECT node.node_id, COALESCE(json_extract(output.value, '$.variant'), json_extract(output.value, '$.Variant'))
                 FROM processing_execution_nodes node
+                JOIN json_each(node.outputs_json) output
                 WHERE node.execution_id = $execution
-                    AND (node.node_id = $producer OR EXISTS(
-                        SELECT 1 FROM json_each(node.outputs_json) output
-                        WHERE json_extract(output.value, '$.variant') = $variant
-                           OR json_extract(output.value, '$.Variant') = $variant
-                           OR json_extract(output.value, '$.recipe.name') = $recipe
-                           OR json_extract(output.value, '$.Recipe.Name') = $recipe
-                    ))
-            );
+                    AND COALESCE(json_extract(output.value, '$.variant'), json_extract(output.value, '$.Variant')) IS NOT NULL
+                    AND (
+                        json_extract(output.value, '$.recipe.name') = $recipe
+                        OR json_extract(output.value, '$.Recipe.Name') = $recipe
+                        OR (
+                            COALESCE(json_extract(output.value, '$.schemaVersion'), json_extract(output.value, '$.SchemaVersion')) IN ($v1, $v2)
+                            AND (
+                                node.node_id = $producer
+                                OR COALESCE(json_extract(output.value, '$.variant'), json_extract(output.value, '$.Variant')) = $variant
+                            )
+                        )
+                    )
+                ORDER BY node.rowid
+                LIMIT 1;
+                """;
+            nodeCommand.Parameters.AddWithValue("$execution", executionId.ToString("N"));
+            nodeCommand.Parameters.AddWithValue("$v1", MeasuredStellarAssociationsV1.V1SchemaVersion);
+            nodeCommand.Parameters.AddWithValue("$v2", MeasuredStellarAssociationsV1.CurrentSchemaVersion);
+            nodeCommand.Parameters.AddWithValue("$variant", ExposureAssociationProducts.Variant);
+            nodeCommand.Parameters.AddWithValue("$producer", ExposureAssociationProducts.StepAlias);
+            nodeCommand.Parameters.AddWithValue("$recipe", ExposureAssociationProducts.RecipeName);
+            using var reader = await nodeCommand.ExecuteReaderAsync(token).ConfigureAwait(false);
+            if (await reader.ReadAsync(token).ConfigureAwait(false))
+                return new CenteredAuthoritativeAssociationWriter(reader.GetString(0), reader.GetString(1));
+        }
+
+        using var productCommand = connection.CreateCommand();
+        productCommand.CommandText = """
+            SELECT product.producer, product.variant
+            FROM centered_exposure_products product
+            JOIN centered_exposure_attempts attempt ON attempt.capture_id = product.capture_id
+            JOIN centered_exposure_runs run ON run.run_id = attempt.run_id
+            WHERE product.capture_id = $capture AND run.run_id = $run
+                AND run.agent_id = $agent AND run.camera_id = $camera
+                AND product.execution_id = $execution
+                AND product.schema_version IN ($v1, $v2, $dispV1, $dispV2)
+                AND (product.variant IN ($variant, $measuredVariant) OR product.producer = $producer)
+            ORDER BY product.revision
+            LIMIT 1;
             """;
-        SqliteRawCaptureJournal.AddExposureParameters(command, key);
-        command.Parameters.AddWithValue("$execution", executionId.ToString("N"));
-        command.Parameters.AddWithValue("$v1", MeasuredStellarAssociationsV1.V1SchemaVersion);
-        command.Parameters.AddWithValue("$v2", MeasuredStellarAssociationsV1.CurrentSchemaVersion);
-        command.Parameters.AddWithValue("$dispV1", CenteredViewLayerBindings.DispositionPrefix + MeasuredStellarAssociationsV1.V1SchemaVersion);
-        command.Parameters.AddWithValue("$dispV2", CenteredViewLayerBindings.DispositionPrefix + MeasuredStellarAssociationsV1.CurrentSchemaVersion);
-        command.Parameters.AddWithValue("$variant", ExposureAssociationProducts.Variant);
-        command.Parameters.AddWithValue("$measuredVariant", "measured-stellar-associations-v1");
-        command.Parameters.AddWithValue("$producer", ExposureAssociationProducts.StepAlias);
-        command.Parameters.AddWithValue("$recipe", ExposureAssociationProducts.RecipeName);
-        return await command.ExecuteScalarAsync(token).ConfigureAwait(false) is 1L;
+        SqliteRawCaptureJournal.AddExposureParameters(productCommand, key);
+        productCommand.Parameters.AddWithValue("$execution", executionId.ToString("N"));
+        productCommand.Parameters.AddWithValue("$v1", MeasuredStellarAssociationsV1.V1SchemaVersion);
+        productCommand.Parameters.AddWithValue("$v2", MeasuredStellarAssociationsV1.CurrentSchemaVersion);
+        productCommand.Parameters.AddWithValue("$dispV1", CenteredViewLayerBindings.DispositionPrefix + MeasuredStellarAssociationsV1.V1SchemaVersion);
+        productCommand.Parameters.AddWithValue("$dispV2", CenteredViewLayerBindings.DispositionPrefix + MeasuredStellarAssociationsV1.CurrentSchemaVersion);
+        productCommand.Parameters.AddWithValue("$variant", ExposureAssociationProducts.Variant);
+        productCommand.Parameters.AddWithValue("$measuredVariant", "measured-stellar-associations-v1");
+        productCommand.Parameters.AddWithValue("$producer", ExposureAssociationProducts.StepAlias);
+        using var productReader = await productCommand.ExecuteReaderAsync(token).ConfigureAwait(false);
+        return await productReader.ReadAsync(token).ConfigureAwait(false)
+            ? new CenteredAuthoritativeAssociationWriter(productReader.GetString(0), productReader.GetString(1))
+            : null;
     }
 
     private static async ValueTask AddCenteredViewSchemaAsync(

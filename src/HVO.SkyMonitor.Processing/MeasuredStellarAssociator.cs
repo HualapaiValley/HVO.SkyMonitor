@@ -200,12 +200,13 @@ public static class MeasuredStellarAssociator
 
         var detectionGrid = new PointGrid(detections.Select(static item => item.Pixel).ToArray(), maxSearchRadius);
         var predictionCellSize = Math.Max(settings.CrowdingRadiusPixels,
-            planets.Length > 0 ? Math.Max(maxSearchRadius, Math.Min(64, maxSearchRadius * 1.25 + 1)) : maxSearchRadius);
+            planets.Length > 0
+                ? Math.Max(maxSearchRadius, Math.Min(Math.Max(64, settings.MaximumWindowPixels), maxSearchRadius * 1.5 + 4))
+                : maxSearchRadius);
         var predictionGrid = new PointGrid(targets.Select(static item => item.Pixel).ToArray(), predictionCellSize);
         var preMatch = new string?[targets.Length];
         var contestedByCompetingTarget = new bool[targets.Length];
         var starPointingCovariances = planets.Length > 0 ? new Covariance2D?[stars.Length] : null;
-        var starPointingMaxWindows = planets.Length > 0 ? new double[stars.Length] : null;
         var windows = new List<(int Target, int Detection, double Distance, double Normalized, double NegativeLogLikelihood)>[targets.Length];
         var crowdingSquared = settings.CrowdingRadiusPixels * settings.CrowdingRadiusPixels;
         var windowSigmasSquared = settings.WindowSigmas * settings.WindowSigmas;
@@ -233,6 +234,13 @@ public static class MeasuredStellarAssociator
                     (isPlanet || targets[other].Magnitude - target.Magnitude <= settings.CrowdingMagnitudeDifference)))
             {
                 preMatch[index] = MeasuredStellarAssociationReasonCodes.CrowdedPrediction;
+                continue;
+            }
+            // If an exclusion footprint (e.g. saturated-excessive) already covers the planet's predicted position,
+            // withhold the planet before matching so it cannot claim a nearby moon or star inside its search window.
+            if (isPlanet && ExclusionContaining(target.Pixel, exclusions, settings.ExclusionMarginPixels) is { } containingExclusion)
+            {
+                preMatch[index] = MeasuredStellarAssociationReasonCodes.MeasurementExcludedPrefix + containingExclusion.ReasonCode;
                 continue;
             }
             var targetOffsetRadius = targetOffsetRadii[index];
@@ -272,14 +280,41 @@ public static class MeasuredStellarAssociator
         foreach (var pair in pairs)
         {
             if (targetAssigned[pair.Target] >= 0 || detectionAssigned[pair.Detection] >= 0) continue;
-            if (pair.Target >= stars.Length &&
-                HasPlausibleCompetingTarget(pair.Target, pair.Detection, pair.Distance, pair.NegativeLogLikelihood))
-            {
-                contestedByCompetingTarget[pair.Target] = true;
-                continue;
-            }
             targetAssigned[pair.Target] = pair.Detection;
             detectionAssigned[pair.Detection] = pair.Target;
+        }
+        // Phase 2: revoke any planet assignment whose detection is also plausibly explained by any unassigned
+        // competing catalog star (or other planet) within that competitor's own declared pointing + centroid window.
+        // Running after Phase 1 guarantees a catalog star that already matched its own distinct detection does not
+        // falsely block a real planet, and prevents a worse-fitting star from retroactively stealing a contested source.
+        if (planets.Length > 0)
+        {
+            bool revoked;
+            do
+            {
+                revoked = false;
+                for (var planetIndex = stars.Length; planetIndex < targets.Length; planetIndex++)
+                {
+                    var detectionIndex = targetAssigned[planetIndex];
+                    if (detectionIndex < 0) continue;
+                    var planetDistance = Math.Sqrt(DistanceSquared(targets[planetIndex].Pixel, detections[detectionIndex].Pixel));
+                    if (!HasPlausibleCompetingTarget(planetIndex, detectionIndex, planetDistance))
+                        continue;
+                    targetAssigned[planetIndex] = -1;
+                    detectionAssigned[detectionIndex] = -1;
+                    contestedByCompetingTarget[planetIndex] = true;
+                    // Any unassigned target whose own matching window included this now-unclaimed detection is also
+                    // ambiguous rather than ClaimedByOther.
+                    for (var other = 0; other < targets.Length; other++)
+                    {
+                        if (other != planetIndex && targetAssigned[other] < 0 &&
+                            windows[other].Any(entry => entry.Detection == detectionIndex))
+                            contestedByCompetingTarget[other] = true;
+                    }
+                    revoked = true;
+                }
+            }
+            while (revoked);
         }
 
         var associations = new List<MeasuredStellarAssociationV1>();
@@ -295,7 +330,7 @@ public static class MeasuredStellarAssociator
             }
             var reason = ResolveUnmatchedReason(index, star.Pixel);
             unmatched.Add(Unmatched(star, reason));
-            targetCategory[index] = preMatch[index] is not null ? 1 : 2;
+            targetCategory[index] = preMatch[index] is not null || contestedByCompetingTarget[index] ? 1 : 2;
         }
 
         MeasuredPointSourcePlanetEvidenceV1? planetEvidence = null;
@@ -373,7 +408,7 @@ public static class MeasuredStellarAssociator
         // Preserve plausible competing catalog-star (and other planet) explanations even when the competing target was
         // excluded by pre-match filtering (crowded, near-edge, ambiguous, outside aperture) or sits outside its fixed
         // star window under the declared angular pointing uncertainty, so an absent planet never steals a star's source.
-        bool HasPlausibleCompetingTarget(int planetIndex, int detectionIndex, double planetDistance, double planetNll)
+        bool HasPlausibleCompetingTarget(int planetIndex, int detectionIndex, double planetDistance)
         {
             var detection = detections[detectionIndex];
             foreach (var other in predictionGrid.Near(detection.Pixel))
@@ -382,43 +417,64 @@ public static class MeasuredStellarAssociator
                 var otherDistance = Math.Sqrt(DistanceSquared(targets[other].Pixel, detection.Pixel));
                 if (other < stars.Length)
                 {
-                    var (starCov, starWindow) = GetStarPointingWindow(other);
-                    if (otherDistance <= starWindow)
+                    var starCov = GetStarPointingCovariance(other);
+                    var starCombinedLimit = MeasuredStellarAssociationJson.PlanetMaximumWindow(
+                        settings, CombinedUncertaintyMajorSigma(detection, starCov));
+                    if (otherDistance <= starCombinedLimit)
                     {
-                        var (starNorm, starNll) = EvaluateResidual(
+                        var (starNorm, _) = EvaluateResidual(
                             detection, targets[other].Pixel, starCov, settings.PredictionSigmaPixels);
-                        if (starNorm <= windowSigmasSquared &&
-                            (otherDistance < settings.AmbiguityRatio * planetDistance || starNll <= planetNll))
+                        if (starNorm <= windowSigmasSquared)
                             return true;
                     }
                     if (otherDistance <= settings.OffsetRadiusPixels &&
                         otherDistance < settings.AmbiguityRatio * planetDistance)
                         return true;
                 }
-                else if (otherDistance <= targetMaxWindows[other])
+                else
                 {
-                    var (otherNorm, otherNll) = EvaluateResidual(
-                        detection, targets[other].Pixel, targetCovariances[other], settings.PredictionSigmaPixels);
-                    if (otherNorm <= windowSigmasSquared &&
-                        (otherDistance < settings.AmbiguityRatio * planetDistance || otherNll <= planetNll))
-                        return true;
+                    var otherCombinedLimit = MeasuredStellarAssociationJson.PlanetMaximumWindow(
+                        settings, CombinedUncertaintyMajorSigma(detection, targetCovariances[other]));
+                    if (otherDistance <= otherCombinedLimit)
+                    {
+                        var (otherNorm, _) = EvaluateResidual(
+                            detection, targets[other].Pixel, targetCovariances[other], settings.PredictionSigmaPixels);
+                        if (otherNorm <= windowSigmasSquared)
+                            return true;
+                    }
                 }
             }
             return false;
         }
 
-        (Covariance2D Covariance, double MaxWindow) GetStarPointingWindow(int starIndex)
+        Covariance2D GetStarPointingCovariance(int starIndex)
         {
             if (starPointingCovariances![starIndex] is { } cached)
-                return (cached, starPointingMaxWindows![starIndex]);
+                return cached;
             var cov = ComputePredictionCovariance(
                 targets[starIndex], scene, jacobianProjector!, settings.PredictionSigmaPixels, pointingAngularSigmaRadians);
-            var sigma = Math.Max(MajorSigma(cov), settings.PredictionSigmaPixels);
-            var window = MeasuredStellarAssociationJson.PlanetMaximumWindow(settings, sigma);
             starPointingCovariances[starIndex] = cov;
-            starPointingMaxWindows![starIndex] = window;
-            return (cov, window);
+            return cov;
         }
+    }
+
+    private static StellarMeasurementExclusion? ExclusionContaining(
+        PixelPoint point, IReadOnlyList<StellarMeasurementExclusion> exclusions, double exclusionMarginPixels)
+    {
+        StellarMeasurementExclusion? best = null;
+        var bestDistance = double.MaxValue;
+        foreach (var exclusion in exclusions)
+        {
+            if (exclusion.Footprint is not { } footprint || !footprint.Contains(point, exclusionMarginPixels))
+                continue;
+            var distance = DistanceSquared(exclusion.Peak, point);
+            if (best is null || distance < bestDistance)
+            {
+                best = exclusion;
+                bestDistance = distance;
+            }
+        }
+        return best;
     }
 
     private static StellarMeasurementExclusion? ExcludedBy(

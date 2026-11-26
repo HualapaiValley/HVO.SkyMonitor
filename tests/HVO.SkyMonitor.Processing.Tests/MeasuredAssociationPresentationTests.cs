@@ -173,6 +173,8 @@ public sealed class MeasuredAssociationPresentationTests
         }
         var matchedStar = MakeStar("star:matched", "Matched Star", 20, 12, 1.5);
         var absentStar = MakeStar("star:absent", "Absent Star", -26, 18, 2.0);
+        var unnamedPresentStar = MakeStar("HIP 99001", "HIP 99001", 34, -22, 2.5);
+        var unnamedMissingStar = MakeStar("HIP 99002", "HIP 99002", -34, -30, 2.6);
         var marsAltAz = projector.Unproject(new(96 - 24, 96 - 22))!.Value;
         var marsEq = EquatorialPrecession.PrecessToJ2000(
             CoordinateTransforms.HorizontalToEquatorial(marsAltAz, utc, site.LatitudeDegrees, site.LongitudeDegrees), utc);
@@ -183,15 +185,17 @@ public sealed class MeasuredAssociationPresentationTests
         var renderEphemeris = new FixedPlanetEphemeris(new Dictionary<SolarSystemBody, SolarSystemPosition>(), ephemeris.ModelVersion);
         var catalogMeta = new CatalogMetadata("fixture", "1", new Uri("https://example.test/catalog"), new string('C', 64), "test", "v1");
 
-        var predVisible = await new VisibleSceneBuilder(new InMemoryCelestialCatalog([matchedStar, absentStar]), null, predEphemeris)
+        var predVisible = await new VisibleSceneBuilder(
+                new InMemoryCelestialCatalog([matchedStar, absentStar, unnamedPresentStar, unnamedMissingStar]), null, predEphemeris)
             .BuildAsync(new VisibleSceneRequest(utc, site, projection, new CatalogQuery(6.5, 100), catalogMeta,
                 projectionVersion: "calibration-v1", solarSystemBodies: [SolarSystemBody.Mars])).ConfigureAwait(false);
         var predScene = ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, predVisible,
             ProjectedSceneImageTransformV1.Identity(192, 192),
             new ProjectedSceneSource(CaptureId, ArtifactId, DescriptorIdentity), "calibration-v1", "calibration-v1");
 
-        // Render scene contains ONLY matchedStar (omitting both Mars and absentStar from scene.Objects).
-        var renderVisible = await new VisibleSceneBuilder(new InMemoryCelestialCatalog([matchedStar]), null, renderEphemeris)
+        // Render scene contains matchedStar and unnamedPresentStar (omitting Mars, absentStar, and unnamedMissingStar).
+        var renderVisible = await new VisibleSceneBuilder(
+                new InMemoryCelestialCatalog([matchedStar, unnamedPresentStar]), null, renderEphemeris)
             .BuildAsync(new VisibleSceneRequest(utc, site, projection, new CatalogQuery(6.5, 100), catalogMeta,
                 projectionVersion: "rig-projection-v1")).ConfigureAwait(false);
         var renderScene = ProjectedSceneJson.Create(ProjectedSceneKind.VirtualRenderAuthoritative, renderVisible,
@@ -200,6 +204,7 @@ public sealed class MeasuredAssociationPresentationTests
 
         Assert.IsFalse(renderScene.Objects.Any(static o => o.Id == "solar-system:Mars"));
         Assert.IsFalse(renderScene.Objects.Any(static o => o.Id == "star:absent"));
+        Assert.IsFalse(renderScene.Objects.Any(static o => o.Id == "HIP 99002"));
 
         // Run real association on an image containing ONLY matchedStar.
         var samples = Field(192, 192);
@@ -214,12 +219,26 @@ public sealed class MeasuredAssociationPresentationTests
         var compatibleDiag = MeasuredAssociationPresentation.CreateExpectedNotDetectedPayload(
             renderScene, evidence, allowCompatibleExposureAssociations: true);
 
-        Assert.HasCount(2, exactDiag.Markers);
-        Assert.HasCount(2, compatibleDiag.Markers, "Compatible render scene must NOT drop Mars or absentStar missing from scene.Objects.");
-        Assert.IsTrue(compatibleDiag.TextBlocks.Any(static b => b.Lines[0] == "Mars (expected)"),
-            $"Missing Mars diagnostic label: [{string.Join(", ", compatibleDiag.TextBlocks.Select(b => b.Lines[0]))}]");
-        Assert.IsTrue(compatibleDiag.TextBlocks.Any(static b => b.Lines[0].EndsWith(AnnotationLabelFormatter.ExpectedSuffix, StringComparison.Ordinal) &&
-            b.Lines[0].Contains("absent", StringComparison.OrdinalIgnoreCase)));
+        // All 4 unconfirmed objects (Mars, absentStar, unnamedPresentStar, unnamedMissingStar) retain markers in both.
+        Assert.HasCount(4, exactDiag.Markers);
+        Assert.HasCount(4, compatibleDiag.Markers, "Compatible render scene must NOT drop Mars or absent stars missing from scene.Objects.");
+        Assert.IsTrue(exactDiag.TextBlocks.Any(static b => b.Lines[0] == "Mars (expected)"));
+        Assert.IsTrue(exactDiag.TextBlocks.Any(static b => b.Lines[0] == "Absent Star (expected)"));
+        Assert.HasCount(2, exactDiag.TextBlocks, "Unnamed stars must not emit raw catalog ID labels.");
+
+        // Opus L3: stars missing from the render scene or unnamed in the scene never fall back to raw catalog IDs,
+        // while planet diagnostics still carry their body name ("Mars (expected)").
+        var compatLabel = Assert.ContainsSingle(compatibleDiag.TextBlocks,
+            $"Unexpected compatible diagnostic labels: [{string.Join(", ", compatibleDiag.TextBlocks.Select(b => b.Lines[0]))}]");
+        Assert.AreEqual("Mars (expected)", compatLabel.Lines[0]);
+        Assert.IsFalse(compatibleDiag.TextBlocks.Any(static b =>
+            b.Lines[0].Contains("star:", StringComparison.OrdinalIgnoreCase) ||
+            b.Lines[0].Contains("HIP ", StringComparison.OrdinalIgnoreCase)));
+
+        // Measured layer with no scene also suppresses raw catalog ID labels while preserving markers.
+        var measuredWithoutScene = MeasuredAssociationPresentation.CreateMeasuredPayload(evidence, scene: null);
+        Assert.ContainsSingle(measuredWithoutScene.Markers);
+        Assert.IsEmpty(measuredWithoutScene.TextBlocks);
     }
 
     [TestMethod]
@@ -294,9 +313,11 @@ public sealed class MeasuredAssociationPresentationTests
 
         // When bound to a genuinely star-only scene without planets, v1 may truthfully report all-predictions-matched.
         var starOnlyScene = await StarFieldAsync(("star:only", 0, 0, 1.5)).ConfigureAwait(false);
-        var v1AllStarOnly = AllEligible(starOnlyScene) with
+        var starOnlyV2 = AllEligible(starOnlyScene);
+        var v1AllStarOnly = starOnlyV2 with
         {
             SchemaVersion = MeasuredStellarAssociationsV1.V1SchemaVersion,
+            Scene = starOnlyV2.Scene with { ProjectionGeometryIdentitySha256 = null },
             Method = new(MeasuredStellarAssociator.V1AlgorithmVersion, new(), StellarLabelPolicy.V1Version, new()),
             PointSourcePlanets = null
         };

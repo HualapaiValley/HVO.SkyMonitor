@@ -10,6 +10,14 @@ internal sealed record CenteredViewLayerBinding(CenteredViewLayerScope Scope, Ce
     internal CenteredViewLayerKey Key(Guid captureId) => new(Style.Kind, Scope, captureId);
 }
 
+internal readonly record struct CenteredAuthoritativeAssociationWriter(string Producer, string Variant)
+{
+    internal bool Matches(ExposureProductSlot slot) =>
+        MeasuredStellarAssociationsV1.IsSupportedSchemaVersion(CenteredViewLayerBindings.SourceSchema(slot.SchemaVersion)) &&
+        string.Equals(slot.Producer, Producer, StringComparison.Ordinal) &&
+        string.Equals(slot.Variant, Variant, StringComparison.Ordinal);
+}
+
 internal static class CenteredViewLayerBindings
 {
     // Outputless view settlements have a cursor without asserting that the science slot produced an artifact.
@@ -44,20 +52,26 @@ internal static class CenteredViewLayerBindings
 
     private const string DefaultMeasuredAssociationVariant = "measured-stellar-associations-v1";
 
-    internal static bool IsAuthoritativeAssociationSlot(ExposureProductSlot slot) =>
-        MeasuredStellarAssociationsV1.IsSupportedSchemaVersion(SourceSchema(slot.SchemaVersion)) &&
-        (slot.Variant is ExposureAssociationProducts.Variant or DefaultMeasuredAssociationVariant ||
-         slot.Producer == ExposureAssociationProducts.StepAlias);
+    internal static bool IsAuthoritativeAssociationSlot(
+        ExposureProductSlot slot, CenteredAuthoritativeAssociationWriter? authoritativeWriter = null)
+    {
+        if (!MeasuredStellarAssociationsV1.IsSupportedSchemaVersion(SourceSchema(slot.SchemaVersion)))
+            return false;
+        if (authoritativeWriter is { } writer)
+            return writer.Matches(slot);
+        return slot.Variant is ExposureAssociationProducts.Variant or DefaultMeasuredAssociationVariant ||
+            slot.Producer == ExposureAssociationProducts.StepAlias;
+    }
 
     internal static bool IsSceneExpectedNotDetectedSlot(ExposureProductSlot slot) =>
         PresentationLayerPayloadV1.SupportsSchema(SourceSchema(slot.SchemaVersion)) &&
         slot.Variant == "expected-not-detected-layer-v1";
 
     internal static IReadOnlyList<CenteredViewLayerBinding> ReadLegacySlot(
-        ExposureProductSlot slot, bool hasAuthoritativeAssociations = false) => SourceSchema(slot.SchemaVersion) switch
+        ExposureProductSlot slot, CenteredAuthoritativeAssociationWriter? authoritativeWriter = null) => SourceSchema(slot.SchemaVersion) switch
         {
             ExposureMeasurementProducts.SchemaVersion when slot.Variant == ExposureMeasurementProducts.Variant => [Markers],
-            _ when IsAuthoritativeAssociationSlot(slot) => [MeasuredAssociations, ExpectedNotDetected],
+            _ when IsAuthoritativeAssociationSlot(slot, authoritativeWriter) => [MeasuredAssociations, ExpectedNotDetected],
             RegionalStellarVisibilityProducts.SchemaVersion => [RegionalVisibility],
             MeasuredAstrometrySolutionV1.CurrentSchemaVersion => [Residuals],
             var schema when PresentationLayerPayloadV1.SupportsSchema(schema) => slot.Variant switch
@@ -67,7 +81,7 @@ internal static class CenteredViewLayerBindings
                 "scene-image-circle-layer-v1" => [ImageCircle],
                 "scene-constellation-layer-v1" => [Constellations],
                 "scene-deep-sky-v1" => [DeepSky],
-                "expected-not-detected-layer-v1" => hasAuthoritativeAssociations ? [] : [ExpectedNotDetected],
+                "expected-not-detected-layer-v1" => authoritativeWriter is not null ? [] : [ExpectedNotDetected],
                 "cloud-mask-layer-v1" => [CloudMask],
                 "cloud-label-layer-v1" => [CloudLabel],
                 "environment-layer-v1" => [Environment],

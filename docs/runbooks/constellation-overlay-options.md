@@ -54,7 +54,7 @@ The shared descriptors in `HVO.SkyMonitor.Processing` resolve the registered ali
 - `projected-scene-presentation-v13-plain-circle-bounded-expected-labels` (retained contract)
 - `projected-scene-presentation-v15-plain-circle-bounded-point-source-labels` (current runtime)
 
-Both describe the same scalar fields and constellation selection list. Resolving a retained descriptor never makes
+All three describe the same scalar fields and constellation selection list. Resolving a retained descriptor never makes
 the current runtime execute an older producer under its old identity. Both hosts
 use the same shared contract; no new producer or recipe version is introduced.
 

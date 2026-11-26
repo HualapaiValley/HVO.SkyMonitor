@@ -73,7 +73,9 @@ public sealed record MeasuredStellarAssociationSceneV1(
     [property: JsonRequired] string CatalogChecksumSha256,
     [property: JsonRequired] string CalibrationVersion,
     [property: JsonRequired] string ProjectionAlgorithmVersion,
-    [property: JsonRequired] string AstronomyAlgorithmVersion);
+    [property: JsonRequired] string AstronomyAlgorithmVersion,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ProjectionGeometryIdentitySha256 = null);
 
 /// <summary>Image-wide measurement facts. Per-source evidence is carried by the association and detection entries.</summary>
 public sealed record MeasuredStellarMeasurementV1(
@@ -300,6 +302,61 @@ public static class MeasuredStellarAssociationJson
         return CaptureContractJson.ComputeCanonicalJsonSha256(JsonSerializer.SerializeToElement(associations, SerializerOptions));
     }
 
+    /// <summary>
+    /// Computes the canonical uppercase SHA-256 identity of a projected scene's pixel-mapping geometry and orientation
+    /// (coordinate convention, optical projection parameters excluding algorithm-label variation, and image transform).
+    /// </summary>
+    public static string ComputeProjectionGeometryIdentitySha256(ProjectedSceneV1 scene)
+    {
+        ArgumentNullException.ThrowIfNull(scene);
+        var p = scene.Projection;
+        var t = scene.ImageTransform;
+        var canonical = new
+        {
+            coordinateConvention = scene.CoordinateConvention.ToString(),
+            projection = new
+            {
+                model = p.Model.ToString(),
+                aperture = p.Aperture.ToString(),
+                calibrationVersion = p.CalibrationVersion,
+                widthPixels = p.WidthPixels,
+                heightPixels = p.HeightPixels,
+                principalPointX = NormalizeZero(p.PrincipalPointX),
+                principalPointY = NormalizeZero(p.PrincipalPointY),
+                focalLengthXPixels = NormalizeZero(p.FocalLengthXPixels),
+                focalLengthYPixels = NormalizeZero(p.FocalLengthYPixels),
+                imageCircleRadiusPixels = p.ImageCircleRadiusPixels is { } r ? NormalizeZero(r) : (double?)null,
+                boresightAltitudeDegrees = NormalizeZero(p.BoresightAltitudeDegrees),
+                boresightAzimuthDegrees = NormalizeZero(p.BoresightAzimuthDegrees),
+                rollDegrees = NormalizeZero(p.RollDegrees),
+                horizontalFlip = p.HorizontalFlip,
+                enforceSensorBounds = p.EnforceSensorBounds,
+                radialDistortionK1 = NormalizeZero(p.RadialDistortionK1)
+            },
+            imageTransform = new
+            {
+                schemaVersion = t.SchemaVersion,
+                sourceWidthPixels = t.SourceWidthPixels,
+                sourceHeightPixels = t.SourceHeightPixels,
+                cropX = t.CropX,
+                cropY = t.CropY,
+                cropWidth = t.CropWidth,
+                cropHeight = t.CropHeight,
+                binX = t.BinX,
+                binY = t.BinY,
+                horizontalMirror = t.HorizontalMirror,
+                verticalMirror = t.VerticalMirror,
+                rotation = t.Rotation.ToString(),
+                outputWidthPixels = t.OutputWidthPixels,
+                outputHeightPixels = t.OutputHeightPixels
+            }
+        };
+        return CaptureContractJson.ComputeCanonicalJsonSha256(JsonSerializer.SerializeToElement(canonical, SerializerOptions))
+            .ToUpperInvariant();
+
+        static double NormalizeZero(double value) => value == 0 ? 0 : value;
+    }
+
     public static byte[] Serialize(MeasuredStellarAssociationsV1 associations)
     {
         ArgumentNullException.ThrowIfNull(associations);
@@ -352,7 +409,9 @@ public static class MeasuredStellarAssociationJson
         var scene = value.Scene;
         if (scene is null || !Sha256(scene.SceneIdentitySha256) || !Enum.IsDefined(scene.Kind) ||
             !Text(scene.CatalogName) || !Text(scene.CatalogVersion) || !Sha256(scene.CatalogChecksumSha256) ||
-            !Text(scene.CalibrationVersion) || !Text(scene.ProjectionAlgorithmVersion) || !Text(scene.AstronomyAlgorithmVersion))
+            !Text(scene.CalibrationVersion) || !Text(scene.ProjectionAlgorithmVersion) || !Text(scene.AstronomyAlgorithmVersion) ||
+            (isV1 && scene.ProjectionGeometryIdentitySha256 is not null) ||
+            (scene.ProjectionGeometryIdentitySha256 is { } geometrySha && !Sha256(geometrySha)))
             return Invalid(InvalidContract, nameof(value.Scene));
         var measurement = value.Measurement;
         if (measurement is null || !Text(measurement.AlgorithmVersion) || !Sha256(measurement.SettingsIdentitySha256) ||

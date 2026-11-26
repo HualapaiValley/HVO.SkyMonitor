@@ -14,11 +14,13 @@ internal sealed class CenteredViewSourceLayers(
         DateTimeOffset observedUtc, CancellationToken token)
     {
         var bindings = await store.ReadCenteredLayerBindingsAsync(generation, token).ConfigureAwait(false);
-        var hasAuthoritativeAssociations = bindings is null &&
-            CenteredViewLayerBindings.IsSceneExpectedNotDetectedSlot(source.Slot) &&
-            await store.HasAuthoritativeExposureAssociationsAsync(source.Exposure, source.Slot.ExecutionId, token)
-                .ConfigureAwait(false);
-        var resolved = ResolveBindings(bindings, source.Slot, hasAuthoritativeAssociations);
+        var authoritativeWriter = bindings is null &&
+            (CenteredViewLayerBindings.IsSceneExpectedNotDetectedSlot(source.Slot) ||
+             MeasuredStellarAssociationsV1.IsSupportedSchemaVersion(CenteredViewLayerBindings.SourceSchema(source.Slot.SchemaVersion)))
+            ? await store.ReadAuthoritativeAssociationWriterAsync(source.Exposure, source.Slot.ExecutionId, token)
+                .ConfigureAwait(false)
+            : null;
+        var resolved = ResolveBindings(bindings, source.Slot, authoritativeWriter);
         if (resolved.Count == 0)
             return;
 
@@ -57,9 +59,10 @@ internal sealed class CenteredViewSourceLayers(
             var exposure = contributor.Exposure;
             if (bindings is not { Count: 0 })
             {
-                var hasAuthoritativeAssociations = bindings is null &&
-                    await store.HasAuthoritativeExposureAssociationsAsync(exposure.Input.Key, exposure.ExecutionId, token)
-                        .ConfigureAwait(false);
+                var authoritativeWriter = bindings is null
+                    ? await store.ReadAuthoritativeAssociationWriterAsync(exposure.Input.Key, exposure.ExecutionId, token)
+                        .ConfigureAwait(false)
+                    : null;
                 long after = 0;
                 while (true)
                 {
@@ -67,7 +70,7 @@ internal sealed class CenteredViewSourceLayers(
                         .ConfigureAwait(false);
                     foreach (var source in sources)
                     {
-                        foreach (var binding in ResolveBindings(bindings, source.Slot, hasAuthoritativeAssociations))
+                        foreach (var binding in ResolveBindings(bindings, source.Slot, authoritativeWriter))
                             await PublishAsync(viewBase, binding, source, exposure.ExposureEndedUtc, token).ConfigureAwait(false);
                         after = source.Revision!.Value;
                     }
@@ -99,8 +102,8 @@ internal sealed class CenteredViewSourceLayers(
     private static IReadOnlyList<CenteredViewLayerBinding> ResolveBindings(
         IReadOnlyDictionary<(string Producer, string Schema, string Variant), IReadOnlyList<CenteredViewLayerBinding>>? bindings,
         ExposureProductSlot slot,
-        bool hasAuthoritativeAssociations = false) =>
+        CenteredAuthoritativeAssociationWriter? authoritativeWriter = null) =>
         bindings is null
-            ? CenteredViewLayerBindings.ReadLegacySlot(slot, hasAuthoritativeAssociations)
+            ? CenteredViewLayerBindings.ReadLegacySlot(slot, authoritativeWriter)
             : bindings.GetValueOrDefault((slot.Producer, CenteredViewLayerBindings.SourceSchema(slot.SchemaVersion), slot.Variant)) ?? [];
 }

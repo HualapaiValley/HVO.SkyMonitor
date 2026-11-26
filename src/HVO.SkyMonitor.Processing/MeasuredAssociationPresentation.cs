@@ -45,7 +45,6 @@ public static class MeasuredAssociationPresentation
         var maxLabelChars = style?.MaximumLabelCharacters ?? 24;
         var labelScale = style?.LabelScale ?? 1;
         var labelColor = style?.LabelColor ?? MeasuredLabelColor;
-        var sceneObjects = BuildSceneObjects(scene);
         var sceneNames = BuildSceneDisplayNames(scene);
 
         var markers = new List<PresentationMarkerV1>();
@@ -89,7 +88,7 @@ public static class MeasuredAssociationPresentation
             }
             if (star.LabelEligible && maxLabelChars > 0 && star.Magnitude <= maxLabelMag)
             {
-                var name = ResolveStarDisplayName(star.CatalogId, sceneObjects);
+                var name = ResolveStarDisplayName(star.CatalogId, sceneNames);
                 if (name is null) continue;
                 var formatted = AnnotationLabelFormatter.Format(
                     new ProjectedAnnotationObject(star.CatalogId, name, pixel), maxLabelChars);
@@ -241,7 +240,6 @@ public static class MeasuredAssociationPresentation
         var maxLabelChars = style?.MaximumLabelCharacters ?? 24;
         var labelScale = style?.LabelScale ?? 1;
         var markerRadius = style?.MarkerRadius is > 0 ? Math.Min(style.MarkerRadius, 8) : 5;
-        var sceneObjects = BuildSceneObjects(scene);
         var sceneNames = BuildSceneDisplayNames(scene);
 
         var items = new List<(string Id, string? Label, PixelPoint Pixel, double Magnitude)>();
@@ -286,14 +284,14 @@ public static class MeasuredAssociationPresentation
                 unmatched.Magnitude > maxLabelMag) continue;
             var pixel = new PixelPoint(unmatched.ExpectedX, unmatched.ExpectedY);
             if (!Inside(pixel, width, height) || horizon is not null && !horizon.IsClear(pixel)) continue;
-            items.Add((unmatched.CatalogId, ResolveStarDisplayName(unmatched.CatalogId, sceneObjects),
+            items.Add((unmatched.CatalogId, ResolveStarDisplayName(unmatched.CatalogId, sceneNames),
                 pixel, unmatched.Magnitude));
         }
         foreach (var ineligible in associations.Associations.Where(item => !item.LabelEligible && item.Magnitude <= maxLabelMag))
         {
             var pixel = new PixelPoint(ineligible.ExpectedX, ineligible.ExpectedY);
             if (!Inside(pixel, width, height) || horizon is not null && !horizon.IsClear(pixel)) continue;
-            items.Add((ineligible.CatalogId, ResolveStarDisplayName(ineligible.CatalogId, sceneObjects),
+            items.Add((ineligible.CatalogId, ResolveStarDisplayName(ineligible.CatalogId, sceneNames),
                 pixel, ineligible.Magnitude));
         }
 
@@ -420,15 +418,6 @@ public static class MeasuredAssociationPresentation
             throw new ArgumentException("The projected scene does not match the measured associations.", nameof(scene));
     }
 
-    private static Dictionary<string, ProjectedCelestialObject>? BuildSceneObjects(ProjectedSceneV1? scene)
-    {
-        if (scene is null) return null;
-        var objects = new Dictionary<string, ProjectedCelestialObject>(scene.Objects.Count, StringComparer.Ordinal);
-        foreach (var item in scene.Objects)
-            objects[item.Id] = item;
-        return objects;
-    }
-
     private static Dictionary<string, string>? BuildSceneDisplayNames(ProjectedSceneV1? scene)
     {
         if (scene is null) return null;
@@ -444,12 +433,8 @@ public static class MeasuredAssociationPresentation
     private static string ResolvePlanetDisplayName(string objectId, SolarSystemBody body, Dictionary<string, string>? sceneNames) =>
         sceneNames is not null && sceneNames.TryGetValue(objectId, out var name) ? name : body.ToString();
 
-    private static string? ResolveStarDisplayName(string catalogId, Dictionary<string, ProjectedCelestialObject>? sceneObjects)
-    {
-        if (sceneObjects is null) return catalogId;
-        if (!sceneObjects.TryGetValue(catalogId, out var obj)) return catalogId;
-        return IsNamed(obj.Id, obj.DisplayName) ? obj.DisplayName : null;
-    }
+    private static string? ResolveStarDisplayName(string catalogId, Dictionary<string, string>? sceneNames) =>
+        sceneNames is not null && sceneNames.TryGetValue(catalogId, out var name) ? name : null;
 
     private static bool IsNamed(string id, string displayName) =>
         !string.IsNullOrWhiteSpace(displayName) && !string.Equals(id, displayName, StringComparison.Ordinal);
