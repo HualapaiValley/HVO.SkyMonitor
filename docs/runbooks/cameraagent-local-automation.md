@@ -37,7 +37,7 @@ retain the current runner are recorded in the
 
 In **Schedule**, expand unavailable schedules for the same repair guidance shown
 on definition cards. Upcoming product runs show their exact source spans and
-earliest final time. In **Runs**, expand source window and provenance to inspect
+earliest final time. In **Run history**, expand source window and provenance to inspect
 a retained attempt and find products linked to its occurrence. A time-lapse
 request can succeed before its worker produces a video.
 
@@ -45,7 +45,7 @@ On a runnable product definition, expand **Backfill** and enter the
 starting-sunrise report date. Preview the eligible windows and select the exact
 hour by offset and UTC time when applicable. Give a reason before queuing. If a
 site change moves the previewed window, preview the new window before queuing. A
-failed or interrupted source-window run can be retried from **Runs** with its
+failed or interrupted source-window run can be retried from **Run history** with its
 original inputs. The store checks the version, retention, current registry,
 finality and queue bounds again at admission. Disabling withdraws queued
 attempts. An already running predefined task finishes under its existing worker
@@ -84,7 +84,7 @@ names a target the registry does not publish is rejected with
 
 Built-in producers register `ILocalAutomationWindowTaskAdapter`; their descriptors
 publish actual installed targets and supported presets. `StillImageGeneration` is
-registered for keograms and star trails when the pinned [still-product configuration](cameraagent-still-products.md)
+registered for keograms, star trails and daily summaries when the pinned [still-product configuration](cameraagent-still-products.md)
 is enabled and valid; it has no target otherwise. A target
 must identify its immutable producer preset; an adapter must reject a retained preset
 it can no longer resolve, rather than reinterpret it using changed settings. Each

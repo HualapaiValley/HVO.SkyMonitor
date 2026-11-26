@@ -1014,7 +1014,8 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         {
             return null;
         }
-        return _automation?.Definitions.FirstOrDefault(item => item.Definition.DefinitionId == run.DefinitionId && item.Definition.Enabled);
+        return _automation?.Definitions.FirstOrDefault(item =>
+            item.Definition.DefinitionId == run.DefinitionId && IsDefinitionRunnable(item));
     }
 
 

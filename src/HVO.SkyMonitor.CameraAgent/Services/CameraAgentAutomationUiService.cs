@@ -76,7 +76,9 @@ internal sealed class CameraAgentAutomationUiService(
 {
     public ValueTask<OperatorUiResult<IReadOnlyList<CameraAgentAutomationSourceChoice>>> GetSourceChoicesAsync(
         LocalAutomationSaveRequest request, CancellationToken cancellationToken)
-        => ReadPreviewAsync<IReadOnlyList<CameraAgentAutomationSourceChoice>>(() =>
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        return ReadPreviewAsync<IReadOnlyList<CameraAgentAutomationSourceChoice>>(() =>
         {
             var definition = DraftDefinition(request, ReadAt());
             var descriptor = registry.Describe().FirstOrDefault(item => item.TaskKind == request.TaskKind);
@@ -104,10 +106,13 @@ internal sealed class CameraAgentAutomationUiService(
                 : OperatorUiResult<IReadOnlyList<CameraAgentAutomationSourceChoice>>.Failure(
                     OperatorUiResultKind.Invalid, "No source period and selection are available for this task target."));
         }, cancellationToken);
+    }
 
     public ValueTask<OperatorUiResult<CameraAgentAutomationSchedulePreview>> PreviewScheduleAsync(
         LocalAutomationSaveRequest request, CancellationToken cancellationToken)
-        => ReadPreviewAsync<CameraAgentAutomationSchedulePreview>(async () =>
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        return ReadPreviewAsync<CameraAgentAutomationSchedulePreview>(async () =>
         {
             var current = await store.ReadDefinitionForPreviewAsync(request.DefinitionId, cancellationToken).ConfigureAwait(false);
             if ((current?.Version ?? 0) != request.ExpectedVersion)
@@ -150,6 +155,7 @@ internal sealed class CameraAgentAutomationUiService(
                 ?.OccurrenceUtc ?? LocalAutomationSchedule.NextPeriodicDueUtc(definition.TriggerEpochUtc, definition.TriggerInterval, cursor);
             return OperatorUiResult<CameraAgentAutomationSchedulePreview>.Success(new(now, due, null));
         }, cancellationToken);
+    }
 
     public ValueTask<OperatorUiResult<IReadOnlyList<LocalAutomationSourceWindow>>> PreviewBackfillAsync(
         string definitionId, long version, DateOnly reportDate, CancellationToken cancellationToken)
@@ -353,15 +359,23 @@ internal sealed class CameraAgentAutomationUiService(
 
     public ValueTask<OperatorUiResult<LocalAutomationCommandResult>> BackfillAsync(
         LocalAutomationBackfillRequest request, CancellationToken cancellationToken)
-        => ExecuteAsync(actor => OccurrenceStore.BackfillAsync(request with { Actor = actor }, cancellationToken), cancellationToken);
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        return ExecuteAsync(actor => OccurrenceStore.BackfillAsync(request with { Actor = actor }, cancellationToken), cancellationToken);
+    }
 
     public ValueTask<OperatorUiResult<LocalAutomationCommandResult>> RetryAsync(
         LocalAutomationRetryRequest request, CancellationToken cancellationToken)
-        => ExecuteAsync(actor => OccurrenceStore.RetryAsync(request with { Actor = actor }, cancellationToken), cancellationToken);
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        return ExecuteAsync(actor => OccurrenceStore.RetryAsync(request with { Actor = actor }, cancellationToken), cancellationToken);
+    }
 
     public ValueTask<OperatorUiResult<LocalAutomationCommandResult>> RunNowAsync(
         LocalAutomationRunNowRequest request, CancellationToken cancellationToken)
-        => ExecuteAsync(async actor =>
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        return ExecuteAsync(async actor =>
         {
             var owned = request with { Actor = actor };
             if (await OccurrenceStore.FindRunNowReplayAsync(owned, cancellationToken).ConfigureAwait(false) is { } replay)
@@ -369,11 +383,25 @@ internal sealed class CameraAgentAutomationUiService(
                 return replay;
             }
             var current = await store.ReadDefinitionForPreviewAsync(request.DefinitionId, cancellationToken).ConfigureAwait(false);
-            return current?.Definition.TaskKind == LocalAutomationTaskKind.TimeDataRefresh
-                ? await OccurrenceStore.RunNowAsync(owned, cancellationToken).ConfigureAwait(false)
-                : new(LocalAutomationCommandStatus.Invalid, LocalAutomationContract.RunNowUnavailableReasonCode, null,
+            if (current is null)
+            {
+                return new(LocalAutomationCommandStatus.NotFound, LocalAutomationContract.UnknownDefinitionReasonCode, null,
                     LocalAutomationOperatorState.Empty);
+            }
+            if (current.Definition.TaskKind != LocalAutomationTaskKind.TimeDataRefresh)
+            {
+                return new(LocalAutomationCommandStatus.Invalid, LocalAutomationContract.RunNowUnavailableReasonCode, null,
+                    LocalAutomationOperatorState.Empty);
+            }
+            // The store rechecks this version atomically so a replacement cannot change the admitted task kind.
+            if (current.Version != request.ExpectedVersion)
+            {
+                return new(LocalAutomationCommandStatus.Conflict, LocalAutomationContract.ExpectedVersionConflictReasonCode, null,
+                    LocalAutomationOperatorState.Empty);
+            }
+            return await OccurrenceStore.RunNowAsync(owned, cancellationToken).ConfigureAwait(false);
         }, cancellationToken);
+    }
 
     private ILocalAutomationOccurrenceStore OccurrenceStore => store as ILocalAutomationOccurrenceStore
         ?? throw new InvalidOperationException("This store does not support explicit occurrences.");

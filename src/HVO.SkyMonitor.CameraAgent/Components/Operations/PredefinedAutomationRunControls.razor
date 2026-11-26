@@ -13,7 +13,7 @@
             @if (_windows.Count > 0)
             {
                 <label class="ops-field">Source window
-                    <select @bind="_windowInput">
+                    <select @bind="_windowInput" @bind:after="WindowChanged">
                         <option value="">Choose a window</option>
                         @foreach (var window in _windows)
                         {

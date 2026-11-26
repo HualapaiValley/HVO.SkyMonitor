@@ -92,7 +92,7 @@ public sealed class AutomationWizardIntegrationTests
         var original = saved.Value!.State.Definitions.Single().NextOccurrence!;
         fixture.Clock.Advance(original.ScheduledForUtc - fixture.Clock.GetUtcNow());
         Assert.IsTrue(await fixture.Store.TryBeginOccurrenceAsync(original, CancellationToken.None).ConfigureAwait(false));
-        await fixture.Store.CompleteRunAsync(original.RunKey, LocalAutomationRunOutcome.Succeeded, "Fixture result", CancellationToken.None).ConfigureAwait(false);
+        await fixture.Store.CompleteRunAsync(original.RunKey, LocalAutomationRunOutcome.Failed, "Fixture failure", CancellationToken.None).ConfigureAwait(false);
 
         fixture.Registry.KeogramSelection = LocalAutomationSourceSelection.DarkNightActualSources;
         var rejected = await fixture.Store.GetStateAsync(CancellationToken.None).ConfigureAwait(false);
@@ -114,6 +114,9 @@ public sealed class AutomationWizardIntegrationTests
         await cut.FindAll(".automation-tabs button")[1].ClickAsync(new()).ConfigureAwait(false);
         Assert.IsEmpty(cut.FindAll(".automation-upcoming li"));
         Assert.Contains("The recorded source selection is no longer accepted", cut.Find("details").TextContent);
+        await cut.FindAll(".automation-tabs button")[2].ClickAsync(new()).ConfigureAwait(false);
+        Assert.HasCount(1, cut.FindAll(".automation-run-table tbody tr"));
+        Assert.IsEmpty(cut.FindAll(".automation-run-control"));
         await cut.FindAll(".automation-tabs button")[0].ClickAsync(new()).ConfigureAwait(false);
 
         await cut.Find("#automation-edit-daily").ClickAsync(new()).ConfigureAwait(false);
@@ -131,6 +134,80 @@ public sealed class AutomationWizardIntegrationTests
         Assert.AreEqual(original, repaired.Runs.Single().Occurrence);
         Assert.AreEqual(original.Definition, live.History.Single(item => item.Version == 1).Definition);
         Assert.AreEqual("wizard-owner", live.Actor);
+        await cut.FindAll(".automation-tabs button")[2].ClickAsync(new()).ConfigureAwait(false);
+        Assert.AreEqual("Retry", cut.Find(".automation-run-control summary").TextContent);
+    }
+
+    [TestMethod]
+    public async Task Backfill_QueuesBothRepeatedHoursOnOneReportDateAfterAnAlreadyRecordedWindow()
+    {
+        using var fixture = new AutomationWizardFixture("America/Denver");
+        fixture.Clock.Advance(new DateTimeOffset(2026, 11, 2, 20, 0, 0, TimeSpan.Zero) - fixture.Clock.GetUtcNow());
+        var save = AutomationWizardFixture.Request("hourly", LocalAutomationSourceWindowKind.CompletedCivilHour);
+        Assert.IsTrue((await fixture.Service.SaveAsync(save, CancellationToken.None).ConfigureAwait(false)).IsSuccess);
+        var date = new DateOnly(2026, 10, 31);
+        var zone = TimeZoneInfo.FindSystemTimeZoneById("America/Denver");
+        var repeated = fixture.Planner.ResolveWindows(date, save.SourceWindow!)
+            .Where(window => TimeZoneInfo.ConvertTime(window.StartUtc, zone).Hour == 1).ToArray();
+        Assert.HasCount(2, repeated);
+
+        using var context = Context(fixture);
+        var cut = context.Render<AutomationsPage>();
+        var controls = cut.WaitForElement(".automation-run-control");
+        await controls.QuerySelector("input[type=date]")!.ChangeAsync(new ChangeEventArgs { Value = "2026-10-31" }).ConfigureAwait(false);
+        await controls.QuerySelector("button")!.ClickAsync(new()).ConfigureAwait(false);
+        await cut.Find(".automation-run-control input[maxlength]").InputAsync(new ChangeEventArgs { Value = "Repair first gap" }).ConfigureAwait(false);
+        await SelectAsync(repeated[0]).ConfigureAwait(false);
+        await QueueButton().ClickAsync(new()).ConfigureAwait(false);
+        Assert.Contains("One attempt is queued", cut.Find(".automation-run-control [role=status]").TextContent);
+        Assert.IsTrue(QueueButton().HasAttribute("disabled"));
+
+        await SelectAsync(null).ConfigureAwait(false);
+        await SelectAsync(repeated[0]).ConfigureAwait(false);
+        await cut.Find(".automation-run-control input[maxlength]").InputAsync(new ChangeEventArgs { Value = "Check recorded hour" }).ConfigureAwait(false);
+        Assert.IsFalse(QueueButton().HasAttribute("disabled"));
+        await QueueButton().ClickAsync(new()).ConfigureAwait(false);
+        Assert.Contains("already has a recorded run", cut.Find(".automation-run-control [role=status]").TextContent);
+        Assert.AreEqual(1, (await fixture.Store.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).QueuedRunCount);
+
+        await SelectAsync(repeated[1]).ConfigureAwait(false);
+        Assert.IsEmpty(cut.FindAll(".automation-run-control [role=status]"));
+        Assert.IsFalse(QueueButton().HasAttribute("disabled"));
+        await QueueButton().ClickAsync(new()).ConfigureAwait(false);
+        var state = await fixture.Store.GetStateAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual("2026-10-31", cut.Find(".automation-run-control input[type=date]").GetAttribute("value"));
+        Assert.AreEqual(1, state.Definitions.Single().Version);
+        Assert.HasCount(2, state.ActiveRuns);
+        CollectionAssert.AreEquivalent(repeated, state.ActiveRuns.Select(run => run.Occurrence!.SourceWindow).ToArray());
+
+        AngleSharp.Dom.IElement QueueButton() => cut.Find(".automation-run-control button.primary");
+
+        Task SelectAsync(LocalAutomationSourceWindow? window) => cut.Find(".automation-run-control select").ChangeAsync(
+            new ChangeEventArgs { Value = window?.StartUtc.UtcTicks.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "" });
+    }
+
+    [TestMethod]
+    public async Task Backfill_PreviewAgainReenablesQueueForTheAutoSelectedDailyWindow()
+    {
+        using var fixture = new AutomationWizardFixture();
+        fixture.Clock.Advance(TimeSpan.FromDays(2));
+        Assert.IsTrue((await fixture.Service.SaveAsync(AutomationWizardFixture.Request(), CancellationToken.None).ConfigureAwait(false)).IsSuccess);
+
+        using var context = Context(fixture);
+        var cut = context.Render<AutomationsPage>();
+        var controls = cut.WaitForElement(".automation-run-control");
+        await controls.QuerySelector("input[type=date]")!.ChangeAsync(new ChangeEventArgs { Value = "2026-10-12" }).ConfigureAwait(false);
+        await cut.Find(".automation-run-control button.secondary").ClickAsync(new()).ConfigureAwait(false);
+        await cut.Find(".automation-run-control input[maxlength]").InputAsync(new ChangeEventArgs { Value = "Repair daily gap" }).ConfigureAwait(false);
+        await cut.Find(".automation-run-control button.primary").ClickAsync(new()).ConfigureAwait(false);
+        Assert.IsTrue(cut.Find(".automation-run-control button.primary").HasAttribute("disabled"));
+
+        await cut.Find(".automation-run-control button.secondary").ClickAsync(new()).ConfigureAwait(false);
+        Assert.IsEmpty(cut.FindAll(".automation-run-control [role=status]"));
+        Assert.IsFalse(cut.Find(".automation-run-control button.primary").HasAttribute("disabled"));
+        await cut.Find(".automation-run-control button.primary").ClickAsync(new()).ConfigureAwait(false);
+        Assert.Contains("request was already recorded", cut.Find(".automation-run-control [role=status]").TextContent);
+        Assert.AreEqual(1, (await fixture.Store.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).QueuedRunCount);
     }
 
     [TestMethod]

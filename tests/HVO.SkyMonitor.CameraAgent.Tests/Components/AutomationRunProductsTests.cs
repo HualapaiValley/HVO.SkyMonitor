@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
+using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
 using HVO.SkyMonitor.CameraAgent.Common.TimeLapses;
 using HVO.SkyMonitor.CameraAgent.Components.Operations;
 using HVO.SkyMonitor.CameraAgent.Services;
@@ -26,6 +27,24 @@ public sealed class AutomationRunProductsTests
         var retained = PredefinedAutomationRunControls.WindowTime(oldRules.StartUtc, oldRules);
         Assert.StartsWith("UTC ", retained);
         Assert.Contains("retained local offset unavailable", retained);
+    }
+
+    [TestMethod]
+    public void StillProductLinksMatchTheRetainedOccurrenceAndExcludeSegments()
+    {
+        var occurrence = NightlyDayFixture.Daily(NightlyProductKind.StarTrail);
+        var other = NightlyDayFixture.Daily(NightlyProductKind.Keogram);
+        var final = NightlyDayFixture.Product(occurrence, NightlyProductKind.StarTrail);
+        var segment = final with { ProductId = Guid.NewGuid(), Scope = NightlyProductScope.Segment };
+        var otherFinal = NightlyDayFixture.Product(other, NightlyProductKind.Keogram);
+        var finalWindow = NightlyDayFixture.Produced(occurrence, final, 12, 12);
+        var segmentWindow = new NightlyProductWindowRecord(finalWindow.Status with { Scope = NightlyProductScope.Segment }, [segment]);
+        var otherWindow = NightlyDayFixture.Produced(other, otherFinal, 12, 12);
+        var view = new CameraAgentNightlyDayView(
+            new(NightlyDayFixture.Date, [segmentWindow, finalWindow, otherWindow], [segment, final, otherFinal]), null);
+
+        Assert.AreEqual(($"/archive/products/nightly/{final.ProductId:D}", "Final still product"),
+            AutomationRunProducts.ProductsFor(view, occurrence).Single());
     }
 
     [TestMethod]

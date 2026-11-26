@@ -322,7 +322,7 @@ public sealed partial class SqliteLocalAutomationStore
                 "automation.source-window-not-found", token).ConfigureAwait(false);
         }
         if (request.ExpectedWindowIdentitySha256 is { } expected &&
-            !string.Equals(window.IdentitySha256, expected, StringComparison.Ordinal))
+            !string.Equals(window.IdentitySha256, expected, StringComparison.OrdinalIgnoreCase))
         {
             return await OccurrenceResultAsync(connection, transaction, LocalAutomationCommandStatus.Conflict,
                 "automation.source-window-changed", token).ConfigureAwait(false);

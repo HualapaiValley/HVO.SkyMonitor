@@ -43,6 +43,11 @@ public sealed partial class PredefinedAutomationRunControls : IDisposable
         _dateInput = args.Value as string ?? string.Empty;
         _windows = [];
         _windowInput = string.Empty;
+        WindowChanged();
+    }
+
+    private void WindowChanged()
+    {
         _message = null;
         _queued = false;
     }
@@ -53,13 +58,13 @@ public sealed partial class PredefinedAutomationRunControls : IDisposable
         {
             return;
         }
+        WindowChanged();
         if (!DateOnly.TryParseExact(_dateInput, "yyyy-MM-dd", Invariant, DateTimeStyles.None, out var date))
         {
             SetMessage("Choose the starting-sunrise report date.", error: true);
             return;
         }
         _busy = true;
-        _message = null;
         _windows = [];
         _windowInput = string.Empty;
         try

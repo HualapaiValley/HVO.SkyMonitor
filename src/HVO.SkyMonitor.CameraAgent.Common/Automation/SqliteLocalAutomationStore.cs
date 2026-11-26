@@ -1756,11 +1756,6 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
     private static DateTimeOffset Truncate(DateTimeOffset value)
         => new(value.UtcDateTime.AddTicks(-(value.UtcDateTime.Ticks % TimeSpan.TicksPerMillisecond)), TimeSpan.Zero);
 
-    /// <summary>
-    /// A resolved phase origin is a millisecond-truncated UTC instant at or after now. A periodic
-    /// origin also lies within one interval of now, which expresses every phase while keeping the
-    /// first occurrence bounded; any other trigger keeps the save instant.
-    /// </summary>
     /// <summary>Trims to the stored bound without splitting a surrogate pair.</summary>
     private static string Bound(string value)
     {
