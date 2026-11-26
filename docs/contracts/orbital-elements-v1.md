@@ -44,8 +44,8 @@ A normalized record contains:
 | Elements | Mean motion rev/day; eccentricity; inclination, ascending node, argument of pericenter and mean anomaly in degrees; BStar in inverse Earth radii; original GP DOT/DDOT fields and convention; ephemeris/classification fields; optional element-set/revolution numbers |
 | Provenance | Parser/normalizer/profile version and source-asserted type/status only when supplied |
 
-Initial CelesTrak GP JSON supplies its documented omitted model constants only
-under the approved profile. Reject conflicting center/frame/time/theory,
+CelesTrak GP CSV and retained GP JSON use the documented model constants for
+omitted fields under their respective profiles. Reject conflicting center/frame/time/theory,
 nonfinite values, invalid eccentricity/inclination/mean motion, malformed
 identities, invalid intervals and unsupported ephemeris/model combinations.
 Normalize angles and negative zero consistently in typed data before hashing;

@@ -50,8 +50,10 @@ geometry and transient products; #1395 supplies integrated cadence evidence.
 | [NASA ISS trajectory](https://spotthestation.nasa.gov/trajectory_data.cfm) | Mission-specific trajectory/ephemeris products | Different schema, validity and source terms; not a general satellite population | Comparison/research candidate |
 
 CelesTrak's documented GP query supports one-to-nine-digit catalog identifiers.
-Its JSON may omit Earth, TEME, UTC and SGP4 constants. Supply those only under
-this source profile; reject conflicting metadata. Preserve source numerics,
+The original #528 client used JSON. #2138 switched live refresh to CSV with the
+same OMM field definitions and retained legacy JSON snapshot replay. Both GP formats
+may omit EARTH, TEME, UTC and SGP4 constants. Supply those only under the documented
+source profile and reject conflicting metadata. Preserve source numerics,
 units and the normalizer identity. `CLASSIFICATION_TYPE=U` is a security
 classification, not object kind or operational status. Names and international
 designators are aliases, not primary identity. Analyst-number reuse needs
@@ -71,7 +73,8 @@ no conditional requests and no automatic HTTP retry. A 301, 304, 403, 404, 429
 or 5xx response halts that provider's acquisition until recorded operator
 investigation/resume. Manual refresh shares the same task and cannot bypass
 the minimum interval or clear the halt. Resume remains subject to the next
-permitted attempt. EOP is a separate daily source, not another GP query.
+permitted attempt, including at least 15 minutes after a 5xx response. EOP is a
+separate daily source.
 
 Only explicitly configured acquisition runs. Schedule with stable per-deployment
 jitter, but enforce at least two hours since the last outbound attempt even

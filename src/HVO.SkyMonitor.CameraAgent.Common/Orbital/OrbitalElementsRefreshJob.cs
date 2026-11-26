@@ -14,7 +14,7 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Orbital;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Provider policy (halt, two-hour floor, single flight) is enforced by the store, which commits the attempt row and
+/// Provider policy (halt, two-hour floor, 5xx backoff, single flight) is enforced by the store, which commits the attempt row and
 /// the floor before any request is made. This job never retries a request. A successful run applies retention on a
 /// best-effort basis and never fails because of it.
 /// </para>

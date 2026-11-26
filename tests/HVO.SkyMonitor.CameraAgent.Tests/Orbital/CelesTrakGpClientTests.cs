@@ -13,7 +13,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Orbital;
 public sealed class CelesTrakGpClientTests
 {
     private const string Secret = "SECRET-HEADER-VALUE";
-    private static readonly byte[] SmallJson = Encoding.UTF8.GetBytes("[{\"NORAD_CAT_ID\":1}]");
+    private static readonly byte[] SmallCsv = Encoding.UTF8.GetBytes("NORAD_CAT_ID\n1\n");
 
     [TestMethod]
     [DataRow(100)]
@@ -45,7 +45,7 @@ public sealed class CelesTrakGpClientTests
     [DataRow(599)]
     public async Task EveryNon200StatusIsAProviderHaltWithoutReadingTheBody(int status)
     {
-        var content = new TrackingContent(SmallJson);
+        var content = new TrackingContent(SmallCsv);
         var (result, handler) = await FetchAsync(content, (HttpStatusCode)status,
             configure: static response => response.Headers.TryAddWithoutValidation("Location", "https://example.invalid/")).ConfigureAwait(false);
 
@@ -80,7 +80,7 @@ public sealed class CelesTrakGpClientTests
     [DataRow(999)]
     public async Task StatusOutsideTheRfc9110RangeIsAHaltWithTheInvalidStatusReason(int status)
     {
-        var content = new TrackingContent(SmallJson);
+        var content = new TrackingContent(SmallCsv);
         var (result, handler) = await FetchAsync(content, (HttpStatusCode)status).ConfigureAwait(false);
 
         // Fail safe: the job records it as a provider-wide halt with no HTTP status (orbital.invalid-http-status).
@@ -99,7 +99,7 @@ public sealed class CelesTrakGpClientTests
     [DataRow(599)]
     public async Task BoundaryValidStatusesStillHaltAndFitTheHaltContract(int status)
     {
-        var (result, _) = await FetchAsync(new TrackingContent(SmallJson), (HttpStatusCode)status).ConfigureAwait(false);
+        var (result, _) = await FetchAsync(new TrackingContent(SmallCsv), (HttpStatusCode)status).ConfigureAwait(false);
 
         Assert.AreEqual(OrbitalFetchDisposition.HttpStatusHalt, result.Disposition);
         var halt = new OrbitalProviderHalt(CelesTrakGpTestData.RetrievedUtc, result.HttpStatusCode!.Value, result.ReasonCode);
@@ -111,23 +111,23 @@ public sealed class CelesTrakGpClientTests
     [TestMethod]
     public async Task RequestIsOneUnconditionalGetOfTheApprovedUriWithExactlyThreeHeaders()
     {
-        var (result, handler) = await FetchAsync(new TrackingContent(SmallJson)).ConfigureAwait(false);
+        var (result, handler) = await FetchAsync(new TrackingContent(SmallCsv)).ConfigureAwait(false);
 
         Assert.AreEqual(OrbitalFetchDisposition.Retrieved, result.Disposition);
         var request = handler.Requests.Single();
         Assert.AreEqual(HttpMethod.Get, request.Method);
         Assert.AreEqual(CelesTrakGpSource.RequestUri, request.RequestUri);
-        Assert.AreEqual("https://celestrak.org/NORAD/elements/gp.php?GROUP=active&FORMAT=JSON", request.RequestUri!.OriginalString);
+        Assert.AreEqual("https://celestrak.org/NORAD/elements/gp.php?GROUP=active&FORMAT=CSV", request.RequestUri!.OriginalString);
         Assert.IsFalse(request.HasContent);
         CollectionAssert.AreEquivalent(
-            new[] { ("User-Agent", CelesTrakGpTestData.UserAgent), ("Accept", "application/json"), ("Accept-Encoding", "gzip") },
+            new[] { ("User-Agent", CelesTrakGpTestData.UserAgent), ("Accept", "text/csv, text/plain; q=0.9"), ("Accept-Encoding", "gzip") },
             request.Headers.ToArray());
     }
 
     [TestMethod]
     public async Task EachFetchIsExactlyOneNewRequestAndNothingIsCachedOrConditional()
     {
-        var handler = new StubHttpHandler(() => CelesTrakGpTestData.Response(HttpStatusCode.OK, new TrackingContent(SmallJson),
+        var handler = new StubHttpHandler(() => CelesTrakGpTestData.Response(HttpStatusCode.OK, new TrackingContent(SmallCsv),
             configure: static response =>
             {
                 response.Headers.TryAddWithoutValidation("ETag", "\"v1\"");
@@ -152,7 +152,7 @@ public sealed class CelesTrakGpClientTests
     [TestMethod]
     public async Task RetrievedIdentityBodyCarriesExactBytesHashLengthsAndUtcTimes()
     {
-        var raw = CelesTrakGpTestData.ReadFixture(CelesTrakGpTestData.ValidFixture);
+        var raw = CelesTrakGpTestData.ValidCsv();
         var clock = new ManualTimeProvider(new DateTimeOffset(2026, 10, 19, 10, 28, 18, TimeSpan.FromHours(-7)));
         var handler = new StubHttpHandler((_, _) =>
         {
@@ -180,7 +180,7 @@ public sealed class CelesTrakGpClientTests
     [TestMethod]
     public async Task ProviderDateHeaderNeverBecomesProvenanceTime()
     {
-        var raw = CelesTrakGpTestData.ReadFixture(CelesTrakGpTestData.ValidFixture);
+        var raw = CelesTrakGpTestData.ValidCsv();
         var clock = new ManualTimeProvider(CelesTrakGpTestData.RetrievedUtc);
         var (result, _) = await FetchAsync(new TrackingContent(raw), timeProvider: clock, configure: static response =>
         {
@@ -199,44 +199,46 @@ public sealed class CelesTrakGpClientTests
     }
 
     [TestMethod]
-    [DataRow("application/json")]
-    [DataRow("APPLICATION/JSON")]
-    [DataRow("application/json; charset=utf-8")]
-    [DataRow("application/json;charset=UTF-8")]
-    [DataRow("Application/Json; Charset=\"utf-8\"")]
-    public async Task JsonMediaTypeIsAccepted(string contentType)
+    [DataRow("text/csv")]
+    [DataRow("TEXT/CSV")]
+    [DataRow("text/plain")]
+    [DataRow("text/plain; charset=utf-8")]
+    [DataRow("text/csv; charset=utf-8")]
+    [DataRow("text/csv;charset=UTF-8")]
+    [DataRow("Text/Csv; Charset=\"utf-8\"")]
+    public async Task CsvOrPlainTextMediaTypeIsAccepted(string contentType)
     {
-        var (result, _) = await FetchAsync(new TrackingContent(SmallJson), contentType: contentType).ConfigureAwait(false);
+        var (result, _) = await FetchAsync(new TrackingContent(SmallCsv), contentType: contentType).ConfigureAwait(false);
         Assert.AreEqual(OrbitalFetchDisposition.Retrieved, result.Disposition, result.Detail);
     }
 
     [TestMethod]
     [DataRow(null)]
     [DataRow("text/html")]
-    [DataRow("text/plain; charset=utf-8")]
+    [DataRow("application/json")]
     [DataRow("text/json")]
     [DataRow("application/octet-stream")]
     [DataRow("application/problem+json")]
-    [DataRow("application/jsonl")]
+    [DataRow("text/csv-extra")]
     [DataRow("application/*")]
     [DataRow("*/*")]
-    [DataRow("application/json; charset=iso-8859-1")]
-    [DataRow("application/json; charset=utf-16")]
-    [DataRow("application/json; profile=gp")]
-    [DataRow("application/json; charset=utf-8; profile=gp")]
-    [DataRow("application/json, text/html")]
-    [DataRow("application/json;")]
+    [DataRow("text/csv; charset=iso-8859-1")]
+    [DataRow("text/csv; charset=utf-16")]
+    [DataRow("text/csv; profile=gp")]
+    [DataRow("text/csv; charset=utf-8; profile=gp")]
+    [DataRow("text/csv, text/html")]
+    [DataRow("text/csv;")]
     [DataRow("")]
     [DataRow("json")]
     public async Task OtherMediaTypesAreRejectedBeforeTheBodyIsRead(string? contentType)
     {
-        var content = new TrackingContent(SmallJson);
+        var content = new TrackingContent(SmallCsv);
         var (result, _) = await FetchAsync(content, contentType: contentType).ConfigureAwait(false);
 
         Assert.AreEqual(OrbitalFetchDisposition.ResponseRejected, result.Disposition);
         Assert.AreEqual(200, result.HttpStatusCode);
         Assert.AreEqual("orbital.media-type", result.ReasonCode);
-        Assert.AreEqual("content-type-not-application-json", result.Detail);
+        Assert.AreEqual("content-type-not-csv-or-plain-text", result.Detail);
         Assert.IsNull(result.RawBytes);
         Assert.IsFalse(content.BodyRead);
     }
@@ -244,9 +246,9 @@ public sealed class CelesTrakGpClientTests
     [TestMethod]
     public async Task DuplicateContentTypeHeadersAreRejected()
     {
-        var content = new TrackingContent(SmallJson);
+        var content = new TrackingContent(SmallCsv);
         var (result, _) = await FetchAsync(content, configure: static response =>
-            response.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json")).ConfigureAwait(false);
+            response.Content.Headers.TryAddWithoutValidation("Content-Type", "text/csv")).ConfigureAwait(false);
 
         Assert.AreEqual("orbital.media-type", result.ReasonCode);
         Assert.IsFalse(content.BodyRead);
@@ -261,12 +263,12 @@ public sealed class CelesTrakGpClientTests
     [DataRow(" gzip ", "gzip")]
     public async Task IdentityOrGzipContentEncodingIsAccepted(string? header, string? expected)
     {
-        var wire = expected == "gzip" ? CelesTrakGpTestData.Gzip(SmallJson) : SmallJson;
+        var wire = expected == "gzip" ? CelesTrakGpTestData.Gzip(SmallCsv) : SmallCsv;
         var (result, _) = await FetchAsync(new TrackingContent(wire), contentEncoding: header).ConfigureAwait(false);
 
         Assert.AreEqual(OrbitalFetchDisposition.Retrieved, result.Disposition, result.Detail);
         Assert.AreEqual(expected, result.ContentEncoding);
-        CollectionAssert.AreEqual(SmallJson, result.RawBytes);
+        CollectionAssert.AreEqual(SmallCsv, result.RawBytes);
         Assert.AreEqual(wire.Length, result.WireLengthBytes);
     }
 
@@ -282,7 +284,7 @@ public sealed class CelesTrakGpClientTests
     [DataRow("gzip;q=1")]
     public async Task OtherContentEncodingsAreRejectedBeforeTheBodyIsRead(string header)
     {
-        var content = new TrackingContent(CelesTrakGpTestData.Gzip(SmallJson));
+        var content = new TrackingContent(CelesTrakGpTestData.Gzip(SmallCsv));
         var (result, _) = await FetchAsync(content, contentEncoding: header).ConfigureAwait(false);
 
         Assert.AreEqual(OrbitalFetchDisposition.ResponseRejected, result.Disposition);
@@ -295,7 +297,7 @@ public sealed class CelesTrakGpClientTests
     [TestMethod]
     public async Task RepeatedContentEncodingHeadersAreRejected()
     {
-        var content = new TrackingContent(CelesTrakGpTestData.Gzip(SmallJson));
+        var content = new TrackingContent(CelesTrakGpTestData.Gzip(SmallCsv));
         var (result, _) = await FetchAsync(content, contentEncoding: "gzip", configure: static response =>
             response.Content.Headers.TryAddWithoutValidation("Content-Encoding", "gzip")).ConfigureAwait(false);
 
@@ -438,7 +440,7 @@ public sealed class CelesTrakGpClientTests
     [DataRow("truncated-member-forged-isize", "gzip-truncated")]
     public async Task InvalidGzipIsRejected(string shape, string detailPrefix)
     {
-        var payload = CelesTrakGpTestData.ReadFixture(CelesTrakGpTestData.ValidFixture);
+        var payload = CelesTrakGpTestData.ValidCsv();
         var valid = CelesTrakGpTestData.Gzip(payload);
         var forgedSuffix = new byte[8];
         "GARB"u8.CopyTo(forgedSuffix);
@@ -478,7 +480,7 @@ public sealed class CelesTrakGpClientTests
     {
         using var cancelled = new CancellationTokenSource();
         cancelled.Cancel();
-        var wire = CelesTrakGpTestData.Gzip(SmallJson);
+        var wire = CelesTrakGpTestData.Gzip(SmallCsv);
 
         Assert.ThrowsExactly<OperationCanceledException>(() => CelesTrakGpClient.DecodeGzip(wire, 1000, cancelled.Token));
     }
@@ -555,7 +557,7 @@ public sealed class CelesTrakGpClientTests
     public async Task InternalDeadlineCoversTheBodyRead()
     {
         var clock = new ManualTimeProvider(CelesTrakGpTestData.RetrievedUtc);
-        var content = new TrackingContent(SmallJson, holdReads: true);
+        var content = new TrackingContent(SmallCsv, holdReads: true);
         var handler = new StubHttpHandler(() => CelesTrakGpTestData.Response(HttpStatusCode.OK, content,
             configure: static response => response.Headers.TryAddWithoutValidation("ETag", "\"slow\"")));
         var client = CelesTrakGpTestData.CreateClient(handler, clock);
@@ -597,7 +599,7 @@ public sealed class CelesTrakGpClientTests
     [TestMethod]
     public async Task CallerCancellationDuringTheBodyReadIsRethrown()
     {
-        var content = new TrackingContent(SmallJson, holdReads: true);
+        var content = new TrackingContent(SmallCsv, holdReads: true);
         var handler = new StubHttpHandler(() => CelesTrakGpTestData.Response(HttpStatusCode.OK, content));
         using var caller = new CancellationTokenSource();
         var fetch = CelesTrakGpTestData.CreateClient(handler).FetchAsync(caller.Token).AsTask();
@@ -611,7 +613,7 @@ public sealed class CelesTrakGpClientTests
     [TestMethod]
     public async Task PreCancelledCallerSendsNothing()
     {
-        var handler = new StubHttpHandler(() => CelesTrakGpTestData.Response(HttpStatusCode.OK, new TrackingContent(SmallJson)));
+        var handler = new StubHttpHandler(() => CelesTrakGpTestData.Response(HttpStatusCode.OK, new TrackingContent(SmallCsv)));
         using var caller = new CancellationTokenSource();
         await caller.CancelAsync().ConfigureAwait(false);
 
@@ -717,7 +719,7 @@ public sealed class CelesTrakGpClientTests
     [DataRow("handler-cancellation", "orbital.transport-cancelled")]
     public async Task BodyReadFailuresAreTransportFailuresAfterTheStatusWasSeen(string shape, string reasonCode)
     {
-        var content = new TrackingContent(SmallJson, readFailure: CreateTransportException(shape));
+        var content = new TrackingContent(SmallCsv, readFailure: CreateTransportException(shape));
         var (result, _) = await FetchAsync(content).ConfigureAwait(false);
 
         Assert.AreEqual(OrbitalFetchDisposition.TransportFailure, result.Disposition);
@@ -739,22 +741,22 @@ public sealed class CelesTrakGpClientTests
     [TestMethod]
     public async Task ValidatorsAreCapturedForEveryResponseAndSanitized()
     {
-        var (halt, _) = await FetchAsync(new TrackingContent(SmallJson), HttpStatusCode.NotModified, configure: static response =>
+        var (halt, _) = await FetchAsync(new TrackingContent(SmallCsv), HttpStatusCode.NotModified, configure: static response =>
         {
             response.Headers.TryAddWithoutValidation("ETag", "W/\"304-tag\"");
             response.Content.Headers.TryAddWithoutValidation("Last-Modified", "Mon, 19 Oct 2026 17:00:00 GMT");
         }).ConfigureAwait(false);
-        var (dropped, _) = await FetchAsync(new TrackingContent(SmallJson), configure: static response =>
+        var (dropped, _) = await FetchAsync(new TrackingContent(SmallCsv), configure: static response =>
         {
             response.Headers.TryAddWithoutValidation("ETag", "\"café\"");
             response.Content.Headers.TryAddWithoutValidation("Last-Modified", new string('M', 129));
         }).ConfigureAwait(false);
-        var (duplicate, _) = await FetchAsync(new TrackingContent(SmallJson), configure: static response =>
+        var (duplicate, _) = await FetchAsync(new TrackingContent(SmallCsv), configure: static response =>
         {
             response.Headers.TryAddWithoutValidation("ETag", "\"one\"");
             response.Headers.TryAddWithoutValidation("ETag", "\"two\"");
         }).ConfigureAwait(false);
-        var (bounded, _) = await FetchAsync(new TrackingContent(SmallJson), configure: static response =>
+        var (bounded, _) = await FetchAsync(new TrackingContent(SmallCsv), configure: static response =>
         {
             response.Headers.TryAddWithoutValidation("ETag", "\"" + new string('e', 1022) + "\"");
             response.Content.Headers.TryAddWithoutValidation("Last-Modified", new string('M', 128));
@@ -884,7 +886,7 @@ public sealed class CelesTrakGpClientTests
     }
 
     private static async Task<(OrbitalFetchResult Result, StubHttpHandler Handler)> FetchAsync(TrackingContent content,
-        HttpStatusCode status = HttpStatusCode.OK, string? contentType = "application/json", string? contentEncoding = null,
+        HttpStatusCode status = HttpStatusCode.OK, string? contentType = "text/csv", string? contentEncoding = null,
         long? contentLength = null, CelesTrakGpClientSettings? settings = null, TimeProvider? timeProvider = null,
         Action<HttpResponseMessage>? configure = null)
     {

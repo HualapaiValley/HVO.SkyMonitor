@@ -579,7 +579,7 @@ internal static class OrbitalOperatorText
             "The attempt was cancelled after a valid provider response was recorded, before it could be activated. The provider is not halted, and the last-known-good snapshot remains active.",
         ["orbital.attempt-in-flight"] = "Another attempt was already running, so this occurrence was skipped.",
         ["orbital.attempt-interrupted"] = "CameraAgent stopped before the attempt completed; startup recorded it as interrupted.",
-        ["orbital.floor-not-elapsed"] = "Skipped because the provider's two-hour floor had not elapsed.",
+        ["orbital.floor-not-elapsed"] = "Skipped because the next permitted provider attempt time had not arrived.",
         ["orbital.manual-request-expired"] =
             "A manual refresh waited more than 15 minutes without running and expired. Check that the automation runner is on.",
         ["orbital.candidate-rejected"] = "The provider response failed validation and was rejected.",
@@ -591,7 +591,7 @@ internal static class OrbitalOperatorText
             "An attempt may have reached the provider, but its outcome was not recorded (for example after a crash, a storage failure or a shutdown during the request), so no valid HTTP status was recorded. Every refresh is halted until an operator confirms provider access and resumes the provider.",
 
         // Response checks.
-        ["orbital.media-type"] = "The provider response was not JSON.",
+        ["orbital.media-type"] = "The provider response has an unsupported content type or charset.",
         ["orbital.content-encoding"] = "The provider response used an unsupported content encoding.",
         ["orbital.gzip-invalid"] = "The compressed provider response was invalid.",
         ["orbital.length-mismatch"] = "The provider response length did not match its declared length.",
@@ -601,6 +601,9 @@ internal static class OrbitalOperatorText
         ["orbital.raw-integrity"] = "The stored provider response failed integrity verification.",
 
         // Parser and normalizer.
+        ["orbital.csv-header"] = "The provider response has an invalid CSV header.",
+        ["orbital.csv-row-width"] = "A CSV row has a different number of fields than the header.",
+        ["orbital.csv-syntax"] = "The provider response has invalid CSV syntax or encoding.",
         ["orbital.json-root"] = "The provider response was not a JSON array of records.",
         ["orbital.json-syntax"] = "The provider response was not valid JSON.",
         ["orbital.missing-member"] = "A record was missing a required field.",

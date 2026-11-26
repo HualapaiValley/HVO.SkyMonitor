@@ -1,13 +1,13 @@
+using System.Buffers.Text;
 using System.Globalization;
 using System.Text;
-using System.Text.Json;
 using System.Text.Unicode;
 using HVO.SkyMonitor.Astronomy;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Orbital;
 
-/// <summary>One CelesTrak GP JSON element set after strict member validation, before contract normalization.</summary>
-internal sealed record CelesTrakGpElementSet(int Index, string CatalogNumber, string? ObjectName, string? ObjectId,
+/// <summary>One CelesTrak GP CSV element set after strict column validation, before contract normalization.</summary>
+internal sealed record CelesTrakGpElementSet(string CatalogNumber, string? ObjectName, string? ObjectId,
     DateTimeOffset EpochUtc, double MeanMotion, double Eccentricity, double Inclination, double AscendingNode,
     double ArgumentOfPericenter, double MeanAnomaly, double BStar, double MeanMotionDot, double MeanMotionDdot,
     int EphemerisType, string Classification, long? ElementSetNumber, long? RevolutionNumber);
@@ -16,9 +16,8 @@ internal sealed record CelesTrakGpParseResult(IReadOnlyList<CelesTrakGpElementSe
     string Detail);
 
 /// <summary>
-/// Strict parser for the CelesTrak GP JSON format (<c>FORMAT=JSON</c>): a root array of flat OMM-keyed objects. The
-/// member allow-list is closed; any unknown, duplicate, mistyped or missing member rejects the whole payload with the
-/// zero-based record index and a sanitized member name, never record text.
+/// Strict parser for CelesTrak GP CSV with a header of OMM field names. Invalid headers or rows reject the whole
+/// payload. Diagnostics identify the row and known column without including provider field values.
 /// </summary>
 /// <remarks>
 /// EPOCH grammar: <c>YYYY-MM-DDTHH:MM:SS</c>, an optional <c>.</c> plus one to seven fraction digits, and an optional
@@ -28,9 +27,7 @@ internal sealed record CelesTrakGpParseResult(IReadOnlyList<CelesTrakGpElementSe
 /// </remarks>
 internal static class CelesTrakGpParser
 {
-    internal const int MaximumDepth = 4;
     internal const int MaximumTextLength = 256;
-    internal const int MaximumMemberNameReport = 64;
     internal const int MaximumCatalogDigits = 9;
     internal const int MaximumIntegerDigits = 18;
     internal static readonly DateTimeOffset MinimumEpochUtc = new(1957, 10, 4, 0, 0, 0, TimeSpan.Zero);
@@ -38,13 +35,11 @@ internal static class CelesTrakGpParser
     internal static readonly string[] SupportedOmmVersions = ["2.0", "3.0"];
 
     private const int MaximumEpochLength = 28;
-    private const int MaximumEscapedTextBytes = MaximumTextLength * 6;
-    private const int MaximumNameBytes = 128;
+    private const int MaximumTextBytes = MaximumTextLength * 4;
 
     internal enum MemberKind
     {
         Number,
-        UnsignedInteger,
         CatalogNumber,
         Epoch,
         Classification,
@@ -59,6 +54,7 @@ internal static class CelesTrakGpParser
     internal sealed record MemberRule(string Name, MemberKind Kind, bool Required, string? FixedValue = null)
     {
         public byte[] Utf8Name { get; } = Encoding.UTF8.GetBytes(Name);
+        public byte[]? FixedUtf8Value { get; } = FixedValue is null ? null : Encoding.UTF8.GetBytes(FixedValue);
     }
 
     private enum Member
@@ -125,224 +121,167 @@ internal static class CelesTrakGpParser
 
     internal static CelesTrakGpParseResult Parse(ReadOnlySpan<byte> raw, DateTimeOffset retrievedUtc)
     {
-        if (raw.Length == 0)
+        if (raw.IsEmpty)
         {
             return Reject("orbital.empty-payload", "raw-bytes=0");
         }
         if (!Utf8.IsValid(raw))
         {
-            return Reject("orbital.json-syntax", "utf8-invalid");
+            return Reject("orbital.csv-syntax", "utf8-invalid");
         }
-        var maximumEpoch = retrievedUtc.ToUniversalTime() + MaximumFutureEpoch;
-        var reader = new Utf8JsonReader(raw, new JsonReaderOptions
+        if (raw.StartsWith("\uFEFF"u8))
         {
-            AllowTrailingCommas = false,
-            CommentHandling = JsonCommentHandling.Disallow,
-            MaxDepth = MaximumDepth
-        });
+            raw = raw[3..];
+        }
+
+        Span<Range> fields = stackalloc Range[Rules.Count];
+        Span<Member> columns = stackalloc Member[Rules.Count];
+        var header = ReadLine(ref raw);
+        var failure = ReadHeader(header, fields, columns, out var count);
+        if (failure is not null)
+        {
+            return failure;
+        }
+
+        var utc = retrievedUtc.ToUniversalTime();
+        var maximumEpoch = utc > DateTimeOffset.MaxValue - MaximumFutureEpoch
+            ? DateTimeOffset.MaxValue
+            : utc + MaximumFutureEpoch;
         var sets = new List<CelesTrakGpElementSet>();
-        try
+        while (!raw.IsEmpty)
         {
-            if (!reader.Read() || reader.TokenType != JsonTokenType.StartArray)
+            var index = sets.Count;
+            if (index == OrbitalContract.MaximumRecords)
             {
-                return Reject("orbital.json-root", "root-not-array");
+                return Reject("orbital.record-bound",
+                    FormattableString.Invariant($"records>{OrbitalContract.MaximumRecords}"));
             }
-            while (true)
+
+            var row = ReadLine(ref raw);
+            if (!TryReadFields(row, fields, out var rowCount))
             {
-                if (!reader.Read())
-                {
-                    return Reject("orbital.json-syntax", "unterminated-array");
-                }
-                if (reader.TokenType == JsonTokenType.EndArray)
-                {
-                    break;
-                }
-                var index = sets.Count;
-                if (index >= OrbitalContract.MaximumRecords)
-                {
-                    return Reject("orbital.record-bound",
-                        FormattableString.Invariant($"records>{OrbitalContract.MaximumRecords}"));
-                }
-                if (reader.TokenType != JsonTokenType.StartObject)
-                {
-                    return Reject("orbital.record-shape", FormattableString.Invariant($"record={index} token={reader.TokenType}"));
-                }
-                var failure = ParseRecord(ref reader, index, maximumEpoch, out var set);
-                if (failure is not null)
-                {
-                    return failure;
-                }
-                sets.Add(set!);
+                return Reject("orbital.csv-syntax", FormattableString.Invariant($"record={index} invalid-row"));
             }
-            // A single JSON value only: any further token, including a second array, is a syntax error.
-            if (reader.Read())
+            if (rowCount != count)
             {
-                return Reject("orbital.json-syntax", "trailing-content");
+                return Reject("orbital.csv-row-width",
+                    FormattableString.Invariant($"record={index} columns={rowCount} expected={count}"));
             }
+
+            failure = ParseRecord(row, fields[..count], columns[..count], index, maximumEpoch, out var set);
+            if (failure is not null)
+            {
+                return failure;
+            }
+            sets.Add(set!);
         }
-        catch (JsonException exception)
-        {
-            return Reject("orbital.json-syntax",
-                FormattableString.Invariant($"line={exception.LineNumber} byte={exception.BytePositionInLine}"));
-        }
-        catch (InvalidOperationException)
-        {
-            return Reject("orbital.json-syntax",
-                FormattableString.Invariant($"invalid-escape offset={reader.TokenStartIndex}"));
-        }
-        if (sets.Count == 0)
-        {
-            return Reject("orbital.empty-payload", "records=0");
-        }
-        return new CelesTrakGpParseResult(sets.AsReadOnly(), null, FormattableString.Invariant($"records={sets.Count}"));
+        return sets.Count == 0
+            ? Reject("orbital.empty-payload", "records=0")
+            : new CelesTrakGpParseResult(sets, null, string.Empty);
     }
 
-    private static CelesTrakGpParseResult? ParseRecord(ref Utf8JsonReader reader, int index, DateTimeOffset maximumEpoch,
-        out CelesTrakGpElementSet? set)
+    private static ReadOnlySpan<byte> ReadLine(ref ReadOnlySpan<byte> raw)
     {
-        set = null;
-        uint seen = 0;
-        string catalog = string.Empty;
-        string? objectName = null, objectId = null;
-        var epoch = default(DateTimeOffset);
-        double meanMotion = 0, eccentricity = 0, inclination = 0, node = 0, pericenter = 0, anomaly = 0;
-        double bstar = 0, dot = 0, ddot = 0;
-        long? elementSet = null, revolution = null;
-        while (true)
+        var newline = raw.IndexOf((byte)'\n');
+        if (newline < 0)
         {
-            if (!reader.Read())
+            var last = raw;
+            raw = [];
+            return last;
+        }
+        var line = raw[..newline];
+        raw = raw[(newline + 1)..];
+        return !line.IsEmpty && line[^1] == '\r' ? line[..^1] : line;
+    }
+
+    // A line contains one record. Quoted fields may contain commas and doubled quotes. Embedded line breaks are
+    // refused, as control characters are outside the GP field profile.
+    private static bool TryReadFields(ReadOnlySpan<byte> line, Span<Range> fields, out int count)
+    {
+        count = 0;
+        if (line.Contains((byte)'\r'))
+        {
+            return false;
+        }
+        var position = 0;
+        while (count < fields.Length)
+        {
+            if (position < line.Length && line[position] == '"')
             {
-                return Reject("orbital.json-syntax", FormattableString.Invariant($"record={index} unterminated-object"));
+                var start = ++position;
+                while (true)
+                {
+                    var quote = line[position..].IndexOf((byte)'"');
+                    if (quote < 0)
+                    {
+                        return false;
+                    }
+                    position += quote + 1;
+                    if (position == line.Length || line[position] != '"')
+                    {
+                        break;
+                    }
+                    position++;
+                }
+                fields[count++] = start..(position - 1);
             }
-            if (reader.TokenType == JsonTokenType.EndObject)
+            else
             {
-                break;
+                var start = position;
+                var separator = line[position..].IndexOfAny((byte)',', (byte)'"');
+                position = separator < 0 ? line.Length : position + separator;
+                fields[count++] = start..position;
             }
-            var member = Lookup(ref reader);
+
+            if (position == line.Length)
+            {
+                return true;
+            }
+            if (line[position++] != ',')
+            {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    private static CelesTrakGpParseResult? ReadHeader(ReadOnlySpan<byte> row, Span<Range> fields, Span<Member> columns,
+        out int count)
+    {
+        if (!TryReadFields(row, fields, out count))
+        {
+            return Reject("orbital.csv-header", "invalid-header");
+        }
+        uint seen = 0;
+        for (var column = 0; column < count; column++)
+        {
+            var member = Lookup(row[fields[column]]);
             if (member is null)
             {
-                return Reject("orbital.unknown-member",
-                    FormattableString.Invariant($"record={index} member={SanitizeMemberName(reader.ValueSpan)}"));
+                return Reject("orbital.unknown-member", FormattableString.Invariant($"column={column}"));
             }
-            var rule = Rules[(int)member.Value];
             var bit = 1u << (int)member.Value;
             if ((seen & bit) != 0)
             {
-                return Reject("orbital.duplicate-member", FormattableString.Invariant($"record={index} member={rule.Name}"));
+                return Reject("orbital.duplicate-member", $"header member={Rules[(int)member.Value].Name}");
             }
+            columns[column] = member.Value;
             seen |= bit;
-            if (!reader.Read())
-            {
-                return Reject("orbital.json-syntax", FormattableString.Invariant($"record={index} member={rule.Name} missing-value"));
-            }
-            if (reader.TokenType is JsonTokenType.StartObject or JsonTokenType.StartArray)
-            {
-                return MemberType(index, rule);
-            }
-            string? reason = null;
-            switch (member.Value)
-            {
-                case Member.ObjectName:
-                    reason = ReadOptionalText(ref reader, out objectName);
-                    break;
-                case Member.ObjectId:
-                    reason = ReadOptionalText(ref reader, out objectId);
-                    break;
-                case Member.Epoch:
-                    reason = ReadEpoch(ref reader, maximumEpoch, out epoch);
-                    break;
-                case Member.MeanMotion:
-                    reason = ReadNumber(ref reader, out meanMotion);
-                    break;
-                case Member.Eccentricity:
-                    reason = ReadNumber(ref reader, out eccentricity);
-                    break;
-                case Member.Inclination:
-                    reason = ReadNumber(ref reader, out inclination);
-                    break;
-                case Member.AscendingNode:
-                    reason = ReadNumber(ref reader, out node);
-                    break;
-                case Member.ArgumentOfPericenter:
-                    reason = ReadNumber(ref reader, out pericenter);
-                    break;
-                case Member.MeanAnomaly:
-                    reason = ReadNumber(ref reader, out anomaly);
-                    break;
-                case Member.BStar:
-                    reason = ReadNumber(ref reader, out bstar);
-                    break;
-                case Member.MeanMotionDot:
-                    reason = ReadNumber(ref reader, out dot);
-                    break;
-                case Member.MeanMotionDdot:
-                    reason = ReadNumber(ref reader, out ddot);
-                    break;
-                case Member.EphemerisType:
-                    reason = ReadUnsignedInteger(ref reader, out var ephemeris) ??
-                        (ephemeris == 0 ? null : "orbital.unsupported-ephemeris-type");
-                    break;
-                case Member.Classification:
-                    reason = reader.TokenType != JsonTokenType.String ? "orbital.member-type"
-                        : reader.ValueTextEquals("U"u8) ? null : "orbital.unsupported-classification";
-                    break;
-                case Member.CatalogNumber:
-                    reason = ReadCatalogNumber(ref reader, out catalog);
-                    break;
-                case Member.ElementSetNumber:
-                    reason = ReadOptionalUnsignedInteger(ref reader, out elementSet);
-                    break;
-                case Member.RevolutionNumber:
-                    reason = ReadOptionalUnsignedInteger(ref reader, out revolution);
-                    break;
-                case Member.CenterName or Member.ReferenceFrame or Member.TimeSystem or Member.MeanElementTheory:
-                    reason = reader.TokenType != JsonTokenType.String ? "orbital.member-type"
-                        : reader.ValueTextEquals(rule.FixedValue) ? null : "orbital.conflicting-metadata";
-                    break;
-                case Member.OmmVersion:
-                    reason = reader.TokenType != JsonTokenType.String ? "orbital.member-type"
-                        : IsSupportedOmmVersion(ref reader) ? null : "orbital.conflicting-metadata";
-                    break;
-                case Member.Comment or Member.Originator:
-                    reason = reader.TokenType != JsonTokenType.String ? "orbital.member-type" : ReadIgnoredText(ref reader);
-                    break;
-            }
-            if (reason is not null)
-            {
-                return Reject(reason, FormattableString.Invariant($"record={index} member={rule.Name}"));
-            }
         }
         var missing = RequiredMask & ~seen;
         if (missing != 0)
         {
             var first = System.Numerics.BitOperations.TrailingZeroCount(missing);
-            return Reject("orbital.missing-member", FormattableString.Invariant($"record={index} member={Rules[first].Name}"));
+            return Reject("orbital.missing-member", $"header member={Rules[first].Name}");
         }
-        set = new CelesTrakGpElementSet(index, catalog, objectName, objectId, epoch, meanMotion, eccentricity, inclination,
-            node, pericenter, anomaly, bstar, dot, ddot, EphemerisType: 0, Classification: "U", elementSet, revolution);
         return null;
     }
 
-    private static Member? Lookup(ref Utf8JsonReader reader)
+    private static Member? Lookup(ReadOnlySpan<byte> name)
     {
-        Span<byte> unescaped = stackalloc byte[MaximumNameBytes];
-        scoped ReadOnlySpan<byte> name;
-        if (!reader.ValueIsEscaped)
+        for (var i = 0; i < Rules.Count; i++)
         {
-            name = reader.ValueSpan;
-        }
-        else if (reader.ValueSpan.Length <= MaximumNameBytes)
-        {
-            name = unescaped[..reader.CopyString(unescaped)];
-        }
-        else
-        {
-            return null;
-        }
-        var rules = Rules;
-        for (var i = 0; i < rules.Count; i++)
-        {
-            if (name.SequenceEqual(rules[i].Utf8Name))
+            if (name.SequenceEqual(Rules[i].Utf8Name))
             {
                 return (Member)i;
             }
@@ -350,62 +289,84 @@ internal static class CelesTrakGpParser
         return null;
     }
 
-    private static bool IsSupportedOmmVersion(ref Utf8JsonReader reader)
+    private static CelesTrakGpParseResult? ParseRecord(ReadOnlySpan<byte> row, ReadOnlySpan<Range> fields,
+        ReadOnlySpan<Member> columns, int index, DateTimeOffset maximumEpoch, out CelesTrakGpElementSet? set)
     {
-        foreach (var version in SupportedOmmVersions)
+        set = null;
+        string? objectName = null, objectId = null;
+        string catalog = string.Empty;
+        DateTimeOffset epoch = default;
+        double meanMotion = 0, eccentricity = 0, inclination = 0, node = 0, pericenter = 0, anomaly = 0,
+            bstar = 0, dot = 0, ddot = 0;
+        long? elementSet = null, revolution = null;
+
+        for (var column = 0; column < columns.Length; column++)
         {
-            if (reader.ValueTextEquals(version))
+            var member = columns[column];
+            var field = row[fields[column]];
+            var rule = Rules[(int)member];
+            var reason = member switch
             {
-                return true;
+                Member.ObjectName => ReadOptionalText(field, out objectName),
+                Member.ObjectId => ReadOptionalText(field, out objectId),
+                Member.Epoch => ReadEpoch(field, maximumEpoch, out epoch),
+                Member.MeanMotion => ReadNumber(field, out meanMotion),
+                Member.Eccentricity => ReadNumber(field, out eccentricity),
+                Member.Inclination => ReadNumber(field, out inclination),
+                Member.AscendingNode => ReadNumber(field, out node),
+                Member.ArgumentOfPericenter => ReadNumber(field, out pericenter),
+                Member.MeanAnomaly => ReadNumber(field, out anomaly),
+                Member.BStar => ReadNumber(field, out bstar),
+                Member.MeanMotionDot => ReadNumber(field, out dot),
+                Member.MeanMotionDdot => ReadNumber(field, out ddot),
+                Member.EphemerisType => ReadEphemerisType(field),
+                Member.Classification => field.SequenceEqual("U"u8) ? null : "orbital.unsupported-classification",
+                Member.CatalogNumber => ReadCatalogNumber(field, out catalog),
+                Member.ElementSetNumber => ReadOptionalUnsignedInteger(field, out elementSet),
+                Member.RevolutionNumber => ReadOptionalUnsignedInteger(field, out revolution),
+                Member.OmmVersion => field.SequenceEqual("2.0"u8) || field.SequenceEqual("3.0"u8)
+                    ? null : "orbital.conflicting-metadata",
+                Member.Comment or Member.Originator => ReadOptionalText(field, out _),
+                _ => field.SequenceEqual(rule.FixedUtf8Value) ? null : "orbital.conflicting-metadata"
+            };
+            if (reason is not null)
+            {
+                return Reject(reason, FormattableString.Invariant($"record={index} member={rule.Name}"));
             }
         }
-        return false;
+
+        set = new CelesTrakGpElementSet(catalog, objectName, objectId, epoch, meanMotion, eccentricity, inclination,
+            node, pericenter, anomaly, bstar, dot, ddot, EphemerisType: 0, Classification: "U", elementSet, revolution);
+        return null;
     }
 
-    private static string? ReadNumber(ref Utf8JsonReader reader, out double value)
-    {
-        value = 0;
-        if (reader.TokenType != JsonTokenType.Number)
-        {
-            return "orbital.member-type";
-        }
-        // The reader returns infinity rather than failing for out-of-range literals such as 1e400.
-        return reader.TryGetDouble(out value) && double.IsFinite(value) ? null : "orbital.invalid-number";
-    }
+    private static string? ReadNumber(ReadOnlySpan<byte> field, out double value) =>
+        Utf8Parser.TryParse(field, out value, out var consumed) && consumed == field.Length && double.IsFinite(value)
+            ? null : "orbital.invalid-number";
 
-    /// <summary>A JSON number spelled only with ASCII digits: no sign, fraction, exponent or leading zero.</summary>
-    private static string? ReadUnsignedInteger(ref Utf8JsonReader reader, out long value)
-    {
-        value = 0;
-        if (reader.TokenType != JsonTokenType.Number)
-        {
-            return "orbital.member-type";
-        }
-        return TryParseDigits(reader.ValueSpan, MaximumIntegerDigits, out value) ? null : "orbital.invalid-number";
-    }
+    private static string? ReadEphemerisType(ReadOnlySpan<byte> field) =>
+        !TryParseDigits(field, MaximumIntegerDigits, out var value) ? "orbital.invalid-number"
+            : value == 0 ? null : "orbital.unsupported-ephemeris-type";
 
-    private static string? ReadOptionalUnsignedInteger(ref Utf8JsonReader reader, out long? value)
+    private static string? ReadOptionalUnsignedInteger(ReadOnlySpan<byte> field, out long? value)
     {
         value = null;
-        if (reader.TokenType == JsonTokenType.Null)
+        if (field.IsEmpty)
         {
             return null;
         }
-        var reason = ReadUnsignedInteger(ref reader, out var parsed);
-        value = reason is null ? parsed : null;
-        return reason;
+        if (!TryParseDigits(field, MaximumIntegerDigits, out var parsed))
+        {
+            return "orbital.invalid-number";
+        }
+        value = parsed;
+        return null;
     }
 
-    /// <summary>NORAD catalog numbers are canonical decimal 1..999,999,999; never narrowed to five TLE digits.</summary>
-    private static string? ReadCatalogNumber(ref Utf8JsonReader reader, out string catalog)
+    private static string? ReadCatalogNumber(ReadOnlySpan<byte> field, out string catalog)
     {
         catalog = string.Empty;
-        if (reader.TokenType != JsonTokenType.Number)
-        {
-            return "orbital.member-type";
-        }
-        var span = reader.ValueSpan;
-        if (!TryParseDigits(span, MaximumCatalogDigits, out var parsed) || parsed == 0)
+        if (!TryParseDigits(field, MaximumCatalogDigits, out var parsed) || parsed == 0)
         {
             return "orbital.invalid-object-identity";
         }
@@ -431,68 +392,25 @@ internal static class CelesTrakGpParser
         return true;
     }
 
-    private static string? ReadOptionalText(ref Utf8JsonReader reader, out string? value)
+    private static string? ReadOptionalText(ReadOnlySpan<byte> field, out string? value)
     {
         value = null;
-        if (reader.TokenType == JsonTokenType.Null)
-        {
-            return null;
-        }
-        if (reader.TokenType != JsonTokenType.String)
-        {
-            return "orbital.member-type";
-        }
-        var reason = ReadBoundedText(ref reader, out var text);
-        if (reason is null && !string.IsNullOrWhiteSpace(text))
-        {
-            value = text;
-        }
-        return reason;
-    }
-
-    private static string? ReadIgnoredText(ref Utf8JsonReader reader) => ReadBoundedText(ref reader, out _);
-
-    private static string? ReadBoundedText(ref Utf8JsonReader reader, out string? text)
-    {
-        text = null;
-        if (reader.ValueSpan.Length > MaximumEscapedTextBytes)
+        if (field.Length > MaximumTextBytes)
         {
             return "orbital.invalid-text";
         }
-        try
+        var text = Encoding.UTF8.GetString(field).Replace("\"\"", "\"", StringComparison.Ordinal);
+        if (text.Length > MaximumTextLength || text.Any(char.IsControl))
         {
-            text = reader.GetString();
-        }
-        catch (InvalidOperationException)
-        {
-            // An escaped lone surrogate cannot be represented as text.
             return "orbital.invalid-text";
         }
-        return text is null || text.Length > MaximumTextLength || text.Any(char.IsControl) ? "orbital.invalid-text" : null;
+        value = string.IsNullOrWhiteSpace(text) ? null : text;
+        return null;
     }
 
-    private static string? ReadEpoch(ref Utf8JsonReader reader, DateTimeOffset maximumEpoch, out DateTimeOffset epoch)
+    private static string? ReadEpoch(ReadOnlySpan<byte> field, DateTimeOffset maximumEpoch, out DateTimeOffset epoch)
     {
-        epoch = default;
-        if (reader.TokenType != JsonTokenType.String)
-        {
-            return "orbital.member-type";
-        }
-        Span<byte> scratch = stackalloc byte[MaximumEpochLength * 6];
-        scoped ReadOnlySpan<byte> text;
-        if (!reader.ValueIsEscaped)
-        {
-            text = reader.ValueSpan;
-        }
-        else if (reader.ValueSpan.Length <= scratch.Length)
-        {
-            text = scratch[..reader.CopyString(scratch)];
-        }
-        else
-        {
-            return "orbital.invalid-epoch";
-        }
-        if (!TryParseEpoch(text, out epoch))
+        if (!TryParseEpoch(field, out epoch))
         {
             return "orbital.invalid-epoch";
         }
@@ -557,26 +475,6 @@ internal static class CelesTrakGpParser
         return true;
     }
 
-    /// <summary>Raw member bytes reduced to <c>[A-Z0-9_]</c> and at most 64 characters for reporting.</summary>
-    internal static string SanitizeMemberName(ReadOnlySpan<byte> raw)
-    {
-        var length = Math.Min(raw.Length, MaximumMemberNameReport);
-        if (length == 0)
-        {
-            return "_";
-        }
-        Span<char> chars = stackalloc char[length];
-        for (var i = 0; i < length; i++)
-        {
-            var b = raw[i];
-            chars[i] = b is >= (byte)'A' and <= (byte)'Z' or >= (byte)'0' and <= (byte)'9' or (byte)'_' ? (char)b : '_';
-        }
-        return new string(chars);
-    }
-
-    private static CelesTrakGpParseResult MemberType(int index, MemberRule rule) =>
-        Reject("orbital.member-type", FormattableString.Invariant($"record={index} member={rule.Name}"));
-
     private static CelesTrakGpParseResult Reject(string reasonCode, string detail) => new(null, reasonCode, detail);
 
     private static uint ComputeRequiredMask()
@@ -595,12 +493,11 @@ internal static class CelesTrakGpParser
     private static string BuildRuleDescriptor()
     {
         var builder = new StringBuilder();
-        builder.Append("format=celestrak-gp-json;profile=").Append(OrbitalContract.CelesTrakGpProfile).Append('\n');
-        builder.Append("json=utf8-strict;bom=reject;comments=reject;trailing-commas=reject;max-depth=")
-            .Append(MaximumDepth.ToString(CultureInfo.InvariantCulture))
-            .Append(";root=array;trailing-content=reject;empty=reject\n");
+        builder.Append("format=celestrak-gp-csv;profile=").Append(OrbitalContract.CelesTrakGpCsvProfile).Append('\n');
+        builder.Append("csv=utf8-strict;bom=optional;lines=crlf-or-lf;final-newline=optional;embedded-newlines=reject;")
+            .Append("quoting=double-quote;escape=doubled-quote;header=omm-names-any-order;row-width=header\n");
         builder.Append("records=1..").Append(OrbitalContract.MaximumRecords.ToString(CultureInfo.InvariantCulture))
-            .Append(";record=flat-object;unknown-member=reject;duplicate-member=reject;nested=reject\n");
+            .Append(";unknown-member=reject;duplicate-member=reject\n");
         foreach (var rule in Rules)
         {
             builder.Append("member=").Append(rule.Name).Append(';').Append(rule.Kind.ToString())
@@ -612,19 +509,17 @@ internal static class CelesTrakGpParser
             builder.Append('\n');
         }
         builder.Append("omm-versions=").Append(string.Join(',', SupportedOmmVersions)).Append('\n');
-        builder.Append("number=json-number;finite;string-number=reject\n");
-        builder.Append("unsigned-integer=json-number;ascii-digits;no-leading-zero;max-digits=")
-            .Append(MaximumIntegerDigits.ToString(CultureInfo.InvariantCulture)).Append(";null=optional-only\n");
-        builder.Append("catalog=json-number;ascii-digits;1..")
+        builder.Append("number=invariant-decimal-or-exponent;finite;whole-field\n");
+        builder.Append("unsigned-integer=ascii-digits;no-leading-zero;max-digits=")
+            .Append(MaximumIntegerDigits.ToString(CultureInfo.InvariantCulture)).Append(";empty=optional-only\n");
+        builder.Append("catalog=ascii-digits;1..")
             .Append(MaximumCatalogDigits.ToString(CultureInfo.InvariantCulture)).Append("-digits;nonzero;canonical-decimal\n");
-        builder.Append("text=json-string-or-null;max-chars=").Append(MaximumTextLength.ToString(CultureInfo.InvariantCulture))
+        builder.Append("text=utf8;max-utf16-chars=").Append(MaximumTextLength.ToString(CultureInfo.InvariantCulture))
             .Append(";control=reject;blank=null\n");
         builder.Append("epoch=YYYY-MM-DDTHH:MM:SS[.f{1,7}][Z];utc;min=")
             .Append(MinimumEpochUtc.ToString("O", CultureInfo.InvariantCulture)).Append(";max=retrieved+")
             .Append(MaximumFutureEpoch.TotalDays.ToString(CultureInfo.InvariantCulture)).Append("d\n");
         builder.Append("ephemeris-type=0;classification=U;metadata-omitted=profile-default;metadata-conflict=reject\n");
-        builder.Append("member-report=[A-Z0-9_];max-chars=")
-            .Append(MaximumMemberNameReport.ToString(CultureInfo.InvariantCulture)).Append('\n');
         return builder.ToString();
     }
 }

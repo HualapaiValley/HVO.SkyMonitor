@@ -21,7 +21,8 @@ public sealed record OrbitalAttemptAdmission(OrbitalAdmissionStatus Status, stri
 
 /// <summary>
 /// Durable provider state. Times are UTC. <see cref="NextPermittedAttemptUtc"/> is the floor from the last
-/// outbound attempt and is null only before the first attempt; a halt is reported separately and does not move it.
+/// outbound attempt and a 5xx backoff when applicable. It is null only before the first attempt. A provider halt
+/// is reported separately and resume leaves the existing floor in force.
 /// <see cref="LastRetrievalSuccessUtc"/> is the last valid HTTP 200, whatever became of its content;
 /// <see cref="LastActivationUtc"/> is when the active payload last changed, so an unchanged-payload activation advances
 /// only the retrieval. Element freshness comes from <see cref="CurrentMaximumEpochUtc"/>, never from either time.

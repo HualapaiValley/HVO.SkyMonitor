@@ -10,6 +10,12 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Orbital;
 
 public sealed partial class SqliteOrbitalElementsStore
 {
+    private const string JsonExtension = ".json";
+    internal const string CsvExtension = ".csv";
+
+    private static string ContentRelativePath(string directory, string sha256, string extension)
+        => Path.Combine(directory, sha256 + extension);
+
     private enum DeleteOutcome { Deleted, Absent, Refused }
 
     private static readonly string[] ContentDirectories =
@@ -24,8 +30,9 @@ public sealed partial class SqliteOrbitalElementsStore
     /// </summary>
     private async ValueTask WriteIntentAsync(string attemptId, PreparedPublication prepared, CancellationToken cancellationToken)
     {
+        var rawKind = prepared.RawExtension == CsvExtension ? "raw-csv" : "raw";
         var bytes = Encoding.UTF8.GetBytes(string.Create(CultureInfo.InvariantCulture,
-            $"{IntentHeader} {attemptId}\nraw {prepared.RawSha256}\npayload {prepared.PayloadSha256}\nmanifest {prepared.ManifestSha256}\n"));
+            $"{IntentHeader} {attemptId}\n{rawKind} {prepared.RawSha256}\npayload {prepared.PayloadSha256}\nmanifest {prepared.ManifestSha256}\n"));
         await AtomicPublisher.PublishAsync(RequireRoot(), Path.Combine(StagingDirectoryName, attemptId + IntentExtension),
             PublishMode.CreateNew, (stream, token) => stream.WriteAsync(bytes, token).AsTask(), cancellationToken)
             .ConfigureAwait(false);
@@ -42,10 +49,11 @@ public sealed partial class SqliteOrbitalElementsStore
         string name,
         ReadOnlyMemory<byte> content,
         string contentSha256,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string extension = JsonExtension)
     {
         var root = RequireRoot();
-        var relative = Path.Combine(directory, name + ".json");
+        var relative = ContentRelativePath(directory, name, extension);
         var path = root.Resolve(relative);
         if (Directory.Exists(path))
         {
@@ -139,13 +147,13 @@ public sealed partial class SqliteOrbitalElementsStore
         }
         else
         {
-            foreach (var (directory, sha256) in entries)
+            foreach (var (directory, sha256, extension) in entries)
             {
                 if (await IsUsedByPublishedAsync(connection, directory, sha256, cancellationToken).ConfigureAwait(false))
                 {
                     continue;
                 }
-                switch (TryDeleteRegular(FilePath(directory, sha256)))
+                switch (TryDeleteRegular(FilePath(directory, sha256, extension)))
                 {
                     case DeleteOutcome.Deleted:
                         deleted++;
@@ -163,7 +171,7 @@ public sealed partial class SqliteOrbitalElementsStore
         return deleted;
     }
 
-    private static async ValueTask<IReadOnlyList<(string Directory, string Sha256)>?> ReadIntentAsync(
+    private static async ValueTask<IReadOnlyList<(string Directory, string Sha256, string Extension)>?> ReadIntentAsync(
         string intentPath,
         CancellationToken cancellationToken)
     {
@@ -178,7 +186,7 @@ public sealed partial class SqliteOrbitalElementsStore
         {
             return null;
         }
-        var entries = new List<(string, string)>(3);
+        var entries = new List<(string, string, string)>(3);
         foreach (var line in lines.Skip(1))
         {
             var parts = line.Split(' ');
@@ -188,7 +196,7 @@ public sealed partial class SqliteOrbitalElementsStore
             }
             var directory = parts[0] switch
             {
-                "raw" => RawDirectoryName,
+                "raw" or "raw-csv" => RawDirectoryName,
                 "payload" => PayloadDirectoryName,
                 "manifest" => ManifestDirectoryName,
                 _ => null
@@ -197,7 +205,7 @@ public sealed partial class SqliteOrbitalElementsStore
             {
                 return null;
             }
-            entries.Add((directory, parts[1]));
+            entries.Add((directory, parts[1], parts[0] == "raw-csv" ? CsvExtension : JsonExtension));
         }
         return entries;
     }

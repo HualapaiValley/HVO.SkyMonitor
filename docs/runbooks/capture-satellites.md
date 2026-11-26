@@ -53,9 +53,12 @@ Observatory & location shows that credit alongside the retained pass provenance.
 Current Sky includes the credit in Diagnostics for ordinary and centered
 predictions. The capture input retains its own manifest independently of the
 currently installed source.
-The #528 refresh client currently requests GP JSON. Its two-hour minimum
-between attempts and operator-resumed halt on HTTP errors also apply after
-5xx responses. Prediction makes no provider requests. A supplemental
+The refresh client requests `FORMAT=CSV` and publishes `celestrak-gp-csv-v1`
+snapshots. Previously retained `celestrak-gp-json-v1` snapshots remain available
+for byte-identical replay. [Orbital refresh](orbital-elements-refresh.md#provider-policy)
+allows at most one attempt per two hours, halts on non-200 HTTP responses until
+an operator resumes, and waits at least 15 minutes after a 5xx response before
+another attempt. Prediction makes no provider requests. A supplemental
 Space-Track acquisition would require the site operator's own account and
 at most one poll per hour at a randomized minute. CameraAgent has no
 Space-Track client or shared HVO account.

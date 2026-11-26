@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
@@ -50,7 +51,7 @@ public sealed class CelesTrakGpFixtureTests
             Assert.IsFalse(text.Contains("ISS (ZARYA)", StringComparison.Ordinal), path);
             Assert.IsFalse(text.Contains("GENERATED VIA SPACE-TRACK", StringComparison.OrdinalIgnoreCase), path);
         }
-        var valid = Encoding.UTF8.GetString(CelesTrakGpTestData.ReadFixture(CelesTrakGpTestData.ValidFixture));
+        var valid = Encoding.UTF8.GetString(CelesTrakGpTestData.ReadFixture(CelesTrakGpTestData.LegacyJsonFixture));
         Assert.IsTrue(valid.Contains("HVO SYNTHETIC", StringComparison.Ordinal));
     }
 }
@@ -58,7 +59,7 @@ public sealed class CelesTrakGpFixtureTests
 /// <summary>Shared fixture loading, payload builders, fakes and a manual clock for the CelesTrak GP tests.</summary>
 internal static class CelesTrakGpTestData
 {
-    public const string ValidFixture = "celestrak-gp-active-valid.json";
+    public const string LegacyJsonFixture = "celestrak-gp-active-valid.json";
     public const string UserAgent = "HVO.SkyMonitor.CameraAgent/1.0-test";
 
     /// <summary>The retrieval instant every fixture outcome in the README is stated against.</summary>
@@ -69,6 +70,18 @@ internal static class CelesTrakGpTestData
     public static string FixturePath(string name) => Path.Combine(FixtureDirectory, name);
 
     public static byte[] ReadFixture(string name) => File.ReadAllBytes(FixturePath(name));
+
+    public static byte[] ValidCsv() => Encoding.UTF8.GetBytes("""
+        OBJECT_NAME,OBJECT_ID,EPOCH,MEAN_MOTION,ECCENTRICITY,INCLINATION,RA_OF_ASC_NODE,ARG_OF_PERICENTER,MEAN_ANOMALY,EPHEMERIS_TYPE,CLASSIFICATION_TYPE,NORAD_CAT_ID,ELEMENT_SET_NO,REV_AT_EPOCH,BSTAR,MEAN_MOTION_DOT,MEAN_MOTION_DDOT
+        HVO SYNTHETIC A,1998-067A,2026-10-19T12:00:00.000000,15.50103472,0.0006703,51.6416,247.4627,130.536,325.0288,0,U,25544,999,47001,0.00034123,0.00016717,0
+        HVO SYNTHETIC A,1998-067A,2026-10-18T06:30:00.500000,15.50098211,0.0006691,51.6418,253.1179,128.9021,231.2504,0,U,25544,998,46982,0.00033871,0.00016502,0
+        HVO SYNTHETIC MAX ID,2026-900A,2026-10-20T16:00:00.123456,1.00271,0.0001,0.05,90,270,45,0,U,999999999,1,0,0,0,0
+        HVO SYNTHETIC MIN ID,1957-001A,2026-10-01T00:00:00Z,14.2,0.05,65.1,10.5,20.25,340.75,0,U,1,42,12345,1.2e-05,2.5e-06,1.5e-11
+        HVO SYNTHETIC FULL METADATA,2025-123B,2026-10-19T08:15:30.5,2.00563,0.7123,63.4,300.0,270.0,5.5,0,U,123456,7,88,-0.00011,-3e-07,0
+        ,,2026-10-19T00:00:00,14.19,0.0011,97.7,120.0,85.2,274.9,0,U,43013,,,5.2e-05,3.2e-06,0
+        ,   ,2026-10-17T23:59:59.9999999,15.6,0,41.47,0,0,359.9999,0,U,48274,,0,0.00021,-1.5e-05,0
+        HVO SYNTHETIC OLD EPOCH É,1958-002B,1958-03-17T12:00:00.000000,10.85,0.18,34.25,200,150,220,0,U,5,1,1,0.0001,2e-07,0
+        """.ReplaceLineEndings("\n") + "\n");
 
     public static CelesTrakGpClientSettings DefaultSettings { get; } = new(CelesTrakGpSource.MaximumRequestTimeout,
         CelesTrakGpSource.MaximumWireBytes, CelesTrakGpSource.MaximumRawBytes, UserAgent);
@@ -85,9 +98,9 @@ internal static class CelesTrakGpTestData
 
     private static readonly (string Name, string Value)[] BaseMembers =
     [
-        ("OBJECT_NAME", "\"HVO SYNTHETIC T\""),
-        ("OBJECT_ID", "\"2024-010A\""),
-        ("EPOCH", "\"2026-10-19T06:00:00.000000\""),
+        ("OBJECT_NAME", "HVO SYNTHETIC T"),
+        ("OBJECT_ID", "2024-010A"),
+        ("EPOCH", "2026-10-19T06:00:00.000000"),
         ("MEAN_MOTION", "15.2"),
         ("ECCENTRICITY", "0.0012"),
         ("INCLINATION", "53.2"),
@@ -95,7 +108,7 @@ internal static class CelesTrakGpTestData
         ("ARG_OF_PERICENTER", "60.25"),
         ("MEAN_ANOMALY", "300.75"),
         ("EPHEMERIS_TYPE", "0"),
-        ("CLASSIFICATION_TYPE", "\"U\""),
+        ("CLASSIFICATION_TYPE", "U"),
         ("NORAD_CAT_ID", "60001"),
         ("ELEMENT_SET_NO", "999"),
         ("REV_AT_EPOCH", "1234"),
@@ -104,30 +117,40 @@ internal static class CelesTrakGpTestData
         ("MEAN_MOTION_DDOT", "0")
     ];
 
-    /// <summary>A valid compact record; each override replaces a member's raw JSON, removes it (null) or appends it.</summary>
-    public static string Record(params (string Name, string? Value)[] overrides)
+    public static string CsvHeader { get; } = string.Join(',', BaseMembers.Select(static field => field.Name));
+
+    // A null override omits the column from this row; an empty string is an explicit empty field.
+    public static Dictionary<string, string> Record(params (string Name, string? Value)[] overrides)
     {
-        var members = BaseMembers.Select(static m => (m.Name, Value: (string?)m.Value)).ToList();
+        var fields = BaseMembers.ToDictionary(static field => field.Name, static field => field.Value, StringComparer.Ordinal);
         foreach (var (name, value) in overrides)
         {
-            var index = members.FindIndex(m => m.Name == name);
-            if (index >= 0)
+            if (value is null)
             {
-                members[index] = (name, value);
+                fields.Remove(name);
             }
-            else if (value is not null)
+            else
             {
-                members.Add((name, value));
+                fields[name] = value;
             }
         }
-        return "{" + string.Join(',', members.Where(static m => m.Value is not null)
-            .Select(static m => $"\"{m.Name}\":{m.Value}")) + "}";
+        return fields;
     }
 
-    public static string RecordFor(int catalogNumber, params (string Name, string? Value)[] overrides) =>
-        Record([("NORAD_CAT_ID", catalogNumber.ToString(System.Globalization.CultureInfo.InvariantCulture)), .. overrides]);
+    public static Dictionary<string, string> RecordFor(int catalogNumber, params (string Name, string? Value)[] overrides) =>
+        Record([("NORAD_CAT_ID", catalogNumber.ToString(CultureInfo.InvariantCulture)), .. overrides]);
 
-    public static byte[] Payload(params string[] records) => Encoding.UTF8.GetBytes("[" + string.Join(',', records) + "]");
+    public static byte[] Payload(params Dictionary<string, string>[] records)
+    {
+        var columns = records.SelectMany(static record => record.Keys).Distinct(StringComparer.Ordinal).ToArray();
+        var lines = records.Select(record =>
+            string.Join(',', columns.Select(column => EncodeField(record.GetValueOrDefault(column, string.Empty)))));
+        return Encoding.UTF8.GetBytes(string.Join(',', columns.Select(EncodeField)) + "\n" + string.Join('\n', lines) + "\n");
+    }
+
+    private static string EncodeField(string value) => value.IndexOfAny([',', '"', '\r', '\n']) >= 0
+        ? "\"" + value.Replace("\"", "\"\"", StringComparison.Ordinal) + "\""
+        : value;
 
     public static byte[] Gzip(byte[] raw)
     {
@@ -144,7 +167,7 @@ internal static class CelesTrakGpTestData
         new(new HttpClient(handler), timeProvider ?? TimeProvider.System, settings ?? DefaultSettings);
 
     public static HttpResponseMessage Response(HttpStatusCode status, TrackingContent content,
-        string? contentType = "application/json", string? contentEncoding = null, long? contentLength = null,
+        string? contentType = "text/csv", string? contentEncoding = null, long? contentLength = null,
         Action<HttpResponseMessage>? configure = null)
     {
         if (contentType is not null)
