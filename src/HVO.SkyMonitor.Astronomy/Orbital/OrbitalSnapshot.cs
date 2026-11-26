@@ -49,6 +49,10 @@ public sealed class OrbitalSnapshot
 
     public static OrbitalSnapshot Create(IEnumerable<OrbitalRecordV1> records, IEnumerable<OrbitalSnapshotSource> sources,
         OrbitalPopulationCoverage coverage)
+        => Create(records, sources, coverage, OrbitalContract.CelesTrakGpProfile);
+
+    public static OrbitalSnapshot Create(IEnumerable<OrbitalRecordV1> records, IEnumerable<OrbitalSnapshotSource> sources,
+        OrbitalPopulationCoverage coverage, string profileVersion)
     {
         ArgumentNullException.ThrowIfNull(records);
         ArgumentNullException.ThrowIfNull(sources);
@@ -66,7 +70,7 @@ public sealed class OrbitalSnapshot
         Array.Sort(items, static (a, b) => StringComparer.Ordinal.Compare(a.RecordSha256, b.RecordSha256));
         Array.Sort(sourceItems, static (a, b) => StringComparer.Ordinal.Compare(a.DatasetKey, b.DatasetKey));
         var payload = OrbitalCanonicalJson.Digest(items);
-        var value = new OrbitalSnapshotManifestV1(OrbitalContract.SchemaVersion, OrbitalContract.CelesTrakGpProfile, string.Empty,
+        var value = new OrbitalSnapshotManifestV1(OrbitalContract.SchemaVersion, profileVersion, string.Empty,
             payload.Sha256, payload.Length, items.Length,
             items.Select(static r => r.ObjectIdentity).Distinct().Count(),
             items.Length == 0 ? null : items.Min(static r => r.EpochUtc),
@@ -120,7 +124,7 @@ public sealed class OrbitalSnapshot
     private static OrbitalSnapshot ValidateAndMaterialize(OrbitalSnapshotManifestV1 m, OrbitalRecordV1[] records,
         (string Sha256, int Length) payload, bool recordsValidated = false)
     {
-        OrbitalContract.Require(m.SchemaVersion == OrbitalContract.SchemaVersion && m.ProfileVersion == OrbitalContract.CelesTrakGpProfile && OrbitalContract.IsSha256(m.ManifestSha256) &&
+        OrbitalContract.Require(m.SchemaVersion == OrbitalContract.SchemaVersion && OrbitalContract.IsSupportedGpProfile(m.ProfileVersion) && OrbitalContract.IsSha256(m.ManifestSha256) &&
             OrbitalContract.IsSha256(m.NormalizedPayloadSha256), "manifest-schema-identity");
         OrbitalContract.Require(records.Length <= OrbitalContract.MaximumRecords && m.RecordCount == records.Length &&
             m.Sources is { Count: > 0 and <= OrbitalContract.MaximumSources } && m.Coverage is not null, "snapshot-bound");
@@ -134,7 +138,7 @@ public sealed class OrbitalSnapshot
             OrbitalContract.Require(source is not null && OrbitalContract.Dataset(source.DatasetKey), "source-dataset");
             var s = source!;
             OrbitalContract.Require(sources.TryAdd(s.DatasetKey, s) && OrbitalContract.Text(s.Provider, 128) &&
-                OrbitalContract.Text(s.UnderlyingLineage) && SafeUri(s.SourceUri, allowGpQuery: true) && SafeUri(s.TermsUri, false) &&
+                OrbitalContract.Text(s.UnderlyingLineage) && SafeUri(s.SourceUri, m.ProfileVersion) && SafeUri(s.TermsUri) &&
                 OrbitalContract.Text(s.TermsReference, 2048) && OrbitalContract.IsSha256(s.RawSha256) &&
                 s.RawLengthBytes is > 0 and <= 32 * 1024 * 1024 && OrbitalContract.Utc(s.RetrievedUtc) &&
                 (s.ProviderGeneratedUtc is null || OrbitalContract.Utc(s.ProviderGeneratedUtc.Value)) &&
@@ -149,6 +153,7 @@ public sealed class OrbitalSnapshot
             OrbitalContract.Require(previous is null || StringComparer.Ordinal.Compare(previous, record.RecordSha256) < 0, "record-order-or-duplicate");
             previous = record.RecordSha256;
             OrbitalContract.Require(sources.TryGetValue(record.SourceDataset, out var source) &&
+                record.Model.ProfileVersion == m.ProfileVersion &&
                 record.Model.Parser == source.Parser && record.Model.Normalizer == source.Normalizer, "record-source-binding");
         }
         OrbitalContract.Require((m.MinimumEpochUtc is null || OrbitalContract.Utc(m.MinimumEpochUtc.Value)) &&
@@ -165,11 +170,16 @@ public sealed class OrbitalSnapshot
         return new(m, records.ToArray());
     }
 
-    private static bool SafeUri(Uri? uri, bool allowGpQuery)
+    private static bool SafeUri(Uri? uri, string? sourceProfile = null)
     {
         if (uri is null || !uri.IsAbsoluteUri || uri.Scheme != Uri.UriSchemeHttps ||
             uri.OriginalString.Length > 2048 || uri.UserInfo.Length != 0 || uri.Fragment.Length != 0) return false;
-        return uri.Query.Length == 0 || allowGpQuery && uri.Query == "?GROUP=active&FORMAT=JSON";
+        return sourceProfile switch
+        {
+            OrbitalContract.CelesTrakGpProfile => uri.Query.Length == 0 || uri.Query == "?GROUP=active&FORMAT=JSON",
+            OrbitalContract.CelesTrakGpCsvProfile => uri.OriginalString == "https://celestrak.org/NORAD/elements/gp.php?GROUP=active&FORMAT=CSV",
+            _ => uri.Query.Length == 0
+        };
     }
 }
 

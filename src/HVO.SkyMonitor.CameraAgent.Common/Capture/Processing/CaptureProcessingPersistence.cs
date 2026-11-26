@@ -601,12 +601,10 @@ internal sealed partial class CaptureProcessingPersistence(
                 break;
             }
             var payloadPath = ResolveSafePath(entry.PayloadRelativePath);
-            var payload = silo is null ? null : await silo.ReadRawAsync(entry.Descriptor, cancellationToken).ConfigureAwait(false);
-            if (payload is null)
-            {
-                if (!File.Exists(payloadPath)) break;
-                payload = await File.ReadAllBytesAsync(payloadPath, cancellationToken).ConfigureAwait(false);
-            }
+            var payload = silo is null
+                ? File.Exists(payloadPath) ? await File.ReadAllBytesAsync(payloadPath, cancellationToken).ConfigureAwait(false) : null
+                : await silo.ReadLiveRawAsync(entry.Descriptor, payloadPath, cancellationToken).ConfigureAwait(false);
+            if (payload is null) break;
             if (!string.Equals(
                 ProcessingIdentity.ComputePayloadSha256(payload),
                 entry.Descriptor.Artifact.ChecksumSha256,
@@ -867,18 +865,22 @@ internal sealed partial class CaptureProcessingPersistence(
         IReadOnlyList<ProcessingProduct> products, string nodeId, Guid? executionId, CancellationToken cancellationToken)
     {
         if (silo is null || outputs.Count == 0) return;
-        var identity = CaptureContractJson.ComputeCanonicalJsonSha256(JsonSerializer.SerializeToElement(new
+        var identity = SiloOutputGroupId(raw, nodeId, executionId, outputs.Select(static output => output.ArtifactId));
+        var inputs = outputs.Select((output, index) => new SiloArtifactInput(output.ArtifactId, output.Artifact.Role.ToString(),
+            output.Artifact.MediaType, output.Artifact.ChecksumSha256, products[index].Payload, output.EvidenceJson,
+            output.ContentIdentitySha256, output.OutputIdentitySha256, nodeId, output.RecipeIdentitySha256)).ToArray();
+        await silo.PublishProcessingAsync(identity, raw, inputs, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static string SiloOutputGroupId(ReconstructionDescriptor raw, string nodeId, Guid? executionId,
+        IEnumerable<Guid> artifacts) =>
+        SiloCenteredViews.LowerHex(CaptureContractJson.ComputeCanonicalJsonSha256(JsonSerializer.SerializeToElement(new
         {
             raw.Capture.CaptureId,
             NodeId = nodeId,
             ExecutionId = executionId,
-            Artifacts = outputs.Select(static output => output.ArtifactId).Order().ToArray()
-        }));
-        var inputs = outputs.Select((output, index) => new SiloArtifactInput(output.ArtifactId, output.Artifact.Role.ToString(),
-            output.Artifact.MediaType, output.Artifact.ChecksumSha256, products[index].Payload, output.EvidenceJson,
-            output.ContentIdentitySha256, output.OutputIdentitySha256, nodeId, output.RecipeIdentitySha256)).ToArray();
-        await silo.PublishProcessingAsync(SiloCenteredViews.LowerHex(identity), raw, inputs, cancellationToken).ConfigureAwait(false);
-    }
+            Artifacts = artifacts.Order().ToArray()
+        })));
 
     internal async Task<ProcessingArtifact> RestoreCenteredLinearAsync(
         ExposureProductRef expected, CancellationToken cancellationToken)

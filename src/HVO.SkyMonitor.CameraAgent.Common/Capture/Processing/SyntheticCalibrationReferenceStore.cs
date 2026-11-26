@@ -93,7 +93,8 @@ internal sealed class SyntheticCalibrationReferenceStore(
         var relativeDirectory = Path.Combine("calibration", "synthetic", publicationIdentity.ToUpperInvariant());
         var bundleRelativePath = Normalize(Path.Combine(relativeDirectory, CalibrationLibraryEvidenceNames.BundleEnvelope));
         var profileRelativePath = Normalize(Path.Combine(relativeDirectory, CalibrationLibraryEvidenceNames.ProfileMarker));
-        EnsureCommittedBundleIsComplete(relativeDirectory, bundleRelativePath, profileRelativePath);
+        if (_publisher.Silo is null)
+            EnsureCommittedBundleIsComplete(relativeDirectory, bundleRelativePath, profileRelativePath);
         var generated = SyntheticCalibrationReferenceGenerator.Generate(
             layout.Width, layout.Height, layout.PixelFormat, model);
         var referenceInputs = new Dictionary<string, ProcessingArtifact>(StringComparer.Ordinal);
@@ -200,18 +201,17 @@ internal sealed class SyntheticCalibrationReferenceStore(
                 DateTimeOffset.UnixEpoch,
                 null),
             libraryArtifacts);
-        await _publisher.PublishBundleEnvelopeAsync(
-            bundleRelativePath,
-            CalibrationLibraryContractJson.Serialize(bundle),
-            cancellationToken).ConfigureAwait(false);
-        await _publisher.PublishSiloBundleAsync(bundle, profileJson, cancellationToken).ConfigureAwait(false);
-        await _publisher.PublishProfileMarkerAsync(
-            profileRelativePath,
-            profileJson,
-            cancellationToken).ConfigureAwait(false);
-        foreach (var manifestRelativePath in libraryArtifacts.Select(static artifact => artifact.ManifestRelativePath))
+        if (_publisher.Silo is null)
         {
-            loader.RegisterRetentionHold(manifestRelativePath);
+            await _publisher.PublishBundleEnvelopeAsync(bundleRelativePath, CalibrationLibraryContractJson.Serialize(bundle),
+                cancellationToken).ConfigureAwait(false);
+            await _publisher.PublishProfileMarkerAsync(profileRelativePath, profileJson, cancellationToken).ConfigureAwait(false);
+            foreach (var artifact in libraryArtifacts)
+                loader.RegisterRetentionHold(artifact.ManifestRelativePath);
+        }
+        else
+        {
+            await _publisher.PublishSiloBundleAsync(bundle, profileJson, cancellationToken).ConfigureAwait(false);
         }
         if (_calibrationLibrary is not null)
         {

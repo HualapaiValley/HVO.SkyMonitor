@@ -487,7 +487,7 @@ internal sealed class RegionalStellarVisibilityCaptureProcessingStep(
 
         try
         {
-            var artifact = await referenceLoader.LoadAsync(match.ManifestRelativePath, cancellationToken).ConfigureAwait(false);
+            var artifact = await referenceLoader.LoadAsync(match.ManifestRelativePath, cancellationToken, defectArtifactId).ConfigureAwait(false);
             if (artifact.ArtifactId != defectArtifactId ||
                 artifact.Layout is not { } layout ||
                 layout.Width != rawLayout.Width ||

@@ -181,10 +181,6 @@ internal sealed class SiloFilePayloadSpool : ISiloPayloadSpool
         var removed = false;
         foreach (var path in Directory.EnumerateFileSystemEntries(_directory))
         {
-            if (++examined > (long)_maximumFiles + 1)
-            {
-                throw new SiloSpoolFullException();
-            }
             _root.Verify(path, "silo-payload-spool-start");
             var info = new FileInfo(path);
             if (IsPartialName(info.Name))
@@ -194,6 +190,8 @@ internal sealed class SiloFilePayloadSpool : ISiloPayloadSpool
             }
             else
             {
+                if (++examined > (long)_maximumFiles + 1)
+                    throw new SiloSpoolFullException();
                 _ = WithinSpool(info.Name);
                 Track(info);
             }

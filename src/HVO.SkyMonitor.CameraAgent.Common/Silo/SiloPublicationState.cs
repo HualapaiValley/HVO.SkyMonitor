@@ -634,10 +634,15 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
 
     /// <summary>Open staged work, oldest first: everything not yet visible or abandoned.</summary>
     public ValueTask<IReadOnlyList<(string GroupId, string RevisionId)>> ListOpenAsync(int limit, CancellationToken cancellationToken) =>
+        ListOpenAsync(limit, skipRawAdmissions: false, cancellationToken);
+
+    internal ValueTask<IReadOnlyList<(string GroupId, string RevisionId)>> ListOpenAsync(
+        int limit, bool skipRawAdmissions, CancellationToken cancellationToken) =>
         ListGroupsAsync("""
             SELECT group_id, revision_id FROM staged_groups WHERE state NOT IN ('visible', 'abandoned')
+                AND ($skip_raw = 0 OR group_kind <> 'raw-capture')
             ORDER BY staged_unix_ms, group_id, revision_id LIMIT $limit;
-            """, limit, cancellationToken);
+            """, limit, cancellationToken, ("$skip_raw", skipRawAdmissions));
 
     /// <summary>Visible or abandoned groups that still have members whose spooled bytes were not released.</summary>
     public ValueTask<IReadOnlyList<(string GroupId, string RevisionId)>> ListUnreleasedAsync(int limit, CancellationToken cancellationToken) =>
@@ -649,10 +654,11 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
             ORDER BY g.updated_unix_ms, g.group_id, g.revision_id LIMIT $limit;
             """, limit, cancellationToken);
 
-    private async ValueTask<IReadOnlyList<(string GroupId, string RevisionId)>> ListGroupsAsync(string sql, int limit, CancellationToken cancellationToken)
+    private async ValueTask<IReadOnlyList<(string GroupId, string RevisionId)>> ListGroupsAsync(string sql, int limit,
+        CancellationToken cancellationToken, params (string Name, object? Value)[] parameters)
     {
         using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-        using var command = CreateCommand(connection, null, sql, ("$limit", limit));
+        using var command = CreateCommand(connection, null, sql, [("$limit", limit), .. parameters]);
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         var result = new List<(string, string)>();
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))

@@ -2,6 +2,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using Microsoft.Data.Sqlite;
 using System.Diagnostics.CodeAnalysis;
@@ -22,7 +23,8 @@ internal sealed class SqliteCaptureLaneStore(
     Action<TimeSpan>? lockWaitRecorder = null,
     Action? evidenceInvalidated = null,
     CenteredExposureProductChanges? centeredProductChanges = null,
-    Action<Guid>? liveAstrometryPublished = null) : ICaptureLaneStore
+    Action<Guid>? liveAstrometryPublished = null,
+    SiloArtifactStorage? silo = null) : ICaptureLaneStore
 {
     private static readonly JsonSerializerOptions EnvelopeJsonOptions = new(JsonSerializerDefaults.Web);
     private readonly string _root = Path.GetFullPath(root);
@@ -243,7 +245,16 @@ internal sealed class SqliteCaptureLaneStore(
                 var absolutePath = Resolve(candidate.PayloadRelativePath);
                 if (!File.Exists(absolutePath) || !File.Exists(Path.ChangeExtension(absolutePath, ".json")))
                 {
-                    throw new FileNotFoundException("Capture lane evidence is no longer retained.");
+                    if (silo is { BindingVerified: false })
+                    {
+                        await CommitWithCenteredWakeAsync(connection, transaction, revisionBefore, cancellationToken).ConfigureAwait(false);
+                        return null;
+                    }
+                    var artifactId = manifest.Descriptor.Artifact.ArtifactId;
+                    if (silo is null || !await silo.HasMemberAsync(artifactId,
+                            CaptureContractJson.ComputeDescriptorSha256(manifest.Descriptor), cancellationToken).ConfigureAwait(false) ||
+                        !await silo.HasMemberAsync(artifactId, SiloArtifactStorage.RawEvidenceRevision, cancellationToken).ConfigureAwait(false))
+                        throw new FileNotFoundException("Capture lane evidence is no longer retained.");
                 }
                 var stored = new StoredFrameReference(
                     candidate.PayloadRelativePath,

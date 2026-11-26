@@ -2699,10 +2699,10 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 JOIN processing_output_sources source
                   ON source.output_identity_sha256 = output.output_identity_sha256
             )
-            SELECT artifact_id, payload_relative_path, sidecar_relative_path
+            SELECT artifact_id, payload_relative_path, sidecar_relative_path, 0
             FROM processing_outputs WHERE artifact_id IN held AND availability_state = 'Available'
             UNION
-            SELECT raw_artifact_id, payload_relative_path, sidecar_relative_path
+            SELECT raw_artifact_id, payload_relative_path, sidecar_relative_path, 1
             FROM raw_captures WHERE raw_artifact_id IN held
             LIMIT $maximum_holds_plus_one;
             """;
@@ -2714,10 +2714,10 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-            holds.Add(new ProcessingRetentionHold(
-                Guid.ParseExact(reader.GetString(0), "N"),
-                reader.GetString(1),
-                reader.GetString(2)));
+            var id = Guid.ParseExact(reader.GetString(0), "N");
+            holds.Add(_silo is not null && reader.GetBoolean(3)
+                ? new ProcessingRetentionHold(id, SiloArtifactStorage.RawReference(id, ".bin"), SiloArtifactStorage.RawReference(id, ".json"))
+                : new ProcessingRetentionHold(id, reader.GetString(1), reader.GetString(2)));
         }
         if (holds.Count > ProcessingRetentionHoldSafetyCount)
             throw new InvalidDataException("Processing retention lineage exceeds its safety bound.");

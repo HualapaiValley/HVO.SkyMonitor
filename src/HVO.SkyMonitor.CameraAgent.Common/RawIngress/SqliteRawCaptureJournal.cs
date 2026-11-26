@@ -426,6 +426,8 @@ internal sealed partial class SqliteRawCaptureJournal(
         {
             return (false, false);
         }
+        if (usesSilo)
+            return (true, reader.GetString(2) == "committed");
         var root = Path.GetDirectoryName(Path.GetDirectoryName(_databasePath)!)!;
         var payload = Path.GetFullPath(Path.Combine(
             root, reader.GetString(0).Replace('/', Path.DirectorySeparatorChar)));

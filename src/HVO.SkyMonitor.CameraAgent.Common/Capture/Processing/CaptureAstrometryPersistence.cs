@@ -8,7 +8,7 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
 internal sealed partial class CaptureProcessingPersistence
 {
-    /// <summary>Uses the normal publisher's prepared files to freeze outcomes across a failed node commit.</summary>
+    /// <summary>Uses prepared immutable products to freeze outcomes across a failed node commit.</summary>
     internal async ValueTask<(ProcessingOutcome Outcome, bool Restored)> ExecuteRetainedAstrometryAsync(
         CaptureProcessingContext context, ProcessingExecutionRequest request, ProcessingProduct contextProduct,
         Func<ValueTask<ProcessingOutcome>> execute, CancellationToken cancellationToken)
@@ -30,16 +30,31 @@ internal sealed partial class CaptureProcessingPersistence
         {
             if (context.ProcessingExecution is { } execution)
                 await _store.EnsureExecutionLeaseAsync(execution, cancellationToken).ConfigureAwait(false);
-            await CopyMetadataProductAsync(_storageRoot, descriptor, node, contextProduct, cancellationToken).ConfigureAwait(false);
-            RawIngressFileStore.EnsureNoSymbolicLinks(_storageRoot, path);
-            if (File.Exists(path))
+            await PublishPreparedAstrometryAsync(descriptor, node, contextProduct, cancellationToken).ConfigureAwait(false);
+            byte[]? bytes;
+            if (Silo is { } siloStorage)
             {
-                var length = new FileInfo(path).Length;
-                if (length is <= 0 or > MeasuredAstrometryJson.MaximumSolutionBytes)
-                    throw new InvalidDataException("Prepared astrometry exceeds its byte bound.");
-                var bytes = await ReadCommittedFileAsync(path, length, cancellationToken).ConfigureAwait(false);
+                await siloStorage.ResumeProcessingAsync(SiloOutputGroupId(descriptor, node, null, [artifactId]), cancellationToken)
+                    .ConfigureAwait(false);
+                bytes = await siloStorage.ReadMetadataAsync(artifactId, outputIdentity, MeasuredAstrometryJson.MaximumSolutionBytes,
+                    null, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                RawIngressFileStore.EnsureNoSymbolicLinks(_storageRoot, path);
+                bytes = null;
+                if (File.Exists(path))
+                {
+                    var length = new FileInfo(path).Length;
+                    if (length is <= 0 or > MeasuredAstrometryJson.MaximumSolutionBytes)
+                        throw new InvalidDataException("Prepared astrometry exceeds its byte bound.");
+                    bytes = await ReadCommittedFileAsync(path, length, cancellationToken).ConfigureAwait(false);
+                }
+            }
+            if (bytes is not null)
+            {
                 var restored = RetainedAstrometryProducts.Restore(request, bytes, cancellationToken);
-                await CopyMetadataProductAsync(_storageRoot, descriptor, node, restored, cancellationToken).ConfigureAwait(false);
+                await PublishPreparedAstrometryAsync(descriptor, node, restored, cancellationToken).ConfigureAwait(false);
                 return (ProcessingOutcome.Produced(restored), true);
             }
         }
@@ -54,9 +69,23 @@ internal sealed partial class CaptureProcessingPersistence
         {
             if (context.ProcessingExecution is { } execution)
                 await _store.EnsureExecutionLeaseAsync(execution, cancellationToken).ConfigureAwait(false);
-            await CopyMetadataProductAsync(_storageRoot, descriptor, node, product, cancellationToken).ConfigureAwait(false);
+            await PublishPreparedAstrometryAsync(descriptor, node, product, cancellationToken).ConfigureAwait(false);
         }
         finally { lifecycle.Release(); }
         return (outcome, false);
+    }
+
+    private async ValueTask PublishPreparedAstrometryAsync(ReconstructionDescriptor descriptor, string node, ProcessingProduct product,
+        CancellationToken cancellationToken)
+    {
+        if (Silo is null)
+        {
+            await CopyMetadataProductAsync(_storageRoot, descriptor, node, product, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        var output = await PersistMetadataProductAsync(_storageRoot, descriptor, node, product, null,
+            provisionStorageRoot: false, cancellationToken, writeLocalCopies: false).ConfigureAwait(false);
+        await PersistSiloOutputsAsync(descriptor, [output], [product], node, null, cancellationToken).ConfigureAwait(false);
     }
 }

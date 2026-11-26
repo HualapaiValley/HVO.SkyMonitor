@@ -739,17 +739,13 @@ internal sealed class FrameProcessingWorker
         if (rawCapture is { } receipt)
         {
             var descriptor = receipt.Manifest.Descriptor;
-            byte[]? sidecar = null;
-            if (silo is not null)
-            {
-                sidecar = await silo.ReadMemberAsync(descriptor.Artifact.ArtifactId, SiloArtifactStorage.RawEvidenceRevision,
-                    CaptureContractJson.Serialize(receipt.Manifest).LongLength, receipt.CommittedManifestSha256, cancellationToken)
-                    .ConfigureAwait(false);
-                if (sidecar is null && item.Execution?.ExecutionClass == ProcessingGraphExecutionClass.Replay)
-                    throw new FileNotFoundException("The archived raw evidence has no settled Silo publication.");
-            }
-            sidecar ??= await File.ReadAllBytesAsync(
-                Path.ChangeExtension(receipt.StoredFrame.AbsolutePath, ".json"), cancellationToken).ConfigureAwait(false);
+            var sidecarPath = Path.ChangeExtension(receipt.StoredFrame.AbsolutePath, ".json");
+            var replay = item.Execution?.ExecutionClass == ProcessingGraphExecutionClass.Replay;
+            var sidecar = silo is null
+                ? await File.ReadAllBytesAsync(sidecarPath, cancellationToken).ConfigureAwait(false)
+                : await silo.ReadRawEvidenceAsync(descriptor.Artifact.ArtifactId, receipt.CommittedManifestSha256,
+                    replay ? null : sidecarPath, cancellationToken).ConfigureAwait(false)
+                    ?? throw new FileNotFoundException("The raw evidence has no settled Silo publication or staging file.");
             var parsed = CaptureContractJson.ParseManifest(sidecar);
             if (!parsed.IsValid || parsed.Document?.Manifest is not { } persistedManifest)
             {
@@ -766,10 +762,11 @@ internal sealed class FrameProcessingWorker
             rawCapture = receipt;
             async ValueTask<CaptureResult> LoadRawFrameAsync(CancellationToken token)
             {
-                var retained = silo is null ? null : await silo.ReadRawAsync(receipt.Manifest.Descriptor, token).ConfigureAwait(false);
-                if (silo is not null && retained is null && item.Execution?.ExecutionClass == ProcessingGraphExecutionClass.Replay)
-                    throw new FileNotFoundException("The archived raw frame has no settled Silo publication.");
-                var payload = retained ?? await File.ReadAllBytesAsync(receipt.StoredFrame.AbsolutePath, token).ConfigureAwait(false);
+                var payload = silo is null
+                    ? await File.ReadAllBytesAsync(receipt.StoredFrame.AbsolutePath, token).ConfigureAwait(false)
+                    : (replay ? await silo.ReadRawAsync(receipt.Manifest.Descriptor, token).ConfigureAwait(false)
+                        : await silo.ReadLiveRawAsync(receipt.Manifest.Descriptor, receipt.StoredFrame.AbsolutePath, token).ConfigureAwait(false))
+                        ?? throw new FileNotFoundException("The raw frame has no settled Silo publication or staging file.");
                 var reconstruction = FrameReconstructor.TryReconstruct(receipt.Manifest.Descriptor, payload, out var frame);
                 if (!reconstruction.IsValid || frame is null)
                 {

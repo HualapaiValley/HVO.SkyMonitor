@@ -21,7 +21,7 @@ internal sealed class CenteredViewSourceLayers(
         IOException? retryableFailure = null;
         while (true)
         {
-            var bases = await views.ReadContributorBasesAsync(source.Exposure, after, PageSize, token).ConfigureAwait(false);
+            var bases = await views.ReadContributorBasesAsync(source.Exposure, after, PageSize, token, includePending: true).ConfigureAwait(false);
             foreach (var (viewBase, order) in bases)
             {
                 try

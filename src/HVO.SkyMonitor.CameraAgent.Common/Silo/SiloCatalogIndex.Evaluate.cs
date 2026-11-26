@@ -41,7 +41,10 @@ internal sealed class SiloFreshEvidence
 }
 
 internal sealed record SiloReopenItem(
-    SiloRoleKey Role, string Sha256, bool Required, string Source, string Disposition, SiloExactLocator? ServedFrom, string? Detail);
+    SiloRoleKey Role, string Sha256, bool Required, string Source, string Disposition, SiloExactLocator? ServedFrom, string? Detail)
+{
+    internal bool Damaged { get; init; }
+}
 
 /// <summary>
 /// Whether a revision reopens exactly, which required role blocks it, and what else is reported (#1965 6.1). Every
@@ -214,7 +217,7 @@ internal sealed partial class SiloCatalogIndex
         }
         var recorded = await ReadRecordedMembersAsync(connection, groupId, revisionId, cancellationToken).ConfigureAwait(false);
         var manifestRole = new SiloRoleKey(SiloIdentityKind.Manifest, groupId, revisionId);
-        var (manifestDisposition, bytes, _) = await ProbeRoleAsync(connection, stores, manifestRole, manifestSha, manifestLength,
+        var (manifestDisposition, bytes, _, _) = await ProbeRoleAsync(connection, stores, manifestRole, manifestSha, manifestLength,
             captureBytes: true, fresh, cancellationToken).ConfigureAwait(false);
         if (bytes is null)
         {
@@ -256,7 +259,7 @@ internal sealed partial class SiloCatalogIndex
         foreach (var member in recorded.Where(static member => member.Required))
         {
             var role = new SiloRoleKey(SiloIdentityKind.Member, member.ArtifactId, member.ArtifactRevision);
-            var (current, _, _) = await ProbeRoleAsync(connection, stores, role, member.Sha256, member.Length, captureBytes: false,
+            var (current, _, _, _) = await ProbeRoleAsync(connection, stores, role, member.Sha256, member.Length, captureBytes: false,
                 fresh, cancellationToken).ConfigureAwait(false);
             if (current != SiloDisposition.Available)
             {
@@ -281,7 +284,7 @@ internal sealed partial class SiloCatalogIndex
                 outcomes.Add(SiloDisposition.Conflict);
                 continue;
             }
-            var (current, _, _) = await ProbeRoleAsync(connection, stores, role, dependency.Sha256, published.Length, captureBytes: false,
+            var (current, _, _, _) = await ProbeRoleAsync(connection, stores, role, dependency.Sha256, published.Length, captureBytes: false,
                 fresh, cancellationToken).ConfigureAwait(false);
             if (current != SiloDisposition.Available)
             {
@@ -449,7 +452,7 @@ internal sealed partial class SiloCatalogIndex
     /// independently computed length and SHA-256 match. Every probe outcome is kept as that copy's own finding, and a
     /// success is remembered only for the rest of this operation.
     /// </summary>
-    private async ValueTask<(string Disposition, byte[]? Bytes, SiloExactLocator? ServedFrom)> ProbeRoleAsync(
+    private async ValueTask<(string Disposition, byte[]? Bytes, SiloExactLocator? ServedFrom, bool Damaged)> ProbeRoleAsync(
         SqliteConnection connection, SiloStoreSet stores, SiloRoleKey role, string sha256, long length, bool captureBytes,
         SiloFreshEvidence fresh, CancellationToken cancellationToken)
     {
@@ -468,6 +471,7 @@ internal sealed partial class SiloCatalogIndex
         }
         byte[]? bytes = null;
         SiloExactLocator? servedFrom = null;
+        var damaged = false;
         foreach (var locator in locators)
         {
             SiloProbe probe;
@@ -491,6 +495,7 @@ internal sealed partial class SiloCatalogIndex
                 ("$when", probe.ObservedUtc.ToUnixTimeMilliseconds()), ("$kind", KindName(role.Kind)), ("$id", role.Id),
                 ("$revision", role.Revision), ("$store", locator.StoreId), ("$bucket", locator.Bucket), ("$key", locator.Key),
                 ("$version", locator.VersionId)).ConfigureAwait(false);
+            damaged |= probe.Status == SiloProbeStatus.Damaged;
             if (probe.Status == SiloProbeStatus.Verified)
             {
                 bytes = probe.Bytes;
@@ -500,7 +505,7 @@ internal sealed partial class SiloCatalogIndex
         }
         var unknown = await UnknownIntervalAsync(connection, null, cancellationToken).ConfigureAwait(false);
         var disposition = await RecomputeRoleAsync(connection, null, role, unknown, cancellationToken).ConfigureAwait(false);
-        return (disposition, bytes, servedFrom);
+        return (disposition, bytes, servedFrom, damaged && disposition == SiloDisposition.Missing);
     }
 
     private const string VerificationColumns = "kind, id, revision, sha256, length, generation, sequence, record_index";
@@ -586,7 +591,7 @@ internal sealed partial class SiloCatalogIndex
     {
         const int batchSize = 16;
         VerificationRow? after = null;
-        long verified = 0, unavailable = 0, expired = 0, failed = 0;
+        long verified = 0, unavailable = 0, expired = 0, failed = 0, damaged = 0, missing = 0;
         while (true)
         {
             await _writer.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -612,11 +617,17 @@ internal sealed partial class SiloCatalogIndex
                         case SiloDisposition.Available: verified++; break;
                         case SiloDisposition.TemporarilyUnavailable: unavailable++; break;
                         case SiloDisposition.PolicyExpired: expired++; break;
+                        case SiloDisposition.Missing:
+                            if (result.Damaged) damaged++; else missing++;
+                            failed++;
+                            break;
+                        case SiloDisposition.Conflict: damaged++; failed++; break;
                         default: failed++; break;
                     }
                 }
                 if (rows.Count < batchSize)
-                    return new(cutoff.Generation, cutoff.Sequence, verified, unavailable, expired, failed);
+                    return new(cutoff.Generation, cutoff.Sequence, verified, unavailable, expired, failed)
+                    { DamagedRoles = damaged, MissingRoles = missing };
                 after = rows[^1];
             }
             finally
@@ -648,9 +659,10 @@ internal sealed partial class SiloCatalogIndex
         {
             using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
             string state, manifestSha;
+            bool requiresMembers;
             string? outcome, stream, reference, json;
             using (var command = CreateCommand(connection, null, """
-                SELECT state, outcome, manifest_sha256, stream_id, reference_capture_id, manifest_json FROM publications
+                SELECT state, outcome, manifest_sha256, stream_id, reference_capture_id, manifest_json, requires_members FROM publications
                 WHERE group_id = $group AND revision_id = $revision;
                 """, ("$group", groupId), ("$revision", revisionId)))
             using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
@@ -661,13 +673,14 @@ internal sealed partial class SiloCatalogIndex
                 }
                 (state, outcome, manifestSha, stream, reference, json) = (reader.GetString(0), NullableString(reader, 1), reader.GetString(2),
                     NullableString(reader, 3), NullableString(reader, 4), NullableString(reader, 5));
+                requiresMembers = reader.GetBoolean(6);
             }
             if (link is { } expected && (!string.Equals(expected.StreamId, stream, StringComparison.Ordinal) ||
                 !string.Equals(expected.ReferenceCaptureId, reference, StringComparison.Ordinal)))
             {
                 return new(groupId, revisionId, true, false, LinkMismatch, [], null);
             }
-            if (state != "visible")
+            if (state != "visible" && (requiresMembers || json is null || outcome != SiloDisposition.Missing))
             {
                 return new(groupId, revisionId, true, false, outcome ?? SiloDisposition.Pending, [], null);
             }
@@ -705,12 +718,12 @@ internal sealed partial class SiloCatalogIndex
                     items.Add(new(role, sha, required, source, SiloDisposition.Conflict, null, "published with another digest"));
                     continue;
                 }
-                var (disposition, _, servedFrom) = await ProbeRoleAsync(connection, stores, role, sha, bound.Value.Length, captureBytes: false,
+                var (disposition, _, servedFrom, damaged) = await ProbeRoleAsync(connection, stores, role, sha, bound.Value.Length, captureBytes: false,
                     fresh, cancellationToken).ConfigureAwait(false);
-                items.Add(new(role, sha, required, source, disposition, servedFrom, null));
+                items.Add(new SiloReopenItem(role, sha, required, source, disposition, servedFrom, null) { Damaged = damaged });
             }
-            var reopenable = items.All(static item => !item.Required || item.Disposition == SiloDisposition.Available);
-            return new(groupId, revisionId, true, reopenable, null, items, json);
+            var reopenable = state == "visible" && items.All(static item => !item.Required || item.Disposition == SiloDisposition.Available);
+            return new(groupId, revisionId, true, reopenable, state == "visible" ? null : outcome, items, json);
         }
         finally
         {

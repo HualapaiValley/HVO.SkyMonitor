@@ -40,6 +40,18 @@ public sealed class OrbitalSnapshotPanelTests
     private static readonly string ShortManifest = "sha256:" + new string('a', 8) + "…" + new string('a', 8);
 
     [TestMethod]
+    public void RetainedCelesTrakManifestDisplaysBothSourceCredits()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var manifest = TestOrbitalUiService.Manifest();
+        var source = manifest.Sources.Single() with { Provider = "celestrak", UnderlyingLineage = "USSF public GP via CelesTrak" };
+        service.GetHandler = _ => Success(TestOrbitalUiService.View(manifest: manifest with { Sources = [source] }));
+        var panel = context.Render<OrbitalSnapshotPanel>();
+        Assert.Contains("US Space Force / Space-Track public GP data via CelesTrak", panel.WaitForElement("#orbital-provider").TextContent);
+    }
+
+    [TestMethod]
     public void SuccessfulActivation_ShowsFreshCountsHashesEpochsAndLinks()
     {
         using var context = new BunitContext();

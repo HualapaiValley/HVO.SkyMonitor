@@ -461,6 +461,10 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         {
             return new(CameraAgentArtifactReadStatus.Conflict);
         }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return new(CameraAgentArtifactReadStatus.Unavailable);
+        }
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Preview encoding failures are converted to a sanitized retrieval status.")]

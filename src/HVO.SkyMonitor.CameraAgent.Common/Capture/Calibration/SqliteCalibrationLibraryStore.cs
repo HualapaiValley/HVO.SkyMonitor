@@ -1365,7 +1365,7 @@ public sealed partial class SqliteCalibrationLibraryStore(
         string storageRoot,
         CancellationToken cancellationToken)
     {
-        if (!PathsEqual(_storageRoot, storageRoot))
+        if (Silo is not null || !PathsEqual(_storageRoot, storageRoot))
         {
             return [];
         }
@@ -1377,7 +1377,7 @@ public sealed partial class SqliteCalibrationLibraryStore(
         string storageRoot,
         CancellationToken cancellationToken)
     {
-        if (!PathsEqual(_storageRoot, storageRoot))
+        if (Silo is not null || !PathsEqual(_storageRoot, storageRoot))
         {
             return [];
         }
@@ -1479,7 +1479,7 @@ public sealed partial class SqliteCalibrationLibraryStore(
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(artifactIds);
-        if (!PathsEqual(_storageRoot, storageRoot) || artifactIds.Count == 0)
+        if (Silo is not null || !PathsEqual(_storageRoot, storageRoot) || artifactIds.Count == 0)
         {
             return [];
         }
@@ -1601,6 +1601,9 @@ public sealed partial class SqliteCalibrationLibraryStore(
             : null;
         var files = new List<EvidenceFileFingerprint>(2 + bundle.Artifacts.Count * 2);
         var bundleArtifactId = Silo is null ? Guid.Empty : CalibrationArtifactPublisher.BundleArtifactId(bundle);
+        if (Silo is not null && bundle.Source == CalibrationLibraryBundleSources.VirtualAcquisitionV1 &&
+            !await Silo.HasMemberAsync(bundleArtifactId, CalibrationArtifactPublisher.SiloBundleRevision, cancellationToken).ConfigureAwait(false))
+            bundleArtifactId = CalibrationArtifactPublisher.EnvelopeArtifactId(bundle);
         var profileJson = await ReadLibraryMetadataAsync(bundle.ProfileRelativePath, bundleArtifactId,
             CalibrationArtifactPublisher.SiloProfileRevision, bundle.ProfileIdentitySha256, files, cancellationToken)
             .ConfigureAwait(false);
@@ -1703,6 +1706,24 @@ public sealed partial class SqliteCalibrationLibraryStore(
         }
 
         return new PublishedBundleEvidence(evidence, files, Now().ToUnixTimeMilliseconds());
+    }
+
+    internal async Task<Guid?> FindArtifactByManifestPathAsync(string relativePath, CancellationToken cancellationToken)
+    {
+        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT DISTINCT artifact_id FROM calibration_library_artifacts
+            WHERE manifest_relative_path = $path LIMIT 2;
+            """;
+        command.Parameters.AddWithValue("$path", relativePath);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) return null;
+        var id = Guid.ParseExact(reader.GetString(0), "N");
+        if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            throw new InvalidDataException("The calibration manifest path identifies multiple artifacts.");
+        return id;
     }
 
     private async Task<byte[]> ReadLibraryMetadataAsync(string relativePath, Guid artifactId, string revision,

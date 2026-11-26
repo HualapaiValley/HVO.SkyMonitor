@@ -12,6 +12,12 @@ internal sealed class SiloArtifactStorage(SiloInstalledStorage storage, TimeProv
     public const string RawEvidenceRevision = "raw-evidence-1";
     public const string ProductEvidenceRevision = "product-evidence-1";
 
+    internal bool BindingVerified => storage.BindingVerified;
+
+    internal static bool IsReference(string path) => path.StartsWith("silo/", StringComparison.Ordinal);
+
+    internal static string RawReference(Guid id, string extension) => $"silo/raw/{id:N}{extension}";
+
     public async ValueTask PublishProcessingAsync(string groupId, ReconstructionDescriptor raw, IReadOnlyList<SiloArtifactInput> outputs,
         CancellationToken cancellationToken)
     {
@@ -44,6 +50,14 @@ internal sealed class SiloArtifactStorage(SiloInstalledStorage storage, TimeProv
             .ConfigureAwait(false);
     }
 
+    internal async ValueTask ResumeProcessingAsync(string groupId, CancellationToken cancellationToken)
+    {
+        if (await storage.State.ReadGroupAsync(groupId, "1", cancellationToken).ConfigureAwait(false) is { } group)
+        {
+            await PublishAsync(group.Draft, null, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
     public async ValueTask PublishAsync(SiloGroupDraft draft, Func<SiloDraftMember, CancellationToken, ValueTask<Stream>>? open,
         CancellationToken cancellationToken)
     {
@@ -72,6 +86,18 @@ internal sealed class SiloArtifactStorage(SiloInstalledStorage storage, TimeProv
         return new(id.ToString("D"), revision, role, retentionClass, media, length, sha, true, SiloFilePayloadSpool.TokenOf(sha));
     }
 
+    internal ValueTask<bool> IsArtifactRetainedAsync(Guid artifactId, CancellationToken cancellationToken) =>
+        storage.BindingVerified
+            ? storage.Index.IsArtifactRetainedAsync(artifactId.ToString("D"), cancellationToken)
+            : ValueTask.FromResult(true);
+
+    internal ValueTask<bool> IsReferenceRetainedAsync(string path, CancellationToken cancellationToken)
+    {
+        if (!IsReference(path) || !Guid.TryParseExact(Path.GetFileNameWithoutExtension(path), "N", out var id))
+            throw new InvalidDataException("The Silo retention reference is invalid.");
+        return IsArtifactRetainedAsync(id, cancellationToken);
+    }
+
     public ValueTask<bool> HasMemberAsync(Guid artifactId, string revision, CancellationToken cancellationToken) =>
         storage.BindingVerified
             ? storage.Index.HasVisibleMemberAsync(artifactId.ToString("D"), revision, cancellationToken)
@@ -80,6 +106,32 @@ internal sealed class SiloArtifactStorage(SiloInstalledStorage storage, TimeProv
     public async ValueTask<byte[]?> ReadRawAsync(ReconstructionDescriptor descriptor, CancellationToken cancellationToken) =>
         await ReadMemberAsync(descriptor.Artifact.ArtifactId, CaptureContractJson.ComputeDescriptorSha256(descriptor),
             descriptor.Layout.ByteLength, descriptor.Artifact.ChecksumSha256, cancellationToken).ConfigureAwait(false);
+
+    internal ValueTask<byte[]?> ReadLiveRawAsync(ReconstructionDescriptor descriptor, string stagingPath,
+        CancellationToken cancellationToken) =>
+        ReadWithStagingAsync(token => ReadRawAsync(descriptor, token), stagingPath, cancellationToken);
+
+    internal ValueTask<byte[]?> ReadRawEvidenceAsync(Guid artifactId, string sha256, string? stagingPath,
+        CancellationToken cancellationToken) =>
+        ReadWithStagingAsync(token => ReadMetadataAsync(artifactId, RawEvidenceRevision, SiloJson.MaximumMetadataObjectBytes,
+            sha256, token), stagingPath, cancellationToken);
+
+    private static async ValueTask<byte[]?> ReadWithStagingAsync(Func<CancellationToken, ValueTask<byte[]?>> read,
+        string? stagingPath, CancellationToken cancellationToken)
+    {
+        var published = await read(cancellationToken).ConfigureAwait(false);
+        if (published is not null || stagingPath is null) return published;
+
+        try
+        {
+            return await File.ReadAllBytesAsync(stagingPath, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
+        {
+            // P4 may have committed and reclaimed the pair since the first catalog lookup.
+            return await read(cancellationToken).ConfigureAwait(false);
+        }
+    }
 
     public async ValueTask<byte[]?> ReadMemberAsync(Guid artifactId, string revision, long length, string sha256,
         CancellationToken cancellationToken)

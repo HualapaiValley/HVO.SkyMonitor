@@ -256,27 +256,29 @@ internal static class SiloVerifier
             using var captured = captureBytes || captureMismatch ? new MemoryStream() : null;
             var buffer = new byte[ReadSize(maximumBytes, ReadBufferSize)];
             long length = 0;
-            try
+            while (true)
             {
                 int read;
-                while ((read = await opened.Content.ReadAsync(buffer.AsMemory(0, ReadSize(maximumBytes - length, buffer.Length)),
-                    cancellationToken).ConfigureAwait(false)) > 0)
+                try
                 {
-                    if (read > maximumBytes - length)
-                    {
-                        return new(SiloProbeStatus.Damaged, locator, clock.GetUtcNow(), "length-exceeds-identity");
-                    }
-                    length += read;
-                    hash.AppendData(buffer, 0, read);
-                    if ((destination ?? captured) is { } output)
-                    {
-                        await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
-                    }
+                    read = await opened.Content.ReadAsync(buffer.AsMemory(0, ReadSize(maximumBytes - length, buffer.Length)),
+                        cancellationToken).ConfigureAwait(false);
                 }
-            }
-            catch (IOException exception) when (exception is not SiloStoreUnavailableException)
-            {
-                return new(SiloProbeStatus.Damaged, locator, clock.GetUtcNow(), "read-error");
+                catch (IOException exception) when (exception is not SiloStoreUnavailableException)
+                {
+                    return new(SiloProbeStatus.Damaged, locator, clock.GetUtcNow(), "read-error");
+                }
+                if (read == 0) break;
+                if (read > maximumBytes - length)
+                {
+                    return new(SiloProbeStatus.Damaged, locator, clock.GetUtcNow(), "length-exceeds-identity");
+                }
+                length += read;
+                hash.AppendData(buffer, 0, read);
+                if ((destination ?? captured) is { } output)
+                {
+                    await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+                }
             }
             var mismatch = length != expectedLength ? "length-mismatch" :
                 string.Equals(Convert.ToHexStringLower(hash.GetHashAndReset()), expectedSha256, StringComparison.Ordinal)

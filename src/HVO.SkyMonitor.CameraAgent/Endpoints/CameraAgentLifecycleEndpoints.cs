@@ -38,9 +38,12 @@ internal static class CameraAgentLifecycleEndpoints
         try
         {
             var result = await verifier.VerifyAsync(cancellationToken).ConfigureAwait(false);
-            return result.UnavailableRoles > 0 || result.FailedRoles > 0
-                ? Results.Json(result, statusCode: StatusCodes.Status503ServiceUnavailable)
-                : Results.Ok(result);
+            var status = result.DamagedRoles > 0 ? StatusCodes.Status409Conflict
+                : result.UnavailableRoles > 0 ? StatusCodes.Status503ServiceUnavailable
+                : result.MissingRoles > 0 ? StatusCodes.Status410Gone
+                : result.FailedRoles > 0 ? StatusCodes.Status503ServiceUnavailable
+                : StatusCodes.Status200OK;
+            return Results.Json(result, statusCode: status);
         }
         catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException or FormatException)
         {

@@ -1,0 +1,13 @@
+.automation-run-control {
+    margin-block: .5rem;
+}
+
+.automation-run-control fieldset {
+    display: grid;
+    gap: .5rem;
+    margin-block: .5rem;
+}
+
+.automation-run-control p {
+    overflow-wrap: anywhere;
+}

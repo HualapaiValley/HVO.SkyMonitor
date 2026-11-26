@@ -269,7 +269,8 @@ public sealed partial class SqliteLocalAutomationStore
         SqliteTransaction transaction, LocalAutomationBackfillRequest request, CancellationToken token)
     {
         if (!ValidOccurrenceCommand(request.DefinitionId, request.ExpectedVersion, request.IdempotencyKey,
-                request.Actor, request.Reason) || request.HourStartUtc is { Offset: var offset } && offset != TimeSpan.Zero)
+                request.Actor, request.Reason) || request.HourStartUtc is { Offset: var offset } && offset != TimeSpan.Zero ||
+            request.ExpectedWindowIdentitySha256 is { } identity && (identity.Length != 64 || !identity.All(char.IsAsciiHexDigit)))
         {
             return await OccurrenceResultAsync(connection, transaction, LocalAutomationCommandStatus.Invalid,
                 LocalAutomationContract.InvalidCommandReasonCode, token).ConfigureAwait(false);
@@ -320,13 +321,19 @@ public sealed partial class SqliteLocalAutomationStore
             return await OccurrenceResultAsync(connection, transaction, LocalAutomationCommandStatus.Invalid,
                 "automation.source-window-not-found", token).ConfigureAwait(false);
         }
+        if (request.ExpectedWindowIdentitySha256 is { } expected &&
+            !string.Equals(window.IdentitySha256, expected, StringComparison.OrdinalIgnoreCase))
+        {
+            return await OccurrenceResultAsync(connection, transaction, LocalAutomationCommandStatus.Conflict,
+                "automation.source-window-changed", token).ConfigureAwait(false);
+        }
         var now = Now();
         if (!window.IsEligibleForFinal(now))
         {
             return await OccurrenceResultAsync(connection, transaction, LocalAutomationCommandStatus.Conflict,
                 "automation.finality-not-reached", token).ConfigureAwait(false);
         }
-        if (window.EndUtc < LocalAutomationWindowPlanner.LookbackStart(now))
+        if (!LocalAutomationWindowPlanner.IsWithinBackfillLookback(window.EndUtc, now))
         {
             return await OccurrenceResultAsync(connection, transaction, LocalAutomationCommandStatus.Invalid,
                 "automation.backfill-outside-lookback", token).ConfigureAwait(false);

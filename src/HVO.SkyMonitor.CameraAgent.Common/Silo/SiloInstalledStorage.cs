@@ -23,7 +23,7 @@ internal sealed class SiloInstalledStorage : ICameraAgentSiloVerification, IDisp
     private int _disposed;
 
     public SiloInstalledStorage(SiloInstalledSettings settings, IOptions<CameraAgentHostOptions> options, TimeProvider clock,
-        ISiloFaults? faults = null)
+        ISiloFaults? faults = null, Func<ISiloObjectStore, ISiloObjectStore>? decorateReadStore = null)
     {
         var rawRoot = Path.GetFullPath(options.Value.RawIngressRoot);
         Directory.CreateDirectory(rawRoot);
@@ -38,12 +38,13 @@ internal sealed class SiloInstalledStorage : ICameraAgentSiloVerification, IDisp
             _installed = new(settings);
             State = new(_root.PublicationDatabasePath, Binding, clock);
             Index = new(_root.IndexDatabasePath, Binding, clock);
-            Catalog = new(Index, new SiloStoreSet(_installed.Store), SiloNoAuthorityEvidence.Instance, faults);
+            Catalog = new(Index, new SiloStoreSet(decorateReadStore?.Invoke(_installed.Store) ?? _installed.Store), SiloNoAuthorityEvidence.Instance, faults);
             _journal = new(State, _root.Spool, _installed.Store, Binding, clock, faults);
             Publisher = new(State, _root.Spool, _journal, Catalog, Spool, Binding, clock, faults);
         }
         catch
         {
+            _installed?.Dispose();
             _root.Dispose();
             throw;
         }
@@ -158,6 +159,15 @@ internal sealed class SiloInstalledStorage : ICameraAgentSiloVerification, IDisp
         await VerifyReadinessAsync(cancellationToken).ConfigureAwait(false);
         await VerifyAdmissionJournalAsync(cancellationToken).ConfigureAwait(false);
         var (cursor, cursorSha) = await Index.ReadCursorAsync(cancellationToken).ConfigureAwait(false);
+        if (cursor is null)
+        {
+            var writer = await State.ReadWriterEvidenceAsync(cancellationToken).ConfigureAwait(false);
+            if (writer.Head == new SiloJournalPosition(1, 1))
+            {
+                await Catalog.CatchUpAsync(writer, null, cancellationToken).ConfigureAwait(false);
+                (cursor, cursorSha) = await Index.ReadCursorAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
         if (cursor is not { } cutoff || cursorSha is null ||
             await State.CommittedSha256Async(cutoff, cancellationToken).ConfigureAwait(false) != cursorSha)
             throw new SiloConflictException("silo.catalog-recovering", "The Silo catalog has not reached the committed journal head.");

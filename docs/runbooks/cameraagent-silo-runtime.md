@@ -429,10 +429,13 @@ Never disable the old key before step 6 shows the new key ready.
   Publication advances independently. `CameraAgent:Silo:MaximumStagedBytes` and `MaximumStagedFiles` default to
   2 GiB and 4,096 files. Pending raw admission and the publication spool each enforce those limits. The raw pressure
   fence stops new exposures while pending admissions drain. It leaves operator and installer controls in effect.
-- The `silo-storage` health check reports the result of the writer binding and journal-head probe. The authorized
+  Allow roughly twice the configured staging byte limit at peak while raw admission files and publication-spool copies
+  coexist. The local raw pair is reclaimed after P4 and directory synchronization.
+- The `silo-storage` health check reports the writer binding, journal-head probe, and publication recovery status. The authorized
   `POST /api/internal/deployment/lifecycle/silo/verify-history` route checks the local admission database, verifies the
   journal through its indexed cutoff, and reads retained roles by exact version. The response reports the cutoff and
-  counts for verified, unavailable, expired and failed roles. Full verification can take time proportional to retained
+  counts for verified, unavailable, expired, damaged and missing roles. Damaged bytes return HTTP 409, missing
+  required versions return 410, and temporary unavailability returns 503. Full verification can take time proportional to retained
   history.
 - Centered archive receipts bind selected output revisions and their evidence. The Silo catalog verifies those exact
   dependencies before the receipt becomes visible. Current Sky follows the catalog's open live interval during
@@ -717,6 +720,15 @@ phase=replaced
 versions after                                                                       # step 4
 if ! diff "$W/before" "$W/after" >&2; then fail "the object versions read back differ from those before the stop."; fi
 phase=restarting-app; "${COMPOSE[@]}" start cameraagent
+app_ready=false
+for _ in $(seq 30); do
+  if docker exec "$APP" curl --max-time 2 --fail --silent http://localhost:8080/health > /dev/null; then
+    app_ready=true
+    break
+  fi
+  sleep 2
+done
+if [[ $app_ready != true ]]; then fail "CameraAgent did not report ready."; fi
 "$HVO" cameraagent silo-verify --instance-id "$ID" --product-root "$P" --json > "$W/verify.json"
 case "$(jq -er .readiness "$W/verify.json")" in
   ready) result="silo-verify ready" ;;

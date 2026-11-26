@@ -32,7 +32,7 @@ internal sealed class AutomationWizardFixture : IDisposable
 
     internal MutableTimeProvider Clock { get; } = new(new DateTimeOffset(2026, 10, 12, 10, 0, 0, TimeSpan.Zero));
     internal WizardRegistry Registry { get; } = new();
-    internal FixedObservingDayCalendarProvider Calendar { get; }
+    internal WizardCalendar Calendar { get; }
     internal LocalAutomationWindowPlanner Planner { get; }
     internal SqliteLocalAutomationStore Store { get; private set; }
     internal CameraAgentAutomationUiService Service { get; private set; }
@@ -80,10 +80,16 @@ internal sealed class AutomationWizardFixture : IDisposable
         public override Task<AuthenticationState> GetAuthenticationStateAsync() => Task.FromResult(new AuthenticationState(principal));
     }
 
+    internal sealed class WizardCalendar(ObservingDayCalendar current) : IObservingDayCalendarProvider
+    {
+        public ObservingDayCalendar Current { get; set; } = current;
+    }
+
     internal sealed class WizardRegistry : ILocalAutomationTaskRegistry
     {
         internal bool Available { get; set; } = true;
         internal bool Throw { get; set; }
+        internal LocalAutomationSourceSelection KeogramSelection { get; set; }
         internal List<string> Targets { get; } = ["keogram", "star-trail"];
         internal List<LocalAutomationOccurrence> Executed { get; } = [];
 
@@ -100,7 +106,7 @@ internal sealed class AutomationWizardFixture : IDisposable
                 !Describe()[0].Targets.Contains(definition.TaskTarget, StringComparer.Ordinal))
                 return new(LocalAutomationContract.UnregisteredTargetReasonCode, "definition.taskTarget");
             var selection = definition.TaskTarget == "star-trail"
-                ? LocalAutomationSourceSelection.DarkNightActualSources : LocalAutomationSourceSelection.AllActualSources;
+                ? LocalAutomationSourceSelection.DarkNightActualSources : KeogramSelection;
             return definition.SourceWindow?.Selection == selection ? null
                 : new(LocalAutomationContract.UnregisteredCombinationReasonCode, "definition.sourceWindow.selection");
         }

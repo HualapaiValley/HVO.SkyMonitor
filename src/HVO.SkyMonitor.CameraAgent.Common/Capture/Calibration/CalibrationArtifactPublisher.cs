@@ -77,7 +77,15 @@ public sealed class CalibrationArtifactPublisher(
     internal const string SiloProfileRevision = "calibration-profile-1";
 
     internal static Guid BundleArtifactId(CalibrationLibraryBundleV1 bundle) =>
+        bundle.Source == CalibrationLibraryBundleSources.VirtualAcquisitionV1
+            ? VirtualBundleArtifactId(bundle.BundleId)
+            : EnvelopeArtifactId(bundle);
+
+    internal static Guid EnvelopeArtifactId(CalibrationLibraryBundleV1 bundle) =>
         ProcessingIdentity.CreateArtifactId(SiloHash.Sha256(CalibrationLibraryContractJson.Serialize(bundle)));
+
+    internal static Guid VirtualBundleArtifactId(string bundleId) =>
+        ProcessingIdentity.CreateArtifactId(SiloHash.Sha256(System.Text.Encoding.UTF8.GetBytes("calibration-job:" + bundleId)));
 
     internal async ValueTask PublishSiloBundleAsync(CalibrationLibraryBundleV1 bundle, ReadOnlyMemory<byte> profile,
         CancellationToken cancellationToken)
@@ -112,6 +120,27 @@ public sealed class CalibrationArtifactPublisher(
         ArgumentNullException.ThrowIfNull(payloadRelativePath);
         ArgumentNullException.ThrowIfNull(manifestRelativePath);
         ValidatePairPaths(payloadRelativePath, manifestRelativePath);
+        if (Silo is not null)
+        {
+            var parsed = CaptureContractJson.ParseManifest(manifest);
+            if (!parsed.IsValid || parsed.Document?.Manifest is not { } evidence)
+                throw new InvalidDataException("Silo calibration publication requires a valid artifact manifest.");
+            var descriptor = evidence.Descriptor;
+            if (descriptor.Layout.ByteLength != payload.Length || evidence.RelativeArtifactPath != payloadRelativePath)
+                throw new InvalidDataException("The Silo calibration manifest differs from its payload identity.");
+            var id = descriptor.Artifact.ArtifactId;
+            var revision = CaptureContractJson.ComputeDescriptorSha256(descriptor);
+            var payloadMember = SiloArtifactStorage.Member(id, revision, "calibration-frame", SiloRetentionClass.Full,
+                descriptor.Artifact.MediaType, payload.Length, descriptor.Artifact.ChecksumSha256);
+            var evidenceMember = SiloArtifactStorage.Member(id, SiloEvidenceRevision, "calibration-evidence", SiloRetentionClass.Metadata,
+                "application/json", manifest.Length, SiloHash.Sha256(manifest.Span));
+            var draft = new SiloGroupDraft("calibration-artifact", id.ToString("N"), revision, descriptor.Artifact.CreatedUtc.ToUniversalTime(),
+                descriptor.Timing.ExposureStartedUtc.ToUniversalTime(), descriptor.Timing.ExposureEndedUtc.ToUniversalTime(),
+                [payloadMember, evidenceMember], [], new([]), CameraId: descriptor.Capture.RigId);
+            await Silo.PublishAsync(draft, (member, token) => SiloArtifactStorage.OpenMemoryAsync(
+                member.Role == "calibration-frame" ? payload : manifest, token), cancellationToken).ConfigureAwait(false);
+            return;
+        }
         var lifecycle = RawIngressLifecycleLock.ForRoot(_root);
         await lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -133,24 +162,6 @@ public sealed class CalibrationArtifactPublisher(
         finally
         {
             lifecycle.Release();
-        }
-        if (Silo is not null)
-        {
-            var parsed = CaptureContractJson.ParseManifest(manifest);
-            if (!parsed.IsValid || parsed.Document?.Manifest is not { } evidence)
-                throw new InvalidDataException("Silo calibration publication requires a valid artifact manifest.");
-            var descriptor = evidence.Descriptor;
-            var id = descriptor.Artifact.ArtifactId;
-            var revision = CaptureContractJson.ComputeDescriptorSha256(descriptor);
-            var payloadMember = SiloArtifactStorage.Member(id, revision, "calibration-frame", SiloRetentionClass.Full,
-                descriptor.Artifact.MediaType, payload.Length, descriptor.Artifact.ChecksumSha256);
-            var evidenceMember = SiloArtifactStorage.Member(id, SiloEvidenceRevision, "calibration-evidence", SiloRetentionClass.Metadata,
-                "application/json", manifest.Length, SiloHash.Sha256(manifest.Span));
-            var draft = new SiloGroupDraft("calibration-artifact", id.ToString("N"), revision, descriptor.Artifact.CreatedUtc.ToUniversalTime(),
-                descriptor.Timing.ExposureStartedUtc.ToUniversalTime(), descriptor.Timing.ExposureEndedUtc.ToUniversalTime(),
-                [payloadMember, evidenceMember], [], new([]), CameraId: descriptor.Capture.RigId);
-            await Silo.PublishAsync(draft, (member, token) => SiloArtifactStorage.OpenMemoryAsync(
-                member.Role == "calibration-frame" ? payload : manifest, token), cancellationToken).ConfigureAwait(false);
         }
     }
 

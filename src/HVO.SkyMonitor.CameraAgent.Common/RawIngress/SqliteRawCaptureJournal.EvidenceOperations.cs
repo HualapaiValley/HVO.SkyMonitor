@@ -188,6 +188,15 @@ internal sealed partial class SqliteRawCaptureJournal
         }
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         _faultInjector.Inject(RawIngressFaultPoint.BeforeJournalTransactionCommit);
+        if (usesSilo && action == RawEvidenceReleaseAction.Revalidate)
+        {
+            command.CommandText = """
+                INSERT OR IGNORE INTO silo_raw_admissions(raw_capture_row_id, staged_bytes)
+                VALUES ($raw, $bytes);
+                """;
+            command.Parameters.AddWithValue("$bytes", checked(entry.PayloadLength + entry.ManifestJson.LongLength));
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return new(false, new(action, actor, reason, occurred));
     }

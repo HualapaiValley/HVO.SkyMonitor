@@ -36,7 +36,7 @@ internal sealed class CenteredViewLayerProducer(
         bool isPartial = false, string? reason = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(style);
-        var viewBase = await views.ReadBaseAsync(baseId, cancellationToken).ConfigureAwait(false);
+        var viewBase = await views.ReadBaseAsync(baseId, includePending: true, cancellationToken).ConfigureAwait(false);
         if (viewBase is null)
             return null;
         var evidence = await ReadEvidenceAsync(source, style, cancellationToken).ConfigureAwait(false);
@@ -55,7 +55,7 @@ internal sealed class CenteredViewLayerProducer(
         IOException? retryableFailure = null;
         while (true)
         {
-            var bases = await views.ReadContributorBasesAsync(source.Exposure, afterOrder, batchSize, cancellationToken)
+            var bases = await views.ReadContributorBasesAsync(source.Exposure, afterOrder, batchSize, cancellationToken, includePending: true)
                 .ConfigureAwait(false);
             foreach (var (viewBase, order) in bases)
             {

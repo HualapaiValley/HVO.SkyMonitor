@@ -73,20 +73,24 @@ internal sealed partial class SqliteRawCaptureJournal
             throw new CaptureLaneBackpressureException("The Silo raw admission spool has reached its configured capacity.");
     }
 
-    internal async Task<IReadOnlyList<RawIngressJournalEntry>> ReadPendingSiloAdmissionsAsync(int limit, CancellationToken cancellationToken)
+    internal async Task<IReadOnlyList<RawIngressJournalEntry>> ReadPendingSiloAdmissionsAsync(int limit,
+        CancellationToken cancellationToken, long afterRowId = 0)
     {
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.CommandText = $"""
-            SELECT {SiloRawEntryColumns}
+            SELECT {SiloRawEntryColumns}, pending.raw_capture_row_id,
+                EXISTS (SELECT 1 FROM raw_capture_stage_events event
+                    WHERE event.raw_capture_row_id = raw.raw_capture_row_id AND event.stage_key = 'raw-evidence-written-off')
             FROM silo_raw_admissions pending JOIN raw_captures raw ON raw.raw_capture_row_id = pending.raw_capture_row_id
-            ORDER BY pending.raw_capture_row_id LIMIT $limit;
+            WHERE pending.raw_capture_row_id > $after ORDER BY pending.raw_capture_row_id LIMIT $limit;
             """;
         command.Parameters.AddWithValue("$limit", limit);
+        command.Parameters.AddWithValue("$after", afterRowId);
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         var entries = new List<RawIngressJournalEntry>();
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-            entries.Add(ReadEntry(reader));
+            entries.Add(ReadEntry(reader) with { AdmissionRowId = reader.GetInt64(16), EvidenceWrittenOff = reader.GetBoolean(17) });
         return entries;
     }
 
@@ -94,10 +98,21 @@ internal sealed partial class SqliteRawCaptureJournal
     {
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
-        command.CommandText = $"SELECT {SiloRawEntryColumns} FROM raw_captures raw WHERE raw.raw_artifact_id = $artifact;";
+        command.CommandText = $"""
+            SELECT {SiloRawEntryColumns},
+                EXISTS (SELECT 1 FROM raw_capture_stage_events event
+                    WHERE event.raw_capture_row_id = raw.raw_capture_row_id AND event.stage_key = 'raw-evidence-written-off'),
+                (SELECT COUNT(*) FROM raw_capture_stage_events event
+                    WHERE event.raw_capture_row_id = raw.raw_capture_row_id AND event.stage_key GLOB 'raw-evidence-release.*'
+                        AND event.state = 'Revalidate:evidence-restored')
+            FROM raw_captures raw WHERE raw.raw_artifact_id = $artifact;
+            """;
+
         command.Parameters.AddWithValue("$artifact", artifactId.ToString("N"));
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? ReadEntry(reader) : null;
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? ReadEntry(reader) with { EvidenceWrittenOff = reader.GetBoolean(16), AdmissionRevalidationCount = reader.GetInt64(17) }
+            : null;
     }
 
     internal async Task SettleSiloAdmissionAsync(Guid captureId, string manifestSha256, CancellationToken cancellationToken)
@@ -106,7 +121,7 @@ internal sealed partial class SqliteRawCaptureJournal
         using var command = connection.CreateCommand();
         command.CommandText = """
             DELETE FROM silo_raw_admissions WHERE raw_capture_row_id = (
-                SELECT raw_capture_row_id FROM raw_captures WHERE capture_id = $capture AND manifest_sha256 = $hash AND state = 'committed');
+                SELECT raw_capture_row_id FROM raw_captures WHERE capture_id = $capture AND manifest_sha256 = $hash);
             """;
         command.Parameters.AddWithValue("$capture", captureId.ToString("N"));
         command.Parameters.AddWithValue("$hash", manifestSha256);

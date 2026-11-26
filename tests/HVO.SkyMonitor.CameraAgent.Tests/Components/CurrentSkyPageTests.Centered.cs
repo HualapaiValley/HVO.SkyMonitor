@@ -2044,7 +2044,10 @@ public sealed partial class CurrentSkyPageTests
         current = rev2;
         await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
         Assert.AreEqual(0, Volatile.Read(ref rev2Calls), "Paused live view must NOT load or advance to rev2.");
-        Assert.AreEqual(1, Volatile.Read(ref rev1Calls), "Refreshing must keep the in-flight load for the displayed revision.");
+        // A replacement cancels the original load before the queued replacement can reach the service.
+        var rev1Load = (Calls: Volatile.Read(ref rev1Calls), Canceled: rev1Token.IsCancellationRequested);
+        Assert.AreEqual((Calls: 1, Canceled: false), rev1Load,
+            "Refreshing must keep the original in-flight load for the displayed revision.");
 
         var firstRead = retryFailedLoad
             ? new CameraAgentCenteredPresentationRead(CameraAgentLayeredPresentationStatus.Unavailable, null, "Temporary overlay outage.")

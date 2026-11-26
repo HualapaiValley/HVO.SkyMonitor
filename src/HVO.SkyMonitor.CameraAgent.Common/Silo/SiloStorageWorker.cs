@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
@@ -14,57 +15,83 @@ internal sealed partial class SiloStorageWorker(SiloInstalledStorage storage, Ra
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        string? previous = null;
-        while (!stoppingToken.IsCancellationRequested)
+        try
         {
-            var status = await CheckAndRecoverAsync(stoppingToken).ConfigureAwait(false);
-            Volatile.Write(ref _status, status);
-            if (status != previous)
-                ReportStatus(logger, status);
-            previous = status;
-            await Task.Delay(TimeSpan.FromSeconds(5), clock, stoppingToken).ConfigureAwait(false);
+            string? previous = null;
+            while (!stoppingToken.IsCancellationRequested)
+            {
+                var (status, more) = await CheckAndRecoverAsync(stoppingToken).ConfigureAwait(false);
+                Volatile.Write(ref _status, status);
+                if (status != previous)
+                    ReportStatus(logger, status);
+                previous = status;
+                if (!more)
+                    await Task.Delay(TimeSpan.FromSeconds(5), clock, stoppingToken).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            // A deliberate worker stop completes cleanly even if the host is still running.
         }
     }
 
-    private async ValueTask<string> CheckAndRecoverAsync(CancellationToken stoppingToken)
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "A storage failure is reported through dependency health without terminating capture host supervision.")]
+    private async ValueTask<(string Status, bool More)> CheckAndRecoverAsync(CancellationToken stoppingToken)
     {
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-        deadline.CancelAfter(TimeSpan.FromSeconds(10));
+        const int rawBatchSize = 16;
+        const int viewBatchSize = 8;
+        var verifyingBinding = true;
         try
         {
-            await storage.VerifyReadinessAsync(deadline.Token).ConfigureAwait(false);
+            using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken))
+            {
+                deadline.CancelAfter(TimeSpan.FromSeconds(10));
+                await storage.VerifyReadinessAsync(deadline.Token).ConfigureAwait(false);
+            }
+            verifyingBinding = false;
+
+            // The raw ledger may already contain a quarantine or write-off. Only its owner advances raw groups.
+            var resumed = await storage.Publisher.ResumeAsync(rawBatchSize, skipRawAdmissions: true, stoppingToken).ConfigureAwait(false);
+            var raw = await ingress.PublishSiloAdmissionsAsync(rawBatchSize, stoppingToken).ConfigureAwait(false);
+            if (!ingress.SiloAdmissionsReady)
+                return ("silo-initializing", false);
+
+            var centered = await views.PublishSiloChangesAsync(viewBatchSize, stoppingToken).ConfigureAwait(false);
+            var recovery = resumed.FirstOrDefault(static outcome => outcome.BlockedCode is not null ||
+                outcome.CatalogState == "closed");
+            var status = raw.Status ?? centered.Status ?? recovery?.BlockedCode ?? recovery?.CatalogOutcome;
+            return (status ?? "silo-ready", raw.More || centered.More ||
+                status is null && resumed.Count == rawBatchSize && resumed.All(static outcome => outcome.State == SiloStagedState.Visible));
         }
         catch (Exception exception) when (exception is SiloStoreUnavailableException ||
             exception is OperationCanceledException && !stoppingToken.IsCancellationRequested)
         {
-            return "silo-store-unavailable";
-        }
-        catch (Exception exception) when (exception is SiloConflictException or SiloDataException)
-        {
-            return "silo-binding-refused";
-        }
-
-        // Readiness owns only the bounded probe. Resumable work can take longer and is recovered with host cancellation.
-        Volatile.Write(ref _status, "silo-ready");
-        try
-        {
-            var outcomes = await storage.Publisher.ResumeAsync(16, stoppingToken).ConfigureAwait(false);
-            var raw = await ingress.PublishSiloAdmissionsAsync(16, stoppingToken).ConfigureAwait(false);
-            if (ingress.SiloAdmissionsReady)
-                await views.PublishSiloChangesAsync(8, stoppingToken).ConfigureAwait(false);
-            return raw ?? outcomes.FirstOrDefault(static outcome => outcome.BlockedCode is not null)?.BlockedCode ?? "silo-ready";
-        }
-        catch (SiloStoreUnavailableException)
-        {
-            return "silo-store-unavailable";
+            return ("silo-store-unavailable", false);
         }
         catch (Exception exception) when (exception is SiloCatalogDivergedException or SiloConflictException or SiloDataException)
         {
-            return "silo-reconciliation-refused";
+            ReportFailure(logger, exception);
+            return (verifyingBinding ? "silo-binding-refused" : "silo-reconciliation-refused", false);
         }
-        catch (IOException)
+        catch (SiloSpoolFullException)
         {
-            return "silo-staged-evidence-unavailable";
+            return ("silo-publication-spool-full", false);
+        }
+        catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
+        {
+            ReportFailure(logger, exception);
+            return ("silo-staged-evidence-missing", false);
+        }
+        catch (Exception exception) when (exception is IOException)
+        {
+            ReportFailure(logger, exception);
+            return ("silo-local-io-unavailable", false);
+        }
+        catch (Exception exception) when (!stoppingToken.IsCancellationRequested)
+        {
+            ReportFailure(logger, exception);
+            return ("silo-worker-failed", false);
         }
     }
 
@@ -73,6 +100,9 @@ internal sealed partial class SiloStorageWorker(SiloInstalledStorage storage, Ra
         var status = Volatile.Read(ref _status);
         return Task.FromResult(status == "silo-ready" ? HealthCheckResult.Healthy(status) : HealthCheckResult.Unhealthy(status));
     }
+
+    [LoggerMessage(7397, LogLevel.Error, "CameraAgent Silo storage recovery failed")]
+    private static partial void ReportFailure(ILogger logger, Exception exception);
 
     [LoggerMessage(7396, LogLevel.Information, "CameraAgent Silo storage state {Status}")]
     private static partial void ReportStatus(ILogger logger, string status);

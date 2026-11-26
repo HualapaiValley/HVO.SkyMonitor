@@ -34,6 +34,24 @@ public sealed class SiloPublicationOwnershipTests
 
     [TestMethod]
     [TestCategory("Unit")]
+    public void InstalledSiloSettingsRejectLocalRunnerReplay()
+    {
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["CameraAgent:Silo:StateContract"] = "cameraagent-silo-state-v1",
+            ["CameraAgent:ProcessingGraphs:ReplayProfile"] = "LocalRunner"
+        }).Build();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddCameraAgentInfrastructure(configuration);
+        using var provider = services.BuildServiceProvider();
+        var failure = Assert.ThrowsExactly<OptionsValidationException>(() =>
+            _ = provider.GetRequiredService<IOptions<CameraAgentHostOptions>>().Value);
+        CollectionAssert.Contains(failure.Failures.ToArray(), "The Silo storage layout requires in-process replay.");
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
     public async Task OverlappingCatchUpAcceptsTheSameSegmentButRefusesAnotherHash()
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.CancellationToken);
@@ -41,21 +59,28 @@ public sealed class SiloPublicationOwnershipTests
         var token = timeout.Token;
         using var silo = await SiloHarness.CreateAsync(install: false).ConfigureAwait(false);
         await silo.Journal.OpenFirstGenerationAsync(new Dictionary<string, long> { ["capture-sequence"] = 0 }, token).ConfigureAwait(false);
+        var firstSegment = await silo.WriterEvidenceAsync().ConfigureAwait(false);
+        await silo.Journal.AppendAsync(
+            [new SiloLiveIssueRecord("camera", "stream", SiloDrafts.CaptureGroup(1), "r1", 1, SiloHarness.Start)],
+            "second-segment", token).ConfigureAwait(false);
         var writer = await silo.WriterEvidenceAsync().ConfigureAwait(false);
-        var bothWalking = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var entered = 0;
+        Assert.AreEqual(new SiloJournalPosition(1, 2), writer.Head);
+
+        var firstWalking = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var resumeWalk = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         silo.Local.BeforeList = async cancellationToken =>
         {
-            if (Interlocked.Increment(ref entered) == 2)
-            {
-                bothWalking.TrySetResult();
-            }
-            await bothWalking.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            firstWalking.TrySetResult();
+            await resumeWalk.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
         };
-
-        var ends = await Task.WhenAll(
-            silo.Catalog.CatchUpAsync(writer, null, token).AsTask(),
-            silo.Catalog.CatchUpAsync(writer, null, token).AsTask()).ConfigureAwait(false);
+        var first = silo.Catalog.CatchUpAsync(writer, null, token).AsTask();
+        await firstWalking.Task.WaitAsync(token).ConfigureAwait(false);
+        var second = silo.Catalog.CatchUpAsync(writer, null, token).AsTask();
+        Assert.IsFalse(second.IsCompleted);
+        resumeWalk.TrySetResult();
+        var ends = await Task.WhenAll(first, second).ConfigureAwait(false);
+        var superseded = await silo.Catalog.CatchUpAsync(firstSegment, null, token).ConfigureAwait(false);
+        Assert.AreEqual(writer.Head, superseded.Last);
         foreach (var end in ends)
         {
             Assert.AreEqual(SiloPrefixEnd.Tail, end.Reason);

@@ -332,6 +332,7 @@ public sealed class SiloReplacementRunbookTests
     [DataRow("read-back-differs", "The replacement Silo runs but did not verify as the original.")]
     [DataRow("read-back-incomplete", "The replacement Silo runs but did not verify as the original.")]
     [DataRow("app-start-fails", "The replacement version inventory matched. Check CameraAgent and run silo-verify again.")]
+    [DataRow("app-not-ready", "CameraAgent did not report ready.")]
     public async Task TheBlock_SaysWhatThePhaseItReachedLeaves(string change, string guidance)
     {
         RequireTools();
@@ -339,7 +340,7 @@ public sealed class SiloReplacementRunbookTests
         switch (change)
         {
             case "not-ready-before": run.Verify("not-ready"); break;
-            case "app-stop-fails" or "app-still-running" or "app-start-fails": run.Flag(change); break;
+            case "app-stop-fails" or "app-still-running" or "app-start-fails" or "app-not-ready": run.Flag(change); break;
             case "inventory-incomplete-before": run.ReadFails("before"); break;
             case "stop-fails": run.Flag("stop-fails"); break;
             case "removal-fails": run.Flag("rm-fails"); break;
@@ -353,6 +354,8 @@ public sealed class SiloReplacementRunbookTests
         Assert.AreEqual(1, exit, error);
         AssertStoppedOnce(error);
         StringAssert.Contains(error, guidance, StringComparison.Ordinal);
+        if (change == "app-not-ready")
+            Assert.HasCount(30, run.DockerCalls.Where(static call => call.Contains("localhost:8080/health", StringComparison.Ordinal)).ToArray());
         if (change != "removal-fails")
             Assert.IsFalse(error.Contains("docker start", StringComparison.Ordinal), "Only an original whose container is kept is ever started again: " + error);
         switch (change)
@@ -383,7 +386,7 @@ public sealed class SiloReplacementRunbookTests
                 StringAssert.Contains(error, $"docker stop {Silo}", StringComparison.Ordinal);
                 break;
         }
-        Assert.IsFalse(run.CameraAgentRunning);
+        Assert.AreEqual(change == "app-not-ready", run.CameraAgentRunning);
         AssertInventoryKept(error);
     }
 
@@ -440,6 +443,7 @@ public sealed class SiloReplacementRunbookTests
             Script("docker", FakeDocker);
             Script("hvo-sky-install", FakeInstaller);
             Script("findmnt", FakeFindmnt);
+            Script("sleep", "#!/usr/bin/env bash\nexit 0\n");
         }
 
         public string Root => root.FullName;
@@ -745,6 +749,10 @@ public sealed class SiloReplacementRunbookTests
                 if [[ -e $S/differ-after ]]; then echo '{"format":"changed"}' > "$S/objects/meta/fence.json@v2"; fi
                 exit 0 ;;
               exec)
+                if [[ "$*" == *'curl --max-time 2 --fail --silent http://localhost:8080/health' ]]; then
+                  [[ $(cat "$S/containers/cameraagent/running") == true && ! -f $S/app-not-ready ]]
+                  exit $?
+                fi
                 if [[ $(cat "$S/containers/cameraagent/running") != false ]]; then
                   echo "CameraAgent must be stopped during the version inventory" >&2; exit 2
                 fi

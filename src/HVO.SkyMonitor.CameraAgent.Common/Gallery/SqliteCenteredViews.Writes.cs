@@ -241,7 +241,7 @@ internal sealed partial class SqliteCenteredViews
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var transaction = BeginWrite(connection);
         var view = await ReadExactAsync(connection, transaction, baseId, revisionId, cancellationToken).ConfigureAwait(false);
-        if (view is null)
+        if (view is null || !await IsSiloViewVisibleAsync(baseId, revisionId, cancellationToken).ConfigureAwait(false))
             return null;
         var requested = enabledLayerIds.ToHashSet(StringComparer.Ordinal);
         var ordered = Array.AsReadOnly(view.Revision.Manifest.Layers.Select(layer => layer.LayerIdentitySha256)

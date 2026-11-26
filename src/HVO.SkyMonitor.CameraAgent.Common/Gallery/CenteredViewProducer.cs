@@ -27,7 +27,7 @@ internal sealed partial class CenteredViewProducer(
             !input.Raw.Validate().IsValid || input.Geometry.Layout != input.Raw.Layout)
             throw new InvalidDataException("The single preview source does not belong to the admitted camera run.");
 
-        var retained = await views.ReadRegisteredBaseAsync(stream, input.Key.CaptureId, CenteredViewKind.Single, cancellationToken)
+        var retained = await views.ReadRegisteredBaseAsync(stream, input.Key.CaptureId, CenteredViewKind.Single, cancellationToken, includePending: true)
             .ConfigureAwait(false);
         if (retained is not null)
         {

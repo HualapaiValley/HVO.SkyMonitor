@@ -40,7 +40,8 @@ internal sealed record SiloIndexedPublication(
     string? CameraId,
     string? StreamId,
     long? RevisionOrder,
-    SiloCaptureSequence? Capture);
+    SiloCaptureSequence? Capture,
+    bool ReachedP4);
 
 /// <summary>Each base keeps three independent pointers (#1965 6.3); the default reopen target is the last live, else the first.</summary>
 internal sealed record SiloRevisionPointers(string GroupId, string? FirstRevisionId, string? LatestRevisionId, string? LastLiveRevisionId)
@@ -67,7 +68,7 @@ internal sealed partial class SiloCatalogIndex
 {
     private const string PublicationColumns = """
         group_kind, group_id, revision_id, previous_revision_id, generation, sequence, record_index, state, manifest_status, outcome,
-        outcome_detail, from_utc_ticks, to_utc_ticks, camera_id, stream_id, revision_order, agent_id, capture_sequence
+        outcome_detail, from_utc_ticks, to_utc_ticks, camera_id, stream_id, revision_order, agent_id, capture_sequence, requires_members
         """;
 
     private static SiloIndexedPublication ReadPublication(SqliteDataReader reader) => new(
@@ -76,7 +77,7 @@ internal sealed partial class SiloCatalogIndex
         NullableString(reader, 9), NullableString(reader, 10),
         NullableLong(reader, 11) is { } from ? FromTicks(from) : null, NullableLong(reader, 12) is { } to ? FromTicks(to) : null,
         NullableString(reader, 13), NullableString(reader, 14), NullableLong(reader, 15),
-        NullableString(reader, 16) is { } agent ? new SiloCaptureSequence(agent, reader.GetInt64(17)) : null);
+        NullableString(reader, 16) is { } agent ? new SiloCaptureSequence(agent, reader.GetInt64(17)) : null, !reader.GetBoolean(18));
 
     public async ValueTask<SiloAuthorityReport> ReadAuthorityAsync(CancellationToken cancellationToken)
     {
@@ -216,6 +217,55 @@ internal sealed partial class SiloCatalogIndex
         return result;
     }
 
+    internal async ValueTask<IReadOnlyList<SiloLiveInterval>> ReadVisibleLiveIntervalsAsync(string baseId, long afterOrder,
+        int limit, CancellationToken cancellationToken)
+    {
+        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        using var command = CreateCommand(connection, null, """
+            SELECT i.camera_id, i.stream_id, i.group_id, i.revision_id, i.change_order, i.started_utc_ticks,
+                   i.ended_change_order, i.ended_utc_ticks
+            FROM live_intervals i JOIN publications p ON p.group_id = i.group_id AND p.revision_id = i.revision_id
+            WHERE i.group_id = $base AND i.change_order > $after AND p.state = 'visible'
+            ORDER BY i.change_order LIMIT $limit;
+            """, ("$base", baseId), ("$after", afterOrder), ("$limit", limit));
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        var result = new List<SiloLiveInterval>();
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            result.Add(new(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetInt64(4),
+                FromTicks(reader.GetInt64(5)), NullableLong(reader, 6), NullableLong(reader, 7) is { } ended ? FromTicks(ended) : null));
+        }
+        return result;
+    }
+
+    internal async ValueTask<bool> HasLiveIssueAsync(string groupId, long order, CancellationToken cancellationToken)
+    {
+        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        using var command = CreateCommand(connection, null, """
+            SELECT EXISTS (SELECT 1 FROM live_intervals WHERE group_id = $group AND change_order = $order);
+            """, ("$group", groupId), ("$order", order));
+        return (long)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))! == 1;
+    }
+
+    internal async ValueTask<bool> HasVisibleViewAsync(string groupId, CancellationToken cancellationToken)
+    {
+        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        using var command = CreateCommand(connection, null, """
+            SELECT EXISTS (SELECT 1 FROM publications WHERE group_id = $group AND state = 'visible');
+            """, ("$group", groupId));
+        return (long)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))! == 1;
+    }
+
+    internal async ValueTask<string?> ReadLastVisibleLiveRevisionAsync(string groupId, CancellationToken cancellationToken)
+    {
+        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        return await ScalarStringAsync(connection, null, """
+            SELECT i.revision_id FROM live_intervals i
+            JOIN publications p ON p.group_id = i.group_id AND p.revision_id = i.revision_id
+            WHERE i.group_id = $group AND p.state = 'visible' ORDER BY i.change_order DESC LIMIT 1;
+            """, cancellationToken, ("$group", groupId)).ConfigureAwait(false);
+    }
+
     /// <summary>Layer bindings of a view revision, exactly as published, in every layer state.</summary>
     public async ValueTask<IReadOnlyList<SiloViewLayerRow>> ReadLayersAsync(string groupId, string revisionId, CancellationToken cancellationToken)
     {
@@ -274,6 +324,21 @@ internal sealed partial class SiloCatalogIndex
             }
         }
         return new(role, sha, length, disposition, journaled, available, locators);
+    }
+
+    internal async ValueTask<bool> IsArtifactRetainedAsync(string artifactId, CancellationToken cancellationToken)
+    {
+        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        using var command = CreateCommand(connection, null, """
+            WITH payloads AS (
+                SELECT disposition FROM roles WHERE kind = 'member' AND id = $id AND revision NOT IN ($raw, $product)
+            )
+            SELECT NOT EXISTS (SELECT 1 FROM payloads)
+                OR EXISTS (SELECT 1 FROM payloads WHERE disposition <> 'policy-expired');
+            """, ("$id", artifactId), ("$raw", SiloArtifactStorage.RawEvidenceRevision),
+            ("$product", SiloArtifactStorage.ProductEvidenceRevision));
+        // No indexed role can mean the catalog has not caught up yet. Require explicit expiry to release a hold.
+        return (long)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))! == 1;
     }
 
     internal async ValueTask<bool> HasVisibleMemberAsync(string artifactId, string revision, CancellationToken cancellationToken)
