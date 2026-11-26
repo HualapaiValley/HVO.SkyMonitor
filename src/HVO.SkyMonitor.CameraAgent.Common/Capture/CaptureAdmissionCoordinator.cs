@@ -19,6 +19,14 @@ public enum CaptureAdmissionState
     Unavailable
 }
 
+internal enum CaptureBoundaryKind
+{
+    Exposure,
+    Motor,
+    MotorCleanup,
+    Configuration
+}
+
 public sealed record CaptureAdmissionSnapshot(
     CaptureAdmissionState State,
     long Version,
@@ -120,6 +128,8 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
     private TaskCompletionSource? _maintenanceDrainedSignal;
     private int _failedPublicationDuringDrain;
     private int _failClosed;
+    // Written only under the command gate. A sweep defers normal exposures between its bounded operations.
+    private bool _focusHold;
     private bool _awaitingEvidenceRecovery;
     private bool _disposed;
     private readonly FirstBootPauseIdentity? _firstBootPause;
@@ -388,15 +398,54 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
     }
 
     internal Task<T> ExecuteCaptureBoundaryAsync<T>(Func<CancellationToken, Task<T>> action, CancellationToken cancellationToken)
-        => ExecuteBoundaryAsync(action, requireLifecycleAdmission: true, cancellationToken);
+        => ExecuteBoundaryAsync(CaptureBoundaryKind.Exposure, action, cancellationToken);
+
+    internal async Task FailFocusClosedAsync()
+    {
+        await _commandGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            FailClosed();
+            _fleetRuntimeState?.CaptureFailed("focus-restoration-unverified");
+        }
+        finally { _commandGate.Release(); }
+    }
+
+    internal async Task WithFocusHoldAsync(Func<Task> operation, CancellationToken cancellationToken)
+    {
+        await ExecuteCaptureBoundaryAsync(token =>
+        {
+            token.ThrowIfCancellationRequested();
+            if (_focusHold || Snapshot.State == CaptureAdmissionState.Unavailable)
+                throw new CaptureControlConflictException("Capture admission is unavailable for motorized focus.");
+            _focusHold = true;
+            return Task.FromResult(true);
+        }, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await operation().ConfigureAwait(false);
+        }
+        finally
+        {
+            await _commandGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+            try
+            {
+                _focusHold = false;
+                if (Snapshot.State == CaptureAdmissionState.Running) OpenGate();
+            }
+            finally
+            {
+                _commandGate.Release();
+            }
+        }
+    }
 
     /// <summary>Serializes configuration publication without admitting an exposure, including module startup during verification.</summary>
     internal Task<T> ExecuteConfigurationBoundaryAsync<T>(Func<CancellationToken, Task<T>> action, CancellationToken cancellationToken)
-        => ExecuteBoundaryAsync(action, requireLifecycleAdmission: false, cancellationToken);
+        => ExecuteBoundaryAsync(CaptureBoundaryKind.Configuration, action, cancellationToken);
 
-    private async Task<T> ExecuteBoundaryAsync<T>(
-        Func<CancellationToken, Task<T>> action, bool requireLifecycleAdmission,
-        CancellationToken cancellationToken)
+    internal async Task<T> ExecuteBoundaryAsync<T>(CaptureBoundaryKind kind,
+        Func<CancellationToken, Task<T>> action, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(action);
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
@@ -405,6 +454,12 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
         var reopen = Snapshot.State == CaptureAdmissionState.Running;
         try
         {
+            var motorOperation = kind is CaptureBoundaryKind.Motor or CaptureBoundaryKind.MotorCleanup;
+            var requireLifecycleAdmission = kind is not (CaptureBoundaryKind.Configuration or CaptureBoundaryKind.MotorCleanup);
+            if (motorOperation && Snapshot.State == CaptureAdmissionState.Unavailable)
+                throw new CaptureAdmissionUnavailableException();
+            if (kind != CaptureBoundaryKind.Configuration && _focusHold != motorOperation)
+                throw new CaptureControlConflictException("A motorized focus session has exclusive capture admission.");
             if (requireLifecycleAdmission) ThrowIfLifecycleAdmissionHeld();
             Interlocked.Exchange(ref _failedPublicationDuringDrain, 0);
             CloseGate();
@@ -613,7 +668,7 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
 
     private void OpenGate()
     {
-        if (Volatile.Read(ref _failClosed) != 0)
+        if (_focusHold || Volatile.Read(ref _failClosed) != 0)
         {
             return;
         }
