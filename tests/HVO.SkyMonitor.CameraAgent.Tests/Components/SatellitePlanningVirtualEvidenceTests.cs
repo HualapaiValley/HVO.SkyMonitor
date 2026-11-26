@@ -138,6 +138,7 @@ public sealed class SatellitePlanningVirtualEvidenceTests
         var authentication = new Authentication();
         using var context = new BunitContext();
         ConfigureAuthorization(context, authentication, planner);
+        context.Services.AddSingleton<IPlanetEphemeris, AstronomyEnginePlanetEphemeris>();
         var anonymous = await context.Services.GetRequiredService<IAuthorizationService>()
             .AuthorizeAsync(authentication.User, CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false);
         Assert.IsFalse(anonymous.Succeeded);
@@ -193,6 +194,11 @@ public sealed class SatellitePlanningVirtualEvidenceTests
             Assert.AreEqual(row.Pass.ProductSha256, arc.Pass.ProductSha256);
             Assert.AreEqual(row.Pass.SearchInterval, arc.Pass.SearchInterval);
             Assert.AreEqual(input.Snapshots.Current.Manifest.ManifestSha256, arc.Pass.Lineage.SnapshotManifestSha256);
+            Assert.IsNotNull(row.Source);
+            var provenance = cut.Find(".satellite-detail .satellite-provenance").TextContent;
+            Assert.Contains(row.Source.RawSha256, provenance, StringComparison.Ordinal);
+            Assert.Contains("US Space Force / Space-Track public GP data via CelesTrak", provenance, StringComparison.Ordinal);
+            Assert.HasCount(3, cut.FindAll(".anchor-lunar-context"));
             Assert.IsTrue(arc.Samples.Count > 2);
             Assert.IsTrue(arc.Samples.All(sample => sample.Pixel is null && sample.Illumination == OrbitalIllumination.Unknown));
             Assert.IsNull(arc.OrbitUncertainty.Value);

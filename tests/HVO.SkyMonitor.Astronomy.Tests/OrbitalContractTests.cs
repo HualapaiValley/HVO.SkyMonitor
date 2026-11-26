@@ -45,6 +45,34 @@ public sealed class OrbitalContractTests
     }
 
     [TestMethod]
+    public void CsvAndLegacyGpProvenanceCannotBeInterchanged()
+    {
+        var original = OrbitalContractExamples.Record();
+        var record = OrbitalContract.CreateRecord(original with
+        {
+            Model = original.Model with { ProfileVersion = OrbitalContract.CelesTrakGpCsvProfile }
+        });
+        var source = OrbitalContractExamples.Source() with
+        {
+            SourceUri = new("https://celestrak.org/NORAD/elements/gp.php?GROUP=active&FORMAT=CSV")
+        };
+        var coverage = OrbitalContractExamples.Coverage;
+        OrbitalSnapshot Csv(OrbitalRecordV1 item, OrbitalSnapshotSource provenance) =>
+            OrbitalSnapshot.Create([item], [provenance], coverage, OrbitalContract.CelesTrakGpCsvProfile);
+        var snapshot = Csv(record, source);
+        var parsed = OrbitalSnapshot.Parse(snapshot.SerializeManifest(), snapshot.SerializePayload());
+        Assert.IsTrue(parsed.IsValid, parsed.Reason);
+        Assert.AreEqual(record.RecordSha256, parsed.Snapshot!.Records.Single().RecordSha256);
+        Assert.AreNotEqual(original.RecordSha256, record.RecordSha256);
+        Assert.ThrowsExactly<ArgumentException>(() => Csv(original, source));
+        Assert.ThrowsExactly<ArgumentException>(() => Csv(record, OrbitalContractExamples.Source()));
+        Assert.ThrowsExactly<ArgumentException>(() => Csv(record, source with { SourceUri = new("https://example.invalid/") }));
+        Assert.ThrowsExactly<ArgumentException>(() => OrbitalSnapshot.Create([original], [source], coverage));
+        Assert.ThrowsExactly<ArgumentException>(() => Csv(record, source with { TermsUri = source.SourceUri }));
+        Assert.ThrowsExactly<ArgumentException>(() => Csv(record, source with { SourceUri = new(source.SourceUri + "&token=extra") }));
+    }
+
+    [TestMethod]
     public void ObjectRecordAndAcquisitionIdentitiesHaveSeparateLifetimes()
     {
         var records = new[] { OrbitalContractExamples.Record(), OrbitalContractExamples.Record(epochHours: -1), OrbitalContractExamples.Record("999999999", name: null) };

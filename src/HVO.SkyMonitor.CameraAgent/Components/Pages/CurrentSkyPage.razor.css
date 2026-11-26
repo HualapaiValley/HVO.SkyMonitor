@@ -345,5 +345,5 @@
 .layer-readiness-tag--ready { color: #8fe49c; background: var(--green-soft); }
 .layer-readiness-tag--partial { color: #e6bd62; background: var(--amber-soft); }
 .layer-readiness-tag--pending { color: var(--blue); background: var(--blue-soft); }
-.layer-readiness-tag--nodetection, .layer-readiness-tag--disabled { color: var(--muted-strong); background: var(--surface-raised); }
+.layer-readiness-tag--nodetection, .layer-readiness-tag--nosegment, .layer-readiness-tag--disabled { color: var(--muted-strong); background: var(--surface-raised); }
 .layer-readiness-tag--incompatible, .layer-readiness-tag--unavailable { color: #ff9b95; background: var(--red-soft); }

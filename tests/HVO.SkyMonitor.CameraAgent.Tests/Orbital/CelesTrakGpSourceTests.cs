@@ -36,7 +36,7 @@ public sealed class CelesTrakGpSourceTests
         Assert.Contains("two hours", CelesTrakGpSource.TermsReference);
         Assert.Contains("no feed redistribution", CelesTrakGpSource.TermsReference);
         Assert.IsLessThanOrEqualTo(256, CelesTrakGpSource.UnderlyingLineage.Length);
-        Assert.StartsWith("USSF public GP", CelesTrakGpSource.UnderlyingLineage);
+        Assert.AreEqual("US Space Force / Space-Track public GP data via CelesTrak", CelesTrakGpSource.UnderlyingLineage);
     }
 
     [TestMethod]

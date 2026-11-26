@@ -73,6 +73,15 @@ public sealed record OperationsSection(
 /// </summary>
 public static class OperationsSectionCatalog
 {
+    internal static OperationsSection ForFocuser(OperationsSection section, bool registered) =>
+        registered && section.Slug == "focus" ? MotorizedFocus : section;
+
+    private static OperationsSection MotorizedFocus { get; } = new("focus", "Focus", "Capture", "/operations/focus",
+        "Capture / motorized optical setup", "Move the registered focuser or measure a star to find its best focus.", [])
+    {
+        Badge = "Motorized"
+    };
+
     public const string OverviewPath = "/operations";
 
     public static IReadOnlyList<string> Groups { get; } = ["Overview", "Setup", "Capture", "Processing", "Automation", "Data", "System"];

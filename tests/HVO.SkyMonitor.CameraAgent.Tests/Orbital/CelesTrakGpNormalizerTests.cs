@@ -12,10 +12,10 @@ public sealed class CelesTrakGpNormalizerTests
 {
     // Pinned identities of the valid fixture's candidate at RetrievedUtc with the default synthetic validators. A change
     // to the parser rules, normalizer rules, contract serialization or fixture bytes must change these deliberately.
-    private const string ValidNormalizedPayloadSha256 = "F3BDD6215306A5188CBDF1D518B0EC51A7AD55336B15388864B48B49BDABB8C8";
-    private const string ValidManifestSha256 = "0009A4DE70965F6C70F881576EADCB3E9D345B0BFCF4CAE0BC7453C3CCF5FE00";
+    private const string ValidNormalizedPayloadSha256 = "2CB0BFEA080571CA8555BB554C8AA2FA1ECBEF397C399DB1A8EC9C478265D2FF";
+    private const string ValidManifestSha256 = "06F00D385E147B4F494A0D79D0ADB4E0A20A4BDD90799989BBFFBE4EDC502E3D";
     private const string ParserImplementationSha256 = "79FEEE50CCC7D0D5108E8040D95A8048332C5C9AD4A13B17B1B2CC2249A8BF7A";
-    private const string NormalizerImplementationSha256 = "0D1E2F09E4F375287BC9353ECA0FBBE4BACED8782DF5E240DF564C5812A17583";
+    private const string NormalizerImplementationSha256 = "481C0A485CC0FE6225D30D4228143108025697E253268033F13AE3C1EBAB1A38";
 
     private static readonly string[] ExpectedKnownExclusions =
     [

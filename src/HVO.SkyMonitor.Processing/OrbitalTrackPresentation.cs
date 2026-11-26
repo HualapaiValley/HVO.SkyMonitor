@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.Imaging;
 using SkiaSharp;
@@ -68,6 +69,12 @@ public static class OrbitalTrackPresentation
     public static (PresentationLayerPayloadV1 Payload, byte[] SourceFactsJson) CreatePayloadAndSourceFacts(
         int sourceWidth, int sourceHeight, IReadOnlyList<OrbitalExposureTrackV1> tracks,
         IReadOnlyDictionary<OrbitalObjectIdentity, string>? displayNames, bool queryIncomplete)
+        => CreatePayloadAndSourceFacts(sourceWidth, sourceHeight, tracks, displayNames, queryIncomplete, hideObjectLabels: false);
+
+    /// <summary>Allows a retained presentation choice to omit object labels while preserving the required caption.</summary>
+    public static (PresentationLayerPayloadV1 Payload, byte[] SourceFactsJson) CreatePayloadAndSourceFacts(
+        int sourceWidth, int sourceHeight, IReadOnlyList<OrbitalExposureTrackV1> tracks,
+        IReadOnlyDictionary<OrbitalObjectIdentity, string>? displayNames, bool queryIncomplete, bool hideObjectLabels)
     {
         ArgumentNullException.ThrowIfNull(tracks);
         if (sourceWidth is < 1 or > 65_536 || sourceHeight is < 1 or > 65_536 ||
@@ -132,7 +139,7 @@ public static class OrbitalTrackPresentation
                     phase = (phase + Math.Sqrt(dx * dx + dy * dy)) % (Stroke.DashPixels + Stroke.GapPixels);
                 }
             }
-            if (anchor is { } point) anchors.Add((track, point));
+            if (!hideObjectLabels && anchor is { } point) anchors.Add((track, point));
         }
 
         var occupied = new List<SKRect> { Bounds(caption, sourceWidth, sourceHeight) };
@@ -169,37 +176,23 @@ public static class OrbitalTrackPresentation
 
         // Include names even if a label cannot fit. Returning the exact bytes lets an artifact adapter retain
         // the same inputs the payload hashes, rather than inventing an unrelated source descriptor identity.
-        var sourceFacts = JsonSerializer.SerializeToUtf8Bytes(new
-        {
-            ProducerVersion,
-            LayerKind,
-            sourceWidth,
-            sourceHeight,
-            Tracks = ordered.Select(track => new
-            {
-                track.ProductSha256,
-                DisplayName = names.GetValueOrDefault(track.Lineage.ObjectIdentity)
-            }).ToArray()
-        });
+        var sourceFacts = JsonSerializer.SerializeToUtf8Bytes(new SourceFacts(ProducerVersion, LayerKind,
+            sourceWidth, sourceHeight, queryIncomplete, hideObjectLabels,
+            ordered.Select(track => new SourceTrack(track.ProductSha256,
+                names.GetValueOrDefault(track.Lineage.ObjectIdentity))).ToArray()));
         var sourceIdentity = Convert.ToHexString(SHA256.HashData(sourceFacts));
-        if (queryIncomplete)
-        {
-            // A bounded query may stop after complete child tracks. Retain that query qualification too.
-            sourceFacts = JsonSerializer.SerializeToUtf8Bytes(new
-            {
-                ProducerVersion,
-                LayerKind,
-                sourceWidth,
-                sourceHeight,
-                QueryIncomplete = true,
-                Tracks = ordered.Select(track => new
-                { track.ProductSha256, DisplayName = names.GetValueOrDefault(track.Lineage.ObjectIdentity) }).ToArray()
-            });
-            sourceIdentity = Convert.ToHexString(SHA256.HashData(sourceFacts));
-        }
         return (PresentationLayerPayloadJson.Create(sourceIdentity, sourceWidth, sourceHeight,
             markers: markers, segments: segments, textBlocks: texts), sourceFacts);
     }
+
+    private sealed record SourceFacts(string ProducerVersion, string LayerKind,
+        [property: JsonPropertyName("sourceWidth")] int SourceWidth,
+        [property: JsonPropertyName("sourceHeight")] int SourceHeight,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool QueryIncomplete,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool ObjectLabelsHidden,
+        IReadOnlyList<SourceTrack> Tracks);
+
+    private sealed record SourceTrack(string ProductSha256, string? DisplayName);
 
     private static bool Compatible(OrbitalExposureTrackV1 a, OrbitalExposureTrackV1 b) =>
         a.RequestedInterval == b.RequestedInterval && a.Observer == b.Observer && a.Geometry == b.Geometry &&

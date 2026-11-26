@@ -10,6 +10,7 @@ public sealed partial class ProcessingNodeOptionsTests
     [DataRow("MeasuredAstrometry", "measured-astrometry-v1", "captureStride", "60.5")]
     [DataRow("MeasuredAstrometry", "measured-astrometry-v1", "captureStride", "null")]
     [DataRow("CaptureSatelliteTracks", "capture-satellite-products-v1", "allowStaleDiagnostics", "\"true\"")]
+    [DataRow("CaptureSatelliteTracks", "capture-satellite-products-v1", "hideObjectLabels", "\"true\"")]
     [DataRow("CaptureSatelliteTracks", "capture-satellite-products-v1", "outputVariant", "\" \"")]
     [DataRow("CaptureSatelliteLayer", "predicted-satellite-tracks-v1", "inputVariant", "\"\"")]
     [DataRow("CaptureSatelliteLayer", "predicted-satellite-tracks-v1", "inputVariant", "42")]

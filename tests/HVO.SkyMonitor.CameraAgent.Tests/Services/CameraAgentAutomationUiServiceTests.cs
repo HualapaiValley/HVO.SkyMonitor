@@ -22,6 +22,60 @@ public sealed class CameraAgentAutomationUiServiceTests
     private const string SyntheticFailureMessage = "Synthetic automation I/O failure at " + SyntheticFailurePath;
 
     [TestMethod]
+    [DataRow(null, 1L, nameof(OperatorUiResultKind.NotFound), "This automation no longer exists")]
+    [DataRow(LocalAutomationTaskKind.TimeDataRefresh, 2L, nameof(OperatorUiResultKind.Conflict), "This automation changed")]
+    [DataRow(LocalAutomationTaskKind.CustomScript, 1L, nameof(OperatorUiResultKind.Invalid), "unavailable for Run now")]
+    [DataRow(LocalAutomationTaskKind.OrbitalElementsRefresh, 1L, nameof(OperatorUiResultKind.Invalid), "unavailable for Run now")]
+    [DataRow(LocalAutomationTaskKind.SpaceWeatherRefresh, 1L, nameof(OperatorUiResultKind.Invalid), "unavailable for Run now")]
+    public async Task RunNowAsync_RejectsMissingUnboundAndOtherTaskDefinitionsBeforeQueueingAsync(
+        LocalAutomationTaskKind? kind, long expectedVersion, string expected, string guidance)
+    {
+        var store = new Mock<ILocalAutomationStore>(MockBehavior.Strict);
+        var occurrences = store.As<ILocalAutomationOccurrenceStore>();
+        occurrences.Setup(candidate => candidate.FindRunNowReplayAsync(
+                It.IsAny<LocalAutomationRunNowRequest>(), CancellationToken.None))
+            .ReturnsAsync((LocalAutomationCommandResult?)null);
+        var definition = kind is { } taskKind
+            ? new LocalAutomationDefinition("refresh", "Refresh data", true, taskKind, "refresh",
+                LocalAutomationTriggerKind.Periodic, 3600, DateTimeOffset.UnixEpoch)
+            : null;
+        store.Setup(candidate => candidate.ReadDefinitionForPreviewAsync("refresh", CancellationToken.None))
+            .ReturnsAsync(definition is null ? null : new LocalAutomationRunnerEntry(
+                definition, 1, LocalAutomationContract.ComputeRevisionSha256(definition), null, null));
+        var authorization = CreateAuthorization(out var principal, succeeded: true);
+        var service = CreateService(store.Object, principal, authorization.Object);
+
+        var result = await service.RunNowAsync(new("refresh", expectedVersion, "run-now", "caller", "Refresh data"),
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(expected, result.Kind.ToString());
+        Assert.Contains(guidance, result.Message!);
+        occurrences.Verify(candidate => candidate.RunNowAsync(
+            It.IsAny<LocalAutomationRunNowRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task PreviewScheduleAsync_ResumingPeriodicDefinitionAdvancesPastThePausedBoundariesAsync()
+    {
+        var epoch = new DateTimeOffset(2026, 10, 12, 10, 0, 0, TimeSpan.Zero);
+        var clock = new Automation.MutableTimeProvider(epoch.AddHours(4).AddMinutes(15));
+        var request = SaveRequest() with { ExpectedVersion = 2 };
+        var paused = new LocalAutomationDefinition(request.DefinitionId, request.Name, false, request.TaskKind,
+            request.TaskTarget, request.TriggerKind, request.TriggerInterval, epoch);
+        var store = new Mock<ILocalAutomationStore>(MockBehavior.Strict);
+        store.Setup(candidate => candidate.ReadDefinitionForPreviewAsync(request.DefinitionId, CancellationToken.None))
+            .ReturnsAsync(new LocalAutomationRunnerEntry(
+                paused, 2, LocalAutomationContract.ComputeRevisionSha256(paused), epoch.AddHours(1), null));
+        var authorization = CreateAuthorization(out var principal, succeeded: true);
+        var service = CreateService(store.Object, principal, authorization.Object, clock: clock);
+
+        var result = await service.PreviewScheduleAsync(request, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.IsTrue(result.IsSuccess, result.Message);
+        Assert.AreEqual(epoch.AddHours(5), result.Value!.DueUtc);
+    }
+
+    [TestMethod]
     public async Task GetAsync_WhenTheReadPolicyFails_DeniesWithoutTouchingTheStoreAsync()
     {
         var store = new RecordingStore();
@@ -381,7 +435,8 @@ public sealed class CameraAgentAutomationUiServiceTests
         ILocalAutomationStore store,
         ClaimsPrincipal principal,
         IAuthorizationService authorization,
-        ILogger<CameraAgentAutomationUiService>? logger = null)
+        ILogger<CameraAgentAutomationUiService>? logger = null,
+        TimeProvider? clock = null)
         => new(
             new StubAuthenticationStateProvider(principal),
             authorization,
@@ -390,7 +445,7 @@ public sealed class CameraAgentAutomationUiServiceTests
             new Automation.StubAutomationTaskRegistry(),
             new LocalAutomationWindowPlanner(new Common.Gallery.FixedObservingDayCalendarProvider(
                 Common.Gallery.ObservingDayCalendar.ForDeployment(Automation.LocalAutomationWindowTests.Site()))),
-            TimeProvider.System);
+            clock ?? TimeProvider.System);
 
     private sealed class StubAuthenticationStateProvider(ClaimsPrincipal principal) : AuthenticationStateProvider
     {

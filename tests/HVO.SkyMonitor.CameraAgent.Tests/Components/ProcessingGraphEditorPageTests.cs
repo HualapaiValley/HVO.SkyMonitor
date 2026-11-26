@@ -991,6 +991,153 @@ public sealed class ProcessingGraphEditorPageTests
         }
     }
 
+    [TestMethod]
+    public void GraphEditorHidesInspectLinkForUnsavedAutoAddedBuiltInStageWhileKeepingSavedStageLinkEnabled()
+    {
+        const string measurementAlias = ExposureMeasurementProducts.StepAlias;
+        const string predictionAlias = ExposureCatalogPredictionProducts.StepAlias;
+        var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
+
+        // 1. Source revision contains ExposureMeasurement and disabled regional, without ExposureCatalogPrediction.
+        using (var unsavedContext = new BunitContext())
+        {
+            unsavedContext.JSInterop.Mode = JSRuntimeMode.Loose;
+            var pipelineWithoutPrediction = new CapturePipelineConfig(
+            [
+                new(measurementAlias, measurementAlias, 4, null, ["$raw"], Required: false, Enabled: true, Publication: durable),
+                new(RegionalStellarVisibilityProducts.StepAlias, "regional", 30, null,
+                    ["$raw", measurementAlias], Required: false, Enabled: false, Publication: durable)
+            ]);
+            var service = CreateEditorService(pipelineWithoutPrediction);
+            service.StepAliases = ["Preview", RegionalStellarVisibilityProducts.StepAlias];
+            unsavedContext.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(service);
+            unsavedContext.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/pipeline/graphs/new?from=rev-active");
+
+            var cut = unsavedContext.Render<ProcessingGraphEditorPage>();
+            var regionalRow = cut.WaitForElement($"li.node-row[data-node-alias='{RegionalStellarVisibilityProducts.StepAlias}']");
+            FindMainRowEnabledCheckbox(regionalRow).Change(true);
+
+            // Saved built-in stage keeps its Inspect built-in stage link.
+            var savedBuiltInLink = cut.Find($"li.node-row[data-node-alias='{measurementAlias}'] .node-row--builtin a");
+            Assert.AreEqual("Inspect built-in stage", savedBuiltInLink.TextContent.Trim());
+            Assert.AreEqual($"/operations/pipeline/graphs/rev-active/nodes/{measurementAlias}", savedBuiltInLink.GetAttribute("href"));
+
+            // Auto-added unsaved built-in stage must not render a broken inspect link to rev-active.
+            var unsavedBuiltInRow = cut.Find($"li.node-row[data-node-alias='{predictionAlias}'] .node-row--builtin");
+            Assert.IsEmpty(unsavedBuiltInRow.QuerySelectorAll("a"),
+                "Auto-added ExposureCatalogPrediction does not exist in rev-active and must not render a broken inspect link.");
+            StringAssert.Contains(unsavedBuiltInRow.TextContent, "unsaved draft", StringComparison.OrdinalIgnoreCase);
+
+            // Newly added configurable node also omits Configure on its own page until saved.
+            cut.Find("select[aria-label='New node type']").Change("Preview");
+            cut.FindAll("button").Single(static button => button.TextContent.Trim() == "Add node").Click();
+            var addedPreviewRow = cut.Find("li.node-row[data-node-alias='Preview']");
+            Assert.IsEmpty(addedPreviewRow.QuerySelectorAll("a.node-options-page-link"),
+                "Newly added editable node does not exist in rev-active and must not render a broken dedicated-page link.");
+            Assert.IsNotEmpty(cut.FindAll($"li.node-row[data-node-alias='{RegionalStellarVisibilityProducts.StepAlias}'] a.node-options-page-link"),
+                "Saved editable node must retain its Configure on its own page link.");
+
+            // After saving the draft, the built-in row updates from unsaved wording to post-save wording.
+            cut.Find("form").Submit();
+            Assert.IsFalse(cut.Find(".editor-actions button.btn-primary").HasAttribute("disabled"));
+            cut.Find(".editor-actions button.btn-primary").Click();
+            cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "saved as an immutable revision", StringComparison.Ordinal));
+            unsavedBuiltInRow = cut.Find($"li.node-row[data-node-alias='{predictionAlias}'] .node-row--builtin");
+            Assert.IsEmpty(unsavedBuiltInRow.QuerySelectorAll("a"));
+            StringAssert.Contains(unsavedBuiltInRow.TextContent, "Added in the saved draft", StringComparison.Ordinal);
+            Assert.IsFalse(unsavedBuiltInRow.TextContent.Contains("unsaved draft", StringComparison.OrdinalIgnoreCase),
+                "Post-save notice must not keep 'unsaved draft' wording after saving.");
+        }
+
+        // 2. When ExposureCatalogPrediction already exists in the source revision, its Inspect built-in stage link stays enabled.
+        using (var savedContext = new BunitContext())
+        {
+            savedContext.JSInterop.Mode = JSRuntimeMode.Loose;
+            var pipelineWithPrediction = new CapturePipelineConfig(
+            [
+                new(measurementAlias, measurementAlias, 4, null, ["$raw"], Required: false, Enabled: true, Publication: durable),
+                new(predictionAlias, predictionAlias, 5, null, ["$raw"], Required: false, Enabled: true, Publication: durable),
+                new(RegionalStellarVisibilityProducts.StepAlias, "regional", 30, null,
+                    ["$raw", measurementAlias, predictionAlias], Required: false, Enabled: true, Publication: durable)
+            ]);
+            savedContext.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(CreateEditorService(pipelineWithPrediction));
+            savedContext.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/pipeline/graphs/new?from=rev-active");
+
+            var cut = savedContext.Render<ProcessingGraphEditorPage>();
+            var predictionLink = cut.WaitForElement($"li.node-row[data-node-alias='{predictionAlias}'] .node-row--builtin a");
+            Assert.AreEqual("Inspect built-in stage", predictionLink.TextContent.Trim());
+            Assert.AreEqual($"/operations/pipeline/graphs/rev-active/nodes/{predictionAlias}", predictionLink.GetAttribute("href"));
+        }
+    }
+
+    [TestMethod]
+    public void GraphEditorHidesDedicatedPageLinkOnDeletedIdReuseTypeChangeAndDuplicateId()
+    {
+        var pipeline = new CapturePipelineConfig(
+        [
+            new("ImageQuality", "quality", 10, null, ["$raw"], Enabled: true),
+            new("Preview", "preview", 20, null, ["$raw"], Enabled: true)
+        ]);
+
+        // 1. Deleting a saved node and renaming another node to its ID hides Configure on its own page.
+        using (var reuseContext = new BunitContext())
+        {
+            reuseContext.JSInterop.Mode = JSRuntimeMode.Loose;
+            var service = CreateEditorService(pipeline);
+            service.StepAliases = ["ImageQuality", "Preview", "CombinedPreview"];
+            reuseContext.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(service);
+            reuseContext.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/pipeline/graphs/new?from=rev-active");
+
+            var cut = reuseContext.Render<ProcessingGraphEditorPage>();
+            cut.WaitForElement("li.node-row[data-node-alias='Preview'] a.node-options-page-link");
+            cut.Find("button[aria-label='Remove quality']").Click();
+            cut.Find("li.node-row[data-node-alias='Preview'] input[aria-label='Node identifier']").Change("quality");
+
+            Assert.IsEmpty(cut.FindAll("li.node-row[data-node-alias='Preview'] a.node-options-page-link"),
+                "Renaming a surviving row to a deleted saved node's ID must hide Configure on its own page.");
+        }
+
+        // 2. Changing a saved node's type hides Configure on its own page.
+        using (var typeContext = new BunitContext())
+        {
+            typeContext.JSInterop.Mode = JSRuntimeMode.Loose;
+            var service = CreateEditorService(pipeline);
+            service.StepAliases = ["ImageQuality", "Preview", "CombinedPreview"];
+            typeContext.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(service);
+            typeContext.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/pipeline/graphs/new?from=rev-active");
+
+            var cut = typeContext.Render<ProcessingGraphEditorPage>();
+            cut.WaitForElement("li.node-row[data-node-alias='Preview'] a.node-options-page-link");
+            cut.Find("li.node-row[data-node-alias='Preview'] select[aria-label='Node type']").Change("CombinedPreview");
+
+            Assert.IsEmpty(cut.FindAll("li.node-row[data-node-alias='CombinedPreview'] a.node-options-page-link"),
+                "Changing a saved row's type must hide Configure on its own page.");
+            Assert.IsNotEmpty(cut.FindAll("li.node-row[data-node-alias='ImageQuality'] a.node-options-page-link"),
+                "Unchanged saved rows must keep Configure on its own page.");
+        }
+
+        // 3. Duplicating a saved ID hides Configure on its own page on both conflicting rows.
+        using (var duplicateContext = new BunitContext())
+        {
+            duplicateContext.JSInterop.Mode = JSRuntimeMode.Loose;
+            var service = CreateEditorService(pipeline);
+            service.StepAliases = ["ImageQuality", "Preview"];
+            duplicateContext.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(service);
+            duplicateContext.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/pipeline/graphs/new?from=rev-active");
+
+            var cut = duplicateContext.Render<ProcessingGraphEditorPage>();
+            cut.WaitForElement("li.node-row[data-node-alias='Preview'] a.node-options-page-link");
+            cut.Find("select[aria-label='New node type']").Change("Preview");
+            cut.FindAll("button").Single(static button => button.TextContent.Trim() == "Add node").Click();
+            var previewRows = cut.FindAll("li.node-row[data-node-alias='Preview']");
+            Assert.HasCount(2, previewRows);
+            previewRows[1].QuerySelector("input[aria-label='Node identifier']")!.Change("preview");
+
+            Assert.IsEmpty(cut.FindAll("li.node-row[data-node-alias='Preview'] a.node-options-page-link"),
+                "Duplicating a saved ID must hide Configure on its own page for all conflicting rows.");
+        }
+    }
+
     private static ProcessingExecutionPagesTests.GraphUiService CreateEditorService(CapturePipelineConfig pipeline)
     {
         var registry = ProcessingGraphPagesTests.Registry();

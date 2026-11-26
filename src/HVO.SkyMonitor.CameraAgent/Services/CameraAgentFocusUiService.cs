@@ -44,7 +44,8 @@ internal sealed record FocusUiStatus(
     ManualFocusSessionLimits Limits,
     bool RetentionAvailable,
     bool CanControl,
-    bool IsOwner);
+    bool IsOwner,
+    MotorFocusStatus? Focuser = null);
 
 /// <summary>
 /// Authorizes every focus read and command against the current circuit's principal before it reaches the
@@ -81,7 +82,8 @@ internal sealed class CameraAgentFocusUiService(
             coordinator.Limits,
             coordinator.RetentionAvailable,
             canControl,
-            canControl && owner is not null && string.Equals(session.OwnerId, owner, StringComparison.Ordinal)));
+            canControl && owner is not null && string.Equals(session.OwnerId, owner, StringComparison.Ordinal),
+            coordinator.Focuser));
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",

@@ -1409,6 +1409,30 @@ public sealed partial class AutomationsPageTests
 
         internal OperatorUiResult<CameraAgentAutomationWindowPreview>? PreviewResult { get; set; }
 
+        public ValueTask<OperatorUiResult<IReadOnlyList<CameraAgentAutomationSourceChoice>>> GetSourceChoicesAsync(
+            LocalAutomationSaveRequest request, CancellationToken cancellationToken)
+            => ValueTask.FromResult(OperatorUiResult<IReadOnlyList<CameraAgentAutomationSourceChoice>>.Success(
+                [.. _state!.Registry.Single(item => item.TaskKind == request.TaskKind).SupportedSourceWindows
+                    .SelectMany(period => Enum.GetValues<LocalAutomationSourceSelection>()
+                        .Select(selection => new CameraAgentAutomationSourceChoice(period, selection)))]));
+
+        public ValueTask<OperatorUiResult<CameraAgentAutomationSchedulePreview>> PreviewScheduleAsync(
+            LocalAutomationSaveRequest request, CancellationToken cancellationToken)
+            => ValueTask.FromResult(OperatorUiResult<CameraAgentAutomationSchedulePreview>.Success(
+                new(Instant, request.TriggerKind == LocalAutomationTriggerKind.Periodic ? Instant.AddSeconds(request.TriggerInterval) : null, null)));
+
+        public ValueTask<OperatorUiResult<IReadOnlyList<LocalAutomationSourceWindow>>> PreviewBackfillAsync(
+            string definitionId, long version, DateOnly reportDate, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public ValueTask<OperatorUiResult<LocalAutomationCommandResult>> BackfillAsync(
+            LocalAutomationBackfillRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public ValueTask<OperatorUiResult<LocalAutomationCommandResult>> RetryAsync(
+            LocalAutomationRetryRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public ValueTask<OperatorUiResult<LocalAutomationCommandResult>> RunNowAsync(
+            LocalAutomationRunNowRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
+
         public ValueTask<OperatorUiResult<CameraAgentAutomationWindowPreview>> PreviewWindowAsync(
             LocalAutomationSaveRequest request, CancellationToken cancellationToken)
         {

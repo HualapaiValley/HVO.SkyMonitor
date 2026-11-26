@@ -1,5 +1,6 @@
 @inherits SiteTimeComponent
 @using HVO.SkyMonitor.CameraAgent.Components.Pages
+@using HVO.SkyMonitor.CameraAgent.Common.Orbital
 @using HVO.SkyMonitor.CameraAgent.Services
 @* Software & Catalog's orbital-element snapshot: the installed snapshot's verified manifest, the refresh read model and
    the reserved refresh schedule, with the bounded Refresh and Resume commands of OrbitalElementsOperations. It reads
@@ -76,7 +77,7 @@
             {
                 @if (source is not null)
                 {
-                    <div><dt>Provider and dataset</dt><dd id="orbital-provider">@source.Provider / @source.DatasetKey<small>@source.UnderlyingLineage</small></dd></div>
+                    <div><dt>Provider and dataset</dt><dd id="orbital-provider">@source.Provider / @source.DatasetKey<small>@CelesTrakGpSource.DisplayLineage(source)</small></dd></div>
                 }
                 @if (manifest is not null)
                 {

@@ -300,6 +300,33 @@ public sealed partial class CurrentSkyPageTests
     }
 
     [TestMethod]
+    public void CenteredEmptySatellitePredictionHasItsOwnReadinessState()
+    {
+        using var context = new BunitContext();
+        var (service, clock) = ConfigurePolling(context);
+        var reference = CenteredExposure(103, clock.GetUtcNow().AddSeconds(-10));
+        var layers = new CenteredViewLayer[]
+        {
+            new(new("predicted-satellites", CenteredViewLayerScope.Contributor, reference.Capture.CaptureId), 1,
+                EvidencePin("satellite"), clock.GetUtcNow(), CenteredViewReadiness.AssessedEmpty,
+                nameof(CaptureSatelliteReason.NoExposureSegments), null),
+            new(new("MeasuredTransientTrails", CenteredViewLayerScope.Contributor, reference.Capture.CaptureId), 1,
+                EvidencePin("trails"), clock.GetUtcNow(), CenteredViewReadiness.AssessedEmpty, null, null)
+        };
+        var view = CenteredSingle(reference, 1, layers);
+        service.CenteredCurrentSkyHandler = (_, _) =>
+            ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(
+                CenteredSkyView(view, reference, CenteredViewLiveState.Ready, clock.GetUtcNow())));
+
+        var cut = context.Render<CurrentSkyPage>();
+        var prediction = cut.WaitForElement("[data-layer-kind='predicted-satellites'][data-layer-readiness='NoSegment']");
+        Assert.AreEqual("No segment", prediction.QuerySelector(".layer-readiness-tag")?.TextContent);
+        Assert.AreEqual("No predicted segment for this exposure", prediction.QuerySelector("small")?.TextContent);
+        Assert.IsTrue(prediction.QuerySelector("input")!.HasAttribute("disabled"));
+        Assert.AreEqual("No detection", cut.Find("[data-layer-kind='MeasuredTransientTrails'] .layer-readiness-tag").TextContent);
+    }
+
+    [TestMethod]
     [DataRow(OrbitalTrackPresentation.LayerKind)]
     [DataRow("predicted-satellites")]
     public void CenteredPredictedSatelliteTrackKindsRenderTheSameDiagnosticCopy(string layerKind)
@@ -323,6 +350,8 @@ public sealed partial class CurrentSkyPageTests
             StringAssert.StartsWith(row.QuerySelector("strong")?.TextContent, "Predicted satellite tracks · #103", StringComparison.Ordinal);
             Assert.AreEqual("predicted / exact exposure segment; geometry only, not a detection or visibility claim",
                 row.QuerySelector("small")?.TextContent);
+            Assert.Contains("US Space Force / Space-Track public GP data via CelesTrak",
+                cut.Find("[aria-label='Diagnostics layers'] .satellite-source-credit").TextContent, StringComparison.Ordinal);
         });
     }
 
@@ -2044,7 +2073,10 @@ public sealed partial class CurrentSkyPageTests
         current = rev2;
         await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
         Assert.AreEqual(0, Volatile.Read(ref rev2Calls), "Paused live view must NOT load or advance to rev2.");
-        Assert.AreEqual(1, Volatile.Read(ref rev1Calls), "Refreshing must keep the in-flight load for the displayed revision.");
+        // A replacement cancels the original load before the queued replacement can reach the service.
+        var rev1Load = (Calls: Volatile.Read(ref rev1Calls), Canceled: rev1Token.IsCancellationRequested);
+        Assert.AreEqual((Calls: 1, Canceled: false), rev1Load,
+            "Refreshing must keep the original in-flight load for the displayed revision.");
 
         var firstRead = retryFailedLoad
             ? new CameraAgentCenteredPresentationRead(CameraAgentLayeredPresentationStatus.Unavailable, null, "Temporary overlay outage.")

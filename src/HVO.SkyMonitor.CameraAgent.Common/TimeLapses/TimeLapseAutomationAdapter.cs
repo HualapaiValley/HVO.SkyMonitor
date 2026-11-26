@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.Globalization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
@@ -17,12 +18,20 @@ internal sealed class TimeLapseAutomationAdapter(IOptions<CameraAgentHostOptions
     {
         var preset = options.Value.TimeLapses;
         var enabled = preset.Enabled && Validator.TryValidateObject(preset, new(preset), [], true);
+        var target = enabled ? preset.Target : null;
         return new(LocalAutomationTaskKind.TimeLapseGeneration,
             "Queues a local-only hourly or sunrise-day video with a frozen display and timing preset.",
-            [LocalAutomationTriggerKind.SourceWindowClosed], enabled ? [preset.Target] : [],
+            [LocalAutomationTriggerKind.SourceWindowClosed], target is null ? [] : [target],
             Available: enabled, UnavailableReason: enabled ? null : "Time-lapse generation requires an enabled, pinned rig preset.")
         {
-            SupportedSourceWindows = [LocalAutomationSourceWindowKind.CompletedCivilHour, LocalAutomationSourceWindowKind.SunriseDay]
+            SupportedSourceWindows = [LocalAutomationSourceWindowKind.CompletedCivilHour, LocalAutomationSourceWindowKind.SunriseDay],
+            ProducerPresets = target is null ? [] :
+            [
+                new(target, "Time-lapse video",
+                    [new("Playback compression", preset.Timing.Compression.ToString(CultureInfo.InvariantCulture) + "×"),
+                     new("Maximum output dimension", preset.MaximumDimension.ToString(CultureInfo.InvariantCulture) + " px"),
+                     new("Frame stack", preset.Frames.StackCount.ToString(CultureInfo.InvariantCulture))])
+            ]
         };
     }
 

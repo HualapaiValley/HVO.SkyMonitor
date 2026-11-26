@@ -206,6 +206,21 @@ spec = importlib.util.spec_from_file_location("restore_imports", root / "scripts
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 
+# Check the declaration after the BOM, but retain the BOM in the certified digest.
+generated = root / "Example.csproj.nuget.g.props"
+project_xml = '<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003" />'
+for encoding in ("utf-16", "UTF-8"):
+    blob = (f"<?xml version='1.0' encoding='{encoding}'?>\n" + project_xml).encode("utf-8-sig")
+    generated.write_bytes(blob)
+    try:
+        result = mod.generated_imports(generated, root, root / "nuget", root / "sdk", set())
+    except mod.ProofError as error:
+        if encoding != "utf-16" or str(error) != "XML declares a non-UTF-8 encoding":
+            raise
+    else:
+        if encoding == "utf-16" or result != {"sha256": mod.digest(blob), "imports": []}:
+            raise SystemExit(f"unexpected generated import result for {encoding}: {result}")
+
 cases = [
     ("valid-single", ["/Tests/"]),
     ("valid-multi", ["/Tests/Sub/"]),

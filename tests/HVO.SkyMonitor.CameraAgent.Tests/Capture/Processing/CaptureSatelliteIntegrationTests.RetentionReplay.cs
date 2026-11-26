@@ -6,6 +6,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Orbital;
+using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.Processing.Tests;
 using Microsoft.Data.Sqlite;
@@ -160,7 +161,10 @@ public sealed partial class CaptureSatelliteIntegrationTests
     }
 
     [TestMethod]
-    public async Task ArchivedReplayPinsOriginalProductsAndIgnoresChangedCurrentSiteAndSources()
+    [DataRow(false, false)]
+    [DataRow(true, false)]
+    [DataRow(true, true)]
+    public async Task ArchivedReplayPinsOriginalProductsAndIgnoresChangedCurrentSiteAndSources(bool csvSnapshot, bool hideObjectLabels)
     {
         var root = CreateRoot();
         try
@@ -169,15 +173,43 @@ public sealed partial class CaptureSatelliteIntegrationTests
             var clock = new Clock(f.Descriptor.Timing.DurableIngressUtc);
             HVO.SkyMonitor.CameraAgent.Common.RawIngress.RawCaptureReceipt raw;
             string originalChecksum;
+            string originalLayerChecksum;
             string revision;
             using (var provider = CreateProvider(root, f, clock))
             {
-                var config = Configuration(root, f);
+                var config = Configuration(root, f, hideObjectLabels: hideObjectLabels);
+                if (csvSnapshot)
+                    await InstallCsvSnapshotAsync(provider, TestContext.CancellationToken).ConfigureAwait(false);
                 raw = await CaptureAsync(provider, config, f).ConfigureAwait(false);
                 Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, (await ProcessAsync(provider, config).ConfigureAwait(false)).Outcome);
                 var original = await provider.GetRequiredService<SqliteCaptureProcessingStore>().ReadNodeAsync(
                     raw.Manifest.Descriptor.Capture.CaptureId, "satellite", CancellationToken.None).ConfigureAwait(false);
-                originalChecksum = original!.Outputs.Single(p => p.ProductSchemaVersion == CaptureOrbitalPredictionJson.SchemaVersion).Artifact.ChecksumSha256;
+                var prediction = original!.Outputs.Single(p => p.ProductSchemaVersion == CaptureOrbitalPredictionJson.SchemaVersion);
+                originalChecksum = prediction.Artifact.ChecksumSha256;
+                var layerNode = await provider.GetRequiredService<SqliteCaptureProcessingStore>().ReadNodeAsync(
+                    raw.Manifest.Descriptor.Capture.CaptureId, "satellite-layer", TestContext.CancellationToken).ConfigureAwait(false);
+                var layerOutput = layerNode!.Outputs.Single(p => p.ProductSchemaVersion == PresentationLayerPayloadV1.CurrentSchemaVersion);
+                originalLayerChecksum = layerOutput.Artifact.ChecksumSha256;
+                var layer = PresentationLayerPayloadJson.Parse(await File.ReadAllBytesAsync(Path.Combine(root, layerOutput.PayloadRelativePath),
+                    TestContext.CancellationToken).ConfigureAwait(false)).Payload;
+                Assert.IsNotNull(layer);
+                Assert.IsNotEmpty(layer.Segments);
+                var sourceOutput = layerNode.Outputs.Single(p => p.ProductSchemaVersion == CaptureSatelliteProducts.SourceSchema);
+                using var layerSource = JsonDocument.Parse(await File.ReadAllBytesAsync(Path.Combine(root, sourceOutput.PayloadRelativePath),
+                    TestContext.CancellationToken).ConfigureAwait(false));
+                Assert.AreEqual(hideObjectLabels, layerSource.RootElement.TryGetProperty("ObjectLabelsHidden", out var flag) && flag.GetBoolean());
+                if (hideObjectLabels) Assert.HasCount(1, layer.TextBlocks);
+                if (csvSnapshot)
+                {
+                    using var product = JsonDocument.Parse(await File.ReadAllBytesAsync(Path.Combine(root, prediction.PayloadRelativePath),
+                        TestContext.CancellationToken).ConfigureAwait(false));
+                    var manifest = product.RootElement.GetProperty("input").GetProperty("snapshotManifest");
+                    Assert.AreEqual(CsvFixtureManifest, manifest.GetProperty("manifestSha256").GetString());
+                    Assert.AreEqual("US Space Force / Space-Track public GP data via CelesTrak",
+                        manifest.GetProperty("sources")[0].GetProperty("underlyingLineage").GetString());
+                    var track = Assert.ContainsSingle(product.RootElement.GetProperty("tracks").EnumerateArray());
+                    Assert.AreEqual("25544", track.GetProperty("lineage").GetProperty("objectIdentity").GetProperty("catalogNumber").GetString());
+                }
                 using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}");
                 await connection.OpenAsync().ConfigureAwait(false);
                 using var command = connection.CreateCommand();
@@ -229,11 +261,33 @@ public sealed partial class CaptureSatelliteIntegrationTests
                         "satellite", CancellationToken.None).ConfigureAwait(false);
                     Assert.IsNotNull(node);
                     Assert.AreEqual(originalChecksum, node.Outputs.Single(p => p.ProductSchemaVersion == CaptureOrbitalPredictionJson.SchemaVersion).Artifact.ChecksumSha256);
+                    var layerNode = await store.ReadExecutionNodeAsync(execution.ExecutionId, raw.Manifest.Descriptor.Capture.CaptureId,
+                        "satellite-layer", TestContext.CancellationToken).ConfigureAwait(false);
+                    Assert.IsNotNull(layerNode);
+                    Assert.AreEqual(originalLayerChecksum, layerNode.Outputs.Single(p =>
+                        p.ProductSchemaVersion == PresentationLayerPayloadV1.CurrentSchemaVersion).Artifact.ChecksumSha256);
                 }
                 finally { graph.DisposeSteps(); }
             }
         }
         finally { Directory.Delete(root, true); }
+    }
+
+    private const string CsvFixtureManifest = "519862B7B1E16722A01210710C0D17B3E9D60B3CEE8D33D997AC4F330719FA72";
+
+    private static async Task InstallCsvSnapshotAsync(ServiceProvider provider, CancellationToken token)
+    {
+        var directory = Path.Combine(AppContext.BaseDirectory, "Fixtures", "orbital", "csv-omm-v1");
+        var parsed = OrbitalSnapshot.Parse(await File.ReadAllBytesAsync(Path.Combine(directory, "manifest.json"), token).ConfigureAwait(false),
+            await File.ReadAllBytesAsync(Path.Combine(directory, "records.json"), token).ConfigureAwait(false));
+        Assert.IsNotNull(parsed.Snapshot, parsed.Reason);
+        Assert.AreEqual(CsvFixtureManifest, parsed.Snapshot.Manifest.ManifestSha256);
+        var store = provider.GetRequiredService<IOrbitalElementsStore>();
+        await store.InitializeAsync(token).ConfigureAwait(false);
+        var attempt = await store.TryBeginAttemptAsync("retained-csv-fixture", OrbitalAttemptTrigger.Manual, token).ConfigureAwait(false);
+        Assert.AreEqual(OrbitalAdmissionStatus.Admitted, attempt.Status);
+        await store.PublishAndActivateAsync(attempt.AttemptId!, parsed.Snapshot,
+            await File.ReadAllBytesAsync(Path.Combine(directory, "source.csv"), token).ConfigureAwait(false), token).ConfigureAwait(false);
     }
 
     private static async Task<DurableProcessingOutput> RetainCanonicalSceneAsync(string root, ServiceProvider provider,
