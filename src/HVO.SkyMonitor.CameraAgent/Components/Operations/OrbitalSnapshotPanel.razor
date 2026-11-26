@@ -76,7 +76,7 @@
             {
                 @if (source is not null)
                 {
-                    <div><dt>Provider and dataset</dt><dd id="orbital-provider">@source.Provider / @source.DatasetKey<small>@source.UnderlyingLineage</small></dd></div>
+                    <div><dt>Provider and dataset</dt><dd id="orbital-provider">@source.Provider / @source.DatasetKey<small>@SourceLineage(source)</small></dd></div>
                 }
                 @if (manifest is not null)
                 {

@@ -28,6 +28,7 @@ public static class OrbitalContract
 {
     public const string SchemaVersion = "hvo-orbital-elements-v1";
     public const string CelesTrakGpProfile = "celestrak-gp-json-v1";
+    public const string CelesTrakGpCsvProfile = "celestrak-gp-csv-v1";
     public const string GpDerivativeConvention = "gp-tle-field-values-rev-per-day-powers-v1";
     public const int MaximumRecords = 100_000;
     public const int MaximumSources = 32;
@@ -128,6 +129,7 @@ public static class OrbitalContract
     internal static bool Utc(DateTimeOffset value) => value.Offset == TimeSpan.Zero;
     internal static bool Software(OrbitalSoftwareIdentity? value) => value is not null &&
         Text(value.Name, 128) && Text(value.Version, 128) && IsSha256(value.ImplementationSha256);
+    internal static bool IsSupportedGpProfile(string profile) => profile is CelesTrakGpProfile or CelesTrakGpCsvProfile;
     private static double Zero(double value) => value == 0 ? 0 : value;
     private static double Angle(double value) => Zero(value is >= 0 and < 360 ? value : (value % 360 + 360) % 360);
 
@@ -141,7 +143,7 @@ public static class OrbitalContract
         var m = value.Model;
         Require(m is not null && m.Center == "EARTH" && m.Frame == "TEME" && m.TimeSystem == "UTC" &&
             m.Theory == "SGP4" && m.DerivativeConvention == GpDerivativeConvention &&
-            m.ProfileVersion == CelesTrakGpProfile && Software(m.Parser) && Software(m.Normalizer), "unsupported-model");
+            IsSupportedGpProfile(m.ProfileVersion) && Software(m.Parser) && Software(m.Normalizer), "unsupported-model");
         var e = value.Elements;
         Require(e is not null, "missing-elements");
         Require(new[] { e!.MeanMotionRevolutionsPerDay, e.Eccentricity, e.InclinationDegrees, e.AscendingNodeDegrees,
