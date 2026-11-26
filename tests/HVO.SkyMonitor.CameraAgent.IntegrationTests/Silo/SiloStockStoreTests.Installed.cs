@@ -33,6 +33,7 @@ public sealed partial class SiloStockStoreTests
     [DataRow(false, false)]
     [DataRow(true, false)]
     [DataRow(false, true)]
+    [DataRow(true, true)]
     public async Task InstalledCameraAdmitsAndReopensItsExactRawVersionAfterInterruptedPublication(bool color, bool centered)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.CancellationToken);
@@ -58,7 +59,7 @@ public sealed partial class SiloStockStoreTests
         var fault = new InterruptManifestPublication();
         var priorKeyDirectory = Environment.GetEnvironmentVariable(DeploymentKeyPerFile.DirectoryVariable);
         var priorSettingsPath = Environment.GetEnvironmentVariable(DeploymentLocalSettings.PathVariable);
-        Func<string, string>? configureCamera = centered ? CenteredConfiguration : color ? ColorConfiguration : null;
+        Func<string, string>? configureCamera = centered ? json => CenteredConfiguration(json, color) : color ? ColorConfiguration : null;
 
         try
         {
@@ -223,9 +224,9 @@ public sealed partial class SiloStockStoreTests
         return configuration.ToJsonString();
     }
 
-    private static string CenteredConfiguration(string json)
+    private static string CenteredConfiguration(string json, bool color)
     {
-        var configuration = JsonNode.Parse(json)!;
+        var configuration = JsonNode.Parse(color ? ColorConfiguration(json) : json)!;
         configuration["centeredExposure"] = new JsonObject
         {
             ["cameraId"] = "installed-virtual",
@@ -234,15 +235,18 @@ public sealed partial class SiloStockStoreTests
         var moduleOptions = configuration["module"]!["options"]!.AsObject();
         moduleOptions.Remove("transientScenario");
         moduleOptions.Remove("cloudScenario");
-        configuration["rig"]!["readout"] = JsonNode.Parse("""
-            {
-              "roi": { "x": 0, "y": 0, "width": 64, "height": 48 },
-              "binX": 1, "binY": 1, "binningAlgorithm": "IdentityV1",
-              "pixelFormat": "Mono16", "sampleDepthBits": 12, "containerDepthBits": 16,
-              "packing": "ByteAligned", "storedCodeTransform": "RightAlignedV1", "levelCodeSpace": "NativeSample",
-              "blackLevel": 64, "whiteLevel": 4095, "strideBytes": 128, "byteOrder": "LittleEndian", "cfaPattern": "None"
-            }
-            """);
+        if (!color)
+        {
+            configuration["rig"]!["readout"] = JsonNode.Parse("""
+                {
+                  "roi": { "x": 0, "y": 0, "width": 64, "height": 48 },
+                  "binX": 1, "binY": 1, "binningAlgorithm": "IdentityV1",
+                  "pixelFormat": "Mono16", "sampleDepthBits": 12, "containerDepthBits": 16,
+                  "packing": "ByteAligned", "storedCodeTransform": "RightAlignedV1", "levelCodeSpace": "NativeSample",
+                  "blackLevel": 64, "whiteLevel": 4095, "strideBytes": 128, "byteOrder": "LittleEndian", "cfaPattern": "None"
+                }
+                """);
+        }
         var pipeline = configuration["pipeline"]!;
         var steps = pipeline["steps"]!.AsArray();
         var calibration = steps.Single(step => step!["id"]!.GetValue<string>() == "Calibration")!.DeepClone();
