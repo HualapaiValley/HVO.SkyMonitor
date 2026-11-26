@@ -55,10 +55,20 @@ solar no-event, and persistence/restart/edit provenance through the real SQLite
 store. Existing runner tests retain immutable retry, overlap and interruption
 qualification.
 
-Remaining #1133 work includes richer per-task parameters, additional approved
-calendar/solar trigger presets, run-history product links and supported UI
-run/cancel/backfill controls, operator configuration of overlap, timeout,
-retry/missed-run policy and resource lane, plus broader performance and operator qualification.
-Script acceptance belongs to #1137. Protected `development/v1` CI and final
-base synchronization wait for the repository finalization reservation; this draft
-does not authorize merge or release adoption.
+## Standalone CameraAgent follow-up
+
+The follow-up exposes producer-specific parameters from the installed target,
+filters and defaults source choices through the registry, previews the installed
+periodic and capture-relative schedules, and shows exact source spans in the
+schedule and retained run views. Retained definitions use the same registry
+validation as saves and claims. Rejected definitions keep their revisions and
+run history and can be repaired through an explicit revision.
+
+The UI uses the existing versioned commands for settled backfills, retained
+window retries, time-data Run now, and withdrawal of queued work when disabling
+a definition. Orbital and space-weather manual refreshes keep their existing
+provider-specific admission. Run history resolves published artifacts by
+retained occurrence identity. Producer settings and execution policy remain
+owned by their registered tasks. The delivered schedule vocabulary is periodic,
+capture-relative and source-window-close, including both approved source periods.
+Custom scripts are tracked in #1137.

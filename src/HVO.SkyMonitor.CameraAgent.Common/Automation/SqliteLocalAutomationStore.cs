@@ -38,6 +38,10 @@ public interface ILocalAutomationStore
     /// <summary>The complete operator projection, including the registry and the next-run calendar.</summary>
     ValueTask<LocalAutomationOperatorState> GetStateAsync(CancellationToken cancellationToken);
 
+    /// <summary>Reads the retained definition and its schedule cursor for a prospective edit.</summary>
+    ValueTask<LocalAutomationRunnerEntry?> ReadDefinitionForPreviewAsync(string definitionId, CancellationToken cancellationToken)
+        => ValueTask.FromResult<LocalAutomationRunnerEntry?>(null);
+
     /// <summary>Records a new immutable revision of one definition.</summary>
     ValueTask<LocalAutomationCommandResult> SaveAsync(
         LocalAutomationSaveRequest request,
@@ -390,6 +394,31 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
         }
     }
 
+
+    public async ValueTask<LocalAutomationRunnerEntry?> ReadDefinitionForPreviewAsync(
+        string definitionId, CancellationToken cancellationToken)
+    {
+        using var operation = RetainOperationAuthority();
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            await EnsureSchemaAsync(connection, settleInterruptedRuns: false, cancellationToken).ConfigureAwait(false);
+            using var transaction = BeginRead(connection);
+            var record = await ReadDefinitionAsync(connection, transaction, definitionId, cancellationToken).ConfigureAwait(false);
+            if (record is null)
+            {
+                return null;
+            }
+            var progress = await ReadProgressAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+            progress.TryGetValue(definitionId, out var value);
+            return new(record.Definition, record.Version, record.RevisionSha256, value.LastOccurrenceUtc, value.LastCaptureSequence);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
 
     public async ValueTask<LocalAutomationCommandResult> SaveAsync(
         LocalAutomationSaveRequest request,
@@ -819,7 +848,7 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
             // Only a definition's first save asks its registered task for a phase origin. The command
             // hash excludes the epoch and a replay returned above, so a retried save stays identical.
             var initialEpoch = _registry.ResolveInitialTriggerEpoch(definition, epoch);
-            if (!IsInitialTriggerEpoch(initialEpoch, epoch, definition))
+            if (!LocalAutomationSchedule.IsInitialTriggerEpoch(initialEpoch, epoch, definition))
             {
                 return await RejectAsync(
                     connection, transaction, LocalAutomationCommandStatus.Invalid,
@@ -1287,20 +1316,23 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
         // be reported as having never run.
         var lastRuns = await ReadLatestRunsAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
         var histories = await ReadRevisionsAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+        var now = Now();
         var states = new List<LocalAutomationDefinitionState>(definitions.Count);
         var calendar = new List<LocalAutomationCalendarEntry>(definitions.Count);
         foreach (var record in definitions)
         {
             progress.TryGetValue(record.Definition.DefinitionId, out var value);
+            var rejection = LocalAutomationDefinitionValidator.Validate(record.Definition) ?? _registry.Validate(record.Definition);
+            var runnable = record.Definition.Enabled && rejection is null;
             var periodic = record.Definition.TriggerKind == LocalAutomationTriggerKind.Periodic;
-            var windowPlan = record.Definition.Enabled && record.Definition.TriggerKind == LocalAutomationTriggerKind.SourceWindowClosed
+            var windowPlan = runnable && record.Definition.TriggerKind == LocalAutomationTriggerKind.SourceWindowClosed
                 ? _windowPlanner?.Resolve(new(record.Definition, record.Version, record.RevisionSha256,
-                    value.LastOccurrenceUtc, value.LastCaptureSequence), Now()) : null;
-            var nextRunUtc = periodic && record.Definition.Enabled
+                    value.LastOccurrenceUtc, value.LastCaptureSequence), now) : null;
+            var nextRunUtc = periodic && runnable
                 ? LocalAutomationSchedule.NextPeriodicDueUtc(
                     record.Definition.TriggerEpochUtc, record.Definition.TriggerInterval, value.LastOccurrenceUtc)
                 : windowPlan?.NextOccurrence?.ScheduledForUtc;
-            var nextCapture = record.Definition.TriggerKind == LocalAutomationTriggerKind.CaptureRelative && record.Definition.Enabled
+            var nextCapture = record.Definition.TriggerKind == LocalAutomationTriggerKind.CaptureRelative && runnable
                 ? LocalAutomationSchedule.NextCaptureSequence(
                     record.Definition.TriggerInterval, value.LastCaptureSequence)
                 : null;
@@ -1318,6 +1350,8 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
                 lastRun,
                 history ?? [])
             {
+                RegistryRejection = rejection,
+                SupportsRunNow = runnable && _registry.SupportsRunNow(record.Definition),
                 NextOccurrence = windowPlan?.NextOccurrence,
                 WindowUnavailableReasonCode = windowPlan?.UnavailableReasonCode ??
                     (record.Definition.SourceWindow is not null && _windowPlanner is null ? "automation.window-planner-unavailable" : null)
@@ -1335,7 +1369,7 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
         }
         return new LocalAutomationOperatorState(
             storeVersion,
-            Now(),
+            now,
             observedCaptureSequence,
             _registry.Describe(),
             states,
@@ -1727,13 +1761,6 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
     /// origin also lies within one interval of now, which expresses every phase while keeping the
     /// first occurrence bounded; any other trigger keeps the save instant.
     /// </summary>
-    private static bool IsInitialTriggerEpoch(
-        DateTimeOffset epochUtc, DateTimeOffset nowUtc, LocalAutomationDefinition definition)
-        => epochUtc.Offset == TimeSpan.Zero && epochUtc == Truncate(epochUtc) && epochUtc >= nowUtc &&
-           (definition.TriggerKind == LocalAutomationTriggerKind.Periodic
-               ? epochUtc - nowUtc < TimeSpan.FromSeconds(definition.TriggerInterval)
-               : epochUtc == nowUtc);
-
     /// <summary>Trims to the stored bound without splitting a surrogate pair.</summary>
     private static string Bound(string value)
     {

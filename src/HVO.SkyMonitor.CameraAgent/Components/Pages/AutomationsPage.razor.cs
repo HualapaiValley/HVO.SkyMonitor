@@ -90,6 +90,8 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
     private bool _windowStep;
     private bool _scriptStep;
     private CameraAgentAutomationWindowPreview? _windowPreview;
+    private CameraAgentAutomationSchedulePreview? _schedulePreview;
+    private IReadOnlyList<CameraAgentAutomationSourceChoice> _sourceChoices = [];
     private bool _enabledInput = true;
     private long _editingVersion;
     private bool _editTargetRemoved;
@@ -187,6 +189,22 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
 
     private IReadOnlyList<LocalAutomationSourceWindowKind> SourceWindows
         => Descriptor(_taskKindInput)?.SupportedSourceWindows ?? [];
+
+    private LocalAutomationProducerPreset? ProducerPreset(string target)
+        => Descriptor(_taskKindInput)?.ProducerPresets.FirstOrDefault(preset => preset.Target == target);
+
+    private IEnumerable<LocalAutomationSourceSelection> SourceSelections
+        => _sourceChoices.Where(choice => choice.Period == _windowKindInput).Select(static choice => choice.Selection);
+
+    private void SourcePeriodChanged()
+    {
+        FormChanged();
+        var selections = SourceSelections.ToArray();
+        if (selections.Length > 0 && !selections.Contains(_selectionInput))
+        {
+            _selectionInput = selections[0];
+        }
+    }
 
     private string RegistryUnavailableReason => _automation?.Registry
         .Select(OperatorUnavailableReason)
@@ -389,6 +407,7 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         _formDirty = true;
         _commandMessage = null;
         _windowPreview = null;
+        _schedulePreview = null;
     }
 
     private void TaskChanged()
@@ -496,6 +515,8 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         _windowStep = false;
         _scriptStep = false;
         _windowPreview = null;
+        _schedulePreview = null;
+        _sourceChoices = [];
         _reasonInput = string.Empty;
         _enabledInput = true;
         SeedForm();
@@ -532,6 +553,8 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         _windowStep = false;
         _scriptStep = false;
         _windowPreview = null;
+        _schedulePreview = null;
+        _sourceChoices = [];
         if (_sourceWindowInput is { } policy)
         {
             _windowKindInput = policy.Kind;
@@ -581,44 +604,19 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
             _focusTargetId = "automation-script-target";
             return;
         }
-        if (!TryValidateForm())
+        if (!TryValidateForm() || !TryParseInterval(out var interval))
         {
             return;
         }
-        if (WindowTask)
+        if (!ScriptTask)
         {
-            if (!_windowStep)
-            {
-                _windowStep = true;
-                _focusTargetId = "automation-source-window";
-                return;
-            }
-            if (!SourceWindows.Contains(_windowKindInput) || !Enum.IsDefined(_selectionInput) ||
-                !decimal.TryParse(_settleInput, NumberStyles.AllowDecimalPoint, Invariant, out var seconds) ||
-                seconds < 0 || seconds > 86400 || decimal.Round(seconds, 7) != seconds)
-            {
-                SetCommandMessage("Choose a supported source period and a settle allowance between 0 and 86400 seconds (up to seven decimal places).", error: true);
-                return;
-            }
-            _sourceWindowInput = new(LocalAutomationSourceWindowPolicy.CurrentVersion, _windowKindInput,
-                _selectionInput, TimeSpan.FromTicks((long)(seconds * TimeSpan.TicksPerSecond)));
             _busy = true;
             try
             {
-                var result = await AutomationService.PreviewWindowAsync(new(_idInput.Trim(), _nameInput.Trim(),
-                    _enabledInput, _taskKindInput, _targetInput.Trim(), _triggerKindInput, 1, _editingVersion,
-                    string.Empty, string.Empty, null, _sourceWindowInput), _lifetime.Token);
-                if (result.Kind == OperatorUiResultKind.Unauthorized)
+                if (!await PrepareDefinitionPreviewAsync(interval))
                 {
-                    NavigationManager.NavigateTo("/Account/AccessDenied");
                     return;
                 }
-                if (!result.IsSuccess || result.Value is not { } preview)
-                {
-                    SetCommandMessage(result.Message ?? "The source-window preview is unavailable.", error: true);
-                    return;
-                }
-                _windowPreview = preview;
             }
             catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
             {
@@ -633,6 +631,74 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         _pendingDefinition = null;
         _dialog = DialogMode.Confirm;
         _focusTargetId = CancelId;
+    }
+
+    private async Task<bool> PrepareDefinitionPreviewAsync(int interval)
+    {
+        var request = new LocalAutomationSaveRequest(_idInput.Trim(), _nameInput.Trim(), _enabledInput, _taskKindInput,
+            _targetInput.Trim(), _triggerKindInput, interval, _editingVersion, string.Empty, string.Empty, null);
+        if (!WindowTask)
+        {
+            var result = await AutomationService.PreviewScheduleAsync(request, _lifetime.Token);
+            _schedulePreview = ReadPreview(result);
+            if (result.Kind == OperatorUiResultKind.Conflict)
+            {
+                await LoadAsync();
+            }
+            return _schedulePreview is not null;
+        }
+        if (!_windowStep)
+        {
+            var choices = ReadPreview(await AutomationService.GetSourceChoicesAsync(request, _lifetime.Token));
+            if (choices is null)
+            {
+                return false;
+            }
+            _sourceChoices = choices;
+            var originalKind = _windowKindInput;
+            var originalSelection = _selectionInput;
+            if (!choices.Any(choice => choice.Period == _windowKindInput))
+            {
+                _windowKindInput = choices[0].Period;
+            }
+            SourcePeriodChanged();
+            if (_sourceWindowInput is not null && (originalKind != _windowKindInput || originalSelection != _selectionInput))
+            {
+                SetCommandMessage("The recorded source settings are unavailable for this target. Review the selected period and selection before recording a new revision.", error: false);
+            }
+            _windowStep = true;
+            _focusTargetId = "automation-source-window";
+            return false;
+        }
+        if (!_sourceChoices.Contains(new(_windowKindInput, _selectionInput)) ||
+            !decimal.TryParse(_settleInput, NumberStyles.AllowDecimalPoint, Invariant, out var seconds) ||
+            seconds < 0 || seconds > 86400 || decimal.Round(seconds, 7) != seconds)
+        {
+            SetCommandMessage("Choose a supported source period and a settle allowance between 0 and 86400 seconds (up to seven decimal places).", error: true);
+            return false;
+        }
+        _sourceWindowInput = new(LocalAutomationSourceWindowPolicy.CurrentVersion, _windowKindInput, _selectionInput,
+            TimeSpan.FromTicks((long)(seconds * TimeSpan.TicksPerSecond)));
+        _windowPreview = ReadPreview(await AutomationService.PreviewWindowAsync(
+            request with { SourceWindow = _sourceWindowInput }, _lifetime.Token));
+        return _windowPreview is not null;
+    }
+
+    private T? ReadPreview<T>(OperatorUiResult<T> result) where T : class
+    {
+        if (result.Kind == OperatorUiResultKind.Unauthorized)
+        {
+            NavigationManager.NavigateTo("/Account/AccessDenied");
+        }
+        else if (result.IsSuccess)
+        {
+            return result.Value;
+        }
+        else
+        {
+            SetCommandMessage(result.Message ?? "The automation preview is unavailable.", error: true);
+        }
+        return null;
     }
 
     private void BackToTask()
@@ -929,7 +995,7 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
             SetCommandMessage(OperatorUnavailableReason(descriptor) ?? "Select an available registered task, target and trigger.", error: true);
             return false;
         }
-        return TryParseInterval(out _);
+        return true;
     }
 
     private static string SourceWindowLabel(LocalAutomationSourceWindowKind kind)
@@ -939,9 +1005,18 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         => selection == LocalAutomationSourceSelection.DarkNightActualSources ? "Dark-night actual sources" : "All actual sources";
 
     private static string WindowTime(DateTimeOffset utc, LocalAutomationSourceWindow window)
-        => string.Concat(TimeZoneInfo.ConvertTime(utc,
-                TimeZoneInfo.FindSystemTimeZoneById(window.ReportingPeriod.Site.TimeZoneId)).ToString("yyyy-MM-dd HH:mm:ss.fffffff zzz", Invariant),
-            " / UTC ", utc.ToString("yyyy-MM-dd HH:mm:ss.fffffff", Invariant));
+        => PredefinedAutomationRunControls.WindowTime(utc, window);
+
+    private LocalAutomationDefinitionState? RetryDefinition(LocalAutomationRun run)
+    {
+        if (run.Attempt >= SqliteLocalAutomationStore.MaximumOccurrenceAttempts ||
+            run.Outcome is not (LocalAutomationRunOutcome.Failed or LocalAutomationRunOutcome.Interrupted))
+        {
+            return null;
+        }
+        return _automation?.Definitions.FirstOrDefault(item => item.Definition.DefinitionId == run.DefinitionId && item.Definition.Enabled);
+    }
+
 
     /// <summary>The reason exactly as the store will hash it, so the retained key stays payload-accurate.</summary>
     private string? TrimmedReason()
@@ -1043,7 +1118,7 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
             "The definition stops running immediately. Its recorded runs stay in the run history, and its "
             + "revisions are retained durably under a bounded limit but are no longer listed on this page.",
         PendingCommandKind.Toggle => _pendingDefinition?.Definition.Enabled == true
-            ? "The definition stops running. Queued attempts will be withdrawn. Its recorded revisions and run history are retained."
+            ? "Disabling stops new runs. Queued attempts will be withdrawn. Any attempt already running can finish. Revisions and run history are retained."
             : "The definition starts running at its next occurrence. Occurrences that elapsed while it was "
               + "disabled are not replayed.",
         _ => (Editing ? "Queued attempts will be withdrawn. " : string.Empty)
@@ -1079,47 +1154,31 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         _ => "The custom script sandbox is unavailable. Ask the host owner to check its prerequisites and availability diagnostics."
     };
 
-    private string? DefinitionUnavailableReason(LocalAutomationDefinition definition)
+    private string? DefinitionUnavailableReason(LocalAutomationDefinitionState state)
     {
-        var descriptor = Descriptor(definition.TaskKind);
+        if (state.RegistryRejection is not { } rejection)
+        {
+            return null;
+        }
+        var descriptor = Descriptor(state.Definition.TaskKind);
         if (descriptor is not { Available: true })
         {
             return OperatorUnavailableReason(descriptor) ?? "This task is not registered on this CameraAgent.";
         }
-        if (!descriptor.Targets.Contains(definition.TaskTarget, StringComparer.Ordinal))
+        return rejection switch
         {
-            return "The recorded target is no longer registered. Edit this automation to choose a current target.";
-        }
-        if (!descriptor.CompatibleTriggers.Contains(definition.TriggerKind))
-        {
-            return "The recorded trigger is not supported by this task. Edit this automation to choose a supported trigger.";
-        }
-        if (definition.TriggerKind == LocalAutomationTriggerKind.SourceWindowClosed &&
-            (definition.SourceWindow is not { } policy || !policy.IsValid() || !descriptor.SupportedSourceWindows.Contains(policy.Kind)))
-        {
-            return "The recorded source period is not supported by this task. Edit this automation to choose a supported period.";
-        }
-        return null;
+            { ReasonCode: LocalAutomationContract.UnregisteredTargetReasonCode, FieldPath: "definition.taskTarget" } =>
+                "The recorded target is no longer registered. Edit this automation to choose a current target.",
+            { ReasonCode: LocalAutomationContract.UnregisteredCombinationReasonCode, FieldPath: "definition.triggerKind" } =>
+                "The recorded trigger is not supported by this task. Edit this automation to choose a supported trigger.",
+            _ => CameraAgentAutomationUiService.DescribeRejection(rejection)
+        };
     }
 
     private bool IsDefinitionRunnable(LocalAutomationDefinitionState item)
-        => item.Definition.Enabled && DefinitionUnavailableReason(item.Definition) is null;
+        => item.Definition.Enabled && item.RegistryRejection is null;
 
-    private IReadOnlyList<LocalAutomationCalendarEntry> RunnableCalendar
-    {
-        get
-        {
-            if (_automation is not { } state) return [];
-            // The store calendar is already capped and may be filled by retired targets. Definitions retain
-            // every next occurrence, so filter that complete projection before applying the display limit.
-            return state.Definitions.Where(item => IsDefinitionRunnable(item) && item.NextRunUtc is not null)
-                .OrderBy(static item => item.NextRunUtc)
-                .Take(LocalAutomationContract.MaximumProjectedCalendarEntries)
-                .Select(static item => new LocalAutomationCalendarEntry(item.Definition.DefinitionId,
-                    item.Definition.Name, item.Definition.TaskKind, item.Definition.TaskTarget, item.NextRunUtc!.Value)
-                { Occurrence = item.NextOccurrence }).ToArray();
-        }
-    }
+    private IReadOnlyList<LocalAutomationCalendarEntry> RunnableCalendar => _automation?.Calendar ?? [];
 
     private IReadOnlyList<string> Targets() => Descriptor(_taskKindInput)?.Targets ?? [];
 
@@ -1157,13 +1216,13 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
 
     private string DescribeNextRun(LocalAutomationDefinitionState definition)
     {
+        if (definition.RegistryRejection is not null)
+        {
+            return "Unavailable";
+        }
         if (!definition.Definition.Enabled)
         {
             return "Disabled";
-        }
-        if (DefinitionUnavailableReason(definition.Definition) is not null)
-        {
-            return "Unavailable";
         }
         if (definition.NextRunUtc is { } due)
         {

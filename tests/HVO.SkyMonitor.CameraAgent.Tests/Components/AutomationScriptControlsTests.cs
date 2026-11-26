@@ -332,5 +332,11 @@ public sealed class AutomationScriptControlsTests
         public ValueTask<OperatorUiResult<LocalAutomationCommandResult>> SaveAsync(LocalAutomationSaveRequest request, CancellationToken cancellationToken) => inner.SaveAsync(request, cancellationToken);
         public ValueTask<OperatorUiResult<LocalAutomationCommandResult>> RemoveAsync(LocalAutomationRemoveRequest request, CancellationToken cancellationToken) => inner.RemoveAsync(request, cancellationToken);
         public ValueTask<OperatorUiResult<CameraAgentAutomationWindowPreview>> PreviewWindowAsync(LocalAutomationSaveRequest request, CancellationToken cancellationToken) => inner.PreviewWindowAsync(request, cancellationToken);
+        public ValueTask<OperatorUiResult<IReadOnlyList<CameraAgentAutomationSourceChoice>>> GetSourceChoicesAsync(LocalAutomationSaveRequest request, CancellationToken cancellationToken) => inner.GetSourceChoicesAsync(request, cancellationToken);
+        public ValueTask<OperatorUiResult<CameraAgentAutomationSchedulePreview>> PreviewScheduleAsync(LocalAutomationSaveRequest request, CancellationToken cancellationToken) => inner.PreviewScheduleAsync(request, cancellationToken);
+        public ValueTask<OperatorUiResult<IReadOnlyList<LocalAutomationSourceWindow>>> PreviewBackfillAsync(string definitionId, long version, DateOnly reportDate, CancellationToken cancellationToken) => inner.PreviewBackfillAsync(definitionId, version, reportDate, cancellationToken);
+        public ValueTask<OperatorUiResult<LocalAutomationCommandResult>> BackfillAsync(LocalAutomationBackfillRequest request, CancellationToken cancellationToken) => inner.BackfillAsync(request, cancellationToken);
+        public ValueTask<OperatorUiResult<LocalAutomationCommandResult>> RetryAsync(LocalAutomationRetryRequest request, CancellationToken cancellationToken) => inner.RetryAsync(request, cancellationToken);
+        public ValueTask<OperatorUiResult<LocalAutomationCommandResult>> RunNowAsync(LocalAutomationRunNowRequest request, CancellationToken cancellationToken) => inner.RunNowAsync(request, cancellationToken);
     }
 }

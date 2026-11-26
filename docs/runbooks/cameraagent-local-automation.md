@@ -10,12 +10,13 @@ This runbook covers the versioned durable local contract behind that section.
 ## Configure A Product Automation
 
 Choose **Create automation**, then an available registered task and its pinned
-target. Product tasks continue through **Next: source window**: select a completed
-site-local hour or sunrise-to-next-sunrise period, the producer's accepted actual
-source selection, and a settle allowance from 0 to 86400 seconds. Up to seven
-decimal places preserve existing subsecond allowances. Keograms require all actual
-sources; star trails require dark-night sources. The pinned target supplies recipe
-parameters; changing producer configuration is a separate operation.
+target. The target shows the producer's pinned settings. Product tasks continue
+through **Next: source window**. Select a completed site-local hour or a daily
+sunrise-to-next-sunrise period from the choices that producer accepts. The source
+selection defaults to an accepted value. Keograms require all actual sources,
+star trails require dark-night sources, and daily summaries require a sunrise
+day. Settle allowances range from 0 to 86400 seconds and preserve up to seven
+decimal places. Producer recipe settings come from the host configuration.
 
 **Preview and review** shows exact inclusive start, exclusive end, site zone and
 offsets, starting-sunrise product date, and next-run/earliest-final time in both
@@ -23,22 +24,40 @@ site time and UTC. The preview is read-only, calculated for the next future
 occurrence if enabled; saving later may change it. It is not a coverage or
 publication guarantee. Missing sunrise events produce explicit unavailability,
 without a fallback time. Partial sunrise hours and DST folds/gaps use the shared
-planner. Confirm **Record revision** to save; stepping back retains your fields.
+planner. **Review and save** for periodic and capture-relative tasks previews
+the current cadence or the exact durable capture sequence when a baseline is
+known. Confirm **Record revision** to save. Stepping back retains your fields.
 
 **Edit** supports source-window definitions, including their retained selection
 and allowance. **Disable** pauses the definition without rewriting its policy or
 old occurrences. Revision history retains actor and reason. Hourly and daily tasks
 use separate identifiers and revisions. The first-slice scope and decision to
 retain the current runner are recorded in the
-[wizard decision](../planning/automation-wizard-1133.md). Run/cancel/backfill UI and
-broader task parameter editors remain follow-up work under #1133.
+[wizard decision](../planning/automation-wizard-1133.md).
 
-Changing a pinned producer preset can retire its old target hash. A retained
-definition then shows **Unavailable**, with repair guidance, and contributes no
-enabled count or upcoming run. Unsupported retained triggers and source presets
-are treated the same way. Choose **Edit** and select a currently registered
-target/trigger/period to record a new revision; old definitions in revision history
-and retained occurrences keep their original identities. Enable/disable is
+In **Schedule**, expand unavailable schedules for the same repair guidance shown
+on definition cards. Upcoming product runs show their exact source spans and
+earliest final time. In **Runs**, expand source window and provenance to inspect
+a retained attempt and find products linked to its occurrence. A time-lapse
+request can succeed before its worker produces a video.
+
+On a runnable product definition, expand **Backfill** and enter the
+starting-sunrise report date. Preview the eligible windows and select the exact
+hour by offset and UTC time when applicable. Give a reason before queuing. If a
+site change moves the previewed window, preview the new window before queuing. A
+failed or interrupted source-window run can be retried from **Runs** with its
+original inputs. The store checks the version, retention, current registry,
+finality and queue bounds again at admission. Disabling withdraws queued
+attempts. An already running predefined task finishes under its existing worker
+policy. Time-data refresh supports **Run now**. Orbital and space-weather
+refreshes link to their provider-specific controls.
+
+Changing a producer preset or its validation rules can make a definition
+unavailable. Such a definition shows **Unavailable** with the registry's repair
+guidance and contributes no enabled count or upcoming run. Choose **Edit** and
+select a currently registered target, trigger, or period to record a new
+revision. Revision history and retained occurrences keep their original
+identities. Enable/disable is
 unavailable until the retained settings are compatible again.
 
 ## What A Definition Can Express
