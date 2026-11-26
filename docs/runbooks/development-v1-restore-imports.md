@@ -87,10 +87,11 @@ unsafe input is removed or the audit policy is changed under HIGH-tier review.
 Drift in the observed Linux x64 SDK binary, resolved NuGet packages, or
 generated `.nuget.g.props`/`.nuget.g.targets` imports is caught by SDK-backed
 `--verify-docs-restore HEAD` in full-mode `CI / Quality` (failing the job) and
-during `Development v1 / Build and Unit` classification. Even when a base tree
-carries a stale, drifted or unsafe certificate, Build and Unit continues to fail
-closed and select full validation; it never produces a skipped-green required
-result (Refs #1996).
+by the trusted-base `--verify-docs-restore "$base"` replay during
+`Development v1 / Build and Unit` classification of docs-only PRs. Even when a
+base tree carries a stale, drifted or unsafe certificate, Build and Unit
+continues to fail closed and select full validation; it never produces a
+skipped-green required result (Refs #1996).
 
 From a clean candidate commit on Linux x64, use the pinned stable SDK and the
 same NuGet sources as Build and Unit. The published Linux x64 SDK distribution
