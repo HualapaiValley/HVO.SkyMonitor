@@ -405,6 +405,14 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
 
         var source5TransformOn3 = ReadContributorSimilarity(apiStack3Enriched, admitted[4].Key.CaptureId);
         var source5TransformOn4 = ReadContributorSimilarity(apiStack4Enriched, admitted[4].Key.CaptureId);
+        Assert.AreEqual(2.5, source5TransformOn3.Tx, QualOverlayTolerancePixels,
+            $"{modeName}: source #5 -> base #3 Tx must match expected +2.5 px shift.");
+        Assert.AreEqual(-1.5, source5TransformOn3.Ty, QualOverlayTolerancePixels,
+            $"{modeName}: source #5 -> base #3 Ty must match expected -1.5 px shift.");
+        Assert.AreEqual(1.25, source5TransformOn4.Tx, QualOverlayTolerancePixels,
+            $"{modeName}: source #5 -> base #4 Tx must match expected +1.25 px shift.");
+        Assert.AreEqual(-0.75, source5TransformOn4.Ty, QualOverlayTolerancePixels,
+            $"{modeName}: source #5 -> base #4 Ty must match expected -0.75 px shift.");
         Assert.IsGreaterThan(0.9, Math.Abs(source5TransformOn3.Tx - source5TransformOn4.Tx),
             "Source #5 registration transform must stay scoped to each overlapping base (#3 vs #4).");
         var expectedTrail3Start = source5TransformOn3.SourceToReference(trailStart5)!.Value;
@@ -414,7 +422,7 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         AssertQualTrail(liveTrail4, expectedTrail4Start, expectedTrail4End, $"{modeName}-current-sky-partial-stack4-trail");
 
         // 4. Operations (/operations/pipeline -> Running pipeline & recorded reference run for #3):
-        // verify live #4 details AND follow recorded #3 publication link to verify both earlier & enriched #3 revisions!
+        // verify live #4 details AND follow BOTH rendered publication links on the recorded #3 run page!
         await page.GotoAsync("/operations/pipeline").ConfigureAwait(false);
         await page.GetByRole(AriaRole.Link, new() { Name = "Running pipeline", Exact = true }).ClickAsync().ConfigureAwait(false);
         await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
@@ -429,15 +437,42 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         await Assertions.Expect(displayRegion.GetByRole(AriaRole.Link, new() { Name = "Open exact stack revision" }))
             .ToHaveAttributeAsync("href", stack4EnrichedApiHref).ConfigureAwait(false);
 
-        // Open the recorded reference execution for #3 and follow its enriched Stack #3 publication link!
+        // Open the recorded reference execution for #3 after #4 is live and verify BOTH the original live-issued
+        // #3 link AND the later enriched #3 link are rendered, then follow BOTH links directly from the page!
         var stack3ExecutionPath = $"/operations/pipeline/executions/{stack3.Base.Definition.Reference.ExecutionId:D}";
         await page.GotoAsync(stack3ExecutionPath).ConfigureAwait(false);
         await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
+        var recordedInitialLink = page.Locator($".run-publication a[href='{stack3InitialApiHref}']");
         var recordedEnrichedLink = page.Locator($".run-publication a[href='{stack3EnrichedApiHref}']");
+        await Assertions.Expect(recordedInitialLink).ToBeVisibleAsync().ConfigureAwait(false);
         await Assertions.Expect(recordedEnrichedLink).ToBeVisibleAsync().ConfigureAwait(false);
+        StringAssert.Contains(await recordedInitialLink.InnerTextAsync().ConfigureAwait(false),
+            "Last issued live", StringComparison.Ordinal);
+        StringAssert.Contains(await recordedEnrichedLink.InnerTextAsync().ConfigureAwait(false),
+            "Later archived revision", StringComparison.Ordinal);
 
-        // 5. Shared Archive Viewer: reopen Single #3, earlier Stack #3 (pre-trail), enriched Stack #3 (post-trail),
-        // and Partial Stack #4 — verifying decoded JPEG pixels, colors, dimensions, and base-scoped overlays on EVERY base!
+        var followedInitialHref = await recordedInitialLink.GetAttributeAsync("href").ConfigureAwait(false);
+        var followedEnrichedHref = await recordedEnrichedLink.GetAttributeAsync("href").ConfigureAwait(false);
+        Assert.AreEqual(stack3InitialApiHref, followedInitialHref);
+        Assert.AreEqual(stack3EnrichedApiHref, followedEnrichedHref);
+        var followedStack3Initial = await ReadApiCenteredViewAsync(context, followedInitialHref!).ConfigureAwait(false);
+        var followedStack3Enriched = await ReadApiCenteredViewAsync(context, followedEnrichedHref!).ConfigureAwait(false);
+        Assert.AreEqual(stack3.Base.BaseId, followedStack3Initial.Base.BaseId);
+        Assert.AreEqual(stack3InitialRevId, followedStack3Initial.Revision.RevisionId);
+        Assert.AreEqual(stack3.Base.Definition.Preview.PayloadSha256, followedStack3Initial.Base.Definition.Preview.PayloadSha256);
+        Assert.IsFalse(followedStack3Initial.Revision.Layers.Any(layer =>
+                layer.Key.Kind == TransientTrailPresentation.LayerKind && layer.Readiness == CenteredViewReadiness.Ready),
+            "Followed original #3 Operations link must resolve the pre-trail live-issued revision.");
+        Assert.AreEqual(stack3.Base.BaseId, followedStack3Enriched.Base.BaseId);
+        Assert.AreEqual(stack3EnrichedRevId, followedStack3Enriched.Revision.RevisionId);
+        Assert.AreEqual(stack3.Base.Definition.Preview.PayloadSha256, followedStack3Enriched.Base.Definition.Preview.PayloadSha256);
+        Assert.IsTrue(followedStack3Enriched.Revision.Layers.Any(layer =>
+                layer.Key.Kind == TransientTrailPresentation.LayerKind && layer.Readiness == CenteredViewReadiness.Ready),
+            "Followed enriched #3 Operations link must resolve the post-trail archived revision.");
+
+        // 5. Shared Archive Viewer: reopen Single #3, earlier Stack #3 (pre-trail, from followed Operations link),
+        // enriched Stack #3 (post-trail, from followed Operations link), and Partial Stack #4 — verifying decoded
+        // JPEG pixels, colors, dimensions, and base-scoped overlays on EVERY base!
         await page.GotoAsync(CenteredViewLinks.Archive(admitted[2].Key.CaptureId, single3.Base.BaseId, single3.LatestRevisionId))
             .ConfigureAwait(false);
         await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
@@ -446,22 +481,28 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         await VerifyRenderedImageAndColorsAsync(page, context, bayer, single3.Base.Definition.Preview.PayloadSha256,
             $"{modeName}-archive-single3", offsetX: 0, offsetY: 0, token).ConfigureAwait(false);
 
-        // Earlier live-issued Stack #3 revision (before delayed trail) resolves exact pair with 0 trail lines!
-        await page.GotoAsync(CenteredViewLinks.Archive(admitted[2].Key.CaptureId, stack3.Base.BaseId, stack3InitialRevId))
+        // Earlier live-issued Stack #3 revision (followed from Operations run page) resolves exact pair with 0 trail lines!
+        await page.GotoAsync(CenteredViewLinks.Archive(
+                followedStack3Initial.Base.Definition.Reference.Capture.CaptureId,
+                followedStack3Initial.Base.BaseId,
+                followedStack3Initial.Revision.RevisionId))
             .ConfigureAwait(false);
         await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
         await page.Locator(".sky-layer-canvas--verified").WaitForAsync().ConfigureAwait(false);
-        await VerifyRenderedImageAndColorsAsync(page, context, bayer, stack3.Base.Definition.Preview.PayloadSha256,
+        await VerifyRenderedImageAndColorsAsync(page, context, bayer, followedStack3Initial.Base.Definition.Preview.PayloadSha256,
             $"{modeName}-archive-stack3-initial", offsetX: 0, offsetY: 0, token).ConfigureAwait(false);
         Assert.AreEqual(0, await page.Locator($".sky-layer-overlay svg g[data-layer-kind='{TransientTrailPresentation.LayerKind}'] line").CountAsync().ConfigureAwait(false),
             "Archived earlier Stack #3 revision must stay free of the delayed trail.");
 
-        // Later enriched Stack #3 revision resolves exact pair WITH source #5 trail scoped to base #3!
-        await page.GotoAsync(CenteredViewLinks.Archive(admitted[2].Key.CaptureId, stack3.Base.BaseId, stack3EnrichedRevId))
+        // Later enriched Stack #3 revision (followed from Operations run page) resolves exact pair WITH source #5 trail scoped to base #3!
+        await page.GotoAsync(CenteredViewLinks.Archive(
+                followedStack3Enriched.Base.Definition.Reference.Capture.CaptureId,
+                followedStack3Enriched.Base.BaseId,
+                followedStack3Enriched.Revision.RevisionId))
             .ConfigureAwait(false);
         await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
         await page.Locator(".sky-layer-canvas--verified").WaitForAsync().ConfigureAwait(false);
-        await VerifyRenderedImageAndColorsAsync(page, context, bayer, stack3.Base.Definition.Preview.PayloadSha256,
+        await VerifyRenderedImageAndColorsAsync(page, context, bayer, followedStack3Enriched.Base.Definition.Preview.PayloadSha256,
             $"{modeName}-archive-stack3-enriched", offsetX: 0, offsetY: 0, token).ConfigureAwait(false);
         var archiveRefMarker3 = await ReadBrowserReferenceMarkerAsync(page).ConfigureAwait(false);
         AssertQualPoint(archiveRefMarker3, refMarker3, $"{modeName}-archive-stack3-ref-marker");

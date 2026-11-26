@@ -60,14 +60,48 @@ public static class BuiltInProcessingRecipes
         JsonElement options,
         ProcessingInputSelector selector,
         ProcessingAnnotationInput? annotation = null,
-        IReadOnlyList<ProcessingAuxiliaryInput>? auxiliaryInputs = null)
+        IReadOnlyList<ProcessingAuxiliaryInput>? auxiliaryInputs = null) =>
+        CreateExecutionIdentity(recipeName, options, selector, annotation, auxiliaryInputs, deliveredCfaPhase: null);
+
+    public static ProcessingRecipeIdentity CreateExecutionIdentity(ProcessingExecutionRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        return CreateExecutionIdentity(
+            request.RecipeName,
+            request.Options,
+            request.Input,
+            request.Annotation,
+            request.AuxiliaryInputs,
+            ResolveDeliveredBayerPhase(request));
+    }
+
+    internal static BayerPattern? ResolveDeliveredBayerPhase(ProcessingExecutionRequest request)
+    {
+        if (request.RecipeName is not (EncodedPreview or FixedPreview or Annotation))
+        {
+            return null;
+        }
+        var primary = ProcessingRecipeSupport.ResolveSingle(request, out _);
+        return primary?.Layout is { PixelFormat: CameraPixelFormat.BayerRggb16 } layout
+            ? BayerRggb16Demosaicer.ResolvePattern(layout)
+            : null;
+    }
+
+    private static ProcessingRecipeIdentity CreateExecutionIdentity(
+        string recipeName,
+        JsonElement options,
+        ProcessingInputSelector selector,
+        ProcessingAnnotationInput? annotation,
+        IReadOnlyList<ProcessingAuxiliaryInput>? auxiliaryInputs,
+        BayerPattern? deliveredCfaPhase)
     {
         ArgumentNullException.ThrowIfNull(selector);
         var recipe = CreateAll().SingleOrDefault(candidate =>
             string.Equals(candidate.Definition.Name, recipeName, StringComparison.Ordinal))
             ?? throw new ArgumentException("The requested built-in recipe is unknown.", nameof(recipeName));
         var normalized = recipe.NormalizeOptions(options);
-        var effective = ProcessingIdentity.BindExecutionInputs(normalized, selector, annotation, auxiliaryInputs);
+        var effective = ProcessingIdentity.BindExecutionInputs(
+            normalized, selector, annotation, auxiliaryInputs, deliveredCfaPhase);
         return ProcessingIdentity.CreateRecipeIdentity(recipe.Definition, effective);
     }
 

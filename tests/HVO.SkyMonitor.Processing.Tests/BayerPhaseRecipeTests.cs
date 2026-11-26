@@ -154,6 +154,249 @@ public sealed class BayerPhaseRecipeTests
         }
     }
 
+    [TestMethod]
+    public async Task ShiftedBayerPhasesProduceDistinctRecipeAndOutputIdentitiesWhilePinningHistoricalRggbAsync()
+    {
+        var fixedArtifactId = Guid.Parse("19281928-1928-4928-8928-192819281928");
+        var createdUtc = new DateTimeOffset(2026, 11, 20, 22, 30, 0, TimeSpan.Zero);
+        var rig = CreateRig(0, 0);
+        var compatibility = new ProcessingCompatibilityIdentity(
+            RigProjectionContextFactory.CreateProfileHashSha256(rig),
+            "orientation-v1", "cal-none", "mask-none", "sensor-v1", "setpoint-v1", "profile-v1");
+        var sharedRaw = RenderColorPatches(0, 0);
+        var selector = ProcessingInputSelector.Raw("raw");
+        var executor = new ProcessingRecipeExecutor();
+
+        Assert.ThrowsExactly<ArgumentNullException>(() =>
+            BuiltInProcessingRecipes.CreateExecutionIdentity((ProcessingExecutionRequest)null!));
+
+        (int X, int Y, BayerPattern Pattern)[] phases =
+        [
+            (0, 0, BayerPattern.Rggb),
+            (1, 0, BayerPattern.Grbg),
+            (0, 1, BayerPattern.Gbrg),
+            (1, 1, BayerPattern.Bggr)
+        ];
+
+        FrameLayoutDescriptor LegacyRggbLayout() =>
+            new(Width, Height, Width * 2, CameraPixelFormat.BayerRggb16, FrameByteOrder.LittleEndian, 12, 16,
+                FrameSamplePacking.ByteAligned, ColorFilterArrayPattern.Rggb, 64, 4095, sharedRaw.Length)
+            {
+                StoredCodeTransform = FrameStoredCodeTransform.RightAlignedV1,
+                LevelCodeSpace = FrameLevelCodeSpace.NativeSample
+            };
+
+        FrameLayoutDescriptor Mono16Layout() =>
+            new(Width, Height, Width * 2, CameraPixelFormat.Mono16, FrameByteOrder.LittleEndian, 12, 16,
+                FrameSamplePacking.ByteAligned, ColorFilterArrayPattern.None, 64, 4095, sharedRaw.Length)
+            {
+                StoredCodeTransform = FrameStoredCodeTransform.RightAlignedV1,
+                LevelCodeSpace = FrameLevelCodeSpace.NativeSample
+            };
+
+        ProcessingArtifact ArtifactFor(FrameLayoutDescriptor layout) => new(
+            fixedArtifactId,
+            FrameArtifactRole.Raw,
+            "raw",
+            new string('A', 64),
+            "application/octet-stream",
+            layout,
+            sharedRaw,
+            createdUtc,
+            TimeSpan.FromSeconds(1),
+            compatibility)
+        {
+            ObservationStartedUtc = createdUtc
+        };
+
+        var encodedOptions = JsonSerializer.SerializeToElement(new { outputEncoding = "Jpeg", jpegQuality = 90 });
+        var fixedOptions = JsonSerializer.SerializeToElement(new FixedDisplayTransferOptions(64, 4095, 2.2));
+        var annotationOptions = JsonSerializer.SerializeToElement(new
+        {
+            drawLabels = false,
+            drawImageCircle = false,
+            drawCardinalDirections = false,
+            jpegQuality = 90
+        });
+        var annotationInput = new ProcessingAnnotationInput(
+            [],
+            [],
+            new PreviewTransform(1, 1),
+            null,
+            new string('C', 64));
+
+        // Verify EncodedPreview, FixedPreview, and raw-input Annotation bind non-(0,0) CFA phase into both
+        // Recipe.IdentitySha256 and OutputIdentitySha256 while preserving historical (0,0) RGGB and legacy keys.
+        var recipeCases = new (string RecipeName, JsonElement Options, string Variant, ProcessingAnnotationInput? Annotation, string GoldenRggbRecipe, string GoldenRggbOutput)[]
+        {
+            (BuiltInProcessingRecipes.EncodedPreview, encodedOptions, "preview", null,
+                "CEBC4D6E215D8F95B07425B2A8A830D74DE7F617A5A5F1073355F0A641EAA65D",
+                "7478AAA909DC3BFC4FC3F32DB2AF4C5F77C9691CAB8B013F414C8BE1653A655A"),
+            (BuiltInProcessingRecipes.FixedPreview, fixedOptions, "fixed-preview", null,
+                "15A1782B2ABA9DD9CDFBA461BBA4CC6FF3D0D8BCDBC9217C266C6F4A90D7DB81",
+                "CCD5E9D7CC90B35EE2D8BEB39053C2CA4D398E57618AB95408AF5B2CBD5C18E5"),
+            (BuiltInProcessingRecipes.Annotation, annotationOptions, "annotated", annotationInput,
+                "5BDEA97715F86F24C95F9ACF1E4E2A02A4A922248FF7E42B7DB4C10B4D314D53",
+                "7CFAF2AB0C281FB257EB79E3CC3C20DA4927D68AC14820496D11DCA12CAA98C3")
+        };
+
+        foreach (var (recipeName, options, variant, annotation, goldenRggbRecipe, goldenRggbOutput) in recipeCases)
+        {
+            var historicalIdentity = BuiltInProcessingRecipes.CreateExecutionIdentity(
+                recipeName, options, selector, annotation);
+            var recipeIds = new Dictionary<BayerPattern, string>();
+            var outputIds = new Dictionary<BayerPattern, string>();
+            var artifactIds = new Dictionary<BayerPattern, Guid>();
+            byte[]? rggbPayload = null;
+
+            foreach (var (ox, oy, pattern) in phases)
+            {
+                var req = new ProcessingExecutionRequest(
+                    recipeName, options, selector, [ArtifactFor(CreateLayout(ox, oy, sharedRaw.Length))],
+                    variant, Annotation: annotation, InputArtifactId: fixedArtifactId);
+                var outcome = await executor.ExecuteAsync(req).ConfigureAwait(false);
+                Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status, $"{recipeName}-{pattern}: {outcome.ReasonCode}");
+                var product = outcome.Products[0];
+
+                // Replay contract agreement: CreateExecutionIdentity(request) and descriptor/output hashing must match!
+                var replayExpected = BuiltInProcessingRecipes.CreateExecutionIdentity(req);
+                Assert.AreEqual(replayExpected.IdentitySha256, product.Recipe.IdentitySha256, $"{recipeName}-{pattern}: replay recipe identity");
+                Assert.AreEqual(
+                    ProcessingIdentity.CreateRecipeIdentity(product.Recipe.Descriptor).IdentitySha256,
+                    product.Recipe.IdentitySha256,
+                    $"{recipeName}-{pattern}: descriptor recipe identity");
+                Assert.AreEqual(
+                    ProcessingIdentity.CreateOutputIdentity(product.Role, product.Variant, product.Recipe.IdentitySha256, product.SourceArtifactIds),
+                    product.OutputIdentitySha256,
+                    $"{recipeName}-{pattern}: output identity");
+
+                if (pattern == BayerPattern.Rggb)
+                {
+                    Assert.AreEqual(historicalIdentity.IdentitySha256, product.Recipe.IdentitySha256,
+                        $"{recipeName}: (0,0) RGGB must preserve historical recipe identity.");
+                    Assert.IsFalse(product.Recipe.Descriptor.Options.TryGetProperty("deliveredCfa", out _),
+                        $"{recipeName}: (0,0) RGGB descriptor must omit deliveredCfa.");
+                    Assert.AreEqual(goldenRggbRecipe, product.Recipe.IdentitySha256, $"{recipeName}: golden RGGB recipe");
+                    Assert.AreEqual(goldenRggbOutput, product.OutputIdentitySha256, $"{recipeName}: golden RGGB output");
+                    rggbPayload = product.Payload.ToArray();
+                }
+                else
+                {
+                    Assert.AreNotEqual(historicalIdentity.IdentitySha256, product.Recipe.IdentitySha256,
+                        $"{recipeName}-{pattern}: shifted phase must not alias historical RGGB recipe identity.");
+                    Assert.AreEqual(pattern.ToString(), product.Recipe.Descriptor.Options.GetProperty("deliveredCfa").GetString(),
+                        $"{recipeName}-{pattern}: descriptor must record deliveredCfa.");
+                }
+
+                recipeIds[pattern] = product.Recipe.IdentitySha256;
+                outputIds[pattern] = product.OutputIdentitySha256;
+                artifactIds[pattern] = ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256);
+            }
+
+            Assert.AreEqual(4, recipeIds.Values.Distinct(StringComparer.Ordinal).Count(),
+                $"{recipeName}: all 4 CFA phases must produce mutually distinct Recipe.IdentitySha256 values.");
+            Assert.AreEqual(4, outputIds.Values.Distinct(StringComparer.Ordinal).Count(),
+                $"{recipeName}: all 4 CFA phases must produce mutually distinct OutputIdentitySha256 values.");
+            Assert.AreEqual(4, artifactIds.Values.Distinct().Count(),
+                $"{recipeName}: all 4 CFA phases must produce mutually distinct durable artifact IDs.");
+
+            // Legacy layout (Readout = null) must match (0,0) RGGB recipe identity, output identity, and payload bytes!
+            var legacyReq = new ProcessingExecutionRequest(
+                recipeName, options, selector, [ArtifactFor(LegacyRggbLayout())],
+                variant, Annotation: annotation, InputArtifactId: fixedArtifactId);
+            var legacyOutcome = await executor.ExecuteAsync(legacyReq).ConfigureAwait(false);
+            Assert.AreEqual(ProcessingOutcomeStatus.Produced, legacyOutcome.Status, legacyOutcome.ReasonCode);
+            var legacyProduct = legacyOutcome.Products[0];
+            Assert.AreEqual(recipeIds[BayerPattern.Rggb], legacyProduct.Recipe.IdentitySha256, $"{recipeName}: legacy recipe");
+            Assert.AreEqual(outputIds[BayerPattern.Rggb], legacyProduct.OutputIdentitySha256, $"{recipeName}: legacy output");
+            CollectionAssert.AreEqual(rggbPayload!, legacyProduct.Payload.ToArray(), $"{recipeName}: legacy bytes");
+
+            // Mono16 input must keep historical recipe identity without deliveredCfa.
+            var monoReq = new ProcessingExecutionRequest(
+                recipeName, options, selector, [ArtifactFor(Mono16Layout())],
+                variant, Annotation: annotation, InputArtifactId: fixedArtifactId);
+            var monoOutcome = await executor.ExecuteAsync(monoReq).ConfigureAwait(false);
+            Assert.AreEqual(ProcessingOutcomeStatus.Produced, monoOutcome.Status, monoOutcome.ReasonCode);
+            Assert.AreEqual(historicalIdentity.IdentitySha256, monoOutcome.Products[0].Recipe.IdentitySha256, $"{recipeName}: mono16 recipe");
+            Assert.IsFalse(monoOutcome.Products[0].Recipe.Descriptor.Options.TryGetProperty("deliveredCfa", out _), $"{recipeName}: mono16 deliveredCfa");
+        }
+
+        // Non-demosaicing recipes (e.g. LinearNormalization) must not bind deliveredCfa even on odd-origin BGGR.
+        var linearReq = new ProcessingExecutionRequest(
+            BuiltInProcessingRecipes.LinearNormalization,
+            JsonSerializer.SerializeToElement(new { mode = "None" }),
+            selector,
+            [ArtifactFor(CreateLayout(1, 1, sharedRaw.Length))],
+            "linear",
+            InputArtifactId: fixedArtifactId);
+        var linearOutcome = await executor.ExecuteAsync(linearReq).ConfigureAwait(false);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, linearOutcome.Status, linearOutcome.ReasonCode);
+        var linearHistorical = BuiltInProcessingRecipes.CreateExecutionIdentity(
+            linearReq.RecipeName, linearReq.Options, linearReq.Input);
+        Assert.AreEqual(linearHistorical.IdentitySha256, linearOutcome.Products[0].Recipe.IdentitySha256);
+        Assert.AreEqual(linearHistorical.IdentitySha256, BuiltInProcessingRecipes.CreateExecutionIdentity(linearReq).IdentitySha256);
+    }
+
+    [TestMethod]
+    public void TimeLapseFrameRendererPinsRggbIdentityAndDistinguishesDeliveredCfaWithSameRig()
+    {
+        const string goldenRggbRenderingIdentity = "6BC0FB08FEF12D88CD586763A59CF3DD58A287E912CE1558EF2F54013A61F618";
+        var fixedArtifactId = Guid.Parse("19281928-1928-4928-8928-192819280001");
+        var createdUtc = new DateTimeOffset(2026, 11, 20, 22, 30, 0, TimeSpan.Zero);
+        var sharedRig = CreateRig(0, 0);
+        var sharedCompat = new ProcessingCompatibilityIdentity(
+            RigProjectionContextFactory.CreateProfileHashSha256(sharedRig),
+            "orientation-v1", "cal-none", "mask-none", "sensor-v1", "setpoint-v1", "profile-v1");
+        var sharedRaw = RenderColorPatches(0, 0);
+        var options = new TimeLapseFrameOptions(
+            CardinalDirections: false, CornerMetadata: false, ImageCircle: false, JpegQuality: 90);
+
+        ProcessingArtifact ArtifactFor(FrameLayoutDescriptor layout) => new(
+            fixedArtifactId,
+            FrameArtifactRole.Raw,
+            "raw",
+            new string('A', 64),
+            "application/octet-stream",
+            layout,
+            sharedRaw,
+            createdUtc,
+            TimeSpan.FromSeconds(1),
+            sharedCompat)
+        {
+            ObservationStartedUtc = createdUtc
+        };
+
+        // Hold rig, compatibility, artifact ID, raw bytes, timestamp, and options completely fixed;
+        // vary ONLY layout.Readout.CfaOriginX/Y so RenderingIdentitySha256 separation depends strictly on deliveredCfa.
+        var rggb = TimeLapseFrameRenderer.Render([ArtifactFor(CreateLayout(0, 0, sharedRaw.Length))], sharedRig, options, daytime: false, Width, Height);
+        var grbg = TimeLapseFrameRenderer.Render([ArtifactFor(CreateLayout(1, 0, sharedRaw.Length))], sharedRig, options, daytime: false, Width, Height);
+        var gbrg = TimeLapseFrameRenderer.Render([ArtifactFor(CreateLayout(0, 1, sharedRaw.Length))], sharedRig, options, daytime: false, Width, Height);
+        var bggr = TimeLapseFrameRenderer.Render([ArtifactFor(CreateLayout(1, 1, sharedRaw.Length))], sharedRig, options, daytime: false, Width, Height);
+
+        var legacyLayout = new FrameLayoutDescriptor(
+            Width, Height, Width * 2, CameraPixelFormat.BayerRggb16, FrameByteOrder.LittleEndian, 12, 16,
+            FrameSamplePacking.ByteAligned, ColorFilterArrayPattern.Rggb, 64, 4095, sharedRaw.Length)
+        {
+            StoredCodeTransform = FrameStoredCodeTransform.RightAlignedV1,
+            LevelCodeSpace = FrameLevelCodeSpace.NativeSample
+        };
+        var legacy = TimeLapseFrameRenderer.Render([ArtifactFor(legacyLayout)], sharedRig, options, daytime: false, Width, Height);
+
+        Assert.AreEqual(goldenRggbRenderingIdentity, rggb.RenderingIdentitySha256,
+            "Pinned (0,0) RGGB time-lapse rendering identity must remain unchanged.");
+        Assert.AreEqual(rggb.RenderingIdentitySha256, legacy.RenderingIdentitySha256,
+            "Legacy null-readout Bayer layout must preserve the exact (0,0) RGGB rendering identity.");
+        string[] allIdentities =
+        [
+            rggb.RenderingIdentitySha256,
+            grbg.RenderingIdentitySha256,
+            gbrg.RenderingIdentitySha256,
+            bggr.RenderingIdentitySha256
+        ];
+        Assert.AreEqual(4, allIdentities.Distinct(StringComparer.Ordinal).Count(),
+            "All 4 delivered Bayer CFA phases with identical rig and bytes must produce distinct RenderingIdentitySha256 values.");
+    }
+
     private static byte[] RenderColorPatches(int originX, int originY)
     {
         var raw = new byte[Width * Height * 2];

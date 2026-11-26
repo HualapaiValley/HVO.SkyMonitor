@@ -481,12 +481,7 @@ internal static class ReplayProjection
             ProcessingRecipeIdentity? expectedRecipe = null;
             if (envelope.Products.Count > 0)
             {
-                expectedRecipe = BuiltInProcessingRecipes.CreateExecutionIdentity(
-                    request.RecipeName,
-                    request.Options,
-                    request.Input,
-                    request.Annotation,
-                    request.AuxiliaryInputs);
+                expectedRecipe = BuiltInProcessingRecipes.CreateExecutionIdentity(request);
             }
             var expectedProduct = envelope.Products.Count > 0
                 ? BuiltInProcessingRecipes.CreateProductContract(request, expectedRecipe!)

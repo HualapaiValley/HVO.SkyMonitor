@@ -229,8 +229,14 @@ public sealed class CenteredPipelineQualificationTests
             var layerProducer = new CenteredViewLayerProducer(views, persistence);
             var reader = provider.GetRequiredService<ICenteredViewPresentationReader>();
 
+            // Repository scope note (#1928): no real-camera raw binary Mono16/Bayer frames are checked into git.
+            // The retained November Mono16 and staged odd-origin bayer-103.bin corpus lives outside the repo and
+            // is replayed end-to-end by [TestCategory("Manual")] CenteredCorpusEvidenceTests when HVO_CAPTURE_1919_CORPUS
+            // is mounted. This CI-runnable qualification replays deterministic checksummed non-VirtualSky frames with
+            // verified descriptors and bit-for-bit reopened payload SHA-256s without claiming real-camera hardware capture.
             TestContext.WriteLine(string.Create(CultureInfo.InvariantCulture,
-                $"Qualification profile={profileName} evidenceOrigin=DeterministicSyntheticNonVirtualReplay format={format} " +
+                $"Qualification profile={profileName} evidenceOrigin=DeterministicSyntheticNonVirtualReplay " +
+                $"repoRealCameraCorpus=NoneExternalViaHVO_CAPTURE_1919_CORPUS format={format} " +
                 $"cfa={layout.CfaPattern} origin=({layout.Readout?.CfaOriginX},{layout.Readout?.CfaOriginY}) " +
                 $"bits={layout.SampleDepthBits}/{layout.ContainerDepthBits} levels=[{layout.BlackLevel},{layout.WhiteLevel}] " +
                 $"roi=({layout.Readout?.RoiX},{layout.Readout?.RoiY},{layout.Width}x{layout.Height}) bin={layout.Readout?.BinX}x{layout.Readout?.BinY} " +
@@ -1497,6 +1503,170 @@ public sealed class CenteredPipelineQualificationTests
             descriptor.Timing.ExposureStartedUtc, descriptor.Timing.DurableIngressUtc), token)
             .ConfigureAwait(false);
         return descriptor;
+    }
+
+    internal static async Task RunRetainedExternalCorpusEndToEndAsync(string evidenceRoot, CancellationToken token)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(evidenceRoot);
+
+        // 1. Replay checksummed November Mono16 corpus entries end-to-end through admission, reopen, linear
+        // normalization, exposure measurement, centered single publication, and decoded JPEG preview.
+        using (var manifest = JsonDocument.Parse(await File.ReadAllBytesAsync(
+            Path.Combine(evidenceRoot, "mono-november", "expected-mono.json"), token).ConfigureAwait(false)))
+        {
+            var entries = manifest.RootElement.EnumerateArray().ToArray();
+            Assert.IsGreaterThan(0, entries.Length, "mono-november/expected-mono.json must contain at least one entry.");
+            var first = entries[0];
+            var firstBytes = await File.ReadAllBytesAsync(
+                Path.Combine(evidenceRoot, "mono-november", first.GetProperty("artifact").GetString()!), token)
+                .ConfigureAwait(false);
+            var width = first.GetProperty("width").GetInt32();
+            var height = first.GetProperty("height").GetInt32();
+            var monoLayout = new FrameLayoutDescriptor(
+                width, height, width * 2, CameraPixelFormat.Mono16, FrameByteOrder.LittleEndian,
+                12, 16, FrameSamplePacking.ByteAligned, ColorFilterArrayPattern.None,
+                first.GetProperty("blackLevel").GetDouble(), first.GetProperty("whiteLevel").GetDouble(), firstBytes.Length)
+            {
+                StoredCodeTransform = FrameStoredCodeTransform.RightAlignedV1,
+                LevelCodeSpace = FrameLevelCodeSpace.NativeSample,
+                Readout = new FrameReadoutDescriptor(
+                    width, height, 0, 0, width, height, 1, 1, FrameBinningAlgorithm.IdentityV1, null, null)
+            };
+
+            var monoInputs = new List<(string Name, byte[] Bytes, string ExpectedSha256)>();
+            foreach (var entry in entries)
+            {
+                var artifact = entry.GetProperty("artifact").GetString()!;
+                var payload = await File.ReadAllBytesAsync(
+                    Path.Combine(evidenceRoot, "mono-november", artifact), token).ConfigureAwait(false);
+                var expectedSha = entry.GetProperty("rawSha256").GetString()!.ToUpperInvariant();
+                Assert.AreEqual(expectedSha, PayloadChecksum.ComputeSha256(payload), $"Corpus checksum mismatch for {artifact}.");
+                monoInputs.Add((artifact, payload, expectedSha));
+            }
+
+            await ReplayExternalCorpusSeriesAsync("corpus-mono-november", monoLayout, monoInputs, token)
+                .ConfigureAwait(false);
+        }
+
+        // 2. Replay checksummed odd-origin (1,1) BGGR Bayer corpus (geometry/bayer-*.bin) end-to-end.
+        using (var oracle = JsonDocument.Parse(await File.ReadAllBytesAsync(
+            Path.Combine(evidenceRoot, "geometry", "geometry-oracle.json"), token).ConfigureAwait(false)))
+        {
+            var bayerEntries = oracle.RootElement.EnumerateObject()
+                .Where(static property => property.Value.ValueKind == JsonValueKind.Array)
+                .SelectMany(static property => property.Value.EnumerateArray())
+                .Where(static value => value.ValueKind == JsonValueKind.Object &&
+                    value.TryGetProperty("file", out var name) &&
+                    name.GetString()?.StartsWith("bayer-", StringComparison.Ordinal) == true)
+                .ToArray();
+            Assert.IsGreaterThan(0, bayerEntries.Length, "geometry/geometry-oracle.json must list bayer-*.bin corpus frames.");
+
+            var bayerInputs = new List<(string Name, byte[] Bytes, string ExpectedSha256)>();
+            foreach (var entry in bayerEntries)
+            {
+                var file = entry.GetProperty("file").GetString()!;
+                var payload = await File.ReadAllBytesAsync(
+                    Path.Combine(evidenceRoot, "geometry", file), token).ConfigureAwait(false);
+                var expectedSha = entry.GetProperty("sha256").GetString()!.ToUpperInvariant();
+                Assert.AreEqual(expectedSha, PayloadChecksum.ComputeSha256(payload), $"Corpus checksum mismatch for {file}.");
+                bayerInputs.Add((file, payload, expectedSha));
+            }
+
+            var bayerLayout = new FrameLayoutDescriptor(
+                160, 128, 320, CameraPixelFormat.BayerRggb16, FrameByteOrder.LittleEndian,
+                12, 16, FrameSamplePacking.ByteAligned, ColorFilterArrayPattern.Rggb, 64, 4095, bayerInputs[0].Bytes.Length)
+            {
+                StoredCodeTransform = FrameStoredCodeTransform.RightAlignedV1,
+                LevelCodeSpace = FrameLevelCodeSpace.NativeSample,
+                Readout = new FrameReadoutDescriptor(
+                    162, 130, 1, 1, 160, 128, 1, 1, FrameBinningAlgorithm.IdentityV1, 1, 1)
+            };
+
+            await ReplayExternalCorpusSeriesAsync("corpus-odd-origin-bayer", bayerLayout, bayerInputs, token)
+                .ConfigureAwait(false);
+        }
+    }
+
+    private static async Task ReplayExternalCorpusSeriesAsync(
+        string profileName,
+        FrameLayoutDescriptor layout,
+        List<(string Name, byte[] Bytes, string ExpectedSha256)> frames,
+        CancellationToken token)
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory($"hvo-1928-{profileName}");
+        try
+        {
+            var clock = new QualificationClock { UtcNow = BaseUtc };
+            using var provider = CreateProvider(root, clock);
+            var profile = CreateProfile(root, profileName, layout);
+            var active = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(provider, profile)
+                .ConfigureAwait(false);
+            var schedule = await ReadScheduleAsync(provider, token).ConfigureAwait(false);
+            var ingress = provider.GetRequiredService<RawCaptureIngress>();
+            var exposureProducts = provider.GetRequiredService<IExposureProductReader>();
+            var artifactService = provider.GetRequiredService<ICameraAgentArtifactService>();
+            var singlePublisher = provider.GetRequiredService<CenteredViewPublicationWorker>();
+            var coordinator = provider.GetRequiredService<CenteredWindowCoordinator>();
+            var registration = provider.GetRequiredService<CenteredWindowRegistrationWorker>();
+            var windowPublisher = provider.GetRequiredService<CenteredViewWindowPublicationWorker>();
+            var views = provider.GetRequiredService<SqliteCenteredViews>();
+            var reader = provider.GetRequiredService<ICenteredViewPresentationReader>();
+
+            CenteredViewStream? stream = null;
+            for (var index = 0; index < frames.Count; index++)
+            {
+                var (name, bytes, expectedSha) = frames[index];
+                var scheduled = BaseUtc.AddTicks(Cadence.Ticks * index);
+                var receipt = await AdmitSyntheticExposureAsync(
+                    ingress, clock, active, schedule, scheduled, layout, bytes, name, token).ConfigureAwait(false);
+                var descriptor = receipt.Manifest.Descriptor;
+                Assert.AreEqual(expectedSha, descriptor.Artifact.ChecksumSha256);
+
+                // Reopen actual persisted raw payload bytes and verify bit-for-bit SHA-256 identity.
+                var openedRaw = await artifactService.OpenContentAsync(descriptor.Artifact.ArtifactId, token)
+                    .ConfigureAwait(false);
+                Assert.AreEqual(CameraAgentArtifactReadStatus.Found, openedRaw.Status);
+                Assert.IsNotNull(openedRaw.Content);
+                byte[] reopenedBytes;
+                await using (openedRaw.Content.ConfigureAwait(false))
+                {
+                    using var buffer = new MemoryStream(bytes.Length);
+                    await openedRaw.Content.CopyToAsync(buffer, token).ConfigureAwait(false);
+                    reopenedBytes = buffer.ToArray();
+                }
+                Assert.AreEqual(expectedSha, PayloadChecksum.ComputeSha256(reopenedBytes));
+                CollectionAssert.AreEqual(bytes, reopenedBytes);
+
+                await ProcessStandardLaneAsync(provider, active, token).ConfigureAwait(false);
+                stream ??= CenteredViewLookup.ResolveStream(
+                    await ingress.ReadCurrentAsync(new(active.AgentId!, profileName), token).ConfigureAwait(false));
+                Assert.IsNotNull(stream);
+                var key = new ExposureKey(stream.Camera, stream.RunId, descriptor.Capture.CaptureId);
+                var linear = await exposureProducts.ReadLinearAsync(key, token).ConfigureAwait(false);
+                Assert.IsNotNull(linear?.Product);
+                Assert.AreEqual(expectedSha, linear.Provenance!.RawPayloadSha256);
+
+                await singlePublisher.DrainCameraAsync(stream.Camera, stream, CancellationToken.None, token)
+                    .ConfigureAwait(false);
+                await coordinator.CloseReadyAsync(token).ConfigureAwait(false);
+                await registration.RegisterPendingAsync(token).ConfigureAwait(false);
+                await windowPublisher.PublishReadyAsync(token).ConfigureAwait(false);
+
+                var single = (await views.ReadArchiveAsync(stream, descriptor.Capture.CaptureId, token)
+                    .ConfigureAwait(false)).Single(item => item.Base.Definition.Kind == CenteredViewKind.Single);
+                var decoded = await DecodePublishedPreviewAsync(reader, single, token).ConfigureAwait(false);
+                Assert.AreEqual(layout.Width, decoded.Width);
+                Assert.AreEqual(layout.Height, decoded.Height);
+                if (layout.PixelFormat == CameraPixelFormat.Mono16)
+                {
+                    AssertMonoPreviewEquality(decoded, $"{profileName}-{name}");
+                }
+            }
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
     }
 
     private sealed class QualificationClock : TimeProvider

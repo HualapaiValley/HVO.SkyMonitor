@@ -1,3 +1,5 @@
+using HVO.SkyMonitor.CameraAgent.Tests.Gallery;
+
 namespace HVO.SkyMonitor.CameraAgent.Tests.RawIngress;
 
 [TestClass]
@@ -5,6 +7,8 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.RawIngress;
 [TestProperty("Area", "RawIngress")]
 public sealed class CenteredCorpusEvidenceTests
 {
+    public TestContext TestContext { get; set; } = null!;
+
     [TestMethod]
     public async Task CenteredRetainedNovemberMonoAndOddOriginBayerPassExactRawAdmission()
     {
@@ -12,5 +16,15 @@ public sealed class CenteredCorpusEvidenceTests
         if (string.IsNullOrEmpty(corpus))
             Assert.Inconclusive("Set HVO_CAPTURE_1919_CORPUS to the directory containing the documented #1919 fixtures.");
         await RawCaptureIngressTests.RunCenteredRetainedCorpusAsync(corpus!).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task CenteredRetainedNovemberMonoAndOddOriginBayerPassEndToEndCenteredQualificationAsync()
+    {
+        var corpus = Environment.GetEnvironmentVariable("HVO_CAPTURE_1919_CORPUS");
+        if (string.IsNullOrEmpty(corpus))
+            Assert.Inconclusive("Set HVO_CAPTURE_1919_CORPUS to the directory containing the documented #1919 fixtures.");
+        await CenteredPipelineQualificationTests.RunRetainedExternalCorpusEndToEndAsync(
+            corpus!, TestContext.CancellationToken).ConfigureAwait(false);
     }
 }
