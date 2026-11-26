@@ -4,6 +4,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Security;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.Imaging;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Web;
 using Microsoft.AspNetCore.WebUtilities;
@@ -380,10 +381,34 @@ public sealed partial class GalleryDetail : SiteTimeComponent, IAsyncDisposable
                 ? new("jpeg", "JPEG image", "8-bit, adjusted for display",
                     FormattableString.Invariant($"/api/v1/operations/artifacts/{artifact.ArtifactId:D}/preview?download=1"))
                 : new("jpeg", "JPEG image", "Not available for this artifact", null);
-            yield return new("fits", "FITS", "Not yet available", null);
         }
+        var reason = ScientificDownloadUnavailable(artifact);
+        var exportUrl = _capture is null ? null :
+            FormattableString.Invariant($"/api/v1/operations/gallery/{_capture.CaptureId:D}/artifacts/{artifact.ArtifactId:D}/export");
+        yield return ScientificOption("fits", "FITS (.fits)", "Uncompressed linear pixels");
+        yield return ScientificOption("fits.fz", "Compressed FITS (.fits.fz)", "Lossless GZIP tile compression");
+        yield return ScientificOption("xisf", "XISF (.xisf)", "Linear pixels with SHA-256 attachment checksum");
         yield return new("original", jpeg ? "JPEG image (original)" : "Original file",
             OriginalDescription(artifact.MediaType), ContentUrl(artifact.ArtifactId));
+
+        DownloadOption ScientificOption(string format, string label, string description)
+            => new(format, label, reason ?? description, reason is null ? $"{exportUrl}/{format}" : null);
+    }
+
+    private string? ScientificDownloadUnavailable(CameraAgentGalleryArtifact artifact)
+    {
+        var raw = _capture?.Artifacts.FirstOrDefault(static item => item.Role == FrameArtifactRole.Raw);
+        if (raw is null || _capture?.RawState == "missing_evidence" || raw.Availability == "Missing")
+            return "The raw capture artifact is missing.";
+        if (_capture?.RawState == "quarantined" || raw.Availability == "Quarantined")
+            return "The raw capture artifact is quarantined.";
+        if (raw.Availability != "Available" || raw.PixelFormat is null)
+            return "The raw capture layout could not be verified.";
+        if (!ScientificCaptureExport.Supports(raw.PixelFormat.Value))
+            return "This raw pixel format is unsupported.";
+        if (raw.ByteLength > ScientificCaptureExport.MaximumSourceBytes)
+            return "The raw capture exceeds the scientific export size limit.";
+        return raw.ArtifactId == artifact.ArtifactId ? null : "Choose the raw capture artifact to export linear pixels.";
     }
 
     private static string OriginalDescription(string? mediaType) => mediaType?.ToUpperInvariant() switch
@@ -397,6 +422,7 @@ public sealed partial class GalleryDetail : SiteTimeComponent, IAsyncDisposable
         "APPLICATION/X-SKYMONITOR-MONO8" => "Exact retained bytes, raw 8-bit mono (.bin)",
         "APPLICATION/X-SKYMONITOR-MONO16" => "Exact retained bytes, raw 16-bit mono (.bin)",
         "APPLICATION/X-SKYMONITOR-RGB24" => "Exact retained bytes, raw 24-bit RGB (.bin)",
+        "APPLICATION/X-SKYMONITOR-BAYER-RGGB8" => "Exact retained bytes, raw 8-bit Bayer RGGB (.bin)",
         "APPLICATION/X-SKYMONITOR-BAYER-RGGB16" => "Exact retained bytes, raw 16-bit Bayer RGGB (.bin)",
         "APPLICATION/X-HVO-LINEAR-FRAME" => "Exact retained bytes, SkyMonitor linear frame (.bin)",
         "APPLICATION/X-HVO-PACKED-IMAGE" => "Exact retained bytes, SkyMonitor packed image (.bin)",

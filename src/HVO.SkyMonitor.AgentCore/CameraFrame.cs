@@ -8,7 +8,9 @@ public enum CameraPixelFormat
     Mono16,
     Rgb24,
     /// <summary>One little-endian unsigned 16-bit sample per RGGB photosite, without demosaicing.</summary>
-    BayerRggb16
+    BayerRggb16,
+    /// <summary>One unsigned 8-bit sample per RGGB photosite, without demosaicing.</summary>
+    BayerRggb8
 }
 
 public sealed record CameraFrame(

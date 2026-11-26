@@ -101,7 +101,8 @@
                                                             <li>
                                                                 @if (option.Url is { } url)
                                                                 {
-                                                                    <a href="@url" download data-format="@option.Format" @onclick="CloseDownloadMenu"><strong>@option.Label</strong><small>@option.Description</small></a>
+                                                                    var descriptionId = $"{menuId}-{option.Format}-description";
+                                                                    <a href="@url" download data-format="@option.Format" aria-label="Download @option.Label" aria-describedby="@descriptionId" @onclick="CloseDownloadMenu"><strong>@option.Label</strong><small id="@descriptionId">@option.Description</small></a>
                                                                 }
                                                                 else
                                                                 {
