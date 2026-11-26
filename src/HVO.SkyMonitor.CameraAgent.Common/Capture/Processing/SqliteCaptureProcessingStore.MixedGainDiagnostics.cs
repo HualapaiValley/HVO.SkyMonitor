@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -17,20 +18,14 @@ internal sealed partial class SqliteCaptureProcessingStore
         if (output.AvailabilityState != "Available") return (null, "Diagnostic product is no longer available.");
         try
         {
-            var path = Path.GetFullPath(Path.Combine(_root, output.PayloadRelativePath));
-            if (!path.StartsWith(Path.TrimEndingDirectorySeparator(_root) + Path.DirectorySeparatorChar, StringComparison.Ordinal))
-                throw new InvalidDataException("Diagnostic path is outside storage.");
-            RawIngressFileStore.EnsureNoSymbolicLinks(_root, path);
             var length = output.ProductManifest?.ByteLength ?? 0;
             if (length is <= 0 or > MixedGainDiagnosticsV1.MaximumPayloadBytes)
                 throw new InvalidDataException("Diagnostic length is invalid.");
-            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read,
-                4096, FileOptions.Asynchronous | FileOptions.SequentialScan);
-            if (stream.Length != length) throw new InvalidDataException("Diagnostic length changed.");
-            var payload = new byte[(int)length];
-            await stream.ReadExactlyAsync(payload, cancellationToken).ConfigureAwait(false);
-            if (!string.Equals(ProcessingIdentity.ComputePayloadSha256(payload), output.Artifact.ChecksumSha256,
-                    StringComparison.Ordinal)) throw new InvalidDataException("Diagnostic checksum changed.");
+            var payload = _silo is null
+                ? await ReadLocalMixedGainDiagnosticsAsync(output, (int)length, cancellationToken).ConfigureAwait(false)
+                : await _silo.ReadMemberAsync(output.ArtifactId, output.OutputIdentitySha256, length,
+                    output.Artifact.ChecksumSha256, cancellationToken).ConfigureAwait(false)
+                    ?? throw new FileNotFoundException("The diagnostic product has no settled Silo publication.");
             var value = MixedGainDiagnosticsV1.Parse(payload);
             var combined = outputs.SingleOrDefault(item => item.OutputIdentitySha256 == value?.CombinedOutputIdentitySha256);
             if (value is null || value.PlanIdentitySha256 != frozen.IdentitySha256 || combined is null ||
@@ -52,9 +47,30 @@ internal sealed partial class SqliteCaptureProcessingStore
             }
             return (value, null);
         }
+        catch (SiloStoreUnavailableException)
+        {
+            return (null, "Diagnostic evidence is temporarily unavailable.");
+        }
         catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException)
         {
             return (null, "Diagnostic evidence is missing or corrupt; counts are unavailable.");
         }
+    }
+
+    private async ValueTask<byte[]> ReadLocalMixedGainDiagnosticsAsync(DurableProcessingOutput output, int length,
+        CancellationToken cancellationToken)
+    {
+        var path = Path.GetFullPath(Path.Combine(_root, output.PayloadRelativePath));
+        if (!path.StartsWith(Path.TrimEndingDirectorySeparator(_root) + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+            throw new InvalidDataException("Diagnostic path is outside storage.");
+        RawIngressFileStore.EnsureNoSymbolicLinks(_root, path);
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read,
+            4096, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        if (stream.Length != length) throw new InvalidDataException("Diagnostic length changed.");
+        var payload = new byte[length];
+        await stream.ReadExactlyAsync(payload, cancellationToken).ConfigureAwait(false);
+        if (!string.Equals(ProcessingIdentity.ComputePayloadSha256(payload), output.Artifact.ChecksumSha256,
+                StringComparison.Ordinal)) throw new InvalidDataException("Diagnostic checksum changed.");
+        return payload;
     }
 }

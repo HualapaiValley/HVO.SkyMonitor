@@ -7,6 +7,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Options;
@@ -239,7 +240,9 @@ internal sealed class SyntheticCalibrationReferenceStore(
             referenceInputs,
             referenceManifests,
             auxiliaryInputs,
-            await CaptureEvidenceFilesAsync(relativeDirectory, cancellationToken).ConfigureAwait(false));
+            _publisher.Silo is null
+                ? await CaptureEvidenceFilesAsync(relativeDirectory, cancellationToken).ConfigureAwait(false)
+                : []);
     }
 
     private static ReconstructionDescriptor CreateDescriptor(
@@ -361,6 +364,30 @@ internal sealed class SyntheticCalibrationReferenceStore(
         SyntheticCalibrationBundle bundle,
         CancellationToken cancellationToken)
     {
+        if (_publisher.Silo is { } silo)
+        {
+            var envelope = CalibrationLibraryContractJson.Serialize(bundle.LibraryBundle);
+            var bundleId = CalibrationArtifactPublisher.BundleArtifactId(bundle.LibraryBundle);
+            if (!await silo.VerifyMemberAsync(bundleId, CalibrationArtifactPublisher.SiloBundleRevision, envelope.LongLength,
+                    SiloHash.Sha256(envelope), cancellationToken).ConfigureAwait(false) ||
+                !await silo.VerifyMemberAsync(bundleId, CalibrationArtifactPublisher.SiloProfileRevision, bundle.ProfileJson.Length,
+                    bundle.ProfileIdentitySha256, cancellationToken).ConfigureAwait(false))
+                throw new InvalidDataException("The cached synthetic calibration bundle has no settled Silo evidence.");
+
+            foreach (var manifest in bundle.ReferenceManifests.Values)
+            {
+                var descriptor = manifest.Descriptor;
+                var artifact = descriptor.Artifact;
+                var revision = CaptureContractJson.ComputeDescriptorSha256(descriptor);
+                var evidence = CaptureContractJson.Serialize(manifest);
+                if (!await silo.VerifyMemberAsync(artifact.ArtifactId, revision, descriptor.Layout.ByteLength,
+                        artifact.ChecksumSha256, cancellationToken).ConfigureAwait(false) ||
+                    !await silo.VerifyMemberAsync(artifact.ArtifactId, CalibrationArtifactPublisher.SiloEvidenceRevision, evidence.LongLength,
+                        SiloHash.Sha256(evidence), cancellationToken).ConfigureAwait(false))
+                    throw new InvalidDataException("The cached synthetic calibration reference has no settled Silo evidence.");
+            }
+            return;
+        }
         foreach (var evidence in bundle.EvidenceFiles)
         {
             var path = ResolvePath(evidence.RelativePath);
