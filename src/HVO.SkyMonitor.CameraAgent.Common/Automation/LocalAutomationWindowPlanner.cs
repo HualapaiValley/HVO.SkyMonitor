@@ -152,6 +152,10 @@ public sealed class LocalAutomationWindowPlanner(IObservingDayCalendarProvider c
     internal static DateTimeOffset LookbackStart(DateTimeOffset nowUtc)
         => new(Math.Max(DateTimeOffset.MinValue.UtcTicks, nowUtc.UtcTicks - TimeSpan.FromDays(MaximumLookbackDays).Ticks), TimeSpan.Zero);
 
+    /// <summary>Checks the age limit for preparing an explicit backfill of a resolved window.</summary>
+    public static bool IsWithinBackfillLookback(DateTimeOffset sourceEndUtc, DateTimeOffset nowUtc)
+        => sourceEndUtc >= LookbackStart(nowUtc);
+
     private static ImmutableArray<LocalAutomationSourceWindow> ResolveCivilHours(
         SunriseReportingPeriod reporting, LocalAutomationSourceWindowPolicy policy)
     {

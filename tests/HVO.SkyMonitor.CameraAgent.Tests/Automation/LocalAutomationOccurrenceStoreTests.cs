@@ -220,6 +220,33 @@ public sealed class LocalAutomationOccurrenceStoreTests : IDisposable
     }
 
     [TestMethod]
+    public async Task Backfill_ValidatesExpectedWindowHashAndAcceptsDifferentHexCase()
+    {
+        await SaveAsync("hourly", LocalAutomationSourceWindowKind.CompletedCivilHour).ConfigureAwait(false);
+        var window = _planner.ResolveWindows(new DateOnly(2026, 10, 12),
+            LocalAutomationWindowTests.Policy(LocalAutomationSourceWindowKind.CompletedCivilHour))[0];
+        MoveTo(window.EarliestFinalUtc);
+        var request = new LocalAutomationBackfillRequest("hourly", window.ReportingPeriod.ReportDate,
+            window.StartUtc, 1, "window-hash", "owner", "Backfill the previewed window");
+
+        foreach (var malformed in new[] { new string('a', 63), new string('g', 64) })
+        {
+            var rejected = await _store.BackfillAsync(request with { ExpectedWindowIdentitySha256 = malformed },
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(LocalAutomationCommandStatus.Invalid, rejected.Status);
+            Assert.AreEqual(LocalAutomationContract.InvalidCommandReasonCode, rejected.ReasonCode);
+            Assert.IsEmpty(rejected.State.ActiveRuns);
+        }
+
+        var differentCase = string.Concat(window.IdentitySha256.Select(char.ToLowerInvariant));
+        Assert.AreNotEqual(window.IdentitySha256, differentCase);
+        var applied = await _store.BackfillAsync(request with { ExpectedWindowIdentitySha256 = differentCase },
+            CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(LocalAutomationCommandStatus.Applied, applied.Status);
+        Assert.AreEqual(window, applied.State.ActiveRuns.Single().Occurrence!.SourceWindow);
+    }
+
+    [TestMethod]
     public async Task CancellationIgnoringExecution_KeepsSoleAuthorityUntilActualDrainAndRestartMarksInterrupted()
     {
         await SaveAsync("hourly", LocalAutomationSourceWindowKind.CompletedCivilHour).ConfigureAwait(false);

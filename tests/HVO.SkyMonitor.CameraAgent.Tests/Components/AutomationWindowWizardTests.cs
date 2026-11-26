@@ -123,7 +123,8 @@ public sealed class AutomationWindowWizardTests
         {
             Registry = new AutomationWizardFixture.WizardRegistry { Available = false }.Describe(),
             Definitions = [new(definition, 1, LocalAutomationContract.ComputeRevisionSha256(definition),
-                DateTimeOffset.UnixEpoch, "owner", null, null, null, null, [])]
+                DateTimeOffset.UnixEpoch, "owner", null, null, null, null, [])
+                { RegistryRejection = new(LocalAutomationContract.UnregisteredTargetReasonCode, "definition.taskTarget") }]
         };
         context.Services.AddSingleton<ICameraAgentAutomationUiService>(new AutomationsPageTests.AutomationUiService(state));
         context.Services.AddSingleton<ICameraAgentScheduleUiService>(new SchedulePageTests.ScheduleUiService(SchedulePageTests.State()));
@@ -184,7 +185,7 @@ public sealed class AutomationWindowWizardTests
     private const string GenericCombinationMessage = "That task and trigger combination is not registered on this CameraAgent.";
 
     [TestMethod]
-    public async Task Wizard_DailySummaryWithAnHourlyPeriodNamesTheSelectedPeriodAndTheOneItNeeds()
+    public async Task Wizard_DailySummaryOffersOnlyTheSunriseDayAndItsRegisteredParameters()
     {
         await WithStillProductWizardAsync(async (fixture, targets) =>
         {
@@ -196,22 +197,14 @@ public sealed class AutomationWindowWizardTests
             Start(cut, "summary");
             await cut.Find("#automation-back-task").ClickAsync(new());
             await cut.Find("#automation-target").ChangeAsync(new ChangeEventArgs { Value = targets[NightlyProductKind.DailySummary] });
+            Assert.Contains("Source node", cut.Find("[aria-label='Pinned producer parameters']").TextContent);
+            Assert.AreEqual("Daily summary", cut.Find($"#automation-target option[value='{targets[NightlyProductKind.DailySummary]}']").TextContent);
             await cut.Find("#automation-save").ClickAsync(new());
-            await cut.Find("#automation-source-window").ChangeAsync(new ChangeEventArgs
-            { Value = nameof(LocalAutomationSourceWindowKind.CompletedCivilHour) });
-            await cut.Find("#automation-save").ClickAsync(new());
-
-            var alert = cut.WaitForElement("[role=alert]").TextContent;
-            StringAssert.Contains(alert, "The source period \"Completed site-local hour\" is not accepted by this task target.", StringComparison.Ordinal);
-            StringAssert.Contains(alert, "Choose \"Sunrise to next sunrise\" for this producer.", StringComparison.Ordinal);
-            Assert.DoesNotContain(GenericCombinationMessage, alert, StringComparison.Ordinal);
-            // The rejected preview saved nothing and left the editor open on the same step.
-            Assert.IsEmpty(cut.FindAll("#automation-confirm"));
+            Assert.AreEqual("Sunrise to next sunrise", cut.WaitForElement("#automation-source-window option").TextContent);
+            Assert.HasCount(1, cut.FindAll("#automation-source-window option"));
+            Assert.HasCount(1, cut.FindAll("#automation-source-selection option"));
             Assert.IsEmpty((await fixture.Store.GetStateAsync(CancellationToken.None)).Definitions);
 
-            // Choosing the named period is the whole correction: the same definition then previews and saves.
-            await cut.Find("#automation-source-window").ChangeAsync(new ChangeEventArgs
-            { Value = nameof(LocalAutomationSourceWindowKind.SunriseDay) });
             await cut.Find("#automation-save").ClickAsync(new());
             cut.WaitForElement("#automation-window-preview");
             await cut.Find("#automation-confirm").ClickAsync(new());
@@ -327,8 +320,16 @@ public sealed class AutomationWindowWizardTests
                 mismatch == "target" ? ["new-preset"] : [definition.TaskTarget], true, null)
                 { SupportedSourceWindows = mismatch == "source" ? [LocalAutomationSourceWindowKind.CompletedCivilHour] : [LocalAutomationSourceWindowKind.SunriseDay] }],
             Definitions = [new(definition, 1, LocalAutomationContract.ComputeRevisionSha256(definition),
-                definition.TriggerEpochUtc, "owner", null, due, null, null, [])],
-            Calendar = [new(definition.DefinitionId, definition.Name, definition.TaskKind, definition.TaskTarget, due)]
+                definition.TriggerEpochUtc, "owner", null, due, null, null, [])
+                {
+                    RegistryRejection = mismatch switch
+                    {
+                        "target" => new(LocalAutomationContract.UnregisteredTargetReasonCode, "definition.taskTarget"),
+                        "source" => new(LocalAutomationContract.UnregisteredCombinationReasonCode, "definition.sourceWindow.kind"),
+                        _ => new(LocalAutomationContract.UnregisteredCombinationReasonCode, "definition.triggerKind")
+                    }
+                }],
+            Calendar = []
         };
         service = new(state);
         context.Services.AddSingleton<ICameraAgentAutomationUiService>(service);

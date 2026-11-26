@@ -79,10 +79,13 @@ public sealed class LocalAutomationTaskRegistry : ILocalAutomationTaskRegistry
         var adapter = _adapters.SingleOrDefault(item => item.Describe().TaskKind == definition.TaskKind);
         var descriptor = adapter?.Describe();
         if (descriptor is null || !descriptor.Available || definition.SourceWindow is null ||
-            !descriptor.CompatibleTriggers.Contains(definition.TriggerKind) ||
-            !descriptor.SupportedSourceWindows.Contains(definition.SourceWindow.Kind))
+            !descriptor.CompatibleTriggers.Contains(definition.TriggerKind))
         {
             return new(LocalAutomationContract.UnregisteredCombinationReasonCode, "definition.triggerKind");
+        }
+        if (!descriptor.SupportedSourceWindows.Contains(definition.SourceWindow.Kind))
+        {
+            return new(LocalAutomationContract.UnregisteredCombinationReasonCode, "definition.sourceWindow.kind");
         }
         return !descriptor.Targets.Contains(definition.TaskTarget, StringComparer.Ordinal)
             ? new(LocalAutomationContract.UnregisteredTargetReasonCode, "definition.taskTarget")

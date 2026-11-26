@@ -6,6 +6,16 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Automation;
 /// </summary>
 public static class LocalAutomationSchedule
 {
+    /// <summary>Checks a new definition's adapter-provided phase against the scheduler's persisted precision and bounds.</summary>
+    public static bool IsInitialTriggerEpoch(DateTimeOffset epochUtc, DateTimeOffset nowUtc, LocalAutomationDefinition definition)
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+        return epochUtc.Offset == TimeSpan.Zero && epochUtc.UtcTicks % TimeSpan.TicksPerMillisecond == 0 && epochUtc >= nowUtc &&
+           (definition.TriggerKind == LocalAutomationTriggerKind.Periodic
+               ? epochUtc - nowUtc < TimeSpan.FromSeconds(definition.TriggerInterval)
+               : epochUtc == nowUtc);
+    }
+
     /// <summary>
     /// The instant the next periodic occurrence is due. Occurrences sit on fixed boundaries measured
     /// from the definition's epoch, so a late run never shifts the cadence. The first occurrence is
