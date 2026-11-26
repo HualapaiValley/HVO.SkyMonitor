@@ -473,7 +473,7 @@ public sealed class WebhookNotificationTransportTests
     private static WebhookDeliveryRequest CreateGenericRequest(string url, string? token = null) => new(
         url, WebhookPayloadFormat.Generic, "Authorization", null, false, token, null, SampleEvent(), 1, 0, false, TimeSpan.FromSeconds(5));
 
-    private static X509Certificate2 CreateEphemeralLoopbackCertificate()
+    internal static X509Certificate2 CreateEphemeralLoopbackCertificate()
     {
         using var rsa = RSA.Create(2048);
         var request = new CertificateRequest("CN=127.0.0.1", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
@@ -486,7 +486,7 @@ public sealed class WebhookNotificationTransportTests
         return X509CertificateLoader.LoadPkcs12(created.Export(X509ContentType.Pfx), null);
     }
 
-    private sealed record CapturedHttp(
+    internal sealed record CapturedHttp(
         string Method,
         string PathAndQuery,
         IReadOnlyDictionary<string, string> Headers,
@@ -495,7 +495,7 @@ public sealed class WebhookNotificationTransportTests
         public string? Header(string name) => Headers.TryGetValue(name, out var val) ? val : null;
     }
 
-    private sealed class InProcessHttpsWebhookServer : IAsyncDisposable
+    internal sealed class InProcessHttpsWebhookServer : IAsyncDisposable
     {
         private readonly TcpListener _listener;
         private readonly X509Certificate2 _cert;

@@ -1127,16 +1127,122 @@ public sealed class OperatorNotificationMonitorServiceTests
             await store.WriteLastHeartbeatSiteDateAsync(new DateOnly(2026, 11, 27), CancellationToken.None).ConfigureAwait(false);
             var skewPublisher = new RecordingPublisher();
             var skewLogger = new RecordingMonitorLogger();
-            using var skewMonitor = new OperatorNotificationMonitorService(
+            using (var skewMonitor = new OperatorNotificationMonitorService(
                 new StaticConfigProvider(options),
                 skewPublisher,
                 hostOptions,
                 skewClock,
                 logger: skewLogger,
+                heartbeatStore: new FileOperatorNotificationHeartbeatStore(stateDir)))
+            {
+                await skewMonitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.IsFalse(skewPublisher.Events.Any(static e => e.Kind == OperatorNotificationEventKind.DailyHeartbeat));
+                Assert.AreEqual(0, skewLogger.Warning16209Count);
+            }
+
+            // Case 3: Exact boundary today.AddDays(2) (> today.AddDays(1)) is treated as malformed, logs Warning 16209 once,
+            // dispatches today's heartbeat, and atomically repairs the checkpoint to today.
+            var boundaryClock = new MonitorClock(new DateTimeOffset(2026, 11, 26, 15, 5, 0, TimeSpan.Zero));
+            await store.WriteLastHeartbeatSiteDateAsync(new DateOnly(2026, 11, 26).AddDays(2), CancellationToken.None).ConfigureAwait(false);
+            var boundaryPublisher = new RecordingPublisher();
+            var boundaryLogger = new RecordingMonitorLogger();
+            using var boundaryMonitor = new OperatorNotificationMonitorService(
+                new StaticConfigProvider(options),
+                boundaryPublisher,
+                hostOptions,
+                boundaryClock,
+                logger: boundaryLogger,
                 heartbeatStore: new FileOperatorNotificationHeartbeatStore(stateDir));
-            await skewMonitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
-            Assert.IsFalse(skewPublisher.Events.Any(static e => e.Kind == OperatorNotificationEventKind.DailyHeartbeat));
-            Assert.AreEqual(0, skewLogger.Warning16209Count);
+            await boundaryMonitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+            var boundaryEvents = boundaryPublisher.Events.Where(static e => e.Kind == OperatorNotificationEventKind.DailyHeartbeat).ToArray();
+            Assert.HasCount(1, boundaryEvents, "Checkpoint dated today.AddDays(2) must exceed the 1-day skew tolerance and recover.");
+            Assert.AreEqual("daily_heartbeat:2026-11-26", boundaryEvents[0].DedupeKey);
+            Assert.AreEqual(1, boundaryLogger.Warning16209Count);
+            Assert.AreEqual(new DateOnly(2026, 11, 26),
+                await store.ReadLastHeartbeatSiteDateAsync(CancellationToken.None).ConfigureAwait(false));
+        }
+        finally
+        {
+            if (Directory.Exists(stateDir))
+            {
+                Directory.Delete(stateDir, recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task DailyHeartbeat_OversizedCheckpoint_RecoversAsMalformedWithWarning16209OnceAndRepairsAtomicallyAsync()
+    {
+        var clock = new MonitorClock(new DateTimeOffset(2026, 11, 26, 15, 5, 0, TimeSpan.Zero)); // 08:05 Phoenix
+        var stateDir = Path.Combine(Path.GetTempPath(), $"hvo-notif-hb-oversized-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(stateDir);
+        var heartbeatFile = Path.Combine(stateDir, FileOperatorNotificationHeartbeatStore.HeartbeatFileName);
+        try
+        {
+            // Write an oversized readable regular file (> 4 KiB cap) containing whitespace padding plus a valid-looking JSON tail.
+            var oversizedPadding = new string(' ', FileOperatorNotificationHeartbeatStore.MaximumCheckpointBytes + 2048);
+            await File.WriteAllTextAsync(heartbeatFile, oversizedPadding + "{\"lastSiteDate\":\"2026-11-26\"}").ConfigureAwait(false);
+            Assert.IsGreaterThan(FileOperatorNotificationHeartbeatStore.MaximumCheckpointBytes, new FileInfo(heartbeatFile).Length);
+
+            var store = new FileOperatorNotificationHeartbeatStore(stateDir);
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+                await store.ReadLastHeartbeatSiteDateAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+
+            var hostOptions = Options.Create(new CameraAgentHostOptions
+            {
+                DisplayName = "HVO AllSky",
+                Observatory = new ObservatoryLocation(35.5, -113.9, 520, "America/Phoenix")
+            });
+            var options = EnabledOptions(captureStallMinutes: 120, heartbeatTime: "08:00");
+
+            // 1. Monitor logs Warning 16209 ONCE, enters malformed-checkpoint recovery (NOT deferral), dispatches today,
+            //    and atomically overwrites the oversized file with a tiny valid 0600 JSON checkpoint.
+            var publisher1 = new RecordingPublisher();
+            var logger1 = new RecordingMonitorLogger();
+            using (var monitor1 = new OperatorNotificationMonitorService(
+                new StaticConfigProvider(options),
+                publisher1,
+                hostOptions,
+                clock,
+                logger: logger1,
+                heartbeatStore: new FileOperatorNotificationHeartbeatStore(stateDir)))
+            {
+                await monitor1.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+                clock.Advance(TimeSpan.FromMinutes(5));
+                await monitor1.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+
+                var day1Events = publisher1.Events.Where(static e => e.Kind == OperatorNotificationEventKind.DailyHeartbeat).ToArray();
+                Assert.HasCount(1, day1Events, "Oversized heartbeat checkpoint must enter malformed recovery, not defer indefinitely.");
+                Assert.AreEqual("daily_heartbeat:2026-11-26", day1Events[0].DedupeKey);
+                Assert.AreEqual(1, logger1.Warning16209Count);
+                Assert.IsLessThanOrEqualTo(64, new FileInfo(heartbeatFile).Length, "Repaired checkpoint must overwrite oversized file.");
+                Assert.AreEqual(new DateOnly(2026, 11, 26),
+                    await store.ReadLastHeartbeatSiteDateAsync(CancellationToken.None).ConfigureAwait(false));
+                if (!OperatingSystem.IsWindows())
+                {
+                    Assert.AreEqual(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(heartbeatFile));
+                }
+            }
+
+            // 2. Same-day restart reads the repaired checkpoint with zero duplicates and zero warnings; next day resumes cleanly.
+            clock.Advance(TimeSpan.FromMinutes(15));
+            var publisher2 = new RecordingPublisher();
+            var logger2 = new RecordingMonitorLogger();
+            using var monitor2 = new OperatorNotificationMonitorService(
+                new StaticConfigProvider(options),
+                publisher2,
+                hostOptions,
+                clock,
+                logger: logger2,
+                heartbeatStore: new FileOperatorNotificationHeartbeatStore(stateDir));
+            await monitor2.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsFalse(publisher2.Events.Any(static e => e.Kind == OperatorNotificationEventKind.DailyHeartbeat));
+            Assert.AreEqual(0, logger2.Warning16209Count);
+
+            clock.Advance(TimeSpan.FromHours(24));
+            await monitor2.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+            var day2 = publisher2.Events.Single(static e => e.Kind == OperatorNotificationEventKind.DailyHeartbeat);
+            Assert.AreEqual("daily_heartbeat:2026-11-27", day2.DedupeKey);
         }
         finally
         {

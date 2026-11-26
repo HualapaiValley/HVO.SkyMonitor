@@ -24,6 +24,7 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
 {
     internal const string ConfigFileName = "operator-notifications.json";
     internal const string QuarantineFileName = "operator-notifications.json.corrupt";
+    internal const int MaximumEnvelopeBytes = 256 * 1024;
     private const int CurrentSchemaVersion = 1;
 
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
@@ -70,6 +71,9 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
     /// <summary>Internal fault-injection seam invoked after temp file fsync and immediately before atomic rename.</summary>
     internal Action<string>? BeforePublishTempFile { get; init; }
 
+    /// <summary>Internal test seam invoked after each durable directory synchronization succeeds.</summary>
+    internal Action<string>? OnDirectorySynced { get; init; }
+
     public async ValueTask<OperatorNotificationSecrets> ReadAsync(CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -101,11 +105,13 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
         try
         {
             var state = await ReadStoreStateUnlockedAsync(cancellationToken).ConfigureAwait(false);
-            if (state.Kind == StoreStateKind.Unreadable && !state.CanReplace)
+            if (!state.CanReplace)
             {
                 throw new IOException(state.IsSymlink
                     ? "Refusing to access a symbolic link in the protected operator notification store."
-                    : "Persisted operator notification store path is blocked by a non-regular file or directory.");
+                    : state.IsOversized
+                        ? "Persisted operator notification store exceeds the maximum allowed size."
+                        : "Persisted operator notification store path is blocked by a non-regular file or directory.");
             }
 
             var options = state.Kind switch
@@ -117,8 +123,9 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
             var revision = Guid.NewGuid().ToString("N");
             await PublishAtomicEnvelopeUnlockedAsync(options, secrets, revision, cancellationToken).ConfigureAwait(false);
             _lastLoggedReadFailureKey = null;
-            var configSecrets = ConfigurationOperatorNotificationConfigProvider.ReadSecretsFromConfiguration(_configuration);
-            var effectiveSecrets = ConfigurationOperatorNotificationConfigProvider.MergeSecrets(secrets, configSecrets);
+            var (hostOptions, configSecrets) = ReadHostConfiguration();
+            var effectiveSecrets = ConfigurationOperatorNotificationConfigProvider.MergeSecrets(
+                secrets, configSecrets, options, hostOptions);
             UpdateCache(options, effectiveSecrets, explicitErrorReasonCode: null);
         }
         finally
@@ -137,11 +144,13 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
             {
                 return;
             }
-            if (state.Kind == StoreStateKind.Unreadable && !state.CanReplace)
+            if (!state.CanReplace)
             {
                 throw new IOException(state.IsSymlink
                     ? "Refusing to access a symbolic link in the protected operator notification store."
-                    : "Persisted operator notification store path is blocked by a non-regular file or directory.");
+                    : state.IsOversized
+                        ? "Persisted operator notification store exceeds the maximum allowed size."
+                        : "Persisted operator notification store path is blocked by a non-regular file or directory.");
             }
             var options = state.Kind == StoreStateKind.Valid
                 ? state.Options
@@ -149,8 +158,10 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
             var revision = Guid.NewGuid().ToString("N");
             await PublishAtomicEnvelopeUnlockedAsync(options, OperatorNotificationSecrets.Empty, revision, cancellationToken).ConfigureAwait(false);
             _lastLoggedReadFailureKey = null;
-            var configSecrets = ConfigurationOperatorNotificationConfigProvider.ReadSecretsFromConfiguration(_configuration);
-            UpdateCache(options, configSecrets, explicitErrorReasonCode: null);
+            var (hostOptions, configSecrets) = ReadHostConfiguration();
+            var effectiveSecrets = ConfigurationOperatorNotificationConfigProvider.MergeSecrets(
+                OperatorNotificationSecrets.Empty, configSecrets, options, hostOptions);
+            UpdateCache(options, effectiveSecrets, explicitErrorReasonCode: null);
         }
         finally
         {
@@ -208,8 +219,9 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                     ConfigurationErrorReasonCode: state.ConfigBindingErrorReasonCode);
             }
 
-            var configSecrets = ConfigurationOperatorNotificationConfigProvider.ReadSecretsFromConfiguration(_configuration);
-            var effectiveSecrets = ConfigurationOperatorNotificationConfigProvider.MergeSecrets(state.ProtectedSecrets, configSecrets);
+            var (hostOptions, configSecrets) = ReadHostConfiguration();
+            var effectiveSecrets = ConfigurationOperatorNotificationConfigProvider.MergeSecrets(
+                state.ProtectedSecrets, configSecrets, state.Options, hostOptions);
             var errorCode = ConfigurationOperatorNotificationConfigProvider.EvaluateConfigurationErrorReasonCode(
                 state.Options, effectiveSecrets, _networkPolicy);
             UpdateCache(state.Options, effectiveSecrets, explicitErrorReasonCode: null);
@@ -240,10 +252,13 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
             var currentSnapshot = BuildSnapshot(currentState);
             if (!currentSnapshot.CanPersist)
             {
+                var unavailableMessage = currentState.IsOversized
+                    ? "The saved operator notification store exceeds the maximum supported file size and cannot be replaced automatically. Inspect or remove the oversized file and retry."
+                    : "The saved operator notification store path is blocked by a non-regular file or directory. Remove the conflicting entry and retry.";
                 return new OperatorNotificationsSaveResult(
                     OperatorNotificationsSaveOutcome.Unavailable,
                     currentSnapshot,
-                    "The saved operator notification store path is blocked by a non-regular file or directory. Remove the conflicting entry and retry.");
+                    unavailableMessage);
             }
             if (!string.Equals(request.ExpectedVersion, currentSnapshot.Version, StringComparison.Ordinal))
             {
@@ -256,18 +271,66 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
             var existingProtected = currentState.Kind == StoreStateKind.Valid
                 ? currentState.ProtectedSecrets
                 : OperatorNotificationSecrets.Empty;
-            var configSecrets = ConfigurationOperatorNotificationConfigProvider.ReadSecretsFromConfiguration(_configuration);
+            var (hostOptions, configSecrets) = ReadHostConfiguration();
+            var normalizedOptions = ConfigurationOperatorNotificationConfigProvider.NormalizeOptions(request.Options);
+
+            // Bind retained stored credentials to their destination so changing SMTP host/port or webhook origin
+            // (or clearing the webhook URL) never carries old credentials over to a different endpoint.
+            var preserveStoredSmtpSecrets = currentState.Kind == StoreStateKind.Valid &&
+                ConfigurationOperatorNotificationConfigProvider.HasMatchingSmtpEndpoint(
+                    normalizedOptions.Smtp,
+                    currentState.Options.Smtp);
+
+            var nextWebhookUrl = ResolveSecretUpdate(
+                existingProtected.WebhookUrl,
+                request.WebhookUrl,
+                request.ClearWebhookUrl,
+                trim: true);
+
+            var previousEffectiveWebhookUrl = currentState.Kind == StoreStateKind.Valid
+                ? (!string.IsNullOrEmpty(existingProtected.WebhookUrl)
+                    ? existingProtected.WebhookUrl
+                    : configSecrets.WebhookUrl)
+                : null;
+            var nextEffectiveWebhookUrl = !string.IsNullOrEmpty(nextWebhookUrl)
+                ? nextWebhookUrl
+                : configSecrets.WebhookUrl;
+
+            var preserveStoredWebhookSecrets = currentState.Kind == StoreStateKind.Valid &&
+                ConfigurationOperatorNotificationConfigProvider.HasMatchingWebhookOrigin(
+                    nextEffectiveWebhookUrl,
+                    previousEffectiveWebhookUrl);
 
             var nextProtected = new OperatorNotificationSecrets(
-                SmtpUsername: ResolveSecretUpdate(existingProtected.SmtpUsername, request.SmtpUsername, request.ClearSmtpUsername, trim: false),
-                SmtpPassword: ResolveSecretUpdate(existingProtected.SmtpPassword, request.SmtpPassword, request.ClearSmtpPassword, trim: false),
-                WebhookUrl: ResolveSecretUpdate(existingProtected.WebhookUrl, request.WebhookUrl, request.ClearWebhookUrl, trim: true),
-                WebhookAuthToken: ResolveSecretUpdate(existingProtected.WebhookAuthToken, request.WebhookAuthToken, request.ClearWebhookAuthToken, trim: false),
-                WebhookUserKey: ResolveSecretUpdate(existingProtected.WebhookUserKey, request.WebhookUserKey, request.ClearWebhookUserKey, trim: false),
-                WebhookNtfyTopic: ResolveSecretUpdate(existingProtected.WebhookNtfyTopic, request.WebhookNtfyTopic, request.ClearWebhookNtfyTopic, trim: true));
+                SmtpUsername: ResolveSecretUpdate(
+                    preserveStoredSmtpSecrets ? existingProtected.SmtpUsername : null,
+                    request.SmtpUsername,
+                    request.ClearSmtpUsername,
+                    trim: false),
+                SmtpPassword: ResolveSecretUpdate(
+                    preserveStoredSmtpSecrets ? existingProtected.SmtpPassword : null,
+                    request.SmtpPassword,
+                    request.ClearSmtpPassword,
+                    trim: false),
+                WebhookUrl: nextWebhookUrl,
+                WebhookAuthToken: ResolveSecretUpdate(
+                    preserveStoredWebhookSecrets ? existingProtected.WebhookAuthToken : null,
+                    request.WebhookAuthToken,
+                    request.ClearWebhookAuthToken,
+                    trim: false),
+                WebhookUserKey: ResolveSecretUpdate(
+                    preserveStoredWebhookSecrets ? existingProtected.WebhookUserKey : null,
+                    request.WebhookUserKey,
+                    request.ClearWebhookUserKey,
+                    trim: false),
+                WebhookNtfyTopic: ResolveSecretUpdate(
+                    preserveStoredWebhookSecrets ? existingProtected.WebhookNtfyTopic : null,
+                    request.WebhookNtfyTopic,
+                    request.ClearWebhookNtfyTopic,
+                    trim: true));
 
-            var normalizedOptions = ConfigurationOperatorNotificationConfigProvider.NormalizeOptions(request.Options);
-            var effectiveSecrets = ConfigurationOperatorNotificationConfigProvider.MergeSecrets(nextProtected, configSecrets);
+            var effectiveSecrets = ConfigurationOperatorNotificationConfigProvider.MergeSecrets(
+                nextProtected, configSecrets, normalizedOptions, hostOptions);
             var problems = OperatorNotificationValidation.Validate(normalizedOptions, effectiveSecrets, _networkPolicy);
             if (problems.Count > 0)
             {
@@ -284,12 +347,15 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
             var envelopeBytes = SerializeAtomicEnvelope(normalizedOptions, nextProtected, nextRevision);
 
             // Preserve a bounded forensic copy of a readable damaged file before explicit operator recovery replaces it.
-            if (currentState.Kind == StoreStateKind.Corrupt && currentState.RawCorruptBytes is { Length: > 0 } corruptBytes)
+            if (currentState.Kind == StoreStateKind.Corrupt &&
+                currentState.RawCorruptBytes is { Length: > 0 and <= MaximumEnvelopeBytes } corruptBytes)
             {
                 await NotificationStateFilePublisher.PublishRestrictedAtomicAsync(
                     _provisioningOptions.StateDirectory,
                     QuarantineFileName,
                     corruptBytes,
+                    beforeRename: null,
+                    onDirectorySynced: OnDirectorySynced,
                     cancellationToken).ConfigureAwait(false);
             }
 
@@ -297,8 +363,9 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                 _provisioningOptions.StateDirectory,
                 ConfigFileName,
                 envelopeBytes,
-                cancellationToken,
-                BeforePublishTempFile).ConfigureAwait(false);
+                BeforePublishTempFile,
+                OnDirectorySynced,
+                cancellationToken).ConfigureAwait(false);
 
             if (!nextProtected.IsEmpty)
             {
@@ -308,7 +375,8 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
             _lastLoggedReadFailureKey = null;
             UpdateCache(normalizedOptions, effectiveSecrets, explicitErrorReasonCode: null);
 
-            var presence = ConfigurationOperatorNotificationConfigProvider.BuildSecretPresence(nextProtected, configSecrets);
+            var presence = ConfigurationOperatorNotificationConfigProvider.BuildSecretPresence(
+                nextProtected, configSecrets, normalizedOptions, hostOptions);
             var version = ConfigurationOperatorNotificationConfigProvider.ComputeVersion(normalizedOptions, presence, nextRevision);
             var updatedSnapshot = new OperatorNotificationsConfigurationSnapshot(
                 normalizedOptions,
@@ -347,12 +415,12 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                 StoreStatusReasonCode: reasonCode);
         }
 
-        var configSecrets = ConfigurationOperatorNotificationConfigProvider.ReadSecretsFromConfiguration(_configuration);
+        var (hostOptions, configSecrets) = ReadHostConfiguration();
         if (state.Kind == StoreStateKind.Absent && state.ConfigBindingErrorReasonCode is not null)
         {
             UpdateCache(state.Options, OperatorNotificationSecrets.Empty, explicitErrorReasonCode: state.ConfigBindingErrorReasonCode);
             var degradedPresence = ConfigurationOperatorNotificationConfigProvider.BuildSecretPresence(
-                OperatorNotificationSecrets.Empty, configSecrets);
+                OperatorNotificationSecrets.Empty, OperatorNotificationSecrets.Empty, state.Options, configurationOptions: null);
             var degradedVersion = ConfigurationOperatorNotificationConfigProvider.ComputeVersion(state.Options, degradedPresence);
             return new OperatorNotificationsConfigurationSnapshot(
                 state.Options,
@@ -364,10 +432,12 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                 StoreStatusReasonCode: state.ConfigBindingErrorReasonCode);
         }
 
-        var effectiveSecrets = ConfigurationOperatorNotificationConfigProvider.MergeSecrets(state.ProtectedSecrets, configSecrets);
+        var effectiveSecrets = ConfigurationOperatorNotificationConfigProvider.MergeSecrets(
+            state.ProtectedSecrets, configSecrets, state.Options, hostOptions);
         UpdateCache(state.Options, effectiveSecrets, explicitErrorReasonCode: null);
 
-        var presence = ConfigurationOperatorNotificationConfigProvider.BuildSecretPresence(state.ProtectedSecrets, configSecrets);
+        var presence = ConfigurationOperatorNotificationConfigProvider.BuildSecretPresence(
+            state.ProtectedSecrets, configSecrets, state.Options, hostOptions);
         var version = ConfigurationOperatorNotificationConfigProvider.ComputeVersion(state.Options, presence, state.Revision);
         return new OperatorNotificationsConfigurationSnapshot(
             state.Options,
@@ -377,6 +447,18 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
             CanPersist: true,
             StoreCorrupt: false,
             StoreStatusReasonCode: null);
+    }
+
+    private (OperatorNotificationsOptions? HostOptions, OperatorNotificationSecrets HostSecrets) ReadHostConfiguration()
+    {
+        var hostOptions = ConfigurationOperatorNotificationConfigProvider.ReadOptionsFromConfiguration(
+            _configuration, out var bindingError);
+        if (bindingError is not null)
+        {
+            return (null, OperatorNotificationSecrets.Empty);
+        }
+
+        return (hostOptions, ConfigurationOperatorNotificationConfigProvider.ReadSecretsFromConfiguration(_configuration));
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
@@ -391,8 +473,18 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
 
         try
         {
-            var rawBytes = await File.ReadAllBytesAsync(inspection.TargetPath!, cancellationToken).ConfigureAwait(false);
-            return ParsePersistedBytes(rawBytes);
+            var readResult = await NotificationStateFilePublisher.ReadBoundedBytesAsync(
+                inspection.TargetPath!,
+                MaximumEnvelopeBytes,
+                cancellationToken).ConfigureAwait(false);
+            if (readResult.ExceededLimit)
+            {
+                LogReadFailureOnce("corrupt:oversized", nameof(InvalidDataException));
+                return StoreReadState.CorruptOversized(
+                    ComputeUnreadableFileFingerprint(inspection.TargetPath!, "oversized"));
+            }
+
+            return ParsePersistedBytes(readResult.Content.ToArray());
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -418,24 +510,27 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
             var inspection = InspectStorePath();
             if (inspection.State is { } earlyState)
             {
-                return earlyState.Kind switch
+                if (earlyState.Kind == StoreStateKind.Absent && earlyState.ConfigBindingErrorReasonCode is null)
                 {
-                    StoreStateKind.Absent when earlyState.ConfigBindingErrorReasonCode is not null =>
-                        (earlyState.Options, earlyState.ConfigBindingErrorReasonCode),
-                    StoreStateKind.Absent =>
-                        (earlyState.Options, ConfigurationOperatorNotificationConfigProvider.EvaluateConfigurationErrorReasonCode(
-                            earlyState.Options,
-                            ConfigurationOperatorNotificationConfigProvider.ReadSecretsFromConfiguration(_configuration),
-                            _networkPolicy)),
-                    _ => (new OperatorNotificationsOptions { Enabled = false },
-                        earlyState.StoreErrorReasonCode ?? NotificationReasonCodes.StoreUnreadable)
-                };
+                    var (absentHostOptions, absentHostSecrets) = ReadHostConfiguration();
+                    var absentEffectiveSecrets = ConfigurationOperatorNotificationConfigProvider.MergeSecrets(
+                        OperatorNotificationSecrets.Empty, absentHostSecrets, earlyState.Options, absentHostOptions);
+                    return (earlyState.Options, ConfigurationOperatorNotificationConfigProvider.EvaluateConfigurationErrorReasonCode(
+                        earlyState.Options, absentEffectiveSecrets, _networkPolicy));
+                }
+
+                return earlyState.Kind == StoreStateKind.Absent
+                    ? (earlyState.Options, earlyState.ConfigBindingErrorReasonCode)
+                    : (new OperatorNotificationsOptions { Enabled = false },
+                        earlyState.StoreErrorReasonCode ?? NotificationReasonCodes.StoreUnreadable);
             }
 
-            byte[] rawBytes;
+            BoundedFileReadResult readResult;
             try
             {
-                rawBytes = File.ReadAllBytes(inspection.TargetPath!);
+                readResult = NotificationStateFilePublisher.ReadBoundedBytes(
+                    inspection.TargetPath!,
+                    MaximumEnvelopeBytes);
             }
             catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
             {
@@ -444,14 +539,21 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                 return (new OperatorNotificationsOptions { Enabled = false }, NotificationReasonCodes.StoreUnreadable);
             }
 
-            var parsed = ParsePersistedBytes(rawBytes);
+            if (readResult.ExceededLimit)
+            {
+                LogReadFailureOnce("corrupt:oversized", nameof(InvalidDataException));
+                return (new OperatorNotificationsOptions { Enabled = false }, NotificationReasonCodes.StoreCorrupt);
+            }
+
+            var parsed = ParsePersistedBytes(readResult.Content.ToArray());
             if (parsed.Kind == StoreStateKind.Corrupt)
             {
                 return (new OperatorNotificationsOptions { Enabled = false }, NotificationReasonCodes.StoreCorrupt);
             }
 
-            var hostSecrets = ConfigurationOperatorNotificationConfigProvider.ReadSecretsFromConfiguration(_configuration);
-            var effectiveSecrets = ConfigurationOperatorNotificationConfigProvider.MergeSecrets(parsed.ProtectedSecrets, hostSecrets);
+            var (hostOptions, hostSecrets) = ReadHostConfiguration();
+            var effectiveSecrets = ConfigurationOperatorNotificationConfigProvider.MergeSecrets(
+                parsed.ProtectedSecrets, hostSecrets, parsed.Options, hostOptions);
             var validationError = ConfigurationOperatorNotificationConfigProvider.EvaluateConfigurationErrorReasonCode(
                 parsed.Options, effectiveSecrets, _networkPolicy);
             return (parsed.Options, validationError);
@@ -573,8 +675,9 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
             _provisioningOptions.StateDirectory,
             ConfigFileName,
             envelopeBytes,
-            cancellationToken,
-            BeforePublishTempFile).ConfigureAwait(false);
+            BeforePublishTempFile,
+            OnDirectorySynced,
+            cancellationToken).ConfigureAwait(false);
         if (!secrets.IsEmpty)
         {
             Log.SecretStoreSaved(_logger);
@@ -652,7 +755,8 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
         string? StoreErrorReasonCode = null,
         string? ConfigBindingErrorReasonCode = null,
         bool CanReplace = true,
-        bool IsSymlink = false)
+        bool IsSymlink = false,
+        bool IsOversized = false)
     {
         public static StoreReadState Absent(
             OperatorNotificationsOptions configOptions,
@@ -679,6 +783,22 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                 StoreErrorReasonCode: NotificationReasonCodes.StoreCorrupt,
                 CanReplace: true,
                 IsSymlink: false);
+        }
+
+        public static StoreReadState CorruptOversized(string fingerprint)
+        {
+            var hash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(fingerprint)));
+            return new StoreReadState(
+                StoreStateKind.Corrupt,
+                new OperatorNotificationsOptions { Enabled = false },
+                OperatorNotificationSecrets.Empty,
+                null,
+                $"corrupt:{hash}",
+                RawCorruptBytes: null,
+                StoreErrorReasonCode: NotificationReasonCodes.StoreCorrupt,
+                CanReplace: false,
+                IsSymlink: false,
+                IsOversized: true);
         }
 
         public static StoreReadState Unreadable(string fingerprint, bool canReplace, bool isSymlink)

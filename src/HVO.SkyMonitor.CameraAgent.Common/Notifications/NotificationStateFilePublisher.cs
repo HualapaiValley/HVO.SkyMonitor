@@ -22,6 +22,11 @@ public readonly record struct NotificationPathInspection(
     string? ExceptionTypeName,
     bool IsSymlink);
 
+/// <summary>Result of a bounded state-file read enforcing an explicit maximum byte count.</summary>
+public readonly record struct BoundedFileReadResult(
+    bool ExceededLimit,
+    ReadOnlyMemory<byte> Content);
+
 /// <summary>
 /// Restricted (0700/0600 on Unix), symlink-refusing, fsync'd atomic file publication helper backed by
 /// <see cref="HVO.SkyMonitor.Storage.FileSystem"/> primitives for operator notification state and checkpoints.
@@ -262,11 +267,27 @@ public static class NotificationStateFilePublisher
     }
 
     public static void EnsureRestrictedDirectory(string directoryPath)
+        => EnsureRestrictedDirectory(directoryPath, onDirectorySynced: null);
+
+    internal static void EnsureRestrictedDirectory(string directoryPath, Action<string>? onDirectorySynced)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(directoryPath);
         var fullDirectory = Path.TrimEndingDirectorySeparator(Path.GetFullPath(directoryPath));
-        VerifyPathIsNotSymlink(fullDirectory);
-        Directory.CreateDirectory(fullDirectory);
+        if (string.IsNullOrEmpty(fullDirectory))
+        {
+            fullDirectory = Path.GetPathRoot(Path.GetFullPath(directoryPath)) ?? directoryPath;
+        }
+
+        var missingDirectories = CollectMissingDirectoriesAndValidateAncestors(fullDirectory);
+        var createdDirectories = new List<string>(missingDirectories.Count);
+        foreach (var missingDirectory in missingDirectories)
+        {
+            VerifyPathIsNotSymlink(missingDirectory);
+            Directory.CreateDirectory(missingDirectory);
+            VerifyPathIsNotSymlink(missingDirectory);
+            createdDirectories.Add(missingDirectory);
+        }
+
         VerifyPathIsNotSymlink(fullDirectory);
         if (!OperatingSystem.IsWindows())
         {
@@ -276,12 +297,275 @@ public static class NotificationStateFilePublisher
         try
         {
             _ = PhysicalRoot.Open(fullDirectory);
-            DurableSync.Directory(fullDirectory);
         }
         catch (FileSystemFaultException ex)
         {
             throw TranslateFault(ex);
         }
+
+        // Fsync the target directory itself, then walk every newly created directory bottom-up and fsync its parent
+        // directory so newly created directory entries are crash-durable before reporting success.
+        SyncDirectory(fullDirectory, allowSymlinkedAncestor: false, onDirectorySynced);
+        for (var i = createdDirectories.Count - 1; i >= 0; i--)
+        {
+            var parent = Path.GetDirectoryName(createdDirectories[i]);
+            if (!string.IsNullOrEmpty(parent))
+            {
+                SyncDirectory(parent, allowSymlinkedAncestor: i == 0, onDirectorySynced);
+            }
+        }
+    }
+
+    private static List<string> CollectMissingDirectoriesAndValidateAncestors(string fullDirectory)
+    {
+        var ancestors = GetAncestorsTopDown(fullDirectory);
+        var missingDirectories = new List<string>();
+
+        for (var i = 0; i < ancestors.Count; i++)
+        {
+            var ancestor = ancestors[i];
+            FileAttributes ancestorAttributes;
+            try
+            {
+                ancestorAttributes = File.GetAttributes(ancestor);
+            }
+            catch (FileNotFoundException)
+            {
+                if (TryDetectLinkTarget(ancestor, out var linkError))
+                {
+                    throw new IOException("Refusing to access a symbolic link in the protected operator notification store.");
+                }
+                if (linkError is not null)
+                {
+                    ThrowAccessError(linkError, "Refusing to access an unreadable ancestor directory in the protected operator notification store.");
+                }
+
+                for (var j = i; j < ancestors.Count; j++)
+                {
+                    missingDirectories.Add(ancestors[j]);
+                }
+                missingDirectories.Add(fullDirectory);
+                return missingDirectories;
+            }
+            catch (DirectoryNotFoundException ex)
+            {
+                throw new IOException("Ancestor path in the protected operator notification store is not a directory.", ex);
+            }
+
+            var ancestorIsLink = (ancestorAttributes & FileAttributes.ReparsePoint) != 0;
+            if (!ancestorIsLink)
+            {
+                ancestorIsLink = TryDetectLinkTarget(ancestor, out var linkErr);
+                if (linkErr is not null)
+                {
+                    ThrowAccessError(linkErr, "Refusing to access an unreadable ancestor directory in the protected operator notification store.");
+                }
+            }
+
+            if (ancestorIsLink)
+            {
+                if ((ancestorAttributes & FileAttributes.Directory) == 0 ||
+                    (ancestorAttributes & FileAttributes.Device) != 0 ||
+                    (OperatingSystem.IsWindows() && !Directory.Exists(ancestor)))
+                {
+                    throw new IOException("Refusing to access a symbolic link to a non-directory ancestor in the protected operator notification store.");
+                }
+            }
+            else if ((ancestorAttributes & FileAttributes.Directory) == 0 || (ancestorAttributes & FileAttributes.Device) != 0)
+            {
+                throw new IOException("Ancestor path in the protected operator notification store is not a directory.");
+            }
+        }
+
+        VerifyPathIsNotSymlink(fullDirectory);
+        try
+        {
+            var dirAttributes = File.GetAttributes(fullDirectory);
+            if ((dirAttributes & FileAttributes.ReparsePoint) != 0)
+            {
+                throw new IOException("Refusing to access a symbolic link in the protected operator notification store.");
+            }
+            if ((dirAttributes & FileAttributes.Directory) == 0 || (dirAttributes & FileAttributes.Device) != 0)
+            {
+                throw new IOException("Protected operator notification store directory path is not a directory.");
+            }
+        }
+        catch (FileNotFoundException)
+        {
+            missingDirectories.Add(fullDirectory);
+        }
+        catch (DirectoryNotFoundException ex)
+        {
+            throw new IOException("Protected operator notification store directory path is not a directory.", ex);
+        }
+
+        return missingDirectories;
+    }
+
+    private static void SyncDirectory(string directoryPath, bool allowSymlinkedAncestor, Action<string>? onDirectorySynced)
+    {
+        var syncPath = directoryPath;
+        if (allowSymlinkedAncestor && OperatingSystem.IsLinux())
+        {
+            // When the pre-existing parent of the highest newly created directory is itself a validated symlink to a
+            // directory (for example /var/run -> /run or a relative '..' symlink chain), append "/." so O_NOFOLLOW
+            // applies to '.' while still failing closed if the resolved target is not a directory.
+            if (TryDetectLinkTarget(directoryPath, out var linkError))
+            {
+                syncPath = Path.Combine(directoryPath, ".");
+            }
+            else if (linkError is not null)
+            {
+                ThrowAccessError(linkError, "Unable to verify ancestor directory before synchronization.");
+            }
+        }
+
+        try
+        {
+            DurableSync.Directory(syncPath);
+        }
+        catch (FileSystemFaultException ex)
+        {
+            throw TranslateFault(ex);
+        }
+
+        onDirectorySynced?.Invoke(directoryPath);
+    }
+
+    [DoesNotReturn]
+    private static void ThrowAccessError(string exceptionTypeName, string message)
+    {
+        if (string.Equals(exceptionTypeName, nameof(UnauthorizedAccessException), StringComparison.Ordinal))
+        {
+            throw new UnauthorizedAccessException(message);
+        }
+        throw new IOException(message);
+    }
+
+    public static ValueTask<BoundedFileReadResult> ReadBoundedBytesAsync(
+        string filePath,
+        int maxBytes,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxBytes);
+        return ReadBoundedBytesCoreAsync(filePath, maxBytes, cancellationToken);
+    }
+
+    private static async ValueTask<BoundedFileReadResult> ReadBoundedBytesCoreAsync(
+        string filePath,
+        int maxBytes,
+        CancellationToken cancellationToken)
+    {
+        var options = new FileStreamOptions
+        {
+            Mode = FileMode.Open,
+            Access = FileAccess.Read,
+            Share = FileShare.Read,
+            BufferSize = Math.Min(maxBytes + 1, 16 * 1024),
+            Options = FileOptions.Asynchronous | FileOptions.SequentialScan
+        };
+
+        var stream = new FileStream(filePath, options);
+        await using (stream.ConfigureAwait(false))
+        {
+            return await ReadBoundedStreamAsync(stream, maxBytes, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    public static BoundedFileReadResult ReadBoundedBytes(string filePath, int maxBytes)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxBytes);
+
+        var options = new FileStreamOptions
+        {
+            Mode = FileMode.Open,
+            Access = FileAccess.Read,
+            Share = FileShare.Read,
+            BufferSize = Math.Min(maxBytes + 1, 16 * 1024),
+            Options = FileOptions.SequentialScan
+        };
+
+        using var stream = new FileStream(filePath, options);
+        return ReadBoundedStream(stream, maxBytes);
+    }
+
+    internal static async ValueTask<BoundedFileReadResult> ReadBoundedStreamAsync(
+        Stream stream,
+        int maxBytes,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxBytes);
+
+        if (stream.CanSeek && stream.Length > maxBytes)
+        {
+            return new BoundedFileReadResult(ExceededLimit: true, Content: ReadOnlyMemory<byte>.Empty);
+        }
+
+        var initialCapacity = stream.CanSeek
+            ? (int)Math.Min(Math.Max(stream.Length, 0), maxBytes)
+            : Math.Min(maxBytes, 4096);
+        using var buffer = new MemoryStream(initialCapacity);
+        var chunk = new byte[Math.Min(maxBytes + 1, 16 * 1024)];
+        var totalRead = 0;
+
+        while (true)
+        {
+            var remainingAllowed = maxBytes - totalRead + 1;
+            var toRead = Math.Min(chunk.Length, remainingAllowed);
+            var bytesRead = await stream.ReadAsync(chunk.AsMemory(0, toRead), cancellationToken).ConfigureAwait(false);
+            if (bytesRead == 0)
+            {
+                break;
+            }
+            totalRead += bytesRead;
+            if (totalRead > maxBytes)
+            {
+                return new BoundedFileReadResult(ExceededLimit: true, Content: ReadOnlyMemory<byte>.Empty);
+            }
+            await buffer.WriteAsync(chunk.AsMemory(0, bytesRead), cancellationToken).ConfigureAwait(false);
+        }
+
+        return new BoundedFileReadResult(ExceededLimit: false, Content: buffer.ToArray());
+    }
+
+    internal static BoundedFileReadResult ReadBoundedStream(Stream stream, int maxBytes)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxBytes);
+
+        if (stream.CanSeek && stream.Length > maxBytes)
+        {
+            return new BoundedFileReadResult(ExceededLimit: true, Content: ReadOnlyMemory<byte>.Empty);
+        }
+
+        var initialCapacity = stream.CanSeek
+            ? (int)Math.Min(Math.Max(stream.Length, 0), maxBytes)
+            : Math.Min(maxBytes, 4096);
+        using var buffer = new MemoryStream(initialCapacity);
+        var chunk = new byte[Math.Min(maxBytes + 1, 16 * 1024)];
+        var totalRead = 0;
+
+        while (true)
+        {
+            var remainingAllowed = maxBytes - totalRead + 1;
+            var toRead = Math.Min(chunk.Length, remainingAllowed);
+            var bytesRead = stream.Read(chunk, 0, toRead);
+            if (bytesRead == 0)
+            {
+                break;
+            }
+            totalRead += bytesRead;
+            if (totalRead > maxBytes)
+            {
+                return new BoundedFileReadResult(ExceededLimit: true, Content: ReadOnlyMemory<byte>.Empty);
+            }
+            buffer.Write(chunk, 0, bytesRead);
+        }
+
+        return new BoundedFileReadResult(ExceededLimit: false, Content: buffer.ToArray());
     }
 
     public static void VerifyRegularFileNoSymlink(string directoryPath, string fileName)
@@ -309,18 +593,27 @@ public static class NotificationStateFilePublisher
         }
     }
 
-    public static async ValueTask PublishRestrictedAtomicAsync(
+    public static ValueTask PublishRestrictedAtomicAsync(
         string directoryPath,
         string fileName,
         ReadOnlyMemory<byte> content,
         CancellationToken cancellationToken,
         Action<string>? beforeRename = null)
+        => PublishRestrictedAtomicAsync(directoryPath, fileName, content, beforeRename, onDirectorySynced: null, cancellationToken);
+
+    public static async ValueTask PublishRestrictedAtomicAsync(
+        string directoryPath,
+        string fileName,
+        ReadOnlyMemory<byte> content,
+        Action<string>? beforeRename,
+        Action<string>? onDirectorySynced,
+        CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(directoryPath);
         ArgumentException.ThrowIfNullOrWhiteSpace(fileName);
 
         var fullDirectory = Path.TrimEndingDirectorySeparator(Path.GetFullPath(directoryPath));
-        EnsureRestrictedDirectory(fullDirectory);
+        EnsureRestrictedDirectory(fullDirectory, onDirectorySynced);
 
         PhysicalRoot root;
         string finalPath;
@@ -386,12 +679,13 @@ public static class NotificationStateFilePublisher
                 {
                     File.SetUnixFileMode(finalPath, RestrictedFileMode);
                 }
-                DurableSync.Directory(fullDirectory);
             }
             catch (FileSystemFaultException ex)
             {
                 throw TranslateFault(ex);
             }
+
+            SyncDirectory(fullDirectory, allowSymlinkedAncestor: false, onDirectorySynced);
         }
         finally
         {
@@ -467,6 +761,7 @@ public static class NotificationStateFilePublisher
 public sealed class FileOperatorNotificationHeartbeatStore(string stateDirectory) : IOperatorNotificationHeartbeatStore
 {
     public const string HeartbeatFileName = "operator-notifications-heartbeat.json";
+    public const int MaximumCheckpointBytes = 4 * 1024;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     private readonly string _stateDirectory = !string.IsNullOrWhiteSpace(stateDirectory)
@@ -493,13 +788,28 @@ public sealed class FileOperatorNotificationHeartbeatStore(string stateDirectory
                 : "Operator notification heartbeat checkpoint path is unreadable or not a regular file.");
         }
 
-        var json = await File.ReadAllTextAsync(inspection.TargetPath, cancellationToken).ConfigureAwait(false);
-        if (string.IsNullOrWhiteSpace(json))
+        var readResult = await NotificationStateFilePublisher.ReadBoundedBytesAsync(
+            inspection.TargetPath,
+            MaximumCheckpointBytes,
+            cancellationToken).ConfigureAwait(false);
+        if (readResult.ExceededLimit)
+        {
+            throw new InvalidDataException("Operator notification heartbeat checkpoint exceeds maximum allowed size.");
+        }
+
+        var span = readResult.Content.Span;
+        var utf8Bom = Encoding.UTF8.Preamble;
+        if (span.StartsWith(utf8Bom))
+        {
+            span = span[utf8Bom.Length..];
+        }
+
+        if (IsAsciiWhitespaceOnly(span))
         {
             throw new InvalidDataException("Operator notification heartbeat checkpoint is empty.");
         }
 
-        var payload = JsonSerializer.Deserialize<HeartbeatCheckpoint>(json, JsonOptions);
+        var payload = JsonSerializer.Deserialize<HeartbeatCheckpoint>(span, JsonOptions);
         if (payload is null ||
             string.IsNullOrWhiteSpace(payload.LastSiteDate) ||
             !DateOnly.TryParseExact(payload.LastSiteDate, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed))
@@ -507,6 +817,18 @@ public sealed class FileOperatorNotificationHeartbeatStore(string stateDirectory
             throw new InvalidDataException("Operator notification heartbeat checkpoint is malformed.");
         }
         return parsed;
+    }
+
+    private static bool IsAsciiWhitespaceOnly(ReadOnlySpan<byte> bytes)
+    {
+        foreach (var b in bytes)
+        {
+            if (b is not ((byte)' ' or (byte)'\t' or (byte)'\r' or (byte)'\n'))
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     public async ValueTask WriteLastHeartbeatSiteDateAsync(DateOnly siteDate, CancellationToken cancellationToken)

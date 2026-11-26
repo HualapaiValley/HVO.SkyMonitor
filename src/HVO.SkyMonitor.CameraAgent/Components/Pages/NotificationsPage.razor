@@ -168,7 +168,7 @@ else
                                 Username: @SecretSourceText(secrets.HasSmtpUsername, secrets.SmtpUsernameSource) · Password: @SecretSourceText(secrets.HasSmtpPassword, secrets.SmtpPasswordSource)
                             </span>
                         </div>
-                        <p class="notifications-hint">Stored encrypted with ASP.NET Core Data Protection. STARTTLS or Implicit TLS is required whenever SMTP credentials are configured; SecurityMode=None is limited to unauthenticated local LAN relays. Leave blank to keep the existing credential; saved values are never returned to the browser.</p>
+                        <p class="notifications-hint">Stored encrypted with ASP.NET Core Data Protection. STARTTLS or Implicit TLS is required whenever SMTP credentials are configured; SecurityMode=None is limited to unauthenticated local LAN relays. Leave blank to keep the existing credential for the same SMTP host and port; changing the host or port drops inherited credentials unless new ones are entered.</p>
                         <div class="notifications-row two">
                             <label class="ops-field">SMTP username (write-only)
                                 <input id="smtp-username" type="password" autocomplete="new-password"
@@ -224,7 +224,7 @@ else
                                 URL: @WebhookUrlStatusText(secrets) · Token: @SecretSourceText(secrets.HasWebhookAuthToken, secrets.WebhookAuthTokenSource)@if (_webhookFormat == WebhookPayloadFormat.Ntfy || secrets.HasWebhookNtfyTopic) { <text> · Topic: @SecretSourceText(secrets.HasWebhookNtfyTopic, secrets.WebhookNtfyTopicSource)</text> }
                             </span>
                         </div>
-                        <p class="notifications-hint">Webhook URLs, auth tokens, and ntfy topics are stored encrypted and never returned to the browser. Only the URL scheme and host are shown after saving.</p>
+                        <p class="notifications-hint">Webhook URLs, auth tokens, and ntfy topics are stored encrypted and never returned to the browser. Only the URL scheme and host are shown after saving. Changing the webhook origin (scheme, host, or port) or clearing the URL drops inherited tokens, user keys, and topics unless re-entered.</p>
                         <label class="ops-field">HTTPS webhook URL (write-only)
                             <input id="webhook-url" type="password" autocomplete="new-password"
                                    placeholder="@(secrets.HasWebhookUrl ? "Stored — enter new HTTPS URL to replace" : "https://hooks.example.org/...")"

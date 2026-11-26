@@ -327,6 +327,100 @@ public sealed class NotificationsPageTests
         }
     }
 
+    [TestMethod]
+    public async Task Save_AgainstRealStoreChangingWebhookOriginAndSmtpHost_DropsHostSecretsAndUpdatesUiPresenceAsync()
+    {
+        var stateDir = Path.Combine(Path.GetTempPath(), $"hvo-notif-ui-dest-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(stateDir);
+        try
+        {
+            var dpProvider = DataProtectionProvider.Create(new DirectoryInfo(Path.Combine(stateDir, "dp-keys")));
+            var hostConfig = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    [OperatorNotificationsOptions.SectionKey + ":Enabled"] = "true",
+                    [OperatorNotificationsOptions.SectionKey + ":Smtp:Enabled"] = "true",
+                    [OperatorNotificationsOptions.SectionKey + ":Smtp:Host"] = "relay-a.example.test",
+                    [OperatorNotificationsOptions.SectionKey + ":Smtp:Port"] = "587",
+                    [OperatorNotificationsOptions.SectionKey + ":Smtp:SecurityMode"] = "StartTls",
+                    [OperatorNotificationsOptions.SectionKey + ":Smtp:FromAddress"] = "camera@example.test",
+                    [OperatorNotificationsOptions.SectionKey + ":Smtp:Recipients:0"] = "ops@example.test",
+                    [ConfigurationOperatorNotificationConfigProvider.SmtpUsernameConfigKey] = "host-smtp-user",
+                    [ConfigurationOperatorNotificationConfigProvider.SmtpPasswordConfigKey] = "host-smtp-pass",
+                    [OperatorNotificationsOptions.SectionKey + ":Webhook:Enabled"] = "true",
+                    [ConfigurationOperatorNotificationConfigProvider.WebhookUrlConfigKey] = "https://hooks-a.example.test/alerts",
+                    [ConfigurationOperatorNotificationConfigProvider.WebhookAuthTokenConfigKey] = "host-webhook-token"
+                })
+                .Build();
+
+            using var store = new OperatorNotificationStore(
+                dpProvider,
+                Options.Create(new DeviceProvisioningOptions { StateDirectory = stateDir }),
+                hostConfig,
+                new OperatorNotificationNetworkPolicy(isDevelopment: false),
+                NullLogger<OperatorNotificationStore>.Instance);
+            using var telemetry = new OperatorNotificationTelemetry();
+            using var dispatcher = new OperatorNotificationDispatcher(
+                store,
+                new NoOpSmtpTransport(),
+                new NoOpWebhookTransport(),
+                telemetry,
+                TimeProvider.System);
+
+            var owner = new ClaimsPrincipal(new ClaimsIdentity(
+                [
+                    new Claim(ClaimTypes.NameIdentifier, "owner-1"),
+                    new Claim(CanonicalCredentialClaims.AccountTypeClaim, CanonicalCredentialClaims.UserAccountType)
+                ],
+                IdentityConstants.ApplicationScheme));
+
+            var uiService = new CameraAgentNotificationsUiService(
+                new StaticAuthStateProvider(owner),
+                new AllowAllAuthorizationService(),
+                dispatcher,
+                NullLogger<CameraAgentNotificationsUiService>.Instance);
+
+            using var context = new BunitContext();
+            context.Services.AddSingleton<ICameraAgentNotificationsUiService>(uiService);
+
+            var cut = context.Render<NotificationsPage>();
+            cut.WaitForAssertion(() =>
+            {
+                StringAssert.Contains(cut.Find("#smtp-secret-status").TextContent, "Password: Host configuration", StringComparison.Ordinal);
+                StringAssert.Contains(cut.Find("#webhook-secret-status").TextContent, "https://hooks-a.example.test (config)", StringComparison.Ordinal);
+                StringAssert.Contains(cut.Find("#webhook-secret-status").TextContent, "Token: Host configuration", StringComparison.Ordinal);
+            });
+
+            // Change both SMTP host and webhook origin in the UI without entering new credentials.
+            await cut.Find("#smtp-host").ChangeAsync(new ChangeEventArgs { Value = "relay-b.example.test" }).ConfigureAwait(false);
+            await cut.Find("#webhook-url").ChangeAsync(new ChangeEventArgs { Value = "https://hooks-b.example.test/new-alerts" }).ConfigureAwait(false);
+            await cut.Find("form.notifications-form").SubmitAsync().ConfigureAwait(false);
+
+            cut.WaitForAssertion(() =>
+            {
+                Assert.AreEqual("Notification settings saved.", cut.Find("#notifications-banner").TextContent.Trim());
+                StringAssert.Contains(cut.Find("#smtp-secret-status").TextContent, "Username: Not set", StringComparison.Ordinal);
+                StringAssert.Contains(cut.Find("#smtp-secret-status").TextContent, "Password: Not set", StringComparison.Ordinal);
+                StringAssert.Contains(cut.Find("#webhook-secret-status").TextContent, "https://hooks-b.example.test (protected)", StringComparison.Ordinal);
+                StringAssert.Contains(cut.Find("#webhook-secret-status").TextContent, "Token: Not set", StringComparison.Ordinal);
+            });
+
+            var effective = await store.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual("relay-b.example.test", effective.Options.Smtp.Host);
+            Assert.IsNull(effective.Secrets.SmtpUsername);
+            Assert.IsNull(effective.Secrets.SmtpPassword);
+            Assert.AreEqual("https://hooks-b.example.test/new-alerts", effective.Secrets.WebhookUrl);
+            Assert.IsNull(effective.Secrets.WebhookAuthToken);
+        }
+        finally
+        {
+            if (Directory.Exists(stateDir))
+            {
+                Directory.Delete(stateDir, recursive: true);
+            }
+        }
+    }
+
     private sealed class StaticAuthStateProvider(ClaimsPrincipal principal) : AuthenticationStateProvider
     {
         public override Task<AuthenticationState> GetAuthenticationStateAsync()

@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -36,7 +37,11 @@ public sealed class ConfigurationOperatorNotificationConfigProvider(
             {
                 return bindingError;
             }
-            var secrets = ReadSecretsFromConfiguration(_configuration);
+            var secrets = MergeSecrets(
+                OperatorNotificationSecrets.Empty,
+                ReadSecretsFromConfiguration(_configuration),
+                options,
+                options);
             return EvaluateConfigurationErrorReasonCode(options, secrets, _networkPolicy);
         }
     }
@@ -45,8 +50,14 @@ public sealed class ConfigurationOperatorNotificationConfigProvider(
     {
         cancellationToken.ThrowIfCancellationRequested();
         var options = ReadOptionsFromConfiguration(_configuration, out var bindingError);
-        var configSecrets = ReadSecretsFromConfiguration(_configuration);
-        var presence = BuildSecretPresence(OperatorNotificationSecrets.Empty, configSecrets);
+        var configSecrets = bindingError is not null
+            ? OperatorNotificationSecrets.Empty
+            : ReadSecretsFromConfiguration(_configuration);
+        var presence = BuildSecretPresence(
+            OperatorNotificationSecrets.Empty,
+            configSecrets,
+            options,
+            bindingError is null ? options : null);
         var version = ComputeVersion(options, presence);
         return ValueTask.FromResult(new OperatorNotificationsConfigurationSnapshot(
             options,
@@ -65,7 +76,11 @@ public sealed class ConfigurationOperatorNotificationConfigProvider(
         var options = ReadOptionsFromConfiguration(_configuration, out var bindingError);
         var secrets = bindingError is not null
             ? OperatorNotificationSecrets.Empty
-            : ReadSecretsFromConfiguration(_configuration);
+            : MergeSecrets(
+                OperatorNotificationSecrets.Empty,
+                ReadSecretsFromConfiguration(_configuration),
+                options,
+                options);
         return ValueTask.FromResult((options, secrets));
     }
 
@@ -83,7 +98,11 @@ public sealed class ConfigurationOperatorNotificationConfigProvider(
                 ConfigurationErrorReasonCode: bindingError));
         }
 
-        var secrets = ReadSecretsFromConfiguration(_configuration);
+        var secrets = MergeSecrets(
+            OperatorNotificationSecrets.Empty,
+            ReadSecretsFromConfiguration(_configuration),
+            options,
+            options);
         var errorCode = EvaluateConfigurationErrorReasonCode(options, secrets, _networkPolicy);
         return ValueTask.FromResult(new OperatorNotificationEffectiveConfiguration(
             options,
@@ -142,33 +161,60 @@ public sealed class ConfigurationOperatorNotificationConfigProvider(
     public static OperatorNotificationSecrets MergeSecrets(
         OperatorNotificationSecrets protectedSecrets,
         OperatorNotificationSecrets configurationSecrets)
+        => MergeSecrets(protectedSecrets, configurationSecrets, effectiveOptions: null, configurationOptions: null);
+
+    public static OperatorNotificationSecrets MergeSecrets(
+        OperatorNotificationSecrets protectedSecrets,
+        OperatorNotificationSecrets configurationSecrets,
+        OperatorNotificationsOptions? effectiveOptions,
+        OperatorNotificationsOptions? configurationOptions)
     {
         ArgumentNullException.ThrowIfNull(protectedSecrets);
         ArgumentNullException.ThrowIfNull(configurationSecrets);
+
+        var effectiveWebhookUrl = Choose(protectedSecrets.WebhookUrl, configurationSecrets.WebhookUrl);
+        var inheritHostWebhookSecrets = HasMatchingWebhookOrigin(effectiveWebhookUrl, configurationSecrets.WebhookUrl);
+        var inheritHostSmtpSecrets = HasMatchingSmtpEndpoint(effectiveOptions?.Smtp, configurationOptions?.Smtp);
+
         return new OperatorNotificationSecrets(
-            SmtpUsername: Choose(protectedSecrets.SmtpUsername, configurationSecrets.SmtpUsername),
-            SmtpPassword: Choose(protectedSecrets.SmtpPassword, configurationSecrets.SmtpPassword),
-            WebhookUrl: Choose(protectedSecrets.WebhookUrl, configurationSecrets.WebhookUrl),
-            WebhookAuthToken: Choose(protectedSecrets.WebhookAuthToken, configurationSecrets.WebhookAuthToken),
-            WebhookUserKey: Choose(protectedSecrets.WebhookUserKey, configurationSecrets.WebhookUserKey),
-            WebhookNtfyTopic: Choose(protectedSecrets.WebhookNtfyTopic, configurationSecrets.WebhookNtfyTopic));
+            SmtpUsername: Choose(protectedSecrets.SmtpUsername, inheritHostSmtpSecrets ? configurationSecrets.SmtpUsername : null),
+            SmtpPassword: Choose(protectedSecrets.SmtpPassword, inheritHostSmtpSecrets ? configurationSecrets.SmtpPassword : null),
+            WebhookUrl: effectiveWebhookUrl,
+            WebhookAuthToken: Choose(protectedSecrets.WebhookAuthToken, inheritHostWebhookSecrets ? configurationSecrets.WebhookAuthToken : null),
+            WebhookUserKey: Choose(protectedSecrets.WebhookUserKey, inheritHostWebhookSecrets ? configurationSecrets.WebhookUserKey : null),
+            WebhookNtfyTopic: Choose(protectedSecrets.WebhookNtfyTopic, inheritHostWebhookSecrets ? configurationSecrets.WebhookNtfyTopic : null));
     }
 
     public static OperatorNotificationSecretPresence BuildSecretPresence(
         OperatorNotificationSecrets protectedSecrets,
         OperatorNotificationSecrets configurationSecrets)
+        => BuildSecretPresence(protectedSecrets, configurationSecrets, effectiveOptions: null, configurationOptions: null);
+
+    public static OperatorNotificationSecretPresence BuildSecretPresence(
+        OperatorNotificationSecrets protectedSecrets,
+        OperatorNotificationSecrets configurationSecrets,
+        OperatorNotificationsOptions? effectiveOptions,
+        OperatorNotificationsOptions? configurationOptions)
     {
         ArgumentNullException.ThrowIfNull(protectedSecrets);
         ArgumentNullException.ThrowIfNull(configurationSecrets);
 
-        var (hasSmtpUser, smtpUserSource) = Presence(protectedSecrets.SmtpUsername, configurationSecrets.SmtpUsername);
-        var (hasSmtpPass, smtpPassSource) = Presence(protectedSecrets.SmtpPassword, configurationSecrets.SmtpPassword);
-        var (hasWebhookUrl, webhookUrlSource) = Presence(protectedSecrets.WebhookUrl, configurationSecrets.WebhookUrl);
-        var (hasWebhookToken, webhookTokenSource) = Presence(protectedSecrets.WebhookAuthToken, configurationSecrets.WebhookAuthToken);
-        var (hasWebhookUserKey, webhookUserKeySource) = Presence(protectedSecrets.WebhookUserKey, configurationSecrets.WebhookUserKey);
-        var (hasWebhookNtfyTopic, webhookNtfyTopicSource) = Presence(protectedSecrets.WebhookNtfyTopic, configurationSecrets.WebhookNtfyTopic);
-
         var effectiveUrl = Choose(protectedSecrets.WebhookUrl, configurationSecrets.WebhookUrl);
+        var inheritHostWebhookSecrets = HasMatchingWebhookOrigin(effectiveUrl, configurationSecrets.WebhookUrl);
+        var inheritHostSmtpSecrets = HasMatchingSmtpEndpoint(effectiveOptions?.Smtp, configurationOptions?.Smtp);
+
+        var (hasSmtpUser, smtpUserSource) = Presence(
+            protectedSecrets.SmtpUsername, inheritHostSmtpSecrets ? configurationSecrets.SmtpUsername : null);
+        var (hasSmtpPass, smtpPassSource) = Presence(
+            protectedSecrets.SmtpPassword, inheritHostSmtpSecrets ? configurationSecrets.SmtpPassword : null);
+        var (hasWebhookUrl, webhookUrlSource) = Presence(protectedSecrets.WebhookUrl, configurationSecrets.WebhookUrl);
+        var (hasWebhookToken, webhookTokenSource) = Presence(
+            protectedSecrets.WebhookAuthToken, inheritHostWebhookSecrets ? configurationSecrets.WebhookAuthToken : null);
+        var (hasWebhookUserKey, webhookUserKeySource) = Presence(
+            protectedSecrets.WebhookUserKey, inheritHostWebhookSecrets ? configurationSecrets.WebhookUserKey : null);
+        var (hasWebhookNtfyTopic, webhookNtfyTopicSource) = Presence(
+            protectedSecrets.WebhookNtfyTopic, inheritHostWebhookSecrets ? configurationSecrets.WebhookNtfyTopic : null);
+
         var endpointHost = OperatorNotificationRedactor.FormatEndpointHost(effectiveUrl);
 
         return new OperatorNotificationSecretPresence(
@@ -185,6 +231,85 @@ public sealed class ConfigurationOperatorNotificationConfigProvider(
             webhookUserKeySource,
             hasWebhookNtfyTopic,
             webhookNtfyTopicSource);
+    }
+
+    /// <summary>
+    /// Returns true ONLY when both webhook URLs parse as absolute HTTP(S) endpoints without embedded userinfo and
+    /// share the exact same normalized origin (scheme, host/canonical IP, and effective port).
+    /// </summary>
+    [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
+        Justification = "Compares raw configured webhook URL strings safely by normalized scheme, host, and effective port.")]
+    public static bool HasMatchingWebhookOrigin(string? effectiveWebhookUrl, string? referenceWebhookUrl)
+    {
+        return TryGetWebhookOrigin(effectiveWebhookUrl, out var effectiveOrigin) &&
+               TryGetWebhookOrigin(referenceWebhookUrl, out var referenceOrigin) &&
+               effectiveOrigin.Port == referenceOrigin.Port &&
+               string.Equals(effectiveOrigin.Scheme, referenceOrigin.Scheme, StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(effectiveOrigin.Host, referenceOrigin.Host, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Returns true ONLY when both SMTP configurations specify non-empty hosts and valid ports targeting the exact
+    /// same relay endpoint (case-insensitive hostname / canonical IP address and identical port).
+    /// </summary>
+    public static bool HasMatchingSmtpEndpoint(SmtpNotificationOptions? effectiveSmtp, SmtpNotificationOptions? referenceSmtp)
+    {
+        return TryGetSmtpEndpoint(effectiveSmtp, out var effectiveEndpoint) &&
+               TryGetSmtpEndpoint(referenceSmtp, out var referenceEndpoint) &&
+               effectiveEndpoint.Port == referenceEndpoint.Port &&
+               string.Equals(effectiveEndpoint.Host, referenceEndpoint.Host, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
+        Justification = "Parses raw configured webhook URL text to extract normalized scheme, host, and effective port.")]
+    private static bool TryGetWebhookOrigin(string? rawUrl, out (string Scheme, string Host, int Port) origin)
+    {
+        origin = default;
+        if (string.IsNullOrWhiteSpace(rawUrl))
+        {
+            return false;
+        }
+
+        var trimmed = rawUrl.Trim();
+        if (!Uri.TryCreate(trimmed, UriKind.Absolute, out var uri))
+        {
+            return false;
+        }
+
+        if (!string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrEmpty(uri.UserInfo) || string.IsNullOrWhiteSpace(uri.IdnHost) || uri.Port <= 0)
+        {
+            return false;
+        }
+
+        var unbracketed = uri.IdnHost.Trim('[', ']');
+        var normalizedHost = IPAddress.TryParse(unbracketed, out var ip)
+            ? ip.ToString()
+            : uri.IdnHost;
+        origin = (uri.Scheme, normalizedHost, uri.Port);
+        return true;
+    }
+
+    private static bool TryGetSmtpEndpoint(SmtpNotificationOptions? smtp, out (string Host, int Port) endpoint)
+    {
+        endpoint = default;
+        if (smtp is null || string.IsNullOrWhiteSpace(smtp.Host) || smtp.Port is < 1 or > 65535)
+        {
+            return false;
+        }
+
+        var trimmed = smtp.Host.Trim();
+        var unbracketed = trimmed.Trim('[', ']');
+        var normalizedHost = IPAddress.TryParse(unbracketed, out var ip)
+            ? ip.ToString()
+            : trimmed;
+        endpoint = (normalizedHost, smtp.Port);
+        return true;
     }
 
     public static string? EvaluateConfigurationErrorReasonCode(
