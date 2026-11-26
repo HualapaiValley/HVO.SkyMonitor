@@ -177,6 +177,10 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
 
     private bool _focusConversion;
 
+    private bool CanLinkToSourceRevision(ProcessingGraphDraftModel.NodeRow node)
+        => _model.SourceRevisionId is not null &&
+           (_model.ExistsInSourceRevision(node) || (_plan is not null && !_graphChanged && _savedRevisionId is null));
+
     private string OptionsSection(ProcessingGraphDraftModel.NodeRow node)
         => ProcessingNodeSectionRegistry.OptionsSectionId(_model.Nodes, node);
 

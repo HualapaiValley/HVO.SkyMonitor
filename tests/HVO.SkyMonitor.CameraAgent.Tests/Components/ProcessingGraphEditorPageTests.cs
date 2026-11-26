@@ -1138,6 +1138,59 @@ public sealed class ProcessingGraphEditorPageTests
         }
     }
 
+    [TestMethod]
+    public void GraphEditorExactRegionalToggleReversalRestoresInspectLinkAfterNoOpPreview()
+    {
+        const string measurementAlias = ExposureMeasurementProducts.StepAlias;
+        const string predictionAlias = ExposureCatalogPredictionProducts.StepAlias;
+        var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
+        var pipeline = new CapturePipelineConfig(
+        [
+            new(measurementAlias, measurementAlias, 4, null, ["$raw"], Required: false, Enabled: true, Publication: durable),
+            new(RegionalStellarVisibilityProducts.StepAlias, "regional", 30, null,
+                ["$raw", measurementAlias, predictionAlias], Required: false, Enabled: true, Publication: durable),
+            new(predictionAlias, predictionAlias, DependsOn: ["$raw"], Required: false, Publication: durable)
+        ]);
+
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(CreateEditorService(pipeline));
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/pipeline/graphs/new?from=rev-active");
+
+        var cut = context.Render<ProcessingGraphEditorPage>();
+        var regionalRow = cut.WaitForElement($"li.node-row[data-node-alias='{RegionalStellarVisibilityProducts.StepAlias}']");
+        Assert.IsNotNull(cut.Find($"li.node-row[data-node-alias='{predictionAlias}'] .node-row--builtin a"));
+
+        // Toggling regional off and back on regenerates ExposureCatalogPrediction as an unsaved row prior to preview.
+        FindMainRowEnabledCheckbox(regionalRow).Change(false);
+        Assert.IsEmpty(cut.FindAll($"li.node-row[data-node-alias='{predictionAlias}']"));
+        regionalRow = cut.Find($"li.node-row[data-node-alias='{RegionalStellarVisibilityProducts.StepAlias}']");
+        FindMainRowEnabledCheckbox(regionalRow).Change(true);
+
+        var predictionBuiltIn = cut.Find($"li.node-row[data-node-alias='{predictionAlias}'] .node-row--builtin");
+        Assert.IsEmpty(predictionBuiltIn.QuerySelectorAll("a"));
+
+        // Previewing the exact reversal confirms no graph changes (Save disabled) and restores the source inspect link.
+        cut.Find("form").Submit();
+        StringAssert.Contains(cut.Find(".editor-banner[role='status']").TextContent, "No graph changes.", StringComparison.Ordinal);
+        Assert.IsTrue(cut.Find(".editor-actions button.btn-primary").HasAttribute("disabled"),
+            "Save must remain disabled when preview confirms no graph changes.");
+        predictionBuiltIn = cut.Find($"li.node-row[data-node-alias='{predictionAlias}'] .node-row--builtin");
+        var restoredLink = predictionBuiltIn.QuerySelector("a");
+        Assert.IsNotNull(restoredLink,
+            "An exact toggle reversal confirmed unchanged by preview must restore the source-revision inspect link instead of telling the operator to save.");
+        Assert.AreEqual("Inspect built-in stage", restoredLink.TextContent.Trim());
+        Assert.AreEqual($"/operations/pipeline/graphs/rev-active/nodes/{predictionAlias}", restoredLink.GetAttribute("href"));
+        Assert.IsFalse(predictionBuiltIn.TextContent.Contains("Save the draft", StringComparison.OrdinalIgnoreCase));
+
+        // Making a real edit afterward clears the unchanged preview and returns the regenerated row to unsaved guidance.
+        regionalRow = cut.Find($"li.node-row[data-node-alias='{RegionalStellarVisibilityProducts.StepAlias}']");
+        regionalRow.QuerySelector("input[id$='-gridColumns']")!.Change("6");
+        predictionBuiltIn = cut.Find($"li.node-row[data-node-alias='{predictionAlias}'] .node-row--builtin");
+        Assert.IsEmpty(predictionBuiltIn.QuerySelectorAll("a"));
+        StringAssert.Contains(predictionBuiltIn.TextContent, "Save the draft", StringComparison.Ordinal);
+    }
+
     private static ProcessingExecutionPagesTests.GraphUiService CreateEditorService(CapturePipelineConfig pipeline)
     {
         var registry = ProcessingGraphPagesTests.Registry();
