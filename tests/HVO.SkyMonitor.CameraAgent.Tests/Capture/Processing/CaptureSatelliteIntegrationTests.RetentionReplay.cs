@@ -6,6 +6,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Orbital;
+using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.Processing.Tests;
 using Microsoft.Data.Sqlite;
@@ -160,9 +161,10 @@ public sealed partial class CaptureSatelliteIntegrationTests
     }
 
     [TestMethod]
-    [DataRow(false)]
-    [DataRow(true)]
-    public async Task ArchivedReplayPinsOriginalProductsAndIgnoresChangedCurrentSiteAndSources(bool csvSnapshot)
+    [DataRow(false, false)]
+    [DataRow(true, false)]
+    [DataRow(true, true)]
+    public async Task ArchivedReplayPinsOriginalProductsAndIgnoresChangedCurrentSiteAndSources(bool csvSnapshot, bool hideObjectLabels)
     {
         var root = CreateRoot();
         try
@@ -171,10 +173,11 @@ public sealed partial class CaptureSatelliteIntegrationTests
             var clock = new Clock(f.Descriptor.Timing.DurableIngressUtc);
             HVO.SkyMonitor.CameraAgent.Common.RawIngress.RawCaptureReceipt raw;
             string originalChecksum;
+            string originalLayerChecksum;
             string revision;
             using (var provider = CreateProvider(root, f, clock))
             {
-                var config = Configuration(root, f);
+                var config = Configuration(root, f, hideObjectLabels: hideObjectLabels);
                 if (csvSnapshot)
                     await InstallCsvSnapshotAsync(provider, TestContext.CancellationToken).ConfigureAwait(false);
                 raw = await CaptureAsync(provider, config, f).ConfigureAwait(false);
@@ -183,6 +186,19 @@ public sealed partial class CaptureSatelliteIntegrationTests
                     raw.Manifest.Descriptor.Capture.CaptureId, "satellite", CancellationToken.None).ConfigureAwait(false);
                 var prediction = original!.Outputs.Single(p => p.ProductSchemaVersion == CaptureOrbitalPredictionJson.SchemaVersion);
                 originalChecksum = prediction.Artifact.ChecksumSha256;
+                var layerNode = await provider.GetRequiredService<SqliteCaptureProcessingStore>().ReadNodeAsync(
+                    raw.Manifest.Descriptor.Capture.CaptureId, "satellite-layer", TestContext.CancellationToken).ConfigureAwait(false);
+                var layerOutput = layerNode!.Outputs.Single(p => p.ProductSchemaVersion == PresentationLayerPayloadV1.CurrentSchemaVersion);
+                originalLayerChecksum = layerOutput.Artifact.ChecksumSha256;
+                var layer = PresentationLayerPayloadJson.Parse(await File.ReadAllBytesAsync(Path.Combine(root, layerOutput.PayloadRelativePath),
+                    TestContext.CancellationToken).ConfigureAwait(false)).Payload;
+                Assert.IsNotNull(layer);
+                Assert.IsNotEmpty(layer.Segments);
+                var sourceOutput = layerNode.Outputs.Single(p => p.ProductSchemaVersion == CaptureSatelliteProducts.SourceSchema);
+                using var layerSource = JsonDocument.Parse(await File.ReadAllBytesAsync(Path.Combine(root, sourceOutput.PayloadRelativePath),
+                    TestContext.CancellationToken).ConfigureAwait(false));
+                Assert.AreEqual(hideObjectLabels, layerSource.RootElement.TryGetProperty("ObjectLabelsHidden", out var flag) && flag.GetBoolean());
+                if (hideObjectLabels) Assert.HasCount(1, layer.TextBlocks);
                 if (csvSnapshot)
                 {
                     using var product = JsonDocument.Parse(await File.ReadAllBytesAsync(Path.Combine(root, prediction.PayloadRelativePath),
@@ -245,6 +261,11 @@ public sealed partial class CaptureSatelliteIntegrationTests
                         "satellite", CancellationToken.None).ConfigureAwait(false);
                     Assert.IsNotNull(node);
                     Assert.AreEqual(originalChecksum, node.Outputs.Single(p => p.ProductSchemaVersion == CaptureOrbitalPredictionJson.SchemaVersion).Artifact.ChecksumSha256);
+                    var layerNode = await store.ReadExecutionNodeAsync(execution.ExecutionId, raw.Manifest.Descriptor.Capture.CaptureId,
+                        "satellite-layer", TestContext.CancellationToken).ConfigureAwait(false);
+                    Assert.IsNotNull(layerNode);
+                    Assert.AreEqual(originalLayerChecksum, layerNode.Outputs.Single(p =>
+                        p.ProductSchemaVersion == PresentationLayerPayloadV1.CurrentSchemaVersion).Artifact.ChecksumSha256);
                 }
                 finally { graph.DisposeSteps(); }
             }

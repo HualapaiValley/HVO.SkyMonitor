@@ -383,6 +383,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<ICameraAgentPreviewEncoder, CameraAgentPreviewEncoder>();
         services.AddSingleton<CameraAgentArtifactService>();
         services.AddSingleton<ICameraAgentArtifactService>(provider => provider.GetRequiredService<CameraAgentArtifactService>());
+        services.AddSingleton<ICameraAgentScientificExports, CameraAgentScientificExports>();
         services.AddSingleton<ICameraAgentLayeredPresentationService, CameraAgentLayeredPresentationService>();
         services.TryAddSingleton<ICenteredMeasuredDeepSky>(provider => new CenteredMeasuredDeepSky(
             provider.GetRequiredService<ICenteredViewReadIndex>(), provider.GetRequiredService<ICenteredViewPublisher>(),

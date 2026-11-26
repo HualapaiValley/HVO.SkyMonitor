@@ -6,6 +6,7 @@ services:
       ASPNETCORE_ENVIRONMENT: Production
       ASPNETCORE_URLS: http://+:8080
       HVO_KEY_PER_FILE_DIRECTORY: /run/hvo-secrets
+      CameraAgent__RawIngressRoot: /app/data/raw
     ports:
       - ${HVO_PUBLIC_PORT:?public port required}:8080
     volumes:

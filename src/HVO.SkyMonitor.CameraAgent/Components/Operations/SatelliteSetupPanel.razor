@@ -22,12 +22,12 @@
                 @if (!group.CanWrite || !state.CanWrite) { <p role="status">@(state.ReadOnlyReason ?? group.ReadOnlyReason)</p> }
             </div>
         }
-        <p><a href="/operations/software#software-orbital-heading">Continue orbital refresh setup in Software &amp; Catalog</a></p>
+        <p><a class="button secondary small" href="/operations/software#software-orbital-heading">Continue orbital refresh setup in Software &amp; Catalog</a></p>
         <div id="satellite-availability" role="status">
             <p>Setup checks the default six-hour window from the selected scene instant. Each search validates its requested window and object epochs.</p>
             @foreach (var problem in view.Problems)
             {
-                <p data-reason="@problem.Code">@problem.Message <a href="@problem.Link">@problem.Action</a></p>
+                <p data-reason="@problem.Code">@problem.Message <a class="button secondary small" href="@problem.Link">@problem.Action</a></p>
             }
             @if (view.Problems.Count == 0) { <p>Local snapshot and time data cover this window. Search passes below to validate the selected objects and their epochs.</p> }
         </div>
@@ -50,12 +50,16 @@
             {
                 <dl id="time-data-refresh" class="ops-facts" data-refresh-outcome="@status.Refresh.Outcome" data-expired="@(status.Expired ? "true" : "false")" data-covers-now="@(status.CoversNow ? "true" : "false")">
                     <div class="full"><dt>Planning coverage</dt><dd>@Coverage(status)</dd></div>
-                    <div class="full"><dt>Time-data refresh</dt><dd>@(status.RefreshEnabled ? "On" : "Off")@if (!status.RefreshScheduled) { <small>The daily automation is not set up. <a href="/operations/automations?setup=time-data">Create the time-data refresh automation</a>.</small> }</dd></div>
+                    <div class="full"><dt>Time-data refresh</dt><dd>@(status.RefreshEnabled ? "On" : "Off")@if (!status.RefreshScheduled) { <small>The daily automation is not set up. <a class="button secondary small" href="/operations/automations?setup=time-data">Create the time-data refresh automation</a></small> }</dd></div>
                     <div class="full"><dt>Last refresh attempt</dt><dd>@Attempt(status.Refresh)@if (status.Refresh.Detail is { Length: > 0 } detail) { <small>@detail</small> }@if (status.Refresh.NextPermittedAttemptUtc is { } next) { <small>Next permitted attempt: @next.ToString("O")</small> }</dd></div>
                     <div class="full"><dt>Last successful adoption</dt><dd>@Adoption(status.ManagedPair)</dd></div>
                 </dl>
             }
-            <p><a href="https://github.com/HualapaiValley/HVO.SkyMonitor/blob/development/v1/docs/astronomy/satellite-planning-v1.md#enable-local-planning">Time-data setup instructions</a>. Capture-time predicted tracks remain unavailable pending #529/#1393; astrometry remains unavailable pending #526/#1187/#523.</p>
+            <p>Use the time-data setup guide to configure planning. Enable the capture satellite nodes in the processing graph to produce exact-exposure tracks for future captures.</p>
+            <p>
+                <a class="button secondary small" href="https://github.com/HualapaiValley/HVO.SkyMonitor/blob/development/v1/docs/astronomy/satellite-planning-v1.md#enable-local-planning">Time-data setup instructions</a>
+                <a class="button secondary small" href="https://github.com/HualapaiValley/HVO.SkyMonitor/blob/development/v1/docs/runbooks/capture-satellites.md#opt-in-graph">Capture satellite graph instructions</a>
+            </p>
         </details>
         @if (_message is not null) { <p role="status">@_message</p> }
         <button type="button" class="button secondary small" disabled="@_busy" @onclick="LoadAsync">Reload setup status</button>

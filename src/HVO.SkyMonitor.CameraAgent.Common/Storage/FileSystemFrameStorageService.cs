@@ -8,6 +8,7 @@ using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
 using Microsoft.Extensions.Logging;
@@ -296,13 +297,7 @@ public sealed partial class FileSystemFrameStorageService(
     }
 
     private static int GetPackedStride(int width, CameraPixelFormat pixelFormat)
-        => checked(width * (pixelFormat switch
-        {
-            CameraPixelFormat.Mono8 => 1,
-            CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16 => 2,
-            CameraPixelFormat.Rgb24 => 3,
-            _ => throw new ArgumentOutOfRangeException(nameof(pixelFormat))
-        }));
+        => checked(width * ImageLayout.BytesPerPixel(pixelFormat));
 
     public async ValueTask RemoveAsync(
         string storageRoot,

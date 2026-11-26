@@ -73,6 +73,72 @@ public sealed class OrbitalContractTests
     }
 
     [TestMethod]
+    [DataRow(OrbitalContract.CelesTrakGpProfile, true)]
+    [DataRow(OrbitalContract.CelesTrakGpCsvProfile, true)]
+    [DataRow("", false)]
+    [DataRow(" ", false)]
+    [DataRow("celestrak-gp-xml-v1", false)]
+    [DataRow("celestrak-gp-csv-v2", false)]
+    [DataRow("CELESTRAK-GP-CSV-V1", false)]
+    [DataRow("CELESTRAK-GP-JSON-V1", false)]
+    [DataRow("celestrak-gp-csv-v1 ", false)]
+    [DataRow(null, false)]
+    public void IsSupportedGpProfileAcceptsOnlyCanonicalJsonAndCsvProfiles(string? profile, bool expected)
+    {
+        Assert.AreEqual(expected, OrbitalContract.IsSupportedGpProfile(profile!));
+        if (!expected)
+        {
+            var record = OrbitalContractExamples.Record();
+            var recordError = Assert.ThrowsExactly<ArgumentException>(() => OrbitalContract.CreateRecord(record with
+            {
+                Model = record.Model with { ProfileVersion = profile! }
+            }));
+            Assert.AreEqual("unsupported-model", recordError.Message);
+
+            var snapshotError = Assert.ThrowsExactly<ArgumentException>(() => OrbitalSnapshot.Create(
+                [record], [OrbitalContractExamples.Source()], OrbitalContractExamples.Coverage, profile!));
+            Assert.AreEqual("manifest-schema-identity", snapshotError.Message);
+        }
+    }
+
+    [TestMethod]
+    [DataRow("https://evil.example/NORAD/elements/gp.php?GROUP=active&FORMAT=CSV")]
+    [DataRow("https://celestrak.org.evil.example/NORAD/elements/gp.php?GROUP=active&FORMAT=CSV")]
+    [DataRow("https://www.celestrak.org/NORAD/elements/gp.php?GROUP=active&FORMAT=CSV")]
+    [DataRow("https://CELESTRAK.ORG/NORAD/elements/gp.php?GROUP=active&FORMAT=CSV")]
+    [DataRow("http://celestrak.org/NORAD/elements/gp.php?GROUP=active&FORMAT=CSV")]
+    [DataRow("https://celestrak.org:443/NORAD/elements/gp.php?GROUP=active&FORMAT=CSV")]
+    [DataRow("https://user@celestrak.org/NORAD/elements/gp.php?GROUP=active&FORMAT=CSV")]
+    [DataRow("https://celestrak.org/NORAD/elements/gp.php?GROUP=active&FORMAT=CSV#frag")]
+    [DataRow("https://celestrak.org/NORAD/elements/gp.php?GROUP=active&FORMAT=JSON")]
+    [DataRow("https://celestrak.org/NORAD/elements/gp.php")]
+    public void CsvProfileRejectsNonCanonicalSourceHostSchemeAndQuery(string invalidSourceAddress)
+    {
+        var original = OrbitalContractExamples.Record();
+        var record = OrbitalContract.CreateRecord(original with
+        {
+            Model = original.Model with { ProfileVersion = OrbitalContract.CelesTrakGpCsvProfile }
+        });
+        var canonicalSource = OrbitalContractExamples.Source() with
+        {
+            SourceUri = new("https://celestrak.org/NORAD/elements/gp.php?GROUP=active&FORMAT=CSV")
+        };
+        var invalidSource = canonicalSource with { SourceUri = new(invalidSourceAddress) };
+
+        var createError = Assert.ThrowsExactly<ArgumentException>(() => OrbitalSnapshot.Create(
+            [record], [invalidSource], OrbitalContractExamples.Coverage, OrbitalContract.CelesTrakGpCsvProfile));
+        Assert.AreEqual("source-provenance", createError.Message);
+
+        var validSnapshot = OrbitalSnapshot.Create(
+            [record], [canonicalSource], OrbitalContractExamples.Coverage, OrbitalContract.CelesTrakGpCsvProfile);
+        var mutatedManifest = validSnapshot.Manifest with { Sources = [invalidSource] };
+        mutatedManifest = mutatedManifest with { ManifestSha256 = OrbitalSnapshot.ComputeManifestIdentity(mutatedManifest) };
+        var parsed = OrbitalSnapshot.Parse(OrbitalContract.SerializeCanonical(mutatedManifest), validSnapshot.SerializePayload());
+        Assert.IsFalse(parsed.IsValid);
+        Assert.AreEqual("source-provenance", parsed.Reason);
+    }
+
+    [TestMethod]
     public void ObjectRecordAndAcquisitionIdentitiesHaveSeparateLifetimes()
     {
         var records = new[] { OrbitalContractExamples.Record(), OrbitalContractExamples.Record(epochHours: -1), OrbitalContractExamples.Record("999999999", name: null) };

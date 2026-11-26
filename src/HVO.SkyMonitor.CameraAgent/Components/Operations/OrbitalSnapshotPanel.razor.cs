@@ -462,11 +462,6 @@ public sealed partial class OrbitalSnapshotPanel : SiteTimeComponent, IAsyncDisp
             : string.Create(CultureInfo.InvariantCulture, $"{seconds:N0} s");
     }
 
-    // Expand the attribution used by earlier CameraAgent releases without rewriting their pinned manifests.
-    private static string SourceLineage(OrbitalSnapshotSource source) =>
-        source is { Provider: CelesTrakGpSource.ProviderKey, UnderlyingLineage: "USSF public GP via CelesTrak" }
-            ? CelesTrakGpSource.UnderlyingLineage : source.UnderlyingLineage;
-
     /// <summary>Only an absolute HTTPS terms URI becomes a link; anything else is shown as its reference text alone.</summary>
     private static string? TermsLink(Uri? terms)
         => terms is { IsAbsoluteUri: true } && string.Equals(terms.Scheme, Uri.UriSchemeHttps, StringComparison.Ordinal)

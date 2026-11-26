@@ -292,12 +292,18 @@ public sealed partial class CaptureSatelliteIntegrationTests
         return provider;
     }
 
-    internal static CameraModuleConfig Configuration(string root, CaptureSatelliteFixture f, OrbitalQueryBounds? bounds = null) => f.Configuration with
-    {
-        Pipeline = new([
+    internal static CameraModuleConfig Configuration(string root, CaptureSatelliteFixture f, OrbitalQueryBounds? bounds = null,
+        bool hideObjectLabels = false) => f.Configuration with
+        {
+            Pipeline = new([
             new(CaptureSatelliteTracksProcessingStep.Alias, "satellite", DependsOn: ["$raw"],
                 Options: JsonSerializer.SerializeToElement(new CaptureSatelliteTracksOptions
-                { CatalogNumbers = ["25544"], Bounds = bounds ?? f.Input.Plan.Bounds, OverrideTimeDataAvailableUtc = f.Input.Plan.Availability.TimeDataAvailableUtc }),
+                {
+                    CatalogNumbers = ["25544"],
+                    Bounds = bounds ?? f.Input.Plan.Bounds,
+                    OverrideTimeDataAvailableUtc = f.Input.Plan.Availability.TimeDataAvailableUtc,
+                    HideObjectLabels = hideObjectLabels
+                }),
                 Publication: new(CaptureProcessingPersistenceMode.DurableLocal)),
             new("Preview", "preview", DependsOn: ["$raw"], Publication: new(CaptureProcessingPersistenceMode.DurableLocal)),
             new(CaptureSatelliteLayerProcessingStep.Alias, "satellite-layer", DependsOn: ["satellite"],
@@ -307,7 +313,7 @@ public sealed partial class CaptureSatelliteIntegrationTests
                 Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
                 { StorageRoot = root, QueueForUpload = false, UpdateLatestFrame = false }))
         ])
-    };
+        };
 
     internal static async Task<RawCaptureReceipt> CaptureAsync(ServiceProvider provider, CameraModuleConfig config, CaptureSatelliteFixture f,
         int sequenceOffset = 0, CaptureLoopSubmission? submission = null)

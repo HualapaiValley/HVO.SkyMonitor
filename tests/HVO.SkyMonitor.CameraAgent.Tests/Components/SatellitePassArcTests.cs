@@ -31,6 +31,7 @@ public sealed class SatellitePassArcTests
         using var context = new BunitContext();
         var cut = Render(context, arc, Hemisphere);
         var paths = cut.FindAll("polyline").Select(element => element.GetAttribute("points")).ToArray();
+        var angularPaths = cut.FindAll(".satellite-arc > svg polyline").Select(element => element.GetAttribute("points")).ToArray();
         Assert.IsNotEmpty(paths);
         var facts = new HorizonObstructionPredictionProduct(new(HorizonObstructionProducts.SchemaVersion,
             arc.ProductSha256, new string('A', 64), new string('B', 64), "test", RigProjectionContextFactory.AlgorithmVersion,
@@ -38,6 +39,12 @@ public sealed class SatellitePassArcTests
             Enumerable.Repeat(eligibility, arc.Samples.Count).ToArray(), new bool[arc.Samples.Count - 1]);
         cut.Render(p => p.Add(c => c.Obstruction, facts));
         Assert.IsEmpty(cut.FindAll("polyline"));
+        Assert.IsEmpty(cut.FindAll(".arc-anchor"));
+        cut.Render(p => p.Add(c => c.ApplyHorizonToAngularView, false).Add(c => c.ShowRigPreview, true));
+        CollectionAssert.AreEqual(angularPaths, cut.FindAll(".satellite-arc > svg polyline").Select(element => element.GetAttribute("points")).ToArray());
+        Assert.IsEmpty(cut.FindAll(".rig-preview polyline"), "The configured-rig preview always applies the obstruction.");
+        Assert.HasCount(3, cut.FindAll(".anchor-facts dd"));
+        cut.Render(p => p.Add(c => c.ApplyHorizonToAngularView, true));
         cut.Render(p => p.Add(c => c.Obstruction, (HorizonObstructionPredictionProduct?)null));
         CollectionAssert.AreEqual(paths, cut.FindAll("polyline").Select(element => element.GetAttribute("points")).ToArray());
         CollectionAssert.AreEqual(before, OrbitalPassArcJson.Serialize(arc));
@@ -56,7 +63,9 @@ public sealed class SatellitePassArcTests
         context.Services.AddSingleton<IPlanetEphemeris>(ephemeris);
         var cut = Render(context, arc, Hemisphere);
         var facts = cut.FindAll(".anchor-solar-context");
+        var lunar = cut.FindAll(".anchor-lunar-context");
         Assert.HasCount(3, facts);
+        Assert.HasCount(3, lunar);
         var indices = new[] { arc.Anchors.StartSampleIndex!.Value, arc.Anchors.PeakSampleIndex!.Value, arc.Anchors.EndSampleIndex!.Value };
         CollectionAssert.AreEqual(indices.Select(index => arc.Samples[index].Utc).ToArray(), ephemeris.Calls.ToArray());
         for (var i = 0; i < indices.Length; i++)
@@ -64,6 +73,9 @@ public sealed class SatellitePassArcTests
             var altitude = SolarAltitudeClassifier.DirectionAt(new AstronomyEnginePlanetEphemeris(), arc.Samples[indices[i]].Utc,
                 arc.Pass.Observer.LatitudeDegrees, arc.Pass.Observer.LongitudeDegrees).AltitudeDegrees;
             Assert.Contains($"Sun geometric altitude {Number(altitude)}°", facts[i].TextContent, StringComparison.Ordinal);
+            var moon = SolarDiskEphemeris.Get(SolarSystemBody.Moon, arc.Samples[indices[i]].Utc, arc.Pass.Observer);
+            Assert.Contains($"Moon geometric altitude {Number(moon.Direction.AltitudeDegrees)}°", lunar[i].TextContent, StringComparison.Ordinal);
+            Assert.Contains($"{Number(moon.IlluminatedFraction * 100)}% illuminated", lunar[i].TextContent, StringComparison.Ordinal);
         }
         Assert.Contains(ephemeris.ModelVersion, cut.Find(".solar-context-note").TextContent, StringComparison.Ordinal);
         Assert.Contains("does not establish satellite sunlight or optical visibility", cut.Find(".solar-context-note").TextContent, StringComparison.Ordinal);
@@ -71,6 +83,7 @@ public sealed class SatellitePassArcTests
         var paths = cut.FindAll("polyline").Select(element => element.GetAttribute("points")).ToArray();
         cut.Render(parameters => parameters.Add(component => component.ShowLabels, false).Add(component => component.ShowPath, false));
         Assert.HasCount(3, cut.FindAll(".anchor-solar-context"));
+        Assert.HasCount(3, cut.FindAll(".anchor-lunar-context"));
         Assert.HasCount(3, ephemeris.Calls, "Presentation toggles must not repeat ephemeris work.");
         cut.Render(parameters => parameters.Add(component => component.ShowPath, true));
         CollectionAssert.AreEqual(paths, cut.FindAll("polyline").Select(element => element.GetAttribute("points")).ToArray());
@@ -121,6 +134,7 @@ public sealed class SatellitePassArcTests
         var cut = Render(context, arc, Hemisphere);
         Assert.IsEmpty(ephemeris.Calls);
         Assert.IsEmpty(cut.FindAll(".anchor-solar-context"));
+        Assert.IsEmpty(cut.FindAll(".anchor-lunar-context"));
         Assert.HasCount(3, cut.FindAll(".anchor-facts dd"));
         Assert.IsTrue(cut.FindAll(".anchor-facts dd").All(element => element.TextContent.Contains("Unresolved", StringComparison.Ordinal)));
     }

@@ -590,6 +590,7 @@ internal static class ReconstructionDescriptorValidator
         {
             CameraPixelFormat.Mono8 => (1, 8, FrameByteOrder.NotApplicable, ColorFilterArrayPattern.None),
             CameraPixelFormat.Mono16 => (2, 16, FrameByteOrder.LittleEndian, ColorFilterArrayPattern.None),
+            CameraPixelFormat.BayerRggb8 => (1, 8, FrameByteOrder.NotApplicable, ColorFilterArrayPattern.Rggb),
             CameraPixelFormat.Rgb24 => (3, 8, FrameByteOrder.NotApplicable, ColorFilterArrayPattern.None),
             CameraPixelFormat.BayerRggb16 => (2, 16, FrameByteOrder.LittleEndian, ColorFilterArrayPattern.Rggb),
             _ => (0, 0, FrameByteOrder.NotApplicable, ColorFilterArrayPattern.None)
@@ -597,7 +598,7 @@ internal static class ReconstructionDescriptorValidator
         var sampleDepthIsSupported = layout.SampleDepthBits is 8 or 10 or 12 or 14 or 16;
         var formatDepthIsValid = layout.PixelFormat switch
         {
-            CameraPixelFormat.Mono8 or CameraPixelFormat.Rgb24 => layout.SampleDepthBits == 8,
+            CameraPixelFormat.Mono8 or CameraPixelFormat.BayerRggb8 or CameraPixelFormat.Rgb24 => layout.SampleDepthBits == 8,
             CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16 =>
                 layout.SampleDepthBits <= layout.ContainerDepthBits,
             _ => false

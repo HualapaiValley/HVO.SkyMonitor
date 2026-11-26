@@ -209,10 +209,25 @@ public sealed partial class VirtualSkyCameraModuleTests
         };
     }
 
-    private class CenteredClock : TimeProvider
+    private sealed class CenteredClock(ExposureTestTimeProvider? simulatedTime = null) : TimeProvider
     {
-        internal virtual DateTimeOffset UtcNow { get; set; } = DateTimeOffset.UtcNow;
+        private DateTimeOffset _utcNow = DateTimeOffset.UtcNow;
+
+        internal DateTimeOffset UtcNow
+        {
+            get => simulatedTime?.GetUtcNow() ?? _utcNow;
+            set
+            {
+                if (simulatedTime is null) _utcNow = value;
+                else simulatedTime.Advance(value - simulatedTime.GetUtcNow());
+            }
+        }
+
         public override DateTimeOffset GetUtcNow() => UtcNow;
+        public override long TimestampFrequency => simulatedTime?.TimestampFrequency ?? base.TimestampFrequency;
+        public override long GetTimestamp() => simulatedTime?.GetTimestamp() ?? base.GetTimestamp();
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period) =>
+            simulatedTime?.CreateTimer(callback, state, dueTime, period) ?? base.CreateTimer(callback, state, dueTime, period);
     }
 
     private sealed class CenteredPublicationFault : ICaptureProcessingFaultInjector

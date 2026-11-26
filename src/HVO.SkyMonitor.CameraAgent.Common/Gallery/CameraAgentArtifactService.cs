@@ -1305,6 +1305,7 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         ["application/x-skymonitor-mono8"] = "-raw-mono8.bin",
         ["application/x-skymonitor-mono16"] = "-raw-mono16.bin",
         ["application/x-skymonitor-rgb24"] = "-raw-rgb24.bin",
+        ["application/x-skymonitor-bayer-rggb8"] = "-raw-bayer-rggb8.bin",
         ["application/x-skymonitor-bayer-rggb16"] = "-raw-bayer-rggb16.bin",
         ["application/x-hvo-linear-frame"] = "-linear-frame.bin",
         ["application/x-hvo-packed-image"] = "-packed-image.bin"

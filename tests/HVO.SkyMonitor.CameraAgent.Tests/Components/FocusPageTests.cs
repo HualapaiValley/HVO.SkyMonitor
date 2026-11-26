@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Reflection;
 using Bunit;
 using HVO.SkyMonitor.AgentCore;
@@ -29,7 +30,10 @@ public sealed class FocusPageTests
         ManualFocusReasonCodes.StoppedByOperator, ManualFocusReasonCodes.SafetyTimeout, ManualFocusReasonCodes.ObserverLost,
         ManualFocusReasonCodes.HostStopping, ManualFocusReasonCodes.CameraWithdrawn, ManualFocusReasonCodes.AdmissionUnavailable,
         ManualFocusReasonCodes.RepeatedFailures, ManualFocusReasonCodes.SampleDeadlineExceeded,
-        ManualFocusReasonCodes.PreviewUnmeasurable, ManualFocusReasonCodes.LoopFailed
+        ManualFocusReasonCodes.PreviewUnmeasurable, ManualFocusReasonCodes.LoopFailed,
+        ManualFocusReasonCodes.AutofocusComplete, ManualFocusReasonCodes.MotorMoveComplete, ManualFocusReasonCodes.AutofocusInvalidSample,
+        ManualFocusReasonCodes.AutofocusUnbracketed, ManualFocusReasonCodes.AutofocusVerificationFailed,
+        ManualFocusReasonCodes.MotorMoveFailed, ManualFocusReasonCodes.MotorPositionUnverified
     ];
 
     private static readonly CameraSimulatedFocusModel Model =
@@ -87,11 +91,70 @@ public sealed class FocusPageTests
         CollectionAssert.AreEqual(HistoryColumns,
             history.QuerySelectorAll("thead th").Select(static column => column.TextContent.Trim()).ToArray());
         Assert.AreEqual("No focus sessions are retained on this CameraAgent.", history.QuerySelector("tbody tr")!.TextContent.Trim());
+        Assert.IsEmpty(cut.FindAll("#motor-heading"));
         Assert.IsEmpty(cut.FindAll("img"));
         Assert.StartsWith("— no sample", cut.Find("#focus-metric").TextContent.Trim());
         Assert.IsEmpty(cut.FindAll(".focus-trend circle"));
         StringAssert.Contains(cut.Find(".focus-simulated legend").TextContent, "not a motor", StringComparison.Ordinal);
         StringAssert.Contains(cut.Find(".focus-fidelity").TextContent, Simulated.Limitation, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void RegisteredFocuser_RendersTemperatureWithInvariantDecimalSeparator()
+    {
+        var previous = CultureInfo.CurrentCulture;
+        try
+        {
+            CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("fr-FR");
+            var service = new FakeFocusService(Status(ManualFocusSessionSnapshot.Idle) with
+            {
+                Focuser = new(new(0, 100, 4), new(true, 10, null, false, 12.5))
+            });
+            using var context = CreateContext(service, out _, focuserRegistered: true);
+            var cut = context.Render<FocusPage>();
+            StringAssert.Contains(cut.Find(".focus-motor [role=status]").TextContent, "12.5 °C", StringComparison.Ordinal);
+        }
+        finally { CultureInfo.CurrentCulture = previous; }
+    }
+
+    [TestMethod]
+    public void InterruptedSweep_WithoutSamples_ShowsInMemoryResultInSessionDetail()
+    {
+        var motor = new MotorFocusStatus(new(0, 100, 4), new(true, 10, null, false, 12.5));
+        var ended = Ended(ManualFocusReasonCodes.StoppedByOperator) with
+        {
+            Motor = new(new(SweepSpacing: 5), motor, motor.State, Recovery: "Starting position verified.")
+        };
+        var service = new FakeFocusService(Status(ended) with { Focuser = motor });
+        using var context = CreateContext(service, out _, focuserRegistered: true);
+        var cut = context.Render<FocusPage>();
+        Assert.AreEqual("Ended by the operator. Result is in memory only.", cut.Find("#focus-session-detail").TextContent.Trim());
+    }
+
+    [TestMethod]
+    [DataRow("motor-move", 80, 0, 0)]
+    [DataRow("motor-out", 0, 5, 0)]
+    [DataRow("motor-in", 0, -5, 0)]
+    [DataRow("motor-sweep", 0, 0, 5)]
+    public void RegisteredFocuser_SubmitsBoundedOwnerCommands(string button, int absolute, int step, int spacing)
+    {
+        var service = new FakeFocusService(Status(ManualFocusSessionSnapshot.Idle) with
+        {
+            Focuser = new(new(0, 100, 4), new(true, 10, null, false, 12.5))
+        });
+        using var context = CreateContext(service, out _, focuserRegistered: true);
+        var cut = context.Render<FocusPage>();
+        Assert.IsEmpty(cut.FindAll(".focus-boundary, #focus-procedure-heading, #focus-position"));
+        StringAssert.Contains(cut.Find(".focus-motor").TextContent, "Backlash 4", StringComparison.Ordinal);
+        cut.Find("#motor-step-size").Change("26");
+        Assert.IsTrue(cut.Find("#motor-in").HasAttribute("disabled"));
+        Assert.IsTrue(cut.Find("#motor-sweep").HasAttribute("disabled"));
+        cut.Find("#motor-step-size").Change("5");
+        cut.Find("#motor-target").Change("80");
+        cut.Find("#" + button).Click();
+        Assert.AreEqual(new MotorFocusCommand(absolute == 0 ? null : absolute, step == 0 ? null : step,
+            spacing == 0 ? null : spacing), service.StartRequest!.Motor);
+        Assert.IsNull(service.StartRequest.SimulatedFocusPosition);
     }
 
     [TestMethod]
@@ -502,6 +565,23 @@ public sealed class FocusPageTests
     }
 
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public void LoadingAndFailedStatus_ShowManualOnlyNoteAccordingToRegistration(bool registered)
+    {
+        var response = new TaskCompletionSource<OperatorUiResult<FocusUiStatus>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var context = CreateContext(new FakeFocusService(null) { StatusResponse = response.Task }, out _, registered);
+        var cut = context.Render<FocusPage>();
+        Assert.AreEqual(!registered, cut.FindAll(".focus-boundary").Any());
+        Assert.IsEmpty(cut.FindAll("#motor-move"));
+
+        response.SetResult(OperatorUiResult<FocusUiStatus>.Failure(OperatorUiResultKind.Unavailable, "Focus status unavailable."));
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find(".focus-message").TextContent, "Focus status unavailable.", StringComparison.Ordinal));
+        Assert.AreEqual(!registered, cut.FindAll(".focus-boundary").Any());
+        Assert.IsEmpty(cut.FindAll("#motor-move"));
+    }
+
+    [TestMethod]
     public void UnauthorizedStatus_NavigatesToAccessDenied()
     {
         var service = new FakeFocusService(null);
@@ -560,7 +640,7 @@ public sealed class FocusPageTests
 
     private static string Normalize(string text) => string.Join(' ', text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
 
-    private static BunitContext CreateContext(FakeFocusService service, out ManualTimeProvider time)
+    private static BunitContext CreateContext(FakeFocusService service, out ManualTimeProvider time, bool focuserRegistered = false)
     {
         var context = new BunitContext();
         context.JSInterop.SetupModule("./Components/Pages/FocusPage.razor.js").SetupVoid("bindPicker", _ => true).SetVoidResult();
@@ -568,6 +648,8 @@ public sealed class FocusPageTests
         context.Services.AddSingleton<ICameraAgentFocusUiService>(service);
         context.Services.AddSingleton<TimeProvider>(time);
         context.Services.AddSingleton(new CircuitConnectionState());
+        if (focuserRegistered)
+            context.Services.AddSingleton<IMotorizedFocuser>(new VirtualMotorizedFocuser(new()));
         context.SetRendererInfo(new RendererInfo("Server", isInteractive: true));
         return context;
     }
@@ -631,6 +713,8 @@ public sealed class FocusPageTests
 
         public OperatorUiResultKind ObserveKind { get; init; } = OperatorUiResultKind.Success;
 
+        public Task<OperatorUiResult<FocusUiStatus>>? StatusResponse { get; init; }
+
         public int StatusReads { get; private set; }
 
         public int SavedReads { get; private set; }
@@ -647,6 +731,7 @@ public sealed class FocusPageTests
         public ValueTask<OperatorUiResult<FocusUiStatus>> GetStatusAsync(CancellationToken cancellationToken)
         {
             StatusReads++;
+            if (StatusResponse is { } response) return new(response.WaitAsync(cancellationToken));
             return ValueTask.FromResult(_status is null
                 ? OperatorUiResult<FocusUiStatus>.Failure(OperatorUiResultKind.Unauthorized, "Authorization is required.")
                 : OperatorUiResult<FocusUiStatus>.Success(_status));

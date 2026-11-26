@@ -39,6 +39,7 @@ public sealed partial class CurrentSkyPageTests
         StringAssert.Contains(label.TextContent, "population Partial", StringComparison.Ordinal);
         StringAssert.Contains(label.TextContent, "configured geometry", StringComparison.Ordinal);
         StringAssert.Contains(label.TextContent, "source retrieved unknown", StringComparison.Ordinal);
+        StringAssert.Contains(label.TextContent, "optical visibility Unknown", StringComparison.Ordinal);
     }
 
     [TestMethod]
@@ -112,6 +113,8 @@ public sealed partial class CurrentSkyPageTests
         var predictedGroup = cut.FindAll(".overlay-group[aria-label='Diagnostics layers'] label")
             .Where(label => label.QuerySelector("strong")?.TextContent == "Predicted satellite tracks").ToArray();
         Assert.HasCount(1, predictedGroup);
+        Assert.Contains("US Space Force / Space-Track public GP data via CelesTrak",
+            cut.Find(".satellite-source-credit").TextContent, StringComparison.Ordinal);
         StringAssert.Contains(predictedGroup[0].TextContent, "exact exposure segment", StringComparison.Ordinal);
         StringAssert.Contains(predictedGroup[0].TextContent, "not a detection or visibility claim", StringComparison.Ordinal);
         Assert.HasCount(1, cut.FindAll(".overlay-group[aria-label='Measured layers'] input[data-layer-identity]"));
