@@ -76,7 +76,11 @@ public sealed class ProcessingRecipeExecutor : IProcessingRecipeExecutor
         {
             var normalized = recipe.NormalizeOptions(request.Options);
             var effective = ProcessingIdentity.BindExecutionInputs(
-                normalized, request.Input, request.Annotation, request.AuxiliaryInputs);
+                normalized,
+                request.Input,
+                request.Annotation,
+                request.AuxiliaryInputs,
+                BuiltInProcessingRecipes.ResolveDeliveredBayerPhase(request));
             identity = ProcessingIdentity.CreateRecipeIdentity(recipe.Definition, effective);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

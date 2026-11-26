@@ -60,14 +60,48 @@ public static class BuiltInProcessingRecipes
         JsonElement options,
         ProcessingInputSelector selector,
         ProcessingAnnotationInput? annotation = null,
-        IReadOnlyList<ProcessingAuxiliaryInput>? auxiliaryInputs = null)
+        IReadOnlyList<ProcessingAuxiliaryInput>? auxiliaryInputs = null) =>
+        CreateExecutionIdentity(recipeName, options, selector, annotation, auxiliaryInputs, deliveredCfaPhase: null);
+
+    public static ProcessingRecipeIdentity CreateExecutionIdentity(ProcessingExecutionRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        return CreateExecutionIdentity(
+            request.RecipeName,
+            request.Options,
+            request.Input,
+            request.Annotation,
+            request.AuxiliaryInputs,
+            ResolveDeliveredBayerPhase(request));
+    }
+
+    internal static BayerPattern? ResolveDeliveredBayerPhase(ProcessingExecutionRequest request)
+    {
+        if (request.RecipeName is not (EncodedPreview or FixedPreview or Annotation))
+        {
+            return null;
+        }
+        var primary = ProcessingRecipeSupport.ResolveSingle(request, out _);
+        return primary?.Layout is { PixelFormat: CameraPixelFormat.BayerRggb16 } layout
+            ? BayerRggb16Demosaicer.ResolvePattern(layout)
+            : null;
+    }
+
+    private static ProcessingRecipeIdentity CreateExecutionIdentity(
+        string recipeName,
+        JsonElement options,
+        ProcessingInputSelector selector,
+        ProcessingAnnotationInput? annotation,
+        IReadOnlyList<ProcessingAuxiliaryInput>? auxiliaryInputs,
+        BayerPattern? deliveredCfaPhase)
     {
         ArgumentNullException.ThrowIfNull(selector);
         var recipe = CreateAll().SingleOrDefault(candidate =>
             string.Equals(candidate.Definition.Name, recipeName, StringComparison.Ordinal))
             ?? throw new ArgumentException("The requested built-in recipe is unknown.", nameof(recipeName));
         var normalized = recipe.NormalizeOptions(options);
-        var effective = ProcessingIdentity.BindExecutionInputs(normalized, selector, annotation, auxiliaryInputs);
+        var effective = ProcessingIdentity.BindExecutionInputs(
+            normalized, selector, annotation, auxiliaryInputs, deliveredCfaPhase);
         return ProcessingIdentity.CreateRecipeIdentity(recipe.Definition, effective);
     }
 
@@ -578,12 +612,15 @@ internal sealed class EncodedPreviewRecipe : IProcessingRecipe
                 algorithms.Add(new("display-stretch", Mono16DisplayStretch.AlgorithmVersion));
                 break;
             case CameraPixelFormat.BayerRggb16:
-                display = BayerRggb16Demosaicer.DemosaicToRgb24(
-                    layout.Width, layout.Height, input.Payload, cancellationToken, layout.StrideBytes, CreateStretch(options));
-                displayFormat = CameraPixelFormat.Rgb24;
-                algorithms.Add(new("display-stretch", Mono16DisplayStretch.AlgorithmVersion));
-                algorithms.Add(new("rggb-demosaic", BayerRggb16Demosaicer.AlgorithmVersion));
-                break;
+                {
+                    var pattern = BayerRggb16Demosaicer.ResolvePattern(layout);
+                    display = BayerRggb16Demosaicer.DemosaicToRgb24(
+                        layout.Width, layout.Height, input.Payload, cancellationToken, layout.StrideBytes, CreateStretch(options), pattern);
+                    displayFormat = CameraPixelFormat.Rgb24;
+                    algorithms.Add(new("display-stretch", Mono16DisplayStretch.AlgorithmVersion));
+                    algorithms.Add(new("rggb-demosaic", BayerRggb16Demosaicer.AlgorithmVersionFor(pattern)));
+                    break;
+                }
             case CameraPixelFormat.Rgb24:
             case CameraPixelFormat.Mono8:
                 display = ProcessingRecipeSupport.PackRows(layout, input.Payload, cancellationToken);
@@ -915,12 +952,15 @@ internal sealed class AnnotationRecipe : IProcessingRecipe
                 algorithms.Add(new("display-stretch", Mono16DisplayStretch.AlgorithmVersion));
                 break;
             case CameraPixelFormat.BayerRggb16:
-                pixels = BayerRggb16Demosaicer.DemosaicToRgb24(
-                    layout.Width, layout.Height, input.Payload, cancellationToken, layout.StrideBytes, stretch);
-                format = CameraPixelFormat.Rgb24;
-                algorithms.Add(new("display-stretch", Mono16DisplayStretch.AlgorithmVersion));
-                algorithms.Add(new("rggb-demosaic", BayerRggb16Demosaicer.AlgorithmVersion));
-                break;
+                {
+                    var pattern = BayerRggb16Demosaicer.ResolvePattern(layout);
+                    pixels = BayerRggb16Demosaicer.DemosaicToRgb24(
+                        layout.Width, layout.Height, input.Payload, cancellationToken, layout.StrideBytes, stretch, pattern);
+                    format = CameraPixelFormat.Rgb24;
+                    algorithms.Add(new("display-stretch", Mono16DisplayStretch.AlgorithmVersion));
+                    algorithms.Add(new("rggb-demosaic", BayerRggb16Demosaicer.AlgorithmVersionFor(pattern)));
+                    break;
+                }
             case CameraPixelFormat.Mono8:
             case CameraPixelFormat.Rgb24:
                 pixels = ProcessingRecipeSupport.PackRows(layout, input.Payload, cancellationToken);
