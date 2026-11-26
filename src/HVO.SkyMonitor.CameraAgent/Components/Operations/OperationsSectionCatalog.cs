@@ -38,6 +38,7 @@ public sealed record OperationsSection(
         "delivery" => "M3 10h11m-4-4 4 4-4 4M17 4v12",
         "storage" => "M16 5a6 3 0 1 0-12 0 6 3 0 0 0 12 0M4 5v5c0 1.7 2.7 3 6 3s6-1.3 6-3V5M4 10v5c0 1.7 2.7 3 6 3s6-1.3 6-3v-5",
         "health" => "M3 10h3l2-5 4 10 2-5h3",
+        "notifications" => "M10 3a4 4 0 0 0-4 4v3.5L4.5 13v1h11v-1L14 10.5V7a4 4 0 0 0-4-4ZM8.5 15.5a1.5 1.5 0 0 0 3 0",
         "control" => "M10 2v7M6 4a7 7 0 1 0 8 0",
         "software" => "m10 2 7 4-7 4-7-4 7-4ZM3 10l7 4 7-4M3 14l7 4 7-4",
         _ => "M3 5h14M3 10h14M3 15h14"
@@ -128,6 +129,9 @@ public static class OperationsSectionCatalog
         new("health", "Health & diagnostics", "System", "/operations/health",
             "System / bounded diagnostics",
             "Separate capture freshness, durable work pressure, host resources, and central dependencies without exposing sensitive payload data.", ["/operations/system", "/system"]),
+        new("notifications", "Notifications", "System", "/operations/notifications",
+            "System / opt-in alerts",
+            "Opt-in standalone SMTP email and generic HTTPS webhook notifications for local operational health events, off by default and isolated from capture.", []),
         new("control", "System control", "System", "/operations/control",
             "System / authenticated local actions",
             "Perform only bounded CameraAgent controls that preserve accepted evidence and produce an auditable terminal receipt.", []),

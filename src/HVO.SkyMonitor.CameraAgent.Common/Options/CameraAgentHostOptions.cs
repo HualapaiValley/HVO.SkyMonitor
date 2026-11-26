@@ -2,6 +2,7 @@ using System.ComponentModel.DataAnnotations;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
+using HVO.SkyMonitor.CameraAgent.Common.Notifications;
 using HVO.SkyMonitor.CameraAgent.Common.SiteProfile;
 using HVO.SkyMonitor.CameraAgent.Common.SkyMap;
 using HVO.SkyMonitor.Processing;
@@ -74,6 +75,9 @@ public sealed class CameraAgentHostOptions : IValidatableObject
 
     [Required]
     public SpaceWeatherOptions SpaceWeather { get; init; } = new();
+
+    [Required]
+    public OperatorNotificationsOptions Notifications { get; init; } = new();
 
     [Required]
     public NightlyProductOptions NightlyProducts { get; init; } = new();
@@ -382,6 +386,10 @@ public sealed class CameraAgentHostOptions : IValidatableObject
         var spaceWeatherResults = new List<ValidationResult>();
         Validator.TryValidateObject(SpaceWeather, new ValidationContext(SpaceWeather), spaceWeatherResults, validateAllProperties: true);
         foreach (var result in spaceWeatherResults) yield return result;
+
+        var notificationResults = new List<ValidationResult>();
+        Validator.TryValidateObject(Notifications, new ValidationContext(Notifications), notificationResults, validateAllProperties: true);
+        foreach (var result in notificationResults) yield return result;
     }
 }
 

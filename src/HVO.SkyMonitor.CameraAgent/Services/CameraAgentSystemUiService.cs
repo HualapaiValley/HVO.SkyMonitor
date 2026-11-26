@@ -180,6 +180,7 @@ internal sealed class CameraAgentSystemUiService(
             ["space-weather"] = ("Space weather", "Local", "/operations/space-weather"),
             ["deployment-location"] = ("Deployment location", "Local", "/operations/site"),
             ["disk-pressure"] = ("Storage capacity", "Local", "/operations/storage"),
+            ["operator-notifications"] = ("Operator notifications", "Local", "/operations/notifications"),
             ["camera-configuration"] = ("Camera configuration", "Acquisition", "/operations/camera"),
             ["capture-admission"] = ("Capture admission", "Acquisition", "/operations/control"),
             ["clock"] = ("Clock", "Acquisition", "/operations/control"),

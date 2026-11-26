@@ -14,7 +14,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 public sealed class OperationsLayoutTests
 {
     private static readonly RenderFragment Body = builder => builder.AddMarkupContent(0, "<h1>Section body</h1>");
-    private static readonly string[] ExpectedSlugs = ["overview", "site", "camera", "registration", "schedule", "focus", "calibration", "pipeline", "environment", "space-weather", "transients", "automations", "delivery", "storage", "health", "control", "software"];
+    private static readonly string[] ExpectedSlugs = ["overview", "site", "camera", "registration", "schedule", "focus", "calibration", "pipeline", "environment", "space-weather", "transients", "automations", "delivery", "storage", "health", "notifications", "control", "software"];
     private static readonly string[] ExpectedGroups = ["Setup", "Capture", "Processing", "Automation", "Data", "System"];
 
     [TestMethod]
@@ -40,6 +40,7 @@ public sealed class OperationsLayoutTests
         Assert.AreEqual("registration", OperationsSectionCatalog.Resolve("/devices/bootstrap")!.Slug);
         Assert.AreEqual("registration", OperationsSectionCatalog.Resolve("/devices")!.Slug);
         Assert.AreEqual("health", OperationsSectionCatalog.Resolve("/operations/system")!.Slug);
+        Assert.AreEqual("notifications", OperationsSectionCatalog.Resolve("/operations/notifications")!.Slug);
         Assert.AreEqual("control", OperationsSectionCatalog.Resolve("/operations/control")!.Slug);
         Assert.AreEqual("software", OperationsSectionCatalog.Resolve("/operations/software")!.Slug);
         Assert.AreEqual("focus", OperationsSectionCatalog.Resolve("/operations/focus")?.Slug);
@@ -94,6 +95,7 @@ public sealed class OperationsLayoutTests
             ("/system", "health"),
             ("/operations/system", "health"),
             ("/operations/health", "health"),
+            ("/operations/notifications", "notifications"),
             ("/operations/control", "control"),
             ("/operations/software", "software"),
             ("/operations/quarantine?kind=Artifact", "storage"),

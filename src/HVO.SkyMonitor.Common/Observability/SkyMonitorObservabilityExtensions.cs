@@ -103,6 +103,10 @@ public static class SkyMonitorObservabilityExtensions
     {
         "Availability", "Reason"
     };
+    private static readonly HashSet<string> OperatorNotificationsHealthDataKeys = new(StringComparer.Ordinal)
+    {
+        "Availability", "QueueDepth", "SmtpState", "WebhookState"
+    };
     private static readonly HashSet<string> CalibrationLibraryHealthDataKeys = new(StringComparer.Ordinal)
     {
         "Required", "Active", "ActiveState", "StateVersion", "PendingAcquisitionState",
@@ -277,6 +281,7 @@ public static class SkyMonitorObservabilityExtensions
             "environmental-acquisition" => EnvironmentalAcquisitionHealthDataKeys,
             "orbital-elements" => OrbitalElementsHealthDataKeys,
             "space-weather" => SpaceWeatherHealthDataKeys,
+            "operator-notifications" => OperatorNotificationsHealthDataKeys,
             "deployment-location" => DeploymentLocationHealthDataKeys,
             "calibration-library" => CalibrationLibraryHealthDataKeys,
             _ => null
