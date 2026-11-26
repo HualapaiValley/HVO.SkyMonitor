@@ -167,6 +167,47 @@ public sealed class MotorFocusSessionTests
     }
 
     [TestMethod]
+    public async Task OpticalDisplacedAtStartCoordinate()
+    {
+        var fixture = await FocusOwnerFixture.CreateAsync().ConfigureAwait(false);
+        await using var scope = fixture.ConfigureAwait(false);
+        var camera = await fixture.PublishScriptedAsync().ConfigureAwait(false);
+        var motor = NewMotor();
+        var token = CancellationToken.None;
+
+        // Travel down through the backlash gap to park at 500 with the optics still at 512.
+        var advance = motor.MoveAsync(512, token);
+        motor.AdvanceBy(TimeSpan.MaxValue);
+        Assert.AreEqual(MotorizedFocuserMoveOutcome.Completed, (await advance.ConfigureAwait(false)).Outcome);
+        var park = motor.MoveAsync(500, token);
+        motor.AdvanceBy(TimeSpan.MaxValue);
+        Assert.AreEqual(MotorizedFocuserMoveOutcome.Completed, (await park.ConfigureAwait(false)).Outcome);
+        Assert.AreEqual(500, motor.State.Position);
+        Assert.AreEqual(512, motor.OpticalPosition);
+
+        (int Motor, int Optical)? failedPreview = null;
+        camera.BeforePreview = (number, _) =>
+        {
+            if (number != 3) return Task.CompletedTask;
+            failedPreview = (motor.State.Position, motor.OpticalPosition);
+            throw new IOException("Preview failed at the starting motor coordinate.");
+        };
+
+        using var clock = AdvanceMotor(motor);
+        using var owner = Coordinator(fixture, motor);
+        await owner.StartAsync(Sweep, "alice", token).ConfigureAwait(false);
+        var ended = await FocusWait.EndedAsync(owner, Timeout).ConfigureAwait(false);
+
+        Assert.AreEqual((500, 500), failedPreview);
+        Assert.AreEqual(ManualFocusReasonCodes.LoopFailed, ended.EndReason);
+        Assert.IsNull(ended.Motor!.AppliedPosition);
+        Assert.AreEqual(500, ended.Motor.Final!.Position);
+        Assert.AreEqual(512, motor.OpticalPosition, "Motor cleanup must restore the optics even when the motor is already at 500.");
+        Assert.AreEqual("Starting position verified.", ended.Motor.Recovery);
+        Assert.IsTrue(await fixture.CaptureAdmittedWithinAsync(Timeout).ConfigureAwait(false));
+    }
+
+    [TestMethod]
     public async Task Sweep_RejectsAnUnbracketedMinimumAndRestoresInitialPosition()
     {
         var fixture = await FocusOwnerFixture.CreateAsync().ConfigureAwait(false);
