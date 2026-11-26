@@ -318,24 +318,27 @@ public sealed class ReleaseAcquirerTests
     public async Task CreateFifoOrInconclusive_WhenCommandHangs_FailsWithinTimeout()
     {
         var root = Directory.CreateTempSubdirectory("hvo-mkfifo-hang-");
+        var fifoPath = Path.Combine(root.FullName, "release.json");
+        var pidFile = fifoPath + ".pid";
         try
         {
             var script = Path.Combine(root.FullName, "hang.sh");
-            await File.WriteAllTextAsync(script, "#!/bin/sh\nexec sleep 30\n");
+            await File.WriteAllTextAsync(script, "#!/bin/sh\nset -e\nprintf '%s' \"$$\" > \"$1.pid\"\nexec sleep 30\n");
             File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-            var fifoPath = Path.Combine(root.FullName, "release.json");
 
             var stopwatch = Stopwatch.StartNew();
             var failure = await Assert.ThrowsExactlyAsync<AssertFailedException>(
-                () => CreateFifoOrInconclusiveAsync(fifoPath, script, TimeSpan.FromMilliseconds(250)));
+                () => CreateFifoOrInconclusiveAsync(fifoPath, script, TimeSpan.FromMilliseconds(500)));
             stopwatch.Stop();
 
             StringAssert.Contains(failure.Message, "timed out", StringComparison.Ordinal);
             Assert.IsLessThan(5.0, stopwatch.Elapsed.TotalSeconds, $"Expected bounded timeout, took {stopwatch.Elapsed}.");
+            var pid = await ReadFixturePidAsync(pidFile);
+            Assert.IsFalse(Directory.Exists($"/proc/{pid}"), $"Timed-out command PID {pid} was not reaped.");
         }
         finally
         {
-            root.Delete(recursive: true);
+            await CleanUpFifoFixtureAsync(root, pidFile);
         }
     }
 
@@ -344,24 +347,27 @@ public sealed class ReleaseAcquirerTests
     public async Task CreateFifoOrInconclusive_WhenChildHoldsRedirectedPipesOpen_FailsWithinTimeout()
     {
         var root = Directory.CreateTempSubdirectory("hvo-mkfifo-pipe-");
+        var fifoPath = Path.Combine(root.FullName, "release.json");
+        var pidFile = fifoPath + ".pid";
         try
         {
             var script = Path.Combine(root.FullName, "hold-pipes.sh");
-            await File.WriteAllTextAsync(script, "#!/bin/sh\n(sleep 2) &\nexit 0\n");
+            await File.WriteAllTextAsync(script, "#!/bin/sh\nset -e\nsleep 30 &\nprintf '%s' \"$!\" > \"$1.pid\"\nexit 0\n");
             File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-            var fifoPath = Path.Combine(root.FullName, "release.json");
 
             var stopwatch = Stopwatch.StartNew();
             var failure = await Assert.ThrowsExactlyAsync<AssertFailedException>(
-                () => CreateFifoOrInconclusiveAsync(fifoPath, script, TimeSpan.FromMilliseconds(250)));
+                () => CreateFifoOrInconclusiveAsync(fifoPath, script, TimeSpan.FromMilliseconds(500)));
             stopwatch.Stop();
 
             StringAssert.Contains(failure.Message, "remained open", StringComparison.Ordinal);
             Assert.IsLessThan(5.0, stopwatch.Elapsed.TotalSeconds, $"Expected bounded pipe drain timeout, took {stopwatch.Elapsed}.");
+            Assert.IsTrue(File.Exists(pidFile), "The pipe-holding descendant did not record its PID.");
         }
         finally
         {
-            root.Delete(recursive: true);
+            // The command has exited, so the fixture owns cleanup of its reparented descendant.
+            await CleanUpFifoFixtureAsync(root, pidFile);
         }
     }
 
@@ -389,6 +395,11 @@ public sealed class ReleaseAcquirerTests
     [DataRow(1, "mkfifo: cannot create fifo '/tmp/not supported/release.json': File exists", "/tmp/not supported/release.json", false)]
     [DataRow(1, "mkfifo: cannot create fifo '/tmp/Operation not permitted:x/release.json': No space left on device", "/tmp/Operation not permitted:x/release.json", false)]
     [DataRow(1, "mkfifo: '/tmp/EPERM/release.json'", "/tmp/EPERM/release.json", false)]
+    [DataRow(1, "mkfifo: cannot create fifo '/tmp/EPERM\n/fifo': File exists", "/tmp/EPERM\n/fifo", false)]
+    [DataRow(1, "mkfifo: cannot create fifo '/tmp/not supported\r\n/fifo': Permission denied", "/tmp/not supported\r\n/fifo", true)]
+    [DataRow(1, "mkfifo: failed (TEST_EPERM)", null, false)]
+    [DataRow(1, "mkfifo: failed (EPERM_DETAIL)", null, false)]
+    [DataRow(1, "mkfifo: failed (TEST_EPERM, EPERM)", null, true)]
     [DataRow(1, "mkfifo: cannot create fifo '/tmp/fileperm/x': File exists", "/tmp/fileperm/x", false)]
     [DataRow(1, "mkfifo: cannot create fifo '/tmp/missing/x': No such file or directory", "/tmp/missing/x", false)]
     public void IsRestrictedFifoError_ClassifiesRestrictedAndUnexpectedErrors(
@@ -474,15 +485,16 @@ public sealed class ReleaseAcquirerTests
             var drainTimeout = remaining > TimeSpan.FromMilliseconds(50)
                 ? remaining
                 : TimeSpan.FromMilliseconds(50);
+            var drainTask = Task.WhenAll(standardOutputTask, standardErrorTask);
             string standardError;
             try
             {
-                await Task.WhenAll(standardOutputTask, standardErrorTask).WaitAsync(drainTimeout);
+                await drainTask.WaitAsync(drainTimeout);
                 standardError = (await standardErrorTask).Trim();
             }
             catch (TimeoutException)
             {
-                await KillAndReapProcessTreeAsync(process);
+                ObserveFaults(drainTask);
                 await CancelAndClosePipesAsync(process, pipeCts, standardOutputTask, standardErrorTask);
                 Assert.Fail(
                     $"'{command}' exited with code {process.ExitCode}, but its redirected output streams remained open past the {effectiveTimeout.TotalMilliseconds.ToString("0", CultureInfo.InvariantCulture)} ms timeout.");
@@ -513,9 +525,12 @@ public sealed class ReleaseAcquirerTests
             return true;
         }
 
-        foreach (var rawLine in standardError.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+        var diagnostic = string.IsNullOrEmpty(targetPath)
+            ? standardError
+            : standardError.Replace(targetPath, string.Empty, StringComparison.Ordinal);
+        foreach (var line in diagnostic.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
         {
-            var reason = ExtractDiagnosticReason(rawLine, targetPath);
+            var reason = line[(line.LastIndexOf(':') + 1)..].Trim();
             if (reason.Contains("operation not permitted", StringComparison.OrdinalIgnoreCase)
                 || reason.Contains("operation not supported", StringComparison.OrdinalIgnoreCase)
                 || reason.Contains("not supported", StringComparison.OrdinalIgnoreCase)
@@ -536,23 +551,14 @@ public sealed class ReleaseAcquirerTests
         return false;
     }
 
-    private static string ExtractDiagnosticReason(string line, string? targetPath)
-    {
-        var sanitized = string.IsNullOrEmpty(targetPath)
-            ? line
-            : line.Replace(targetPath, string.Empty, StringComparison.Ordinal);
-        var lastColon = sanitized.LastIndexOf(':');
-        return (lastColon >= 0 ? sanitized[(lastColon + 1)..] : sanitized).Trim();
-    }
-
     private static bool ContainsErrnoToken(string reason, string token)
     {
         var start = 0;
         while ((start = reason.IndexOf(token, start, StringComparison.Ordinal)) >= 0)
         {
-            var beforeOk = start == 0 || !char.IsLetterOrDigit(reason[start - 1]);
+            var beforeOk = start == 0 || !IsErrnoIdentifierCharacter(reason[start - 1]);
             var end = start + token.Length;
-            var afterOk = end == reason.Length || !char.IsLetterOrDigit(reason[end]);
+            var afterOk = end == reason.Length || !IsErrnoIdentifierCharacter(reason[end]);
             if (beforeOk && afterOk)
             {
                 return true;
@@ -562,6 +568,61 @@ public sealed class ReleaseAcquirerTests
         }
 
         return false;
+    }
+
+    private static bool IsErrnoIdentifierCharacter(char character)
+        => char.IsLetterOrDigit(character) || character == '_';
+
+    private static async Task<int> ReadFixturePidAsync(string pidFile)
+    {
+        var pid = int.Parse(await File.ReadAllTextAsync(pidFile), CultureInfo.InvariantCulture);
+        Assert.IsGreaterThan(1, pid, $"Invalid FIFO fixture PID in '{pidFile}'.");
+        return pid;
+    }
+
+    private static async Task CleanUpFifoFixtureAsync(DirectoryInfo root, string pidFile)
+    {
+        try
+        {
+            if (!File.Exists(pidFile))
+            {
+                return;
+            }
+
+            var pid = await ReadFixturePidAsync(pidFile);
+            var procPath = $"/proc/{pid}";
+            if (!Directory.Exists(procPath))
+            {
+                return;
+            }
+
+            try
+            {
+                using var process = Process.GetProcessById(pid);
+                process.Kill();
+            }
+            catch (ArgumentException) when (!Directory.Exists(procPath))
+            {
+                return;
+            }
+            catch (InvalidOperationException) when (!Directory.Exists(procPath))
+            {
+                return;
+            }
+
+            // A zombie still has a /proc entry until its parent reaps it.
+            var stopwatch = Stopwatch.StartNew();
+            while (Directory.Exists(procPath) && stopwatch.Elapsed < TimeSpan.FromSeconds(5))
+            {
+                await Task.Delay(20);
+            }
+
+            Assert.IsFalse(Directory.Exists(procPath), $"FIFO fixture PID {pid} was not reaped during cleanup.");
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
     }
 
     private static async Task KillAndReapProcessTreeAsync(Process process)
