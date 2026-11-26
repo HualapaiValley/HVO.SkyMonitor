@@ -2,6 +2,7 @@ using System.Reflection;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using HVO.SkyMonitor.Deployment;
+using HVO.SkyMonitor.Deployment.Contracts;
 
 namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 
@@ -332,10 +333,225 @@ public sealed class ProgramOutputTests
         StringAssert.Contains(output, "A plan writes no product file, lock or Compose file; a database caught mid-transaction is read through a private temporary copy that is removed.", StringComparison.Ordinal);
     }
 
+    [TestMethod]
+    [DataRow(true, true, true, 200, "Runtime running=True, alive=True, healthy=True (/health HTTP 200)")]
+    [DataRow(true, true, false, 503, "Runtime running=True, alive=True, healthy=False (/health HTTP 503)")]
+    [DataRow(true, true, null, null, "Runtime running=True, alive=True, healthy=unknown")]
+    [DataRow(false, false, false, null, "Runtime running=False, alive=False, healthy=False")]
+    [DataRow(false, null, null, null, "Runtime running=False, alive=unknown, healthy=unknown")]
+    [DataRow(null, true, true, 200, null)]
+    public async Task RunAsync_LifecycleHumanOutput_FormatsRuntimeReadinessAndStatusCode(
+        bool? running,
+        bool? alive,
+        bool? healthy,
+        int? healthStatusCode,
+        string? expectedRuntimeLine)
+    {
+        var result = CreateLifecycleResult(
+            outcome: "status",
+            running: running,
+            alive: alive,
+            healthy: healthy,
+            healthStatusCode: healthStatusCode);
+
+        var (exitCode, output, error) = await RunWithServicesAsync(StatusArguments, LifecycleServices(result));
+
+        Assert.AreEqual(0, exitCode);
+        Assert.AreEqual(string.Empty, error);
+        var lines = output.Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+        Assert.AreEqual("Outcome: status", lines[0]);
+        if (expectedRuntimeLine is null)
+        {
+            Assert.IsFalse(output.Contains("Runtime running=", StringComparison.Ordinal), output);
+        }
+        else
+        {
+            CollectionAssert.Contains(lines, expectedRuntimeLine);
+            if (healthStatusCode is null)
+            {
+                Assert.IsFalse(output.Contains("(/health HTTP", StringComparison.Ordinal), output);
+            }
+        }
+    }
+
+    [TestMethod]
+    [DataRow("planned", "Plan:")]
+    [DataRow("completed", "Changes:")]
+    public async Task RunAsync_LifecycleHumanOutput_FormatsPreservedAdmissionAndOptionalSections(
+        string outcome,
+        string expectedPlanHeading)
+    {
+        var operationId = Guid.Parse("11111111-2222-3333-4444-555555555555");
+        var instanceId = Guid.Parse("5a3f7c1e-2b4d-4e6f-8a9b-0c1d2e3f4a5b");
+        var observedUtc = new DateTimeOffset(2026, 11, 25, 12, 34, 56, 789, TimeSpan.Zero);
+        var completedUtc = new DateTimeOffset(2026, 11, 25, 12, 30, 01, 250, TimeSpan.Zero);
+        var imageId = $"sha256:{new string('a', 64)}";
+        var keySha256 = new string('c', 64);
+        var admission = new LifecycleAdmissionObservation(
+            State: "Paused",
+            Version: 7,
+            CaptureSequence: 42,
+            ObservedUtc: observedUtc,
+            LatestCommandOrder: 9,
+            LatestCommandKeySha256: keySha256,
+            LatestTarget: "Paused",
+            LatestActor: "installer:upgrade",
+            LatestChanged: true,
+            LatestResultVersion: 7,
+            LatestCompletedUtc: completedUtc);
+        var plan = DeploymentPlan.Of([new DeploymentPlanItem(DeploymentPlanAction.Change, "container", "cameraagent", "upgrade")]);
+        var catalog = new CatalogInstallationIdentity(
+            "hyg-v42", "hyg-v4.2-p3-s2-r1", "1", "1", new string('b', 64), 1, 1, "/var/lib/hvo-sky/catalogs/hyg",
+            new string('b', 64), "local-offline");
+        var deepSkyCatalog = new CatalogInstallationIdentity(
+            "openngc", "openngc-v1.0-r1", "1", "1", new string('d', 64), 1, 1, "/var/lib/hvo-sky/catalogs/openngc",
+            new string('d', 64), "local-offline");
+        var result = CreateLifecycleResult(
+            outcome: outcome,
+            operation: LifecycleOperationKind.Upgrade,
+            operationId: operationId,
+            instanceId: instanceId,
+            lifecycleCondition: InstanceLifecycleCondition.Installed,
+            image: new ImageInstallationIdentity("archive", imageId, imageId, "amd64", null),
+            catalog: catalog,
+            deepSkyCatalog: deepSkyCatalog,
+            running: true,
+            alive: true,
+            healthy: false,
+            healthStatusCode: 503,
+            preservedAdmission: admission,
+            preservedPaths: ["/var/lib/hvo-sky/cameraagents/a/state", "/var/lib/hvo-sky/cameraagents/a/captures"],
+            resumeCommand: $"hvo-sky-install cameraagent upgrade --instance-id {instanceId:D} --resume",
+            plan: plan);
+
+        var (exitCode, output, error) = await RunWithServicesAsync(StatusArguments, LifecycleServices(result));
+
+        Assert.AreEqual(0, exitCode);
+        Assert.AreEqual(string.Empty, error);
+        string[] expectedLines =
+        [
+            $"Outcome: {outcome}",
+            $"Operation: Upgrade / {operationId:D}",
+            $"Instance: {instanceId:D} / Installed",
+            $"Image: {imageId}",
+            "Catalog: hyg-v42 / hyg-v4.2-p3-s2-r1",
+            "Deep-sky catalog: openngc / openngc-v1.0-r1",
+            "Runtime running=True, alive=True, healthy=False (/health HTTP 503)",
+            $"Capture admission preserved: Paused at version 7, sequence 42, observed {observedUtc:O}.",
+            $"Latest capture command #9 (key SHA-256 {keySha256}, Paused, changed=True) by installer:upgrade at {completedUtc:O}, version 7.",
+            "Preserved: /var/lib/hvo-sky/cameraagents/a/state",
+            "Preserved: /var/lib/hvo-sky/cameraagents/a/captures",
+            $"Resume: hvo-sky-install cameraagent upgrade --instance-id {instanceId:D} --resume",
+            expectedPlanHeading,
+            .. DeploymentPlanText.Lines(plan)
+        ];
+        Assert.AreEqual(string.Join(Environment.NewLine, expectedLines) + Environment.NewLine, output);
+    }
+
+    [TestMethod]
+    public async Task RunAsync_LifecycleHumanOutput_OmitsPreservedAdmissionWhenAbsent()
+    {
+        var result = CreateLifecycleResult(
+            outcome: "status",
+            running: true,
+            alive: true,
+            healthy: true,
+            healthStatusCode: 200,
+            preservedAdmission: null);
+
+        var (exitCode, output, error) = await RunWithServicesAsync(StatusArguments, LifecycleServices(result));
+
+        Assert.AreEqual(0, exitCode);
+        Assert.AreEqual(string.Empty, error);
+        Assert.IsFalse(output.Contains("Capture admission preserved:", StringComparison.Ordinal), output);
+        Assert.IsFalse(output.Contains("Latest capture command #", StringComparison.Ordinal), output);
+    }
+
+    private static readonly string[] StatusArguments = ["status"];
+
+    private static LifecycleResult CreateLifecycleResult(
+        string outcome,
+        LifecycleOperationKind? operation = null,
+        Guid? operationId = null,
+        Guid? instanceId = null,
+        InstanceLifecycleCondition? lifecycleCondition = null,
+        ImageInstallationIdentity? image = null,
+        CatalogInstallationIdentity? catalog = null,
+        CatalogInstallationIdentity? deepSkyCatalog = null,
+        bool? running = null,
+        bool? alive = null,
+        bool? healthy = null,
+        int? healthStatusCode = null,
+        LifecycleAdmissionObservation? preservedAdmission = null,
+        IReadOnlyList<string>? preservedPaths = null,
+        string? resumeCommand = null,
+        DeploymentPlan? plan = null)
+        => new(
+            SchemaVersion: 1,
+            Operation: operation,
+            Outcome: outcome,
+            OperationId: operationId,
+            InstanceId: instanceId,
+            LifecycleCondition: lifecycleCondition,
+            ProductRoot: "/var/lib/hvo-sky",
+            InstanceRoot: null,
+            Image: image,
+            PreviousImage: null,
+            Catalog: catalog,
+            PreviousCatalog: null,
+            DockerDaemon: null,
+            Running: running,
+            Healthy: healthy,
+            PreservedPaths: preservedPaths ?? [],
+            ResumeCommand: resumeCommand,
+            CompletedUtc: new DateTimeOffset(2026, 11, 25, 12, 35, 00, TimeSpan.Zero))
+        {
+            Alive = alive,
+            HealthStatusCode = healthStatusCode,
+            DeepSkyCatalog = deepSkyCatalog,
+            PreservedAdmission = preservedAdmission,
+            Plan = plan
+        };
+
+    private static ProgramServices LifecycleServices(LifecycleResult result)
+        => new(
+            Parse: _ => new LifecycleRequest(result.Operation, result.InstanceId, result.ProductRoot, dryRun: false, resume: false, json: false),
+            Install: static (_, _) => throw new InvalidOperationException("Unexpected install call."),
+            Preflight: static (_, _) => throw new InvalidOperationException("Unexpected preflight call."),
+            Reset: static (_, _) => throw new InvalidOperationException("Unexpected reset call."),
+            HostPolicy: static (_, _) => throw new InvalidOperationException("Unexpected host-policy call."),
+            OwnerRecovery: static (_, _) => throw new InvalidOperationException("Unexpected owner-recovery call."),
+            Lifecycle: (_, _) => Task.FromResult(result))
+        {
+            Wizard = null
+        };
+
     private static string Text(string usage) => usage.ReplaceLineEndings() + Environment.NewLine;
 
     private static Task<(int ExitCode, string Output, string Error)> RunCommandLineAsync(string commandLine)
         => RunAsync(commandLine.Split(' ', StringSplitOptions.RemoveEmptyEntries));
+
+    private static async Task<(int ExitCode, string Output, string Error)> RunWithServicesAsync(
+        string[] arguments,
+        ProgramServices services)
+    {
+        var originalOutput = Console.Out;
+        var originalError = Console.Error;
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+        Console.SetOut(output);
+        Console.SetError(error);
+        try
+        {
+            var exitCode = await Program.RunAsync(arguments, services, CancellationToken.None);
+            return (exitCode, output.ToString(), error.ToString());
+        }
+        finally
+        {
+            Console.SetOut(originalOutput);
+            Console.SetError(originalError);
+        }
+    }
 
     private static async Task<(int ExitCode, string Output, string Error)> RunAsync(params string[] arguments)
     {

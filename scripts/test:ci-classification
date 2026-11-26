@@ -1931,7 +1931,8 @@ run_fast_group_canary() {
     printf 'Real inventory canary passed: expected %s.\n' "$canary_expected"
     for runtime_input in \
       "src/HVO.SkyMonitor.CameraAgent/wwwroot/css/themes/hvo-dark.css" \
-      "docs/runbooks/cameraagent-silo-runtime.md"; do
+      "docs/runbooks/cameraagent-silo-runtime.md" \
+      "THIRD-PARTY-NOTICES.md"; do
       runtime_index="$canary_dir/runtime-index-${runtime_input//\//_}"
       GIT_INDEX_FILE="$runtime_index" git -C "$repo_root" read-tree "$real_base"
       runtime_blob="$(printf 'runtime input mutation for %s\n' "$runtime_input" | git -C "$repo_root" hash-object -w --stdin)"
@@ -1954,7 +1955,7 @@ run_fast_group_canary() {
         exit 1
       }
     done
-    printf 'Real-repo Deployment.Cli.Tests runtime input canaries passed (2 inputs).\n'
+    printf 'Real-repo Deployment.Cli.Tests runtime input canaries passed (3 inputs).\n'
   )
   canary_commit="$(cat "$canary_dir/canary-commit")"
   if git -C "$repo_root" cat-file -e "$canary_commit^{commit}" 2>/dev/null; then

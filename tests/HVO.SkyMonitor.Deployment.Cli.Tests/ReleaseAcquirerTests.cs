@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using HVO.SkyMonitor.Deployment;
@@ -175,11 +176,7 @@ public sealed class ReleaseAcquirerTests
                 break;
             case "release-json-fifo":
                 File.Delete(Path.Combine(folder, "release.json"));
-                using (var mkfifo = Process.Start("mkfifo", Path.Combine(folder, "release.json")))
-                {
-                    await mkfifo.WaitForExitAsync();
-                    Assert.AreEqual(0, mkfifo.ExitCode);
-                }
+                await CreateFifoOrInconclusiveAsync(Path.Combine(folder, "release.json"));
                 break;
             case "archive-symlink":
                 File.Move(archive!, outside);
@@ -224,6 +221,131 @@ public sealed class ReleaseAcquirerTests
         var exception = Assert.ThrowsExactly<InstallerException>(() => image.ToEvidence(stranger));
         Assert.AreEqual("The running CameraAgent image is not the image the release names.", exception.Message);
     }
+
+    [TestMethod]
+    public async Task CreateFifoOrInconclusive_WhenCommandMissing_IsInconclusive()
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-guard-");
+        try
+        {
+            var missingCommand = Path.Combine(root.FullName, "no-such-mkfifo");
+            var fifoPath = Path.Combine(root.FullName, "release.json");
+
+            await Assert.ThrowsExactlyAsync<AssertInconclusiveException>(
+                () => CreateFifoOrInconclusiveAsync(fifoPath, missingCommand));
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task CreateFifoOrInconclusive_WhenTargetAlreadyExists_FailsInsteadOfSkipping()
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-existing-");
+        try
+        {
+            // Verify mkfifo itself works on this host first so a restricted environment remains inconclusive cleanly.
+            await CreateFifoOrInconclusiveAsync(Path.Combine(root.FullName, "probe.fifo"));
+
+            var existingFile = Path.Combine(root.FullName, "already-exists");
+            await File.WriteAllTextAsync(existingFile, "occupied");
+
+            await Assert.ThrowsExactlyAsync<AssertFailedException>(
+                () => CreateFifoOrInconclusiveAsync(existingFile));
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [DataRow(127, "", true)]
+    [DataRow(126, "", true)]
+    [DataRow(1, "mkfifo: cannot create fifo '/tmp/x': Operation not permitted", true)]
+    [DataRow(1, "mkfifo: cannot create fifo '/tmp/x': Operation not supported", true)]
+    [DataRow(1, "mkfifo: cannot create fifo '/tmp/x': Function not implemented", true)]
+    [DataRow(1, "mkfifo: cannot create fifo '/tmp/x': Permission denied", true)]
+    [DataRow(1, "mkfifo: cannot create fifo '/tmp/x': Read-only file system", true)]
+    [DataRow(1, "mkfifo: failed (EPERM)", true)]
+    [DataRow(1, "mkfifo: cannot create fifo '/tmp/fileperm/x': File exists", false)]
+    [DataRow(1, "mkfifo: cannot create fifo '/tmp/missing/x': No such file or directory", false)]
+    public void IsRestrictedFifoError_ClassifiesRestrictedAndUnexpectedErrors(int exitCode, string stderr, bool expected)
+    {
+        ArgumentNullException.ThrowIfNull(stderr);
+        Assert.AreEqual(expected, IsRestrictedFifoError(exitCode, stderr));
+    }
+
+    private static async Task CreateFifoOrInconclusiveAsync(string path, string command = "mkfifo")
+    {
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS() && !OperatingSystem.IsFreeBSD())
+        {
+            Assert.Inconclusive("FIFO creation requires a POSIX test environment.");
+        }
+
+        var startInfo = new ProcessStartInfo(command)
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        startInfo.ArgumentList.Add(path);
+
+        Process? process;
+        try
+        {
+            process = Process.Start(startInfo);
+        }
+        catch (Win32Exception exception)
+        {
+            Assert.Inconclusive($"'{command}' is unavailable in this test environment: {exception.Message}");
+            return;
+        }
+
+        if (process is null)
+        {
+            Assert.Inconclusive($"'{command}' could not be started in this test environment.");
+            return;
+        }
+
+        using (process)
+        {
+            var standardOutputTask = process.StandardOutput.ReadToEndAsync();
+            var standardErrorTask = process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+            _ = await standardOutputTask;
+            var standardError = (await standardErrorTask).Trim();
+            if (process.ExitCode == 0)
+            {
+                return;
+            }
+
+            if (IsRestrictedFifoError(process.ExitCode, standardError))
+            {
+                Assert.Inconclusive($"'{command}' cannot create a FIFO in this restricted or non-POSIX test environment (exit {process.ExitCode}): {standardError}");
+            }
+
+            Assert.Fail($"'{command}' failed unexpectedly (exit {process.ExitCode}): {standardError}");
+        }
+    }
+
+    private static bool IsRestrictedFifoError(int exitCode, string standardError)
+        => exitCode is 126 or 127
+           || standardError.Contains("operation not permitted", StringComparison.OrdinalIgnoreCase)
+           || standardError.Contains("operation not supported", StringComparison.OrdinalIgnoreCase)
+           || standardError.Contains("not supported", StringComparison.OrdinalIgnoreCase)
+           || standardError.Contains("function not implemented", StringComparison.OrdinalIgnoreCase)
+           || standardError.Contains("permission denied", StringComparison.OrdinalIgnoreCase)
+           || standardError.Contains("read-only file system", StringComparison.OrdinalIgnoreCase)
+           || standardError.Contains("EPERM", StringComparison.Ordinal)
+           || standardError.Contains("ENOTSUP", StringComparison.Ordinal)
+           || standardError.Contains("EOPNOTSUPP", StringComparison.Ordinal)
+           || standardError.Contains("ENOSYS", StringComparison.Ordinal)
+           || standardError.Contains("EACCES", StringComparison.Ordinal)
+           || standardError.Contains("EROFS", StringComparison.Ordinal);
 
     private static InstallRequest Request(string? release) => new()
     {

@@ -1695,6 +1695,7 @@ exit "$FAKE_EXIT"
     deploy_cases = 0
     git("checkout", "-q", "--detach", real_base)
     real_deploy_cli_tests_csproj = (root / "tests/HVO.SkyMonitor.Deployment.Cli.Tests/HVO.SkyMonitor.Deployment.Cli.Tests.csproj").read_text()
+    real_cameraagent_csproj = (root / "src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj").read_text()
     real_coverage_baseline = (root / "scripts/coverage/baseline.json").read_text()
     real_coverage_policy = (root / "scripts/coverage/policy.json").read_text()
     real_component_baselines = {
@@ -1707,7 +1708,9 @@ exit "$FAKE_EXIT"
         ("src/HVO.SkyMonitor.CameraAgent/Dockerfile", "FROM scratch\n"),
         ("src/HVO.SkyMonitor.CameraAgent/Configuration/OwnerPasswordFileText.cs", "class P {}\n"),
         ("src/HVO.SkyMonitor.CameraAgent/wwwroot/css/themes/hvo-dark.css", ":root[data-theme=\"hvo-dark\"] { --hvo-body-bg: #0b1018; }\n"),
+        ("src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj", real_cameraagent_csproj),
         ("docs/runbooks/cameraagent-silo-runtime.md", "# Silo runtime\n"),
+        ("THIRD-PARTY-NOTICES.md", "# Third-party notices\n"),
         ("src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj",
          '<Project><ItemGroup><Compile Include="../HVO.SkyMonitor.CameraAgent/Configuration/OwnerPasswordFileText.cs" /></ItemGroup></Project>\n'),
         ("tests/HVO.SkyMonitor.Deployment.Cli.Tests/HVO.SkyMonitor.Deployment.Cli.Tests.csproj", real_deploy_cli_tests_csproj),
@@ -1742,6 +1745,7 @@ exit "$FAKE_EXIT"
         ("CameraAgent Dockerfile PR runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/Dockerfile", "pull_request", "true"),
         ("CameraAgent hvo-dark.css PR runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/wwwroot/css/themes/hvo-dark.css", "pull_request", "true"),
         ("Silo replacement runbook PR runs Deployment.Cli.Tests and is not docs-fast-path skipped", "docs/runbooks/cameraagent-silo-runtime.md", "pull_request", "true"),
+        ("THIRD-PARTY-NOTICES.md PR runs Deployment.Cli.Tests and is not docs-fast-path skipped", "THIRD-PARTY-NOTICES.md", "pull_request", "true"),
         ("Linked CameraAgent source PR runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/Configuration/OwnerPasswordFileText.cs", "pull_request", "true"),
         ("Deployment.Cli PR runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.Deployment.Cli/Program.cs", "pull_request", "true"),
         ("Shared AgentCore PR runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.AgentCore/Contract.cs", "pull_request", "true"),
