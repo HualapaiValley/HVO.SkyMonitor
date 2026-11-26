@@ -125,6 +125,29 @@ public sealed class TimeSyncSettingsTests
         Assert.IsFalse(TimeSyncSettings.TryParseServer(new string('a', 64) + ".example", out _, out _));
     }
 
+    [TestMethod]
+    [DataRow("/dev/ttyS0")]
+    [DataRow("/dev/ttyUSB1")]
+    [DataRow("/dev/ttyACM2")]
+    [DataRow("/dev/ttyAMA10")]
+    [DataRow("/dev/pts/123")]
+    public void NumberedSerialAndPseudoTerminalPathsAreValid(string path)
+        => Assert.IsNull((GpsReceiverSettings.Default with { Enabled = true, Device = path }).Validate());
+
+    [TestMethod]
+    [DataRow("/dev/watchdog")]
+    [DataRow("/dev/st0")]
+    [DataRow("/dev/tty")]
+    [DataRow("/dev/tty0")]
+    [DataRow("/dev/ttyUSB")]
+    [DataRow("/dev/ttyUSB0.extra")]
+    [DataRow("/dev/pts/master")]
+    [DataRow("/dev/pts/../ttyS0")]
+    [DataRow("/dev/ttyS0\n")]
+    [DataRow("dev/ttyUSB0")]
+    public void OtherDevicePathsAreRefused(string path)
+        => Assert.IsNotNull((GpsReceiverSettings.Default with { Enabled = true, Device = path }).Validate());
+
     private static IConfiguration Configuration(params (string Key, string Value)[] values)
         => new ConfigurationBuilder()
             .AddInMemoryCollection(values.Select(static value => new KeyValuePair<string, string?>(

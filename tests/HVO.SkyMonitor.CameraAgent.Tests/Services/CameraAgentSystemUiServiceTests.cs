@@ -356,7 +356,7 @@ public sealed partial class CameraAgentSystemUiServiceTests
                 ? new Dictionary<string, object>()
                 : new Dictionary<string, object> { ["Availability"] = availability });
 
-    private sealed class Fixture : IDisposable
+    internal sealed class Fixture : IDisposable
     {
         private readonly string _root = Path.Combine(Path.GetTempPath(), "hvo-system-ui", Guid.NewGuid().ToString("N"));
         private readonly CaptureControlTelemetry _telemetry = new();
@@ -470,7 +470,7 @@ public sealed partial class CameraAgentSystemUiServiceTests
             };
     }
 
-    private sealed class SettableTimeProvider(DateTimeOffset now) : TimeProvider
+    internal sealed class SettableTimeProvider(DateTimeOffset now) : TimeProvider
     {
         internal DateTimeOffset Now { get; set; } = now;
 

@@ -260,6 +260,7 @@ internal sealed class CameraAgentTimeSyncUiService(
         var now = timeProvider.GetUtcNow();
         var (zoneId, zoneOffset) = SiteZone(now);
         var measured = settings.Enabled && snapshot is { Enabled: true } ? snapshot : null;
+        var gps = settings.Gps.Enabled ? measured?.Gps : null;
         var servers = measured?.Servers
             .Select(result => new TimeSyncServerView(
                 result.Server,
@@ -282,7 +283,7 @@ internal sealed class CameraAgentTimeSyncUiService(
             assessment.Description,
             settings.Tolerance,
             settings.Interval,
-            measured is { Selected: null, Gps: { CanVerifyClock: true } gps } ? gps.PpsMeasuredUtc : measured?.MeasuredUtc,
+            measured?.Selected is null && gps is { CanVerifyClock: true } ? gps.PpsMeasuredUtc : measured?.MeasuredUtc,
             servers.FirstOrDefault(static server => server.Selected),
             servers,
             configured.Count - valid.Length,
@@ -292,7 +293,7 @@ internal sealed class CameraAgentTimeSyncUiService(
         {
             Receiver = monitor.GpsReaderRegistered ? settings.Gps : null,
             GpsOverridden = settingsFile?.FindOverriddenKeys(GpsKeys).Count > 0,
-            Gps = measured?.Gps,
+            Gps = gps,
         };
     }
 

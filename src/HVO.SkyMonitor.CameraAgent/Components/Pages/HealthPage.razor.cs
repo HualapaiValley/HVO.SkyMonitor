@@ -186,6 +186,8 @@ public sealed partial class HealthPage : SiteTimeComponent, IDisposable
     // With no drift to show, the title says why, so "Host synced" is never read as a network measurement.
     private string ClockDriftTitle(SystemClockFact? clock) => clock switch
     {
+        { UsesGpsPps: true, Drift: not null, MeasuredUtc: { } measured } =>
+            $"This agent's clock minus GPS/PPS time, measured {FormatAge(measured)} ago",
         { Drift: not null, MeasuredUtc: { } measured } =>
             $"This agent's clock minus network time, measured {FormatAge(measured)} ago",
         { Status: ClockSyncStatus.HostSynchronized } =>

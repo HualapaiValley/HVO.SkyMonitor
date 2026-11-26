@@ -174,7 +174,8 @@ public sealed class GpsTimeReader(TimeProvider timeProvider, GpsUtcWindow? utcWi
         }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
-            throw new ObjectDisposedException(nameof(GpsTimeReader));
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            throw;
         }
         catch (OperationCanceledException) when (timeout.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
@@ -397,7 +398,7 @@ public sealed class GpsTimeReader(TimeProvider timeProvider, GpsUtcWindow? utcWi
 
     private static bool TryDate(string text, out DateOnly date)
     {
-        // Explicit 2000..2099 fake-workload window; no culture/calendar-dependent two-digit-year pivot.
+        // Decode two-digit RMC years as 2000–2099. Fix validation applies the receiver deployment window.
         date = default;
         return text.Length == 6 && text.All(char.IsAsciiDigit) &&
             DateOnly.TryParseExact(text[..4] + "20" + text[4..], "ddMMyyyy", CultureInfo.InvariantCulture, DateTimeStyles.None, out date);

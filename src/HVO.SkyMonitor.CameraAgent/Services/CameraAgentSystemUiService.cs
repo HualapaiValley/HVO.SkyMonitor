@@ -72,8 +72,8 @@ internal sealed record SystemHostFacts(
     string Runtime,
     string RuntimeIdentifier);
 
-/// <param name="Drift">This agent's clock minus network time, positive when it runs ahead; null when not measured.</param>
-internal sealed record SystemClockFact(ClockSyncStatus Status, TimeSpan? Drift, DateTimeOffset? MeasuredUtc);
+/// <param name="Drift">Host time minus the measured reference time. Positive values mean the host runs ahead.</param>
+internal sealed record SystemClockFact(ClockSyncStatus Status, TimeSpan? Drift, DateTimeOffset? MeasuredUtc, bool UsesGpsPps = false);
 
 internal sealed record SystemHealthView(
     DateTimeOffset EvaluatedUtc,
@@ -499,8 +499,11 @@ internal sealed class CameraAgentSystemUiService(
         {
             return new SystemClockFact(status, null, null);
         }
-        if (latest.Selected is null && settings.Gps.Enabled && latest.Gps is { CanVerifyClock: true } gps)
-            return new SystemClockFact(status, gps.PpsOffset?.Negate(), gps.PpsMeasuredUtc);
+        if (latest.Selected is null && settings.Gps.Enabled && latest.Gps is { CanVerifyClock: true } gps &&
+            status is ClockSyncStatus.InTolerance or ClockSyncStatus.Drifting or ClockSyncStatus.Unsynchronized)
+        {
+            return new SystemClockFact(status, gps.PpsOffset?.Negate(), gps.PpsMeasuredUtc, UsesGpsPps: true);
+        }
         return new SystemClockFact(status, latest.Selected?.Offset?.Negate(), latest.MeasuredUtc);
     }
 

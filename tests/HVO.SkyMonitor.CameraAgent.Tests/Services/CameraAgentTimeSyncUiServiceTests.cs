@@ -394,12 +394,13 @@ public sealed class CameraAgentTimeSyncUiServiceTests
         Assert.IsFalse(File.Exists(file.Path));
     }
 
-    private static CameraAgentTimeSyncUiService CreateService(
-        StubMonitor monitor,
+    internal static CameraAgentTimeSyncUiService CreateService(
+        IClockSyncMonitor monitor,
         bool read,
         bool mutate,
         IDeploymentLocationStore? locations = null,
-        OperatorSettingsFile? settingsFile = null)
+        OperatorSettingsFile? settingsFile = null,
+        TimeProvider? timeProvider = null)
     {
         var user = new ClaimsPrincipal(new ClaimsIdentity(
             [
@@ -418,7 +419,7 @@ public sealed class CameraAgentTimeSyncUiServiceTests
             new StubAuthenticationStateProvider(user),
             authorization.Object,
             monitor,
-            new FixedTimeProvider(Now),
+            timeProvider ?? new FixedTimeProvider(Now),
             NullLogger<CameraAgentTimeSyncUiService>.Instance,
             locations,
             settingsFile);

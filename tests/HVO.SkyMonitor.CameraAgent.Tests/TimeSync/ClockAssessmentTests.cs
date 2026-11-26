@@ -62,6 +62,25 @@ public sealed class ClockAssessmentTests
     }
 
     [TestMethod]
+    [DataRow(false, false, ClockSyncStatus.Unverified)]
+    [DataRow(true, false, ClockSyncStatus.InTolerance)]
+    [DataRow(true, true, ClockSyncStatus.Drifting)]
+    public void QualifiedPpsIsUsedOnlyWhenEnabledAndNoServerAnswered(bool enabled, bool serverAnswered, ClockSyncStatus expected)
+    {
+        var gps = GpsTimeStatus.Empty(GpsSignalState.Available) with
+        {
+            PpsOffset = TimeSpan.Zero,
+            PpsUncertainty = TimeSpan.FromMilliseconds(5),
+            PpsMeasuredUtc = Now,
+        };
+        var snapshot = Snapshot(serverAnswered ? TimeSpan.FromSeconds(2) : null, KernelClockStatus.Unknown) with { Gps = gps };
+        var settings = TimeSyncSettings.Default with { Gps = new(enabled, "/dev/ttyUSB0", 9600, true) };
+
+        Assert.IsTrue(gps.CanVerifyClock);
+        Assert.AreEqual(expected, ClockAssessment.Evaluate(settings, snapshot).Status);
+    }
+
+    [TestMethod]
     public void Evaluate_ADrift_SaysWhichWayTheClockIsOutInWholeMilliseconds()
     {
         // A server ahead of this host (positive offset) means this host's clock is behind.

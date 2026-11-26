@@ -26,7 +26,8 @@ public sealed partial class TimeSyncPanel : SiteTimeComponent, IDisposable
     private string? _error;
     private int _loadedGeneration = -1;
     private bool _checking;
-    private bool _saving;
+    private bool _savingServers;
+    private bool _savingGps;
     private bool _disposed;
 
     [Inject] internal ICameraAgentTimeSyncUiService TimeSyncService { get; set; } = default!;
@@ -34,7 +35,7 @@ public sealed partial class TimeSyncPanel : SiteTimeComponent, IDisposable
     /// <summary>Bumped by the page's Refresh, so the panel reads the clock state again with the rest of the page.</summary>
     [Parameter] public int Generation { get; set; }
 
-    private bool Busy => _checking || _saving;
+    private bool Busy => _checking || _savingServers || _savingGps;
 
     private static string CheckIntervalText => ClockFormat.Unsigned(ClockSyncMonitor.OnDemandInterval);
 
@@ -153,7 +154,7 @@ public sealed partial class TimeSyncPanel : SiteTimeComponent, IDisposable
             _message = PanelMessage.Failure(invalid);
             return;
         }
-        _saving = true;
+        _savingServers = true;
         _message = null;
         try
         {
@@ -179,7 +180,7 @@ public sealed partial class TimeSyncPanel : SiteTimeComponent, IDisposable
         }
         finally
         {
-            _saving = false;
+            _savingServers = false;
         }
     }
 
@@ -192,7 +193,8 @@ public sealed partial class TimeSyncPanel : SiteTimeComponent, IDisposable
             _message = PanelMessage.Failure(problem);
             return;
         }
-        _saving = true;
+        _savingGps = true;
+        _message = null;
         try
         {
             var result = await TimeSyncService.SaveGpsAsync(settings, version, _lifetime.Token);
@@ -205,7 +207,7 @@ public sealed partial class TimeSyncPanel : SiteTimeComponent, IDisposable
         }
         finally
         {
-            _saving = false;
+            _savingGps = false;
         }
     }
 

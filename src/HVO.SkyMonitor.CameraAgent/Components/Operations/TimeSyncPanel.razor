@@ -1,4 +1,5 @@
 @inherits SiteTimeComponent
+@using System.Globalization
 @using HVO.SkyMonitor.CameraAgent.Common.TimeSync
 <section class="ops-panel ops-grid time-sync" aria-labelledby="time-heading">
     <header class="ops-panel-heading">
@@ -75,7 +76,7 @@
                                 <td><span class="state-chip @(server.Failure is null ? "success" : "warning")">@FailureText(server.Failure)</span></td>
                                 <td>@(server.Offset is { } offset ? ClockFormat.Relative(offset.Negate()) : "—")</td>
                                 <td>@(server.RoundTrip is { } serverRoundTrip ? ClockFormat.Unsigned(serverRoundTrip) : "—")</td>
-                                <td>@(server.Stratum?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "—")</td>
+                                <td>@(server.Stratum?.ToString(CultureInfo.InvariantCulture) ?? "—")</td>
                             </tr>
                         }
                     </tbody>
@@ -96,7 +97,7 @@
                     <label class="ops-field">Servers<input id="time-servers" autocomplete="off" spellcheck="false" maxlength="@ServersInputMaxLength"
                                                            placeholder="@string.Join(", ", TimeSyncSettings.DefaultServers)" @bind="_serversInput" /></label>
                     <div class="time-settings-actions">
-                        <button type="button" id="time-servers-save" class="button secondary" @onclick="() => SaveServersAsync(useDefault: false)">@(_saving ? "Saving…" : "Save servers")</button>
+                        <button type="button" id="time-servers-save" class="button secondary" @onclick="() => SaveServersAsync(useDefault: false)">@(_savingServers ? "Saving…" : "Save servers")</button>
                         <button type="button" id="time-servers-default" class="text-button" disabled="@view.Setting.UsingDefault" @onclick="() => SaveServersAsync(useDefault: true)">Use default</button>
                     </div>
                 </fieldset>
@@ -112,13 +113,13 @@
                     var gps = view.Gps;
                     <dl class="ops-facts time-facts">
                         <div><dt>Fix</dt><dd id="time-gps-fix">@(receiver.Validate() ?? (view.Status == ClockSyncStatus.Disabled ? "Checking off" : (gps?.State.ToString() ?? "Awaiting measurement")))</dd></div>
-                        <div><dt>Satellites / fix quality</dt><dd>@(gps?.Satellites?.ToString() ?? "—") / @(gps?.FixQuality?.ToString() ?? "—")</dd></div>
+                        <div><dt>Satellites / fix quality</dt><dd>@(gps?.Satellites?.ToString(CultureInfo.InvariantCulture) ?? "—") / @(gps?.FixQuality?.ToString(CultureInfo.InvariantCulture) ?? "—")</dd></div>
                         <div><dt>Last sentence</dt><dd>@(gps?.LastSentenceUtc is { } last ? SiteTime.Format(last) : "—")</dd></div>
                         <div><dt>Host offset at NMEA arrival</dt><dd>@(gps?.ArrivalOffset is { } arrival ? ClockFormat.Relative(arrival.Negate()) : "—")</dd></div>
                         @if (receiver.UsePps)
                         {
                             <div><dt>PPS signal</dt><dd>@(gps?.PpsState.ToString() ?? "Unavailable")</dd></div>
-                            <div><dt>Host offset at PPS edge</dt><dd>@(gps?.PpsOffset is { } edge ? ClockFormat.Relative(edge.Negate()) + " ±" + ClockFormat.Unsigned(gps.PpsUncertainty!.Value) : "—")</dd></div>
+                            <div><dt>Host offset at PPS edge</dt><dd>@(gps is { PpsOffset: { } edge, PpsUncertainty: { } uncertainty } ? ClockFormat.Relative(edge.Negate()) + " ±" + ClockFormat.Unsigned(uncertainty) : "—")</dd></div>
                         }
                     </dl>
                 }
@@ -130,7 +131,7 @@
                     <label class="time-gps-pps"><input id="time-gps-pps" type="checkbox" @bind="_usePps" /> Use rising DCD PPS (within 5 ms of UTC, following RMC names the pulse)</label>
                     @if (view.Receiver is not null)
                     {
-                        <button id="time-gps-save" type="button" class="button secondary" @onclick="SaveGpsAsync">Save receiver</button>
+                        <button id="time-gps-save" type="button" class="button secondary" @onclick="SaveGpsAsync">@(_savingGps ? "Saving…" : "Save receiver")</button>
                     }
                 </fieldset>
                 @if (GpsFormReason is { } reason)

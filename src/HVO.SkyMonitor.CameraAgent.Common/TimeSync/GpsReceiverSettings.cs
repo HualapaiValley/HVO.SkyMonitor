@@ -9,11 +9,10 @@ public sealed partial record GpsReceiverSettings(bool Enabled, string Device, in
     public const string SectionKey = TimeSyncSettings.SectionKey + ":Gps";
     public static GpsReceiverSettings Default { get; } = new(false, string.Empty, 9600, false);
 
-
     public string? Validate()
     {
         if (Device is null || Device.Length > 255 || ((Enabled || Device.Length > 0) && !DevicePath().IsMatch(Device)))
-            return "Enter an absolute serial device path directly under /dev, or a numbered /dev/pts device.";
+            return "Enter a numbered serial device such as /dev/ttyUSB0 or /dev/pts/0.";
         return BaudRate is 4800 or 9600 or 38400 or 115200 ? null : "Choose a supported baud rate.";
     }
 
@@ -32,6 +31,6 @@ public sealed partial record GpsReceiverSettings(bool Enabled, string Device, in
         return new(active || !valid, section["Device"] ?? string.Empty, valid ? rate : 0, usePps);
     }
 
-    [GeneratedRegex(@"\A/dev/(?:[A-Za-z0-9][A-Za-z0-9_.-]*|pts/[0-9]+)\z", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"\A/dev/(?:tty(?:S|USB|ACM|AMA)|pts/)[0-9]+\z", RegexOptions.CultureInvariant)]
     private static partial Regex DevicePath();
 }

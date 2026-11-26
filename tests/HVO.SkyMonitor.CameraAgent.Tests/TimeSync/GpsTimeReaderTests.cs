@@ -701,6 +701,39 @@ public sealed class GpsTimeReaderTests
     public void ScriptedUtcWindow_RefusesReversedBounds()
         => Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new GpsUtcWindow(Now, Now.AddTicks(-1)));
 
+    [TestMethod]
+    public void PpsUncertaintyIncludesTimeSpentSamplingHostUtc()
+    {
+        var time = new FakeTimeProvider(Now);
+        using var reader = CreateReader(time);
+        var low = time.GetTimestamp();
+        time.Advance(TimeSpan.FromMilliseconds(10));
+        reader.ObserveRisingEdge(low, time.GetTimestamp());
+        reader.ConsumeSerialBytes(Encoding.ASCII.GetBytes(Rmc() + "\n"));
+
+        time.UtcReadDuration = TimeSpan.FromMilliseconds(7);
+        Assert.AreEqual(TimeSpan.FromMilliseconds(22), reader.GetStatus().PpsUncertainty);
+    }
+
+    [TestMethod]
+    public void PpsExpiresFromTheEdgeWhileTheFollowingRmcIsStillFresh()
+    {
+        var time = new FakeTimeProvider(Now);
+        using var reader = CreateReader(time);
+        reader.ObserveRisingEdge(time.GetTimestamp(), time.GetTimestamp());
+        time.Advance(TimeSpan.FromMilliseconds(400));
+        reader.ConsumeSerialBytes(Encoding.ASCII.GetBytes(Rmc() + "\n"));
+        time.Advance(GpsTimeReader.StaleAfter - TimeSpan.FromMilliseconds(401));
+        Assert.IsTrue(reader.GetStatus().CanVerifyClock);
+
+        time.Advance(TimeSpan.FromMilliseconds(1));
+        var gps = reader.GetStatus();
+        Assert.AreEqual(GpsSignalState.Available, gps.State);
+        Assert.AreEqual(GpsSignalState.Stale, gps.PpsState);
+        Assert.IsNull(gps.PpsOffset);
+        Assert.IsFalse(gps.CanVerifyClock);
+    }
+
     private static GpsTimeReader CreateReader(TimeProvider time)
         => new(time, new GpsUtcWindow(new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero),
             new DateTimeOffset(2027, 12, 31, 23, 59, 59, TimeSpan.Zero)));
@@ -727,7 +760,12 @@ public sealed class GpsTimeReaderTests
         private readonly ExposureTestTimeProvider _inner = new(start);
         private TimeSpan _wallOffset;
         public override long TimestampFrequency => _inner.TimestampFrequency;
-        public override DateTimeOffset GetUtcNow() => _inner.GetUtcNow() + _wallOffset;
+        internal TimeSpan UtcReadDuration { get; set; }
+        public override DateTimeOffset GetUtcNow()
+        {
+            if (UtcReadDuration > TimeSpan.Zero) Advance(UtcReadDuration);
+            return _inner.GetUtcNow() + _wallOffset;
+        }
         public override long GetTimestamp() => _inner.GetTimestamp();
         public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
             => _inner.CreateTimer(callback, state, dueTime, period);

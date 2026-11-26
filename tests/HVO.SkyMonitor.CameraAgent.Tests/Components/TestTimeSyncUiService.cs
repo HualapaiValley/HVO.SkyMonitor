@@ -16,6 +16,9 @@ internal sealed class TestTimeSyncUiService : ICameraAgentTimeSyncUiService
         (servers, _) => ValueTask.FromResult(OperatorUiResult<TimeSyncServersSetting>.Success(
             new(servers, servers.Count == 0, "version-2", false)));
 
+    internal Func<GpsReceiverSettings, ValueTask<OperatorUiResult<GpsReceiverSettings>>> SaveGpsHandler { get; set; } =
+        receiver => ValueTask.FromResult(OperatorUiResult<GpsReceiverSettings>.Success(receiver));
+
     internal int Reads { get; private set; }
 
     internal int Checks { get; private set; }
@@ -28,7 +31,7 @@ internal sealed class TestTimeSyncUiService : ICameraAgentTimeSyncUiService
         GpsReceiverSettings receiver, string expectedVersion, CancellationToken cancellationToken)
     {
         GpsSaves.Add((receiver, expectedVersion));
-        return ValueTask.FromResult(OperatorUiResult<GpsReceiverSettings>.Success(receiver));
+        return SaveGpsHandler(receiver);
     }
 
     public ValueTask<OperatorUiResult<TimeSyncView>> GetAsync(CancellationToken cancellationToken)

@@ -10,13 +10,13 @@ public enum ClockSyncStatus
     /// <summary>No round has completed since checking was turned on.</summary>
     NotMeasured,
 
-    /// <summary>A server answered and the offset is within the tolerance.</summary>
+    /// <summary>A time source measured the clock within tolerance.</summary>
     InTolerance,
 
     /// <summary>No server answered, but the host's time service reports the clock synchronized.</summary>
     HostSynchronized,
 
-    /// <summary>A server answered and the offset exceeds the tolerance.</summary>
+    /// <summary>A time source measured the clock outside tolerance.</summary>
     Drifting,
 
     /// <summary>The offset is within the tolerance, but the host's time service reports the clock unsynchronized.</summary>

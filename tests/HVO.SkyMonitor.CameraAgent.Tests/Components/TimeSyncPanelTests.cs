@@ -486,7 +486,7 @@ public sealed class TimeSyncPanelTests
         Assert.IsTrue(cut.Find("#time-set-clock").HasAttribute("disabled"));
     }
 
-    private static TestTimeSyncUiService Configure(BunitContext context)
+    internal static TestTimeSyncUiService Configure(BunitContext context)
     {
         context.JSInterop.Mode = JSRuntimeMode.Loose;
         var service = new TestTimeSyncUiService();
