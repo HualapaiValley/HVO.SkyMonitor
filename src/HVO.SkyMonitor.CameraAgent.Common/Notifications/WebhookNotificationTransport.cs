@@ -146,6 +146,12 @@ public sealed class WebhookNotificationTransport(
                 ChannelName, NotificationReasonCodes.InvalidConfiguration, transient: false, Elapsed(started));
         }
 
+        if (!OperatorNotificationValidation.TryGetIdnHost(uri!, out var idnHost))
+        {
+            return OperatorNotificationDeliveryResult.Failure(
+                ChannelName, NotificationReasonCodes.InvalidConfiguration, transient: false, Elapsed(started));
+        }
+
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(request.Timeout > TimeSpan.Zero
             ? request.Timeout
@@ -154,21 +160,21 @@ public sealed class WebhookNotificationTransport(
 
         try
         {
-            var resolution = await ResolveValidatedAddressesAsync(uri.IdnHost, request.AllowPrivateNetwork, ct).ConfigureAwait(false);
+            var resolution = await ResolveValidatedAddressesAsync(idnHost, request.AllowPrivateNetwork, ct).ConfigureAwait(false);
             if (resolution.FailureReasonCode is not null)
             {
                 return OperatorNotificationDeliveryResult.Failure(
                     ChannelName, resolution.FailureReasonCode, resolution.TransientFailure, Elapsed(started));
             }
 
-            var requestBytes = FormatHttp11PostRequest(uri, pathAndQuery, wirePayload.ContentType, wirePayload.BodyBytes, extraHeaders);
+            var requestBytes = FormatHttp11PostRequest(uri!, idnHost, pathAndQuery, wirePayload.ContentType, wirePayload.BodyBytes, extraHeaders);
 
-            var rawStream = await ConnectFirstAddressAsync(resolution.Addresses, uri.Port, ct).ConfigureAwait(false);
+            var rawStream = await ConnectFirstAddressAsync(resolution.Addresses, uri!.Port, ct).ConfigureAwait(false);
             await using (rawStream.ConfigureAwait(false))
             {
                 if (string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
                 {
-                    var sslStream = await UpgradeToTlsAsync(rawStream, uri.IdnHost, ct).ConfigureAwait(false);
+                    var sslStream = await UpgradeToTlsAsync(rawStream, idnHost, ct).ConfigureAwait(false);
                     await using (sslStream.ConfigureAwait(false))
                     {
                         await sslStream.WriteAsync(requestBytes, ct).ConfigureAwait(false);
@@ -538,12 +544,13 @@ public sealed class WebhookNotificationTransport(
 
     private static byte[] FormatHttp11PostRequest(
         Uri uri,
+        string idnHost,
         string pathAndQuery,
         string contentType,
         byte[] bodyBytes,
         List<KeyValuePair<string, string>> extraHeaders)
     {
-        var host = uri.HostNameType == UriHostNameType.IPv6 ? $"[{uri.IdnHost}]" : uri.IdnHost;
+        var host = uri.HostNameType == UriHostNameType.IPv6 ? $"[{idnHost}]" : idnHost;
         var hostHeader = uri.IsDefaultPort
             ? host
             : string.Create(CultureInfo.InvariantCulture, $"{host}:{uri.Port}");

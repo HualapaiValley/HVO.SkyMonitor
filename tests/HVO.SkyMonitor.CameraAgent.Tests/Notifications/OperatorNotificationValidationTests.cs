@@ -500,6 +500,47 @@ public sealed class OperatorNotificationValidationTests
         Assert.IsFalse(OperatorNotificationValidation.IsPrivateOrLoopbackSmtpAddress(IPAddress.Parse("fd00:ec2::254")));
     }
 
+    [TestMethod]
+    public async Task InvalidIdnWebhookHost_IsRejectedCleanlyWithoutThrowingUriFormatExceptionAsync()
+    {
+        const string invalidIdnUrl = "https://bad\u200Dhost.example.test/alerts";
+
+        Assert.IsFalse(OperatorNotificationValidation.TryValidateWebhookUrl(
+            invalidIdnUrl,
+            allowPrivateNetwork: false,
+            ProductionPolicy,
+            out var parsed,
+            out var reasonCode,
+            out var problem));
+        Assert.IsNull(parsed);
+        Assert.AreEqual(NotificationReasonCodes.InvalidConfiguration, reasonCode);
+        Assert.IsNotNull(problem);
+
+        Assert.IsNull(OperatorNotificationRedactor.FormatEndpointHost(invalidIdnUrl));
+        Assert.IsNull(ConfigurationOperatorNotificationConfigProvider.FormatWebhookOriginKey(invalidIdnUrl));
+        Assert.IsFalse(ConfigurationOperatorNotificationConfigProvider.HasMatchingWebhookOrigin(invalidIdnUrl, invalidIdnUrl));
+
+        using var transport = new WebhookNotificationTransport(ProductionPolicy, TimeProvider.System);
+        var delivery = await transport.SendAsync(new WebhookDeliveryRequest(
+            invalidIdnUrl,
+            WebhookPayloadFormat.Generic,
+            WebhookNotificationOptions.DefaultAuthHeaderName,
+            null,
+            false,
+            null,
+            null,
+            new OperatorNotificationEvent(
+                OperatorNotificationEventKind.DailyHeartbeat,
+                OperatorNotificationSeverity.Info,
+                "idn-test",
+                "IDN test",
+                "Invalid IDN host should fail cleanly.",
+                DateTimeOffset.UtcNow),
+            1, 0, true, TimeSpan.FromSeconds(5)), CancellationToken.None).ConfigureAwait(false);
+        Assert.IsFalse(delivery.Succeeded);
+        Assert.AreEqual(NotificationReasonCodes.InvalidConfiguration, delivery.ReasonCode);
+    }
+
     private static string FindRepositoryRoot()
     {
         var current = new DirectoryInfo(AppContext.BaseDirectory);

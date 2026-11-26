@@ -229,21 +229,23 @@ public static partial class OperatorNotificationValidation
             return false;
         }
 
-        if (string.IsNullOrWhiteSpace(parsed.Host))
+        if (string.IsNullOrWhiteSpace(parsed.Host) || !TryGetIdnHost(parsed, out var idnHost))
         {
             reasonCode = NotificationReasonCodes.InvalidConfiguration;
             problem = "Webhook URL must include a valid host name.";
             return false;
         }
 
-        if (IsBlockedWebhookHostName(parsed.Host, policy.AllowLoopbackForTesting))
+        if (IsBlockedWebhookHostName(parsed.Host, policy.AllowLoopbackForTesting) ||
+            IsBlockedWebhookHostName(idnHost, policy.AllowLoopbackForTesting))
         {
             reasonCode = NotificationReasonCodes.SsrfBlocked;
             problem = "Webhook target host is blocked by outbound network safety policy.";
             return false;
         }
 
-        if (IPAddress.TryParse(parsed.Host.Trim('[', ']'), out var literalIp) &&
+        if ((IPAddress.TryParse(parsed.Host.Trim('[', ']'), out var literalIp) ||
+             IPAddress.TryParse(idnHost.Trim('[', ']'), out literalIp)) &&
             IsBlockedWebhookAddress(literalIp, allowPrivateNetwork, policy.AllowLoopbackForTesting))
         {
             reasonCode = NotificationReasonCodes.SsrfBlocked;
@@ -253,6 +255,27 @@ public static partial class OperatorNotificationValidation
 
         uri = parsed;
         return true;
+    }
+
+    internal static bool TryGetIdnHost(Uri uri, out string idnHost)
+    {
+        ArgumentNullException.ThrowIfNull(uri);
+        try
+        {
+            var value = uri.IdnHost;
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                idnHost = string.Empty;
+                return false;
+            }
+            idnHost = value;
+            return true;
+        }
+        catch (Exception ex) when (ex is UriFormatException or ArgumentException)
+        {
+            idnHost = string.Empty;
+            return false;
+        }
     }
 
     public static bool IsBlockedWebhookHostName(string host, bool allowLoopbackForTesting = false)
@@ -760,13 +783,12 @@ public static partial class OperatorNotificationRedactor
         Justification = "Parses raw stored URL text safely to extract only scheme and host for redacted display.")]
     public static string? FormatEndpointHost(string? rawUrl)
     {
-        if (string.IsNullOrWhiteSpace(rawUrl) || !Uri.TryCreate(rawUrl, UriKind.Absolute, out var uri))
+        if (string.IsNullOrWhiteSpace(rawUrl) || !Uri.TryCreate(rawUrl.Trim(), UriKind.Absolute, out var uri))
         {
             return null;
         }
         var scheme = uri.Scheme;
-        var host = uri.IdnHost;
-        if (string.IsNullOrWhiteSpace(host))
+        if (!OperatorNotificationValidation.TryGetIdnHost(uri, out var host))
         {
             return null;
         }

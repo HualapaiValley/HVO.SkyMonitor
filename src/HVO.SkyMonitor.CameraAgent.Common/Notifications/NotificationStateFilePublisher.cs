@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Text;
@@ -5,6 +6,24 @@ using System.Text.Json;
 using HVO.SkyMonitor.Storage.FileSystem;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Notifications;
+
+/// <summary>Raised when an existing protected state file exceeds the maximum allowed size immediately before replacement.</summary>
+public sealed class NotificationStoreOversizedTargetException : IOException
+{
+    public NotificationStoreOversizedTargetException()
+    {
+    }
+
+    public NotificationStoreOversizedTargetException(string message)
+        : base(message)
+    {
+    }
+
+    public NotificationStoreOversizedTargetException(string message, Exception innerException)
+        : base(message, innerException)
+    {
+    }
+}
 
 /// <summary>Result classification when inspecting a protected notification state file path.</summary>
 public enum NotificationPathStatus
@@ -38,6 +57,18 @@ public static class NotificationStateFilePublisher
 
     private const UnixFileMode RestrictedFileMode =
         UnixFileMode.UserRead | UnixFileMode.UserWrite;
+
+    private const int MaximumVerifiedDirectoryCacheEntries = 4096;
+
+    private static readonly StringComparer DirectoryPathComparer =
+        OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+
+    // Tracks newly created directories whose parent directory entry has not yet completed DurableSync.Directory.
+    // Value is true when the directory's parent pre-existed and may be a validated symlinked ancestor.
+    private static readonly ConcurrentDictionary<string, bool> PendingParentSyncDirectories = new(DirectoryPathComparer);
+
+    // Tracks directories whose parent directory entry has been durably verified/synced in this process.
+    private static readonly ConcurrentDictionary<string, byte> VerifiedParentSyncedDirectories = new(DirectoryPathComparer);
 
     /// <summary>
     /// Walks and verifies the ancestor directory chain top-down, then inspects <paramref name="directoryPath"/> and
@@ -279,19 +310,56 @@ public static class NotificationStateFilePublisher
         }
 
         var missingDirectories = CollectMissingDirectoriesAndValidateAncestors(fullDirectory);
-        var createdDirectories = new List<string>(missingDirectories.Count);
-        foreach (var missingDirectory in missingDirectories)
+        for (var i = 0; i < missingDirectories.Count; i++)
         {
+            var missingDirectory = missingDirectories[i];
+            var allowSymlinkedParent = i == 0;
             VerifyPathIsNotSymlink(missingDirectory);
-            Directory.CreateDirectory(missingDirectory);
+            // Record pending parent sync BEFORE creating the directory so any retry or concurrent publisher
+            // observing the newly created directory on disk still syncs its parent before acknowledging.
+            VerifiedParentSyncedDirectories.TryRemove(missingDirectory, out _);
+            PendingParentSyncDirectories[missingDirectory] = allowSymlinkedParent;
+            try
+            {
+                if (OperatingSystem.IsWindows())
+                {
+                    Directory.CreateDirectory(missingDirectory);
+                }
+                else
+                {
+                    Directory.CreateDirectory(missingDirectory, RestrictedDirectoryMode);
+                }
+            }
+            catch
+            {
+                if (!Directory.Exists(missingDirectory) && !File.Exists(missingDirectory))
+                {
+                    PendingParentSyncDirectories.TryRemove(missingDirectory, out _);
+                }
+                throw;
+            }
+
             VerifyPathIsNotSymlink(missingDirectory);
-            createdDirectories.Add(missingDirectory);
+            if (!OperatingSystem.IsWindows())
+            {
+                File.SetUnixFileMode(missingDirectory, RestrictedDirectoryMode);
+            }
         }
 
-        VerifyPathIsNotSymlink(fullDirectory);
-        if (!OperatingSystem.IsWindows())
+        var chainBottomUp = GetSelfAndAncestorsBottomUp(fullDirectory);
+        // Re-enforce 0700 + no-symlink on any pending newly-created directory in the chain (for example if an earlier
+        // attempt was interrupted after mkdir before chmod) as well as the leaf state directory itself.
+        for (var i = chainBottomUp.Count - 1; i >= 0; i--)
         {
-            File.SetUnixFileMode(fullDirectory, RestrictedDirectoryMode);
+            var candidate = chainBottomUp[i];
+            if (i == 0 || PendingParentSyncDirectories.ContainsKey(candidate))
+            {
+                VerifyPathIsNotSymlink(candidate);
+                if (!OperatingSystem.IsWindows())
+                {
+                    File.SetUnixFileMode(candidate, RestrictedDirectoryMode);
+                }
+            }
         }
 
         try
@@ -303,16 +371,80 @@ public static class NotificationStateFilePublisher
             throw TranslateFault(ex);
         }
 
-        // Fsync the target directory itself, then walk every newly created directory bottom-up and fsync its parent
-        // directory so newly created directory entries are crash-durable before reporting success.
+        // Fsync the target directory itself, then walk bottom-up and fsync the parent of EVERY directory whose
+        // parent entry has not yet been durably verified/synced in this process (covering interrupted retries and
+        // concurrent publishers targeting newly created directory chains).
         SyncDirectory(fullDirectory, allowSymlinkedAncestor: false, onDirectorySynced);
-        for (var i = createdDirectories.Count - 1; i >= 0; i--)
+        for (var i = 0; i < chainBottomUp.Count; i++)
         {
-            var parent = Path.GetDirectoryName(createdDirectories[i]);
+            var current = chainBottomUp[i];
+            var isPending = PendingParentSyncDirectories.TryGetValue(current, out var allowSymlinkedParent);
+            var isUnverifiedTarget = i == 0 && !VerifiedParentSyncedDirectories.ContainsKey(current);
+            if (!isPending && !isUnverifiedTarget)
+            {
+                continue;
+            }
+
+            var parent = Path.GetDirectoryName(current);
             if (!string.IsNullOrEmpty(parent))
             {
-                SyncDirectory(parent, allowSymlinkedAncestor: i == 0, onDirectorySynced);
+                SyncDirectory(parent, allowSymlinkedAncestor: isPending ? allowSymlinkedParent : true, onDirectorySynced);
             }
+
+            MarkDirectoryParentVerifiedSynced(current);
+            PendingParentSyncDirectories.TryRemove(current, out _);
+        }
+    }
+
+    private static List<string> GetSelfAndAncestorsBottomUp(string fullPath)
+    {
+        var chain = new List<string> { fullPath };
+        var current = Path.GetDirectoryName(fullPath);
+        while (!string.IsNullOrEmpty(current))
+        {
+            chain.Add(current);
+            var parent = Path.GetDirectoryName(current);
+            if (string.Equals(parent, current, StringComparison.Ordinal))
+            {
+                break;
+            }
+            current = parent;
+        }
+        return chain;
+    }
+
+    private static void MarkDirectoryParentVerifiedSynced(string directoryPath)
+    {
+        if (VerifiedParentSyncedDirectories.Count >= MaximumVerifiedDirectoryCacheEntries &&
+            !VerifiedParentSyncedDirectories.ContainsKey(directoryPath))
+        {
+            VerifiedParentSyncedDirectories.Clear();
+        }
+        VerifiedParentSyncedDirectories[directoryPath] = 0;
+    }
+
+    /// <summary>
+    /// Checks filesystem metadata (without opening the file) to determine whether <paramref name="filePath"/> is an
+    /// existing non-symlink regular file whose length strictly exceeds <paramref name="maxBytes"/>.
+    /// </summary>
+    public static bool IsRegularFileExceedingSize(string filePath, int maxBytes)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxBytes);
+        try
+        {
+            var info = new FileInfo(filePath);
+            if (!info.Exists ||
+                info.LinkTarget is not null ||
+                (info.Attributes & (FileAttributes.ReparsePoint | FileAttributes.Directory | FileAttributes.Device)) != 0)
+            {
+                return false;
+            }
+            return info.Length > maxBytes;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
         }
     }
 
@@ -599,7 +731,30 @@ public static class NotificationStateFilePublisher
         ReadOnlyMemory<byte> content,
         CancellationToken cancellationToken,
         Action<string>? beforeRename = null)
-        => PublishRestrictedAtomicAsync(directoryPath, fileName, content, beforeRename, onDirectorySynced: null, cancellationToken);
+        => PublishRestrictedAtomicAsync(
+            directoryPath,
+            fileName,
+            content,
+            beforeRename,
+            onDirectorySynced: null,
+            maxExistingTargetBytes: null,
+            cancellationToken);
+
+    public static ValueTask PublishRestrictedAtomicAsync(
+        string directoryPath,
+        string fileName,
+        ReadOnlyMemory<byte> content,
+        Action<string>? beforeRename,
+        Action<string>? onDirectorySynced,
+        CancellationToken cancellationToken)
+        => PublishRestrictedAtomicAsync(
+            directoryPath,
+            fileName,
+            content,
+            beforeRename,
+            onDirectorySynced,
+            maxExistingTargetBytes: null,
+            cancellationToken);
 
     public static async ValueTask PublishRestrictedAtomicAsync(
         string directoryPath,
@@ -607,6 +762,7 @@ public static class NotificationStateFilePublisher
         ReadOnlyMemory<byte> content,
         Action<string>? beforeRename,
         Action<string>? onDirectorySynced,
+        int? maxExistingTargetBytes,
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(directoryPath);
@@ -621,10 +777,7 @@ public static class NotificationStateFilePublisher
         {
             root = PhysicalRoot.Open(fullDirectory);
             finalPath = root.Resolve(fileName);
-            if (File.Exists(finalPath) || Directory.Exists(finalPath))
-            {
-                DurableSync.RequireRegularFile(finalPath);
-            }
+            VerifyExistingTargetForReplace(finalPath, maxExistingTargetBytes);
         }
         catch (FileSystemFaultException ex)
         {
@@ -673,6 +826,8 @@ public static class NotificationStateFilePublisher
 
             try
             {
+                // Re-verify existing target immediately before atomic replace to block external growth or substitution.
+                VerifyExistingTargetForReplace(finalPath, maxExistingTargetBytes);
                 AtomicPublisher.PublishPrepared(root, tempPath, finalPath, PublishMode.Replace);
                 root.Verify(finalPath, "publish-notification-state");
                 if (!OperatingSystem.IsWindows())
@@ -699,6 +854,20 @@ public static class NotificationStateFilePublisher
                 {
                     // Best-effort temporary cleanup.
                 }
+            }
+        }
+    }
+
+    private static void VerifyExistingTargetForReplace(string finalPath, int? maxExistingTargetBytes)
+    {
+        VerifyPathIsNotSymlink(finalPath);
+        if (File.Exists(finalPath) || Directory.Exists(finalPath))
+        {
+            DurableSync.RequireRegularFile(finalPath);
+            if (maxExistingTargetBytes.HasValue && IsRegularFileExceedingSize(finalPath, maxExistingTargetBytes.Value))
+            {
+                throw new NotificationStoreOversizedTargetException(
+                    "Persisted operator notification store exceeds the maximum allowed size.");
             }
         }
     }

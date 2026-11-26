@@ -40,6 +40,8 @@ public sealed class NotificationsPageTests
             Assert.AreEqual(string.Empty, cut.Find("#webhook-auth-token").GetAttribute("value") ?? string.Empty);
             Assert.IsNotNull(cut.Find("#notifications-history-empty"));
             Assert.IsNull(cut.Find("fieldset.notifications-fieldset").GetAttribute("disabled"));
+            StringAssert.Contains(cut.Markup, "restores any host-configured webhook URL and host token", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "transport security mode", StringComparison.Ordinal);
         });
     }
 

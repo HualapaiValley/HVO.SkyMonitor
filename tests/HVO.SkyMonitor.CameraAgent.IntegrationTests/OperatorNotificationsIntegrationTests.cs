@@ -299,6 +299,66 @@ public sealed class OperatorNotificationsIntegrationTests
     }
 
     [TestMethod]
+    public async Task InvalidIdnWebhookHostInHostConfigReturns200OnGetAndAllowsCorrectivePutRecoveryAsync()
+    {
+        using var fixture = new CameraAgentIntegrationFixture();
+        await fixture.InitializeAsync(settings: new Dictionary<string, string?>
+        {
+            ["CameraAgent:Notifications:Enabled"] = "true",
+            ["CameraAgent:Notifications:Webhook:Enabled"] = "true",
+            ["CameraAgent:Notifications:Webhook:Url"] = "https://bad\u200Dhost.example.test/alerts",
+            ["CameraAgent:Notifications:Webhook:AuthToken"] = "host-token"
+        }).ConfigureAwait(false);
+
+        string readWriteKey;
+        using (var scope = fixture.CreateCameraAgentScope())
+        {
+            var users = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+            var owner = (await users.FindByEmailAsync("owner@cameraagent.integration").ConfigureAwait(false))!;
+            var keys = scope.ServiceProvider.GetRequiredService<CameraAgentApiKeyStore>();
+            readWriteKey = (await keys.CreateAsync(owner.Id, "invalid-idn-recovery", ApiKeyAccessLevel.ReadWrite, CancellationToken.None).ConfigureAwait(false)).Token!;
+        }
+
+        using var rwClient = CreateApiKeyClient(fixture, readWriteKey);
+
+        string version;
+        using (var getResp = await rwClient.GetAsync(new Uri(NotificationsPath, UriKind.Relative)).ConfigureAwait(false))
+        {
+            var getBody = await getResp.Content.ReadAsStringAsync().ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.OK, getResp.StatusCode, getBody);
+            using var doc = JsonDocument.Parse(getBody);
+            var cfg = doc.RootElement.GetProperty("configuration");
+            var status = doc.RootElement.GetProperty("status");
+            Assert.IsFalse(cfg.GetProperty("storeCorrupt").GetBoolean());
+            Assert.IsTrue(cfg.GetProperty("canPersist").GetBoolean());
+            Assert.AreEqual(NotificationReasonCodes.InvalidConfiguration, status.GetProperty("configurationErrorReasonCode").GetString());
+            Assert.AreEqual(JsonValueKind.Null, cfg.GetProperty("secrets").GetProperty("webhookEndpointHost").ValueKind);
+            version = cfg.GetProperty("version").GetString()!;
+            Assert.IsFalse(string.IsNullOrWhiteSpace(version));
+        }
+
+        // Corrective PUT replacing the invalid IDN URL succeeds with 200 OK (not 503!).
+        using (var putResp = await rwClient.PutAsJsonAsync(new Uri(NotificationsPath, UriKind.Relative), new
+        {
+            expectedVersion = version,
+            options = new
+            {
+                enabled = true,
+                webhook = new { enabled = true }
+            },
+            webhookUrl = "https://hooks.example.test/recovered",
+            webhookAuthToken = "recovered-token"
+        }).ConfigureAwait(false))
+        {
+            var putBody = await putResp.Content.ReadAsStringAsync().ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.OK, putResp.StatusCode, putBody);
+            using var doc = JsonDocument.Parse(putBody);
+            Assert.AreEqual("https://hooks.example.test", doc.RootElement.GetProperty("configuration").GetProperty("secrets").GetProperty("webhookEndpointHost").GetString());
+            Assert.AreEqual(JsonValueKind.Null, doc.RootElement.GetProperty("status").GetProperty("configurationErrorReasonCode").ValueKind);
+        }
+    }
+
+    [TestMethod]
     [DoNotParallelize]
     public async Task DamagedOrUnreadableStorePathSuspendsWithoutHostFallbackReportsDegradedAndSupportsResetRecoveryAsync()
     {
