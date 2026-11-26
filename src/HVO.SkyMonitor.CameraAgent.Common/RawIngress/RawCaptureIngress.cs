@@ -283,6 +283,7 @@ internal sealed partial class RawCaptureIngress :
                     health.QuarantineCount,
                     health.QuarantineBytes,
                     held.Oldest);
+                CheckSiloPressure(held.Count, held.Bytes, held.LargestAdmissionBytes);
                 _state.SetProjectedSceneBacklog(projectedSceneBacklog);
                 if (baseAvailability == RawIngressAvailability.Unhealthy)
                 {
@@ -751,6 +752,8 @@ internal sealed partial class RawCaptureIngress :
             _logger.RawIngressSqliteSucceeded("commit");
             var held = await _journal.ReadHeldTotalsAsync(CancellationToken.None).ConfigureAwait(false);
             _state.UpdateBaseHeldData(held.Count, held.Bytes, held.Oldest);
+            CheckSiloPressure(held.Count, held.Bytes,
+                outcome == RawIngressOutcome.Committed ? checked(entry.PayloadLength + entry.ManifestJson.LongLength + 64) : 0);
             var prior = _state.GetBaseSnapshot();
             var receipt = new RawCaptureReceipt(
                 outcome,
@@ -1065,7 +1068,7 @@ internal sealed partial class RawCaptureIngress :
         {
             return;
         }
-        var stagingPressure = Interlocked.Read(ref _refusedSiloStagingBytes) > 0;
+        var stagingPressure = SiloPressureRelease is not null;
         var degraded = underPressure || stagingPressure || baseline.QuarantineCount > 0 ||
                        baseline.Reason is "index-projection-failed" or "reconciliation-held";
         _state.UpdateBaseStatus(

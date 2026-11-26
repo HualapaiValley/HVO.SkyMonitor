@@ -11,7 +11,10 @@ internal sealed partial class RawCaptureIngress
     internal bool SiloAdmissionsReady => Volatile.Read(ref _initialized);
 
     private const string SiloIntentsDirectory = "raw-admission-intents";
-    private long _refusedSiloStagingBytes;
+    private TaskCompletionSource? _siloPressureRelease;
+    private long _nextSiloAdmissionBytes;
+
+    internal Task? SiloPressureRelease => Volatile.Read(ref _siloPressureRelease)?.Task;
 
     private sealed record SiloRawIntent(Guid ArtifactId, DateTimeOffset ExposureStartedUtc);
 
@@ -76,10 +79,35 @@ internal sealed partial class RawCaptureIngress
         }
         catch (CaptureLaneBackpressureException)
         {
-            Interlocked.Exchange(ref _refusedSiloStagingBytes, bytes);
-            _state.UpdateBaseStatus(RawIngressAvailability.Degraded, "silo-staging-pressure");
+            Interlocked.Exchange(ref _nextSiloAdmissionBytes, bytes);
+            HoldSiloPressure();
             throw;
         }
+    }
+
+    private void CheckSiloPressure(long heldCount, long heldBytes, long observedAdmissionBytes = 0)
+    {
+        if (_siloSettings is null) return;
+        if (observedAdmissionBytes > 0) Interlocked.Exchange(ref _nextSiloAdmissionBytes, observedAdmissionBytes);
+        var nextBytes = Math.Max(1, Interlocked.Read(ref _nextSiloAdmissionBytes));
+        if (heldCount >= _siloSettings.MaximumStagedFiles / 2 || nextBytes > _siloSettings.MaximumStagedBytes - heldBytes)
+        {
+            HoldSiloPressure();
+        }
+        else if (Interlocked.Exchange(ref _siloPressureRelease, null) is { } release)
+        {
+            if (_state.GetBaseSnapshot().Reason == "silo-staging-pressure")
+                ReportPressure(underPressure: false);
+            release.TrySetResult();
+        }
+    }
+
+    private void HoldSiloPressure()
+    {
+        if (SiloPressureRelease is null)
+            Interlocked.CompareExchange(ref _siloPressureRelease, new(TaskCreationOptions.RunContinuationsAsynchronously), null);
+        if (_state.GetBaseSnapshot().Reason == "accepting")
+            _state.UpdateBaseStatus(RawIngressAvailability.Degraded, "silo-staging-pressure");
     }
 
     private async ValueTask<IReadOnlyList<RawIngressRetentionHold>> ReadRetentionHoldsAsync(CancellationToken cancellationToken)
@@ -115,15 +143,26 @@ internal sealed partial class RawCaptureIngress
             if (outcome.State != SiloStagedState.Visible || outcome.CatalogState != "visible")
                 return outcome.BlockedCode ?? "silo-admission-publication-pending";
             await _journal.SettleSiloAdmissionAsync(entry.CaptureId, entry.ManifestSha256, cancellationToken).ConfigureAwait(false);
+            await RefreshSiloPressureAsync(cancellationToken).ConfigureAwait(false);
+        }
+        if (entries.Count == 0 && SiloPressureRelease is not null)
+            await RefreshSiloPressureAsync(cancellationToken).ConfigureAwait(false);
+        return null;
+    }
+
+    private async ValueTask RefreshSiloPressureAsync(CancellationToken cancellationToken)
+    {
+        await _acceptGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
             var held = await _journal.ReadHeldTotalsAsync(cancellationToken).ConfigureAwait(false);
             _state.UpdateBaseHeldData(held.Count, held.Bytes, held.Oldest);
-            var refused = Interlocked.Read(ref _refusedSiloStagingBytes);
-            if (refused > 0 && held.Count < _siloSettings!.MaximumStagedFiles / 2 && refused <= _siloSettings.MaximumStagedBytes - held.Bytes &&
-                Interlocked.CompareExchange(ref _refusedSiloStagingBytes, 0, refused) == refused &&
-                _state.GetBaseSnapshot().Reason == "silo-staging-pressure")
-                ReportPressure(underPressure: false);
+            CheckSiloPressure(held.Count, held.Bytes);
         }
-        return null;
+        finally
+        {
+            _acceptGate.Release();
+        }
     }
 
     private static SiloGroupDraft CreateSiloDraft(RawIngressJournalEntry entry, ArtifactManifestV2 manifest)

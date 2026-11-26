@@ -673,12 +673,13 @@ internal sealed partial class SqliteRawCaptureJournal(
     }
 
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The storage layout only selects between two constant queries.")]
-    internal async Task<(long Count, long Bytes, DateTimeOffset? Oldest)> ReadHeldTotalsAsync(CancellationToken cancellationToken)
+    internal async Task<(long Count, long Bytes, DateTimeOffset? Oldest, long LargestAdmissionBytes)> ReadHeldTotalsAsync(
+        CancellationToken cancellationToken)
     {
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.CommandText = usesSilo ? """
-            SELECT COUNT(*), COALESCE(SUM(pending.staged_bytes), 0), MIN(raw.durable_ingress_unix_ms)
+            SELECT COUNT(*), COALESCE(SUM(pending.staged_bytes), 0), MIN(raw.durable_ingress_unix_ms), COALESCE(MAX(pending.staged_bytes), 0)
             FROM silo_raw_admissions pending JOIN raw_captures raw ON raw.raw_capture_row_id = pending.raw_capture_row_id;
             """ : """
             SELECT COUNT(*), COALESCE(SUM(payload_length), 0), MIN(durable_ingress_unix_ms)
@@ -695,7 +696,8 @@ internal sealed partial class SqliteRawCaptureJournal(
         return (
             reader.GetInt64(0),
             reader.GetInt64(1),
-            oldest);
+            oldest,
+            usesSilo ? reader.GetInt64(3) : 0);
     }
 
     /// <summary>

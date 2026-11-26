@@ -555,14 +555,16 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
         }
     }
 
+    private Task? StoragePressureRelease => (_rawCaptureIngress as RawCaptureIngress)?.SiloPressureRelease;
+
     private bool TryEnter()
     {
-        if (Volatile.Read(ref _gateState) != GateRunning || _lifecycleControls?.AdmissionHeld == true)
+        if (Volatile.Read(ref _gateState) != GateRunning || _lifecycleControls?.AdmissionHeld == true || StoragePressureRelease is not null)
         {
             return false;
         }
         Interlocked.Increment(ref _inFlight);
-        if (Volatile.Read(ref _gateState) == GateRunning && _lifecycleControls?.AdmissionHeld != true)
+        if (Volatile.Read(ref _gateState) == GateRunning && _lifecycleControls?.AdmissionHeld != true && StoragePressureRelease is null)
         {
             return true;
         }
@@ -586,6 +588,11 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
             }
             if (_lifecycleControls?.AdmissionHeld == true)
                 await _lifecycleControls.WaitForAdmissionReleaseAsync(cancellationToken).ConfigureAwait(false);
+            if (StoragePressureRelease is { } pressureRelease)
+            {
+                await pressureRelease.WaitAsync(cancellationToken).ConfigureAwait(false);
+                continue;
+            }
             var signal = Volatile.Read(ref _runningSignal).Task;
             if (TryEnter())
             {

@@ -12,6 +12,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Silo.S3;
 using HVO.SkyMonitor.CameraAgent.IntegrationTests.Infrastructure;
@@ -55,6 +56,8 @@ public sealed partial class SiloStockStoreTests
         var writer = await CreateWriterAsync(container, binding, token).ConfigureAwait(false);
         await InstallBindingAsync(admin, binding, writer.Access, token).ConfigureAwait(false);
         var settings = InstalledSettings(binding, Endpoint(container), writer, pause, lifecycleToken);
+        if (!centered)
+            settings["CameraAgent:Silo:MaximumStagedFiles"] = "2";
         var root = Directory.CreateTempSubdirectory("silo-capture-").FullName;
         var fault = new InterruptManifestPublication();
         var priorKeyDirectory = Environment.GetEnvironmentVariable(DeploymentKeyPerFile.DirectoryVariable);
@@ -77,6 +80,19 @@ public sealed partial class SiloStockStoreTests
             var storage = scope.ServiceProvider.GetRequiredService<SiloInstalledStorage>();
             var reopened = await WaitForReopenAsync(storage, pending.GroupId, pending.RevisionId, token).ConfigureAwait(false);
             Assert.IsTrue(reopened.Reopenable);
+            if (!centered)
+            {
+                if (scope.ServiceProvider.GetRequiredService<RawCaptureIngress>().SiloPressureRelease is { } pressure)
+                    await pressure.WaitAsync(token).ConfigureAwait(false);
+                var admissions = scope.ServiceProvider.GetRequiredService<CaptureAdmissionCoordinator>();
+                await admissions.InitializeAsync(token).ConfigureAwait(false);
+                Assert.AreEqual(CaptureAdmissionState.Paused, admissions.Snapshot.State);
+                await AssertExposureWaitsAsync(admissions, token).ConfigureAwait(false);
+                await admissions.ResumeAsync("operator-resume", admissions.Snapshot.Version, "operator", null, token)
+                    .ConfigureAwait(false);
+                using var admission = await admissions.EnterAsync(token).ConfigureAwait(false);
+                admission.MarkNoPublicationRequired();
+            }
             var raw = reopened.Items.Single(static item => item.Role.Kind == SiloIdentityKind.Member &&
                 item.Role.Revision != SiloArtifactStorage.RawEvidenceRevision);
             var artifactId = Guid.ParseExact(raw.Role.Id, "D");
@@ -188,7 +204,26 @@ public sealed partial class SiloStockStoreTests
         Assert.IsNull(await storage.Index.ReadPublicationAsync(pending.GroupId, pending.RevisionId, token).ConfigureAwait(false));
         var staged = await storage.State.ReadGroupAsync(pending.GroupId, pending.RevisionId, token).ConfigureAwait(false);
         Assert.AreEqual(SiloStagedState.ManifestQualified, staged?.State);
+        if (settings.ContainsKey("CameraAgent:Silo:MaximumStagedFiles"))
+        {
+            var ingress = scope.ServiceProvider.GetRequiredService<RawCaptureIngress>();
+            Assert.IsNotNull(ingress.SiloPressureRelease);
+            var admissions = scope.ServiceProvider.GetRequiredService<CaptureAdmissionCoordinator>();
+            Assert.AreEqual(CaptureAdmissionState.Running, admissions.Snapshot.State);
+            await AssertExposureWaitsAsync(admissions, token).ConfigureAwait(false);
+            await admissions.PauseAsync("operator-pause", admissions.Snapshot.Version, "operator", null, token)
+                .ConfigureAwait(false);
+        }
         return pending;
+    }
+
+    private static async Task AssertExposureWaitsAsync(CaptureAdmissionCoordinator admissions, CancellationToken token)
+    {
+        using var wait = CancellationTokenSource.CreateLinkedTokenSource(token);
+        var blocked = admissions.EnterAsync(wait.Token).AsTask();
+        Assert.IsFalse(blocked.IsCompleted);
+        await wait.CancelAsync().ConfigureAwait(false);
+        await Assert.ThrowsAsync<OperationCanceledException>(async () => await blocked.ConfigureAwait(false));
     }
 
     private static async Task<SiloReopenResult> WaitForReopenAsync(SiloInstalledStorage storage, string group, string revision,
