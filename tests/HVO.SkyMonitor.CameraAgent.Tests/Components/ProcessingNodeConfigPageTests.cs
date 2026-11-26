@@ -1270,6 +1270,59 @@ public sealed class ProcessingNodeConfigPageTests
         Assert.AreEqual("page", cut.Find(".node-switcher__item--current").GetAttribute("aria-current"));
     }
 
+    [TestMethod]
+    public void ConfigPageExactRegionalToggleReversalRestoresSwitcherLinkAfterNoOpPreview()
+    {
+        const string measurementAlias = ExposureMeasurementProducts.StepAlias;
+        const string predictionAlias = ExposureCatalogPredictionProducts.StepAlias;
+        var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
+        var pipeline = new CapturePipelineConfig(
+        [
+            new(measurementAlias, measurementAlias, 4, null, ["$raw"], Required: false, Enabled: true, Publication: durable),
+            new(RegionalStellarVisibilityProducts.StepAlias, "regional", 30, null,
+                ["$raw", measurementAlias, predictionAlias], Required: false, Enabled: true, Publication: durable),
+            new(predictionAlias, predictionAlias, DependsOn: ["$raw"], Required: false, Publication: durable)
+        ]);
+
+        using var context = new BunitContext();
+        Configure(context, pipeline);
+
+        var cut = context.Render<ProcessingNodeConfigPage>(parameters => parameters
+            .Add(static page => page.RevisionId, "rev-active")
+            .Add(static page => page.NodeId, "regional"));
+        cut.WaitForElement("#node-options-1-enabled");
+
+        // Toggling regional off and back on regenerates ExposureCatalogPrediction as an unsaved switcher item prior to preview.
+        cut.Find("#node-options-1-enabled").Change(false);
+        Assert.IsFalse(cut.FindAll(".node-switcher__item").Any(static item =>
+            item.TextContent.Contains(predictionAlias, StringComparison.Ordinal)));
+        cut.Find("#node-options-1-enabled").Change(true);
+
+        var predictionItem = cut.FindAll(".node-switcher__item")
+            .Single(static item => item.TextContent.Contains(predictionAlias, StringComparison.Ordinal));
+        Assert.AreNotEqual("A", predictionItem.TagName);
+        StringAssert.Contains(predictionItem.TextContent, "Unsaved draft", StringComparison.Ordinal);
+
+        // Previewing the exact reversal confirms no graph changes (Save disabled) and restores the source switcher link.
+        cut.Find("form").Submit();
+        StringAssert.Contains(cut.Find(".config-banner[role='status']").TextContent, "No graph changes.", StringComparison.Ordinal);
+        Assert.IsTrue(cut.Find("button.btn-primary").HasAttribute("disabled"),
+            "Save must remain disabled when preview confirms no graph changes.");
+        predictionItem = cut.FindAll(".node-switcher__item")
+            .Single(static item => item.TextContent.Contains(predictionAlias, StringComparison.Ordinal));
+        Assert.AreEqual("A", predictionItem.TagName,
+            "An exact toggle reversal confirmed unchanged by preview must restore the source-revision switcher link instead of telling the operator to save.");
+        Assert.AreEqual($"/operations/pipeline/graphs/rev-active/nodes/{predictionAlias}", predictionItem.GetAttribute("href"));
+        Assert.IsFalse(predictionItem.TextContent.Contains("Unsaved draft", StringComparison.Ordinal));
+
+        // Making a real edit afterward clears the unchanged preview and returns the regenerated stage to the unsaved badge.
+        cut.Find("#node-options-1-gridColumns").Change("6");
+        predictionItem = cut.FindAll(".node-switcher__item")
+            .Single(static item => item.TextContent.Contains(predictionAlias, StringComparison.Ordinal));
+        Assert.AreNotEqual("A", predictionItem.TagName);
+        StringAssert.Contains(predictionItem.TextContent, "Unsaved draft", StringComparison.Ordinal);
+    }
+
     private static ProcessingExecutionPagesTests.GraphUiService Configure(BunitContext context, CapturePipelineConfig pipeline)
     {
         context.JSInterop.Mode = JSRuntimeMode.Loose;

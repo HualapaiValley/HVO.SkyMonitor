@@ -9,6 +9,7 @@ using HVO.SkyMonitor.CameraAgent.Tests.Components;
 using HVO.SkyMonitor.CameraAgent.Tests.Services;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.Processing.Tests;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 
@@ -106,6 +107,7 @@ public sealed partial class DurableCaptureProcessingTests
             context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js")
                 .Setup<string>("bindLayerToggles", _ => true).SetResult("valid");
             var ui = CurrentSkyPageTests.Configure(context);
+            context.Services.AddSingleton<TimeProvider>(new CurrentSkyPageTests.ManualTimeProvider(OperatorUiTestData.Now));
             ui.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(image));
             var heldLayer = new HeldDisplayRead<CameraAgentLayeredPresentation>();
             var heldStandalone = new HeldDisplayRead<CameraAgentRetainedAstrometry>();
@@ -133,9 +135,14 @@ public sealed partial class DurableCaptureProcessingTests
                 return heldStandalone.Read();
             };
             ui.AstrometryPublicationHandler = service.ReadAstrometryPublicationStateAsync;
+            var selectedFitRendered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             ui.LatestAstrometrySelectionHandler = async (cancellation, previous, assessment) =>
             {
                 var request = Interlocked.Increment(ref historyRequests);
+                // Applying a headline advances the observation revision. Install the initial selected fit
+                // before that can supersede its verified observation on the renderer.
+                if (request == 1 && !pendingStandalone)
+                    await selectedFitRendered.Task.WaitAsync(cancellation).ConfigureAwait(false);
                 var response = await service.GetLatestAcceptedAstrometryAsync(cancellation, previous, assessment).ConfigureAwait(false);
                 if (unrelated && request == 2)
                 {
@@ -150,23 +157,37 @@ public sealed partial class DurableCaptureProcessingTests
             };
             var page = context.Render<CurrentSkyPage>();
             var timeout = TimeSpan.FromSeconds(8);
-            page.WaitForAssertion(() =>
+
+            // Resolve each event target on the renderer so background renders cannot retire its handler first.
+            Task RefreshAsync() => page.InvokeAsync(() => page.Find("button.refresh-link").ClickAsync());
+            Task CalculatePixelToSkyAsync() => page.InvokeAsync(async () =>
             {
-                StringAssert.Contains(page.Find(".latest-measured-solution").TextContent, newest.ArtifactId.ToString(), StringComparison.Ordinal);
-                Assert.AreEqual(1, standaloneReads);
-                Assert.AreEqual(pendingStandalone, page.Find(".pixel-sky-calculator button").HasAttribute("disabled"));
-            }, timeout);
+                await page.Find(".pixel-sky-calculator input").ChangeAsync("280").ConfigureAwait(true);
+                await page.FindAll(".pixel-sky-calculator input")[1].ChangeAsync("240").ConfigureAwait(true);
+                await page.Find("form.pixel-sky-calculator").SubmitAsync().ConfigureAwait(true);
+                StringAssert.Contains(page.Find(".astrometry-calculator-result").TextContent, "mean of date", StringComparison.Ordinal);
+            });
+
+            try
+            {
+                await page.WaitForAssertionAsync(() =>
+                {
+                    Assert.AreEqual(1, standaloneReads);
+                    Assert.AreEqual(pendingStandalone, page.Find(".pixel-sky-calculator button").HasAttribute("disabled"));
+                    if (pendingStandalone) Assert.IsTrue(heldStandalone.IsPending);
+                }, timeout).ConfigureAwait(false);
+            }
+            finally { selectedFitRendered.TrySetResult(); }
+            await page.WaitForAssertionAsync(() =>
+                StringAssert.Contains(page.Find(".latest-measured-solution").TextContent, newest.ArtifactId.ToString(), StringComparison.Ordinal),
+                timeout).ConfigureAwait(false);
             if (!pendingStandalone)
             {
-                await page.Find(".pixel-sky-calculator input").ChangeAsync("280").ConfigureAwait(false);
-                await page.FindAll(".pixel-sky-calculator input")[1].ChangeAsync("240").ConfigureAwait(false);
-                await page.Find("form.pixel-sky-calculator").SubmitAsync().ConfigureAwait(false);
-                StringAssert.Contains(page.Find(".astrometry-calculator-result").TextContent, "mean of date", StringComparison.Ordinal);
-                await page.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+                await CalculatePixelToSkyAsync().ConfigureAwait(false);
+                await RefreshAsync().ConfigureAwait(false);
                 Assert.IsTrue(heldLayer.IsPending);
                 if (unrelated) await historyHeld.Task.WaitAsync(timeout).ConfigureAwait(false);
             }
-            else Assert.IsTrue(heldStandalone.IsPending);
 
             var reconciler = new DerivedProductReconciler(root, store);
             var asset = Path.Combine(root, newest.PayloadRelativePath);
@@ -194,7 +215,7 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.IsFalse(File.Exists(asset));
             try
             {
-                await page.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+                await RefreshAsync().ConfigureAwait(false);
                 if (unrelated) Assert.AreEqual(2, Volatile.Read(ref historyRequests));
             }
             finally { releaseHistory.TrySetResult(); }
@@ -255,10 +276,13 @@ public sealed partial class DurableCaptureProcessingTests
                 // Release the verified original bytes through the journal's availability transition.
                 // The fresh reader still checks the complete retained lineage and hashes.
                 await store.SetOutputAvailabilityAsync(newest.OutputIdentitySha256, "Available", null, token).ConfigureAwait(false);
-                var reloadButton = page.FindAll("button.refresh-measured-evidence").SingleOrDefault();
-                if (reloadButton is not null && !reloadButton.HasAttribute("disabled"))
-                    await reloadButton.ClickAsync().ConfigureAwait(false);
-                await page.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+                await page.InvokeAsync(async () =>
+                {
+                    var reloadButton = page.FindAll("button.refresh-measured-evidence").SingleOrDefault();
+                    if (reloadButton is not null && !reloadButton.HasAttribute("disabled"))
+                        await reloadButton.ClickAsync().ConfigureAwait(true);
+                }).ConfigureAwait(false);
+                await RefreshAsync().ConfigureAwait(false);
                 page.WaitForAssertion(() =>
                 {
                     Assert.IsFalse(page.Find(".pixel-sky-calculator button").HasAttribute("disabled"));
@@ -269,10 +293,7 @@ public sealed partial class DurableCaptureProcessingTests
                     Assert.IsTrue(page.FindAll(".pixel-sky-calculator input")
                         .All(input => string.IsNullOrEmpty(input.GetAttribute("value"))));
                 }, timeout);
-                await page.Find(".pixel-sky-calculator input").ChangeAsync("280").ConfigureAwait(false);
-                await page.FindAll(".pixel-sky-calculator input")[1].ChangeAsync("240").ConfigureAwait(false);
-                await page.Find("form.pixel-sky-calculator").SubmitAsync().ConfigureAwait(false);
-                StringAssert.Contains(page.Find(".astrometry-calculator-result").TextContent, "mean of date", StringComparison.Ordinal);
+                await CalculatePixelToSkyAsync().ConfigureAwait(false);
             }
             Assert.IsTrue(freshReads > 0, "The selected capture needs a read begun after invalidation.");
         }

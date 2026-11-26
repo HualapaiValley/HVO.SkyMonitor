@@ -60,7 +60,7 @@
                     var label = row.IsSystemManaged
                         ? $"{row.Id} (Built-in)"
                         : row.OptionsForm is { } rowForm ? $"{row.Id} · {rowForm.Descriptor.Title}" : row.Id;
-                    @if (_model.ExistsInSourceRevision(row))
+                    @if (CanLinkToSourceRevision(row))
                     {
                         <a class="node-switcher__item @(current ? "node-switcher__item--current" : null)"
                            aria-current="@(current ? "page" : null)"
