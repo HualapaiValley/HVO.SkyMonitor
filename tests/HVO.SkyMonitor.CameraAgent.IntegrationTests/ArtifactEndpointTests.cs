@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Diagnostics.Metrics;
 using System.Net;
@@ -231,6 +232,20 @@ public sealed class ArtifactEndpointTests
     [TestMethod]
     public async Task ScientificExportsUseReadAuthorizationExactBindingAndVerifiedDownloadAsync()
     {
+        var failures = new ConcurrentQueue<(long Count, string? Format, string? Reason, int? Status)>();
+        using var meter = new Meter(CameraAgentOperatorTelemetry.InstrumentationName);
+        using var telemetry = new CameraAgentOperatorTelemetry(meter);
+        using var listener = new MeterListener
+        {
+            InstrumentPublished = (instrument, observer) =>
+            {
+                if (ReferenceEquals(meter, instrument.Meter) && instrument.Name == "camera_agent.scientific_export.failures")
+                    observer.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>((_, count, tags, _) => failures.Enqueue((count,
+            GetTagValue(tags, "format") as string, GetTagValue(tags, "reason") as string, GetTagValue(tags, "status") as int?)));
+        listener.Start();
         var service = new StubArtifactService { MediaType = "application/x-skymonitor-mono16" };
         var utc = new DateTimeOffset(2026, 11, 26, 12, 0, 0, TimeSpan.Zero);
         var profile = new ProfileIdentityDescriptor("test", "1", new string('A', 64));
@@ -248,6 +263,8 @@ public sealed class ArtifactEndpointTests
         {
             services.RemoveAll<ICameraAgentArtifactService>();
             services.AddSingleton<ICameraAgentArtifactService>(service);
+            services.RemoveAll<CameraAgentOperatorTelemetry>();
+            services.AddSingleton(telemetry);
         });
         var (ownerId, nonOwnerId) = await GetUsersAsync(factory.Services).ConfigureAwait(false);
         var uri = ExportUri(service.CaptureId, service.ArtifactId, "fits");
@@ -288,15 +305,29 @@ public sealed class ArtifactEndpointTests
 
             using var head = new HttpRequestMessage(HttpMethod.Head, download);
             using var header = await owner.SendAsync(head).ConfigureAwait(false);
+            Assert.AreEqual(response.Content.Headers.ContentLength, header.Content.Headers.ContentLength);
             Assert.AreEqual(response.Headers.ETag, header.Headers.ETag);
             Assert.AreEqual("Cookie", header.Headers.Vary.Single());
             Assert.IsEmpty(await header.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
 
             using var range = new HttpRequestMessage(HttpMethod.Get, download);
             range.Headers.Range = new RangeHeaderValue(0, 7);
+            range.Headers.IfRange = new RangeConditionHeaderValue(response.Headers.ETag!);
             using var part = await owner.SendAsync(range).ConfigureAwait(false);
             Assert.AreEqual(HttpStatusCode.PartialContent, part.StatusCode);
             CollectionAssert.AreEqual(bytes[..8], await part.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
+
+            using var conditional = new HttpRequestMessage(HttpMethod.Get, download);
+            conditional.Headers.IfNoneMatch.Add(response.Headers.ETag!);
+            using var unchanged = await owner.SendAsync(conditional).ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.NotModified, unchanged.StatusCode);
+
+            using var invalidRange = new HttpRequestMessage(HttpMethod.Get, download);
+            invalidRange.Headers.Range = new RangeHeaderValue(bytes.LongLength, null);
+            using var unsatisfiable = await owner.SendAsync(invalidRange).ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.RequestedRangeNotSatisfiable, unsatisfiable.StatusCode);
+            Assert.AreEqual($"bytes */{bytes.LongLength}", unsatisfiable.Content.Headers.ContentRange?.ToString());
+            Assert.Contains((1L, format, "scientific-export.range-unsatisfiable", 416), failures);
         }
 
         await AssertProblemAsync(ExportUri(Guid.NewGuid(), service.ArtifactId, "fits"),
@@ -307,8 +338,14 @@ public sealed class ArtifactEndpointTests
             HttpStatusCode.Conflict, "scientific-export.corrupt-source").ConfigureAwait(false);
         await AssertProblemAsync(ExportUri(service.CaptureId, service.ArtifactId, "png"),
             HttpStatusCode.BadRequest, "scientific-export.unknown-format").ConfigureAwait(false);
+        Assert.Contains((1L, "unknown", "scientific-export.unknown-format", 400), failures);
         service.Content[4] ^= 1;
+        using var changedHead = new HttpRequestMessage(HttpMethod.Head, ExportUri(service.CaptureId, service.ArtifactId, "xisf"));
+        using var changedHeadResponse = await owner.SendAsync(changedHead).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Conflict, changedHeadResponse.StatusCode);
+        Assert.IsFalse(changedHeadResponse.Headers.Contains("X-Artifact-SHA256"));
         await AssertProblemAsync(uri, HttpStatusCode.Conflict, "scientific-export.corrupt-source").ConfigureAwait(false);
+        Assert.Contains((1L, "fits", "scientific-export.corrupt-source", 409), failures);
         service.Descriptor = null;
         await AssertProblemAsync(uri, HttpStatusCode.UnsupportedMediaType, "scientific-export.unsupported-source").ConfigureAwait(false);
 

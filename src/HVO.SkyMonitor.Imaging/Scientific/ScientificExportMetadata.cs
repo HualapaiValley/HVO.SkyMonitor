@@ -9,6 +9,8 @@ internal sealed class ScientificExportMetadata(
     ReconstructionDescriptor descriptor, ScientificExportObservation observation,
     ScientificExportEncoding encoding, ScientificExportLineage lineage)
 {
+    internal ScientificExportEncoding Encoding => encoding;
+    internal ScientificExportLineage Lineage => lineage;
     internal FrameLayoutDescriptor Layout => descriptor.Layout;
     internal string CreationTime => descriptor.Artifact.CreatedUtc.UtcDateTime.ToString("O", CultureInfo.InvariantCulture);
     // Raw calibration producers retain the acquisition kind in the artifact variant.
@@ -40,9 +42,9 @@ internal sealed class ScientificExportMetadata(
         if (observation.ElevationMeters is { } elevation && double.IsFinite(elevation))
             yield return Number("SITEELEV", elevation, "Elevation in metres", "Observation:Location:Elevation");
         if (!string.IsNullOrWhiteSpace(observation.Observatory))
-            yield return Text("OBSERVAT", observation.Observatory, "Observatory", "Observation:Location:Name");
+            yield return Text("OBSERVAT", observation.Observatory, "Observatory name supplied at export", "Observation:Location:Name");
         if (!string.IsNullOrWhiteSpace(observation.Observer))
-            yield return Text("OBSERVER", observation.Observer, "Observer", "Observer:Name");
+            yield return Text("OBSERVER", observation.Observer, "Observer name supplied at export", "Observer:Name");
         yield return Text("ROWORDER", "TOP-DOWN", "Rows follow the stored sensor order");
         if (BayerPattern is { } pattern)
         {
@@ -89,7 +91,7 @@ internal sealed class ScientificExportMetadata(
         string type = "String") => new(name, XmlText(value), comment, property, type);
 
     private static ScientificKeyword Number(string name, double value, string comment = "", string? property = null,
-        string type = "Float64") => new(name, value.ToString("G17", CultureInfo.InvariantCulture), comment, property, type);
+        string type = "Float64") => new(name, value.ToString("R", CultureInfo.InvariantCulture), comment, property, type);
 
     private static ScientificKeyword Integer(string name, long value, string comment, string? property = null)
         => new(name, value.ToString(CultureInfo.InvariantCulture), comment, property, "Int64");

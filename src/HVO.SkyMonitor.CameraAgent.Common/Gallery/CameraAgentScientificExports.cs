@@ -1,10 +1,13 @@
+using System.Data.Common;
 using System.Diagnostics.CodeAnalysis;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
-using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.SiteProfile;
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.Imaging;
+using HVO.SkyMonitor.Storage.FileSystem;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Gallery;
@@ -12,7 +15,8 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Gallery;
 public interface ICameraAgentScientificExports
 {
     ValueTask<CameraAgentScientificExportResult> PrepareAsync(
-        Guid captureId, Guid artifactId, ScientificExportFormat format, CancellationToken cancellationToken);
+        Guid captureId, Guid artifactId, ScientificExportFormat format, CancellationToken cancellationToken,
+        bool reuseRecent = false);
 }
 
 public sealed record CameraAgentScientificExportResult(
@@ -41,16 +45,29 @@ public sealed class CameraAgentScientificDownload : IAsyncDisposable
     }
 }
 
-internal sealed class CameraAgentScientificExports(
+internal sealed partial class CameraAgentScientificExports(
     ICameraAgentArtifactService artifacts, ICameraAgentRetainedAstrometryService astrometry,
     IDeploymentLocationStore deployment, ISiteProfileStore siteProfile,
-    IOptions<CameraAgentHostOptions> options) : ICameraAgentScientificExports, IDisposable
+    IOptions<CameraAgentHostOptions> options, IStorageCapacityProvider capacityProvider,
+    ILogger<CameraAgentScientificExports> logger) : ICameraAgentScientificExports, IDisposable
 {
+    private const long MinimumIngressReserveBytes = 64L * 1024 * 1024;
+    private const int MaximumCachedBytes = 8 * 1024 * 1024;
+    private const string Capacity = "scientific-export.capacity";
+    private const string IoUnavailable = "scientific-export.io-unavailable";
+    private const string AstrometryUnavailable = "scientific-export.astrometry-unavailable";
     private readonly SemaphoreSlim _slots = new(2, 2);
+    private readonly Lock _capacityGate = new();
+    private long _pendingSpoolBytes;
+    private RecentExport? _recent;
+
+    private sealed record ExportKey(ScientificExportFormat Format, string DescriptorSha256, ScientificExportObservation Observation);
+    private sealed record RecentExport(ExportKey Key, ScientificExportReceipt Receipt, byte[] Bytes);
 
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The result transfers the staged download and its slot to the response handler.")]
     public async ValueTask<CameraAgentScientificExportResult> PrepareAsync(
-        Guid captureId, Guid artifactId, ScientificExportFormat format, CancellationToken cancellationToken)
+        Guid captureId, Guid artifactId, ScientificExportFormat format, CancellationToken cancellationToken,
+        bool reuseRecent = false)
     {
         if (captureId == Guid.Empty || artifactId == Guid.Empty)
             return Missing();
@@ -58,7 +75,10 @@ internal sealed class CameraAgentScientificExports(
             return Busy();
 
         var handedOff = false;
-        FileStream? output = null;
+        Stream? output = null;
+        long reservedBytes = 0;
+        var operation = "source-open";
+        RecentExport? staged = null;
         try
         {
             var opened = await artifacts.OpenContentAsync(artifactId, cancellationToken).ConfigureAwait(false);
@@ -80,28 +100,78 @@ internal sealed class CameraAgentScientificExports(
                     return new(CameraAgentArtifactReadStatus.Conflict, ScientificCaptureExport.CorruptSource);
                 if (source.ByteLength > ScientificCaptureExport.MaximumSourceBytes)
                     return new(CameraAgentArtifactReadStatus.TooLarge, ScientificCaptureExport.SourceTooLarge);
+                if (!descriptor.Validate().IsValid)
+                    return new(CameraAgentArtifactReadStatus.Conflict, ScientificCaptureExport.CorruptSource);
 
-                var retained = await astrometry.GetAsync(captureId, cancellationToken).ConfigureAwait(false);
+                CameraAgentRetainedAstrometry retained;
+                try
+                {
+                    retained = await astrometry.GetAsync(captureId, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or DbException)
+                {
+                    LogIoFailure(format, AstrometryUnavailable, "astrometry-read", exception);
+                    return new(CameraAgentArtifactReadStatus.Unavailable, AstrometryUnavailable);
+                }
                 if (retained.Reason == "read-capacity")
                     return Busy();
+                if (retained.Reason == CameraAgentRetainedAstrometryService.TemporaryEvidenceUnavailable)
+                    return new(CameraAgentArtifactReadStatus.Unavailable, AstrometryUnavailable);
+
+                operation = "observation-metadata";
+                var descriptorSha256 = CaptureContractJson.ComputeDescriptorSha256(descriptor);
                 var solved = retained is { Solution.Assessment.HasMeasuredMapping: true, Mapping: not null } &&
                     retained.Solution.Assessment.Frame.SourceArtifactId == artifactId &&
                     string.Equals(retained.Solution.Assessment.Frame.SourcePayloadSha256, source.ChecksumSha256, StringComparison.OrdinalIgnoreCase) &&
                     string.Equals(retained.Solution.Assessment.Frame.SourceDescriptorSha256,
-                        CaptureContractJson.ComputeDescriptorSha256(descriptor), StringComparison.OrdinalIgnoreCase);
+                        descriptorSha256, StringComparison.OrdinalIgnoreCase);
                 var location = CameraAgentCaptureLocationProjector.Project(descriptor, deployment);
+                // Descriptive names come from the export-time profile. Only coordinates are captured provenance.
                 var site = (await siteProfile.GetAsync(cancellationToken).ConfigureAwait(false)).Profile;
                 var wcs = solved ? retained.Mapping!.ToCelestialWcs() : null;
                 var observation = new ScientificExportObservation(location.LatitudeDegrees, location.LongitudeDegrees, location.ElevationMeters,
                     site.ObservatoryName, site.OwnerName, wcs, wcs is not null ? retained.SolutionIdentitySha256 : null);
 
-                // Stage privately before any response bytes are committed, including on checksum failure or cancellation.
-                // An unlinked Linux file is reclaimed even if the host exits during preparation or download.
-                output = CreateSpool(options.Value.RawIngressRoot);
-                receipt = await ScientificCaptureExport.WriteAsync(source, output, descriptor, format, observation, cancellationToken)
-                    .ConfigureAwait(false);
+                var key = new ExportKey(format, descriptorSha256, observation);
+                var recent = reuseRecent ? Volatile.Read(ref _recent) : null;
+                if (recent?.Key == key)
+                {
+                    operation = "source-verify";
+                    await ScientificCaptureExport.VerifySourceAsync(source, source.ByteLength, source.ChecksumSha256, cancellationToken)
+                        .ConfigureAwait(false);
+                    output = new MemoryStream(recent.Bytes, writable: false);
+                    receipt = recent.Receipt;
+                }
+                else
+                {
+                    var estimate = ScientificCaptureExport.MaximumOutputBytes(descriptor, format, observation);
+                    operation = "capacity-probe";
+                    if (!TryReserveSpool(estimate))
+                        return Busy();
+                    reservedBytes = estimate;
+
+                    // Stage privately. On Linux the unlinked file is reclaimed even if the host exits.
+                    operation = "spool-open";
+                    output = CreateSpool(options.Value.RawIngressRoot);
+                    operation = "encode";
+                    receipt = await ScientificCaptureExport.WriteAsync(source, output, descriptor, format, observation, cancellationToken)
+                        .ConfigureAwait(false);
+
+                    if (receipt.ByteLength <= MaximumCachedBytes)
+                    {
+                        operation = "spool-read";
+                        var bytes = new byte[(int)receipt.ByteLength];
+                        await output.ReadExactlyAsync(bytes, cancellationToken).ConfigureAwait(false);
+                        output.Position = 0;
+                        staged = new(key, receipt, bytes);
+                    }
+                }
+                operation = "source-close";
             }
+            cancellationToken.ThrowIfCancellationRequested();
             var download = new CameraAgentScientificDownload(output, receipt, () => _slots.Release());
+            if (staged is not null)
+                Volatile.Write(ref _recent, staged);
             handedOff = true;
             return new(CameraAgentArtifactReadStatus.Found, null, download);
         }
@@ -116,18 +186,45 @@ internal sealed class CameraAgentScientificExports(
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            return new(CameraAgentArtifactReadStatus.Unavailable, "scientific-export.io-unavailable");
+            var reason = operation == "capacity-probe" ? Capacity : IoUnavailable;
+            LogIoFailure(format, reason, operation, exception);
+            return new(CameraAgentArtifactReadStatus.Unavailable, reason);
         }
         finally
         {
-            if (!handedOff)
+            try
             {
-                try
+                if (!handedOff && output is not null)
                 {
-                    if (output is not null) await output.DisposeAsync().ConfigureAwait(false);
+                    try { await output.DisposeAsync().ConfigureAwait(false); }
+                    catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                    {
+                        LogIoFailure(format, IoUnavailable, "spool-close", exception);
+                    }
                 }
-                finally { _slots.Release(); }
             }
+            finally
+            {
+                if (reservedBytes != 0)
+                {
+                    lock (_capacityGate) _pendingSpoolBytes -= reservedBytes;
+                }
+                if (!handedOff) _slots.Release();
+            }
+        }
+    }
+
+    private bool TryReserveSpool(long estimate)
+    {
+        lock (_capacityGate)
+        {
+            var available = capacityProvider.GetCapacity(options.Value.RawIngressRoot).AvailableBytes;
+            var reserve = Math.Max(MinimumIngressReserveBytes, options.Value.RawIngressReserveBytes);
+            // The filesystem may not yet account for concurrent writers that passed the capacity check.
+            if (available < reserve || available - reserve - _pendingSpoolBytes < estimate)
+                return false;
+            _pendingSpoolBytes += estimate;
+            return true;
         }
     }
 
@@ -135,7 +232,7 @@ internal sealed class CameraAgentScientificExports(
     {
         var root = Path.GetFullPath(rawIngressRoot);
         var directory = Path.Combine(root, ".scientific-exports");
-        RawIngressFileStore.EnsureNoSymbolicLinks(root, directory);
+        PhysicalRoot.VerifyPath(root, directory, "scientific-export-staging");
         if (OperatingSystem.IsWindows())
         {
             Directory.CreateDirectory(directory);
@@ -145,9 +242,9 @@ internal sealed class CameraAgentScientificExports(
             const UnixFileMode privateDirectory = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
             Directory.CreateDirectory(directory, privateDirectory);
             if (File.GetUnixFileMode(directory) != privateDirectory)
-                throw new IOException("Scientific export staging directory must have mode 0700.");
+                throw new FileSystemFaultException(FileSystemFaultKind.PermissionDenied, "staging-directory-mode", directory);
         }
-        RawIngressFileStore.EnsureNoSymbolicLinks(root, directory);
+        PhysicalRoot.VerifyPath(root, directory, "scientific-export-staging");
         var path = Path.Combine(directory, $"hvo-science-{Guid.NewGuid():N}");
         var options = new FileStreamOptions
         {
@@ -187,7 +284,19 @@ internal sealed class CameraAgentScientificExports(
         => new(CameraAgentArtifactReadStatus.NotFound, "scientific-export.source-not-found");
 
     private static CameraAgentScientificExportResult Busy()
-        => new(CameraAgentArtifactReadStatus.Unavailable, "scientific-export.capacity");
+        => new(CameraAgentArtifactReadStatus.Unavailable, Capacity);
+
+    private void LogIoFailure(ScientificExportFormat format, string reason, string operation, Exception exception)
+    {
+        // Exception messages, paths and inner exceptions can disclose the filesystem layout.
+        var fault = exception as FileSystemFaultException;
+        IoFailure(logger, format, reason, operation, fault?.Kind.ToString() ?? exception.GetType().Name, exception.HResult);
+    }
+
+    [LoggerMessage(EventId = 14722, Level = LogLevel.Warning,
+        Message = "Scientific export {Format} failed with {ReasonCode} during {Operation}: {Cause} ({ErrorCode}).")]
+    private static partial void IoFailure(ILogger logger, ScientificExportFormat format, string reasonCode,
+        string operation, string cause, int errorCode);
 
     public void Dispose() => _slots.Dispose();
 }

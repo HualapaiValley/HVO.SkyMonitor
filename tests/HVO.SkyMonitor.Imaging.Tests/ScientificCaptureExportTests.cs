@@ -1,7 +1,8 @@
 using System.Buffers.Binary;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
-using System.Reflection;
 using System.IO.Compression;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -54,7 +55,7 @@ public sealed class ScientificCaptureExportTests
 
     [TestMethod]
     [DataRow(CameraPixelFormat.Mono8, 8195, 3)]
-    [DataRow(CameraPixelFormat.BayerRggb16, 3001, 5)]
+    [DataRow(CameraPixelFormat.BayerRggb16, 3001, 7)]
     public async Task TiledFitsDecodesGzipHeapAndPartialTilesAsync(CameraPixelFormat format, int width, int height)
     {
         var (descriptor, payload, expected) = Frame(format, width, height, bigEndian: true);
@@ -67,6 +68,8 @@ public sealed class ScientificCaptureExportTests
         Assert.AreEqual("'BINTABLE'", header["XTENSION"]);
         Assert.AreEqual("T", header["ZIMAGE"]);
         Assert.AreEqual("'GZIP_1'", header["ZCMPTYPE"]);
+        Assert.AreEqual("compression=GZIP_1;zlib=6/Filtered;tile=16384", receipt.Encoding.Options);
+        Assert.AreEqual($"'{receipt.Encoding.Options}'", header["HVOOPT"]);
         Assert.AreEqual("'COMPRESSED_DATA'", header["TTYPE1"]);
         Assert.AreEqual("'1PB'", header["TFORM1"]);
         Assert.AreEqual("2", header["ZNAXIS"]);
@@ -113,6 +116,83 @@ public sealed class ScientificCaptureExportTests
         Assert.AreEqual(0, bytes.Length % Block);
         CollectionAssert.AreEqual(expected, actual);
         AssertReceipt(bytes, receipt, descriptor, ".fits.fz", "application/fits");
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    [SuppressMessage("Security", "CA5394:Do not use insecure randomness", Justification = "Seeded synthetic sensor noise must be reproducible.")]
+    public async Task FitsTileGzipPreservesNoiseHeavy16BitSamplesWithinStagingBoundAsync(bool fullEntropy)
+    {
+        const int width = 4096;
+        const int height = 64;
+        const int rowBytes = width * 2;
+        var (descriptor, _, _) = Frame(CameraPixelFormat.Mono16, width, height, bigEndian: true);
+        var payload = new byte[rowBytes * height];
+        new Random(2145).NextBytes(payload);
+        if (!fullEntropy)
+        {
+            // A mostly random capture with a repeated readout strip two rows later, across the old tile boundary.
+            for (var offset = 0; offset < payload.Length; offset += 4 * rowBytes)
+                payload.AsSpan(offset + rowBytes, 2048).CopyTo(payload.AsSpan(offset + 3 * rowBytes, 2048));
+        }
+        descriptor = descriptor with
+        {
+            Layout = descriptor.Layout with { StrideBytes = rowBytes, ByteLength = payload.Length },
+            Artifact = descriptor.Artifact with { ChecksumSha256 = PayloadChecksum.ComputeSha256(payload) }
+        };
+
+        var (bytes, receipt) = await EncodeAsync(descriptor, payload, ScientificExportFormat.FitsTileGzip).ConfigureAwait(false);
+        var (_, extension) = ReadHdu(bytes, 0);
+        var (header, table) = ReadHdu(bytes, extension);
+        var tiles = int.Parse(header["NAXIS2"], CultureInfo.InvariantCulture);
+        var heap = table + tiles * 8;
+        var decoded = new byte[payload.Length / tiles];
+        // FITS stores unsigned 16-bit input as signed big-endian values with BZERO=32768.
+        var fitsSamples = (byte[])payload.Clone();
+        for (var index = 0; index < fitsSamples.Length; index += 2)
+            fitsSamples[index] ^= 0x80;
+        for (var tile = 0; tile < tiles; tile++)
+        {
+            var entry = table + tile * 8;
+            var length = BinaryPrimitives.ReadInt32BigEndian(bytes.AsSpan(entry));
+            var offset = BinaryPrimitives.ReadInt32BigEndian(bytes.AsSpan(entry + 4));
+            using var member = new MemoryStream(bytes, heap + offset, length);
+            using var gzip = new GZipStream(member, CompressionMode.Decompress);
+            await gzip.ReadExactlyAsync(decoded).ConfigureAwait(false);
+            Assert.AreEqual(-1, gzip.ReadByte());
+            Assert.IsTrue(fitsSamples.AsSpan(tile * decoded.Length, decoded.Length).SequenceEqual(decoded));
+        }
+
+        long baseline = 0;
+        using var originalMember = new MemoryStream();
+        for (var offset = 0; offset < fitsSamples.Length; offset += 2 * rowBytes)
+        {
+            originalMember.SetLength(0);
+            using (var gzip = new GZipStream(originalMember, CompressionLevel.Fastest, leaveOpen: true))
+                gzip.Write(fitsSamples.AsSpan(offset, 2 * rowBytes));
+            baseline += originalMember.Length + 8;
+        }
+        var tuned = int.Parse(header["PCOUNT"], CultureInfo.InvariantCulture) + tiles * 8;
+        Console.WriteLine($"Full entropy={fullEntropy}, raw={payload.Length}, Fastest tiles={baseline}, tuned tiles={tuned} bytes");
+        Assert.IsGreaterThan(payload.Length, baseline);
+        Assert.IsLessThan(baseline, tuned);
+        if (!fullEntropy)
+            Assert.IsLessThan(payload.Length, tuned);
+        Assert.IsLessThanOrEqualTo(ScientificCaptureExport.MaximumOutputBytes(descriptor, ScientificExportFormat.FitsTileGzip), receipt.ByteLength);
+    }
+
+    [TestMethod]
+    public async Task FitsScientificNumbersUseShortestRoundTripRepresentationAsync()
+    {
+        var (descriptor, payload, _) = Frame(CameraPixelFormat.Mono8, 4, 3);
+        const double preciseScale = -0.00012345678901234567;
+        var observation = Solved with { Wcs = Solved.Wcs! with { ReferenceX = 2.50025, Cd11 = preciseScale } };
+        var (bytes, _) = await EncodeAsync(descriptor, payload, ScientificExportFormat.Fits, observation).ConfigureAwait(false);
+        var (header, _) = ReadHdu(bytes, 0);
+        Assert.AreEqual("2.50025", header["CRPIX1"]);
+        Assert.AreEqual("42.1", header["CRVAL1"]);
+        Assert.AreEqual(preciseScale, double.Parse(header["CD1_1"], CultureInfo.InvariantCulture));
     }
 
     [TestMethod]
@@ -325,7 +405,7 @@ public sealed class ScientificCaptureExportTests
     {
         Assert.AreEqual(extension, receipt.Encoding.Extension);
         Assert.AreEqual(mediaType, receipt.Encoding.MediaType);
-        Assert.AreEqual("1.0", receipt.Encoding.Version);
+        Assert.AreEqual("1.1", receipt.Encoding.Version);
         Assert.AreEqual(bytes.LongLength, receipt.ByteLength);
         Assert.AreEqual(Convert.ToHexString(SHA256.HashData(bytes)), receipt.Sha256);
         Assert.AreEqual(new ScientificExportLineage(descriptor.Artifact.ArtifactId, descriptor.Capture.CaptureId,
@@ -391,7 +471,7 @@ public sealed class ScientificCaptureExportTests
         Assert.AreEqual($"'{descriptor.Artifact.ChecksumSha256}'", header["HVOHASH"]);
         Assert.AreEqual("42", header["HVOSEQ"]);
         Assert.Contains("hvo-", header["HVOENC"]);
-        Assert.AreEqual("'1.0'", header["HVOENCV"]);
+        Assert.AreEqual("'1.1'", header["HVOENCV"]);
         Assert.Contains("compression=", header["HVOOPT"]);
         if (descriptor.Layout.CfaPattern == ColorFilterArrayPattern.None)
             Assert.IsFalse(header.ContainsKey("BAYERPAT"));

@@ -1228,6 +1228,12 @@ public sealed class ProcessingNodeConfigPageTests
         // 1b. After saving the draft, the switcher badge updates from 'Unsaved draft' to post-save wording.
         cut.Find("form").Submit();
         Assert.IsFalse(cut.Find("button.btn-primary").HasAttribute("disabled"));
+        predictionItem = cut.FindAll(".node-switcher__item")
+            .Single(item => item.TextContent.Contains(predictionAlias, StringComparison.Ordinal));
+        Assert.AreNotEqual("A", predictionItem.TagName);
+        Assert.IsNull(predictionItem.GetAttribute("href"));
+        Assert.AreEqual("true", predictionItem.GetAttribute("aria-disabled"));
+        StringAssert.Contains(predictionItem.TextContent, "Unsaved draft", StringComparison.Ordinal);
         cut.Find("button.btn-primary").Click();
         cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "saved as an immutable revision", StringComparison.Ordinal));
         var savedPredictionItem = cut.FindAll(".node-switcher__item")

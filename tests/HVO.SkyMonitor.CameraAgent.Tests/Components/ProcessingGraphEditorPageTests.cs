@@ -1040,6 +1040,9 @@ public sealed class ProcessingGraphEditorPageTests
             // After saving the draft, the built-in row updates from unsaved wording to post-save wording.
             cut.Find("form").Submit();
             Assert.IsFalse(cut.Find(".editor-actions button.btn-primary").HasAttribute("disabled"));
+            unsavedBuiltInRow = cut.Find($"li.node-row[data-node-alias='{predictionAlias}'] .node-row--builtin");
+            Assert.IsEmpty(unsavedBuiltInRow.QuerySelectorAll("a"));
+            StringAssert.Contains(unsavedBuiltInRow.TextContent, "unsaved draft", StringComparison.OrdinalIgnoreCase);
             cut.Find(".editor-actions button.btn-primary").Click();
             cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "saved as an immutable revision", StringComparison.Ordinal));
             unsavedBuiltInRow = cut.Find($"li.node-row[data-node-alias='{predictionAlias}'] .node-row--builtin");
