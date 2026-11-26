@@ -300,6 +300,33 @@ public sealed partial class CurrentSkyPageTests
     }
 
     [TestMethod]
+    public void CenteredEmptySatellitePredictionHasItsOwnReadinessState()
+    {
+        using var context = new BunitContext();
+        var (service, clock) = ConfigurePolling(context);
+        var reference = CenteredExposure(103, clock.GetUtcNow().AddSeconds(-10));
+        var layers = new CenteredViewLayer[]
+        {
+            new(new("predicted-satellites", CenteredViewLayerScope.Contributor, reference.Capture.CaptureId), 1,
+                EvidencePin("satellite"), clock.GetUtcNow(), CenteredViewReadiness.AssessedEmpty,
+                nameof(CaptureSatelliteReason.NoExposureSegments), null),
+            new(new("MeasuredTransientTrails", CenteredViewLayerScope.Contributor, reference.Capture.CaptureId), 1,
+                EvidencePin("trails"), clock.GetUtcNow(), CenteredViewReadiness.AssessedEmpty, null, null)
+        };
+        var view = CenteredSingle(reference, 1, layers);
+        service.CenteredCurrentSkyHandler = (_, _) =>
+            ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(
+                CenteredSkyView(view, reference, CenteredViewLiveState.Ready, clock.GetUtcNow())));
+
+        var cut = context.Render<CurrentSkyPage>();
+        var prediction = cut.WaitForElement("[data-layer-kind='predicted-satellites'][data-layer-readiness='NoSegment']");
+        Assert.AreEqual("No segment", prediction.QuerySelector(".layer-readiness-tag")?.TextContent);
+        Assert.AreEqual("No predicted segment for this exposure", prediction.QuerySelector("small")?.TextContent);
+        Assert.IsTrue(prediction.QuerySelector("input")!.HasAttribute("disabled"));
+        Assert.AreEqual("No detection", cut.Find("[data-layer-kind='MeasuredTransientTrails'] .layer-readiness-tag").TextContent);
+    }
+
+    [TestMethod]
     [DataRow(OrbitalTrackPresentation.LayerKind)]
     [DataRow("predicted-satellites")]
     public void CenteredPredictedSatelliteTrackKindsRenderTheSameDiagnosticCopy(string layerKind)
@@ -323,6 +350,8 @@ public sealed partial class CurrentSkyPageTests
             StringAssert.StartsWith(row.QuerySelector("strong")?.TextContent, "Predicted satellite tracks · #103", StringComparison.Ordinal);
             Assert.AreEqual("predicted / exact exposure segment; geometry only, not a detection or visibility claim",
                 row.QuerySelector("small")?.TextContent);
+            Assert.Contains("US Space Force / Space-Track public GP data via CelesTrak",
+                cut.Find("[aria-label='Diagnostics layers'] .satellite-source-credit").TextContent, StringComparison.Ordinal);
         });
     }
 

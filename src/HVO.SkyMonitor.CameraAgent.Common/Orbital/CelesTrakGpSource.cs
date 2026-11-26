@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Headers;
+using HVO.SkyMonitor.Astronomy;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Orbital;
 
@@ -19,6 +20,15 @@ public static class CelesTrakGpSource
     public const int MaximumRawBytes = 32 * 1024 * 1024;
 
     public const string UnderlyingLineage = "US Space Force / Space-Track public GP data via CelesTrak";
+
+    /// <summary>Expands legacy attribution for display while preserving the retained source identity.</summary>
+    public static string DisplayLineage(OrbitalSnapshotSource source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        return source is { Provider: ProviderKey, UnderlyingLineage: "USSF public GP via CelesTrak" or "USSF/Space-Track public GP via CelesTrak" }
+            ? UnderlyingLineage : source.UnderlyingLineage;
+    }
+
     public const string TermsReference = "CelesTrak usage policy: at most one GP query per two hours per group and halt on " +
         "any non-200 response. Underlying USSF public GP data via CelesTrak; attribution retained; local calculation and " +
         "cache only, no feed redistribution.";

@@ -131,6 +131,31 @@ public sealed partial class CaptureSatelliteProductTests
     }
 
     [TestMethod]
+    public async Task HiddenObjectLabelsKeepExposureGeometryAndMandatoryCaption()
+    {
+        var fixture = new CaptureSatelliteFixture();
+        var original = fixture.Evidence;
+        var hidden = CaptureSatelliteProducts.ParseInput(CaptureSatelliteProducts.SerializeInput(original with { HideObjectLabels = true }));
+        Assert.IsTrue(hidden.HideObjectLabels);
+        Assert.IsFalse(CaptureSatelliteProducts.ParseInput(CaptureSatelliteProducts.SerializeInput(original)).HideObjectLabels);
+        var result = await CaptureSatelliteProducts.PredictAsync(original, fixture.Raw, "satellites", CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(result);
+        var labelled = CaptureSatelliteProducts.Create(original, fixture.Raw, "satellites", result.Payload);
+        var unlabelled = CaptureSatelliteProducts.Create(hidden, fixture.Raw, "satellites", result.Payload);
+        var displayed = PresentationLayerPayloadJson.Parse(labelled[^1].Payload).Payload!;
+        var omitted = PresentationLayerPayloadJson.Parse(unlabelled[^1].Payload).Payload!;
+        Assert.HasCount(1, omitted.TextBlocks);
+        CollectionAssert.AreEqual(displayed.TextBlocks[0].Lines.ToArray(), omitted.TextBlocks[0].Lines.ToArray());
+        CollectionAssert.AreEqual(displayed.Segments.ToArray(), omitted.Segments.ToArray());
+        CollectionAssert.AreEqual(displayed.Markers.ToArray(), omitted.Markers.ToArray());
+        Assert.AreNotEqual(displayed.SourceIdentitySha256, omitted.SourceIdentitySha256);
+        using var facts = JsonDocument.Parse(unlabelled.Single(p => p.SchemaVersion == CaptureSatelliteProducts.SourceSchema).Payload);
+        Assert.IsTrue(facts.RootElement.GetProperty("ObjectLabelsHidden").GetBoolean());
+        Assert.AreEqual(labelled.Single(p => p.SchemaVersion == CaptureOrbitalPredictionJson.SchemaVersion).ChecksumSha256,
+            unlabelled.Single(p => p.SchemaVersion == CaptureOrbitalPredictionJson.SchemaVersion).ChecksumSha256);
+    }
+
+    [TestMethod]
     public void OmittedNullableCaptureFactsRoundTripAndRequiredFactsStayRequired()
     {
         var f = new CaptureSatelliteFixture();
