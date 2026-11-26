@@ -240,6 +240,9 @@ public sealed partial class SiloStockStoreTests
                 var stopped = restarted;
                 restarted = null;
                 stopped.Dispose();
+                settings["CameraAgent:Silo:MaximumStagedFiles"] = "4";
+                await File.WriteAllTextAsync(Path.Combine(keyDirectory, "CameraAgent__Silo__MaximumStagedFiles"), "4", token)
+                    .ConfigureAwait(false);
                 await AssertStartupReclaimsRawAsync(settings, root, recovery, journal, rawManifest.Descriptor, token).ConfigureAwait(false);
             }
         }

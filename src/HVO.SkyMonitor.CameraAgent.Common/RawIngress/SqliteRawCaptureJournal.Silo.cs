@@ -133,17 +133,37 @@ internal sealed partial class SqliteRawCaptureJournal
             : null;
     }
 
-    internal async Task SettleSiloAdmissionAsync(Guid captureId, string manifestSha256, CancellationToken cancellationToken)
+    internal async Task<bool> SettleSiloAdmissionAsync(Guid captureId, string manifestSha256, bool siloVisible,
+        CancellationToken cancellationToken)
     {
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var transaction = BeginImmediate(connection);
         using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.Parameters.AddWithValue("$capture", captureId.ToString("N"));
+        command.Parameters.AddWithValue("$hash", manifestSha256);
+        var evidenceRestored = false;
+        if (siloVisible)
+        {
+            // Check the current disposition in SQLite because publication releases the raw lifecycle lock.
+            command.CommandText = """
+                UPDATE raw_captures AS raw SET state = 'committed', failure_reason = NULL
+                WHERE capture_id = $capture AND manifest_sha256 = $hash
+                    AND state IN ('missing_evidence', 'quarantined')
+                    AND EXISTS (SELECT 1 FROM silo_raw_admissions pending
+                        WHERE pending.raw_capture_row_id = raw.raw_capture_row_id)
+                    AND NOT EXISTS (SELECT 1 FROM raw_capture_stage_events event
+                        WHERE event.raw_capture_row_id = raw.raw_capture_row_id AND event.stage_key = 'raw-evidence-written-off');
+                """;
+            evidenceRestored = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
+        }
         command.CommandText = """
             DELETE FROM silo_raw_admissions WHERE raw_capture_row_id = (
                 SELECT raw_capture_row_id FROM raw_captures WHERE capture_id = $capture AND manifest_sha256 = $hash);
             """;
-        command.Parameters.AddWithValue("$capture", captureId.ToString("N"));
-        command.Parameters.AddWithValue("$hash", manifestSha256);
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return evidenceRestored;
     }
 
     internal async Task<bool> HasPendingSiloAdmissionAsync(Guid captureId, CancellationToken cancellationToken)
