@@ -3,6 +3,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
+using HVO.SkyMonitor.CameraAgent.Common.Orbital;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Common.SkyMap;
 using Microsoft.Extensions.Options;
@@ -106,7 +107,7 @@ public sealed class CameraAgentSatellitePlanner(
             throw new PlanningUnavailable(CameraAgentSatellitePlanningOutcome.NoMatches,
                 "No matching objects in this snapshot (matching 0; selected 0). This does not establish global absence.");
         var selected = matches.Take(MaximumObjects).ToArray();
-        var policy = new OrbitalSelectionPolicy([new("celestrak:gp:active", 0)], settings.AllowStaleDiagnostics);
+        var policy = new OrbitalSelectionPolicy([new(CelesTrakGpSource.DatasetKey, 0)], settings.AllowStaleDiagnostics);
         ValidateSelectedEpochs(time, interval, snapshot, selected, policy);
         var query = new OrbitalPassQuery(new(OrbitalPredictionUse.Diagnostic, snapshot, policy, interval, selected,
             new(context.Observer.LatitudeDegrees, context.Observer.LongitudeDegrees, context.Observer.ElevationMeters),
@@ -131,30 +132,43 @@ public sealed class CameraAgentSatellitePlanner(
             snapshot.Manifest.NormalizedPayloadLengthBytes + snapshot.SerializeManifest().Length +
             OrbitalContract.SerializeCanonical(context).Length + OrbitalContract.SerializeCanonical(model).Length;
         if (retainedBytes > MaximumRetainedBytes) throw RetentionExceeded();
-        var engines = engineFactory.Create(time);
-        var prediction = await engines.Prediction.FindPassesAsync(query, cancellationToken).ConfigureAwait(false);
+        // Keep each search handle independent. Only complete work can be reused, so a retry can
+        // recover more results after a work-limited search.
+        var cached = sessions.FindLast(session => session.QueryIdentity == queryIdentity &&
+            session.View.Prediction.Status == OrbitalExecutionStatus.Complete &&
+            timeProvider.GetUtcNow() < session.View.ExpiresUtc);
+        var engines = cached?.Engines ?? engineFactory.Create(time);
+        var prediction = cached?.View.Prediction ??
+            await engines.Prediction.FindPassesAsync(query, cancellationToken).ConfigureAwait(false);
         retainedBytes += prediction.Products.Sum(static pass => (long)OrbitalPredictionJson.SerializePass(pass).Length);
         if (retainedBytes > MaximumRetainedBytes) throw RetentionExceeded();
         await VerifyCurrentAsync(settingsIdentity, snapshot.Manifest.ManifestSha256, model, interval, contextIdentity,
             cancellationToken).ConfigureAwait(false);
-        var rows = prediction.Products.OrderBy(static pass => pass.PassInterval.StartUtc)
+        var sources = snapshot.Manifest.Sources.ToDictionary(static source => source.DatasetKey, StringComparer.Ordinal);
+        var rows = cached?.View.Passes ?? Array.AsReadOnly(prediction.Products.OrderBy(static pass => pass.PassInterval.StartUtc)
             .ThenBy(static pass => pass.Lineage.ObjectIdentity.CatalogNumber, StringComparer.Ordinal)
             .ThenBy(static pass => pass.ProductSha256, StringComparer.Ordinal)
             .Select(pass => new CameraAgentSatellitePassRow(
                 snapshot.RecordsFor(pass.Lineage.ObjectIdentity).Single(record => record.RecordSha256 == pass.Lineage.RecordSha256).ObjectName
-                    ?? pass.Lineage.ObjectIdentity.CatalogNumber, pass)).ToArray();
+                    ?? pass.Lineage.ObjectIdentity.CatalogNumber, pass)
+            {
+                Source = sources.GetValueOrDefault(pass.Lineage.SourceDataset)
+            }).ToArray());
         var now = timeProvider.GetUtcNow();
         // A later identical request must never resurrect an expired handle or overwrite another result prefix.
         var identity = Hash(new { QuerySha256 = queryIdentity, CreatedUtc = now, SessionNonce = Guid.NewGuid() });
         var view = new CameraAgentSatellitePassSearchView(identity, now, now.Add(SessionLifetime), context, prediction,
-            Array.AsReadOnly(rows), matches.Length, selected.Length,
-            snapshot.Manifest.Sources.Count == 0 ? null : snapshot.Manifest.Sources.Max(static source => source.RetrievedUtc));
+            rows, matches.Length, selected.Length,
+            snapshot.Manifest.Sources.Count == 0 ? null : snapshot.Manifest.Sources.Max(static source => source.RetrievedUtc))
+        {
+            SnapshotProfileVersion = snapshot.Manifest.ProfileVersion
+        };
         cancellationToken.ThrowIfCancellationRequested();
         ExpireSessions();
         // Oldest insertion wins eviction, including equal-clock requests. Never silently evict this candidate.
         while (sessions.Count >= MaximumSessions || sessions.Sum(static session => session.RetainedBytes) + retainedBytes > MaximumRetainedBytes)
             sessions.RemoveAt(0);
-        sessions.Add(new(view, query, time, engines, settingsIdentity, contextIdentity, retainedBytes));
+        sessions.Add(new(view, cached?.Query ?? query, engines, settingsIdentity, contextIdentity, queryIdentity, retainedBytes));
         var truncation = matches.Length > selected.Length ? " Object selection was truncated deterministically." : "";
         return new(CameraAgentSatellitePlanningOutcome.Ready,
             $"Matching objects: {matches.Length}; selected: {selected.Length}.{truncation} {Limitations}", view);
@@ -354,6 +368,6 @@ public sealed class CameraAgentSatellitePlanner(
     private sealed class PlanningUnavailable(CameraAgentSatellitePlanningOutcome outcome, string message) : Exception(message)
     { public CameraAgentSatellitePlanningOutcome Outcome { get; } = outcome; }
     private sealed record Filter(string Identity, string[]? CatalogNumbers, string? Name);
-    private sealed record Session(CameraAgentSatellitePassSearchView View, OrbitalPassQuery Query, OrbitalTimeData Time,
-        CameraAgentOrbitalPlanningEngines Engines, string SettingsIdentity, string ContextIdentity, long RetainedBytes);
+    private sealed record Session(CameraAgentSatellitePassSearchView View, OrbitalPassQuery Query,
+        CameraAgentOrbitalPlanningEngines Engines, string SettingsIdentity, string ContextIdentity, string QueryIdentity, long RetainedBytes);
 }

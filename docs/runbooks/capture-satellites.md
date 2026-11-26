@@ -49,6 +49,10 @@ Capture and replay accept normalized CelesTrak CSV/OMM snapshots and retained
 GP JSON snapshots. The manifest carries the source format and credits the
 US Space Force / Space-Track for public GP data distributed by CelesTrak.
 Software & Catalog displays the source credit for the installed snapshot.
+Observatory & location shows that credit alongside the retained pass provenance.
+Current Sky includes the credit in Diagnostics for ordinary and centered
+predictions. The capture input retains its own manifest independently of the
+currently installed source.
 The #528 refresh client currently requests GP JSON. Its two-hour minimum
 between attempts and operator-resumed halt on HTTP errors also apply after
 5xx responses. Prediction makes no provider requests. A supplemental
@@ -168,10 +172,17 @@ does not establish absence outside the requested population/exposure. Source
 retrieval/epoch age and configured geometry remain visible. Exports use the
 existing immutable manifest and selected layer identities.
 
+In **Capture satellite predictions**, turn on **Hide satellite object labels**
+and activate a new graph revision to omit optional names and catalog numbers
+from future captures. The geometry and required diagnostic caption are kept.
+Replay uses the recorded label setting from the original capture.
+
 Only samples inside each declared exposure segment are connected. The existing
 1px stroke, 2px endpoints, bounded labels and prediction/unknown/partial/stale
 captions remain. A partial query qualifies even a prefix containing complete
-child tracks. No full-pass arc is introduced into capture imagery.
+child tracks. Centered views retain one segment per eligible contributing
+exposure with its direct-to-reference transform, highlight the reference and
+leave temporal gaps. The full planning arc lives in Observatory & location.
 
 ## Restart, replay and retention
 

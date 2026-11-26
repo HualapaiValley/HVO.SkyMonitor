@@ -43,7 +43,10 @@ public sealed record CameraAgentSatellitePlanningContext(
 }
 
 /// <summary>A source-named canonical pass. Its boundary kinds distinguish resolved crossings from clipped windows.</summary>
-public sealed record CameraAgentSatellitePassRow(string DisplayName, OrbitalPassSummaryV1 Pass);
+public sealed record CameraAgentSatellitePassRow(string DisplayName, OrbitalPassSummaryV1 Pass)
+{
+    public OrbitalSnapshotSource? Source { get; init; }
+}
 
 /// <summary>
 /// One bounded search session. The facade privately retains its exact original query for selected-pass detail.
@@ -58,7 +61,10 @@ public sealed record CameraAgentSatellitePassSearchView(
     IReadOnlyList<CameraAgentSatellitePassRow> Passes,
     int MatchingObjects,
     int SelectedObjects,
-    DateTimeOffset? MostRecentSourceRetrievedUtc);
+    DateTimeOffset? MostRecentSourceRetrievedUtc)
+{
+    public string? SnapshotProfileVersion { get; init; }
+}
 
 /// <summary>Detail of an exact previously returned parent pass, without a narrowed search or record reselection.</summary>
 public sealed record CameraAgentSatellitePassArcView(
