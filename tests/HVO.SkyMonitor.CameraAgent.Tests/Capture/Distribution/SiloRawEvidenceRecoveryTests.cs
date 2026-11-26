@@ -106,9 +106,18 @@ public sealed class SiloRawEvidenceRecoveryTests
 
         var retry = await ingress.ClaimAsync(secondaryDefinition, "retry", fixture.Configuration, token).ConfigureAwait(false);
         Assert.IsNotNull(retry);
+        Assert.IsTrue(retry.SiloEvidenceVisibleAtClaim);
         Assert.AreEqual(1, retry.Attempt);
         Assert.AreEqual(CaptureLaneHandlerResult.Success,
             await new SecondaryEvidenceReader(artifacts).HandleAsync(retry.Context, token).ConfigureAwait(false));
+        if (publishBeforeFailure)
+        {
+            // Even with a pre-visibility sample, a second failure cannot reuse the lane's restoration.
+            Assert.AreEqual(CaptureLaneHandlerOutcome.TerminalFailure,
+                await ingress.FailAsync(retry with { SiloEvidenceVisibleAtClaim = false }, secondaryFailure, token)
+                    .ConfigureAwait(false));
+            Assert.AreEqual(2L, await CountRestorationsAsync().ConfigureAwait(false));
+        }
 
         Task<long> CountRestorationsAsync() => ScalarLongAsync(connection, """
             SELECT COUNT(*) FROM raw_capture_stage_events
@@ -124,6 +133,125 @@ public sealed class SiloRawEvidenceRecoveryTests
     }
 
     [TestMethod]
+    [DataRow("standard", "evidence-unavailable")]
+    [DataRow("secondary", "evidence-invalid")]
+    public async Task PublishedSiloEvidenceFailureQuarantinesRequiredLane(string name, string reason)
+    {
+        using var fixture = CreateFixture(new()
+        {
+            SecondaryLanes = [new SecondaryCaptureLaneOptions { Name = "secondary", Enabled = true, Required = true }]
+        });
+        var token = CancellationToken.None;
+        var (settings, store) = await CreateRecoverySiloAsync().ConfigureAwait(false);
+        using var storage = new SiloInstalledStorage(settings, fixture.Options, fixture.Time, new SiloTestFaults(),
+            decorateReadStore: null, store, new SiloTestPayloads());
+        var artifacts = new SiloArtifactStorage(storage, fixture.Time);
+        var state = new RawIngressState(fixture.Time);
+        using var telemetry = new RawIngressTelemetry(state);
+        using var ingress = new RawCaptureIngress(fixture.Options, new FixedCapacityProvider(), state, fixture.Time,
+            telemetry, NullLogger<RawCaptureIngress>.Instance, new NullRawIngressFaultInjector(), fixture.Policy,
+            laneState: fixture.LaneState, silo: storage, siloSettings: settings, siloArtifacts: artifacts);
+        await storage.VerifyReadinessAsync(token).ConfigureAwait(false);
+        var capture = await ingress.AcceptAsync(fixture.Configuration, fixture.CreateSubmission(0), token).ConfigureAwait(false);
+        Assert.IsNotNull(capture);
+        Assert.IsNull((await ingress.PublishSiloAdmissionsAsync(16, token).ConfigureAwait(false)).Status);
+        Assert.IsFalse(File.Exists(capture.StoredFrame.AbsolutePath));
+
+        var lane = fixture.Policy.Definitions.Single(lane => lane.Name == name);
+        var lease = await ingress.ClaimAsync(lane, "test", fixture.Configuration, token).ConfigureAwait(false);
+        Assert.IsNotNull(lease);
+        Assert.IsTrue(lease.SiloEvidenceVisibleAtClaim);
+        var result = name == "standard" ? CaptureLaneHandlerResult.Terminal(reason) : CaptureLaneHandlerResult.Retry(reason);
+        Assert.AreEqual(CaptureLaneHandlerOutcome.TerminalFailure, await ingress.FailAsync(lease, result, token).ConfigureAwait(false));
+        Assert.IsNull(await ingress.ClaimAsync(lane, "retry", fixture.Configuration, token).ConfigureAwait(false));
+
+        using var connection = await OpenAsync(fixture.Root).ConfigureAwait(false);
+        using var disposition = connection.CreateCommand();
+        disposition.CommandText = "SELECT state, failure_reason, attempt_count FROM capture_lane_work WHERE lane_name = $lane;";
+        disposition.Parameters.AddWithValue("$lane", name);
+        using (var reader = await disposition.ExecuteReaderAsync(token).ConfigureAwait(false))
+        {
+            Assert.IsTrue(await reader.ReadAsync(token).ConfigureAwait(false));
+            Assert.AreEqual(("quarantined", reason, 1L), (reader.GetString(0), reader.GetString(1), reader.GetInt64(2)));
+        }
+        Assert.AreEqual(0L, await ScalarLongAsync(connection, """
+            SELECT COUNT(*) FROM raw_capture_stage_events WHERE stage_key GLOB 'raw-evidence-silo-restored.*';
+            """).ConfigureAwait(false));
+        Assert.AreEqual(CaptureLaneAvailability.Unhealthy, fixture.LaneState.Snapshot.Availability);
+        Assert.AreEqual("required-quarantine", fixture.LaneState.Snapshot.Reason);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task SiloAdmissionSettlementClearsRetentionAndPressureWithRequiredTransientLane(bool replayReclaimIntent)
+    {
+        using var fixture = CreateFixture(new(), transient: RequiredTransient());
+        var token = CancellationToken.None;
+        var (settings, store) = await CreateRecoverySiloAsync().ConfigureAwait(false);
+        var faults = new SiloTestFaults();
+        using var storage = new SiloInstalledStorage(settings, fixture.Options, fixture.Time, faults,
+            decorateReadStore: null, store, new SiloTestPayloads());
+        var artifacts = new SiloArtifactStorage(storage, fixture.Time);
+        var state = new RawIngressState(fixture.Time);
+        using var telemetry = new RawIngressTelemetry(state);
+        var reclaim = new InterruptReclaim();
+        await storage.VerifyReadinessAsync(token).ConfigureAwait(false);
+        await QuarantineAndPublishAsync().ConfigureAwait(false);
+        using var connection = await OpenAsync(fixture.Root).ConfigureAwait(false);
+        if (replayReclaimIntent)
+        {
+            Assert.AreEqual(1L, await ScalarLongAsync(connection, "SELECT COUNT(*) FROM silo_raw_admissions;").ConfigureAwait(false));
+            using var restarted = CreateIngress();
+            await restarted.InitializeAsync(token).ConfigureAwait(false);
+        }
+
+        AssertRecoveredLaneHealth(fixture.LaneState);
+        Assert.AreEqual(0L, await ScalarLongAsync(connection, "SELECT MAX(pressure_state) FROM capture_lane_definitions;")
+            .ConfigureAwait(false));
+        Assert.AreEqual(0L, await ScalarLongAsync(connection, "SELECT retention_hold FROM raw_captures;").ConfigureAwait(false));
+        Assert.AreEqual(0L, await ScalarLongAsync(connection, "SELECT COUNT(*) FROM silo_raw_admissions;").ConfigureAwait(false));
+        Assert.AreEqual(1L, await ScalarLongAsync(connection, """
+            SELECT COUNT(*) FROM capture_lane_work WHERE lane_name = 'standard' AND state = 'abandoned';
+            """).ConfigureAwait(false));
+
+        RawCaptureIngress CreateIngress() => new(fixture.Options, new FixedCapacityProvider(), state, fixture.Time,
+            telemetry, NullLogger<RawCaptureIngress>.Instance, reclaim, fixture.Policy,
+            laneState: fixture.LaneState, silo: storage, siloSettings: settings, siloArtifacts: artifacts);
+
+        async Task QuarantineAndPublishAsync()
+        {
+            using var ingress = CreateIngress();
+            var capture = await ingress.AcceptAsync(fixture.Configuration, fixture.CreateSubmission(0), token).ConfigureAwait(false);
+            Assert.IsNotNull(capture);
+            var transient = await ClaimAsync("transient").ConfigureAwait(false);
+            await ingress.CompleteAsync(transient, token).ConfigureAwait(false);
+            var standard = await ClaimAsync("standard").ConfigureAwait(false);
+            Assert.AreEqual(CaptureLaneHandlerOutcome.TerminalFailure,
+                await ingress.FailAsync(standard, CaptureLaneHandlerResult.Terminal("evidence-invalid"), token).ConfigureAwait(false));
+            await Assert.ThrowsExactlyAsync<CaptureLaneBackpressureException>(() => ingress.EnsureCanAcceptAsync(4, token).AsTask())
+                .ConfigureAwait(false);
+            using (var before = await OpenAsync(fixture.Root).ConfigureAwait(false))
+            {
+                Assert.AreEqual(2L, await ScalarLongAsync(before, "SELECT pressure_state FROM capture_lane_definitions WHERE lane_name = 'standard';")
+                    .ConfigureAwait(false));
+                Assert.AreEqual(1L, await ScalarLongAsync(before, "SELECT retention_hold FROM raw_captures;").ConfigureAwait(false));
+            }
+            reclaim.Armed = replayReclaimIntent;
+            var status = (await ingress.PublishSiloAdmissionsAsync(16, token).ConfigureAwait(false)).Status;
+            Assert.AreEqual(replayReclaimIntent ? "silo-raw-admission-failed" : null, status);
+
+            async Task<CaptureLaneLease> ClaimAsync(string name)
+            {
+                var lane = fixture.Policy.Definitions.Single(lane => lane.Name == name);
+                var lease = await ingress.ClaimAsync(lane, "test", fixture.Configuration, token).ConfigureAwait(false);
+                Assert.IsNotNull(lease);
+                return lease;
+            }
+        }
+    }
+
+    [TestMethod]
     [DataRow(RawEvidenceReleaseAction.Revalidate)]
     [DataRow(RawEvidenceReleaseAction.WriteOff)]
     public async Task OperatorEvidenceReleaseClearsDurableRequiredLanePressure(RawEvidenceReleaseAction action)
@@ -131,7 +259,7 @@ public sealed class SiloRawEvidenceRecoveryTests
         using var fixture = CreateFixture(new()
         {
             SecondaryLanes = [new SecondaryCaptureLaneOptions { Name = "secondary", Enabled = true, Required = true }]
-        });
+        }, transient: RequiredTransient());
         var token = CancellationToken.None;
         var receipt = await fixture.AcceptAsync(0).ConfigureAwait(false);
         foreach (var name in new[] { "standard", "secondary" })
@@ -160,6 +288,22 @@ public sealed class SiloRawEvidenceRecoveryTests
         AssertRecoveredLaneHealth(fixture.LaneState);
         Assert.AreEqual(0L, await ScalarLongAsync(connection, "SELECT MAX(pressure_state) FROM capture_lane_definitions;")
             .ConfigureAwait(false));
+    }
+
+    private static TransientDetectionOptions RequiredTransient() => new() { Mode = TransientOperatingMode.Edge, Required = true };
+
+    private sealed class InterruptReclaim : IRawIngressFaultInjector
+    {
+        public bool Armed { get; set; }
+
+        public void Inject(RawIngressFaultPoint point) { }
+
+        public void AfterSiloStagingReclaimed()
+        {
+            if (!Armed) return;
+            Armed = false;
+            throw new IOException("Interrupted before Silo admission settlement.");
+        }
     }
 
     private static void AssertRecoveredLaneHealth(CaptureLaneState state)

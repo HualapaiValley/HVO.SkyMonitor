@@ -98,13 +98,12 @@ internal sealed class SiloArtifactStorage(SiloInstalledStorage storage, TimeProv
         return IsArtifactRetainedAsync(id, cancellationToken);
     }
 
-    internal async ValueTask<bool> HasRawEvidenceAsync(ReconstructionDescriptor descriptor, CancellationToken cancellationToken)
-    {
-        var artifactId = descriptor.Artifact.ArtifactId;
-        return await HasMemberAsync(artifactId, CaptureContractJson.ComputeDescriptorSha256(descriptor), cancellationToken)
-                   .ConfigureAwait(false) &&
-               await HasMemberAsync(artifactId, RawEvidenceRevision, cancellationToken).ConfigureAwait(false);
-    }
+    // Raw payload and sidecar visibility must come from one local index snapshot.
+    internal ValueTask<bool> HasRawEvidenceAsync(ReconstructionDescriptor descriptor, CancellationToken cancellationToken) =>
+        storage.BindingVerified
+            ? storage.Index.HasVisibleMemberPairAsync(descriptor.Artifact.ArtifactId.ToString("D"),
+                CaptureContractJson.ComputeDescriptorSha256(descriptor), RawEvidenceRevision, cancellationToken)
+            : ValueTask.FromResult(false);
 
     public ValueTask<bool> HasMemberAsync(Guid artifactId, string revision, CancellationToken cancellationToken) =>
         storage.BindingVerified

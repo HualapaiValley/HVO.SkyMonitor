@@ -152,7 +152,8 @@ internal sealed partial class SqliteRawCaptureJournal
                 JOIN silo_raw_admissions pending ON pending.raw_capture_row_id = raw.raw_capture_row_id
                 WHERE capture_id = $capture AND manifest_sha256 = $hash
                     AND NOT EXISTS (SELECT 1 FROM raw_capture_stage_events event
-                        WHERE event.raw_capture_row_id = raw.raw_capture_row_id AND event.stage_key = 'raw-evidence-written-off');
+                        WHERE event.raw_capture_row_id = raw.raw_capture_row_id AND event.candidate_id = ''
+                          AND event.stage_key IN ('raw-evidence-written-off', 'raw-evidence-silo-published-failure'));
                 """;
             if (await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is long rowId)
             {
@@ -168,6 +169,9 @@ internal sealed partial class SqliteRawCaptureJournal
                     .ConfigureAwait(false);
                 if (lanesReleased)
                 {
+                    var hasExecutionPins = await HasExecutionPinsAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+                    await SqliteCaptureLaneStore.RecomputeRetentionHoldAsync(
+                        connection, transaction, rowId, hasExecutionPins, cancellationToken).ConfigureAwait(false);
                     await SqliteCaptureLaneStore.RecomputeRequiredPressureAsync(
                         connection, transaction, _distributionOptions, now, cancellationToken).ConfigureAwait(false);
                 }
@@ -186,13 +190,30 @@ internal sealed partial class SqliteRawCaptureJournal
         return evidenceRestored || lanesReleased;
     }
 
-    internal static async Task RecordSiloEvidenceRestorationAsync(SqliteCommand command, CancellationToken cancellationToken)
+    internal static async Task RecordSiloEvidenceRestorationAsync(SqliteCommand command, CancellationToken cancellationToken,
+        string? laneStageKey = null)
     {
         command.CommandText = """
             INSERT INTO raw_capture_stage_events(raw_capture_row_id, stage_key, state, source, event_unix_ms)
             VALUES ($raw, $stage, 'evidence-restored', 'silo-publication', $now);
             """;
-        command.Parameters.AddWithValue("$stage", $"raw-evidence-silo-restored.{Guid.NewGuid():N}");
+        command.Parameters.AddWithValue("$stage", laneStageKey ?? $"raw-evidence-silo-restored.{Guid.NewGuid():N}");
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    internal static async Task RecordPublishedSiloEvidenceFailureAsync(SqliteConnection connection, SqliteTransaction transaction,
+        long rawRowId, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        // A lease can observe P4 before the publisher reacquires the lifecycle gate. Preserve failures
+        // of the exact published pair across settlement, reclaim replay and sibling lease completion.
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            INSERT OR IGNORE INTO raw_capture_stage_events(raw_capture_row_id, stage_key, state, source, event_unix_ms)
+            VALUES ($raw, 'raw-evidence-silo-published-failure', 'evidence-failed', 'silo-publication', $now);
+            """;
+        command.Parameters.AddWithValue("$raw", rawRowId);
+        command.Parameters.AddWithValue("$now", now.ToUnixTimeMilliseconds());
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 

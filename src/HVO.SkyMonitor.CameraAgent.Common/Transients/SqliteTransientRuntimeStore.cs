@@ -2218,10 +2218,7 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
         {
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
             EnsureDatabaseFilesArePhysical();
-            connection.CreateFunction<string?, string>(
-                "hvo_sha256",
-                static value => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value ?? string.Empty))),
-                isDeterministic: true);
+            Sqlite.SqliteHashFunctions.RegisterSha256(connection);
             return connection;
         }
         catch

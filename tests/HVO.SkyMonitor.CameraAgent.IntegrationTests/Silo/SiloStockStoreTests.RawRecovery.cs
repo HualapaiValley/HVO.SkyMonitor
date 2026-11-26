@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Amazon.S3.Model;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
@@ -59,37 +60,12 @@ public sealed partial class SiloStockStoreTests
         var root = Directory.CreateTempSubdirectory("silo-lane-recovery-").FullName;
         var fault = new InterruptRawRecovery();
         using var host = new CameraAgentIntegrationFixture();
-        var keyDirectory = Directory.CreateDirectory(Path.Combine(root, "settings")).FullName;
-        foreach (var (key, value) in settings)
-            await File.WriteAllTextAsync(Path.Combine(keyDirectory, key.Replace(":", "__", StringComparison.Ordinal)), value, token)
-                .ConfigureAwait(false);
-        var priorKeyDirectory = Environment.GetEnvironmentVariable(DeploymentKeyPerFile.DirectoryVariable);
-        var priorSettingsPath = Environment.GetEnvironmentVariable(DeploymentLocalSettings.PathVariable);
-        try
-        {
-            Environment.SetEnvironmentVariable(DeploymentKeyPerFile.DirectoryVariable, keyDirectory);
-            Environment.SetEnvironmentVariable(DeploymentLocalSettings.PathVariable, Path.Combine(root, DeploymentLocalSettings.FileName));
-            await host.InitializeAsync(services =>
-            {
-                services.RemoveAll<IHostedService>();
-                services.AddSingleton<ISiloFaults>(fault);
-            }, settings, root).ConfigureAwait(false);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(DeploymentKeyPerFile.DirectoryVariable, priorKeyDirectory);
-            Environment.SetEnvironmentVariable(DeploymentLocalSettings.PathVariable, priorSettingsPath);
-        }
+        await InitializeSiloLaneRecoveryHostAsync(host, settings, root, fault, token).ConfigureAwait(false);
         using var scope = host.CreateCameraAgentScope();
         var services = scope.ServiceProvider;
         var storage = services.GetRequiredService<SiloInstalledStorage>();
         var ingress = services.GetRequiredService<RawCaptureIngress>();
-        var config = NightlyProductFixture.Configuration() with
-        {
-            Pipeline = new([new("ProjectedScene", "scene", DependsOn: ["$raw"])],
-                CapturePipelineSchemaVersions.ExplicitV2, CapturePipelineDependencyPolicy.RejectEnabledDependent)
-        };
-        services.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(config);
+        var config = ConfigureSiloLaneRecovery(services);
         await storage.VerifyReadinessAsync(token).ConfigureAwait(false);
         var capture = await ingress.AcceptAsync(config, RecoverySubmission(), token).ConfigureAwait(false);
         Assert.IsNotNull(capture);
@@ -220,6 +196,138 @@ public sealed partial class SiloStockStoreTests
             var completed = !await reader.IsDBNullAsync(3, token).ConfigureAwait(false);
             return ((reader.GetString(0), failure), reader.GetInt32(2), completed);
         }
+    }
+
+    [TestMethod]
+    [TestCategory("Integration")]
+    [DataRow(false, false)]
+    [DataRow(true, false)]
+    [DataRow(false, true)]
+    public async Task MissingPublishedRawSidecarQuarantinesStandardLane(bool interruptReclaim, bool claimBeforePublication)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromMinutes(3));
+        var token = deadline.Token;
+        var instance = Guid.NewGuid();
+        var binding = new SiloStorageBinding(instance.ToString("D"), CameraAgentSiloBinding.StoreIdFor(instance),
+            CameraAgentSiloBinding.BucketFor(instance));
+        var access = RandomHex(12);
+        var secret = RandomHex(24);
+        var container = BuildStockContainer(access, secret, "on");
+        await using var containerLease = container.ConfigureAwait(false);
+        await container.StartAsync(token).ConfigureAwait(false);
+        var endpoint = Endpoint(container);
+        using var admin = SiloS3ObjectStore.CreateClient(endpoint, access, secret);
+        await CreateVersionedBucketAsync(admin, binding.Bucket, token).ConfigureAwait(false);
+        var writer = await CreateWriterAsync(container, binding, token).ConfigureAwait(false);
+        await InstallBindingAsync(admin, binding, writer.Access, token).ConfigureAwait(false);
+
+        var root = Directory.CreateTempSubdirectory("silo-missing-raw-sidecar-").FullName;
+        var fault = new InterruptRawRecovery();
+        using var host = new CameraAgentIntegrationFixture();
+        var settings = InstalledSettings(binding, endpoint, writer, Guid.NewGuid(), RandomHex(24));
+        await InitializeSiloLaneRecoveryHostAsync(host, settings, root, fault, token).ConfigureAwait(false);
+        using var scope = host.CreateCameraAgentScope();
+        var services = scope.ServiceProvider;
+        var storage = services.GetRequiredService<SiloInstalledStorage>();
+        var ingress = services.GetRequiredService<RawCaptureIngress>();
+        var config = ConfigureSiloLaneRecovery(services);
+        await storage.VerifyReadinessAsync(token).ConfigureAwait(false);
+        var capture = await ingress.AcceptAsync(config, RecoverySubmission(), token).ConfigureAwait(false);
+        Assert.IsNotNull(capture);
+        var descriptor = capture.Manifest.Descriptor;
+        var captureId = descriptor.Capture.CaptureId;
+        var standard = services.GetRequiredService<CaptureLanePolicy>().Definitions.Single(static lane => lane.Name == "standard");
+        var lease = claimBeforePublication ? await ClaimAsync().ConfigureAwait(false) : null;
+        if (interruptReclaim)
+            fault.InterruptReclamation();
+        var publication = await ingress.PublishSiloAdmissionsAsync(16, token).ConfigureAwait(false);
+        Assert.AreEqual(interruptReclaim ? "silo-raw-admission-failed" : null, publication.Status);
+        Assert.AreEqual(SiloStagedState.Visible,
+            (await storage.State.ReadGroupAsync(captureId.ToString("N"), "raw-1", token).ConfigureAwait(false))?.State);
+        Assert.IsFalse(File.Exists(Path.ChangeExtension(capture.StoredFrame.AbsolutePath, ".json")));
+
+        var sidecar = await storage.Index.ReadRoleAsync(new(SiloIdentityKind.Member, descriptor.Artifact.ArtifactId.ToString("D"),
+            SiloArtifactStorage.RawEvidenceRevision), token).ConfigureAwait(false);
+        Assert.IsNotNull(sidecar);
+        var locator = sidecar.Locators.Single(static copy => copy.Eligible && copy.CopyState == "active").Locator;
+        await admin.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = locator.Bucket,
+            Key = locator.Key,
+            VersionId = locator.VersionId
+        }, token).ConfigureAwait(false);
+
+        lease ??= await ClaimAsync().ConfigureAwait(false);
+        Assert.AreEqual(!claimBeforePublication, lease.SiloEvidenceVisibleAtClaim);
+        var result = await services.GetRequiredService<StandardCaptureLaneHandler>().HandleAsync(lease.Context, token).ConfigureAwait(false);
+        Assert.AreEqual(CaptureLaneHandlerOutcome.TerminalFailure, result.Outcome);
+        Assert.AreEqual("evidence-unavailable", result.Reason);
+        Assert.IsTrue(result.PublishedSiloEvidenceFailed);
+        Assert.AreEqual(CaptureLaneHandlerOutcome.TerminalFailure, await ingress.FailAsync(lease, result, token).ConfigureAwait(false));
+
+        if (interruptReclaim)
+            Assert.IsNull((await ingress.PublishSiloAdmissionsAsync(16, token).ConfigureAwait(false)).Status);
+        using var connection = await OpenRawJournalAsync(root, token).ConfigureAwait(false);
+        using var disposition = connection.CreateCommand();
+        disposition.CommandText = """
+            SELECT state, failure_reason, attempt_count FROM capture_lane_work
+            WHERE lane_name = 'standard' AND state = 'quarantined';
+            """;
+        using (var reader = await disposition.ExecuteReaderAsync(token).ConfigureAwait(false))
+        {
+            Assert.IsTrue(await reader.ReadAsync(token).ConfigureAwait(false));
+            Assert.AreEqual(("quarantined", "evidence-unavailable", 1L), (reader.GetString(0), reader.GetString(1), reader.GetInt64(2)));
+        }
+        Assert.AreEqual(0L, await CountSiloRestorationEventsAsync(connection, captureId, token).ConfigureAwait(false));
+        var snapshot = services.GetRequiredService<CaptureLaneState>().Snapshot;
+        Assert.AreEqual(CaptureLaneAvailability.Unhealthy, snapshot.Availability);
+        Assert.AreEqual("required-quarantine", snapshot.Reason);
+
+        async Task<CaptureLaneLease> ClaimAsync()
+        {
+            var claimed = await ingress.ClaimAsync(standard, "silo-test", config, token).ConfigureAwait(false);
+            Assert.IsNotNull(claimed);
+            return claimed;
+        }
+    }
+
+    private static async Task InitializeSiloLaneRecoveryHostAsync(CameraAgentIntegrationFixture host,
+        Dictionary<string, string?> settings, string root, InterruptRawRecovery fault, CancellationToken token)
+    {
+        var keyDirectory = Directory.CreateDirectory(Path.Combine(root, "settings")).FullName;
+        foreach (var (key, value) in settings)
+            await File.WriteAllTextAsync(Path.Combine(keyDirectory, key.Replace(":", "__", StringComparison.Ordinal)), value, token)
+                .ConfigureAwait(false);
+        var priorKeyDirectory = Environment.GetEnvironmentVariable(DeploymentKeyPerFile.DirectoryVariable);
+        var priorSettingsPath = Environment.GetEnvironmentVariable(DeploymentLocalSettings.PathVariable);
+        try
+        {
+            Environment.SetEnvironmentVariable(DeploymentKeyPerFile.DirectoryVariable, keyDirectory);
+            Environment.SetEnvironmentVariable(DeploymentLocalSettings.PathVariable, Path.Combine(root, DeploymentLocalSettings.FileName));
+            await host.InitializeAsync(services =>
+            {
+                services.RemoveAll<IHostedService>();
+                services.AddSingleton<ISiloFaults>(fault);
+                services.AddSingleton<IRawIngressFaultInjector>(fault);
+            }, settings, root).ConfigureAwait(false);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(DeploymentKeyPerFile.DirectoryVariable, priorKeyDirectory);
+            Environment.SetEnvironmentVariable(DeploymentLocalSettings.PathVariable, priorSettingsPath);
+        }
+    }
+
+    private static CameraModuleConfig ConfigureSiloLaneRecovery(IServiceProvider services)
+    {
+        var config = NightlyProductFixture.Configuration() with
+        {
+            Pipeline = new([new("ProjectedScene", "scene", DependsOn: ["$raw"])],
+                CapturePipelineSchemaVersions.ExplicitV2, CapturePipelineDependencyPolicy.RejectEnabledDependent)
+        };
+        services.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(config);
+        return config;
     }
 
     private static CaptureLoopSubmission RecoverySubmission()

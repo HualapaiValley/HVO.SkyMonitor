@@ -1957,6 +1957,7 @@ internal sealed partial class SqliteRawCaptureJournal(
     {
         await Sqlite.SqliteConnectionConfigurationGate.RunAsync(async () =>
         {
+            Sqlite.SqliteHashFunctions.RegisterSha256(connection);
             await ExecuteNonQueryAsync(connection, null, $"PRAGMA busy_timeout = {_busyTimeoutSeconds * 1000};", cancellationToken).ConfigureAwait(false);
             await ExecuteNonQueryAsync(connection, null, "PRAGMA foreign_keys = ON;", cancellationToken).ConfigureAwait(false);
             var journalMode = await ExecuteScalarStringAsync(connection, "PRAGMA journal_mode = WAL;", cancellationToken).ConfigureAwait(false);

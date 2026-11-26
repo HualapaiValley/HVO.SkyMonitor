@@ -1156,13 +1156,17 @@ internal sealed partial class RawCaptureIngress :
         CancellationToken cancellationToken)
     {
         var started = System.Diagnostics.Stopwatch.GetTimestamp();
-        var actualOutcome = await _laneStore.FailAsync(lease, result, cancellationToken).ConfigureAwait(false);
+        var (actualOutcome, siloEvidenceRestored) = await _laneStore.FailAsync(lease, result, cancellationToken).ConfigureAwait(false);
         var reason = NormalizeLaneReason(result.Reason);
         // This outcome is what makes the raw pass verify the capture's payload in full. It commits after the handler
         // reported the evidence, so a pass that report started can have run before it.
         if (actualOutcome == CaptureLaneHandlerOutcome.TerminalFailure && reason == "evidence-unavailable")
             RequireReconciliation();
-        if (actualOutcome is CaptureLaneHandlerOutcome.RetryableFailure or CaptureLaneHandlerOutcome.Deferred)
+        if (siloEvidenceRestored && actualOutcome == CaptureLaneHandlerOutcome.RetryableFailure)
+        {
+            _logger.CaptureLaneSiloEvidenceRestored(lease.Lane);
+        }
+        else if (actualOutcome is CaptureLaneHandlerOutcome.RetryableFailure or CaptureLaneHandlerOutcome.Deferred)
         {
             _logger.CaptureLaneRetryScheduled(
                 lease.Lane,
@@ -1173,7 +1177,7 @@ internal sealed partial class RawCaptureIngress :
         {
             // Abandonment can repeat for every frame while a superseded plan stays active; the condition itself is
             // reported once through processing health, so the per-frame record stays at Debug.
-            _logger.CaptureLaneAbandoned(lease.Lane, reason);
+            _logger.CaptureLaneAbandoned(lease.Lane, siloEvidenceRestored ? "raw-evidence-revalidated" : reason);
         }
         else
         {
