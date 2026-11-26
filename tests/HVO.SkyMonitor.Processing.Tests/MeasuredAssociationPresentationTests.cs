@@ -148,4 +148,159 @@ public sealed class MeasuredAssociationPresentationTests
         Assert.AreEqual(MeasuredAssociationPresentation.EmptyExpectedNoPredictionsReason,
             MeasuredAssociationPresentation.ClassifyEmptyExpectedLayerReason(emptyAssoc));
     }
+
+    [TestMethod]
+    public async Task CompatibleRenderSceneExpectedNotDetectedPreservesUnmatchedObjectsAbsentFromRenderScene()
+    {
+        // Astra D3: when a compatible VirtualRenderAuthoritative render scene omits a catalog object (e.g. Mars or an
+        // absent star) that is present in the bound prediction/association evidence, the diagnostic MUST still emit it.
+        var ephemeris = new AstronomyEnginePlanetEphemeris();
+        var utc = new DateTimeOffset(2026, 1, 15, 6, 0, 0, TimeSpan.Zero);
+        var site = new ObserverLocation(35.347, -113.878, 520);
+        var jupiterPos = ephemeris.GetPosition(SolarSystemBody.Jupiter, utc);
+        var jupiterAltAz = CoordinateTransforms.EquatorialToHorizontal(
+            EquatorialPrecession.PrecessJ2000(jupiterPos.EquatorialJ2000, utc), utc, site.LatitudeDegrees, site.LongitudeDegrees);
+        var projection = new ProjectionContext(ProjectionModel.Perspective, 96, 96, 500, 500, 192, 192,
+            ProjectionAperture.Rectangular, BoresightAltitudeDegrees: jupiterAltAz.AltitudeDegrees,
+            BoresightAzimuthDegrees: jupiterAltAz.AzimuthDegrees);
+        var projector = ProjectorFactory.Create(projection);
+        CelestialCatalogObject MakeStar(string id, string name, double dx, double dy, double mag)
+        {
+            var altAz = projector.Unproject(new(96 + dx, 96 + dy))!.Value;
+            var eq = EquatorialPrecession.PrecessToJ2000(
+                CoordinateTransforms.HorizontalToEquatorial(altAz, utc, site.LatitudeDegrees, site.LongitudeDegrees), utc);
+            return new(id, name, eq.RightAscensionHours, eq.DeclinationDegrees, mag);
+        }
+        var matchedStar = MakeStar("star:matched", "Matched Star", 20, 12, 1.5);
+        var absentStar = MakeStar("star:absent", "Absent Star", -26, 18, 2.0);
+        var marsAltAz = projector.Unproject(new(96 - 24, 96 - 22))!.Value;
+        var marsEq = EquatorialPrecession.PrecessToJ2000(
+            CoordinateTransforms.HorizontalToEquatorial(marsAltAz, utc, site.LatitudeDegrees, site.LongitudeDegrees), utc);
+        var predEphemeris = new FixedPlanetEphemeris(new Dictionary<SolarSystemBody, SolarSystemPosition>
+        {
+            [SolarSystemBody.Mars] = new(marsEq, 0.4)
+        }, ephemeris.ModelVersion);
+        var renderEphemeris = new FixedPlanetEphemeris(new Dictionary<SolarSystemBody, SolarSystemPosition>(), ephemeris.ModelVersion);
+        var catalogMeta = new CatalogMetadata("fixture", "1", new Uri("https://example.test/catalog"), new string('C', 64), "test", "v1");
+
+        var predVisible = await new VisibleSceneBuilder(new InMemoryCelestialCatalog([matchedStar, absentStar]), null, predEphemeris)
+            .BuildAsync(new VisibleSceneRequest(utc, site, projection, new CatalogQuery(6.5, 100), catalogMeta,
+                projectionVersion: "calibration-v1", solarSystemBodies: [SolarSystemBody.Mars])).ConfigureAwait(false);
+        var predScene = ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, predVisible,
+            ProjectedSceneImageTransformV1.Identity(192, 192),
+            new ProjectedSceneSource(CaptureId, ArtifactId, DescriptorIdentity), "calibration-v1", "calibration-v1");
+
+        // Render scene contains ONLY matchedStar (omitting both Mars and absentStar from scene.Objects).
+        var renderVisible = await new VisibleSceneBuilder(new InMemoryCelestialCatalog([matchedStar]), null, renderEphemeris)
+            .BuildAsync(new VisibleSceneRequest(utc, site, projection, new CatalogQuery(6.5, 100), catalogMeta,
+                projectionVersion: "rig-projection-v1")).ConfigureAwait(false);
+        var renderScene = ProjectedSceneJson.Create(ProjectedSceneKind.VirtualRenderAuthoritative, renderVisible,
+            ProjectedSceneImageTransformV1.Identity(192, 192),
+            new ProjectedSceneSource(CaptureId, ArtifactId, DescriptorIdentity), "calibration-v1", "rig-projection-v1");
+
+        Assert.IsFalse(renderScene.Objects.Any(static o => o.Id == "solar-system:Mars"));
+        Assert.IsFalse(renderScene.Objects.Any(static o => o.Id == "star:absent"));
+
+        // Run real association on an image containing ONLY matchedStar.
+        var samples = Field(192, 192);
+        AddNoise(samples, 5263, 2.0);
+        AddGaussian(samples, predScene.Objects.Single(static o => o.Id == "star:matched").Pixel, 1.25, 15_000, 192);
+        var raw = RawArtifact(samples, HVO.SkyMonitor.AgentCore.CameraPixelFormat.Mono16, 192, 192);
+        var outcome = await new ProcessingRecipeExecutor().ExecuteAsync(Request(raw, predScene)).ConfigureAwait(false);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status, outcome.ReasonCode);
+        var evidence = MeasuredStellarAssociationJson.Parse(outcome.Products.Single().Payload).Associations!;
+
+        var exactDiag = MeasuredAssociationPresentation.CreateExpectedNotDetectedPayload(evidence, predScene);
+        var compatibleDiag = MeasuredAssociationPresentation.CreateExpectedNotDetectedPayload(
+            renderScene, evidence, allowCompatibleExposureAssociations: true);
+
+        Assert.HasCount(2, exactDiag.Markers);
+        Assert.HasCount(2, compatibleDiag.Markers, "Compatible render scene must NOT drop Mars or absentStar missing from scene.Objects.");
+        Assert.IsTrue(compatibleDiag.TextBlocks.Any(static b => b.Lines[0] == "Mars (expected)"),
+            $"Missing Mars diagnostic label: [{string.Join(", ", compatibleDiag.TextBlocks.Select(b => b.Lines[0]))}]");
+        Assert.IsTrue(compatibleDiag.TextBlocks.Any(static b => b.Lines[0].EndsWith(AnnotationLabelFormatter.ExpectedSuffix, StringComparison.Ordinal) &&
+            b.Lines[0].Contains("absent", StringComparison.OrdinalIgnoreCase)));
+    }
+
+    [TestMethod]
+    public async Task RetainedV1StarOnlyAssociationsWithScenePlanetsNeverClaimsAllPredictionsMatched()
+    {
+        // Astra D4: a retained v1 star-only association product with all stars matched, paired with a scene containing
+        // Jupiter and Mars, must surface unassessed planets and must NEVER report expected.all-predictions-matched.
+        var ephemeris = new AstronomyEnginePlanetEphemeris();
+        var utc = new DateTimeOffset(2026, 1, 15, 6, 0, 0, TimeSpan.Zero);
+        var site = new ObserverLocation(35.347, -113.878, 520);
+        var jupiterPos = ephemeris.GetPosition(SolarSystemBody.Jupiter, utc);
+        var jupiterAltAz = CoordinateTransforms.EquatorialToHorizontal(
+            EquatorialPrecession.PrecessJ2000(jupiterPos.EquatorialJ2000, utc), utc, site.LatitudeDegrees, site.LongitudeDegrees);
+        var projection = new ProjectionContext(ProjectionModel.Perspective, 96, 96, 500, 500, 192, 192,
+            ProjectionAperture.Rectangular, BoresightAltitudeDegrees: jupiterAltAz.AltitudeDegrees,
+            BoresightAzimuthDegrees: jupiterAltAz.AzimuthDegrees);
+        var projector = ProjectorFactory.Create(projection);
+        var starAltAz = projector.Unproject(new(124, 114))!.Value;
+        var starEq = EquatorialPrecession.PrecessToJ2000(
+            CoordinateTransforms.HorizontalToEquatorial(starAltAz, utc, site.LatitudeDegrees, site.LongitudeDegrees), utc);
+        var marsAltAz = projector.Unproject(new(68, 74))!.Value;
+        var marsEq = EquatorialPrecession.PrecessToJ2000(
+            CoordinateTransforms.HorizontalToEquatorial(marsAltAz, utc, site.LatitudeDegrees, site.LongitudeDegrees), utc);
+        var fixedEphem = new FixedPlanetEphemeris(new Dictionary<SolarSystemBody, SolarSystemPosition>
+        {
+            [SolarSystemBody.Jupiter] = jupiterPos,
+            [SolarSystemBody.Mars] = new(marsEq, 0.5)
+        }, ephemeris.ModelVersion);
+        var star = new CelestialCatalogObject("star:v1-matched", "V1 Matched", starEq.RightAscensionHours, starEq.DeclinationDegrees, 1.4);
+        var meta = new CatalogMetadata("fixture", "1", new Uri("https://example.test/catalog"), new string('C', 64), "test", "v1");
+        var visibleWithPlanets = await new VisibleSceneBuilder(new InMemoryCelestialCatalog([star]), null, fixedEphem)
+            .BuildAsync(new VisibleSceneRequest(utc, site, projection, new CatalogQuery(6.5, 100), meta,
+                projectionVersion: "perspective-v1", solarSystemBodies: [SolarSystemBody.Jupiter, SolarSystemBody.Mars])).ConfigureAwait(false);
+        var sceneWithPlanets = ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, visibleWithPlanets,
+            ProjectedSceneImageTransformV1.Identity(192, 192),
+            new ProjectedSceneSource(CaptureId, ArtifactId, DescriptorIdentity), "calibration-v1", "perspective-v1");
+
+        var starObj = sceneWithPlanets.Objects.Single(static o => o.Id == "star:v1-matched");
+        var v1StarOnly = new MeasuredStellarAssociationsV1(
+            MeasuredStellarAssociationsV1.V1SchemaVersion,
+            new(CaptureId, ArtifactId, DescriptorIdentity, HVO.SkyMonitor.AgentCore.FrameArtifactRole.Raw, "raw",
+                new string('1', 64), HVO.SkyMonitor.AgentCore.CameraPixelFormat.Mono16, 192, 192),
+            new(sceneWithPlanets.SceneIdentitySha256, sceneWithPlanets.Kind, sceneWithPlanets.Catalog.Name,
+                sceneWithPlanets.Catalog.Version, sceneWithPlanets.Catalog.ChecksumSha256,
+                sceneWithPlanets.Projection.CalibrationVersion, sceneWithPlanets.Projection.AlgorithmVersion,
+                sceneWithPlanets.AstronomyAlgorithmVersion),
+            new(StellarSourceMeasurer.AlgorithmVersion, new string('2', 64), "mono-linear-v1",
+                StellarMeasurementStatus.Completed, 1000, 5, 1, 1, 0),
+            new(MeasuredStellarAssociator.V1AlgorithmVersion, new(), StellarLabelPolicy.V1Version, new()),
+            [new(starObj.Id, 0, starObj.Magnitude, starObj.Pixel.X, starObj.Pixel.Y, starObj.Pixel.X, starObj.Pixel.Y,
+                0, 0, 5000, 50, 0.01, 0, 0.01, false, 0, false, null, null, true, null)],
+            [],
+            [],
+            PointSourcePlanets: null);
+        Assert.IsTrue(MeasuredStellarAssociationJson.Validate(v1StarOnly).IsValid);
+
+        // Neither overload may claim expected.all-predictions-matched when v1 did not assess planets.
+        Assert.AreEqual(MeasuredAssociationPresentation.EmptyExpectedPlanetsUnassessedReason,
+            MeasuredAssociationPresentation.ClassifyEmptyExpectedLayerReason(v1StarOnly));
+        Assert.AreEqual(MeasuredAssociationPresentation.EmptyExpectedPlanetsUnassessedReason,
+            MeasuredAssociationPresentation.ClassifyEmptyExpectedLayerReason(v1StarOnly, sceneWithPlanets));
+
+        // Expected-not-detected layers surface unassessed Jupiter and Mars as expected diagnostics.
+        var fromAssoc = MeasuredAssociationPresentation.CreateExpectedNotDetectedPayload(v1StarOnly, sceneWithPlanets);
+        var fromScene = MeasuredAssociationPresentation.CreateExpectedNotDetectedPayload(sceneWithPlanets, v1StarOnly);
+        foreach (var layer in new[] { fromAssoc, fromScene })
+        {
+            Assert.HasCount(2, layer.Markers);
+            Assert.IsTrue(layer.TextBlocks.Any(static b => b.Lines[0] == "Jupiter (expected)"));
+            Assert.IsTrue(layer.TextBlocks.Any(static b => b.Lines[0] == "Mars (expected)"));
+        }
+
+        // When bound to a genuinely star-only scene without planets, v1 may truthfully report all-predictions-matched.
+        var starOnlyScene = await StarFieldAsync(("star:only", 0, 0, 1.5)).ConfigureAwait(false);
+        var v1AllStarOnly = AllEligible(starOnlyScene) with
+        {
+            SchemaVersion = MeasuredStellarAssociationsV1.V1SchemaVersion,
+            Method = new(MeasuredStellarAssociator.V1AlgorithmVersion, new(), StellarLabelPolicy.V1Version, new()),
+            PointSourcePlanets = null
+        };
+        Assert.AreEqual(MeasuredAssociationPresentation.EmptyExpectedAllMatchedReason,
+            MeasuredAssociationPresentation.ClassifyEmptyExpectedLayerReason(v1AllStarOnly, starOnlyScene));
+    }
 }

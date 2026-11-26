@@ -51,6 +51,7 @@ The shared descriptors in `HVO.SkyMonitor.Processing` resolve the registered ali
 `ScenePresentationLayer` (case insensitive) at these exact versions:
 
 - `projected-scene-presentation-v12-plain-circle-markers` (retained contract)
+- `projected-scene-presentation-v13-plain-circle-bounded-expected-labels` (retained contract)
 - `projected-scene-presentation-v15-plain-circle-bounded-point-source-labels` (current runtime)
 
 Both describe the same scalar fields and constellation selection list. Resolving a retained descriptor never makes

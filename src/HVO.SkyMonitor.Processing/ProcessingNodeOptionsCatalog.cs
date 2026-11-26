@@ -114,6 +114,7 @@ public sealed class ProcessingNodeOptionsCatalog
     /// <summary>Shipped descriptors and explicitly requested upgrades; reads never apply them.</summary>
     public static ProcessingNodeOptionsCatalog BuiltIn { get; } = new(ProcessingNodeOptionsDescriptors.All,
         [new SceneStylePresentationUpgrade(ProcessingNodeOptionsDescriptors.ScenePresentationLayerV12.StepVersion),
+         new SceneStylePresentationUpgrade(ProcessingNodeOptionsDescriptors.ScenePresentationLayerV13.StepVersion),
          new SceneStylePresentationUpgrade(ProcessingNodeOptionsDescriptors.ScenePresentationLayer.StepVersion)]);
 
     public ImmutableArray<ProcessingNodeOptionsDescriptor> Descriptors { get; }

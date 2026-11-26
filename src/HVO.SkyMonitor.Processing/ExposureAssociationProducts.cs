@@ -117,13 +117,7 @@ public static class ExposureAssociationProducts
             !MatchesBinding(artifact, scene.Source.ArtifactId, lineage, associations.Scene.SceneIdentitySha256))
             return false;
 
-        return associations.Scene.Kind == ProjectedSceneKind.Predicted &&
-            associations.Source.CaptureId == scene.Source.CaptureId &&
-            associations.Source.ArtifactId == scene.Source.ArtifactId &&
-            ExposureMeasurementProducts.Same(associations.Source.DescriptorIdentitySha256, scene.Source.ArtifactIdentitySha256) &&
-            associations.Source.WidthPixels == scene.ImageTransform.OutputWidthPixels &&
-            associations.Source.HeightPixels == scene.ImageTransform.OutputHeightPixels &&
-            string.Equals(associations.Scene.CalibrationVersion, scene.Projection.CalibrationVersion, StringComparison.Ordinal);
+        return PresentationLayerProducers.AreCompatibleExposureAssociations(associations, scene);
     }
 
     private static bool MatchesBinding(
@@ -178,7 +172,8 @@ public static class ExposureAssociationProducts
             evidence.Method.Settings != binding.Settings || evidence.Method.LabelPolicy != binding.LabelPolicy ||
             evidence.Measurement.DetectionCount != measurement.Sources.Detections.Count ||
             evidence.Associations.Any(member => !MeasuredStellarAssociator.MatchesDetection(member, measurement.Sources.Detections)) ||
-            evidence.PointSourcePlanets?.Associations.Any(member => !MeasuredStellarAssociator.MatchesDetection(member, measurement.Sources.Detections)) == true)
+            evidence.PointSourcePlanets?.Associations.Any(member => !MeasuredStellarAssociator.MatchesDetection(member, measurement.Sources.Detections)) == true ||
+            evidence.UnassociatedDetections.Any(member => !MeasuredStellarAssociator.MatchesDetection(member, measurement.Sources.Detections)))
             throw new InvalidDataException("The association uses different measured stellar evidence.");
     }
 

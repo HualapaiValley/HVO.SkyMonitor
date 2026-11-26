@@ -46,6 +46,9 @@ public static class SceneStylePresentation
     public const string StepAlias = "SceneStylePresentationLayerV1";
     internal const string PreviousProducerVersion = "projected-scene-presentation-v14-explicit-style";
     public const string ProducerVersion = "projected-scene-presentation-v15-explicit-style";
+    public static ProcessingNodeOptionsDescriptor DescriptorV14 { get; } = new(
+        "scene-style-presentation-options-v1", StepAlias, PreviousProducerVersion, "Scene overlay style",
+        "Choose packaged fonts, RGB colours and a point glyph. Mono8 uses the red channel; display composition promotes monochrome bases to RGB. Qualification captions and measured/expected semantics remain fixed.", Options());
     public static ProcessingNodeOptionsDescriptor Descriptor { get; } = new(
         "scene-style-presentation-options-v1", StepAlias, ProducerVersion, "Scene overlay style",
         "Choose packaged fonts, RGB colours and a point glyph. Mono8 uses the red channel; display composition promotes monochrome bases to RGB. Qualification captions and measured/expected semantics remain fixed.", Options());

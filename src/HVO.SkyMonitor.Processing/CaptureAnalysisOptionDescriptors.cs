@@ -30,6 +30,10 @@ public static class CaptureAnalysisOptionDescriptors
                 "Metadata output route. Update variant-specific dependent inputs separately.", "measured-stellar-associations-v1", 128, isIdentifier: true)
         ]);
 
+    public static ProcessingNodeOptionsDescriptor StellarAssociationsV1 { get; } = new(
+        "measured-stellar-association-options-v1", "MeasuredStellarAssociations", MeasuredStellarAssociationRecipe.V1ImplementationVersion,
+        StellarAssociations.Title, StellarAssociations.Help, StellarAssociations.Options);
+
     public static ProcessingNodeOptionsDescriptor Astrometry { get; } = new(
         "measured-astrometry-options-v1", "MeasuredAstrometry", "measured-astrometry-v1", "Measured astrometry",
         "Configure the existing sampled background assessment. The retained catalog, clock, previous accepted assessment and solver settings are preserved. This does not change rig calibration or qualify measured positions.",
@@ -47,6 +51,10 @@ public static class CaptureAnalysisOptionDescriptors
         "Exposure stellar associations",
         "Associate retained exposure centroids with the capture's independent catalog prediction. Association thresholds and label policy are preserved.",
         StellarAssociations.Options.Where(static option => option.Key != "useAstrometryPrediction"));
+
+    public static ProcessingNodeOptionsDescriptor CenteredStellarAssociationsV1 { get; } = new(
+        "exposure-stellar-association-options-v1", ExposureAssociationProducts.StepAlias, ExposureAssociationProducts.V1ImplementationVersion,
+        CenteredStellarAssociations.Title, CenteredStellarAssociations.Help, CenteredStellarAssociations.Options);
 
     public static ProcessingNodeOptionsDescriptor CenteredAstrometry { get; } = new(
         "exposure-measured-astrometry-options-v1", CenteredAstrometryAlias, MeasuredAstrometryRecipe.AlgorithmVersion,

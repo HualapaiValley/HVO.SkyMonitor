@@ -258,7 +258,7 @@ public sealed class ProcessingNodeOptionsForm
         if (string.Equals(Descriptor.DescriptorId, OverlayManifestOptionDescriptors.Layer.DescriptorId, StringComparison.Ordinal) &&
             string.Equals(option.Key, "enabled", StringComparison.Ordinal) &&
             _inputs.TryGetValue("kind", out var kind) &&
-            string.Equals(PresentationLayerKindSelection.Canonicalize(kind), OrbitalTrackPresentation.LayerKind, StringComparison.Ordinal))
+            PresentationLayerKindSelection.Canonicalize(kind) is OrbitalTrackPresentation.LayerKind or MeasuredAssociationPresentation.ExpectedNotDetectedLayerKind)
         {
             return ProcessingOptionValue.FromToggle(false);
         }

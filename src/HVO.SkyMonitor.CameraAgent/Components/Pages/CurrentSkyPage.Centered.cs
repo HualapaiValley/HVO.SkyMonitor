@@ -1306,6 +1306,7 @@ public sealed partial class CurrentSkyPage
             MeasuredAssociationPresentation.EmptyExpectedAllMatchedReason => "all expected catalog predictions matched",
             MeasuredAssociationPresentation.EmptyExpectedFilteredReason => "unmatched predictions excluded by display filter or aperture",
             MeasuredAssociationPresentation.EmptyExpectedNoPredictionsReason => "no expected catalog predictions in scene",
+            MeasuredAssociationPresentation.EmptyExpectedPlanetsUnassessedReason => "stars matched; point-source planets not assessed by retained v1 evidence",
             "centered.association-parent-invalid" => "measured association parent verification failed",
             MeasuredStellarAssociationReasonCodes.MeasurementIncomplete => "exposure measurement incomplete",
             _ => reason.StartsWith("centered.", StringComparison.Ordinal)

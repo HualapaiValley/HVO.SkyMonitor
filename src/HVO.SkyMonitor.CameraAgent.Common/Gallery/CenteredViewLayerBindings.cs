@@ -42,30 +42,40 @@ internal static class CenteredViewLayerBindings
     internal static string SourceSchema(string schema) => schema.StartsWith(DispositionPrefix, StringComparison.Ordinal)
         ? schema[DispositionPrefix.Length..] : schema;
 
-    internal static IReadOnlyList<CenteredViewLayerBinding> ReadLegacySlot(ExposureProductSlot slot) => SourceSchema(slot.SchemaVersion) switch
-    {
-        ExposureMeasurementProducts.SchemaVersion when slot.Variant == ExposureMeasurementProducts.Variant => [Markers],
-        var schema when MeasuredStellarAssociationsV1.IsSupportedSchemaVersion(schema) &&
-            (slot.Variant == ExposureAssociationProducts.Variant || slot.Producer == ExposureAssociationProducts.StepAlias) =>
-            [MeasuredAssociations, ExpectedNotDetected],
-        RegionalStellarVisibilityProducts.SchemaVersion => [RegionalVisibility],
-        MeasuredAstrometrySolutionV1.CurrentSchemaVersion => [Residuals],
-        var schema when PresentationLayerPayloadV1.SupportsSchema(schema) => slot.Variant switch
+    private const string DefaultMeasuredAssociationVariant = "measured-stellar-associations-v1";
+
+    internal static bool IsAuthoritativeAssociationSlot(ExposureProductSlot slot) =>
+        MeasuredStellarAssociationsV1.IsSupportedSchemaVersion(SourceSchema(slot.SchemaVersion)) &&
+        (slot.Variant is ExposureAssociationProducts.Variant or DefaultMeasuredAssociationVariant ||
+         slot.Producer == ExposureAssociationProducts.StepAlias);
+
+    internal static bool IsSceneExpectedNotDetectedSlot(ExposureProductSlot slot) =>
+        PresentationLayerPayloadV1.SupportsSchema(SourceSchema(slot.SchemaVersion)) &&
+        slot.Variant == "expected-not-detected-layer-v1";
+
+    internal static IReadOnlyList<CenteredViewLayerBinding> ReadLegacySlot(
+        ExposureProductSlot slot, bool hasAuthoritativeAssociations = false) => SourceSchema(slot.SchemaVersion) switch
         {
-            "scene-annotation-layer-v1" => [Annotation],
-            "scene-cardinal-layer-v1" => [Cardinals],
-            "scene-image-circle-layer-v1" => [ImageCircle],
-            "scene-constellation-layer-v1" => [Constellations],
-            "scene-deep-sky-v1" => [DeepSky],
-            "expected-not-detected-layer-v1" => [ExpectedNotDetected],
-            "cloud-mask-layer-v1" => [CloudMask],
-            "cloud-label-layer-v1" => [CloudLabel],
-            "environment-layer-v1" => [Environment],
-            "capture-satellites-v1-layer" => [Satellites],
+            ExposureMeasurementProducts.SchemaVersion when slot.Variant == ExposureMeasurementProducts.Variant => [Markers],
+            _ when IsAuthoritativeAssociationSlot(slot) => [MeasuredAssociations, ExpectedNotDetected],
+            RegionalStellarVisibilityProducts.SchemaVersion => [RegionalVisibility],
+            MeasuredAstrometrySolutionV1.CurrentSchemaVersion => [Residuals],
+            var schema when PresentationLayerPayloadV1.SupportsSchema(schema) => slot.Variant switch
+            {
+                "scene-annotation-layer-v1" => [Annotation],
+                "scene-cardinal-layer-v1" => [Cardinals],
+                "scene-image-circle-layer-v1" => [ImageCircle],
+                "scene-constellation-layer-v1" => [Constellations],
+                "scene-deep-sky-v1" => [DeepSky],
+                "expected-not-detected-layer-v1" => hasAuthoritativeAssociations ? [] : [ExpectedNotDetected],
+                "cloud-mask-layer-v1" => [CloudMask],
+                "cloud-label-layer-v1" => [CloudLabel],
+                "environment-layer-v1" => [Environment],
+                "capture-satellites-v1-layer" => [Satellites],
+                _ => []
+            },
             _ => []
-        },
-        _ => []
-    };
+        };
 
     internal static IReadOnlyDictionary<(string Producer, string Schema, string Variant), IReadOnlyList<CenteredViewLayerBinding>> ReadConfigured(
         ProcessingGraphDefinition graph)

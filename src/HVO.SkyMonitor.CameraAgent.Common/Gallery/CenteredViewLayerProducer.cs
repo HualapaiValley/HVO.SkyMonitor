@@ -131,6 +131,7 @@ internal sealed class CenteredViewLayerProducer(
                 evidence.Pin, observedUtc, CenteredViewReadiness.Incompatible, invalidAssociationReason, null), token)
                 .ConfigureAwait(false);
         }
+        ProjectedSceneV1? authenticatedAssociationScene = null;
         if (evidence.Associations is { } associations)
         {
             ProjectedSceneV1 authenticatedScene;
@@ -146,6 +147,7 @@ internal sealed class CenteredViewLayerProducer(
                     evidence.Pin, observedUtc, CenteredViewReadiness.Incompatible, "centered.association-parent-invalid", null), token)
                     .ConfigureAwait(false);
             }
+            authenticatedAssociationScene = authenticatedScene;
             if (style.Kind == MeasuredAssociationPresentation.MeasuredLayerKind &&
                 associations.Measurement.Status != StellarMeasurementStatus.Completed)
                 return await views.PublishLayerAsync(viewBase.BaseId, new(key, evidence.Lookup.Revision!.Value,
@@ -239,7 +241,7 @@ internal sealed class CenteredViewLayerProducer(
             var emptyReason = reason ?? (evidence.Associations is null
                 ? null
                 : style.Kind == MeasuredAssociationPresentation.ExpectedNotDetectedLayerKind
-                    ? MeasuredAssociationPresentation.ClassifyEmptyExpectedLayerReason(evidence.Associations)
+                    ? MeasuredAssociationPresentation.ClassifyEmptyExpectedLayerReason(evidence.Associations, authenticatedAssociationScene)
                     : MeasuredAssociationPresentation.EmptyMeasuredReason);
             return await views.PublishLayerAsync(viewBase.BaseId, new(key, evidence.Lookup.Revision!.Value,
                 evidence.Pin, observedUtc, CenteredViewReadiness.AssessedEmpty, emptyReason, null), token).ConfigureAwait(false);

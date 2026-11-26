@@ -95,4 +95,78 @@ public sealed partial class ProcessingNodeOptionsTests
         var invalid = Graph(Node("invalid", Scene.StepAlias, SceneVersion, "{\"labelFont\":\"PlexBold\"}"));
         Assert.IsFalse(catalog.ApplyUpgrade(invalid, catalog.PlanUpgrade(invalid), "2").IsValid);
     }
+
+    [TestMethod]
+    public void RetainedShippedLegacyDescriptorsSupportInspectionAndWholeDraftUpgradeFromBaseV13Draft()
+    {
+        var catalog = ProcessingNodeOptionsCatalog.BuiltIn;
+        const string v13Scene = "projected-scene-presentation-v13-plain-circle-bounded-expected-labels";
+        const string v14Style = "projected-scene-presentation-v14-explicit-style";
+        const string v4Annotation = "projected-annotation-v4";
+        const string v1Measured = "measured-stellar-associations-v1";
+        const string v1ExposureAssoc = "associate-exposure-measurement-v1";
+
+        // Every previously shipped descriptor remains Described in BuiltIn for lossless inspection.
+        var v13Res = catalog.Resolve("ScenePresentationLayer", v13Scene);
+        Assert.AreEqual(ProcessingNodeOptionsResolutionStatus.Described, v13Res.Status);
+        Assert.AreSame(ProcessingNodeOptionsDescriptors.ScenePresentationLayerV13, v13Res.Descriptor);
+        Assert.IsNotNull(v13Res.Upgrade);
+        Assert.AreEqual(SceneStylePresentation.StepAlias, v13Res.Upgrade!.ToStepAlias);
+        Assert.AreEqual(SceneStylePresentation.ProducerVersion, v13Res.Upgrade.ToStepVersion);
+
+        var v14Res = catalog.Resolve(SceneStylePresentation.StepAlias, v14Style);
+        Assert.AreEqual(ProcessingNodeOptionsResolutionStatus.Described, v14Res.Status);
+        Assert.AreSame(SceneStylePresentation.DescriptorV14, v14Res.Descriptor);
+
+        var v4AnnRes = catalog.Resolve("Annotation", v4Annotation);
+        Assert.AreEqual(ProcessingNodeOptionsResolutionStatus.Described, v4AnnRes.Status);
+        Assert.AreSame(AnnotationOptionDescriptors.DescriptorV4, v4AnnRes.Descriptor);
+        // Retained v4 annotation descriptor still enforces corner-line selection validation.
+        var tooManyCornerLines = ProcessingNodeOptionsCodec.Decode(v4AnnRes.Descriptor!,
+            Json("""{"topLeftTokens":["agent-identity","capture-sequence","utc","environment"],"environmentalKinds":["AirTemperature","RelativeHumidity","AtmosphericPressure","WindSpeed","RainState","CloudCover"]}"""));
+        Assert.IsFalse(tooManyCornerLines.IsValid);
+
+        var v1MeasRes = catalog.Resolve("MeasuredStellarAssociations", v1Measured);
+        Assert.AreEqual(ProcessingNodeOptionsResolutionStatus.Described, v1MeasRes.Status);
+        Assert.AreSame(CaptureAnalysisOptionDescriptors.StellarAssociationsV1, v1MeasRes.Descriptor);
+
+        var v1ExpRes = catalog.Resolve(ExposureAssociationProducts.StepAlias, v1ExposureAssoc);
+        Assert.AreEqual(ProcessingNodeOptionsResolutionStatus.Described, v1ExpRes.Status);
+        Assert.AreSame(CaptureAnalysisOptionDescriptors.CenteredStellarAssociationsV1, v1ExpRes.Descriptor);
+
+        // Whole-draft scene-style upgrade from a draft saved against base v13 upgrades scene + consumers cleanly.
+        var baseDraft = Graph(
+            Node("legacy-scene", Scene.StepAlias, v13Scene, """{ "markerValue":120, "expectedPositionDiagnostics":false, "future":[1e+02] }"""),
+            Node("legacy-annotation", "Annotation", v4Annotation, """{ "markRadius":8 }"""),
+            Node("legacy-measured", "MeasuredStellarAssociations", v1Measured, """{ "enabled":true }"""),
+            Node("legacy-exposure-assoc", ExposureAssociationProducts.StepAlias, v1ExposureAssoc, """{ "enabled":true }"""),
+            Node("legacy-style", SceneStylePresentation.StepAlias, v14Style, """{ "pointGlyph":"Crosshair" }"""),
+            Node("manifest", "OverlayManifest", "overlay-manifest-v1", "{}"),
+            Node("materializer", "PresentationMaterializer", "typed-presentation-materialization-v1", "{}"));
+
+        Assert.IsEmpty(catalog.Validate(baseDraft));
+        var plan = catalog.PlanUpgrade(baseDraft);
+        var step = Assert.ContainsSingle(plan.Steps);
+        Assert.AreEqual("legacy-scene", step.NodeId);
+        Assert.AreEqual(v13Scene, step.FromStepVersion);
+        Assert.AreEqual(SceneStylePresentation.StepAlias, step.ToStepAlias);
+        Assert.AreEqual(SceneStylePresentation.ProducerVersion, step.ToStepVersion);
+
+        var upgraded = catalog.ApplyUpgrade(baseDraft, plan, "2");
+        Assert.IsTrue(upgraded.IsValid, string.Join(' ', upgraded.Diagnostics));
+        var upgradedScene = upgraded.Definition!.Nodes.Single(static n => n.Id == "legacy-scene");
+        Assert.AreEqual(SceneStylePresentation.StepAlias, upgradedScene.StepAlias);
+        Assert.AreEqual(SceneStylePresentation.ProducerVersion, upgradedScene.StepVersion);
+        Assert.AreEqual(120, upgradedScene.EffectiveOptions.GetProperty("markerRed").GetInt32());
+        Assert.IsFalse(upgradedScene.EffectiveOptions.GetProperty("expectedPositionDiagnostics").GetBoolean());
+        Assert.AreEqual("[1e+02]", upgradedScene.EffectiveOptions.GetProperty("future").GetRawText());
+        Assert.IsTrue(upgraded.Definition.Nodes.Single(static n => n.Id == "manifest").EffectiveOptions.GetProperty("useSceneStyle").GetBoolean());
+        Assert.IsTrue(upgraded.Definition.Nodes.Single(static n => n.Id == "materializer").EffectiveOptions.GetProperty("useSceneStyle").GetBoolean());
+        // Unrelated legacy nodes remain intact and still validate cleanly.
+        Assert.AreEqual(v4Annotation, upgraded.Definition.Nodes.Single(static n => n.Id == "legacy-annotation").StepVersion);
+        Assert.AreEqual(v1Measured, upgraded.Definition.Nodes.Single(static n => n.Id == "legacy-measured").StepVersion);
+        Assert.AreEqual(v1ExposureAssoc, upgraded.Definition.Nodes.Single(static n => n.Id == "legacy-exposure-assoc").StepVersion);
+        Assert.AreEqual(v14Style, upgraded.Definition.Nodes.Single(static n => n.Id == "legacy-style").StepVersion);
+        Assert.IsEmpty(catalog.Validate(upgraded.Definition));
+    }
 }

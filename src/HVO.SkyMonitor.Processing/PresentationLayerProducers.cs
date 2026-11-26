@@ -639,6 +639,8 @@ public static class PresentationLayerProducers
                 : null);
     }
 
+    private const double CompatibleSceneCoordinateTolerancePixels = 0.5;
+
     internal static bool AssociationsBindScene(
         MeasuredStellarAssociationsV1 associations, ProjectedSceneV1 scene, bool allowCompatibleExposureAssociations)
     {
@@ -646,12 +648,70 @@ public static class PresentationLayerProducers
             return true;
         if (!allowCompatibleExposureAssociations)
             return false;
-        return associations.Scene.Kind == ProjectedSceneKind.Predicted &&
-            associations.Source.CaptureId == scene.Source.CaptureId &&
-            associations.Source.ArtifactId == scene.Source.ArtifactId &&
-            string.Equals(associations.Source.DescriptorIdentitySha256, scene.Source.ArtifactIdentitySha256, StringComparison.OrdinalIgnoreCase) &&
-            associations.Source.WidthPixels == scene.ImageTransform.OutputWidthPixels &&
-            associations.Source.HeightPixels == scene.ImageTransform.OutputHeightPixels &&
-            string.Equals(associations.Scene.CalibrationVersion, scene.Projection.CalibrationVersion, StringComparison.Ordinal);
+        return AreCompatibleExposureAssociations(associations, scene);
+    }
+
+    internal static bool AreCompatibleExposureAssociations(
+        MeasuredStellarAssociationsV1 associations, ProjectedSceneV1 scene)
+    {
+        if (associations.Scene.Kind != ProjectedSceneKind.Predicted ||
+            associations.Source.CaptureId != scene.Source.CaptureId ||
+            associations.Source.ArtifactId != scene.Source.ArtifactId ||
+            !string.Equals(associations.Source.DescriptorIdentitySha256, scene.Source.ArtifactIdentitySha256, StringComparison.OrdinalIgnoreCase) ||
+            associations.Source.WidthPixels != scene.ImageTransform.OutputWidthPixels ||
+            associations.Source.HeightPixels != scene.ImageTransform.OutputHeightPixels ||
+            scene.CoordinateConvention != ProjectedSceneCoordinateConvention.ContinuousTopLeftPixelEdge ||
+            scene.ImageTransform != ProjectedSceneImageTransformV1.Identity(associations.Source.WidthPixels, associations.Source.HeightPixels) ||
+            !string.Equals(associations.Scene.CalibrationVersion, scene.Projection.CalibrationVersion, StringComparison.Ordinal))
+            return false;
+
+        if (associations.PointSourcePlanets is { } planetEvidence &&
+            !planetEvidence.ProjectionMappingVersion.StartsWith(
+                $"{scene.Projection.Model}:{scene.Projection.CalibrationVersion}:", StringComparison.Ordinal))
+            return false;
+
+        // Require compatible delivered-image pixel coordinates for every shared predicted/associated object before
+        // transferring eligibility across scenes (rejecting mirrored, rotated, shifted, or differently projected scenes).
+        var sceneObjects = new Dictionary<string, ProjectedCelestialObject>(scene.Objects.Count, StringComparer.Ordinal);
+        foreach (var obj in scene.Objects)
+            sceneObjects[obj.Id] = obj;
+
+        var starWindowLimit = associations.Method.Settings.MaximumWindowPixels + CompatibleSceneCoordinateTolerancePixels;
+        foreach (var star in associations.Associations)
+        {
+            if (!sceneObjects.TryGetValue(star.CatalogId, out var obj)) continue;
+            if (obj.Kind != CelestialObjectKind.Star ||
+                double.Hypot(obj.Pixel.X - star.ExpectedX, obj.Pixel.Y - star.ExpectedY) > CompatibleSceneCoordinateTolerancePixels ||
+                double.Hypot(obj.Pixel.X - star.MeasuredX, obj.Pixel.Y - star.MeasuredY) > starWindowLimit)
+                return false;
+        }
+        foreach (var unmatched in associations.UnmatchedPredictions)
+        {
+            if (!sceneObjects.TryGetValue(unmatched.CatalogId, out var obj)) continue;
+            if (obj.Kind != CelestialObjectKind.Star ||
+                double.Hypot(obj.Pixel.X - unmatched.ExpectedX, obj.Pixel.Y - unmatched.ExpectedY) > CompatibleSceneCoordinateTolerancePixels)
+                return false;
+        }
+        if (associations.PointSourcePlanets is { } planets)
+        {
+            foreach (var planet in planets.Associations)
+            {
+                if (!sceneObjects.TryGetValue(planet.ObjectId, out var obj)) continue;
+                var planetWindowLimit = MeasuredStellarAssociationJson.PlanetMaximumWindow(
+                    associations.Method.Settings, planet.PropagatedPredictionSigmaPixels) + CompatibleSceneCoordinateTolerancePixels;
+                if (obj.Kind != CelestialObjectKind.SolarSystemBody ||
+                    double.Hypot(obj.Pixel.X - planet.ExpectedX, obj.Pixel.Y - planet.ExpectedY) > CompatibleSceneCoordinateTolerancePixels ||
+                    double.Hypot(obj.Pixel.X - planet.MeasuredX, obj.Pixel.Y - planet.MeasuredY) > planetWindowLimit)
+                    return false;
+            }
+            foreach (var unmatched in planets.UnmatchedPredictions)
+            {
+                if (!sceneObjects.TryGetValue(unmatched.ObjectId, out var obj)) continue;
+                if (obj.Kind != CelestialObjectKind.SolarSystemBody ||
+                    double.Hypot(obj.Pixel.X - unmatched.ExpectedX, obj.Pixel.Y - unmatched.ExpectedY) > CompatibleSceneCoordinateTolerancePixels)
+                    return false;
+            }
+        }
+        return true;
     }
 }

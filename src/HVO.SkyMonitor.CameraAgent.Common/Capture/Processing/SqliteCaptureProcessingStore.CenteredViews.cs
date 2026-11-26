@@ -65,6 +65,48 @@ internal sealed partial class SqliteCaptureProcessingStore
         return items;
     }
 
+    internal async ValueTask<bool> HasAuthoritativeExposureAssociationsAsync(
+        ExposureKey key, Guid executionId, CancellationToken token)
+    {
+        using var connection = await OpenCenteredViewsAsync(token).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT EXISTS(
+                SELECT 1
+                FROM centered_exposure_products product
+                JOIN centered_exposure_attempts attempt ON attempt.capture_id = product.capture_id
+                JOIN centered_exposure_runs run ON run.run_id = attempt.run_id
+                WHERE product.capture_id = $capture AND run.run_id = $run
+                    AND run.agent_id = $agent AND run.camera_id = $camera
+                    AND product.execution_id = $execution
+                    AND product.schema_version IN ($v1, $v2, $dispV1, $dispV2)
+                    AND (product.variant IN ($variant, $measuredVariant) OR product.producer = $producer)
+            ) OR EXISTS(
+                SELECT 1
+                FROM processing_execution_nodes node
+                WHERE node.execution_id = $execution
+                    AND (node.node_id = $producer OR EXISTS(
+                        SELECT 1 FROM json_each(node.outputs_json) output
+                        WHERE json_extract(output.value, '$.variant') = $variant
+                           OR json_extract(output.value, '$.Variant') = $variant
+                           OR json_extract(output.value, '$.recipe.name') = $recipe
+                           OR json_extract(output.value, '$.Recipe.Name') = $recipe
+                    ))
+            );
+            """;
+        SqliteRawCaptureJournal.AddExposureParameters(command, key);
+        command.Parameters.AddWithValue("$execution", executionId.ToString("N"));
+        command.Parameters.AddWithValue("$v1", MeasuredStellarAssociationsV1.V1SchemaVersion);
+        command.Parameters.AddWithValue("$v2", MeasuredStellarAssociationsV1.CurrentSchemaVersion);
+        command.Parameters.AddWithValue("$dispV1", CenteredViewLayerBindings.DispositionPrefix + MeasuredStellarAssociationsV1.V1SchemaVersion);
+        command.Parameters.AddWithValue("$dispV2", CenteredViewLayerBindings.DispositionPrefix + MeasuredStellarAssociationsV1.CurrentSchemaVersion);
+        command.Parameters.AddWithValue("$variant", ExposureAssociationProducts.Variant);
+        command.Parameters.AddWithValue("$measuredVariant", "measured-stellar-associations-v1");
+        command.Parameters.AddWithValue("$producer", ExposureAssociationProducts.StepAlias);
+        command.Parameters.AddWithValue("$recipe", ExposureAssociationProducts.RecipeName);
+        return await command.ExecuteScalarAsync(token).ConfigureAwait(false) is 1L;
+    }
+
     private static async ValueTask AddCenteredViewSchemaAsync(
         SqliteConnection connection, SqliteTransaction transaction, CancellationToken cancellationToken)
     {

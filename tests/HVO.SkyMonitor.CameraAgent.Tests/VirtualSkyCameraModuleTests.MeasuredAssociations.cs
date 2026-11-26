@@ -8,8 +8,10 @@ using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.DependencyInjection;
@@ -608,14 +610,17 @@ public sealed partial class VirtualSkyCameraModuleTests
     [DataRow("forged-lineage")]
     [DataRow("tampered-measurement-parent")]
     [DataRow("tampered-scene-parent")]
+    [DataRow("tampered-unclaimed-centroid")]
+    [DataRow("tampered-unclaimed-flux")]
     [DataRow("incomplete-measurement")]
     [DataRow("empty-all-matched")]
     [DataRow("empty-display-filtered")]
     public async Task GalleryAuthenticatesAssociationParentsAndSettlesIncompleteAndTruthfulEmptyStates(string scenario)
     {
         ArgumentNullException.ThrowIfNull(scenario);
-        // Sol M5 + M6 + M7 + Opus L3 + L4:
-        // - Forged lineage / tampered measurement / tampered scene settle Incompatible ("centered.association-parent-invalid").
+        // Sol M5 + M6 + M7 + Opus L3 + L4 + Astra D6:
+        // - Forged lineage / tampered measurement / tampered scene / tampered unclaimed centroid or flux settle
+        //   Incompatible ("centered.association-parent-invalid").
         // - MeasurementIncomplete settles measured layer Incompatible ("measurement-incomplete").
         // - Empty expected-not-detected settles AssessedEmpty with "expected.all-predictions-matched" ONLY when all matched,
         //   and "expected.unmatched-filtered-from-display" when an unmatched faint prediction (> 6.5 mag) exists.
@@ -630,10 +635,13 @@ public sealed partial class VirtualSkyCameraModuleTests
         var ra = AstronomyTime.LocalMeanSiderealDegrees(start, location.LongitudeDegrees) / 15d;
         var matchedStar = new CelestialCatalogObject("star:m5-1", "M5 One", ra, location.LatitudeDegrees, 0.3, 0.65);
         var faintAbsentStar = new CelestialCatalogObject("star:m5-faint", "M5 Faint", (ra + 1.5) % 24, location.LatitudeDegrees + 15, 7.8, 0.65);
+        var unclaimedStar = new CelestialCatalogObject("star:m5-unclaimed", "M5 Unclaimed", (ra - 1.5 + 24) % 24, location.LatitudeDegrees - 15, 0.4, 0.65);
         var predCatalog = scenario == "empty-display-filtered"
             ? new TestMetadataCatalog([matchedStar, faintAbsentStar])
             : new TestMetadataCatalog([matchedStar]);
-        var renderCatalog = new InMemoryCelestialCatalog([matchedStar]);
+        var renderCatalog = scenario is "tampered-unclaimed-centroid" or "tampered-unclaimed-flux"
+            ? new InMemoryCelestialCatalog([matchedStar, unclaimedStar])
+            : new InMemoryCelestialCatalog([matchedStar]);
 
         var sceneStep = profile.Pipeline.Steps.Single(static s => s.Type == "ProjectedScene") with
         {
@@ -775,18 +783,33 @@ public sealed partial class VirtualSkyCameraModuleTests
                     ProcessingProductKind.Metadata, MeasuredStellarAssociationsV1.CurrentSchemaVersion,
                     origEvidence.AssociationIdentitySha256);
             }
-            else if (scenario == "tampered-scene-parent")
+            else if (scenario is "tampered-scene-parent" or "tampered-unclaimed-centroid" or "tampered-unclaimed-flux")
             {
-                // Altered measured detection position that contradicts the committed measurement parent.
-                var altered = origEvidence with
+                // Altered measured detection or unclaimed detection coordinates/flux contradicting the committed step-4 parent.
+                MeasuredStellarAssociationsV1 altered;
+                if (scenario == "tampered-scene-parent")
                 {
-                    Associations =
-                    [
-                        origEvidence.Associations[0] with { MeasuredX = origEvidence.Associations[0].MeasuredX + 0.5 }
-                    ]
-                };
+                    altered = origEvidence with
+                    {
+                        Associations =
+                        [
+                            origEvidence.Associations[0] with { MeasuredX = origEvidence.Associations[0].MeasuredX + 0.5 }
+                        ]
+                    };
+                }
+                else
+                {
+                    var unclaimed = origEvidence.UnassociatedDetections[0];
+                    var tamperedUnclaimed = scenario == "tampered-unclaimed-centroid"
+                        ? unclaimed with { X = Math.Clamp(unclaimed.X + 1.5, 0, origEvidence.Source.WidthPixels) }
+                        : unclaimed with { Flux = unclaimed.Flux + 125.0 };
+                    altered = origEvidence with
+                    {
+                        UnassociatedDetections = [tamperedUnclaimed, .. origEvidence.UnassociatedDetections.Skip(1)]
+                    };
+                }
                 var bytes = MeasuredStellarAssociationJson.Serialize(altered);
-                forgedProduct = ProcessingRecipeSupport.CreateProduct(FrameArtifactRole.Metadata, "tampered-det",
+                forgedProduct = ProcessingRecipeSupport.CreateProduct(FrameArtifactRole.Metadata, "tampered-det-" + scenario,
                     StructuredProcessingProductContracts.MeasuredStellarAssociationsMediaType, null, bytes,
                     ProcessingIdentity.CreateRecipeIdentity(origArtifact.RecipeDescriptor!),
                     [new("measured-stellar-associator", MeasuredStellarAssociator.AlgorithmVersion)],
@@ -1057,6 +1080,301 @@ public sealed partial class VirtualSkyCameraModuleTests
             // Unclaimed source preserved without catalog identity.
             Assert.IsTrue(evidence.UnassociatedDetections.Any(static d =>
                 d.ReasonCode == MeasuredStellarAssociationReasonCodes.NoCatalogPrediction));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task MissingGraphRecoveryEnforcesSingleExpectedNotDetectedWriterInBothArrivalOrders()
+    {
+        // Astra D5: when the frozen graph is unavailable (ReadCenteredLayerBindingsAsync returns null),
+        // CenteredViewSourceLayers and ReadLegacySlot must enforce the exact same single-writer ownership rule so
+        // expected-not-detected-layer-v1 never overwrites ExposureStellarAssociations in either arrival order.
+        var token = TestContext.CancellationToken;
+        var start = new DateTimeOffset(2026, 11, 20, 22, 30, 0, TimeSpan.Zero);
+        var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
+
+        var sceneExpectedSlot = new ExposureProductSlot(Guid.NewGuid(), "scene-overlay",
+            PresentationLayerPayloadV1.CurrentSchemaVersion, "expected-not-detected-layer-v1");
+        Assert.IsEmpty(CenteredViewLayerBindings.ReadLegacySlot(sceneExpectedSlot, hasAuthoritativeAssociations: true));
+        Assert.ContainsSingle(CenteredViewLayerBindings.ReadLegacySlot(sceneExpectedSlot, hasAuthoritativeAssociations: false));
+
+        // Exercise BOTH arrival orders AND RebuildForBaseAsync with an unavailable frozen graph (non-existent generationId).
+        foreach (var orderLabel in new[] { "scene-first", "assoc-first", "rebuild-base" })
+        {
+            var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory($"hvo-d5-{orderLabel}");
+            try
+            {
+                var clock = new CenteredClock { UtcNow = start };
+                var deviceClock = new ExposureTestTimeProvider(start, autoAdvance: true);
+                var profile = CenteredRuntimeProfile(root, start, CameraPixelFormat.Mono16);
+                var loc = profile.DeploymentLocation!;
+                var ra = AstronomyTime.LocalMeanSiderealDegrees(start, loc.LongitudeDegrees) / 15d;
+                var star1 = new CelestialCatalogObject("star:d5-1", "D5 One", ra, loc.LatitudeDegrees, 0.4, 0.65);
+                var star2 = new CelestialCatalogObject("star:d5-2", "D5 Two", (ra + 1.5) % 24, loc.LatitudeDegrees + 15, 0.6, 0.65);
+                var predCat = new TestMetadataCatalog([star1, star2]);
+                var rendCat = new InMemoryCelestialCatalog([star1]);
+                profile = profile with
+                {
+                    Module = new("VirtualSky", JsonSerializer.SerializeToElement(new
+                    {
+                        seed = 52655,
+                        illuminationMode = "ControlledNight",
+                        magnitudeZeroElectronsPerSecond = 3000,
+                        backgroundElectronsPerSecond = 25,
+                        readNoiseStandardDeviation = 4.0,
+                        shotNoiseEnabled = true
+                    })),
+                    Pipeline = profile.Pipeline with
+                    {
+                        Steps =
+                        [
+                            .. profile.Pipeline.Steps,
+                            new("MeasuredStellarAssociations", "associated", DependsOn: ["scene"], Required: false, Publication: durable),
+                            new("ScenePresentationLayer", "scene-overlay", DependsOn: ["scene", "associated"], Required: false, Publication: durable,
+                                Options: JsonSerializer.SerializeToElement(new ScenePresentationLayerProcessingStepOptions
+                                {
+                                    UseExposureAssociations = true,
+                                    IncludeExpectedNotDetectedLayer = true
+                                }))
+                        ]
+                    }
+                };
+                var seed = new DeploymentLocationSeed(loc.LocationId, loc.Source, null,
+                    loc.EffectiveFromUtc, loc.EffectiveUntilUtc,
+                    new(loc.LatitudeDegrees, loc.LongitudeDegrees, loc.ElevationMeters, loc.TimeZoneId));
+                using var provider = CenteredRuntimeProvider(root, clock, services =>
+                {
+                    services.AddSingleton<IDeploymentLocationProtector, DataProtectionDeploymentLocationProtector>();
+                    services.AddSingleton<ICelestialCatalog>(predCat);
+                });
+                await provider.GetRequiredService<RawCaptureIngress>().InitializeAsync(token).ConfigureAwait(false);
+                var initLoc = await provider.GetRequiredService<IDeploymentLocationStore>().InitializeAsync(seed, token).ConfigureAwait(false);
+                profile = profile with { DeploymentLocation = initLoc };
+                var active = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(provider, profile).ConfigureAwait(false);
+                var ingress = provider.GetRequiredService<RawCaptureIngress>();
+                var module = new VirtualSkyCameraModule(deviceClock, rendCat, new ProjectedSceneStore(),
+                    stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
+                await using var cam = module.ConfigureAwait(false);
+                await module.InitializeAsync(active, token).ConfigureAwait(false);
+                var resources = provider.GetRequiredService<CaptureProjectedSceneStager>().FrozenResources;
+                var reservation = await ingress.ReserveCenteredAsync(active, resources, null, token).ConfigureAwait(false);
+                var setpoint = new CaptureSetpoint(TimeSpan.FromSeconds(1), 1, null, null);
+                await ingress.DispatchCenteredAsync(reservation.Pending.Key, setpoint, null, "d5-test", token).ConfigureAwait(false);
+                var req = new CaptureRequest(start, TimeSpan.FromSeconds(1), CaptureMode.Still, setpoint)
+                {
+                    BoundGraphRevisionId = reservation.Revision.State.RevisionId,
+                    BoundGraph = reservation.Revision.Pipeline
+                };
+                var cap = await module.CaptureBoundAsync(reservation.Pending.Key, req, token).ConfigureAwait(false);
+                clock.UtcNow = cap.AcquisitionTiming!.ReadoutCompletedUtc.AddMilliseconds(1);
+                var receipt = await ingress.AcceptCenteredAsync(active, new(req, cap, start, req.TargetInterval, req.TargetInterval), reservation, token).ConfigureAwait(false);
+                var capId = receipt.Manifest.Descriptor.Capture.CaptureId;
+                await ProcessCenteredRuntimeExposureAsync(provider, active, token).ConfigureAwait(false);
+
+                var key = new ExposureKey(reservation.Pending.Key.Camera, reservation.Pending.Key.RunId, capId);
+                var linear = await provider.GetRequiredService<IExposureProductReader>().ReadLinearAsync(key, token).ConfigureAwait(false);
+                var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
+                var views = provider.GetRequiredService<SqliteCenteredViews>();
+                var producer = provider.GetRequiredService<ICenteredViewProducer>();
+                var sourceLayers = provider.GetRequiredService<CenteredViewSourceLayers>();
+                var executionId = linear!.Product!.Slot.ExecutionId;
+                var sources = await store.ReadCenteredViewSourcesAsync(key, executionId, 0, 64, token).ConfigureAwait(false);
+                var assocSource = sources.Single(static s => CenteredViewLayerBindings.IsAuthoritativeAssociationSlot(s.Slot));
+                var sceneExpectedSource = sources.Single(static s => CenteredViewLayerBindings.IsSceneExpectedNotDetectedSlot(s.Slot));
+                Assert.IsTrue(await store.HasAuthoritativeExposureAssociationsAsync(key, executionId, token).ConfigureAwait(false));
+
+                var missingGeneration = $"missing-graph-{orderLabel}";
+                Assert.IsNull(await store.ReadCenteredLayerBindingsAsync(missingGeneration, token).ConfigureAwait(false));
+                var stream = new CenteredViewStream(key.Camera, key.RunId, missingGeneration);
+                var published = await producer.PublishSingleAsync(stream, executionId,
+                    receipt.Manifest.Descriptor.Capture.CaptureSequence, linear, new(), token).ConfigureAwait(false);
+                Assert.IsNotNull(published);
+
+                if (orderLabel == "scene-first")
+                {
+                    await sourceLayers.RebuildForProductAsync(sceneExpectedSource, missingGeneration, start, token).ConfigureAwait(false);
+                    var midView = await views.ReadLatestSingleAsync(stream, token).ConfigureAwait(false);
+                    Assert.IsNotNull(midView);
+                    Assert.IsFalse(midView.Revision.Layers.Any(static l => l.Key.Kind == MeasuredAssociationPresentation.ExpectedNotDetectedLayerKind),
+                        "scene-first must suppress scene-overlay expected-not-detected before ExposureStellarAssociations arrives.");
+                    await sourceLayers.RebuildForProductAsync(assocSource, missingGeneration, start, token).ConfigureAwait(false);
+                }
+                else if (orderLabel == "assoc-first")
+                {
+                    await sourceLayers.RebuildForProductAsync(assocSource, missingGeneration, start, token).ConfigureAwait(false);
+                    await sourceLayers.RebuildForProductAsync(sceneExpectedSource, missingGeneration, start, token).ConfigureAwait(false);
+                }
+                else
+                {
+                    await sourceLayers.RebuildForBaseAsync(published.Base, token).ConfigureAwait(false);
+                }
+
+                var finalView = await views.ReadLatestSingleAsync(stream, token).ConfigureAwait(false);
+                Assert.IsNotNull(finalView);
+                var measured = finalView.Revision.Layers.Single(static l => l.Key.Kind == MeasuredAssociationPresentation.MeasuredLayerKind);
+                var expected = finalView.Revision.Layers.Single(static l => l.Key.Kind == MeasuredAssociationPresentation.ExpectedNotDetectedLayerKind);
+                Assert.AreEqual(CenteredViewReadiness.Ready, expected.Readiness, $"{orderLabel}: {expected.Reason}");
+                Assert.AreEqual(assocSource.Product!.ArtifactId, measured.Evidence!.ArtifactId, orderLabel);
+                Assert.AreEqual(assocSource.Product.ArtifactId, expected.Evidence!.ArtifactId,
+                    $"{orderLabel}: expected-not-detected must remain pinned to ExposureStellarAssociations even without a frozen graph.");
+                Assert.AreNotEqual(sceneExpectedSource.Product!.ArtifactId, expected.Evidence.ArtifactId, orderLabel);
+            }
+            finally
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task OrdinaryPresentationMaterializerSelectsExpectedNotDetectedEndToEnd()
+    {
+        // Astra D7: expected-not-detected must be registered in PresentationLayerKindSelection so both explicit
+        // materializer selection and manifest layer overrides validate and materialize end-to-end.
+        Assert.IsTrue(PresentationLayerKindSelection.IsSupported(MeasuredAssociationPresentation.ExpectedNotDetectedLayerKind));
+        var validMatJson = JsonDocument.Parse("""{"enabledLayerKinds":["expected-not-detected"]}""").RootElement.Clone();
+        Assert.IsTrue(ProcessingNodeOptionsCodec.Decode(PresentationMaterializerOptionDescriptors.Descriptor, validMatJson).IsValid);
+        var validManifestJson = JsonDocument.Parse("""{"layers":[{"kind":"expected-not-detected","enabled":true}]}""").RootElement.Clone();
+        Assert.IsTrue(ProcessingNodeOptionsCodec.Decode(OverlayManifestOptionDescriptors.Descriptor, validManifestJson).IsValid);
+
+        var matOptions = new PresentationMaterializerProcessingStepOptions
+        {
+            BasePreviewVariant = "preview-v1",
+            OutputVariant = "expected-materialized",
+            EnabledLayerKinds = [MeasuredAssociationPresentation.ExpectedNotDetectedLayerKind]
+        };
+        Assert.IsTrue(System.ComponentModel.DataAnnotations.Validator.TryValidateObject(
+            matOptions, new(matOptions), new List<System.ComponentModel.DataAnnotations.ValidationResult>(), true));
+
+        var manifestOverrideOptions = new OverlayManifestProcessingStepOptions
+        {
+            BasePreviewVariant = "preview-v1",
+            IncludeExpectedNotDetectedLayer = true,
+            Layers = [new() { Kind = MeasuredAssociationPresentation.ExpectedNotDetectedLayerKind, Enabled = true }]
+        };
+        Assert.IsTrue(System.ComponentModel.DataAnnotations.Validator.TryValidateObject(
+            manifestOverrideOptions, new(manifestOverrideOptions), new List<System.ComponentModel.DataAnnotations.ValidationResult>(), true));
+
+        // Execute ScenePresentationLayer -> OverlayManifest -> PresentationMaterializer end-to-end on a real scene.
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-d7-materializer");
+        try
+        {
+            var token = TestContext.CancellationToken;
+            var start = new DateTimeOffset(2026, 11, 20, 22, 30, 0, TimeSpan.Zero);
+            var profile = CenteredRuntimeProfile(root, start, CameraPixelFormat.Mono16);
+            var width = profile.Rig.Sensor.WidthPixels;
+            var height = profile.Rig.Sensor.HeightPixels;
+            var manifest = ReconstructableCaptureContractTests.CreateManifest(
+                CameraPixelFormat.Mono8, width, height, width, new byte[width * height]);
+            var descriptor = manifest.Descriptor;
+            var epoch = descriptor.Timing.ExposureStartedUtc;
+            var location = profile.DeploymentLocation!;
+            var ra = AstronomyTime.LocalMeanSiderealDegrees(epoch, location.LongitudeDegrees) / 15d;
+            var star = new CelestialCatalogObject("star:d7", "D7 Star", ra, location.LatitudeDegrees, 0.5, 0.65);
+            var proj = RigProjectionContextFactory.Create(profile.Rig);
+            var visible = await new VisibleSceneBuilder(new InMemoryCelestialCatalog([star])).BuildAsync(
+                new VisibleSceneRequest(epoch, new(location.LatitudeDegrees, location.LongitudeDegrees, location.ElevationMeters),
+                    proj, new CatalogQuery(6.5, 100), new CatalogMetadata("d7", "1", new Uri("https://example.test/d7"),
+                        new string('C', 64), "test", "v1"), projectionVersion: RigProjectionContextFactory.AlgorithmVersion), token).ConfigureAwait(false);
+            var raw = new CameraFrame(epoch, width, height, CameraPixelFormat.Mono8,
+                new byte[width * height], new(TimeSpan.FromSeconds(1), 99.5, -9.5), width);
+            var artifacts = new FrameArtifactSet(new FrameArtifact(descriptor.Artifact.ArtifactId, FrameArtifactRole.Raw, raw, []));
+            var submission = new CaptureLoopSubmission(
+                new(descriptor.Timing.RequestedStartUtc, TimeSpan.FromSeconds(1), CaptureMode.Still),
+                new(raw, new(TimeSpan.FromSeconds(1), 99.5, null, null), TimeSpan.Zero, CaptureMode.Still, false, Artifacts: artifacts),
+                descriptor.Timing.RequestedStartUtc, TimeSpan.FromSeconds(1), TimeSpan.Zero);
+            var receipt = new RawCaptureReceipt(RawIngressOutcome.Committed, manifest,
+                new StoredFrameReference("raw.bin", "/virtual/raw.bin", raw.TimestampUtc, FrameArtifactRole.Raw),
+                CaptureContractJson.ComputeManifestSha256(manifest));
+            var context = new CaptureProcessingContext(profile, submission, receipt);
+            var compat = CameraAgentRecipeExecutionAdapter.CreateCompatibility(descriptor);
+
+            context.BeginNode("preview", []);
+            var previewRecipe = ProcessingIdentity.CreateRecipeIdentity(RecipeIdentityDescriptor.Create(
+                BuiltInProcessingRecipes.FixedPreview, "1", "synthetic-preview", JsonSerializer.SerializeToElement(new { })));
+            var previewDeriv = context.AddDerivative(FrameArtifactRole.Preview, raw, "preview-v1", [descriptor.Artifact.ArtifactId],
+                CaptureProcessingContext.CreateArtifactId(new string('D', 64)));
+            context.AssociateProcessingProduct(previewDeriv, new(
+                FrameArtifactRole.Preview, "preview-v1", new string('D', 64),
+                "application/x-hvo-packed-image", descriptor.Layout, raw.PixelData,
+                ProcessingIdentity.ComputePayloadSha256(raw.PixelData), previewRecipe, [],
+                [descriptor.Artifact.ArtifactId], TimeSpan.FromSeconds(1), compat));
+
+            var scene = ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, visible,
+                ProjectedSceneImageTransformV1.Identity(width, height),
+                new ProjectedSceneSource(descriptor.Capture.CaptureId, descriptor.Artifact.ArtifactId,
+                    CaptureContractJson.ComputeDescriptorSha256(descriptor)),
+                profile.Rig.Optics.CalibrationVersion, RigProjectionContextFactory.AlgorithmVersion);
+            var sceneBytes = ProjectedSceneJson.Serialize(scene);
+            var sceneRecipe = ProcessingIdentity.CreateRecipeIdentity(RecipeIdentityDescriptor.Create(
+                BuiltInProcessingRecipes.ProjectedScene, "1", "fixture", JsonSerializer.SerializeToElement(new { })));
+            context.BeginNode("scene", []);
+            var sceneProduct = new ProcessingProduct(
+                FrameArtifactRole.Metadata, "projected-scene-v1", new string('B', 64),
+                StructuredProcessingProductContracts.ProjectedSceneMediaType, null, sceneBytes,
+                ProcessingIdentity.ComputePayloadSha256(sceneBytes), sceneRecipe, [],
+                [descriptor.Artifact.ArtifactId], TimeSpan.Zero, compat)
+            {
+                Kind = ProcessingProductKind.Metadata,
+                SchemaVersion = scene.SchemaVersion,
+                ContentIdentitySha256 = scene.SceneIdentitySha256
+            };
+            context.RegisterProcessingProduct(sceneProduct);
+
+            context.BeginNode("scene-layer", ["scene"]);
+            await new ScenePresentationLayerCaptureProcessingStep(new("scene-layer", "ScenePresentationLayer", 20),
+                new() { IncludeExpectedNotDetectedLayer = true, ExpectedPositionDiagnostics = false })
+                .ProcessAsync(context, token).ConfigureAwait(false);
+
+            var sceneArtifact = CameraAgentRecipeExecutionAdapter.CreateArtifact(context, sceneProduct);
+            context.BeginNode("environment", ["scene"]);
+            LayeredPresentationCaptureProcessing.Add(context, PresentationProcessingProducts.CreateLayerProduct(
+                PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256, width, height), "environment-layer-v1", [sceneArtifact], "fixture-v1"));
+
+            // 1. Default manifest (expected-not-detected disabled by default) + explicit materializer selection draws pixels.
+            context.BeginNode("manifest-default", ["preview", "scene-layer", "environment"]);
+            await new OverlayManifestCaptureProcessingStep(new("manifest-default", "OverlayManifest", 30),
+                new() { BasePreviewVariant = "preview-v1", IncludeExpectedNotDetectedLayer = true })
+                .ProcessAsync(context, token).ConfigureAwait(false);
+            var defaultManifest = LayeredPresentationJson.ParseManifest(context.ProcessingProducts[^1].Payload).Document!;
+            Assert.IsFalse(defaultManifest.Layers.Single(static l => l.LayerKind == MeasuredAssociationPresentation.ExpectedNotDetectedLayerKind).EnabledByDefault);
+
+            context.BeginNode("mat-explicit", ["preview", "manifest-default", "scene-layer", "environment"]);
+            await new PresentationMaterializerCaptureProcessingStep(new("mat-explicit", "PresentationMaterializer", 40), matOptions)
+                .ProcessAsync(context, token).ConfigureAwait(false);
+            var explicitPixels = context.ProcessingProducts[^1].Payload.ToArray();
+            Assert.IsGreaterThanOrEqualTo(0, explicitPixels.AsSpan().IndexOfAnyExcept((byte)0),
+                "Explicitly selecting expected-not-detected in PresentationMaterializer must draw its diagnostic pixels.");
+
+            // 2. Manifest layer override enabling expected-not-detected + empty EnabledLayerKinds also draws pixels.
+            context.BeginNode("manifest-override", ["preview", "scene-layer", "environment"]);
+            await new OverlayManifestCaptureProcessingStep(new("manifest-override", "OverlayManifest", 31),
+                new()
+                {
+                    BasePreviewVariant = "preview-v1",
+                    IncludeExpectedNotDetectedLayer = true,
+                    Layers =
+                    [
+                        new() { Kind = "scene-annotation", Enabled = false },
+                        new() { Kind = "scene-constellations", Enabled = false },
+                        new() { Kind = "environment", Enabled = false },
+                        new() { Kind = MeasuredAssociationPresentation.ExpectedNotDetectedLayerKind, Enabled = true }
+                    ]
+                }).ProcessAsync(context, token).ConfigureAwait(false);
+            var overrideManifest = LayeredPresentationJson.ParseManifest(context.ProcessingProducts[^1].Payload).Document!;
+            Assert.IsTrue(overrideManifest.Layers.Single(static l => l.LayerKind == MeasuredAssociationPresentation.ExpectedNotDetectedLayerKind).EnabledByDefault);
+
+            context.BeginNode("mat-override", ["preview", "manifest-override", "scene-layer", "environment"]);
+            await new PresentationMaterializerCaptureProcessingStep(new("mat-override", "PresentationMaterializer", 41),
+                new() { BasePreviewVariant = "preview-v1", OutputVariant = "override-materialized" })
+                .ProcessAsync(context, token).ConfigureAwait(false);
+            var overridePixels = context.ProcessingProducts[^1].Payload.ToArray();
+            CollectionAssert.AreEqual(explicitPixels, overridePixels,
+                "Enabling expected-not-detected via manifest override must match explicit materializer selection byte-for-byte.");
         }
         finally
         {

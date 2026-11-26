@@ -173,6 +173,7 @@ public static class MeasuredStellarAssociator
         var angularSigmaRadians = double.Hypot(
             settings.EffectivePlanetEphemerisUncertaintyArcseconds,
             settings.EffectivePlanetPointingUncertaintyArcseconds) * ArcsecondsToRadians;
+        var pointingAngularSigmaRadians = settings.EffectivePlanetPointingUncertaintyArcseconds * ArcsecondsToRadians;
         var jacobianProjector = planets.Length > 0 ? CreateJacobianProjector(scene.Projection) : null;
 
         for (var index = 0; index < stars.Length; index++)
@@ -185,7 +186,7 @@ public static class MeasuredStellarAssociator
         for (var p = 0; p < planets.Length; p++)
         {
             var index = stars.Length + p;
-            var planetCov = ComputePlanetPredictionCovariance(
+            var planetCov = ComputePredictionCovariance(
                 planets[p].Object, scene, jacobianProjector!, settings.PredictionSigmaPixels, angularSigmaRadians);
             var propagatedSigma = Math.Max(MajorSigma(planetCov), settings.PredictionSigmaPixels);
             var maxWindow = MeasuredStellarAssociationJson.PlanetMaximumWindow(settings, propagatedSigma);
@@ -198,9 +199,13 @@ public static class MeasuredStellarAssociator
         }
 
         var detectionGrid = new PointGrid(detections.Select(static item => item.Pixel).ToArray(), maxSearchRadius);
-        var predictionGrid = new PointGrid(targets.Select(static item => item.Pixel).ToArray(),
-            Math.Max(settings.CrowdingRadiusPixels, maxSearchRadius));
+        var predictionCellSize = Math.Max(settings.CrowdingRadiusPixels,
+            planets.Length > 0 ? Math.Max(maxSearchRadius, Math.Min(64, maxSearchRadius * 1.25 + 1)) : maxSearchRadius);
+        var predictionGrid = new PointGrid(targets.Select(static item => item.Pixel).ToArray(), predictionCellSize);
         var preMatch = new string?[targets.Length];
+        var contestedByCompetingTarget = new bool[targets.Length];
+        var starPointingCovariances = planets.Length > 0 ? new Covariance2D?[stars.Length] : null;
+        var starPointingMaxWindows = planets.Length > 0 ? new double[stars.Length] : null;
         var windows = new List<(int Target, int Detection, double Distance, double Normalized, double NegativeLogLikelihood)>[targets.Length];
         var crowdingSquared = settings.CrowdingRadiusPixels * settings.CrowdingRadiusPixels;
         var windowSigmasSquared = settings.WindowSigmas * settings.WindowSigmas;
@@ -267,6 +272,12 @@ public static class MeasuredStellarAssociator
         foreach (var pair in pairs)
         {
             if (targetAssigned[pair.Target] >= 0 || detectionAssigned[pair.Detection] >= 0) continue;
+            if (pair.Target >= stars.Length &&
+                HasPlausibleCompetingTarget(pair.Target, pair.Detection, pair.Distance, pair.NegativeLogLikelihood))
+            {
+                contestedByCompetingTarget[pair.Target] = true;
+                continue;
+            }
             targetAssigned[pair.Target] = pair.Detection;
             detectionAssigned[pair.Detection] = pair.Target;
         }
@@ -306,7 +317,7 @@ public static class MeasuredStellarAssociator
                 }
                 var reason = ResolveUnmatchedReason(index, planet.Pixel);
                 unmatchedPlanets.Add(UnmatchedPlanet(planet, body, reason));
-                targetCategory[index] = preMatch[index] is not null ? 1 : 2;
+                targetCategory[index] = preMatch[index] is not null || contestedByCompetingTarget[index] ? 1 : 2;
             }
             planetEvidence = new(scene.EffectiveUtc, scene.EphemerisModelVersion ?? "unspecified",
                 mappingVersion, Round(settings.PredictionSigmaPixels, ValueDecimals),
@@ -346,6 +357,8 @@ public static class MeasuredStellarAssociator
         {
             if (preMatch[targetIndex] is { } pre)
                 return pre;
+            if (contestedByCompetingTarget[targetIndex])
+                return MeasuredStellarAssociationReasonCodes.Ambiguous;
             if (windows[targetIndex].Count > 0)
                 return MeasuredStellarAssociationReasonCodes.ClaimedByOther;
             if (ExcludedBy(expectedPixel, exclusions, targetMaxWindows[targetIndex], settings.ExclusionMarginPixels) is { } exclusion)
@@ -355,6 +368,56 @@ public static class MeasuredStellarAssociator
                     DistanceSquared(detections[candidate].Pixel, expectedPixel) <= offsetRadius * offsetRadius))
                 return MeasuredStellarAssociationReasonCodes.OffsetMeasuredSource;
             return MeasuredStellarAssociationReasonCodes.NoMeasuredSource;
+        }
+
+        // Preserve plausible competing catalog-star (and other planet) explanations even when the competing target was
+        // excluded by pre-match filtering (crowded, near-edge, ambiguous, outside aperture) or sits outside its fixed
+        // star window under the declared angular pointing uncertainty, so an absent planet never steals a star's source.
+        bool HasPlausibleCompetingTarget(int planetIndex, int detectionIndex, double planetDistance, double planetNll)
+        {
+            var detection = detections[detectionIndex];
+            foreach (var other in predictionGrid.Near(detection.Pixel))
+            {
+                if (other == planetIndex || targetAssigned[other] >= 0) continue;
+                var otherDistance = Math.Sqrt(DistanceSquared(targets[other].Pixel, detection.Pixel));
+                if (other < stars.Length)
+                {
+                    var (starCov, starWindow) = GetStarPointingWindow(other);
+                    if (otherDistance <= starWindow)
+                    {
+                        var (starNorm, starNll) = EvaluateResidual(
+                            detection, targets[other].Pixel, starCov, settings.PredictionSigmaPixels);
+                        if (starNorm <= windowSigmasSquared &&
+                            (otherDistance < settings.AmbiguityRatio * planetDistance || starNll <= planetNll))
+                            return true;
+                    }
+                    if (otherDistance <= settings.OffsetRadiusPixels &&
+                        otherDistance < settings.AmbiguityRatio * planetDistance)
+                        return true;
+                }
+                else if (otherDistance <= targetMaxWindows[other])
+                {
+                    var (otherNorm, otherNll) = EvaluateResidual(
+                        detection, targets[other].Pixel, targetCovariances[other], settings.PredictionSigmaPixels);
+                    if (otherNorm <= windowSigmasSquared &&
+                        (otherDistance < settings.AmbiguityRatio * planetDistance || otherNll <= planetNll))
+                        return true;
+                }
+            }
+            return false;
+        }
+
+        (Covariance2D Covariance, double MaxWindow) GetStarPointingWindow(int starIndex)
+        {
+            if (starPointingCovariances![starIndex] is { } cached)
+                return (cached, starPointingMaxWindows![starIndex]);
+            var cov = ComputePredictionCovariance(
+                targets[starIndex], scene, jacobianProjector!, settings.PredictionSigmaPixels, pointingAngularSigmaRadians);
+            var sigma = Math.Max(MajorSigma(cov), settings.PredictionSigmaPixels);
+            var window = MeasuredStellarAssociationJson.PlanetMaximumWindow(settings, sigma);
+            starPointingCovariances[starIndex] = cov;
+            starPointingMaxWindows![starIndex] = window;
+            return (cov, window);
         }
     }
 
@@ -429,6 +492,12 @@ public static class MeasuredStellarAssociator
         if (angle >= 90) angle -= 180;
         var roundedPropagated = Math.Max(Round(propagatedPredictionSigmaPixels, ValueDecimals),
             Round(settings.PredictionSigmaPixels, ValueDecimals));
+        // Clamp against the exact persisted rounded-sigma window validated by MeasuredStellarAssociationJson.Validate
+        // so valid window-edge matches never fail Serialize after 6-decimal rounding.
+        var validatedMaxWindow = MeasuredStellarAssociationJson.PlanetMaximumWindow(settings, roundedPropagated);
+        var clampedResidual = Math.Min(
+            Round(Math.Sqrt(DistanceSquared(detection.Pixel, planet.Pixel)), PositionDecimals),
+            Round(Math.Min(maximumWindowPixels, validatedMaxWindow), ValueDecimals));
         var (normalized, _) = EvaluateResidual(detection, planet.Pixel, predictionCovariance, settings.PredictionSigmaPixels);
         var association = new MeasuredPointSourcePlanetAssociationV1(
             planet.Id,
@@ -439,7 +508,7 @@ public static class MeasuredStellarAssociator
             Round(planet.Pixel.Y, PositionDecimals),
             Round(detection.Pixel.X, PositionDecimals),
             Round(detection.Pixel.Y, PositionDecimals),
-            Math.Min(Round(Math.Sqrt(DistanceSquared(detection.Pixel, planet.Pixel)), PositionDecimals), maximumWindowPixels),
+            clampedResidual,
             Math.Min(Round(normalized, ValueDecimals), settings.WindowSigmas * settings.WindowSigmas),
             roundedPropagated,
             Math.Max(Round(CombinedUncertaintyMajorSigma(detection, predictionCovariance), ValueDecimals), roundedPropagated),
@@ -493,7 +562,8 @@ public static class MeasuredStellarAssociator
             return false;
         var detection = detections[member.DetectionIndex];
         var covariance = detection.CentroidCovariance;
-        return member.MeasuredX == Round(detection.Pixel.X, PositionDecimals) &&
+        return detection.Index == member.DetectionIndex &&
+               member.MeasuredX == Round(detection.Pixel.X, PositionDecimals) &&
                member.MeasuredY == Round(detection.Pixel.Y, PositionDecimals) &&
                member.Flux == Round(detection.Flux, ValueDecimals) && member.SignalToNoise == Round(detection.SignalToNoise) &&
                member.CovarianceXX == Round(covariance?.XX) && member.CovarianceXY == Round(covariance?.XY) &&
@@ -507,12 +577,25 @@ public static class MeasuredStellarAssociator
             return false;
         var detection = detections[member.DetectionIndex];
         var covariance = detection.CentroidCovariance;
-        return member.MeasuredX == Round(detection.Pixel.X, PositionDecimals) &&
+        return detection.Index == member.DetectionIndex &&
+               member.MeasuredX == Round(detection.Pixel.X, PositionDecimals) &&
                member.MeasuredY == Round(detection.Pixel.Y, PositionDecimals) &&
                member.Flux == Round(detection.Flux, ValueDecimals) && member.SignalToNoise == Round(detection.SignalToNoise) &&
                member.CovarianceXX == Round(covariance?.XX) && member.CovarianceXY == Round(covariance?.XY) &&
                member.CovarianceYY == Round(covariance?.YY) && member.SaturatedSampleCount == detection.SaturatedSampleCount &&
                member.Trailed == detection.Conditions.HasFlag(StellarSourceConditions.Trailed);
+    }
+
+    internal static bool MatchesDetection(MeasuredStellarUnassociatedDetectionV1 member, IReadOnlyList<StellarDetection> detections)
+    {
+        if (member.DetectionIndex < 0 || member.DetectionIndex >= detections.Count)
+            return false;
+        var detection = detections[member.DetectionIndex];
+        return detection.Index == member.DetectionIndex &&
+               member.X == Round(detection.Pixel.X, PositionDecimals) &&
+               member.Y == Round(detection.Pixel.Y, PositionDecimals) &&
+               member.Flux == Round(detection.Flux, ValueDecimals) &&
+               member.SignalToNoise == Round(detection.SignalToNoise);
     }
 
     private static IImageProjector CreateJacobianProjector(ProjectedSceneProjection p) => ProjectorFactory.Create(
@@ -522,11 +605,12 @@ public static class MeasuredStellarAssociator
             EnforceSensorBounds: false, p.RadialDistortionK1));
 
     /// <summary>
-    /// Propagates isotropic angular ephemeris+pointing uncertainty through the delivered-image projection Jacobian
-    /// (including focal scale, off-axis perspective/fisheye geometry, distortion, crop, bin, mirror, and rotation)
-    /// at the planet's horizontal direction, combined in quadrature with the pixel-floor prediction variance.
+    /// Propagates isotropic angular ephemeris+pointing (or pointing-only) uncertainty through the delivered-image
+    /// projection Jacobian (including focal scale, off-axis perspective/fisheye geometry, distortion, crop, bin,
+    /// mirror, and rotation) at the object's horizontal direction, combined in quadrature with the pixel-floor
+    /// prediction variance.
     /// </summary>
-    private static Covariance2D ComputePlanetPredictionCovariance(
+    private static Covariance2D ComputePredictionCovariance(
         ProjectedCelestialObject planet,
         ProjectedSceneV1 scene,
         IImageProjector projector,

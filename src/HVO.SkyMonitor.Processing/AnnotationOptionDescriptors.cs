@@ -79,6 +79,14 @@ public static class AnnotationOptionDescriptors
                     EnvironmentalObservationKind.RainState, EnvironmentalObservationKind.CloudCover], 8)
         ]);
 
+    public static ProcessingNodeOptionsDescriptor DescriptorV4 { get; } = new(
+        "annotation-options-v1",
+        "Annotation",
+        "projected-annotation-v4",
+        Descriptor.Title,
+        Descriptor.Help,
+        Descriptor.Options);
+
     private static ProcessingOptionDescriptor Corner(string key, string label, IEnumerable<string> defaults)
         => ProcessingOptionDescriptor.ChoiceCollection(key, key, label,
             "Ordered retained-fact lines, with at most eight unique tokens and eight expanded lines. The environment token expands to the selected observation count, or one unavailable line when empty. Clear the selection for an empty corner.",
@@ -89,7 +97,7 @@ public static class AnnotationOptionDescriptors
         IEnumerable<ProcessingDecodedOption> decoded, string path)
     {
         if (!descriptor.StepAlias.Equals(Descriptor.StepAlias, StringComparison.OrdinalIgnoreCase) ||
-            descriptor.StepVersion != Descriptor.StepVersion)
+            (descriptor.StepVersion != Descriptor.StepVersion && descriptor.StepVersion != DescriptorV4.StepVersion))
             yield break;
         var options = decoded.ToDictionary(static option => option.Descriptor.Key, StringComparer.Ordinal);
         if (!options.TryGetValue("environmentalKinds", out var environment)) yield break;

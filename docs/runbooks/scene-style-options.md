@@ -15,7 +15,7 @@ palette: marker 144/144/144, label and cardinal 255/255/255, image circle
 96/96/96. Labels/cardinals default to MonoBold; point markers default to Circle.
 The portable v12 upgrade explicitly disables expected-position diagnostic labels
 when that flag is absent; it never reintroduces historical unqualified star names.
-The installed legacy alias continues to bind its existing v13 producer.
+The installed legacy alias continues to bind its existing v15 producer.
 
 Choose marker, label, cardinal and image-circle RGB colours, independent label
 and cardinal packaged faces, and Circle or Crosshair point markers. The pinned
@@ -47,8 +47,8 @@ pinned font-set identity through that hash, scene identity and actual source
 lineage. Readers that do not support the new payload reject it. CameraAgent
 and LogicHost use shared payload readers, raster materialization and grouped
 SVG glyph paths; retained layers do not consult the currently active style.
-Old v12/v13 graph JSON and v1–v4 retained payloads retain their previous
-identities and rendering.
+Old v12/v13/v14 graph JSON and v1–v4 retained payloads (as well as retained v14
+scene-style payloads) retain their previous identities and rendering.
 
 Packed Mono8 composition uses the red channel, matching the existing colour
 contract. Display composition promotes a monochrome base to RGB so chosen

@@ -4,6 +4,7 @@ public sealed partial class ProcessingNodeOptionsTests
 {
     [TestMethod]
     [DataRow("projected-scene-presentation-v12-plain-circle-markers")]
+    [DataRow("projected-scene-presentation-v13-plain-circle-bounded-expected-labels")]
     [DataRow(SceneVersion)]
     public void SceneScalarEditsPreserveCollectionsNullableLegacyMembersAndUnchangedBytes(string version)
     {
@@ -11,7 +12,8 @@ public sealed partial class ProcessingNodeOptionsTests
         var source = Json("""{ "DrawMarkers" : true, "constellationIds": [ "Ori", "UMa" ], "markerValue":null, "labelValue":17, "imageCircleValue":null, "cardinalValue":128, "expectedPositionDiagnostics":true, "future":{"x":1e+02} }""");
         var decoded = ProcessingNodeOptionsCodec.Decode(descriptor, source);
         Assert.IsTrue(decoded.IsValid);
-        Assert.HasCount(version == SceneVersion ? 30 : 17, decoded.Options);
+        var isV12 = version == "projected-scene-presentation-v12-plain-circle-markers";
+        Assert.HasCount(isV12 ? 17 : 30, decoded.Options);
         Assert.AreEqual(6, decoded.Get("markerRadius").Value.AsWholeNumber());
         Assert.AreEqual(2, decoded.Get("labelScale").Value.AsWholeNumber());
         Assert.AreEqual(24, decoded.Get("maximumLabelCharacters").Value.AsWholeNumber());
@@ -19,7 +21,7 @@ public sealed partial class ProcessingNodeOptionsTests
         Assert.AreEqual(2, decoded.Get("cardinalScale").Value.AsWholeNumber());
         foreach (var key in new[] { "drawMarkers", "drawLabels", "drawConstellationLines", "drawImageCircle", "drawCardinalDirections" })
             Assert.IsTrue(decoded.Get(key).Value.AsToggle(), key);
-        if (version == SceneVersion)
+        if (!isV12)
         {
             Assert.IsTrue(decoded.Get("expectedPositionDiagnostics").Value.AsToggle());
             var strict = ProcessingNodeOptionsCodec.Encode(descriptor, source, new Dictionary<string, ProcessingOptionValue>
@@ -45,7 +47,7 @@ public sealed partial class ProcessingNodeOptionsTests
         Assert.AreEqual(source.GetRawText().Replace("true, \"constellationIds\"", "false, \"constellationIds\"", StringComparison.Ordinal)
             .Replace(" }", ",\"maximumLabelMagnitude\":-1.25 }", StringComparison.Ordinal), edited.Options!.Value.GetRawText());
         Assert.IsFalse(edited.Options.Value.TryGetProperty("labelScale", out _), "An edit must not materialize other defaults.");
-        Assert.HasCount(2, ProcessingNodeOptionsCatalog.BuiltIn.Upgrades);
+        Assert.HasCount(3, ProcessingNodeOptionsCatalog.BuiltIn.Upgrades);
     }
 
     [TestMethod]
