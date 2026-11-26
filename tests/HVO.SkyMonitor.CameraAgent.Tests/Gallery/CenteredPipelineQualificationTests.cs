@@ -1328,27 +1328,31 @@ public sealed class CenteredPipelineQualificationTests
         FrameLayoutDescriptor layout,
         byte[] rawBytes,
         string sourceId,
-        CancellationToken token)
+        CancellationToken token,
+        TimeSpan? exposureDuration = null,
+        TimeSpan? cadence = null)
     {
+        var effectiveExposure = exposureDuration ?? ExposureDuration;
+        var effectiveCadence = cadence ?? Cadence;
         clock.UtcNow = scheduledUtc;
         var reservation = await ingress.ReserveCenteredAsync(
             active, new(null, null, null, null, "qual-1928"), null, token, schedule: schedule)
             .ConfigureAwait(false);
-        var setpoint = new CaptureSetpoint(ExposureDuration, 10, null, null);
-        var request = new CaptureRequest(scheduledUtc, Cadence, CaptureMode.Still, setpoint)
+        var setpoint = new CaptureSetpoint(effectiveExposure, 10, null, null);
+        var request = new CaptureRequest(scheduledUtc, effectiveCadence, CaptureMode.Still, setpoint)
         {
             BoundGraphRevisionId = reservation.Revision.State.RevisionId,
             BoundGraph = reservation.Revision.Pipeline
         };
         await ingress.DispatchCenteredAsync(
-            reservation.Pending.Key, setpoint, null, "qual-1928", token, scheduledUtc, Cadence)
+            reservation.Pending.Key, setpoint, null, "qual-1928", token, scheduledUtc, effectiveCadence)
             .ConfigureAwait(false);
 
-        var exposureEnd = scheduledUtc.Add(ExposureDuration);
+        var exposureEnd = scheduledUtc.Add(effectiveExposure);
         var readoutEnd = exposureEnd.AddMilliseconds(10);
         var frame = new CameraFrame(
             scheduledUtc, layout.Width, layout.Height, layout.PixelFormat, rawBytes,
-            new FrameMetadata(ExposureDuration, 10, -10, SourceId: sourceId),
+            new FrameMetadata(effectiveExposure, 10, -10, SourceId: sourceId),
             layout.StrideBytes)
         {
             Layout = layout
@@ -1360,7 +1364,7 @@ public sealed class CenteredPipelineQualificationTests
         clock.UtcNow = readoutEnd.AddMilliseconds(1);
         return await ingress.AcceptCenteredAsync(
             active,
-            new(request, result, scheduledUtc, Cadence, readoutEnd - scheduledUtc),
+            new(request, result, scheduledUtc, effectiveCadence, readoutEnd - scheduledUtc),
             reservation, token).ConfigureAwait(false);
     }
 
@@ -1505,27 +1509,139 @@ public sealed class CenteredPipelineQualificationTests
         return descriptor;
     }
 
-    internal static async Task RunRetainedExternalCorpusEndToEndAsync(string evidenceRoot, CancellationToken token)
+    [TestMethod]
+    public async Task CenteredPipelineQualification_CorpusReplayHelpersVerifyProvenanceOraclesAndPartialRootsAsync()
+    {
+        var token = TestContext.CancellationToken;
+        var corpusRoot = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-1928-corpus-contract");
+        try
+        {
+            // 1. Stage a geometry/-only partial corpus root first and verify mono-november reports Inconclusive
+            // cleanly instead of throwing DirectoryNotFoundException, while Bayer geometry passes color + displacement oracles!
+            var geometryDir = Path.Combine(corpusRoot, "geometry");
+            Directory.CreateDirectory(geometryDir);
+            var bayerFrameObjects = new List<object>();
+            for (var i = 0; i < SequenceShifts.Length; i++)
+            {
+                var (dx, dy) = SequenceShifts[i];
+                var file = $"bayer-{101 + i}.bin";
+                var bytes = RenderSyntheticFrame(
+                    CameraPixelFormat.BayerRggb16, 1, 1, dx, dy, FieldStars, includeClippedPatch: false);
+                await File.WriteAllBytesAsync(Path.Combine(geometryDir, file), bytes, token).ConfigureAwait(false);
+                bayerFrameObjects.Add(new
+                {
+                    file,
+                    frame = 101 + i,
+                    sha256 = PayloadChecksum.ComputeSha256(bytes),
+                    inputPositionMinusReference103 = new[] { -dx, -dy }
+                });
+            }
+            var oracleJson = JsonSerializer.Serialize(new
+            {
+                sourcesAt103 = new[]
+                {
+                    new[] { RedTarget.X, RedTarget.Y },
+                    new[] { GreenTarget.X, GreenTarget.Y },
+                    new[] { BlueTarget.X, BlueTarget.Y }
+                },
+                knownSource105ToCenter103 = new[]
+                {
+                    SequenceShifts[4].Dx - SequenceShifts[2].Dx,
+                    SequenceShifts[4].Dy - SequenceShifts[2].Dy
+                },
+                knownSource105ToCenter104 = new[]
+                {
+                    SequenceShifts[4].Dx - SequenceShifts[3].Dx,
+                    SequenceShifts[4].Dy - SequenceShifts[3].Dy
+                },
+                frames = bayerFrameObjects
+            });
+            await File.WriteAllTextAsync(Path.Combine(geometryDir, "geometry-oracle.json"), oracleJson, token)
+                .ConfigureAwait(false);
+
+            await Assert.ThrowsExactlyAsync<AssertInconclusiveException>(async () =>
+                await RunRetainedNovemberMonoEndToEndAsync(corpusRoot, token).ConfigureAwait(false))
+                .ConfigureAwait(false);
+            await RunRetainedBayerGeometryEndToEndAsync(corpusRoot, token).ConfigureAwait(false);
+
+            // 2. Stage mono-november/expected-mono.json with a 20-second study capture, original captureId,
+            // and raw brightness stats, and verify RunRetainedNovemberMonoEndToEndAsync preserves all provenance facts!
+            var monoDir = Path.Combine(corpusRoot, "mono-november");
+            Directory.CreateDirectory(monoDir);
+            var monoBytes = RenderSyntheticFrame(
+                CameraPixelFormat.Mono16, 0, 0, 0, 0, FieldStars, includeClippedPatch: false);
+            await File.WriteAllBytesAsync(Path.Combine(monoDir, "study-mono-1.bin"), monoBytes, token).ConfigureAwait(false);
+            var monoStats = ImageStatisticsCalculator.Calculate(
+                Width, Height, Width * 2, CameraPixelFormat.Mono16, monoBytes, (ushort)WhiteLevel, token);
+            var monoManifestJson = JsonSerializer.Serialize(new[]
+            {
+                new
+                {
+                    artifact = "study-mono-1.bin",
+                    captureId = Guid.Parse("19280001-1111-4111-8111-192800010001"),
+                    rawSha256 = PayloadChecksum.ComputeSha256(monoBytes),
+                    width = Width,
+                    height = Height,
+                    blackLevel = (double)BlackLevel,
+                    whiteLevel = (double)WhiteLevel,
+                    exposureSeconds = 20.0,
+                    capturedUtc = "2026-11-15T04:10:00Z",
+                    pixelCount = monoStats.SampleCount,
+                    minAdu = monoStats.Minimum,
+                    maxAdu = monoStats.Maximum,
+                    sumAdu = monoStats.Sum,
+                    zeroCount = monoStats.ZeroCount,
+                    whiteLevelCount = monoStats.SaturatedCount
+                }
+            });
+            await File.WriteAllTextAsync(Path.Combine(monoDir, "expected-mono.json"), monoManifestJson, token)
+                .ConfigureAwait(false);
+
+            await RunRetainedNovemberMonoEndToEndAsync(corpusRoot, token).ConfigureAwait(false);
+        }
+        finally
+        {
+            Directory.Delete(corpusRoot, recursive: true);
+        }
+    }
+
+    internal static async Task RunRetainedNovemberMonoEndToEndAsync(string evidenceRoot, CancellationToken token)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(evidenceRoot);
-
-        // 1. Replay checksummed November Mono16 corpus entries end-to-end through admission, reopen, linear
-        // normalization, exposure measurement, centered single publication, and decoded JPEG preview.
-        using (var manifest = JsonDocument.Parse(await File.ReadAllBytesAsync(
-            Path.Combine(evidenceRoot, "mono-november", "expected-mono.json"), token).ConfigureAwait(false)))
+        var monoDir = Path.Combine(evidenceRoot, "mono-november");
+        var manifestPath = Path.Combine(monoDir, "expected-mono.json");
+        if (!File.Exists(manifestPath))
         {
-            var entries = manifest.RootElement.EnumerateArray().ToArray();
-            Assert.IsGreaterThan(0, entries.Length, "mono-november/expected-mono.json must contain at least one entry.");
-            var first = entries[0];
-            var firstBytes = await File.ReadAllBytesAsync(
-                Path.Combine(evidenceRoot, "mono-november", first.GetProperty("artifact").GetString()!), token)
-                .ConfigureAwait(false);
-            var width = first.GetProperty("width").GetInt32();
-            var height = first.GetProperty("height").GetInt32();
+            Assert.Inconclusive($"Retained November Mono16 corpus manifest not found at '{manifestPath}'.");
+        }
+
+        // Each entry in mono-november/expected-mono.json is a separate 20-second real study capture.
+        // Replay each entry preserving its original manifest captureId, exposure duration (20s),
+        // layout, raw brightness statistics, and bit-for-bit reopened raw payload SHA-256.
+        using var manifest = JsonDocument.Parse(await File.ReadAllBytesAsync(manifestPath, token).ConfigureAwait(false));
+        var entries = manifest.RootElement.EnumerateArray().ToArray();
+        Assert.IsGreaterThan(0, entries.Length, "mono-november/expected-mono.json must contain at least one entry.");
+
+        for (var index = 0; index < entries.Length; index++)
+        {
+            var entry = entries[index];
+            var artifact = entry.GetProperty("artifact").GetString()!;
+            var originalCaptureId = entry.GetProperty("captureId").GetGuid();
+            Assert.AreNotEqual(Guid.Empty, originalCaptureId, $"Manifest entry {artifact} must declare an original captureId.");
+            var payload = await File.ReadAllBytesAsync(Path.Combine(monoDir, artifact), token).ConfigureAwait(false);
+            var expectedSha = entry.GetProperty("rawSha256").GetString()!.ToUpperInvariant();
+            Assert.AreEqual(expectedSha, PayloadChecksum.ComputeSha256(payload), $"Corpus checksum mismatch for {artifact}.");
+
+            var width = entry.GetProperty("width").GetInt32();
+            var height = entry.GetProperty("height").GetInt32();
+            var exposureDuration = ResolveManifestExposureDuration(entry, TimeSpan.FromSeconds(20));
+            var captureStartedUtc = ResolveManifestStartedUtc(entry, BaseUtc.AddHours(index));
+            var studyCadence = exposureDuration + TimeSpan.FromSeconds(5);
+
             var monoLayout = new FrameLayoutDescriptor(
                 width, height, width * 2, CameraPixelFormat.Mono16, FrameByteOrder.LittleEndian,
                 12, 16, FrameSamplePacking.ByteAligned, ColorFilterArrayPattern.None,
-                first.GetProperty("blackLevel").GetDouble(), first.GetProperty("whiteLevel").GetDouble(), firstBytes.Length)
+                entry.GetProperty("blackLevel").GetDouble(), entry.GetProperty("whiteLevel").GetDouble(), payload.Length)
             {
                 StoredCodeTransform = FrameStoredCodeTransform.RightAlignedV1,
                 LevelCodeSpace = FrameLevelCodeSpace.NativeSample,
@@ -1533,76 +1649,169 @@ public sealed class CenteredPipelineQualificationTests
                     width, height, 0, 0, width, height, 1, 1, FrameBinningAlgorithm.IdentityV1, null, null)
             };
 
-            var monoInputs = new List<(string Name, byte[] Bytes, string ExpectedSha256)>();
-            foreach (var entry in entries)
+            var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory($"hvo-1928-mono-study-{index}");
+            try
             {
-                var artifact = entry.GetProperty("artifact").GetString()!;
-                var payload = await File.ReadAllBytesAsync(
-                    Path.Combine(evidenceRoot, "mono-november", artifact), token).ConfigureAwait(false);
-                var expectedSha = entry.GetProperty("rawSha256").GetString()!.ToUpperInvariant();
-                Assert.AreEqual(expectedSha, PayloadChecksum.ComputeSha256(payload), $"Corpus checksum mismatch for {artifact}.");
-                monoInputs.Add((artifact, payload, expectedSha));
+                var clock = new QualificationClock { UtcNow = captureStartedUtc };
+                using var provider = CreateProvider(root, clock);
+                var profile = CreateProfile(root, $"corpus-mono-study-{index}", monoLayout);
+                var active = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(provider, profile)
+                    .ConfigureAwait(false);
+                var schedule = await ReadScheduleAsync(provider, token).ConfigureAwait(false);
+                var ingress = provider.GetRequiredService<RawCaptureIngress>();
+                var processing = provider.GetRequiredService<SqliteCaptureProcessingStore>();
+                var persistence = provider.GetRequiredService<CaptureProcessingPersistence>();
+                var exposureProducts = provider.GetRequiredService<IExposureProductReader>();
+                var artifactService = provider.GetRequiredService<ICameraAgentArtifactService>();
+                var singlePublisher = provider.GetRequiredService<CenteredViewPublicationWorker>();
+                var views = provider.GetRequiredService<SqliteCenteredViews>();
+                var reader = provider.GetRequiredService<ICenteredViewPresentationReader>();
+
+                // Verify exact original CaptureId + 20s exposure round-trip in the durable raw journal first.
+                var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "study-provenance.db"), 15);
+                await journal.InitializeAsync(token).ConfigureAwait(false);
+                var originalIdentity = await journal.ReserveIdentityAsync("corpus-mono-study", originalCaptureId, Guid.NewGuid(), token)
+                    .ConfigureAwait(false);
+                Assert.AreEqual(originalCaptureId, originalIdentity.CaptureId);
+
+                // Replay this separate 20-second study capture through full centered admission -> linear -> measurement -> single publication.
+                var sourceTag = $"{originalCaptureId:D}:{artifact}";
+                var receipt = await AdmitSyntheticExposureAsync(
+                    ingress, clock, active, schedule, captureStartedUtc, monoLayout, payload, sourceTag, token,
+                    exposureDuration: exposureDuration, cadence: studyCadence).ConfigureAwait(false);
+                var descriptor = receipt.Manifest.Descriptor;
+                Assert.AreEqual(expectedSha, descriptor.Artifact.ChecksumSha256);
+                Assert.AreEqual(monoLayout, descriptor.Layout);
+                Assert.AreEqual(exposureDuration, descriptor.Controls.EffectiveExposure);
+                Assert.AreEqual(captureStartedUtc, descriptor.Timing.ExposureStartedUtc);
+                Assert.AreEqual(exposureDuration, descriptor.Timing.ExposureEndedUtc - descriptor.Timing.ExposureStartedUtc);
+
+                var stream = CenteredViewLookup.ResolveStream(
+                    await ingress.ReadCurrentAsync(new(active.AgentId!, $"corpus-mono-study-{index}"), token).ConfigureAwait(false));
+                Assert.IsNotNull(stream);
+                var key = new ExposureKey(stream.Camera, stream.RunId, descriptor.Capture.CaptureId);
+
+                // Reopen both durable raw manifest and raw payload bytes from disk and verify exact descriptor & SHA-256.
+                var reopenedRaw = await ingress.ReadCenteredRawAsync(key, token).ConfigureAwait(false);
+                Assert.IsNotNull(reopenedRaw);
+                Assert.AreEqual(expectedSha, reopenedRaw.Manifest.Descriptor.Artifact.ChecksumSha256);
+                Assert.AreEqual(exposureDuration, reopenedRaw.Manifest.Descriptor.Controls.EffectiveExposure);
+                Assert.AreEqual(captureStartedUtc, reopenedRaw.Manifest.Descriptor.Timing.ExposureStartedUtc);
+                Assert.AreEqual(monoLayout, reopenedRaw.Manifest.Descriptor.Layout);
+
+                var reopenedBytes = await ReadReopenedArtifactBytesAsync(artifactService, descriptor.Artifact.ArtifactId, payload.Length, token)
+                    .ConfigureAwait(false);
+                Assert.AreEqual(expectedSha, PayloadChecksum.ComputeSha256(reopenedBytes));
+                CollectionAssert.AreEqual(payload, reopenedBytes);
+
+                await ProcessStandardLaneAsync(provider, active, token).ConfigureAwait(false);
+                var linear = await exposureProducts.ReadLinearAsync(key, token).ConfigureAwait(false);
+                Assert.IsNotNull(linear?.Product);
+                Assert.AreEqual(expectedSha, linear.Provenance!.RawPayloadSha256);
+
+                var executionId = ProcessingGraphOperationsCoordinator.GetLiveExecutionId(key.CaptureId, stream.GenerationId);
+                var sources = await processing.ReadCenteredViewSourcesAsync(key, executionId, 0, 24, token).ConfigureAwait(false);
+                var measurementRef = Assert.ContainsSingle(sources.Where(item =>
+                    item.Slot.SchemaVersion == ExposureMeasurementProducts.SchemaVersion)).Product!;
+                var (_, measurement) = await persistence.ReadCenteredViewMeasurementAsync(
+                    key.CaptureId,
+                    new(measurementRef.ArtifactId, measurementRef.OutputIdentitySha256, measurementRef.PayloadSha256),
+                    token).ConfigureAwait(false);
+                Assert.AreEqual(ExposureMeasurementStatus.Usable, measurement.Sources.Status, measurement.Sources.Reason);
+                Assert.IsNotEmpty(measurement.Sources.Detections);
+                if (measurement.RawBrightness is { } stats)
+                {
+                    if (entry.TryGetProperty("pixelCount", out var pixelCount))
+                        Assert.AreEqual(pixelCount.GetInt64(), stats.SampleCount);
+                    if (entry.TryGetProperty("minAdu", out var minAdu))
+                        Assert.AreEqual(minAdu.GetUInt16(), stats.Minimum);
+                    if (entry.TryGetProperty("maxAdu", out var maxAdu))
+                        Assert.AreEqual(maxAdu.GetUInt16(), stats.Maximum);
+                    if (entry.TryGetProperty("sumAdu", out var sumAdu))
+                        Assert.AreEqual(sumAdu.GetUInt64(), stats.Sum);
+                    if (entry.TryGetProperty("zeroCount", out var zeroCount))
+                        Assert.AreEqual(zeroCount.GetInt64(), stats.ZeroCount);
+                    if (entry.TryGetProperty("whiteLevelCount", out var whiteLevelCount))
+                        Assert.AreEqual(whiteLevelCount.GetInt64(), stats.SensorClipping.Count);
+                }
+
+                await singlePublisher.DrainCameraAsync(stream.Camera, stream, CancellationToken.None, token)
+                    .ConfigureAwait(false);
+                var single = (await views.ReadArchiveAsync(stream, descriptor.Capture.CaptureId, token)
+                    .ConfigureAwait(false)).Single(item => item.Base.Definition.Kind == CenteredViewKind.Single);
+                var decoded = await DecodePublishedPreviewAsync(reader, single, token).ConfigureAwait(false);
+                Assert.AreEqual(monoLayout.Width, decoded.Width);
+                Assert.AreEqual(monoLayout.Height, decoded.Height);
+                AssertMonoPreviewEquality(decoded, $"corpus-mono-november-{artifact}");
             }
-
-            await ReplayExternalCorpusSeriesAsync("corpus-mono-november", monoLayout, monoInputs, token)
-                .ConfigureAwait(false);
-        }
-
-        // 2. Replay checksummed odd-origin (1,1) BGGR Bayer corpus (geometry/bayer-*.bin) end-to-end.
-        using (var oracle = JsonDocument.Parse(await File.ReadAllBytesAsync(
-            Path.Combine(evidenceRoot, "geometry", "geometry-oracle.json"), token).ConfigureAwait(false)))
-        {
-            var bayerEntries = oracle.RootElement.EnumerateObject()
-                .Where(static property => property.Value.ValueKind == JsonValueKind.Array)
-                .SelectMany(static property => property.Value.EnumerateArray())
-                .Where(static value => value.ValueKind == JsonValueKind.Object &&
-                    value.TryGetProperty("file", out var name) &&
-                    name.GetString()?.StartsWith("bayer-", StringComparison.Ordinal) == true)
-                .ToArray();
-            Assert.IsGreaterThan(0, bayerEntries.Length, "geometry/geometry-oracle.json must list bayer-*.bin corpus frames.");
-
-            var bayerInputs = new List<(string Name, byte[] Bytes, string ExpectedSha256)>();
-            foreach (var entry in bayerEntries)
+            finally
             {
-                var file = entry.GetProperty("file").GetString()!;
-                var payload = await File.ReadAllBytesAsync(
-                    Path.Combine(evidenceRoot, "geometry", file), token).ConfigureAwait(false);
-                var expectedSha = entry.GetProperty("sha256").GetString()!.ToUpperInvariant();
-                Assert.AreEqual(expectedSha, PayloadChecksum.ComputeSha256(payload), $"Corpus checksum mismatch for {file}.");
-                bayerInputs.Add((file, payload, expectedSha));
+                Directory.Delete(root, recursive: true);
             }
-
-            var bayerLayout = new FrameLayoutDescriptor(
-                160, 128, 320, CameraPixelFormat.BayerRggb16, FrameByteOrder.LittleEndian,
-                12, 16, FrameSamplePacking.ByteAligned, ColorFilterArrayPattern.Rggb, 64, 4095, bayerInputs[0].Bytes.Length)
-            {
-                StoredCodeTransform = FrameStoredCodeTransform.RightAlignedV1,
-                LevelCodeSpace = FrameLevelCodeSpace.NativeSample,
-                Readout = new FrameReadoutDescriptor(
-                    162, 130, 1, 1, 160, 128, 1, 1, FrameBinningAlgorithm.IdentityV1, 1, 1)
-            };
-
-            await ReplayExternalCorpusSeriesAsync("corpus-odd-origin-bayer", bayerLayout, bayerInputs, token)
-                .ConfigureAwait(false);
         }
     }
 
-    private static async Task ReplayExternalCorpusSeriesAsync(
-        string profileName,
-        FrameLayoutDescriptor layout,
-        List<(string Name, byte[] Bytes, string ExpectedSha256)> frames,
-        CancellationToken token)
+    internal static async Task RunRetainedBayerGeometryEndToEndAsync(string evidenceRoot, CancellationToken token)
     {
-        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory($"hvo-1928-{profileName}");
+        ArgumentException.ThrowIfNullOrWhiteSpace(evidenceRoot);
+        var geometryDir = File.Exists(Path.Combine(evidenceRoot, "geometry", "geometry-oracle.json"))
+            ? Path.Combine(evidenceRoot, "geometry")
+            : File.Exists(Path.Combine(evidenceRoot, "geometry-oracle.json"))
+                ? evidenceRoot
+                : null;
+        if (geometryDir is null)
+        {
+            Assert.Inconclusive($"Retained Bayer geometry oracle not found under '{evidenceRoot}'.");
+        }
+
+        using var oracle = JsonDocument.Parse(await File.ReadAllBytesAsync(
+            Path.Combine(geometryDir, "geometry-oracle.json"), token).ConfigureAwait(false));
+        var sourcesAt103 = oracle.RootElement.GetProperty("sourcesAt103").EnumerateArray()
+            .Select(static row => new PixelPoint(row[0].GetDouble(), row[1].GetDouble()))
+            .ToArray();
+        Assert.IsGreaterThanOrEqualTo(3, sourcesAt103.Length, "geometry-oracle.json must provide sourcesAt103 targets.");
+
+        var bayerEntries = oracle.RootElement.GetProperty("frames").EnumerateArray()
+            .Where(static value => value.ValueKind == JsonValueKind.Object &&
+                value.TryGetProperty("file", out var name) &&
+                name.GetString()?.StartsWith("bayer-", StringComparison.Ordinal) == true)
+            .OrderBy(static value => value.TryGetProperty("frame", out var frame) ? frame.GetInt32() : 0)
+            .ToArray();
+        Assert.IsGreaterThan(0, bayerEntries.Length, "geometry-oracle.json must list bayer-*.bin corpus frames.");
+
+        var bayerInputs = new List<(string Name, int FrameNumber, byte[] Bytes, string ExpectedSha256)>();
+        foreach (var entry in bayerEntries)
+        {
+            var file = entry.GetProperty("file").GetString()!;
+            var frameNumber = entry.TryGetProperty("frame", out var frameProp) ? frameProp.GetInt32() : bayerInputs.Count + 101;
+            var payload = await File.ReadAllBytesAsync(Path.Combine(geometryDir, file), token).ConfigureAwait(false);
+            var expectedSha = entry.GetProperty("sha256").GetString()!.ToUpperInvariant();
+            Assert.AreEqual(expectedSha, PayloadChecksum.ComputeSha256(payload), $"Corpus checksum mismatch for {file}.");
+            bayerInputs.Add((file, frameNumber, payload, expectedSha));
+        }
+
+        var bayerLayout = new FrameLayoutDescriptor(
+            160, 128, 320, CameraPixelFormat.BayerRggb16, FrameByteOrder.LittleEndian,
+            12, 16, FrameSamplePacking.ByteAligned, ColorFilterArrayPattern.Rggb, 64, 4095, bayerInputs[0].Bytes.Length)
+        {
+            StoredCodeTransform = FrameStoredCodeTransform.RightAlignedV1,
+            LevelCodeSpace = FrameLevelCodeSpace.NativeSample,
+            Readout = new FrameReadoutDescriptor(
+                162, 130, 1, 1, 160, 128, 1, 1, FrameBinningAlgorithm.IdentityV1, 1, 1)
+        };
+
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-1928-corpus-odd-origin-bayer");
         try
         {
             var clock = new QualificationClock { UtcNow = BaseUtc };
             using var provider = CreateProvider(root, clock);
-            var profile = CreateProfile(root, profileName, layout);
+            var profile = CreateProfile(root, "corpus-odd-origin-bayer", bayerLayout);
             var active = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(provider, profile)
                 .ConfigureAwait(false);
             var schedule = await ReadScheduleAsync(provider, token).ConfigureAwait(false);
             var ingress = provider.GetRequiredService<RawCaptureIngress>();
+            var processing = provider.GetRequiredService<SqliteCaptureProcessingStore>();
+            var persistence = provider.GetRequiredService<CaptureProcessingPersistence>();
             var exposureProducts = provider.GetRequiredService<IExposureProductReader>();
             var artifactService = provider.GetRequiredService<ICameraAgentArtifactService>();
             var singlePublisher = provider.GetRequiredService<CenteredViewPublicationWorker>();
@@ -1613,38 +1822,42 @@ public sealed class CenteredPipelineQualificationTests
             var reader = provider.GetRequiredService<ICenteredViewPresentationReader>();
 
             CenteredViewStream? stream = null;
-            for (var index = 0; index < frames.Count; index++)
+            var admitted = new Dictionary<int, (Guid CaptureId, ExposureKey Key)>();
+            for (var index = 0; index < bayerInputs.Count; index++)
             {
-                var (name, bytes, expectedSha) = frames[index];
+                var (name, frameNumber, bytes, expectedSha) = bayerInputs[index];
                 var scheduled = BaseUtc.AddTicks(Cadence.Ticks * index);
                 var receipt = await AdmitSyntheticExposureAsync(
-                    ingress, clock, active, schedule, scheduled, layout, bytes, name, token).ConfigureAwait(false);
+                    ingress, clock, active, schedule, scheduled, bayerLayout, bytes, name, token).ConfigureAwait(false);
                 var descriptor = receipt.Manifest.Descriptor;
                 Assert.AreEqual(expectedSha, descriptor.Artifact.ChecksumSha256);
 
-                // Reopen actual persisted raw payload bytes and verify bit-for-bit SHA-256 identity.
-                var openedRaw = await artifactService.OpenContentAsync(descriptor.Artifact.ArtifactId, token)
+                var reopenedBytes = await ReadReopenedArtifactBytesAsync(artifactService, descriptor.Artifact.ArtifactId, bytes.Length, token)
                     .ConfigureAwait(false);
-                Assert.AreEqual(CameraAgentArtifactReadStatus.Found, openedRaw.Status);
-                Assert.IsNotNull(openedRaw.Content);
-                byte[] reopenedBytes;
-                await using (openedRaw.Content.ConfigureAwait(false))
-                {
-                    using var buffer = new MemoryStream(bytes.Length);
-                    await openedRaw.Content.CopyToAsync(buffer, token).ConfigureAwait(false);
-                    reopenedBytes = buffer.ToArray();
-                }
                 Assert.AreEqual(expectedSha, PayloadChecksum.ComputeSha256(reopenedBytes));
                 CollectionAssert.AreEqual(bytes, reopenedBytes);
 
                 await ProcessStandardLaneAsync(provider, active, token).ConfigureAwait(false);
                 stream ??= CenteredViewLookup.ResolveStream(
-                    await ingress.ReadCurrentAsync(new(active.AgentId!, profileName), token).ConfigureAwait(false));
+                    await ingress.ReadCurrentAsync(new(active.AgentId!, "corpus-odd-origin-bayer"), token).ConfigureAwait(false));
                 Assert.IsNotNull(stream);
                 var key = new ExposureKey(stream.Camera, stream.RunId, descriptor.Capture.CaptureId);
+                admitted[frameNumber] = (descriptor.Capture.CaptureId, key);
+
                 var linear = await exposureProducts.ReadLinearAsync(key, token).ConfigureAwait(false);
                 Assert.IsNotNull(linear?.Product);
                 Assert.AreEqual(expectedSha, linear.Provenance!.RawPayloadSha256);
+
+                var executionId = ProcessingGraphOperationsCoordinator.GetLiveExecutionId(key.CaptureId, stream.GenerationId);
+                var sources = await processing.ReadCenteredViewSourcesAsync(key, executionId, 0, 24, token).ConfigureAwait(false);
+                var measurementRef = Assert.ContainsSingle(sources.Where(item =>
+                    item.Slot.SchemaVersion == ExposureMeasurementProducts.SchemaVersion)).Product!;
+                var (_, measurement) = await persistence.ReadCenteredViewMeasurementAsync(
+                    key.CaptureId,
+                    new(measurementRef.ArtifactId, measurementRef.OutputIdentitySha256, measurementRef.PayloadSha256),
+                    token).ConfigureAwait(false);
+                Assert.AreEqual(ExposureMeasurementStatus.Usable, measurement.Sources.Status, measurement.Sources.Reason);
+                Assert.AreEqual(BayerPattern.Bggr, measurement.Sources.LocalBayerPattern);
 
                 await singlePublisher.DrainCameraAsync(stream.Camera, stream, CancellationToken.None, token)
                     .ConfigureAwait(false);
@@ -1654,19 +1867,152 @@ public sealed class CenteredPipelineQualificationTests
 
                 var single = (await views.ReadArchiveAsync(stream, descriptor.Capture.CaptureId, token)
                     .ConfigureAwait(false)).Single(item => item.Base.Definition.Kind == CenteredViewKind.Single);
-                var decoded = await DecodePublishedPreviewAsync(reader, single, token).ConfigureAwait(false);
-                Assert.AreEqual(layout.Width, decoded.Width);
-                Assert.AreEqual(layout.Height, decoded.Height);
-                if (layout.PixelFormat == CameraPixelFormat.Mono16)
+                var decodedSingle = await DecodePublishedPreviewAsync(reader, single, token).ConfigureAwait(false);
+                Assert.AreEqual(bayerLayout.Width, decodedSingle.Width);
+                Assert.AreEqual(bayerLayout.Height, decodedSingle.Height);
+                if (frameNumber == 103)
                 {
-                    AssertMonoPreviewEquality(decoded, $"{profileName}-{name}");
+                    AssertOracleBayerJpegColors(decodedSingle, sourcesAt103, "corpus-bayer-single-103");
                 }
+            }
+
+            Assert.IsNotNull(stream);
+
+            // When the full 6-exposure 101..106 sequence is present, verify both overlapping 5-frame registered
+            // stacks (centered on 103 and 104) against the oracle color targets (sourcesAt103) AND known
+            // source-105 displacements (knownSource105ToCenter103 / knownSource105ToCenter104)!
+            if (admitted.TryGetValue(103, out var cap103) &&
+                admitted.TryGetValue(104, out var cap104) &&
+                admitted.TryGetValue(105, out var cap105))
+            {
+                var stack103 = (await views.ReadArchiveAsync(stream, cap103.CaptureId, token).ConfigureAwait(false))
+                    .Single(item => item.Base.Definition.Kind == CenteredViewKind.Stack);
+                var stack104 = (await views.ReadArchiveAsync(stream, cap104.CaptureId, token).ConfigureAwait(false))
+                    .Single(item => item.Base.Definition.Kind == CenteredViewKind.Stack);
+                Assert.AreEqual(5, stack103.Base.Definition.Contributors.Count);
+                Assert.AreEqual(5, stack104.Base.Definition.Contributors.Count);
+
+                var science103 = await persistence.ReadCenteredViewRetainedProductAsync(
+                    cap103.CaptureId, stack103.Base.Definition.Science, token).ConfigureAwait(false);
+                var evidence103 = CenteredRegisteredStackEvidence.Read(science103);
+                var science104 = await persistence.ReadCenteredViewRetainedProductAsync(
+                    cap104.CaptureId, stack104.Base.Definition.Science, token).ConfigureAwait(false);
+                var evidence104 = CenteredRegisteredStackEvidence.Read(science104);
+                Assert.AreEqual(CenteredStackDisposition.Registered, evidence103.Disposition);
+                Assert.AreEqual(CenteredStackDisposition.Registered, evidence104.Disposition);
+
+                // Verify registered-stack displacement oracle against knownSource105ToCenter103 & knownSource105ToCenter104.
+                var firstExpected = oracle.RootElement.GetProperty("knownSource105ToCenter103");
+                var nextExpected = oracle.RootElement.GetProperty("knownSource105ToCenter104");
+                var dxFirst = firstExpected[0].GetDouble();
+                var dyFirst = firstExpected[1].GetDouble();
+                var dxNext = nextExpected[0].GetDouble();
+                var dyNext = nextExpected[1].GetDouble();
+                var match103 = evidence103.Sources.Single(source => source.CaptureId == cap105.CaptureId);
+                var match104 = evidence104.Sources.Single(source => source.CaptureId == cap105.CaptureId);
+                Assert.AreEqual(CenteredRegistrationMethod.VerifiedCentroidSimilarity, match103.Method);
+                Assert.AreEqual(CenteredRegistrationMethod.VerifiedCentroidSimilarity, match104.Method);
+                var map105To103 = CenteredRegisteredStackRecipe.ReconstructSourceMap(
+                    evidence103, match103.Offset, new Dictionary<Guid, ProcessingArtifact>(), token)!;
+                var map105To104 = CenteredRegisteredStackRecipe.ReconstructSourceMap(
+                    evidence104, match104.Offset, new Dictionary<Guid, ProcessingArtifact>(), token)!;
+                foreach (var heldPosition in sourcesAt103)
+                {
+                    var sampleOn105 = new PixelPoint(heldPosition.X - dxFirst, heldPosition.Y - dyFirst);
+                    var mapped103 = map105To103.SourceToReference(sampleOn105)!.Value;
+                    var mapped104 = map105To104.SourceToReference(sampleOn105)!.Value;
+                    Assert.AreEqual(heldPosition.X, mapped103.X, BayerCentroidTolerancePixels);
+                    Assert.AreEqual(heldPosition.Y, mapped103.Y, BayerCentroidTolerancePixels);
+                    Assert.AreEqual(sampleOn105.X + dxNext, mapped104.X, BayerCentroidTolerancePixels);
+                    Assert.AreEqual(sampleOn105.Y + dyNext, mapped104.Y, BayerCentroidTolerancePixels);
+                    Assert.IsGreaterThan(0.9, Math.Abs(mapped103.X - mapped104.X),
+                        "Overlapping corpus stacks 103 and 104 must keep source 105 transforms separated.");
+                    Assert.AreEqual(dxFirst - dxNext, mapped103.X - mapped104.X, BayerCentroidTolerancePixels * 2,
+                        "Overlapping corpus stack 103 vs 104 X separation must match oracle difference.");
+                }
+
+                // Verify linear stack 103 RGB channel color fidelity against sourcesAt103[0] (red) and sourcesAt103[2] (blue).
+                var redPin = evidence103.Outputs.Single(output => output.Channel == "red");
+                var greenPin = evidence103.Outputs.Single(output => output.Channel == "green");
+                var bluePin = evidence103.Outputs.Single(output => output.Channel == "blue");
+                Assert.AreNotEqual(redPin.PayloadSha256, greenPin.PayloadSha256);
+                Assert.AreNotEqual(bluePin.PayloadSha256, greenPin.PayloadSha256);
+                Assert.AreNotEqual(redPin.PayloadSha256, bluePin.PayloadSha256);
+                var redPlane = await persistence.ReadCenteredViewRetainedProductAsync(
+                    cap103.CaptureId, new(redPin.ArtifactId, redPin.OutputIdentitySha256, redPin.PayloadSha256), token)
+                    .ConfigureAwait(false);
+                var bluePlane = await persistence.ReadCenteredViewRetainedProductAsync(
+                    cap103.CaptureId, new(bluePin.ArtifactId, bluePin.OutputIdentitySha256, bluePin.PayloadSha256), token)
+                    .ConfigureAwait(false);
+                const double corpusBackgroundAdu = 91.0;
+                var redAt0 = Math.Max(0.0, MeasureLinearPatchMean(redPlane.Payload, bayerLayout.Width, sourcesAt103[0], radius: 1) - corpusBackgroundAdu);
+                var blueAt0 = Math.Max(0.0, MeasureLinearPatchMean(bluePlane.Payload, bayerLayout.Width, sourcesAt103[0], radius: 1) - corpusBackgroundAdu);
+                var redAt2 = Math.Max(0.0, MeasureLinearPatchMean(redPlane.Payload, bayerLayout.Width, sourcesAt103[2], radius: 1) - corpusBackgroundAdu);
+                var blueAt2 = Math.Max(0.0, MeasureLinearPatchMean(bluePlane.Payload, bayerLayout.Width, sourcesAt103[2], radius: 1) - corpusBackgroundAdu);
+                Assert.IsGreaterThan(2.0 * blueAt0, redAt0, $"Corpus linear stack 103 sourcesAt103[0] must be red-dominant (R={redAt0:F1}, B={blueAt0:F1}).");
+                Assert.IsGreaterThan(2.0 * redAt2, blueAt2, $"Corpus linear stack 103 sourcesAt103[2] must be blue-dominant (B={blueAt2:F1}, R={redAt2:F1}).");
+
+                // Also verify decoded published stack 103 JPEG preview preserves red/blue color polarity on sourcesAt103.
+                var decodedStack103 = await DecodePublishedPreviewAsync(reader, stack103, token).ConfigureAwait(false);
+                Assert.AreEqual(bayerLayout.Width, decodedStack103.Width);
+                Assert.AreEqual(bayerLayout.Height, decodedStack103.Height);
+                AssertOracleBayerJpegColors(decodedStack103, sourcesAt103, "corpus-bayer-stack-103");
             }
         }
         finally
         {
             Directory.Delete(root, recursive: true);
         }
+    }
+
+    private static async Task<byte[]> ReadReopenedArtifactBytesAsync(
+        ICameraAgentArtifactService artifactService, Guid artifactId, int expectedLength, CancellationToken token)
+    {
+        var openedRaw = await artifactService.OpenContentAsync(artifactId, token).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentArtifactReadStatus.Found, openedRaw.Status);
+        Assert.IsNotNull(openedRaw.Content);
+        await using (openedRaw.Content.ConfigureAwait(false))
+        {
+            using var buffer = new MemoryStream(expectedLength);
+            await openedRaw.Content.CopyToAsync(buffer, token).ConfigureAwait(false);
+            return buffer.ToArray();
+        }
+    }
+
+    private static TimeSpan ResolveManifestExposureDuration(JsonElement entry, TimeSpan fallback)
+    {
+        if (entry.TryGetProperty("exposureSeconds", out var seconds) && seconds.ValueKind == JsonValueKind.Number)
+            return TimeSpan.FromSeconds(seconds.GetDouble());
+        if (entry.TryGetProperty("exposureDurationSeconds", out var durSeconds) && durSeconds.ValueKind == JsonValueKind.Number)
+            return TimeSpan.FromSeconds(durSeconds.GetDouble());
+        if (entry.TryGetProperty("exposureMs", out var ms) && ms.ValueKind == JsonValueKind.Number)
+            return TimeSpan.FromMilliseconds(ms.GetDouble());
+        if (entry.TryGetProperty("exposureDuration", out var durStr) && durStr.ValueKind == JsonValueKind.String &&
+            TimeSpan.TryParse(durStr.GetString(), CultureInfo.InvariantCulture, out var parsed))
+            return parsed;
+        return fallback;
+    }
+
+    private static DateTimeOffset ResolveManifestStartedUtc(JsonElement entry, DateTimeOffset fallback)
+    {
+        foreach (var propertyName in new[] { "exposureStartedUtc", "capturedUtc", "startedUtc", "timestampUtc" })
+        {
+            if (entry.TryGetProperty(propertyName, out var prop) && prop.ValueKind == JsonValueKind.String &&
+                DateTimeOffset.TryParse(prop.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var parsed))
+            {
+                return parsed.ToUniversalTime();
+            }
+        }
+        return fallback;
+    }
+
+    private static void AssertOracleBayerJpegColors(DecodedImage decoded, PixelPoint[] sourcesAt103, string label)
+    {
+        Assert.AreEqual(CameraPixelFormat.Rgb24, decoded.PixelFormat, $"{label}: Bayer preview must decode as Rgb24.");
+        var redTarget = MeasureJpegPatch(decoded, sourcesAt103[0], radius: 1);
+        var blueTarget = MeasureJpegPatch(decoded, sourcesAt103[2], radius: 1);
+        Assert.IsGreaterThan(redTarget.Blue, redTarget.Red, $"{label}: sourcesAt103[0] expected R > B, got {redTarget}.");
+        Assert.IsGreaterThan(blueTarget.Red, blueTarget.Blue, $"{label}: sourcesAt103[2] expected B > R, got {blueTarget}.");
     }
 
     private sealed class QualificationClock : TimeProvider

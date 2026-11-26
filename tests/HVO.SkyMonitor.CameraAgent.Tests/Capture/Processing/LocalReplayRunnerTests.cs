@@ -1050,6 +1050,152 @@ public sealed class LocalReplayRunnerTests
                 options.MaxTotalTransferBytes));
     }
 
+    [TestMethod]
+    public async Task ReplayProjection_ValidatesAllFourBayerPhasesForPreviewAndRawAnnotationAsync()
+    {
+        const int width = 32;
+        const int height = 24;
+        var rawBytes = new byte[width * height * 2];
+        for (var i = 0; i < width * height; i++)
+        {
+            var code = (ushort)(200 + (i % 4) * 700);
+            rawBytes[i * 2] = (byte)(code & 0xff);
+            rawBytes[i * 2 + 1] = (byte)(code >> 8);
+        }
+
+        var fixedArtifactId = Guid.Parse("19281928-1928-4928-8928-192819289999");
+        var createdUtc = new DateTimeOffset(2026, 11, 20, 22, 30, 0, TimeSpan.Zero);
+        var compatibility = new ProcessingCompatibilityIdentity(
+            "rig-v1", "orientation-v1", "cal-none", "mask-none", "sensor-v1", "setpoint-v1", "profile-v1");
+        var selector = ProcessingInputSelector.Raw("raw");
+        var executor = new ProcessingRecipeExecutor();
+        var options = CreateOptions(CreateSocketPath());
+
+        var encodedOptions = JsonSerializer.SerializeToElement(new { outputEncoding = "Jpeg", jpegQuality = 90 });
+        var fixedOptions = JsonSerializer.SerializeToElement(new FixedDisplayTransferOptions(64, 4095, 2.2));
+        var annotationOptions = JsonSerializer.SerializeToElement(new
+        {
+            drawLabels = false,
+            drawImageCircle = false,
+            drawCardinalDirections = false,
+            jpegQuality = 90
+        });
+        var annotationInput = new ProcessingAnnotationInput(
+            [],
+            [],
+            new PreviewTransform(1, 1),
+            null,
+            new string('C', 64));
+
+        (int X, int Y, BayerPattern Pattern)[] phases =
+        [
+            (0, 0, BayerPattern.Rggb),
+            (1, 0, BayerPattern.Grbg),
+            (0, 1, BayerPattern.Gbrg),
+            (1, 1, BayerPattern.Bggr)
+        ];
+
+        (string RecipeName, JsonElement Options, string Variant, ProcessingAnnotationInput? Annotation)[] recipes =
+        [
+            (BuiltInProcessingRecipes.EncodedPreview, encodedOptions, "preview", null),
+            (BuiltInProcessingRecipes.FixedPreview, fixedOptions, "fixed-preview", null),
+            (BuiltInProcessingRecipes.Annotation, annotationOptions, "annotated", annotationInput)
+        ];
+
+        foreach (var (recipeName, recipeOptions, variant, annotation) in recipes)
+        {
+            var phaseLessRecipe = BuiltInProcessingRecipes.CreateExecutionIdentity(
+                recipeName, recipeOptions, selector, annotation);
+            var reconstructedRecipeIds = new HashSet<string>(StringComparer.Ordinal);
+            var reconstructedOutputIds = new HashSet<string>(StringComparer.Ordinal);
+
+            foreach (var (ox, oy, pattern) in phases)
+            {
+                var layout = new FrameLayoutDescriptor(
+                    width, height, width * 2, CameraPixelFormat.BayerRggb16, FrameByteOrder.LittleEndian, 12, 16,
+                    FrameSamplePacking.ByteAligned, ColorFilterArrayPattern.Rggb, 64, 4095, rawBytes.Length)
+                {
+                    StoredCodeTransform = FrameStoredCodeTransform.RightAlignedV1,
+                    LevelCodeSpace = FrameLevelCodeSpace.NativeSample,
+                    Readout = new FrameReadoutDescriptor(
+                        width + ox * 2, height + oy * 2, ox, oy, width, height, 1, 1,
+                        FrameBinningAlgorithm.IdentityV1, ox, oy)
+                };
+                var input = new ProcessingArtifact(
+                    fixedArtifactId,
+                    FrameArtifactRole.Raw,
+                    "raw",
+                    new string('A', 64),
+                    "application/octet-stream",
+                    layout,
+                    rawBytes,
+                    createdUtc,
+                    TimeSpan.FromSeconds(1),
+                    compatibility);
+                var request = new ProcessingExecutionRequest(
+                    recipeName,
+                    recipeOptions,
+                    selector,
+                    [input],
+                    variant,
+                    Annotation: annotation,
+                    InputArtifactId: fixedArtifactId);
+                var outcome = await executor.ExecuteAsync(request).ConfigureAwait(false);
+                Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status, $"{recipeName}-{pattern}: {outcome.ReasonCode}");
+
+                var context = CreateJobContext();
+                var projection = ReplayProjection.ProjectResponse(context, request, outcome, options);
+                var payloads = projection.Payloads.Select(static payload => payload.ToArray()).ToArray();
+                var reconstructed = ReplayProjection.ReconstructOutcome(
+                    projection.Metadata,
+                    payloads,
+                    context,
+                    request,
+                    options.MaxTotalTransferBytes);
+
+                Assert.AreEqual(ProcessingOutcomeStatus.Produced, reconstructed.Status, $"{recipeName}-{pattern}");
+                var expectedProduct = outcome.Products.Single();
+                var actualProduct = reconstructed.Products.Single();
+                Assert.AreEqual(expectedProduct.Recipe.IdentitySha256, actualProduct.Recipe.IdentitySha256);
+                Assert.AreEqual(expectedProduct.OutputIdentitySha256, actualProduct.OutputIdentitySha256);
+                CollectionAssert.AreEqual(expectedProduct.Payload.ToArray(), actualProduct.Payload.ToArray());
+                CollectionAssert.AreEqual(expectedProduct.Algorithms.ToArray(), actualProduct.Algorithms.ToArray());
+                reconstructedRecipeIds.Add(actualProduct.Recipe.IdentitySha256);
+                reconstructedOutputIds.Add(actualProduct.OutputIdentitySha256);
+
+                if (pattern != BayerPattern.Rggb)
+                {
+                    var projectedProduct = projection.Metadata.Products.Single();
+                    var downgraded = projection.Metadata with
+                    {
+                        Products =
+                        [
+                            projectedProduct with
+                            {
+                                Recipe = phaseLessRecipe,
+                                OutputIdentitySha256 = ProcessingIdentity.CreateOutputIdentity(
+                                    projectedProduct.Role,
+                                    projectedProduct.Variant,
+                                    phaseLessRecipe.IdentitySha256,
+                                    projectedProduct.SourceArtifactIds)
+                            }
+                        ]
+                    };
+                    Assert.Throws<LocalReplayRunnerOutputValidationException>(() =>
+                        ReplayProjection.ReconstructOutcome(
+                            downgraded,
+                            payloads,
+                            context,
+                            request,
+                            options.MaxTotalTransferBytes));
+                }
+            }
+
+            Assert.AreEqual(4, reconstructedRecipeIds.Count, $"{recipeName}: replay must distinguish all 4 CFA recipe identities.");
+            Assert.AreEqual(4, reconstructedOutputIds.Count, $"{recipeName}: replay must distinguish all 4 CFA output identities.");
+        }
+    }
+
     private static CameraAgentRecipeExecutionAdapter CreateAdapter(LocalReplayRunnerClient client)
     {
         var hostOptions = Options.Create(new CameraAgentHostOptions

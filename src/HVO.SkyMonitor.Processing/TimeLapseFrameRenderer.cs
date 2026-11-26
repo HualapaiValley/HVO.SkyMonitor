@@ -59,6 +59,33 @@ public static class TimeLapseFrameRenderer
         });
     }
 
+    internal static string RecipeIdentity(
+        TimeLapseFrameOptions options,
+        string rendererVersion,
+        BayerPattern? deliveredCfaPhase)
+    {
+        Validate(options);
+        ValidateVersion(rendererVersion);
+        if (deliveredCfaPhase is not { } shifted || shifted == BayerPattern.Rggb)
+        {
+            return RecipeIdentity(options, rendererVersion);
+        }
+
+        return CaptureContractJson.ComputeCanonicalJsonSha256(new
+        {
+            Version = rendererVersion,
+            OverlayVersion = rendererVersion == LegacyVersion ? LegacyOverlayVersion : OriginalColoursOverlayVersion,
+            options,
+            mean = Linear16ArithmeticMean.AlgorithmVersion,
+            stretch = Mono16DisplayStretch.AlgorithmVersion,
+            demosaic = BayerRggb16Demosaicer.AlgorithmVersionFor(shifted),
+            dayTransfer = FixedDisplayTransfer.AlgorithmVersion,
+            quality = ImageStatisticsCalculator.AlgorithmVersion,
+            compositor = PresentationLayerCompositor.AlgorithmVersion,
+            deliveredCfa = shifted.ToString()
+        });
+    }
+
     /// <summary>Optional quality admission on the verified linear source, before timeline planning or stacking.</summary>
     public static bool AcceptsQuality(ProcessingArtifact source, TimeLapseFrameOptions options, CancellationToken cancellationToken = default)
     {
@@ -121,7 +148,7 @@ public static class TimeLapseFrameRenderer
         var imageLayout = new ImageLayout(layout.Width, layout.Height, color ? CameraPixelFormat.Rgb24 : CameraPixelFormat.Mono8,
             layout.Width * (color ? 3 : 1));
         var checksums = sources.Select(source => ProcessingIdentity.ComputePayloadSha256(source.Payload)).ToArray();
-        var recipeIdentity = RecipeIdentity(options, rendererVersion);
+        var recipeIdentity = RecipeIdentity(options, rendererVersion, color ? bayerPattern : null);
         var selectedLayerIdentities = additionalLayers?.Select(layer => new
         {
             layer.Payload.ContentIdentitySha256,

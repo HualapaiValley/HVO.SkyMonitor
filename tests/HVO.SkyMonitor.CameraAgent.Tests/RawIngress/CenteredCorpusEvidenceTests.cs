@@ -19,12 +19,23 @@ public sealed class CenteredCorpusEvidenceTests
     }
 
     [TestMethod]
-    public async Task CenteredRetainedNovemberMonoAndOddOriginBayerPassEndToEndCenteredQualificationAsync()
+    public async Task CenteredRetainedNovemberMonoPassEndToEndCenteredQualificationAsync()
     {
         var corpus = Environment.GetEnvironmentVariable("HVO_CAPTURE_1919_CORPUS");
         if (string.IsNullOrEmpty(corpus))
             Assert.Inconclusive("Set HVO_CAPTURE_1919_CORPUS to the directory containing the documented #1919 fixtures.");
-        await CenteredPipelineQualificationTests.RunRetainedExternalCorpusEndToEndAsync(
+        await CenteredPipelineQualificationTests.RunRetainedNovemberMonoEndToEndAsync(
+            corpus!, TestContext.CancellationToken).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task CenteredRetainedOddOriginBayerGeometryPassEndToEndCenteredQualificationAsync()
+    {
+        var corpus = Environment.GetEnvironmentVariable("HVO_CAPTURE_1919_CORPUS")
+            ?? Environment.GetEnvironmentVariable("HVO_REGISTRATION_GEOMETRY");
+        if (string.IsNullOrEmpty(corpus))
+            Assert.Inconclusive("Set HVO_CAPTURE_1919_CORPUS (or HVO_REGISTRATION_GEOMETRY) to the directory containing the geometry oracle fixtures.");
+        await CenteredPipelineQualificationTests.RunRetainedBayerGeometryEndToEndAsync(
             corpus!, TestContext.CancellationToken).ConfigureAwait(false);
     }
 }

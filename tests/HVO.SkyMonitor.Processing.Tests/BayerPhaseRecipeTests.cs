@@ -340,7 +340,9 @@ public sealed class BayerPhaseRecipeTests
     [TestMethod]
     public void TimeLapseFrameRendererPinsRggbIdentityAndDistinguishesDeliveredCfaWithSameRig()
     {
-        const string goldenRggbRenderingIdentity = "6BC0FB08FEF12D88CD586763A59CF3DD58A287E912CE1558EF2F54013A61F618";
+        const string goldenRggbNightRenderingIdentity = "6BC0FB08FEF12D88CD586763A59CF3DD58A287E912CE1558EF2F54013A61F618";
+        const string goldenRggbDayRenderingIdentity = "2F5A49FCE4C68CF8682395E297E6978DA1C87BA787226152255CC6ED61BE212B";
+        const string goldenRggbRecipeIdentity = "B3ACB9B11571BAFAE1A0A850048CB62B8C385DD6198DF9598BBD5CA04590FF68";
         var fixedArtifactId = Guid.Parse("19281928-1928-4928-8928-192819280001");
         var createdUtc = new DateTimeOffset(2026, 11, 20, 22, 30, 0, TimeSpan.Zero);
         var sharedRig = CreateRig(0, 0);
@@ -350,6 +352,7 @@ public sealed class BayerPhaseRecipeTests
         var sharedRaw = RenderColorPatches(0, 0);
         var options = new TimeLapseFrameOptions(
             CardinalDirections: false, CornerMetadata: false, ImageCircle: false, JpegQuality: 90);
+        var historicalRecipeIdentity = TimeLapseFrameRenderer.RecipeIdentity(options);
 
         ProcessingArtifact ArtifactFor(FrameLayoutDescriptor layout) => new(
             fixedArtifactId,
@@ -366,13 +369,6 @@ public sealed class BayerPhaseRecipeTests
             ObservationStartedUtc = createdUtc
         };
 
-        // Hold rig, compatibility, artifact ID, raw bytes, timestamp, and options completely fixed;
-        // vary ONLY layout.Readout.CfaOriginX/Y so RenderingIdentitySha256 separation depends strictly on deliveredCfa.
-        var rggb = TimeLapseFrameRenderer.Render([ArtifactFor(CreateLayout(0, 0, sharedRaw.Length))], sharedRig, options, daytime: false, Width, Height);
-        var grbg = TimeLapseFrameRenderer.Render([ArtifactFor(CreateLayout(1, 0, sharedRaw.Length))], sharedRig, options, daytime: false, Width, Height);
-        var gbrg = TimeLapseFrameRenderer.Render([ArtifactFor(CreateLayout(0, 1, sharedRaw.Length))], sharedRig, options, daytime: false, Width, Height);
-        var bggr = TimeLapseFrameRenderer.Render([ArtifactFor(CreateLayout(1, 1, sharedRaw.Length))], sharedRig, options, daytime: false, Width, Height);
-
         var legacyLayout = new FrameLayoutDescriptor(
             Width, Height, Width * 2, CameraPixelFormat.BayerRggb16, FrameByteOrder.LittleEndian, 12, 16,
             FrameSamplePacking.ByteAligned, ColorFilterArrayPattern.Rggb, 64, 4095, sharedRaw.Length)
@@ -380,21 +376,63 @@ public sealed class BayerPhaseRecipeTests
             StoredCodeTransform = FrameStoredCodeTransform.RightAlignedV1,
             LevelCodeSpace = FrameLevelCodeSpace.NativeSample
         };
-        var legacy = TimeLapseFrameRenderer.Render([ArtifactFor(legacyLayout)], sharedRig, options, daytime: false, Width, Height);
+        var monoLayout = new FrameLayoutDescriptor(
+            Width, Height, Width * 2, CameraPixelFormat.Mono16, FrameByteOrder.LittleEndian, 12, 16,
+            FrameSamplePacking.ByteAligned, ColorFilterArrayPattern.None, 64, 4095, sharedRaw.Length)
+        {
+            StoredCodeTransform = FrameStoredCodeTransform.RightAlignedV1,
+            LevelCodeSpace = FrameLevelCodeSpace.NativeSample
+        };
 
-        Assert.AreEqual(goldenRggbRenderingIdentity, rggb.RenderingIdentitySha256,
-            "Pinned (0,0) RGGB time-lapse rendering identity must remain unchanged.");
-        Assert.AreEqual(rggb.RenderingIdentitySha256, legacy.RenderingIdentitySha256,
-            "Legacy null-readout Bayer layout must preserve the exact (0,0) RGGB rendering identity.");
-        string[] allIdentities =
-        [
-            rggb.RenderingIdentitySha256,
-            grbg.RenderingIdentitySha256,
-            gbrg.RenderingIdentitySha256,
-            bggr.RenderingIdentitySha256
-        ];
-        Assert.AreEqual(4, allIdentities.Distinct(StringComparer.Ordinal).Count(),
-            "All 4 delivered Bayer CFA phases with identical rig and bytes must produce distinct RenderingIdentitySha256 values.");
+        // Hold rig, compatibility, artifact ID, raw bytes, timestamp, and options completely fixed;
+        // vary ONLY layout.Readout.CfaOriginX/Y across BOTH night and day modes so both RecipeIdentitySha256
+        // and RenderingIdentitySha256 separation depend strictly on deliveredCfa.
+        foreach (var (daytime, expectedRggbRendering) in new[]
+        {
+            (false, goldenRggbNightRenderingIdentity),
+            (true, goldenRggbDayRenderingIdentity)
+        })
+        {
+            var mode = daytime ? "day" : "night";
+            var rggb = TimeLapseFrameRenderer.Render([ArtifactFor(CreateLayout(0, 0, sharedRaw.Length))], sharedRig, options, daytime, Width, Height);
+            var grbg = TimeLapseFrameRenderer.Render([ArtifactFor(CreateLayout(1, 0, sharedRaw.Length))], sharedRig, options, daytime, Width, Height);
+            var gbrg = TimeLapseFrameRenderer.Render([ArtifactFor(CreateLayout(0, 1, sharedRaw.Length))], sharedRig, options, daytime, Width, Height);
+            var bggr = TimeLapseFrameRenderer.Render([ArtifactFor(CreateLayout(1, 1, sharedRaw.Length))], sharedRig, options, daytime, Width, Height);
+            var legacy = TimeLapseFrameRenderer.Render([ArtifactFor(legacyLayout)], sharedRig, options, daytime, Width, Height);
+            var mono = TimeLapseFrameRenderer.Render([ArtifactFor(monoLayout)], sharedRig, options, daytime, Width, Height);
+
+            Assert.AreEqual(historicalRecipeIdentity, rggb.RecipeIdentitySha256,
+                $"{mode}: (0,0) RGGB must preserve historical TimeLapseFrameRenderer.RecipeIdentity.");
+            Assert.AreEqual(historicalRecipeIdentity, legacy.RecipeIdentitySha256,
+                $"{mode}: legacy null-readout Bayer must preserve historical RecipeIdentitySha256.");
+            Assert.AreEqual(historicalRecipeIdentity, mono.RecipeIdentitySha256,
+                $"{mode}: Mono16 must preserve historical RecipeIdentitySha256.");
+            Assert.AreEqual(goldenRggbRecipeIdentity, rggb.RecipeIdentitySha256,
+                $"{mode}: pinned (0,0) RGGB time-lapse recipe identity must remain unchanged.");
+            Assert.AreEqual(expectedRggbRendering, rggb.RenderingIdentitySha256,
+                $"{mode}: pinned (0,0) RGGB time-lapse rendering identity must remain unchanged.");
+            Assert.AreEqual(rggb.RenderingIdentitySha256, legacy.RenderingIdentitySha256,
+                $"{mode}: legacy null-readout Bayer must preserve exact (0,0) RGGB rendering identity.");
+
+            string[] allRenderingIds =
+            [
+                rggb.RenderingIdentitySha256,
+                grbg.RenderingIdentitySha256,
+                gbrg.RenderingIdentitySha256,
+                bggr.RenderingIdentitySha256
+            ];
+            string[] allRecipeIds =
+            [
+                rggb.RecipeIdentitySha256,
+                grbg.RecipeIdentitySha256,
+                gbrg.RecipeIdentitySha256,
+                bggr.RecipeIdentitySha256
+            ];
+            Assert.AreEqual(4, allRenderingIds.Distinct(StringComparer.Ordinal).Count(),
+                $"{mode}: all 4 delivered Bayer CFA phases with identical rig and bytes must produce distinct RenderingIdentitySha256 values.");
+            Assert.AreEqual(4, allRecipeIds.Distinct(StringComparer.Ordinal).Count(),
+                $"{mode}: all 4 delivered Bayer CFA phases with identical rig and bytes must produce distinct RecipeIdentitySha256 values.");
+        }
     }
 
     private static byte[] RenderColorPatches(int originX, int originY)
