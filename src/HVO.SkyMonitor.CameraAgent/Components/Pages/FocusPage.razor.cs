@@ -16,7 +16,7 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 /// connection, or losing authorization stops the heartbeat, and the coordinator ends the session at its observer
 /// timeout. The server keeps a disconnected circuit's timers running, so the heartbeat is sent only while
 /// <see cref="CircuitConnectionState"/> reports a connected browser. Every number shown is measured
-/// from the preview's own pixels; nothing here moves hardware.
+/// from preview pixels. Motor commands use the same authorized session owner.
 /// </summary>
 public sealed partial class FocusPage : SiteTimeComponent, IAsyncDisposable
 {
@@ -50,6 +50,8 @@ public sealed partial class FocusPage : SiteTimeComponent, IAsyncDisposable
     private string _exposureText = FormatExposure(TimeSpan.FromSeconds(1));
     private double _gain = 110;
     private double _position;
+    private int _motorTarget;
+    private int _stepSize = 1;
     private int _safetyMinutes = 15;
     private string _metric = MetricHfd;
 
@@ -89,7 +91,11 @@ public sealed partial class FocusPage : SiteTimeComponent, IAsyncDisposable
         Position
     }
 
-    private static OperationsSection Section => OperationsSectionCatalog.Get("focus");
+    private OperationsSection Section => OperationsSectionCatalog.ForFocuser(OperationsSectionCatalog.Get("focus"), _status?.Focuser is not null);
+
+    private bool CanRunMotor => CanStartSession && _status?.Focuser?.State is { Connected: true, Stalled: false, IsMoving: false };
+
+    private bool HasEvidence => Session.History.Count > 0 || Session.Motor?.Command.SweepSpacing is not null;
 
     private ManualFocusSessionSnapshot Session => _status?.Session ?? ManualFocusSessionSnapshot.Idle;
 
@@ -101,17 +107,17 @@ public sealed partial class FocusPage : SiteTimeComponent, IAsyncDisposable
 
     private CameraFocusPreviewFidelity? Fidelity => Session.Fidelity ?? _status?.Availability.Fidelity;
 
-    private CameraSimulatedFocusModel? SimulatedFocus => Session.SimulatedFocus ?? _status?.Availability.SimulatedFocus;
+    private CameraSimulatedFocusModel? SimulatedFocus => _status?.Focuser is null ? Session.SimulatedFocus ?? _status?.Availability.SimulatedFocus : null;
 
     private bool IsOwner => _status?.IsOwner == true;
 
     private bool HasEnded => Session.State is ManualFocusSessionState.Stopped or ManualFocusSessionState.TimedOut
         or ManualFocusSessionState.Faulted;
 
-    private bool CanSave => HasEnded && IsOwner && RetentionAvailable && Session.History.Count > 0 &&
+    private bool CanSave => HasEnded && IsOwner && RetentionAvailable && HasEvidence &&
         Session.Retention == ManualFocusRetentionState.InMemoryOnly;
 
-    private bool CanDiscard => HasEnded && IsOwner && Session.History.Count > 0 &&
+    private bool CanDiscard => HasEnded && IsOwner && HasEvidence &&
         Session.Retention == ManualFocusRetentionState.InMemoryOnly;
 
     // Prerendered markup has no circuit behind it, so input given before the page is live would be silently lost.
@@ -120,15 +126,15 @@ public sealed partial class FocusPage : SiteTimeComponent, IAsyncDisposable
     private bool CanStartSession => _status is { CanControl: true, Availability.Available: true } && !Session.IsRunning &&
         !CanSave && !Busy;
 
-    private bool CanEditSettings => CanStartSession || (Session.IsRunning && IsOwner && !Busy);
+    private bool CanEditSettings => CanStartSession || CanAdjust;
 
-    private bool CanAdjust => Session.IsRunning && IsOwner && !Busy;
+    private bool CanAdjust => Session.IsRunning && IsOwner && Session.Motor is null && !Busy;
 
     private bool CanApply => CanAdjust && _dirty;
 
     private bool PrimaryEnabled => !Busy && _status is not null && (Session.IsRunning ? IsOwner : CanSave || CanStartSession);
 
-    private string PrimaryLabel => Session.IsRunning ? "End session"
+    private string PrimaryLabel => Session.IsRunning ? (Session.Motor is null ? "End session" : "Abort motor operation")
         : CanSave ? "Save session result"
         : HasEnded ? "Start new session"
         : "Start focus session";
@@ -215,6 +221,7 @@ public sealed partial class FocusPage : SiteTimeComponent, IAsyncDisposable
         TimeSpan.FromMinutes(minutes) >= Limits.MinimumSafetyTimeout && TimeSpan.FromMinutes(minutes) <= Limits.MaximumSafetyTimeout);
 
     private string ApplyHelp => !Session.IsRunning ? "Settings apply when the session starts."
+        : Session.Motor is not null ? "The motor operation uses fixed preview settings."
         : !IsOwner ? "Only the session owner can change settings."
         : _dirty ? "Changed settings take effect from the next exposure; the exposure in progress finishes first."
         : "Change exposure, gain, or the simulated position, then apply it to the next exposure.";
@@ -475,6 +482,11 @@ public sealed partial class FocusPage : SiteTimeComponent, IAsyncDisposable
     // The form shows what the session is exposing with unless the operator has unapplied edits.
     private void SyncForm(FocusUiStatus status, FocusUiStatus? previous)
     {
+        if (previous?.Focuser is null && status.Focuser is { } motor)
+        {
+            _motorTarget = motor.State.Position;
+            _stepSize = Math.Max(1, (motor.Limits.MaximumPosition - motor.Limits.MinimumPosition - motor.Limits.BacklashSteps) / 8);
+        }
         var session = status.Session;
         var model = session.SimulatedFocus ?? status.Availability.SimulatedFocus;
         if (!_formInitialized)
@@ -527,7 +539,7 @@ public sealed partial class FocusPage : SiteTimeComponent, IAsyncDisposable
         return StartAsync();
     }
 
-    private Task StartAsync()
+    private Task StartAsync(MotorFocusCommand? motor = null)
     {
         if (!TryReadSettings(out var settings))
         {
@@ -536,10 +548,12 @@ public sealed partial class FocusPage : SiteTimeComponent, IAsyncDisposable
         var request = new ManualFocusSessionRequest(
             settings,
             SimulatedFocus is not null ? _position : null,
-            SafetyTimeout: TimeSpan.FromMinutes(_safetyMinutes));
+            SafetyTimeout: TimeSpan.FromMinutes(_safetyMinutes), Motor: motor);
         _viewer = FocusViewer.Star;
         return CommandAsync(token => FocusService.StartAsync(request, token), null, clearDirty: true);
     }
+
+    private Task StartMotorAsync(MotorFocusCommand command) => CanRunMotor ? StartAsync(command) : Task.CompletedTask;
 
     private async Task SaveAsync()
     {
@@ -889,6 +903,8 @@ public sealed partial class FocusPage : SiteTimeComponent, IAsyncDisposable
 
     internal static string EndText(string? reason) => reason switch
     {
+        "autofocus-complete" => "Autofocus applied the verified HFD minimum.",
+        "motor-move-complete" => "Focuser reached the requested position.",
         ManualFocusReasonCodes.StoppedByOperator => "Ended by the operator.",
         ManualFocusReasonCodes.SafetyTimeout => "The safety limit ended the session.",
         ManualFocusReasonCodes.ObserverLost => "The owner stopped observing (page closed, connection lost, or access removed), so the session ended.",

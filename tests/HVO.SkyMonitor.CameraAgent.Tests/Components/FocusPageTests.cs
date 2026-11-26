@@ -87,11 +87,38 @@ public sealed class FocusPageTests
         CollectionAssert.AreEqual(HistoryColumns,
             history.QuerySelectorAll("thead th").Select(static column => column.TextContent.Trim()).ToArray());
         Assert.AreEqual("No focus sessions are retained on this CameraAgent.", history.QuerySelector("tbody tr")!.TextContent.Trim());
+        Assert.IsEmpty(cut.FindAll("#motor-heading"));
         Assert.IsEmpty(cut.FindAll("img"));
         Assert.StartsWith("— no sample", cut.Find("#focus-metric").TextContent.Trim());
         Assert.IsEmpty(cut.FindAll(".focus-trend circle"));
         StringAssert.Contains(cut.Find(".focus-simulated legend").TextContent, "not a motor", StringComparison.Ordinal);
         StringAssert.Contains(cut.Find(".focus-fidelity").TextContent, Simulated.Limitation, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [DataRow("motor-move", 80, 0, 0)]
+    [DataRow("motor-out", 0, 5, 0)]
+    [DataRow("motor-in", 0, -5, 0)]
+    [DataRow("motor-sweep", 0, 0, 5)]
+    public void RegisteredFocuser_SubmitsBoundedOwnerCommands(string button, int absolute, int step, int spacing)
+    {
+        var service = new FakeFocusService(Status(ManualFocusSessionSnapshot.Idle) with
+        {
+            Focuser = new(new(0, 100, 4), new(true, 10, null, false, 12.5))
+        });
+        using var context = CreateContext(service, out _);
+        var cut = context.Render<FocusPage>();
+        Assert.IsEmpty(cut.FindAll(".focus-boundary, #focus-position"));
+        StringAssert.Contains(cut.Find(".focus-motor").TextContent, "Backlash 4", StringComparison.Ordinal);
+        cut.Find("#motor-step-size").Change("26");
+        Assert.IsTrue(cut.Find("#motor-in").HasAttribute("disabled"));
+        Assert.IsTrue(cut.Find("#motor-sweep").HasAttribute("disabled"));
+        cut.Find("#motor-step-size").Change("5");
+        cut.Find("#motor-target").Change("80");
+        cut.Find("#" + button).Click();
+        Assert.AreEqual(new MotorFocusCommand(absolute == 0 ? null : absolute, step == 0 ? null : step,
+            spacing == 0 ? null : spacing), service.StartRequest!.Motor);
+        Assert.IsNull(service.StartRequest.SimulatedFocusPosition);
     }
 
     [TestMethod]

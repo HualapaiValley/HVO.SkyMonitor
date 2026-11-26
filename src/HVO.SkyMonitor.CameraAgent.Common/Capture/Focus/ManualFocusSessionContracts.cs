@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.Imaging;
@@ -92,7 +93,17 @@ public sealed record ManualFocusSessionRequest(
     ManualFocusPreviewSettings Settings,
     double? SimulatedFocusPosition = null,
     PixelPoint? Target = null,
-    TimeSpan? SafetyTimeout = null);
+    TimeSpan? SafetyTimeout = null,
+    MotorFocusCommand? Motor = null);
+
+/// <summary>Exactly one operation, in motor steps. A sweep samples five equally spaced positions.</summary>
+public sealed record MotorFocusCommand(int? AbsolutePosition = null, int? RelativeSteps = null, int? SweepSpacing = null);
+
+public sealed record MotorFocusStatus(MotorizedFocuserCapabilities Limits, MotorizedFocuserState State);
+
+/// <summary>Outcome of an operator-initiated motor session, including incomplete sweeps.</summary>
+public sealed record MotorFocusEvidence(MotorFocusCommand Command, MotorFocusStatus Initial,
+    MotorizedFocuserState? Final = null, int? AppliedPosition = null, string? Recovery = null);
 
 /// <summary>A change applied from the next exposure on. Null members are unchanged.</summary>
 public sealed record ManualFocusAdjustment(
@@ -194,7 +205,8 @@ public sealed record ManualFocusSample(
     ManualFocusTargetSource TargetSource,
     FocusStarMeasurement Measurement,
     ManualFocusSampleProvenance Provenance,
-    string? ComparisonGroupId = null);
+    string? ComparisonGroupId = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? MotorPosition = null);
 
 /// <summary>A single publication of the session and the display images belonging to its latest sample.</summary>
 public sealed record ManualFocusPresentation(
@@ -240,7 +252,8 @@ public sealed record ManualFocusSessionSnapshot(
     CameraFocusPreviewFidelity? Fidelity,
     CameraSimulatedFocusModel? SimulatedFocus,
     ManualFocusRetentionState Retention,
-    string? SavedRecordId)
+    string? SavedRecordId,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] MotorFocusEvidence? Motor = null)
 {
     public static ManualFocusSessionSnapshot Idle { get; } = new(
         string.Empty, ManualFocusSessionState.Idle, null, default, null, default, new(TimeSpan.Zero, 0), null, null,
@@ -342,7 +355,7 @@ public static class ManualFocusReasonCodes
         "The camera module is not running, so no focus preview can be taken. Wait for capture to start, then try again.";
 
     public const string AdmissionFailClosed =
-        "Capture admission is unavailable after a durable publication failure; focus previews are refused until verified restart recovery.";
+        "Capture admission is unavailable. Focus previews require verified restart recovery.";
 
     public const string CameraWithdrawnMessage =
         "The camera module was withdrawn by its owner (configuration change, restart, or shutdown).";

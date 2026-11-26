@@ -47,6 +47,10 @@ public sealed partial class ManualFocusSessionCoordinator : IHostedService, IDis
 
     public ManualFocusSessionAvailability Availability => _source.GetAvailability();
 
+    private CameraModuleManualFocusPreviewSource? MotorSource => _source as CameraModuleManualFocusPreviewSource;
+
+    public MotorFocusStatus? Focuser => MotorSource?.Focuser is { } motor ? new(motor.Capabilities, motor.State) : null;
+
     public bool RetentionAvailable => _store is not null;
 
     /// <summary>Reads the metrics and their images together without recording owner observation.</summary>
@@ -98,6 +102,7 @@ public sealed partial class ManualFocusSessionCoordinator : IHostedService, IDis
         {
             var session = RequireOwned(sessionId, actor);
             session.LastObservedUtc = _timeProvider.GetUtcNow();
+            session.ObserverDeadline?.CancelAfter(_limits.ObserverTimeout);
             return session.ToSnapshot();
         }
     }
@@ -126,7 +131,8 @@ public sealed partial class ManualFocusSessionCoordinator : IHostedService, IDis
         {
             throw new ManualFocusSessionUnavailableException(availability.Reason);
         }
-        var position = ResolvePosition(availability, request.SimulatedFocusPosition);
+        if (Focuser is not null && request.SimulatedFocusPosition.HasValue)
+            throw new ManualFocusSessionValidationException("Use the registered focuser to change focus position.");
         lock (_sync)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
@@ -135,10 +141,27 @@ public sealed partial class ManualFocusSessionCoordinator : IHostedService, IDis
                 throw new ManualFocusSessionConflictException(
                     "A manual focus session is already running; only its owner can stop it.");
             }
+            var position = MotorSource?.Focuser is VirtualMotorizedFocuser simulator
+                ? SimulatedPosition(simulator, availability.SimulatedFocus)
+                : ResolvePosition(availability, request.SimulatedFocusPosition);
+            MotorFocusEvidence? evidence = null;
+            if (request.Motor is { } command)
+            {
+                var motor = Focuser ?? throw new ManualFocusSessionUnavailableException("No motorized focuser is registered.");
+                ValidateMotorCommand(command, motor);
+                if (command.SweepSpacing.HasValue && _limits.HistoryCapacity < SweepSamples + 1)
+                    throw new ManualFocusSessionUnavailableException("Autofocus history needs room for five samples and a verification exposure.");
+                if (command.SweepSpacing.HasValue && availability.Fidelity is { QualifiesPhysicalFocus: false }
+                    && (MotorSource?.Focuser is not VirtualMotorizedFocuser || availability.SimulatedFocus is null))
+                    throw new ManualFocusSessionValidationException("Simulated autofocus requires a virtual motor and a position-dependent preview model.");
+                evidence = new(command, motor);
+            }
             var now = _timeProvider.GetUtcNow();
             var session = new Session(Guid.NewGuid().ToString("N"), actor, now, now + safetyTimeout,
                 _limits.HistoryCapacity, new CancellationTokenSource(safetyTimeout, _timeProvider))
             {
+                Motor = evidence,
+                ObserverDeadline = evidence is null ? null : new CancellationTokenSource(_limits.ObserverTimeout, _timeProvider),
                 Settings = request.Settings,
                 Position = position,
                 Hint = request.Target,
@@ -182,6 +205,10 @@ public sealed partial class ManualFocusSessionCoordinator : IHostedService, IDis
             {
                 throw new ManualFocusSessionStateException("The manual focus session is not running.");
             }
+            if (session.Motor is not null)
+                throw new ManualFocusSessionStateException("Stop the motor operation before adjusting preview settings or target.");
+            if (adjustment.SimulatedFocusPosition.HasValue && Focuser is not null)
+                throw new ManualFocusSessionValidationException("Use the registered focuser to change focus position.");
             if (adjustment.SimulatedFocusPosition is { } position)
             {
                 if (session.SimulatedFocus is not { } model)
@@ -264,7 +291,7 @@ public sealed partial class ManualFocusSessionCoordinator : IHostedService, IDis
             {
                 throw new ManualFocusSessionStateException("This session was already saved or discarded.");
             }
-            if (session.TotalSamples == 0)
+            if (session.TotalSamples == 0 && session.Motor?.Command.SweepSpacing is null)
             {
                 throw new ManualFocusSessionStateException("The session has no samples to save.");
             }
@@ -367,144 +394,19 @@ public sealed partial class ManualFocusSessionCoordinator : IHostedService, IDis
     private async Task RunAsync(Session session)
     {
         var token = session.Cancellation.Token;
-        var failures = 0;
         var endState = ManualFocusSessionState.Stopped;
         string? endReason = null;
-        long? previousStart = null;
         try
         {
-            while (true)
+            if (session.Motor is not null)
             {
-                token.ThrowIfCancellationRequested();
-                if (previousStart is { } started &&
-                    _limits.MinimumSamplePeriod - _timeProvider.GetElapsedTime(started) is { Ticks: > 0 } remaining)
-                {
-                    await Task.Delay(remaining, _timeProvider, token).ConfigureAwait(false);
-                }
-                previousStart = _timeProvider.GetTimestamp();
-                ManualFocusPreviewSettings settings;
-                double? position;
-                PixelPoint? target, hint;
-                ManualFocusTargetSource targetSource;
-                long comparisonRevision;
-                long? moduleGeneration;
-                lock (_sync)
-                {
-                    if (_timeProvider.GetUtcNow() - session.LastObservedUtc > _limits.ObserverTimeout)
-                    {
-                        endState = ManualFocusSessionState.TimedOut;
-                        endReason = ManualFocusReasonCodes.ObserverLost;
-                        break;
-                    }
-                    settings = session.Settings;
-                    position = session.Position;
-                    target = session.Target;
-                    hint = session.Hint;
-                    targetSource = session.TargetSource;
-                    comparisonRevision = session.ComparisonRevision;
-                    moduleGeneration = session.ModuleGeneration;
-                }
-
-                ManualFocusPreview preview;
-                string? failure = null;
-                using (var deadline = new CancellationTokenSource(settings.Exposure + _limits.SampleDeadlineGrace, _timeProvider))
-                using (var linked = CancellationTokenSource.CreateLinkedTokenSource(token, deadline.Token))
-                {
-                    try
-                    {
-                        preview = await _source.AcquireAsync(settings, position, moduleGeneration, linked.Token).ConfigureAwait(false);
-                        lock (_sync)
-                        {
-                            session.ModuleGeneration ??= preview.ModuleGeneration;
-                        }
-                    }
-                    catch (OperationCanceledException) when (token.IsCancellationRequested)
-                    {
-                        throw;
-                    }
-                    catch (OperationCanceledException) when (deadline.IsCancellationRequested)
-                    {
-                        preview = null!;
-                        failure = ManualFocusReasonCodes.SampleDeadlineExceeded;
-                    }
-                    catch (CaptureControlConflictException exception)
-                    {
-                        endState = ManualFocusSessionState.Faulted;
-                        endReason = ManualFocusReasonCodes.AdmissionUnavailable;
-                        lock (_sync)
-                        {
-                            session.LastFailure = exception.Message;
-                        }
-                        break;
-                    }
-                    catch (ManualFocusSessionUnavailableException exception)
-                    {
-                        endState = ManualFocusSessionState.Faulted;
-                        endReason = exception.ReasonCode;
-                        lock (_sync)
-                        {
-                            session.LastFailure = exception.Message;
-                        }
-                        break;
-                    }
-                    catch (Exception exception)
-                    {
-                        preview = null!;
-                        failure = $"{exception.GetType().Name}: {exception.Message}";
-                    }
-                }
-                if (failure is not null)
-                {
-                    failures++;
-                    lock (_sync)
-                    {
-                        session.LastFailure = failure;
-                    }
-                    if (_logger is not null)
-                    {
-                        LogSampleFailed(_logger, session.Id, failure, failures);
-                    }
-                    if (failures >= _limits.MaximumConsecutiveFailures)
-                    {
-                        endState = ManualFocusSessionState.Faulted;
-                        endReason = ManualFocusReasonCodes.RepeatedFailures;
-                        break;
-                    }
-                    continue;
-                }
-                failures = 0;
-
-                long sequence;
-                lock (_sync)
-                {
-                    sequence = session.TotalSamples + 1;
-                }
-                ManualFocusPreviewOutcome outcome;
-                try
-                {
-                    outcome = ManualFocusPreviewMeasurement.Measure(preview.Frame, sequence, target, hint, token,
-                        preview.ImageCircle);
-                }
-                catch (OperationCanceledException) when (token.IsCancellationRequested)
-                {
-                    throw;
-                }
-                catch (Exception exception) when (exception is ArgumentException or InvalidDataException or NotSupportedException)
-                {
-                    endState = ManualFocusSessionState.Faulted;
-                    endReason = ManualFocusReasonCodes.PreviewUnmeasurable;
-                    lock (_sync)
-                    {
-                        session.LastFailure =
-                            $"The preview frame could not be measured ({exception.GetType().Name}: {exception.Message}).";
-                    }
-                    break;
-                }
-                var sample = CreateSample(sequence, settings, position, targetSource, comparisonRevision, preview, outcome);
-                lock (_sync)
-                {
-                    session.Record(sample, outcome, target, hint);
-                }
+                using var observed = CancellationTokenSource.CreateLinkedTokenSource(token, session.ObserverDeadline!.Token);
+                await RunMotorAsync(session, observed.Token).ConfigureAwait(false);
+                endReason = session.Motor.Command.SweepSpacing.HasValue ? "autofocus-complete" : "motor-move-complete";
+            }
+            else
+            {
+                (endState, endReason) = await RunManualLoopAsync(session, token).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
@@ -514,6 +416,23 @@ public sealed partial class ManualFocusSessionCoordinator : IHostedService, IDis
                 endReason = session.StopReason ?? ManualFocusReasonCodes.SafetyTimeout;
                 endState = session.StopReason is null ? ManualFocusSessionState.TimedOut : ManualFocusSessionState.Stopped;
             }
+        }
+        catch (OperationCanceledException) when (session.ObserverDeadline?.IsCancellationRequested == true)
+        {
+            endState = ManualFocusSessionState.TimedOut;
+            endReason = ManualFocusReasonCodes.ObserverLost;
+        }
+        catch (ManualFocusSessionUnavailableException exception)
+        {
+            endState = ManualFocusSessionState.Faulted;
+            endReason = exception.ReasonCode;
+            lock (_sync) session.LastFailure = exception.Message;
+        }
+        catch (CaptureControlConflictException exception)
+        {
+            endState = ManualFocusSessionState.Faulted;
+            endReason = ManualFocusReasonCodes.AdmissionUnavailable;
+            lock (_sync) session.LastFailure = exception.Message;
         }
         catch (Exception exception)
         {
@@ -536,6 +455,150 @@ public sealed partial class ManualFocusSessionCoordinator : IHostedService, IDis
                 LogSessionEnded(_logger, session.Id, session.State, session.EndReason!, session.TotalSamples);
             }
         }
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "Preview failures are bounded by the consecutive failure limit.")]
+    private async Task<(ManualFocusSessionState State, string? Reason)> RunManualLoopAsync(Session session, CancellationToken token)
+    {
+        var failures = 0;
+        long? previousStart = null;
+        var endState = ManualFocusSessionState.Stopped;
+        string? endReason = null;
+        while (true)
+        {
+            token.ThrowIfCancellationRequested();
+            if (previousStart is { } started &&
+                _limits.MinimumSamplePeriod - _timeProvider.GetElapsedTime(started) is { Ticks: > 0 } remaining)
+            {
+                await Task.Delay(remaining, _timeProvider, token).ConfigureAwait(false);
+            }
+            previousStart = _timeProvider.GetTimestamp();
+            ManualFocusPreviewSettings settings;
+            double? position;
+            PixelPoint? target, hint;
+            ManualFocusTargetSource targetSource;
+            long comparisonRevision;
+            long? moduleGeneration;
+            lock (_sync)
+            {
+                if (_timeProvider.GetUtcNow() - session.LastObservedUtc > _limits.ObserverTimeout)
+                {
+                    endState = ManualFocusSessionState.TimedOut;
+                    endReason = ManualFocusReasonCodes.ObserverLost;
+                    break;
+                }
+                settings = session.Settings;
+                position = session.Position;
+                target = session.Target;
+                hint = session.Hint;
+                targetSource = session.TargetSource;
+                comparisonRevision = session.ComparisonRevision;
+                moduleGeneration = session.ModuleGeneration;
+            }
+
+            ManualFocusPreview preview;
+            string? failure = null;
+            using (var deadline = new CancellationTokenSource(settings.Exposure + _limits.SampleDeadlineGrace, _timeProvider))
+            using (var linked = CancellationTokenSource.CreateLinkedTokenSource(token, deadline.Token))
+            {
+                try
+                {
+                    preview = await _source.AcquireAsync(settings, position, moduleGeneration, linked.Token).ConfigureAwait(false);
+                    lock (_sync)
+                    {
+                        session.ModuleGeneration ??= preview.ModuleGeneration;
+                    }
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (OperationCanceledException) when (deadline.IsCancellationRequested)
+                {
+                    preview = null!;
+                    failure = ManualFocusReasonCodes.SampleDeadlineExceeded;
+                }
+                catch (CaptureControlConflictException exception)
+                {
+                    endState = ManualFocusSessionState.Faulted;
+                    endReason = ManualFocusReasonCodes.AdmissionUnavailable;
+                    lock (_sync)
+                    {
+                        session.LastFailure = exception.Message;
+                    }
+                    break;
+                }
+                catch (ManualFocusSessionUnavailableException exception)
+                {
+                    endState = ManualFocusSessionState.Faulted;
+                    endReason = exception.ReasonCode;
+                    lock (_sync)
+                    {
+                        session.LastFailure = exception.Message;
+                    }
+                    break;
+                }
+                catch (Exception exception)
+                {
+                    preview = null!;
+                    failure = $"{exception.GetType().Name}: {exception.Message}";
+                }
+            }
+            if (failure is not null)
+            {
+                failures++;
+                lock (_sync)
+                {
+                    session.LastFailure = failure;
+                }
+                if (_logger is not null)
+                {
+                    LogSampleFailed(_logger, session.Id, failure, failures);
+                }
+                if (failures >= _limits.MaximumConsecutiveFailures)
+                {
+                    endState = ManualFocusSessionState.Faulted;
+                    endReason = ManualFocusReasonCodes.RepeatedFailures;
+                    break;
+                }
+                continue;
+            }
+            failures = 0;
+
+            long sequence;
+            lock (_sync)
+            {
+                sequence = session.TotalSamples + 1;
+            }
+            ManualFocusPreviewOutcome outcome;
+            try
+            {
+                outcome = ManualFocusPreviewMeasurement.Measure(preview.Frame, sequence, target, hint, token,
+                    preview.ImageCircle);
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception) when (exception is ArgumentException or InvalidDataException or NotSupportedException)
+            {
+                endState = ManualFocusSessionState.Faulted;
+                endReason = ManualFocusReasonCodes.PreviewUnmeasurable;
+                lock (_sync)
+                {
+                    session.LastFailure =
+                        $"The preview frame could not be measured ({exception.GetType().Name}: {exception.Message}).";
+                }
+                break;
+            }
+            var sample = CreateSample(sequence, settings, position, targetSource, comparisonRevision, preview, outcome);
+            lock (_sync)
+            {
+                session.Record(sample, outcome, target, hint);
+            }
+        }
+        return (endState, endReason);
     }
 
     private ManualFocusSample CreateSample(
@@ -721,6 +784,8 @@ public sealed partial class ManualFocusSessionCoordinator : IHostedService, IDis
         public string Id { get; } = id;
         public string OwnerId { get; } = ownerId;
         public CancellationTokenSource Cancellation { get; } = cancellation;
+        public MotorFocusEvidence? Motor { get; set; }
+        public CancellationTokenSource? ObserverDeadline { get; init; }
         public Task? Loop { get; set; }
         public ManualFocusSessionState State { get; private set; } = ManualFocusSessionState.Running;
         public required ManualFocusPreviewSettings Settings { get; set; }
@@ -787,18 +852,20 @@ public sealed partial class ManualFocusSessionCoordinator : IHostedService, IDis
             _history.Clear();
             Best = null;
             Images = null;
+            Motor = null;
             Retention = ManualFocusRetentionState.Discarded;
         }
 
         public ManualFocusSessionSnapshot ToSnapshot() => new(
             Id, State, OwnerId, startedUtc, EndedUtc, safetyDeadlineUtc, Settings, Position, Target ?? Hint,
             TargetSource, TotalSamples, historyCapacity, _history.ToArray(), Best, LastFailure, EndReason, ModuleType,
-            Fidelity, SimulatedFocus, Retention, SavedRecordId);
+            Fidelity, SimulatedFocus, Retention, SavedRecordId, Motor);
 
         public void Dispose()
         {
             Cancellation.Cancel();
             Cancellation.Dispose();
+            ObserverDeadline?.Dispose();
         }
     }
 }

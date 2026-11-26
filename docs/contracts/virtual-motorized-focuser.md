@@ -1,63 +1,53 @@
-# Virtual motorized focuser foundation (#1712)
+# Motorized focus and virtual qualification (#1712)
 
-This is the coordinator-authorized hardware-free slice of [#1712](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1712),
-under the [bounded claim](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1712#issuecomment-6862021903).
-It delivers the device contract and deterministic virtual motor only. The parent
-issue remains open for registered-device UI, autofocus, session history/export
-integration and separately tracked physical qualification. No device is registered
-with the host, and no motion endpoint or unattended policy is enabled.
+[Issue #1712](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1712) adds
+operator-directed focus sessions on top of the SDK-free motor contract and
+deterministic simulator delivered in #1841. CameraAgent accepts an optional
+singleton `IMotorizedFocuser` through dependency injection. The standard host
+registers no device. The Focus page and sidebar report manual-only capability
+on those installations. Physical motor and unattended qualification are separate.
 
-## Ownership
+## Acquisition and admission
 
-`IMotorizedFocuser` is an SDK-free AgentCore device contract. The virtual motor
-lives in CameraAgent.Common beside the existing focus-session owner. It owns no
-camera, image, profile, admission gate, session or durable state.
+The same authorized operator starts, observes and stops manual and motorized
+sessions through `ManualFocusSessionCoordinator`. An absolute move or relative
+step ends at its requested coordinate. Autofocus holds normal exposures from
+the first drain through final verification or recovery. This can cost capture
+windows but avoids admitting exposures taken at trial focus positions. The
+Focus page discloses the hold. Scheduled work follows its ordinary admission
+and cadence rules. Other preview and calibration exposures receive a conflict.
 
-Future production use must go through the existing `ManualFocusSessionCoordinator`
-ownership rules and the configured `CameraModuleOwnership` generation/lease,
-inside `CaptureAdmissionCoordinator.ExecuteCaptureBoundaryAsync`. Movement and
-its associated preview must complete inside the same exclusive boundary so a
-normal exposure cannot overlap motor motion or preview acquisition. A caller
-must link session cancellation, deadline, host shutdown and module revocation,
-await motor termination before releasing the boundary, and never construct a
-second camera. Teardown that calls `AbortAsync` must pass a bounded cleanup
-token independent of session cancellation.
-Do not hold the admission command gate for a whole autofocus session: #1017's
-[revised ownership contract](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1017#issuecomment-5953317989)
-uses bounded per-sample operations so pause/schedule commands remain usable.
-The motor contract is not an authorization or session-ownership substitute.
+Each move and its associated preview share a bounded acquisition operation on
+the pinned camera generation. The command gate is released between operations,
+so operator pause, schedule and lifecycle changes remain effective. Releasing
+the focus hold respects the current admission state. Stop, host shutdown,
+lost observation, safety/operation deadlines and module withdrawal interrupt
+the operation. Teardown aborts motion with an independent cleanup token.
+Failure or cancellation attempts to restore the initial motor coordinate
+under the same generation. The virtual device additionally verifies the
+original optical position, including backlash. If restoration cannot be
+verified, normal admission stays closed until restart recovery. Before
+restarting, the operator must resolve the disconnect or stall and verify
+the intended focus. The simulator starts from its configured initial state.
 
-The existing VirtualSky preview setpoint is a separate simulated optical model.
-This slice does not connect a motor position to that model, mutate a profile,
-change manual-session records or alter the retained Focus UI owned under #1110.
+## Measurement and evidence
 
-## Admission during a future autofocus sweep
+The operator selects a positive step spacing. Five equally spaced positions
+are centered near the starting coordinate, shifted inside the limits to
+allow for backlash take-up. The sweep approaches from below, tracks the
+same star, and measures HFD from preview pixels using the manual-session
+measurement. All five measurements must be valid and comparable, with
+decreasing then increasing HFD around a distinct interior minimum.
+Autofocus approaches the selected position from below again and requires a
+sixth measurement below both neighboring widths before accepting it.
 
-Per-sample acquisition keeps pause and schedule commands responsive. When the
-boundary reopens, a normal exposure can still use the sweep position left by
-the completed sample. Before enabling autofocus and its history/export under
-#1712 AC3/AC4, record the admission policy and its virtual acceptance cases.
-Evaluate these options while keeping the command gate scoped to each sample.
-
-- **Pause normal admission for the sweep.** Apply a session-scoped hold that
-  leaves operator commands responsive. Define how scheduled and manual captures
-  are deferred or skipped and how the operator sees the gap. Release only the
-  autofocus hold at teardown and recheck operator pause, schedule and lifecycle
-  state before admitting normal captures.
-- **Admit normal captures between samples.** Within the exclusive boundary,
-  restore and verify the production focus before reopening admission, or define
-  when a settled sweep position is acceptable for a normal exposure. In the
-  latter case, retain the actual focus state and sweep provenance on each such
-  capture and specify its eligibility for downstream products.
-
-Compare missed capture windows with the latency, extra travel and backlash of
-restoring focus, and decide whether downstream consumers can use or exclude
-labelled exposures reliably. Verify termination and temporary-setting cleanup
-on success, cancellation, failure, disconnect and module revocation. Define
-how normal admission stays closed when the required focus state cannot be
-verified and what evidence allows it to resume. Preserve the distinction between
-preview frames and normal captures, including in focus history and export. An
-active profile change requires explicit acceptance.
+Preview exposure and gain are scoped to each call. With VirtualSky the
+simulator's optical coordinate maps linearly over the declared simulated
+preview range. A sweep writes no camera profile or normal capture. Session
+history includes the request, initial limits and state, measured positions,
+image and settings provenance, verified applied position or recovery outcome.
+The operator can save even an interrupted sweep with zero samples, then export
+the verified immutable record through the existing authenticated history route.
 
 ## Device and simulation semantics
 

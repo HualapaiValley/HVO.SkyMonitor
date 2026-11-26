@@ -32,8 +32,9 @@
                             {
                                 <p class="ops-nav-group" id="@GroupId(group)">@group</p>
                             }
-                            foreach (var section in OperationsSectionCatalog.Sections.Where(section => section.Group == group))
+                            foreach (var entry in OperationsSectionCatalog.Sections.Where(section => section.Group == group))
                             {
+                                var section = OperationsSectionCatalog.ForFocuser(entry, _focuserRegistered);
                                 var current = Current is not null && section.Slug == Current.Slug;
                                 var count = _attention?.CountFor(section.Slug) ?? 0;
                                 var note = section.CapabilityNote;
