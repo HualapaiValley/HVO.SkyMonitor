@@ -40,8 +40,8 @@ internal sealed class SiloInstalledSettings
 
         MaximumStagedBytes = section.GetValue("MaximumStagedBytes", 2L * 1024 * 1024 * 1024);
         MaximumStagedFiles = section.GetValue("MaximumStagedFiles", 4096);
-        if (MaximumStagedBytes <= 0 || MaximumStagedFiles <= 0)
-            throw new InvalidOperationException("The installed Silo spool limits must be positive.");
+        if (MaximumStagedBytes <= 0 || MaximumStagedFiles is < 2 or int.MaxValue)
+            throw new InvalidOperationException("The installed Silo spool requires a positive byte limit and room for an admission pair.");
     }
 
     public SiloStorageBinding Binding { get; }

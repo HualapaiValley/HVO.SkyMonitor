@@ -433,6 +433,28 @@ Never disable the old key before step 6 shows the new key ready.
   reads retained roles by exact version. The response reports the cutoff and counts for verified, unavailable, expired
   and failed roles. Full verification can take time proportional to retained history.
 
+### #1968 publication measurement
+
+On 2026-11-26, the `MeasureStockSiloDurabilityCost` test in `CameraAgent.IntegrationTests` ran on Linux amd64 on
+`hvo-dev-04`, using the pinned stock image, Linux Docker overlay storage and a loopback endpoint. Each setting started
+with a fresh bucket and State directory. Each serial sample staged and committed 144 groups with 288 payloads totaling
+1,017,004,032 bytes. Each direct-I/O sample transferred 24 objects of 6,996,992 bytes.
+
+| Measurement | Sync off | Sync on | #1964 Pi baseline |
+| --- | ---: | ---: | ---: |
+| Committed ingest (Mb/s) | 64.04 | 75.82 | 312 |
+| PUTs / GETs per 144 commits | 576 / 1,728 | 576 / 1,728 | 720 / 1,440 |
+| Commit latency p95 / p99 (ms) | 1,706 / 3,237 | 1,271 / 1,430 | — |
+| Direct PUT, one / eight workers (Mb/s) | 1,966 / 7,727 | 1,239 / 1,482 | 1,038 / 1,580 |
+| Exact GET + SHA-256, eight workers (Mb/s) | 4,550 | 11,416 | 1,972 direct GET |
+| Client CPU time / peak working set | 58.66 s / 421.67 MiB | 47.32 s / 443.76 MiB | — |
+
+The sync-on sample used four PUTs and twelve GETs per group. The group path adds local fsync, serialized journal and
+catalog transactions, and independent payload and manifest verification around group commit. Direct sync-on loopback
+I/O sustained enough throughput to exceed committed ingest. The higher sync-on committed rate in this single pair is
+inconclusive given the host-wide effects of `sync(2)`, the nonmatching topology and the separate #1964 import path.
+The 312 Mb/s comparison remains open for installed workload qualification. [#1964 baseline](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1964)
+
 ## Uninstall, purge and unsupported operations
 
 - `cameraagent uninstall` pauses capture, then `compose down` removes both containers and both networks. It keeps the

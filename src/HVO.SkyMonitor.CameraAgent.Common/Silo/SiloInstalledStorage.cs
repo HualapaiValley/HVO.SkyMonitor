@@ -57,6 +57,8 @@ internal sealed class SiloInstalledStorage : ICameraAgentSiloVerification, IDisp
 
     public SiloFilePayloadSpool Spool { get; }
 
+    internal PhysicalRoot PhysicalState => _root.Root;
+
     public bool BindingVerified => Volatile.Read(ref _bindingVerified);
 
     internal FileStream OpenReadScratch()

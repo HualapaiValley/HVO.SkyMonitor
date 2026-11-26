@@ -1,4 +1,6 @@
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.Processing;
@@ -68,6 +70,10 @@ public sealed class CalibrationArtifactPublisher(
     private readonly string _root = Path.GetFullPath(options.Value.RawIngressRoot);
     private readonly ICalibrationPublicationFaultInjector _faultInjector = faultInjector;
 
+    internal SiloArtifactStorage? Silo { get; init; }
+
+    internal const string SiloEvidenceRevision = "calibration-evidence-1";
+
     internal void InjectFault(CalibrationPublicationFaultPoint point, string relativePath)
         => _faultInjector.Inject(point, relativePath);
 
@@ -102,6 +108,24 @@ public sealed class CalibrationArtifactPublisher(
         finally
         {
             lifecycle.Release();
+        }
+        if (Silo is not null)
+        {
+            var parsed = CaptureContractJson.ParseManifest(manifest);
+            if (!parsed.IsValid || parsed.Document?.Manifest is not { } evidence)
+                throw new InvalidDataException("Silo calibration publication requires a valid artifact manifest.");
+            var descriptor = evidence.Descriptor;
+            var id = descriptor.Artifact.ArtifactId;
+            var revision = CaptureContractJson.ComputeDescriptorSha256(descriptor);
+            var payloadMember = SiloArtifactStorage.Member(id, revision, "calibration-frame", SiloRetentionClass.Full,
+                descriptor.Artifact.MediaType, payload.Length, descriptor.Artifact.ChecksumSha256);
+            var evidenceMember = SiloArtifactStorage.Member(id, SiloEvidenceRevision, "calibration-evidence", SiloRetentionClass.Metadata,
+                "application/json", manifest.Length, SiloHash.Sha256(manifest.Span));
+            var draft = new SiloGroupDraft("calibration-artifact", id.ToString("N"), revision, descriptor.Artifact.CreatedUtc.ToUniversalTime(),
+                descriptor.Timing.ExposureStartedUtc.ToUniversalTime(), descriptor.Timing.ExposureEndedUtc.ToUniversalTime(),
+                [payloadMember, evidenceMember], [], new([]), CameraId: descriptor.Capture.RigId);
+            await Silo.PublishAsync(draft, (member, token) => SiloArtifactStorage.OpenMemoryAsync(
+                member.Role == "calibration-frame" ? payload : manifest, token), cancellationToken).ConfigureAwait(false);
         }
     }
 

@@ -672,11 +672,15 @@ internal sealed partial class SqliteRawCaptureJournal(
         return captures;
     }
 
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The storage layout only selects between two constant queries.")]
     internal async Task<(long Count, long Bytes, DateTimeOffset? Oldest)> ReadHeldTotalsAsync(CancellationToken cancellationToken)
     {
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
-        command.CommandText = """
+        command.CommandText = usesSilo ? """
+            SELECT COUNT(*), COALESCE(SUM(pending.staged_bytes), 0), MIN(raw.durable_ingress_unix_ms)
+            FROM silo_raw_admissions pending JOIN raw_captures raw ON raw.raw_capture_row_id = pending.raw_capture_row_id;
+            """ : """
             SELECT COUNT(*), COALESCE(SUM(payload_length), 0), MIN(durable_ingress_unix_ms)
             FROM raw_captures WHERE retention_hold = 1 OR EXISTS (
                 SELECT 1 FROM raw_capture_stage_events disposition
@@ -1692,7 +1696,7 @@ internal sealed partial class SqliteRawCaptureJournal(
             SELECT
                 (SELECT COUNT(*) FROM raw_ingress_reconciliation WHERE outcome = 'quarantined'),
                 (SELECT COALESCE(SUM(observed_bytes), 0) FROM raw_ingress_reconciliation WHERE outcome = 'quarantined'),
-                (SELECT COUNT(*) FROM raw_captures raw WHERE state != 'committed'
+                (SELECT COUNT(*) FROM raw_captures raw WHERE state IN ('missing_evidence', 'quarantined')
                     AND NOT EXISTS (SELECT 1 FROM raw_capture_stage_events disposition
                         WHERE disposition.raw_capture_row_id = raw.raw_capture_row_id
                           AND disposition.stage_key = 'raw-evidence-written-off'));

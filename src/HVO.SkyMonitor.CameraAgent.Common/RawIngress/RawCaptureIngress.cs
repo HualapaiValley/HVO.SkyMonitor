@@ -196,6 +196,7 @@ internal sealed partial class RawCaptureIngress :
                 // in this process runs again only if it left work for later or a failure invalidated it since.
                 var requests = Interlocked.Read(ref _reconciliationRequests);
                 var reconcileRaw = requests != Volatile.Read(ref _reconciledRequests);
+                var siloIntents = reconcileRaw ? await ReadSiloRawIntentsAsync(cancellationToken).ConfigureAwait(false) : null;
                 var reconciliation = reconcileRaw
                     ? await new RawIngressReconciler(
                         _options.RawIngressRoot,
@@ -204,9 +205,13 @@ internal sealed partial class RawCaptureIngress :
                         _telemetry.RecordDirectorySync,
                         _lanePolicy.Definitions,
                         _faultInjector.OpenPayloadForVerification,
-                        PrepareRecoveredCenteredAdmissionAsync)
+                        PrepareRecoveredCenteredAdmissionAsync, siloIntents, _siloSettings?.MaximumStagedFiles ?? 0)
                          .RunAsync(EnterInitializationMaintenanceAsync, cancellationToken, interruptionToken).ConfigureAwait(false)
                     : new RawIngressReconciliationSummary(0, 0, 0, 0, 0, 0);
+                if (siloIntents is not null && reconciliation.MaintenanceDeferred == 0)
+                {
+                    foreach (var (artifactId, _) in siloIntents) ReleaseSiloRawIntent(artifactId);
+                }
                 var projectedSceneBacklog = 0;
                 var heldBy = HeldBy();
                 if (reconciliation.MaintenanceDeferred > 0)
@@ -214,7 +219,7 @@ internal sealed partial class RawCaptureIngress :
                     _logger.MaintenanceHeld("Raw-ingress evidence quarantine", heldBy);
                 }
                 var stagesHeld = false;
-                if (_projectedSceneStaging is not null)
+                if (_projectedSceneStaging is not null && _silo is null)
                 {
                     // Stage cleanup deletes unowned stages, so it runs only under the maintenance barrier, as the
                     // background reconciliation does.
@@ -625,6 +630,7 @@ internal sealed partial class RawCaptureIngress :
                 }
                 _faultInjector.Inject(RawIngressFaultPoint.ValidationCompleted);
                 await EnsureSiloCapacityAsync(frame.PixelData.Length, previewManifest, CancellationToken.None).ConfigureAwait(false);
+                await RecordSiloRawIntentAsync(identity.ArtifactId, previewDescriptor.Timing.ExposureStartedUtc).ConfigureAwait(false);
                 using (var payloadActivity = RawIngressTelemetry.ActivitySource.StartActivity("payload.publish"))
                 {
                     await _files.PublishPayloadAsync(paths, frame.PixelData, CancellationToken.None).ConfigureAwait(false);
@@ -739,6 +745,7 @@ internal sealed partial class RawCaptureIngress :
                     }
                 }
                 _faultInjector.Inject(RawIngressFaultPoint.AfterJournalCommit);
+                ReleaseSiloRawIntent(identity.ArtifactId);
                 commitActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
             }
             _logger.RawIngressSqliteSucceeded("commit");
@@ -1058,11 +1065,12 @@ internal sealed partial class RawCaptureIngress :
         {
             return;
         }
-        var degraded = underPressure || baseline.QuarantineCount > 0 ||
+        var stagingPressure = Interlocked.Read(ref _refusedSiloStagingBytes) > 0;
+        var degraded = underPressure || stagingPressure || baseline.QuarantineCount > 0 ||
                        baseline.Reason is "index-projection-failed" or "reconciliation-held";
         _state.UpdateBaseStatus(
             degraded ? RawIngressAvailability.Degraded : RawIngressAvailability.Accepting,
-            underPressure ? "disk-pressure" : degraded ? baseline.Reason : "accepting");
+            underPressure ? "disk-pressure" : stagingPressure ? "silo-staging-pressure" : degraded ? baseline.Reason : "accepting");
     }
 
     public void ReportWakeup(bool queued) => _telemetry.RecordWakeup(queued);

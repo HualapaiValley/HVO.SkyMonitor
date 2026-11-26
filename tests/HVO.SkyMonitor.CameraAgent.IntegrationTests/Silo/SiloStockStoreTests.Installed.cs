@@ -12,6 +12,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Silo.S3;
 using HVO.SkyMonitor.CameraAgent.IntegrationTests.Infrastructure;
+using HVO.SkyMonitor.Common.Configuration;
 using HVO.SkyMonitor.Deployment.Contracts;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -49,9 +50,15 @@ public sealed partial class SiloStockStoreTests
         var settings = InstalledSettings(binding, Endpoint(container), writer, pause, lifecycleToken);
         var root = Directory.CreateTempSubdirectory("silo-capture-").FullName;
         var fault = new InterruptManifestPublication();
+        var priorKeyDirectory = Environment.GetEnvironmentVariable(DeploymentKeyPerFile.DirectoryVariable);
 
         try
         {
+            var keyDirectory = Directory.CreateDirectory(Path.Combine(root, "settings")).FullName;
+            foreach (var (key, value) in settings)
+                await File.WriteAllTextAsync(Path.Combine(keyDirectory, key.Replace(":", "__", StringComparison.Ordinal)), value, token)
+                    .ConfigureAwait(false);
+            Environment.SetEnvironmentVariable(DeploymentKeyPerFile.DirectoryVariable, keyDirectory);
             var pending = await CaptureUntilInterruptedAsync(root, settings, lifecycleToken, pause, color, fault, token).ConfigureAwait(false);
             using var restarted = new CameraAgentIntegrationFixture { KeepStorageOnDispose = true };
             await restarted.InitializeAsync(services => RemoveCaptureWorkers(services, stopCamera: true), settings, root,
@@ -85,6 +92,7 @@ public sealed partial class SiloStockStoreTests
         }
         finally
         {
+            Environment.SetEnvironmentVariable(DeploymentKeyPerFile.DirectoryVariable, priorKeyDirectory);
             Directory.Delete(root, recursive: true);
         }
     }
@@ -99,6 +107,8 @@ public sealed partial class SiloStockStoreTests
             RemoveCaptureWorkers(services, stopCamera: false);
             services.AddSingleton<ISiloFaults>(fault);
         }, settings, root, color ? ColorConfiguration : null).ConfigureAwait(false);
+        using var scope = host.CreateCameraAgentScope();
+        var storage = scope.ServiceProvider.GetRequiredService<SiloInstalledStorage>();
         using var client = host.CreateCameraAgentClient();
         client.DefaultRequestHeaders.Add("X-HVO-Installation-Token", lifecycleToken);
         while (true)
@@ -113,8 +123,6 @@ public sealed partial class SiloStockStoreTests
             await Task.Delay(50, token).ConfigureAwait(false);
         }
         await fault.Interrupted.Task.WaitAsync(token).ConfigureAwait(false);
-        using var scope = host.CreateCameraAgentScope();
-        var storage = scope.ServiceProvider.GetRequiredService<SiloInstalledStorage>();
         var pending = (await storage.State.ListOpenAsync(8, token).ConfigureAwait(false)).Single();
         Assert.IsNull(await storage.Index.ReadPublicationAsync(pending.GroupId, pending.RevisionId, token).ConfigureAwait(false));
         var staged = await storage.State.ReadGroupAsync(pending.GroupId, pending.RevisionId, token).ConfigureAwait(false);

@@ -10,6 +10,54 @@ internal sealed partial class RawCaptureIngress
 {
     internal bool SiloAdmissionsReady => Volatile.Read(ref _journalValidated);
 
+    private const string SiloIntentsDirectory = "raw-admission-intents";
+    private long _refusedSiloStagingBytes;
+
+    private sealed record SiloRawIntent(Guid ArtifactId, DateTimeOffset ExposureStartedUtc);
+
+    private async ValueTask RecordSiloRawIntentAsync(Guid artifactId, DateTimeOffset exposureStartedUtc)
+    {
+        if (_silo is null) return;
+        var intent = new SiloRawIntent(artifactId, exposureStartedUtc);
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(intent);
+        await AtomicPublisher.PublishAsync(_silo.PhysicalState, SiloIntentPath(artifactId), PublishMode.CreateNew,
+            (stream, token) => stream.WriteAsync(bytes, token).AsTask(), CancellationToken.None).ConfigureAwait(false);
+    }
+
+    private async Task<IReadOnlyList<(Guid ArtifactId, RawIngressPaths Paths)>?> ReadSiloRawIntentsAsync(CancellationToken cancellationToken)
+    {
+        if (_silo is null) return null;
+        var root = _silo.PhysicalState;
+        var directory = root.Resolve(SiloIntentsDirectory);
+        if (!Directory.Exists(directory)) return [];
+        if (AtomicPublisher.CleanupTemporaries(root, directory, _siloSettings!.MaximumStagedFiles) > 0)
+            DurableSync.Directory(directory);
+        var intents = new List<(Guid, RawIngressPaths)>();
+        foreach (var path in Directory.EnumerateFiles(directory))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            root.Verify(path, "silo-raw-intent");
+            if (intents.Count >= _siloSettings.MaximumStagedFiles || new FileInfo(path).Length is < 1 or > 512)
+                throw new InvalidDataException("The Silo raw admission intent inventory exceeds its bounds.");
+            var intent = JsonSerializer.Deserialize<SiloRawIntent>(await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false));
+            if (intent is null || intent.ArtifactId == Guid.Empty || path != root.Resolve(SiloIntentPath(intent.ArtifactId)))
+                throw new InvalidDataException("A Silo raw admission intent has an invalid identity.");
+            intents.Add((intent.ArtifactId, _files.GetPaths(intent.ExposureStartedUtc, intent.ArtifactId)));
+        }
+        return intents;
+    }
+
+    private void ReleaseSiloRawIntent(Guid artifactId)
+    {
+        if (_silo is null) return;
+        var path = _silo.PhysicalState.Resolve(SiloIntentPath(artifactId));
+        if (!File.Exists(path)) return;
+        File.Delete(path);
+        DurableSync.Directory(Path.GetDirectoryName(path)!);
+    }
+
+    private static string SiloIntentPath(Guid artifactId) => Path.Combine(SiloIntentsDirectory, artifactId.ToString("N") + ".json");
+
     private void EnsureSiloBinding()
     {
         if (_silo is { BindingVerified: false })
@@ -28,6 +76,7 @@ internal sealed partial class RawCaptureIngress
         }
         catch (CaptureLaneBackpressureException)
         {
+            Interlocked.Exchange(ref _refusedSiloStagingBytes, bytes);
             _state.UpdateBaseStatus(RawIngressAvailability.Degraded, "silo-staging-pressure");
             throw;
         }
@@ -66,8 +115,13 @@ internal sealed partial class RawCaptureIngress
             if (outcome.State != SiloStagedState.Visible || outcome.CatalogState != "visible")
                 return outcome.BlockedCode ?? "silo-admission-publication-pending";
             await _journal.SettleSiloAdmissionAsync(entry.CaptureId, entry.ManifestSha256, cancellationToken).ConfigureAwait(false);
-            if (_state.GetBaseSnapshot().Reason == "silo-staging-pressure")
-                _state.UpdateBaseStatus(RawIngressAvailability.Accepting, "accepting");
+            var held = await _journal.ReadHeldTotalsAsync(cancellationToken).ConfigureAwait(false);
+            _state.UpdateBaseHeldData(held.Count, held.Bytes, held.Oldest);
+            var refused = Interlocked.Read(ref _refusedSiloStagingBytes);
+            if (refused > 0 && held.Count < _siloSettings!.MaximumStagedFiles / 2 && refused <= _siloSettings.MaximumStagedBytes - held.Bytes &&
+                Interlocked.CompareExchange(ref _refusedSiloStagingBytes, 0, refused) == refused &&
+                _state.GetBaseSnapshot().Reason == "silo-staging-pressure")
+                ReportPressure(underPressure: false);
         }
         return null;
     }

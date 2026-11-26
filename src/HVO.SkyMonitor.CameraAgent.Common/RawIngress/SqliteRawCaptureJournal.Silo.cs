@@ -6,6 +6,12 @@ namespace HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 internal sealed partial class SqliteRawCaptureJournal
 {
     private const string SiloAdmissionTable = "silo_raw_admissions";
+    private const string SiloRawEntryColumns = """
+        raw.agent_id, raw.capture_sequence, raw.capture_id, raw.raw_artifact_id,
+        raw.descriptor_sha256, raw.manifest_sha256, raw.payload_sha256, raw.payload_length,
+        raw.payload_relative_path, raw.sidecar_relative_path, raw.manifest_json,
+        raw.exposure_started_unix_ms, raw.durable_ingress_unix_ms, raw.state, raw.retention_hold, raw.evidence_origin
+        """;
     private const string SiloAdmissionSql = """
         CREATE TABLE silo_raw_admissions (
             raw_capture_row_id INTEGER PRIMARY KEY REFERENCES raw_captures(raw_capture_row_id),
@@ -71,11 +77,8 @@ internal sealed partial class SqliteRawCaptureJournal
     {
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
-        command.CommandText = """
-            SELECT raw.agent_id, raw.capture_sequence, raw.capture_id, raw.raw_artifact_id,
-                   raw.descriptor_sha256, raw.manifest_sha256, raw.payload_sha256, raw.payload_length,
-                   raw.payload_relative_path, raw.sidecar_relative_path, raw.manifest_json,
-                   raw.exposure_started_unix_ms, raw.durable_ingress_unix_ms, raw.state, raw.retention_hold, raw.evidence_origin
+        command.CommandText = $"""
+            SELECT {SiloRawEntryColumns}
             FROM silo_raw_admissions pending JOIN raw_captures raw ON raw.raw_capture_row_id = pending.raw_capture_row_id
             ORDER BY pending.raw_capture_row_id LIMIT $limit;
             """;
@@ -85,6 +88,16 @@ internal sealed partial class SqliteRawCaptureJournal
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             entries.Add(ReadEntry(reader));
         return entries;
+    }
+
+    internal async Task<RawIngressJournalEntry?> ReadSiloAdmissionByArtifactAsync(Guid artifactId, CancellationToken cancellationToken)
+    {
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = $"SELECT {SiloRawEntryColumns} FROM raw_captures raw WHERE raw.raw_artifact_id = $artifact;";
+        command.Parameters.AddWithValue("$artifact", artifactId.ToString("N"));
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? ReadEntry(reader) : null;
     }
 
     internal async Task SettleSiloAdmissionAsync(Guid captureId, string manifestSha256, CancellationToken cancellationToken)
