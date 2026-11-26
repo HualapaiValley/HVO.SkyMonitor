@@ -125,7 +125,7 @@ public sealed partial class DurableCaptureProcessingTests
             };
             ui.CurrentPresentationHandler = (id, cancellation) =>
             {
-                freshReads++;
+                Interlocked.Increment(ref freshReads);
                 return service.GetCurrentLayeredPresentationAsync(id, cancellation);
             };
             ui.AstrometryHandler = (id, cancellation) =>
@@ -136,14 +136,20 @@ public sealed partial class DurableCaptureProcessingTests
             };
             ui.AstrometryPublicationHandler = service.ReadAstrometryPublicationStateAsync;
             var selectedFitRendered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var preRepairHistoryDone = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var repairedLayerRendered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             ui.LatestAstrometrySelectionHandler = async (cancellation, previous, assessment) =>
             {
                 var request = Interlocked.Increment(ref historyRequests);
                 // Applying a headline advances the observation revision. Install the initial selected fit
-                // before that can supersede its verified observation on the renderer.
+                // and post-repair layers before that can interleave with their verified observation on the renderer.
                 if (request == 1 && !pendingStandalone)
                     await selectedFitRendered.Task.WaitAsync(cancellation).ConfigureAwait(false);
+                if (scenario == "repair" && request == 4)
+                    await repairedLayerRendered.Task.WaitAsync(cancellation).ConfigureAwait(false);
                 var response = await service.GetLatestAcceptedAstrometryAsync(cancellation, previous, assessment).ConfigureAwait(false);
+                if (scenario == "repair" && request == 2)
+                    preRepairHistoryDone.TrySetResult();
                 if (unrelated && request == 2)
                 {
                     preEvictionResponse.TrySetResult(response);
@@ -158,7 +164,8 @@ public sealed partial class DurableCaptureProcessingTests
             var page = context.Render<CurrentSkyPage>();
             var timeout = TimeSpan.FromSeconds(8);
 
-            // Resolve each event target on the renderer so background renders cannot retire its handler first.
+            // Resolve each event target and DOM check on the renderer so background renders cannot race with bUnit's markup cache.
+            Task WaitForPageAsync(Action assertion) => page.WaitForAssertionAsync(() => page.InvokeAsync(assertion), timeout);
             Task RefreshAsync() => page.InvokeAsync(() => page.Find("button.refresh-link").ClickAsync());
             Task CalculatePixelToSkyAsync() => page.InvokeAsync(async () =>
             {
@@ -170,17 +177,20 @@ public sealed partial class DurableCaptureProcessingTests
 
             try
             {
-                await page.WaitForAssertionAsync(() =>
+                await WaitForPageAsync(() =>
                 {
                     Assert.AreEqual(1, standaloneReads);
                     Assert.AreEqual(pendingStandalone, page.Find(".pixel-sky-calculator button").HasAttribute("disabled"));
                     if (pendingStandalone) Assert.IsTrue(heldStandalone.IsPending);
-                }, timeout).ConfigureAwait(false);
+                }).ConfigureAwait(false);
             }
             finally { selectedFitRendered.TrySetResult(); }
-            await page.WaitForAssertionAsync(() =>
-                StringAssert.Contains(page.Find(".latest-measured-solution").TextContent, newest.ArtifactId.ToString(), StringComparison.Ordinal),
-                timeout).ConfigureAwait(false);
+            await WaitForPageAsync(() =>
+            {
+                Assert.AreEqual(1, standaloneReads);
+                StringAssert.Contains(page.Find(".latest-measured-solution").TextContent, newest.ArtifactId.ToString(), StringComparison.Ordinal);
+                Assert.AreEqual(pendingStandalone, page.Find(".pixel-sky-calculator button").HasAttribute("disabled"));
+            }).ConfigureAwait(false);
             if (!pendingStandalone)
             {
                 await CalculatePixelToSkyAsync().ConfigureAwait(false);
@@ -196,6 +206,7 @@ public sealed partial class DurableCaptureProcessingTests
             byte[]? originalSidecar = null;
             if (scenario == "repair")
             {
+                await preRepairHistoryDone.Task.WaitAsync(timeout).ConfigureAwait(false);
                 originalPayload = await File.ReadAllBytesAsync(asset, token).ConfigureAwait(false);
                 originalSidecar = await File.ReadAllBytesAsync(sidecar, token).ConfigureAwait(false);
                 var corrupt = (byte[])originalPayload.Clone();
@@ -228,7 +239,7 @@ public sealed partial class DurableCaptureProcessingTests
                 Assert.AreEqual(!holdMaterializedHistory, response.Value.PreviousSummaryEvicted);
                 Assert.IsFalse(response.Value.SelectedAssessmentInvalidated);
             }
-            page.WaitForAssertion(() =>
+            await WaitForPageAsync(() =>
             {
                 var headline = page.Find(".latest-measured-solution").TextContent;
                 StringAssert.Contains(headline, olderFit.ArtifactId.ToString(), StringComparison.Ordinal);
@@ -237,7 +248,7 @@ public sealed partial class DurableCaptureProcessingTests
                 StringAssert.Contains(headline, unrelated ? "For the selected capture" : "For a different capture", StringComparison.Ordinal);
                 Assert.AreEqual(!unrelated, page.Find(".pixel-sky-calculator button").HasAttribute("disabled"));
                 Assert.AreEqual(unrelated ? 1 : 0, page.FindAll(".astrometry-calculator-result").Count);
-            }, timeout);
+            }).ConfigureAwait(false);
 
             if (unrelated) Assert.AreEqual(3, Volatile.Read(ref historyRequests));
 
@@ -250,27 +261,39 @@ public sealed partial class DurableCaptureProcessingTests
             }).ConfigureAwait(false);
             if (pendingStandalone)
             {
-                Assert.IsTrue(page.Find(".pixel-sky-calculator button").HasAttribute("disabled"),
-                    "Completing pre-invalidation standalone work must not restore an invalidated mapping.");
+                await page.InvokeAsync(() => Assert.IsTrue(page.Find(".pixel-sky-calculator button").HasAttribute("disabled"),
+                    "Completing pre-invalidation standalone work must not restore an invalidated mapping.")).ConfigureAwait(false);
             }
             await page.InvokeAsync(() => page.Find("button[title='Show Processed image']").ClickAsync()).ConfigureAwait(false);
             if (!pendingStandalone && !heldToken.IsCancellationRequested)
             {
                 // A live response did not hit the cancellation guard. Wait until the component has applied
                 // the image projection so the following assertion observes its actual rendered tools.
-                page.WaitForElement(".sky-layer-canvas img", timeout);
+                await WaitForPageAsync(() => Assert.IsNotNull(page.Find(".sky-layer-canvas img"))).ConfigureAwait(false);
             }
-            Assert.AreEqual(!unrelated, page.Find(".pixel-sky-calculator button").HasAttribute("disabled"),
-                "Completing pre-invalidation layer work must not restore an invalidated mapping.");
-            foreach (var layer in enriched.Value.Layers)
-                Assert.AreEqual(unrelated, page.FindAll($"g[id='{layer.DomGroupId}']").Count != 0,
-                    "The outstanding enriched response must not restore invalidated measured overlays.");
+            await page.InvokeAsync(() =>
+            {
+                Assert.AreEqual(!unrelated, page.Find(".pixel-sky-calculator button").HasAttribute("disabled"),
+                    "Completing pre-invalidation layer work must not restore an invalidated mapping.");
+                foreach (var layer in enriched.Value.Layers)
+                    Assert.AreEqual(unrelated, page.FindAll($"g[id='{layer.DomGroupId}']").Count != 0,
+                        "The outstanding enriched response must not restore invalidated measured overlays.");
+            }).ConfigureAwait(false);
             Assert.AreEqual(!unrelated, heldToken.IsCancellationRequested, "Only the invalidated source's pending work is canceled.");
             if (unrelated) return;
-            Assert.IsEmpty(page.FindAll(".astrometry-calculator-result"));
+            await page.InvokeAsync(() => Assert.IsEmpty(page.FindAll(".astrometry-calculator-result"))).ConfigureAwait(false);
 
             if (originalPayload is not null)
             {
+                // Let the post-invalidation layer read finish before repairing so the repair reload always
+                // starts a fresh post-repair layer read rather than skipping while _layerLoading is still true.
+                await WaitForPageAsync(() =>
+                {
+                    Assert.IsTrue(Volatile.Read(ref freshReads) > 0);
+                    var reloadButton = page.Find("button.refresh-measured-evidence");
+                    Assert.AreEqual("Refresh measured evidence", reloadButton.TextContent.Trim());
+                    Assert.IsFalse(reloadButton.HasAttribute("disabled"));
+                }).ConfigureAwait(false);
                 await File.WriteAllBytesAsync(asset, originalPayload, token).ConfigureAwait(false);
                 await File.WriteAllBytesAsync(sidecar, originalSidecar!, token).ConfigureAwait(false);
                 // Release the verified original bytes through the journal's availability transition.
@@ -283,7 +306,17 @@ public sealed partial class DurableCaptureProcessingTests
                         await reloadButton.ClickAsync().ConfigureAwait(true);
                 }).ConfigureAwait(false);
                 await RefreshAsync().ConfigureAwait(false);
-                page.WaitForAssertion(() =>
+                try
+                {
+                    await WaitForPageAsync(() =>
+                    {
+                        Assert.IsFalse(page.Find(".pixel-sky-calculator button").HasAttribute("disabled"));
+                        foreach (var layer in enriched.Value.Layers)
+                            Assert.HasCount(1, page.FindAll($"g[id='{layer.DomGroupId}']"));
+                    }).ConfigureAwait(false);
+                }
+                finally { repairedLayerRendered.TrySetResult(); }
+                await WaitForPageAsync(() =>
                 {
                     Assert.IsFalse(page.Find(".pixel-sky-calculator button").HasAttribute("disabled"));
                     StringAssert.Contains(page.Find(".latest-measured-solution").TextContent, newest.ArtifactId.ToString(), StringComparison.Ordinal);
@@ -292,10 +325,10 @@ public sealed partial class DurableCaptureProcessingTests
                     Assert.IsEmpty(page.FindAll(".astrometry-calculator-result"));
                     Assert.IsTrue(page.FindAll(".pixel-sky-calculator input")
                         .All(input => string.IsNullOrEmpty(input.GetAttribute("value"))));
-                }, timeout);
+                }).ConfigureAwait(false);
                 await CalculatePixelToSkyAsync().ConfigureAwait(false);
             }
-            Assert.IsTrue(freshReads > 0, "The selected capture needs a read begun after invalidation.");
+            Assert.IsTrue(Volatile.Read(ref freshReads) > 0, "The selected capture needs a read begun after invalidation.");
         }
         finally { Directory.Delete(root, recursive: true); }
     }

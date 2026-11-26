@@ -11,6 +11,7 @@ public sealed partial class CurrentSkyPage
     private long _latestAstrometryRevision;
     private long _retainedAstrometryInvalidationRevision;
     private long _astrometryObservationRevision;
+    private long _latestAstrometryObservationRevision;
     private bool _latestAstrometryLoading;
     private bool _latestAstrometryRefreshQueued;
     private bool? _latestAstrometryReadSucceeded;
@@ -73,7 +74,6 @@ public sealed partial class CurrentSkyPage
         if (!IsCurrentLatestAstrometryRead(revision)) return;
 
         var read = result.Value;
-        if (read is not null) Interlocked.Increment(ref _astrometryObservationRevision);
         var summary = SummaryIdentity(read?.Summary);
         var previousInvalid = read?.PreviousSummaryInvalidated == true ? SummaryIdentity(previous) : null;
         var selectedInvalid = read?.SelectedAssessmentInvalidated == true ? requestedSelection : null;
@@ -83,6 +83,9 @@ public sealed partial class CurrentSkyPage
         var rejectedSummary = SameIdentity(summary, previousInvalid) || SameIdentity(summary, selectedInvalid);
         var reloadReportedSelection = false;
         var hasReportedInvalidation = previousInvalid is not null || selectedInvalid is not null;
+        var appliedObservationRevision = read is { Completed: true } || hasReportedInvalidation
+            ? Interlocked.Increment(ref _astrometryObservationRevision)
+            : Volatile.Read(ref _astrometryObservationRevision);
         // An exact rejection suspends matching tools before any asynchronous recheck. A fresh
         // authorized layer or standalone read can install a repaired fit, including the same identity.
         if (previousInvalid is not null) reloadReportedSelection |= InvalidateAstrometryEvidence(previousInvalid);
@@ -134,7 +137,11 @@ public sealed partial class CurrentSkyPage
 
             _latestAstrometryLoading = false;
             _latestAstrometryReadSucceeded = completed;
-            if (completed) _latestAstrometry = read!.Summary;
+            if (completed)
+            {
+                _latestAstrometry = read!.Summary;
+                _latestAstrometryObservationRevision = appliedObservationRevision;
+            }
             StateHasChanged();
             if (reloadSelected) TryLoadLayers(_runCaptureId);
             return;
@@ -195,6 +202,7 @@ public sealed partial class CurrentSkyPage
     {
         if (!SameIdentity(SummaryIdentity(_latestAstrometry), identity)) return;
         _latestAstrometry = null;
+        _latestAstrometryObservationRevision = 0;
         _latestAstrometryReadSucceeded = false;
     }
 
@@ -206,7 +214,11 @@ public sealed partial class CurrentSkyPage
         => value is not null && value.CaptureId == identity.CaptureId && value.ArtifactId == identity.ArtifactId &&
             string.Equals(value.SolutionIdentitySha256, identity.SolutionIdentitySha256, StringComparison.OrdinalIgnoreCase);
 
-    private sealed record ObservedAstrometryResult<T>(OperatorUiResult<T> Result, long? ObservationRevision = null)
+    private sealed record ObservedAstrometryResult<T>(
+        OperatorUiResult<T> Result,
+        long? ObservationRevision = null,
+        long? InvalidationRevision = null,
+        CameraAgentAstrometryAssessmentIdentity? Identity = null)
     {
         public OperatorUiResultKind Kind => Result.Kind;
         public bool IsSuccess => Result.IsSuccess;
@@ -214,7 +226,22 @@ public sealed partial class CurrentSkyPage
     }
 
     private bool IsCurrentAstrometryObservation<T>(ObservedAstrometryResult<T>? observed)
-        => observed?.ObservationRevision is not { } revision || revision == Volatile.Read(ref _astrometryObservationRevision);
+    {
+        if (observed?.ObservationRevision is not { } revision) return true;
+        var currentRevision = Volatile.Read(ref _astrometryObservationRevision);
+        if (revision == currentRevision) return true;
+        // A non-invalidating headline update that confirmed the exact same fit at the current observation revision
+        // does not contradict this observation.
+        return observed.InvalidationRevision == Volatile.Read(ref _retainedAstrometryInvalidationRevision) &&
+            _latestAstrometryReadSucceeded == true &&
+            _latestAstrometryObservationRevision == currentRevision &&
+            SameIdentity(SummaryIdentity(_latestAstrometry), observed.Identity);
+    }
+
+    private bool CanRevalidateAstrometryObservation<T>(ObservedAstrometryResult<T>? observed, CancellationToken cancellation)
+        => observed is { IsSuccess: true, ObservationRevision: not null, InvalidationRevision: { } invalidationRevision, Identity: not null } &&
+           invalidationRevision == Volatile.Read(ref _retainedAstrometryInvalidationRevision) &&
+           !cancellation.IsCancellationRequested;
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "An unverified optional measurement is never published.")]
     private async ValueTask<OperatorUiResult<CameraAgentAstrometryPublicationState>> ReadAstrometryObservationAsync(
@@ -253,13 +280,16 @@ public sealed partial class CurrentSkyPage
             while (!cancellation.IsCancellationRequested)
             {
                 var revision = Volatile.Read(ref _astrometryObservationRevision);
+                var invalidationRevision = Volatile.Read(ref _retainedAstrometryInvalidationRevision);
                 var observation = await ReadAstrometryObservationAsync(identity, cancellation).ConfigureAwait(false);
                 if (observation.Kind == OperatorUiResultKind.Unauthorized)
                     return new(OperatorUiResult<T>.Failure(OperatorUiResultKind.Unauthorized, observation.Message ?? "Access denied."));
                 if (cancellation.IsCancellationRequested || !observation.IsSuccess ||
                     observation.Value == CameraAgentAstrometryPublicationState.Indeterminate) break;
-                if (revision != Volatile.Read(ref _astrometryObservationRevision)) continue;
-                if (observation.Value == CameraAgentAstrometryPublicationState.Available) return new(result, revision);
+                if (revision != Volatile.Read(ref _astrometryObservationRevision) ||
+                    invalidationRevision != Volatile.Read(ref _retainedAstrometryInvalidationRevision)) continue;
+                if (observation.Value == CameraAgentAstrometryPublicationState.Available)
+                    return new(result, revision, invalidationRevision, identity);
                 if (observation.Value == CameraAgentAstrometryPublicationState.Invalidated)
                 {
                     var withdrawn = false;
@@ -358,23 +388,33 @@ public sealed partial class CurrentSkyPage
             using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5), TimeProvider);
             using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellation, deadline.Token);
             var result = await OperatorService.GetRetainedAstrometryAsync(captureId, evidencePin, bounded.Token).ConfigureAwait(false);
-            var observed = result.Value?.Solution?.Assessment.HasMeasuredMapping == true
-                ? await ValidateAstrometryPublicationAsync(captureId, result, result.Value, bounded.Token).ConfigureAwait(false)
-                : new(result);
-            await InvokeAsync(() =>
+            while (true)
             {
-                // Authorization revocation is never hidden by a late response or by a changed capture.
-                if (observed.Kind == OperatorUiResultKind.Unauthorized) { RevokeAccess(); return; }
-                if (revision != _astrometryReadRevision || generation != _layerGeneration || captureId != _runCaptureId || _disposeStarted != 0 || _accessDenied || cancellation.IsCancellationRequested) return;
-                if (IsCenteredMode && _centeredAstrometryEvidence != evidencePin) return;
-                var eligible = IsCurrentAstrometryObservation(observed) ? observed.Value : null;
-                if (evidencePin is not null && eligible is { Solution: not null } && eligible.ArtifactId != evidencePin.ArtifactId)
+                var observed = result.Value?.Solution?.Assessment.HasMeasuredMapping == true
+                    ? await ValidateAstrometryPublicationAsync(captureId, result, result.Value, bounded.Token).ConfigureAwait(false)
+                    : new(result);
+                var retry = false;
+                await InvokeAsync(() =>
                 {
-                    eligible = new(captureId, "Unavailable", "centered-evidence-pin-mismatch");
-                }
-                ApplyAstrometry(captureId, eligible ?? new(captureId, "Unavailable", "retained-read-unavailable"));
-                StateHasChanged();
-            });
+                    // Authorization revocation is never hidden by a late response or by a changed capture.
+                    if (observed.Kind == OperatorUiResultKind.Unauthorized) { RevokeAccess(); return; }
+                    if (revision != _astrometryReadRevision || generation != _layerGeneration || captureId != _runCaptureId || _disposeStarted != 0 || _accessDenied || cancellation.IsCancellationRequested) return;
+                    if (IsCenteredMode && _centeredAstrometryEvidence != evidencePin) return;
+                    if (!IsCurrentAstrometryObservation(observed) && CanRevalidateAstrometryObservation(observed, bounded.Token))
+                    {
+                        retry = true;
+                        return;
+                    }
+                    var eligible = IsCurrentAstrometryObservation(observed) ? observed.Value : null;
+                    if (evidencePin is not null && eligible is { Solution: not null } && eligible.ArtifactId != evidencePin.ArtifactId)
+                    {
+                        eligible = new(captureId, "Unavailable", "centered-evidence-pin-mismatch");
+                    }
+                    ApplyAstrometry(captureId, eligible ?? new(captureId, "Unavailable", "retained-read-unavailable"));
+                    StateHasChanged();
+                });
+                if (!retry) return;
+            }
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
         catch (Exception)

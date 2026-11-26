@@ -357,132 +357,145 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
                 layers = await ReadLayersAsync(prefetch.CaptureId, timeout.Token).ConfigureAwait(false);
             }
             var refreshedCaptureId = displayCaptureId;
-            await InvokeAsync(() =>
+            while (true)
             {
-                if (_accessDenied || _disposeStarted != 0) { _refreshing = false; return; }
-                // A denial is never deferred, not even behind the full-screen viewer.
-                if (layers?.Kind == OperatorUiResultKind.Unauthorized)
+                var revalidateLayers = false;
+                await InvokeAsync(() =>
                 {
-                    RevokeAccess();
-                    return;
-                }
-                // A result that waited for the dispatcher past the deadline is discarded, like one that missed it.
-                if (timeout.IsCancellationRequested)
-                {
-                    ShowRefreshDeadlineExceeded(timings, bound, firstRefresh);
-                    return;
-                }
-                if (_viewerOpen) { _refreshing = false; return; }
-                if (prefetchedLayersRevision != (prefetch?.Revision ?? 0) || !IsCurrentAstrometryObservation(layers))
-                    layers = null;
-                var baseOnly = false;
-                if (change == CaptureChange.Switch && result.Value?.Presentation is { } incoming)
-                {
-                    if (requiresEligibleLayers &&
-                        (layers is not { IsSuccess: true, Value: { } incomingLayers } || incomingLayers.CaptureId != displayCaptureId))
+                    if (_accessDenied || _disposeStarted != 0) { _refreshing = false; return; }
+                    // A denial is never deferred, not even behind the full-screen viewer.
+                    if (layers?.Kind == OperatorUiResultKind.Unauthorized)
                     {
-                        change = CaptureChange.Hold;
+                        RevokeAccess();
+                        return;
                     }
-                    else if (requiresEligibleLayers && layers?.Value is { } projection &&
-                        ResolveSelection(incoming, _selectedStage) == CameraAgentPresentationStage.Annotated &&
-                        !LayersMatchDisplay(incoming, projection))
+                    // A result that waited for the dispatcher past the deadline is discarded, like one that missed it.
+                    if (timeout.IsCancellationRequested)
                     {
-                        // Give transient incompatibility one eligible refresh to heal. A stream of newer
-                        // incompatible captures shares that grace instead of restarting it on every capture.
-                        if (_gaveDisplayMismatchOneRefresh) baseOnly = true;
-                        else change = CaptureChange.Hold;
-                        _gaveDisplayMismatchOneRefresh = true;
+                        ShowRefreshDeadlineExceeded(timings, bound, firstRefresh);
+                        return;
+                    }
+                    if (_viewerOpen) { _refreshing = false; return; }
+                    if (prefetchedLayersRevision == (prefetch?.Revision ?? 0) &&
+                        !IsCurrentAstrometryObservation(layers) &&
+                        CanRevalidateAstrometryObservation(layers, timeout.Token))
+                    {
+                        revalidateLayers = true;
+                        return;
+                    }
+                    if (prefetchedLayersRevision != (prefetch?.Revision ?? 0) || !IsCurrentAstrometryObservation(layers))
+                        layers = null;
+                    var baseOnly = false;
+                    if (change == CaptureChange.Switch && result.Value?.Presentation is { } incoming)
+                    {
+                        if (requiresEligibleLayers &&
+                            (layers is not { IsSuccess: true, Value: { } incomingLayers } || incomingLayers.CaptureId != displayCaptureId))
+                        {
+                            change = CaptureChange.Hold;
+                        }
+                        else if (requiresEligibleLayers && layers?.Value is { } projection &&
+                            ResolveSelection(incoming, _selectedStage) == CameraAgentPresentationStage.Annotated &&
+                            !LayersMatchDisplay(incoming, projection))
+                        {
+                            // Give transient incompatibility one eligible refresh to heal. A stream of newer
+                            // incompatible captures shares that grace instead of restarting it on every capture.
+                            if (_gaveDisplayMismatchOneRefresh) baseOnly = true;
+                            else change = CaptureChange.Hold;
+                            _gaveDisplayMismatchOneRefresh = true;
+                        }
+                        else
+                        {
+                            _gaveDisplayMismatchOneRefresh = false;
+                        }
+                    }
+                    var previouslyDisplayedCaptureId = _runCaptureId;
+                    if (result.IsSuccess && result.Value is not null && change == CaptureChange.Hold)
+                    {
+                        HoldDisplayedCapture(result.Value);
+                        refreshedCaptureId = _runCaptureId;
+                    }
+                    else if (result.IsSuccess && result.Value is not null)
+                    {
+                        CancelCenteredPresentationLoad();
+                        _centeredLiveContext = null;
+                        _centeredDisplay = null;
+                        _centeredAstrometryEvidence = null;
+                        _centeredAstrometryEvidenceSet = false;
+                        if (_layerVisibilityScopeKey is not null &&
+                            !string.Equals(_layerVisibilityScopeKey, LayerVisibilityKey, StringComparison.Ordinal))
+                        {
+                            _layerVisibility.Clear();
+                            _layerVisibilityRead = false;
+                            _layerVisibilityScopeKey = LayerVisibilityKey;
+                        }
+                        var wasLayered = ShowLayeredHero;
+                        var previousBaseUrl = ProcessedBaseSlot?.PreviewUrl;
+                        _presentation = result.Value.Presentation;
+                        _facts = result.Value.Facts;
+                        _operations = result.Value.Operations;
+                        if (_runCaptureId != displayCaptureId)
+                        {
+                            _transient = null;
+                            _transientMessage = null;
+                            _liveExecutionId = null;
+                            _runCaptureId = displayCaptureId;
+                            _combinedProduct = null;
+                            _combinedObservationSpan = null;
+                            _lineageArtifactId = null;
+                            _lineageMessage = null;
+                            ResetLayers(displayCaptureId, cancellationToken);
+                            _showingBaseOnlyForMismatch = baseOnly;
+                            _lastCaptureChangeTimestamp = started;
+                            if (layers is not null && displayCaptureId is { } shownCaptureId)
+                                ApplyLayerResult(shownCaptureId, Volatile.Read(ref _layerGeneration), layers);
+                        }
+                        var combinedId = _facts?.CombinedLineage?.ArtifactId;
+                        if (_lineageArtifactId != combinedId)
+                        {
+                            _combinedProduct = null;
+                            _combinedObservationSpan = null;
+                            _lineageMessage = null;
+                            _lineageArtifactId = combinedId;
+                            if (combinedId is { } artifactId)
+                                _ = LoadLineageAsync(artifactId, displayCaptureId, cancellationToken);
+                        }
+                        _factsUnavailableReason = result.Value.FactsUnavailableReason;
+                        _selectedStage = ResolveSelection(result.Value.Presentation, _selectedStage);
+                        if (_layers is not null && (wasLayered != ShowLayeredHero || previousBaseUrl != ProcessedBaseSlot?.PreviewUrl))
+                        {
+                            // Verification belongs to a particular rendered base. A same-capture outage destroys
+                            // that DOM; its replacement must reapply the retained checkbox selection before use.
+                            _layerInteractive = false;
+                            _bindGeneration++;
+                            _bindLayers = true;
+                        }
+                        if (layers is null)
+                        {
+                            TryLoadLayers(displayCaptureId);
+                        }
+                        _errorMessage = null;
                     }
                     else
                     {
-                        _gaveDisplayMismatchOneRefresh = false;
+                        _errorMessage = result.Message ?? "The current image projection is unavailable.";
                     }
-                }
-                var previouslyDisplayedCaptureId = _runCaptureId;
-                if (result.IsSuccess && result.Value is not null && change == CaptureChange.Hold)
-                {
-                    HoldDisplayedCapture(result.Value);
-                    refreshedCaptureId = _runCaptureId;
-                }
-                else if (result.IsSuccess && result.Value is not null)
-                {
-                    CancelCenteredPresentationLoad();
-                    _centeredLiveContext = null;
-                    _centeredDisplay = null;
-                    _centeredAstrometryEvidence = null;
-                    _centeredAstrometryEvidenceSet = false;
-                    if (_layerVisibilityScopeKey is not null &&
-                        !string.Equals(_layerVisibilityScopeKey, LayerVisibilityKey, StringComparison.Ordinal))
+                    _refreshDeadlineMessage = null;
+                    _initialLoading = false;
+                    _refreshing = false;
+                    if (result.IsSuccess)
                     {
-                        _layerVisibility.Clear();
-                        _layerVisibilityRead = false;
-                        _layerVisibilityScopeKey = LayerVisibilityKey;
+                        // Pending selected evidence and the history scan share the raw-read permit. Give the
+                        // history scan a chance to finish before starting this tick's optional selected retry.
+                        if (previouslyDisplayedCaptureId == _runCaptureId && _layers?.Astrometry is { Solution: null })
+                            _ = RefreshPendingAstrometryAsync(_layerGeneration, manual);
+                        else
+                            _ = LoadLatestAstrometryAsync(manual);
                     }
-                    var wasLayered = ShowLayeredHero;
-                    var previousBaseUrl = ProcessedBaseSlot?.PreviewUrl;
-                    _presentation = result.Value.Presentation;
-                    _facts = result.Value.Facts;
-                    _operations = result.Value.Operations;
-                    if (_runCaptureId != displayCaptureId)
-                    {
-                        _transient = null;
-                        _transientMessage = null;
-                        _liveExecutionId = null;
-                        _runCaptureId = displayCaptureId;
-                        _combinedProduct = null;
-                        _combinedObservationSpan = null;
-                        _lineageArtifactId = null;
-                        _lineageMessage = null;
-                        ResetLayers(displayCaptureId, cancellationToken);
-                        _showingBaseOnlyForMismatch = baseOnly;
-                        _lastCaptureChangeTimestamp = started;
-                        if (layers is not null && displayCaptureId is { } shownCaptureId)
-                            ApplyLayerResult(shownCaptureId, Volatile.Read(ref _layerGeneration), layers);
-                    }
-                    var combinedId = _facts?.CombinedLineage?.ArtifactId;
-                    if (_lineageArtifactId != combinedId)
-                    {
-                        _combinedProduct = null;
-                        _combinedObservationSpan = null;
-                        _lineageMessage = null;
-                        _lineageArtifactId = combinedId;
-                        if (combinedId is { } artifactId)
-                            _ = LoadLineageAsync(artifactId, displayCaptureId, cancellationToken);
-                    }
-                    _factsUnavailableReason = result.Value.FactsUnavailableReason;
-                    _selectedStage = ResolveSelection(result.Value.Presentation, _selectedStage);
-                    if (_layers is not null && (wasLayered != ShowLayeredHero || previousBaseUrl != ProcessedBaseSlot?.PreviewUrl))
-                    {
-                        // Verification belongs to a particular rendered base. A same-capture outage destroys
-                        // that DOM; its replacement must reapply the retained checkbox selection before use.
-                        _layerInteractive = false;
-                        _bindGeneration++;
-                        _bindLayers = true;
-                    }
-                    if (layers is null)
-                    {
-                        TryLoadLayers(displayCaptureId);
-                    }
-                    _errorMessage = null;
-                }
-                else
-                {
-                    _errorMessage = result.Message ?? "The current image projection is unavailable.";
-                }
-                _refreshDeadlineMessage = null;
-                _initialLoading = false;
-                _refreshing = false;
-                if (result.IsSuccess)
-                {
-                    // Pending selected evidence and the history scan share the raw-read permit. Give the
-                    // history scan a chance to finish before starting this tick's optional selected retry.
-                    if (previouslyDisplayedCaptureId == _runCaptureId && _layers?.Astrometry is { Solution: null })
-                        _ = RefreshPendingAstrometryAsync(_layerGeneration, manual);
-                    else
-                        _ = LoadLatestAstrometryAsync(manual);
-                }
-                StateHasChanged();
-            }).ConfigureAwait(false);
+                    StateHasChanged();
+                }).ConfigureAwait(false);
+                if (!revalidateLayers) break;
+                layers = await ValidateMeasuredLayersAsync(prefetch!.CaptureId, layers!.Result, timeout.Token).ConfigureAwait(false);
+            }
             if (!_accessDenied && _disposeStarted == 0 && refreshedCaptureId is { } captureId)
             {
                 // The image is already visible. A slow optional run-link lookup cannot make
@@ -641,6 +654,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         _centeredAstrometryEvidence = null;
         _centeredAstrometryEvidenceSet = false;
         _latestAstrometry = null;
+        _latestAstrometryObservationRevision = 0;
         _latestAstrometryRevision++;
         _lifetime?.Cancel();
         _layerCancellation?.Cancel();
@@ -724,26 +738,57 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
 
     private async Task LoadLayersAsync(Guid captureId, long generation, CancellationToken cancellation)
     {
-        var result = await ReadLayersAsync(captureId, cancellation).ConfigureAwait(false);
-        if (result is null || Volatile.Read(ref _disposeStarted) != 0 ||
-            cancellation.IsCancellationRequested && result.Kind != OperatorUiResultKind.Unauthorized) return;
-        await InvokeAsync(() => ApplyLayerResult(captureId, generation, result)).ConfigureAwait(false);
+        using var deadline = new CancellationTokenSource(RefreshTimeout, TimeProvider);
+        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellation, deadline.Token);
+        var observed = await ReadLayersAsync(captureId, cancellation, bounded.Token).ConfigureAwait(false);
+        if (observed is null || Volatile.Read(ref _disposeStarted) != 0 ||
+            cancellation.IsCancellationRequested && observed.Kind != OperatorUiResultKind.Unauthorized) return;
+        while (true)
+        {
+            var retry = false;
+            await InvokeAsync(() =>
+            {
+                if (observed.Kind != OperatorUiResultKind.Unauthorized &&
+                    !IsCenteredMode && generation == _layerGeneration && _runCaptureId == captureId &&
+                    _disposeStarted == 0 && !_accessDenied &&
+                    _layerCancellation is { IsCancellationRequested: false } &&
+                    !_viewerOpen &&
+                    !IsCurrentAstrometryObservation(observed) &&
+                    CanRevalidateAstrometryObservation(observed, bounded.Token))
+                {
+                    retry = true;
+                    return;
+                }
+                ApplyLayerResult(captureId, generation, observed);
+            }).ConfigureAwait(false);
+            if (!retry) return;
+            observed = await ValidateMeasuredLayersAsync(captureId, observed.Result, bounded.Token).ConfigureAwait(false);
+            if (Volatile.Read(ref _disposeStarted) != 0 ||
+                cancellation.IsCancellationRequested && observed.Kind != OperatorUiResultKind.Unauthorized) return;
+        }
     }
 
     /// <summary>Reads one capture's layers within their own deadline, or null when the page stopped waiting.</summary>
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Optional layers must never break current-image refresh.")]
     private async Task<ObservedAstrometryResult<CameraAgentLayeredPresentation>?> ReadLayersAsync(Guid captureId, CancellationToken cancellation)
     {
+        using var deadline = new CancellationTokenSource(RefreshTimeout, TimeProvider);
+        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellation, deadline.Token);
+        return await ReadLayersAsync(captureId, cancellation, bounded.Token).ConfigureAwait(false);
+    }
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Optional layers must never break current-image refresh.")]
+    private async Task<ObservedAstrometryResult<CameraAgentLayeredPresentation>?> ReadLayersAsync(
+        Guid captureId, CancellationToken cancellation, CancellationToken bounded)
+    {
         try
         {
-            using var deadline = new CancellationTokenSource(RefreshTimeout, TimeProvider);
-            using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellation, deadline.Token);
             using var phase = CameraAgentCurrentSkyRefreshDiagnostics.Measure("layer-read");
             // A shared flight may have started before invalidation, even on a later manual refresh.
             var result = Volatile.Read(ref _retainedAstrometryInvalidationRevision) != 0
-                ? await OperatorService.GetCurrentLayeredPresentationAsync(captureId, bounded.Token).ConfigureAwait(false)
-                : await OperatorService.GetLayeredPresentationAsync(captureId, bounded.Token).ConfigureAwait(false);
-            return await ValidateMeasuredLayersAsync(captureId, result, bounded.Token).ConfigureAwait(false);
+                ? await OperatorService.GetCurrentLayeredPresentationAsync(captureId, bounded).ConfigureAwait(false)
+                : await OperatorService.GetLayeredPresentationAsync(captureId, bounded).ConfigureAwait(false);
+            return await ValidateMeasuredLayersAsync(captureId, result, bounded).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
         {
@@ -1591,6 +1636,15 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
                 using var deadline = new CancellationTokenSource(RefreshTimeout, TimeProvider);
                 using var bounded = CancellationTokenSource.CreateLinkedTokenSource(layerLifetime.Token, deadline.Token);
                 var validated = await ValidateMeasuredLayersAsync(result.CaptureId, result.Result, bounded.Token);
+                while (validated.Kind != OperatorUiResultKind.Unauthorized &&
+                       !IsCenteredMode && result.Generation == _layerGeneration && _runCaptureId == result.CaptureId &&
+                       _disposeStarted == 0 && !_accessDenied && !_viewerOpen &&
+                       _layerCancellation is { IsCancellationRequested: false } &&
+                       !IsCurrentAstrometryObservation(validated) &&
+                       CanRevalidateAstrometryObservation(validated, bounded.Token))
+                {
+                    validated = await ValidateMeasuredLayersAsync(result.CaptureId, validated.Result, bounded.Token);
+                }
                 ApplyLayerResult(result.CaptureId, result.Generation, validated);
             }
             var pendingCentered = _deferredCenteredPresentation;

@@ -213,7 +213,7 @@ def read_xml(name, *, solution=False):
         text = raw.decode("utf-8-sig")
     except UnicodeDecodeError:
         fail("build input is not UTF-8")
-    if "\0" in text:
+    if "\0" in text or text.startswith("\ufeff"):
         fail("build input is not UTF-8")
     declaration = re.match(r"^<\?xml\s+([^?]*?)\?>", text)
     if declaration:

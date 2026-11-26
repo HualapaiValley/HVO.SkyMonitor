@@ -1906,38 +1906,46 @@ public sealed partial class CurrentSkyPageTests
         };
 
         var cut = context.Render<CurrentSkyPage>();
-        cut.WaitForAssertion(() =>
+        var timeout = TimeSpan.FromSeconds(5);
+        await cut.WaitForAssertionAsync(() => cut.InvokeAsync(() =>
         {
             Assert.AreEqual(1, Volatile.Read(ref presentationCalls));
             Assert.AreEqual(1, Volatile.Read(ref bindCount));
+            Assert.IsTrue(clock.HasTimer(TimeSpan.FromSeconds(15)));
+            Assert.IsNotNull(cut.Find(".sky-layer-canvas--verified"));
             Assert.AreEqual("Ready", cut.Find("[data-layer-kind='star-annotations'] .layer-readiness-tag").TextContent);
             Assert.IsFalse(cut.Find("[data-layer-kind='star-annotations'] input").HasAttribute("disabled"));
             Assert.AreEqual("Unavailable", cut.Find("[data-layer-kind='scene-constellations'] .layer-readiness-tag").TextContent);
             Assert.IsTrue(cut.Find("[data-layer-kind='scene-constellations'] input").HasAttribute("disabled"));
-        });
+        }), timeout).ConfigureAwait(false);
 
         // Recover scene-constellations on the EXACT SAME (BaseId, RevisionId) through the production deferred path
         // via either automatic poll OR manual refresh!
         if (manualRefresh)
         {
-            await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+            await cut.InvokeAsync(() => cut.Find("button.refresh-link").ClickAsync()).ConfigureAwait(false);
         }
         else
         {
             clock.Advance(TimeSpan.FromSeconds(15));
         }
 
-        cut.WaitForAssertion(() =>
+        await cut.WaitForAssertionAsync(() => cut.InvokeAsync(() =>
         {
-            Assert.IsGreaterThanOrEqualTo(2, Volatile.Read(ref presentationCalls));
+            Assert.AreEqual(2, Volatile.Read(ref presentationCalls));
+            Assert.AreEqual(2, Volatile.Read(ref bindCount));
+            Assert.IsNotNull(cut.Find(".sky-layer-canvas--verified"));
             Assert.AreEqual("Ready", cut.Find("[data-layer-kind='scene-constellations'] .layer-readiness-tag").TextContent);
             Assert.IsFalse(cut.Find("[data-layer-kind='scene-constellations'] input").HasAttribute("disabled"));
             Assert.IsTrue(cut.Find("[data-layer-kind='scene-constellations'] input").HasAttribute("checked"));
-            Assert.IsGreaterThanOrEqualTo(2, Volatile.Read(ref bindCount));
-        });
+        }), timeout).ConfigureAwait(false);
 
-        await cut.Find("[data-layer-kind='scene-constellations'] input").ChangeAsync(false).ConfigureAwait(false);
-        Assert.IsFalse(cut.Find("[data-layer-kind='scene-constellations'] input").HasAttribute("checked"));
+        // Resolve the checkbox and dispatch onchange atomically on the renderer so background renders cannot retire its handler first.
+        await cut.InvokeAsync(async () =>
+        {
+            await cut.Find("[data-layer-kind='scene-constellations'] input").ChangeAsync(false).ConfigureAwait(true);
+            Assert.IsFalse(cut.Find("[data-layer-kind='scene-constellations'] input").HasAttribute("checked"));
+        }).ConfigureAwait(false);
     }
 
     [TestMethod]
