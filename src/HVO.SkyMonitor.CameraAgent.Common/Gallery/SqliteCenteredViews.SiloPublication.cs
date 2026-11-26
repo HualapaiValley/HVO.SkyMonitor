@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.CameraAgent.Common.Silo;
+using Microsoft.Data.Sqlite;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Gallery;
 
@@ -60,7 +61,16 @@ internal sealed partial class SqliteCenteredViews
         silo is null || silo.BindingVerified &&
         await silo.Index.ReadPublicationAsync(baseId, revisionId, cancellationToken).ConfigureAwait(false) is { State: "visible" };
 
-    private async ValueTask<bool> PublishedSiloIntervalAsync(CenteredViewLiveInterval interval, CancellationToken cancellationToken) =>
-        silo is null || silo.BindingVerified &&
-        await silo.ReadViewCursorAsync(cancellationToken).ConfigureAwait(false) >= interval.StartedOrder;
+    private async ValueTask<CenteredViewCurrent?> ReadSiloCurrentAsync(SqliteConnection connection, string cameraId,
+        string? streamId, CancellationToken cancellationToken)
+    {
+        if (!silo!.BindingVerified ||
+            await silo.Index.ReadCurrentLiveAsync(cameraId, cancellationToken).ConfigureAwait(false) is not { } live ||
+            streamId is not null && live.StreamId != streamId ||
+            !await IsSiloViewVisibleAsync(live.GroupId, live.RevisionId, cancellationToken).ConfigureAwait(false))
+            return null;
+
+        var view = await ReadExactAsync(connection, null, live.GroupId, live.RevisionId, cancellationToken).ConfigureAwait(false);
+        return view is null ? null : new(view, new(live.GroupId, live.RevisionId, live.StartedOrder, live.StartedUtc, null, null));
+    }
 }

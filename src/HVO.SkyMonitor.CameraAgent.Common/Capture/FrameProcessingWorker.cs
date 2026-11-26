@@ -12,6 +12,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Replay;
 using HVO.SkyMonitor.Processing;
@@ -160,7 +161,7 @@ internal sealed class FrameProcessingWorker
         }
         try
         {
-            var context = await CreateContextAsync(item, cancellationToken).ConfigureAwait(false);
+            var context = await CreateContextAsync(item, cancellationToken, persistence?.Silo).ConfigureAwait(false);
             var rawCapture = context.RawCapture;
             var captureId = rawCapture?.Manifest.Descriptor.Capture.CaptureId;
             if (persistence is not null)
@@ -630,6 +631,19 @@ internal sealed class FrameProcessingWorker
             }
             throw;
         }
+        catch (SiloStoreUnavailableException)
+        {
+            return Finish(CaptureLaneHandlerResult.Retry("silo-store-unavailable"));
+        }
+        catch (SiloSpoolFullException)
+        {
+            return Finish(CaptureLaneHandlerResult.Retry("silo-staging-pressure"));
+        }
+        catch (SiloConflictException exception)
+        {
+            logger.CaptureProcessingStepFailed("Silo", item.Submission.CaptureStartedUtc, exception);
+            return Finish(CaptureLaneHandlerResult.Terminal(exception.Code));
+        }
         catch
         {
             if (!graphFinished)
@@ -717,13 +731,24 @@ internal sealed class FrameProcessingWorker
 
     private static async ValueTask<CaptureProcessingContext> CreateContextAsync(
         FrameProcessingItem item,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        SiloArtifactStorage? silo = null)
     {
         var submission = item.Submission;
         var rawCapture = item.RawCapture;
         if (rawCapture is { } receipt)
         {
-            var sidecar = await File.ReadAllBytesAsync(
+            var descriptor = receipt.Manifest.Descriptor;
+            byte[]? sidecar = null;
+            if (silo is not null)
+            {
+                sidecar = await silo.ReadMemberAsync(descriptor.Artifact.ArtifactId, SiloArtifactStorage.RawEvidenceRevision,
+                    CaptureContractJson.Serialize(receipt.Manifest).LongLength, receipt.CommittedManifestSha256, cancellationToken)
+                    .ConfigureAwait(false);
+                if (sidecar is null && item.Execution?.ExecutionClass == ProcessingGraphExecutionClass.Replay)
+                    throw new FileNotFoundException("The archived raw evidence has no settled Silo publication.");
+            }
+            sidecar ??= await File.ReadAllBytesAsync(
                 Path.ChangeExtension(receipt.StoredFrame.AbsolutePath, ".json"), cancellationToken).ConfigureAwait(false);
             var parsed = CaptureContractJson.ParseManifest(sidecar);
             if (!parsed.IsValid || parsed.Document?.Manifest is not { } persistedManifest)
@@ -741,7 +766,10 @@ internal sealed class FrameProcessingWorker
             rawCapture = receipt;
             async ValueTask<CaptureResult> LoadRawFrameAsync(CancellationToken token)
             {
-                var payload = await File.ReadAllBytesAsync(receipt.StoredFrame.AbsolutePath, token).ConfigureAwait(false);
+                var retained = silo is null ? null : await silo.ReadRawAsync(receipt.Manifest.Descriptor, token).ConfigureAwait(false);
+                if (silo is not null && retained is null && item.Execution?.ExecutionClass == ProcessingGraphExecutionClass.Replay)
+                    throw new FileNotFoundException("The archived raw frame has no settled Silo publication.");
+                var payload = retained ?? await File.ReadAllBytesAsync(receipt.StoredFrame.AbsolutePath, token).ConfigureAwait(false);
                 var reconstruction = FrameReconstructor.TryReconstruct(receipt.Manifest.Descriptor, payload, out var frame);
                 if (!reconstruction.IsValid || frame is null)
                 {

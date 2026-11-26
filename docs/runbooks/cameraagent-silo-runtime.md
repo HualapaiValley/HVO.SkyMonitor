@@ -429,9 +429,13 @@ Never disable the old key before step 6 shows the new key ready.
   Publication advances independently. `CameraAgent:Silo:MaximumStagedBytes` and `MaximumStagedFiles` default to
   2 GiB and 4,096 files. Pending raw admission and the publication spool each enforce those limits.
 - The `silo-storage` health check reports the result of the writer binding and journal-head probe. The authorized
-  `POST /api/internal/deployment/lifecycle/silo/verify-history` route verifies the journal through its indexed cutoff and
-  reads retained roles by exact version. The response reports the cutoff and counts for verified, unavailable, expired
-  and failed roles. Full verification can take time proportional to retained history.
+  `POST /api/internal/deployment/lifecycle/silo/verify-history` route checks the local admission database, verifies the
+  journal through its indexed cutoff, and reads retained roles by exact version. The response reports the cutoff and
+  counts for verified, unavailable, expired and failed roles. Full verification can take time proportional to retained
+  history.
+- Centered archive receipts bind selected output revisions and their evidence. The Silo catalog verifies those exact
+  dependencies before the receipt becomes visible. Current Sky follows the catalog's open live interval during
+  publication and recovery.
 
 ### #1968 publication measurement
 

@@ -203,6 +203,7 @@ internal sealed class SyntheticCalibrationReferenceStore(
             bundleRelativePath,
             CalibrationLibraryContractJson.Serialize(bundle),
             cancellationToken).ConfigureAwait(false);
+        await _publisher.PublishSiloBundleAsync(bundle, profileJson, cancellationToken).ConfigureAwait(false);
         await _publisher.PublishProfileMarkerAsync(
             profileRelativePath,
             profileJson,

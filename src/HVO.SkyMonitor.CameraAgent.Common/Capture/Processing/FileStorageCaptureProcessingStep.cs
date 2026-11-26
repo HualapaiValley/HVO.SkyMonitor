@@ -27,6 +27,7 @@ internal sealed class FileStorageCaptureProcessingStep(
     ICaptureProcessingFaultInjector? faults = null) : ConfigurableCaptureProcessingStep<FileStorageCaptureProcessingStepOptions>(metadata, options), ICaptureProcessingArtifactConsumer, IDurableCaptureProcessingPostCommit
 {
     internal const string StableAlias = "Storage";
+    internal const string SiloArchiveEvidenceVersion = "cameraagent-silo-archive-v1";
 
     private readonly ILatestFrameAccessor _latestFrameAccessor = latestFrameAccessor;
     private readonly IFrameStorageService _frameStorageService = frameStorageService;
@@ -81,6 +82,22 @@ internal sealed class FileStorageCaptureProcessingStep(
             return;
         }
         context.RecordConsumedArtifacts(selectedArtifacts, selectedProducts);
+        if (_processingPersistence?.Silo is not null)
+        {
+            if (exportsCenteredCopy)
+            {
+                foreach (var artifact in selectedArtifacts)
+                {
+                    if (context.GetProcessingProduct(artifact.ArtifactId) is { } product &&
+                        context.GetDependencyPublicationPolicy(artifact.ArtifactId)?.Persistence != CaptureProcessingPersistenceMode.MemoryOnly)
+                        context.RecordArchivePublication(artifact.ArtifactId.ToString("D"), product.OutputIdentitySha256, SiloArchiveEvidenceVersion);
+                }
+                if (selectedArtifacts.Any(artifact => context.GetProcessingProduct(artifact.ArtifactId) is not null))
+                    faults?.Inject(CaptureProcessingFaultPoint.AfterArchiveCopyStaged, context.CurrentNodeId!);
+            }
+            UpdateLatestFrame(selectedArtifacts, allowAutomaticPublication);
+            return;
+        }
         var compactScene = (context.RawCapture?.Manifest.Scene ?? artifacts.Raw.Frame.Metadata.Scene)?.RequiresProjectedScene == true;
         var needsSceneUpload = allowAutomaticPublication && compactScene && selectedArtifacts.Any(artifact =>
         {
@@ -254,6 +271,11 @@ internal sealed class FileStorageCaptureProcessingStep(
             lifecycleGate.Release();
         }
 
+        UpdateLatestFrame(selectedArtifacts, allowAutomaticPublication);
+    }
+
+    private void UpdateLatestFrame(IReadOnlyList<FrameArtifact> selectedArtifacts, bool allowAutomaticPublication)
+    {
         if (allowAutomaticPublication && Options.UpdateLatestFrame)
         {
             var raw = selectedArtifacts.LastOrDefault(static artifact => artifact.Role == FrameArtifactRole.Raw);
@@ -358,6 +380,13 @@ internal sealed class FileStorageCaptureProcessingStep(
             return;
         if (_processingPersistence is null || context.CurrentNodeId is not { } storageNode)
             throw new InvalidOperationException("Centered Storage requires durable archive publication evidence.");
+
+        if (_processingPersistence.Silo is not null)
+        {
+            await _processingPersistence.PublishSiloArchiveAsync(
+                context.ReconstructionDescriptor!, execution.ExecutionId, storageNode, cancellationToken).ConfigureAwait(false);
+            return;
+        }
 
         var copies = await _processingPersistence.ReadCommittedArchivePublicationsAsync(
             execution.ExecutionId, storageNode, cancellationToken).ConfigureAwait(false);

@@ -8,7 +8,7 @@ namespace HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 
 internal sealed partial class RawCaptureIngress
 {
-    internal bool SiloAdmissionsReady => Volatile.Read(ref _journalValidated);
+    internal bool SiloAdmissionsReady => Volatile.Read(ref _initialized);
 
     private const string SiloIntentsDirectory = "raw-admission-intents";
     private long _refusedSiloStagingBytes;
@@ -90,7 +90,7 @@ internal sealed partial class RawCaptureIngress
 
     internal async ValueTask<string?> PublishSiloAdmissionsAsync(int limit, CancellationToken cancellationToken)
     {
-        if (_silo is null || !Volatile.Read(ref _journalValidated)) return null;
+        if (_silo is null || !SiloAdmissionsReady) return null;
 
         var entries = await _journal.ReadPendingSiloAdmissionsAsync(limit, cancellationToken).ConfigureAwait(false);
         var root = PhysicalRoot.Open(_options.RawIngressRoot);

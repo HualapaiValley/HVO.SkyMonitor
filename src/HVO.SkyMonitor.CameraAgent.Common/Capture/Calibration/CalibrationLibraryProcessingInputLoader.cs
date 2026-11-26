@@ -30,8 +30,12 @@ internal sealed class CalibrationLibraryProcessingInputLoader(
     {
         ArgumentNullException.ThrowIfNull(snapshot);
         var bundle = snapshot.Bundle;
-        var profileJson = await File.ReadAllBytesAsync(
-            ResolveSafePath(bundle.ProfileRelativePath), cancellationToken).ConfigureAwait(false);
+        var profileJson = silo is null
+            ? await File.ReadAllBytesAsync(ResolveSafePath(bundle.ProfileRelativePath), cancellationToken).ConfigureAwait(false)
+            : await silo.ReadMetadataAsync(CalibrationArtifactPublisher.BundleArtifactId(bundle),
+                CalibrationArtifactPublisher.SiloProfileRevision, CalibrationLibraryContractJson.MaximumBundleBytes,
+                bundle.ProfileIdentitySha256, cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidDataException("The selected calibration profile has no settled Silo evidence.");
         if (!string.Equals(
                 PayloadChecksum.ComputeSha256(profileJson),
                 bundle.ProfileIdentitySha256,
@@ -53,13 +57,11 @@ internal sealed class CalibrationLibraryProcessingInputLoader(
         {
             var envelope = masters.SingleOrDefault(artifact => artifact.Kind == kind)
                 ?? throw new InvalidDataException("The selected calibration bundle is missing a master kind.");
-            var evidence = await File.ReadAllBytesAsync(ResolveSafePath(envelope.ManifestRelativePath), cancellationToken).ConfigureAwait(false);
-            if (silo is not null)
-            {
-                evidence = await silo.ReadMemberAsync(envelope.ArtifactId, CalibrationArtifactPublisher.SiloEvidenceRevision,
-                    evidence.LongLength, SiloHash.Sha256(evidence), cancellationToken).ConfigureAwait(false)
+            var evidence = silo is null
+                ? await File.ReadAllBytesAsync(ResolveSafePath(envelope.ManifestRelativePath), cancellationToken).ConfigureAwait(false)
+                : await silo.ReadMetadataAsync(envelope.ArtifactId, CalibrationArtifactPublisher.SiloEvidenceRevision,
+                    CalibrationLibraryContractJson.MaximumBundleBytes, sha256: null, cancellationToken).ConfigureAwait(false)
                     ?? throw new InvalidDataException("The selected master has no settled Silo evidence.");
-            }
             var parsed = CaptureContractJson.ParseManifest(evidence);
             var expectedRole = bundle.Source == CalibrationLibraryBundleSources.VirtualAcquisitionV1
                 ? FrameArtifactRole.Combined

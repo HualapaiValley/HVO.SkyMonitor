@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using Microsoft.Extensions.Hosting;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
@@ -7,7 +8,9 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 public sealed class CalibrationLibraryValidationService(
     SqliteCalibrationLibraryStore store,
     ICameraAgentConfigurationAccessor configurationAccessor,
-    CalibrationTelemetry telemetry) : BackgroundService
+    CalibrationTelemetry telemetry,
+    CalibrationLibraryReconciler? reconciler = null,
+    ICameraAgentSiloVerification? silo = null) : BackgroundService
 {
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
         Justification = "Calibration validation must not stop raw acquisition when optional library state is unavailable.")]
@@ -18,6 +21,8 @@ public sealed class CalibrationLibraryValidationService(
         {
             try
             {
+                if (silo is not null && reconciler is not null)
+                    _ = await reconciler.ReconcileAsync(stoppingToken).ConfigureAwait(false);
                 _ = await store.ValidateActiveBundleAsync(stoppingToken).ConfigureAwait(false);
                 return;
             }

@@ -186,8 +186,17 @@ internal sealed partial class SiloCatalogIndex
 
     public async ValueTask<SiloLiveInterval?> ReadCurrentLiveAsync(string cameraId, CancellationToken cancellationToken)
     {
-        var history = await ReadLiveHistoryAsync(cameraId, cancellationToken).ConfigureAwait(false);
-        return history.LastOrDefault(static interval => interval.EndedOrder is null);
+        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        using var command = CreateCommand(connection, null, """
+            SELECT camera_id, stream_id, group_id, revision_id, change_order, started_utc_ticks
+            FROM live_intervals WHERE camera_id = $camera AND ended_change_order IS NULL
+            ORDER BY generation DESC, sequence DESC, record_index DESC LIMIT 1;
+            """, ("$camera", cameraId));
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? new(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetInt64(4),
+                FromTicks(reader.GetInt64(5)), null, null)
+            : null;
     }
 
     public async ValueTask<IReadOnlyList<SiloLiveInterval>> ReadLiveHistoryAsync(string cameraId, CancellationToken cancellationToken)

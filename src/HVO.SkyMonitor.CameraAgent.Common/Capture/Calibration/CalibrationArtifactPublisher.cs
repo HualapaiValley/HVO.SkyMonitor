@@ -73,6 +73,31 @@ public sealed class CalibrationArtifactPublisher(
     internal SiloArtifactStorage? Silo { get; init; }
 
     internal const string SiloEvidenceRevision = "calibration-evidence-1";
+    internal const string SiloBundleRevision = "calibration-bundle-1";
+    internal const string SiloProfileRevision = "calibration-profile-1";
+
+    internal static Guid BundleArtifactId(CalibrationLibraryBundleV1 bundle) =>
+        ProcessingIdentity.CreateArtifactId(SiloHash.Sha256(CalibrationLibraryContractJson.Serialize(bundle)));
+
+    internal async ValueTask PublishSiloBundleAsync(CalibrationLibraryBundleV1 bundle, ReadOnlyMemory<byte> profile,
+        CancellationToken cancellationToken)
+    {
+        if (Silo is null) return;
+        var envelope = CalibrationLibraryContractJson.Serialize(bundle);
+        var id = BundleArtifactId(bundle);
+        var members = new[]
+        {
+            SiloArtifactStorage.Member(id, SiloBundleRevision, "calibration-bundle", SiloRetentionClass.Full,
+                "application/json", envelope.LongLength, SiloHash.Sha256(envelope)),
+            SiloArtifactStorage.Member(id, SiloProfileRevision, "calibration-profile", SiloRetentionClass.Full,
+                "application/json", profile.Length, bundle.ProfileIdentitySha256)
+        };
+        var created = bundle.CreatedUtc.ToUniversalTime();
+        var draft = new SiloGroupDraft("calibration-bundle", id.ToString("N"), "1", created, created, created,
+            members, [], new([]), CameraId: bundle.Applicability.RigId);
+        await Silo.PublishAsync(draft, (member, token) => SiloArtifactStorage.OpenMemoryAsync(
+            member.ArtifactRevision == SiloBundleRevision ? envelope : profile, token), cancellationToken).ConfigureAwait(false);
+    }
 
     internal void InjectFault(CalibrationPublicationFaultPoint point, string relativePath)
         => _faultInjector.Inject(point, relativePath);

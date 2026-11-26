@@ -146,7 +146,10 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<IOperationsQueueSnapshotRefresher>(provider => provider.GetRequiredService<RawCaptureIngress>());
         services.AddSingleton<SqliteCaptureScheduleStore>();
         services.AddSingleton<SqliteNamedRigProfileStore>();
-        services.AddSingleton<SqliteCalibrationLibraryStore>();
+        services.AddSingleton(provider => new SqliteCalibrationLibraryStore(
+            provider.GetRequiredService<IRawCaptureIngress>(), provider.GetRequiredService<IOptions<CameraAgentHostOptions>>(),
+            provider.GetRequiredService<TimeProvider>(), provider.GetService<CalibrationTelemetry>())
+        { Silo = provider.GetService<SiloArtifactStorage>() });
         services.AddSingleton<SqliteCalibrationFamilyStore>();
         services.AddSingleton<CalibrationFamilyActivationService>();
         services.AddSingleton(static provider => new CalibrationArtifactPublisher(
@@ -358,12 +361,15 @@ public static class CameraAgentServiceCollectionExtensions
         services.TryAddSingleton<IExecutionEvidenceTransport>(NullExecutionEvidenceTransport.Instance);
         services.TryAddSingleton<IExecutionEvidenceOriginProvider, LocalExecutionEvidenceOriginProvider>();
         services.AddSingleton<IObservingDayCalendarProvider, DeploymentObservingDayCalendarProvider>();
-        services.AddSingleton<LocalArchiveReader>(static provider => new LocalArchiveReader(
-            provider.GetRequiredService<IFrameStorageService>(),
-            provider.GetRequiredService<ICameraAgentConfigurationAccessor>(),
-            provider.GetRequiredService<IOptions<CameraAgentHostOptions>>(),
-            // Resolve the schedule at read time, after service construction.
-            () => provider.GetRequiredService<CaptureScheduleRuntimeCoordinator>().Snapshot?.Configuration));
+        if (!siloSelected)
+        {
+            services.AddSingleton<LocalArchiveReader>(static provider => new LocalArchiveReader(
+                provider.GetRequiredService<IFrameStorageService>(),
+                provider.GetRequiredService<ICameraAgentConfigurationAccessor>(),
+                provider.GetRequiredService<IOptions<CameraAgentHostOptions>>(),
+                // Resolve the schedule at read time, after service construction.
+                () => provider.GetRequiredService<CaptureScheduleRuntimeCoordinator>().Snapshot?.Configuration));
+        }
         services.AddSingleton<SqliteCameraAgentGallery>();
         services.AddSingleton<ICameraAgentGallery>(provider => provider.GetRequiredService<SqliteCameraAgentGallery>());
         services.AddSingleton<ICameraAgentArchive>(provider => provider.GetRequiredService<SqliteCameraAgentGallery>());
@@ -444,13 +450,17 @@ public static class CameraAgentServiceCollectionExtensions
             provider.GetRequiredService<ICameraAgentConfigurationLoader>(), provider.GetRequiredService<ILogger<RetainedIntegrityScrubService>>(),
             provider.GetRequiredService<TimeProvider>(), provider.GetRequiredService<CameraAgentConfigurationInitializer>(),
             provider.GetRequiredService<ICameraAgentConfigurationAccessor>(), provider.GetRequiredService<IDeploymentLocationStore>(),
-            provider.GetRequiredService<IHostApplicationLifetime>(), provider.GetRequiredService<CaptureLaneState>()));
+            provider.GetRequiredService<IHostApplicationLifetime>(), provider.GetRequiredService<CaptureLaneState>(),
+            provider.GetService<ICameraAgentSiloVerification>()));
         services.AddSingleton<CaptureAdmissionInitializationService>();
         services.AddHostedService<AfterApplicationStartedService<CaptureAdmissionInitializationService>>();
         services.AddHostedService<CaptureProcessingStateRefreshService>();
         services.AddSingleton<IHostedService>(provider => provider.GetRequiredService<CenteredWindowCoordinator>());
         services.AddSingleton<IHostedService>(provider => provider.GetRequiredService<CenteredWindowRegistrationWorker>());
-        services.AddHostedService<DerivedProductReconciliationService>();
+        if (!siloSelected)
+        {
+            services.AddHostedService<DerivedProductReconciliationService>();
+        }
         services.AddHostedService<ProjectedSceneStageReconciliationService>();
         services.AddSingleton<IProcessingRetentionHolds>(provider =>
             new CompositeProcessingRetentionHolds(

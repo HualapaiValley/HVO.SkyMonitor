@@ -10,16 +10,18 @@ internal sealed partial class SqliteCenteredViews
     {
         var streamId = StreamId(stream);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-        var current = await ReadCurrentAsync(connection, null, streamId, cameraId: null, cancellationToken).ConfigureAwait(false);
-        return current is not null && await PublishedSiloIntervalAsync(current.Interval, cancellationToken).ConfigureAwait(false) ? current : null;
+        if (silo is not null)
+            return await ReadSiloCurrentAsync(connection, Identity(stream.Camera), streamId, cancellationToken).ConfigureAwait(false);
+        return await ReadCurrentAsync(connection, null, streamId, cameraId: null, cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask<CenteredViewCurrent?> ReadLastLiveAsync(CameraKey camera, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(camera);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-        var current = await ReadCurrentAsync(connection, null, streamId: null, Identity(camera), cancellationToken).ConfigureAwait(false);
-        return current is not null && await PublishedSiloIntervalAsync(current.Interval, cancellationToken).ConfigureAwait(false) ? current : null;
+        if (silo is not null)
+            return await ReadSiloCurrentAsync(connection, Identity(camera), streamId: null, cancellationToken).ConfigureAwait(false);
+        return await ReadCurrentAsync(connection, null, streamId: null, Identity(camera), cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask<CenteredView?> ReadLatestSingleAsync(CenteredViewStream stream, CancellationToken cancellationToken = default)

@@ -44,13 +44,15 @@ internal sealed class SiloArtifactStorage(SiloInstalledStorage storage, TimeProv
             .ConfigureAwait(false);
     }
 
-    public async ValueTask PublishAsync(SiloGroupDraft draft, Func<SiloDraftMember, CancellationToken, ValueTask<Stream>> open,
+    public async ValueTask PublishAsync(SiloGroupDraft draft, Func<SiloDraftMember, CancellationToken, ValueTask<Stream>>? open,
         CancellationToken cancellationToken)
     {
         if (!storage.BindingVerified)
             throw new SiloStoreUnavailableException(storage.Binding.StoreId, "verify writer binding", writeMayHaveLanded: false);
         await storage.Publisher.StageAsync(draft, open, cancellationToken).ConfigureAwait(false);
         var outcome = await storage.Publisher.PublishAsync(draft.GroupId, draft.RevisionId, cancellationToken).ConfigureAwait(false);
+        if (outcome.BlockedCode is { } conflict && conflict != "silo.store-unavailable")
+            throw new SiloConflictException(conflict, "The staged Silo artifact publication was refused.");
         if (outcome.State != SiloStagedState.Visible || outcome.CatalogState != "visible")
             throw new SiloStoreUnavailableException(storage.Binding.StoreId, "settle artifact publication", writeMayHaveLanded: true);
     }
@@ -107,7 +109,47 @@ internal sealed class SiloArtifactStorage(SiloInstalledStorage storage, TimeProv
         }
     }
 
+    internal async ValueTask<bool> VerifyMemberAsync(Guid artifactId, string revision, long length, string sha256,
+        CancellationToken cancellationToken)
+    {
+        var role = await ResolveMemberAsync(artifactId, revision, length, sha256, cancellationToken).ConfigureAwait(false);
+        if (role is null) return false;
+        await ReadMemberCoreAsync(role, Stream.Null, cancellationToken).ConfigureAwait(false);
+        return true;
+    }
+
+    internal async ValueTask<bool> VerifyRawPairIfPublishedAsync(ReconstructionDescriptor descriptor, byte[] evidence,
+        CancellationToken cancellationToken)
+    {
+        var id = descriptor.Artifact.ArtifactId;
+        if (!await VerifyMemberAsync(id, CaptureContractJson.ComputeDescriptorSha256(descriptor), descriptor.Layout.ByteLength,
+            descriptor.Artifact.ChecksumSha256, cancellationToken).ConfigureAwait(false)) return false;
+        if (!await VerifyMemberAsync(id, RawEvidenceRevision, evidence.LongLength, SiloHash.Sha256(evidence),
+            cancellationToken).ConfigureAwait(false))
+            throw new InvalidDataException("The committed Silo raw frame has no settled source evidence.");
+        return true;
+    }
+
+    internal async ValueTask<byte[]?> ReadMetadataAsync(Guid artifactId, string revision, int maximumBytes, string? sha256,
+        CancellationToken cancellationToken)
+    {
+        var role = await FindMemberAsync(artifactId, revision, cancellationToken).ConfigureAwait(false);
+        if (role is null) return null;
+        if (role.Length > maximumBytes || sha256 is not null && role.Sha256 != SiloCenteredViews.LowerHex(sha256))
+            throw new InvalidDataException("The committed Silo metadata differs from the expected size or identity.");
+        return (await ReadMemberCoreAsync(role, null, cancellationToken).ConfigureAwait(false)).Bytes;
+    }
+
     private async ValueTask<SiloRoleStatus?> ResolveMemberAsync(Guid artifactId, string revision, long length, string sha256,
+        CancellationToken cancellationToken)
+    {
+        var role = await FindMemberAsync(artifactId, revision, cancellationToken).ConfigureAwait(false);
+        if (role is not null && (role.Length != length || role.Sha256 != SiloCenteredViews.LowerHex(sha256)))
+            throw new InvalidDataException("The committed Silo member differs from the requested identity.");
+        return role;
+    }
+
+    private async ValueTask<SiloRoleStatus?> FindMemberAsync(Guid artifactId, string revision,
         CancellationToken cancellationToken)
     {
         if (!storage.BindingVerified)
@@ -115,10 +157,8 @@ internal sealed class SiloArtifactStorage(SiloInstalledStorage storage, TimeProv
 
         var id = artifactId.ToString("D");
         if (!await storage.Index.HasVisibleMemberAsync(id, revision, cancellationToken).ConfigureAwait(false)) return null;
-        var role = await storage.Index.ReadRoleAsync(new(SiloIdentityKind.Member, id, revision), cancellationToken).ConfigureAwait(false);
-        if (role is null || role.Length != length || role.Sha256 != SiloCenteredViews.LowerHex(sha256))
-            throw new InvalidDataException("The committed Silo member differs from the requested identity.");
-        return role;
+        return await storage.Index.ReadRoleAsync(new(SiloIdentityKind.Member, id, revision), cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidDataException("The visible Silo member is missing its exact role record.");
     }
 
     private async ValueTask<SiloProbe> ReadMemberCoreAsync(SiloRoleStatus role, Stream? destination, CancellationToken cancellationToken)

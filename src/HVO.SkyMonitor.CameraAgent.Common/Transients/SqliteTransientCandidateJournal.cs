@@ -8,6 +8,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
@@ -158,11 +159,13 @@ internal sealed class SqliteTransientCandidateJournal : ITransientCandidateJourn
     private readonly int _candidateTimeoutMinutes;
     private readonly TimeProvider _timeProvider;
     private readonly ITransientCandidateFaultInjector _faultInjector;
+    private readonly SiloArtifactStorage? _silo;
 
     public SqliteTransientCandidateJournal(
         IOptions<CameraAgentHostOptions> options,
         TimeProvider timeProvider,
-        ITransientCandidateFaultInjector? faultInjector = null)
+        ITransientCandidateFaultInjector? faultInjector = null,
+        SiloArtifactStorage? silo = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(timeProvider);
@@ -176,6 +179,7 @@ internal sealed class SqliteTransientCandidateJournal : ITransientCandidateJourn
         _candidateTimeoutMinutes = configured.TransientDetection.CandidateTimeoutMinutes;
         _timeProvider = timeProvider;
         _faultInjector = faultInjector ?? NullTransientCandidateFaultInjector.Instance;
+        _silo = silo;
     }
 
     public async ValueTask StageCaptureAsync(
@@ -1443,42 +1447,8 @@ internal sealed class SqliteTransientCandidateJournal : ITransientCandidateJourn
             {
                 throw new InvalidDataException("Transient source manifest is invalid or altered.");
             }
-            var payloadPath = Resolve(snapshot.PayloadRelativePath);
-            var sidecarPath = Resolve(snapshot.SidecarRelativePath);
-            RawIngressFileStore.EnsureNoSymbolicLinks(_root, payloadPath);
-            RawIngressFileStore.EnsureNoSymbolicLinks(_root, sidecarPath);
-            if (!File.Exists(payloadPath) || !File.Exists(sidecarPath))
-            {
-                throw new FileNotFoundException("Transient source evidence is no longer physically retained.");
-            }
-            if (new FileInfo(payloadPath).Length != snapshot.PayloadLength)
-            {
-                throw new InvalidDataException("Transient source payload length differs from committed evidence.");
-            }
-            using (var stream = new FileStream(
-                       payloadPath,
-                       FileMode.Open,
-                       FileAccess.Read,
-                       FileShare.Read,
-                       64 * 1024,
-                       FileOptions.Asynchronous | FileOptions.SequentialScan))
-            {
-                var payloadSha256 = Convert.ToHexString(
-                    await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false));
-                if (!string.Equals(payloadSha256, snapshot.PayloadSha256, StringComparison.Ordinal))
-                {
-                    throw new InvalidDataException("Transient source payload checksum differs from committed evidence.");
-                }
-            }
-            var sidecar = await File.ReadAllBytesAsync(sidecarPath, cancellationToken).ConfigureAwait(false);
-            if (!sidecar.AsSpan().SequenceEqual(snapshot.ManifestJson) ||
-                !string.Equals(
-                    CaptureContractJson.ComputeManifestSha256(sidecar),
-                    snapshot.ManifestSha256,
-                    StringComparison.Ordinal))
-            {
-                throw new InvalidDataException("Transient source sidecar differs from committed manifest evidence.");
-            }
+            await VerifySourcePairAsync(manifest.Descriptor, snapshot.ManifestJson, snapshot.PayloadRelativePath,
+                snapshot.SidecarRelativePath, snapshot.PayloadLength, cancellationToken).ConfigureAwait(false);
             if (!string.Equals(snapshot.AgentId, reservation.AgentId, StringComparison.Ordinal))
             {
                 throw new TransientCandidateIdentityConflictException(
@@ -1978,39 +1948,35 @@ internal sealed class SqliteTransientCandidateJournal : ITransientCandidateJourn
         {
             throw new InvalidDataException("Transient source manifest is invalid or altered.");
         }
+        await VerifySourcePairAsync(manifest.Descriptor, manifestJson, payloadRelativePath,
+            sidecarRelativePath, payloadLength, cancellationToken).ConfigureAwait(false);
+        return new SourceRow(rawRowId, payloadLength, agentId, manifest);
+    }
+
+    private async ValueTask VerifySourcePairAsync(ReconstructionDescriptor descriptor, byte[] manifestJson,
+        string payloadRelativePath, string sidecarRelativePath, long payloadLength, CancellationToken cancellationToken)
+    {
+        if (descriptor.Layout.ByteLength != payloadLength)
+            throw new InvalidDataException("Transient source payload length differs from committed evidence.");
+        if (_silo is not null &&
+            await _silo.VerifyRawPairIfPublishedAsync(descriptor, manifestJson, cancellationToken).ConfigureAwait(false)) return;
+
         var payloadPath = Resolve(payloadRelativePath);
         var sidecarPath = Resolve(sidecarRelativePath);
         if (!File.Exists(payloadPath) || !File.Exists(sidecarPath))
-        {
             throw new FileNotFoundException("Transient source evidence is no longer physically retained.");
-        }
         RawIngressFileStore.EnsureNoSymbolicLinks(_root, payloadPath);
         RawIngressFileStore.EnsureNoSymbolicLinks(_root, sidecarPath);
-        if (new FileInfo(payloadPath).Length != payloadLength)
+        using (var stream = new FileStream(payloadPath, FileMode.Open, FileAccess.Read, FileShare.Read,
+            64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
         {
-            throw new InvalidDataException("Transient source payload length differs from committed evidence.");
-        }
-        using (var stream = new FileStream(
-                         payloadPath,
-                         FileMode.Open,
-                         FileAccess.Read,
-                         FileShare.Read,
-                         64 * 1024,
-                         FileOptions.Asynchronous | FileOptions.SequentialScan))
-        {
-            var actualPayloadSha = Convert.ToHexString(await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false));
-            if (!string.Equals(actualPayloadSha, payloadSha256, StringComparison.Ordinal))
-            {
-                throw new InvalidDataException("Transient source payload checksum differs from committed evidence.");
-            }
+            if (stream.Length != payloadLength || Convert.ToHexString(
+                await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false)) != descriptor.Artifact.ChecksumSha256)
+                throw new InvalidDataException("Transient source payload differs from committed evidence.");
         }
         var sidecar = await File.ReadAllBytesAsync(sidecarPath, cancellationToken).ConfigureAwait(false);
-        if (!sidecar.AsSpan().SequenceEqual(manifestJson) ||
-            !string.Equals(CaptureContractJson.ComputeManifestSha256(sidecar), manifestSha256, StringComparison.Ordinal))
-        {
+        if (!sidecar.AsSpan().SequenceEqual(manifestJson))
             throw new InvalidDataException("Transient source sidecar differs from committed manifest evidence.");
-        }
-        return new SourceRow(rawRowId, payloadLength, agentId, manifest);
     }
 
     private async Task EnsureCapacityAsync(

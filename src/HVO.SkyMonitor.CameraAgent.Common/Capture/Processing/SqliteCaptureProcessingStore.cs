@@ -400,7 +400,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 !migrateSchema8 && !migrateSchema9 && !migrateSchema10 && !migrateSchema11;
             using var connection = await OpenUnconfiguredAsync(disableCheckpointOnClose: currentSchemaRestart, cancellationToken)
                 .ConfigureAwait(false);
-            if (currentSchemaRestart)
+            if (currentSchemaRestart && _silo is null)
                 await CheckRestartDatabaseAsync(connection, cancellationToken).ConfigureAwait(false);
             if (initializeSchema)
             {

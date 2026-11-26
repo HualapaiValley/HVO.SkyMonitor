@@ -446,7 +446,7 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
             var content = new CameraAgentArtifactContentStream(stream, validated.ArtifactId,
                 validated.CaptureId, validated.Role, validated.MediaType, validated.ByteLength, validated.ChecksumSha256.ToUpperInvariant(),
                 CreateFileName(validated.ArtifactId, validated.MediaType), validated.Descriptor, validated.EncodedWidth, validated.EncodedHeight)
-                { ProductManifest = validated.ProductManifest };
+            { ProductManifest = validated.ProductManifest };
             return new(CameraAgentArtifactReadStatus.Found, content);
         }
         catch (SiloStoreUnavailableException)

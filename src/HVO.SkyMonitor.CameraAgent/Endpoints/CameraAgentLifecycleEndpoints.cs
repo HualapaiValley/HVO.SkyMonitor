@@ -42,7 +42,7 @@ internal static class CameraAgentLifecycleEndpoints
                 ? Results.Json(result, statusCode: StatusCodes.Status503ServiceUnavailable)
                 : Results.Ok(result);
         }
-        catch (Exception exception) when (exception is IOException or InvalidOperationException or FormatException)
+        catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException or FormatException)
         {
             return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
         }

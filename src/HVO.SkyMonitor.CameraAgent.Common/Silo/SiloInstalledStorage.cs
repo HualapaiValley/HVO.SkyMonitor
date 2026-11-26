@@ -1,6 +1,8 @@
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Silo.S3;
 using HVO.SkyMonitor.Storage.FileSystem;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
 using System.Globalization;
 using System.Text;
@@ -12,6 +14,7 @@ internal sealed class SiloInstalledStorage : ICameraAgentSiloVerification, IDisp
 {
     private readonly SiloInstalledStore _installed;
     private readonly SiloStateRoot _root;
+    private readonly PhysicalRoot _rawRoot;
     private readonly SiloJournalWriter _journal;
     private readonly SemaphoreSlim _initialization = new(1, 1);
     private readonly bool _publicationStateExisted;
@@ -24,7 +27,8 @@ internal sealed class SiloInstalledStorage : ICameraAgentSiloVerification, IDisp
     {
         var rawRoot = Path.GetFullPath(options.Value.RawIngressRoot);
         Directory.CreateDirectory(rawRoot);
-        var statePath = PhysicalRoot.Open(rawRoot).Resolve(".silo");
+        _rawRoot = PhysicalRoot.Open(rawRoot);
+        var statePath = _rawRoot.Resolve(".silo");
         _root = SiloStateRoot.Acquire(statePath);
         try
         {
@@ -152,6 +156,7 @@ internal sealed class SiloInstalledStorage : ICameraAgentSiloVerification, IDisp
     public async ValueTask<CameraAgentSiloVerificationResult> VerifyAsync(CancellationToken cancellationToken)
     {
         await VerifyReadinessAsync(cancellationToken).ConfigureAwait(false);
+        await VerifyAdmissionJournalAsync(cancellationToken).ConfigureAwait(false);
         var (cursor, cursorSha) = await Index.ReadCursorAsync(cancellationToken).ConfigureAwait(false);
         if (cursor is not { } cutoff || cursorSha is null ||
             await State.CommittedSha256Async(cutoff, cancellationToken).ConfigureAwait(false) != cursorSha)
@@ -164,6 +169,29 @@ internal sealed class SiloInstalledStorage : ICameraAgentSiloVerification, IDisp
             throw new SiloConflictException("silo.journal-verification-failed", "The Silo journal could not be verified through the catalog cutoff.");
 
         return await Index.VerifyHistoryAsync(Catalog.Stores, cutoff, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask VerifyAdmissionJournalAsync(CancellationToken cancellationToken)
+    {
+        var path = _rawRoot.Resolve(Path.Combine("journal", "raw-ingress.db"));
+        foreach (var suffix in new[] { "", "-wal", "-shm", "-journal" })
+            _rawRoot.Verify(path + suffix, "silo-verify-admission-journal");
+        try
+        {
+            using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+            {
+                DataSource = path,
+                Mode = SqliteOpenMode.ReadOnly,
+                Pooling = false,
+                DefaultTimeout = 1
+            }.ToString());
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            await SqliteRawCaptureJournal.ValidateSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
+        }
+        catch (SqliteException exception)
+        {
+            throw new InvalidDataException("The Silo admission journal could not be fully verified.", exception);
+        }
     }
 
     public void Dispose()

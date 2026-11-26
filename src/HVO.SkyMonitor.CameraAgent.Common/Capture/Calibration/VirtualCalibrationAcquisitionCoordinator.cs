@@ -401,6 +401,7 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
             }
 
             var bundle = CreateBundle(job.Plan, profilePath, profileJson, artifacts);
+            await _publisher.PublishSiloBundleAsync(bundle, profileJson, cancellationToken).ConfigureAwait(false);
             _ = await _store.AdoptPublishedBundleAsync(bundle, CancellationToken.None).ConfigureAwait(false);
             _publisher.InjectFault(CalibrationPublicationFaultPoint.AfterSqlitePublication, profilePath);
             return await _store.CompleteAcquisitionAsync(
