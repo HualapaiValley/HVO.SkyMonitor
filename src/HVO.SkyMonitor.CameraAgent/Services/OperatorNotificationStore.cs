@@ -41,6 +41,7 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
 
     private volatile OperatorNotificationsOptions _cachedOptions;
     private volatile string? _cachedConfigurationErrorReasonCode;
+    private string? _lastLoggedReadFailureKey;
 
     public OperatorNotificationStore(
         IDataProtectionProvider dataProtectionProvider,
@@ -75,6 +76,12 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
         try
         {
             var state = await ReadStoreStateUnlockedAsync(cancellationToken).ConfigureAwait(false);
+            if (state.Kind == StoreStateKind.Unreadable)
+            {
+                throw new IOException(state.IsSymlink
+                    ? "Refusing to access a symbolic link in the protected operator notification store."
+                    : "Persisted operator notification store path is unreadable or not a regular file.");
+            }
             if (state.Kind == StoreStateKind.Corrupt)
             {
                 throw new InvalidDataException("Persisted operator notification store is unreadable or corrupt.");
@@ -94,14 +101,25 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
         try
         {
             var state = await ReadStoreStateUnlockedAsync(cancellationToken).ConfigureAwait(false);
-            var options = state.Kind == StoreStateKind.Valid
-                ? state.Options
-                : ConfigurationOperatorNotificationConfigProvider.ReadOptionsFromConfiguration(_configuration);
+            if (state.Kind == StoreStateKind.Unreadable && !state.CanReplace)
+            {
+                throw new IOException(state.IsSymlink
+                    ? "Refusing to access a symbolic link in the protected operator notification store."
+                    : "Persisted operator notification store path is blocked by a non-regular file or directory.");
+            }
+
+            var options = state.Kind switch
+            {
+                StoreStateKind.Valid => state.Options,
+                StoreStateKind.Absent when state.ConfigBindingErrorReasonCode is null => state.Options,
+                _ => new OperatorNotificationsOptions { Enabled = false }
+            };
             var revision = Guid.NewGuid().ToString("N");
             await PublishAtomicEnvelopeUnlockedAsync(options, secrets, revision, cancellationToken).ConfigureAwait(false);
+            _lastLoggedReadFailureKey = null;
             var configSecrets = ConfigurationOperatorNotificationConfigProvider.ReadSecretsFromConfiguration(_configuration);
             var effectiveSecrets = ConfigurationOperatorNotificationConfigProvider.MergeSecrets(secrets, configSecrets);
-            UpdateCache(options, effectiveSecrets, storeCorrupt: false);
+            UpdateCache(options, effectiveSecrets, explicitErrorReasonCode: null);
         }
         finally
         {
@@ -119,13 +137,20 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
             {
                 return;
             }
+            if (state.Kind == StoreStateKind.Unreadable && !state.CanReplace)
+            {
+                throw new IOException(state.IsSymlink
+                    ? "Refusing to access a symbolic link in the protected operator notification store."
+                    : "Persisted operator notification store path is blocked by a non-regular file or directory.");
+            }
             var options = state.Kind == StoreStateKind.Valid
                 ? state.Options
                 : new OperatorNotificationsOptions { Enabled = false };
             var revision = Guid.NewGuid().ToString("N");
             await PublishAtomicEnvelopeUnlockedAsync(options, OperatorNotificationSecrets.Empty, revision, cancellationToken).ConfigureAwait(false);
+            _lastLoggedReadFailureKey = null;
             var configSecrets = ConfigurationOperatorNotificationConfigProvider.ReadSecretsFromConfiguration(_configuration);
-            UpdateCache(options, configSecrets, storeCorrupt: false);
+            UpdateCache(options, configSecrets, explicitErrorReasonCode: null);
         }
         finally
         {
@@ -161,22 +186,33 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
         try
         {
             var state = await ReadStoreStateUnlockedAsync(cancellationToken).ConfigureAwait(false);
-            if (state.Kind == StoreStateKind.Corrupt)
+            if (state.Kind is StoreStateKind.Corrupt or StoreStateKind.Unreadable)
             {
+                var reasonCode = state.StoreErrorReasonCode ?? NotificationReasonCodes.StoreCorrupt;
                 var safeDisabled = new OperatorNotificationsOptions { Enabled = false };
-                UpdateCache(safeDisabled, OperatorNotificationSecrets.Empty, storeCorrupt: true);
+                UpdateCache(safeDisabled, OperatorNotificationSecrets.Empty, explicitErrorReasonCode: reasonCode);
                 return new OperatorNotificationEffectiveConfiguration(
                     safeDisabled,
                     OperatorNotificationSecrets.Empty,
                     StoreCorrupt: true,
-                    ConfigurationErrorReasonCode: NotificationReasonCodes.StoreCorrupt);
+                    ConfigurationErrorReasonCode: reasonCode);
+            }
+
+            if (state.Kind == StoreStateKind.Absent && state.ConfigBindingErrorReasonCode is not null)
+            {
+                UpdateCache(state.Options, OperatorNotificationSecrets.Empty, explicitErrorReasonCode: state.ConfigBindingErrorReasonCode);
+                return new OperatorNotificationEffectiveConfiguration(
+                    state.Options,
+                    OperatorNotificationSecrets.Empty,
+                    StoreCorrupt: false,
+                    ConfigurationErrorReasonCode: state.ConfigBindingErrorReasonCode);
             }
 
             var configSecrets = ConfigurationOperatorNotificationConfigProvider.ReadSecretsFromConfiguration(_configuration);
             var effectiveSecrets = ConfigurationOperatorNotificationConfigProvider.MergeSecrets(state.ProtectedSecrets, configSecrets);
             var errorCode = ConfigurationOperatorNotificationConfigProvider.EvaluateConfigurationErrorReasonCode(
                 state.Options, effectiveSecrets, _networkPolicy);
-            UpdateCache(state.Options, effectiveSecrets, storeCorrupt: false);
+            UpdateCache(state.Options, effectiveSecrets, explicitErrorReasonCode: null);
             return new OperatorNotificationEffectiveConfiguration(
                 state.Options,
                 effectiveSecrets,
@@ -202,6 +238,13 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
         {
             var currentState = await ReadStoreStateUnlockedAsync(cancellationToken).ConfigureAwait(false);
             var currentSnapshot = BuildSnapshot(currentState);
+            if (!currentSnapshot.CanPersist)
+            {
+                return new OperatorNotificationsSaveResult(
+                    OperatorNotificationsSaveOutcome.Unavailable,
+                    currentSnapshot,
+                    "The saved operator notification store path is blocked by a non-regular file or directory. Remove the conflicting entry and retry.");
+            }
             if (!string.Equals(request.ExpectedVersion, currentSnapshot.Version, StringComparison.Ordinal))
             {
                 return new OperatorNotificationsSaveResult(
@@ -240,7 +283,7 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
             var nextRevision = Guid.NewGuid().ToString("N");
             var envelopeBytes = SerializeAtomicEnvelope(normalizedOptions, nextProtected, nextRevision);
 
-            // Preserve a bounded forensic copy of a damaged file before explicit operator recovery replaces it.
+            // Preserve a bounded forensic copy of a readable damaged file before explicit operator recovery replaces it.
             if (currentState.Kind == StoreStateKind.Corrupt && currentState.RawCorruptBytes is { Length: > 0 } corruptBytes)
             {
                 await NotificationStateFilePublisher.PublishRestrictedAtomicAsync(
@@ -262,7 +305,8 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                 Log.SecretStoreSaved(_logger);
             }
 
-            UpdateCache(normalizedOptions, effectiveSecrets, storeCorrupt: false);
+            _lastLoggedReadFailureKey = null;
+            UpdateCache(normalizedOptions, effectiveSecrets, explicitErrorReasonCode: null);
 
             var presence = ConfigurationOperatorNotificationConfigProvider.BuildSecretPresence(nextProtected, configSecrets);
             var version = ConfigurationOperatorNotificationConfigProvider.ComputeVersion(normalizedOptions, presence, nextRevision);
@@ -288,23 +332,40 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
 
     private OperatorNotificationsConfigurationSnapshot BuildSnapshot(StoreReadState state)
     {
-        if (state.Kind == StoreStateKind.Corrupt)
+        if (state.Kind is StoreStateKind.Corrupt or StoreStateKind.Unreadable)
         {
+            var reasonCode = state.StoreErrorReasonCode ?? NotificationReasonCodes.StoreCorrupt;
             var safeDisabled = new OperatorNotificationsOptions { Enabled = false };
-            UpdateCache(safeDisabled, OperatorNotificationSecrets.Empty, storeCorrupt: true);
+            UpdateCache(safeDisabled, OperatorNotificationSecrets.Empty, explicitErrorReasonCode: reasonCode);
             return new OperatorNotificationsConfigurationSnapshot(
                 safeDisabled,
                 OperatorNotificationSecretPresence.Empty,
                 state.VersionToken!,
                 HasSavedOverrides: true,
-                CanPersist: true,
+                CanPersist: state.CanReplace,
                 StoreCorrupt: true,
-                StoreStatusReasonCode: NotificationReasonCodes.StoreCorrupt);
+                StoreStatusReasonCode: reasonCode);
         }
 
         var configSecrets = ConfigurationOperatorNotificationConfigProvider.ReadSecretsFromConfiguration(_configuration);
+        if (state.Kind == StoreStateKind.Absent && state.ConfigBindingErrorReasonCode is not null)
+        {
+            UpdateCache(state.Options, OperatorNotificationSecrets.Empty, explicitErrorReasonCode: state.ConfigBindingErrorReasonCode);
+            var degradedPresence = ConfigurationOperatorNotificationConfigProvider.BuildSecretPresence(
+                OperatorNotificationSecrets.Empty, configSecrets);
+            var degradedVersion = ConfigurationOperatorNotificationConfigProvider.ComputeVersion(state.Options, degradedPresence);
+            return new OperatorNotificationsConfigurationSnapshot(
+                state.Options,
+                degradedPresence,
+                degradedVersion,
+                HasSavedOverrides: false,
+                CanPersist: true,
+                StoreCorrupt: false,
+                StoreStatusReasonCode: state.ConfigBindingErrorReasonCode);
+        }
+
         var effectiveSecrets = ConfigurationOperatorNotificationConfigProvider.MergeSecrets(state.ProtectedSecrets, configSecrets);
-        UpdateCache(state.Options, effectiveSecrets, storeCorrupt: false);
+        UpdateCache(state.Options, effectiveSecrets, explicitErrorReasonCode: null);
 
         var presence = ConfigurationOperatorNotificationConfigProvider.BuildSecretPresence(state.ProtectedSecrets, configSecrets);
         var version = ConfigurationOperatorNotificationConfigProvider.ComputeVersion(state.Options, presence, state.Revision);
@@ -319,43 +380,70 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
-        Justification = "Corrupt or undecryptable persisted store is explicitly classified as StoreCorrupt without crashing CameraAgent or falling back to host credentials.")]
+        Justification = "Corrupt, unreadable, directory, or symlink store states must fail closed without throwing into endpoints/workers or falling back to host credentials.")]
     private async ValueTask<StoreReadState> ReadStoreStateUnlockedAsync(CancellationToken cancellationToken)
     {
-        var path = ConfigFilePath;
-        var hasEntry = File.Exists(path) || new FileInfo(path).LinkTarget is not null;
-        if (!hasEntry)
+        var inspection = InspectStorePath();
+        if (inspection.State is not null)
         {
-            var configOptions = ConfigurationOperatorNotificationConfigProvider.ReadOptionsFromConfiguration(_configuration);
-            return StoreReadState.Absent(configOptions);
+            return inspection.State;
         }
 
-        // Security invariant: symlinks / non-regular files are unconditionally refused with IOException.
-        NotificationStateFilePublisher.VerifyRegularFileNoSymlink(_provisioningOptions.StateDirectory, ConfigFileName);
-
-        var rawBytes = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
-        return ParsePersistedBytes(rawBytes);
+        try
+        {
+            var rawBytes = await File.ReadAllBytesAsync(inspection.TargetPath!, cancellationToken).ConfigureAwait(false);
+            return ParsePersistedBytes(rawBytes);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+        {
+            var exceptionName = ex.GetType().Name;
+            LogReadFailureOnce($"unreadable:read:{exceptionName}", exceptionName);
+            return StoreReadState.Unreadable(
+                ComputeUnreadableFileFingerprint(inspection.TargetPath!, exceptionName),
+                canReplace: true,
+                isSymlink: false);
+        }
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
-        Justification = "Startup load must never crash CameraAgent if a persisted notification file is corrupt; corrupt stores fail closed to Degraded/StoreCorrupt.")]
+        Justification = "Startup load must never crash CameraAgent if a persisted notification file or host config is damaged; failures fail closed to Degraded.")]
     private (OperatorNotificationsOptions Options, string? ErrorReasonCode) LoadInitialStateSafe()
     {
         try
         {
-            var path = ConfigFilePath;
-            var hasEntry = File.Exists(path) || new FileInfo(path).LinkTarget is not null;
-            if (!hasEntry)
+            var inspection = InspectStorePath();
+            if (inspection.State is { } earlyState)
             {
-                var configOptions = ConfigurationOperatorNotificationConfigProvider.ReadOptionsFromConfiguration(_configuration);
-                var configSecrets = ConfigurationOperatorNotificationConfigProvider.ReadSecretsFromConfiguration(_configuration);
-                var errorCode = ConfigurationOperatorNotificationConfigProvider.EvaluateConfigurationErrorReasonCode(
-                    configOptions, configSecrets, _networkPolicy);
-                return (configOptions, errorCode);
+                return earlyState.Kind switch
+                {
+                    StoreStateKind.Absent when earlyState.ConfigBindingErrorReasonCode is not null =>
+                        (earlyState.Options, earlyState.ConfigBindingErrorReasonCode),
+                    StoreStateKind.Absent =>
+                        (earlyState.Options, ConfigurationOperatorNotificationConfigProvider.EvaluateConfigurationErrorReasonCode(
+                            earlyState.Options,
+                            ConfigurationOperatorNotificationConfigProvider.ReadSecretsFromConfiguration(_configuration),
+                            _networkPolicy)),
+                    _ => (new OperatorNotificationsOptions { Enabled = false },
+                        earlyState.StoreErrorReasonCode ?? NotificationReasonCodes.StoreUnreadable)
+                };
             }
 
-            NotificationStateFilePublisher.VerifyRegularFileNoSymlink(_provisioningOptions.StateDirectory, ConfigFileName);
-            var rawBytes = File.ReadAllBytes(path);
+            byte[] rawBytes;
+            try
+            {
+                rawBytes = File.ReadAllBytes(inspection.TargetPath!);
+            }
+            catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+            {
+                var exceptionName = ex.GetType().Name;
+                LogReadFailureOnce($"unreadable:read:{exceptionName}", exceptionName);
+                return (new OperatorNotificationsOptions { Enabled = false }, NotificationReasonCodes.StoreUnreadable);
+            }
+
             var parsed = ParsePersistedBytes(rawBytes);
             if (parsed.Kind == StoreStateKind.Corrupt)
             {
@@ -370,8 +458,148 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
         }
         catch (Exception ex)
         {
-            Log.SecretStoreReadFailed(_logger, ex.GetType().Name);
-            return (new OperatorNotificationsOptions { Enabled = false }, NotificationReasonCodes.StoreCorrupt);
+            LogReadFailureOnce($"unreadable:startup:{ex.GetType().Name}", ex.GetType().Name);
+            return (new OperatorNotificationsOptions { Enabled = false }, NotificationReasonCodes.StoreUnreadable);
+        }
+    }
+
+    /// <summary>
+    /// Distinguishes confirmed file absence from directories, symlinks, non-regular entries, and permission/I/O errors.
+    /// ONLY confirmed absence is eligible to fall back to host configuration.
+    /// </summary>
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "Filesystem inspection errors must classify as StoreUnreadable without falling back to host credentials.")]
+    private PathInspectionResult InspectStorePath()
+    {
+        var fullDirectory = Path.TrimEndingDirectorySeparator(Path.GetFullPath(_provisioningOptions.StateDirectory));
+
+        if (HasLinkTarget(fullDirectory))
+        {
+            LogReadFailureOnce("unreadable:state-dir-symlink", nameof(IOException));
+            return new PathInspectionResult(null, StoreReadState.Unreadable("state-dir-symlink", canReplace: false, isSymlink: true));
+        }
+
+        FileAttributes dirAttributes;
+        try
+        {
+            dirAttributes = File.GetAttributes(fullDirectory);
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+        {
+            _lastLoggedReadFailureKey = null;
+            var configOptions = ConfigurationOperatorNotificationConfigProvider.ReadOptionsFromConfiguration(
+                _configuration, out var bindingError);
+            return new PathInspectionResult(null, StoreReadState.Absent(configOptions, bindingError));
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+        {
+            var exceptionName = ex.GetType().Name;
+            LogReadFailureOnce($"unreadable:state-dir:{exceptionName}", exceptionName);
+            return new PathInspectionResult(null, StoreReadState.Unreadable($"state-dir:{exceptionName}", canReplace: false, isSymlink: false));
+        }
+
+        if ((dirAttributes & FileAttributes.ReparsePoint) != 0)
+        {
+            LogReadFailureOnce("unreadable:state-dir-reparse", nameof(IOException));
+            return new PathInspectionResult(null, StoreReadState.Unreadable("state-dir-symlink", canReplace: false, isSymlink: true));
+        }
+
+        if ((dirAttributes & FileAttributes.Directory) == 0)
+        {
+            LogReadFailureOnce("unreadable:state-dir-not-directory", nameof(IOException));
+            return new PathInspectionResult(null, StoreReadState.Unreadable("state-dir-not-directory", canReplace: false, isSymlink: false));
+        }
+
+        var targetPath = Path.Combine(fullDirectory, ConfigFileName);
+        if (HasLinkTarget(targetPath))
+        {
+            LogReadFailureOnce("unreadable:target-symlink", nameof(IOException));
+            return new PathInspectionResult(null, StoreReadState.Unreadable("target-symlink", canReplace: false, isSymlink: true));
+        }
+
+        FileAttributes targetAttributes;
+        try
+        {
+            targetAttributes = File.GetAttributes(targetPath);
+        }
+        catch (FileNotFoundException)
+        {
+            _lastLoggedReadFailureKey = null;
+            var configOptions = ConfigurationOperatorNotificationConfigProvider.ReadOptionsFromConfiguration(
+                _configuration, out var bindingError);
+            return new PathInspectionResult(null, StoreReadState.Absent(configOptions, bindingError));
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+        {
+            var exceptionName = ex.GetType().Name;
+            LogReadFailureOnce($"unreadable:target-stat:{exceptionName}", exceptionName);
+            return new PathInspectionResult(null, StoreReadState.Unreadable($"target-stat:{exceptionName}", canReplace: false, isSymlink: false));
+        }
+
+        if ((targetAttributes & FileAttributes.ReparsePoint) != 0)
+        {
+            LogReadFailureOnce("unreadable:target-reparse", nameof(IOException));
+            return new PathInspectionResult(null, StoreReadState.Unreadable("target-symlink", canReplace: false, isSymlink: true));
+        }
+
+        if ((targetAttributes & FileAttributes.Directory) != 0)
+        {
+            LogReadFailureOnce("unreadable:target-directory", nameof(IOException));
+            return new PathInspectionResult(null, StoreReadState.Unreadable("target-directory", canReplace: false, isSymlink: false));
+        }
+
+        if ((targetAttributes & FileAttributes.Device) != 0)
+        {
+            LogReadFailureOnce("unreadable:target-device", nameof(IOException));
+            return new PathInspectionResult(null, StoreReadState.Unreadable("target-device", canReplace: false, isSymlink: false));
+        }
+
+        try
+        {
+            NotificationStateFilePublisher.VerifyRegularFileNoSymlink(fullDirectory, ConfigFileName);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            var exceptionName = ex.GetType().Name;
+            var isSymlink = ex.Message.Contains("symbolic link", StringComparison.OrdinalIgnoreCase);
+            LogReadFailureOnce($"unreadable:target-verify:{exceptionName}", exceptionName);
+            return new PathInspectionResult(null, StoreReadState.Unreadable($"target-verify:{exceptionName}", canReplace: false, isSymlink: isSymlink));
+        }
+
+        return new PathInspectionResult(targetPath, null);
+    }
+
+    private static bool HasLinkTarget(string path)
+    {
+        try
+        {
+            return new FileInfo(path).LinkTarget is not null || new DirectoryInfo(path).LinkTarget is not null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    private static string ComputeUnreadableFileFingerprint(string path, string reasonTag)
+    {
+        try
+        {
+            var info = new FileInfo(path);
+            return $"{reasonTag}|{info.Length}|{info.LastWriteTimeUtc.Ticks}|{(int)info.Attributes}";
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return reasonTag;
+        }
+    }
+
+    private void LogReadFailureOnce(string failureKey, string exceptionType)
+    {
+        if (!string.Equals(_lastLoggedReadFailureKey, failureKey, StringComparison.Ordinal))
+        {
+            _lastLoggedReadFailureKey = failureKey;
+            Log.SecretStoreReadFailed(_logger, exceptionType);
         }
     }
 
@@ -383,7 +611,7 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
         {
             if (rawBytes.Length == 0)
             {
-                Log.SecretStoreReadFailed(_logger, nameof(InvalidDataException));
+                LogReadFailureOnce("corrupt:empty", nameof(InvalidDataException));
                 return StoreReadState.Corrupt(rawBytes);
             }
 
@@ -393,7 +621,7 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                 string.IsNullOrWhiteSpace(envelope.Revision) ||
                 envelope.Options is null)
             {
-                Log.SecretStoreReadFailed(_logger, nameof(InvalidDataException));
+                LogReadFailureOnce("corrupt:envelope", nameof(InvalidDataException));
                 return StoreReadState.Corrupt(rawBytes);
             }
 
@@ -402,7 +630,7 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
             {
                 if (string.IsNullOrWhiteSpace(envelope.ProtectedSecrets))
                 {
-                    Log.SecretStoreReadFailed(_logger, nameof(InvalidDataException));
+                    LogReadFailureOnce("corrupt:empty-secret-blob", nameof(InvalidDataException));
                     return StoreReadState.Corrupt(rawBytes);
                 }
 
@@ -411,12 +639,13 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                     ?? throw new InvalidDataException("Unprotected operator notification secrets payload is null.");
             }
 
+            _lastLoggedReadFailureKey = null;
             var normalized = ConfigurationOperatorNotificationConfigProvider.NormalizeOptions(envelope.Options);
             return StoreReadState.Valid(normalized, secrets, envelope.Revision);
         }
         catch (Exception ex)
         {
-            Log.SecretStoreReadFailed(_logger, ex.GetType().Name);
+            LogReadFailureOnce($"corrupt:{ex.GetType().Name}", ex.GetType().Name);
             return StoreReadState.Corrupt(rawBytes);
         }
     }
@@ -464,12 +693,11 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
     private void UpdateCache(
         OperatorNotificationsOptions options,
         OperatorNotificationSecrets effectiveSecrets,
-        bool storeCorrupt)
+        string? explicitErrorReasonCode)
     {
         _cachedOptions = options;
-        _cachedConfigurationErrorReasonCode = storeCorrupt
-            ? NotificationReasonCodes.StoreCorrupt
-            : ConfigurationOperatorNotificationConfigProvider.EvaluateConfigurationErrorReasonCode(
+        _cachedConfigurationErrorReasonCode = explicitErrorReasonCode
+            ?? ConfigurationOperatorNotificationConfigProvider.EvaluateConfigurationErrorReasonCode(
                 options, effectiveSecrets, _networkPolicy);
     }
 
@@ -492,11 +720,14 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
         _gate.Dispose();
     }
 
+    private readonly record struct PathInspectionResult(string? TargetPath, StoreReadState? State);
+
     private enum StoreStateKind
     {
         Absent = 0,
         Valid = 1,
-        Corrupt = 2
+        Corrupt = 2,
+        Unreadable = 3
     }
 
     private sealed record StoreReadState(
@@ -505,10 +736,17 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
         OperatorNotificationSecrets ProtectedSecrets,
         string? Revision,
         string? VersionToken,
-        byte[]? RawCorruptBytes)
+        byte[]? RawCorruptBytes,
+        string? StoreErrorReasonCode = null,
+        string? ConfigBindingErrorReasonCode = null,
+        bool CanReplace = true,
+        bool IsSymlink = false)
     {
-        public static StoreReadState Absent(OperatorNotificationsOptions configOptions) =>
-            new(StoreStateKind.Absent, configOptions, OperatorNotificationSecrets.Empty, null, null, null);
+        public static StoreReadState Absent(
+            OperatorNotificationsOptions configOptions,
+            string? configBindingErrorReasonCode = null) =>
+            new(StoreStateKind.Absent, configOptions, OperatorNotificationSecrets.Empty, null, null, null,
+                ConfigBindingErrorReasonCode: configBindingErrorReasonCode);
 
         public static StoreReadState Valid(
             OperatorNotificationsOptions options,
@@ -525,7 +763,25 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                 OperatorNotificationSecrets.Empty,
                 null,
                 $"corrupt:{hash}",
-                rawBytes);
+                rawBytes,
+                StoreErrorReasonCode: NotificationReasonCodes.StoreCorrupt,
+                CanReplace: true,
+                IsSymlink: false);
+        }
+
+        public static StoreReadState Unreadable(string fingerprint, bool canReplace, bool isSymlink)
+        {
+            var hash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(fingerprint)));
+            return new StoreReadState(
+                StoreStateKind.Unreadable,
+                new OperatorNotificationsOptions { Enabled = false },
+                OperatorNotificationSecrets.Empty,
+                null,
+                $"unreadable:{hash}",
+                null,
+                StoreErrorReasonCode: NotificationReasonCodes.StoreUnreadable,
+                CanReplace: canReplace,
+                IsSymlink: isSymlink);
         }
     }
 

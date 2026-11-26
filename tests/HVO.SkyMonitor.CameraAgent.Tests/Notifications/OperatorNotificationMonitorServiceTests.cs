@@ -1,14 +1,23 @@
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Deployment;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.Notifications;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using HVO.SkyMonitor.CameraAgent.Modules.Zwo;
 using HVO.SkyMonitor.Deployment.Contracts;
 using HVO.SkyMonitor.Fleet.Contracts;
+using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Notifications;
@@ -399,6 +408,307 @@ public sealed class OperatorNotificationMonitorServiceTests
         }
     }
 
+    [TestMethod]
+    public async Task DailyHeartbeat_TransientCheckpointWriteFailure_RetriesPersistenceAndPreventsSameDayDuplicateAfterRestartAsync()
+    {
+        var clock = new MonitorClock(new DateTimeOffset(2026, 11, 26, 15, 5, 0, TimeSpan.Zero)); // 08:05 Phoenix
+        var stateDir = Path.Combine(Path.GetTempPath(), $"hvo-notif-hb-retry-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(stateDir);
+        try
+        {
+            var backingStore = new FileOperatorNotificationHeartbeatStore(stateDir);
+            var flakyStore = new FailOnceHeartbeatStore(backingStore);
+            var hostOptions = Options.Create(new CameraAgentHostOptions
+            {
+                DisplayName = "HVO AllSky",
+                Observatory = new ObservatoryLocation(35.5, -113.9, 520, "America/Phoenix")
+            });
+            var options = EnabledOptions(captureStallMinutes: 120, heartbeatTime: "08:00");
+            var totalHeartbeatAdmissions = 0;
+
+            var publisher1 = new RecordingPublisher();
+            using (var monitor1 = new OperatorNotificationMonitorService(
+                new StaticConfigProvider(options), publisher1, hostOptions, clock, heartbeatStore: flakyStore))
+            {
+                // 1. Evaluation fires heartbeat, but initial checkpoint write fails transiently with IOException.
+                await monitor1.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(1, publisher1.Events.Count(static e => e.Kind == OperatorNotificationEventKind.DailyHeartbeat));
+                totalHeartbeatAdmissions += publisher1.Events.Count(static e => e.Kind == OperatorNotificationEventKind.DailyHeartbeat);
+                Assert.IsFalse(File.Exists(backingStore.FilePath), "First checkpoint write failed transiently.");
+
+                // 2. Storage recovers: next evaluation on same site day MUST persist checkpoint WITHOUT re-dispatching!
+                publisher1.Events.Clear();
+                clock.Advance(TimeSpan.FromMinutes(5));
+                await monitor1.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.IsFalse(publisher1.Events.Any(static e => e.Kind == OperatorNotificationEventKind.DailyHeartbeat),
+                    "In-process retry of checkpoint persistence must not emit a duplicate heartbeat.");
+                Assert.IsTrue(File.Exists(backingStore.FilePath),
+                    "Subsequent evaluation after storage recovery must persist the pending heartbeat checkpoint.");
+            }
+
+            // 3. Restart on the same site day -> reads persisted checkpoint and emits ZERO duplicate heartbeats!
+            clock.Advance(TimeSpan.FromMinutes(10));
+            var publisher2 = new RecordingPublisher();
+            using (var monitor2 = new OperatorNotificationMonitorService(
+                new StaticConfigProvider(options), publisher2, hostOptions, clock, heartbeatStore: new FileOperatorNotificationHeartbeatStore(stateDir)))
+            {
+                await monitor2.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+                totalHeartbeatAdmissions += publisher2.Events.Count(static e => e.Kind == OperatorNotificationEventKind.DailyHeartbeat);
+            }
+
+            Assert.AreEqual(1, totalHeartbeatAdmissions, "Total heartbeat admissions across transient write failure + recovery + restart must be 1.");
+        }
+        finally
+        {
+            if (Directory.Exists(stateDir)) Directory.Delete(stateDir, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [DataRow("io")]
+    [DataRow("sqlite")]
+    public async Task RealPath_StartupStorageFailure_NeverEmitsCameraDisconnectedAndRoutesToUpgradeOrRecoveryFailedAsync(string failureKind)
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-notif-storage-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var clock = new MonitorClock(new DateTimeOffset(2026, 11, 26, 10, 0, 0, TimeSpan.Zero));
+            var hostOptions = Options.Create(new CameraAgentHostOptions
+            {
+                RawIngressRoot = root,
+                RawIngressSqliteBusyTimeoutSeconds = 1,
+                DisplayName = "Storage Failure Dome"
+            });
+
+            Exception failure = failureKind == "sqlite"
+                ? new SqliteException("database disk image is malformed", 11)
+                : new IOException("Read-only filesystem during raw-ingress initialization.");
+
+            var ingress = new FailingInitRawIngress(failure);
+            using var telemetry = new CaptureControlTelemetry();
+            using var admission = new CaptureAdmissionCoordinator(ingress, hostOptions, clock, telemetry);
+            var fleet = new FleetRuntimeState(clock);
+            var namedRigs = new SqliteNamedRigProfileStore(ingress, hostOptions, clock);
+            using var lifetime = new TestHostApplicationLifetime();
+            var module = new FaultingCameraModule(initException: null, captureException: null);
+
+            using var captureService = new CameraCaptureService(
+                new StaticConfigAccessor(CreateTestCameraConfig()),
+                new SingleModuleFactory(module),
+                ingress,
+                new NoOpCaptureDistributor(),
+                clock,
+                new AstronomyEnginePlanetEphemeris(),
+                telemetry,
+                admission,
+                fleet,
+                lifetime,
+                NullLogger<CameraCaptureService>.Instance,
+                namedRigProfiles: namedRigs);
+
+            await captureService.StartAsync(CancellationToken.None).ConfigureAwait(false);
+            lifetime.NotifyStarted();
+            await ingress.InitializeAttempted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            await WaitUntilAsync(() => fleet.Snapshot.Capture.Availability == FleetAvailability.Unavailable, TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            await captureService.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+            // Confirm real-path preconditions: admission stays Initializing, namedRigProfiles recorded ActiveRuntimeFailure,
+            // and FleetRuntimeState classified the failure as storage (not camera disconnect).
+            Assert.AreEqual(CaptureAdmissionState.Initializing, admission.Snapshot.State);
+            Assert.IsFalse(string.IsNullOrWhiteSpace(namedRigs.ActiveRuntimeFailure));
+            Assert.IsFalse(fleet.IsCameraDisconnected);
+            Assert.IsTrue(fleet.IsStorageFailure);
+
+            var publisher = new RecordingPublisher();
+            var options = EnabledOptions(captureStallMinutes: 15, disconnectedSeconds: 10, heartbeatTime: "23:59");
+            using var monitor = new OperatorNotificationMonitorService(
+                new StaticConfigProvider(options),
+                publisher,
+                hostOptions,
+                clock,
+                fleetRuntimeState: fleet,
+                admissionCoordinator: admission,
+                rigProfileStore: namedRigs);
+
+            await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+            clock.Advance(TimeSpan.FromSeconds(30));
+            await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsFalse(publisher.Events.Any(static e => e.Kind == OperatorNotificationEventKind.CameraDisconnected),
+                $"Startup {failureKind} storage failure must NEVER emit CameraDisconnected.");
+            var storageAlert = publisher.Events.FirstOrDefault(static e =>
+                e.Kind == OperatorNotificationEventKind.UpgradeOrRecoveryFailed &&
+                e.DedupeKey == "upgrade_recovery_failed:capture-storage");
+            Assert.IsNotNull(storageAlert,
+                $"Startup {failureKind} storage failure must alert the operator via UpgradeOrRecoveryFailed instead of going silent.");
+            Assert.AreEqual(OperatorNotificationSeverity.Critical, storageAlert.Severity);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [DataRow((int)AsiErrorCode.Timeout, true, false)]
+    [DataRow((int)AsiErrorCode.Timeout, false, false)]
+    [DataRow((int)AsiErrorCode.GeneralError, true, false)]
+    [DataRow((int)AsiErrorCode.GeneralError, false, false)]
+    [DataRow((int)AsiErrorCode.CameraRemoved, true, true)]
+    [DataRow((int)AsiErrorCode.CameraRemoved, false, true)]
+    [DataRow((int)AsiErrorCode.CameraClosed, true, true)]
+    [DataRow((int)AsiErrorCode.CameraClosed, false, true)]
+    public async Task RealPath_AsiExceptions_ClassifyOnlyDisconnectCodesAsCameraDisconnectedAsync(
+        int rawErrorCode,
+        bool failDuringInit,
+        bool expectCameraDisconnected)
+    {
+        var errorCode = (AsiErrorCode)rawErrorCode;
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-notif-asi-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var clock = new MonitorClock(new DateTimeOffset(2026, 11, 26, 10, 0, 0, TimeSpan.Zero));
+            var hostOptions = Options.Create(new CameraAgentHostOptions
+            {
+                RawIngressRoot = root,
+                RawIngressSqliteBusyTimeoutSeconds = 1,
+                DisplayName = "ZWO Dome"
+            });
+
+            var asiEx = new AsiException(failDuringInit ? "ASIOpenCamera" : "ASIGetExpStatus", errorCode);
+            var ingress = new WorkingRawIngress(root);
+            using var telemetry = new CaptureControlTelemetry();
+            using var admission = new CaptureAdmissionCoordinator(ingress, hostOptions, clock, telemetry);
+            var fleet = new FleetRuntimeState(clock);
+            var namedRigs = new SqliteNamedRigProfileStore(ingress, hostOptions, clock);
+            using var lifetime = new TestHostApplicationLifetime();
+            var module = new FaultingCameraModule(
+                initException: failDuringInit ? asiEx : null,
+                captureException: failDuringInit ? null : asiEx);
+
+            using var captureService = new CameraCaptureService(
+                new StaticConfigAccessor(CreateTestCameraConfig()),
+                new SingleModuleFactory(module),
+                ingress,
+                new NoOpCaptureDistributor(),
+                clock,
+                new AstronomyEnginePlanetEphemeris(),
+                telemetry,
+                admission,
+                fleet,
+                lifetime,
+                NullLogger<CameraCaptureService>.Instance,
+                namedRigProfiles: namedRigs);
+
+            await captureService.StartAsync(CancellationToken.None).ConfigureAwait(false);
+            lifetime.NotifyStarted();
+            await module.FaultThrown.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            await WaitUntilAsync(() => fleet.Snapshot.Capture.Availability == FleetAvailability.Unavailable, TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            await captureService.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+            Assert.AreEqual("AsiException", fleet.Snapshot.Capture.Reason);
+            Assert.AreEqual(expectCameraDisconnected, fleet.IsCameraDisconnected);
+
+            var publisher = new RecordingPublisher();
+            var options = EnabledOptions(captureStallMinutes: 30, disconnectedSeconds: 10, heartbeatTime: "23:59");
+            using var monitor = new OperatorNotificationMonitorService(
+                new StaticConfigProvider(options),
+                publisher,
+                hostOptions,
+                clock,
+                fleetRuntimeState: fleet,
+                admissionCoordinator: admission,
+                rigProfileStore: namedRigs);
+
+            await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+            clock.Advance(TimeSpan.FromSeconds(30));
+            await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+
+            var emittedDisconnect = publisher.Events.Any(static e => e.Kind == OperatorNotificationEventKind.CameraDisconnected);
+            Assert.AreEqual(expectCameraDisconnected, emittedDisconnect,
+                $"AsiErrorCode.{errorCode} (failDuringInit={failDuringInit}) expected CameraDisconnected={expectCameraDisconnected}.");
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task RealPath_CameraNotConnectedInvalidOperation_EmitsCameraDisconnectedAsync()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-notif-notconn-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var clock = new MonitorClock(new DateTimeOffset(2026, 11, 26, 10, 0, 0, TimeSpan.Zero));
+            var hostOptions = Options.Create(new CameraAgentHostOptions
+            {
+                RawIngressRoot = root,
+                RawIngressSqliteBusyTimeoutSeconds = 1,
+                DisplayName = "ZWO Unplugged Dome"
+            });
+
+            var ingress = new WorkingRawIngress(root);
+            using var telemetry = new CaptureControlTelemetry();
+            using var admission = new CaptureAdmissionCoordinator(ingress, hostOptions, clock, telemetry);
+            var fleet = new FleetRuntimeState(clock);
+            var namedRigs = new SqliteNamedRigProfileStore(ingress, hostOptions, clock);
+            using var lifetime = new TestHostApplicationLifetime();
+            var module = new FaultingCameraModule(
+                initException: new InvalidOperationException("The configured ASI camera is not connected."),
+                captureException: null);
+
+            using var captureService = new CameraCaptureService(
+                new StaticConfigAccessor(CreateTestCameraConfig()),
+                new SingleModuleFactory(module),
+                ingress,
+                new NoOpCaptureDistributor(),
+                clock,
+                new AstronomyEnginePlanetEphemeris(),
+                telemetry,
+                admission,
+                fleet,
+                lifetime,
+                NullLogger<CameraCaptureService>.Instance,
+                namedRigProfiles: namedRigs);
+
+            await captureService.StartAsync(CancellationToken.None).ConfigureAwait(false);
+            lifetime.NotifyStarted();
+            await module.FaultThrown.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            await WaitUntilAsync(() => fleet.Snapshot.Capture.Availability == FleetAvailability.Unavailable, TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            await captureService.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+            Assert.IsTrue(fleet.IsCameraDisconnected);
+
+            var publisher = new RecordingPublisher();
+            var options = EnabledOptions(captureStallMinutes: 30, disconnectedSeconds: 10, heartbeatTime: "23:59");
+            using var monitor = new OperatorNotificationMonitorService(
+                new StaticConfigProvider(options),
+                publisher,
+                hostOptions,
+                clock,
+                fleetRuntimeState: fleet,
+                admissionCoordinator: admission,
+                rigProfileStore: namedRigs);
+
+            await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+            clock.Advance(TimeSpan.FromSeconds(20));
+            await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsTrue(publisher.Events.Any(static e => e.Kind == OperatorNotificationEventKind.CameraDisconnected));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
     private static OperatorNotificationsOptions EnabledOptions(
         int captureStallMinutes = 15,
         int disconnectedSeconds = 60,
@@ -453,5 +763,146 @@ public sealed class OperatorNotificationMonitorServiceTests
         public ValueTask<DeploymentLocationSnapshot> InitializeAsync(DeploymentLocationSeed seed, CancellationToken cancellationToken) =>
             ValueTask.FromResult(Active!);
         public DeploymentLocationSnapshot Resolve(CaptureLocationProvenance provenance, DateTimeOffset? effectiveUtc = null) => Active!;
+    }
+
+    private static CameraModuleConfig CreateTestCameraConfig() =>
+        new(
+            new ObservatoryLocation(0, 0, 0, "UTC"),
+            new CameraModuleDescriptor("Test"),
+            new CameraRigConfig(
+                new SensorProfile("Test", 1, 1, 1, SensorColorMode.Mono, CameraPixelFormat.Mono8),
+                new OpticsProfile("EquidistantFisheye", 0, 180, 0),
+                new RigOrientation(90, 0, 0),
+                new PipelineExposureProfile(
+                    TimeSpan.FromMilliseconds(1), TimeSpan.FromMilliseconds(1),
+                    TimeSpan.FromMilliseconds(1), 0, 0),
+                new CameraControlPolicy
+                {
+                    ExposureControl = AutomaticControlOwnership.Disabled,
+                    GainControl = AutomaticControlOwnership.Disabled
+                }),
+            CapturePipelineConfig.Empty);
+
+    private static async Task WaitUntilAsync(Func<bool> predicate, TimeSpan timeout)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (!predicate())
+        {
+            if (DateTimeOffset.UtcNow >= deadline)
+            {
+                Assert.Fail($"Condition not met within {timeout.TotalSeconds:0.0}s.");
+            }
+            await Task.Delay(15).ConfigureAwait(false);
+        }
+    }
+
+    private sealed class FailOnceHeartbeatStore(IOperatorNotificationHeartbeatStore inner) : IOperatorNotificationHeartbeatStore
+    {
+        private int _writeAttempts;
+
+        public ValueTask<DateOnly?> ReadLastHeartbeatSiteDateAsync(CancellationToken cancellationToken)
+            => inner.ReadLastHeartbeatSiteDateAsync(cancellationToken);
+
+        public ValueTask WriteLastHeartbeatSiteDateAsync(DateOnly siteDate, CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref _writeAttempts) == 1)
+            {
+                throw new IOException("Simulated transient storage outage while writing heartbeat checkpoint.");
+            }
+            return inner.WriteLastHeartbeatSiteDateAsync(siteDate, cancellationToken);
+        }
+    }
+
+    private sealed class StaticConfigAccessor(CameraModuleConfig config) : ICameraAgentConfigurationAccessor
+    {
+        public bool IsConfigured => true;
+        public void SetConfiguration(CameraModuleConfig value) => throw new NotSupportedException();
+        public ValueTask<CameraModuleConfig> WaitForConfigurationAsync(CancellationToken cancellationToken)
+            => ValueTask.FromResult(config);
+    }
+
+    private sealed class SingleModuleFactory(ICameraModule module) : ICameraModuleFactory
+    {
+        public ICameraModule Create(string moduleType) => module;
+    }
+
+    private sealed class FailingInitRawIngress(Exception failure) : IRawCaptureIngress
+    {
+        public TaskCompletionSource InitializeAttempted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public ValueTask InitializeAsync(CancellationToken cancellationToken)
+        {
+            InitializeAttempted.TrySetResult();
+            return ValueTask.FromException(failure);
+        }
+
+        public ValueTask<RawCaptureReceipt?> AcceptAsync(
+            CameraModuleConfig configuration,
+            CaptureLoopSubmission submission,
+            CancellationToken cancellationToken) => ValueTask.FromResult<RawCaptureReceipt?>(null);
+    }
+
+    private sealed class WorkingRawIngress(string root) : IRawCaptureIngress
+    {
+        public async ValueTask InitializeAsync(CancellationToken cancellationToken)
+            => await new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1)
+                .InitializeAsync(cancellationToken).ConfigureAwait(false);
+
+        public ValueTask<RawCaptureReceipt?> AcceptAsync(
+            CameraModuleConfig configuration,
+            CaptureLoopSubmission submission,
+            CancellationToken cancellationToken) => ValueTask.FromResult<RawCaptureReceipt?>(null);
+    }
+
+    private sealed class FaultingCameraModule(Exception? initException, Exception? captureException) : ICameraModule
+    {
+        public TaskCompletionSource FaultThrown { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public string Id => "faulting-test";
+        public string DisplayName => "Faulting Test Camera";
+        public string ModuleType => "Test";
+        public CameraModuleCapabilities Capabilities => CameraModuleCapabilities.StillFrames;
+
+        public Task InitializeAsync(CameraModuleConfig config, CancellationToken cancellationToken)
+        {
+            if (initException is not null)
+            {
+                FaultThrown.TrySetResult();
+                return Task.FromException(initException);
+            }
+            return Task.CompletedTask;
+        }
+
+        public Task<CaptureResult> CaptureAsync(CaptureRequest request, CancellationToken cancellationToken)
+        {
+            if (captureException is not null)
+            {
+                FaultThrown.TrySetResult();
+                return Task.FromException<CaptureResult>(captureException);
+            }
+            return Task.FromCanceled<CaptureResult>(cancellationToken);
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed class NoOpCaptureDistributor : ICaptureDistributor
+    {
+        public void NotifyCommittedCapture() { }
+        public ValueTask ProcessEphemeralAsync(
+            CameraModuleConfig configuration,
+            CaptureLoopSubmission submission,
+            CancellationToken cancellationToken) => ValueTask.CompletedTask;
+    }
+
+    private sealed class TestHostApplicationLifetime : IHostApplicationLifetime, IDisposable
+    {
+        private readonly CancellationTokenSource _started = new();
+        public CancellationToken ApplicationStarted => _started.Token;
+        public CancellationToken ApplicationStopping => CancellationToken.None;
+        public CancellationToken ApplicationStopped => CancellationToken.None;
+        public void StopApplication() { }
+        public void NotifyStarted() => _started.Cancel();
+        public void Dispose() => _started.Dispose();
     }
 }

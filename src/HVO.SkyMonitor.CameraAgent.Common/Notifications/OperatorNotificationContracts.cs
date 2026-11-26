@@ -256,6 +256,7 @@ public static class NotificationReasonCodes
     public const string TlsUnsupported = "tls-unsupported";
     public const string TlsRequired = "tls-required";
     public const string StoreCorrupt = "store-corrupt";
+    public const string StoreUnreadable = "store-unreadable";
     public const string AuthFailed = "auth-failed";
     public const string Timeout = "timeout";
     public const string RedirectBlocked = "redirect-blocked";
@@ -280,6 +281,7 @@ public static class NotificationReasonCodes
         TlsUnsupported => "The SMTP server did not advertise STARTTLS; connection refused to prevent plaintext downgrade.",
         TlsRequired => "TLS (STARTTLS or Implicit TLS) is required for authenticated SMTP or non-local SMTP relays.",
         StoreCorrupt => "The saved operator notification store is unreadable or corrupted; delivery is suspended until replacement settings are saved.",
+        StoreUnreadable => "The saved operator notification store path is unreadable or not a regular file; delivery is suspended until storage access is restored or replacement settings are saved.",
         AuthFailed => "Authentication was rejected by the remote server.",
         Timeout => "The remote endpoint did not respond before the configured timeout.",
         RedirectBlocked => "The webhook endpoint returned an HTTP redirect, which is refused for security.",

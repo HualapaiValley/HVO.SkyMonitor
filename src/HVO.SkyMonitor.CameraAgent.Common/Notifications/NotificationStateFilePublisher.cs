@@ -84,7 +84,7 @@ public static class NotificationStateFilePublisher
         {
             root = PhysicalRoot.Open(fullDirectory);
             finalPath = root.Resolve(fileName);
-            if (File.Exists(finalPath))
+            if (File.Exists(finalPath) || Directory.Exists(finalPath))
             {
                 DurableSync.RequireRegularFile(finalPath);
             }
@@ -234,12 +234,17 @@ public sealed class FileOperatorNotificationHeartbeatStore(string stateDirectory
     public async ValueTask<DateOnly?> ReadLastHeartbeatSiteDateAsync(CancellationToken cancellationToken)
     {
         var path = FilePath;
-        if (!File.Exists(path) && new FileInfo(path).LinkTarget is null)
+        if (!File.Exists(path) && !Directory.Exists(path) &&
+            new FileInfo(path).LinkTarget is null && new DirectoryInfo(path).LinkTarget is null)
         {
             return null;
         }
 
         NotificationStateFilePublisher.VerifyRegularFileNoSymlink(_stateDirectory, HeartbeatFileName);
+        if (Directory.Exists(path))
+        {
+            throw new IOException("Refusing to read a directory as the operator notification heartbeat checkpoint.");
+        }
         var json = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
         var payload = JsonSerializer.Deserialize<HeartbeatCheckpoint>(json, JsonOptions);
         if (payload is null ||

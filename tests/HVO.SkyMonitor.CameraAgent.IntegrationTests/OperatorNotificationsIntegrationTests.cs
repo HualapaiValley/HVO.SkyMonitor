@@ -217,6 +217,253 @@ public sealed class OperatorNotificationsIntegrationTests
 
     [TestMethod]
     [DoNotParallelize]
+    [DataRow("CameraAgent:Notifications:Smtp:SecurityMode", "SSL")]
+    [DataRow("CameraAgent:Notifications:RequestTimeoutSeconds", "ten")]
+    [DataRow("CameraAgent:Notifications:Smtp:Port", "submission")]
+    [DataRow("CameraAgent:Notifications:Webhook:Format", "Teams")]
+    public async Task UnparseableNotificationConfigWithEnabledFalseStartsCameraAgentCleanlyAndAllowsDiagnosisAndOverrideAsync(
+        string key,
+        string malformedValue)
+    {
+        using var fixture = new CameraAgentIntegrationFixture();
+        await fixture.InitializeAsync(settings: new Dictionary<string, string?>
+        {
+            ["CameraAgent:Notifications:Enabled"] = "false",
+            [key] = malformedValue
+        }).ConfigureAwait(false);
+
+        // /health MUST return HTTP 200 with operator-notifications Degraded (invalid-configuration, NOT store-corrupt).
+        using var anon = fixture.CreateCameraAgentClient();
+        using var healthResp = await anon.GetAsync(new Uri("/health", UriKind.Relative)).ConfigureAwait(false);
+        var healthJson = await healthResp.Content.ReadAsStringAsync().ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, healthResp.StatusCode, healthJson);
+        using (var doc = JsonDocument.Parse(healthJson))
+        {
+            var check = doc.RootElement.GetProperty("checks").EnumerateArray()
+                .Single(c => c.GetProperty("name").GetString() == "operator-notifications");
+            Assert.AreEqual("Degraded", check.GetProperty("status").GetString());
+            Assert.AreEqual(NotificationReasonCodes.InvalidConfiguration, check.GetProperty("data").GetProperty("ReasonCode").GetString());
+        }
+
+        // Operations summary and notifications GET endpoints stay 200 OK (NOT 503!) so operators can diagnose and override.
+        string readWriteKey;
+        using (var scope = fixture.CreateCameraAgentScope())
+        {
+            var users = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+            var owner = (await users.FindByEmailAsync("owner@cameraagent.integration").ConfigureAwait(false))!;
+            var keys = scope.ServiceProvider.GetRequiredService<CameraAgentApiKeyStore>();
+            readWriteKey = (await keys.CreateAsync(owner.Id, "malformed-cfg-override", ApiKeyAccessLevel.ReadWrite, CancellationToken.None).ConfigureAwait(false)).Token!;
+        }
+
+        using var rwClient = CreateApiKeyClient(fixture, readWriteKey);
+        using (var summaryResp = await rwClient.GetAsync(new Uri("/api/v1/operations/summary", UriKind.Relative)).ConfigureAwait(false))
+        {
+            Assert.AreEqual(HttpStatusCode.OK, summaryResp.StatusCode);
+        }
+
+        string version;
+        using (var getResp = await rwClient.GetAsync(new Uri(NotificationsPath, UriKind.Relative)).ConfigureAwait(false))
+        {
+            var getBody = await getResp.Content.ReadAsStringAsync().ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.OK, getResp.StatusCode, getBody);
+            using var doc = JsonDocument.Parse(getBody);
+            var cfg = doc.RootElement.GetProperty("configuration");
+            Assert.IsFalse(cfg.GetProperty("storeCorrupt").GetBoolean());
+            Assert.AreEqual(NotificationReasonCodes.InvalidConfiguration, cfg.GetProperty("storeStatusReasonCode").GetString());
+            Assert.IsTrue(cfg.GetProperty("canPersist").GetBoolean());
+            version = cfg.GetProperty("version").GetString()!;
+            Assert.IsFalse(string.IsNullOrWhiteSpace(version));
+        }
+
+        // Explicit operator override clears invalid-configuration and restores Healthy status.
+        using (var putResp = await rwClient.PutAsJsonAsync(new Uri(NotificationsPath, UriKind.Relative), new
+        {
+            expectedVersion = version,
+            options = new { enabled = false }
+        }).ConfigureAwait(false))
+        {
+            var putBody = await putResp.Content.ReadAsStringAsync().ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.OK, putResp.StatusCode, putBody);
+        }
+
+        using var healthAfterResp = await anon.GetAsync(new Uri("/health", UriKind.Relative)).ConfigureAwait(false);
+        var healthAfterJson = await healthAfterResp.Content.ReadAsStringAsync().ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, healthAfterResp.StatusCode, healthAfterJson);
+        using (var doc = JsonDocument.Parse(healthAfterJson))
+        {
+            var check = doc.RootElement.GetProperty("checks").EnumerateArray()
+                .Single(c => c.GetProperty("name").GetString() == "operator-notifications");
+            Assert.AreEqual("Healthy", check.GetProperty("status").GetString());
+            Assert.AreEqual("Disabled", check.GetProperty("data").GetProperty("Availability").GetString());
+        }
+    }
+
+    [TestMethod]
+    [DoNotParallelize]
+    public async Task DamagedOrUnreadableStorePathSuspendsWithoutHostFallbackReportsDegradedAndSupportsResetRecoveryAsync()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var fixture = new CameraAgentIntegrationFixture();
+        await fixture.InitializeAsync(settings: new Dictionary<string, string?>
+        {
+            ["CameraAgent:Notifications:Enabled"] = "true",
+            ["CameraAgent:Notifications:Smtp:Enabled"] = "true",
+            ["CameraAgent:Notifications:Smtp:Host"] = "fallback-relay.example.test",
+            ["CameraAgent:Notifications:Smtp:FromAddress"] = "fallback@example.test",
+            ["CameraAgent:Notifications:Smtp:Recipients:0"] = "ops@example.test",
+            [ConfigurationOperatorNotificationConfigProvider.SmtpUsernameConfigKey] = "host-fallback-user",
+            [ConfigurationOperatorNotificationConfigProvider.SmtpPasswordConfigKey] = "host-fallback-pass"
+        }).ConfigureAwait(false);
+
+        string readWriteKey;
+        string provisioningDir;
+        using (var scope = fixture.CreateCameraAgentScope())
+        {
+            var users = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+            var owner = (await users.FindByEmailAsync("owner@cameraagent.integration").ConfigureAwait(false))!;
+            var keys = scope.ServiceProvider.GetRequiredService<CameraAgentApiKeyStore>();
+            readWriteKey = (await keys.CreateAsync(owner.Id, "store-recovery", ApiKeyAccessLevel.ReadWrite, CancellationToken.None).ConfigureAwait(false)).Token!;
+            provisioningDir = scope.ServiceProvider.GetRequiredService<IOptions<DeviceProvisioningOptions>>().Value.StateDirectory;
+        }
+
+        var storePath = Path.Combine(provisioningDir, OperatorNotificationStore.ConfigFileName);
+        using var rwClient = CreateApiKeyClient(fixture, readWriteKey);
+        using var anon = fixture.CreateCameraAgentClient();
+
+        // Part A: Directory at envelope path must NEVER reactivate host credentials and must report Degraded / store-unreadable.
+        Directory.CreateDirectory(storePath);
+        try
+        {
+            var dirHealthJson = await anon.GetStringAsync(new Uri("/health", UriKind.Relative)).ConfigureAwait(false);
+            using (var doc = JsonDocument.Parse(dirHealthJson))
+            {
+                var check = doc.RootElement.GetProperty("checks").EnumerateArray()
+                    .Single(c => c.GetProperty("name").GetString() == "operator-notifications");
+                Assert.AreEqual("Degraded", check.GetProperty("status").GetString());
+                Assert.AreEqual(NotificationReasonCodes.StoreUnreadable, check.GetProperty("data").GetProperty("ReasonCode").GetString());
+            }
+
+            using (var dirGetResp = await rwClient.GetAsync(new Uri(NotificationsPath, UriKind.Relative)).ConfigureAwait(false))
+            {
+                var dirGetBody = await dirGetResp.Content.ReadAsStringAsync().ConfigureAwait(false);
+                Assert.AreEqual(HttpStatusCode.OK, dirGetResp.StatusCode, dirGetBody);
+                using var doc = JsonDocument.Parse(dirGetBody);
+                var cfg = doc.RootElement.GetProperty("configuration");
+                Assert.IsTrue(cfg.GetProperty("storeCorrupt").GetBoolean());
+                Assert.AreEqual(NotificationReasonCodes.StoreUnreadable, cfg.GetProperty("storeStatusReasonCode").GetString());
+                Assert.IsFalse(cfg.GetProperty("secrets").GetProperty("hasSmtpPassword").GetBoolean(),
+                    "Directory at envelope path must never fall back to host SMTP credentials.");
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(storePath))
+            {
+                Directory.Delete(storePath, recursive: true);
+            }
+        }
+
+        // Part B: Save a valid envelope, make it unreadable (0000) at runtime, verify Degraded health, 200 GET, and PUT reset recovery.
+        string currentVersion;
+        using (var initialGet = await rwClient.GetAsync(new Uri(NotificationsPath, UriKind.Relative)).ConfigureAwait(false))
+        {
+            var body = await initialGet.Content.ReadAsStringAsync().ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.OK, initialGet.StatusCode, body);
+            using var doc = JsonDocument.Parse(body);
+            currentVersion = doc.RootElement.GetProperty("configuration").GetProperty("version").GetString()!;
+        }
+
+        using (var saveValid = await rwClient.PutAsJsonAsync(new Uri(NotificationsPath, UriKind.Relative), new
+        {
+            expectedVersion = currentVersion,
+            options = new
+            {
+                enabled = true,
+                smtp = new
+                {
+                    enabled = true,
+                    host = "smtp.example.test",
+                    port = 587,
+                    securityMode = 0,
+                    fromAddress = "camera@example.test",
+                    recipients = IntegrationRecipients
+                }
+            },
+            smtpUsername = "saved-user",
+            smtpPassword = "saved-password"
+        }).ConfigureAwait(false))
+        {
+            Assert.AreEqual(HttpStatusCode.OK, saveValid.StatusCode, await saveValid.Content.ReadAsStringAsync().ConfigureAwait(false));
+        }
+
+        try
+        {
+            File.SetUnixFileMode(storePath, UnixFileMode.None);
+
+            // Health IMMEDIATELY reports Degraded (store-unreadable) rather than staying green.
+            var unreadableHealthJson = await anon.GetStringAsync(new Uri("/health", UriKind.Relative)).ConfigureAwait(false);
+            using (var doc = JsonDocument.Parse(unreadableHealthJson))
+            {
+                var check = doc.RootElement.GetProperty("checks").EnumerateArray()
+                    .Single(c => c.GetProperty("name").GetString() == "operator-notifications");
+                Assert.AreEqual("Degraded", check.GetProperty("status").GetString());
+                Assert.AreEqual(NotificationReasonCodes.StoreUnreadable, check.GetProperty("data").GetProperty("ReasonCode").GetString());
+            }
+
+            // GET returns 200 OK (not 503) with a valid recovery version and zero host secret fallback.
+            string recoveryVersion;
+            using (var unreadableGet = await rwClient.GetAsync(new Uri(NotificationsPath, UriKind.Relative)).ConfigureAwait(false))
+            {
+                var body = await unreadableGet.Content.ReadAsStringAsync().ConfigureAwait(false);
+                Assert.AreEqual(HttpStatusCode.OK, unreadableGet.StatusCode, body);
+                using var doc = JsonDocument.Parse(body);
+                var cfg = doc.RootElement.GetProperty("configuration");
+                Assert.IsTrue(cfg.GetProperty("storeCorrupt").GetBoolean());
+                Assert.AreEqual(NotificationReasonCodes.StoreUnreadable, cfg.GetProperty("storeStatusReasonCode").GetString());
+                Assert.IsTrue(cfg.GetProperty("canPersist").GetBoolean());
+                Assert.IsFalse(cfg.GetProperty("secrets").GetProperty("hasSmtpPassword").GetBoolean());
+                recoveryVersion = cfg.GetProperty("version").GetString()!;
+                Assert.IsFalse(string.IsNullOrWhiteSpace(recoveryVersion));
+            }
+
+            // PUT with the recovery version atomically replaces the 0000 file with a 0600 envelope and restores Healthy.
+            using (var resetPut = await rwClient.PutAsJsonAsync(new Uri(NotificationsPath, UriKind.Relative), new
+            {
+                expectedVersion = recoveryVersion,
+                options = new { enabled = false }
+            }).ConfigureAwait(false))
+            {
+                var body = await resetPut.Content.ReadAsStringAsync().ConfigureAwait(false);
+                Assert.AreEqual(HttpStatusCode.OK, resetPut.StatusCode, body);
+                using var doc = JsonDocument.Parse(body);
+                Assert.IsFalse(doc.RootElement.GetProperty("configuration").GetProperty("storeCorrupt").GetBoolean());
+            }
+
+            Assert.AreEqual(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(storePath));
+            var recoveredHealthJson = await anon.GetStringAsync(new Uri("/health", UriKind.Relative)).ConfigureAwait(false);
+            using (var doc = JsonDocument.Parse(recoveredHealthJson))
+            {
+                var check = doc.RootElement.GetProperty("checks").EnumerateArray()
+                    .Single(c => c.GetProperty("name").GetString() == "operator-notifications");
+                Assert.AreEqual("Healthy", check.GetProperty("status").GetString());
+                Assert.AreEqual("Disabled", check.GetProperty("data").GetProperty("Availability").GetString());
+            }
+        }
+        finally
+        {
+            if (File.Exists(storePath))
+            {
+                File.SetUnixFileMode(storePath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            }
+        }
+    }
+
+    [TestMethod]
+    [DoNotParallelize]
     public async Task EndToEndEncryptedSaveLoopbackTlsSmtpAndWebhookDeliveryCaptureProgressDuringHeldOutageAndZeroSecretLeaksAsync()
     {
         var runId = Guid.NewGuid().ToString("N");
@@ -232,6 +479,7 @@ public sealed class OperatorNotificationsIntegrationTests
         using var logCollector = new InMemoryLogCollector();
         var smtpCapture = LoopbackStartTlsSmtpSink.Start(cert);
         var webhookCapture = LoopbackHttpsSink.Start(cert);
+        ObservingSmtpNotificationTransport? smtpObserver = null;
         await using (smtpCapture.ConfigureAwait(false))
         await using (webhookCapture.ConfigureAwait(false))
         {
@@ -244,11 +492,15 @@ public sealed class OperatorNotificationsIntegrationTests
                 };
                 services.Replace(ServiceDescriptor.Singleton(loopbackPolicy));
                 services.Replace(ServiceDescriptor.Singleton<ISmtpNotificationTransport>(sp =>
-                    new SmtpNotificationTransport(loopbackPolicy, sp.GetRequiredService<TimeProvider>())
+                {
+                    var inner = new SmtpNotificationTransport(loopbackPolicy, sp.GetRequiredService<TimeProvider>())
                     {
                         CertificateValidationCallback = (_, presented, _, _) =>
                             presented is X509Certificate2 x509 && string.Equals(x509.Thumbprint, certThumbprint, StringComparison.Ordinal)
-                    }));
+                    };
+                    smtpObserver = new ObservingSmtpNotificationTransport(inner);
+                    return smtpObserver;
+                }));
                 services.Replace(ServiceDescriptor.Singleton<IWebhookNotificationTransport>(sp =>
                     new WebhookNotificationTransport(loopbackPolicy, sp.GetRequiredService<TimeProvider>())
                     {
@@ -311,7 +563,7 @@ public sealed class OperatorNotificationsIntegrationTests
                 options = new
                 {
                     enabled = true,
-                    requestTimeoutSeconds = 2,
+                    requestTimeoutSeconds = 15,
                     maxRetryAttempts = 0,
                     consecutiveOutageThreshold = 1,
                     outageCooldownSeconds = 60,
@@ -374,14 +626,18 @@ public sealed class OperatorNotificationsIntegrationTests
             StringAssert.Contains(webhookCapture.Requests[0], "Test notification", StringComparison.Ordinal);
 
             // 6. Wait for initial virtual-camera durable capture, then hold an SMTP provider send OPEN and verify:
-            //    (a) Webhook delivers immediately while SMTP is still held open,
-            //    (b) Virtual-camera durable capture sequence numbers keep advancing during the held SMTP outage, and
+            //    (a) Webhook delivers immediately while the client-side SMTP attempt is still actively pending,
+            //    (b) Virtual-camera durable capture sequence numbers advance AFTER the hold starts AND BEFORE the
+            //        client-side 15s SMTP timeout expires or the hold is released (strict overlap invariant), and
             //    (c) Once SMTP times out into OutageBackoff, /health reports Degraded (never Unhealthy) and summary stays 200 OK.
-            var initialSequence = await WaitForCaptureSequenceAsync(fixture.StorageRoot, minimumSequence: 1, TimeSpan.FromSeconds(15)).ConfigureAwait(false);
+            _ = await WaitForCaptureSequenceAsync(fixture.StorageRoot, minimumSequence: 1, TimeSpan.FromSeconds(15)).ConfigureAwait(false);
+            Assert.IsNotNull(smtpObserver);
+            Assert.AreEqual(1, smtpObserver.CompletedSendCount);
             var smtpHoldGate = smtpCapture.ArmHoldNextConnection();
 
-            using (var scope = fixture.CreateCameraAgentScope())
+            try
             {
+                using var scope = fixture.CreateCameraAgentScope();
                 var dispatcher = scope.ServiceProvider.GetRequiredService<OperatorNotificationDispatcher>();
                 Assert.IsTrue(dispatcher.TryPublish(new OperatorNotificationEvent(
                     OperatorNotificationEventKind.DiskPressure,
@@ -392,33 +648,55 @@ public sealed class OperatorNotificationsIntegrationTests
                     DateTimeOffset.UtcNow,
                     "Integration Camera")));
 
-                // Confirm SMTP worker has connected and is actively held open on the stalled provider.
+                // Confirm SMTP worker has connected and the loopback server is actively holding the connection open.
                 await smtpHoldGate.ConnectionHeld.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+                Assert.AreEqual(1, smtpObserver.ActiveSendCount, "Client-side SMTP send must be actively pending while held open.");
+                Assert.AreEqual(1, smtpObserver.CompletedSendCount, "Held SMTP attempt must not have timed out or completed yet.");
 
-                // Independent Webhook channel delivers promptly while SMTP is still hung!
+                // Sample baseline committed capture_sequence AFTER the SMTP connection is actively held open!
+                var baselineDuringHold = await WaitForCaptureSequenceAsync(
+                    fixture.StorageRoot,
+                    minimumSequence: 1,
+                    TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+                // Independent Webhook channel delivers promptly while client-side SMTP send is still actively pending!
                 var webhookDeadline = DateTimeOffset.UtcNow.AddSeconds(10);
                 while (DateTimeOffset.UtcNow < webhookDeadline && webhookCapture.Requests.Count < 2)
                 {
                     await Task.Delay(50).ConfigureAwait(false);
                 }
                 Assert.HasCount(2, webhookCapture.Requests, "Webhook must deliver independently while SMTP send is held open.");
+                Assert.AreEqual(1, smtpObserver.ActiveSendCount, "Client-side SMTP send must still be actively pending after webhook delivery.");
 
-                // Real capture-progress acceptance check: virtual-camera durable captures continue advancing during the notification outage!
+                // Real capture-progress acceptance check: capture_sequence MUST advance WHILE the client-side SMTP attempt
+                // is STILL actively pending (before releasing the hold and before the 15s client timeout expires)!
                 var sequenceDuringOutage = await WaitForCaptureSequenceAsync(
                     fixture.StorageRoot,
-                    minimumSequence: initialSequence + 2,
-                    TimeSpan.FromSeconds(15)).ConfigureAwait(false);
-                Assert.IsGreaterThanOrEqualTo(initialSequence + 2, sequenceDuringOutage,
-                    "Virtual-camera durable capture sequence must continue advancing during a notification provider outage.");
+                    minimumSequence: baselineDuringHold + 2,
+                    TimeSpan.FromSeconds(13)).ConfigureAwait(false);
+                Assert.IsGreaterThanOrEqualTo(baselineDuringHold + 2, sequenceDuringOutage,
+                    "Virtual-camera durable capture sequence must continue advancing while client-side SMTP delivery is actively pending.");
+                Assert.IsFalse(smtpHoldGate.ReleaseTask.IsCompleted, "SMTP server hold must still be open when capture advancement completes.");
+                Assert.AreEqual(1, smtpObserver.ActiveSendCount,
+                    "Client-side SMTP attempt must STILL be actively pending (not timed out) when capture_sequence advanced.");
+                Assert.AreEqual(1, smtpObserver.CompletedSendCount,
+                    "Client-side SMTP attempt must NOT have finished before capture_sequence advanced.");
+                Assert.AreNotEqual(NotificationChannelHealthState.OutageBackoff, dispatcher.GetStatus().Smtp.State,
+                    "SMTP must not have already timed out into OutageBackoff before capture_sequence advanced.");
 
-                // Wait for the held SMTP attempt to hit its 2s RequestTimeoutSeconds and transition SMTP to OutageBackoff.
-                var backoffDeadline = DateTimeOffset.UtcNow.AddSeconds(10);
+                // Now wait for the held SMTP attempt to hit its 15s RequestTimeoutSeconds and transition SMTP to OutageBackoff.
+                var backoffDeadline = DateTimeOffset.UtcNow.AddSeconds(20);
                 while (DateTimeOffset.UtcNow < backoffDeadline &&
                        dispatcher.GetStatus().Smtp.State != NotificationChannelHealthState.OutageBackoff)
                 {
                     await Task.Delay(50).ConfigureAwait(false);
                 }
                 Assert.AreEqual(NotificationChannelHealthState.OutageBackoff, dispatcher.GetStatus().Smtp.State);
+                Assert.AreEqual(0, smtpObserver.ActiveSendCount);
+                Assert.AreEqual(2, smtpObserver.CompletedSendCount);
+            }
+            finally
+            {
                 smtpHoldGate.Release();
             }
 
@@ -558,6 +836,29 @@ public sealed class OperatorNotificationsIntegrationTests
         public Task ReleaseTask => _release.Task;
         public void MarkHeld() => _held.TrySetResult();
         public void Release() => _release.TrySetResult();
+    }
+
+    private sealed class ObservingSmtpNotificationTransport(ISmtpNotificationTransport inner) : ISmtpNotificationTransport
+    {
+        private int _activeSendCount;
+        private int _completedSendCount;
+
+        public int ActiveSendCount => Volatile.Read(ref _activeSendCount);
+        public int CompletedSendCount => Volatile.Read(ref _completedSendCount);
+
+        public async Task<OperatorNotificationDeliveryResult> SendAsync(SmtpDeliveryRequest request, CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref _activeSendCount);
+            try
+            {
+                return await inner.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _activeSendCount);
+                Interlocked.Increment(ref _completedSendCount);
+            }
+        }
     }
 
     private sealed class LoopbackStartTlsSmtpSink : IAsyncDisposable

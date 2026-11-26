@@ -1,6 +1,6 @@
 using System.Net;
 using HVO.SkyMonitor.CameraAgent.Common.Notifications;
-using HVO.SkyMonitor.CameraAgent.Common.Options;
+using Microsoft.Extensions.Configuration;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Notifications;
 
@@ -15,8 +15,7 @@ public sealed class OperatorNotificationValidationTests
     [TestMethod]
     public void Defaults_AreStrictlyOffByDefault()
     {
-        var hostOptions = new CameraAgentHostOptions();
-        var options = hostOptions.Notifications;
+        var options = new OperatorNotificationsOptions();
 
         Assert.IsFalse(options.Enabled);
         Assert.IsFalse(options.Smtp.Enabled);
@@ -28,6 +27,38 @@ public sealed class OperatorNotificationValidationTests
 
         var problems = OperatorNotificationValidation.Validate(options, OperatorNotificationSecrets.Empty, ProductionPolicy);
         Assert.IsEmpty(problems);
+
+        var emptyConfig = new ConfigurationBuilder().Build();
+        var bound = ConfigurationOperatorNotificationConfigProvider.ReadOptionsFromConfiguration(emptyConfig, out var bindingError);
+        Assert.IsNull(bindingError);
+        Assert.IsFalse(bound.Enabled);
+    }
+
+    [TestMethod]
+    [DataRow("Smtp:SecurityMode", "SSL")]
+    [DataRow("Smtp:Port", "submission")]
+    [DataRow("Webhook:Format", "Teams")]
+    [DataRow("RequestTimeoutSeconds", "ten")]
+    public void ReadOptionsFromConfiguration_UnparseableValue_DegradesAsInvalidConfigurationWithoutThrowing(
+        string relativeKey,
+        string malformedValue)
+    {
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                [OperatorNotificationsOptions.SectionKey + ":Enabled"] = "false",
+                [OperatorNotificationsOptions.SectionKey + ":" + relativeKey] = malformedValue
+            })
+            .Build();
+
+        var options = ConfigurationOperatorNotificationConfigProvider.ReadOptionsFromConfiguration(config, out var bindingError);
+
+        Assert.IsFalse(options.Enabled);
+        Assert.AreEqual(NotificationReasonCodes.InvalidConfiguration, bindingError);
+
+        var provider = new ConfigurationOperatorNotificationConfigProvider(config, ProductionPolicy);
+        Assert.IsFalse(provider.CurrentOptions.Enabled);
+        Assert.AreEqual(NotificationReasonCodes.InvalidConfiguration, provider.ConfigurationErrorReasonCode);
     }
 
     [TestMethod]

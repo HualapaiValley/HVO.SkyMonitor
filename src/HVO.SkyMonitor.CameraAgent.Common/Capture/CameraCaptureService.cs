@@ -258,8 +258,9 @@ public sealed class CameraCaptureService(
                             : null);
                 _fleetRuntimeState.CaptureFailed(
                     ex.GetType().Name,
-                    isCameraDisconnected: (!moduleInitialized && !activationFailed && !isStorageFailure) ||
-                                          FleetRuntimeState.IsCameraDisconnectException(ex));
+                    isCameraDisconnected: !isStorageFailure && !activationFailed &&
+                                          FleetRuntimeState.IsCameraDisconnectException(ex),
+                    isStorageFailure: isStorageFailure);
                 if (isStorageFailure)
                 {
                     _logger.RawIngressRefused("capture-loop", "storage-unavailable");
@@ -298,7 +299,9 @@ public sealed class CameraCaptureService(
                     }
                     catch (Exception ex)
                     {
-                        _fleetRuntimeState.CaptureFailed(ex.GetType().Name);
+                        _fleetRuntimeState.CaptureFailed(
+                            ex.GetType().Name,
+                            isCameraDisconnected: FleetRuntimeState.IsCameraDisconnectException(ex));
                         _logger.CaptureLoopFailed(ex);
                         if (!stoppingToken.IsCancellationRequested)
                         {

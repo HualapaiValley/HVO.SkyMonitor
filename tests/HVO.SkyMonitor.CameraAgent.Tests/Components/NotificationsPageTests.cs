@@ -130,6 +130,34 @@ public sealed class NotificationsPageTests
     }
 
     [TestMethod]
+    public void Render_InvalidHostConfiguration_ShowsInvalidConfigurationBannerAndAllowsOverrideSave()
+    {
+        using var context = CreateContext(out var service);
+        service.CurrentView = service.CurrentView with
+        {
+            Configuration = service.CurrentView.Configuration with
+            {
+                StoreCorrupt = false,
+                StoreStatusReasonCode = NotificationReasonCodes.InvalidConfiguration
+            },
+            Status = service.CurrentView.Status with
+            {
+                ConfigurationErrorReasonCode = NotificationReasonCodes.InvalidConfiguration
+            }
+        };
+
+        var cut = context.Render<NotificationsPage>();
+
+        cut.WaitForAssertion(() =>
+        {
+            var banner = cut.Find("#notifications-config-error-banner");
+            StringAssert.Contains(banner.TextContent, NotificationReasonCodes.InvalidConfiguration, StringComparison.Ordinal);
+            Assert.IsNull(cut.Find("fieldset.notifications-fieldset").GetAttribute("disabled"));
+            Assert.IsNull(cut.Find("#notifications-save").GetAttribute("disabled"));
+        });
+    }
+
+    [TestMethod]
     public void TestSend_DisplaysSanitizedPerChannelResultAndRefreshesAuditHistory()
     {
         using var context = CreateContext(out var service);

@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using HVO.SkyMonitor.CameraAgent.Common.Notifications;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 
@@ -11,35 +12,62 @@ namespace HVO.SkyMonitor.CameraAgent.HealthChecks;
 internal sealed class OperatorNotificationsHealthCheck(
     IOperatorNotificationService notificationService) : IHealthCheck
 {
-    public Task<HealthCheckResult> CheckHealthAsync(
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "Health check must isolate notification store/config faults as Degraded and never fail host readiness.")]
+    public async Task<HealthCheckResult> CheckHealthAsync(
         HealthCheckContext context,
         CancellationToken cancellationToken = default)
     {
-        var status = notificationService.GetStatus();
+        string? probeErrorReasonCode = null;
+        try
+        {
+            // Refresh store state so runtime filesystem damage (e.g. chmod 0000 or directory replacement)
+            // surfaces immediately as Degraded instead of remaining green until the next delivery.
+            var snapshot = await notificationService.GetConfigurationAsync(cancellationToken).ConfigureAwait(false);
+            if (!string.IsNullOrEmpty(snapshot.StoreStatusReasonCode))
+            {
+                probeErrorReasonCode = snapshot.StoreStatusReasonCode;
+            }
+            else if (snapshot.StoreCorrupt)
+            {
+                probeErrorReasonCode = NotificationReasonCodes.StoreCorrupt;
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            probeErrorReasonCode = NotificationReasonCodes.StoreUnreadable;
+        }
 
-        if (!string.IsNullOrEmpty(status.ConfigurationErrorReasonCode))
+        var status = notificationService.GetStatus();
+        var effectiveErrorReasonCode = probeErrorReasonCode ?? status.ConfigurationErrorReasonCode;
+
+        if (!string.IsNullOrEmpty(effectiveErrorReasonCode))
         {
             var errorData = new Dictionary<string, object>(StringComparer.Ordinal)
             {
                 ["Availability"] = "Degraded",
-                ["ReasonCode"] = status.ConfigurationErrorReasonCode,
+                ["ReasonCode"] = effectiveErrorReasonCode,
                 ["QueueDepth"] = status.QueueDepth,
                 ["SmtpState"] = status.Smtp.State.ToString(),
                 ["WebhookState"] = status.Webhook.State.ToString()
             };
-            return Task.FromResult(HealthCheckResult.Degraded(
-                NotificationReasonCodes.DescribeForOperator(status.ConfigurationErrorReasonCode),
-                data: errorData));
+            return HealthCheckResult.Degraded(
+                NotificationReasonCodes.DescribeForOperator(effectiveErrorReasonCode),
+                data: errorData);
         }
 
         if (!status.Enabled)
         {
-            return Task.FromResult(HealthCheckResult.Healthy(
+            return HealthCheckResult.Healthy(
                 "Operator notifications are disabled.",
                 data: new Dictionary<string, object>(StringComparer.Ordinal)
                 {
                     ["Availability"] = "Disabled"
-                }));
+                });
         }
 
         var smtpDegraded = status.Smtp.Enabled &&
@@ -57,13 +85,13 @@ internal sealed class OperatorNotificationsHealthCheck(
 
         if (smtpDegraded || webhookDegraded)
         {
-            return Task.FromResult(HealthCheckResult.Degraded(
+            return HealthCheckResult.Degraded(
                 "One or more operator notification channels are experiencing delivery failures.",
-                data: data));
+                data: data);
         }
 
-        return Task.FromResult(HealthCheckResult.Healthy(
+        return HealthCheckResult.Healthy(
             "Operator notifications are ready.",
-            data: data));
+            data: data);
     }
 }

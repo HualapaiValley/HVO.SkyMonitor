@@ -35,9 +35,18 @@ else
 
     @if (_view.Configuration.StoreCorrupt)
     {
+        var storeReason = _view.Configuration.StoreStatusReasonCode ?? NotificationReasonCodes.StoreCorrupt;
         <div id="notifications-corrupt-banner" class="ops-note-banner" role="alert">
             <span class="status-icon failure" aria-hidden="true"></span>
-            <span><strong>Saved notification store unreadable.</strong> Delivery is suspended and host configuration fallbacks are blocked until you save replacement settings or disable notifications below.</span>
+            <span><strong>Saved notification store unreadable (@storeReason).</strong> Delivery is suspended and host configuration fallbacks are blocked until @(_view.Configuration.CanPersist ? "you save replacement settings or disable notifications below." : "the conflicting path entry is removed.")</span>
+        </div>
+    }
+    else if (!string.IsNullOrEmpty(_view.Configuration.StoreStatusReasonCode) || !string.IsNullOrEmpty(status.ConfigurationErrorReasonCode))
+    {
+        var configReason = _view.Configuration.StoreStatusReasonCode ?? status.ConfigurationErrorReasonCode!;
+        <div id="notifications-config-error-banner" class="ops-note-banner" role="alert">
+            <span class="status-icon failure" aria-hidden="true"></span>
+            <span><strong>Notification configuration invalid (@configReason).</strong> @NotificationReasonCodes.DescribeForOperator(configReason) Save replacement settings below to override host configuration.</span>
         </div>
     }
 
@@ -307,7 +316,7 @@ else
                                 <td><strong>Upgrade / recovery failed</strong></td>
                                 <td><input id="event-upgrade-failed" type="checkbox" aria-label="Enable upgrade or recovery failed notification" @bind="_upgradeFailedEnabled" /></td>
                                 <td><input id="cooldown-upgrade-failed" type="number" min="1" max="1440" aria-label="Upgrade or recovery failed cooldown minutes" @bind="_upgradeFailedCooldown" /> min</td>
-                                <td>Failed installer lifecycle receipt, retained-integrity recovery requirement, or unavailable admission.</td>
+                                <td>Failed installer lifecycle receipt, retained-integrity recovery requirement, or unavailable capture storage/admission.</td>
                             </tr>
                             <tr>
                                 <td><strong>Daily heartbeat</strong></td>

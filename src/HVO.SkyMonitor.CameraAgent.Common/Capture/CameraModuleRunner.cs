@@ -380,9 +380,12 @@ internal sealed class CameraModuleRunner
             {
                 admission.MarkNoPublicationRequired();
                 admission.Dispose();
+                var isStorageFailure = ex is RawIngressConflictException or IOException or InvalidDataException or
+                    UnauthorizedAccessException or Microsoft.Data.Sqlite.SqliteException;
                 _fleetRuntimeState?.CaptureFailed(
                     ex.GetType().Name,
-                    isCameraDisconnected: FleetRuntimeState.IsCameraDisconnectException(ex));
+                    isCameraDisconnected: !isStorageFailure && FleetRuntimeState.IsCameraDisconnectException(ex),
+                    isStorageFailure: isStorageFailure);
                 // A centered dispatch can have changed the device. Only a reconciled owner can open a fresh target.
                 if (reservation is not null) throw;
                 cycleActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Error, "module-failure");

@@ -402,6 +402,171 @@ public sealed class OperatorNotificationStoreTests
         Assert.IsFalse(File.Exists(store.ConfigFilePath));
     }
 
+    [TestMethod]
+    public async Task DirectoryAtEnvelopePath_NeverFallsBackToHostCredentialsAndReportsStoreUnreadableAsync()
+    {
+        using var dir = TempStateDir.Create();
+        var hostConfig = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                [OperatorNotificationsOptions.SectionKey + ":Enabled"] = "true",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Enabled"] = "true",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Host"] = "fallback-host.example.test",
+                [ConfigurationOperatorNotificationConfigProvider.SmtpUsernameConfigKey] = "host-fallback-user",
+                [ConfigurationOperatorNotificationConfigProvider.SmtpPasswordConfigKey] = "host-fallback-password",
+                [ConfigurationOperatorNotificationConfigProvider.WebhookUrlConfigKey] = "https://host-fallback.example.test/secret"
+            })
+            .Build();
+
+        // Create a directory where the envelope file belongs.
+        var envelopePath = Path.Combine(dir.Path, OperatorNotificationStore.ConfigFileName);
+        Directory.CreateDirectory(envelopePath);
+
+        using var store = CreateStore(dir.Path, isDevelopment: false, configuration: hostConfig);
+
+        Assert.IsFalse(store.CurrentOptions.Enabled);
+        Assert.AreEqual(NotificationReasonCodes.StoreUnreadable, store.ConfigurationErrorReasonCode);
+
+        var snapshot = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(snapshot.StoreCorrupt);
+        Assert.AreEqual(NotificationReasonCodes.StoreUnreadable, snapshot.StoreStatusReasonCode);
+        Assert.IsFalse(snapshot.Options.Enabled);
+        Assert.IsFalse(snapshot.CanPersist);
+        Assert.IsFalse(string.IsNullOrWhiteSpace(snapshot.Version));
+        Assert.IsFalse(snapshot.Secrets.HasSmtpPassword, "Directory at store path must NEVER fall back to host config secrets.");
+        Assert.IsFalse(snapshot.Secrets.HasWebhookUrl, "Directory at store path must NEVER fall back to host config webhook URL.");
+
+        var effective = await store.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(effective.StoreCorrupt);
+        Assert.AreEqual(NotificationReasonCodes.StoreUnreadable, effective.ConfigurationErrorReasonCode);
+        Assert.IsFalse(effective.Options.Enabled);
+        Assert.IsTrue(effective.Secrets.IsEmpty);
+
+        await Assert.ThrowsExactlyAsync<IOException>(async () =>
+            await store.ReadAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task UnreadableRegularStoreFile_ReportsDegradedAndSupportsGetAndResetRecoveryAsync()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var dir = TempStateDir.Create();
+        var dpProvider = DataProtectionProvider.Create(new DirectoryInfo(Path.Combine(dir.Path, "dp-keys")));
+        var hostConfig = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                [OperatorNotificationsOptions.SectionKey + ":Enabled"] = "true",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Enabled"] = "true",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Host"] = "fallback-host.example.test",
+                [ConfigurationOperatorNotificationConfigProvider.SmtpUsernameConfigKey] = "host-fallback-user",
+                [ConfigurationOperatorNotificationConfigProvider.SmtpPasswordConfigKey] = "host-fallback-password"
+            })
+            .Build();
+
+        using var store = CreateStore(dir.Path, isDevelopment: false, dpProvider: dpProvider, configuration: hostConfig);
+        var initial = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+        var saved = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+            initial.Version,
+            new OperatorNotificationsOptions
+            {
+                Enabled = true,
+                Smtp = new SmtpNotificationOptions
+                {
+                    Enabled = true,
+                    Host = "smtp.example.test",
+                    Port = 587,
+                    SecurityMode = SmtpSecurityMode.StartTls,
+                    FromAddress = "camera@example.test",
+                    Recipients = ["ops@example.test"]
+                }
+            },
+            SmtpUsername: "saved-user",
+            SmtpPassword: "saved-password"), "owner-1", CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(OperatorNotificationsSaveOutcome.Applied, saved.Outcome);
+
+        try
+        {
+            // Make the persisted regular file unreadable at runtime (0000).
+            File.SetUnixFileMode(store.ConfigFilePath, UnixFileMode.None);
+
+            // Runtime delivery lookup must NOT throw UnauthorizedAccessException or fall back to host config/credentials.
+            var effective = await store.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsTrue(effective.StoreCorrupt);
+            Assert.AreEqual(NotificationReasonCodes.StoreUnreadable, effective.ConfigurationErrorReasonCode);
+            Assert.IsFalse(effective.Options.Enabled);
+            Assert.IsTrue(effective.Secrets.IsEmpty);
+            Assert.AreEqual(NotificationReasonCodes.StoreUnreadable, store.ConfigurationErrorReasonCode);
+
+            // GET snapshot must NOT throw UnauthorizedAccessException and must produce a valid concurrency version for reset recovery.
+            var snapshot = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsTrue(snapshot.StoreCorrupt);
+            Assert.AreEqual(NotificationReasonCodes.StoreUnreadable, snapshot.StoreStatusReasonCode);
+            Assert.IsTrue(snapshot.CanPersist);
+            Assert.IsFalse(string.IsNullOrWhiteSpace(snapshot.Version));
+            Assert.IsFalse(snapshot.Secrets.HasSmtpPassword);
+
+            // Stale version still returns Conflict.
+            var conflict = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                "stale-version",
+                new OperatorNotificationsOptions { Enabled = false }), "owner-1", CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(OperatorNotificationsSaveOutcome.Conflict, conflict.Outcome);
+
+            // Explicit reset/save recovery with the returned version replaces the 0000 regular file atomically with a 0600 envelope.
+            var recovered = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                snapshot.Version,
+                new OperatorNotificationsOptions { Enabled = false }), "owner-1", CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(OperatorNotificationsSaveOutcome.Applied, recovered.Outcome, recovered.Message);
+            Assert.IsNotNull(recovered.Snapshot);
+            Assert.IsFalse(recovered.Snapshot.StoreCorrupt);
+            Assert.IsNull(recovered.Snapshot.StoreStatusReasonCode);
+            Assert.IsNull(store.ConfigurationErrorReasonCode);
+            Assert.AreEqual(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(store.ConfigFilePath));
+        }
+        finally
+        {
+            if (File.Exists(store.ConfigFilePath))
+            {
+                File.SetUnixFileMode(store.ConfigFilePath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task MalformedHostConfiguration_ReportsInvalidConfigurationNotStoreCorruptAndAllowsOverrideSaveAsync()
+    {
+        using var dir = TempStateDir.Create();
+        var malformedConfig = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                [OperatorNotificationsOptions.SectionKey + ":Enabled"] = "false",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:SecurityMode"] = "SSL",
+                [OperatorNotificationsOptions.SectionKey + ":RequestTimeoutSeconds"] = "ten"
+            })
+            .Build();
+
+        using var store = CreateStore(dir.Path, isDevelopment: false, configuration: malformedConfig);
+
+        Assert.IsFalse(store.CurrentOptions.Enabled);
+        Assert.AreEqual(NotificationReasonCodes.InvalidConfiguration, store.ConfigurationErrorReasonCode);
+
+        var snapshot = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.IsFalse(snapshot.StoreCorrupt);
+        Assert.AreEqual(NotificationReasonCodes.InvalidConfiguration, snapshot.StoreStatusReasonCode);
+        Assert.IsTrue(snapshot.CanPersist);
+        Assert.IsFalse(string.IsNullOrWhiteSpace(snapshot.Version));
+
+        var saved = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+            snapshot.Version,
+            new OperatorNotificationsOptions { Enabled = false }), "owner-1", CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(OperatorNotificationsSaveOutcome.Applied, saved.Outcome, saved.Message);
+        Assert.IsNull(store.ConfigurationErrorReasonCode);
+        Assert.IsNull(saved.Snapshot!.StoreStatusReasonCode);
+    }
+
     private static OperatorNotificationStore CreateStore(
         string stateDirectory,
         bool isDevelopment,

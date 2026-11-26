@@ -20,6 +20,7 @@ public sealed class FleetRuntimeState(TimeProvider timeProvider)
     private DateTimeOffset? _lastRecoveredUtc;
     private bool _failed;
     private bool _cameraDisconnected;
+    private bool _storageFailure;
 
     public bool IsCameraDisconnected
     {
@@ -28,6 +29,17 @@ public sealed class FleetRuntimeState(TimeProvider timeProvider)
             lock (_gate)
             {
                 return _cameraDisconnected;
+            }
+        }
+    }
+
+    public bool IsStorageFailure
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _storageFailure;
             }
         }
     }
@@ -80,13 +92,17 @@ public sealed class FleetRuntimeState(TimeProvider timeProvider)
             _captureAvailability = FleetAvailability.Available;
             _captureReason = "ready";
             _cameraDisconnected = false;
+            _storageFailure = false;
         }
     }
 
     public void CaptureFailed(string reason)
-        => CaptureFailed(reason, isCameraDisconnected: false);
+        => CaptureFailed(reason, isCameraDisconnected: false, isStorageFailure: false);
 
     public void CaptureFailed(string reason, bool isCameraDisconnected)
+        => CaptureFailed(reason, isCameraDisconnected, isStorageFailure: false);
+
+    public void CaptureFailed(string reason, bool isCameraDisconnected, bool isStorageFailure)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(reason);
         lock (_gate)
@@ -96,6 +112,7 @@ public sealed class FleetRuntimeState(TimeProvider timeProvider)
             _lastFailedUtc = timeProvider.GetUtcNow();
             _failed = true;
             _cameraDisconnected = isCameraDisconnected;
+            _storageFailure = isStorageFailure;
         }
     }
 
@@ -132,6 +149,7 @@ public sealed class FleetRuntimeState(TimeProvider timeProvider)
             }
             _failed = false;
             _cameraDisconnected = false;
+            _storageFailure = false;
             _captureAvailability = FleetAvailability.Available;
             _captureReason = "capturing";
             _lastSucceededUtc = now;

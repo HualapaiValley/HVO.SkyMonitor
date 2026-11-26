@@ -61,7 +61,8 @@ public sealed class OperatorNotificationMonitorService(
     private FleetRuntimeSnapshot? _lastKnownFleetSnapshot;
     private DateTimeOffset? _cameraDisconnectedSinceUtc;
     private DateTimeOffset? _runningSinceUtc;
-    private DateOnly? _lastHeartbeatSiteDate;
+    private DateOnly? _lastDispatchedHeartbeatSiteDate;
+    private DateOnly? _lastPersistedHeartbeatSiteDate;
     private bool _heartbeatCheckpointLoaded;
 
     /// <summary>Internal test seam to simulate transient fleet-snapshot lock timeouts deterministically.</summary>
@@ -190,7 +191,7 @@ public sealed class OperatorNotificationMonitorService(
         }
 
         // 4. Upgrade / recovery failed
-        if (await EvaluateUpgradeOrRecoveryFailedAsync(options, now, cameraName, admissionSnapshot, cancellationToken).ConfigureAwait(false))
+        if (await EvaluateUpgradeOrRecoveryFailedAsync(options, now, cameraName, fleetSnapshot, admissionSnapshot, cancellationToken).ConfigureAwait(false))
         {
             activeFaults++;
         }
@@ -214,7 +215,7 @@ public sealed class OperatorNotificationMonitorService(
         }
 
         var rigFailure = rigProfileStore?.ActiveRuntimeFailure;
-        var rigIndicatesCameraFailure = IsCameraDisconnectRigFailure(rigFailure);
+        var rigIndicatesCameraFailure = fleetRuntimeState is null && IsCameraDisconnectRigFailure(rigFailure);
 
         // Preserve last known camera disconnect timer if the 50 ms fleet-snapshot read transiently timed out.
         if (fleetSnapshotTimedOut && !rigIndicatesCameraFailure)
@@ -222,10 +223,13 @@ public sealed class OperatorNotificationMonitorService(
             return _cameraDisconnectedSinceUtc is not null;
         }
 
-        var disconnected = rigIndicatesCameraFailure ||
-                           fleetRuntimeState?.IsCameraDisconnected == true ||
-                           (fleetSnapshot is { Capture.Availability: FleetAvailability.Unavailable } &&
-                            IsCameraDisconnectReason(fleetSnapshot.Capture.Reason));
+        // Rely on the single unified typed disconnect classification on FleetRuntimeState when present so
+        // startup storage failures and non-disconnect AsiException errors never override IsCameraDisconnected == false.
+        var disconnected = fleetRuntimeState is not null
+            ? fleetRuntimeState.IsCameraDisconnected
+            : rigIndicatesCameraFailure ||
+              (fleetSnapshot is { Capture.Availability: FleetAvailability.Unavailable } &&
+               IsCameraDisconnectReason(fleetSnapshot.Capture.Reason));
 
         if (!disconnected)
         {
@@ -274,12 +278,18 @@ public sealed class OperatorNotificationMonitorService(
         {
             return false;
         }
-        // Schedule/store publication errors are not camera hardware disconnects.
-        if (rigFailure.Contains("activation could not be published", StringComparison.OrdinalIgnoreCase))
+        // Storage, publication, and non-disconnect initialization errors are not camera hardware disconnects.
+        if (rigFailure.Contains("activation could not be published", StringComparison.OrdinalIgnoreCase) ||
+            rigFailure.Contains("IOException", StringComparison.OrdinalIgnoreCase) ||
+            rigFailure.Contains("SqliteException", StringComparison.OrdinalIgnoreCase) ||
+            rigFailure.Contains("RawIngressConflictException", StringComparison.OrdinalIgnoreCase) ||
+            rigFailure.Contains("InvalidDataException", StringComparison.OrdinalIgnoreCase) ||
+            rigFailure.Contains("UnauthorizedAccessException", StringComparison.OrdinalIgnoreCase) ||
+            rigFailure.Contains("TimeoutException", StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }
-        return true;
+        return IsCameraDisconnectReason(rigFailure);
     }
 
     internal static bool IsCameraDisconnectReason(string? reason)
@@ -299,7 +309,8 @@ public sealed class OperatorNotificationMonitorService(
             string.Equals(trimmed, "SqliteException", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(trimmed, "InvalidDataException", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(trimmed, "UnauthorizedAccessException", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(trimmed, "RawIngressConflictException", StringComparison.OrdinalIgnoreCase))
+            string.Equals(trimmed, "RawIngressConflictException", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(trimmed, "AsiException", StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }
@@ -313,8 +324,7 @@ public sealed class OperatorNotificationMonitorService(
                trimmed.Contains("camera_closed", StringComparison.OrdinalIgnoreCase) ||
                trimmed.Contains("device-lost", StringComparison.OrdinalIgnoreCase) ||
                trimmed.Contains("device-unavailable", StringComparison.OrdinalIgnoreCase) ||
-               trimmed.Contains("camera-unavailable", StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(trimmed, "AsiException", StringComparison.OrdinalIgnoreCase);
+               trimmed.Contains("camera-unavailable", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<bool> EvaluateCaptureStalledAsync(
@@ -454,6 +464,7 @@ public sealed class OperatorNotificationMonitorService(
         OperatorNotificationsOptions options,
         DateTimeOffset now,
         string cameraName,
+        FleetRuntimeSnapshot? fleetSnapshot,
         CaptureAdmissionSnapshot? admissionSnapshot,
         CancellationToken cancellationToken)
     {
@@ -571,6 +582,31 @@ public sealed class OperatorNotificationMonitorService(
                     new Dictionary<string, string>(StringComparer.Ordinal) { ["source"] = "capture-admission" }));
             }
         }
+        else if (fleetRuntimeState?.IsStorageFailure == true)
+        {
+            anyFault = true;
+            if (options.Events.UpgradeOrRecoveryFailedEnabled)
+            {
+                var storageReason = OperatorNotificationRedactor.SanitizeOperationalText(fleetSnapshot?.Capture.Reason, 64);
+                if (string.IsNullOrWhiteSpace(storageReason))
+                {
+                    storageReason = "storage-unavailable";
+                }
+                _publisher.TryPublish(new OperatorNotificationEvent(
+                    OperatorNotificationEventKind.UpgradeOrRecoveryFailed,
+                    OperatorNotificationSeverity.Critical,
+                    "upgrade_recovery_failed:capture-storage",
+                    "Capture storage / startup recovery failed",
+                    $"CameraAgent '{cameraName}' could not access durable capture storage ({storageReason}); capture is unavailable until storage recovers.",
+                    now,
+                    cameraName,
+                    new Dictionary<string, string>(StringComparer.Ordinal)
+                    {
+                        ["source"] = "capture-storage",
+                        ["reason"] = storageReason
+                    }));
+            }
+        }
 
         return anyFault;
     }
@@ -631,6 +667,14 @@ public sealed class OperatorNotificationMonitorService(
         int activeFaults,
         CancellationToken cancellationToken)
     {
+        // Retry persisting any previously dispatched heartbeat checkpoint whose initial write failed transiently.
+        if (heartbeatStore is not null &&
+            _lastDispatchedHeartbeatSiteDate is { } pendingPersistDate &&
+            (_lastPersistedHeartbeatSiteDate is null || pendingPersistDate > _lastPersistedHeartbeatSiteDate))
+        {
+            await TryPersistHeartbeatCheckpointAsync(pendingPersistDate, cancellationToken).ConfigureAwait(false);
+        }
+
         if (!options.Events.DailyHeartbeatEnabled ||
             !OperatorNotificationValidation.TryParseTimeOfDay(options.Events.DailyHeartbeatTime, out var scheduledTime))
         {
@@ -639,13 +683,20 @@ public sealed class OperatorNotificationMonitorService(
 
         if (!_heartbeatCheckpointLoaded && heartbeatStore is not null)
         {
-            _heartbeatCheckpointLoaded = true;
             try
             {
                 var persistedDate = await heartbeatStore.ReadLastHeartbeatSiteDateAsync(cancellationToken).ConfigureAwait(false);
-                if (persistedDate is not null && (_lastHeartbeatSiteDate is null || persistedDate > _lastHeartbeatSiteDate))
+                _heartbeatCheckpointLoaded = true;
+                if (persistedDate is not null)
                 {
-                    _lastHeartbeatSiteDate = persistedDate;
+                    if (_lastPersistedHeartbeatSiteDate is null || persistedDate > _lastPersistedHeartbeatSiteDate)
+                    {
+                        _lastPersistedHeartbeatSiteDate = persistedDate;
+                    }
+                    if (_lastDispatchedHeartbeatSiteDate is null || persistedDate > _lastDispatchedHeartbeatSiteDate)
+                    {
+                        _lastDispatchedHeartbeatSiteDate = persistedDate;
+                    }
                 }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -662,7 +713,7 @@ public sealed class OperatorNotificationMonitorService(
         var localNow = TimeZoneInfo.ConvertTime(now, timeZone);
         var localDate = DateOnly.FromDateTime(localNow.DateTime);
         var localTime = TimeOnly.FromDateTime(localNow.DateTime);
-        if (localTime < scheduledTime || (_lastHeartbeatSiteDate is { } lastDate && localDate <= lastDate))
+        if (localTime < scheduledTime || (_lastDispatchedHeartbeatSiteDate is { } lastDate && localDate <= lastDate))
         {
             return;
         }
@@ -696,22 +747,30 @@ public sealed class OperatorNotificationMonitorService(
 
         if (published)
         {
-            _lastHeartbeatSiteDate = localDate;
+            _lastDispatchedHeartbeatSiteDate = localDate;
             if (heartbeatStore is not null)
             {
-                try
-                {
-                    await heartbeatStore.WriteLastHeartbeatSiteDateAsync(localDate, cancellationToken).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    OperatorNotificationLog.MonitorEvaluationFailed(_logger, ex.GetType().Name);
-                }
+                await TryPersistHeartbeatCheckpointAsync(localDate, cancellationToken).ConfigureAwait(false);
             }
+        }
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "Durable heartbeat checkpoint I/O failures must never crash the monitor or affect capture.")]
+    private async Task TryPersistHeartbeatCheckpointAsync(DateOnly siteDate, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await heartbeatStore!.WriteLastHeartbeatSiteDateAsync(siteDate, cancellationToken).ConfigureAwait(false);
+            _lastPersistedHeartbeatSiteDate = siteDate;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            OperatorNotificationLog.MonitorEvaluationFailed(_logger, ex.GetType().Name);
         }
     }
 

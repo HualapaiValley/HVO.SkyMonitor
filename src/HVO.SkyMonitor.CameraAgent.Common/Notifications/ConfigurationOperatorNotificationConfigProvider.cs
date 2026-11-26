@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -30,7 +31,11 @@ public sealed class ConfigurationOperatorNotificationConfigProvider(
     {
         get
         {
-            var options = ReadOptionsFromConfiguration(_configuration);
+            var options = ReadOptionsFromConfiguration(_configuration, out var bindingError);
+            if (bindingError is not null)
+            {
+                return bindingError;
+            }
             var secrets = ReadSecretsFromConfiguration(_configuration);
             return EvaluateConfigurationErrorReasonCode(options, secrets, _networkPolicy);
         }
@@ -39,7 +44,7 @@ public sealed class ConfigurationOperatorNotificationConfigProvider(
     public ValueTask<OperatorNotificationsConfigurationSnapshot> GetSnapshotAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var options = ReadOptionsFromConfiguration(_configuration);
+        var options = ReadOptionsFromConfiguration(_configuration, out var bindingError);
         var configSecrets = ReadSecretsFromConfiguration(_configuration);
         var presence = BuildSecretPresence(OperatorNotificationSecrets.Empty, configSecrets);
         var version = ComputeVersion(options, presence);
@@ -48,21 +53,36 @@ public sealed class ConfigurationOperatorNotificationConfigProvider(
             presence,
             version,
             HasSavedOverrides: false,
-            CanPersist: false));
+            CanPersist: false,
+            StoreCorrupt: false,
+            StoreStatusReasonCode: bindingError));
     }
 
     public ValueTask<(OperatorNotificationsOptions Options, OperatorNotificationSecrets Secrets)> GetEffectiveForDeliveryAsync(
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        return ValueTask.FromResult((ReadOptionsFromConfiguration(_configuration), ReadSecretsFromConfiguration(_configuration)));
+        var options = ReadOptionsFromConfiguration(_configuration, out var bindingError);
+        var secrets = bindingError is not null
+            ? OperatorNotificationSecrets.Empty
+            : ReadSecretsFromConfiguration(_configuration);
+        return ValueTask.FromResult((options, secrets));
     }
 
     public ValueTask<OperatorNotificationEffectiveConfiguration> GetEffectiveConfigurationAsync(
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var options = ReadOptionsFromConfiguration(_configuration);
+        var options = ReadOptionsFromConfiguration(_configuration, out var bindingError);
+        if (bindingError is not null)
+        {
+            return ValueTask.FromResult(new OperatorNotificationEffectiveConfiguration(
+                options,
+                OperatorNotificationSecrets.Empty,
+                StoreCorrupt: false,
+                ConfigurationErrorReasonCode: bindingError));
+        }
+
         var secrets = ReadSecretsFromConfiguration(_configuration);
         var errorCode = EvaluateConfigurationErrorReasonCode(options, secrets, _networkPolicy);
         return ValueTask.FromResult(new OperatorNotificationEffectiveConfiguration(
@@ -85,10 +105,26 @@ public sealed class ConfigurationOperatorNotificationConfigProvider(
     }
 
     public static OperatorNotificationsOptions ReadOptionsFromConfiguration(IConfiguration configuration)
+        => ReadOptionsFromConfiguration(configuration, out _);
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "Malformed notification configuration values must degrade notification status as invalid-configuration rather than crashing startup or endpoints.")]
+    public static OperatorNotificationsOptions ReadOptionsFromConfiguration(
+        IConfiguration configuration,
+        out string? bindingErrorReasonCode)
     {
         ArgumentNullException.ThrowIfNull(configuration);
-        var bound = configuration.GetSection(OperatorNotificationsOptions.SectionKey).Get<OperatorNotificationsOptions>();
-        return NormalizeOptions(bound ?? new OperatorNotificationsOptions());
+        try
+        {
+            var bound = configuration.GetSection(OperatorNotificationsOptions.SectionKey).Get<OperatorNotificationsOptions>();
+            bindingErrorReasonCode = null;
+            return NormalizeOptions(bound ?? new OperatorNotificationsOptions());
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or FormatException or OverflowException or ArgumentException)
+        {
+            bindingErrorReasonCode = NotificationReasonCodes.InvalidConfiguration;
+            return new OperatorNotificationsOptions { Enabled = false };
+        }
     }
 
     public static OperatorNotificationSecrets ReadSecretsFromConfiguration(IConfiguration configuration)
