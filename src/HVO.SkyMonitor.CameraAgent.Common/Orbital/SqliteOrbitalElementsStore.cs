@@ -600,8 +600,6 @@ public sealed partial class SqliteOrbitalElementsStore : IOrbitalElementsStore, 
 
     internal string RawPath(string rawSha256, string extension) => FilePath(RawDirectoryName, rawSha256, extension);
 
-    internal string QuarantinePath(string rawSha256) => FilePath(QuarantineDirectoryName, rawSha256);
-
     /// <summary>Re-proves that no link has been introduced between the root and an orbital file before it is touched.</summary>
     internal void VerifyContained(string absolutePath, string operation)
         => (_root ?? throw new InvalidOperationException("The orbital elements store has not been initialized."))

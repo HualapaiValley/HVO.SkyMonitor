@@ -650,7 +650,7 @@ internal static class OrbitalOperatorText
 
         // Resume.
         ["orbital.resumed"] =
-            "Provider resumed. The next permitted occurrence makes the next request; the two-hour floor did not move.",
+            "Provider resumed. The next request still follows the two-hour minimum and the 15-minute backoff after server errors (5xx).",
         ["orbital.resume-replayed"] = "This resume was already applied.",
         ["orbital.no-halt"] = "There is no provider halt to resume. The current state is shown.",
         ["orbital.halt-mismatch"] = "The halt changed after this page read it. Review the current halt before resuming.",

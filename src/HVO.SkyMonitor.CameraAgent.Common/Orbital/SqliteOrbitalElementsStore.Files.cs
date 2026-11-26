@@ -12,6 +12,7 @@ public sealed partial class SqliteOrbitalElementsStore
 {
     private const string JsonExtension = ".json";
     internal const string CsvExtension = ".csv";
+    private const string QuarantineExtension = ".raw";
 
     private static string ContentRelativePath(string directory, string sha256, string extension)
         => Path.Combine(directory, sha256 + extension);
@@ -268,7 +269,8 @@ public sealed partial class SqliteOrbitalElementsStore
         CancellationToken cancellationToken)
     {
         var root = RequireRoot();
-        var relative = Path.Combine(QuarantineDirectoryName, sha256 + ".json");
+        // Rejected bodies may use any format. Keep them outside the installation's JSON manifest scan.
+        var relative = ContentRelativePath(QuarantineDirectoryName, sha256, QuarantineExtension);
         var path = root.Resolve(relative);
         if (Directory.Exists(path))
         {
@@ -299,7 +301,11 @@ public sealed partial class SqliteOrbitalElementsStore
     private async ValueTask<int> PruneQuarantineAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
         var removed = 0;
-        foreach (var path in EnumerateBounded(Path.Combine(_rootPath, QuarantineDirectoryName), "*.json"))
+        var paths = Directory.EnumerateFiles(Path.Combine(_rootPath, QuarantineDirectoryName))
+            .Where(static path => Path.GetExtension(path) is QuarantineExtension or JsonExtension)
+            .Take(MaximumReconciledEntries)
+            .ToList();
+        foreach (var path in paths)
         {
             var name = Path.GetFileNameWithoutExtension(path);
             if (!OrbitalContract.IsSha256(name))

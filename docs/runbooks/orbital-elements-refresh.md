@@ -628,7 +628,8 @@ redact them before sharing them outside the site.
   raw/<RawSha256>.json           retained legacy JSON provider response bytes
   payloads/<PayloadSha256>.json   normalized orbital-elements-v1 payload
   manifests/<ManifestSha256>.json snapshot manifest
-  quarantine/<RawSha256>.json     rejected raw bodies kept as evidence
+  quarantine/<RawSha256>.raw      rejected response bodies kept as evidence
+  quarantine/<RawSha256>.json     retained legacy quarantine bodies
   staging/                        publication intents during a write
 ```
 
@@ -673,16 +674,16 @@ at most 32 MiB each.
 
 1. Read its `reason`, the precise parser, normalizer or response code, and its
    `rawSha256`.
-2. If a raw SHA is present, `quarantine/<rawSha256>.json` holds the decoded response
-   bytes exactly as received.
+2. If the body was retained, `quarantine/<rawSha256>.raw` holds the exact decoded
+   response bytes. Older evidence may still be at `quarantine/<rawSha256>.json`.
 3. Inspect a copy. Do not edit, rename or delete files in the store.
 4. Keep the copy local, because the provider terms forbid redistribution.
 
 Response-level rejections have no raw body. A status line outside 100–599 is a halt,
 not a quarantine. The newest `MaximumQuarantinedPayloads` bodies are kept and older
-ones are pruned automatically. The quarantine state clears at the next successful
-activation. If the cause is a provider format change, it needs a parser change under
-the contract; no configuration setting accepts it.
+ones are pruned automatically for both extensions. The quarantine state clears at
+the next successful activation. If the cause is a provider format change, it needs a
+parser change under the contract; no configuration setting accepts it.
 
 ## Crash Recovery
 

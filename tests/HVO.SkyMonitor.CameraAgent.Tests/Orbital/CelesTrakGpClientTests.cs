@@ -425,7 +425,7 @@ public sealed class CelesTrakGpClientTests
     }
 
     [TestMethod]
-    [DataRow("plain-json-labelled-gzip", "gzip-header")]
+    [DataRow("plain-csv-labelled-gzip", "gzip-header")]
     [DataRow("too-short", "gzip-header")]
     [DataRow("wrong-magic", "gzip-header")]
     [DataRow("wrong-method", "gzip-header")]
@@ -447,7 +447,7 @@ public sealed class CelesTrakGpClientTests
         BinaryPrimitives.WriteUInt32LittleEndian(forgedSuffix.AsSpan(4), (uint)payload.Length);
         var wire = shape switch
         {
-            "plain-json-labelled-gzip" => payload,
+            "plain-csv-labelled-gzip" => payload,
             "too-short" => valid[..17],
             "wrong-magic" => Mutate(valid, 1, 0x8C),
             "wrong-method" => Mutate(valid, 2, 0x07),

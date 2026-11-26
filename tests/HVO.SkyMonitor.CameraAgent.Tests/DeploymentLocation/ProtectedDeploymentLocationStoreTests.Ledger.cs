@@ -4,11 +4,61 @@ using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using Microsoft.Data.Sqlite;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
+using HVO.SkyMonitor.CameraAgent.Tests.Orbital;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.DeploymentLocation;
 
 public sealed partial class ProtectedDeploymentLocationStoreTests
 {
+    [TestMethod]
+    public async Task QuarantinedOrbitalCsvKeepsInstallationVerifiedAndLegacyJsonPrunes()
+    {
+        var seed = CreateSeed(35, -113, 0, "America/Phoenix");
+        var token = CancellationToken.None;
+        using var locations = CreateStore();
+        var active = await locations.InitializeAsync(seed, token).ConfigureAwait(false);
+        var orbitalRoot = Path.Combine(_options.Value.RawIngressRoot, ".orbital-elements");
+        var clock = new OrbitalElementsStoreTestData.Clock(Now);
+        using var orbital = OrbitalElementsStoreTestData.Open(orbitalRoot, clock,
+            OrbitalElementsStoreTestData.Settings(orbitalRoot, maximumQuarantined: 1));
+        var quarantine = Path.Combine(orbitalRoot, "quarantine");
+
+        var csv = CelesTrakGpTestData.Payload(CelesTrakGpTestData.Record(("MEAN_MOTION", "NaN")));
+        var csvSha = CelesTrakGpTestData.Sha256(csv);
+        var attempt = await OrbitalElementsStoreTestData.AdmitAsync(orbital).ConfigureAwait(false);
+        await orbital.RecordQuarantineAsync(attempt, csv, csvSha, "orbital.invalid-number", "synthetic CSV", token)
+            .ConfigureAwait(false);
+
+        Assert.AreEqual(active, await locations.VerifyInstallationAsync(seed, token).ConfigureAwait(false));
+        Assert.AreEqual(active, await locations.FullVerifyAsync(seed, token).ConfigureAwait(false));
+        Assert.IsFalse(locations.RequiresRetainedIntegrityScrub);
+        var csvPath = Path.Combine(quarantine, csvSha + ".raw");
+        CollectionAssert.AreEqual(csv, await File.ReadAllBytesAsync(csvPath, token).ConfigureAwait(false));
+
+        clock.Advance(OrbitalElementsStoreTestData.Interval);
+        var legacy = CelesTrakGpTestData.ReadFixture(CelesTrakGpTestData.LegacyJsonFixture);
+        var legacySha = CelesTrakGpTestData.Sha256(legacy);
+        var legacyAttempt = await OrbitalElementsStoreTestData.AdmitAsync(orbital).ConfigureAwait(false);
+        await orbital.RecordQuarantineAsync(legacyAttempt, legacy, legacySha, "orbital.candidate-invalid", "synthetic JSON", token)
+            .ConfigureAwait(false);
+        Assert.IsFalse(File.Exists(csvPath));
+        // Recreate the previous filename for evidence still referenced by the retained attempt.
+        var legacyPath = Path.Combine(quarantine, legacySha + ".json");
+        RetainedFileMutations.Move(Path.Combine(quarantine, legacySha + ".raw"), legacyPath);
+        CollectionAssert.AreEqual(legacy, await File.ReadAllBytesAsync(legacyPath, token).ConfigureAwait(false));
+        Assert.AreEqual(active, await locations.FullVerifyAsync(seed, token).ConfigureAwait(false));
+
+        clock.Advance(OrbitalElementsStoreTestData.Interval);
+        var laterAttempt = await OrbitalElementsStoreTestData.AdmitAsync(orbital).ConfigureAwait(false);
+        await orbital.RecordQuarantineAsync(laterAttempt, csv, csvSha, "orbital.invalid-number", "synthetic CSV", token)
+            .ConfigureAwait(false);
+        Assert.IsFalse(File.Exists(legacyPath));
+        CollectionAssert.AreEqual(csv, await File.ReadAllBytesAsync(csvPath, token).ConfigureAwait(false));
+        Assert.AreEqual(active, await locations.VerifyInstallationAsync(seed, token).ConfigureAwait(false));
+        Assert.AreEqual(active, await locations.FullVerifyAsync(seed, token).ConfigureAwait(false));
+        Assert.IsFalse(locations.RequiresRetainedIntegrityScrub);
+    }
+
     [TestMethod]
     public async Task QualifiedProtectedReadNeverTraversesRetainedEvidenceAndConcurrentReadsAgree()
     {

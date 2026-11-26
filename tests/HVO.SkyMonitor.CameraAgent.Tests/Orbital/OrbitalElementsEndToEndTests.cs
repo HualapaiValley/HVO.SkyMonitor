@@ -368,6 +368,7 @@ public sealed class OrbitalElementsEndToEndTests : OrbitalStoreTestBase
         Assert.AreEqual(good, state.CurrentManifestSha256);
         var quarantine = Path.Combine(host.OrbitalRoot, "quarantine");
         var quarantined = Directory.GetFiles(quarantine).Single();
+        Assert.AreEqual(CelesTrakGpTestData.Sha256(raw) + ".raw", Path.GetFileName(quarantined));
         CollectionAssert.AreEqual(raw, await File.ReadAllBytesAsync(quarantined).ConfigureAwait(false));
         var current = await host.Reader.ReadCurrentAsync(CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(good, current.Snapshot?.Manifest.ManifestSha256);

@@ -54,6 +54,22 @@ public sealed class CelesTrakGpFixtureTests
         var valid = Encoding.UTF8.GetString(CelesTrakGpTestData.ReadFixture(CelesTrakGpTestData.LegacyJsonFixture));
         Assert.IsTrue(valid.Contains("HVO SYNTHETIC", StringComparison.Ordinal));
     }
+
+    [TestMethod]
+    [DataRow("BSTAR", ".0001413", "0.0001413")]
+    [DataRow("MEAN_MOTION_DOT", "-.31515E-4", "-0.000031515")]
+    [DataRow("MEAN_MOTION_DDOT", "-2.218E-5", "-0.00002218")]
+    public void CelesTrakCsvNumberSpellingsNormalizeToTheSameRecord(string member, string spelling, string canonicalSpelling)
+    {
+        var raw = CelesTrakGpTestData.Payload(CelesTrakGpTestData.Record((member, spelling)));
+        var canonical = CelesTrakGpTestData.Payload(CelesTrakGpTestData.Record((member, canonicalSpelling)));
+        var result = CelesTrakGpNormalizer.CreateCandidate(CelesTrakGpTestData.Retrieved(raw));
+        var baseline = CelesTrakGpNormalizer.CreateCandidate(CelesTrakGpTestData.Retrieved(canonical));
+
+        Assert.IsNotNull(result.Snapshot, result.Detail);
+        Assert.IsNotNull(baseline.Snapshot, baseline.Detail);
+        Assert.AreEqual(baseline.Snapshot.Records.Single().RecordSha256, result.Snapshot.Records.Single().RecordSha256);
+    }
 }
 
 /// <summary>Shared fixture loading, payload builders, fakes and a manual clock for the CelesTrak GP tests.</summary>

@@ -151,7 +151,7 @@
             {
                 <article class="ops-action-row">
                     <span class="ops-action-icon warning" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M7 5v10"></path><path d="M13 5v10"></path></svg></span>
-                    <span><strong>Resume provider</strong><small>Clears only the halt shown above, after you record why. The two-hour floor never moves.</small></span>
+                    <span><strong>Resume provider</strong><small>Clears the halt shown above after you record why. The two-hour minimum and the 15-minute backoff after server errors (5xx) still apply.</small></span>
                     <button type="button" id="@ResumeTriggerId" class="button secondary" disabled="@(Busy || ResumeUnavailableReason is not null)"
                             title="@ResumeUnavailableReason" aria-describedby="@(ResumeUnavailableReason is null ? null : "orbital-resume-unavailable")"
                             @onclick="OpenResumeDialog">Resume provider</button>
@@ -226,7 +226,7 @@
                     <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"></path></svg>
                 </button>
             </div>
-            <p id="orbital-resume-description" class="dialog-intro">Resuming clears only the halt shown here; if the halt changed after this page read it, nothing is cleared. It never moves the provider's two-hour floor, so the next request still waits for the next permitted attempt.</p>
+            <p id="orbital-resume-description" class="dialog-intro">You can clear the halt shown here while it is current. The next request still follows the two-hour minimum and the 15-minute backoff after server errors (5xx).</p>
             <dl class="orbital-resume-facts">
                 <div><dt>Halted since</dt><dd id="orbital-resume-since">@SiteTime.Format(resumeHalt.SinceUtc)<small>@Utc(resumeHalt.SinceUtc)</small></dd></div>
                 <div><dt>HTTP status</dt><dd id="orbital-resume-status">@OrbitalOperatorText.HaltStatus(resumeHalt.HttpStatusCode)</dd></div>
