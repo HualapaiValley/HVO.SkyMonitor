@@ -129,6 +129,11 @@ public sealed class GpsTimeReader(TimeProvider timeProvider, GpsUtcWindow? utcWi
         {
             await _reading.WaitAsync(linked.Token).ConfigureAwait(false);
             entered = true;
+            lock (_gate)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                ObjectDisposedException.ThrowIf(_disposed, this);
+            }
             framing = _framing.GetValue(source, static _ => new LineFraming());
             var buffer = new byte[1];
             for (var count = 0; count < MaximumBytesPerRead; count++)

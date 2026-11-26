@@ -10,7 +10,7 @@ internal sealed class GpsReceiverMonitor(
 {
     // This release supports receiver dates in a window narrower than a single 1024-week GPS rollover.
     // Outside that deployment era a subsequent release must supply a new window. Never infer it from host UTC.
-    internal static GpsUtcWindow ReceiverEra { get; } = new(new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero), new(2035, 12, 31, 23, 59, 59, TimeSpan.Zero));
+    internal static GpsUtcWindow ReceiverEra { get; } = new(new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero), new DateTimeOffset(2036, 1, 1, 0, 0, 0, TimeSpan.Zero).AddTicks(-1));
     private volatile Session? _session;
 
     internal GpsTimeStatus? Status(GpsReceiverSettings configured)
