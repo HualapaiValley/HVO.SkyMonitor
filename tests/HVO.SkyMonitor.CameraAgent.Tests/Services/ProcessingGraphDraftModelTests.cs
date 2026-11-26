@@ -342,4 +342,62 @@ public sealed class ProcessingGraphDraftModelTests
             "Resolving the duplicate ID restores source-revision linking for the original saved row.");
         Assert.IsFalse(duplicateDraft.ExistsInSourceRevision(duplicatePreview));
     }
+
+    [TestMethod]
+    public void ExistsInSourceRevision_TreatsRegeneratedPredictionAsUnsavedAndPreservesProvenanceAcrossUnrelatedConversion()
+    {
+        var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
+        const string measurementAlias = ExposureMeasurementProducts.StepAlias;
+        const string predictionAlias = ExposureCatalogPredictionProducts.StepAlias;
+
+        // 1. Disabling and re-enabling the sole regional visibility consumer regenerates ExposureCatalogPrediction as an unsaved replacement.
+        var centeredSource = new CapturePipelineConfig(
+        [
+            new(measurementAlias, measurementAlias, 4, null, ["$raw"], Required: false, Enabled: true, Publication: durable),
+            new(predictionAlias, predictionAlias, 5, null, ["$raw"], Required: false, Enabled: true, Publication: durable),
+            new(RegionalStellarVisibilityProducts.StepAlias, "regional", 30, null,
+                ["$raw", measurementAlias, predictionAlias], Required: false, Enabled: true, Publication: durable)
+        ]);
+        var toggleDraft = ProcessingGraphDraftModel.FromPipeline(centeredSource, "rev-active", "night", "2");
+        var initialPrediction = toggleDraft.Nodes.Single(static row => row.Type == predictionAlias);
+        var regional = toggleDraft.Nodes.Single(static row => row.Id == "regional");
+        Assert.IsTrue(toggleDraft.ExistsInSourceRevision(initialPrediction));
+
+        regional.Enabled = false;
+        toggleDraft.EnsureRegionalVisibilityWiring(regional);
+        Assert.IsFalse(toggleDraft.Nodes.Any(static row => row.Type == predictionAlias));
+
+        regional.Enabled = true;
+        toggleDraft.EnsureRegionalVisibilityWiring(regional);
+        var regeneratedPrediction = toggleDraft.Nodes.Single(static row => row.Type == predictionAlias);
+        Assert.IsFalse(toggleDraft.ExistsInSourceRevision(regeneratedPrediction),
+            "A regenerated ExposureCatalogPrediction row must not inherit source provenance in the same draft.");
+
+        // 2. Temporarily renaming a saved row across an unrelated conversion preserves provenance once the original ID is restored.
+        var conversionSource = new CapturePipelineConfig(
+        [
+            new("Preview", "preview", 10, null, ["$raw"], Enabled: true),
+            new("ScenePresentationLayer", "scene", 20, null, ["$raw"], Enabled: true)
+        ]);
+        var renameDraft = ProcessingGraphDraftModel.FromPipeline(conversionSource, "rev-active", "night", "2");
+        var previewRow = renameDraft.Nodes.Single(static row => row.Id == "preview");
+        previewRow.Id = "preview-temp";
+        Assert.IsFalse(renameDraft.ExistsInSourceRevision(previewRow));
+
+        var converted = renameDraft.WithConvertedPipeline(new CapturePipelineConfig(
+        [
+            new("Preview", "preview-temp", 10, null, ["$raw"], Enabled: true),
+            new(SceneStylePresentation.StepAlias, "scene", 20, null, ["$raw"], Enabled: true)
+        ]));
+        var convertedPreview = converted.Nodes.Single(static row => row.Id == "preview-temp");
+        var convertedScene = converted.Nodes.Single(static row => row.Id == "scene");
+        Assert.IsFalse(converted.ExistsInSourceRevision(convertedPreview),
+            "While temporarily renamed, the converted draft row must remain unlinked.");
+        Assert.IsFalse(converted.ExistsInSourceRevision(convertedScene),
+            "A row whose type changed during conversion must remain unlinked.");
+
+        convertedPreview.Id = "preview";
+        Assert.IsTrue(converted.ExistsInSourceRevision(convertedPreview),
+            "Restoring the original ID on an untouched saved row after an unrelated conversion must restore source-revision linking.");
+    }
 }

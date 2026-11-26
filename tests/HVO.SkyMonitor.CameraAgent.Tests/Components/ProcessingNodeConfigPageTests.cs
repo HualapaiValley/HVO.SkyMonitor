@@ -1237,6 +1237,10 @@ public sealed class ProcessingNodeConfigPageTests
         StringAssert.Contains(savedPredictionItem.TextContent, "Saved in new draft", StringComparison.Ordinal);
         Assert.IsFalse(savedPredictionItem.TextContent.Contains("Unsaved draft", StringComparison.Ordinal),
             "Post-save switcher badge must not keep 'Unsaved draft' wording after saving.");
+        var savedTooltip = savedPredictionItem.GetAttribute("title") ?? string.Empty;
+        StringAssert.Contains(savedTooltip, "save banner", StringComparison.Ordinal);
+        Assert.IsFalse(savedTooltip.Contains("above", StringComparison.OrdinalIgnoreCase),
+            "Post-save switcher tooltip must not point 'above' when the save banner renders below the switcher.");
 
         // 2. Navigating directly to a missing node renders the clean fallback list without broken switcher/form state,
         //    and switching to a valid node in the revision recovers cleanly.

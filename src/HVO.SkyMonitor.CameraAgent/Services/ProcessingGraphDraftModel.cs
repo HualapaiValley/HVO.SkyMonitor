@@ -80,7 +80,7 @@ internal sealed class ProcessingGraphDraftModel
         converted._initialDefinition = _initialDefinition;
         converted._sourceStepTypesById = new Dictionary<string, string>(_sourceStepTypesById, StringComparer.OrdinalIgnoreCase);
 
-        var retainedSourceByCurrentId = new Dictionary<string, (string SourceId, string SourceType)>(StringComparer.OrdinalIgnoreCase);
+        var retainedSourceByCurrentId = new Dictionary<string, (string CurrentType, string SourceId, string SourceType)>(StringComparer.OrdinalIgnoreCase);
         var ambiguousIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var existing in Nodes)
         {
@@ -94,11 +94,12 @@ internal sealed class ProcessingGraphDraftModel
                 ambiguousIds.Add(currentId);
                 continue;
             }
-            if (!string.IsNullOrWhiteSpace(existing.OriginalSourceNodeId) &&
-                !string.IsNullOrWhiteSpace(existing.OriginalSourceNodeType) &&
-                string.Equals(currentId, existing.OriginalSourceNodeId, StringComparison.OrdinalIgnoreCase))
+            var currentType = existing.Type.Trim();
+            if (!string.IsNullOrWhiteSpace(currentType) &&
+                !string.IsNullOrWhiteSpace(existing.OriginalSourceNodeId) &&
+                !string.IsNullOrWhiteSpace(existing.OriginalSourceNodeType))
             {
-                retainedSourceByCurrentId[currentId] = (existing.OriginalSourceNodeId, existing.OriginalSourceNodeType);
+                retainedSourceByCurrentId[currentId] = (currentType, existing.OriginalSourceNodeId, existing.OriginalSourceNodeType);
             }
             else
             {
@@ -109,8 +110,10 @@ internal sealed class ProcessingGraphDraftModel
         foreach (var row in converted.Nodes)
         {
             var currentId = row.Id.Trim();
+            var currentType = row.Type.Trim();
             if (!string.IsNullOrWhiteSpace(currentId) &&
-                retainedSourceByCurrentId.TryGetValue(currentId, out var original))
+                retainedSourceByCurrentId.TryGetValue(currentId, out var original) &&
+                string.Equals(currentType, original.CurrentType, StringComparison.OrdinalIgnoreCase))
             {
                 row.OriginalSourceNodeId = original.SourceId;
                 row.OriginalSourceNodeType = original.SourceType;
@@ -233,9 +236,6 @@ internal sealed class ProcessingGraphDraftModel
                 DependsOn: [RawInput],
                 Required: false,
                 Publication: DurableLocalPublication);
-            var isFromSource = _sourceStepTypesById.TryGetValue(predictionAlias, out var sourcePredictionType) &&
-                               !string.IsNullOrWhiteSpace(SourceRevisionId) &&
-                               string.Equals(sourcePredictionType, predictionAlias, StringComparison.OrdinalIgnoreCase);
             Nodes.Add(new NodeRow
             {
                 Id = predictionAlias,
@@ -244,9 +244,7 @@ internal sealed class ProcessingGraphDraftModel
                 Enabled = true,
                 DependsOn = new HashSet<string>([RawInput], StringComparer.Ordinal),
                 Publication = DurableLocalPublication,
-                SystemManagedStep = predictionStep,
-                OriginalSourceNodeId = isFromSource ? predictionAlias : null,
-                OriginalSourceNodeType = isFromSource ? sourcePredictionType : null
+                SystemManagedStep = predictionStep
             });
         }
 
