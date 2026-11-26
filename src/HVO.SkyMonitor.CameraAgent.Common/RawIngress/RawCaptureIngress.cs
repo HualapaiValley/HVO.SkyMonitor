@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
@@ -60,6 +61,9 @@ internal sealed partial class RawCaptureIngress :
     private readonly ProjectedSceneStageLifecycleCoordinator? _projectedSceneLifecycle;
     private readonly ProcessingGraphOperationsCoordinator? _graphOperations;
     private readonly SqliteCaptureProcessingStore? _processingStore;
+    private readonly SiloInstalledStorage? _silo;
+    private readonly SiloInstalledSettings? _siloSettings;
+    private readonly SiloArtifactStorage? _siloArtifacts;
 
     public RawCaptureIngress(
         IOptions<CameraAgentHostOptions> options,
@@ -80,7 +84,10 @@ internal sealed partial class RawCaptureIngress :
         Capture.CaptureMaintenanceGate? maintenanceGate = null,
         CenteredExposureProductChanges? centeredProductChanges = null,
         CenteredWindowWakeup? centeredWindowWakeup = null,
-        SqliteCaptureProcessingStore? processingStore = null)
+        SqliteCaptureProcessingStore? processingStore = null,
+        SiloInstalledStorage? silo = null,
+        SiloInstalledSettings? siloSettings = null,
+        SiloArtifactStorage? siloArtifacts = null)
     {
         _options = options.Value;
         _capacityProvider = capacityProvider;
@@ -97,6 +104,9 @@ internal sealed partial class RawCaptureIngress :
         _projectedSceneLifecycle = projectedSceneLifecycle;
         _graphOperations = graphOperations;
         _processingStore = processingStore;
+        _silo = silo;
+        _siloSettings = siloSettings;
+        _siloArtifacts = siloArtifacts;
         _maintenanceGate = maintenanceGate;
         if (maintenanceGate is not null) maintenanceGate.CaptureRunning += RunDeferredMaintenance;
         var resolvedLaneFaultInjector = laneFaultInjector ?? new NullCaptureLaneFaultInjector();
@@ -113,7 +123,8 @@ internal sealed partial class RawCaptureIngress :
             timeProvider.GetUtcNow,
             _options.TransientDetection, centeredProductChanges: centeredProductChanges,
             centeredWindowWakeup: centeredWindowWakeup,
-            firstBootPause: _options.FirstBootPause.Identity);
+            firstBootPause: _options.FirstBootPause.Identity,
+            usesSilo: silo is not null);
         _files = new RawIngressFileStore(
             root,
             faultInjector,
@@ -484,6 +495,7 @@ internal sealed partial class RawCaptureIngress :
             }
             if (!existingCapture.Exists)
             {
+                EnsureSiloBinding();
                 EnsureCapacity(frame.PixelData.Length);
             }
             var centeredRequest = centered is null ? null : await _journal.ReadCenteredRequestAsync(
@@ -612,6 +624,7 @@ internal sealed partial class RawCaptureIngress :
                     throw new InvalidOperationException($"Raw ingress descriptor is invalid ({validation.ReasonCode}).");
                 }
                 _faultInjector.Inject(RawIngressFaultPoint.ValidationCompleted);
+                await EnsureSiloCapacityAsync(frame.PixelData.Length, previewManifest, CancellationToken.None).ConfigureAwait(false);
                 using (var payloadActivity = RawIngressTelemetry.ActivitySource.StartActivity("payload.publish"))
                 {
                     await _files.PublishPayloadAsync(paths, frame.PixelData, CancellationToken.None).ConfigureAwait(false);
@@ -741,7 +754,7 @@ internal sealed partial class RawCaptureIngress :
                     committedDescriptor.Timing.ExposureStartedUtc,
                     FrameArtifactRole.Raw),
                 manifestSha256);
-            if (outcome == RawIngressOutcome.Committed || prior.Availability == RawIngressAvailability.Degraded)
+            if (_silo is null && (outcome == RawIngressOutcome.Committed || prior.Availability == RawIngressAvailability.Degraded))
             {
                 try
                 {
@@ -1003,7 +1016,7 @@ internal sealed partial class RawCaptureIngress :
             return Array.Empty<RawIngressRetentionHold>();
         }
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
-        return await _journal.ReadRetentionHoldsAsync(cancellationToken).ConfigureAwait(false);
+        return await ReadRetentionHoldsAsync(cancellationToken).ConfigureAwait(false);
     }
 
     internal async ValueTask<IReadOnlyList<RawIngressRetentionHold>> GetRetentionHoldsUnderLifecycleLockAsync(
@@ -1020,7 +1033,7 @@ internal sealed partial class RawCaptureIngress :
             throw new InvalidOperationException(
                 "Raw ingress must be initialized before retention reads are made under the lifecycle lock.");
         }
-        return await _journal.ReadRetentionHoldsAsync(cancellationToken).ConfigureAwait(false);
+        return await ReadRetentionHoldsAsync(cancellationToken).ConfigureAwait(false);
     }
 
     public void InvalidateEvidence()

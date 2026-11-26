@@ -22,7 +22,7 @@ public sealed partial class VirtualSkyCameraModuleTests
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-centered-full-custody");
         var token = CancellationToken.None;
         var start = new DateTimeOffset(2026, 11, 20, 22, 30, 0, TimeSpan.Zero);
-        var clock = new CenteredClock { UtcNow = start };
+        var clock = new CenteredCustodyClock(start);
         var deviceClock = new ExposureTestTimeProvider(start, autoAdvance: true);
         var interval = TimeSpan.FromSeconds(2);
         var profile = CenteredRuntimeProfile(root, start, CameraPixelFormat.BayerRggb16);
@@ -119,6 +119,21 @@ public sealed partial class VirtualSkyCameraModuleTests
         {
             Directory.Delete(root, recursive: true);
         }
+    }
+
+    // The fixture advances exposure UTC explicitly. Registration's deadline must use the same clock under suite load.
+    private sealed class CenteredCustodyClock(DateTimeOffset start) : CenteredClock
+    {
+        private readonly ExposureTestTimeProvider _clock = new(start);
+
+        internal override DateTimeOffset UtcNow
+        {
+            get => _clock.GetUtcNow();
+            set => _clock.Advance(value - _clock.GetUtcNow());
+        }
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period) =>
+            _clock.CreateTimer(callback, state, dueTime, period);
     }
 
     [TestMethod]

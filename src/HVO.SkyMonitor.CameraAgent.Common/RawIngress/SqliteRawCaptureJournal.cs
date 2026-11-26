@@ -25,7 +25,8 @@ internal sealed partial class SqliteRawCaptureJournal(
     Action? inspectionSourceOpenedSeam = null,
     CenteredExposureProductChanges? centeredProductChanges = null,
     CenteredWindowWakeup? centeredWindowWakeup = null,
-    FirstBootPauseIdentity? firstBootPause = null)
+    FirstBootPauseIdentity? firstBootPause = null,
+    bool usesSilo = false)
 {
     // v16 fences readers that do not honor capture-specific environmental unavailable evidence.
     internal const int CurrentSchemaVersion = 17;
@@ -250,7 +251,12 @@ internal sealed partial class SqliteRawCaptureJournal(
             }
         }
         await ConfigureConnectionAsync(connection, cancellationToken).ConfigureAwait(false);
-        await ValidateSchemaAsync(connection, cancellationToken, _busyTimeoutSeconds).ConfigureAwait(false);
+        if (usesSilo)
+            await InitializeSiloAdmissionsAsync(connection, cancellationToken).ConfigureAwait(false);
+        else if (await ExecuteScalarLongAsync(connection,
+            "SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE name = 'silo_raw_admissions');", cancellationToken).ConfigureAwait(false) != 0)
+            throw new InvalidDataException("This raw admission journal belongs to an installed Silo layout.");
+        await ValidateSchemaAsync(connection, cancellationToken, _busyTimeoutSeconds, verifyDatabase: !usesSilo).ConfigureAwait(false);
         await SynchronizeTransientPolicyAsync(connection, laneDefinitions, cancellationToken).ConfigureAwait(false);
         await SynchronizeLaneDefinitionsAsync(connection, laneDefinitions, cancellationToken).ConfigureAwait(false);
     }
@@ -573,6 +579,8 @@ internal sealed partial class SqliteRawCaptureJournal(
         command.Parameters.AddWithValue("$committed", _utcNow().ToUniversalTime().ToUnixTimeMilliseconds());
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         var rawRowId = await ReadLastInsertRowIdAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+        if (usesSilo)
+            await TrackSiloAdmissionAsync(connection, transaction, rawRowId, entry, cancellationToken).ConfigureAwait(false);
         await InsertContextAsync(
             connection, transaction, rawRowId, contextJson, contextSha256, cancellationToken).ConfigureAwait(false);
         await InsertLaneWorkAsync(
@@ -1623,6 +1631,8 @@ internal sealed partial class SqliteRawCaptureJournal(
             await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
         var recoveredRowId = await ReadLastInsertRowIdAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+        if (usesSilo)
+            await TrackSiloAdmissionAsync(connection, transaction, recoveredRowId, entry, cancellationToken).ConfigureAwait(false);
         await InsertLaneWorkAsync(
             connection, transaction, recoveredRowId, entry, laneDefinitions, cancellationToken).ConfigureAwait(false);
         if (centered is not null)
@@ -2132,7 +2142,8 @@ internal sealed partial class SqliteRawCaptureJournal(
                 !actualSchemaDefinitions.TryGetValue(expected.Key, out var actual) ||
                 !string.Equals(actual, expected.Value, StringComparison.Ordinal)) ||
             actualSchemaDefinitions.Keys.Any(name =>
-                !expectedDefinitions.ContainsKey(name) && !SharedSchemaObjectNames.Contains(name)) ||
+                !expectedDefinitions.ContainsKey(name) && !SharedSchemaObjectNames.Contains(name) &&
+                !IsCanonicalSiloAdmissionTable(name, actualSchemaDefinitions[name], version)) ||
             (actualSchemaDefinitions.ContainsKey(LegacyAstrometryJournalSchema.LookupIndexName) &&
              version != CurrentSchemaVersion &&
              (version != PreviousEnvironmentalFenceSchemaVersion ||

@@ -209,9 +209,9 @@ public sealed partial class VirtualSkyCameraModuleTests
         };
     }
 
-    private sealed class CenteredClock : TimeProvider
+    private class CenteredClock : TimeProvider
     {
-        internal DateTimeOffset UtcNow { get; set; } = DateTimeOffset.UtcNow;
+        internal virtual DateTimeOffset UtcNow { get; set; } = DateTimeOffset.UtcNow;
         public override DateTimeOffset GetUtcNow() => UtcNow;
     }
 

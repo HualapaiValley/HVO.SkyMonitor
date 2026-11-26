@@ -76,7 +76,7 @@ internal sealed class CenteredExposureInputCustody(
                     var output = await store.ReadOutputByArtifactIdAsync(expected.ArtifactId, cancellationToken).ConfigureAwait(false);
                     if (output?.Descriptor is not { } descriptor || output.AvailabilityState != "Available")
                         return null;
-                    if (!ingress.CenteredFrameFilesExist(candidate.Exposure.Raw))
+                    if (!await ingress.CenteredFrameEvidenceExistsAsync(candidate.Exposure.Raw, cancellationToken).ConfigureAwait(false))
                         return null;
 
                     var bytes = checked(candidate.Exposure.Raw.Layout.ByteLength + descriptor.Layout.ByteLength);

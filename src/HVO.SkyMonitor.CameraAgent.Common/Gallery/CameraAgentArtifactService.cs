@@ -5,6 +5,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Imaging;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
@@ -106,6 +107,7 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
     private readonly Microsoft.Extensions.Logging.ILogger? _logger;
     private readonly string _root;
     private readonly LocalArchiveReader? _localArchive;
+    private readonly SiloArtifactStorage? _silo;
     private readonly string _databasePath;
     private readonly string _walPath;
     private readonly string _sharedMemoryPath;
@@ -133,10 +135,12 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         SqliteCaptureProcessingStore processingStore,
         ICameraAgentPreviewEncoder previewEncoder,
         Microsoft.Extensions.Logging.ILogger<CameraAgentArtifactService>? logger = null,
-        LocalArchiveReader? localArchive = null)
+        LocalArchiveReader? localArchive = null,
+        SiloArtifactStorage? silo = null)
     {
         _logger = logger;
         _localArchive = localArchive;
+        _silo = silo;
         ArgumentNullException.ThrowIfNull(options);
         _processingStore = processingStore ?? throw new ArgumentNullException(nameof(processingStore));
         _previewEncoder = previewEncoder ?? throw new ArgumentNullException(nameof(previewEncoder));
@@ -190,6 +194,14 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
             await _processingStore.InitializeAsync(cancellationToken).ConfigureAwait(false);
             var evidence = await ReadJournalEvidenceAsync(artifactId, replayExecutionId, history, cancellationToken)
                 .ConfigureAwait(false);
+            if (_silo is not null)
+            {
+                lifecycleGateHeld = false;
+                lifecycleGate.Release();
+                return evidence.Row is { } siloRow && evidence.Status == CameraAgentArtifactReadStatus.Found
+                    ? await OpenSiloContentAsync(_silo, siloRow, forPreview, cancellationToken).ConfigureAwait(false)
+                    : new(evidence.Status);
+            }
             IndexedArchiveFrame? archive = null;
             if (evidence.Status != CameraAgentArtifactReadStatus.Found)
             {
@@ -411,6 +423,43 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
             {
                 lifecycleGate.Release();
             }
+        }
+    }
+
+    [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The result transfers ownership of the verified stream to the caller.")]
+    private async ValueTask<CameraAgentArtifactContentResult> OpenSiloContentAsync(SiloArtifactStorage silo,
+        ArtifactEvidenceRow row, bool forPreview, CancellationToken cancellationToken)
+    {
+        var raw = row.Kind == ArtifactEvidenceKind.Raw;
+        if (raw && row.RawState != "committed")
+            return new(row.RawState == "missing_evidence" ? CameraAgentArtifactReadStatus.Gone : CameraAgentArtifactReadStatus.Conflict);
+        try
+        {
+            var evidence = await silo.ReadMemberAsync(row.ArtifactId, raw ? SiloArtifactStorage.RawEvidenceRevision : SiloArtifactStorage.ProductEvidenceRevision,
+                row.EvidenceJson.LongLength, SiloHash.Sha256(row.EvidenceJson), cancellationToken).ConfigureAwait(false);
+            if (evidence is null) return new(CameraAgentArtifactReadStatus.Unavailable);
+            var validated = raw ? ValidateRaw(row, evidence) : ValidateProcessing(row, evidence);
+            if (forPreview && PreviewStatus(validated) is { } previewStatus) return new(previewStatus);
+            var stream = await silo.OpenMemberAsync(row.ArtifactId, row.IdentitySha256,
+                validated.ByteLength, validated.ChecksumSha256, cancellationToken).ConfigureAwait(false);
+            if (stream is null) return new(CameraAgentArtifactReadStatus.Unavailable);
+            var content = new CameraAgentArtifactContentStream(stream, validated.ArtifactId,
+                validated.CaptureId, validated.Role, validated.MediaType, validated.ByteLength, validated.ChecksumSha256.ToUpperInvariant(),
+                CreateFileName(validated.ArtifactId, validated.MediaType), validated.Descriptor, validated.EncodedWidth, validated.EncodedHeight)
+                { ProductManifest = validated.ProductManifest };
+            return new(CameraAgentArtifactReadStatus.Found, content);
+        }
+        catch (SiloStoreUnavailableException)
+        {
+            return new(CameraAgentArtifactReadStatus.Unavailable);
+        }
+        catch (FileNotFoundException)
+        {
+            return new(CameraAgentArtifactReadStatus.Gone);
+        }
+        catch (InvalidDataException)
+        {
+            return new(CameraAgentArtifactReadStatus.Conflict);
         }
     }
 
@@ -914,7 +963,7 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         {
             raw.CommandText = """
                 SELECT capture_id, raw_artifact_id, payload_relative_path, sidecar_relative_path,
-                       manifest_json, manifest_sha256, payload_sha256, payload_length, state
+                       manifest_json, manifest_sha256, payload_sha256, payload_length, state, descriptor_sha256
                 FROM raw_captures WHERE raw_artifact_id = $artifact_id;
                 """;
             raw.Parameters.AddWithValue("$artifact_id", artifactId.ToString("N"));
@@ -934,14 +983,14 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
                     descriptor.Artifact.MediaType,
                     reader.GetInt64(7),
                     reader.GetString(6),
-                    reader.GetString(8)));
+                    reader.GetString(8), reader.GetString(9)));
             }
         }
         using (var output = connection.CreateCommand())
         {
             output.CommandText = """
                 SELECT output.capture_id, output.artifact_id, output.payload_relative_path,
-                       output.sidecar_relative_path, output.descriptor_json, output.availability_state
+                       output.sidecar_relative_path, output.descriptor_json, output.availability_state, output.output_identity_sha256
                 FROM processing_outputs AS output
                 INNER JOIN processing_nodes AS node
                     ON node.capture_id = output.capture_id AND node.node_id = output.node_id
@@ -973,7 +1022,7 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
                     facts.MediaType,
                     facts.ByteLength,
                     facts.ChecksumSha256,
-                    null));
+                    null, reader.GetString(6)));
             }
         }
         return rows.Count switch
@@ -994,7 +1043,7 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT output.capture_id, output.artifact_id, output.payload_relative_path,
-                   output.sidecar_relative_path, output.descriptor_json, output.availability_state
+                   output.sidecar_relative_path, output.descriptor_json, output.availability_state, output.output_identity_sha256
             FROM processing_executions execution
             JOIN processing_execution_outputs association
               ON association.execution_id = execution.execution_id
@@ -1028,7 +1077,7 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
                 facts.MediaType,
                 facts.ByteLength,
                 facts.ChecksumSha256,
-                null));
+                null, reader.GetString(6)));
         }
         return rows.Count switch
         {
@@ -1553,7 +1602,8 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         string MediaType,
         long ByteLength,
         string ChecksumSha256,
-        string? RawState);
+        string? RawState,
+        string IdentitySha256);
 
     private sealed record ArtifactEvidenceLookup(
         CameraAgentArtifactReadStatus Status,

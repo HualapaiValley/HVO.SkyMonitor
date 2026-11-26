@@ -8,6 +8,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.Storage.FileSystem;
@@ -18,7 +19,7 @@ using Microsoft.Extensions.Options;
 namespace HVO.SkyMonitor.CameraAgent.Common.TimeLapses;
 
 /// <summary>CameraAgent authority for queued windows, frozen inputs and immutable local-only video publication.</summary>
-internal sealed partial class SqliteTimeLapseStore(IOptions<CameraAgentHostOptions> options, TimeProvider clock)
+internal sealed partial class SqliteTimeLapseStore(IOptions<CameraAgentHostOptions> options, TimeProvider clock, SiloArtifactStorage? silo = null)
     : ICameraAgentTimeLapseCatalog, ICameraAgentTimeLapseCommands, IProcessingRetentionHolds, IDisposable
 {
     private const int MaximumPendingJobs = 64;
@@ -266,17 +267,32 @@ internal sealed partial class SqliteTimeLapseStore(IOptions<CameraAgentHostOptio
             var json = Serialize(product);
             await ExecuteAsync(authorityConnection, null, "INSERT INTO publications(product_id) VALUES($id);", token,
                 ("$id", product.ProductId.ToString("N"))).ConfigureAwait(false);
-            await AtomicPublisher.PublishAsync(root, name, PublishMode.Replace, async (output, cancellationToken) =>
+            if (silo is null)
             {
-                using var input = encoded.OpenRead();
-                await input.CopyToAsync(output, cancellationToken).ConfigureAwait(false);
-            }, token).ConfigureAwait(false);
-            if (await HashPathAsync(root.Resolve(name), token).ConfigureAwait(false) != product.Encoding.PayloadSha256 ||
-                new FileInfo(root.Resolve(name)).Length != product.Encoding.PayloadBytes)
-                throw new InvalidDataException("Published video bytes differ from encoder evidence.");
-            using (DeploymentLocation.RetainedIntegrityLedger.BeginWrite(root.Resolve("products/" + product.ProductId.ToString("N") + ".json"), Encoding.UTF8.GetBytes(json)))
-                await AtomicPublisher.PublishAsync(root, "products/" + product.ProductId.ToString("N") + ".json", PublishMode.Replace,
-                    (output, cancellationToken) => output.WriteAsync(Encoding.UTF8.GetBytes(json), cancellationToken).AsTask(), token).ConfigureAwait(false);
+                await AtomicPublisher.PublishAsync(root, name, PublishMode.Replace, async (output, cancellationToken) =>
+                {
+                    using var input = encoded.OpenRead();
+                    await input.CopyToAsync(output, cancellationToken).ConfigureAwait(false);
+                }, token).ConfigureAwait(false);
+                if (await HashPathAsync(root.Resolve(name), token).ConfigureAwait(false) != product.Encoding.PayloadSha256 ||
+                    new FileInfo(root.Resolve(name)).Length != product.Encoding.PayloadBytes)
+                    throw new InvalidDataException("Published video bytes differ from encoder evidence.");
+                using (DeploymentLocation.RetainedIntegrityLedger.BeginWrite(root.Resolve("products/" + product.ProductId.ToString("N") + ".json"), Encoding.UTF8.GetBytes(json)))
+                    await AtomicPublisher.PublishAsync(root, "products/" + product.ProductId.ToString("N") + ".json", PublishMode.Replace,
+                        (output, cancellationToken) => output.WriteAsync(Encoding.UTF8.GetBytes(json), cancellationToken).AsTask(), token).ConfigureAwait(false);
+            }
+            else
+            {
+                var member = SiloArtifactStorage.Member(product.ProductId, product.OutputIdentitySha256, "video", SiloRetentionClass.Display,
+                    "video/mp4", product.Encoding.PayloadBytes, product.Encoding.PayloadSha256);
+                var draft = new SiloGroupDraft("time-lapse", product.ProductId.ToString("N"), product.OutputIdentitySha256,
+                    product.EndUtc.ToUniversalTime(), product.StartUtc.ToUniversalTime(), product.EndUtc.ToUniversalTime(), [member], [], new([]));
+                await silo.PublishAsync(draft, (_, cancellationToken) =>
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    return ValueTask.FromResult<Stream>(encoded.OpenRead());
+                }, token).ConfigureAwait(false);
+            }
             using var connection = await OpenAsync(token).ConfigureAwait(false);
             using var transaction = Begin(connection);
             await ExecuteAsync(connection, transaction, """
@@ -340,6 +356,9 @@ internal sealed partial class SqliteTimeLapseStore(IOptions<CameraAgentHostOptio
     {
         var product = await GetAsync(productId, cancellationToken).ConfigureAwait(false);
         if (product is null) return null;
+        if (silo is not null)
+            return await silo.OpenMemberAsync(productId, product.OutputIdentitySha256, product.Encoding.PayloadBytes,
+                product.Encoding.PayloadSha256, cancellationToken).ConfigureAwait(false);
         var path = Root().Resolve("products/" + productId.ToString("N") + ".mp4");
         if (!File.Exists(path)) return null;
         DurableSync.RequireRegularFile(path);

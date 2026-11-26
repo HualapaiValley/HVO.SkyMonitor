@@ -3,6 +3,7 @@ using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.Imaging;
 using Microsoft.Extensions.Options;
@@ -29,7 +30,8 @@ internal sealed partial class CaptureProcessingPersistence(
     IFrameStorageService frameStorage,
     CaptureProcessingTelemetry telemetry,
     ILogger<CaptureProcessingPersistence> logger,
-    ICaptureProcessingFaultInjector? faultInjector = null) :
+    ICaptureProcessingFaultInjector? faultInjector = null,
+    SiloArtifactStorage? silo = null) :
     IProcessingRetentionHolds, IProcessingOutputExpiration
 {
     private readonly string _storageRoot = Path.GetFullPath(options.Value.RawIngressRoot);
@@ -267,6 +269,8 @@ internal sealed partial class CaptureProcessingPersistence(
                 inputs.Count, "CanonicalContext", "operator", null, null, null, null,
                 "cameraagent-operator-v1", Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(actor))), false));
             var completed = _timeProvider.GetUtcNow();
+            await PersistSiloOutputsAsync(baseOutput.Descriptor, [durableOutput], [product], nodeId, null, cancellationToken)
+                .ConfigureAwait(false);
             await _store.WriteNodeAsync(
                 captureId,
                 node,
@@ -655,9 +659,12 @@ internal sealed partial class CaptureProcessingPersistence(
         foreach (var entry in entries)
         {
             var payloadPath = ResolveSafePath(entry.PayloadRelativePath);
-            if (!File.Exists(payloadPath))
+            if (silo is null && !File.Exists(payloadPath))
                 throw new FileNotFoundException("A frozen replay input is no longer retained.", payloadPath);
-            var payload = await File.ReadAllBytesAsync(payloadPath, cancellationToken).ConfigureAwait(false);
+            var payload = silo is null
+                ? await File.ReadAllBytesAsync(payloadPath, cancellationToken).ConfigureAwait(false)
+                : await silo.ReadRawAsync(entry.Descriptor, cancellationToken).ConfigureAwait(false)
+                    ?? throw new FileNotFoundException("A frozen replay input has no settled Silo publication.");
             if (!string.Equals(
                 ProcessingIdentity.ComputePayloadSha256(payload),
                 entry.PayloadSha256,
@@ -795,6 +802,8 @@ internal sealed partial class CaptureProcessingPersistence(
                 _telemetry.RecordPersistence(node, product, stopwatch.Elapsed);
                 activity?.SetStatus(ActivityStatusCode.Ok);
             }
+            await PersistSiloOutputsAsync(rawCapture.Manifest.Descriptor, outputs, products, node.Id, execution?.ExecutionId, cancellationToken)
+                .ConfigureAwait(false);
             _faultInjector.Inject(CaptureProcessingFaultPoint.AfterOutputsPublishedBeforeNodeCommit, node.Id);
             var inputEvidence = context.GetCurrentInputEvidence();
             var centeredProducts = rawCapture.Manifest.CenteredExposure is not null &&
@@ -839,6 +848,21 @@ internal sealed partial class CaptureProcessingPersistence(
         }
     }
 
+    private async ValueTask PersistSiloOutputsAsync(ReconstructionDescriptor raw, List<DurableProcessingOutput> outputs,
+        IReadOnlyList<ProcessingProduct> products, string nodeId, Guid? executionId, CancellationToken cancellationToken)
+    {
+        if (silo is null || outputs.Count == 0) return;
+        var identity = CaptureContractJson.ComputeCanonicalJsonSha256(JsonSerializer.SerializeToElement(new
+        {
+            raw.Capture.CaptureId, NodeId = nodeId, ExecutionId = executionId,
+            Artifacts = outputs.Select(static output => output.ArtifactId).Order().ToArray()
+        }));
+        var inputs = outputs.Select((output, index) => new SiloArtifactInput(output.ArtifactId, output.Artifact.Role.ToString(),
+            output.Artifact.MediaType, output.Artifact.ChecksumSha256, products[index].Payload, output.EvidenceJson,
+            output.ContentIdentitySha256, output.OutputIdentitySha256, nodeId, output.RecipeIdentitySha256)).ToArray();
+        await silo.PublishProcessingAsync(SiloCenteredViews.LowerHex(identity), raw, inputs, cancellationToken).ConfigureAwait(false);
+    }
+
     internal async Task<ProcessingArtifact> RestoreCenteredLinearAsync(
         ExposureProductRef expected, CancellationToken cancellationToken)
     {
@@ -866,7 +890,11 @@ internal sealed partial class CaptureProcessingPersistence(
         }
         var payloadPath = ResolveSafePath(output.PayloadRelativePath);
         var sidecarPath = ResolveSafePath(output.SidecarRelativePath);
-        var sidecar = await ReadCommittedFileAsync(sidecarPath, output.EvidenceJson.LongLength, cancellationToken).ConfigureAwait(false);
+        var sidecar = silo is null
+            ? await ReadCommittedFileAsync(sidecarPath, output.EvidenceJson.LongLength, cancellationToken).ConfigureAwait(false)
+            : await silo.ReadMemberAsync(output.ArtifactId, SiloArtifactStorage.ProductEvidenceRevision, output.EvidenceJson.LongLength,
+                SiloHash.Sha256(output.EvidenceJson), cancellationToken).ConfigureAwait(false)
+                ?? throw new FileNotFoundException("The processing evidence has no settled Silo publication.");
         if (!sidecar.AsSpan().SequenceEqual(output.EvidenceJson))
         {
             throw new InvalidDataException("Committed processing output sidecar differs from its durable bytes.");
@@ -891,7 +919,7 @@ internal sealed partial class CaptureProcessingPersistence(
         {
             throw new InvalidDataException("Committed processing output sidecar conflicts with durable state.");
         }
-        var payload = await ReadCommittedFileAsync(payloadPath, descriptor.Layout.ByteLength, cancellationToken).ConfigureAwait(false);
+        var payload = await ReadProcessingPayloadAsync(output, payloadPath, descriptor.Layout.ByteLength, cancellationToken).ConfigureAwait(false);
         var reconstruction = FrameReconstructor.TryReconstruct(descriptor, payload, out var frame);
         if (!reconstruction.IsValid || frame is null)
         {
@@ -1195,7 +1223,13 @@ internal sealed partial class CaptureProcessingPersistence(
             _ => throw new InvalidDataException("Durable processing product manifest type is unsupported.")
         });
 
-    private static async ValueTask<RestoredProcessingOutput> RestoreMetadataProductAsync(
+    private async ValueTask<byte[]> ReadProcessingPayloadAsync(DurableProcessingOutput output, string path, long length,
+        CancellationToken cancellationToken) => silo is null
+        ? await ReadCommittedFileAsync(path, length, cancellationToken).ConfigureAwait(false)
+        : await silo.ReadMemberAsync(output.ArtifactId, output.OutputIdentitySha256, length, output.Artifact.ChecksumSha256,
+            cancellationToken).ConfigureAwait(false) ?? throw new FileNotFoundException("The processing artifact has no settled Silo publication.");
+
+    private async ValueTask<RestoredProcessingOutput> RestoreMetadataProductAsync(
         DurableProcessingOutput output,
         string payloadPath,
         byte[] sidecar,
@@ -1204,7 +1238,7 @@ internal sealed partial class CaptureProcessingPersistence(
         var manifest = DurableProcessingProductManifestJson.Parse(sidecar);
         ValidateLayoutlessOutputFacts(output, manifest);
         var recipe = ProcessingIdentity.CreateRecipeIdentity(manifest.Artifact.Recipe);
-        var payload = await ReadCommittedFileAsync(payloadPath, manifest.ByteLength, cancellationToken).ConfigureAwait(false);
+        var payload = await ReadProcessingPayloadAsync(output, payloadPath, manifest.ByteLength, cancellationToken).ConfigureAwait(false);
         if (payload.LongLength != manifest.ByteLength ||
             !string.Equals(ProcessingIdentity.ComputePayloadSha256(payload), manifest.Artifact.ChecksumSha256, StringComparison.Ordinal))
         {

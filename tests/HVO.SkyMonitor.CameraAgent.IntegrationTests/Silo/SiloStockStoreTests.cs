@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using Amazon.S3;
 using Amazon.S3.Model;
 using DotNet.Testcontainers.Builders;
+using DotNet.Testcontainers.Containers;
 using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Silo.S3;
 
@@ -10,7 +11,7 @@ namespace HVO.SkyMonitor.CameraAgent.IntegrationTests.Silo;
 
 [TestClass]
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
-public sealed class SiloStockStoreTests
+public sealed partial class SiloStockStoreTests
 {
     // Same stock index as the installer, exercised on a new disposable data root.
     private const string StockImage = "docker.io/pgsty/silo@sha256:c20d112390b9a9ce8c11b8af95ad35bcaa62f4759663c09c936cd8d2b511f329";
@@ -29,11 +30,24 @@ public sealed class SiloStockStoreTests
         var token = deadline.Token;
         var accessKey = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(12));
         var secretKey = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(24));
-        var container = new ContainerBuilder(StockImage)
+        var container = BuildStockContainer(accessKey, secretKey, "on");
+        await using var containerLease = container.ConfigureAwait(false);
+        await container.StartAsync(token).ConfigureAwait(false);
+        using var client = SiloS3ObjectStore.CreateClient(Endpoint(container), accessKey, secretKey);
+        await CreateVersionedBucketAsync(client, Bucket, token).ConfigureAwait(false);
+
+        var descriptor = new SiloStoreDescriptor("local-silo-fixture", Bucket, SiloStoreClass.Local, SiloRetrieval.Online,
+            PersistenceQualified: false);
+        var store = new SiloS3ObjectStore(client, descriptor, TimeSpan.FromSeconds(30));
+        await CheckStockVersionsAsync(container, client, store, descriptor, accessKey, secretKey, token).ConfigureAwait(false);
+    }
+
+    private static IContainer BuildStockContainer(string accessKey, string secretKey, string sync) =>
+        new ContainerBuilder(StockImage)
             .WithEnvironment("MINIO_ROOT_USER", accessKey)
             .WithEnvironment("MINIO_ROOT_PASSWORD", secretKey)
             .WithEnvironment("MINIO_BROWSER", "off")
-            .WithEnvironment("MINIO_FS_OSYNC", "on")
+            .WithEnvironment("MINIO_FS_OSYNC", sync)
             .WithCommand("server", "/data", "--address", ":9000")
             .WithPortBinding(Port, assignRandomHostPort: true)
             .WithCreateParameterModifier(parameters =>
@@ -47,20 +61,22 @@ public sealed class SiloStockStoreTests
             .WithWaitStrategy(Wait.ForUnixContainer().UntilHttpRequestIsSucceeded(
                 request => request.ForPort(Port).ForPath("/minio/health/ready")))
             .Build();
-        await using var containerLease = container.ConfigureAwait(false);
-        await container.StartAsync(token).ConfigureAwait(false);
-        using var client = SiloS3ObjectStore.CreateClient(new UriBuilder("http", container.Hostname, container.GetMappedPublicPort(Port)).Uri,
-            accessKey, secretKey);
-        await client.PutBucketAsync(new PutBucketRequest { BucketName = Bucket }, token).ConfigureAwait(false);
+
+    private static Uri Endpoint(IContainer container) => new UriBuilder("http", container.Hostname, container.GetMappedPublicPort(Port)).Uri;
+
+    private static async Task CreateVersionedBucketAsync(AmazonS3Client client, string bucket, CancellationToken token)
+    {
+        await client.PutBucketAsync(new PutBucketRequest { BucketName = bucket }, token).ConfigureAwait(false);
         await client.PutBucketVersioningAsync(new PutBucketVersioningRequest
         {
-            BucketName = Bucket,
+            BucketName = bucket,
             VersioningConfig = new S3BucketVersioningConfig { Status = VersionStatus.Enabled }
         }, token).ConfigureAwait(false);
+    }
 
-        var descriptor = new SiloStoreDescriptor("local-silo-fixture", Bucket, SiloStoreClass.Local, SiloRetrieval.Online,
-            PersistenceQualified: false);
-        var store = new SiloS3ObjectStore(client, descriptor, TimeSpan.FromSeconds(30));
+    private static async Task CheckStockVersionsAsync(IContainer container, AmazonS3Client client, SiloS3ObjectStore store,
+        SiloStoreDescriptor descriptor, string accessKey, string secretKey, CancellationToken token)
+    {
         var bytes = RandomNumberGenerator.GetBytes(512 * 1024);
         var write = Put(Key, bytes);
         Assert.IsNull(await store.LocateCurrentVersionAsync(Key, token).ConfigureAwait(false));

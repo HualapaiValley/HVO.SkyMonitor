@@ -223,6 +223,11 @@ internal static class SiloVerifier
         ProbeBoundedAsync(store, locator, expectedLength, expectedSha256, clock, Math.Max(0, expectedLength),
             captureBytes, captureMismatch: false, cancellationToken);
 
+    internal static ValueTask<SiloProbe> CopyVerifiedAsync(ISiloObjectStore store, SiloExactLocator locator,
+        long expectedLength, string expectedSha256, TimeProvider clock, Stream destination, CancellationToken cancellationToken) =>
+        ProbeBoundedAsync(store, locator, expectedLength, expectedSha256, clock, expectedLength,
+            captureBytes: false, captureMismatch: false, cancellationToken, destination);
+
     /// <summary>Read a checkpoint occupant once, keeping its complete bytes for retry comparison if its identity differs.</summary>
     public static ValueTask<SiloProbe> ProbeMetadataOccupantAsync(
         ISiloObjectStore store, SiloExactLocator locator, long expectedLength, string expectedSha256,
@@ -235,7 +240,8 @@ internal static class SiloVerifier
 
     private static async ValueTask<SiloProbe> ProbeBoundedAsync(
         ISiloObjectStore store, SiloExactLocator locator, long expectedLength, string expectedSha256,
-        TimeProvider clock, long maximumBytes, bool captureBytes, bool captureMismatch, CancellationToken cancellationToken)
+        TimeProvider clock, long maximumBytes, bool captureBytes, bool captureMismatch, CancellationToken cancellationToken,
+        Stream? destination = null)
     {
         try
         {
@@ -262,9 +268,9 @@ internal static class SiloVerifier
                     }
                     length += read;
                     hash.AppendData(buffer, 0, read);
-                    if (captured is not null)
+                    if ((destination ?? captured) is { } output)
                     {
-                        await captured.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+                        await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
                     }
                 }
             }
@@ -305,7 +311,16 @@ internal static class SiloVerifier
         {
             return null;
         }
-        using var opened = await store.OpenVersionAsync(key, versionId, cancellationToken).ConfigureAwait(false);
+        var bytes = await ReadExactMetadataAsync(store, new(store.Descriptor.StoreId, store.Descriptor.Bucket, key, versionId),
+            cancellationToken, maximumBytes).ConfigureAwait(false);
+        return bytes is null ? null : (versionId, bytes);
+    }
+
+    public static async ValueTask<byte[]?> ReadExactMetadataAsync(ISiloObjectStore store, SiloExactLocator locator,
+        CancellationToken cancellationToken, long maximumBytes = SiloJson.MaximumMetadataObjectBytes)
+    {
+        ValidateMetadataReadLimit(maximumBytes, nameof(maximumBytes));
+        using var opened = await store.OpenVersionAsync(locator.Key, locator.VersionId, cancellationToken).ConfigureAwait(false);
         if (opened.Status != SiloOpenStatus.Found || opened.Content is null)
         {
             return null;
@@ -318,11 +333,11 @@ internal static class SiloVerifier
         {
             if (read > maximumBytes - buffer.Length)
             {
-                throw new SiloInvalidObjectException(key, "the metadata object exceeds its bound");
+                throw new SiloInvalidObjectException(locator.Key, "the metadata object exceeds its bound");
             }
             await buffer.WriteAsync(chunk.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
         }
-        return (versionId, buffer.ToArray());
+        return buffer.ToArray();
     }
 
     internal static void ValidateMetadataReadLimit(long maximumBytes, string parameterName)

@@ -18,6 +18,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.SiteProfile;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
 using HVO.SkyMonitor.CameraAgent.Common.TimeSync;
@@ -55,15 +56,26 @@ public static class CameraAgentServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configuration);
 
+        var siloSelected = configuration.GetSection("CameraAgent:Silo").Exists();
         services.TryAddSingleton(TimeProvider.System);
         services.AddOptions<CameraAgentHostOptions>()
             .Bind(configuration.GetSection("CameraAgent"))
             .Configure(options => options.SpaceWeather.BindProducts(configuration))
             .ValidateDataAnnotations()
-            .Validate(options => string.IsNullOrEmpty(configuration["CameraAgent:Silo:StateContract"]) ||
+            .Validate(options => !siloSelected ||
                 options.CentralIntegration.Mode == CentralIntegrationMode.Disabled,
                 "The Silo storage layout requires disabled central integration.")
             .ValidateOnStart();
+        if (siloSelected)
+        {
+            services.AddSingleton(_ => SiloInstalledSettings.Read(configuration.GetSection("CameraAgent:Silo")));
+            services.AddSingleton<SiloInstalledStorage>();
+            services.AddSingleton<SiloArtifactStorage>();
+            services.AddSingleton<ICameraAgentSiloVerification>(provider => provider.GetRequiredService<SiloInstalledStorage>());
+            services.AddSingleton<SiloStorageWorker>();
+            services.AddHostedService(provider => provider.GetRequiredService<SiloStorageWorker>());
+            services.AddHealthChecks().AddCheck<SiloStorageWorker>("silo-storage", tags: ["dependency"]);
+        }
 
         services.AddSingleton<ICameraAgentConfigurationAccessor, CameraAgentConfigurationAccessor>();
         services.AddSingleton<DeploymentLocationTelemetry>();
@@ -415,7 +427,8 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton(static provider => new TimeLapseSourceReader(
             provider.GetRequiredService<IOptions<CameraAgentHostOptions>>(), provider.GetRequiredService<RawCaptureIngress>(),
             provider.GetRequiredService<SqliteCaptureProcessingStore>(), provider.GetRequiredService<SqliteTimeLapseStore>(),
-            () => provider.GetService<IDeploymentLocationStore>(), provider.GetRequiredService<IPlanetEphemeris>()));
+            () => provider.GetService<IDeploymentLocationStore>(), provider.GetRequiredService<IPlanetEphemeris>(),
+            provider.GetService<SiloArtifactStorage>()));
         services.AddSingleton<TimeLapseGenerator>();
         services.AddSingleton<ILocalAutomationWindowTaskAdapter, TimeLapseAutomationAdapter>();
         services.AddHostedService<TimeLapseWorker>();

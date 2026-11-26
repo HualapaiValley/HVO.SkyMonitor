@@ -137,6 +137,24 @@ internal sealed class SiloPublisher(
         }
     }
 
+    internal async ValueTask PublishLiveViewAsync(SiloLiveIssueRecord record, CancellationToken cancellationToken)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var operation = "centered-live:" + record.ChangeOrder.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            await journal.AppendAsync([record], operation, cancellationToken).ConfigureAwait(false);
+            var end = await catalog.CatchUpAsync(await state.ReadWriterEvidenceAsync(cancellationToken).ConfigureAwait(false), null,
+                cancellationToken).ConfigureAwait(false);
+            if (end.Reason != SiloPrefixEnd.Tail)
+                throw new SiloStoreUnavailableException(binding.StoreId, "index centered live view", writeMayHaveLanded: true);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     /// <summary>
     /// Startup: replay any pending segment, bring the catalog to the writer's committed head with P3 recovery, finish any
     /// interrupted release, then advance staged work. The work is bounded by unreleased staged groups and the journal

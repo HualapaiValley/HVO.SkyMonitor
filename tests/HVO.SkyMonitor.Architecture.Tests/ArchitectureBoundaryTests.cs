@@ -1050,7 +1050,7 @@ public sealed partial class ArchitectureBoundaryTests
     [TestCategory("Integration")]
     public void CameraAgentProviderSdkUsageIsConfinedToSiloInfrastructure()
     {
-        var repository = Repository.Value;
+        var repository = snapshot.Graph;
         var sourceRoot = Path.Combine(repository.Root, "src");
         var siloAdapter = Path.Combine(sourceRoot, CameraAgentCommon, "Silo", "S3") + Path.DirectorySeparatorChar;
         var violations = Directory.EnumerateDirectories(sourceRoot, "HVO.SkyMonitor.CameraAgent*")

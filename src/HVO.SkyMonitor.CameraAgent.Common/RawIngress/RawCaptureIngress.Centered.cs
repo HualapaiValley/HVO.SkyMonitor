@@ -288,8 +288,12 @@ internal sealed partial class RawCaptureIngress : ICenteredExposureRuntimeReader
     internal Task<CenteredRawEvidence?> ReadCenteredRawAsync(ExposureKey key, CancellationToken cancellationToken)
         => _journal.ReadCenteredRawAsync(key, cancellationToken);
 
-    internal bool CenteredFrameFilesExist(ReconstructionDescriptor descriptor)
+    internal async ValueTask<bool> CenteredFrameEvidenceExistsAsync(ReconstructionDescriptor descriptor, CancellationToken cancellationToken)
     {
+        if (_siloArtifacts is not null &&
+            !await _journal.HasPendingSiloAdmissionAsync(descriptor.Capture.CaptureId, cancellationToken).ConfigureAwait(false))
+            return await _siloArtifacts.HasMemberAsync(descriptor.Artifact.ArtifactId, CaptureContractJson.ComputeDescriptorSha256(descriptor),
+                cancellationToken).ConfigureAwait(false);
         var paths = _files.GetPaths(descriptor.Timing.ExposureStartedUtc, descriptor.Artifact.ArtifactId);
         RawIngressFileStore.EnsureNoSymbolicLinks(_options.RawIngressRoot, paths.SidecarAbsolutePath);
         RawIngressFileStore.EnsureNoSymbolicLinks(_options.RawIngressRoot, paths.PayloadAbsolutePath);
@@ -302,6 +306,13 @@ internal sealed partial class RawCaptureIngress : ICenteredExposureRuntimeReader
             throw new InvalidDataException("The centered raw source is not available as committed evidence.");
 
         var descriptor = evidence.Manifest.Descriptor;
+        if (_siloArtifacts is not null &&
+            !await _journal.HasPendingSiloAdmissionAsync(descriptor.Capture.CaptureId, cancellationToken).ConfigureAwait(false))
+        {
+            var retained = await _siloArtifacts.ReadRawAsync(descriptor, cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidDataException("The centered raw source has no settled Silo publication.");
+            return ReconstructCenteredFrame(descriptor, retained);
+        }
         var paths = _files.GetPaths(descriptor.Timing.ExposureStartedUtc, descriptor.Artifact.ArtifactId);
         RawIngressFileStore.EnsureNoSymbolicLinks(_options.RawIngressRoot, paths.SidecarAbsolutePath);
         RawIngressFileStore.EnsureNoSymbolicLinks(_options.RawIngressRoot, paths.PayloadAbsolutePath);
@@ -311,6 +322,11 @@ internal sealed partial class RawCaptureIngress : ICenteredExposureRuntimeReader
             throw new InvalidDataException("Centered raw frame evidence differs from its committed identity.");
 
         var bytes = await File.ReadAllBytesAsync(paths.PayloadAbsolutePath, cancellationToken).ConfigureAwait(false);
+        return ReconstructCenteredFrame(descriptor, bytes);
+    }
+
+    private static CameraFrame ReconstructCenteredFrame(ReconstructionDescriptor descriptor, byte[] bytes)
+    {
         var validation = FrameReconstructor.TryReconstruct(descriptor, bytes, out var frame);
         return validation.IsValid && frame is not null
             ? frame

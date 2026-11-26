@@ -581,6 +581,51 @@ internal sealed partial class SiloCatalogIndex
         return rows;
     }
 
+    internal async ValueTask<CameraAgentSiloVerificationResult> VerifyHistoryAsync(
+        SiloStoreSet stores, SiloJournalPosition cutoff, CancellationToken cancellationToken)
+    {
+        const int batchSize = 16;
+        VerificationRow? after = null;
+        long verified = 0, unavailable = 0, expired = 0, failed = 0;
+        while (true)
+        {
+            await _writer.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+                var rows = await ReadVerificationRowsAsync(connection, $"""
+                    SELECT {VerificationColumns} FROM roles
+                    WHERE (generation, sequence) <= ($cutoff_generation, $cutoff_sequence)
+                      AND (generation, sequence, record_index, kind, id, revision) > ($g, $s, $i, $kind, $id, $revision)
+                    {VerificationOrder};
+                    """, batchSize, cancellationToken, ("$cutoff_generation", cutoff.Generation), ("$cutoff_sequence", cutoff.Sequence),
+                    ("$g", after?.Generation ?? 0), ("$s", after?.Sequence ?? 0), ("$i", after?.Index ?? 0),
+                    ("$kind", after is null ? string.Empty : KindName(after.Role.Kind)), ("$id", after?.Role.Id ?? string.Empty),
+                    ("$revision", after?.Role.Revision ?? string.Empty)).ConfigureAwait(false);
+                var fresh = new SiloFreshEvidence();
+                foreach (var row in rows)
+                {
+                    var result = await ProbeRoleAsync(connection, stores, row.Role, row.Sha256, row.Length, captureBytes: false,
+                        fresh, cancellationToken).ConfigureAwait(false);
+                    switch (result.Disposition)
+                    {
+                        case SiloDisposition.Available: verified++; break;
+                        case SiloDisposition.TemporarilyUnavailable: unavailable++; break;
+                        case SiloDisposition.PolicyExpired: expired++; break;
+                        default: failed++; break;
+                    }
+                }
+                if (rows.Count < batchSize)
+                    return new(cutoff.Generation, cutoff.Sequence, verified, unavailable, expired, failed);
+                after = rows[^1];
+            }
+            finally
+            {
+                _writer.Release();
+            }
+        }
+    }
+
     /// <summary>
     /// Exact reopen (#1965 6.1). A published ID alone proves nothing: the manifest, every required member and every
     /// required reopen dependency must each verify now, by exact read, through an eligible locator, falling back from the

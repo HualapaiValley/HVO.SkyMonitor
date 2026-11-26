@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 
@@ -11,7 +12,7 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Gallery;
 
 internal sealed partial class SqliteCenteredViews(
     SqliteCaptureProcessingStore store, TimeProvider clock, ILogger<SqliteCenteredViews> logger,
-    RawCaptureIngress? ingress = null)
+    RawCaptureIngress? ingress = null, SiloInstalledStorage? silo = null)
     : ICenteredViewReadIndex, ICenteredViewPublisher
 {
     private const int MaximumPageSize = 128;

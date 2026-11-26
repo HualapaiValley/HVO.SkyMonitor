@@ -267,6 +267,17 @@ internal sealed partial class SiloCatalogIndex
         return new(role, sha, length, disposition, journaled, available, locators);
     }
 
+    internal async ValueTask<bool> HasVisibleMemberAsync(string artifactId, string revision, CancellationToken cancellationToken)
+    {
+        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        using var command = CreateCommand(connection, null, """
+            SELECT EXISTS (
+                SELECT 1 FROM publication_members m JOIN publications p ON p.group_id = m.group_id AND p.revision_id = m.revision_id
+                WHERE m.artifact_id = $artifact AND m.artifact_revision = $revision AND p.state = 'visible');
+            """, ("$artifact", artifactId), ("$revision", revision));
+        return (long)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))! == 1;
+    }
+
     /// <summary>Whether an artifact revision is already published with another length, digest or set of facts.</summary>
     public async ValueTask<bool> ConflictsWithPublishedAsync(SiloObjectIdentity identity, string factsSha256, CancellationToken cancellationToken)
     {

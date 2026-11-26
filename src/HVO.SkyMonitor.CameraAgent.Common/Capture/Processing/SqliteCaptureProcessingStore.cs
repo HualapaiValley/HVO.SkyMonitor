@@ -1,5 +1,6 @@
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.Processing;
@@ -327,6 +328,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
 
     private readonly CenteredExposureProductChanges? _centeredProductChanges;
     private readonly CenteredWindowWakeup? _centeredWindowWakeup;
+    private readonly SiloArtifactStorage? _silo;
 
     public SqliteCaptureProcessingStore(
         IOptions<CameraAgentHostOptions> options,
@@ -334,11 +336,13 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         ICaptureProcessingFaultInjector? faultInjector = null,
         Microsoft.Extensions.Logging.ILogger<SqliteCaptureProcessingStore>? logger = null,
         CenteredExposureProductChanges? centeredProductChanges = null,
-        CenteredWindowWakeup? centeredWindowWakeup = null)
+        CenteredWindowWakeup? centeredWindowWakeup = null,
+        SiloArtifactStorage? silo = null)
     {
         _logger = logger;
         _centeredProductChanges = centeredProductChanges;
         _centeredWindowWakeup = centeredWindowWakeup;
+        _silo = silo;
         ArgumentNullException.ThrowIfNull(options);
         var values = options.Value;
         _root = Path.GetFullPath(values.RawIngressRoot);

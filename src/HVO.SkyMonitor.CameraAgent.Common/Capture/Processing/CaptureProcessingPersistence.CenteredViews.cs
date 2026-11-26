@@ -68,6 +68,7 @@ internal sealed partial class CaptureProcessingPersistence
             var nodeId = product.Role == FrameArtifactRole.Preview ? CenteredViewPreviewNode : CenteredViewPublicationProducer + "-layer";
             var output = await PersistMetadataProductAsync(_storageRoot, reference, nodeId, product,
                 BeforeMetadataDirectorySyncForTest, provisionStorageRoot: false, cancellationToken).ConfigureAwait(false);
+            await PersistSiloOutputsAsync(reference, [output], [product], nodeId, null, cancellationToken).ConfigureAwait(false);
             _faultInjector.Inject(CaptureProcessingFaultPoint.AfterOutputsPublishedBeforeNodeCommit, CenteredViewPublicationProducer);
             var node = new CaptureProcessingGraphNode(nodeId, OnDemandMaterializationStep.Instance, [], false,
                 product.Recipe.Descriptor.Name, product.Role, product.Variant, product.Recipe.IdentitySha256);

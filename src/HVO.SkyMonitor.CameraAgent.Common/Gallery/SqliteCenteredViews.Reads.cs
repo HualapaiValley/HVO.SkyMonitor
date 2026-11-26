@@ -10,14 +10,16 @@ internal sealed partial class SqliteCenteredViews
     {
         var streamId = StreamId(stream);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-        return await ReadCurrentAsync(connection, null, streamId, cameraId: null, cancellationToken).ConfigureAwait(false);
+        var current = await ReadCurrentAsync(connection, null, streamId, cameraId: null, cancellationToken).ConfigureAwait(false);
+        return current is not null && await PublishedSiloIntervalAsync(current.Interval, cancellationToken).ConfigureAwait(false) ? current : null;
     }
 
     public async ValueTask<CenteredViewCurrent?> ReadLastLiveAsync(CameraKey camera, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(camera);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-        return await ReadCurrentAsync(connection, null, streamId: null, Identity(camera), cancellationToken).ConfigureAwait(false);
+        var current = await ReadCurrentAsync(connection, null, streamId: null, Identity(camera), cancellationToken).ConfigureAwait(false);
+        return current is not null && await PublishedSiloIntervalAsync(current.Interval, cancellationToken).ConfigureAwait(false) ? current : null;
     }
 
     public async ValueTask<CenteredView?> ReadLatestSingleAsync(CenteredViewStream stream, CancellationToken cancellationToken = default)
@@ -37,7 +39,9 @@ internal sealed partial class SqliteCenteredViews
             ORDER BY r.change_order DESC LIMIT 1;
             """, ("$stream", streamId), ("$kind", (int)CenteredViewKind.Single));
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? ReadView(reader) : null;
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) return null;
+        var view = ReadView(reader);
+        return await IsSiloViewVisibleAsync(view.Base.BaseId, view.Revision.RevisionId, cancellationToken).ConfigureAwait(false) ? view : null;
     }
 
     public ValueTask<IReadOnlyList<CenteredViewArchiveBase>> ReadArchiveAsync(
@@ -102,7 +106,14 @@ internal sealed partial class SqliteCenteredViews
         var values = new List<CenteredViewArchiveBase>();
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-            values.Add(new(ReadBase(reader), reader.GetString(3), reader.GetString(4), ReadNullableText(reader, 5)));
+            var viewBase = ReadBase(reader);
+            var initial = reader.GetString(3);
+            if (!await IsSiloViewVisibleAsync(viewBase.BaseId, initial, cancellationToken).ConfigureAwait(false)) continue;
+            var latest = reader.GetString(4);
+            if (!await IsSiloViewVisibleAsync(viewBase.BaseId, latest, cancellationToken).ConfigureAwait(false)) latest = initial;
+            var live = ReadNullableText(reader, 5);
+            if (live is not null && !await IsSiloViewVisibleAsync(viewBase.BaseId, live, cancellationToken).ConfigureAwait(false)) live = null;
+            values.Add(new(viewBase, initial, latest, live));
         }
         return values.AsReadOnly();
     }
@@ -112,7 +123,14 @@ internal sealed partial class SqliteCenteredViews
         ValidateHash(baseId);
         ValidateHash(revisionId);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-        return await ReadExactAsync(connection, null, baseId, revisionId, cancellationToken).ConfigureAwait(false);
+        var view = await ReadExactAsync(connection, null, baseId, revisionId, cancellationToken).ConfigureAwait(false);
+        if (view is null || !await IsSiloViewVisibleAsync(baseId, revisionId, cancellationToken).ConfigureAwait(false)) return null;
+        if (silo is not null)
+        {
+            var reopened = await silo.Catalog.ReopenAsync(baseId, revisionId, cancellationToken).ConfigureAwait(false);
+            if (!reopened.Reopenable) return null;
+        }
+        return view;
     }
 
     public async ValueTask<CenteredViewStream?> ReadReferenceStreamAsync(CameraKey camera, Guid referenceCaptureId,

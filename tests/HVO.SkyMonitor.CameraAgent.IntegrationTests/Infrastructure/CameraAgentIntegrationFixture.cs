@@ -40,7 +40,8 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
     public async Task InitializeAsync(
         Action<IServiceCollection>? configureServices = null,
         IReadOnlyDictionary<string, string?>? settings = null,
-        string? storageRoot = null)
+        string? storageRoot = null,
+        Func<string, string>? configureCamera = null)
     {
         _storageRoot = storageRoot ?? Path.Combine(Path.GetTempPath(), $"hvo-cameraagent-standalone-integration-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_storageRoot);
@@ -60,11 +61,10 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
         var transientEpochUtc = DateTimeOffset.UtcNow.AddMinutes(-1).ToUniversalTime();
         var template = await File.ReadAllTextAsync(
             Path.Combine(AppContext.BaseDirectory, "Fixtures", "cameraagent.integration.json")).ConfigureAwait(false);
-        await File.WriteAllTextAsync(
-            _configurationPath,
-            template
-                .Replace("__STORAGE_ROOT__", JsonSerializer.Serialize(_storageRoot), StringComparison.Ordinal)
-                .Replace("__TRANSIENT_EPOCH_UTC__", JsonSerializer.Serialize(transientEpochUtc), StringComparison.Ordinal))
+        var rendered = template
+            .Replace("__STORAGE_ROOT__", JsonSerializer.Serialize(_storageRoot), StringComparison.Ordinal)
+            .Replace("__TRANSIENT_EPOCH_UTC__", JsonSerializer.Serialize(transientEpochUtc), StringComparison.Ordinal);
+        await File.WriteAllTextAsync(_configurationPath, configureCamera?.Invoke(rendered) ?? rendered)
             .ConfigureAwait(false);
 
         _agentBaseFactory = new WebApplicationFactory<Program>();

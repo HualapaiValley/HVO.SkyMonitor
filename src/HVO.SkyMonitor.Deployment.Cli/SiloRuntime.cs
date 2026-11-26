@@ -35,7 +35,7 @@ internal static partial class SiloRuntimeProfile
     public const string ComposeTemplateVersion = "cameraagent-silo-compose-v1";
 
     /// <summary>The Silo layout's state contract: distinct from <c>cameraagent-state-v2</c> and never a migration target.</summary>
-    public const string StateContract = "cameraagent-silo-state-v1";
+    public const string StateContract = CameraAgentSiloBinding.StateContract;
 
     public const string Repository = SiloImagePin.Repository;
     public const string Release = SiloImagePin.Release;
@@ -84,10 +84,10 @@ internal static partial class SiloRuntimeProfile
     /// <summary>The free space a data-root filesystem of <paramref name="totalBytes"/> must keep.</summary>
     public static long RequiredFreeBytes(long totalBytes) => Math.Max(MinimumFreeBytes, totalBytes / 100 * MinimumFreePercent);
 
-    public const string MarkerKey = "meta/instance.v1.json";
-    public const string FenceKey = "meta/fence.json";
-    public const string MarkerFormat = "hvo.cameraagent.silo.instance/1";
-    public const string FenceFormat = "hvo.cameraagent.silo.fence/1";
+    public const string MarkerKey = CameraAgentSiloBinding.MarkerKey;
+    public const string FenceKey = CameraAgentSiloBinding.FenceKey;
+    public const string MarkerFormat = CameraAgentSiloBinding.MarkerFormat;
+    public const string FenceFormat = CameraAgentSiloBinding.FenceFormat;
 
     public static string DataRoot(InstallationPaths paths) => Path.Combine(paths.InstanceRoot, DataDirectoryName);
     public static string RootSecretsDirectory(InstallationPaths paths) => Path.Combine(paths.ConfigRoot, RootSecretsDirectoryName);
@@ -96,8 +96,8 @@ internal static partial class SiloRuntimeProfile
 
     /// <summary>The instance's private network as Compose names it: its project's <c>silo</c> network.</summary>
     public static string NetworkNameFor(Guid instanceId) => ComposeDeployment.ContainerNameFor(instanceId) + "_" + NetworkName;
-    public static string BucketFor(Guid instanceId) => $"hvo-{instanceId:N}";
-    public static string StoreIdFor(Guid instanceId) => $"local-silo:{instanceId:D}";
+    public static string BucketFor(Guid instanceId) => CameraAgentSiloBinding.BucketFor(instanceId);
+    public static string StoreIdFor(Guid instanceId) => CameraAgentSiloBinding.StoreIdFor(instanceId);
     public static string WriterNameFor(int generation) => $"hvo-writer-g{generation.ToString(CultureInfo.InvariantCulture)}";
 
     /// <summary>
@@ -105,8 +105,7 @@ internal static partial class SiloRuntimeProfile
     /// bucket. It names the store, never an endpoint URL, so relocating the endpoint preserves it.
     /// </summary>
     public static string StorageBindingIdFor(Guid instanceId, string storeId, string bucket)
-        => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(
-            $"hvo.cameraagent.silo.binding/1\n{instanceId:D}\n{storeId}\n{bucket}")));
+        => CameraAgentSiloBinding.BindingIdFor(instanceId, storeId, bucket);
 
     public const string EndpointSetting = "CameraAgent__Silo__Endpoint";
     public const string StateContractSetting = "CameraAgent__Silo__StateContract";
@@ -115,7 +114,7 @@ internal static partial class SiloRuntimeProfile
     public const string StorageBindingIdSetting = "CameraAgent__Silo__StorageBindingId";
     public const string WriterGenerationSetting = "CameraAgent__Silo__WriterGeneration";
 
-    /// <summary>The setting files CameraAgent reads to find its store. #1968 consumes them; until then they are inert.</summary>
+    /// <summary>The setting files CameraAgent reads to find and authenticate its installed store.</summary>
     public static IReadOnlyDictionary<string, string> CameraAgentSettings(Guid instanceId, Guid firstBootPauseId)
     {
         var bucket = BucketFor(instanceId);

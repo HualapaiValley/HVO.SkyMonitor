@@ -2,6 +2,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
+using HVO.SkyMonitor.Deployment.Contracts;
 using System.Text.Json.Serialization;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Silo;
@@ -51,7 +52,7 @@ internal sealed record SiloExactLocator(string StoreId, string Bucket, string Ke
 {
     public void Validate()
     {
-        SiloText.RequireToken(StoreId, nameof(StoreId), 128);
+        SiloText.RequireStoreId(StoreId);
         SiloText.RequireToken(Bucket, nameof(Bucket), 63);
         SiloText.RequireKey(Key);
         SiloText.RequireText(VersionId, nameof(VersionId), 1024);
@@ -107,8 +108,14 @@ internal sealed record SiloStorageBinding(string InstanceId, string StoreId, str
     private static string Compute(string instanceId, string storeId, string bucket)
     {
         SiloText.RequireText(instanceId, nameof(InstanceId), 256);
-        SiloText.RequireToken(storeId, nameof(StoreId), 128);
+        SiloText.RequireStoreId(storeId);
         SiloText.RequireToken(bucket, nameof(Bucket), 63);
+        if (CameraAgentSiloBinding.TryReadInstanceId(storeId, out var installedInstance))
+        {
+            if (instanceId != installedInstance.ToString("D") || bucket != CameraAgentSiloBinding.BucketFor(installedInstance))
+                throw new ArgumentException("The installed Silo store belongs to a different instance or bucket.", nameof(storeId));
+            return CameraAgentSiloBinding.BindingIdFor(installedInstance, storeId, bucket);
+        }
         // Length-prefixed fields under a domain label, so no two distinct bindings share an encoding.
         var builder = new StringBuilder(SiloFormats.StorageBinding);
         foreach (var field in new[] { instanceId, storeId, bucket })
@@ -139,6 +146,12 @@ internal static class SiloHash
 
 internal static class SiloText
 {
+    public static void RequireStoreId(string storeId)
+    {
+        if (!CameraAgentSiloBinding.TryReadInstanceId(storeId, out _))
+            RequireToken(storeId, nameof(storeId), 128);
+    }
+
     public static void RequireText(string? value, string name, int maximum)
     {
         if (string.IsNullOrWhiteSpace(value) || value.Length > maximum || value.Any(char.IsControl))

@@ -61,6 +61,8 @@ internal sealed partial class CaptureProcessingPersistence
                     product.Compatibility, product.TotalIntegration, reference.Capture.CaptureSequence,
                     FrameArtifactRecipeVersion: artifact.RecipeVersion));
             }
+            await PersistSiloOutputsAsync(reference, outputs, result.Products, CenteredWindowCoordinator.RegistrationProducer,
+                null, cancellationToken).ConfigureAwait(false);
             _faultInjector.Inject(CaptureProcessingFaultPoint.AfterOutputsPublishedBeforeNodeCommit, CenteredWindowCoordinator.RegistrationProducer);
             return await _store.PublishCenteredWindowAsync(result, outputs, journal, cancellationToken).ConfigureAwait(false);
         }

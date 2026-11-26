@@ -1,9 +1,9 @@
 # CameraAgent stock Silo runtime
 
 This runbook covers the stock Silo runtime that a Silo-layout CameraAgent instance installs with (#1966). The
-[CameraAgent Silo storage and cutover contract](../planning/cameraagent-silo-cutover.md) defines the layout. Until
-#1968 the CameraAgent store does not yet write to Silo; this runtime provisions, binds and verifies the store and
-holds capture paused until it is authorized.
+[CameraAgent Silo storage and cutover contract](../planning/cameraagent-silo-cutover.md) defines the layout. The
+installer provisions, binds and verifies the store and holds capture paused until it is authorized. CameraAgent
+checks the installed bucket marker and writer fence before using the scoped credential.
 
 The first Silo release uses the centered profile and launches only under the launch hold of contract section 9. Use
 this runtime for qualification and disposable installs until then.
@@ -414,9 +414,24 @@ Never disable the old key before step 6 shows the new key ready.
   then issues `sync(2)` before returning.
 - With it on, an acknowledged version is meant to survive power loss on ext4 that honors flush (contract 5.2). That is
   the design, not a measured guarantee. A process crash (SIGKILL) has been qualified. A physical power cut has not been
-  measured, and that proof is #1968/#1974 work.
+  measured. Physical host power-loss testing is tracked in #2126.
 - `scripts/qualify:silo-runtime` measures the cost (`osync-cost`). `sync(2)` is host-wide, so the cost depends on other
   dirty data on the host. The native ARM64 measurement on physical storage is the relevant one.
+
+### CameraAgent payload and verification limits
+
+- Each object is written in one create-only PUT with a supplied SHA-256. The ceiling is 5 GiB per object. CameraAgent
+  does not initiate multipart uploads. The installed writer policy grants no multipart cleanup authority.
+- CameraAgent checks length and SHA-256 via exact-version GET. A lost response body reports store unavailability and
+  can be retried. A completed read with the wrong bytes reports an integrity failure. A confirmed missing version is
+  reported separately.
+- Raw ingress syncs the local payload and evidence before it commits admission and the pending Silo publication row.
+  Publication advances independently. `CameraAgent:Silo:MaximumStagedBytes` and `MaximumStagedFiles` default to
+  2 GiB and 4,096 files. Pending raw admission and the publication spool each enforce those limits.
+- The `silo-storage` health check reports the result of the writer binding and journal-head probe. The authorized
+  `POST /api/internal/deployment/lifecycle/silo/verify-history` route verifies the journal through its indexed cutoff and
+  reads retained roles by exact version. The response reports the cutoff and counts for verified, unavailable, expired
+  and failed roles. Full verification can take time proportional to retained history.
 
 ## Uninstall, purge and unsupported operations
 

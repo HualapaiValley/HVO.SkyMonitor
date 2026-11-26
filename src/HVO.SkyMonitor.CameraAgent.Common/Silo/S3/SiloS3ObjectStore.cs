@@ -39,6 +39,16 @@ internal sealed class SiloS3ObjectStore(
         });
     }
 
+    public async ValueTask<bool> HasVersioningAsync(CancellationToken cancellationToken) =>
+        await SendAsync("verify bucket versioning", async token =>
+        {
+            var response = await client.GetBucketVersioningAsync(new GetBucketVersioningRequest
+            {
+                BucketName = Descriptor.Bucket
+            }, token).ConfigureAwait(false);
+            return response.VersioningConfig?.Status == VersionStatus.Enabled;
+        }, cancellationToken).ConfigureAwait(false);
+
     public async ValueTask<SiloPutResult> PutCreateOnlyAsync(SiloPutRequest request, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
