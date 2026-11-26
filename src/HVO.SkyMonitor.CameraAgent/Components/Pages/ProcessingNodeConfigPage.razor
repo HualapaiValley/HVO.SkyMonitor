@@ -60,9 +60,24 @@
                     var label = row.IsSystemManaged
                         ? $"{row.Id} (Built-in)"
                         : row.OptionsForm is { } rowForm ? $"{row.Id} · {rowForm.Descriptor.Title}" : row.Id;
-                    <a class="node-switcher__item @(current ? "node-switcher__item--current" : null)"
-                       aria-current="@(current ? "page" : null)"
-                       href="@NodeConfigHref(_resolvedRevisionId!, row.Id)">@label</a>
+                    @if (_model.ExistsInSourceRevision(row))
+                    {
+                        <a class="node-switcher__item @(current ? "node-switcher__item--current" : null)"
+                           aria-current="@(current ? "page" : null)"
+                           href="@NodeConfigHref(_resolvedRevisionId!, row.Id.Trim())">@label</a>
+                    }
+                    else if (_savedRevisionId is not null)
+                    {
+                        <span class="node-switcher__item node-switcher__item--unsaved"
+                              aria-disabled="true"
+                              title="Added in the saved draft. Open the saved draft link in the save banner to view this stage on its own page.">@label · Saved in new draft</span>
+                    }
+                    else
+                    {
+                        <span class="node-switcher__item node-switcher__item--unsaved"
+                              aria-disabled="true"
+                              title="Added in this unsaved draft. Save the draft before opening this stage on its own page.">@label · Unsaved draft</span>
+                    }
                 }
             </nav>
         }

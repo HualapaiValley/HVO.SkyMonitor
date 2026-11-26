@@ -71,7 +71,18 @@
                                     <p>Inputs: @string.Join(", ", node.DependsOn.Select(static input => input == ProcessingGraphDraftModel.RawInput ? "raw capture" : input))</p>
                                     @if (_model.SourceRevisionId is { } sourceId)
                                     {
-                                        <p><a href="@ProcessingNodeConfigPage.NodeConfigHref(sourceId, node.Id)">Inspect built-in stage</a></p>
+                                        @if (_model.ExistsInSourceRevision(node))
+                                        {
+                                            <p><a href="@ProcessingNodeConfigPage.NodeConfigHref(sourceId, node.Id.Trim())">Inspect built-in stage</a></p>
+                                        }
+                                        else if (_savedRevisionId is not null)
+                                        {
+                                            <p class="editor-note">Added in the saved draft — open the saved draft above to inspect this built-in stage.</p>
+                                        }
+                                        else
+                                        {
+                                            <p class="editor-note">Added in this unsaved draft. Save the draft before inspecting this built-in stage on its own page.</p>
+                                        }
                                     }
                                 </div>
                             }
@@ -103,9 +114,9 @@
                                     <section class="node-options-section" id="@OptionsSection(node)" aria-label="@optionsForm.Descriptor.Title">
                                         <div class="node-options-section__head">
                                             <h3 id="@SceneOptionsAnchor(node)">@optionsForm.Descriptor.Title</h3>
-                                            @if (_model.SourceRevisionId is { } sourceId)
+                                            @if (_model.SourceRevisionId is { } sourceId && _model.ExistsInSourceRevision(node))
                                             {
-                                                <a class="node-options-page-link" href="@ProcessingNodeConfigPage.NodeConfigHref(sourceId, node.Id)">Configure on its own page</a>
+                                                <a class="node-options-page-link" href="@ProcessingNodeConfigPage.NodeConfigHref(sourceId, node.Id.Trim())">Configure on its own page</a>
                                             }
                                         </div>
                                         @if (optionsForm.Descriptor.StepAlias == FrameFactsPresentation.StepAlias)
