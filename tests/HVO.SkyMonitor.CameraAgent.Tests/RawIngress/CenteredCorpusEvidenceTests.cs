@@ -15,7 +15,19 @@ public sealed class CenteredCorpusEvidenceTests
         var corpus = Environment.GetEnvironmentVariable("HVO_CAPTURE_1919_CORPUS");
         if (string.IsNullOrEmpty(corpus))
             Assert.Inconclusive("Set HVO_CAPTURE_1919_CORPUS to the directory containing the documented #1919 fixtures.");
-        await RawCaptureIngressTests.RunCenteredRetainedCorpusAsync(corpus!).ConfigureAwait(false);
+        await RunCombinedRawAdmissionOrInconclusiveAsync(corpus!).ConfigureAwait(false);
+    }
+
+    internal static async Task RunCombinedRawAdmissionOrInconclusiveAsync(string corpus)
+    {
+        var monoManifest = Path.Combine(corpus, "mono-november", "expected-mono.json");
+        var geometryOracle = Path.Combine(corpus, "geometry", "geometry-oracle.json");
+        if (!File.Exists(monoManifest) || !File.Exists(geometryOracle))
+        {
+            Assert.Inconclusive(
+                $"Combined raw-admission corpus requires both '{monoManifest}' and '{geometryOracle}'.");
+        }
+        await RawCaptureIngressTests.RunCenteredRetainedCorpusAsync(corpus).ConfigureAwait(false);
     }
 
     [TestMethod]
