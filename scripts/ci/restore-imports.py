@@ -157,8 +157,19 @@ def is_valid_folder_name(folder_name):
     return True
 
 
+def check_xml_encoding(text):
+    # Match ci:classify's source audit before ElementTree receives decoded text.
+    require("\0" not in text, "build input is not UTF-8")
+    declaration = re.match(r"^<\?xml\s+([^?]*?)\?>", text)
+    if declaration:
+        declared_encoding = re.search(r"(?:^|\s)encoding\s*=\s*([\"'])([^\"']+)\1", declaration.group(1))
+        require(not declared_encoding or declared_encoding.group(2).lower() == "utf-8",
+                "XML declares a non-UTF-8 encoding")
+
+
 def solution_projects(solution_blob):
     text = solution_blob.decode("utf-8-sig")
+    check_xml_encoding(text)
     require("<!DOCTYPE" not in text.upper() and "<!ENTITY" not in text.upper(),
             "document type declarations require manual review")
     require(not re.search(r"&#|%[0-9a-fA-F]{2}", text), "escaped build input requires manual review")
@@ -315,6 +326,7 @@ def normalize(value, checkout, packages, sdk_path):
 
 def generated_imports(path, checkout, packages, sdk_path, graph_packages):
     data = path.read_bytes().decode("utf-8")
+    check_xml_encoding(data.removeprefix("\ufeff"))
     prefix = "$(NuGetPackageRoot)"
     xml = ET.fromstring(data)
     require(xml.tag == "{http://schemas.microsoft.com/developer/msbuild/2003}Project", "unknown generated import format")

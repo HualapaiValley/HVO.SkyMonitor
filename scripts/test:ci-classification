@@ -1041,7 +1041,7 @@ certificate_cases=(
   slnx-folder-reserved-clock slnx-folder-del-char slnx-folder-c1-control
   slnx-{folder,project}-{tab,cr,lf,escaped-tab,escaped-cr,escaped-lf}
   slnx-{folder,project}-xmlns-{tab,cr,lf}
-  slnx-doctype slnx-doctype-entity
+  slnx-doctype slnx-doctype-entity slnx-declares-utf16 slnx-declares-utf8
   slnx-attribute-formatting
 )
 
@@ -1106,6 +1106,7 @@ SLNX_ERRORS = dict.fromkeys(SLNX_INVALID_CASES, "unknown solution entry") | {
            else "solution attribute contains control whitespace")
     for case, (_, whitespace) in SLNX_WHITESPACE_CASES.items()
 } | dict.fromkeys(SLNX_DECLARATION_CASES, "document type declarations require manual review")
+SLNX_ERRORS["slnx-declares-utf16"] = "XML declares a non-UTF-8 encoding"
 DIRECT_CHECK_CASES = SLNX_ERRORS.keys() | {
     "global-json-sdk-paths", "global-json-extra-top-key", "global-json-utf16",
 }
@@ -1311,6 +1312,13 @@ for case in cases:
             '</Solution>\n',
             encoding="utf-8",
         )
+    elif case in ("slnx-declares-utf16", "slnx-declares-utf8"):
+        encoding = "utf-16" if case == "slnx-declares-utf16" else "UtF-8"
+        solution = repo / "HVO.SkyMonitor.v9.slnx"
+        solution.write_text(f'<?xml version="1.0" encoding="{encoding}"?>\n' + solution.read_text(encoding="utf-8"),
+                            encoding="utf-8-sig")
+        if case == "slnx-declares-utf8":
+            expected = "verify-restore"
     elif case in SLNX_DECLARATION_CASES:
         declaration, project_path = SLNX_DECLARATION_CASES[case]
         (repo / "HVO.SkyMonitor.v9.slnx").write_text(
