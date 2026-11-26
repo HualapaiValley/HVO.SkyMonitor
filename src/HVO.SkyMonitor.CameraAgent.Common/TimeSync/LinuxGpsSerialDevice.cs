@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Runtime.InteropServices;
+using HVO.SkyMonitor.Storage.FileSystem;
 using Microsoft.Win32.SafeHandles;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.TimeSync;
@@ -24,8 +25,10 @@ internal sealed class LinuxGpsSerialDevice : IGpsSerialDevice
         if (!Supported) throw new PlatformNotSupportedException();
         if (settings.Validate() is not null || !settings.Enabled)
             throw new ArgumentException("Invalid serial receiver settings.", nameof(settings));
-        var noFollow = RuntimeInformation.ProcessArchitecture == Architecture.Arm64 ? 0x8000 : 0x20000;
-        _handle = Open(settings.Device, 0x80000 | 0x800 | 0x100 | noFollow); // CLOEXEC | NONBLOCK | NOCTTY | NOFOLLOW
+        const int nonBlocking = 0x800;
+        const int noControllingTerminal = 0x100;
+        _handle = Open(settings.Device, LinuxOpenFlags.ReadOnly | LinuxOpenFlags.CloseOnExec |
+            LinuxOpenFlags.NoFollow | nonBlocking | noControllingTerminal);
         try
         {
             if (_handle.IsInvalid || Ioctl(_handle, 0x5401, _original) < 0) throw new IOException("Serial device unavailable.");
