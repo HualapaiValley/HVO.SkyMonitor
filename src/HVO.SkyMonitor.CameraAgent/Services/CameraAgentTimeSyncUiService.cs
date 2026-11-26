@@ -16,6 +16,9 @@ namespace HVO.SkyMonitor.CameraAgent.Services;
 /// </summary>
 internal interface ICameraAgentTimeSyncUiService
 {
+    ValueTask<OperatorUiResult<GpsReceiverSettings>> SaveGpsAsync(
+        GpsReceiverSettings receiver, string expectedVersion, CancellationToken cancellationToken);
+
     ValueTask<OperatorUiResult<TimeSyncView>> GetAsync(CancellationToken cancellationToken);
 
     ValueTask<OperatorUiResult<TimeSyncCheckView>> CheckNowAsync(CancellationToken cancellationToken);
@@ -45,7 +48,12 @@ internal sealed record TimeSyncView(
     int IgnoredEntries,
     KernelClockState Kernel,
     TimeSyncServersSetting Setting,
-    bool CanChange);
+    bool CanChange)
+{
+    internal GpsReceiverSettings? Receiver { get; init; }
+    internal GpsTimeStatus? Gps { get; init; }
+    internal bool GpsOverridden { get; init; }
+}
 
 internal sealed record TimeSyncServerView(
     string Server,
@@ -152,54 +160,65 @@ internal sealed class CameraAgentTimeSyncUiService(
         }
     }
 
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
-        Justification = "The UI service logs internal failures and returns fixed sanitized states.")]
-    public async ValueTask<OperatorUiResult<TimeSyncServersSetting>> SaveServersAsync(
-        IReadOnlyList<string> servers,
-        string expectedVersion,
-        CancellationToken cancellationToken)
+    private const string GpsPrefix = GpsReceiverSettings.SectionKey + ":";
+    private static readonly string[] GpsKeys = [GpsPrefix + "Enabled", GpsPrefix + "Device", GpsPrefix + "BaudRate", GpsPrefix + "UsePps"];
+
+    public ValueTask<OperatorUiResult<GpsReceiverSettings>> SaveGpsAsync(
+        GpsReceiverSettings receiver, string expectedVersion, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(receiver);
+        return SaveSettingAsync(expectedVersion, () =>
+            !monitor.GpsReaderRegistered ? "GPS reader support is unavailable on this host." :
+            settingsFile?.FindOverriddenKeys(GpsKeys).Count > 0 ? "Another configuration source sets GPS receiver settings." :
+            receiver.Validate(),
+            () => new Dictionary<string, JsonNode?>(StringComparer.Ordinal)
+            {
+                [GpsPrefix + "Enabled"] = receiver.Enabled,
+                [GpsPrefix + "Device"] = receiver.Device,
+                [GpsPrefix + "BaudRate"] = receiver.BaudRate,
+                [GpsPrefix + "UsePps"] = receiver.UsePps,
+            },
+            _ => receiver, cancellationToken);
+    }
+
+    public ValueTask<OperatorUiResult<TimeSyncServersSetting>> SaveServersAsync(
+        IReadOnlyList<string> servers, string expectedVersion, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(servers);
+        return SaveSettingAsync(expectedVersion, () => ValidateServers(servers),
+            () => new Dictionary<string, JsonNode?>(StringComparer.Ordinal)
+            {
+                [TimeSyncSettings.ServersKey] = servers.Count == 0 ? null : JsonValue.Create(string.Join(", ", servers)),
+            },
+            version => ReadSetting(version, servers.Count == 0 ? TimeSyncSettings.DefaultServers : servers, servers.Count == 0),
+            cancellationToken);
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "The UI service logs internal failures and returns fixed sanitized states.")]
+    private async ValueTask<OperatorUiResult<T>> SaveSettingAsync<T>(
+        string expectedVersion, Func<string?> validate, Func<IReadOnlyDictionary<string, JsonNode?>> changes,
+        Func<string, T> project, CancellationToken cancellationToken)
+    {
         var principal = await GetAuthorizedPrincipalAsync(CameraAgentAuthorizationPolicyNames.OperationsMutateV1)
             .ConfigureAwait(false);
         var actor = principal is null ? null : CameraAgentCredentialAccess.GetOwnerId(principal);
         if (string.IsNullOrWhiteSpace(actor))
-        {
-            return OperatorUiResult<TimeSyncServersSetting>.Failure(
-                OperatorUiResultKind.Unauthorized, "Authorization is required.");
-        }
+            return OperatorUiResult<T>.Failure(OperatorUiResultKind.Unauthorized, "Authorization is required.");
         if (settingsFile is null)
-        {
-            return OperatorUiResult<TimeSyncServersSetting>.Failure(OperatorUiResultKind.Unavailable, NoSettingsFileMessage);
-        }
+            return OperatorUiResult<T>.Failure(OperatorUiResultKind.Unavailable, NoSettingsFileMessage);
         if (string.IsNullOrWhiteSpace(expectedVersion))
-        {
-            return OperatorUiResult<TimeSyncServersSetting>.Failure(OperatorUiResultKind.Conflict, SettingsConflictMessage);
-        }
-        if (ValidateServers(servers) is { } invalid)
-        {
-            return OperatorUiResult<TimeSyncServersSetting>.Failure(OperatorUiResultKind.Invalid, invalid);
-        }
+            return OperatorUiResult<T>.Failure(OperatorUiResultKind.Conflict, SettingsConflictMessage);
         try
         {
-            var result = await settingsFile.WriteAsync(
-                expectedVersion,
-                new Dictionary<string, JsonNode?>(StringComparer.Ordinal)
-                {
-                    [TimeSyncSettings.ServersKey] = servers.Count == 0 ? null : JsonValue.Create(string.Join(", ", servers))
-                },
-                actor,
-                cancellationToken).ConfigureAwait(false);
+            if (validate() is { } invalid)
+                return OperatorUiResult<T>.Failure(OperatorUiResultKind.Invalid, invalid);
+            var result = await settingsFile.WriteAsync(expectedVersion, changes(), actor, cancellationToken).ConfigureAwait(false);
             return result.Status switch
             {
-                OperatorSettingsWriteStatus.Conflict => OperatorUiResult<TimeSyncServersSetting>.Failure(
-                    OperatorUiResultKind.Conflict, SettingsConflictMessage),
-                OperatorSettingsWriteStatus.Unreadable => OperatorUiResult<TimeSyncServersSetting>.Failure(
-                    OperatorUiResultKind.Invalid, SettingsUnreadableMessage),
-                _ => OperatorUiResult<TimeSyncServersSetting>.Success(ReadSetting(
-                    result.Snapshot.Version,
-                    servers.Count == 0 ? TimeSyncSettings.DefaultServers : servers,
-                    servers.Count == 0))
+                OperatorSettingsWriteStatus.Conflict => OperatorUiResult<T>.Failure(OperatorUiResultKind.Conflict, SettingsConflictMessage),
+                OperatorSettingsWriteStatus.Unreadable => OperatorUiResult<T>.Failure(OperatorUiResultKind.Invalid, SettingsUnreadableMessage),
+                _ => OperatorUiResult<T>.Success(project(result.Snapshot.Version)),
             };
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -208,9 +227,8 @@ internal sealed class CameraAgentTimeSyncUiService(
         }
         catch (Exception exception)
         {
-            logger.LogWarning(exception, "CameraAgent time server change failed.");
-            return OperatorUiResult<TimeSyncServersSetting>.Failure(
-                OperatorUiResultKind.Unavailable, "The time server change could not be completed.");
+            logger.LogWarning(exception, "CameraAgent time settings change failed.");
+            return OperatorUiResult<T>.Failure(OperatorUiResultKind.Unavailable, "The time settings change could not be completed.");
         }
     }
 
@@ -264,13 +282,18 @@ internal sealed class CameraAgentTimeSyncUiService(
             assessment.Description,
             settings.Tolerance,
             settings.Interval,
-            measured?.MeasuredUtc,
+            measured is { Selected: null, Gps: { CanVerifyClock: true } gps } ? gps.PpsMeasuredUtc : measured?.MeasuredUtc,
             servers.FirstOrDefault(static server => server.Selected),
             servers,
             configured.Count - valid.Length,
             snapshot?.Kernel ?? KernelClockState.Unknown,
             ReadSetting(file?.Version, valid, settings.Servers.Count == 0, file?.Problem is not null),
-            canChange);
+            canChange)
+        {
+            Receiver = monitor.GpsReaderRegistered ? settings.Gps : null,
+            GpsOverridden = settingsFile?.FindOverriddenKeys(GpsKeys).Count > 0,
+            Gps = measured?.Gps,
+        };
     }
 
     private TimeSyncServersSetting ReadSetting(

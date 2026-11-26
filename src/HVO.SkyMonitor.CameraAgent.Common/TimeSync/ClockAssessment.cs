@@ -50,6 +50,16 @@ public sealed record ClockAssessment(ClockSyncStatus Status, string Description)
         var kernel = snapshot.Kernel.Status;
         if (snapshot.Selected?.Offset is not { } offset)
         {
+            if (settings.Gps.Enabled && snapshot.Gps is { CanVerifyClock: true, PpsOffset: { } gps, PpsUncertainty: { } uncertainty })
+            {
+                if (gps.Duration() - uncertainty > settings.Tolerance)
+                    return new(ClockSyncStatus.Drifting, "The measured GPS/PPS offset exceeds the clock tolerance.");
+                if (gps.Duration() + uncertainty <= settings.Tolerance)
+                    return kernel == KernelClockStatus.Unsynchronized
+                        ? new(ClockSyncStatus.Unsynchronized, "GPS/PPS is within tolerance, but the host reports its clock unsynchronized.")
+                        : new(ClockSyncStatus.InTolerance, "GPS/PPS verifies the host clock within tolerance.");
+                // The PPS uncertainty crosses the tolerance. Only independent kernel evidence can vouch for the clock.
+            }
             return kernel == KernelClockStatus.Synchronized
                 ? new(ClockSyncStatus.HostSynchronized,
                     "No time server answered; the host's time service reports the clock synchronized.")

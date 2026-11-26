@@ -589,12 +589,27 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddHostedService(provider => provider.GetRequiredService<TransientCandidateDeliveryService>());
         services.TryAddSingleton<ISntpClient, SntpClient>();
         services.TryAddSingleton<IKernelClockReader, LinuxKernelClockReader>();
+        if (LinuxGpsSerialDevice.Supported)
+        {
+            services.AddSingleton(provider => new GpsReceiverMonitor(
+                () =>
+                {
+                    var settings = TimeSyncSettings.Read(configuration);
+                    return settings.Enabled ? settings.Gps : null;
+                },
+                static settings => new LinuxGpsSerialDevice(settings),
+                provider.GetRequiredService<TimeProvider>()));
+            services.AddHostedService(provider => provider.GetRequiredService<GpsReceiverMonitor>());
+        }
         services.AddSingleton(provider => new ClockSyncMonitor(
             () => TimeSyncSettings.Read(configuration),
             provider.GetRequiredService<ISntpClient>(),
             provider.GetRequiredService<IKernelClockReader>(),
             provider.GetRequiredService<TimeProvider>(),
-            provider.GetRequiredService<ILogger<ClockSyncMonitor>>()));
+            provider.GetRequiredService<ILogger<ClockSyncMonitor>>())
+        {
+            GpsReader = provider.GetService<GpsReceiverMonitor>(),
+        });
         services.AddSingleton<IClockSyncMonitor>(provider => provider.GetRequiredService<ClockSyncMonitor>());
         services.AddHostedService(provider => provider.GetRequiredService<ClockSyncMonitor>());
 

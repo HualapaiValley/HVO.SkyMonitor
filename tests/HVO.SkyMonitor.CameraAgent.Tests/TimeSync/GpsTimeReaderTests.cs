@@ -206,10 +206,48 @@ public sealed class GpsTimeReaderTests
         {
             using var source = Source(Rmc());
             await Assert.ThrowsExactlyAsync<ObjectDisposedException>(() => reader.ReadAsync(source, token)).ConfigureAwait(false);
-            Assert.AreEqual(before, reader.GetStatus());
+            AssertUnavailable(reader.GetStatus());
             Assert.AreEqual(0L, source.Position);
             Assert.IsTrue(source.CanRead);
         }
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task DisposeWithOutstandingReads_ReleasesActiveAndAllQueuedWithoutTouchingTheirStreams(bool callerCancels)
+    {
+        var time = new FakeTimeProvider(Now);
+        using var reader = CreateReader(time);
+        using var cancellation = new CancellationTokenSource();
+        using var active = new DelayedCancellationStream();
+        using var queued = Source(Rmc());
+        var first = reader.ReadAsync(active, cancellation.Token);
+        var waiters = Enumerable.Range(0, 8).Select(_ => reader.ReadAsync(queued, CancellationToken.None)).ToArray();
+        Assert.IsFalse(first.IsCompleted);
+        Assert.IsTrue(waiters.All(task => !task.IsCompleted));
+        if (callerCancels) await cancellation.CancelAsync().ConfigureAwait(false);
+        reader.Dispose();
+        active.Finish.TrySetResult();
+        if (callerCancels)
+        {
+            var canceled = await Assert.ThrowsAsync<OperationCanceledException>(
+                () => first.WaitAsync(GpsTimeReader.ReadTimeout)).ConfigureAwait(false);
+            Assert.AreEqual(cancellation.Token, canceled.CancellationToken);
+        }
+        else
+        {
+            var disposed = await Assert.ThrowsExactlyAsync<ObjectDisposedException>(() => first.WaitAsync(GpsTimeReader.ReadTimeout)).ConfigureAwait(false);
+            Assert.AreEqual(nameof(GpsTimeReader), disposed.ObjectName);
+        }
+        foreach (var waiter in waiters)
+        {
+            var disposed = await Assert.ThrowsExactlyAsync<ObjectDisposedException>(() => waiter.WaitAsync(GpsTimeReader.ReadTimeout)).ConfigureAwait(false);
+            Assert.AreEqual(nameof(GpsTimeReader), disposed.ObjectName);
+        }
+        Assert.AreEqual(0L, queued.Position);
+        Assert.IsTrue(active.CanRead);
+        AssertUnavailable(reader.GetStatus());
     }
 
     [TestMethod]
@@ -680,6 +718,25 @@ public sealed class GpsTimeReaderTests
             => _inner.CreateTimer(callback, state, dueTime, period);
         internal void Advance(TimeSpan elapsed) => _inner.Advance(elapsed);
         internal void AdjustTime(DateTimeOffset utc) => _wallOffset = utc - _inner.GetUtcNow();
+    }
+
+    private sealed class DelayedCancellationStream : MemoryStream
+    {
+        internal TaskCompletionSource Finish { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
+                return 0;
+            }
+            finally
+            {
+                // Hold the read gate during cancellation until the test has also disposed the reader.
+                await Finish.Task.ConfigureAwait(false);
+            }
+        }
     }
 
     private sealed class WaitingStream(Action? beforeWait = null) : MemoryStream

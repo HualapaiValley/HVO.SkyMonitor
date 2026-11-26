@@ -1,10 +1,8 @@
 @inherits SiteTimeComponent
 @using HVO.SkyMonitor.CameraAgent.Common.TimeSync
-@* System control's Time panel: the agent clock measured against network time, the time servers, and the GPS receiver
-   settings a later reader will use. CameraAgent measures the clock and never sets it. *@
 <section class="ops-panel ops-grid time-sync" aria-labelledby="time-heading">
     <header class="ops-panel-heading">
-        <div><h2 id="time-heading">Time</h2><p>Capture timestamps, overlays, twilight and schedules use this host's clock. CameraAgent measures it against network time; the host's time service sets it.</p></div>
+        <div><h2 id="time-heading">Time</h2><p>Capture timestamps, overlays, twilight and schedules use this host's clock. CameraAgent measures it against available time sources; the host's time service sets it.</p></div>
         @if (_view is { } heading)
         {
             <span id="time-status" class="state-chip @ClockFormat.StatusChip(heading.Status)">@ClockFormat.StatusText(heading.Status)</span>
@@ -34,7 +32,7 @@
         <div class="time-sync-grid">
             <dl class="ops-facts time-facts">
                 <AgentClock SiteTimeZoneId="@view.SiteTimeZoneId" />
-                <div><dt>Clock offset</dt><dd id="time-offset" title="This agent's clock compared with the server that answered">@OffsetText(view)</dd></div>
+                <div><dt>Clock offset</dt><dd id="time-offset" title="This agent's clock compared with the measured reference">@OffsetText(view)</dd></div>
                 <div><dt>Answered by</dt><dd id="time-server">@AnsweredByText(view)</dd></div>
                 <div><dt>Round trip</dt><dd id="time-round-trip">@(view.Selected?.RoundTrip is { } roundTrip ? ClockFormat.Unsigned(roundTrip) : "—")</dd></div>
                 <div><dt>Measured</dt><dd id="time-measured" title="@MeasuredTitle(view)">@MeasuredText(view)</dd></div>
@@ -109,15 +107,36 @@
             </div>
             <div class="time-settings">
                 <h3 id="time-gps-heading">GPS receiver</h3>
-                <p class="time-note">A GPS receiver with a pulse-per-second output keeps time without a network connection.</p>
-                <fieldset class="time-settings-form time-gps" disabled aria-describedby="time-gps-unavailable">
+                @if (view.Receiver is { Enabled: true } receiver)
+                {
+                    var gps = view.Gps;
+                    <dl class="ops-facts time-facts">
+                        <div><dt>Fix</dt><dd id="time-gps-fix">@(receiver.Validate() ?? (view.Status == ClockSyncStatus.Disabled ? "Checking off" : (gps?.State.ToString() ?? "Awaiting measurement")))</dd></div>
+                        <div><dt>Satellites / fix quality</dt><dd>@(gps?.Satellites?.ToString() ?? "—") / @(gps?.FixQuality?.ToString() ?? "—")</dd></div>
+                        <div><dt>Last sentence</dt><dd>@(gps?.LastSentenceUtc is { } last ? SiteTime.Format(last) : "—")</dd></div>
+                        <div><dt>Host offset at NMEA arrival</dt><dd>@(gps?.ArrivalOffset is { } arrival ? ClockFormat.Relative(arrival.Negate()) : "—")</dd></div>
+                        @if (receiver.UsePps)
+                        {
+                            <div><dt>PPS signal</dt><dd>@(gps?.PpsState.ToString() ?? "Unavailable")</dd></div>
+                            <div><dt>Host offset at PPS edge</dt><dd>@(gps?.PpsOffset is { } edge ? ClockFormat.Relative(edge.Negate()) + " ±" + ClockFormat.Unsigned(gps.PpsUncertainty!.Value) : "—")</dd></div>
+                        }
+                    </dl>
+                }
+                <fieldset class="time-settings-form time-gps" disabled="@(Busy || GpsFormReason is not null)" aria-describedby="@(GpsFormReason is null ? null : "time-gps-unavailable")">
                     <legend class="visually-hidden">GPS receiver</legend>
-                    <label class="ops-field">Time source<select id="time-gps-source"><option selected>Network time servers</option><option>GPS receiver</option></select></label>
-                    <label class="ops-field">Serial device<input id="time-gps-device" autocomplete="off" placeholder="Not configured" /></label>
-                    <label class="ops-field">Baud rate<select id="time-gps-baud"><option>4800</option><option selected>9600</option><option>38400</option><option>115200</option></select></label>
-                    <label class="time-gps-pps"><input id="time-gps-pps" type="checkbox" /> Use the PPS signal</label>
+                    <label class="ops-field">Time sources<select id="time-gps-source" @bind="_gpsSource"><option value="network">Network time servers</option><option value="gps">Network and GPS receiver</option></select></label>
+                    <label class="ops-field">Serial device<input id="time-gps-device" autocomplete="off" placeholder="/dev/ttyUSB0" @bind="_device" /></label>
+                    <label class="ops-field">Baud rate<select id="time-gps-baud" @bind="_baudRate"><option>4800</option><option>9600</option><option>38400</option><option>115200</option></select></label>
+                    <label class="time-gps-pps"><input id="time-gps-pps" type="checkbox" @bind="_usePps" /> Use rising DCD PPS (within 5 ms of UTC, following RMC names the pulse)</label>
+                    @if (view.Receiver is not null)
+                    {
+                        <button id="time-gps-save" type="button" class="button secondary" @onclick="SaveGpsAsync">Save receiver</button>
+                    }
                 </fieldset>
-                <p id="time-gps-unavailable" class="time-note">@GpsUnavailableReason</p>
+                @if (GpsFormReason is { } reason)
+                {
+                    <p id="time-gps-unavailable" class="time-note">@reason</p>
+                }
             </div>
         </div>
     }

@@ -22,6 +22,15 @@ internal sealed class TestTimeSyncUiService : ICameraAgentTimeSyncUiService
 
     internal List<(IReadOnlyList<string> Servers, string Version)> Saves { get; } = [];
 
+    internal List<(GpsReceiverSettings Receiver, string Version)> GpsSaves { get; } = [];
+
+    public ValueTask<OperatorUiResult<GpsReceiverSettings>> SaveGpsAsync(
+        GpsReceiverSettings receiver, string expectedVersion, CancellationToken cancellationToken)
+    {
+        GpsSaves.Add((receiver, expectedVersion));
+        return ValueTask.FromResult(OperatorUiResult<GpsReceiverSettings>.Success(receiver));
+    }
+
     public ValueTask<OperatorUiResult<TimeSyncView>> GetAsync(CancellationToken cancellationToken)
     {
         Reads++;

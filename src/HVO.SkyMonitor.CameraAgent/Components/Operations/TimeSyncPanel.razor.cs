@@ -7,8 +7,7 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Operations;
 
 /// <summary>
 /// System control's Time panel. It shows the latest clock measurement, runs an on-demand check, and edits the time
-/// server list in the operator settings file. Setting the host clock and the GPS receiver are shown disabled with the
-/// reason: the host's time service owns the clock, and no GPS reader exists yet.
+/// server list and GPS receiver in the operator settings file. The host owns its clock.
 /// </summary>
 public sealed partial class TimeSyncPanel : SiteTimeComponent, IDisposable
 {
@@ -20,6 +19,10 @@ public sealed partial class TimeSyncPanel : SiteTimeComponent, IDisposable
     private TimeSyncView? _view;
     private PanelMessage? _message;
     private string _serversInput = string.Empty;
+    private string _gpsSource = "network";
+    private string _device = string.Empty;
+    private int _baudRate = GpsReceiverSettings.Default.BaudRate;
+    private bool _usePps;
     private string? _error;
     private int _loadedGeneration = -1;
     private bool _checking;
@@ -53,6 +56,16 @@ public sealed partial class TimeSyncPanel : SiteTimeComponent, IDisposable
         _ => null,
     };
 
+    private string? GpsFormReason => _view switch
+    {
+        { Receiver: null } => GpsUnavailableReason,
+        { CanChange: false } => "Operations change rights are required to configure GPS.",
+        { Setting.Version: null } => "This host loads no operator settings file.",
+        { Setting.Unreadable: true } => "Correct the unreadable operator settings file before saving.",
+        { GpsOverridden: true } => "Another configuration source sets GPS receiver settings.",
+        _ => null,
+    };
+
     protected override async Task OnParametersSetAsync()
     {
         if (Generation != _loadedGeneration)
@@ -73,6 +86,13 @@ public sealed partial class TimeSyncPanel : SiteTimeComponent, IDisposable
         {
             // The input keeps what the operator typed until the stored list changes or a save completes.
             var settingChanged = resetInput || _view is null || !SameSetting(_view.Setting, view.Setting);
+            if (view.Receiver is { } receiver && (resetInput || _view?.Receiver != receiver || _view?.Setting.Version != view.Setting.Version))
+            {
+                _gpsSource = receiver.Enabled ? "gps" : "network";
+                _device = receiver.Device;
+                _baudRate = receiver.BaudRate;
+                _usePps = receiver.UsePps;
+            }
             _view = view;
             _error = null;
             if (settingChanged)
@@ -163,6 +183,32 @@ public sealed partial class TimeSyncPanel : SiteTimeComponent, IDisposable
         }
     }
 
+    private async Task SaveGpsAsync()
+    {
+        if (Busy || GpsFormReason is not null || _view?.Setting.Version is not { } version) return;
+        var settings = new GpsReceiverSettings(_gpsSource == "gps", _device, _baudRate, _usePps);
+        if (settings.Validate() is { } problem)
+        {
+            _message = PanelMessage.Failure(problem);
+            return;
+        }
+        _saving = true;
+        try
+        {
+            var result = await TimeSyncService.SaveGpsAsync(settings, version, _lifetime.Token);
+            if (_disposed) return;
+            _message = result.IsSuccess ? PanelMessage.Info("GPS receiver settings saved.") : PanelMessage.Failure(result.Message!);
+            if (result.IsSuccess) await LoadAsync(resetInput: true);
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
+        {
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
     private static bool SameSetting(TimeSyncServersSetting left, TimeSyncServersSetting right)
         => string.Equals(left.Version, right.Version, StringComparison.Ordinal) &&
            left.UsingDefault == right.UsingDefault &&
@@ -189,6 +235,7 @@ public sealed partial class TimeSyncPanel : SiteTimeComponent, IDisposable
     private static string OffsetText(TimeSyncView view) => view switch
     {
         { Selected.Offset: { } offset } => ClockFormat.Relative(offset.Negate()),
+        { Gps: { CanVerifyClock: true, PpsOffset: { } gps } } => ClockFormat.Relative(gps.Negate()),
         { MeasuredUtc: null } => "Not measured",
         _ => "No server answered",
     };
@@ -198,6 +245,7 @@ public sealed partial class TimeSyncPanel : SiteTimeComponent, IDisposable
         { Selected: { Stratum: { } stratum } selected } => string.Create(
             CultureInfo.InvariantCulture, $"{selected.Server}, stratum {stratum}"),
         { Selected: { } selected } => selected.Server,
+        { Gps.CanVerifyClock: true } => "GPS/PPS",
         { MeasuredUtc: null } => "—",
         _ => "None",
     };

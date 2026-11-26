@@ -10,6 +10,8 @@ public interface IClockSyncMonitor
     /// <summary>The settings as the host configuration holds them now.</summary>
     TimeSyncSettings Settings { get; }
 
+    bool GpsReaderRegistered => false;
+
     /// <summary>The latest completed round, or null before the first one completes.</summary>
     ClockSyncSnapshot? Latest { get; }
 
@@ -33,7 +35,7 @@ public sealed record ClockSyncSnapshot(
     int IgnoredEntries,
     KernelClockState Kernel)
 {
-    /// <summary>Optional fake-only GPS diagnostics; not used by clock health or production registration.</summary>
+    /// <summary>GPS diagnostics sampled from the current receiver when the snapshot is requested.</summary>
     public GpsTimeStatus? Gps { get; init; }
 }
 
@@ -88,7 +90,15 @@ public sealed class ClockSyncMonitor : BackgroundService, IClockSyncMonitor
 
     public TimeSyncSettings Settings => _settings();
 
-    public ClockSyncSnapshot? Latest => _latest;
+    internal GpsReceiverMonitor? GpsReader { get; init; }
+
+    public bool GpsReaderRegistered => GpsReader is not null;
+
+    public ClockSyncSnapshot? Latest => WithGps(_latest);
+
+    private ClockSyncSnapshot? WithGps(ClockSyncSnapshot? snapshot) =>
+        snapshot is { Enabled: true } && GpsReader is not null
+            ? snapshot with { Gps = GpsReader.Status(Settings.Gps) } : snapshot;
 
     public async Task<ClockCheckResult> CheckNowAsync(CancellationToken cancellationToken)
     {
@@ -107,14 +117,14 @@ public sealed class ClockSyncMonitor : BackgroundService, IClockSyncMonitor
                     elapsed < OnDemandInterval)
                 {
                     return new ClockCheckResult(
-                        ClockCheckOutcome.RateLimited, _latest, _timeProvider.GetUtcNow() + (OnDemandInterval - elapsed));
+                        ClockCheckOutcome.RateLimited, Latest, _timeProvider.GetUtcNow() + (OnDemandInterval - elapsed));
                 }
                 _lastOnDemandTimestamp = _timeProvider.GetTimestamp();
                 round = StartRound();
                 outcome = ClockCheckOutcome.Measured;
             }
         }
-        return new ClockCheckResult(outcome, await round.WaitAsync(cancellationToken).ConfigureAwait(false), null);
+        return new ClockCheckResult(outcome, WithGps(await round.WaitAsync(cancellationToken).ConfigureAwait(false)), null);
     }
 
     public override async Task StopAsync(CancellationToken cancellationToken)

@@ -1,96 +1,33 @@
-# GPS time-source preparation
+# CameraAgent GPS/PPS time source
 
-Refs #1710. Roy authorized this fakes-only preparation slice on November 12,
-2026, at 3:09 PM PST through Kepler. It does not complete the parent issue's
-production reader, settings persistence, UI, or physical validation acceptance.
+The **Time** panel on System control configures a read-only serial receiver on Linux x64 or ARM64. Network time remains enabled. When no time server answers, a compatible local receiver can verify the host clock offline. The host operating system owns clock discipline.
 
-`GpsTimeReader` accepts only a caller-owned in-process `Stream`. No production
-registration, device adapter, settings keys, UI enablement, or host clock writes
-are added. Scripts supply checksummed GP/GN RMC and GGA sentences and invoke
-`ObserveSimulatedPps` to model edge receipt. The injected `TimeProvider` supplies
-receipt timestamps and monotonic freshness. The reader never opens a path.
+Choose **Network and GPS receiver**, enter the device path as seen inside CameraAgent, select the receiver baud rate, and save. CameraAgent opens only that tty. Use an existing device directly under `/dev` or a numbered `/dev/pts` pseudo-terminal. The final path component must be a device node. The deployment must already provide access to it. The reader uses raw 8N1 at 4800, 9600, 38400 or 115200 baud. Choose **Network time servers** to release the receiver.
 
-Each read has a 4096-byte budget and a two-second deadline, including waiting
-for another read. Streams must honor asynchronous read cancellation. Caller
-cancellation throws `OperationCanceledException` with the caller's token. An
-internal deadline ends a round normally. Each line is limited to 82 characters
-including its optional CR, excluding LF. LF ends a physical line and one CR is
-allowed only immediately before it. Non-ASCII, DEL, other control characters,
-invalid checksums, unsupported sentences, and malformed supported data are
-ignored. Overlong or invalid lines are discarded
-through the next LF. Partial lines are not buffered across rounds: their tails
-remain discarded through LF when the same source continues, even after a byte
-budget, timeout, cancellation, EOF, or an intervening read from another source.
-Framing state uses weak stream identities, so it does not retain caller-owned
-streams. Continuations assume forward reads; use a fresh stream for a new script.
+The operator file stores `Enabled`, `Device`, `BaudRate` and `UsePps` under `CameraAgent:TimeSync:Gps`. Missing settings default to GPS off, an empty device, 9600 baud and PPS off. The host checks configuration every second. An invalid setting prevents device access. Saving requires operations-change access, an editable settings file and its current version. A higher-precedence GPS setting makes the form read-only. A host without the reader keeps its unsupported explanation.
 
-Dispose the reader after pending reads and observations have completed. A read
-after reader disposal throws `ObjectDisposedException` before accessing the stream.
+## Receiver evidence
 
-RMC supplies dated UTC and A/V validity. When a mode field is present, only
-measured modes A (autonomous), D (differential), P (precise), R (fixed RTK),
-and F (float RTK) allow a diagnostic fix. N (invalid), E (estimated), M (manual),
-S (simulated), empty and unsupported modes report NoFix, even with status A;
-a legacy sentence without a mode field still uses A/V validity. GGA supplies fix quality (0..8) and
-satellite count (0..99), with its own freshness; a fresh quality of zero
-suppresses an otherwise valid RMC offset until recovery or expiry; it cannot supply a UTC date.
-The fake workload explicitly interprets two-digit years as 2000..2099, accepts
-up to seven fractional-second digits, and rejects leap-second timestamps.
-Fresh evidence expires at five seconds. Invalid traffic, new GGA data, and PPS
-edges cannot refresh dated RMC evidence. An `IOException`, `TimeoutException`,
-`UnauthorizedAccessException`, or `ObjectDisposedException` from the stream read
-clears all RMC, GGA, and simulated PPS evidence and reports Unavailable. If
-caller cancellation is also requested, the reader clears the evidence before
-propagating caller cancellation. An `OperationCanceledException` from the stream
-counts as a stream failure only when neither caller cancellation nor the
-internal deadline is requested. To honor read cancellation, production adapters
-must translate I/O aborted by their own cancellation or deadline handling into
-`OperationCanceledException`. Surfacing `IOException` or `ObjectDisposedException`
-clears evidence as it would for a transport fault. Caller cancellation and the
-internal deadline on their own retain completed evidence until normal expiry.
-Caller cancellation takes precedence when both cancellation sources are
-requested. Unexpected programming exceptions propagate. A subsequent valid
-sentence permits recovery.
-EOF simply ends a scripted round and is not interpreted as a real-device
-unplug indication.
+Checksummed GP/GN RMC provides date, UTC and fix validity. The reader accepts legacy status A or measured modes A/D/P/R/F. Checksummed GGA reports fix quality and satellite count. Quality zero suppresses the fix. Each sentence has an 82-character limit. The serial worker reads at most 512 bytes per poll and keeps incomplete lines across polls. An invalid or overlong line is discarded through LF. No raw receiver traffic enters the logs or the operator file.
 
-`ReportInto` returns an immutable `ClockSyncSnapshot` copy with `Gps` diagnostics.
-It preserves network selection and kernel evidence. `ArrivalOffset` is NMEA UTC
-advanced by its monotonic age minus the current host wall clock, including
-unknown transport latency. It reconstructs receipt time in the current host-clock
-frame, so a wall-clock step changes the offset immediately without extending
-freshness; a later GGA receipt cannot replace the RMC anchor. It is hidden
-when dated fix evidence is absent, invalid, stale, or unavailable. Simulated PPS
-reports its last receipt and freshness independently; it never establishes a
-UTC association. `CanVerifyClock` is always false, so none of this slice's
-GPS diagnostics can establish a healthy clock offline or override existing
-clock-health semantics. Stale UTC/receipt timestamps are retained as history,
-with explicit stale state; they are not current offset evidence.
+**Host offset at NMEA arrival** includes serial latency. The panel shows GPS fix state, satellites, quality and last sentence independently of clock health. RMC and GGA expire independently after five seconds of monotonic time. A host clock step immediately changes the projected offset. Disconnect or device replacement clears the whole session. An unavailable device is retried every second. Disabled clock checking releases the device.
 
-Three questions remain open before a production GPS/PPS implementation:
+This release accepts receiver UTC from 2026 through 2035, independently of host UTC. The supported deployment era is shorter than one 1024-week GPS rollover. Operation beyond this era requires an updated receiver date window.
 
-1. Which PPS source and which edge are supported?
-2. Which NMEA UTC second does an edge mark?
-3. What measurement uncertainty is acceptable for known-good clock evidence?
+## PPS receiver contract
 
-Physical serial/PPS integration, receiver qualification, container device access,
-configuration persistence, and operator UI activation remain separate work under
-the parent issue. There is no new persistence, migration, background service,
-log, metric, health registration, or production deployment in this slice.
+Enable **Use rising DCD PPS** only for a receiver and adapter with these characteristics.
 
-## Bounded residual safety regressions
+- The rising carrier-detect transition at the configured tty is within 5 ms of the UTC second.
+- That transition is followed by an integral-second RMC naming the same UTC second. The line begins after the pulse and finishes within 800 ms.
+- The DCD pulse is long enough to observe at a nominal 10 ms sampling interval. Unavailable DCD still permits NMEA diagnostics.
 
-The follow-up authorized on November 13, 2026 addresses the carried L2/L3/L4
-fake-reader cases in [#1710's ledger](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1710#issuecomment-6843149322).
-These changes confer no production clock authority. The 2000..2099 parser
-window describes decoding, not plausibility: a two-digit year and status A
-alone cannot establish that receiver UTC is current. Fake callers supply an
-immutable `GpsUtcWindow` with inclusive earliest/latest UTC bounds; reversed
-bounds are rejected. Missing bounds or dated UTC outside them reports NoFix,
-suppresses the offset, and revokes any earlier fix. GGA/PPS cannot restore that
-fix. The bounds are script inputs, never derived from the injected host wall
-clock. Unit fixtures declare 2026..2027 and test 2099 plus both 1024-week shifts
-and tick-precise accepting/rejecting boundaries. These dates are fixture data,
-not a new production tolerance. Selecting an independent
-UTC reference and its acceptable window for production remains a required
-parent-issue decision; host time is not silently trusted as that authority.
+The reader brackets the edge with a low and a high observation. It discards ambiguous edges when serial bytes are already queued at the first high observation, or when the bracket exceeds 100 ms. Initial high, fractional RMC, a sentence spanning the edge, estimated/manual/simulated fixes, and an undated or stale edge cannot verify the clock. The uncertainty allowance includes the whole observation bracket, the 5 ms signal delivery budget and the time spent sampling the host clock. The reported offset is projected against the current host clock from the observed high.
+
+A successful SNTP result retains precedence. Offline, the entire PPS offset interval must fit inside the configured clock tolerance for GPS to establish healthy time. A definitely out-of-tolerance offset reports drift. An explicitly unsynchronized kernel prevents a healthy in-tolerance result. Missing or inconclusive GPS evidence falls back to the existing kernel assessment.
+
+## Cancellation and software validation
+
+`GpsTimeReader.ReadAsync` accepts a caller-owned stream that honors cancellation. Each round consumes at most 4096 bytes within two seconds, including time queued. Stream faults invalidate evidence. Caller cancellation preserves the caller token. Deadline expiry alone returns normally. Disposal immediately revokes diagnostics and cancels active and queued reads. A pending read canceled by disposal throws `ObjectDisposedException` for the reader. Gate and token disposal wait until the last admitted read unwinds. Reads begun after disposal never touch the stream.
+
+Hardware-free tests cover the production monitor with simulated bytes, modem transitions, hot unplug, reopening, configuration changes and shutdown. A Linux pseudo-terminal exercises the native tty adapter. Physical qualification remains open under [#1710](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1710). Record the receiver, adapter, baud, pulse polarity and width, RMC association, worst-case signal delivery latency, deployment permissions, measured offset against an independent reference, and disconnect/reconnect behavior before qualifying a particular installation.

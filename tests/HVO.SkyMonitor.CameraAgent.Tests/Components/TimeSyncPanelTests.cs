@@ -66,7 +66,7 @@ public sealed class TimeSyncPanelTests
     }
 
     [TestMethod]
-    public void Panel_OffersNoWayToSetTheHostClockOrUseGpsYet()
+    public void Panel_DisablesGpsWithoutRegisteredReaderAndExplainsHostClockOwnership()
     {
         using var context = new BunitContext();
         Configure(context);
@@ -439,6 +439,51 @@ public sealed class TimeSyncPanelTests
         cut.Render(parameters => parameters.Add(panel => panel.Generation, 1));
 
         cut.WaitForAssertion(() => Assert.AreEqual(2, service.Reads));
+    }
+
+    [TestMethod]
+    public void GpsPanel_ShowsUnavailableAndSavesSelectedReceiverAtReadVersion()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        service.GetHandler = _ => Success(TestTimeSyncUiService.View() with
+        {
+            Receiver = new(true, "/dev/ttyUSB1", 4800, false),
+            Gps = GpsTimeStatus.Empty(GpsSignalState.Unavailable),
+        });
+        var cut = context.Render<TimeSyncPanel>();
+        cut.WaitForAssertion(() => Assert.AreEqual("Unavailable", cut.Find("#time-gps-fix").TextContent));
+        Assert.IsFalse(cut.Find("fieldset.time-gps").HasAttribute("disabled"));
+        Assert.IsEmpty(cut.FindAll("#time-gps-unavailable"));
+        cut.Find("#time-gps-device").Change("/dev/ttyUSB2");
+        cut.Find("#time-gps-baud").Change("115200");
+        cut.Find("#time-gps-pps").Change(true);
+        cut.Find("#time-gps-source").Change("network");
+        cut.Find("#time-gps-save").Click();
+        cut.WaitForAssertion(() => Assert.AreEqual(
+            (new GpsReceiverSettings(false, "/dev/ttyUSB2", 115200, true), "version-1"), service.GpsSaves.Single()));
+    }
+
+    [TestMethod]
+    public void GpsPanel_RendersFixDiagnosticsWithReadOnlySettings()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var receipt = OperatorUiTestData.Now;
+        service.GetHandler = _ => Success(TestTimeSyncUiService.View(canChange: false) with
+        {
+            Receiver = new(true, "/dev/ttyUSB1", 4800, true),
+            Gps = new(GpsSignalState.Available, receipt, receipt, TimeSpan.FromMilliseconds(-35), 2, 12, GpsSignalState.Missing, null),
+        });
+        var cut = context.Render<TimeSyncPanel>();
+        cut.WaitForAssertion(() => Assert.AreEqual("Available", cut.Find("#time-gps-fix").TextContent));
+        var facts = cut.Find("#time-gps-heading + dl").TextContent;
+        Assert.Contains("12 / 2", facts, StringComparison.Ordinal);
+        Assert.Contains("35 ms ahead", facts, StringComparison.Ordinal);
+        Assert.Contains("23 Jul 2026", facts, StringComparison.Ordinal);
+        Assert.Contains("Missing", facts, StringComparison.Ordinal);
+        Assert.IsTrue(cut.Find("fieldset.time-gps").HasAttribute("disabled"));
+        Assert.IsTrue(cut.Find("#time-set-clock").HasAttribute("disabled"));
     }
 
     private static TestTimeSyncUiService Configure(BunitContext context)

@@ -18,6 +18,8 @@ public sealed partial record TimeSyncSettings(
     TimeSpan Tolerance,
     TimeSpan QueryTimeout)
 {
+    public GpsReceiverSettings Gps { get; init; } = GpsReceiverSettings.Default;
+
     public const string SectionKey = "CameraAgent:TimeSync";
 
     /// <summary>The key the operator UI writes: the servers as one comma-separated value.</summary>
@@ -67,7 +69,10 @@ public sealed partial record TimeSyncSettings(
             ReadServers(section.GetSection("Servers")),
             Clamp(section["Interval"], DefaultInterval, MinimumInterval, MaximumInterval),
             Clamp(section["Tolerance"], DefaultTolerance, MinimumTolerance, MaximumTolerance),
-            Clamp(section["QueryTimeout"], DefaultQueryTimeout, MinimumQueryTimeout, MaximumQueryTimeout));
+            Clamp(section["QueryTimeout"], DefaultQueryTimeout, MinimumQueryTimeout, MaximumQueryTimeout))
+        {
+            Gps = GpsReceiverSettings.Read(section.GetSection("Gps")),
+        };
     }
 
     /// <summary>

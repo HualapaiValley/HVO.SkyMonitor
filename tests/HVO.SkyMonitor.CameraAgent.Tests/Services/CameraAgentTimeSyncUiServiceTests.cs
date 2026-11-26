@@ -11,6 +11,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Configuration;
 using Moq;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Services;
@@ -357,6 +358,42 @@ public sealed class CameraAgentTimeSyncUiServiceTests
         Assert.IsNull(CameraAgentTimeSyncUiService.ValidateServers(["a.example", "b.example:1123", "10.0.0.1", "[::1]"]));
     }
 
+    [TestMethod]
+    public async Task SaveGps_RoundTripsAllSettingsAndConflictsWithoutOverwriting()
+    {
+        using var file = new TemporarySettingsFile();
+        var monitor = new StubMonitor { GpsReaderRegistered = true };
+        var service = CreateService(monitor, read: true, mutate: true, settingsFile: file.File);
+        var receiver = new GpsReceiverSettings(true, "/dev/ttyACM0", 38400, true);
+        var version = (await service.GetAsync(CancellationToken.None).ConfigureAwait(false)).Value!.Setting.Version!;
+        var result = await service.SaveGpsAsync(receiver, version, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(receiver, result.Value);
+        var conflict = await service.SaveGpsAsync(GpsReceiverSettings.Default, version, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(OperatorUiResultKind.Conflict, conflict.Kind);
+        using var input = File.OpenRead(file.Path);
+        var config = new ConfigurationBuilder().AddJsonStream(input).Build();
+        Assert.AreEqual(receiver, TimeSyncSettings.Read(config).Gps);
+        Assert.AreEqual(1, file.Reloads);
+    }
+
+    [TestMethod]
+    [DataRow(false, true, false, "/dev/ttyUSB0", 9600, nameof(OperatorUiResultKind.Invalid))]
+    [DataRow(true, false, false, "/dev/ttyUSB0", 9600, nameof(OperatorUiResultKind.Unauthorized))]
+    [DataRow(true, true, true, "/dev/ttyUSB0", 9600, nameof(OperatorUiResultKind.Invalid))]
+    [DataRow(true, true, false, "/dev/../etc/passwd", 9600, nameof(OperatorUiResultKind.Invalid))]
+    [DataRow(true, true, false, "/dev/ttyUSB0", 0, nameof(OperatorUiResultKind.Invalid))]
+    public async Task SaveGps_RefusesUnavailableUnauthorizedOverriddenAndInvalidChanges(
+        bool registered, bool mutate, bool overridden, string path, int baud, string expected)
+    {
+        using var file = new TemporarySettingsFile(overridden ? [GpsReceiverSettings.SectionKey + ":UsePps"] : []);
+        var monitor = new StubMonitor { GpsReaderRegistered = registered };
+        var service = CreateService(monitor, read: true, mutate: mutate, settingsFile: file.File);
+        var result = await service.SaveGpsAsync(new(true, path, baud, true), OperatorSettingsFile.AbsentVersion, CancellationToken.None)
+            .ConfigureAwait(false);
+        Assert.AreEqual(expected, result.Kind.ToString());
+        Assert.IsFalse(File.Exists(file.Path));
+    }
+
     private static CameraAgentTimeSyncUiService CreateService(
         StubMonitor monitor,
         bool read,
@@ -390,6 +427,8 @@ public sealed class CameraAgentTimeSyncUiServiceTests
     private sealed class StubMonitor : IClockSyncMonitor
     {
         private readonly TimeSyncSettings _settings = TimeSyncSettings.Default;
+
+        public bool GpsReaderRegistered { get; init; }
 
         internal bool ThrowOnRead { get; init; }
 

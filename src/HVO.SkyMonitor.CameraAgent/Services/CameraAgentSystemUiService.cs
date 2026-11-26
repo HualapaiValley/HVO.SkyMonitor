@@ -499,6 +499,8 @@ internal sealed class CameraAgentSystemUiService(
         {
             return new SystemClockFact(status, null, null);
         }
+        if (latest.Selected is null && settings.Gps.Enabled && latest.Gps is { CanVerifyClock: true } gps)
+            return new SystemClockFact(status, gps.PpsOffset?.Negate(), gps.PpsMeasuredUtc);
         return new SystemClockFact(status, latest.Selected?.Offset?.Negate(), latest.MeasuredUtc);
     }
 
