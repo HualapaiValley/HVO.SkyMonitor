@@ -10,11 +10,13 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Endpoints;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Tests.Components;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
@@ -31,6 +33,63 @@ public sealed partial class CameraAgentArtifactServiceTests
     private static readonly JsonSerializerOptions CenteredTestJson = new(JsonSerializerDefaults.Web);
     private static readonly double[] Center103ExpectedLine = [21.5, 28, 41.5, 58];
     private static readonly double[] Center104ExpectedLine = [24.5, 29, 44.5, 59];
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task StandaloneArchiveProductVisibilityRespectsTheCaptureJournalAsync(bool captureIsJournaled)
+    {
+        using var fixture = await ArtifactFixture.CreateAsync().ConfigureAwait(false);
+        var token = CancellationToken.None;
+        var raw = await fixture.AddRawAsync().ConfigureAwait(false);
+        var source = raw.Manifest.Descriptor;
+        var capture = captureIsJournaled ? source.Capture : source.Capture with { CaptureId = Guid.NewGuid() };
+        var artifact = source.Artifact with
+        {
+            ArtifactId = Guid.NewGuid(),
+            Role = FrameArtifactRole.Calibrated,
+            SourceArtifactIds = [raw.ArtifactId]
+        };
+        var descriptor = source with { Capture = capture, Artifact = artifact };
+        var layout = descriptor.Layout;
+        var controls = descriptor.Controls;
+        var frame = new CameraFrame(descriptor.Timing.ExposureStartedUtc, layout.Width, layout.Height, layout.PixelFormat, raw.Payload,
+            new(controls.EffectiveExposure, controls.EffectiveGain, controls.EffectiveTemperatureC ?? double.NaN,
+                artifact.SourceId, Offset: controls.EffectiveOffset), layout.StrideBytes);
+
+        var config = StoragePolicyRawIngressIntegrationTests.Profile(fixture.Root);
+        var accessor = new CameraAgentConfigurationAccessor();
+        accessor.SetConfiguration(config);
+        var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = fixture.Root });
+        using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+        await storage.SaveAsync(Path.Combine(fixture.Root, "storage-a"),
+            new FrameArtifact(artifact.ArtifactId, artifact.Role, frame, artifact.SourceArtifactIds), descriptor, token).ConfigureAwait(false);
+        var archive = new LocalArchiveReader(storage, accessor, options, () => config);
+        using var service = new CameraAgentArtifactService(options, fixture.ProcessingStore, new CameraAgentPreviewEncoder(), localArchive: archive);
+        var gallery = new SqliteCameraAgentGallery(options, fixture.ProcessingStore, localArchive: archive);
+
+        var opened = await service.OpenContentAsync(artifact.ArtifactId, token).ConfigureAwait(false);
+        var content = opened.Content;
+        await using var contentScope = (content ?? Stream.Null).ConfigureAwait(false);
+        var product = await gallery.GetProductAsync(artifact.ArtifactId, token).ConfigureAwait(false);
+        var page = await gallery.GetProductPageAsync(new(Role: FrameArtifactRole.Calibrated), token).ConfigureAwait(false);
+
+        if (captureIsJournaled)
+        {
+            Assert.AreEqual(CameraAgentArtifactReadStatus.NotFound, opened.Status);
+            Assert.IsNull(content);
+            Assert.IsNull(product);
+            Assert.IsEmpty(page.Items);
+        }
+        else
+        {
+            Assert.AreEqual(CameraAgentArtifactReadStatus.Found, opened.Status);
+            Assert.IsNotNull(content);
+            CollectionAssert.AreEqual(raw.Payload, await ReadAllAsync(content).ConfigureAwait(false));
+            Assert.IsNotNull(product);
+            Assert.AreEqual(artifact.ArtifactId, page.Items.Single().ArtifactId);
+        }
+    }
 
     [TestMethod]
     [DataRow(false)]
@@ -704,41 +763,59 @@ public sealed partial class CameraAgentArtifactServiceTests
         using var fixture = await ArtifactFixture.CreateAsync().ConfigureAwait(false);
         var token = CancellationToken.None;
         const int totalLayers = 10;
+        const int permitCount = CenteredViewPresentationReader.DefaultMaximumConcurrentLayerReads;
         var (views, enriched) = await CreateMultiLayerCenteredViewAsync(fixture, totalLayers, $"gen-m7-{stallMode}", token)
             .ConfigureAwait(false);
 
         var layerArtifactIds = enriched.Revision.Manifest.Layers
             .Select(static layer => layer.SourceProduct.ArtifactId)
             .ToHashSet();
-        using var probe = new StalledConcurrencyProbeArtifactService(fixture.Service, layerArtifactIds, stallMode);
+        var safetyTimeout = TimeSpan.FromSeconds(30);
+        using var probe = new StalledConcurrencyProbeArtifactService(fixture.Service, layerArtifactIds, stallMode, permitCount, safetyTimeout);
+        var time = new CurrentSkyPageTests.ManualTimeProvider(DateTimeOffset.UtcNow);
+        var layerTimeout = TimeSpan.FromMilliseconds(80);
+        var overallTimeout = TimeSpan.FromMilliseconds(350);
         var reader = new CenteredViewPresentationReader(
             views,
             probe,
-            TimeProvider.System,
-            optionalLayerReadTimeout: TimeSpan.FromMilliseconds(80),
-            maximumConcurrentLayerReads: CenteredViewPresentationReader.DefaultMaximumConcurrentLayerReads,
-            overallOptionalLayersReadTimeout: TimeSpan.FromMilliseconds(350));
+            time,
+            optionalLayerReadTimeout: layerTimeout,
+            maximumConcurrentLayerReads: permitCount,
+            overallOptionalLayersReadTimeout: overallTimeout);
 
+        using var callerCts = new CancellationTokenSource();
         try
         {
-            var rendered = await reader.ReadAsync(enriched.Base.BaseId, enriched.Revision.RevisionId, token)
-                .AsTask().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            var readTask = reader.ReadAsync(enriched.Base.BaseId, enriched.Revision.RevisionId, callerCts.Token).AsTask();
+            await probe.WaitForExpectedOperationsEnteredAsync().WaitAsync(safetyTimeout).ConfigureAwait(false);
+            Assert.AreEqual(permitCount, probe.PeakActiveOperations, $"All {permitCount} {stallMode} operations must overlap.");
+
+            // All permits are held by stalled operations. Expire their individual deadlines and
+            // prove the next wave is queued at the gate before expiring the overall deadline.
+            time.Advance(layerTimeout);
+            await WaitForConditionAsync(
+                () => reader.PendingLayerReadWaiterCount == permitCount,
+                safetyTimeout).ConfigureAwait(false);
+            Assert.AreEqual(0, reader.AvailableLayerReadPermits, "Timed-out operations must retain their permits.");
+            Assert.AreEqual(permitCount, probe.TotalStartedOperations, "Queued layers must not start while the gate is full.");
+
+            time.Advance(overallTimeout - layerTimeout);
+            var rendered = await readTask.WaitAsync(safetyTimeout).ConfigureAwait(false);
 
             Assert.AreEqual(CameraAgentLayeredPresentationStatus.Found, rendered.Status);
             Assert.IsNotNull(rendered.Presentation);
             Assert.IsEmpty(rendered.Presentation.Layers);
-            Assert.AreEqual(
-                CenteredViewPresentationReader.DefaultMaximumConcurrentLayerReads,
-                probe.PeakActiveOperations,
-                $"Timed-out {stallMode} operations must never exceed the 4-operation concurrency cap.");
-            Assert.AreEqual(
-                CenteredViewPresentationReader.DefaultMaximumConcurrentLayerReads,
-                probe.TotalStartedOperations,
-                $"No 5th {stallMode} operation may start while all 4 concurrency permits remain held by timed-out ops.");
+            Assert.AreEqual(permitCount, probe.PeakActiveOperations, $"Timed-out {stallMode} operations must stay within the concurrency cap.");
+            Assert.AreEqual(permitCount, probe.TotalStartedOperations, "Expiring the overall deadline must not start any queued layer.");
+            Assert.AreEqual(0, reader.PendingLayerReadWaiterCount, "The overall deadline must remove all queued layers.");
         }
         finally
         {
+            await callerCts.CancelAsync().ConfigureAwait(false);
             await probe.ReleaseAndDrainAsync().ConfigureAwait(false);
+            await WaitForConditionAsync(
+                () => reader.AvailableLayerReadPermits == permitCount,
+                safetyTimeout).ConfigureAwait(false);
             Assert.AreEqual(0, probe.OpenStreamCount, "All detached streams must be disposed after stalled operations finish.");
         }
     }
@@ -1446,9 +1523,8 @@ public sealed partial class CameraAgentArtifactServiceTests
             await probe.WaitForAllOperationsEnteredAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
 
             var (_, cancelElapsed) = await RunOnDedicatedThreadAsync(
-                threadId =>
+                _ =>
                 {
-                    probe.SetCancellingThreadId(threadId);
                     callerCts.Cancel();
                     return true;
                 }).ConfigureAwait(false);
@@ -1456,15 +1532,16 @@ public sealed partial class CameraAgentArtifactServiceTests
                 "Synchronous caller cancellation must return promptly on the late-open path.");
             await Assert.ThrowsAsync<OperationCanceledException>(() => firstReadTask.WaitAsync(TimeSpan.FromSeconds(5)))
                 .ConfigureAwait(false);
-            Assert.AreEqual(0, probe.CompletedDisposeCount,
-                "Late-open sync-blocking DisposeAsync must not complete before being released.");
+            Assert.AreEqual(0, reader.AvailableLayerReadPermits,
+                "Cancellation must leave every permit held while its layer open is outstanding.");
 
             // Release the 4 late opens; their wrapped streams enter synchronously blocking DisposeAsync while holding permits.
             probe.ReleaseLateOpens();
             await probe.WaitForAllDisposesEnteredAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-            Assert.AreEqual(0, probe.DisposesOnCancellingThread,
-                "Late-open DisposeAsync must not execute on the caller's cancelling thread.");
-            Assert.AreEqual(0, reader.AvailableLayerReadPermits);
+            Assert.AreEqual(0, probe.CompletedDisposeCount,
+                "All late-open disposals have entered and must stay blocked until released.");
+            Assert.AreEqual(0, reader.AvailableLayerReadPermits,
+                "Every permit must remain held while its late-open disposal is blocked.");
 
             var secondReadTask = reader.ReadAsync(enriched.Base.BaseId, enriched.Revision.RevisionId, CancellationToken.None).AsTask();
             await probe.WaitForSecondPreviewOpenedAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
@@ -1480,6 +1557,13 @@ public sealed partial class CameraAgentArtifactServiceTests
             Assert.AreEqual(CameraAgentLayeredPresentationStatus.Found, secondRendered.Status);
             Assert.IsNotNull(secondRendered.Presentation);
             Assert.HasCount(permitCount, secondRendered.Presentation.Layers);
+
+            // The second read can reuse a permit while other late-open disposals are still running.
+            await WaitForConditionAsync(
+                () => reader.AvailableLayerReadPermits == permitCount,
+                TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+            Assert.AreEqual(permitCount, probe.CompletedDisposeCount,
+                "Every late-open disposal must finish before all permits return to the gate.");
         }
         finally
         {
@@ -2316,11 +2400,16 @@ public sealed partial class CameraAgentArtifactServiceTests
     private sealed class StalledConcurrencyProbeArtifactService(
         ICameraAgentArtifactService inner,
         HashSet<Guid> stalledArtifactIds,
-        string stallMode) : ICameraAgentArtifactService, IDisposable
+        string stallMode,
+        int expectedOperationCount = 1,
+        TimeSpan? safetyTimeout = null) : ICameraAgentArtifactService, IDisposable
     {
         private readonly ManualResetEventSlim _syncGate = new(false);
+        private readonly TimeSpan _syncWaitTimeout = safetyTimeout ?? TimeSpan.FromSeconds(10);
+        private readonly TimeSpan _drainTimeout = safetyTimeout ?? TimeSpan.FromSeconds(5);
         private readonly TaskCompletionSource _asyncGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly TaskCompletionSource _drained = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _expectedOperationsEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int _active;
         private int _peak;
         private int _totalStarted;
@@ -2332,6 +2421,8 @@ public sealed partial class CameraAgentArtifactServiceTests
         public int TotalStartedOperations => Volatile.Read(ref _totalStarted);
         public int OpenStreamCount => Volatile.Read(ref _openStreams);
         public bool IsReleased => Volatile.Read(ref _released) != 0;
+
+        public Task WaitForExpectedOperationsEnteredAsync() => _expectedOperationsEntered.Task;
 
         public ValueTask<CameraAgentArtifactContentResult> OpenContentAsync(Guid artifactId, CancellationToken cancellationToken)
         {
@@ -2400,6 +2491,10 @@ public sealed partial class CameraAgentArtifactServiceTests
                     break;
                 }
             }
+            if (current >= expectedOperationCount)
+            {
+                _expectedOperationsEntered.TrySetResult();
+            }
         }
 
         private void ExitOperation()
@@ -2426,7 +2521,7 @@ public sealed partial class CameraAgentArtifactServiceTests
             _asyncGate.TrySetResult();
             if (Volatile.Read(ref _inFlight) > 0 || Volatile.Read(ref _openStreams) > 0)
             {
-                await _drained.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                await _drained.Task.WaitAsync(_drainTimeout).ConfigureAwait(false);
             }
         }
 
@@ -2459,7 +2554,7 @@ public sealed partial class CameraAgentArtifactServiceTests
                     owner.EnterOperation();
                     try
                     {
-                        owner._syncGate.Wait(TimeSpan.FromSeconds(10), CancellationToken.None);
+                        owner._syncGate.Wait(owner._syncWaitTimeout, CancellationToken.None);
                         return ValueTask.FromResult(0);
                     }
                     finally

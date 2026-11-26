@@ -275,6 +275,58 @@ public sealed partial class CurrentSkyPageTests
     }
 
     [TestMethod]
+    public void CenteredPendingDeepSkyAssociationsAppearInMeasuredLayers()
+    {
+        using var context = new BunitContext();
+        var (service, clock) = ConfigurePolling(context);
+        var reference = CenteredExposure(103, clock.GetUtcNow().AddSeconds(-10));
+        var view = CenteredStack(reference,
+            [CenteredExposure(102, reference.ExposureStartedUtc.AddSeconds(-1)), reference,
+             CenteredExposure(104, reference.ExposureStartedUtc.AddSeconds(1))],
+            1, [new(new("measured-deep-sky", CenteredViewLayerScope.Stack, null),
+                0, null, null, CenteredViewReadiness.Waiting, "centered.awaiting-product", null)]);
+        service.CenteredCurrentSkyHandler = (_, _) =>
+            ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(
+                CenteredSkyView(view, reference, CenteredViewLiveState.Ready, clock.GetUtcNow())));
+
+        var cut = context.Render<CurrentSkyPage>();
+        cut.WaitForAssertion(() =>
+        {
+            var row = cut.Find("[aria-label='Measured layers'] [data-layer-kind='measured-deep-sky']");
+            Assert.AreEqual("Pending", row.QuerySelector(".layer-readiness-tag")?.TextContent);
+            Assert.AreEqual("Pending · waiting for optional evidence", row.QuerySelector("small")?.TextContent);
+            Assert.IsNotNull(row.QuerySelector("input:disabled"));
+        });
+    }
+
+    [TestMethod]
+    [DataRow(OrbitalTrackPresentation.LayerKind)]
+    [DataRow("predicted-satellites")]
+    public void CenteredPredictedSatelliteTrackKindsRenderTheSameDiagnosticCopy(string layerKind)
+    {
+        using var context = new BunitContext();
+        var (service, clock) = ConfigurePolling(context);
+        var reference = CenteredExposure(103, clock.GetUtcNow().AddSeconds(-10));
+        var compatibility = new PresentationCompatibilityDescriptor(640, 480, new string('B', 64), new string('C', 64));
+        var view = CenteredSingle(reference, 1,
+            [ReadyLayer(layerKind, reference.Capture.CaptureId, 1, compatibility, scope: CenteredViewLayerScope.Contributor)],
+            compatibility);
+        service.CenteredCurrentSkyHandler = (_, _) =>
+            ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(
+                CenteredSkyView(view, reference, CenteredViewLiveState.Ready, clock.GetUtcNow())));
+
+        var cut = context.Render<CurrentSkyPage>();
+        cut.WaitForAssertion(() =>
+        {
+            var row = cut.Find($"[aria-label='Diagnostics layers'] [data-layer-kind='{layerKind}']");
+            Assert.AreEqual("Ready", row.QuerySelector(".layer-readiness-tag")?.TextContent);
+            StringAssert.StartsWith(row.QuerySelector("strong")?.TextContent, "Predicted satellite tracks · #103", StringComparison.Ordinal);
+            Assert.AreEqual("predicted / exact exposure segment; geometry only, not a detection or visibility claim",
+                row.QuerySelector("small")?.TextContent);
+        });
+    }
+
+    [TestMethod]
     public async Task CenteredPersonalVisibilityCarriesOverOnlyWhenNewBaseIsCompatibleAndLatestFitStaysSeparate()
     {
         var astrometry = (await AstrometryEvidenceAsync().ConfigureAwait(false)) with { ArtifactId = Guid.NewGuid() };
@@ -1914,7 +1966,9 @@ public sealed partial class CurrentSkyPageTests
     }
 
     [TestMethod]
-    public async Task CenteredPauseAllowsSameRevisionOverlayLoadToFinishWhileStillBlockingNewerRevisionAsync()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task CenteredPauseKeepsOverlayLoadsPinnedToTheDisplayedRevisionAsync(bool retryFailedLoad)
     {
         using var context = new BunitContext();
         var (service, clock) = ConfigurePolling(context);
@@ -1952,14 +2006,21 @@ public sealed partial class CurrentSkyPageTests
         var rev1Started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var rev1Gate = new TaskCompletionSource<OperatorUiResult<CameraAgentCenteredPresentationRead>>(TaskCreationOptions.RunContinuationsAsynchronously);
         var rev1Token = CancellationToken.None;
+        var rev1Calls = 0;
         var rev2Calls = 0;
         service.CenteredPresentationHandler = (_, revisionId, ct) =>
         {
             if (revisionId == rev1.Revision.RevisionId)
             {
-                rev1Token = ct;
-                rev1Started.TrySetResult();
-                return new ValueTask<OperatorUiResult<CameraAgentCenteredPresentationRead>>(rev1Gate.Task);
+                if (Interlocked.Increment(ref rev1Calls) == 1)
+                {
+                    rev1Token = ct;
+                    rev1Started.TrySetResult();
+                    return new ValueTask<OperatorUiResult<CameraAgentCenteredPresentationRead>>(rev1Gate.Task);
+                }
+
+                return ValueTask.FromResult(OperatorUiResult<CameraAgentCenteredPresentationRead>.Success(
+                    new(CameraAgentLayeredPresentationStatus.Found, ProjectCenteredPresentation(rev1), null)));
             }
             Interlocked.Increment(ref rev2Calls);
             return ValueTask.FromResult(OperatorUiResult<CameraAgentCenteredPresentationRead>.Success(
@@ -1983,10 +2044,20 @@ public sealed partial class CurrentSkyPageTests
         current = rev2;
         await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
         Assert.AreEqual(0, Volatile.Read(ref rev2Calls), "Paused live view must NOT load or advance to rev2.");
+        Assert.AreEqual(1, Volatile.Read(ref rev1Calls), "Refreshing must keep the in-flight load for the displayed revision.");
 
-        // Release rev1's same-revision overlay load -> finishes cleanly while paused and stays pinned on rev1!
-        rev1Gate.SetResult(OperatorUiResult<CameraAgentCenteredPresentationRead>.Success(
-            new(CameraAgentLayeredPresentationStatus.Found, ProjectCenteredPresentation(rev1), null)));
+        var firstRead = retryFailedLoad
+            ? new CameraAgentCenteredPresentationRead(CameraAgentLayeredPresentationStatus.Unavailable, null, "Temporary overlay outage.")
+            : new CameraAgentCenteredPresentationRead(CameraAgentLayeredPresentationStatus.Found, ProjectCenteredPresentation(rev1), null);
+        rev1Gate.SetResult(OperatorUiResult<CameraAgentCenteredPresentationRead>.Success(firstRead));
+        if (retryFailedLoad)
+        {
+            cut.WaitForAssertion(() => Assert.AreEqual("Unavailable",
+                cut.Find("[data-layer-kind='star-annotations'] .layer-readiness-tag").TextContent));
+
+            // The incoming view is still rev2. Manual refresh must retry the displayed rev1.
+            await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        }
         cut.WaitForAssertion(() =>
         {
             Assert.AreEqual("Paused", cut.Find("[data-centered-state]").TextContent);
@@ -1995,6 +2066,7 @@ public sealed partial class CurrentSkyPageTests
             Assert.IsEmpty(cut.FindAll("[data-layer-kind='scene-constellations']"));
             Assert.IsFalse(cut.Find(".stage-status").TextContent.Contains("while optional overlays load", StringComparison.Ordinal));
         });
+        Assert.AreEqual(retryFailedLoad ? 2 : 1, Volatile.Read(ref rev1Calls));
         Assert.AreEqual(0, Volatile.Read(ref rev2Calls));
 
         // Resume live -> now advances cleanly to rev2!
@@ -2200,7 +2272,9 @@ public sealed partial class CurrentSkyPageTests
     }
 
     [TestMethod]
-    public async Task CenteredArchivedManualRefreshRecoversFailedOverlayAndTransientAstrometryAsync()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task CenteredArchivedManualRefreshRetriesTransientAstrometryWithOrWithoutAnOverlayFailureAsync(bool overlayFailed)
     {
         var astrometry = await AstrometryEvidenceAsync().ConfigureAwait(false);
         var fitArtifactId = Guid.NewGuid();
@@ -2242,13 +2316,13 @@ public sealed partial class CurrentSkyPageTests
         detail = detail with
         {
             Capture = detail.Capture with { ExposureStartedUtc = astrometry.Solution!.Assessment.Frame.ExposureStartUtc },
-            CenteredArchive = detail.CenteredArchive! with
+            CenteredArchive = overlayFailed ? detail.CenteredArchive! with
             {
                 Presentation = null,
                 PresentationStatus = CameraAgentLayeredPresentationStatus.NotRetained,
                 PresentationReason = null,
                 PresentationDeferred = true
-            }
+            } : detail.CenteredArchive
         };
 
         var allowRecovery = 0;
@@ -2263,8 +2337,10 @@ public sealed partial class CurrentSkyPageTests
                 : ValueTask.FromResult(OperatorUiResult<CameraAgentCenteredPresentationRead>.Success(
                     new(CameraAgentLayeredPresentationStatus.Found, ProjectCenteredPresentation(single103), null)));
         };
-        service.ExactAstrometryHandler = (_, _, _) =>
+        service.ExactAstrometryHandler = (requestedCaptureId, requestedPin, _) =>
         {
+            Assert.AreEqual(captureId, requestedCaptureId);
+            Assert.AreEqual(fitPin, requestedPin);
             Interlocked.Increment(ref astrometryAttempts);
             return Volatile.Read(ref allowRecovery) == 0
                 ? ValueTask.FromResult(OperatorUiResult<CameraAgentRetainedAstrometry>.Success(
@@ -2275,21 +2351,36 @@ public sealed partial class CurrentSkyPageTests
         var cut = context.Render<CurrentSkyPage>(p => p.Add(c => c.ArchivedView, detail));
         cut.WaitForAssertion(() =>
         {
-            Assert.IsGreaterThanOrEqualTo(1, Volatile.Read(ref overlayAttempts));
+            if (overlayFailed)
+            {
+                Assert.IsGreaterThanOrEqualTo(1, Volatile.Read(ref overlayAttempts));
+            }
+            else
+            {
+                Assert.AreEqual(0, Volatile.Read(ref overlayAttempts));
+            }
             Assert.IsGreaterThanOrEqualTo(1, Volatile.Read(ref astrometryAttempts));
-            Assert.AreEqual("Unavailable", cut.Find("[data-layer-kind='star-annotations'] .layer-readiness-tag").TextContent);
+            Assert.AreEqual(overlayFailed ? "Unavailable" : "Ready",
+                cut.Find("[data-layer-kind='star-annotations'] .layer-readiness-tag").TextContent);
             Assert.AreEqual("Unavailable", cut.Find(".astrometry-card .state-chip").TextContent);
         });
 
         var overlayBeforeRefresh = Volatile.Read(ref overlayAttempts);
         var astrometryBeforeRefresh = Volatile.Read(ref astrometryAttempts);
 
-        // Archive manual refresh retries BOTH the failed archive overlay read AND transient pinned astrometry!
         Volatile.Write(ref allowRecovery, 1);
         await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
         cut.WaitForAssertion(() =>
         {
-            Assert.IsGreaterThan(overlayBeforeRefresh, Volatile.Read(ref overlayAttempts));
+            if (overlayFailed)
+            {
+                Assert.IsGreaterThan(overlayBeforeRefresh, Volatile.Read(ref overlayAttempts));
+            }
+            else
+            {
+                Assert.AreEqual(0, Volatile.Read(ref overlayAttempts),
+                    "Astrometry must recover independently when all archive overlay layers are already loaded.");
+            }
             Assert.IsGreaterThan(astrometryBeforeRefresh, Volatile.Read(ref astrometryAttempts));
             Assert.AreEqual(single103.Revision.RevisionId, cut.Find(".sky-layer-workspace").GetAttribute("data-centered-revision"));
             Assert.AreEqual("Ready", cut.Find("[data-layer-kind='star-annotations'] .layer-readiness-tag").TextContent);
