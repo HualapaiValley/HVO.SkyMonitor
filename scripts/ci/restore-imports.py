@@ -159,15 +159,20 @@ def is_valid_folder_name(folder_name):
 
 def solution_projects(solution_blob):
     text = solution_blob.decode("utf-8-sig")
+    require("<!DOCTYPE" not in text.upper() and "<!ENTITY" not in text.upper(),
+            "document type declarations require manual review")
     require(not re.search(r"&#|%[0-9a-fA-F]{2}", text), "escaped build input requires manual review")
     # Match the source audit before ElementTree normalizes literal attribute whitespace.
-    attributes = re.finditer(
+    tags = re.finditer(
         r"""<!--.*?-->|<!\[CDATA\[.*?\]\]>|<\?.*?\?>|"""
-        r"""<(?:Folder\s+Name|Project\s+Path)\s*=\s*(["'])(.*?)\1""",
+        r"""(<(?![!?/])(?:[^<>"']|"[^"]*"|'[^']*')*>)""",
         text, re.DOTALL,
     )
-    require(not any(re.search(r"[\t\r\n]", match[2] or "") for match in attributes),
-            "solution attribute contains control whitespace")
+    require(not any(
+        re.search(r"[\t\r\n]", value)
+        for tag in tags if tag[1] is not None
+        for _, value in re.findall(r"""(["'])(.*?)\1""", tag[1], re.DOTALL)
+    ), "solution attribute contains control whitespace")
     solution_root = ET.fromstring(text)
     require(solution_root.tag == "Solution" and not solution_root.attrib, "unknown solution format")
     expected_projects = set()

@@ -1040,6 +1040,8 @@ certificate_cases=(
   slnx-folder-reserved-con slnx-folder-reserved-con-ext slnx-folder-reserved-lpt1
   slnx-folder-reserved-clock slnx-folder-del-char slnx-folder-c1-control
   slnx-{folder,project}-{tab,cr,lf,escaped-tab,escaped-cr,escaped-lf}
+  slnx-{folder,project}-xmlns-{tab,cr,lf}
+  slnx-doctype slnx-doctype-entity
   slnx-attribute-formatting
 )
 
@@ -1073,6 +1075,16 @@ SLNX_WHITESPACE_CASES = {
     f"slnx-{entry}-{kind}": (entry, whitespace)
     for entry in ("folder", "project")
     for kind, whitespace in SLNX_WHITESPACE.items()
+} | {
+    f"slnx-{entry}-xmlns-{kind}": (entry, SLNX_WHITESPACE[kind])
+    for entry in ("folder", "project")
+    for kind in ("tab", "cr", "lf")
+}
+SLNX_DECLARATION_CASES = {
+    "slnx-doctype": ("<!DOCTYPE Solution>", "tests/Example/Example.csproj"),
+    "slnx-doctype-entity": (
+        '<!DOCTYPE Solution [<!ENTITY project "tests/Example/Example.csproj">]>', "&project;",
+    ),
 }
 SECOND_PROJECT_CASES = frozenset({
     "solution-folder-project", "slnx-folder-strasse-pair", "missing-project-record",
@@ -1089,7 +1101,12 @@ SLNX_INVALID_CASES = frozenset({
     "slnx-folder-reserved-con", "slnx-folder-reserved-con-ext", "slnx-folder-reserved-lpt1",
     "slnx-folder-reserved-clock", "slnx-folder-del-char", "slnx-folder-c1-control",
 })
-DIRECT_CHECK_CASES = SLNX_INVALID_CASES | SLNX_WHITESPACE_CASES.keys() | {
+SLNX_ERRORS = dict.fromkeys(SLNX_INVALID_CASES, "unknown solution entry") | {
+    case: ("escaped build input requires manual review" if whitespace.startswith("&#")
+           else "solution attribute contains control whitespace")
+    for case, (_, whitespace) in SLNX_WHITESPACE_CASES.items()
+} | dict.fromkeys(SLNX_DECLARATION_CASES, "document type declarations require manual review")
+DIRECT_CHECK_CASES = SLNX_ERRORS.keys() | {
     "global-json-sdk-paths", "global-json-extra-top-key", "global-json-utf16",
 }
 DIGEST_ZERO = "0" * 64
@@ -1270,6 +1287,13 @@ for case in cases:
     elif case in SLNX_WHITESPACE_CASES or case == "slnx-attribute-formatting":
         entry, whitespace = SLNX_WHITESPACE_CASES.get(case, ("formatting", " "))
         folder_name = f"/Second{whitespace}Group/" if entry == "folder" else "/Second Group/"
+        namespace = 'xmlns:x="urn:x" '
+        folder_namespace = namespace if "-xmlns-" in case and entry == "folder" else ""
+        project_namespace = namespace if "-xmlns-" in case and entry == "project" else ""
+        if case == "slnx-attribute-formatting":
+            folder_namespace = namespace + "\r\n\t\t"
+            project_namespace = "xmlns=''\n\t\t\t"
+            expected = "verify-restore"
         # Commit the space-normalized alias so accepting it would certify a different project.
         second_project = "tests/Second/Second Project.csproj"
         project_path = second_project.replace(" ", whitespace) if entry == "project" else second_project
@@ -1278,15 +1302,21 @@ for case in cases:
         (repo / "HVO.SkyMonitor.v9.slnx").write_text(
             '<Solution>\r\n'
             '\t<!-- <Folder Name="/Ignored\tName/" /> -->\n'
+            '\t<?probe <Project Path="ignored\rpath.csproj" /> ?>\n'
+            '\t<![CDATA[<Folder Name="/Ignored\nName/" />]]>\n'
             '\t<Project Path="tests/Example/Example.csproj" />\n'
-            f'\t<Folder\n\t\tName = "{folder_name}">\n'
-            f"\t\t<Project\tPath\r\n\t\t\t=\t'{project_path}' />\n"
+            f'\t<Folder\n\t\t{folder_namespace}Name = "{folder_name}">\n'
+            f"\t\t<Project\t{project_namespace}Path\r\n\t\t\t=\t'{project_path}' />\n"
             '\t</Folder>\n'
             '</Solution>\n',
             encoding="utf-8",
         )
-        if case == "slnx-attribute-formatting":
-            expected = "verify-restore"
+    elif case in SLNX_DECLARATION_CASES:
+        declaration, project_path = SLNX_DECLARATION_CASES[case]
+        (repo / "HVO.SkyMonitor.v9.slnx").write_text(
+            f'{declaration}\n<Solution><Project Path="{project_path}" /></Solution>\n',
+            encoding="utf-8",
+        )
     elif case == "missing-coverage-project-record":
         (repo / "scripts/coverage").mkdir(parents=True, exist_ok=True)
         (repo / "scripts/coverage/HVO.SkyMonitor.CoverageGate.csproj").write_text(SECOND_CSPROJ, encoding="utf-8")
@@ -1370,14 +1400,8 @@ for case in cases:
         elif case in ("missing-project-record", "extra-project-record", "missing-coverage-project-record"):
             want = "::error::Documentation CI build inventory is stale or unsafe; refresh scripts/ci:docs-inventory and scripts/ci:restore-import-certificate.json: restore import certificate project set differs from committed solution"
             require(want in err_lines, f"{case}: {check.stderr!r}")
-        elif case in SLNX_INVALID_CASES or case in SLNX_WHITESPACE_CASES:
-            if case in SLNX_WHITESPACE_CASES:
-                _, whitespace = SLNX_WHITESPACE_CASES[case]
-                solution_error = ("escaped build input requires manual review" if whitespace.startswith("&#")
-                                  else "solution attribute contains control whitespace")
-            else:
-                solution_error = "unknown solution entry"
-            want = "::error::Documentation CI build inventory is stale or unsafe; remove the unsafe input or update the audit policy under HIGH-tier review: " + solution_error
+        elif case in SLNX_ERRORS:
+            want = "::error::Documentation CI build inventory is stale or unsafe; remove the unsafe input or update the audit policy under HIGH-tier review: " + SLNX_ERRORS[case]
             require(want in err_lines, f"{case}: {check.stderr!r}")
         elif case in ("executable-certificate", "symlink-certificate", "stale-source-hash"):
             want = "::error::Documentation CI build inventory is stale or unsafe; refresh scripts/ci:docs-inventory and scripts/ci:restore-import-certificate.json:"
@@ -1399,7 +1423,7 @@ for case in cases:
             elif case == "global-json-utf16":
                 require("docs inventory audit: global.json is not UTF-8" in direct_lines, f"{case}: {direct.stderr!r}")
             else:
-                require(f"docs inventory audit: {solution_error}" in direct_lines, f"{case}: {direct.stderr!r}")
+                require(f"docs inventory audit: {SLNX_ERRORS[case]}" in direct_lines, f"{case}: {direct.stderr!r}")
 
     with (repo / "docs/runbooks/certified.md").open("a", encoding="utf-8") as fh:
         fh.write("changed\n")
@@ -3622,7 +3646,6 @@ import subprocess
 import sys
 import tempfile
 import time
-from unittest.mock import patch
 
 script_path = pathlib.Path(sys.argv[1])
 script_text = script_path.read_text()
@@ -3723,7 +3746,10 @@ def _collect_worker_pgids(skip_pgrp):
 
 def _abort_hook():
     if active["resume_fd"] is not None:
-        os.write(active["resume_fd"], b"abort\n")
+        try:
+            os.write(active["resume_fd"], b"abort\n")
+        except OSError:
+            pass
 
 
 def _cleanup_active():
@@ -3736,6 +3762,11 @@ def _cleanup_active():
         except Exception:
             pass
         _abort_hook()
+        # Resume a stopped hook once TERM is pending and the abort is buffered.
+        try:
+            proc.send_signal(signal.SIGCONT)
+        except OSError:
+            pass
         try:
             proc.wait(timeout=1.5)
         except Exception:
@@ -3772,6 +3803,16 @@ def _on_signal(signum, _frame):
 
 signal.signal(signal.SIGTERM, _on_signal)
 signal.signal(signal.SIGINT, _on_signal)
+
+# Exercise an abort write after the reader closes.
+read_fd, write_fd = os.pipe()
+os.close(read_fd)
+active["resume_fd"] = write_fd
+try:
+    _abort_hook()
+finally:
+    active["resume_fd"] = None
+    os.close(write_fd)
 
 
 def parse_hook_state(state_path):
@@ -3904,16 +3945,7 @@ try:
             if len(before) < 4:
                 raise SystemExit(f"Expected >=4 live processes in worker pgid {worker_pgid}, saw {before}")
             if early_abort:
-                # Hold the forked harness before exec 4<> until cleanup has
-                # attempted the abort write and begins waiting for its exit.
-                wait_for_exit = proc.wait
-
-                def continue_hook_and_wait(*, timeout):
-                    proc.send_signal(signal.SIGCONT)
-                    return wait_for_exit(timeout=timeout)
-
-                with patch.object(proc, "wait", side_effect=continue_hook_and_wait):
-                    _cleanup_active()
+                _cleanup_active()
                 rc = proc.returncode
             else:
                 os.kill(proc.pid, sig)

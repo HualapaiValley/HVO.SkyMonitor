@@ -226,13 +226,17 @@ def read_xml(name, *, solution=False):
         fail("escaped build input requires manual review")
     if solution:
         # ElementTree normalizes literal attribute whitespace to spaces.
-        # The .NET solution reader preserves it, so inspect values before parsing.
-        attributes = re.finditer(
+        # Inspect all quoted values before parsing, including after namespace declarations.
+        tags = re.finditer(
             r"""<!--.*?-->|<!\[CDATA\[.*?\]\]>|<\?.*?\?>|"""
-            r"""<(?:Folder\s+Name|Project\s+Path)\s*=\s*(["'])(.*?)\1""",
+            r"""(<(?![!?/])(?:[^<>"']|"[^"]*"|'[^']*')*>)""",
             text, re.DOTALL,
         )
-        if any(re.search(r"[\t\r\n]", match[2] or "") for match in attributes):
+        if any(
+            re.search(r"[\t\r\n]", value)
+            for tag in tags if tag[1] is not None
+            for _, value in re.findall(r"""(["'])(.*?)\1""", tag[1], re.DOTALL)
+        ):
             fail("solution attribute contains control whitespace")
     try:
         return ET.fromstring(text)
