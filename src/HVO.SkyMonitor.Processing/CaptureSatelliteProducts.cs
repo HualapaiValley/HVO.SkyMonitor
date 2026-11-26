@@ -37,6 +37,8 @@ public sealed record CaptureSatelliteInputV1(string SchemaVersion, Reconstructio
 {
     public JsonElement? TimeProvenance { get; init; }
     public JsonElement? RequestOptions { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool HideObjectLabels { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public VirtualExposureProvenance? VirtualShutter { get; init; }
 }
@@ -232,7 +234,8 @@ public static class CaptureSatelliteProducts
                     prediction.Tracks.Where((_, index) => prediction.Obstruction is null ||
                         (prediction.Obstruction[index].Eligibility.All(static value => value == HorizonObstructionEligibility.Clear) &&
                          prediction.Obstruction[index].ClearSegments.All(static clear => clear))).ToArray(),
-                    displayNames: null, queryIncomplete: prediction.Status == OrbitalExecutionStatus.Partial);
+                    displayNames: null, queryIncomplete: prediction.Status == OrbitalExecutionStatus.Partial,
+                    hideObjectLabels: input.HideObjectLabels);
                 status = status with { Renderable = true };
             }
             catch (ArgumentException)

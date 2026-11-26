@@ -239,6 +239,7 @@ internal sealed class CaptureSatelliteTracksProcessingStep(
         {
             VirtualShutter = virtualShutter,
             RequestOptions = JsonSerializer.SerializeToElement(Options),
+            HideObjectLabels = Options.HideObjectLabels,
             TimeProvenance = JsonSerializer.SerializeToElement(new
             {
                 time.EarthOrientationProvenance,
@@ -279,6 +280,8 @@ public sealed class CaptureSatelliteTracksOptions : IValidatableObject
     public string OutputVariant { get; init; } = "capture-satellites-v1";
     public IReadOnlyList<string> CatalogNumbers { get; init; } = [];
     public bool AllowStaleDiagnostics { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool HideObjectLabels { get; init; }
     public DateTimeOffset? OverrideTimeDataAvailableUtc { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public CaptureSatellitePinnedInputs? PinnedInputs { get; init; }

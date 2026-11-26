@@ -1236,6 +1236,7 @@ public sealed partial class CurrentSkyPage
                     CenteredViewReadiness.Ready => ("Ready", "Ready"),
                     CenteredViewReadiness.Partial => ("Partial", "Partial"),
                     CenteredViewReadiness.Waiting => ("Pending", "Pending"),
+                    CenteredViewReadiness.AssessedEmpty when IsSatelliteLayer(layer.Key.Kind) => ("No segment", "NoSegment"),
                     CenteredViewReadiness.AssessedEmpty => ("No detection", "NoDetection"),
                     CenteredViewReadiness.Incompatible => ("Incompatible", "Incompatible"),
                     CenteredViewReadiness.NotConfigured => ("Disabled", "Disabled"),
@@ -1266,17 +1267,18 @@ public sealed partial class CurrentSkyPage
     {
         var baseDescription = LayerDescription(layer.Key.Kind);
         var satelliteDetail = SatelliteDescription(presentationLayer?.Satellite);
+        if (!string.IsNullOrWhiteSpace(satelliteDetail))
+            baseDescription = $"{baseDescription} {satelliteDetail}";
         var reasonDetail = FormatCenteredLayerReason(layer.Reason);
 
         return layer.Readiness switch
         {
-            CenteredViewReadiness.Ready => string.IsNullOrWhiteSpace(satelliteDetail)
-                ? baseDescription
-                : $"{baseDescription} {satelliteDetail}",
+            CenteredViewReadiness.Ready => baseDescription,
             CenteredViewReadiness.Partial => string.IsNullOrWhiteSpace(reasonDetail)
                 ? $"Partial · {baseDescription}"
                 : $"Partial ({reasonDetail}) · {baseDescription}",
             CenteredViewReadiness.Waiting => "Pending · waiting for optional evidence",
+            CenteredViewReadiness.AssessedEmpty when IsSatelliteLayer(layer.Key.Kind) => "No predicted segment for this exposure",
             CenteredViewReadiness.AssessedEmpty => string.IsNullOrWhiteSpace(reasonDetail)
                 ? "No detection · assessed empty for this base"
                 : $"No detection · {reasonDetail}",

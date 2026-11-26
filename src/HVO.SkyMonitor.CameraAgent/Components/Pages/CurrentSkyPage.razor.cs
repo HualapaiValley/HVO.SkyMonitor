@@ -1060,6 +1060,8 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
 
     private bool HasLayer(string first, string? second = null) => _layers?.Layers.Any(layer => layer.Kind == first || layer.Kind == second) == true;
 
+    private static bool IsSatelliteLayer(string kind) => kind is OrbitalTrackPresentation.LayerKind or "predicted-satellites";
+
     private IEnumerable<CameraAgentPresentationLayer> RetainedLayers(string group) =>
         _layers?.Layers.Where(layer => LayerGroup(layer.Kind) == group) ?? [];
 
@@ -1088,7 +1090,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         var retrieved = status.SourceRetrievedUtc?.ToString("O", System.Globalization.CultureInfo.InvariantCulture) ?? "unknown";
         var age = status.MaximumEpochAgeHours is { } hours
             ? (Math.Ceiling(hours * 10) / 10).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) : "unknown";
-        return FormattableString.Invariant($"{status.Status}: {reason}; {status.TrackCount} tracks; population {status.Coverage.Completeness}; source retrieved {retrieved}; epoch age <= {age} h; freshness {status.ElementFreshness}; configured geometry; {status.TimeSource} time inputs.");
+        return FormattableString.Invariant($"{status.Status}: {reason}; {status.TrackCount} tracks; population {status.Coverage.Completeness}; source retrieved {retrieved}; epoch age <= {age} h; freshness {status.ElementFreshness}; configured geometry (lower confidence); {status.TimeSource} time inputs; optical visibility {status.PhysicalVisibility}.");
     }
 
     private static string LayerDescription(string kind) => kind switch
