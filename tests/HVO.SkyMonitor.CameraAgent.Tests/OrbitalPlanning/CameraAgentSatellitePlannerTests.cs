@@ -226,6 +226,76 @@ public sealed class CameraAgentSatellitePlannerTests
     }
 
     [TestMethod]
+    [DataRow("site")]
+    [DataRow("rig")]
+    [DataRow("horizon-profile")]
+    [DataRow("time-model")]
+    [DataRow("options")]
+    public async Task SearchCacheRecomputesOnlyAfterAnInputChangesAsync(string change)
+    {
+        var input = new PlanningTestInputs();
+        var configuration = input.Configuration.Value;
+        var location = configuration.DeploymentLocation!;
+        var siteIdentity = HorizonObstructionProfile.ComputeSiteIdentitySha256(location.LatitudeDegrees,
+            location.LongitudeDegrees, location.ElevationMeters, location.ToProvenance());
+        var geometryIdentity = HorizonObstructionProfile.ComputeGeometryIdentitySha256(configuration.Rig);
+        if (change == "horizon-profile") SetHorizon(1);
+
+        var cancellationToken = TestContext.CancellationToken;
+        var request = await input.RequestAsync().ConfigureAwait(false);
+        var before = await input.Planner.SearchAsync(request, cancellationToken).ConfigureAwait(false);
+        var cached = await input.Planner.SearchAsync(request, cancellationToken).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.Ready, before.Outcome, before.Message);
+        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.Ready, cached.Outcome, cached.Message);
+        Assert.AreSame(before.Value!.Prediction, cached.Value!.Prediction);
+        Assert.AreEqual(1, input.Engine.Searches);
+
+        switch (change)
+        {
+            case "site":
+                input.Configuration.Value = configuration with
+                {
+                    DeploymentLocation = DeploymentLocationSnapshot.Create(location.LocationId, 2, "startup-seed", null,
+                        DateTimeOffset.UnixEpoch, null, 35, -113, 75, "America/Phoenix")
+                };
+                break;
+            case "rig":
+                input.Configuration.Value = configuration with { Rig = configuration.Rig with { ProfileVersion = "fixture-rig-v2" } };
+                break;
+            case "horizon-profile":
+                SetHorizon(2);
+                break;
+            case "time-model":
+                input.Times.Current = OrbitalTimeData.FromFinals2000A(
+                    [.. PlanningTestInputs.Bytes("time", "predicted-2026.finals2000A"), (byte)'\n'],
+                    PlanningTestInputs.Bytes("time", "leap-seconds.list"));
+                break;
+            case "options":
+                // This option changes the settings identity without changing the selection policy or model.
+                input.Options.CurrentValue.TimeDataRefreshEnabled = true;
+                break;
+        }
+
+        // Refresh the expected site/rig identities so this exercises the cache instead of the stale-request guard.
+        var updatedRequest = await input.RequestAsync().ConfigureAwait(false);
+        var refreshed = await input.Planner.SearchAsync(updatedRequest, cancellationToken).ConfigureAwait(false);
+        var cachedRefresh = await input.Planner.SearchAsync(updatedRequest, cancellationToken).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.Ready, refreshed.Outcome, refreshed.Message);
+        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.Ready, cachedRefresh.Outcome, cachedRefresh.Message);
+        Assert.AreNotSame(before.Value.Prediction, refreshed.Value!.Prediction);
+        Assert.AreSame(refreshed.Value.Prediction, cachedRefresh.Value!.Prediction);
+        Assert.AreEqual(2, input.Engine.Searches);
+
+        void SetHorizon(long revision)
+        {
+            var profile = new HorizonObstructionProfile(HorizonObstructionProfile.CurrentSchemaVersion, "cache-horizon", revision,
+                "installation", siteIdentity, geometryIdentity, HorizonObstructionSource.Synthetic, 90,
+                [new(0, 0), new(90, 0), new(180, 0), new(270, 0)]);
+            input.Configuration.Value = configuration with { Rig = configuration.Rig with { HorizonObstruction = profile } };
+        }
+    }
+
+    [TestMethod]
     public async Task PartialAndUnavailableNumericalResultsRemainIndependentFromFacadeAvailabilityAsync()
     {
         var input = new PlanningTestInputs();

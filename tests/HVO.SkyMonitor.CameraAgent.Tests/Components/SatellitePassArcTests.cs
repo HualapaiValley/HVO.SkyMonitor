@@ -51,6 +51,43 @@ public sealed class SatellitePassArcTests
     }
 
     [TestMethod]
+    public void HorizonToggleRepositionsTimeLabelsWithoutObstructedAnchorsClaimingSpace()
+    {
+        var original = RetainedArc;
+        var startIndex = original.Anchors.StartSampleIndex!.Value;
+        var peakIndex = original.Anchors.PeakSampleIndex!.Value;
+        var endIndex = original.Anchors.EndSampleIndex!.Value;
+        var samples = original.Samples.ToArray();
+        samples[startIndex] = samples[startIndex] with { Horizontal = samples[peakIndex].Horizontal };
+        samples[endIndex] = samples[endIndex] with { Horizontal = samples[peakIndex].Horizontal };
+        var arc = OrbitalPassArcJson.Create(original with { Samples = samples });
+        var eligibility = Enumerable.Repeat(HorizonObstructionEligibility.Clear, samples.Length).ToArray();
+        eligibility[startIndex] = HorizonObstructionEligibility.Obstructed;
+        var obstruction = new HorizonObstructionPredictionProduct(new(HorizonObstructionProducts.SchemaVersion,
+            arc.ProductSha256, new string('A', 64), new string('B', 64), "test", RigProjectionContextFactory.AlgorithmVersion,
+            ProjectedSceneImageTransformV1.Identity(512, 512)), new string('C', 64), eligibility, new bool[samples.Length - 1]);
+        using var context = new BunitContext();
+        var ephemeris = new RecordingEphemeris();
+        context.Services.AddSingleton<IPlanetEphemeris>(ephemeris);
+        var cut = Render(context, arc, Hemisphere);
+        var firstLabel = cut.Find(".arc-time-label").TextContent;
+
+        cut.Render(p => p.Add(c => c.Obstruction, obstruction).Add(c => c.ApplyHorizonToAngularView, false));
+        Assert.AreEqual(firstLabel, cut.Find(".arc-time-label").TextContent);
+
+        cut.Render(p => p.Add(c => c.ApplyHorizonToAngularView, true));
+        Assert.HasCount(1, cut.FindAll(".arc-time-label"));
+        StringAssert.StartsWith(cut.Find(".arc-time-label").TextContent, "Peak ", StringComparison.Ordinal);
+        Assert.HasCount(2, cut.FindAll(".arc-anchor"));
+        Assert.HasCount(3, cut.FindAll(".anchor-facts dd"));
+
+        cut.Render(p => p.Add(c => c.ApplyHorizonToAngularView, false));
+        Assert.AreEqual(firstLabel, cut.Find(".arc-time-label").TextContent);
+        Assert.HasCount(3, cut.FindAll(".arc-anchor"));
+        Assert.HasCount(3, ephemeris.Calls, "Changing horizon eligibility or visibility must reuse anchor ephemerides.");
+    }
+
+    [TestMethod]
     [DataRow("iss-25544")]
     [DataRow("starlinks-56838")]
     [DataRow("starlinks-65283")]
@@ -75,10 +112,11 @@ public sealed class SatellitePassArcTests
             Assert.Contains($"Sun geometric altitude {Number(altitude)}°", facts[i].TextContent, StringComparison.Ordinal);
             var moon = SolarDiskEphemeris.Get(SolarSystemBody.Moon, arc.Samples[indices[i]].Utc, arc.Pass.Observer);
             Assert.Contains($"Moon geometric altitude {Number(moon.Direction.AltitudeDegrees)}°", lunar[i].TextContent, StringComparison.Ordinal);
-            Assert.Contains($"{Number(moon.IlluminatedFraction * 100)}% illuminated", lunar[i].TextContent, StringComparison.Ordinal);
+            Assert.Contains($"geocentric lunar disk {Number(moon.IlluminatedFraction * 100)}% illuminated", lunar[i].TextContent, StringComparison.Ordinal);
         }
         Assert.Contains(ephemeris.ModelVersion, cut.Find(".solar-context-note").TextContent, StringComparison.Ordinal);
         Assert.Contains("does not establish satellite sunlight or optical visibility", cut.Find(".solar-context-note").TextContent, StringComparison.Ordinal);
+        Assert.Contains("altitude is topocentric", cut.Find(".lunar-context-note").TextContent, StringComparison.Ordinal);
         Assert.Contains("sunlight Unknown", cut.Find(".anchor-facts").TextContent, StringComparison.Ordinal);
         var paths = cut.FindAll("polyline").Select(element => element.GetAttribute("points")).ToArray();
         cut.Render(parameters => parameters.Add(component => component.ShowLabels, false).Add(component => component.ShowPath, false));

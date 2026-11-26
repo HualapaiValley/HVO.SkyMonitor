@@ -37,8 +37,11 @@ the intended focus. The simulator starts from its configured initial state.
 ## Measurement and evidence
 
 The operator selects a positive step spacing. Five equally spaced positions
-are centered near the starting coordinate, shifted inside the limits to
-allow for backlash take-up. The sweep approaches from below, tracks the
+are centered near the starting coordinate. The first sample is at or above
+the lower limit plus the full backlash allowance, and the fifth is at or
+below the upper limit. Near the lower limit, the whole window shifts up to
+preserve spacing and the approach from below. A sweep that cannot fit with
+full take-up is rejected before sampling. The sweep tracks the
 same star, and measures HFD from preview pixels using the manual-session
 measurement. All five measurements must be valid and comparable, with
 decreasing then increasing HFD around a distinct interior minimum.
@@ -93,3 +96,42 @@ backlash and partial reversals, conflicts, pre/in-flight cancellation, idle and
 moving abort, mid-move stall/disconnect, explicit recovery, stale callbacks,
 immutable final snapshots, maximum travel/elapsed arithmetic and fresh instances.
 Physical focus quality, driver timing and unattended safety remain unevidenced.
+
+## Physical qualification prerequisites and unattended verification
+
+Qualify each supported motor, controller, firmware, driver and installed rig
+combination on an attended test rig first. Record those identities, the tested
+temperature and load range, the homing and position-readback method, the safe
+travel envelope, and measured backlash in motor steps. Set software travel
+limits inside the independently verified physical stops. Measure motion,
+settling, abort and recovery times and verify that the configured deadlines
+leave margin. Identify who can stop the test and how they can isolate motor
+power without relying on CameraAgent.
+
+Before approving unattended use, retain time-stamped traces and focus session
+exports for these checks on the actual hardware.
+
+- Verify homing and direction, both software limits, and full backlash
+  take-up. Sweep near both limits, including an initial position less than
+  one backlash allowance above the lower limit. Compare reported coordinates
+  with physical position and confirm every approach stays inside safe travel.
+- Repeat autofocus over the qualified temperature and load range. Set
+  acceptance limits for HFD repeatability, position repeatability, settling and
+  capture hold time before the run. Confirm the return exposure verifies the
+  selected minimum and the active camera profile is preserved.
+- Interrupt motion and preview with operator stop, deadline, camera withdrawal,
+  lost observation, controller disconnect and stall. Verify abort stops motion
+  within the recorded bound. Verify starting focus before capture resumes. If
+  restoration is uncertain, confirm admission stays closed and an operator can
+  identify and recover the fault.
+- Exercise host restart and controller power loss during motion and between
+  samples. Verify reconnect or reboot cannot resume old work, and require a
+  known home or independently verified position before allowing new motion.
+- Verify that ordinary exposures stay held through motion and recovery, an
+  operator pause survives teardown, and a replacement camera generation never
+  receives a cleanup move. Confirm the audit record identifies the outcome,
+  limits, sampled positions, and whether restoration was verified.
+
+Record the hardware and software revisions, procedure, measured results,
+operator recovery steps and sign-off with the qualification evidence. Unattended
+operation requires separate acceptance for the tested installation.

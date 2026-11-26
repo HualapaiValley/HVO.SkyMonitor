@@ -59,6 +59,18 @@ public sealed partial class CurrentSkyPageTests
     }
 
     [TestMethod]
+    public void SatelliteLabelVisibilityLinksToCaptureSatelliteTracksSettings()
+    {
+        using var context = new BunitContext();
+        Configure(context);
+        var cut = context.Render<CurrentSkyPage>();
+
+        var link = cut.Find("a[href='/operations/pipeline/graphs/new?section=capture-satellite-tracks#capture-satellite-tracks']");
+        Assert.AreEqual("Hide satellite object labels", link.TextContent);
+        Assert.AreEqual("Diagnostics layers", link.ParentElement!.GetAttribute("aria-label"));
+    }
+
+    [TestMethod]
     public async Task RetainedSatellitePredictionAndMeasuredTrailHaveIndependentControlsAndFrozenSaveSelection()
     {
         using var context = new BunitContext();

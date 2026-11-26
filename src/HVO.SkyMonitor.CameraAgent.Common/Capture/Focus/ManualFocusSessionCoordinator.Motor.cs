@@ -19,8 +19,7 @@ public sealed partial class ManualFocusSessionCoordinator
         var limits = motor.Limits;
         if (command.SweepSpacing is { } spacing)
         {
-            if (spacing <= 0 || (long)spacing * (SweepSamples - 1) + limits.BacklashSteps > limits.MaximumPosition - (long)limits.MinimumPosition)
-                throw new ManualFocusSessionValidationException("Five sweep positions and backlash take-up must fit inside the focuser limits.");
+            _ = GetSweepStart(limits, motor.State.Position, spacing);
         }
         else
         {
@@ -28,6 +27,17 @@ public sealed partial class ManualFocusSessionCoordinator
             if (target < limits.MinimumPosition || target > limits.MaximumPosition)
                 throw new ManualFocusSessionValidationException("The requested move is outside the focuser limits.");
         }
+    }
+
+    private static int GetSweepStart(MotorizedFocuserCapabilities limits, int initial, int spacing)
+    {
+        // Shift the whole window so even the first sample can be approached through the full backlash.
+        var earliest = (long)limits.MinimumPosition + limits.BacklashSteps;
+        var latest = limits.MaximumPosition - (long)(SweepSamples - 1) * spacing;
+        if (spacing <= 0 || limits.MinimumPosition < 0 || limits.BacklashSteps < 0 || earliest > latest)
+            throw new ManualFocusSessionValidationException("Five sweep positions and backlash take-up must fit inside the focuser limits.");
+        var centered = initial - (long)(SweepSamples / 2) * spacing;
+        return (int)Math.Clamp(centered, earliest, latest);
     }
 
     private static double? SimulatedPosition(IMotorizedFocuser motor, CameraSimulatedFocusModel? model)
@@ -149,8 +159,7 @@ public sealed partial class ManualFocusSessionCoordinator
         IMotorizedFocuser motor, int spacing, CancellationToken token)
     {
         var limits = motor.Capabilities;
-        var first = (int)Math.Clamp(session.Motor!.Initial.State.Position - 2L * spacing,
-            limits.MinimumPosition + limits.BacklashSteps, limits.MaximumPosition - 4L * spacing);
+        var first = GetSweepStart(limits, session.Motor!.Initial.State.Position, spacing);
         var samples = new ManualFocusSample[SweepSamples];
         for (var i = 0; i < samples.Length; i++)
         {
