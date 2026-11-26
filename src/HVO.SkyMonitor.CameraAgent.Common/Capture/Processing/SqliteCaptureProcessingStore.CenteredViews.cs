@@ -11,9 +11,9 @@ internal sealed partial class SqliteCaptureProcessingStore
     private volatile CenteredLayerGraph? _centeredLayerGraph;
 
     private sealed record CenteredLayerGraph(string Revision,
-        IReadOnlyDictionary<(string Producer, string Schema, string Variant), CenteredViewLayerBinding> Bindings);
+        IReadOnlyDictionary<(string Producer, string Schema, string Variant), IReadOnlyList<CenteredViewLayerBinding>> Bindings);
 
-    internal async ValueTask<IReadOnlyDictionary<(string Producer, string Schema, string Variant), CenteredViewLayerBinding>?>
+    internal async ValueTask<IReadOnlyDictionary<(string Producer, string Schema, string Variant), IReadOnlyList<CenteredViewLayerBinding>>?>
         ReadCenteredLayerBindingsAsync(string revision, CancellationToken token)
     {
         if (_centeredLayerGraph is { } cached && cached.Revision == revision)

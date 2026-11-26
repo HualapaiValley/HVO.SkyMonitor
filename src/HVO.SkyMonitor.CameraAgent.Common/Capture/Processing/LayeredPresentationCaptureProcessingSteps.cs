@@ -108,7 +108,10 @@ internal class ScenePresentationLayerCaptureProcessingStep(
             MediaType: OutputMediaType),
         .. (Options.IncludeDeepSkyLayer ? new[] { new CaptureProcessingOutputDescriptor(OutputRole, Options.DeepSkyOutputVariant,
             RecipeName, PresentationLayerPayloadV1.CurrentSchemaVersion, new ProcessingRecipeDefinition(PresentationProcessingProducts.LayerRecipeName,
-                "1.0.0", PresentationDeepSkyLayerProducer.ProducerVersion, ProcessingOperationKind.Transform), MediaType: OutputMediaType) } : [])
+                "1.0.0", PresentationDeepSkyLayerProducer.ProducerVersion, ProcessingOperationKind.Transform), MediaType: OutputMediaType) } : []),
+        .. (Options.IncludeExpectedNotDetectedLayer ? new[] { new CaptureProcessingOutputDescriptor(OutputRole, Options.EffectiveExpectedNotDetectedOutputVariant,
+            RecipeName, PresentationLayerPayloadV1.CurrentSchemaVersion, new ProcessingRecipeDefinition(PresentationProcessingProducts.LayerRecipeName,
+                "1.0.0", MeasuredAssociationPresentation.ExpectedNotDetectedVersion, ProcessingOperationKind.Transform), MediaType: OutputMediaType) } : [])
     ];
     public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } = new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata };
     public IReadOnlyList<CaptureProcessingDependencyRequirement> DependencyRequirements =>
@@ -117,7 +120,9 @@ internal class ScenePresentationLayerCaptureProcessingStep(
             new HashSet<string>(StringComparer.Ordinal) { BuiltInProcessingRecipes.ProjectedScene },
             new HashSet<string>(ProjectedSceneV1.SupportedSchemaVersions, StringComparer.Ordinal)),
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata },
-            new HashSet<string>(StringComparer.Ordinal) { BuiltInProcessingRecipes.MeasuredStellarAssociations },
+            Options.UseExposureAssociations
+                ? new HashSet<string>(StringComparer.Ordinal) { BuiltInProcessingRecipes.MeasuredStellarAssociations, ExposureAssociationProducts.RecipeName }
+                : new HashSet<string>(StringComparer.Ordinal) { BuiltInProcessingRecipes.MeasuredStellarAssociations },
             new HashSet<string>(StringComparer.Ordinal) { MeasuredStellarAssociationsV1.CurrentSchemaVersion },
             Required: false)
     ];
@@ -172,6 +177,13 @@ internal class ScenePresentationLayerCaptureProcessingStep(
             var deepSky = PresentationDeepSkyLayerProducer.Create(scene, Options.ToDeepSkyStyle(), horizon: horizon?.SelectDeepSky(scene));
             LayeredPresentationCaptureProcessing.Add(context, PresentationProcessingProducts.CreateLayerProduct(
                 deepSky.Payload, Options.DeepSkyOutputVariant, [source], PresentationDeepSkyLayerProducer.ProducerVersion, horizon?.IdentitySha256));
+        }
+        if (Options.IncludeExpectedNotDetectedLayer)
+        {
+            var expectedNotDetected = MeasuredAssociationPresentation.CreateExpectedNotDetectedPayload(scene, measured, style, horizon);
+            LayeredPresentationCaptureProcessing.Add(context, PresentationProcessingProducts.CreateLayerProduct(
+                expectedNotDetected, Options.EffectiveExpectedNotDetectedOutputVariant, starSources,
+                MeasuredAssociationPresentation.ExpectedNotDetectedVersion, horizon?.IdentitySha256));
         }
         return ValueTask.CompletedTask;
     }
@@ -387,6 +399,11 @@ internal sealed class OverlayManifestCaptureProcessingStep(
             new HashSet<string> { ScenePresentationLayerCaptureProcessingStep.Recipe },
             new HashSet<string> { PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion },
             Options.EffectiveDeepSkyVariant, Required: false)]),
+        .. (Options.EffectiveExpectedNotDetectedVariant is null ? Array.Empty<CaptureProcessingDependencyRequirement>() :
+        [new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata },
+            new HashSet<string> { ScenePresentationLayerCaptureProcessingStep.Recipe },
+            new HashSet<string> { PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion },
+            Options.EffectiveExpectedNotDetectedVariant, Required: false)]),
         .. (Options.SatelliteVariant is null ? Array.Empty<CaptureProcessingDependencyRequirement>() :
         [new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata },
             new HashSet<string> { PresentationProcessingProducts.LayerRecipeName },
@@ -417,6 +434,10 @@ internal sealed class OverlayManifestCaptureProcessingStep(
         };
         if (products.SingleOrDefault(product => product.Variant == Options.EffectiveDeepSkyVariant) is { } deepSky)
             layerProducts.Add(CreateLayer(deepSky, "scene-deep-sky", 22, PresentationBlendMode.Normal, 1_000_000));
+        if (Options.EffectiveExpectedNotDetectedVariant is not null &&
+            products.SingleOrDefault(product => product.Variant == Options.EffectiveExpectedNotDetectedVariant) is { } expectedNotDetected)
+            layerProducts.Add(CreateLayer(expectedNotDetected, MeasuredAssociationPresentation.ExpectedNotDetectedLayerKind,
+                23, PresentationBlendMode.Normal, 1_000_000, defaultEnabled: false));
         if (products.SingleOrDefault(product => product.Variant == Options.CloudMaskVariant) is { } cloudMask &&
             products.SingleOrDefault(product => product.Variant == Options.CloudLabelVariant) is { } cloudLabels)
         {
@@ -447,7 +468,7 @@ internal sealed class OverlayManifestCaptureProcessingStep(
 
         PresentationLayerProductInput CreateLayer(
             ProcessingProduct product, string kind, int defaultZOrder,
-            PresentationBlendMode blendMode, int opacityMillionths)
+            PresentationBlendMode blendMode, int opacityMillionths, bool defaultEnabled = true)
         {
             var selection = Options.Layers.FirstOrDefault(item => string.Equals(item.Kind, kind, StringComparison.Ordinal))
                 ?? Options.Layers.FirstOrDefault(item => item.Kind != "scene-annotation" && PresentationLayerKinds.Matches(item.Kind, kind))
@@ -456,7 +477,7 @@ internal sealed class OverlayManifestCaptureProcessingStep(
                 ? PresentationLayerKinds.ResolveZOrder(selection.Kind, kind, configuredZOrder)
                 : defaultZOrder;
             return LayeredPresentationCaptureProcessing.Layer(product, kind, scenePayload.SourceIdentitySha256,
-                zOrder, blendMode, opacityMillionths, selection?.Enabled ?? true,
+                zOrder, blendMode, opacityMillionths, selection?.Enabled ?? defaultEnabled,
                 context, reference.Compatibility);
         }
     }
@@ -553,6 +574,13 @@ internal class ScenePresentationLayerProcessingStepOptions : IValidatableObject
 {
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
     public bool IncludeDeepSkyLayer { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool IncludeExpectedNotDetectedLayer { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    [MaxLength(128)] public string? ExpectedNotDetectedOutputVariant { get; init; }
+    internal string EffectiveExpectedNotDetectedOutputVariant => ExpectedNotDetectedOutputVariant ?? "expected-not-detected-layer-v1";
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool UseExposureAssociations { get; init; }
     /// <summary>Explicit graph opt-in so saved graphs with <see cref="IncludeDeepSkyLayer"/> disabled keep their original inline rendering and plan identity.</summary>
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
     public bool ApplyInlineDeepSkyStyle { get; init; }
@@ -622,7 +650,15 @@ internal class ScenePresentationLayerProcessingStepOptions : IValidatableObject
         if (DeepSkyFont is not ("MonoRegular" or "MonoBold") &&
             !(DeepSkyFont == "PlexRegular" && (!deepSkyActive || AllowRetainedLegacyDeepSkyFont)))
             yield return new ValidationResult("Select an available packaged deep-sky label font.", [nameof(DeepSkyFont)]);
-        if (IncludeDeepSkyLayer && new[] { AnnotationOutputVariant, CardinalOutputVariant, ImageCircleOutputVariant, ConstellationOutputVariant, DeepSkyOutputVariant }.Distinct(StringComparer.Ordinal).Count() != 5)
+        var variants = new List<string> { AnnotationOutputVariant, CardinalOutputVariant, ImageCircleOutputVariant, ConstellationOutputVariant };
+        if (IncludeDeepSkyLayer) variants.Add(DeepSkyOutputVariant);
+        if (IncludeExpectedNotDetectedLayer)
+        {
+            if (string.IsNullOrWhiteSpace(EffectiveExpectedNotDetectedOutputVariant))
+                yield return new ValidationResult("Expected-not-detected output variant is required.", [nameof(ExpectedNotDetectedOutputVariant)]);
+            variants.Add(EffectiveExpectedNotDetectedOutputVariant);
+        }
+        if ((IncludeDeepSkyLayer || IncludeExpectedNotDetectedLayer) && variants.Distinct(StringComparer.Ordinal).Count() != variants.Count)
             yield return new ValidationResult("Scene layer variants must be distinct.");
         if (ConstellationIds.Count > 256 || ConstellationIds.Any(static value => string.IsNullOrWhiteSpace(value) || value.Length > 16))
             yield return new ValidationResult("Constellation selections exceed their bounds.", [nameof(ConstellationIds)]);
@@ -685,6 +721,11 @@ internal sealed class OverlayManifestProcessingStepOptions : IValidatableObject
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
     public bool IncludeDeepSkyLayer { get; init; }
     internal string? EffectiveDeepSkyVariant => SceneDeepSkyVariant ?? (IncludeDeepSkyLayer ? "scene-deep-sky-v1" : null);
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    [MaxLength(128)] public string? ExpectedNotDetectedVariant { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool IncludeExpectedNotDetectedLayer { get; init; }
+    internal string? EffectiveExpectedNotDetectedVariant => ExpectedNotDetectedVariant ?? (IncludeExpectedNotDetectedLayer ? "expected-not-detected-layer-v1" : null);
     [Required, MaxLength(128)] public string SceneAnnotationVariant { get; init; } = "scene-annotation-layer-v1";
     [Required, MaxLength(128)] public string SceneCardinalVariant { get; init; } = "scene-cardinal-layer-v1";
     [Required, MaxLength(128)] public string SceneImageCircleVariant { get; init; } = "scene-image-circle-layer-v1";

@@ -17,6 +17,8 @@ internal static class CenteredViewLayerBindings
 
     private static readonly CenteredViewLayerBinding Markers = Reference("measured-source-markers", 19, false);
     private static readonly CenteredViewLayerBinding Annotation = Reference("star-annotations", 20);
+    private static readonly CenteredViewLayerBinding MeasuredAssociations = Reference(MeasuredAssociationPresentation.MeasuredLayerKind, 21, true);
+    private static readonly CenteredViewLayerBinding ExpectedNotDetected = Reference(MeasuredAssociationPresentation.ExpectedNotDetectedLayerKind, 23, false);
     private static readonly CenteredViewLayerBinding Cardinals = Reference("scene-cardinals", 25);
     private static readonly CenteredViewLayerBinding ImageCircle = Reference("scene-image-circle", 15);
     private static readonly CenteredViewLayerBinding Constellations = Reference("scene-constellations", 10);
@@ -29,48 +31,67 @@ internal static class CenteredViewLayerBindings
     private static readonly CenteredViewLayerBinding Satellites = new(CenteredViewLayerScope.Contributor, new("predicted-satellites", 400, false));
 
     internal static IReadOnlyList<CenteredViewLayerBinding> Known { get; } =
-        [Markers, Annotation, Cardinals, ImageCircle, Constellations, DeepSky, CloudMask, CloudLabel, RegionalVisibility, Environment, Residuals, Satellites];
+        [Markers, Annotation, MeasuredAssociations, ExpectedNotDetected, Cardinals, ImageCircle, Constellations, DeepSky, CloudMask, CloudLabel, RegionalVisibility, Environment, Residuals, Satellites];
 
     internal static bool SupportsSchema(string? schema) => schema is ExposureMeasurementProducts.SchemaVersion or
+        MeasuredStellarAssociationsV1.CurrentSchemaVersion or
         RegionalStellarVisibilityProducts.SchemaVersion or
         MeasuredAstrometrySolutionV1.CurrentSchemaVersion || PresentationLayerPayloadV1.SupportsSchema(schema);
 
     internal static string SourceSchema(string schema) => schema.StartsWith(DispositionPrefix, StringComparison.Ordinal)
         ? schema[DispositionPrefix.Length..] : schema;
 
-    internal static CenteredViewLayerBinding? ReadLegacySlot(ExposureProductSlot slot) => SourceSchema(slot.SchemaVersion) switch
+    internal static IReadOnlyList<CenteredViewLayerBinding> ReadLegacySlot(ExposureProductSlot slot) => SourceSchema(slot.SchemaVersion) switch
     {
-        ExposureMeasurementProducts.SchemaVersion when slot.Variant == ExposureMeasurementProducts.Variant => Markers,
-        RegionalStellarVisibilityProducts.SchemaVersion => RegionalVisibility,
-        MeasuredAstrometrySolutionV1.CurrentSchemaVersion => Residuals,
+        ExposureMeasurementProducts.SchemaVersion when slot.Variant == ExposureMeasurementProducts.Variant => [Markers],
+        MeasuredStellarAssociationsV1.CurrentSchemaVersion => [MeasuredAssociations, ExpectedNotDetected],
+        RegionalStellarVisibilityProducts.SchemaVersion => [RegionalVisibility],
+        MeasuredAstrometrySolutionV1.CurrentSchemaVersion => [Residuals],
         var schema when PresentationLayerPayloadV1.SupportsSchema(schema) => slot.Variant switch
         {
-            "scene-annotation-layer-v1" => Annotation,
-            "scene-cardinal-layer-v1" => Cardinals,
-            "scene-image-circle-layer-v1" => ImageCircle,
-            "scene-constellation-layer-v1" => Constellations,
-            "scene-deep-sky-v1" => DeepSky,
-            "cloud-mask-layer-v1" => CloudMask,
-            "cloud-label-layer-v1" => CloudLabel,
-            "environment-layer-v1" => Environment,
-            "capture-satellites-v1-layer" => Satellites,
-            _ => null
+            "scene-annotation-layer-v1" => [Annotation],
+            "scene-cardinal-layer-v1" => [Cardinals],
+            "scene-image-circle-layer-v1" => [ImageCircle],
+            "scene-constellation-layer-v1" => [Constellations],
+            "scene-deep-sky-v1" => [DeepSky],
+            "expected-not-detected-layer-v1" => [ExpectedNotDetected],
+            "cloud-mask-layer-v1" => [CloudMask],
+            "cloud-label-layer-v1" => [CloudLabel],
+            "environment-layer-v1" => [Environment],
+            "capture-satellites-v1-layer" => [Satellites],
+            _ => []
         },
-        _ => null
+        _ => []
     };
 
-    internal static IReadOnlyDictionary<(string Producer, string Schema, string Variant), CenteredViewLayerBinding> ReadConfigured(
+    internal static IReadOnlyDictionary<(string Producer, string Schema, string Variant), IReadOnlyList<CenteredViewLayerBinding>> ReadConfigured(
         ProcessingGraphDefinition graph)
     {
-        var result = new Dictionary<(string, string, string), CenteredViewLayerBinding>();
+        var result = new Dictionary<(string, string, string), IReadOnlyList<CenteredViewLayerBinding>>();
         foreach (var node in graph.Nodes.Where(node => node.Enabled))
         {
-            var ports = Ports(node.StepAlias);
-            for (var index = 0; index < Math.Min(ports.Count, node.Outputs.Length); index++)
+            var ports = PortBindings(node.StepAlias);
+            for (var index = 0; index < node.Outputs.Length; index++)
             {
                 var output = node.Outputs[index];
-                if (ports[index] is { } binding && output.SchemaVersion is { } schema && SupportsSchema(schema))
-                    result.Add((node.Id, schema, output.Variant), binding);
+                if (output.SchemaVersion is not { } schema || !SupportsSchema(schema))
+                    continue;
+                IReadOnlyList<CenteredViewLayerBinding> bindings;
+                if (node.StepAlias is "ScenePresentationLayer" or SceneStylePresentation.StepAlias &&
+                    output.Recipe?.ImplementationVersion == MeasuredAssociationPresentation.ExpectedNotDetectedVersion)
+                {
+                    bindings = [ExpectedNotDetected];
+                }
+                else if (index < ports.Count)
+                {
+                    bindings = ports[index];
+                }
+                else
+                {
+                    continue;
+                }
+                if (bindings.Count > 0)
+                    result.Add((node.Id, schema, output.Variant), bindings);
             }
         }
         return result;
@@ -78,15 +99,16 @@ internal static class CenteredViewLayerBindings
 
     // These are the output port orders declared by the corresponding step contracts.
     // The slot's schema and variant come from the frozen graph so custom variants still bind.
-    internal static IReadOnlyList<CenteredViewLayerBinding?> Ports(string? alias) => alias switch
+    internal static IReadOnlyList<IReadOnlyList<CenteredViewLayerBinding>> PortBindings(string? alias) => alias switch
     {
-        ExposureMeasurementProducts.StepAlias => [Markers],
-        MeasuredAstrometryCaptureProcessingStep.Alias or ExposureAstrometryCaptureProcessingStep.CenteredAlias => [Residuals],
-        "ScenePresentationLayer" or SceneStylePresentation.StepAlias => [Annotation, Cardinals, ImageCircle, Constellations, DeepSky],
-        "CloudPresentationLayer" => [CloudMask, CloudLabel],
-        RegionalStellarVisibilityProducts.StepAlias => [RegionalVisibility],
-        "EnvironmentPresentationLayer" or FrameFactsPresentation.StepAlias => [null, Environment],
-        CaptureSatelliteLayerProcessingStep.Alias => [Satellites],
+        ExposureMeasurementProducts.StepAlias => [[Markers]],
+        ExposureAssociationProducts.StepAlias => [[MeasuredAssociations, ExpectedNotDetected]],
+        MeasuredAstrometryCaptureProcessingStep.Alias or ExposureAstrometryCaptureProcessingStep.CenteredAlias => [[Residuals]],
+        "ScenePresentationLayer" or SceneStylePresentation.StepAlias => [[Annotation], [Cardinals], [ImageCircle], [Constellations], [DeepSky]],
+        "CloudPresentationLayer" => [[CloudMask], [CloudLabel]],
+        RegionalStellarVisibilityProducts.StepAlias => [[RegionalVisibility]],
+        "EnvironmentPresentationLayer" or FrameFactsPresentation.StepAlias => [[], [Environment]],
+        CaptureSatelliteLayerProcessingStep.Alias => [[Satellites]],
         _ => []
     };
 

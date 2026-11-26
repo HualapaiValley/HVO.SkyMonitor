@@ -151,7 +151,8 @@ internal sealed class MeasuredStellarAssociationRecipe : IProcessingRecipe
                 StellarLabelPolicy.Version, policy),
             entries.Associations,
             entries.UnmatchedPredictions,
-            entries.UnassociatedDetections);
+            entries.UnassociatedDetections,
+            entries.PointSourcePlanets);
 
     internal static List<ProcessingAlgorithmIdentity> Algorithms(bool cfa)
     {

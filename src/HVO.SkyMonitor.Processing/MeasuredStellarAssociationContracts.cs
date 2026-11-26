@@ -173,10 +173,57 @@ public sealed record MeasuredStellarUnassociatedDetectionV1(
     [property: JsonRequired] double? SignalToNoise,
     [property: JsonRequired] string ReasonCode);
 
+/// <summary>One point-source planet ephemeris prediction matched one-to-one to one measured source.</summary>
+public sealed record MeasuredPointSourcePlanetAssociationV1(
+    [property: JsonRequired] string ObjectId,
+    [property: JsonRequired] SolarSystemBody Body,
+    [property: JsonRequired] int DetectionIndex,
+    [property: JsonRequired] double Magnitude,
+    [property: JsonRequired] double ExpectedX,
+    [property: JsonRequired] double ExpectedY,
+    [property: JsonRequired] double MeasuredX,
+    [property: JsonRequired] double MeasuredY,
+    [property: JsonRequired] double ResidualPixels,
+    [property: JsonRequired] double NormalizedResidualSquared,
+    [property: JsonRequired] double CombinedUncertaintyPixels,
+    [property: JsonRequired] double Flux,
+    [property: JsonRequired] double? SignalToNoise,
+    [property: JsonRequired] double? CovarianceXX,
+    [property: JsonRequired] double? CovarianceXY,
+    [property: JsonRequired] double? CovarianceYY,
+    [property: JsonRequired] bool Saturated,
+    [property: JsonRequired] int SaturatedSampleCount,
+    [property: JsonRequired] bool Trailed,
+    [property: JsonRequired] double? TrailLengthPixels,
+    [property: JsonRequired] double? TrailAngleDegrees,
+    [property: JsonRequired] bool LabelEligible,
+    [property: JsonRequired] string? LabelRejectionReason);
+
+/// <summary>A point-source planet ephemeris prediction that was not associated, with its declared reason code.</summary>
+public sealed record MeasuredPointSourcePlanetUnmatchedPredictionV1(
+    [property: JsonRequired] string ObjectId,
+    [property: JsonRequired] SolarSystemBody Body,
+    [property: JsonRequired] double Magnitude,
+    [property: JsonRequired] double ExpectedX,
+    [property: JsonRequired] double ExpectedY,
+    [property: JsonRequired] string ReasonCode);
+
+/// <summary>
+/// Exposure-time ephemeris, compatible mapping, and one-to-one measured association evidence for point-source
+/// solar-system planets (Mercury through Neptune). Omitted when a projected scene contains no point-source planets.
+/// </summary>
+public sealed record MeasuredPointSourcePlanetEvidenceV1(
+    [property: JsonRequired] DateTimeOffset EffectiveUtc,
+    [property: JsonRequired] string EphemerisModelVersion,
+    [property: JsonRequired] string ProjectionMappingVersion,
+    [property: JsonRequired] double PredictionSigmaPixels,
+    [property: JsonRequired] IReadOnlyList<MeasuredPointSourcePlanetAssociationV1> Associations,
+    [property: JsonRequired] IReadOnlyList<MeasuredPointSourcePlanetUnmatchedPredictionV1> UnmatchedPredictions);
+
 /// <summary>
 /// Compact analytical evidence binding measured image sources to the catalog predictions of one projected scene.
-/// Every measured detection appears exactly once, either associated or unassociated, and every star prediction
-/// appears exactly once, either associated or unmatched. Labels are eligible only through an association.
+/// Every measured detection appears exactly once, either associated or unassociated, and every star or point-source
+/// planet prediction appears exactly once, either associated or unmatched. Labels are eligible only through an association.
 /// </summary>
 public sealed record MeasuredStellarAssociationsV1(
     [property: JsonRequired] string SchemaVersion,
@@ -186,7 +233,9 @@ public sealed record MeasuredStellarAssociationsV1(
     [property: JsonRequired] MeasuredStellarAssociationMethodV1 Method,
     [property: JsonRequired] IReadOnlyList<MeasuredStellarAssociationV1> Associations,
     [property: JsonRequired] IReadOnlyList<MeasuredStellarUnmatchedPredictionV1> UnmatchedPredictions,
-    [property: JsonRequired] IReadOnlyList<MeasuredStellarUnassociatedDetectionV1> UnassociatedDetections)
+    [property: JsonRequired] IReadOnlyList<MeasuredStellarUnassociatedDetectionV1> UnassociatedDetections,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    MeasuredPointSourcePlanetEvidenceV1? PointSourcePlanets = null)
 {
     public const string CurrentSchemaVersion = "measured-stellar-associations-v1";
 
@@ -299,9 +348,18 @@ public static class MeasuredStellarAssociationJson
         {
             return Invalid(InvalidContract, nameof(value.Method));
         }
+        var planets = value.PointSourcePlanets;
+        var planetAssociationCount = planets?.Associations?.Count ?? 0;
+        var planetUnmatchedCount = planets?.UnmatchedPredictions?.Count ?? 0;
         if (value.Associations is null || value.UnmatchedPredictions is null || value.UnassociatedDetections is null ||
-            value.Associations.Count + value.UnmatchedPredictions.Count > ProjectedSceneJson.MaximumObjectCount ||
-            value.Associations.Count + value.UnassociatedDetections.Count != measurement.DetectionCount ||
+            planets is not null && (planets.Associations is null || planets.UnmatchedPredictions is null ||
+                planetAssociationCount + planetUnmatchedCount == 0 || planets.EffectiveUtc == default ||
+                !Text(planets.EphemerisModelVersion) || !Text(planets.ProjectionMappingVersion) ||
+                !Finite(planets.PredictionSigmaPixels) ||
+                Math.Abs(planets.PredictionSigmaPixels - method.Settings.PredictionSigmaPixels) > 1e-6) ||
+            value.Associations.Count + value.UnmatchedPredictions.Count + planetAssociationCount + planetUnmatchedCount >
+                ProjectedSceneJson.MaximumObjectCount ||
+            value.Associations.Count + planetAssociationCount + value.UnassociatedDetections.Count != measurement.DetectionCount ||
             measurement.DetectionCount > StellarDetector.MaximumSupportedCandidates)
             return Invalid(InvalidContract, "entries");
 
@@ -344,6 +402,53 @@ public static class MeasuredStellarAssociationJson
                 index > 0 && string.CompareOrdinal(value.UnmatchedPredictions[index - 1].CatalogId, item.CatalogId) >= 0)
                 return Invalid(InvalidContract, $"unmatchedPredictions[{index}]");
         }
+        if (planets is not null)
+        {
+            var planetIds = new HashSet<string>(StringComparer.Ordinal);
+            for (var index = 0; index < planets.Associations.Count; index++)
+            {
+                var item = planets.Associations[index];
+                if (item is null || !IsPointSourcePlanetBody(item.Body) ||
+                    !string.Equals(item.ObjectId, PointSourcePlanetId(item.Body), StringComparison.Ordinal) ||
+                    !planetIds.Add(item.ObjectId) ||
+                    item.DetectionIndex < 0 || item.DetectionIndex >= measurement.DetectionCount ||
+                    !detectionIndexes.Add(item.DetectionIndex) || !Finite(item.Magnitude) ||
+                    !Pixel(item.ExpectedX, source.WidthPixels) || !Pixel(item.ExpectedY, source.HeightPixels) ||
+                    !Pixel(item.MeasuredX, source.WidthPixels) || !Pixel(item.MeasuredY, source.HeightPixels) ||
+                    !NonNegative(item.ResidualPixels) || item.ResidualPixels > method.Settings.MaximumWindowPixels + 1e-6 ||
+                    !NonNegative(item.NormalizedResidualSquared) ||
+                    item.NormalizedResidualSquared > method.Settings.WindowSigmas * method.Settings.WindowSigmas + 1e-6 ||
+                    !Finite(item.CombinedUncertaintyPixels) ||
+                    item.CombinedUncertaintyPixels < method.Settings.PredictionSigmaPixels - 1e-6 ||
+                    !Finite(item.Flux) || item.SignalToNoise is { } snr && !Finite(snr) ||
+                    (item.CovarianceXX is null) != (item.CovarianceYY is null) ||
+                    (item.CovarianceXX is null) != (item.CovarianceXY is null) ||
+                    item.CovarianceXX is { } xx && (!NonNegative(xx) || !NonNegative(item.CovarianceYY!.Value) ||
+                        !Finite(item.CovarianceXY!.Value)) ||
+                    item.SaturatedSampleCount < 0 || item.Saturated != item.SaturatedSampleCount > 0 ||
+                    item.Trailed != item.TrailAngleDegrees is not null ||
+                    item.TrailLengthPixels is { } length && !NonNegative(length) ||
+                    item.TrailAngleDegrees is { } angle && (!Finite(angle) || angle is < -90 or >= 90) ||
+                    item.LabelEligible != (item.LabelRejectionReason is null) ||
+                    item.LabelRejectionReason is { } rejection &&
+                        !MeasuredStellarAssociationReasonCodes.LabelRejectionReasons.Contains(rejection) ||
+                    item.LabelEligible != StellarLabelPolicy.IsEligible(item, method.LabelPolicy))
+                    return Invalid(InvalidContract, $"pointSourcePlanets.associations[{index}]");
+                if (index > 0 && string.CompareOrdinal(planets.Associations[index - 1].ObjectId, item.ObjectId) >= 0)
+                    return Invalid(InvalidContract, $"pointSourcePlanets.associations[{index}]");
+            }
+            for (var index = 0; index < planets.UnmatchedPredictions.Count; index++)
+            {
+                var item = planets.UnmatchedPredictions[index];
+                if (item is null || !IsPointSourcePlanetBody(item.Body) ||
+                    !string.Equals(item.ObjectId, PointSourcePlanetId(item.Body), StringComparison.Ordinal) ||
+                    !planetIds.Add(item.ObjectId) || !Finite(item.Magnitude) ||
+                    !Finite(item.ExpectedX) || !Finite(item.ExpectedY) ||
+                    !MeasuredStellarAssociationReasonCodes.IsPredictionReason(item.ReasonCode) ||
+                    index > 0 && string.CompareOrdinal(planets.UnmatchedPredictions[index - 1].ObjectId, item.ObjectId) >= 0)
+                    return Invalid(InvalidContract, $"pointSourcePlanets.unmatchedPredictions[{index}]");
+            }
+        }
         for (var index = 0; index < value.UnassociatedDetections.Count; index++)
         {
             var item = value.UnassociatedDetections[index];
@@ -356,11 +461,20 @@ public static class MeasuredStellarAssociationJson
                 return Invalid(InvalidContract, $"unassociatedDetections[{index}]");
         }
         if (measurement.Status != StellarMeasurementStatus.Completed && (value.Associations.Count != 0 ||
+            planetAssociationCount != 0 ||
             value.UnmatchedPredictions.Any(static item => item.ReasonCode is not
-                (MeasuredStellarAssociationReasonCodes.MeasurementIncomplete or MeasuredStellarAssociationReasonCodes.OutsideAperture))))
+                (MeasuredStellarAssociationReasonCodes.MeasurementIncomplete or MeasuredStellarAssociationReasonCodes.OutsideAperture)) ||
+            planets?.UnmatchedPredictions.Any(static item => item.ReasonCode is not
+                (MeasuredStellarAssociationReasonCodes.MeasurementIncomplete or MeasuredStellarAssociationReasonCodes.OutsideAperture)) == true))
             return Invalid(InvalidContract, nameof(value.Measurement.Status));
         return MeasuredStellarAssociationValidationResult.Success;
     }
+
+    internal static bool IsPointSourcePlanetBody(SolarSystemBody body) => body is
+        SolarSystemBody.Mercury or SolarSystemBody.Venus or SolarSystemBody.Mars or
+        SolarSystemBody.Jupiter or SolarSystemBody.Saturn or SolarSystemBody.Uranus or SolarSystemBody.Neptune;
+
+    internal static string PointSourcePlanetId(SolarSystemBody body) => $"solar-system:{body}";
 
     private static bool Text(string? value) => !string.IsNullOrWhiteSpace(value) && value.Length <= 256;
 

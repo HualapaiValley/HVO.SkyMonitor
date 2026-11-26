@@ -155,16 +155,19 @@ internal sealed class CenteredExposureProductReader(
     private static void AddUnproducedViewProducts(ExposureKey key, CaptureProcessingGraphNode node,
         DurableProcessingNodeStatus status, string? reason, List<CenteredProductSettlement> settlements)
     {
-        var ports = CenteredViewLayerBindings.Ports(node.Alias);
+        var ports = CenteredViewLayerBindings.PortBindings(node.Alias);
         if (ports.Count == 0 || node.Step is not ICaptureProcessingGraphStep step)
             return;
 
         var declared = step is IMultiOutputCaptureProcessingGraphStep multi ? multi.Outputs :
             [new(step.OutputRole, step.OutputVariant, step.RecipeName, step.OutputSchemaVersion)];
-        for (var index = 0; index < Math.Min(ports.Count, declared.Count); index++)
+        for (var index = 0; index < declared.Count; index++)
         {
             var output = declared[index];
-            if (ports[index] is null || output.SchemaVersion is not { } schema ||
+            var bound = index < ports.Count && ports[index].Count > 0 ||
+                node.Alias is "ScenePresentationLayer" or SceneStylePresentation.StepAlias &&
+                output.SharedRecipe?.ImplementationVersion == MeasuredAssociationPresentation.ExpectedNotDetectedVersion;
+            if (!bound || output.SchemaVersion is not { } schema ||
                 !CenteredViewLayerBindings.SupportsSchema(schema) || settlements.Any(product => product.Variant == output.Variant))
                 continue;
 

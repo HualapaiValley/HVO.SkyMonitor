@@ -50,13 +50,22 @@ internal sealed class AnnotationCaptureProcessingStep(
                 new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Preview }),
                 new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata },
                     new HashSet<string>(StringComparer.Ordinal) { BuiltInProcessingRecipes.ProjectedScene }),
-                MeasuredAssociationsRequirement
+                ActiveMeasuredAssociationsRequirement
             ]
-            : [new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Preview }), MeasuredAssociationsRequirement];
+            : [new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Preview }), ActiveMeasuredAssociationsRequirement];
+
+    private CaptureProcessingDependencyRequirement ActiveMeasuredAssociationsRequirement =>
+        Options.UseExposureAssociations ? ExposureMeasuredAssociationsRequirement : MeasuredAssociationsRequirement;
 
     private static CaptureProcessingDependencyRequirement MeasuredAssociationsRequirement { get; } = new(
         new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata },
         new HashSet<string>(StringComparer.Ordinal) { BuiltInProcessingRecipes.MeasuredStellarAssociations },
+        new HashSet<string>(StringComparer.Ordinal) { MeasuredStellarAssociationsV1.CurrentSchemaVersion },
+        Required: false);
+
+    private static CaptureProcessingDependencyRequirement ExposureMeasuredAssociationsRequirement { get; } = new(
+        new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata },
+        new HashSet<string>(StringComparer.Ordinal) { BuiltInProcessingRecipes.MeasuredStellarAssociations, ExposureAssociationProducts.RecipeName },
         new HashSet<string>(StringComparer.Ordinal) { MeasuredStellarAssociationsV1.CurrentSchemaVersion },
         Required: false);
 
@@ -836,6 +845,10 @@ public sealed class AnnotationProcessingStepOptions : IValidatableObject
 
     /// <summary>Opt-in diagnostic: keep unqualified star labels at expected positions, suffixed "(expected)".</summary>
     public bool ExpectedPositionDiagnostics { get; init; }
+
+    /// <summary>Explicit graph opt-in allowing centered ExposureStellarAssociations dependencies without altering legacy plans.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool UseExposureAssociations { get; init; }
 
     public IReadOnlyList<string> TopLeftTokens { get; init; } =
     [

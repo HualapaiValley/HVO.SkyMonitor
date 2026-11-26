@@ -156,6 +156,27 @@ internal sealed class CenteredViewLayerProducer(
                     .ConfigureAwait(false);
             partial |= measurement.Sources.Detections.Count > evidence.Payload.Markers.Count;
         }
+        if (evidence.Associations is { } associations)
+        {
+            if (scope != CenteredViewLayerScope.Reference ||
+                associations.Source.CaptureId != sourceExposure.Capture.CaptureId ||
+                associations.Source.ArtifactId != sourceExposure.Input.Raw.Artifact.ArtifactId ||
+                !string.Equals(associations.Source.DescriptorIdentitySha256,
+                    CaptureContractJson.ComputeDescriptorSha256(sourceExposure.Input.Raw), StringComparison.OrdinalIgnoreCase) ||
+                associations.Source.WidthPixels != sourceExposure.Input.Geometry.Layout.Width ||
+                associations.Source.HeightPixels != sourceExposure.Input.Geometry.Layout.Height)
+                throw new InvalidDataException("Measured associations do not match the exact admitted reference exposure.");
+            if (style.Kind == MeasuredAssociationPresentation.MeasuredLayerKind &&
+                associations.Measurement.Status != StellarMeasurementStatus.Completed)
+                return await views.PublishLayerAsync(viewBase.BaseId, new(key, evidence.Lookup.Revision!.Value,
+                    evidence.Pin, observedUtc, CenteredViewReadiness.Incompatible,
+                    MeasuredStellarAssociationReasonCodes.MeasurementIncomplete, null), token).ConfigureAwait(false);
+            var totalMeasured = associations.Associations.Count +
+                (associations.PointSourcePlanets?.Associations.Count ?? 0) +
+                associations.UnassociatedDetections.Count;
+            if (style.Kind == MeasuredAssociationPresentation.MeasuredLayerKind && totalMeasured > evidence.Payload.Markers.Count)
+                partial = true;
+        }
         if (evidence.RegionalVisibility is { } visibility)
         {
             if (scope != CenteredViewLayerScope.Reference ||
@@ -200,22 +221,40 @@ internal sealed class CenteredViewLayerProducer(
         if (mapped.Markers.Count == 0 && mapped.Segments.Count == 0 && mapped.Ellipses.Count == 0 &&
             mapped.TextBlocks.Count == 0 && mapped.TileMask is null && mapped.RichText is null)
         {
+            var emptyReason = reason ?? (evidence.Associations is null
+                ? null
+                : style.Kind == MeasuredAssociationPresentation.ExpectedNotDetectedLayerKind
+                    ? "expected.all-predictions-matched"
+                    : "measured.no-detected-sources");
             return await views.PublishLayerAsync(viewBase.BaseId, new(key, evidence.Lookup.Revision!.Value,
-                evidence.Pin, observedUtc, CenteredViewReadiness.AssessedEmpty, reason, null), token).ConfigureAwait(false);
+                evidence.Pin, observedUtc, CenteredViewReadiness.AssessedEmpty, emptyReason, null), token).ConfigureAwait(false);
         }
 
-        var options = JsonSerializer.SerializeToElement(new
-        {
-            viewBase.BaseId,
-            GeometryVersion,
-            sourceCaptureId = source.CaptureId,
-            sourceExposure.ExposureStartedUtc,
-            sourceExposure.ExposureEndedUtc,
-            evidence.Pin,
-            evidence.Lookup.Revision
-        });
+        var options = evidence.Associations is not null
+            ? JsonSerializer.SerializeToElement(new
+            {
+                viewBase.BaseId,
+                GeometryVersion,
+                layerKind = style.Kind,
+                sourceCaptureId = source.CaptureId,
+                sourceExposure.ExposureStartedUtc,
+                sourceExposure.ExposureEndedUtc,
+                evidence.Pin,
+                evidence.Lookup.Revision
+            })
+            : JsonSerializer.SerializeToElement(new
+            {
+                viewBase.BaseId,
+                GeometryVersion,
+                sourceCaptureId = source.CaptureId,
+                sourceExposure.ExposureStartedUtc,
+                sourceExposure.ExposureEndedUtc,
+                evidence.Pin,
+                evidence.Lookup.Revision
+            });
         var eligibility = CaptureContractJson.ComputeCanonicalJsonSha256(options);
-        var product = PresentationProcessingProducts.CreateLayerProduct(mapped, GeometryVersion, [evidence.Artifact],
+        var variant = evidence.Associations is not null ? $"{GeometryVersion}:{style.Kind}" : GeometryVersion;
+        var product = PresentationProcessingProducts.CreateLayerProduct(mapped, variant, [evidence.Artifact],
             GeometryVersion, eligibility);
         await persistence.PersistCenteredViewProductAsync(definition.Reference.Input.Raw, product, token).ConfigureAwait(false);
         var sourceProduct = new PresentationProductReference(ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256),
@@ -241,7 +280,7 @@ internal sealed class CenteredViewLayerProducer(
         if (source is not { Availability: ExposureProductAvailability.Available, Revision: > 0, Product: { } product } ||
             product.Exposure != source.Exposure || product.Slot != source.Slot ||
             (!PresentationLayerPayloadV1.SupportsSchema(product.Slot.SchemaVersion) &&
-                product.Slot.SchemaVersion is not (ExposureMeasurementProducts.SchemaVersion or RegionalStellarVisibilityProducts.SchemaVersion or MeasuredAstrometrySolutionV1.CurrentSchemaVersion)))
+                product.Slot.SchemaVersion is not (ExposureMeasurementProducts.SchemaVersion or MeasuredStellarAssociationsV1.CurrentSchemaVersion or RegionalStellarVisibilityProducts.SchemaVersion or MeasuredAstrometrySolutionV1.CurrentSchemaVersion)))
             throw new InvalidDataException("A drawable layer requires a committed source-pixel payload.");
         var pin = new CenteredViewArtifact(product.ArtifactId, product.OutputIdentitySha256, product.PayloadSha256);
         if (product.Slot.SchemaVersion == ExposureMeasurementProducts.SchemaVersion)
@@ -255,6 +294,33 @@ internal sealed class CenteredViewLayerProducer(
                 new PresentationMarkerV1(detection.Pixel, 3, new(200, 240, 255), Crosshair: true));
             return new(source, pin, measurementArtifact, PresentationLayerPayloadJson.Create(
                 identity, layout.Width, layout.Height, markers: markers), measurement);
+        }
+        if (product.Slot.SchemaVersion == MeasuredStellarAssociationsV1.CurrentSchemaVersion)
+        {
+            var associationsArtifact = await persistence.ReadCenteredViewProductAsync(source.Exposure.CaptureId, pin, token)
+                .ConfigureAwait(false);
+            var associations = MeasuredStellarAssociationJson.Parse(associationsArtifact.Payload).Associations;
+            if (associations is null || associationsArtifact.ContentIdentitySha256 is not { } identity ||
+                !string.Equals(identity, product.ContentIdentitySha256, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(identity, associations.AssociationIdentitySha256, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("The measured associations content identity is unbound.");
+            ProjectedSceneV1? scene = null;
+            if (associationsArtifact.SourceArtifactIds is [_, _, var sceneArtifactId])
+            {
+                var sceneArtifact = await persistence.ReadCenteredViewParentAsync(source.Exposure.CaptureId, sceneArtifactId, token)
+                    .ConfigureAwait(false);
+                if (!ProjectedSceneV1.IsSupportedSchemaVersion(sceneArtifact.SchemaVersion) ||
+                    ProjectedSceneJson.Parse(sceneArtifact.Payload).Scene is not { } parsedScene ||
+                    !string.Equals(parsedScene.SceneIdentitySha256, associations.Scene.SceneIdentitySha256, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("The measured associations scene lineage is invalid.");
+                scene = parsedScene;
+            }
+            var associationPayload = style.Kind == MeasuredAssociationPresentation.ExpectedNotDetectedLayerKind
+                ? MeasuredAssociationPresentation.CreateExpectedNotDetectedPayload(associations, scene)
+                : associations.Measurement.Status == StellarMeasurementStatus.Completed
+                    ? MeasuredAssociationPresentation.CreateMeasuredPayload(associations, scene)
+                    : PresentationLayerPayloadJson.Create(identity, associations.Source.WidthPixels, associations.Source.HeightPixels);
+            return new(source, pin, associationsArtifact, associationPayload, Associations: associations);
         }
         if (product.Slot.SchemaVersion == RegionalStellarVisibilityProducts.SchemaVersion)
         {
@@ -484,6 +550,6 @@ internal sealed class CenteredViewLayerProducer(
     private sealed record SourceLayer(ExposureProductLookup Lookup, CenteredViewArtifact Pin,
         ProcessingArtifact Artifact, PresentationLayerPayloadV1 Payload, ExposureMeasurementV1? Measurement = null,
         CameraAgentRetainedAstrometry? Astrometry = null, CaptureSatelliteStatusV1? Satellite = null,
-        RegionalStellarVisibilityV1? RegionalVisibility = null);
+        RegionalStellarVisibilityV1? RegionalVisibility = null, MeasuredStellarAssociationsV1? Associations = null);
     private static readonly JsonSerializerOptions GeometryJson = new(JsonSerializerDefaults.Web);
 }

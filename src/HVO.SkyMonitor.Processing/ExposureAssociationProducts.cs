@@ -121,7 +121,8 @@ public static class ExposureAssociationProducts
             !ExposureMeasurementProducts.Same(evidence.Measurement.SettingsIdentitySha256, measurement.Sources.SettingsSha256) ||
             evidence.Method.Settings != binding.Settings || evidence.Method.LabelPolicy != binding.LabelPolicy ||
             evidence.Measurement.DetectionCount != measurement.Sources.Detections.Count ||
-            evidence.Associations.Any(member => !MeasuredStellarAssociator.MatchesDetection(member, measurement.Sources.Detections)))
+            evidence.Associations.Any(member => !MeasuredStellarAssociator.MatchesDetection(member, measurement.Sources.Detections)) ||
+            evidence.PointSourcePlanets?.Associations.Any(member => !MeasuredStellarAssociator.MatchesDetection(member, measurement.Sources.Detections)) == true)
             throw new InvalidDataException("The association uses different measured stellar evidence.");
     }
 

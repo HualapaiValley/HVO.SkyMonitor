@@ -1302,6 +1302,9 @@ public sealed partial class CurrentSkyPage
             "centered.segments-outside-registration" => "segments outside registered domain",
             "centered.rich-text-preview-too-small" => "preview too small for corner text",
             "centered.trail-geometry-unavailable" => "trail geometry unavailable",
+            "measured.no-detected-sources" => "no measured sources on this reference exposure",
+            "expected.all-predictions-matched" => "all expected catalog predictions matched",
+            MeasuredStellarAssociationReasonCodes.MeasurementIncomplete => "exposure measurement incomplete",
             _ => reason.StartsWith("centered.", StringComparison.Ordinal)
                 ? OperationsPage.SplitWords(reason["centered.".Length..].Replace('-', ' '))
                 : reason
@@ -1310,7 +1313,7 @@ public sealed partial class CurrentSkyPage
 
     private static string CenteredLayerGroup(string kind) => kind switch
     {
-        "measured-deep-sky" or "MeasuredTransientTrails" or "measured-source-markers" or AstrometricDiagnosticPresentation.AssociationsLayer => "Measured",
+        "measured-deep-sky" or "MeasuredTransientTrails" or "measured-source-markers" or MeasuredAssociationPresentation.MeasuredLayerKind or AstrometricDiagnosticPresentation.AssociationsLayer => "Measured",
         "scene-deep-sky" or "scene-annotation" or "star-annotations" or "scene-constellations" or "constellations" or "scene-cardinals" or "cardinal-directions" => "Sky context",
         _ => "Diagnostics"
     };
