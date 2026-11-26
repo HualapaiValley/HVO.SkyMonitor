@@ -157,7 +157,7 @@ public sealed partial class SiloStockStoreTests
     }
 
     private static async Task<(string GroupId, string RevisionId)> CaptureUntilInterruptedAsync(string root,
-        IReadOnlyDictionary<string, string?> settings, string lifecycleToken, Guid pause, Func<string, string>? configureCamera,
+        Dictionary<string, string?> settings, string lifecycleToken, Guid pause, Func<string, string>? configureCamera,
         InterruptManifestPublication fault,
         CancellationToken token)
     {
@@ -223,7 +223,7 @@ public sealed partial class SiloStockStoreTests
         var blocked = admissions.EnterAsync(wait.Token).AsTask();
         Assert.IsFalse(blocked.IsCompleted);
         await wait.CancelAsync().ConfigureAwait(false);
-        await Assert.ThrowsAsync<OperationCanceledException>(async () => await blocked.ConfigureAwait(false));
+        await Assert.ThrowsAsync<OperationCanceledException>(async () => await blocked.ConfigureAwait(false)).ConfigureAwait(false);
     }
 
     private static async Task<SiloReopenResult> WaitForReopenAsync(SiloInstalledStorage storage, string group, string revision,
