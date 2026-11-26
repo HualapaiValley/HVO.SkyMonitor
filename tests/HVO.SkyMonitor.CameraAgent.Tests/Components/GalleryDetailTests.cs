@@ -1,8 +1,10 @@
 using Bunit;
 using Bunit.JSInterop;
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.Imaging;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.DependencyInjection;
@@ -14,6 +16,8 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 [TestProperty("Area", "Ui")]
 public sealed class GalleryDetailTests
 {
+    private static readonly string[] ScientificFormats = ["fits", "fits.fz", "xisf"];
+
     private static void ConfigureGraphService(BunitContext context)
     {
         context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(new ProcessingExecutionPagesTests.GraphUiService());
@@ -447,8 +451,14 @@ public sealed class GalleryDetailTests
             Assert.HasCount(2, cut.FindAll("#evidence-panel-Artifacts a[href$='/preview']"));
             Assert.HasCount(2, cut.FindAll("#evidence-panel-Artifacts a[download][href$='/content']"));
             Assert.HasCount(2, cut.FindAll("#evidence-panel-Artifacts a[download][data-format='jpeg'][href$='/preview?download=1']"));
-            Assert.HasCount(2, cut.FindAll("#evidence-panel-Artifacts [data-format='fits'][aria-disabled='true']"));
-            Assert.IsEmpty(cut.FindAll("#evidence-panel-Artifacts a[data-format='fits']"));
+            var raw = capture.Artifacts[0];
+            foreach (var format in ScientificFormats)
+            {
+                Assert.AreEqual($"/api/v1/operations/gallery/{capture.CaptureId:D}/artifacts/{raw.ArtifactId:D}/export/{format}",
+                    cut.Find($"#evidence-panel-Artifacts a[download][data-format='{format}']").GetAttribute("href"));
+                StringAssert.Contains(cut.Find($"#evidence-panel-Artifacts [data-format='{format}'][aria-disabled='true']").TextContent,
+                    "Choose the raw capture artifact", StringComparison.Ordinal);
+            }
             StringAssert.Contains(cut.Markup, "raw 16-bit mono (.bin)", StringComparison.Ordinal);
             Assert.IsEmpty(cut.FindAll(".comparison-grid"));
             Assert.HasCount(5, cut.FindAll("[role='tab']"));
@@ -466,6 +476,45 @@ public sealed class GalleryDetailTests
         Assert.AreEqual("true", cut.Find("#evidence-tab-Replay").GetAttribute("aria-selected"));
         cut.Find("#evidence-tab-Replay").KeyDown(new Microsoft.AspNetCore.Components.Web.KeyboardEventArgs { Key = "ArrowRight" });
         Assert.AreEqual("true", cut.Find("#evidence-tab-Overview").GetAttribute("aria-selected"));
+    }
+
+    [TestMethod]
+    [DataRow("missing_evidence", CameraPixelFormat.Mono16, false, "The raw capture artifact is missing.")]
+    [DataRow("quarantined", CameraPixelFormat.Mono16, false, "The raw capture artifact is quarantined.")]
+    [DataRow("committed", CameraPixelFormat.Rgb24, false, "This raw pixel format is unsupported.")]
+    [DataRow("committed", null, false, "The raw capture layout could not be verified.")]
+    [DataRow("committed", CameraPixelFormat.Mono16, true, "The raw capture exceeds the scientific export size limit.")]
+    public void ScientificDownloadsExplainUnavailableRawEvidence(string state, CameraPixelFormat? format, bool tooLarge, string reason)
+    {
+        using var context = new BunitContext();
+        ConfigureGraphService(context);
+        var sample = OperatorUiTestData.Capture();
+        var capture = sample with
+        {
+            RawState = state,
+            Artifacts =
+            [
+                sample.Artifacts[0] with
+                {
+                    PixelFormat = format,
+                    ByteLength = tooLarge ? ScientificCaptureExport.MaximumSourceBytes + 1 : sample.Artifacts[0].ByteLength
+                },
+                sample.Artifacts[1]
+            ]
+        };
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(new TestOperatorUiService
+        {
+            DetailHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryCapture>.Success(capture))
+        });
+        var cut = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, capture.CaptureId));
+        cut.WaitForElement("#evidence-tab-Artifacts").Click();
+        cut.Find(".download-menu__toggle").Click();
+        foreach (var extension in ScientificFormats)
+        {
+            Assert.IsEmpty(cut.FindAll($"a[data-format='{extension}']"));
+            Assert.HasCount(2, cut.FindAll($"[data-format='{extension}'][aria-disabled='true']"));
+            StringAssert.Contains(cut.Find($"[data-format='{extension}']").TextContent, reason, StringComparison.Ordinal);
+        }
     }
 
     [TestMethod]
@@ -602,7 +651,7 @@ public sealed class GalleryDetailTests
     }
 
     [TestMethod]
-    public void DetailWithoutDisplayableArtifact_RendersUnsupportedTextAndTechnicalDownload()
+    public void DetailWithoutDisplayableArtifact_KeepsOriginalAndScientificDownloads()
     {
         using var context = new BunitContext();
         ConfigureGraphService(context);
@@ -622,8 +671,10 @@ public sealed class GalleryDetailTests
         var cut = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, capture.CaptureId));
 
         cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "This capture cannot be displayed", StringComparison.Ordinal));
-        Assert.HasCount(1, cut.FindAll("#evidence-panel-Artifacts a[download]"));
+        Assert.HasCount(4, cut.FindAll("#evidence-panel-Artifacts a[download]"));
         Assert.HasCount(1, cut.FindAll("#evidence-panel-Artifacts a[download][data-format='original']"));
+        foreach (var format in ScientificFormats)
+            Assert.HasCount(1, cut.FindAll($"#evidence-panel-Artifacts a[download][data-format='{format}']"));
         Assert.HasCount(1, cut.FindAll("#evidence-panel-Artifacts [data-format='jpeg'][aria-disabled='true']"));
         Assert.IsEmpty(cut.FindAll("#evidence-panel-Artifacts a[href$='/preview']"));
     }

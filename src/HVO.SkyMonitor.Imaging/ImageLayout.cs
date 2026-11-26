@@ -36,7 +36,7 @@ public readonly record struct ImageLayout(int Width, int Height, CameraPixelForm
     /// <summary>Returns bytes per pixel for currently supported packed formats.</summary>
     public static int BytesPerPixel(CameraPixelFormat format) => format switch
     {
-        CameraPixelFormat.Mono8 => 1,
+        CameraPixelFormat.Mono8 or CameraPixelFormat.BayerRggb8 => 1,
         CameraPixelFormat.Mono16 => 2,
         CameraPixelFormat.Rgb24 => 3,
         CameraPixelFormat.BayerRggb16 => 2,

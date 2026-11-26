@@ -280,7 +280,7 @@ internal static class RawCaptureDescriptorFactory
     private static int GetPackedStride(int width, CameraPixelFormat pixelFormat)
         => checked(width * (pixelFormat switch
         {
-            CameraPixelFormat.Mono8 => 1,
+            CameraPixelFormat.Mono8 or CameraPixelFormat.BayerRggb8 => 1,
             CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16 => 2,
             CameraPixelFormat.Rgb24 => 3,
             _ => throw new ArgumentOutOfRangeException(nameof(pixelFormat))
@@ -331,6 +331,7 @@ internal static class RawCaptureDescriptorFactory
         => pixelFormat switch
         {
             CameraPixelFormat.Mono8 => (FrameByteOrder.NotApplicable, 8, 8, ColorFilterArrayPattern.None),
+            CameraPixelFormat.BayerRggb8 => (FrameByteOrder.NotApplicable, 8, 8, ColorFilterArrayPattern.Rggb),
             CameraPixelFormat.Mono16 => (ToFrameByteOrder(configuredByteOrder), 16, 16, ColorFilterArrayPattern.None),
             CameraPixelFormat.Rgb24 => (FrameByteOrder.NotApplicable, 8, 8, ColorFilterArrayPattern.None),
             CameraPixelFormat.BayerRggb16 => (ToFrameByteOrder(configuredByteOrder), 16, 16, ColorFilterArrayPattern.Rggb),
@@ -385,6 +386,7 @@ internal static class RawCaptureDescriptorFactory
         CameraPixelFormat.Mono16 => "application/x-skymonitor-mono16",
         CameraPixelFormat.Rgb24 => "application/x-skymonitor-rgb24",
         CameraPixelFormat.BayerRggb16 => "application/x-skymonitor-bayer-rggb16",
+        CameraPixelFormat.BayerRggb8 => "application/x-skymonitor-bayer-rggb8",
         _ => "application/octet-stream"
     };
 }

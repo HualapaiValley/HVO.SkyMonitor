@@ -15,6 +15,7 @@ internal static class CameraAgentGalleryEndpoints
             .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsReadV1)
             .WithTags("CameraAgent Gallery");
 
+        gallery.MapScientificExports();
         gallery.MapGet("/", GetPageAsync)
             .WithName("GetCameraAgentGalleryPage")
             .Produces<CameraAgentGalleryPage>()

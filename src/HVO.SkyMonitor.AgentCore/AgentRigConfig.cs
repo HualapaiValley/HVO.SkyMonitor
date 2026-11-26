@@ -64,7 +64,7 @@ public static class SensorReadoutResolver
         var height = profile.Roi.Height / profile.BinY;
         var bytesPerPixel = profile.PixelFormat switch
         {
-            CameraPixelFormat.Mono8 => 1,
+            CameraPixelFormat.Mono8 or CameraPixelFormat.BayerRggb8 => 1,
             CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16 => 2,
             CameraPixelFormat.Rgb24 => 3,
             _ => throw new ArgumentOutOfRangeException(nameof(profile))
