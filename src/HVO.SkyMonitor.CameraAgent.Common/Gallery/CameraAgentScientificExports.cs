@@ -1,8 +1,11 @@
 using System.Diagnostics.CodeAnalysis;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.SiteProfile;
 using HVO.SkyMonitor.Imaging;
+using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Gallery;
 
@@ -40,7 +43,8 @@ public sealed class CameraAgentScientificDownload : IAsyncDisposable
 
 internal sealed class CameraAgentScientificExports(
     ICameraAgentArtifactService artifacts, ICameraAgentRetainedAstrometryService astrometry,
-    IDeploymentLocationStore deployment, ISiteProfileStore siteProfile) : ICameraAgentScientificExports, IDisposable
+    IDeploymentLocationStore deployment, ISiteProfileStore siteProfile,
+    IOptions<CameraAgentHostOptions> options) : ICameraAgentScientificExports, IDisposable
 {
     private readonly SemaphoreSlim _slots = new(2, 2);
 
@@ -87,13 +91,13 @@ internal sealed class CameraAgentScientificExports(
                         CaptureContractJson.ComputeDescriptorSha256(descriptor), StringComparison.OrdinalIgnoreCase);
                 var location = CameraAgentCaptureLocationProjector.Project(descriptor, deployment);
                 var site = (await siteProfile.GetAsync(cancellationToken).ConfigureAwait(false)).Profile;
+                var wcs = solved ? retained.Mapping!.ToCelestialWcs() : null;
                 var observation = new ScientificExportObservation(location.LatitudeDegrees, location.LongitudeDegrees, location.ElevationMeters,
-                    site.ObservatoryName, site.OwnerName, solved ? retained.Mapping!.ToCelestialWcs() : null,
-                    solved ? retained.SolutionIdentitySha256 : null);
+                    site.ObservatoryName, site.OwnerName, wcs, wcs is not null ? retained.SolutionIdentitySha256 : null);
 
                 // Stage privately before any response bytes are committed, including on checksum failure or cancellation.
                 // An unlinked Linux file is reclaimed even if the host exits during preparation or download.
-                output = CreateSpool();
+                output = CreateSpool(options.Value.RawIngressRoot);
                 receipt = await ScientificCaptureExport.WriteAsync(source, output, descriptor, format, observation, cancellationToken)
                     .ConfigureAwait(false);
             }
@@ -127,15 +131,30 @@ internal sealed class CameraAgentScientificExports(
         }
     }
 
-    private static FileStream CreateSpool()
+    private static FileStream CreateSpool(string rawIngressRoot)
     {
-        var path = Path.Combine(Path.GetTempPath(), $"hvo-science-{Guid.NewGuid():N}");
+        var root = Path.GetFullPath(rawIngressRoot);
+        var directory = Path.Combine(root, ".scientific-exports");
+        RawIngressFileStore.EnsureNoSymbolicLinks(root, directory);
+        if (OperatingSystem.IsWindows())
+        {
+            Directory.CreateDirectory(directory);
+        }
+        else
+        {
+            const UnixFileMode privateDirectory = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+            Directory.CreateDirectory(directory, privateDirectory);
+            if (File.GetUnixFileMode(directory) != privateDirectory)
+                throw new IOException("Scientific export staging directory must have mode 0700.");
+        }
+        RawIngressFileStore.EnsureNoSymbolicLinks(root, directory);
+        var path = Path.Combine(directory, $"hvo-science-{Guid.NewGuid():N}");
         var options = new FileStreamOptions
         {
             Mode = FileMode.CreateNew,
             Access = FileAccess.ReadWrite,
             Share = FileShare.None,
-            Options = FileOptions.Asynchronous | FileOptions.DeleteOnClose,
+            Options = OperatingSystem.IsLinux() ? FileOptions.Asynchronous : FileOptions.Asynchronous | FileOptions.DeleteOnClose,
             BufferSize = 64 * 1024
         };
         if (!OperatingSystem.IsWindows())
@@ -143,6 +162,7 @@ internal sealed class CameraAgentScientificExports(
         var stream = new FileStream(path, options);
         try
         {
+            // No payload is written while the spool still has a directory entry.
             if (OperatingSystem.IsLinux()) File.Delete(path);
             return stream;
         }

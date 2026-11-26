@@ -37,6 +37,7 @@ internal static class CameraAgentScientificExportEndpoints
             _ => null
         };
         context.Response.Headers.CacheControl = "private, no-store";
+        context.Response.Headers.Vary = "Cookie";
         context.Response.Headers.XContentTypeOptions = "nosniff";
         if (encoding is null)
         {
@@ -72,6 +73,12 @@ internal static class CameraAgentScientificExportEndpoints
     }
 
     private static Task WriteProblemAsync(HttpContext context, int status, string? reason)
-        => Results.Problem(statusCode: status, title: "Scientific export unavailable",
+    {
+        context.Response.StatusCode = status;
+        if (HttpMethods.IsHead(context.Request.Method))
+            return Task.CompletedTask;
+
+        return Results.Problem(statusCode: status, title: "Scientific export unavailable",
             extensions: new Dictionary<string, object?> { ["reasonCode"] = reason }).ExecuteAsync(context);
+    }
 }

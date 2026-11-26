@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Globalization;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Xml;
@@ -11,6 +12,9 @@ internal static class XisfScientificWriter
     private const string Namespace = "http://www.pixinsight.com/xisf";
     private const int PreambleSize = 16;
     private const int AttachmentAlignment = 4096;
+    private static readonly string CreatorApplication = "HVO.SkyMonitor " +
+        typeof(XisfScientificWriter).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()!
+            .InformationalVersion.Split('+', 2)[0];
 
     public static async Task WriteAsync(Stream output, ScientificCaptureExport.PixelReader pixels,
         ScientificExportMetadata metadata, CancellationToken token)
@@ -49,7 +53,12 @@ internal static class XisfScientificWriter
     private static byte[] XmlHeader(ScientificExportMetadata metadata, long offset, long size, string sha256)
     {
         using var buffer = new MemoryStream();
-        using (var xml = XmlWriter.Create(buffer, new XmlWriterSettings { Encoding = new UTF8Encoding(false) }))
+        buffer.Write("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"u8);
+        using (var xml = XmlWriter.Create(buffer, new XmlWriterSettings
+        {
+            Encoding = new UTF8Encoding(false),
+            OmitXmlDeclaration = true
+        }))
         {
             var layout = metadata.Layout;
             xml.WriteStartElement("xisf", Namespace);
@@ -58,6 +67,7 @@ internal static class XisfScientificWriter
             xml.WriteAttributeString("geometry", FormattableString.Invariant($"{layout.Width}:{layout.Height}:1"));
             xml.WriteAttributeString("sampleFormat", layout.ContainerDepthBits == 16 ? "UInt16" : "UInt8");
             xml.WriteAttributeString("colorSpace", "Gray");
+            xml.WriteAttributeString("imageType", metadata.ImageType);
             xml.WriteAttributeString("location", FormattableString.Invariant($"attachment:{offset}:{size}"));
             xml.WriteAttributeString("checksum", "sha256:" + sha256);
 
@@ -67,6 +77,7 @@ internal static class XisfScientificWriter
                 xml.WriteAttributeString("pattern", pattern);
                 xml.WriteAttributeString("width", "2");
                 xml.WriteAttributeString("height", "2");
+                xml.WriteAttributeString("name", $"{pattern} Bayer Filter");
                 xml.WriteEndElement();
             }
 
@@ -74,9 +85,9 @@ internal static class XisfScientificWriter
             {
                 xml.WriteStartElement("FITSKeyword", Namespace);
                 xml.WriteAttributeString("name", keyword.Name);
-                xml.WriteAttributeString("value", keyword.IsFitsString
-                    ? "'" + keyword.Value.Replace("'", "''", StringComparison.Ordinal) + "'" : keyword.Value);
-                xml.WriteAttributeString("comment", keyword.Comment);
+                var value = FitsScientificWriter.FormatKeywordValue(keyword);
+                xml.WriteAttributeString("value", value);
+                xml.WriteAttributeString("comment", FitsScientificWriter.FormatKeywordComment(value, keyword.Comment));
                 xml.WriteEndElement();
                 if (keyword.Property is { } property)
                     WriteProperty(xml, property, keyword.Type, keyword.Type == "TimePoint" ? keyword.Value + "Z" : keyword.Value);
@@ -84,7 +95,8 @@ internal static class XisfScientificWriter
 
             xml.WriteEndElement();
             xml.WriteStartElement("Metadata", Namespace);
-            WriteProperty(xml, "XISF:CreatorApplication", "String", "HVO.SkyMonitor");
+            WriteProperty(xml, "XISF:CreationTime", "TimePoint", metadata.CreationTime);
+            WriteProperty(xml, "XISF:CreatorApplication", "String", CreatorApplication);
             WriteProperty(xml, "XISF:BlockAlignmentSize", "UInt16", AttachmentAlignment.ToString(CultureInfo.InvariantCulture));
             xml.WriteEndElement();
             xml.WriteEndElement();

@@ -4,6 +4,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.Imaging;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.DependencyInjection;
@@ -478,11 +479,12 @@ public sealed class GalleryDetailTests
     }
 
     [TestMethod]
-    [DataRow("missing_evidence", CameraPixelFormat.Mono16, "The raw capture artifact is missing.")]
-    [DataRow("quarantined", CameraPixelFormat.Mono16, "The raw capture artifact is quarantined.")]
-    [DataRow("committed", CameraPixelFormat.Rgb24, "This raw pixel format is unsupported.")]
-    [DataRow("committed", null, "The raw capture layout could not be verified.")]
-    public void ScientificDownloadsExplainUnavailableRawEvidence(string state, CameraPixelFormat? format, string reason)
+    [DataRow("missing_evidence", CameraPixelFormat.Mono16, false, "The raw capture artifact is missing.")]
+    [DataRow("quarantined", CameraPixelFormat.Mono16, false, "The raw capture artifact is quarantined.")]
+    [DataRow("committed", CameraPixelFormat.Rgb24, false, "This raw pixel format is unsupported.")]
+    [DataRow("committed", null, false, "The raw capture layout could not be verified.")]
+    [DataRow("committed", CameraPixelFormat.Mono16, true, "The raw capture exceeds the scientific export size limit.")]
+    public void ScientificDownloadsExplainUnavailableRawEvidence(string state, CameraPixelFormat? format, bool tooLarge, string reason)
     {
         using var context = new BunitContext();
         ConfigureGraphService(context);
@@ -490,7 +492,15 @@ public sealed class GalleryDetailTests
         var capture = sample with
         {
             RawState = state,
-            Artifacts = [sample.Artifacts[0] with { PixelFormat = format }, sample.Artifacts[1]]
+            Artifacts =
+            [
+                sample.Artifacts[0] with
+                {
+                    PixelFormat = format,
+                    ByteLength = tooLarge ? ScientificCaptureExport.MaximumSourceBytes + 1 : sample.Artifacts[0].ByteLength
+                },
+                sample.Artifacts[1]
+            ]
         };
         context.Services.AddSingleton<ICameraAgentOperatorUiService>(new TestOperatorUiService
         {

@@ -127,7 +127,7 @@ internal static class FitsScientificWriter
             cards.Add(Integer("BZERO", 32768));
         }
         foreach (var item in metadata.Keywords())
-            cards.Add(Card(item.Name, item.IsFitsString ? Quote(item.Value) : item.Value, item.Comment));
+            cards.Add(Card(item.Name, FormatKeywordValue(item), item.Comment));
     }
 
     private static byte[] Header(IEnumerable<string> cards)
@@ -142,9 +142,19 @@ internal static class FitsScientificWriter
     private static string Card(string key, string value, string comment = "")
     {
         var card = key.PadRight(8) + "= " + (value.StartsWith('\'') ? value.PadRight(20) : value.PadLeft(20));
-        if (comment.Length > 0 && card.Length + 3 < CardSize)
-            card += " / " + comment[..Math.Min(comment.Length, CardSize - card.Length - 3)];
+        var inlineComment = FormatKeywordComment(value, comment);
+        if (inlineComment.Length > 0)
+            card += " / " + inlineComment;
         return card.PadRight(CardSize);
+    }
+
+    internal static string FormatKeywordValue(ScientificKeyword keyword)
+        => keyword.IsFitsString ? Quote(keyword.Value) : keyword.Value;
+
+    internal static string FormatKeywordComment(string value, string comment)
+    {
+        var available = CardSize - 10 - Math.Max(value.Length, 20) - 3;
+        return available >= 4 ? comment[..Math.Min(comment.Length, available)] : string.Empty;
     }
 
     private static string Quote(string value)

@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Globalization;
+using System.Reflection;
 using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
@@ -34,6 +35,9 @@ public sealed class ScientificCaptureExportTests
         var (descriptor, payload, samples) = Frame(format, 3, 2, bigEndian);
         var (bytes, receipt) = await EncodeAsync(descriptor, payload, ScientificExportFormat.Fits, solved ? Solved : Site).ConfigureAwait(false);
         var (header, data) = ReadHdu(bytes, 0);
+        var hashCard = Encoding.ASCII.GetString(bytes, 0, data).IndexOf("HVOHASH ", StringComparison.Ordinal);
+        Assert.AreEqual($"HVOHASH = '{descriptor.Artifact.ChecksumSha256}'".PadRight(80),
+            Encoding.ASCII.GetString(bytes, hashCard, 80));
         Assert.AreEqual("T", header["SIMPLE"]);
         Assert.AreEqual("2", header["NAXIS"]);
         Assert.AreEqual("3", header["NAXIS1"]);
@@ -123,12 +127,15 @@ public sealed class ScientificCaptureExportTests
         CollectionAssert.AreEqual("XISF0100"u8.ToArray(), bytes[..8]);
         var xmlLength = BinaryPrimitives.ReadInt32LittleEndian(bytes.AsSpan(8));
         Assert.AreEqual(0, BinaryPrimitives.ReadInt32LittleEndian(bytes.AsSpan(12)));
-        var root = XDocument.Parse(Encoding.UTF8.GetString(bytes, 16, xmlLength)).Root!;
+        var document = XDocument.Parse(Encoding.UTF8.GetString(bytes, 16, xmlLength));
+        Assert.AreEqual("UTF-8", document.Declaration?.Encoding);
+        var root = document.Root!;
         XNamespace ns = "http://www.pixinsight.com/xisf";
         Assert.AreEqual(ns + "xisf", root.Name);
         Assert.AreEqual("1.0", (string?)root.Attribute("version"));
         var image = root.Elements(ns + "Image").Single();
         Assert.AreEqual("4:3:1", (string?)image.Attribute("geometry"));
+        Assert.AreEqual("Light", (string?)image.Attribute("imageType"));
         var depth = descriptor.Layout.ContainerDepthBits;
         Assert.AreEqual(depth == 16 ? "UInt16" : "UInt8", (string?)image.Attribute("sampleFormat"));
         Assert.AreEqual("Gray", (string?)image.Attribute("colorSpace"));
@@ -154,13 +161,105 @@ public sealed class ScientificCaptureExportTests
         var properties = image.Elements(ns + "Property").ToDictionary(e => e.Attribute("id")!.Value);
         Assert.AreEqual("2026-11-26T12:34:56.0000000Z", (string?)properties["Observation:Time:Start"].Attribute("value"));
         Assert.AreEqual("1.25", (string?)properties["Instrument:ExposureTime"].Attribute("value"));
+        Assert.AreEqual("Float32", (string?)properties["Instrument:ExposureTime"].Attribute("type"));
+        Assert.AreEqual("Float32", (string?)properties["Instrument:Sensor:Temperature"].Attribute("type"));
+        Assert.AreEqual("Float64", (string?)properties["Observation:Location:Latitude"].Attribute("type"));
+        Assert.IsFalse(properties.ContainsKey("Instrument:Camera:Gain"));
+        Assert.AreEqual("12", (string?)properties["HVO:Camera:ControlGain"].Attribute("value"));
         Assert.AreEqual("Test 'Camera'", properties["Instrument:Camera:Name"].Value);
         Assert.AreEqual("A & B Observatory", properties["Observation:Location:Name"].Value);
         Assert.AreEqual(descriptor.Artifact.ChecksumSha256, properties["HVO:Source:SHA256"].Value);
         var cfa = image.Element(ns + "ColorFilterArray");
         if (descriptor.Layout.CfaPattern == ColorFilterArrayPattern.None) Assert.IsNull(cfa);
-        else Assert.AreEqual("GRBG", (string?)cfa!.Attribute("pattern"));
+        else
+        {
+            Assert.AreEqual("GRBG", (string?)cfa!.Attribute("pattern"));
+            Assert.AreEqual("GRBG Bayer Filter", (string?)cfa.Attribute("name"));
+        }
+        var metadata = root.Elements(ns + "Metadata").Single().Elements(ns + "Property")
+            .ToDictionary(e => e.Attribute("id")!.Value);
+        Assert.AreEqual("TimePoint", (string?)metadata["XISF:CreationTime"].Attribute("type"));
+        Assert.AreEqual("2026-11-26T12:34:58.0000000Z", (string?)metadata["XISF:CreationTime"].Attribute("value"));
+        Assert.AreEqual("String", (string?)metadata["XISF:CreatorApplication"].Attribute("type"));
+        var productVersion = typeof(ScientificCaptureExport).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()!.InformationalVersion.Split('+', 2)[0];
+        Assert.AreEqual($"HVO.SkyMonitor {productVersion}", metadata["XISF:CreatorApplication"].Value);
+        Assert.AreEqual("UInt16", (string?)metadata["XISF:BlockAlignmentSize"].Attribute("type"));
+        Assert.AreEqual("4096", (string?)metadata["XISF:BlockAlignmentSize"].Attribute("value"));
         AssertReceipt(bytes, receipt, descriptor, ".xisf", "application/xisf");
+        var (reencoded, nextReceipt) = await EncodeAsync(descriptor, payload, ScientificExportFormat.Xisf, solved ? Solved : Site).ConfigureAwait(false);
+        CollectionAssert.AreEqual(bytes, reencoded);
+        Assert.AreEqual(receipt, nextReceipt);
+    }
+
+    [TestMethod]
+    [DataRow("bias", "Bias")]
+    [DataRow("dark", "Dark")]
+    [DataRow("flat", "Flat")]
+    [DataRow("defect", "DefectMap")]
+    public async Task XisfImageTypeUsesRetainedRawCalibrationKindAsync(string variant, string imageType)
+    {
+        var (descriptor, payload, _) = Frame(CameraPixelFormat.Mono8, 3, 2);
+        descriptor = descriptor with { Artifact = descriptor.Artifact with { Variant = variant } };
+        var (bytes, _) = await EncodeAsync(descriptor, payload, ScientificExportFormat.Xisf).ConfigureAwait(false);
+        Assert.AreEqual(imageType, (string?)ReadXisfImage(bytes).Attribute("imageType"));
+    }
+
+    [TestMethod]
+    [DataRow(double.NaN, double.PositiveInfinity, double.NegativeInfinity)]
+    [DataRow(90.01, -180.01, double.NaN)]
+    [DataRow(-90.01, 180.01, double.PositiveInfinity)]
+    public async Task OmitsInvalidCoordinatesAndSolveWithoutUsableWcsAsync(double latitude, double longitude, double elevation)
+    {
+        var (descriptor, payload, _) = Frame(CameraPixelFormat.Mono8, 3, 2);
+        var observation = Solved with
+        {
+            LatitudeDegrees = latitude,
+            LongitudeDegrees = longitude,
+            ElevationMeters = elevation,
+            Wcs = latitude > 0 ? Solved.Wcs! with { ReferenceX = double.NaN } : null
+        };
+        var (fits, _) = await EncodeAsync(descriptor, payload, ScientificExportFormat.Fits, observation).ConfigureAwait(false);
+        var (xisf, _) = await EncodeAsync(descriptor, payload, ScientificExportFormat.Xisf, observation).ConfigureAwait(false);
+        var (header, _) = ReadHdu(fits, 0);
+        var image = ReadXisfImage(xisf);
+        foreach (var name in new[] { "SITELAT", "SITELONG", "SITEELEV", "CTYPE1", "HVOSOLVE" })
+        {
+            Assert.IsFalse(header.ContainsKey(name), name);
+            Assert.IsFalse(image.Elements(image.Name.Namespace + "FITSKeyword").Any(node => (string?)node.Attribute("name") == name), name);
+        }
+        Assert.IsFalse(image.Elements(image.Name.Namespace + "Property").Any(node =>
+            (string?)node.Attribute("id") is "Observation:Location:Latitude" or "Observation:Location:Longitude" or
+                "Observation:Location:Elevation" or "HVO:Source:AstrometrySHA256"));
+    }
+
+    [TestMethod]
+    public async Task XisfFitsKeywordsMatchFitsAsciiEscapingAndLengthAsync()
+    {
+        var (descriptor, payload, _) = Frame(CameraPixelFormat.Mono8, 3, 2);
+        var observation = Site with { Observatory = "Café '🔭' " + new string('x', 100) };
+        var (fits, _) = await EncodeAsync(descriptor, payload, ScientificExportFormat.Fits, observation).ConfigureAwait(false);
+        var (xisf, _) = await EncodeAsync(descriptor, payload, ScientificExportFormat.Xisf, observation).ConfigureAwait(false);
+        var (header, _) = ReadHdu(fits, 0);
+        Assert.AreEqual("'Caf? ''?'' " + new string('x', 57) + "'", header["OBSERVAT"]);
+        var image = ReadXisfImage(xisf);
+        var keywords = image.Elements(image.Name.Namespace + "FITSKeyword").ToArray();
+        foreach (var keyword in keywords)
+        {
+            var name = keyword.Attribute("name")!.Value;
+            if (name is not ("HVOENC" or "HVOOPT"))
+                Assert.AreEqual(header[name], (string?)keyword.Attribute("value"), name);
+        }
+        Assert.AreEqual("", (string?)keywords.Single(node => (string?)node.Attribute("name") == "HVOHASH").Attribute("comment"));
+        var location = image.Elements(image.Name.Namespace + "Property").Single(node =>
+            (string?)node.Attribute("id") == "Observation:Location:Name");
+        Assert.AreEqual(observation.Observatory, location.Value);
+    }
+
+    private static XElement ReadXisfImage(byte[] bytes)
+    {
+        var root = XDocument.Parse(Encoding.UTF8.GetString(bytes, 16, BinaryPrimitives.ReadInt32LittleEndian(bytes.AsSpan(8)))).Root!;
+        return root.Elements(root.Name.Namespace + "Image").Single();
     }
 
     [TestMethod]

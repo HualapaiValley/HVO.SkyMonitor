@@ -283,11 +283,13 @@ public sealed class ArtifactEndpointTests
             Assert.AreEqual($"capture-42-{service.ArtifactId:N}.{format}",
                 response.Content.Headers.ContentDisposition?.FileName?.Trim('"'));
             Assert.IsTrue(response.Headers.CacheControl?.NoStore);
+            Assert.AreEqual("Cookie", response.Headers.Vary.Single());
             Assert.AreEqual("nosniff", response.Headers.GetValues("X-Content-Type-Options").Single());
 
             using var head = new HttpRequestMessage(HttpMethod.Head, download);
             using var header = await owner.SendAsync(head).ConfigureAwait(false);
             Assert.AreEqual(response.Headers.ETag, header.Headers.ETag);
+            Assert.AreEqual("Cookie", header.Headers.Vary.Single());
             Assert.IsEmpty(await header.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
 
             using var range = new HttpRequestMessage(HttpMethod.Get, download);
@@ -315,9 +317,17 @@ public sealed class ArtifactEndpointTests
             using var response = await owner.GetAsync(request).ConfigureAwait(false);
             Assert.AreEqual(status, response.StatusCode);
             Assert.AreEqual("application/problem+json", response.Content.Headers.ContentType?.MediaType);
+            Assert.AreEqual("Cookie", response.Headers.Vary.Single());
             Assert.IsFalse(response.Headers.Contains("X-Artifact-SHA256"));
             using var problem = JsonDocument.Parse(await response.Content.ReadAsStringAsync().ConfigureAwait(false));
             Assert.AreEqual(reason, problem.RootElement.GetProperty("reasonCode").GetString());
+
+            using var head = new HttpRequestMessage(HttpMethod.Head, request);
+            using var headResponse = await owner.SendAsync(head).ConfigureAwait(false);
+            Assert.AreEqual(status, headResponse.StatusCode);
+            Assert.IsNull(headResponse.Content.Headers.ContentType);
+            Assert.IsEmpty(await headResponse.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
+            Assert.AreEqual("Cookie", headResponse.Headers.Vary.Single());
         }
     }
 

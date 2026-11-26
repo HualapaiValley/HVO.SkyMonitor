@@ -10,6 +10,17 @@ internal sealed class ScientificExportMetadata(
     ScientificExportEncoding encoding, ScientificExportLineage lineage)
 {
     internal FrameLayoutDescriptor Layout => descriptor.Layout;
+    internal string CreationTime => descriptor.Artifact.CreatedUtc.UtcDateTime.ToString("O", CultureInfo.InvariantCulture);
+    // Raw calibration producers retain the acquisition kind in the artifact variant.
+    internal string ImageType => descriptor.Artifact.Variant switch
+    {
+        "bias" => "Bias",
+        "dark" => "Dark",
+        "flat" => "Flat",
+        "defect" => "DefectMap",
+        _ => "Light"
+    };
+
     internal string? BayerPattern => Layout.CfaPattern == ColorFilterArrayPattern.None
         ? null : BayerRggb16Demosaicer.ResolvePattern(Layout).ToString().ToUpperInvariant();
 
@@ -17,16 +28,16 @@ internal sealed class ScientificExportMetadata(
     {
         yield return Text("DATE-OBS", descriptor.Timing.ExposureStartedUtc.ToString("yyyy-MM-dd'T'HH:mm:ss.fffffff", CultureInfo.InvariantCulture),
             "UTC exposure start", "Observation:Time:Start", "TimePoint");
-        yield return Number("EXPTIME", descriptor.Controls.EffectiveExposure.TotalSeconds, "Exposure in seconds", "Instrument:ExposureTime");
-        yield return Number("GAIN", descriptor.Controls.EffectiveGain, "Effective camera gain", "Instrument:Camera:Gain");
+        yield return Number("EXPTIME", descriptor.Controls.EffectiveExposure.TotalSeconds, "Exposure in seconds", "Instrument:ExposureTime", "Float32");
+        yield return Number("GAIN", descriptor.Controls.EffectiveGain, "Effective camera gain", "HVO:Camera:ControlGain");
         yield return Text("INSTRUME", descriptor.Artifact.SourceId, "Capture camera", "Instrument:Camera:Name");
         if (descriptor.Controls.EffectiveTemperatureC is { } temperature)
-            yield return Number("CCD-TEMP", temperature, "Sensor temperature in Celsius", "Instrument:Sensor:Temperature");
-        if (observation.LatitudeDegrees is { } latitude)
+            yield return Number("CCD-TEMP", temperature, "Sensor temperature in Celsius", "Instrument:Sensor:Temperature", "Float32");
+        if (observation.LatitudeDegrees is { } latitude && double.IsFinite(latitude) && latitude is >= -90 and <= 90)
             yield return Number("SITELAT", latitude, "Latitude in degrees", "Observation:Location:Latitude");
-        if (observation.LongitudeDegrees is { } longitude)
+        if (observation.LongitudeDegrees is { } longitude && double.IsFinite(longitude) && longitude is >= -180 and <= 180)
             yield return Number("SITELONG", longitude, "East longitude in degrees", "Observation:Location:Longitude");
-        if (observation.ElevationMeters is { } elevation)
+        if (observation.ElevationMeters is { } elevation && double.IsFinite(elevation))
             yield return Number("SITEELEV", elevation, "Elevation in metres", "Observation:Location:Elevation");
         if (!string.IsNullOrWhiteSpace(observation.Observatory))
             yield return Text("OBSERVAT", observation.Observatory, "Observatory", "Observation:Location:Name");
@@ -46,9 +57,10 @@ internal sealed class ScientificExportMetadata(
         yield return Text("HVOCAPID", lineage.CaptureId.ToString("D"), "Source capture ID", "HVO:Source:CaptureId");
         yield return Integer("HVOSEQ", lineage.CaptureSequence, "Source capture sequence", "HVO:Source:CaptureSequence");
         yield return Text("HVOHASH", lineage.Sha256, "Source artifact SHA-256", "HVO:Source:SHA256");
+        if (observation.Wcs is not { } wcs || !wcs.IsValid()) yield break;
+
         if (observation.SolutionSha256 is { } solution)
             yield return Text("HVOSOLVE", solution, "Retained solution identity", "HVO:Source:AstrometrySHA256");
-        if (observation.Wcs is not { } wcs || !wcs.IsValid()) yield break;
 
         yield return Text("RADESYS", "FK5", "J2000 mean equator and equinox");
         yield return Number("EQUINOX", 2000);
@@ -76,8 +88,8 @@ internal sealed class ScientificExportMetadata(
     private static ScientificKeyword Text(string name, string value, string comment = "", string? property = null,
         string type = "String") => new(name, XmlText(value), comment, property, type);
 
-    private static ScientificKeyword Number(string name, double value, string comment = "", string? property = null)
-        => new(name, value.ToString("G17", CultureInfo.InvariantCulture), comment, property, "Float64");
+    private static ScientificKeyword Number(string name, double value, string comment = "", string? property = null,
+        string type = "Float64") => new(name, value.ToString("G17", CultureInfo.InvariantCulture), comment, property, type);
 
     private static ScientificKeyword Integer(string name, long value, string comment, string? property = null)
         => new(name, value.ToString(CultureInfo.InvariantCulture), comment, property, "Int64");

@@ -1913,7 +1913,7 @@
       }
     },
     "HVO.SkyMonitor.Imaging/ImageLayout.cs": {
-      "sourceSha256": "9aad3d80fc1b53ce80a778a4c6b0f6500501a41eb12ff08ab7be6f9e698a4ce3",
+      "sourceSha256": "a93fd4d9576d989a53574c977db08d05ea5a567e40fd4c214b580ab99616935c",
       "lines": [
       6, 9, 12, 17, 19, 24, 26, 28, 29, 31, 32, 34, 37, 38, 39, 40,
       41, 42, 43, 44, 53, 54, 56, 58
@@ -1928,7 +1928,7 @@
           "conditions": ["51", "60"]
         },
         "37": {
-          "total": 5,
+          "total": 6,
           "conditions": ["1"]
         },
         "54": {
