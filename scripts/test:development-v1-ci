@@ -1695,6 +1695,7 @@ exit "$FAKE_EXIT"
     deploy_cases = 0
     git("checkout", "-q", "--detach", real_base)
     real_deploy_cli_tests_csproj = (root / "tests/HVO.SkyMonitor.Deployment.Cli.Tests/HVO.SkyMonitor.Deployment.Cli.Tests.csproj").read_text()
+    real_cameraagent_csproj = (root / "src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj").read_text()
     real_coverage_baseline = (root / "scripts/coverage/baseline.json").read_text()
     real_coverage_policy = (root / "scripts/coverage/policy.json").read_text()
     real_component_baselines = {
@@ -1707,7 +1708,9 @@ exit "$FAKE_EXIT"
         ("src/HVO.SkyMonitor.CameraAgent/Dockerfile", "FROM scratch\n"),
         ("src/HVO.SkyMonitor.CameraAgent/Configuration/OwnerPasswordFileText.cs", "class P {}\n"),
         ("src/HVO.SkyMonitor.CameraAgent/wwwroot/css/themes/hvo-dark.css", ":root[data-theme=\"hvo-dark\"] { --hvo-body-bg: #0b1018; }\n"),
+        ("src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj", real_cameraagent_csproj),
         ("docs/runbooks/cameraagent-silo-runtime.md", "# Silo runtime\n"),
+        ("THIRD-PARTY-NOTICES.md", "# Third-party notices\n"),
         ("src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj",
          '<Project><ItemGroup><Compile Include="../HVO.SkyMonitor.CameraAgent/Configuration/OwnerPasswordFileText.cs" /></ItemGroup></Project>\n'),
         ("tests/HVO.SkyMonitor.Deployment.Cli.Tests/HVO.SkyMonitor.Deployment.Cli.Tests.csproj", real_deploy_cli_tests_csproj),
@@ -1735,17 +1738,18 @@ exit "$FAKE_EXIT"
     git("commit", "-qm", "seed deployment path-filter base")
     filter_base = git("rev-parse", "HEAD")
 
-    for label, edited_path, event_name, expected_deploy_cli in (
-        ("CameraAgent-only PR skips Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/Components/Home.razor", "pull_request", "false"),
-        ("CameraAgent-only merge_group always runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/Components/Home.razor", "merge_group", "true"),
-        ("CameraAgent-only push always runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/Components/Home.razor", "push", "true"),
-        ("CameraAgent Dockerfile PR runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/Dockerfile", "pull_request", "true"),
-        ("CameraAgent hvo-dark.css PR runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/wwwroot/css/themes/hvo-dark.css", "pull_request", "true"),
-        ("Silo replacement runbook PR runs Deployment.Cli.Tests and is not docs-fast-path skipped", "docs/runbooks/cameraagent-silo-runtime.md", "pull_request", "true"),
-        ("Linked CameraAgent source PR runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/Configuration/OwnerPasswordFileText.cs", "pull_request", "true"),
-        ("Deployment.Cli PR runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.Deployment.Cli/Program.cs", "pull_request", "true"),
-        ("Shared AgentCore PR runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.AgentCore/Contract.cs", "pull_request", "true"),
-        ("Classifier tamper PR runs Deployment.Cli.Tests", "scripts/ci:classify", "pull_request", "true"),
+    for label, edited_path, event_name, expected_deploy_cli, expected_reason in (
+        ("CameraAgent-only PR skips Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/Components/Home.razor", "pull_request", "false", None),
+        ("CameraAgent-only merge_group always runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/Components/Home.razor", "merge_group", "true", None),
+        ("CameraAgent-only push always runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/Components/Home.razor", "push", "true", None),
+        ("CameraAgent Dockerfile PR runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/Dockerfile", "pull_request", "true", None),
+        ("CameraAgent hvo-dark.css PR runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/wwwroot/css/themes/hvo-dark.css", "pull_request", "true", None),
+        ("Silo replacement runbook PR runs Deployment.Cli.Tests and is not docs-fast-path skipped", "docs/runbooks/cameraagent-silo-runtime.md", "pull_request", "true", "reason=path outside documentation allowlist"),
+        ("THIRD-PARTY-NOTICES.md PR runs Deployment.Cli.Tests and is not docs-fast-path skipped", "THIRD-PARTY-NOTICES.md", "pull_request", "true", "reason=path outside documentation allowlist"),
+        ("Linked CameraAgent source PR runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.CameraAgent/Configuration/OwnerPasswordFileText.cs", "pull_request", "true", None),
+        ("Deployment.Cli PR runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.Deployment.Cli/Program.cs", "pull_request", "true", None),
+        ("Shared AgentCore PR runs Deployment.Cli.Tests", "src/HVO.SkyMonitor.AgentCore/Contract.cs", "pull_request", "true", None),
+        ("Classifier tamper PR runs Deployment.Cli.Tests", "scripts/ci:classify", "pull_request", "true", None),
     ):
         git("checkout", "-q", "--detach", filter_base)
         if edited_path == "scripts/ci:classify":
@@ -1763,7 +1767,8 @@ exit "$FAKE_EXIT"
         result = subprocess.run(["bash", "-euo", "pipefail", "-c", fast_script], cwd=fixture, env=case_env,
                                 capture_output=True, text=True)
         lines = output.read_text().splitlines()
-        if result.returncode or "run_full=true" not in lines or f"run_deployment_cli={expected_deploy_cli}" not in lines:
+        if (result.returncode or "run_full=true" not in lines or f"run_deployment_cli={expected_deploy_cli}" not in lines or
+                (expected_reason is not None and expected_reason not in lines)):
             raise SystemExit(f"Deployment.Cli path-filter case '{label}' failed: {lines} {result.stderr}")
         deploy_cases += 1
 
