@@ -279,4 +279,67 @@ public sealed class ProcessingGraphDraftModelTests
         Assert.IsFalse(converted.ExistsInSourceRevision(converted.Nodes[1]),
             "WithConvertedPipeline must retain the original source revision's node set.");
     }
+
+    [TestMethod]
+    public void ExistsInSourceRevision_RejectsDeletedIdReuseTypeChangesConversionsAndDuplicateIds()
+    {
+        var source = new CapturePipelineConfig(
+        [
+            new("ImageQuality", "quality", 10, null, ["$raw"], Enabled: true),
+            new("Preview", "preview", 20, null, ["$raw"], Enabled: true),
+            new("ScenePresentationLayer", "scene", 30, null, ["$raw"], Enabled: true)
+        ]);
+
+        // 1. Deleting a saved row and renaming another saved row (or a brand-new row) to that deleted ID must return false.
+        var draft = ProcessingGraphDraftModel.FromPipeline(source, "rev-active", "night", "2");
+        var qualityRow = draft.Nodes.Single(static row => row.Id == "quality");
+        var previewRow = draft.Nodes.Single(static row => row.Id == "preview");
+        draft.Remove(qualityRow);
+        previewRow.Id = "quality";
+        Assert.IsFalse(draft.ExistsInSourceRevision(previewRow),
+            "Renaming an existing row to a deleted saved row's ID must not link to the deleted source stage.");
+
+        draft.AddNode("ImageQuality");
+        var addedQuality = draft.Nodes[^1];
+        addedQuality.Id = "quality";
+        Assert.IsFalse(draft.ExistsInSourceRevision(addedQuality),
+            "A newly added row renamed to a deleted saved ID (even with the same type) must not link to the source revision.");
+
+        // 2. Changing a saved row's type directly or via WithConvertedPipeline must return false while unchanged rows stay true.
+        var typeChangeDraft = ProcessingGraphDraftModel.FromPipeline(source, "rev-active", "night", "2");
+        var changedRow = typeChangeDraft.Nodes.Single(static row => row.Id == "preview");
+        changedRow.Type = "CombinedPreview";
+        Assert.IsFalse(typeChangeDraft.ExistsInSourceRevision(changedRow),
+            "Changing a saved row's type must disable source-revision linking for that row.");
+        Assert.IsTrue(typeChangeDraft.ExistsInSourceRevision(typeChangeDraft.Nodes.Single(static row => row.Id == "quality")));
+
+        var converted = typeChangeDraft.WithConvertedPipeline(new CapturePipelineConfig(
+        [
+            new("ImageQuality", "quality", 10, null, ["$raw"], Enabled: true),
+            new("CombinedPreview", "preview", 20, null, ["$raw"], Enabled: true),
+            new(SceneStylePresentation.StepAlias, "scene", 30, null, ["$raw"], Enabled: true)
+        ]));
+        Assert.IsTrue(converted.ExistsInSourceRevision(converted.Nodes.Single(static row => row.Id == "quality")),
+            "Untouched saved row must stay linked after WithConvertedPipeline.");
+        Assert.IsFalse(converted.ExistsInSourceRevision(converted.Nodes.Single(static row => row.Id == "preview")),
+            "Type-changed row must stay unlinked after WithConvertedPipeline.");
+        Assert.IsFalse(converted.ExistsInSourceRevision(converted.Nodes.Single(static row => row.Id == "scene")),
+            "Row whose type was upgraded by WithConvertedPipeline must not link to the old source-revision stage.");
+
+        // 3. Duplicate trimmed IDs across two rows disable source-revision linking for both conflicting rows until resolved.
+        var duplicateDraft = ProcessingGraphDraftModel.FromPipeline(source, "rev-active", "night", "2");
+        var originalPreview = duplicateDraft.Nodes.Single(static row => row.Id == "preview");
+        duplicateDraft.AddNode("Preview");
+        var duplicatePreview = duplicateDraft.Nodes[^1];
+        duplicatePreview.Id = " PREVIEW ";
+        Assert.IsFalse(duplicateDraft.ExistsInSourceRevision(originalPreview),
+            "Duplicating a saved ID in the draft must disable source-revision linking for the conflicting saved row.");
+        Assert.IsFalse(duplicateDraft.ExistsInSourceRevision(duplicatePreview),
+            "Duplicating a saved ID in the draft must disable source-revision linking for the duplicate row.");
+
+        duplicatePreview.Id = "preview-extra";
+        Assert.IsTrue(duplicateDraft.ExistsInSourceRevision(originalPreview),
+            "Resolving the duplicate ID restores source-revision linking for the original saved row.");
+        Assert.IsFalse(duplicateDraft.ExistsInSourceRevision(duplicatePreview));
+    }
 }

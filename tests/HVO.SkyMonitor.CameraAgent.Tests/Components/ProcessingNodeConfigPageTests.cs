@@ -1225,6 +1225,19 @@ public sealed class ProcessingNodeConfigPageTests
         StringAssert.Contains(predictionItem.ClassName, "node-switcher__item--unsaved", StringComparison.Ordinal);
         StringAssert.Contains(predictionItem.TextContent, "Unsaved draft", StringComparison.Ordinal);
 
+        // 1b. After saving the draft, the switcher badge updates from 'Unsaved draft' to post-save wording.
+        cut.Find("form").Submit();
+        Assert.IsFalse(cut.Find("button.btn-primary").HasAttribute("disabled"));
+        cut.Find("button.btn-primary").Click();
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "saved as an immutable revision", StringComparison.Ordinal));
+        var savedPredictionItem = cut.FindAll(".node-switcher__item")
+            .Single(item => item.TextContent.Contains(predictionAlias, StringComparison.Ordinal));
+        Assert.AreNotEqual("A", savedPredictionItem.TagName);
+        Assert.AreEqual("true", savedPredictionItem.GetAttribute("aria-disabled"));
+        StringAssert.Contains(savedPredictionItem.TextContent, "Saved in new draft", StringComparison.Ordinal);
+        Assert.IsFalse(savedPredictionItem.TextContent.Contains("Unsaved draft", StringComparison.Ordinal),
+            "Post-save switcher badge must not keep 'Unsaved draft' wording after saving.");
+
         // 2. Navigating directly to a missing node renders the clean fallback list without broken switcher/form state,
         //    and switching to a valid node in the revision recovers cleanly.
         cut.Render(parameters => parameters
