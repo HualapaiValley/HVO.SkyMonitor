@@ -393,6 +393,9 @@ public class Program
             provider.GetRequiredService<OperatorNotificationStore>());
         builder.Services.AddSingleton<IOperatorNotificationConfigProvider>(provider =>
             provider.GetRequiredService<OperatorNotificationStore>());
+        builder.Services.AddSingleton<IOperatorNotificationHeartbeatStore>(provider =>
+            new FileOperatorNotificationHeartbeatStore(
+                provider.GetRequiredService<IOptions<DeviceProvisioningOptions>>().Value.StateDirectory));
 
         builder.Services.AddOptions<CapturePreviewOptions>()
             .Bind(builder.Configuration.GetSection("CapturePreview"))

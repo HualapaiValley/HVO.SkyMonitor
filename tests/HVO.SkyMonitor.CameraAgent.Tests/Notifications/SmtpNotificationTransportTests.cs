@@ -231,8 +231,12 @@ public sealed class SmtpNotificationTransportTests
     [TestMethod]
     public async Task SendAsync_TransientAndAuthErrors_MapToSanitizedReasonCodesWithoutLeakingSecretsAsync()
     {
+        using var cert = CreateEphemeralLoopbackCertificate();
+        var expectedThumbprint = cert.Thumbprint;
         var badAuthBehavior = new SmtpServerBehavior
         {
+            SupportsStartTls = true,
+            ServerCertificate = cert,
             AuthMechanisms = "PLAIN",
             ExpectedUsername = "right-user",
             ExpectedPassword = "right-password"
@@ -240,11 +244,15 @@ public sealed class SmtpNotificationTransportTests
         var authServer = await InProcessSmtpCaptureServer.StartAsync(badAuthBehavior).ConfigureAwait(false);
         await using (authServer.ConfigureAwait(false))
         {
-            var transport = new SmtpNotificationTransport(LoopbackTestPolicy, TimeProvider.System);
+            var transport = new SmtpNotificationTransport(LoopbackTestPolicy, TimeProvider.System)
+            {
+                CertificateValidationCallback = (_, presented, _, _) =>
+                    presented is X509Certificate2 x509 && string.Equals(x509.Thumbprint, expectedThumbprint, StringComparison.Ordinal)
+            };
 
             const string wrongPassword = "wrong-secret-password-98765";
             var authResult = await transport.SendAsync(new SmtpDeliveryRequest(
-                "127.0.0.1", authServer.Port, SmtpSecurityMode.None,
+                "127.0.0.1", authServer.Port, SmtpSecurityMode.StartTls,
                 "camera@example.test", "Camera", ["ops@example.test"],
                 "right-user", wrongPassword, "Subj", "Body", "test", TimeSpan.FromSeconds(5)), CancellationToken.None).ConfigureAwait(false);
 
@@ -266,6 +274,160 @@ public sealed class SmtpNotificationTransportTests
                 Assert.AreEqual(NotificationReasonCodes.ServerError, transientResult.ReasonCode);
             }
         }
+    }
+
+    [TestMethod]
+    public async Task SendAsync_SecurityModeNoneWithCredentials_FailsClosedWithTlsRequiredAndNeverConnectsAsync()
+    {
+        var server = await InProcessSmtpCaptureServer.StartAsync(new SmtpServerBehavior
+        {
+            AuthMechanisms = "PLAIN LOGIN",
+            ExpectedUsername = "user",
+            ExpectedPassword = "synthetic-password"
+        }).ConfigureAwait(false);
+        await using (server.ConfigureAwait(false))
+        {
+            var dnsCalled = false;
+            var transport = new SmtpNotificationTransport(LoopbackTestPolicy, TimeProvider.System)
+            {
+                DnsResolver = (_, _) =>
+                {
+                    dnsCalled = true;
+                    return Task.FromResult<IPAddress[]>([IPAddress.Parse("93.184.216.34")]);
+                }
+            };
+
+            var publicResult = await transport.SendAsync(new SmtpDeliveryRequest(
+                "smtp.office365.com", 25, SmtpSecurityMode.None,
+                "camera@example.test", "Camera", ["ops@example.test"],
+                "user", "synthetic-password", "Subj", "Body", "test", TimeSpan.FromSeconds(5)), CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsFalse(publicResult.Succeeded);
+            Assert.IsFalse(publicResult.Transient);
+            Assert.AreEqual(NotificationReasonCodes.TlsRequired, publicResult.ReasonCode);
+            Assert.IsFalse(dnsCalled);
+
+            var loopbackResult = await transport.SendAsync(new SmtpDeliveryRequest(
+                "127.0.0.1", server.Port, SmtpSecurityMode.None,
+                "camera@example.test", "Camera", ["ops@example.test"],
+                "user", "synthetic-password", "Subj", "Body", "test", TimeSpan.FromSeconds(5)), CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsFalse(loopbackResult.Succeeded);
+            Assert.IsFalse(loopbackResult.Transient);
+            Assert.AreEqual(NotificationReasonCodes.TlsRequired, loopbackResult.ReasonCode);
+            Assert.IsFalse(server.ReceivedAnyAuthCommand);
+            Assert.IsEmpty(server.CapturedMessages);
+        }
+    }
+
+    [TestMethod]
+    public async Task SendAsync_UnauthenticatedNoneToPublicIpOrPublicDns_FailsClosedWithTlsRequiredAsync()
+    {
+        var transport = new SmtpNotificationTransport(LoopbackTestPolicy, TimeProvider.System)
+        {
+            DnsResolver = (_, _) => Task.FromResult<IPAddress[]>([IPAddress.Parse("93.184.216.34")])
+        };
+
+        var literalResult = await transport.SendAsync(new SmtpDeliveryRequest(
+            "93.184.216.34", 25, SmtpSecurityMode.None,
+            "camera@example.test", "Camera", ["ops@example.test"],
+            null, null, "Subj", "Body", "test", TimeSpan.FromSeconds(2)), CancellationToken.None).ConfigureAwait(false);
+        Assert.IsFalse(literalResult.Succeeded);
+        Assert.IsFalse(literalResult.Transient);
+        Assert.AreEqual(NotificationReasonCodes.TlsRequired, literalResult.ReasonCode);
+
+        var dnsResult = await transport.SendAsync(new SmtpDeliveryRequest(
+            "public-relay.example.test", 25, SmtpSecurityMode.None,
+            "camera@example.test", "Camera", ["ops@example.test"],
+            null, null, "Subj", "Body", "test", TimeSpan.FromSeconds(2)), CancellationToken.None).ConfigureAwait(false);
+        Assert.IsFalse(dnsResult.Succeeded);
+        Assert.IsFalse(dnsResult.Transient);
+        Assert.AreEqual(NotificationReasonCodes.TlsRequired, dnsResult.ReasonCode);
+    }
+
+    [TestMethod]
+    public async Task SendAsync_UnknownSecurityMode_FailsClosedWithInvalidConfigurationAsync()
+    {
+        var transport = new SmtpNotificationTransport(LoopbackTestPolicy, TimeProvider.System);
+        var result = await transport.SendAsync(new SmtpDeliveryRequest(
+            "127.0.0.1", 25, (SmtpSecurityMode)99,
+            "camera@example.test", "Camera", ["ops@example.test"],
+            null, null, "Subj", "Body", "test", TimeSpan.FromSeconds(2)), CancellationToken.None).ConfigureAwait(false);
+
+        Assert.IsFalse(result.Succeeded);
+        Assert.IsFalse(result.Transient);
+        Assert.AreEqual(NotificationReasonCodes.InvalidConfiguration, result.ReasonCode);
+    }
+
+    [TestMethod]
+    public async Task SendAsync_ServerWithoutAuthCapability_NeverReceivesAuthCommandAsync()
+    {
+        using var cert = CreateEphemeralLoopbackCertificate();
+        var expectedThumbprint = cert.Thumbprint;
+        var behavior = new SmtpServerBehavior
+        {
+            SupportsStartTls = true,
+            ServerCertificate = cert,
+            AuthMechanisms = null
+        };
+        var server = await InProcessSmtpCaptureServer.StartAsync(behavior).ConfigureAwait(false);
+        await using (server.ConfigureAwait(false))
+        {
+            var transport = new SmtpNotificationTransport(LoopbackTestPolicy, TimeProvider.System)
+            {
+                CertificateValidationCallback = (_, presented, _, _) =>
+                    presented is X509Certificate2 x509 && string.Equals(x509.Thumbprint, expectedThumbprint, StringComparison.Ordinal)
+            };
+
+            var result = await transport.SendAsync(new SmtpDeliveryRequest(
+                "127.0.0.1", server.Port, SmtpSecurityMode.StartTls,
+                "camera@example.test", "Camera", ["ops@example.test"],
+                "must-not-send-user", "must-not-send-pass", "Subj", "Body", "test", TimeSpan.FromSeconds(5)), CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsFalse(result.Succeeded);
+            Assert.IsFalse(result.Transient);
+            Assert.AreEqual(NotificationReasonCodes.AuthFailed, result.ReasonCode);
+            Assert.IsFalse(server.ReceivedAnyAuthCommand, "Client must never emit AUTH when server did not advertise AUTH PLAIN/LOGIN.");
+            Assert.IsEmpty(server.CapturedMessages);
+        }
+    }
+
+    [TestMethod]
+    public void BuildRfc5322Message_EncodesNonAsciiFromWithoutQuotesFoldsToAndRespects8BitMime()
+    {
+        var recipients = Enumerable.Range(1, 6).Select(i => $"operator-recipient-{i:D2}@observatory.example.test").ToArray();
+        var request = new SmtpDeliveryRequest(
+            "smtp.example.test", 587, SmtpSecurityMode.StartTls,
+            "camera@example.test",
+            "Observatory — Cañón",
+            recipients,
+            null, null,
+            "Capture stalled — dome café",
+            "Alert with non-ASCII temperature: 12°C — résumé",
+            "capture_stalled",
+            TimeSpan.FromSeconds(5));
+
+        var rawNo8Bit = SmtpNotificationTransport.BuildRfc5322Message(
+            request, new DateTimeOffset(2026, 11, 26, 12, 0, 0, TimeSpan.Zero), serverSupports8BitMime: false, out var uses8BitNo);
+        Assert.IsFalse(uses8BitNo);
+        Assert.IsTrue(rawNo8Bit.All(static b => b <= 127), "Message must stay pure 7-bit ASCII when server lacks 8BITMIME.");
+        var textNo8Bit = Encoding.ASCII.GetString(rawNo8Bit);
+        Assert.DoesNotContain("From: \"=?utf-8?", textNo8Bit, StringComparison.Ordinal);
+        StringAssert.Contains(textNo8Bit, "From: =?utf-8?B?", StringComparison.Ordinal);
+        StringAssert.Contains(textNo8Bit, "Content-Transfer-Encoding: quoted-printable\r\n", StringComparison.Ordinal);
+        StringAssert.Contains(textNo8Bit, ",\r\n <operator-recipient-", StringComparison.Ordinal);
+
+        var rawWith8Bit = SmtpNotificationTransport.BuildRfc5322Message(
+            request, new DateTimeOffset(2026, 11, 26, 12, 0, 0, TimeSpan.Zero), serverSupports8BitMime: true, out var uses8BitYes);
+        Assert.IsTrue(uses8BitYes);
+        var textWith8Bit = Encoding.UTF8.GetString(rawWith8Bit);
+        StringAssert.Contains(textWith8Bit, "Content-Transfer-Encoding: 8bit\r\n", StringComparison.Ordinal);
+
+        var asciiRequest = request with { FromDisplayName = "North Camera", Subject = "Disk pressure", Body = "Pure ASCII body" };
+        var rawAscii = SmtpNotificationTransport.BuildRfc5322Message(
+            asciiRequest, new DateTimeOffset(2026, 11, 26, 12, 0, 0, TimeSpan.Zero), serverSupports8BitMime: false, out var uses8BitAscii);
+        Assert.IsFalse(uses8BitAscii);
+        StringAssert.Contains(Encoding.ASCII.GetString(rawAscii), "Content-Transfer-Encoding: 7bit\r\n", StringComparison.Ordinal);
     }
 
     [TestMethod]

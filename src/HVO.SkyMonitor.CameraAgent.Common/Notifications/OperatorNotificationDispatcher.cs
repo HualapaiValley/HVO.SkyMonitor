@@ -10,9 +10,10 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Notifications;
 
 /// <summary>
 /// Bounded, non-blocking, anti-storm operator notification dispatcher. Runs strictly off the capture, processing,
-/// retention, login, and recovery critical paths. Provides in-queue coalescing, per-event cooldowns, global hourly
-/// rate capping, independent per-channel retry/backoff and circuit-breaker outage isolation, and rate-limited
-/// operator test-send verification.
+/// retention, login, and recovery critical paths. Provides O(1) in-queue coalescing, admission-time per-event
+/// cooldowns and global hourly rate capping with bounded state eviction, independent concurrent SMTP and Webhook
+/// channel workers with independent retry/backoff and circuit-breaker outage isolation, revoked-event re-checks,
+/// in-flight repeat preservation, and rate-limited operator test-send verification.
 /// </summary>
 public sealed class OperatorNotificationDispatcher(
     IOperatorNotificationConfigProvider configProvider,
@@ -24,7 +25,9 @@ public sealed class OperatorNotificationDispatcher(
     : BackgroundService, IOperatorNotificationPublisher, IOperatorNotificationService
 {
     private const int MaximumAuditEntries = 20;
+    private const int MaximumTrackedCooldownEntries = 1024;
     private static readonly TimeSpan IdlePollDelay = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan MinimumCooldownRetention = TimeSpan.FromHours(24);
 
     private readonly IOperatorNotificationConfigProvider _configProvider = configProvider ?? throw new ArgumentNullException(nameof(configProvider));
     private readonly ISmtpNotificationTransport _smtpTransport = smtpTransport ?? throw new ArgumentNullException(nameof(smtpTransport));
@@ -36,9 +39,10 @@ public sealed class OperatorNotificationDispatcher(
     private readonly ILogger _logger = logger ?? NullLogger<OperatorNotificationDispatcher>.Instance;
 
     private readonly object _gate = new();
-    private readonly SemaphoreSlim _signal = new(0, 1);
+    private readonly SemaphoreSlim _smtpSignal = new(0, 1);
+    private readonly SemaphoreSlim _webhookSignal = new(0, 1);
     private readonly SemaphoreSlim _testSendGate = new(1, 1);
-    private readonly List<QueuedNotification> _queue = [];
+    private readonly Dictionary<EventDedupeKey, QueuedNotification> _pendingByKey = [];
     private readonly Dictionary<EventDedupeKey, CooldownRecord> _cooldowns = [];
     private readonly Queue<DateTimeOffset> _hourlyDispatchTimestamps = new();
     private readonly Queue<OperatorNotificationAuditEntry> _recentAudit = new();
@@ -52,9 +56,22 @@ public sealed class OperatorNotificationDispatcher(
     private long _totalDroppedQueueFull;
     private DateTimeOffset? _lastTestSendUtc;
 
+    /// <summary>Internal test visibility for bounded cooldown eviction verification.</summary>
+    internal int TrackedCooldownCount
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _cooldowns.Count;
+            }
+        }
+    }
+
     /// <summary>
-    /// Enqueues or coalesces an operational health event without blocking or performing I/O.
-    /// Returns false when notifications or the event are disabled, suppressed by cooldown/rate-limit, or dropped.
+    /// Enqueues or coalesces an operational health event in O(1) without blocking, performing I/O, or invoking
+    /// logging/metrics callbacks inside the critical section. Returns false when notifications or the event are
+    /// disabled, the configuration/store is degraded, or the event is suppressed/dropped.
     /// </summary>
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
         Justification = "TryPublish must never throw into callers on capture, processing, retention, or recovery paths.")]
@@ -76,6 +93,10 @@ public sealed class OperatorNotificationDispatcher(
             {
                 return false;
             }
+            if (_configProvider.ConfigurationErrorReasonCode is not null)
+            {
+                return false;
+            }
 
             var now = _timeProvider.GetUtcNow();
             var slug = OperatorNotificationEvent.EventSlug(notification.Kind);
@@ -84,78 +105,102 @@ public sealed class OperatorNotificationDispatcher(
                 OperatorNotificationEvent.MaximumDedupeKeyLength);
             var key = new EventDedupeKey(notification.Kind, dedupeKeyText);
             var sanitizedEvent = SanitizeEvent(notification, dedupeKeyText);
+            var cooldown = options.Events.GetCooldown(notification.Kind);
+            var maxHourly = Math.Clamp(options.MaxNotificationsPerHour, 1, 60);
+            var queueCapacity = Math.Clamp(options.QueueCapacity, 4, 256);
 
-            var shouldSignal = false;
+            PublishDecision decision;
             lock (_gate)
             {
-                // 1. Coalesce in-place when an identical event key is already queued/retrying.
-                var existing = _queue.FirstOrDefault(item => item.Key == key);
-                if (existing is not null)
+                PruneExpiredCooldownsLocked(now);
+                PruneHourlyWindowLocked(now);
+
+                // 1. O(1) coalesce when an identical event key is already queued or in flight.
+                if (_pendingByKey.TryGetValue(key, out var existing))
                 {
                     existing.Event = sanitizedEvent;
                     existing.CoalescedCount++;
                     existing.LastOccurredUtc = now;
                     _totalCoalesced++;
-                    _telemetry.RecordCoalesced(slug);
-                    OperatorNotificationLog.EventCoalesced(_logger, slug, existing.CoalescedCount);
-                    return true;
+                    decision = new PublishDecision(PublishOutcome.Coalesced, existing.CoalescedCount, _pendingByKey.Count, false, false);
                 }
-
-                // 2. Enforce per-event cooldown window.
-                var cooldown = options.Events.GetCooldown(notification.Kind);
-                if (_cooldowns.TryGetValue(key, out var cooldownRecord) &&
-                    now - cooldownRecord.LastDispatchedUtc < cooldown)
+                else
                 {
-                    cooldownRecord.SuppressedSinceLastDispatch++;
-                    _totalSuppressedCooldown++;
+                    // 2. Enforce per-event cooldown window (committed at admission).
+                    if (_cooldowns.TryGetValue(key, out var cooldownRecord) &&
+                        now < cooldownRecord.ExpiresUtc)
+                    {
+                        cooldownRecord.SuppressedSinceLastDispatch++;
+                        _totalSuppressedCooldown++;
+                        decision = new PublishDecision(PublishOutcome.SuppressedCooldown, 0, _pendingByKey.Count, false, false);
+                    }
+                    // 3. Enforce global rolling-hour anti-storm cap (committed at admission; failures never escape the cap).
+                    else if (_hourlyDispatchTimestamps.Count >= maxHourly)
+                    {
+                        _totalSuppressedRateLimit++;
+                        decision = new PublishDecision(PublishOutcome.SuppressedRateLimit, 0, _pendingByKey.Count, false, false);
+                    }
+                    // 4. Enforce bounded in-memory queue capacity without blocking callers.
+                    else if (_pendingByKey.Count >= queueCapacity)
+                    {
+                        _totalDroppedQueueFull++;
+                        decision = new PublishDecision(PublishOutcome.DroppedQueueFull, 0, _pendingByKey.Count, false, false);
+                    }
+                    else
+                    {
+                        var priorSuppressed = cooldownRecord?.SuppressedSinceLastDispatch ?? 0;
+                        var retention = ComputeCooldownRetention(cooldown);
+                        _cooldowns[key] = new CooldownRecord(now, now + cooldown, now + retention);
+                        EnforceCooldownCapLocked();
+                        _hourlyDispatchTimestamps.Enqueue(now);
+
+                        var item = new QueuedNotification(
+                            key,
+                            sanitizedEvent,
+                            now,
+                            options.Smtp.Enabled,
+                            options.Webhook.Enabled,
+                            priorSuppressed);
+                        _pendingByKey[key] = item;
+                        _totalPublished++;
+                        decision = new PublishDecision(
+                            PublishOutcome.Admitted,
+                            1,
+                            _pendingByKey.Count,
+                            WakeSmtp: options.Smtp.Enabled,
+                            WakeWebhook: options.Webhook.Enabled);
+                    }
+                }
+            }
+
+            // Emit metrics, logs, and channel wakeups strictly OUTSIDE the lock.
+            switch (decision.Outcome)
+            {
+                case PublishOutcome.Coalesced:
+                    _telemetry.RecordCoalesced(slug);
+                    OperatorNotificationLog.EventCoalesced(_logger, slug, decision.Count);
+                    return true;
+                case PublishOutcome.SuppressedCooldown:
                     _telemetry.RecordSuppressed(slug, "cooldown");
                     OperatorNotificationLog.EventSuppressed(_logger, slug, "cooldown");
                     return false;
-                }
-
-                // 3. Enforce global rolling-hour anti-storm cap.
-                PruneHourlyWindowLocked(now);
-                if (_hourlyDispatchTimestamps.Count + _queue.Count >= options.MaxNotificationsPerHour)
-                {
-                    _totalSuppressedRateLimit++;
+                case PublishOutcome.SuppressedRateLimit:
                     _telemetry.RecordSuppressed(slug, "hourly-cap");
                     OperatorNotificationLog.EventSuppressed(_logger, slug, "hourly-cap");
                     return false;
-                }
-
-                // 4. Enforce bounded in-memory queue capacity without blocking callers.
-                if (_queue.Count >= options.QueueCapacity)
-                {
-                    _totalDroppedQueueFull++;
+                case PublishOutcome.DroppedQueueFull:
                     _telemetry.RecordDropped(slug);
-                    OperatorNotificationLog.EventDropped(_logger, slug, options.QueueCapacity);
+                    OperatorNotificationLog.EventDropped(_logger, slug, queueCapacity);
                     return false;
-                }
-
-                var priorSuppressed = cooldownRecord?.SuppressedSinceLastDispatch ?? 0;
-                if (cooldownRecord is not null)
-                {
-                    cooldownRecord.SuppressedSinceLastDispatch = 0;
-                }
-
-                _queue.Add(new QueuedNotification(
-                    key,
-                    sanitizedEvent,
-                    now,
-                    options.Smtp.Enabled,
-                    options.Webhook.Enabled,
-                    priorSuppressed));
-                _totalPublished++;
-                _telemetry.RecordPublished(slug);
-                OperatorNotificationLog.EventQueued(_logger, slug, _queue.Count);
-                shouldSignal = true;
+                case PublishOutcome.Admitted:
+                    _telemetry.RecordPublished(slug);
+                    OperatorNotificationLog.EventQueued(_logger, slug, decision.QueueDepth);
+                    if (decision.WakeSmtp) TryWakeChannel(_smtpSignal);
+                    if (decision.WakeWebhook) TryWakeChannel(_webhookSignal);
+                    return true;
+                default:
+                    return false;
             }
-
-            if (shouldSignal)
-            {
-                TryWakeWorker();
-            }
-            return true;
         }
         catch
         {
@@ -166,13 +211,14 @@ public sealed class OperatorNotificationDispatcher(
     public OperatorNotificationDispatcherSnapshot GetStatus()
     {
         var options = _configProvider.CurrentOptions;
+        var configError = _configProvider.ConfigurationErrorReasonCode;
         var now = _timeProvider.GetUtcNow();
         lock (_gate)
         {
             return new OperatorNotificationDispatcherSnapshot(
                 options.Enabled,
-                _queue.Count,
-                options.QueueCapacity,
+                _pendingByKey.Count,
+                Math.Clamp(options.QueueCapacity, 4, 256),
                 _totalPublished,
                 _totalCoalesced,
                 _totalSuppressedCooldown,
@@ -180,7 +226,8 @@ public sealed class OperatorNotificationDispatcher(
                 _totalDroppedQueueFull,
                 _smtpState.ToStatus(options.Enabled && options.Smtp.Enabled, now),
                 _webhookState.ToStatus(options.Enabled && options.Webhook.Enabled, now),
-                [.. _recentAudit.Reverse()]);
+                [.. _recentAudit.Reverse()],
+                configError);
         }
     }
 
@@ -203,7 +250,7 @@ public sealed class OperatorNotificationDispatcher(
                 _webhookState.ResetBackoff();
                 if (!opts.Enabled)
                 {
-                    _queue.Clear();
+                    _pendingByKey.Clear();
                 }
             }
             OperatorNotificationLog.ConfigurationUpdated(_logger, actor, opts.Enabled, opts.Smtp.Enabled, opts.Webhook.Enabled);
@@ -217,12 +264,19 @@ public sealed class OperatorNotificationDispatcher(
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(actor);
+        if (!Enum.IsDefined(target))
+        {
+            throw new ArgumentOutOfRangeException(nameof(target), "Unsupported test notification target.");
+        }
+
         await _testSendGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var (options, secrets) = await _configProvider.GetEffectiveForDeliveryAsync(cancellationToken).ConfigureAwait(false);
+            var effective = await _configProvider.GetEffectiveConfigurationAsync(cancellationToken).ConfigureAwait(false);
+            var options = effective.Options;
+            var secrets = effective.Secrets;
             var now = _timeProvider.GetUtcNow();
-            var minInterval = TimeSpan.FromSeconds(options.TestSendMinimumIntervalSeconds);
+            var minInterval = TimeSpan.FromSeconds(Math.Clamp(options.TestSendMinimumIntervalSeconds, 0, 300));
             lock (_gate)
             {
                 if (minInterval > TimeSpan.Zero && _lastTestSendUtc is { } last && now - last < minInterval)
@@ -230,6 +284,15 @@ public sealed class OperatorNotificationDispatcher(
                     return new OperatorNotificationTestResult(true, last + minInterval, []);
                 }
                 _lastTestSendUtc = now;
+            }
+
+            if (effective.StoreCorrupt || effective.ConfigurationErrorReasonCode is not null)
+            {
+                var errorCode = effective.StoreCorrupt
+                    ? NotificationReasonCodes.StoreCorrupt
+                    : effective.ConfigurationErrorReasonCode!;
+                var errorResults = BuildConfigErrorTestResults(target, errorCode, now);
+                return new OperatorNotificationTestResult(false, null, errorResults);
             }
 
             var testEvent = new OperatorNotificationEvent(
@@ -292,16 +355,44 @@ public sealed class OperatorNotificationDispatcher(
         }
     }
 
+    private List<NotificationChannelTestResult> BuildConfigErrorTestResults(
+        NotificationTestTarget target,
+        string reasonCode,
+        DateTimeOffset now)
+    {
+        var results = new List<NotificationChannelTestResult>(2);
+        if (target is NotificationTestTarget.Smtp or NotificationTestTarget.AllEnabled)
+        {
+            var res = OperatorNotificationDeliveryResult.Failure(SmtpNotificationTransport.ChannelName, reasonCode, transient: false, TimeSpan.Zero);
+            RecordTestAudit(SmtpNotificationTransport.ChannelName, res, now);
+            results.Add(ToTestChannelResult(res));
+        }
+        if (target is NotificationTestTarget.Webhook or NotificationTestTarget.AllEnabled)
+        {
+            var res = OperatorNotificationDeliveryResult.Failure(WebhookNotificationTransport.ChannelName, reasonCode, transient: false, TimeSpan.Zero);
+            RecordTestAudit(WebhookNotificationTransport.ChannelName, res, now);
+            results.Add(ToTestChannelResult(res));
+        }
+        return results;
+    }
+
+    protected override Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        var smtpWorker = RunChannelWorkerAsync(SmtpNotificationTransport.ChannelName, _smtpSignal, stoppingToken);
+        var webhookWorker = RunChannelWorkerAsync(WebhookNotificationTransport.ChannelName, _webhookSignal, stoppingToken);
+        return Task.WhenAll(smtpWorker, webhookWorker);
+    }
+
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
-        Justification = "Background notification dispatch loop must never crash the host or interfere with capture.")]
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+        Justification = "Independent per-channel background worker must never crash the host or interfere with capture or the sibling channel.")]
+    private async Task RunChannelWorkerAsync(string channel, SemaphoreSlim signal, CancellationToken stoppingToken)
     {
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                var nextDelay = await ProcessDueItemsAsync(stoppingToken).ConfigureAwait(false);
-                await WaitForNextSignalAsync(nextDelay, stoppingToken).ConfigureAwait(false);
+                var nextDelay = await ProcessDueChannelItemsAsync(channel, stoppingToken).ConfigureAwait(false);
+                await WaitForNextSignalAsync(signal, nextDelay, stoppingToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -322,14 +413,22 @@ public sealed class OperatorNotificationDispatcher(
         }
     }
 
-    /// <summary>Processes all currently due queued deliveries once. Exposed internally for deterministic testing.</summary>
+    /// <summary>Processes all currently due queued deliveries concurrently across SMTP and Webhook channels. Exposed internally for deterministic testing.</summary>
     internal async Task<int> ProcessPendingOnceAsync(CancellationToken cancellationToken)
+    {
+        var smtpTask = ProcessChannelPendingOnceAsync(SmtpNotificationTransport.ChannelName, cancellationToken);
+        var webhookTask = ProcessChannelPendingOnceAsync(WebhookNotificationTransport.ChannelName, cancellationToken);
+        var counts = await Task.WhenAll(smtpTask, webhookTask).ConfigureAwait(false);
+        return counts[0] + counts[1];
+    }
+
+    internal async Task<int> ProcessChannelPendingOnceAsync(string channel, CancellationToken cancellationToken)
     {
         var processed = 0;
         while (true)
         {
-            var (item, channel) = DequeueNextDueChannel(_timeProvider.GetUtcNow());
-            if (item is null || channel is null)
+            var item = DequeueNextDueForChannel(channel, _timeProvider.GetUtcNow());
+            if (item is null)
             {
                 break;
             }
@@ -339,15 +438,20 @@ public sealed class OperatorNotificationDispatcher(
         return processed;
     }
 
-    private async Task<TimeSpan> ProcessDueItemsAsync(CancellationToken cancellationToken)
+    private async Task<TimeSpan> ProcessDueChannelItemsAsync(string channel, CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
         {
             var now = _timeProvider.GetUtcNow();
-            var (item, channel) = DequeueNextDueChannel(now);
-            if (item is null || channel is null)
+            var item = DequeueNextDueForChannel(channel, now);
+            if (item is null)
             {
-                return ComputeNextWaitDelay(now);
+                lock (_gate)
+                {
+                    PruneExpiredCooldownsLocked(now);
+                    PruneHourlyWindowLocked(now);
+                }
+                return ComputeNextWaitDelayForChannel(channel, now);
             }
 
             await DispatchChannelWorkAsync(item, channel, cancellationToken).ConfigureAwait(false);
@@ -355,39 +459,49 @@ public sealed class OperatorNotificationDispatcher(
         return IdlePollDelay;
     }
 
-    private (QueuedNotification? Item, string? Channel) DequeueNextDueChannel(DateTimeOffset now)
+    private QueuedNotification? DequeueNextDueForChannel(string channel, DateTimeOffset now)
     {
         lock (_gate)
         {
-            foreach (var item in _queue)
+            var isSmtp = channel == SmtpNotificationTransport.ChannelName;
+            foreach (var item in _pendingByKey.Values)
             {
-                if (item.SmtpPending && !item.SmtpInFlight && now >= item.SmtpNextAttemptUtc)
+                if (isSmtp)
                 {
-                    item.SmtpInFlight = true;
-                    return (item, SmtpNotificationTransport.ChannelName);
+                    if (item.SmtpPending && !item.SmtpInFlight && now >= item.SmtpNextAttemptUtc)
+                    {
+                        item.SmtpInFlight = true;
+                        return item;
+                    }
                 }
-                if (item.WebhookPending && !item.WebhookInFlight && now >= item.WebhookNextAttemptUtc)
+                else
                 {
-                    item.WebhookInFlight = true;
-                    return (item, WebhookNotificationTransport.ChannelName);
+                    if (item.WebhookPending && !item.WebhookInFlight && now >= item.WebhookNextAttemptUtc)
+                    {
+                        item.WebhookInFlight = true;
+                        return item;
+                    }
                 }
             }
-            return (null, null);
+            return null;
         }
     }
 
-    private TimeSpan ComputeNextWaitDelay(DateTimeOffset now)
+    private TimeSpan ComputeNextWaitDelayForChannel(string channel, DateTimeOffset now)
     {
         lock (_gate)
         {
+            var isSmtp = channel == SmtpNotificationTransport.ChannelName;
             DateTimeOffset? earliest = null;
-            foreach (var item in _queue)
+            foreach (var item in _pendingByKey.Values)
             {
-                if (item.SmtpPending && (earliest is null || item.SmtpNextAttemptUtc < earliest))
+                if (isSmtp && item.SmtpPending && !item.SmtpInFlight &&
+                    (earliest is null || item.SmtpNextAttemptUtc < earliest))
                 {
                     earliest = item.SmtpNextAttemptUtc;
                 }
-                if (item.WebhookPending && (earliest is null || item.WebhookNextAttemptUtc < earliest))
+                if (!isSmtp && item.WebhookPending && !item.WebhookInFlight &&
+                    (earliest is null || item.WebhookNextAttemptUtc < earliest))
                 {
                     earliest = item.WebhookNextAttemptUtc;
                 }
@@ -436,15 +550,34 @@ public sealed class OperatorNotificationDispatcher(
         string channel,
         CancellationToken cancellationToken)
     {
-        var (options, secrets) = await _configProvider.GetEffectiveForDeliveryAsync(cancellationToken).ConfigureAwait(false);
+        var effective = await _configProvider.GetEffectiveConfigurationAsync(cancellationToken).ConfigureAwait(false);
+        var options = effective.Options;
+        var secrets = effective.Secrets;
         var now = _timeProvider.GetUtcNow();
         var slug = OperatorNotificationEvent.EventSlug(item.Event.Kind);
 
+        if (effective.StoreCorrupt || effective.ConfigurationErrorReasonCode is not null)
+        {
+            var errorCode = effective.StoreCorrupt
+                ? NotificationReasonCodes.StoreCorrupt
+                : effective.ConfigurationErrorReasonCode!;
+            _telemetry.RecordDelivery(channel, slug, false, errorCode, TimeSpan.Zero, isTest: false);
+            OperatorNotificationLog.DeliveryFailed(_logger, channel, slug, 1, errorCode, transient: false, 0);
+            lock (_gate)
+            {
+                RecordAuditLocked(now, slug, channel, "failed", errorCode, item.CoalescedCount, isTest: false);
+            }
+            CompleteChannel(item, channel, succeeded: false, deliveredCoalescedCount: 0, options, now);
+            return;
+        }
+
+        // Re-check master switch, channel enablement, AND event-category enablement before every delivery/retry attempt.
         if (!options.Enabled ||
             (channel == SmtpNotificationTransport.ChannelName && !options.Smtp.Enabled) ||
-            (channel == WebhookNotificationTransport.ChannelName && !options.Webhook.Enabled))
+            (channel == WebhookNotificationTransport.ChannelName && !options.Webhook.Enabled) ||
+            !options.Events.IsEventEnabled(item.Event.Kind))
         {
-            CompleteChannel(item, channel, succeeded: false, recordCooldown: false, now);
+            CompleteChannel(item, channel, succeeded: false, deliveredCoalescedCount: 0, options, now);
             return;
         }
 
@@ -474,7 +607,7 @@ public sealed class OperatorNotificationDispatcher(
             {
                 RecordAuditLocked(now, slug, channel, "skipped", NotificationReasonCodes.OutageBackoff, coalescedCount, isTest: false);
             }
-            CompleteChannel(item, channel, succeeded: false, recordCooldown: false, now);
+            CompleteChannel(item, channel, succeeded: false, deliveredCoalescedCount: 0, options, now);
             return;
         }
 
@@ -498,7 +631,7 @@ public sealed class OperatorNotificationDispatcher(
                 circuit.RecordSuccess(completedUtc);
                 RecordAuditLocked(completedUtc, slug, channel, "sent", NotificationReasonCodes.Sent, coalescedCount, isTest: false);
             }
-            CompleteChannel(item, channel, succeeded: true, recordCooldown: true, completedUtc);
+            CompleteChannel(item, channel, succeeded: true, deliveredCoalescedCount: coalescedCount, options, completedUtc);
             return;
         }
 
@@ -508,19 +641,22 @@ public sealed class OperatorNotificationDispatcher(
         bool enteredOutageBackoff;
         int consecutiveFailures;
         bool willRetry;
+        var outageThreshold = Math.Clamp(options.ConsecutiveOutageThreshold, 1, 10);
+        var outageCooldown = Math.Clamp(options.OutageCooldownSeconds, 10, 3600);
+        var maxRetries = Math.Clamp(options.MaxRetryAttempts, 0, 5);
 
         lock (_gate)
         {
             (enteredOutageBackoff, consecutiveFailures) = circuit.RecordFailure(
                 completedUtc,
                 result.ReasonCode,
-                options.ConsecutiveOutageThreshold,
-                TimeSpan.FromSeconds(options.OutageCooldownSeconds));
+                outageThreshold,
+                TimeSpan.FromSeconds(outageCooldown));
             RecordAuditLocked(completedUtc, slug, channel, "failed", result.ReasonCode, coalescedCount, isTest: false);
 
             var canRetry = result.Transient &&
                            !enteredOutageBackoff &&
-                           attemptNumber <= options.MaxRetryAttempts;
+                           attemptNumber <= maxRetries;
             willRetry = canRetry;
             if (canRetry)
             {
@@ -538,44 +674,129 @@ public sealed class OperatorNotificationDispatcher(
 
         if (enteredOutageBackoff)
         {
-            OperatorNotificationLog.ChannelBackoffEntered(_logger, channel, options.OutageCooldownSeconds, consecutiveFailures);
+            OperatorNotificationLog.ChannelBackoffEntered(_logger, channel, outageCooldown, consecutiveFailures);
         }
 
         if (!willRetry)
         {
-            CompleteChannel(item, channel, succeeded: false, recordCooldown: false, completedUtc);
+            CompleteChannel(item, channel, succeeded: false, deliveredCoalescedCount: 0, options, completedUtc);
         }
     }
 
-    private void CompleteChannel(QueuedNotification item, string channel, bool succeeded, bool recordCooldown, DateTimeOffset now)
+    private void CompleteChannel(
+        QueuedNotification item,
+        string channel,
+        bool succeeded,
+        int deliveredCoalescedCount,
+        OperatorNotificationsOptions options,
+        DateTimeOffset now)
     {
+        var wakeSmtp = false;
+        var wakeWebhook = false;
+
         lock (_gate)
         {
             if (channel == SmtpNotificationTransport.ChannelName)
             {
                 item.SmtpPending = false;
+                if (succeeded)
+                {
+                    item.SmtpDeliveredCoalescedCount = deliveredCoalescedCount;
+                }
             }
             else
             {
                 item.WebhookPending = false;
-            }
-
-            if (succeeded && recordCooldown)
-            {
-                item.AnyChannelSucceeded = true;
+                if (succeeded)
+                {
+                    item.WebhookDeliveredCoalescedCount = deliveredCoalescedCount;
+                }
             }
 
             if (!item.SmtpPending && !item.WebhookPending)
             {
-                _queue.Remove(item);
-                if (item.AnyChannelSucceeded)
+                if (_pendingByKey.TryGetValue(item.Key, out var current) && ReferenceEquals(current, item))
                 {
-                    _cooldowns[item.Key] = new CooldownRecord(now);
-                    PruneHourlyWindowLocked(now);
-                    _hourlyDispatchTimestamps.Enqueue(now);
+                    _pendingByKey.Remove(item.Key);
+                }
+
+                // Preserve repeats coalesced while a delivery was in flight instead of silently dropping them.
+                var deliveredBaseline = ComputeDeliveredBaseline(item);
+                var undeliveredDelta = item.CoalescedCount - deliveredBaseline;
+                if (undeliveredDelta > 0)
+                {
+                    var cooldown = options.Events.GetCooldown(item.Event.Kind);
+                    var canRequeueImmediately = options.Enabled &&
+                                                (options.Smtp.Enabled || options.Webhook.Enabled) &&
+                                                options.Events.IsEventEnabled(item.Event.Kind) &&
+                                                (!_cooldowns.TryGetValue(item.Key, out var existingCd) || now >= existingCd.ExpiresUtc) &&
+                                                _pendingByKey.Count < Math.Clamp(options.QueueCapacity, 4, 256);
+                    if (canRequeueImmediately)
+                    {
+                        PruneHourlyWindowLocked(now);
+                        if (_hourlyDispatchTimestamps.Count < Math.Clamp(options.MaxNotificationsPerHour, 1, 60))
+                        {
+                            var retention = ComputeCooldownRetention(cooldown);
+                            _cooldowns[item.Key] = new CooldownRecord(now, now + cooldown, now + retention);
+                            EnforceCooldownCapLocked();
+                            _hourlyDispatchTimestamps.Enqueue(now);
+                            var followUp = new QueuedNotification(
+                                item.Key,
+                                item.Event,
+                                now,
+                                options.Smtp.Enabled,
+                                options.Webhook.Enabled,
+                                suppressedDuringCooldown: 0)
+                            {
+                                CoalescedCount = undeliveredDelta
+                            };
+                            _pendingByKey[item.Key] = followUp;
+                            wakeSmtp = options.Smtp.Enabled;
+                            wakeWebhook = options.Webhook.Enabled;
+                            undeliveredDelta = 0;
+                        }
+                    }
+
+                    if (undeliveredDelta > 0)
+                    {
+                        if (_cooldowns.TryGetValue(item.Key, out var cd))
+                        {
+                            cd.SuppressedSinceLastDispatch += undeliveredDelta;
+                        }
+                        else
+                        {
+                            var retention = ComputeCooldownRetention(cooldown);
+                            _cooldowns[item.Key] = new CooldownRecord(now, now + cooldown, now + retention)
+                            {
+                                SuppressedSinceLastDispatch = undeliveredDelta
+                            };
+                            EnforceCooldownCapLocked();
+                        }
+                    }
                 }
             }
         }
+
+        if (wakeSmtp) TryWakeChannel(_smtpSignal);
+        if (wakeWebhook) TryWakeChannel(_webhookSignal);
+    }
+
+    private static int ComputeDeliveredBaseline(QueuedNotification item)
+    {
+        if (item.SmtpDeliveredCoalescedCount > 0 && item.WebhookDeliveredCoalescedCount > 0)
+        {
+            return Math.Min(item.SmtpDeliveredCoalescedCount, item.WebhookDeliveredCoalescedCount);
+        }
+        if (item.SmtpDeliveredCoalescedCount > 0)
+        {
+            return item.SmtpDeliveredCoalescedCount;
+        }
+        if (item.WebhookDeliveredCoalescedCount > 0)
+        {
+            return item.WebhookDeliveredCoalescedCount;
+        }
+        // If no channel succeeded, the whole batch already failed; only carry forward repeats added after the last attempt.
+        return item.CoalescedCount;
     }
 
     private Task<OperatorNotificationDeliveryResult> DeliverSmtpAttemptAsync(
@@ -591,6 +812,7 @@ public sealed class OperatorNotificationDispatcher(
         var camera = string.IsNullOrWhiteSpace(ev.CameraName) ? "CameraAgent" : ev.CameraName;
         var subject = $"[HVO CameraAgent | {camera}] {ev.Title}";
         var body = BuildPlainTextEmailBody(ev, camera, coalescedCount, suppressedDuringCooldown, isTest);
+        var timeoutSeconds = Math.Clamp(options.RequestTimeoutSeconds, 1, 30);
         var request = new SmtpDeliveryRequest(
             smtp.Host,
             smtp.Port,
@@ -603,7 +825,7 @@ public sealed class OperatorNotificationDispatcher(
             subject,
             body,
             isTest ? "test" : OperatorNotificationEvent.EventSlug(ev.Kind),
-            TimeSpan.FromSeconds(options.RequestTimeoutSeconds));
+            TimeSpan.FromSeconds(timeoutSeconds));
 
         return _smtpTransport.SendAsync(request, cancellationToken);
     }
@@ -618,11 +840,12 @@ public sealed class OperatorNotificationDispatcher(
         CancellationToken cancellationToken)
     {
         var webhook = options.Webhook;
+        var timeoutSeconds = Math.Clamp(options.RequestTimeoutSeconds, 1, 30);
         var request = new WebhookDeliveryRequest(
             secrets.WebhookUrl ?? string.Empty,
             webhook.Format,
             webhook.AuthHeaderName,
-            webhook.NtfyTopic,
+            secrets.WebhookNtfyTopic,
             webhook.AllowPrivateNetwork,
             secrets.WebhookAuthToken,
             secrets.WebhookUserKey,
@@ -630,7 +853,7 @@ public sealed class OperatorNotificationDispatcher(
             coalescedCount,
             suppressedDuringCooldown,
             isTest,
-            TimeSpan.FromSeconds(options.RequestTimeoutSeconds));
+            TimeSpan.FromSeconds(timeoutSeconds));
 
         return _webhookTransport.SendAsync(request, cancellationToken);
     }
@@ -675,17 +898,23 @@ public sealed class OperatorNotificationDispatcher(
 
     private static TimeSpan ComputeBackoffDelay(int attemptNumber, OperatorNotificationsOptions options, TimeSpan? retryAfter)
     {
+        var initial = Math.Clamp(options.RetryInitialDelaySeconds, 1, 300);
+        var maximum = Math.Clamp(options.RetryMaximumDelaySeconds, initial, 3600);
         var multiplier = 1L << Math.Clamp(attemptNumber - 1, 0, 10);
-        var seconds = Math.Min(
-            options.RetryMaximumDelaySeconds,
-            (long)options.RetryInitialDelaySeconds * multiplier);
+        var seconds = Math.Min(maximum, (long)initial * multiplier);
         var computed = TimeSpan.FromSeconds(seconds);
         if (retryAfter is { } hinted && hinted > computed)
         {
-            var cap = TimeSpan.FromSeconds(options.RetryMaximumDelaySeconds);
+            var cap = TimeSpan.FromSeconds(maximum);
             return hinted < cap ? hinted : cap;
         }
         return computed;
+    }
+
+    private static TimeSpan ComputeCooldownRetention(TimeSpan cooldown)
+    {
+        var doubled = TimeSpan.FromTicks(cooldown.Ticks * 2);
+        return doubled > MinimumCooldownRetention ? doubled : MinimumCooldownRetention;
     }
 
     private static OperatorNotificationEvent SanitizeEvent(OperatorNotificationEvent source, string dedupeKey)
@@ -760,13 +989,58 @@ public sealed class OperatorNotificationDispatcher(
         }
     }
 
-    private void TryWakeWorker()
+    private void PruneExpiredCooldownsLocked(DateTimeOffset now)
     {
-        if (_signal.CurrentCount == 0)
+        if (_cooldowns.Count == 0)
+        {
+            return;
+        }
+
+        List<EventDedupeKey>? expired = null;
+        foreach (var pair in _cooldowns)
+        {
+            var rec = pair.Value;
+            if ((now >= rec.ExpiresUtc && rec.SuppressedSinceLastDispatch == 0) || now >= rec.MaxRetentionUtc)
+            {
+                expired ??= [];
+                expired.Add(pair.Key);
+            }
+        }
+
+        if (expired is not null)
+        {
+            foreach (var key in expired)
+            {
+                _cooldowns.Remove(key);
+            }
+        }
+    }
+
+    private void EnforceCooldownCapLocked()
+    {
+        while (_cooldowns.Count > MaximumTrackedCooldownEntries)
+        {
+            var oldestKey = default(EventDedupeKey);
+            var oldestUtc = DateTimeOffset.MaxValue;
+            foreach (var pair in _cooldowns)
+            {
+                if (pair.Value.LastDispatchedUtc < oldestUtc)
+                {
+                    oldestUtc = pair.Value.LastDispatchedUtc;
+                    oldestKey = pair.Key;
+                }
+            }
+            _cooldowns.Remove(oldestKey);
+        }
+    }
+
+    private static void TryWakeChannel(SemaphoreSlim signal)
+    {
+        if (signal.CurrentCount == 0)
         {
             try
             {
-                _signal.Release();
+                signal.Release();
             }
             catch (SemaphoreFullException)
             {
@@ -775,10 +1049,10 @@ public sealed class OperatorNotificationDispatcher(
         }
     }
 
-    private async Task WaitForNextSignalAsync(TimeSpan delay, CancellationToken cancellationToken)
+    private async Task WaitForNextSignalAsync(SemaphoreSlim signal, TimeSpan delay, CancellationToken cancellationToken)
     {
         using var delayCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var waitTask = _signal.WaitAsync(delayCts.Token);
+        var waitTask = signal.WaitAsync(delayCts.Token);
         var timerTask = Task.Delay(delay, _timeProvider, delayCts.Token);
         _ = await Task.WhenAny(waitTask, timerTask).ConfigureAwait(false);
         await delayCts.CancelAsync().ConfigureAwait(false);
@@ -795,15 +1069,34 @@ public sealed class OperatorNotificationDispatcher(
     public override void Dispose()
     {
         base.Dispose();
-        _signal.Dispose();
+        _smtpSignal.Dispose();
+        _webhookSignal.Dispose();
         _testSendGate.Dispose();
     }
 
+    private enum PublishOutcome
+    {
+        Admitted,
+        Coalesced,
+        SuppressedCooldown,
+        SuppressedRateLimit,
+        DroppedQueueFull
+    }
+
+    private readonly record struct PublishDecision(
+        PublishOutcome Outcome,
+        int Count,
+        int QueueDepth,
+        bool WakeSmtp,
+        bool WakeWebhook);
+
     private readonly record struct EventDedupeKey(OperatorNotificationEventKind Kind, string Key);
 
-    private sealed class CooldownRecord(DateTimeOffset lastDispatchedUtc)
+    private sealed class CooldownRecord(DateTimeOffset lastDispatchedUtc, DateTimeOffset expiresUtc, DateTimeOffset maxRetentionUtc)
     {
-        public DateTimeOffset LastDispatchedUtc { get; set; } = lastDispatchedUtc;
+        public DateTimeOffset LastDispatchedUtc { get; } = lastDispatchedUtc;
+        public DateTimeOffset ExpiresUtc { get; } = expiresUtc;
+        public DateTimeOffset MaxRetentionUtc { get; } = maxRetentionUtc;
         public int SuppressedSinceLastDispatch { get; set; }
     }
 
@@ -828,7 +1121,8 @@ public sealed class OperatorNotificationDispatcher(
         public int WebhookAttempts { get; set; }
         public DateTimeOffset SmtpNextAttemptUtc { get; set; } = queuedUtc;
         public DateTimeOffset WebhookNextAttemptUtc { get; set; } = queuedUtc;
-        public bool AnyChannelSucceeded { get; set; }
+        public int SmtpDeliveredCoalescedCount { get; set; }
+        public int WebhookDeliveredCoalescedCount { get; set; }
     }
 
     private sealed class ChannelCircuitState(string channel)

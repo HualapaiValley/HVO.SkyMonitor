@@ -34,7 +34,6 @@ public sealed partial class NotificationsPage : SiteTimeComponent, IDisposable
     private bool _webhookEnabled;
     private WebhookPayloadFormat _webhookFormat = WebhookPayloadFormat.Generic;
     private string _webhookAuthHeaderName = WebhookNotificationOptions.DefaultAuthHeaderName;
-    private string _webhookNtfyTopic = string.Empty;
     private bool _webhookAllowPrivateNetwork;
 
     private bool _captureStalledEnabled = true;
@@ -56,9 +55,11 @@ public sealed partial class NotificationsPage : SiteTimeComponent, IDisposable
     private string _webhookUrlInput = string.Empty;
     private string _webhookAuthTokenInput = string.Empty;
     private string _webhookUserKeyInput = string.Empty;
+    private string _webhookNtfyTopicInput = string.Empty;
     private bool _clearWebhookUrl;
     private bool _clearWebhookAuthToken;
     private bool _clearWebhookUserKey;
+    private bool _clearWebhookNtfyTopic;
 
     [Inject] internal ICameraAgentNotificationsUiService NotificationsService { get; set; } = default!;
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
@@ -160,7 +161,6 @@ public sealed partial class NotificationsPage : SiteTimeComponent, IDisposable
                     Enabled = _webhookEnabled,
                     Format = _webhookFormat,
                     AuthHeaderName = _webhookAuthHeaderName,
-                    NtfyTopic = _webhookNtfyTopic,
                     AllowPrivateNetwork = _webhookAllowPrivateNetwork
                 },
                 Events = new OperatorNotificationEventsOptions
@@ -190,7 +190,9 @@ public sealed partial class NotificationsPage : SiteTimeComponent, IDisposable
                 WebhookAuthToken: string.IsNullOrEmpty(_webhookAuthTokenInput) ? null : _webhookAuthTokenInput,
                 ClearWebhookAuthToken: _clearWebhookAuthToken,
                 WebhookUserKey: string.IsNullOrEmpty(_webhookUserKeyInput) ? null : _webhookUserKeyInput,
-                ClearWebhookUserKey: _clearWebhookUserKey);
+                ClearWebhookUserKey: _clearWebhookUserKey,
+                WebhookNtfyTopic: string.IsNullOrEmpty(_webhookNtfyTopicInput) ? null : _webhookNtfyTopicInput,
+                ClearWebhookNtfyTopic: _clearWebhookNtfyTopic);
 
             var result = await NotificationsService.SaveAsync(request, _lifetime.Token);
             if (_disposed)
@@ -290,7 +292,6 @@ public sealed partial class NotificationsPage : SiteTimeComponent, IDisposable
         _webhookEnabled = options.Webhook.Enabled;
         _webhookFormat = options.Webhook.Format;
         _webhookAuthHeaderName = options.Webhook.AuthHeaderName;
-        _webhookNtfyTopic = options.Webhook.NtfyTopic;
         _webhookAllowPrivateNetwork = options.Webhook.AllowPrivateNetwork;
 
         _captureStalledEnabled = options.Events.CaptureStalledEnabled;
@@ -314,9 +315,11 @@ public sealed partial class NotificationsPage : SiteTimeComponent, IDisposable
         _webhookUrlInput = string.Empty;
         _webhookAuthTokenInput = string.Empty;
         _webhookUserKeyInput = string.Empty;
+        _webhookNtfyTopicInput = string.Empty;
         _clearWebhookUrl = false;
         _clearWebhookAuthToken = false;
         _clearWebhookUserKey = false;
+        _clearWebhookNtfyTopic = false;
     }
 
     private static string ChannelStateLabel(OperatorNotificationChannelStatus status) => status.State switch

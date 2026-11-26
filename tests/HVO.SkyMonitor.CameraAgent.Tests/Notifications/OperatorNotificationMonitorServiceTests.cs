@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Deployment;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
@@ -7,6 +8,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Notifications;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.Deployment.Contracts;
+using HVO.SkyMonitor.Fleet.Contracts;
 using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Notifications;
@@ -22,7 +24,7 @@ public sealed class OperatorNotificationMonitorServiceTests
         var clock = new MonitorClock(new DateTimeOffset(2026, 11, 26, 16, 0, 0, TimeSpan.Zero));
         var publisher = new RecordingPublisher();
         var fleet = new FleetRuntimeState(clock);
-        fleet.CaptureFailed("usb disconnect");
+        fleet.CaptureFailed("usb disconnect", isCameraDisconnected: true);
         var storage = new StoragePressureState();
         storage.Set(new StoragePressureSnapshot("/var/secret/camera-root", new StorageCapacity(1000, 20), true, 1, clock.GetUtcNow()));
 
@@ -66,9 +68,9 @@ public sealed class OperatorNotificationMonitorServiceTests
         await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
         Assert.IsTrue(publisher.Events.Any(static e => e.Kind == OperatorNotificationEventKind.CaptureStalled));
 
-        // Camera fails at t=11m -> below 60s threshold, should NOT fire CameraDisconnected yet.
+        // Camera disconnects at t=11m -> below 60s threshold, should NOT fire CameraDisconnected yet.
         publisher.Events.Clear();
-        fleet.CaptureFailed("USB read timeout");
+        fleet.CaptureFailed("USB read timeout", isCameraDisconnected: true);
         await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
         Assert.IsFalse(publisher.Events.Any(static e => e.Kind == OperatorNotificationEventKind.CameraDisconnected));
         Assert.IsFalse(publisher.Events.Any(static e => e.Kind == OperatorNotificationEventKind.CaptureStalled),
@@ -81,6 +83,158 @@ public sealed class OperatorNotificationMonitorServiceTests
         Assert.AreEqual(OperatorNotificationSeverity.Critical, disconnected.Severity);
         StringAssert.Contains(disconnected.Summary, "North Dome", StringComparison.Ordinal);
         StringAssert.Contains(disconnected.Summary, "USB read timeout", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task CaptureStalled_PauseAndResumeAfterExceedingStallThreshold_ProducesZeroFalseAlarmAsync()
+    {
+        var start = new DateTimeOffset(2026, 11, 26, 10, 0, 0, TimeSpan.Zero);
+        var clock = new MonitorClock(start);
+        var publisher = new RecordingPublisher();
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-notif-pause-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var hostOptions = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root, DisplayName = "Pause Resume Cam" });
+            var fleet = new FleetRuntimeState(clock);
+            fleet.ModuleAvailable();
+            var dummyResult = new CaptureResult(
+                Frame: null,
+                NextSetpoint: new CaptureSetpoint(TimeSpan.FromMilliseconds(10), 0, null, null),
+                ProcessingLatency: TimeSpan.FromMilliseconds(10),
+                Mode: default,
+                RequiresImmediateUpload: false);
+            fleet.CaptureSucceeded(dummyResult, TimeSpan.FromMilliseconds(20), TimeSpan.FromMilliseconds(5));
+
+            using var controlStore = new CameraAgentControlStore(hostOptions, clock);
+            var options = EnabledOptions(captureStallMinutes: 15, disconnectedSeconds: 60, heartbeatTime: "23:59");
+            using var monitor = new OperatorNotificationMonitorService(
+                new StaticConfigProvider(options),
+                publisher,
+                hostOptions,
+                clock,
+                fleetRuntimeState: fleet,
+                controlStore: controlStore);
+
+            // Evaluate while running at t=0 -> healthy.
+            await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsEmpty(publisher.Events);
+
+            // Hold capture admission (simulating pause/drain) for 30 minutes (> 15m stall threshold).
+            var workerId = Guid.NewGuid();
+            var opId = Guid.NewGuid();
+            _ = await controlStore.ExchangeAsync(new CameraAgentControlExchange(workerId), CancellationToken.None).ConfigureAwait(false);
+            var submitted = await controlStore.SubmitAsync(
+                new CameraAgentControlRequest(opId, CameraAgentControlKind.Drain, "owner", "Maintenance", 1, clock.GetUtcNow()),
+                CancellationToken.None).ConfigureAwait(false);
+            var draining = submitted with
+            {
+                Phase = CameraAgentControlPhase.Draining,
+                Events = [.. submitted.Events, new(CameraAgentControlPhase.Draining, clock.GetUtcNow(), "lifecycle.draining")]
+            };
+            _ = await controlStore.ExchangeAsync(
+                new CameraAgentControlExchange(workerId, draining),
+                CancellationToken.None).ConfigureAwait(false);
+
+            clock.Advance(TimeSpan.FromMinutes(10));
+            await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsEmpty(publisher.Events);
+
+            // Resume after 30 minutes total elapsed since last capture.
+            clock.Advance(TimeSpan.FromMinutes(20));
+            _ = await controlStore.ExchangeAsync(
+                new CameraAgentControlExchange(workerId, draining with
+                {
+                    Phase = CameraAgentControlPhase.Succeeded,
+                    PausedVersion = 1,
+                    DrainedCaptureSequence = 1,
+                    Events = [.. draining.Events, new(CameraAgentControlPhase.Succeeded, clock.GetUtcNow(), "lifecycle.succeeded")]
+                }),
+                CancellationToken.None).ConfigureAwait(false);
+
+            // Immediately upon resume (t=30m) and 5m later (t=35m) -> ZERO false CaptureStalled!
+            await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+            clock.Advance(TimeSpan.FromMinutes(5));
+            await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsFalse(publisher.Events.Any(static e => e.Kind == OperatorNotificationEventKind.CaptureStalled),
+                "Resuming after a pause longer than CaptureStallThresholdMinutes must NOT trigger a false CaptureStalled alarm.");
+
+            // If no new capture completes for 16 minutes AFTER resume -> CaptureStalled triggers accurately.
+            clock.Advance(TimeSpan.FromMinutes(11));
+            await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsTrue(publisher.Events.Any(static e => e.Kind == OperatorNotificationEventKind.CaptureStalled));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task GenericAcquisitionFailure_DoesNotEmitCameraDisconnectedAsync()
+    {
+        var start = new DateTimeOffset(2026, 11, 26, 10, 0, 0, TimeSpan.Zero);
+        var clock = new MonitorClock(start);
+        var publisher = new RecordingPublisher();
+        var fleet = new FleetRuntimeState(clock);
+        fleet.ModuleAvailable();
+
+        var options = EnabledOptions(captureStallMinutes: 30, disconnectedSeconds: 10, heartbeatTime: "23:59");
+        using var monitor = new OperatorNotificationMonitorService(
+            new StaticConfigProvider(options),
+            publisher,
+            Options.Create(new CameraAgentHostOptions { DisplayName = "South Dome" }),
+            clock,
+            fleetRuntimeState: fleet);
+
+        foreach (var genericReason in new[] { "null-result", "InvalidOperationException", "activation-publication-failed", "TimeoutException", "SqliteException" })
+        {
+            fleet.CaptureFailed(genericReason);
+            await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+            clock.Advance(TimeSpan.FromSeconds(30));
+            await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+
+        Assert.IsFalse(publisher.Events.Any(static e => e.Kind == OperatorNotificationEventKind.CameraDisconnected),
+            "Generic capture/acquisition/publication failures must NOT emit CameraDisconnected.");
+    }
+
+    [TestMethod]
+    public async Task FleetSnapshotTimeout_RetainsLastKnownDisconnectTimerInsteadOfResettingAsync()
+    {
+        var start = new DateTimeOffset(2026, 11, 26, 10, 0, 0, TimeSpan.Zero);
+        var clock = new MonitorClock(start);
+        var publisher = new RecordingPublisher();
+        var disconnectedSnapshot = new FleetRuntimeSnapshot(
+            new FleetCaptureSummary(FleetAvailability.Unavailable, "camera-removed", null, start, null),
+            []);
+
+        var simulateTimeout = false;
+        var options = EnabledOptions(captureStallMinutes: 60, disconnectedSeconds: 60, heartbeatTime: "23:59");
+        using var monitor = new OperatorNotificationMonitorService(
+            new StaticConfigProvider(options),
+            publisher,
+            Options.Create(new CameraAgentHostOptions { DisplayName = "Snapshot Timeout Cam" }),
+            clock)
+        {
+            FleetSnapshotReader = _ => simulateTimeout ? (false, null) : (true, disconnectedSnapshot)
+        };
+
+        // t=0: camera disconnect first observed.
+        await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.IsEmpty(publisher.Events);
+
+        // t=30s: transient 50ms fleet snapshot lock timeout -> must NOT reset disconnect start timestamp!
+        clock.Advance(TimeSpan.FromSeconds(30));
+        simulateTimeout = true;
+        await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.IsEmpty(publisher.Events);
+
+        // t=65s: snapshot succeeds again -> elapsed is 65s >= 60s threshold -> emits CameraDisconnected!
+        clock.Advance(TimeSpan.FromSeconds(35));
+        simulateTimeout = false;
+        await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(publisher.Events.Any(static e => e.Kind == OperatorNotificationEventKind.CameraDisconnected));
     }
 
     [TestMethod]
@@ -118,7 +272,7 @@ public sealed class OperatorNotificationMonitorServiceTests
     }
 
     [TestMethod]
-    public async Task UpgradeOrRecoveryFailed_DetectsControlFailureRetainedIntegrityAndDeploymentLocationAsync()
+    public async Task UpgradeOrRecoveryFailed_DetectsFailuresAndPrunesExpiredControlReceiptDedupEntriesAsync()
     {
         var clock = new MonitorClock(new DateTimeOffset(2026, 11, 26, 10, 0, 0, TimeSpan.Zero));
         var publisher = new RecordingPublisher();
@@ -164,11 +318,17 @@ public sealed class OperatorNotificationMonitorServiceTests
             Assert.IsTrue(upgradeEvents.Any(e => e.DedupeKey == $"upgrade_recovery_failed:control:{opId:N}"));
             Assert.IsTrue(upgradeEvents.Any(static e => e.DedupeKey == "upgrade_recovery_failed:retained-integrity"));
             Assert.IsTrue(upgradeEvents.Any(static e => e.DedupeKey == "upgrade_recovery_failed:retained-evidence"));
+            Assert.AreEqual(1, monitor.TrackedFailedControlOperationCount);
 
-            // Re-evaluating does not duplicate the already-notified failed control operation ID.
+            // Re-evaluating within 24h does not duplicate the already-notified failed control operation ID.
             publisher.Events.Clear();
             await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
             Assert.IsFalse(publisher.Events.Any(e => e.DedupeKey == $"upgrade_recovery_failed:control:{opId:N}"));
+
+            // Advancing > 24h evicts the expired failed receipt ID so memory stays bounded.
+            clock.Advance(TimeSpan.FromHours(25));
+            await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(0, monitor.TrackedFailedControlOperationCount, "Expired failed control operation IDs must be pruned.");
         }
         finally
         {
@@ -177,45 +337,66 @@ public sealed class OperatorNotificationMonitorServiceTests
     }
 
     [TestMethod]
-    public async Task DailyHeartbeat_FiresOncePerSiteCalendarDayAtConfiguredLocalTimeAsync()
+    public async Task DailyHeartbeat_PersistsCheckpointAcrossRestartAndDoesNotDuplicateSameSiteDayAsync()
     {
         // America/Phoenix is UTC-7 year-round. 14:30 UTC == 07:30 Phoenix (before 08:00).
         var clock = new MonitorClock(new DateTimeOffset(2026, 11, 26, 14, 30, 0, TimeSpan.Zero));
-        var publisher = new RecordingPublisher();
-        var options = EnabledOptions(captureStallMinutes: 120, heartbeatTime: "08:00");
-        using var monitor = new OperatorNotificationMonitorService(
-            new StaticConfigProvider(options),
-            publisher,
-            Options.Create(new CameraAgentHostOptions
+        var stateDir = Path.Combine(Path.GetTempPath(), $"hvo-notif-hb-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(stateDir);
+        try
+        {
+            var heartbeatStore = new FileOperatorNotificationHeartbeatStore(stateDir);
+            var hostOptions = Options.Create(new CameraAgentHostOptions
             {
                 DisplayName = "HVO AllSky",
                 Observatory = new ObservatoryLocation(35.5, -113.9, 520, "America/Phoenix")
-            }),
-            clock);
+            });
+            var options = EnabledOptions(captureStallMinutes: 120, heartbeatTime: "08:00");
 
-        // 07:30 local -> not due yet.
-        await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
-        Assert.IsFalse(publisher.Events.Any(static e => e.Kind == OperatorNotificationEventKind.DailyHeartbeat));
+            var publisher1 = new RecordingPublisher();
+            using (var monitor1 = new OperatorNotificationMonitorService(
+                new StaticConfigProvider(options), publisher1, hostOptions, clock, heartbeatStore: heartbeatStore))
+            {
+                // 07:30 local -> not due yet, and NO checkpoint file written yet.
+                await monitor1.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.IsFalse(publisher1.Events.Any(static e => e.Kind == OperatorNotificationEventKind.DailyHeartbeat));
+                Assert.IsFalse(File.Exists(heartbeatStore.FilePath));
 
-        // 08:05 local (15:05 UTC) -> fires once for 2026-11-26.
-        clock.Advance(TimeSpan.FromMinutes(35));
-        await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
-        var hb1 = publisher.Events.Single(static e => e.Kind == OperatorNotificationEventKind.DailyHeartbeat);
-        Assert.AreEqual("daily_heartbeat:2026-11-26", hb1.DedupeKey);
-        Assert.AreEqual(OperatorNotificationSeverity.Info, hb1.Severity);
-        StringAssert.Contains(hb1.Summary, "America/Phoenix", StringComparison.Ordinal);
+                // 08:05 local (15:05 UTC) -> fires once for 2026-11-26 and persists 0600 checkpoint.
+                clock.Advance(TimeSpan.FromMinutes(35));
+                await monitor1.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+                var hb1 = publisher1.Events.Single(static e => e.Kind == OperatorNotificationEventKind.DailyHeartbeat);
+                Assert.AreEqual("daily_heartbeat:2026-11-26", hb1.DedupeKey);
+                Assert.AreEqual(OperatorNotificationSeverity.Info, hb1.Severity);
+                StringAssert.Contains(hb1.Summary, "America/Phoenix", StringComparison.Ordinal);
+                Assert.IsTrue(File.Exists(heartbeatStore.FilePath));
+                if (!OperatingSystem.IsWindows())
+                {
+                    Assert.AreEqual(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(heartbeatStore.FilePath));
+                }
+            }
 
-        // 09:00 local same day -> does NOT fire again.
-        publisher.Events.Clear();
-        clock.Advance(TimeSpan.FromMinutes(55));
-        await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
-        Assert.IsFalse(publisher.Events.Any(static e => e.Kind == OperatorNotificationEventKind.DailyHeartbeat));
+            // Simulate full CameraAgent restart at 08:25 local on the SAME calendar day -> MUST NOT emit duplicate heartbeat!
+            clock.Advance(TimeSpan.FromMinutes(20));
+            var publisher2 = new RecordingPublisher();
+            using (var monitor2 = new OperatorNotificationMonitorService(
+                new StaticConfigProvider(options), publisher2, hostOptions, clock, heartbeatStore: new FileOperatorNotificationHeartbeatStore(stateDir)))
+            {
+                await monitor2.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.IsFalse(publisher2.Events.Any(static e => e.Kind == OperatorNotificationEventKind.DailyHeartbeat),
+                    "Restarting after the scheduled heartbeat time on the same site-local date must NOT emit a duplicate daily heartbeat.");
 
-        // Next day 08:00 local -> fires for 2026-11-27.
-        clock.Advance(TimeSpan.FromHours(23));
-        await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
-        var hb2 = publisher.Events.Single(static e => e.Kind == OperatorNotificationEventKind.DailyHeartbeat);
-        Assert.AreEqual("daily_heartbeat:2026-11-27", hb2.DedupeKey);
+                // Next day 08:25 local -> fires for 2026-11-27.
+                clock.Advance(TimeSpan.FromHours(24));
+                await monitor2.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+                var hb2 = publisher2.Events.Single(static e => e.Kind == OperatorNotificationEventKind.DailyHeartbeat);
+                Assert.AreEqual("daily_heartbeat:2026-11-27", hb2.DedupeKey);
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(stateDir)) Directory.Delete(stateDir, recursive: true);
+        }
     }
 
     private static OperatorNotificationsOptions EnabledOptions(

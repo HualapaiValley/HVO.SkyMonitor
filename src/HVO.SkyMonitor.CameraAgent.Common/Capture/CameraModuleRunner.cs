@@ -380,7 +380,9 @@ internal sealed class CameraModuleRunner
             {
                 admission.MarkNoPublicationRequired();
                 admission.Dispose();
-                _fleetRuntimeState?.CaptureFailed(ex.GetType().Name);
+                _fleetRuntimeState?.CaptureFailed(
+                    ex.GetType().Name,
+                    isCameraDisconnected: FleetRuntimeState.IsCameraDisconnectException(ex));
                 // A centered dispatch can have changed the device. Only a reconciled owner can open a fresh target.
                 if (reservation is not null) throw;
                 cycleActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Error, "module-failure");

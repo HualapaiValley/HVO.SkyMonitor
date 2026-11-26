@@ -125,7 +125,9 @@ internal static class CameraAgentNotificationsEndpoints
                 body.WebhookAuthToken,
                 body.ClearWebhookAuthToken,
                 body.WebhookUserKey,
-                body.ClearWebhookUserKey);
+                body.ClearWebhookUserKey,
+                body.WebhookNtfyTopic,
+                body.ClearWebhookNtfyTopic);
 
             var result = await service.UpdateConfigurationAsync(request, actor, ct).ConfigureAwait(false);
             return result.Outcome switch
@@ -189,7 +191,7 @@ internal static class CameraAgentNotificationsEndpoints
 
         var target = NotificationTestTarget.AllEnabled;
         if (!string.IsNullOrWhiteSpace(body?.Target) &&
-            !Enum.TryParse(body.Target, ignoreCase: true, out target))
+            (!Enum.TryParse(body.Target, ignoreCase: true, out target) || !Enum.IsDefined(target)))
         {
             return Results.Problem(
                 statusCode: StatusCodes.Status400BadRequest,
@@ -256,7 +258,9 @@ internal static class CameraAgentNotificationsEndpoints
         string? WebhookAuthToken = null,
         bool ClearWebhookAuthToken = false,
         string? WebhookUserKey = null,
-        bool ClearWebhookUserKey = false);
+        bool ClearWebhookUserKey = false,
+        string? WebhookNtfyTopic = null,
+        bool ClearWebhookNtfyTopic = false);
 
     [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
     private sealed record TestNotificationBody(string? Target = null);

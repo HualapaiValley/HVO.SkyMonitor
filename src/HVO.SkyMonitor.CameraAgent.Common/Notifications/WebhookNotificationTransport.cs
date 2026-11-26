@@ -1,55 +1,45 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Net;
-using System.Net.Http.Headers;
+using System.Net.Security;
 using System.Net.Sockets;
+using System.Security.Authentication;
 using System.Text;
 using System.Text.Json;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Notifications;
 
 /// <summary>
-/// Outbound HTTP POST JSON webhook delivery transport supporting Generic JSON, Slack, ntfy, and Pushover formats.
-/// Enforces URL/SSRF validation at both validation time and TCP connect time (mitigating DNS rebinding), refuses
-/// redirects, strips cookies/trace headers, enforces strict timeouts, and never logs webhook URLs or tokens.
+/// Outbound bounded HTTP/1.1 POST webhook delivery transport supporting Generic JSON, Slack, ntfy, and Pushover
+/// profiles. Connects directly over a DNS-pinned <see cref="Socket"/> and <see cref="SslStream"/> (never via
+/// <see cref="HttpClient"/> or system HTTP proxies), guaranteeing zero proxy SSRF bypass, zero <c>System.Net.Http</c>
+/// EventSource/DiagnosticListener credential-path leakage, zero redirects, strict send-time header validation,
+/// explicit timeouts, and bounded response header parsing.
 /// </summary>
-public sealed class WebhookNotificationTransport : IWebhookNotificationTransport, IDisposable
+public sealed class WebhookNotificationTransport(
+    OperatorNotificationNetworkPolicy networkPolicy,
+    TimeProvider timeProvider) : IWebhookNotificationTransport, IDisposable
 {
     public const string ChannelName = "webhook";
-    private const string SsrfBlockedMarkerKey = "HVO.Notifications.SsrfBlocked";
+    private const int MaximumResponseHeaderBytes = 32 * 1024;
+    private const int MaximumResponseHeaderLines = 128;
+    private const int MaximumInterimResponses = 4;
+
     private static readonly TimeSpan MinimumRetryAfter = TimeSpan.FromSeconds(OperatorNotificationsOptions.DefaultRetryInitialDelaySeconds);
     private static readonly TimeSpan MaximumRetryAfter = TimeSpan.FromSeconds(OperatorNotificationsOptions.DefaultRetryMaximumDelaySeconds);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
-    private readonly OperatorNotificationNetworkPolicy _networkPolicy;
-    private readonly TimeProvider _timeProvider;
-    private readonly HttpClient _publicClient;
-    private readonly HttpClient _privateAllowedClient;
-    private readonly HttpClient? _injectedTestClient;
-    private bool _disposed;
+    private readonly OperatorNotificationNetworkPolicy _networkPolicy = networkPolicy ?? throw new ArgumentNullException(nameof(networkPolicy));
+    private readonly TimeProvider _timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
 
-    public WebhookNotificationTransport(
-        OperatorNotificationNetworkPolicy networkPolicy,
-        TimeProvider timeProvider)
-    {
-        _networkPolicy = networkPolicy ?? throw new ArgumentNullException(nameof(networkPolicy));
-        _timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
-        _publicClient = CreateSafeClient(allowPrivateNetwork: false, _networkPolicy);
-        _privateAllowedClient = CreateSafeClient(allowPrivateNetwork: true, _networkPolicy);
-    }
+    /// <summary>Internal test seam for deterministic connect-time DNS resolution. Always null in production.</summary>
+    internal Func<string, CancellationToken, Task<IPAddress[]>>? DnsResolver { get; init; }
 
-    /// <summary>Internal test constructor injecting a fake <see cref="HttpMessageHandler"/> for deterministic unit tests.</summary>
-    internal WebhookNotificationTransport(
-        OperatorNotificationNetworkPolicy networkPolicy,
-        TimeProvider timeProvider,
-        HttpMessageHandler testHandler)
-    {
-        _networkPolicy = networkPolicy ?? throw new ArgumentNullException(nameof(networkPolicy));
-        _timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
-        _publicClient = new HttpClient(testHandler ?? throw new ArgumentNullException(nameof(testHandler)), disposeHandler: false);
-        _privateAllowedClient = _publicClient;
-        _injectedTestClient = _publicClient;
-    }
+    /// <summary>Internal test seam for inspecting or intercepting direct pinned TCP socket creation. Always null in production.</summary>
+    internal Func<IPAddress, int, CancellationToken, Task<Stream>>? StreamConnector { get; init; }
+
+    /// <summary>Internal test seam for ephemeral self-signed loopback TLS certificates in unit/integration tests. Always null in production.</summary>
+    internal RemoteCertificateValidationCallback? CertificateValidationCallback { get; init; }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
         Justification = "Webhook delivery maps all HTTP/network failures to fixed sanitized reason codes without leaking URLs or tokens.")]
@@ -59,6 +49,12 @@ public sealed class WebhookNotificationTransport : IWebhookNotificationTransport
     {
         ArgumentNullException.ThrowIfNull(request);
         var started = _timeProvider.GetTimestamp();
+
+        if (!Enum.IsDefined(request.Format))
+        {
+            return OperatorNotificationDeliveryResult.Failure(
+                ChannelName, NotificationReasonCodes.InvalidConfiguration, transient: false, Elapsed(started));
+        }
 
         if (!OperatorNotificationValidation.TryValidateWebhookUrl(
                 request.Url,
@@ -72,79 +68,123 @@ public sealed class WebhookNotificationTransport : IWebhookNotificationTransport
                 ChannelName, validationCode ?? NotificationReasonCodes.InvalidConfiguration, transient: false, Elapsed(started));
         }
 
-        if (request.Format == WebhookPayloadFormat.Pushover &&
-            (string.IsNullOrWhiteSpace(request.AuthToken) || string.IsNullOrWhiteSpace(request.UserKey)))
+        var pathAndQuery = uri!.PathAndQuery;
+        if (string.IsNullOrEmpty(pathAndQuery) ||
+            !pathAndQuery.StartsWith('/') ||
+            OperatorNotificationValidation.HasHeaderInjectionCharacters(pathAndQuery) ||
+            !IsPrintableAscii(pathAndQuery))
+        {
+            return OperatorNotificationDeliveryResult.Failure(
+                ChannelName, NotificationReasonCodes.InvalidConfiguration, transient: false, Elapsed(started));
+        }
+
+        if (request.Format == WebhookPayloadFormat.Pushover)
+        {
+            if (string.IsNullOrWhiteSpace(request.AuthToken) || string.IsNullOrWhiteSpace(request.UserKey))
+            {
+                return OperatorNotificationDeliveryResult.Failure(
+                    ChannelName, NotificationReasonCodes.MissingSecret, transient: false, Elapsed(started));
+            }
+            if (!OperatorNotificationValidation.IsValidHeaderValue(request.AuthToken, OperatorNotificationValidation.MaximumSecretLength) ||
+                !OperatorNotificationValidation.IsValidHeaderValue(request.UserKey, OperatorNotificationValidation.MaximumSecretLength))
+            {
+                return OperatorNotificationDeliveryResult.Failure(
+                    ChannelName, NotificationReasonCodes.InvalidConfiguration, transient: false, Elapsed(started));
+            }
+        }
+
+        var ntfyTopic = request.NtfyTopic?.Trim() ?? string.Empty;
+        if (ntfyTopic.Length > WebhookNotificationOptions.MaximumTopicLength ||
+            OperatorNotificationValidation.HasHeaderInjectionCharacters(ntfyTopic))
+        {
+            return OperatorNotificationDeliveryResult.Failure(
+                ChannelName, NotificationReasonCodes.InvalidConfiguration, transient: false, Elapsed(started));
+        }
+
+        if (request.Format == WebhookPayloadFormat.Ntfy &&
+            OperatorNotificationValidation.IsNtfyRootPath(uri) &&
+            string.IsNullOrEmpty(ntfyTopic))
         {
             return OperatorNotificationDeliveryResult.Failure(
                 ChannelName, NotificationReasonCodes.MissingSecret, transient: false, Elapsed(started));
         }
 
-        var headerName = string.IsNullOrWhiteSpace(request.AuthHeaderName)
+        // Send-time validation of custom header name and value (protects host-configuration path as well as store path).
+        var rawHeaderName = request.AuthHeaderName;
+        if (!string.IsNullOrWhiteSpace(rawHeaderName) &&
+            !OperatorNotificationValidation.IsValidAuthHeaderName(rawHeaderName.Trim()))
+        {
+            return OperatorNotificationDeliveryResult.Failure(
+                ChannelName, NotificationReasonCodes.InvalidConfiguration, transient: false, Elapsed(started));
+        }
+
+        var headerName = string.IsNullOrWhiteSpace(rawHeaderName)
             ? WebhookNotificationOptions.DefaultAuthHeaderName
-            : request.AuthHeaderName.Trim();
-        if (request.Format != WebhookPayloadFormat.Pushover &&
-            !string.IsNullOrWhiteSpace(request.AuthToken) &&
-            !OperatorNotificationValidation.IsValidAuthHeaderName(headerName))
+            : rawHeaderName.Trim();
+
+        var extraHeaders = new List<KeyValuePair<string, string>>(4);
+        if (request.Format != WebhookPayloadFormat.Pushover && !string.IsNullOrEmpty(request.AuthToken))
+        {
+            if (!OperatorNotificationValidation.IsValidAuthHeaderName(headerName) ||
+                !OperatorNotificationValidation.IsValidHeaderValue(request.AuthToken, OperatorNotificationValidation.MaximumSecretLength) ||
+                !IsPrintableAscii(request.AuthToken))
+            {
+                return OperatorNotificationDeliveryResult.Failure(
+                    ChannelName, NotificationReasonCodes.InvalidConfiguration, transient: false, Elapsed(started));
+            }
+
+            var authValue = string.Equals(headerName, WebhookNotificationOptions.DefaultAuthHeaderName, StringComparison.OrdinalIgnoreCase)
+                ? $"Bearer {request.AuthToken}"
+                : request.AuthToken;
+            extraHeaders.Add(new KeyValuePair<string, string>(headerName, authValue));
+        }
+
+        var wirePayload = BuildWirePayload(request, uri, ntfyTopic, extraHeaders);
+        if (!ValidateOutgoingHeaders(extraHeaders))
         {
             return OperatorNotificationDeliveryResult.Failure(
                 ChannelName, NotificationReasonCodes.InvalidConfiguration, transient: false, Elapsed(started));
         }
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutCts.CancelAfter(request.Timeout > TimeSpan.Zero ? request.Timeout : TimeSpan.FromSeconds(OperatorNotificationsOptions.DefaultRequestTimeoutSeconds));
+        timeoutCts.CancelAfter(request.Timeout > TimeSpan.Zero
+            ? request.Timeout
+            : TimeSpan.FromSeconds(OperatorNotificationsOptions.DefaultRequestTimeoutSeconds));
         var ct = timeoutCts.Token;
 
         try
         {
-            var payloadJson = BuildPayloadJson(request);
-            using var httpRequest = new HttpRequestMessage(HttpMethod.Post, uri!)
-            {
-                Content = new StringContent(payloadJson, Encoding.UTF8, "application/json")
-            };
-            httpRequest.Headers.UserAgent.Clear();
-            httpRequest.Headers.UserAgent.Add(new ProductInfoHeaderValue("HVO.SkyMonitor.CameraAgent", "1.0"));
-
-            ApplyHeaders(httpRequest, request, headerName);
-
-            var client = _injectedTestClient ?? (request.AllowPrivateNetwork ? _privateAllowedClient : _publicClient);
-            using var response = await client.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, ct)
-                .ConfigureAwait(false);
-
-            var status = (int)response.StatusCode;
-            if (status is >= 200 and < 300)
-            {
-                return OperatorNotificationDeliveryResult.Success(ChannelName, Elapsed(started));
-            }
-            if (status is >= 300 and < 400)
+            var resolution = await ResolveValidatedAddressesAsync(uri.IdnHost, request.AllowPrivateNetwork, ct).ConfigureAwait(false);
+            if (resolution.FailureReasonCode is not null)
             {
                 return OperatorNotificationDeliveryResult.Failure(
-                    ChannelName, NotificationReasonCodes.RedirectBlocked, transient: false, Elapsed(started));
-            }
-            if (status == 429)
-            {
-                var retryAfter = ParseRetryAfter(response.Headers.RetryAfter, _timeProvider.GetUtcNow());
-                return OperatorNotificationDeliveryResult.Failure(
-                    ChannelName, NotificationReasonCodes.RateLimited, transient: true, Elapsed(started), retryAfter);
-            }
-            if (status == 408 || status >= 500)
-            {
-                var retryAfter = ParseRetryAfter(response.Headers.RetryAfter, _timeProvider.GetUtcNow());
-                return OperatorNotificationDeliveryResult.Failure(
-                    ChannelName, NotificationReasonCodes.ServerError, transient: true, Elapsed(started), retryAfter);
-            }
-            if (status is 401 or 403)
-            {
-                return OperatorNotificationDeliveryResult.Failure(
-                    ChannelName, NotificationReasonCodes.AuthFailed, transient: false, Elapsed(started));
+                    ChannelName, resolution.FailureReasonCode, resolution.TransientFailure, Elapsed(started));
             }
 
-            return OperatorNotificationDeliveryResult.Failure(
-                ChannelName, NotificationReasonCodes.ClientRejected, transient: false, Elapsed(started));
-        }
-        catch (InvalidOperationException ex) when (ex.Data.Contains(SsrfBlockedMarkerKey))
-        {
-            return OperatorNotificationDeliveryResult.Failure(
-                ChannelName, NotificationReasonCodes.SsrfBlocked, transient: false, Elapsed(started));
+            var requestBytes = FormatHttp11PostRequest(uri, pathAndQuery, wirePayload.ContentType, wirePayload.BodyBytes, extraHeaders);
+
+            var rawStream = await ConnectFirstAddressAsync(resolution.Addresses, uri.Port, ct).ConfigureAwait(false);
+            await using (rawStream.ConfigureAwait(false))
+            {
+                if (string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+                {
+                    var sslStream = await UpgradeToTlsAsync(rawStream, uri.IdnHost, ct).ConfigureAwait(false);
+                    await using (sslStream.ConfigureAwait(false))
+                    {
+                        await sslStream.WriteAsync(requestBytes, ct).ConfigureAwait(false);
+                        await sslStream.FlushAsync(ct).ConfigureAwait(false);
+
+                        var response = await ReadHttp11ResponseHeadAsync(sslStream, _timeProvider.GetUtcNow(), ct).ConfigureAwait(false);
+                        return ClassifyHttpStatus(response.StatusCode, response.RetryAfter, Elapsed(started));
+                    }
+                }
+
+                await rawStream.WriteAsync(requestBytes, ct).ConfigureAwait(false);
+                await rawStream.FlushAsync(ct).ConfigureAwait(false);
+
+                var plainResponse = await ReadHttp11ResponseHeadAsync(rawStream, _timeProvider.GetUtcNow(), ct).ConfigureAwait(false);
+                return ClassifyHttpStatus(plainResponse.StatusCode, plainResponse.RetryAfter, Elapsed(started));
+            }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -156,20 +196,25 @@ public sealed class WebhookNotificationTransport : IWebhookNotificationTransport
             return OperatorNotificationDeliveryResult.Failure(
                 ChannelName, NotificationReasonCodes.Timeout, transient: true, Elapsed(started));
         }
-        catch (HttpRequestException ex) when (ex.InnerException is InvalidOperationException inner && inner.Data.Contains(SsrfBlockedMarkerKey))
-        {
-            return OperatorNotificationDeliveryResult.Failure(
-                ChannelName, NotificationReasonCodes.SsrfBlocked, transient: false, Elapsed(started));
-        }
-        catch (HttpRequestException ex) when (ex.InnerException is System.Security.Authentication.AuthenticationException)
+        catch (AuthenticationException)
         {
             return OperatorNotificationDeliveryResult.Failure(
                 ChannelName, NotificationReasonCodes.TlsFailed, transient: false, Elapsed(started));
         }
-        catch (HttpRequestException)
+        catch (SocketException)
         {
             return OperatorNotificationDeliveryResult.Failure(
                 ChannelName, NotificationReasonCodes.ConnectFailed, transient: true, Elapsed(started));
+        }
+        catch (InvalidDataException)
+        {
+            return OperatorNotificationDeliveryResult.Failure(
+                ChannelName, NotificationReasonCodes.ProtocolError, transient: false, Elapsed(started));
+        }
+        catch (IOException)
+        {
+            return OperatorNotificationDeliveryResult.Failure(
+                ChannelName, NotificationReasonCodes.TransportError, transient: true, Elapsed(started));
         }
         catch (Exception)
         {
@@ -179,6 +224,19 @@ public sealed class WebhookNotificationTransport : IWebhookNotificationTransport
     }
 
     internal static string BuildPayloadJson(WebhookDeliveryRequest request)
+    {
+        var uri = Uri.TryCreate(request.Url, UriKind.Absolute, out var parsed)
+            ? parsed
+            : new Uri("https://webhook.invalid/");
+        var wire = BuildWirePayload(request, uri, request.NtfyTopic?.Trim() ?? string.Empty, headers: null);
+        return Encoding.UTF8.GetString(wire.BodyBytes);
+    }
+
+    private static WirePayload BuildWirePayload(
+        WebhookDeliveryRequest request,
+        Uri uri,
+        string ntfyTopic,
+        List<KeyValuePair<string, string>>? headers)
     {
         var ev = request.Event;
         var eventSlug = request.IsTest ? "test" : OperatorNotificationEvent.EventSlug(ev.Kind);
@@ -198,95 +256,136 @@ public sealed class WebhookNotificationTransport : IWebhookNotificationTransport
         var title = OperatorNotificationRedactor.SanitizeOperationalText(ev.Title, OperatorNotificationEvent.MaximumTitleLength);
         var message = BuildMessageBody(ev, camera, request.CoalescedCount, request.SuppressedDuringCooldown);
 
-        return request.Format switch
+        switch (request.Format)
         {
-            WebhookPayloadFormat.Slack => JsonSerializer.Serialize(new
-            {
-                text = $"[{camera}] {title}\n{message}",
-                blocks = new object[]
+            case WebhookPayloadFormat.Slack:
                 {
-                    new
+                    // Escape Slack mrkdwn special entities (&, <, >) so untrusted text cannot trigger <!channel>/<!here>/<!everyone>/<@...>.
+                    var escapedCamera = EscapeSlackMrkdwn(camera);
+                    var escapedTitle = EscapeSlackMrkdwn(title);
+                    var escapedMessage = EscapeSlackMrkdwn(message);
+                    var json = JsonSerializer.Serialize(new
                     {
-                        type = "header",
-                        text = new { type = "plain_text", text = Truncate($"[{camera}] {title}", 150) }
-                    },
-                    new
-                    {
-                        type = "section",
-                        text = new { type = "mrkdwn", text = $"*{severity.ToUpperInvariant()}* (`{eventSlug}`)\n{message}" }
-                    }
+                        text = $"[{escapedCamera}] {escapedTitle}\n{escapedMessage}",
+                        blocks = new object[]
+                        {
+                        new
+                        {
+                            type = "header",
+                            text = new { type = "plain_text", text = Truncate($"[{camera}] {title}", 150) }
+                        },
+                        new
+                        {
+                            type = "section",
+                            text = new { type = "mrkdwn", text = $"*{severity.ToUpperInvariant()}* (`{eventSlug}`)\n{escapedMessage}" }
+                        }
+                        }
+                    }, JsonOptions);
+                    return new WirePayload("application/json; charset=utf-8", Encoding.UTF8.GetBytes(json));
                 }
-            }, JsonOptions),
 
-            WebhookPayloadFormat.Ntfy => BuildNtfyPayload(request, ev, eventSlug, severity, camera, title, message),
+            case WebhookPayloadFormat.Ntfy:
+                {
+                    var priority = ev.Severity switch
+                    {
+                        OperatorNotificationSeverity.Critical => 5,
+                        OperatorNotificationSeverity.Warning => 4,
+                        _ => 3
+                    };
+                    var tags = new[] { "cameraagent", severity, eventSlug };
 
-            WebhookPayloadFormat.Pushover => JsonSerializer.Serialize(new
-            {
-                token = request.AuthToken,
-                user = request.UserKey,
-                title = Truncate($"[{camera}] {title}", 250),
-                message = Truncate(message, 1024),
-                priority = ev.Severity == OperatorNotificationSeverity.Critical ? 1 : 0,
-                timestamp = ev.OccurredUtc.ToUnixTimeSeconds()
-            }, JsonOptions),
+                    // Official ntfy contract:
+                    // - Root URL (/) + non-empty topic -> POST JSON envelope including "topic".
+                    // - Topic-path URL (/my-topic) -> POST plain-text body with Title, Priority, and Tags headers.
+                    if (OperatorNotificationValidation.IsNtfyRootPath(uri))
+                    {
+                        var json = JsonSerializer.Serialize(new
+                        {
+                            topic = ntfyTopic,
+                            title = $"[{camera}] {title}",
+                            message,
+                            priority,
+                            tags
+                        }, JsonOptions);
+                        return new WirePayload("application/json; charset=utf-8", Encoding.UTF8.GetBytes(json));
+                    }
 
-            _ => JsonSerializer.Serialize(new
-            {
-                schemaVersion = 1,
-                source = "HVO.SkyMonitor.CameraAgent",
-                @event = eventSlug,
-                severity,
-                test = request.IsTest,
-                camera,
-                title,
-                text = $"[{camera}] {title}: {message}",
-                message,
-                occurredUtc = ev.OccurredUtc.ToUniversalTime(),
-                coalescedCount = request.CoalescedCount,
-                suppressedCount = request.SuppressedDuringCooldown
-            }, JsonOptions)
-        };
+                    var headerTitle = EncodeHttpHeaderText(Truncate($"[{camera}] {title}", 160));
+                    headers?.Add(new KeyValuePair<string, string>("Title", headerTitle));
+                    headers?.Add(new KeyValuePair<string, string>("Priority", priority.ToString(CultureInfo.InvariantCulture)));
+                    headers?.Add(new KeyValuePair<string, string>("Tags", string.Join(',', tags)));
+                    return new WirePayload("text/plain; charset=utf-8", Encoding.UTF8.GetBytes(message));
+                }
+
+            case WebhookPayloadFormat.Pushover:
+                {
+                    var json = JsonSerializer.Serialize(new
+                    {
+                        token = request.AuthToken,
+                        user = request.UserKey,
+                        title = Truncate($"[{camera}] {title}", 250),
+                        message = Truncate(message, 1024),
+                        priority = ev.Severity == OperatorNotificationSeverity.Critical ? 1 : 0,
+                        timestamp = ev.OccurredUtc.ToUnixTimeSeconds()
+                    }, JsonOptions);
+                    return new WirePayload("application/json; charset=utf-8", Encoding.UTF8.GetBytes(json));
+                }
+
+            default:
+                {
+                    var json = JsonSerializer.Serialize(new
+                    {
+                        schemaVersion = 1,
+                        source = "HVO.SkyMonitor.CameraAgent",
+                        @event = eventSlug,
+                        severity,
+                        test = request.IsTest,
+                        camera,
+                        title,
+                        text = $"[{camera}] {title}: {message}",
+                        message,
+                        occurredUtc = ev.OccurredUtc.ToUniversalTime(),
+                        coalescedCount = request.CoalescedCount,
+                        suppressedCount = request.SuppressedDuringCooldown
+                    }, JsonOptions);
+                    return new WirePayload("application/json; charset=utf-8", Encoding.UTF8.GetBytes(json));
+                }
+        }
     }
 
-    private static string BuildNtfyPayload(
-        WebhookDeliveryRequest request,
-        OperatorNotificationEvent ev,
-        string eventSlug,
-        string severity,
-        string camera,
-        string title,
-        string message)
+    internal static string EscapeSlackMrkdwn(string value)
     {
-        var priority = ev.Severity switch
+        if (string.IsNullOrEmpty(value))
         {
-            OperatorNotificationSeverity.Critical => 5,
-            OperatorNotificationSeverity.Warning => 4,
-            _ => 3
-        };
-        var tags = new[] { "cameraagent", severity, eventSlug };
-        if (!string.IsNullOrWhiteSpace(request.NtfyTopic))
-        {
-            return JsonSerializer.Serialize(new
-            {
-                topic = request.NtfyTopic.Trim(),
-                title = $"[{camera}] {title}",
-                message,
-                priority,
-                tags
-            }, JsonOptions);
+            return string.Empty;
         }
+        return value
+            .Replace("&", "&amp;", StringComparison.Ordinal)
+            .Replace("<", "&lt;", StringComparison.Ordinal)
+            .Replace(">", "&gt;", StringComparison.Ordinal);
+    }
 
-        return JsonSerializer.Serialize(new
+    private static string EncodeHttpHeaderText(string value)
+    {
+        if (IsPrintableAscii(value))
         {
-            title = $"[{camera}] {title}",
-            message,
-            priority,
-            tags,
-            @event = eventSlug,
-            severity,
-            camera,
-            occurredUtc = ev.OccurredUtc.ToUniversalTime()
-        }, JsonOptions);
+            return value;
+        }
+        return $"=?utf-8?B?{Convert.ToBase64String(Encoding.UTF8.GetBytes(value))}?=";
+    }
+
+    private static bool ValidateOutgoingHeaders(List<KeyValuePair<string, string>> headers)
+    {
+        foreach (var header in headers)
+        {
+            if (!OperatorNotificationValidation.IsValidAuthHeaderName(header.Key) ||
+                !OperatorNotificationValidation.IsValidHeaderValue(header.Value) ||
+                !IsPrintableAscii(header.Value))
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static string BuildMessageBody(
@@ -324,140 +423,290 @@ public sealed class WebhookNotificationTransport : IWebhookNotificationTransport
         return sb.ToString();
     }
 
-    private static void ApplyHeaders(HttpRequestMessage httpRequest, WebhookDeliveryRequest request, string headerName)
+    private async Task<AddressResolutionResult> ResolveValidatedAddressesAsync(
+        string host,
+        bool allowPrivateNetwork,
+        CancellationToken ct)
     {
-        if (request.Format == WebhookPayloadFormat.Ntfy)
+        if (OperatorNotificationValidation.IsBlockedWebhookHostName(host, _networkPolicy.AllowLoopbackForTesting))
         {
-            var title = OperatorNotificationRedactor.SanitizeOperationalText(request.Event.Title, 120);
-            var priority = request.Event.Severity switch
-            {
-                OperatorNotificationSeverity.Critical => "5",
-                OperatorNotificationSeverity.Warning => "4",
-                _ => "3"
-            };
-            httpRequest.Headers.TryAddWithoutValidation("X-Title", title);
-            httpRequest.Headers.TryAddWithoutValidation("X-Priority", priority);
-            httpRequest.Headers.TryAddWithoutValidation("X-Tags", $"cameraagent,{OperatorNotificationEvent.EventSlug(request.Event.Kind)}");
+            return new AddressResolutionResult([], NotificationReasonCodes.SsrfBlocked, TransientFailure: false);
         }
 
-        if (request.Format != WebhookPayloadFormat.Pushover && !string.IsNullOrWhiteSpace(request.AuthToken))
+        var trimmed = host.Trim('[', ']');
+        IPAddress[] addresses;
+        if (IPAddress.TryParse(trimmed, out var literal))
         {
-            if (string.Equals(headerName, WebhookNotificationOptions.DefaultAuthHeaderName, StringComparison.OrdinalIgnoreCase))
+            addresses = [literal];
+        }
+        else if (DnsResolver is not null)
+        {
+            addresses = await DnsResolver(trimmed, ct).ConfigureAwait(false);
+        }
+        else
+        {
+            addresses = await Dns.GetHostAddressesAsync(trimmed, ct).ConfigureAwait(false);
+        }
+
+        if (addresses.Length == 0)
+        {
+            return new AddressResolutionResult([], NotificationReasonCodes.ConnectFailed, TransientFailure: true);
+        }
+
+        foreach (var address in addresses)
+        {
+            if (OperatorNotificationValidation.IsBlockedWebhookAddress(address, allowPrivateNetwork, _networkPolicy.AllowLoopbackForTesting))
             {
-                httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", request.AuthToken);
-            }
-            else
-            {
-                httpRequest.Headers.TryAddWithoutValidation(headerName, request.AuthToken);
+                return new AddressResolutionResult([], NotificationReasonCodes.SsrfBlocked, TransientFailure: false);
             }
         }
+
+        return new AddressResolutionResult(addresses, FailureReasonCode: null, TransientFailure: false);
     }
 
-    private static HttpClient CreateSafeClient(bool allowPrivateNetwork, OperatorNotificationNetworkPolicy policy)
+    private async Task<Stream> ConnectFirstAddressAsync(IPAddress[] addresses, int port, CancellationToken ct)
     {
-        SocketsHttpHandler? handler = null;
+        Exception? lastError = null;
+        foreach (var address in addresses)
+        {
+            if (StreamConnector is not null)
+            {
+                try
+                {
+                    return await StreamConnector(address, port, ct).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex) when (ex is SocketException or IOException)
+                {
+                    lastError = ex;
+                    continue;
+                }
+            }
+
+            Socket? socket = null;
+            try
+            {
+                socket = new Socket(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp)
+                {
+                    NoDelay = true
+                };
+                await socket.ConnectAsync(address, port, ct).ConfigureAwait(false);
+                var networkStream = new NetworkStream(socket, ownsSocket: true);
+                socket = null;
+                return networkStream;
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex) when (ex is SocketException or IOException)
+            {
+                lastError = ex;
+            }
+            finally
+            {
+                socket?.Dispose();
+            }
+        }
+
+        throw lastError ?? new SocketException((int)SocketError.HostUnreachable);
+    }
+
+    private async Task<SslStream> UpgradeToTlsAsync(Stream inner, string targetHost, CancellationToken ct)
+    {
+        var sslStream = new SslStream(inner, leaveInnerStreamOpen: true, CertificateValidationCallback);
         try
         {
-            handler = new SocketsHttpHandler
+            var options = new SslClientAuthenticationOptions
             {
-                AllowAutoRedirect = false,
-                UseCookies = false,
-                AutomaticDecompression = DecompressionMethods.None,
-                PreAuthenticate = false,
-                Credentials = null,
-                ActivityHeadersPropagator = null,
-                MaxResponseHeadersLength = 32,
-                MaxResponseDrainSize = 0,
-                MaxConnectionsPerServer = 2,
-                ConnectTimeout = TimeSpan.FromSeconds(5),
-                PooledConnectionIdleTimeout = TimeSpan.FromMinutes(1),
-                PooledConnectionLifetime = TimeSpan.FromMinutes(2),
-                ConnectCallback = async (context, ct) =>
-                {
-                    var host = context.DnsEndPoint.Host;
-                    if (OperatorNotificationValidation.IsBlockedWebhookHostName(host, policy.AllowLoopbackForTesting))
-                    {
-                        throw CreateSsrfBlockedException();
-                    }
-
-                    IPAddress[] addresses = IPAddress.TryParse(host.Trim('[', ']'), out var literal)
-                        ? [literal]
-                        : await Dns.GetHostAddressesAsync(host, ct).ConfigureAwait(false);
-
-                    if (addresses.Length == 0)
-                    {
-                        throw new SocketException((int)SocketError.HostNotFound);
-                    }
-
-                    foreach (var address in addresses)
-                    {
-                        if (OperatorNotificationValidation.IsBlockedWebhookAddress(address, allowPrivateNetwork, policy.AllowLoopbackForTesting))
-                        {
-                            throw CreateSsrfBlockedException();
-                        }
-                    }
-
-                    Exception? lastError = null;
-                    foreach (var address in addresses)
-                    {
-                        var socket = new Socket(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp)
-                        {
-                            NoDelay = true
-                        };
-                        try
-                        {
-                            await socket.ConnectAsync(address, context.DnsEndPoint.Port, ct).ConfigureAwait(false);
-                            return new NetworkStream(socket, ownsSocket: true);
-                        }
-                        catch (OperationCanceledException)
-                        {
-                            socket.Dispose();
-                            throw;
-                        }
-                        catch (Exception ex) when (ex is SocketException or IOException)
-                        {
-                            socket.Dispose();
-                            lastError = ex;
-                        }
-                    }
-
-                    throw lastError ?? new SocketException((int)SocketError.HostUnreachable);
-                }
+                TargetHost = targetHost.Trim('[', ']'),
+                // Allow OS default TLS 1.2/1.3 selection (CA5398).
+                EnabledSslProtocols = SslProtocols.None
             };
-
-            var client = new HttpClient(handler, disposeHandler: true);
-            handler = null;
-            return client;
+            await sslStream.AuthenticateAsClientAsync(options, ct).ConfigureAwait(false);
+            return sslStream;
         }
-        finally
+        catch
         {
-            handler?.Dispose();
+            await sslStream.DisposeAsync().ConfigureAwait(false);
+            throw;
         }
     }
 
-    private static InvalidOperationException CreateSsrfBlockedException()
+    private static byte[] FormatHttp11PostRequest(
+        Uri uri,
+        string pathAndQuery,
+        string contentType,
+        byte[] bodyBytes,
+        List<KeyValuePair<string, string>> extraHeaders)
     {
-        var ex = new InvalidOperationException("Webhook target address is blocked by outbound network safety policy.");
-        ex.Data[SsrfBlockedMarkerKey] = true;
-        return ex;
+        var host = uri.HostNameType == UriHostNameType.IPv6 ? $"[{uri.IdnHost}]" : uri.IdnHost;
+        var hostHeader = uri.IsDefaultPort
+            ? host
+            : string.Create(CultureInfo.InvariantCulture, $"{host}:{uri.Port}");
+
+        var sb = new StringBuilder(512);
+        sb.Append("POST ").Append(pathAndQuery).Append(" HTTP/1.1\r\n");
+        sb.Append("Host: ").Append(hostHeader).Append("\r\n");
+        sb.Append("User-Agent: HVO.SkyMonitor.CameraAgent/1.0\r\n");
+        sb.Append("Content-Type: ").Append(contentType).Append("\r\n");
+        sb.Append(CultureInfo.InvariantCulture, $"Content-Length: {bodyBytes.Length}\r\n");
+        sb.Append("Connection: close\r\n");
+        foreach (var header in extraHeaders)
+        {
+            sb.Append(header.Key).Append(": ").Append(header.Value).Append("\r\n");
+        }
+        sb.Append("\r\n");
+
+        var headerBytes = Encoding.ASCII.GetBytes(sb.ToString());
+        var combined = new byte[headerBytes.Length + bodyBytes.Length];
+        Buffer.BlockCopy(headerBytes, 0, combined, 0, headerBytes.Length);
+        Buffer.BlockCopy(bodyBytes, 0, combined, headerBytes.Length, bodyBytes.Length);
+        return combined;
     }
 
-    private static TimeSpan? ParseRetryAfter(RetryConditionHeaderValue? retryAfter, DateTimeOffset nowUtc)
+    private static async Task<HttpHeadResponse> ReadHttp11ResponseHeadAsync(
+        Stream stream,
+        DateTimeOffset nowUtc,
+        CancellationToken ct)
     {
-        if (retryAfter is null)
+        var reader = new BoundedAsciiLineReader(stream, MaximumResponseHeaderBytes);
+        for (var interim = 0; interim <= MaximumInterimResponses; interim++)
+        {
+            var statusLine = await reader.ReadLineAsync(ct).ConfigureAwait(false);
+            if (!TryParseStatusLine(statusLine, out var statusCode))
+            {
+                throw new InvalidDataException("Malformed HTTP response status line.");
+            }
+
+            TimeSpan? retryAfter = null;
+            var headerLines = 0;
+            while (true)
+            {
+                var line = await reader.ReadLineAsync(ct).ConfigureAwait(false);
+                if (line.Length == 0)
+                {
+                    break;
+                }
+                if (++headerLines > MaximumResponseHeaderLines)
+                {
+                    throw new InvalidDataException("HTTP response exceeded maximum header line limit.");
+                }
+                if (line.StartsWith("Retry-After:", StringComparison.OrdinalIgnoreCase))
+                {
+                    retryAfter = ParseRetryAfter(line[12..].Trim(), nowUtc);
+                }
+            }
+
+            if (statusCode is >= 100 and < 200)
+            {
+                continue;
+            }
+
+            return new HttpHeadResponse(statusCode, retryAfter);
+        }
+
+        throw new InvalidDataException("HTTP server sent too many interim 1xx responses.");
+    }
+
+    private static bool TryParseStatusLine(string line, out int statusCode)
+    {
+        statusCode = 0;
+        if (line.Length < 12 || !line.StartsWith("HTTP/1.", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+        var firstSpace = line.IndexOf(' ', StringComparison.Ordinal);
+        if (firstSpace < 8 || firstSpace + 4 > line.Length)
+        {
+            return false;
+        }
+        var codeSpan = line.AsSpan(firstSpace + 1, 3);
+        if (!int.TryParse(codeSpan, NumberStyles.None, CultureInfo.InvariantCulture, out statusCode) ||
+            statusCode is < 100 or > 599)
+        {
+            return false;
+        }
+        return firstSpace + 4 == line.Length || line[firstSpace + 4] == ' ';
+    }
+
+    private static OperatorNotificationDeliveryResult ClassifyHttpStatus(int status, TimeSpan? retryAfter, TimeSpan elapsed)
+    {
+        if (status is >= 200 and < 300)
+        {
+            return OperatorNotificationDeliveryResult.Success(ChannelName, elapsed);
+        }
+        if (status is >= 300 and < 400)
+        {
+            return OperatorNotificationDeliveryResult.Failure(
+                ChannelName, NotificationReasonCodes.RedirectBlocked, transient: false, elapsed);
+        }
+        if (status == 429)
+        {
+            return OperatorNotificationDeliveryResult.Failure(
+                ChannelName, NotificationReasonCodes.RateLimited, transient: true, elapsed, retryAfter);
+        }
+        if (status == 408 || status >= 500)
+        {
+            return OperatorNotificationDeliveryResult.Failure(
+                ChannelName, NotificationReasonCodes.ServerError, transient: true, elapsed, retryAfter);
+        }
+        if (status is 401 or 403)
+        {
+            return OperatorNotificationDeliveryResult.Failure(
+                ChannelName, NotificationReasonCodes.AuthFailed, transient: false, elapsed);
+        }
+        if (status is >= 400 and < 500)
+        {
+            return OperatorNotificationDeliveryResult.Failure(
+                ChannelName, NotificationReasonCodes.ClientRejected, transient: false, elapsed);
+        }
+        return OperatorNotificationDeliveryResult.Failure(
+            ChannelName, NotificationReasonCodes.ProtocolError, transient: false, elapsed);
+    }
+
+    private static TimeSpan? ParseRetryAfter(string? rawHeader, DateTimeOffset nowUtc)
+    {
+        if (string.IsNullOrWhiteSpace(rawHeader))
         {
             return null;
         }
-        TimeSpan? raw = retryAfter.Delta ?? (retryAfter.Date is { } date ? date - nowUtc : null);
+
+        TimeSpan? raw = null;
+        if (long.TryParse(rawHeader, NumberStyles.Integer, CultureInfo.InvariantCulture, out var deltaSeconds))
+        {
+            raw = TimeSpan.FromSeconds(Math.Clamp(deltaSeconds, 0, 86400));
+        }
+        else if (DateTimeOffset.TryParse(rawHeader, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var retryDate))
+        {
+            raw = retryDate - nowUtc;
+        }
+
         if (raw is null || raw.Value <= TimeSpan.Zero)
         {
             return null;
         }
+
         return raw.Value < MinimumRetryAfter
             ? MinimumRetryAfter
             : raw.Value > MaximumRetryAfter
                 ? MaximumRetryAfter
                 : raw.Value;
+    }
+
+    private static bool IsPrintableAscii(string value)
+    {
+        foreach (var c in value)
+        {
+            if (c is < ' ' or > '~')
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static string Truncate(string value, int maximumLength) =>
@@ -467,15 +716,58 @@ public sealed class WebhookNotificationTransport : IWebhookNotificationTransport
 
     public void Dispose()
     {
-        if (_disposed)
+        // Connections are short-lived and disposed per send; no pooled HttpClient state is retained.
+    }
+
+    private readonly record struct WirePayload(string ContentType, byte[] BodyBytes);
+
+    private readonly record struct AddressResolutionResult(
+        IPAddress[] Addresses,
+        string? FailureReasonCode,
+        bool TransientFailure);
+
+    private readonly record struct HttpHeadResponse(int StatusCode, TimeSpan? RetryAfter);
+
+    private sealed class BoundedAsciiLineReader(Stream stream, int maximumTotalBytes)
+    {
+        private readonly Stream _stream = stream;
+        private readonly byte[] _buffer = new byte[1024];
+        private int _pos;
+        private int _len;
+        private int _totalRead;
+
+        public async Task<string> ReadLineAsync(CancellationToken ct)
         {
-            return;
-        }
-        _disposed = true;
-        _publicClient.Dispose();
-        if (!ReferenceEquals(_privateAllowedClient, _publicClient))
-        {
-            _privateAllowedClient.Dispose();
+            var line = new List<byte>(128);
+            while (true)
+            {
+                if (_pos >= _len)
+                {
+                    _len = await _stream.ReadAsync(_buffer, ct).ConfigureAwait(false);
+                    _pos = 0;
+                    if (_len == 0)
+                    {
+                        throw new IOException("Webhook server closed connection before completing HTTP response headers.");
+                    }
+                }
+
+                var b = _buffer[_pos++];
+                if (++_totalRead > maximumTotalBytes)
+                {
+                    throw new InvalidDataException("HTTP response headers exceeded maximum allowed size.");
+                }
+
+                if (b == (byte)'\n')
+                {
+                    if (line.Count > 0 && line[^1] == (byte)'\r')
+                    {
+                        line.RemoveAt(line.Count - 1);
+                    }
+                    return Encoding.ASCII.GetString(line.ToArray());
+                }
+
+                line.Add(b);
+            }
         }
     }
 }

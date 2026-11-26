@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Net;
@@ -12,8 +11,9 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Notifications;
 /// <summary>
 /// Bounded, zero-external-dependency RFC 5321 / RFC 3207 (STARTTLS) / RFC 8314 (Implicit TLS) / RFC 4954
 /// (AUTH PLAIN and AUTH LOGIN) SMTP delivery transport. Works with standard SMTP mailboxes/relays and Azure
-/// Communication Services Email SMTP endpoints while enforcing strict timeouts, fail-closed TLS, Mailpit production
-/// exclusion, SSRF IP checks, header-injection checks, and zero credential logging.
+/// Communication Services Email SMTP endpoints while enforcing strict timeouts, fail-closed TLS whenever credentials
+/// or non-local hosts are used, explicit AUTH capability checks, Mailpit production exclusion, SSRF IP checks,
+/// RFC 2045/2047/5322 message formatting, and zero credential logging.
 /// </summary>
 public sealed class SmtpNotificationTransport(
     OperatorNotificationNetworkPolicy networkPolicy,
@@ -22,12 +22,17 @@ public sealed class SmtpNotificationTransport(
     public const string ChannelName = "smtp";
     private const int MaximumResponseLines = 64;
     private const int MaximumLineLength = 2048;
+    private const int MaximumRfc5322LineOctets = 998;
+    private const int RecommendedHeaderFoldLength = 78;
 
     private readonly OperatorNotificationNetworkPolicy _networkPolicy = networkPolicy ?? throw new ArgumentNullException(nameof(networkPolicy));
     private readonly TimeProvider _timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
 
     /// <summary>Internal test seam for ephemeral self-signed loopback TLS certificates in unit tests. Always null in production.</summary>
     internal RemoteCertificateValidationCallback? CertificateValidationCallback { get; init; }
+
+    /// <summary>Internal test seam for deterministic DNS resolution in unit tests. Always null in production.</summary>
+    internal Func<string, CancellationToken, Task<IPAddress[]>>? DnsResolver { get; init; }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
         Justification = "SMTP delivery maps all network/protocol failures to fixed sanitized reason codes without leaking credentials.")]
@@ -38,7 +43,8 @@ public sealed class SmtpNotificationTransport(
         ArgumentNullException.ThrowIfNull(request);
         var started = _timeProvider.GetTimestamp();
 
-        if (!OperatorNotificationValidation.IsValidHost(request.Host) ||
+        if (!Enum.IsDefined(request.SecurityMode) ||
+            !OperatorNotificationValidation.IsValidHost(request.Host) ||
             request.Port is < 1 or > 65535 ||
             !OperatorNotificationValidation.IsValidEmailAddress(request.FromAddress) ||
             request.Recipients.Count == 0 ||
@@ -59,26 +65,28 @@ public sealed class SmtpNotificationTransport(
                 ChannelName, NotificationReasonCodes.MailpitProhibited, transient: false, Elapsed(started));
         }
 
+        var hasCredentials = !string.IsNullOrEmpty(request.Username) || !string.IsNullOrEmpty(request.Password);
+        if (hasCredentials && request.SecurityMode == SmtpSecurityMode.None)
+        {
+            return OperatorNotificationDeliveryResult.Failure(
+                ChannelName, NotificationReasonCodes.TlsRequired, transient: false, Elapsed(started));
+        }
+
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(request.Timeout > TimeSpan.Zero ? request.Timeout : TimeSpan.FromSeconds(OperatorNotificationsOptions.DefaultRequestTimeoutSeconds));
         var ct = timeoutCts.Token;
 
         try
         {
-            var addresses = await ResolveValidatedAddressesAsync(request.Host, ct).ConfigureAwait(false);
-            if (addresses is null)
+            var resolution = await ResolveValidatedAddressesAsync(request.Host, request.SecurityMode, ct).ConfigureAwait(false);
+            if (resolution.FailureReasonCode is not null)
             {
                 return OperatorNotificationDeliveryResult.Failure(
-                    ChannelName, NotificationReasonCodes.SsrfBlocked, transient: false, Elapsed(started));
-            }
-            if (addresses.Length == 0)
-            {
-                return OperatorNotificationDeliveryResult.Failure(
-                    ChannelName, NotificationReasonCodes.ConnectFailed, transient: true, Elapsed(started));
+                    ChannelName, resolution.FailureReasonCode, resolution.TransientFailure, Elapsed(started));
             }
 
             using var tcpClient = new TcpClient();
-            await ConnectFirstAddressAsync(tcpClient, addresses, request.Port, ct).ConfigureAwait(false);
+            await ConnectFirstAddressAsync(tcpClient, resolution.Addresses, request.Port, ct).ConfigureAwait(false);
 
             Stream stream = tcpClient.GetStream();
             if (request.SecurityMode == SmtpSecurityMode.ImplicitTls)
@@ -86,11 +94,11 @@ public sealed class SmtpNotificationTransport(
                 var implicitSsl = await UpgradeToTlsAsync(stream, request.Host, ct).ConfigureAwait(false);
                 await using (implicitSsl.ConfigureAwait(false))
                 {
-                    return await RunSmtpSessionAsync(implicitSsl, request, started, ct).ConfigureAwait(false);
+                    return await RunSmtpSessionAsync(implicitSsl, request, tlsActive: true, started, ct).ConfigureAwait(false);
                 }
             }
 
-            return await RunSmtpSessionAsync(stream, request, started, ct).ConfigureAwait(false);
+            return await RunSmtpSessionAsync(stream, request, tlsActive: false, started, ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -132,6 +140,7 @@ public sealed class SmtpNotificationTransport(
     private async Task<OperatorNotificationDeliveryResult> RunSmtpSessionAsync(
         Stream stream,
         SmtpDeliveryRequest request,
+        bool tlsActive,
         long started,
         CancellationToken ct)
     {
@@ -148,38 +157,52 @@ public sealed class SmtpNotificationTransport(
             return ClassifySmtpFailure(ehlo.Code, Elapsed(started));
         }
 
-        if (request.SecurityMode == SmtpSecurityMode.StartTls)
+        switch (request.SecurityMode)
         {
-            if (!ehlo.SupportsCapability("STARTTLS"))
-            {
-                return OperatorNotificationDeliveryResult.Failure(
-                    ChannelName, NotificationReasonCodes.TlsUnsupported, transient: false, Elapsed(started));
-            }
-
-            await session.WriteLineAsync("STARTTLS", ct).ConfigureAwait(false);
-            var startTlsResponse = await session.ReadResponseAsync(ct).ConfigureAwait(false);
-            if (startTlsResponse.Code != 220)
-            {
-                return ClassifySmtpFailure(startTlsResponse.Code, Elapsed(started));
-            }
-
-            var startTlsSsl = await UpgradeToTlsAsync(stream, request.Host, ct).ConfigureAwait(false);
-            await using (startTlsSsl.ConfigureAwait(false))
-            {
-                var tlsSession = new SmtpLineSession(startTlsSsl);
-
-                // RFC 3207 Section 4.2 requires a fresh EHLO after the TLS handshake.
-                var tlsEhlo = await SendEhloAsync(tlsSession, ct).ConfigureAwait(false);
-                if (tlsEhlo.Code != 250)
+            case SmtpSecurityMode.ImplicitTls:
+                if (!tlsActive)
                 {
-                    return ClassifySmtpFailure(tlsEhlo.Code, Elapsed(started));
+                    return OperatorNotificationDeliveryResult.Failure(
+                        ChannelName, NotificationReasonCodes.TlsRequired, transient: false, Elapsed(started));
+                }
+                return await DeliverAfterEhloAsync(session, ehlo, request, tlsActive: true, started, ct).ConfigureAwait(false);
+
+            case SmtpSecurityMode.StartTls:
+                if (!ehlo.SupportsCapability("STARTTLS"))
+                {
+                    return OperatorNotificationDeliveryResult.Failure(
+                        ChannelName, NotificationReasonCodes.TlsUnsupported, transient: false, Elapsed(started));
                 }
 
-                return await DeliverAfterEhloAsync(tlsSession, tlsEhlo, request, started, ct).ConfigureAwait(false);
-            }
-        }
+                await session.WriteLineAsync("STARTTLS", ct).ConfigureAwait(false);
+                var startTlsResponse = await session.ReadResponseAsync(ct).ConfigureAwait(false);
+                if (startTlsResponse.Code != 220)
+                {
+                    return ClassifySmtpFailure(startTlsResponse.Code, Elapsed(started));
+                }
 
-        return await DeliverAfterEhloAsync(session, ehlo, request, started, ct).ConfigureAwait(false);
+                var startTlsSsl = await UpgradeToTlsAsync(stream, request.Host, ct).ConfigureAwait(false);
+                await using (startTlsSsl.ConfigureAwait(false))
+                {
+                    var tlsSession = new SmtpLineSession(startTlsSsl);
+
+                    // RFC 3207 Section 4.2 requires a fresh EHLO after the TLS handshake.
+                    var tlsEhlo = await SendEhloAsync(tlsSession, ct).ConfigureAwait(false);
+                    if (tlsEhlo.Code != 250)
+                    {
+                        return ClassifySmtpFailure(tlsEhlo.Code, Elapsed(started));
+                    }
+
+                    return await DeliverAfterEhloAsync(tlsSession, tlsEhlo, request, tlsActive: true, started, ct).ConfigureAwait(false);
+                }
+
+            case SmtpSecurityMode.None:
+                return await DeliverAfterEhloAsync(session, ehlo, request, tlsActive: false, started, ct).ConfigureAwait(false);
+
+            default:
+                return OperatorNotificationDeliveryResult.Failure(
+                    ChannelName, NotificationReasonCodes.InvalidConfiguration, transient: false, Elapsed(started));
+        }
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
@@ -188,11 +211,18 @@ public sealed class SmtpNotificationTransport(
         SmtpLineSession session,
         SmtpResponse ehlo,
         SmtpDeliveryRequest request,
+        bool tlsActive,
         long started,
         CancellationToken ct)
     {
         if (!string.IsNullOrEmpty(request.Username) || !string.IsNullOrEmpty(request.Password))
         {
+            if (!tlsActive)
+            {
+                return OperatorNotificationDeliveryResult.Failure(
+                    ChannelName, NotificationReasonCodes.TlsRequired, transient: false, Elapsed(started));
+            }
+
             var authResult = await AuthenticateAsync(
                 session,
                 ehlo,
@@ -206,7 +236,13 @@ public sealed class SmtpNotificationTransport(
             }
         }
 
-        await session.WriteLineAsync($"MAIL FROM:<{request.FromAddress}>", ct).ConfigureAwait(false);
+        var supports8BitMime = ehlo.SupportsCapability("8BITMIME");
+        var payload = BuildRfc5322Message(request, _timeProvider.GetUtcNow(), supports8BitMime, out var uses8BitMime);
+        var mailFromCommand = uses8BitMime
+            ? $"MAIL FROM:<{request.FromAddress}> BODY=8BITMIME"
+            : $"MAIL FROM:<{request.FromAddress}>";
+
+        await session.WriteLineAsync(mailFromCommand, ct).ConfigureAwait(false);
         var mailFrom = await session.ReadResponseAsync(ct).ConfigureAwait(false);
         if (mailFrom.Code != 250)
         {
@@ -230,7 +266,6 @@ public sealed class SmtpNotificationTransport(
             return ClassifySmtpFailure(dataStart.Code, Elapsed(started));
         }
 
-        var payload = BuildRfc5322Message(request, _timeProvider.GetUtcNow());
         await session.WriteRawAsync(payload, ct).ConfigureAwait(false);
         var dataDone = await session.ReadResponseAsync(ct).ConfigureAwait(false);
         if (dataDone.Code != 250)
@@ -252,13 +287,20 @@ public sealed class SmtpNotificationTransport(
         return OperatorNotificationDeliveryResult.Success(ChannelName, Elapsed(started));
     }
 
-    private static async Task<IPAddress[]?> ResolveValidatedAddressesAsync(string host, CancellationToken cancellationToken)
+    private async Task<AddressResolutionResult> ResolveValidatedAddressesAsync(
+        string host,
+        SmtpSecurityMode securityMode,
+        CancellationToken cancellationToken)
     {
         var trimmed = host.Trim('[', ']');
         IPAddress[] resolved;
         if (IPAddress.TryParse(trimmed, out var literal))
         {
             resolved = [literal];
+        }
+        else if (DnsResolver is not null)
+        {
+            resolved = await DnsResolver(trimmed, cancellationToken).ConfigureAwait(false);
         }
         else
         {
@@ -267,18 +309,24 @@ public sealed class SmtpNotificationTransport(
 
         if (resolved.Length == 0)
         {
-            return [];
+            return new AddressResolutionResult([], NotificationReasonCodes.ConnectFailed, TransientFailure: true);
         }
 
         foreach (var address in resolved)
         {
             if (OperatorNotificationValidation.IsBlockedSmtpAddress(address))
             {
-                return null;
+                return new AddressResolutionResult([], NotificationReasonCodes.SsrfBlocked, TransientFailure: false);
+            }
+
+            if (securityMode == SmtpSecurityMode.None &&
+                !OperatorNotificationValidation.IsPrivateOrLoopbackSmtpAddress(address))
+            {
+                return new AddressResolutionResult([], NotificationReasonCodes.TlsRequired, TransientFailure: false);
             }
         }
 
-        return resolved;
+        return new AddressResolutionResult(resolved, FailureReasonCode: null, TransientFailure: false);
     }
 
     private static async Task ConnectFirstAddressAsync(
@@ -355,10 +403,17 @@ public sealed class SmtpNotificationTransport(
         TimeSpan elapsed,
         CancellationToken cancellationToken)
     {
-        var supportsLogin = ehlo.SupportsAuthMechanism("LOGIN");
         var supportsPlain = ehlo.SupportsAuthMechanism("PLAIN");
+        var supportsLogin = ehlo.SupportsAuthMechanism("LOGIN");
 
-        if (supportsPlain || !supportsLogin)
+        // Fail closed: never transmit credentials unless the server explicitly advertised a supported AUTH mechanism.
+        if (!supportsPlain && !supportsLogin)
+        {
+            return OperatorNotificationDeliveryResult.Failure(
+                ChannelName, NotificationReasonCodes.AuthFailed, transient: false, elapsed);
+        }
+
+        if (supportsPlain)
         {
             var plainBytes = Encoding.UTF8.GetBytes($"\0{username}\0{password}");
             var plainPayload = Convert.ToBase64String(plainBytes);
@@ -377,8 +432,7 @@ public sealed class SmtpNotificationTransport(
                     return null;
                 }
             }
-            // If server rejected AUTH PLAIN as unsupported (504) and LOGIN may work, try AUTH LOGIN.
-            if (response.Code != 504)
+            if (response.Code != 504 || !supportsLogin)
             {
                 return ClassifyAuthFailure(response.Code, elapsed);
             }
@@ -417,29 +471,197 @@ public sealed class SmtpNotificationTransport(
             _ => OperatorNotificationDeliveryResult.Failure(ChannelName, NotificationReasonCodes.ProtocolError, transient: false, elapsed)
         };
 
-    internal static byte[] BuildRfc5322Message(SmtpDeliveryRequest request, DateTimeOffset nowUtc)
+    internal static byte[] BuildRfc5322Message(
+        SmtpDeliveryRequest request,
+        DateTimeOffset nowUtc,
+        bool serverSupports8BitMime = false)
+        => BuildRfc5322Message(request, nowUtc, serverSupports8BitMime, out _);
+
+    internal static byte[] BuildRfc5322Message(
+        SmtpDeliveryRequest request,
+        DateTimeOffset nowUtc,
+        bool serverSupports8BitMime,
+        out bool uses8BitMime)
     {
         var sb = new StringBuilder(1024);
-        var fromHeader = string.IsNullOrWhiteSpace(request.FromDisplayName)
-            ? $"<{request.FromAddress}>"
-            : $"\"{EscapeQuotedDisplayName(request.FromDisplayName)}\" <{request.FromAddress}>";
-        sb.Append("From: ").Append(fromHeader).Append("\r\n");
-        sb.Append("To: ").Append(string.Join(", ", request.Recipients.Select(static r => $"<{r}>"))).Append("\r\n");
+        sb.Append("From: ").Append(FormatFromHeader(request.FromDisplayName, request.FromAddress)).Append("\r\n");
+        sb.Append("To: ").Append(FormatFoldedRecipients(request.Recipients)).Append("\r\n");
         sb.Append("Date: ").Append(nowUtc.UtcDateTime.ToString("ddd, dd MMM yyyy HH:mm:ss '+0000'", CultureInfo.InvariantCulture)).Append("\r\n");
         sb.Append("Message-ID: <").Append(Guid.NewGuid().ToString("N")).Append("@cameraagent.local>\r\n");
         sb.Append("Subject: ").Append(EncodeHeaderValue(request.Subject)).Append("\r\n");
         sb.Append("MIME-Version: 1.0\r\n");
         sb.Append("Content-Type: text/plain; charset=utf-8\r\n");
-        sb.Append("Content-Transfer-Encoding: 8bit\r\n");
-        sb.Append("Auto-Submitted: auto-generated\r\n");
-        sb.Append("X-HVO-Notification-Event: ").Append(request.EventSlug).Append("\r\n");
-        sb.Append("\r\n");
 
-        // Normalize line endings to CRLF and apply RFC 5321 Section 4.5.2 dot-stuffing.
         var normalizedBody = request.Body
             .Replace("\r\n", "\n", StringComparison.Ordinal)
             .Replace('\r', '\n');
         var lines = normalizedBody.Split('\n');
+
+        var isSevenBit = IsSevenBitSafe(lines);
+        if (isSevenBit)
+        {
+            uses8BitMime = false;
+            sb.Append("Content-Transfer-Encoding: 7bit\r\n");
+            sb.Append("Auto-Submitted: auto-generated\r\n");
+            sb.Append("X-HVO-Notification-Event: ").Append(request.EventSlug).Append("\r\n");
+            sb.Append("\r\n");
+            AppendDotStuffedLines(sb, lines);
+        }
+        else if (serverSupports8BitMime && AllUtf8LinesWithinLimit(lines))
+        {
+            uses8BitMime = true;
+            sb.Append("Content-Transfer-Encoding: 8bit\r\n");
+            sb.Append("Auto-Submitted: auto-generated\r\n");
+            sb.Append("X-HVO-Notification-Event: ").Append(request.EventSlug).Append("\r\n");
+            sb.Append("\r\n");
+            AppendDotStuffedLines(sb, lines);
+        }
+        else
+        {
+            uses8BitMime = false;
+            sb.Append("Content-Transfer-Encoding: quoted-printable\r\n");
+            sb.Append("Auto-Submitted: auto-generated\r\n");
+            sb.Append("X-HVO-Notification-Event: ").Append(request.EventSlug).Append("\r\n");
+            sb.Append("\r\n");
+            AppendQuotedPrintableBody(sb, lines);
+        }
+
+        sb.Append(".\r\n");
+        return Encoding.UTF8.GetBytes(sb.ToString());
+    }
+
+    private static string FormatFromHeader(string displayName, string address)
+    {
+        var trimmed = displayName.Trim();
+        if (trimmed.Length == 0)
+        {
+            return $"<{address}>";
+        }
+
+        // RFC 2047 Section 5: encoded-words MUST NOT appear within a quoted-string.
+        if (IsPrintableAscii(trimmed))
+        {
+            var escaped = trimmed
+                .Replace("\\", "\\\\", StringComparison.Ordinal)
+                .Replace("\"", "\\\"", StringComparison.Ordinal);
+            return $"\"{escaped}\" <{address}>";
+        }
+
+        return $"{EncodeRfc2047Base64Words(trimmed)} <{address}>";
+    }
+
+    private static string FormatFoldedRecipients(IReadOnlyList<string> recipients)
+    {
+        var sb = new StringBuilder(recipients.Count * 40);
+        var currentLineLength = 4; // "To: "
+        for (var i = 0; i < recipients.Count; i++)
+        {
+            var token = $"<{recipients[i]}>";
+            if (i == 0)
+            {
+                sb.Append(token);
+                currentLineLength += token.Length;
+            }
+            else if (currentLineLength + 2 + token.Length > RecommendedHeaderFoldLength)
+            {
+                sb.Append(",\r\n ").Append(token);
+                currentLineLength = 1 + token.Length;
+            }
+            else
+            {
+                sb.Append(", ").Append(token);
+                currentLineLength += 2 + token.Length;
+            }
+        }
+        return sb.ToString();
+    }
+
+    private static string EncodeHeaderValue(string value)
+    {
+        if (IsPrintableAscii(value))
+        {
+            return value;
+        }
+        return EncodeRfc2047Base64Words(value);
+    }
+
+    private static string EncodeRfc2047Base64Words(string value)
+    {
+        // RFC 2047 Section 2: each encoded-word is at most 75 octets: "=?utf-8?B?" (10) + base64 (<=60, 45 UTF-8 bytes) + "?=" (2) = 72 octets.
+        const int maxRawBytesPerWord = 45;
+        var sb = new StringBuilder();
+        var chunk = new List<byte>(maxRawBytesPerWord);
+
+        void FlushChunk()
+        {
+            if (chunk.Count == 0) return;
+            if (sb.Length > 0) sb.Append("\r\n ");
+            sb.Append("=?utf-8?B?").Append(Convert.ToBase64String(chunk.ToArray())).Append("?=");
+            chunk.Clear();
+        }
+
+        Span<byte> runeBytes = stackalloc byte[4];
+        foreach (var rune in value.EnumerateRunes())
+        {
+            var len = rune.EncodeToUtf8(runeBytes);
+            if (chunk.Count + len > maxRawBytesPerWord)
+            {
+                FlushChunk();
+            }
+            for (var i = 0; i < len; i++)
+            {
+                chunk.Add(runeBytes[i]);
+            }
+        }
+        FlushChunk();
+        return sb.ToString();
+    }
+
+    private static bool IsPrintableAscii(string value)
+    {
+        foreach (var c in value)
+        {
+            if (c is < ' ' or > '~')
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static bool IsSevenBitSafe(string[] lines)
+    {
+        foreach (var line in lines)
+        {
+            if (line.Length > MaximumRfc5322LineOctets)
+            {
+                return false;
+            }
+            foreach (var c in line)
+            {
+                if (c != '\t' && c is < ' ' or > '~')
+                {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    private static bool AllUtf8LinesWithinLimit(string[] lines)
+    {
+        foreach (var line in lines)
+        {
+            if (Encoding.UTF8.GetByteCount(line) > MaximumRfc5322LineOctets)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static void AppendDotStuffedLines(StringBuilder sb, string[] lines)
+    {
         foreach (var line in lines)
         {
             if (line.StartsWith('.'))
@@ -448,27 +670,58 @@ public sealed class SmtpNotificationTransport(
             }
             sb.Append(line).Append("\r\n");
         }
-        sb.Append(".\r\n");
-        return Encoding.UTF8.GetBytes(sb.ToString());
     }
 
-    private static string EscapeQuotedDisplayName(string displayName)
+    private static void AppendQuotedPrintableBody(StringBuilder sb, string[] lines)
     {
-        var sanitized = displayName.Trim().Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal);
-        return EncodeHeaderValue(sanitized);
-    }
-
-    private static string EncodeHeaderValue(string value)
-    {
-        var isAscii = value.All(static c => c is >= ' ' and <= '~');
-        if (isAscii)
+        const int maxQpLineLength = 75;
+        foreach (var line in lines)
         {
-            return value;
+            var utf8 = Encoding.UTF8.GetBytes(line);
+            var col = 0;
+            for (var i = 0; i < utf8.Length; i++)
+            {
+                var b = utf8[i];
+                var isLastByte = i == utf8.Length - 1;
+                var mustEncode = b is < 33 or > 126 or (byte)'=' ||
+                                 (col == 0 && b == (byte)'.');
+                if (b is (byte)' ' or (byte)'\t' && !isLastByte)
+                {
+                    mustEncode = false;
+                }
+
+                var tokenLen = mustEncode ? 3 : 1;
+                if (col + tokenLen > maxQpLineLength)
+                {
+                    sb.Append("=\r\n");
+                    col = 0;
+                    if (b == (byte)'.')
+                    {
+                        mustEncode = true;
+                        tokenLen = 3;
+                    }
+                }
+
+                if (mustEncode)
+                {
+                    sb.Append('=').Append(b.ToString("X2", CultureInfo.InvariantCulture));
+                }
+                else
+                {
+                    sb.Append((char)b);
+                }
+                col += tokenLen;
+            }
+            sb.Append("\r\n");
         }
-        return $"=?utf-8?B?{Convert.ToBase64String(Encoding.UTF8.GetBytes(value))}?=";
     }
 
     private TimeSpan Elapsed(long started) => _timeProvider.GetElapsedTime(started);
+
+    private readonly record struct AddressResolutionResult(
+        IPAddress[] Addresses,
+        string? FailureReasonCode,
+        bool TransientFailure);
 
     private sealed class SmtpLineSession(Stream stream)
     {

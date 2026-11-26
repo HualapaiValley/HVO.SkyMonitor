@@ -19,6 +19,18 @@ public sealed class FleetRuntimeState(TimeProvider timeProvider)
     private DateTimeOffset? _lastFailedUtc;
     private DateTimeOffset? _lastRecoveredUtc;
     private bool _failed;
+    private bool _cameraDisconnected;
+
+    public bool IsCameraDisconnected
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _cameraDisconnected;
+            }
+        }
+    }
 
     public FleetRuntimeSnapshot Snapshot
     {
@@ -67,10 +79,14 @@ public sealed class FleetRuntimeState(TimeProvider timeProvider)
         {
             _captureAvailability = FleetAvailability.Available;
             _captureReason = "ready";
+            _cameraDisconnected = false;
         }
     }
 
     public void CaptureFailed(string reason)
+        => CaptureFailed(reason, isCameraDisconnected: false);
+
+    public void CaptureFailed(string reason, bool isCameraDisconnected)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(reason);
         lock (_gate)
@@ -79,7 +95,29 @@ public sealed class FleetRuntimeState(TimeProvider timeProvider)
             _captureReason = Bound(reason);
             _lastFailedUtc = timeProvider.GetUtcNow();
             _failed = true;
+            _cameraDisconnected = isCameraDisconnected;
         }
+    }
+
+    internal static bool IsCameraDisconnectException(Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        var typeName = exception.GetType().Name;
+        var message = exception.Message ?? string.Empty;
+        if (string.Equals(typeName, "AsiException", StringComparison.Ordinal))
+        {
+            return message.Contains("CameraRemoved", StringComparison.OrdinalIgnoreCase) ||
+                   message.Contains("CameraClosed", StringComparison.OrdinalIgnoreCase) ||
+                   message.Contains("removed", StringComparison.OrdinalIgnoreCase) ||
+                   message.Contains("disconnect", StringComparison.OrdinalIgnoreCase);
+        }
+
+        return message.Contains("camera is not connected", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains("camera removed", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains("camera disconnected", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains("device disconnected", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains("device removed", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains("usb disconnect", StringComparison.OrdinalIgnoreCase);
     }
 
     public void CaptureSucceeded(CaptureResult result, TimeSpan moduleDuration, TimeSpan ingressDuration)
@@ -93,6 +131,7 @@ public sealed class FleetRuntimeState(TimeProvider timeProvider)
                 _lastRecoveredUtc = now;
             }
             _failed = false;
+            _cameraDisconnected = false;
             _captureAvailability = FleetAvailability.Available;
             _captureReason = "capturing";
             _lastSucceededUtc = now;

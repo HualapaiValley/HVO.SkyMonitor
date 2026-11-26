@@ -59,6 +59,7 @@ public sealed class NotificationsPageTests
         const string smtpPass = "ui-secret-smtp-pass-22";
         const string webhookSecretPath = "ui-secret-webhook-path-33";
         const string webhookToken = "ui-secret-webhook-tok-44";
+        const string ntfyTopicName = "ui-test-ntfy-topic-66";
         var fullWebhookUrl = $"https://hooks.example.test/{webhookSecretPath}?sig=55";
 
         var cut = context.Render<NotificationsPage>();
@@ -74,8 +75,10 @@ public sealed class NotificationsPageTests
         cut.Find("#smtp-password").Change(smtpPass);
 
         cut.Find("#webhook-enabled").Change(true);
+        cut.Find("#webhook-format").Change(WebhookPayloadFormat.Ntfy.ToString());
         cut.Find("#webhook-url").Change(fullWebhookUrl);
         cut.Find("#webhook-auth-token").Change(webhookToken);
+        cut.Find("#webhook-ntfy-topic").Change(ntfyTopicName);
 
         cut.Find("form.notifications-form").Submit();
 
@@ -85,19 +88,45 @@ public sealed class NotificationsPageTests
             Assert.AreEqual("Notification settings saved.", cut.Find("#notifications-banner").TextContent.Trim());
             Assert.AreEqual("Enabled", cut.Find("#notifications-master-state").TextContent.Trim());
             StringAssert.Contains(cut.Find("#webhook-secret-status").TextContent, "https://hooks.example.test", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find("#webhook-secret-status").TextContent, "Topic: Protected store", StringComparison.Ordinal);
         });
 
         Assert.AreEqual(smtpUser, service.LastSaveRequest!.SmtpUsername);
         Assert.AreEqual(smtpPass, service.LastSaveRequest.SmtpPassword);
         Assert.AreEqual(fullWebhookUrl, service.LastSaveRequest.WebhookUrl);
         Assert.AreEqual(webhookToken, service.LastSaveRequest.WebhookAuthToken);
+        Assert.AreEqual(ntfyTopicName, service.LastSaveRequest.WebhookNtfyTopic);
 
-        // Negative DOM secret-leak verification: inputs cleared and stored secrets NEVER rendered in markup!
+        // Negative DOM secret-leak verification: inputs cleared and stored secrets (including ntfy topic) NEVER rendered in markup!
         var html = cut.Markup;
-        foreach (var canary in new[] { smtpUser, smtpPass, webhookSecretPath, "sig=55", webhookToken })
+        foreach (var canary in new[] { smtpUser, smtpPass, webhookSecretPath, "sig=55", webhookToken, ntfyTopicName })
         {
             Assert.DoesNotContain(canary, html, StringComparison.Ordinal);
         }
+    }
+
+    [TestMethod]
+    public void Render_CorruptStore_ShowsRecoveryAlertAndAllowsSavingReplacementSettings()
+    {
+        using var context = CreateContext(out var service);
+        service.CurrentView = service.CurrentView with
+        {
+            Configuration = service.CurrentView.Configuration with
+            {
+                StoreCorrupt = true,
+                StoreStatusReasonCode = NotificationReasonCodes.StoreCorrupt
+            }
+        };
+
+        var cut = context.Render<NotificationsPage>();
+
+        cut.WaitForAssertion(() =>
+        {
+            var corruptBanner = cut.Find("#notifications-corrupt-banner");
+            StringAssert.Contains(corruptBanner.TextContent, "unreadable", StringComparison.OrdinalIgnoreCase);
+            Assert.IsNull(cut.Find("fieldset.notifications-fieldset").GetAttribute("disabled"));
+            Assert.IsNull(cut.Find("#notifications-save").GetAttribute("disabled"));
+        });
     }
 
     [TestMethod]
@@ -193,7 +222,8 @@ public sealed class NotificationsPageTests
                 !string.IsNullOrEmpty(request.SmtpPassword), NotificationSecretSource.ProtectedStore,
                 !string.IsNullOrEmpty(request.WebhookUrl), host, NotificationSecretSource.ProtectedStore,
                 !string.IsNullOrEmpty(request.WebhookAuthToken), NotificationSecretSource.ProtectedStore,
-                !string.IsNullOrEmpty(request.WebhookUserKey), NotificationSecretSource.ProtectedStore);
+                !string.IsNullOrEmpty(request.WebhookUserKey), NotificationSecretSource.ProtectedStore,
+                !string.IsNullOrEmpty(request.WebhookNtfyTopic), NotificationSecretSource.ProtectedStore);
             var config = new OperatorNotificationsConfigurationSnapshot(request.Options, presence, "v2", true, true);
             var status = CurrentView.Status with
             {

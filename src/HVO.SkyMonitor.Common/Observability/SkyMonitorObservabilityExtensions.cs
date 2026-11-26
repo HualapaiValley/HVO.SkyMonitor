@@ -105,7 +105,7 @@ public static class SkyMonitorObservabilityExtensions
     };
     private static readonly HashSet<string> OperatorNotificationsHealthDataKeys = new(StringComparer.Ordinal)
     {
-        "Availability", "QueueDepth", "SmtpState", "WebhookState"
+        "Availability", "ReasonCode", "QueueDepth", "SmtpState", "WebhookState"
     };
     private static readonly HashSet<string> CalibrationLibraryHealthDataKeys = new(StringComparer.Ordinal)
     {

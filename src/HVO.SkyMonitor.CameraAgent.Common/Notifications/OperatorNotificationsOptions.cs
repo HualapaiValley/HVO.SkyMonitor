@@ -32,11 +32,11 @@ public enum SmtpSecurityMode
     /// <summary>Implicit TLS immediately on connect (SMTPS / RFC 8314, typically port 465).</summary>
     ImplicitTls = 1,
 
-    /// <summary>Plaintext SMTP without TLS (for explicit local LAN relays only).</summary>
+    /// <summary>Plaintext SMTP without TLS (for unauthenticated local LAN/loopback relays only; never permitted with credentials or public hosts).</summary>
     None = 2
 }
 
-/// <summary>JSON payload profile for outbound generic HTTP POST webhooks.</summary>
+/// <summary>Payload profile for outbound generic HTTP POST webhooks.</summary>
 public enum WebhookPayloadFormat
 {
     /// <summary>Structured CameraAgent JSON payload with top-level <c>title</c>, <c>text</c>, and <c>message</c> fields.</summary>
@@ -45,7 +45,7 @@ public enum WebhookPayloadFormat
     /// <summary>Slack incoming webhook JSON payload (<c>text</c> and <c>blocks</c>).</summary>
     Slack = 1,
 
-    /// <summary>ntfy JSON webhook payload with optional <c>topic</c> and ntfy priority/tag headers.</summary>
+    /// <summary>ntfy publishing profile (JSON envelope to server root with protected topic, or plain-text body with Title/Priority/Tags headers to a topic-path URL).</summary>
     Ntfy = 2,
 
     /// <summary>Pushover Messages API JSON payload (<c>token</c>, <c>user</c>, <c>title</c>, <c>message</c>, <c>priority</c>).</summary>
@@ -210,8 +210,8 @@ public sealed class SmtpNotificationOptions : IValidatableObject
 }
 
 /// <summary>
-/// Non-secret generic HTTP POST webhook configuration. The target webhook URL, bearer/auth token, and optional
-/// Pushover user key are treated as protected secrets and are never logged or returned to the UI.
+/// Non-secret generic HTTP POST webhook configuration. The target webhook URL, bearer/auth token, Pushover user key,
+/// and ntfy topic are treated as protected write-only secrets and are never logged or returned to the UI.
 /// </summary>
 public sealed class WebhookNotificationOptions : IValidatableObject
 {
@@ -232,13 +232,9 @@ public sealed class WebhookNotificationOptions : IValidatableObject
     [MaxLength(MaximumHeaderNameLength)]
     public string AuthHeaderName { get; init; } = DefaultAuthHeaderName;
 
-    /// <summary>Optional ntfy topic name included in the JSON body when <see cref="Format"/> is <see cref="WebhookPayloadFormat.Ntfy"/>.</summary>
-    [MaxLength(MaximumTopicLength)]
-    public string NtfyTopic { get; init; } = string.Empty;
-
     /// <summary>
     /// Allows HTTPS webhooks targeting RFC1918/ULA private LAN hosts (for self-hosted relays such as LAN ntfy).
-    /// Loopback, link-local, cloud metadata, unspecified, and multicast addresses remain unconditionally blocked.
+    /// Loopback, link-local, cloud metadata, CGNAT, unspecified, and multicast addresses remain unconditionally blocked.
     /// </summary>
     public bool AllowPrivateNetwork { get; init; }
 

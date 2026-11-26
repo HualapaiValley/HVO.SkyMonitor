@@ -144,6 +144,16 @@ public static partial class OperatorNotificationValidation
     public static bool HasHeaderInjectionCharacters(string? value)
         => value is not null && value.Any(static c => c is '\r' or '\n' or '\0' || char.IsControl(c));
 
+    public static bool IsValidHeaderValue(string? value, int maximumLength = MaximumSecretLength + 16)
+        => !string.IsNullOrEmpty(value) && value.Length <= maximumLength && !HasHeaderInjectionCharacters(value);
+
+    public static bool IsNtfyRootPath(Uri uri)
+    {
+        ArgumentNullException.ThrowIfNull(uri);
+        var path = uri.AbsolutePath;
+        return string.IsNullOrEmpty(path) || path == "/";
+    }
+
     public static bool IsValidAuthHeaderName(string? name)
     {
         if (string.IsNullOrWhiteSpace(name) ||
@@ -268,9 +278,10 @@ public static partial class OperatorNotificationValidation
     }
 
     /// <summary>
-    /// Enforces SSRF IP blocking for webhook destinations. Unspecified, loopback, link-local, cloud metadata, multicast,
-    /// broadcast, and reserved ranges are always blocked (except loopback under the internal test seam). Private
-    /// RFC1918/CGNAT/ULA ranges are blocked unless <paramref name="allowPrivateNetwork"/> is explicitly opted in.
+    /// Enforces SSRF IP blocking for webhook destinations. Unspecified, loopback, link-local, cloud metadata
+    /// (169.254.169.254, 100.100.100.200, fd00:ec2::254, etc.), CGNAT (100.64.0.0/10), multicast, broadcast,
+    /// embedded-IPv4 IPv6 forms, and reserved ranges are always blocked (except loopback under the internal test seam).
+    /// Private RFC 1918 / ULA ranges are blocked unless <paramref name="allowPrivateNetwork"/> is explicitly opted in.
     /// </summary>
     public static bool IsBlockedWebhookAddress(
         IPAddress address,
@@ -298,16 +309,22 @@ public static partial class OperatorNotificationValidation
             var b0 = bytes[0];
             var b1 = bytes[1];
             var b2 = bytes[2];
+            var b3 = bytes[3];
 
+            // Unconditional cloud-metadata, loopback, link-local, CGNAT, and special-purpose exclusions
+            // MUST run BEFORE private-LAN opt-in exceptions.
             // 0.0.0.0/8 (this network / unspecified)
             if (b0 == 0) return true;
             // 127.0.0.0/8 (loopback)
             if (b0 == 127) return !allowLoopbackForTesting;
-            // 169.254.0.0/16 (link-local + AWS/Azure/GCP IMDS 169.254.169.254)
+            // 169.254.0.0/16 (link-local + AWS/Azure/GCP/DO/OCI IMDS 169.254.169.254)
             if (b0 == 169 && b1 == 254) return true;
+            // 100.100.100.200 (Alibaba Cloud ECS IMDS) and entire 100.64.0.0/10 (RFC 6598 shared/CGNAT space)
+            if (b0 == 100 && b1 == 100 && b2 == 100 && b3 == 200) return true;
+            if (b0 == 100 && b1 is >= 64 and <= 127) return true;
             // 224.0.0.0/4 (multicast) and 240.0.0.0/4 (reserved + 255.255.255.255 broadcast)
             if (b0 >= 224) return true;
-            // 192.0.0.0/24 (IETF protocol assignments)
+            // 192.0.0.0/24 (IETF protocol assignments + Oracle Cloud IMDS 192.0.0.192)
             if (b0 == 192 && b1 == 0 && b2 == 0) return true;
             // 192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24 (TEST-NET documentation)
             if ((b0 == 192 && b1 == 0 && b2 == 2) ||
@@ -316,6 +333,8 @@ public static partial class OperatorNotificationValidation
             {
                 return true;
             }
+            // 192.88.99.0/24 (6to4 relay anycast, RFC 7526)
+            if (b0 == 192 && b1 == 88 && b2 == 99) return true;
             // 198.18.0.0/15 (benchmarking)
             if (b0 == 198 && (b1 == 18 || b1 == 19)) return true;
 
@@ -327,8 +346,6 @@ public static partial class OperatorNotificationValidation
                 if (b0 == 172 && b1 is >= 16 and <= 31) return true;
                 // 192.168.0.0/16 (RFC 1918)
                 if (b0 == 192 && b1 == 168) return true;
-                // 100.64.0.0/10 (Carrier-grade NAT / Tailscale / shared address space)
-                if (b0 == 100 && b1 is >= 64 and <= 127) return true;
             }
 
             return false;
@@ -351,29 +368,65 @@ public static partial class OperatorNotificationValidation
                 return true;
             }
 
-            // AWS IPv6 IMDS fd00:ec2::254 is always blocked even when private LAN is enabled.
+            // AWS IPv6 IMDS fd00:ec2::254 (fd00:ec2::/32) is always blocked even when private LAN is enabled.
             if (bytes[0] == 0xfd && bytes[1] == 0x00 && bytes[2] == 0x0e && bytes[3] == 0xc2)
+            {
+                return true;
+            }
+
+            // ::/96 (deprecated IPv4-compatible IPv6 such as ::127.0.0.1, ::169.254.169.254 — ::1 already handled above)
+            if (IsAllZero(bytes[..12]))
+            {
+                return true;
+            }
+
+            // ::ffff:0:0/96 (IPv4-translated SIIT, RFC 2765)
+            if (IsAllZero(bytes[..8]) && bytes[8] == 0xff && bytes[9] == 0xff && bytes[10] == 0 && bytes[11] == 0)
             {
                 return true;
             }
 
             // 64:ff9b::/96 (NAT64 well-known prefix — inspect embedded IPv4)
             if (bytes[0] == 0x00 && bytes[1] == 0x64 && bytes[2] == 0xff && bytes[3] == 0x9b &&
-                bytes[4] == 0 && bytes[5] == 0 && bytes[6] == 0 && bytes[7] == 0 &&
-                bytes[8] == 0 && bytes[9] == 0 && bytes[10] == 0 && bytes[11] == 0)
+                IsAllZero(bytes[4..12]))
             {
                 var embedded = new IPAddress(bytes[12..]);
                 return IsBlockedWebhookAddress(embedded, allowPrivateNetwork, allowLoopbackForTesting);
             }
 
-            // fc00::/7 (Unique Local Addresses)
-            if (!allowPrivateNetwork && (bytes[0] & 0xfe) == 0xfc)
+            // 64:ff9b:1::/48 (NAT64 local-use prefix, RFC 8215)
+            if (bytes[0] == 0x00 && bytes[1] == 0x64 && bytes[2] == 0xff && bytes[3] == 0x9b &&
+                bytes[4] == 0x00 && bytes[5] == 0x01)
+            {
+                return true;
+            }
+
+            // 100::/64 (Discard-Only Address Block, RFC 6666)
+            if (bytes[0] == 0x01 && bytes[1] == 0x00 && IsAllZero(bytes[2..8]))
+            {
+                return true;
+            }
+
+            // 2002::/16 (6to4, RFC 3056 — embeds IPv4 in bytes[2..6])
+            if (bytes[0] == 0x20 && bytes[1] == 0x02)
+            {
+                return true;
+            }
+
+            // 2001::/32 (Teredo, RFC 4380)
+            if (bytes[0] == 0x20 && bytes[1] == 0x01 && bytes[2] == 0x00 && bytes[3] == 0x00)
             {
                 return true;
             }
 
             // 2001:db8::/32 (documentation)
             if (bytes[0] == 0x20 && bytes[1] == 0x01 && bytes[2] == 0x0d && bytes[3] == 0xb8)
+            {
+                return true;
+            }
+
+            // fc00::/7 (Unique Local Addresses)
+            if (!allowPrivateNetwork && (bytes[0] & 0xfe) == 0xfc)
             {
                 return true;
             }
@@ -385,8 +438,8 @@ public static partial class OperatorNotificationValidation
     }
 
     /// <summary>
-    /// Enforces network safety for SMTP relays: private LAN relays are allowed, while link-local/IMDS, unspecified,
-    /// and multicast/broadcast addresses are always blocked.
+    /// Enforces network safety for SMTP relays: private LAN relays are allowed, while link-local/IMDS, cloud metadata,
+    /// unspecified, multicast/broadcast, and deprecated embedded-IPv4 IPv6 addresses are always blocked.
     /// </summary>
     public static bool IsBlockedSmtpAddress(IPAddress address)
     {
@@ -401,17 +454,26 @@ public static partial class OperatorNotificationValidation
             if (!address.TryWriteBytes(bytes, out _)) return true;
             var b0 = bytes[0];
             var b1 = bytes[1];
+            var b2 = bytes[2];
+            var b3 = bytes[3];
             if (b0 == 0) return true;
             if (b0 == 169 && b1 == 254) return true;
+            if (b0 == 100 && b1 == 100 && b2 == 100 && b3 == 200) return true;
+            if (b0 == 192 && b1 == 88 && b2 == 99) return true;
             if (b0 >= 224) return true;
             return false;
         }
         if (address.AddressFamily == AddressFamily.InterNetworkV6)
         {
+            if (IPAddress.IsLoopback(address))
+            {
+                return false;
+            }
             if (address.Equals(IPAddress.IPv6Any) ||
                 address.Equals(IPAddress.IPv6None) ||
                 address.IsIPv6LinkLocal ||
-                address.IsIPv6Multicast)
+                address.IsIPv6Multicast ||
+                address.IsIPv6SiteLocal)
             {
                 return true;
             }
@@ -421,7 +483,63 @@ public static partial class OperatorNotificationValidation
             {
                 return true;
             }
+            if (IsAllZero(bytes[..12])) return true;
+            if (IsAllZero(bytes[..8]) && bytes[8] == 0xff && bytes[9] == 0xff && bytes[10] == 0 && bytes[11] == 0) return true;
+            if (bytes[0] == 0x00 && bytes[1] == 0x64 && bytes[2] == 0xff && bytes[3] == 0x9b && IsAllZero(bytes[4..12]))
+            {
+                return IsBlockedSmtpAddress(new IPAddress(bytes[12..]));
+            }
+            if (bytes[0] == 0x00 && bytes[1] == 0x64 && bytes[2] == 0xff && bytes[3] == 0x9b && bytes[4] == 0x00 && bytes[5] == 0x01) return true;
+            if (bytes[0] == 0x01 && bytes[1] == 0x00 && IsAllZero(bytes[2..8])) return true;
+            if (bytes[0] == 0x20 && bytes[1] == 0x02) return true;
             return false;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Returns true ONLY when <paramref name="address"/> is a loopback, RFC 1918 private IPv4, or IPv6 ULA peer
+    /// (excluding all blocked/metadata addresses). Used to confine unauthenticated <see cref="SmtpSecurityMode.None"/>
+    /// strictly to trusted local LAN relays.
+    /// </summary>
+    public static bool IsPrivateOrLoopbackSmtpAddress(IPAddress address)
+    {
+        ArgumentNullException.ThrowIfNull(address);
+        if (IsBlockedSmtpAddress(address))
+        {
+            return false;
+        }
+        if (address.IsIPv4MappedToIPv6)
+        {
+            address = address.MapToIPv4();
+        }
+        if (IPAddress.IsLoopback(address))
+        {
+            return true;
+        }
+        if (address.AddressFamily == AddressFamily.InterNetwork)
+        {
+            Span<byte> bytes = stackalloc byte[4];
+            if (!address.TryWriteBytes(bytes, out _)) return false;
+            var b0 = bytes[0];
+            var b1 = bytes[1];
+            return b0 == 127 || b0 == 10 || (b0 == 172 && b1 is >= 16 and <= 31) || (b0 == 192 && b1 == 168);
+        }
+        if (address.AddressFamily == AddressFamily.InterNetworkV6)
+        {
+            Span<byte> bytes = stackalloc byte[16];
+            if (!address.TryWriteBytes(bytes, out _)) return false;
+            // fc00::/7 ULA (fd00:ec2::/32 is already rejected by IsBlockedSmtpAddress above)
+            return (bytes[0] & 0xfe) == 0xfc;
+        }
+        return false;
+    }
+
+    private static bool IsAllZero(ReadOnlySpan<byte> span)
+    {
+        for (var i = 0; i < span.Length; i++)
+        {
+            if (span[i] != 0) return false;
         }
         return true;
     }
@@ -456,10 +574,16 @@ public static partial class OperatorNotificationValidation
             problems["retryMaximumDelaySeconds"] = "Maximum retry delay must be at least the initial delay and at most 3600 seconds.";
         if (options.OutageCooldownSeconds is < 10 or > 3600)
             problems["outageCooldownSeconds"] = "Outage cooldown must be between 10 and 3600 seconds.";
+        if (options.ConsecutiveOutageThreshold is < 1 or > 10)
+            problems["consecutiveOutageThreshold"] = "Consecutive outage threshold must be between 1 and 10.";
+        if (options.EvaluationIntervalSeconds is < 5 or > 600)
+            problems["evaluationIntervalSeconds"] = "Evaluation interval must be between 5 and 600 seconds.";
         if (options.CaptureStallThresholdMinutes is < 1 or > 1440)
             problems["captureStallThresholdMinutes"] = "Capture stall threshold must be between 1 and 1440 minutes.";
         if (options.CameraDisconnectedThresholdSeconds is < 0 or > 3600)
             problems["cameraDisconnectedThresholdSeconds"] = "Camera disconnected threshold must be between 0 and 3600 seconds.";
+        if (options.TestSendMinimumIntervalSeconds is < 0 or > 300)
+            problems["testSendMinimumIntervalSeconds"] = "Test send minimum interval must be between 0 and 300 seconds.";
 
         ValidateEvents(options.Events, problems);
         ValidateSecretsLengths(effectiveSecrets, problems);
@@ -493,6 +617,8 @@ public static partial class OperatorNotificationValidation
             problems["webhook.authToken"] = "Webhook auth token must be a single line of at most 1024 characters without control characters.";
         if (secrets.WebhookUserKey is { Length: > MaximumSecretLength } || HasHeaderInjectionCharacters(secrets.WebhookUserKey))
             problems["webhook.userKey"] = "Webhook user key must be a single line of at most 1024 characters without control characters.";
+        if (secrets.WebhookNtfyTopic is { Length: > WebhookNotificationOptions.MaximumTopicLength } || HasHeaderInjectionCharacters(secrets.WebhookNtfyTopic))
+            problems["webhook.ntfyTopic"] = "ntfy topic must be at most 128 printable characters without control characters.";
     }
 
     private static void ValidateSmtp(
@@ -510,7 +636,9 @@ public static partial class OperatorNotificationValidation
             HasHeaderInjectionCharacters(smtp.FromDisplayName))
             problems["smtp.fromDisplayName"] = "From display name must be at most 120 printable characters without line breaks.";
 
+        var hasCredentials = !string.IsNullOrEmpty(secrets.SmtpUsername) || !string.IsNullOrEmpty(secrets.SmtpPassword);
         var hasHost = !string.IsNullOrWhiteSpace(smtp.Host);
+        IPAddress? parsedSmtpIp = null;
         if (hasHost)
         {
             if (!IsValidHost(smtp.Host))
@@ -521,9 +649,24 @@ public static partial class OperatorNotificationValidation
             {
                 problems["smtp.host"] = "Mailpit is a development/test-only capture tool and is excluded from production.";
             }
-            else if (IPAddress.TryParse(smtp.Host.Trim('[', ']'), out var smtpIp) && IsBlockedSmtpAddress(smtpIp))
+            else if (IPAddress.TryParse(smtp.Host.Trim('[', ']'), out parsedSmtpIp) && IsBlockedSmtpAddress(parsedSmtpIp))
             {
                 problems["smtp.host"] = "SMTP target IP address is blocked by outbound network safety policy.";
+            }
+        }
+
+        if (smtp.SecurityMode == SmtpSecurityMode.None)
+        {
+            if (hasCredentials && !problems.ContainsKey("smtp.securityMode"))
+            {
+                problems["smtp.securityMode"] = "STARTTLS or Implicit TLS is required whenever SMTP credentials are configured.";
+            }
+            else if (parsedSmtpIp is not null &&
+                     !IsBlockedSmtpAddress(parsedSmtpIp) &&
+                     !IsPrivateOrLoopbackSmtpAddress(parsedSmtpIp) &&
+                     !problems.ContainsKey("smtp.securityMode"))
+            {
+                problems["smtp.securityMode"] = "Plaintext SMTP (SecurityMode=None) is restricted to unauthenticated local LAN or loopback relays; use STARTTLS or Implicit TLS for public addresses.";
             }
         }
 
@@ -566,13 +709,10 @@ public static partial class OperatorNotificationValidation
         if (!string.IsNullOrWhiteSpace(webhook.AuthHeaderName) && !IsValidAuthHeaderName(webhook.AuthHeaderName))
             problems["webhook.authHeaderName"] = "Webhook auth header name must be a valid, non-reserved HTTP header token.";
 
-        if (webhook.NtfyTopic.Length > WebhookNotificationOptions.MaximumTopicLength ||
-            HasHeaderInjectionCharacters(webhook.NtfyTopic))
-            problems["webhook.ntfyTopic"] = "ntfy topic must be at most 128 printable characters without control characters.";
-
+        Uri? parsedWebhookUri = null;
         if (!string.IsNullOrWhiteSpace(secrets.WebhookUrl))
         {
-            if (!TryValidateWebhookUrl(secrets.WebhookUrl, webhook.AllowPrivateNetwork, policy, out _, out _, out var urlProblem))
+            if (!TryValidateWebhookUrl(secrets.WebhookUrl, webhook.AllowPrivateNetwork, policy, out parsedWebhookUri, out _, out var urlProblem))
             {
                 problems["webhook.url"] = urlProblem!;
             }
@@ -580,6 +720,14 @@ public static partial class OperatorNotificationValidation
         else if (masterEnabled && webhook.Enabled)
         {
             problems["webhook.url"] = "Webhook HTTPS URL is required when webhook notifications are enabled.";
+        }
+
+        if (masterEnabled && webhook.Enabled && webhook.Format == WebhookPayloadFormat.Ntfy &&
+            parsedWebhookUri is not null && IsNtfyRootPath(parsedWebhookUri) &&
+            string.IsNullOrWhiteSpace(secrets.WebhookNtfyTopic) &&
+            !problems.ContainsKey("webhook.ntfyTopic"))
+        {
+            problems["webhook.ntfyTopic"] = "An ntfy topic is required when the webhook URL targets the ntfy server root.";
         }
 
         if (masterEnabled && webhook.Enabled && webhook.Format == WebhookPayloadFormat.Pushover)

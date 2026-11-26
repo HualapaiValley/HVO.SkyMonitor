@@ -387,9 +387,9 @@ public sealed class CameraAgentHostOptions : IValidatableObject
         Validator.TryValidateObject(SpaceWeather, new ValidationContext(SpaceWeather), spaceWeatherResults, validateAllProperties: true);
         foreach (var result in spaceWeatherResults) yield return result;
 
-        var notificationResults = new List<ValidationResult>();
-        Validator.TryValidateObject(Notifications, new ValidationContext(Notifications), notificationResults, validateAllProperties: true);
-        foreach (var result in notificationResults) yield return result;
+        // Operator notifications are strictly opt-in and isolated from host startup: invalid or incomplete
+        // notification settings must never fail ValidateOnStart or block CameraAgent startup, capture, or recovery.
+        // Notification configuration is validated independently at save/load/delivery time and reported as Degraded.
     }
 }
 

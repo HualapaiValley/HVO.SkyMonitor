@@ -33,6 +33,14 @@ else
     var status = _view.Status;
     var secrets = _view.Configuration.Secrets;
 
+    @if (_view.Configuration.StoreCorrupt)
+    {
+        <div id="notifications-corrupt-banner" class="ops-note-banner" role="alert">
+            <span class="status-icon failure" aria-hidden="true"></span>
+            <span><strong>Saved notification store unreadable.</strong> Delivery is suspended and host configuration fallbacks are blocked until you save replacement settings or disable notifications below.</span>
+        </div>
+    }
+
     @if (_banner is not null)
     {
         <div id="notifications-banner" class="ops-note-banner" role="@(_banner.IsError ? "alert" : "status")">
@@ -125,7 +133,7 @@ else
                             <select id="smtp-security" @bind="_smtpSecurityMode">
                                 <option value="@SmtpSecurityMode.StartTls">STARTTLS (port 587, fail-closed)</option>
                                 <option value="@SmtpSecurityMode.ImplicitTls">Implicit TLS / SMTPS (port 465)</option>
-                                <option value="@SmtpSecurityMode.None">None (trusted LAN relay only)</option>
+                                <option value="@SmtpSecurityMode.None">None (unauthenticated local LAN relay only)</option>
                             </select>
                         </label>
                         <label class="ops-field">From display name
@@ -151,7 +159,7 @@ else
                                 Username: @SecretSourceText(secrets.HasSmtpUsername, secrets.SmtpUsernameSource) · Password: @SecretSourceText(secrets.HasSmtpPassword, secrets.SmtpPasswordSource)
                             </span>
                         </div>
-                        <p class="notifications-hint">Stored encrypted with ASP.NET Core Data Protection. Leave blank to keep the existing credential; saved values are never returned to the browser.</p>
+                        <p class="notifications-hint">Stored encrypted with ASP.NET Core Data Protection. STARTTLS or Implicit TLS is required whenever SMTP credentials are configured; SecurityMode=None is limited to unauthenticated local LAN relays. Leave blank to keep the existing credential; saved values are never returned to the browser.</p>
                         <div class="notifications-row two">
                             <label class="ops-field">SMTP username (write-only)
                                 <input id="smtp-username" type="password" autocomplete="new-password"
@@ -190,7 +198,7 @@ else
                             <select id="webhook-format" @bind="_webhookFormat">
                                 <option value="@WebhookPayloadFormat.Generic">Generic JSON</option>
                                 <option value="@WebhookPayloadFormat.Slack">Slack incoming webhook</option>
-                                <option value="@WebhookPayloadFormat.Ntfy">ntfy JSON webhook</option>
+                                <option value="@WebhookPayloadFormat.Ntfy">ntfy (root JSON or topic-path text)</option>
                                 <option value="@WebhookPayloadFormat.Pushover">Pushover Messages API</option>
                             </select>
                         </label>
@@ -200,22 +208,14 @@ else
                         </label>
                     </div>
 
-                    @if (_webhookFormat == WebhookPayloadFormat.Ntfy)
-                    {
-                        <label class="ops-field">ntfy topic (optional when not in URL path)
-                            <input id="webhook-ntfy-topic" autocomplete="off" spellcheck="false" maxlength="@WebhookNotificationOptions.MaximumTopicLength"
-                                   placeholder="hvo-camera-alerts" @bind="_webhookNtfyTopic" />
-                        </label>
-                    }
-
                     <div class="notifications-secret-box">
                         <div class="notifications-secret-head">
                             <strong>Protected webhook endpoint &amp; tokens</strong>
                             <span class="notifications-secret-meta" id="webhook-secret-status">
-                                URL: @WebhookUrlStatusText(secrets) · Token: @SecretSourceText(secrets.HasWebhookAuthToken, secrets.WebhookAuthTokenSource)
+                                URL: @WebhookUrlStatusText(secrets) · Token: @SecretSourceText(secrets.HasWebhookAuthToken, secrets.WebhookAuthTokenSource)@if (_webhookFormat == WebhookPayloadFormat.Ntfy || secrets.HasWebhookNtfyTopic) { <text> · Topic: @SecretSourceText(secrets.HasWebhookNtfyTopic, secrets.WebhookNtfyTopicSource)</text> }
                             </span>
                         </div>
-                        <p class="notifications-hint">Webhook URLs often contain embedded secrets and are stored encrypted. Only the scheme and host are shown after saving.</p>
+                        <p class="notifications-hint">Webhook URLs, auth tokens, and ntfy topics are stored encrypted and never returned to the browser. Only the URL scheme and host are shown after saving.</p>
                         <label class="ops-field">HTTPS webhook URL (write-only)
                             <input id="webhook-url" type="password" autocomplete="new-password"
                                    placeholder="@(secrets.HasWebhookUrl ? "Stored — enter new HTTPS URL to replace" : "https://hooks.example.org/...")"
@@ -235,6 +235,15 @@ else
                                            @bind="_webhookUserKeyInput" />
                                 </label>
                             }
+                            else if (_webhookFormat == WebhookPayloadFormat.Ntfy)
+                            {
+                                <label class="ops-field">ntfy topic (write-only; required for root URL)
+                                    <input id="webhook-ntfy-topic" type="password" autocomplete="new-password"
+                                           maxlength="@WebhookNotificationOptions.MaximumTopicLength"
+                                           placeholder="@(secrets.HasWebhookNtfyTopic ? "Stored — enter to replace" : "Required when URL ends with /")"
+                                           @bind="_webhookNtfyTopicInput" />
+                                </label>
+                            }
                         </div>
                         <div class="notifications-clear-row">
                             <label><input id="webhook-clear-url" type="checkbox" @bind="_clearWebhookUrl" /> Clear stored URL</label>
@@ -242,6 +251,10 @@ else
                             @if (_webhookFormat == WebhookPayloadFormat.Pushover || secrets.HasWebhookUserKey)
                             {
                                 <label><input id="webhook-clear-user-key" type="checkbox" @bind="_clearWebhookUserKey" /> Clear user key</label>
+                            }
+                            @if (_webhookFormat == WebhookPayloadFormat.Ntfy || secrets.HasWebhookNtfyTopic)
+                            {
+                                <label><input id="webhook-clear-ntfy-topic" type="checkbox" @bind="_clearWebhookNtfyTopic" /> Clear stored topic</label>
                             }
                         </div>
                     </div>

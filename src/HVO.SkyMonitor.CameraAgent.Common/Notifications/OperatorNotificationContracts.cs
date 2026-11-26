@@ -52,7 +52,8 @@ public sealed record OperatorNotificationSecrets(
     string? SmtpPassword = null,
     string? WebhookUrl = null,
     string? WebhookAuthToken = null,
-    string? WebhookUserKey = null)
+    string? WebhookUserKey = null,
+    string? WebhookNtfyTopic = null)
 {
     public static OperatorNotificationSecrets Empty { get; } = new();
 
@@ -61,7 +62,8 @@ public sealed record OperatorNotificationSecrets(
         string.IsNullOrEmpty(SmtpPassword) &&
         string.IsNullOrEmpty(WebhookUrl) &&
         string.IsNullOrEmpty(WebhookAuthToken) &&
-        string.IsNullOrEmpty(WebhookUserKey);
+        string.IsNullOrEmpty(WebhookUserKey) &&
+        string.IsNullOrEmpty(WebhookNtfyTopic);
 
     public override string ToString() => "[REDACTED]";
 }
@@ -86,12 +88,15 @@ public sealed record OperatorNotificationSecretPresence(
     bool HasWebhookAuthToken,
     NotificationSecretSource WebhookAuthTokenSource,
     bool HasWebhookUserKey,
-    NotificationSecretSource WebhookUserKeySource)
+    NotificationSecretSource WebhookUserKeySource,
+    bool HasWebhookNtfyTopic = false,
+    NotificationSecretSource WebhookNtfyTopicSource = NotificationSecretSource.None)
 {
     public static OperatorNotificationSecretPresence Empty { get; } = new(
         false, NotificationSecretSource.None,
         false, NotificationSecretSource.None,
         false, null, NotificationSecretSource.None,
+        false, NotificationSecretSource.None,
         false, NotificationSecretSource.None,
         false, NotificationSecretSource.None);
 }
@@ -102,7 +107,9 @@ public sealed record OperatorNotificationsConfigurationSnapshot(
     OperatorNotificationSecretPresence Secrets,
     string Version,
     bool HasSavedOverrides,
-    bool CanPersist);
+    bool CanPersist,
+    bool StoreCorrupt = false,
+    string? StoreStatusReasonCode = null);
 
 /// <summary>Write-only update request from the operator UI or API. Omitted or null secret fields retain existing values.</summary>
 [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
@@ -121,7 +128,9 @@ public sealed record OperatorNotificationsUpdateRequest(
     string? WebhookAuthToken = null,
     bool ClearWebhookAuthToken = false,
     string? WebhookUserKey = null,
-    bool ClearWebhookUserKey = false)
+    bool ClearWebhookUserKey = false,
+    string? WebhookNtfyTopic = null,
+    bool ClearWebhookNtfyTopic = false)
 {
     public override string ToString() => $"OperatorNotificationsUpdateRequest(Version={ExpectedVersion}, Enabled={Options.Enabled}, Secrets=[REDACTED])";
 }
@@ -194,7 +203,8 @@ public sealed record OperatorNotificationDispatcherSnapshot(
     long TotalDroppedQueueFull,
     OperatorNotificationChannelStatus Smtp,
     OperatorNotificationChannelStatus Webhook,
-    IReadOnlyList<OperatorNotificationAuditEntry> RecentDeliveries);
+    IReadOnlyList<OperatorNotificationAuditEntry> RecentDeliveries,
+    string? ConfigurationErrorReasonCode = null);
 
 /// <summary>Sanitized per-channel result of an operator-initiated test delivery.</summary>
 public sealed record NotificationChannelTestResult(
@@ -244,6 +254,8 @@ public static class NotificationReasonCodes
     public const string ConnectFailed = "connect-failed";
     public const string TlsFailed = "tls-failed";
     public const string TlsUnsupported = "tls-unsupported";
+    public const string TlsRequired = "tls-required";
+    public const string StoreCorrupt = "store-corrupt";
     public const string AuthFailed = "auth-failed";
     public const string Timeout = "timeout";
     public const string RedirectBlocked = "redirect-blocked";
@@ -266,6 +278,8 @@ public static class NotificationReasonCodes
         ConnectFailed => "Could not connect to the configured endpoint.",
         TlsFailed => "TLS negotiation or certificate validation failed.",
         TlsUnsupported => "The SMTP server did not advertise STARTTLS; connection refused to prevent plaintext downgrade.",
+        TlsRequired => "TLS (STARTTLS or Implicit TLS) is required for authenticated SMTP or non-local SMTP relays.",
+        StoreCorrupt => "The saved operator notification store is unreadable or corrupted; delivery is suspended until replacement settings are saved.",
         AuthFailed => "Authentication was rejected by the remote server.",
         Timeout => "The remote endpoint did not respond before the configured timeout.",
         RedirectBlocked => "The webhook endpoint returned an HTTP redirect, which is refused for security.",
@@ -306,7 +320,7 @@ public sealed record WebhookDeliveryRequest(
     string Url,
     WebhookPayloadFormat Format,
     string AuthHeaderName,
-    string NtfyTopic,
+    string? NtfyTopic,
     bool AllowPrivateNetwork,
     string? AuthToken,
     string? UserKey,
@@ -340,6 +354,21 @@ public interface IOperatorNotificationSecretStore
     ValueTask ClearAsync(CancellationToken cancellationToken);
 }
 
+/// <summary>Effective delivery configuration plus isolated store/validation fault status.</summary>
+public sealed record OperatorNotificationEffectiveConfiguration(
+    OperatorNotificationsOptions Options,
+    OperatorNotificationSecrets Secrets,
+    bool StoreCorrupt = false,
+    string? ConfigurationErrorReasonCode = null);
+
+/// <summary>Durable checkpoint store for the once-per-site-day operator heartbeat.</summary>
+public interface IOperatorNotificationHeartbeatStore
+{
+    ValueTask<DateOnly?> ReadLastHeartbeatSiteDateAsync(CancellationToken cancellationToken);
+
+    ValueTask WriteLastHeartbeatSiteDateAsync(DateOnly siteDate, CancellationToken cancellationToken);
+}
+
 /// <summary>Reads and persists operator notification configuration and protected secrets.</summary>
 public interface IOperatorNotificationConfigProvider
 {
@@ -348,9 +377,19 @@ public interface IOperatorNotificationConfigProvider
     /// <summary>Returns the current non-secret options synchronously from memory without performing disk I/O.</summary>
     OperatorNotificationsOptions CurrentOptions { get; }
 
+    /// <summary>Current non-null sanitized configuration or store-corruption reason code, if delivery is suspended.</summary>
+    string? ConfigurationErrorReasonCode => null;
+
     /// <summary>Loads effective options together with server-side protected secrets for delivery or test-send.</summary>
     ValueTask<(OperatorNotificationsOptions Options, OperatorNotificationSecrets Secrets)> GetEffectiveForDeliveryAsync(
         CancellationToken cancellationToken);
+
+    /// <summary>Loads effective delivery configuration including isolated store-corruption or validation-error status.</summary>
+    async ValueTask<OperatorNotificationEffectiveConfiguration> GetEffectiveConfigurationAsync(CancellationToken cancellationToken)
+    {
+        var (options, secrets) = await GetEffectiveForDeliveryAsync(cancellationToken).ConfigureAwait(false);
+        return new OperatorNotificationEffectiveConfiguration(options, secrets, false, ConfigurationErrorReasonCode);
+    }
 
     ValueTask<OperatorNotificationsSaveResult> SaveAsync(
         OperatorNotificationsUpdateRequest request,

@@ -250,13 +250,17 @@ public sealed class CameraCaptureService(
                     namedRigProfiles?.ReportPendingRuntimeFailure(
                         $"Pending rig failed capture initialization ({ex.GetType().Name}); cancel it or correct the hardware and restart.");
                 }
+                var isStorageFailure = ex is RawIngressConflictException or IOException or InvalidDataException or
+                    UnauthorizedAccessException or Microsoft.Data.Sqlite.SqliteException;
                 if (!moduleInitialized && ex is not OperationCanceledException && !activationFailed)
                     namedRigProfiles?.ReportActiveRuntimeFailure(
                         prepared is null ? $"Active camera module initialization failed ({ex.GetType().Name}); capture unavailable."
                             : null);
-                _fleetRuntimeState.CaptureFailed(ex.GetType().Name);
-                if (ex is RawIngressConflictException or IOException or InvalidDataException or
-                    UnauthorizedAccessException or Microsoft.Data.Sqlite.SqliteException)
+                _fleetRuntimeState.CaptureFailed(
+                    ex.GetType().Name,
+                    isCameraDisconnected: (!moduleInitialized && !activationFailed && !isStorageFailure) ||
+                                          FleetRuntimeState.IsCameraDisconnectException(ex));
+                if (isStorageFailure)
                 {
                     _logger.RawIngressRefused("capture-loop", "storage-unavailable");
                 }

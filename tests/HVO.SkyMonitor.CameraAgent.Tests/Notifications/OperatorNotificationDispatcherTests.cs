@@ -86,12 +86,11 @@ public sealed class OperatorNotificationDispatcherTests
         Assert.HasCount(2, smtp.Sent);
         StringAssert.Contains(smtp.Sent[1].Body, "Suppressed during cooldown: 2", StringComparison.Ordinal);
 
-        // 4. Bounded queue capacity (QueueCapacity=4): 5th distinct event drops without blocking.
+        // 4. Bounded queue capacity (QueueCapacity=4): 4 distinct events fill queue and hit hourly cap (2 + 4 = 6).
         for (var i = 0; i < 4; i++)
         {
             Assert.IsTrue(dispatcher.TryPublish(MakeEvent(OperatorNotificationEventKind.DiskPressure, $"disk-{i}", clock.GetUtcNow())));
         }
-        // Note: hourly cap is 6 (2 already sent + 4 queued = 6), so next hits hourly cap; let's test hourly cap first!
         Assert.IsFalse(dispatcher.TryPublish(MakeEvent(OperatorNotificationEventKind.DiskPressure, "disk-cap", clock.GetUtcNow())));
         Assert.AreEqual(1, dispatcher.GetStatus().TotalSuppressedRateLimit);
 
@@ -178,7 +177,288 @@ public sealed class OperatorNotificationDispatcherTests
     }
 
     [TestMethod]
-    public async Task SendTestAsync_EnforcesRateLimitAndReportsPerChannelOutcomesAsync()
+    public async Task IndependentChannelWorkers_HungSmtpNeverDelaysWebhookDeliveryAsync()
+    {
+        var smtpEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSmtp = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var webhookDelivered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var options = new OperatorNotificationsOptions
+        {
+            Enabled = true,
+            Smtp = new SmtpNotificationOptions
+            {
+                Enabled = true,
+                Host = "smtp.example.test",
+                FromAddress = "camera@example.test",
+                Recipients = ["ops@example.test"]
+            },
+            Webhook = new WebhookNotificationOptions
+            {
+                Enabled = true,
+                Format = WebhookPayloadFormat.Generic
+            }
+        };
+        var config = new InMemoryConfigProvider(options, new OperatorNotificationSecrets(WebhookUrl: "https://webhook.example.test/ok"));
+        var smtp = new FakeSmtpTransport
+        {
+            Handler = async (_, ct) =>
+            {
+                smtpEntered.TrySetResult();
+                await releaseSmtp.Task.WaitAsync(ct).ConfigureAwait(false);
+                return OperatorNotificationDeliveryResult.Success(SmtpNotificationTransport.ChannelName, TimeSpan.FromMilliseconds(50));
+            }
+        };
+        var webhook = new FakeWebhookTransport
+        {
+            Handler = (_, _) =>
+            {
+                webhookDelivered.TrySetResult();
+                return Task.FromResult(OperatorNotificationDeliveryResult.Success(WebhookNotificationTransport.ChannelName, TimeSpan.FromMilliseconds(5)));
+            }
+        };
+
+        using var telemetry = new OperatorNotificationTelemetry();
+        using var dispatcher = new OperatorNotificationDispatcher(config, smtp, webhook, telemetry, TimeProvider.System);
+        await dispatcher.StartAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            Assert.IsTrue(dispatcher.TryPublish(MakeEvent(OperatorNotificationEventKind.DiskPressure, "disk-hung-smtp", DateTimeOffset.UtcNow)));
+
+            await smtpEntered.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            // Webhook MUST complete while SMTP is still held open!
+            await webhookDelivered.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.IsFalse(releaseSmtp.Task.IsCompleted);
+            Assert.HasCount(1, webhook.Sent);
+        }
+        finally
+        {
+            releaseSmtp.TrySetResult();
+            await dispatcher.StopAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    [TestMethod]
+    public async Task FailedDeliveries_CommitAccountingOnAdmissionSoRepeatedFailuresCannotEscapeHourlyCapOrCooldownAsync()
+    {
+        var clock = new ManualNotificationClock(new DateTimeOffset(2026, 11, 26, 12, 0, 0, TimeSpan.Zero));
+        var options = new OperatorNotificationsOptions
+        {
+            Enabled = true,
+            MaxNotificationsPerHour = 1,
+            MaxRetryAttempts = 0,
+            ConsecutiveOutageThreshold = 5,
+            Smtp = new SmtpNotificationOptions
+            {
+                Enabled = true,
+                Host = "smtp.example.test",
+                FromAddress = "camera@example.test",
+                Recipients = ["ops@example.test"]
+            },
+            Webhook = new WebhookNotificationOptions
+            {
+                Enabled = true,
+                Format = WebhookPayloadFormat.Generic
+            },
+            Events = new OperatorNotificationEventsOptions
+            {
+                DiskPressureCooldownMinutes = 30
+            }
+        };
+        var config = new InMemoryConfigProvider(options, new OperatorNotificationSecrets(WebhookUrl: "https://webhook.example.test/fail"));
+        var smtp = new FakeSmtpTransport
+        {
+            Handler = (_, _) => Task.FromResult(OperatorNotificationDeliveryResult.Failure(
+                SmtpNotificationTransport.ChannelName, NotificationReasonCodes.ConnectFailed, transient: false, TimeSpan.FromMilliseconds(5)))
+        };
+        var webhook = new FakeWebhookTransport
+        {
+            Handler = (_, _) => Task.FromResult(OperatorNotificationDeliveryResult.Failure(
+                WebhookNotificationTransport.ChannelName, NotificationReasonCodes.ServerError, transient: false, TimeSpan.FromMilliseconds(5)))
+        };
+        using var telemetry = new OperatorNotificationTelemetry();
+        using var dispatcher = new OperatorNotificationDispatcher(config, smtp, webhook, telemetry, clock);
+
+        // First fault admitted and BOTH channels fail terminally.
+        Assert.IsTrue(dispatcher.TryPublish(MakeEvent(OperatorNotificationEventKind.DiskPressure, "disk-1", clock.GetUtcNow())));
+        await dispatcher.ProcessPendingOnceAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.HasCount(1, smtp.Sent);
+        Assert.HasCount(1, webhook.Sent);
+
+        // Second identical fault MUST be suppressed by cooldown despite prior failure!
+        clock.Advance(TimeSpan.FromMinutes(1));
+        Assert.IsFalse(dispatcher.TryPublish(MakeEvent(OperatorNotificationEventKind.DiskPressure, "disk-1", clock.GetUtcNow())));
+        Assert.AreEqual(1, dispatcher.GetStatus().TotalSuppressedCooldown);
+
+        // Second distinct fault within same hour MUST be suppressed by MaxNotificationsPerHour=1 despite prior failure!
+        Assert.IsFalse(dispatcher.TryPublish(MakeEvent(OperatorNotificationEventKind.CaptureStalled, "stall-1", clock.GetUtcNow())));
+        Assert.AreEqual(1, dispatcher.GetStatus().TotalSuppressedRateLimit);
+    }
+
+    [TestMethod]
+    public async Task DisabledEventCategoryDuringRetryBackoff_RetiresCleanlyWithoutRetryingAsync()
+    {
+        var clock = new ManualNotificationClock(new DateTimeOffset(2026, 11, 26, 12, 0, 0, TimeSpan.Zero));
+        var options = new OperatorNotificationsOptions
+        {
+            Enabled = true,
+            MaxRetryAttempts = 3,
+            RetryInitialDelaySeconds = 10,
+            RetryMaximumDelaySeconds = 60,
+            ConsecutiveOutageThreshold = 5,
+            Smtp = new SmtpNotificationOptions
+            {
+                Enabled = true,
+                Host = "smtp.example.test",
+                FromAddress = "camera@example.test",
+                Recipients = ["ops@example.test"]
+            },
+            Events = new OperatorNotificationEventsOptions { CaptureStalledEnabled = true }
+        };
+        var config = new InMemoryConfigProvider(options, OperatorNotificationSecrets.Empty);
+        var smtp = new FakeSmtpTransport
+        {
+            Handler = (_, _) => Task.FromResult(OperatorNotificationDeliveryResult.Failure(
+                SmtpNotificationTransport.ChannelName, NotificationReasonCodes.ServerError, transient: true, TimeSpan.FromMilliseconds(5)))
+        };
+        using var telemetry = new OperatorNotificationTelemetry();
+        using var dispatcher = new OperatorNotificationDispatcher(config, smtp, new FakeWebhookTransport(), telemetry, clock);
+
+        Assert.IsTrue(dispatcher.TryPublish(MakeEvent(OperatorNotificationEventKind.CaptureStalled, "stall-revoke", clock.GetUtcNow())));
+        await dispatcher.ProcessPendingOnceAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.HasCount(1, smtp.Sent);
+        Assert.AreEqual(1, dispatcher.GetStatus().QueueDepth);
+
+        // Disable CaptureStalled while item is waiting in retry backoff.
+        config.UpdateOptions(new OperatorNotificationsOptions
+        {
+            Enabled = true,
+            MaxRetryAttempts = 3,
+            RetryInitialDelaySeconds = 10,
+            RetryMaximumDelaySeconds = 60,
+            ConsecutiveOutageThreshold = 5,
+            Smtp = options.Smtp,
+            Events = new OperatorNotificationEventsOptions { CaptureStalledEnabled = false }
+        });
+
+        clock.Advance(TimeSpan.FromSeconds(15));
+        await dispatcher.ProcessPendingOnceAsync(CancellationToken.None).ConfigureAwait(false);
+
+        Assert.HasCount(1, smtp.Sent, "Revoked event category must NOT be retried after being disabled.");
+        Assert.AreEqual(0, dispatcher.GetStatus().QueueDepth);
+    }
+
+    [TestMethod]
+    public async Task CoalescedRepeatsDuringInFlightDelivery_ArePreservedInsteadOfDroppedAsync()
+    {
+        var clock = new ManualNotificationClock(new DateTimeOffset(2026, 11, 26, 12, 0, 0, TimeSpan.Zero));
+        var smtpEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSmtp = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var options = new OperatorNotificationsOptions
+        {
+            Enabled = true,
+            Smtp = new SmtpNotificationOptions
+            {
+                Enabled = true,
+                Host = "smtp.example.test",
+                FromAddress = "camera@example.test",
+                Recipients = ["ops@example.test"]
+            },
+            Events = new OperatorNotificationEventsOptions { CaptureStalledCooldownMinutes = 10 }
+        };
+        var config = new InMemoryConfigProvider(options, OperatorNotificationSecrets.Empty);
+        var firstCall = true;
+        var smtp = new FakeSmtpTransport
+        {
+            Handler = async (_, ct) =>
+            {
+                if (firstCall)
+                {
+                    firstCall = false;
+                    smtpEntered.TrySetResult();
+                    await releaseSmtp.Task.WaitAsync(ct).ConfigureAwait(false);
+                }
+                return OperatorNotificationDeliveryResult.Success(SmtpNotificationTransport.ChannelName, TimeSpan.FromMilliseconds(5));
+            }
+        };
+        using var telemetry = new OperatorNotificationTelemetry();
+        using var dispatcher = new OperatorNotificationDispatcher(config, smtp, new FakeWebhookTransport(), telemetry, clock);
+
+        Assert.IsTrue(dispatcher.TryPublish(MakeEvent(OperatorNotificationEventKind.CaptureStalled, "inflight-key", clock.GetUtcNow())));
+        var dispatchTask = dispatcher.ProcessPendingOnceAsync(CancellationToken.None);
+        await smtpEntered.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+        // Publish 3 identical repeats WHILE the first attempt is in flight.
+        for (var i = 0; i < 3; i++)
+        {
+            Assert.IsTrue(dispatcher.TryPublish(MakeEvent(OperatorNotificationEventKind.CaptureStalled, "inflight-key", clock.GetUtcNow())));
+        }
+
+        releaseSmtp.TrySetResult();
+        await dispatchTask.ConfigureAwait(false);
+        Assert.HasCount(1, smtp.Sent);
+
+        // Advance past cooldown and publish again -> the 3 in-flight repeats were preserved as suppressed occurrences!
+        clock.Advance(TimeSpan.FromMinutes(11));
+        Assert.IsTrue(dispatcher.TryPublish(MakeEvent(OperatorNotificationEventKind.CaptureStalled, "inflight-key", clock.GetUtcNow())));
+        await dispatcher.ProcessPendingOnceAsync(CancellationToken.None).ConfigureAwait(false);
+
+        Assert.HasCount(2, smtp.Sent);
+        StringAssert.Contains(smtp.Sent[1].Body, "Suppressed during cooldown: 3", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task ExpiredCooldownEntries_AreEvictedAndTryPublishInvokesLoggerOutsideLockAsync()
+    {
+        var clock = new ManualNotificationClock(new DateTimeOffset(2026, 11, 26, 12, 0, 0, TimeSpan.Zero));
+        var options = new OperatorNotificationsOptions
+        {
+            Enabled = true,
+            MaxNotificationsPerHour = 60,
+            Smtp = new SmtpNotificationOptions
+            {
+                Enabled = true,
+                Host = "smtp.example.test",
+                FromAddress = "camera@example.test",
+                Recipients = ["ops@example.test"]
+            },
+            Events = new OperatorNotificationEventsOptions { DiskPressureCooldownMinutes = 5 }
+        };
+        var config = new InMemoryConfigProvider(options, OperatorNotificationSecrets.Empty);
+        var smtp = new FakeSmtpTransport();
+        var reentrantCalls = 0;
+        OperatorNotificationDispatcher? dispatcherRef = null;
+        var reentrantLogger = new CallbackLogger<OperatorNotificationDispatcher>(() =>
+        {
+            // Calling GetStatus() from inside a logger callback verifies the lock is NOT held when logging runs.
+            if (dispatcherRef is not null)
+            {
+                _ = dispatcherRef.GetStatus();
+                Interlocked.Increment(ref reentrantCalls);
+            }
+        });
+
+        using var telemetry = new OperatorNotificationTelemetry();
+        using var dispatcher = new OperatorNotificationDispatcher(config, smtp, new FakeWebhookTransport(), telemetry, clock, reentrantLogger);
+        dispatcherRef = dispatcher;
+
+        for (var i = 0; i < 5; i++)
+        {
+            Assert.IsTrue(dispatcher.TryPublish(MakeEvent(OperatorNotificationEventKind.DiskPressure, $"evict-{i}", clock.GetUtcNow())));
+        }
+        Assert.AreEqual(5, dispatcher.TrackedCooldownCount);
+        Assert.IsGreaterThanOrEqualTo(5, reentrantCalls);
+
+        await dispatcher.ProcessPendingOnceAsync(CancellationToken.None).ConfigureAwait(false);
+
+        // Advance past cooldown window -> next publish prunes all 5 expired cooldown entries!
+        clock.Advance(TimeSpan.FromMinutes(10));
+        Assert.IsTrue(dispatcher.TryPublish(MakeEvent(OperatorNotificationEventKind.DiskPressure, "evict-new", clock.GetUtcNow())));
+        Assert.AreEqual(1, dispatcher.TrackedCooldownCount, "Expired cooldown entries must be evicted from memory.");
+    }
+
+    [TestMethod]
+    public async Task SendTestAsync_EnforcesRateLimitRejectsUndefinedTargetAndReportsPerChannelOutcomesAsync()
     {
         var clock = new ManualNotificationClock(new DateTimeOffset(2026, 11, 26, 12, 0, 0, TimeSpan.Zero));
         var options = new OperatorNotificationsOptions
@@ -199,6 +479,10 @@ public sealed class OperatorNotificationDispatcherTests
         var webhook = new FakeWebhookTransport();
         using var telemetry = new OperatorNotificationTelemetry();
         using var dispatcher = new OperatorNotificationDispatcher(config, smtp, webhook, telemetry, clock);
+
+        // Undefined target throws before consuming rate-limit slot.
+        await Assert.ThrowsExactlyAsync<ArgumentOutOfRangeException>(async () =>
+            await dispatcher.SendTestAsync((NotificationTestTarget)99, "owner-1", CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
 
         var first = await dispatcher.SendTestAsync(NotificationTestTarget.AllEnabled, "owner-1", CancellationToken.None).ConfigureAwait(false);
         Assert.IsFalse(first.RateLimited);
@@ -226,6 +510,7 @@ public sealed class OperatorNotificationDispatcherTests
         const string webhookPathSecret = "canary-webhook-path-3344";
         const string webhookToken = "canary-webhook-bearer-5566";
         const string webhookUserKey = "canary-pushover-user-7788";
+        const string webhookNtfyTopic = "canary-ntfy-topic-6677";
 
         var options = new OperatorNotificationsOptions
         {
@@ -242,7 +527,7 @@ public sealed class OperatorNotificationDispatcherTests
             Webhook = new WebhookNotificationOptions
             {
                 Enabled = true,
-                Format = WebhookPayloadFormat.Pushover
+                Format = WebhookPayloadFormat.Ntfy
             }
         };
         var secrets = new OperatorNotificationSecrets(
@@ -250,7 +535,8 @@ public sealed class OperatorNotificationDispatcherTests
             smtpPass,
             $"https://webhook.example.test/{webhookPathSecret}?key=canary-query-9900",
             webhookToken,
-            webhookUserKey);
+            webhookUserKey,
+            webhookNtfyTopic);
 
         var config = new InMemoryConfigProvider(options, secrets);
         var smtp = new FakeSmtpTransport
@@ -291,7 +577,7 @@ public sealed class OperatorNotificationDispatcherTests
         using var telemetry = new OperatorNotificationTelemetry();
         using var dispatcher = new OperatorNotificationDispatcher(config, smtp, webhook, telemetry, clock, logger);
 
-        await dispatcher.UpdateConfigurationAsync(new OperatorNotificationsUpdateRequest("v1", options, smtpUser, false, smtpPass, false, secrets.WebhookUrl, false, webhookToken, false, webhookUserKey, false), "owner-1", CancellationToken.None).ConfigureAwait(false);
+        await dispatcher.UpdateConfigurationAsync(new OperatorNotificationsUpdateRequest("v1", options, smtpUser, false, smtpPass, false, secrets.WebhookUrl, false, webhookToken, false, webhookUserKey, false, webhookNtfyTopic, false), "owner-1", CancellationToken.None).ConfigureAwait(false);
         dispatcher.TryPublish(MakeEvent(OperatorNotificationEventKind.DiskPressure, "disk", clock.GetUtcNow()));
         await dispatcher.ProcessPendingOnceAsync(CancellationToken.None).ConfigureAwait(false);
         await dispatcher.SendTestAsync(NotificationTestTarget.AllEnabled, "owner-1", CancellationToken.None).ConfigureAwait(false);
@@ -299,7 +585,7 @@ public sealed class OperatorNotificationDispatcherTests
         var statusText = dispatcher.GetStatus().ToString();
         var allObserved = string.Join("\n", logger.Messages.Concat(observedTags).Append(statusText));
 
-        foreach (var canary in new[] { smtpUser, smtpPass, recipient, webhookPathSecret, "canary-query-9900", webhookToken, webhookUserKey })
+        foreach (var canary in new[] { smtpUser, smtpPass, recipient, webhookPathSecret, "canary-query-9900", webhookToken, webhookUserKey, webhookNtfyTopic })
         {
             Assert.DoesNotContain(canary, allObserved, StringComparison.Ordinal);
         }
@@ -376,6 +662,20 @@ public sealed class OperatorNotificationDispatcherTests
             return Handler is not null
                 ? Handler(request, cancellationToken)
                 : Task.FromResult(OperatorNotificationDeliveryResult.Success(WebhookNotificationTransport.ChannelName, TimeSpan.FromMilliseconds(5)));
+        }
+    }
+
+    private sealed class CallbackLogger<T>(Action onLog) : ILogger<T>
+    {
+        public IDisposable BeginScope<TState>(TState state) where TState : notnull => NullScope.Instance;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+            => onLog();
+
+        private sealed class NullScope : IDisposable
+        {
+            public static NullScope Instance { get; } = new();
+            public void Dispose() { }
         }
     }
 

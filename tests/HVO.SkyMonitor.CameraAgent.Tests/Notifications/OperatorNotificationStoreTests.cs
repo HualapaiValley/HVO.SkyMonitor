@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using HVO.SkyMonitor.CameraAgent.Common.Notifications;
 using HVO.SkyMonitor.CameraAgent.Configuration;
 using HVO.SkyMonitor.CameraAgent.Services;
@@ -23,12 +24,12 @@ public sealed class OperatorNotificationStoreTests
         Assert.IsFalse(snapshot.Options.Enabled);
         Assert.IsFalse(snapshot.HasSavedOverrides);
         Assert.IsTrue(snapshot.CanPersist);
+        Assert.IsFalse(snapshot.StoreCorrupt);
         Assert.IsFalse(File.Exists(store.ConfigFilePath));
-        Assert.IsFalse(File.Exists(store.SecretsFilePath));
     }
 
     [TestMethod]
-    public async Task SaveAndReload_EncryptsSecretsWithDataProtectionEnforcesPermissionsAndSupportsKeepReplaceClearAsync()
+    public async Task SaveAndReload_AtomicallyEncryptsSecretsIncludingNtfyTopicEnforcesPermissionsAndSupportsKeepReplaceClearAsync()
     {
         using var dir = TempStateDir.Create();
         var dpProvider = DataProtectionProvider.Create(new DirectoryInfo(Path.Combine(dir.Path, "dp-keys")));
@@ -36,6 +37,7 @@ public sealed class OperatorNotificationStoreTests
         const string smtpPass = "protected-pass-3344";
         const string webhookUrl = "https://hooks.example.test/secret-path-5566?sig=7788";
         const string webhookToken = "protected-token-9900";
+        const string ntfyTopic = "protected-ntfy-topic-4455";
 
         using (var store = CreateStore(dir.Path, isDevelopment: false, dpProvider: dpProvider))
         {
@@ -55,7 +57,7 @@ public sealed class OperatorNotificationStoreTests
                 Webhook = new WebhookNotificationOptions
                 {
                     Enabled = true,
-                    Format = WebhookPayloadFormat.Generic
+                    Format = WebhookPayloadFormat.Ntfy
                 }
             };
 
@@ -65,30 +67,29 @@ public sealed class OperatorNotificationStoreTests
                 SmtpUsername: smtpUser,
                 SmtpPassword: smtpPass,
                 WebhookUrl: webhookUrl,
-                WebhookAuthToken: webhookToken), "owner-1", CancellationToken.None).ConfigureAwait(false);
+                WebhookAuthToken: webhookToken,
+                WebhookNtfyTopic: ntfyTopic), "owner-1", CancellationToken.None).ConfigureAwait(false);
 
             Assert.AreEqual(OperatorNotificationsSaveOutcome.Applied, saved.Outcome, saved.Message);
             Assert.IsNotNull(saved.Snapshot);
             Assert.IsTrue(saved.Snapshot.Secrets.HasSmtpUsername);
             Assert.IsTrue(saved.Snapshot.Secrets.HasSmtpPassword);
             Assert.IsTrue(saved.Snapshot.Secrets.HasWebhookUrl);
+            Assert.IsTrue(saved.Snapshot.Secrets.HasWebhookNtfyTopic);
+            Assert.AreEqual(NotificationSecretSource.ProtectedStore, saved.Snapshot.Secrets.WebhookNtfyTopicSource);
             Assert.AreEqual("https://hooks.example.test", saved.Snapshot.Secrets.WebhookEndpointHost);
             Assert.AreEqual(NotificationSecretSource.ProtectedStore, saved.Snapshot.Secrets.WebhookUrlSource);
 
-            // Verify files exist, are encrypted (zero plaintext secrets on disk), and have restricted Unix permissions.
+            // Verify ONE atomic envelope file exists, contains zero plaintext secrets, and has 0600 permissions.
             Assert.IsTrue(File.Exists(store.ConfigFilePath));
-            Assert.IsTrue(File.Exists(store.SecretsFilePath));
-            var configDisk = await File.ReadAllTextAsync(store.ConfigFilePath).ConfigureAwait(false);
-            var secretDisk = await File.ReadAllTextAsync(store.SecretsFilePath).ConfigureAwait(false);
-            foreach (var canary in new[] { smtpUser, smtpPass, "secret-path-5566", "7788", webhookToken })
+            var diskContent = await File.ReadAllTextAsync(store.ConfigFilePath).ConfigureAwait(false);
+            foreach (var canary in new[] { smtpUser, smtpPass, "secret-path-5566", "7788", webhookToken, ntfyTopic })
             {
-                Assert.DoesNotContain(canary, configDisk, StringComparison.Ordinal);
-                Assert.DoesNotContain(canary, secretDisk, StringComparison.Ordinal);
+                Assert.DoesNotContain(canary, diskContent, StringComparison.Ordinal);
             }
 
             if (!OperatingSystem.IsWindows())
             {
-                Assert.AreEqual(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(store.SecretsFilePath));
                 Assert.AreEqual(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(store.ConfigFilePath));
             }
         }
@@ -102,6 +103,7 @@ public sealed class OperatorNotificationStoreTests
             Assert.AreEqual(smtpPass, secrets.SmtpPassword);
             Assert.AreEqual(webhookUrl, secrets.WebhookUrl);
             Assert.AreEqual(webhookToken, secrets.WebhookAuthToken);
+            Assert.AreEqual(ntfyTopic, secrets.WebhookNtfyTopic);
 
             // Stale version returns Conflict.
             var conflict = await reloaded.SaveAsync(new OperatorNotificationsUpdateRequest("stale-version", opts), "owner-1", CancellationToken.None).ConfigureAwait(false);
@@ -112,24 +114,242 @@ public sealed class OperatorNotificationStoreTests
             var cleared = await reloaded.SaveAsync(new OperatorNotificationsUpdateRequest(
                 snap.Version,
                 opts,
-                ClearWebhookAuthToken: true), "owner-1", CancellationToken.None).ConfigureAwait(false);
+                ClearWebhookAuthToken: true,
+                ClearWebhookNtfyTopic: true), "owner-1", CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(OperatorNotificationsSaveOutcome.Applied, cleared.Outcome);
             var (_, afterClear) = await reloaded.GetEffectiveForDeliveryAsync(CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(smtpPass, afterClear.SmtpPassword);
             Assert.IsNull(afterClear.WebhookAuthToken);
+            Assert.IsNull(afterClear.WebhookNtfyTopic);
+        }
+    }
 
-            // Clearing all secrets removes the encrypted secrets file completely.
-            var disabledOpts = new OperatorNotificationsOptions { Enabled = false };
-            var clearedAll = await reloaded.SaveAsync(new OperatorNotificationsUpdateRequest(
-                cleared.Snapshot!.Version,
-                disabledOpts,
-                ClearSmtpUsername: true,
-                ClearSmtpPassword: true,
-                ClearWebhookUrl: true,
-                ClearWebhookAuthToken: true,
-                ClearWebhookUserKey: true), "owner-1", CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(OperatorNotificationsSaveOutcome.Applied, clearedAll.Outcome);
-            Assert.IsFalse(File.Exists(reloaded.SecretsFilePath));
+    [TestMethod]
+    public async Task SaveAsync_PasswordOnlyRotation_AdvancesVersionAndRejectsStaleEditorWithConflictAsync()
+    {
+        using var dir = TempStateDir.Create();
+        var dpProvider = DataProtectionProvider.Create(new DirectoryInfo(Path.Combine(dir.Path, "dp-keys")));
+        using var store = CreateStore(dir.Path, isDevelopment: false, dpProvider: dpProvider);
+
+        var options = new OperatorNotificationsOptions
+        {
+            Enabled = true,
+            Smtp = new SmtpNotificationOptions
+            {
+                Enabled = true,
+                Host = "smtp.example.test",
+                Port = 587,
+                SecurityMode = SmtpSecurityMode.StartTls,
+                FromAddress = "camera@example.test",
+                Recipients = ["ops@example.test"]
+            }
+        };
+
+        var initial = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+        var saved1 = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+            initial.Version, options, SmtpUsername: "user1", SmtpPassword: "password-v1"), "owner-1", CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(OperatorNotificationsSaveOutcome.Applied, saved1.Outcome);
+        var version1 = saved1.Snapshot!.Version;
+
+        // Rotate ONLY the password (options and secret presence flags remain identical).
+        var saved2 = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+            version1, options, SmtpPassword: "password-v2"), "owner-2", CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(OperatorNotificationsSaveOutcome.Applied, saved2.Outcome);
+        var version2 = saved2.Snapshot!.Version;
+        Assert.AreNotEqual(version1, version2, "Secret-only rotation MUST advance the optimistic concurrency version.");
+
+        // Stale editor holding version1 MUST receive Conflict and NOT overwrite password-v2.
+        var staleAttempt = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+            version1, options, SmtpPassword: "stale-password-v0"), "owner-1", CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(OperatorNotificationsSaveOutcome.Conflict, staleAttempt.Outcome);
+
+        var (_, effective) = await store.GetEffectiveForDeliveryAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual("password-v2", effective.SmtpPassword);
+    }
+
+    [TestMethod]
+    public async Task SaveAsync_FaultInjectionDuringRelayRotation_NeverMixesNewOptionsWithOldSecretsAsync()
+    {
+        using var dir = TempStateDir.Create();
+        var realProvider = DataProtectionProvider.Create(new DirectoryInfo(Path.Combine(dir.Path, "dp-keys")));
+        var faultProvider = new FaultInjectingDataProtectionProvider(realProvider);
+
+        var relay1Options = new OperatorNotificationsOptions
+        {
+            Enabled = true,
+            Smtp = new SmtpNotificationOptions
+            {
+                Enabled = true,
+                Host = "relay-one.example.test",
+                Port = 587,
+                SecurityMode = SmtpSecurityMode.StartTls,
+                FromAddress = "camera@example.test",
+                Recipients = ["ops@example.test"]
+            }
+        };
+        var relay2Options = new OperatorNotificationsOptions
+        {
+            Enabled = true,
+            Smtp = new SmtpNotificationOptions
+            {
+                Enabled = true,
+                Host = "relay-two.example.test",
+                Port = 587,
+                SecurityMode = SmtpSecurityMode.StartTls,
+                FromAddress = "camera@example.test",
+                Recipients = ["ops@example.test"]
+            }
+        };
+
+        string versionAfterRelay1;
+        using (var store = CreateStore(dir.Path, isDevelopment: false, dpProvider: faultProvider))
+        {
+            var initial = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+            var saved1 = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                initial.Version, relay1Options, SmtpUsername: "relay1-user", SmtpPassword: "relay1-password"),
+                "owner-1", CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(OperatorNotificationsSaveOutcome.Applied, saved1.Outcome);
+            versionAfterRelay1 = saved1.Snapshot!.Version;
+
+            // 1. Inject DataProtection Protect() failure during rotation to relay2 + relay2-password.
+            faultProvider.FailProtect = true;
+            await Assert.ThrowsExactlyAsync<CryptographicException>(async () =>
+                await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                    versionAfterRelay1, relay2Options, SmtpUsername: "relay2-user", SmtpPassword: "relay2-password"),
+                    "owner-1", CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+            faultProvider.FailProtect = false;
+
+            var (afterDpFailOpts, afterDpFailSecrets) = await store.GetEffectiveForDeliveryAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual("relay-one.example.test", afterDpFailOpts.Smtp.Host);
+            Assert.AreEqual("relay1-password", afterDpFailSecrets.SmtpPassword);
+        }
+
+        // 2. Inject pre-rename I/O failure during rotation -> disk and restarted store still see relay1 + relay1-password.
+        using (var storeWithIoFault = new OperatorNotificationStore(
+            realProvider,
+            Options.Create(new DeviceProvisioningOptions { StateDirectory = dir.Path }),
+            new ConfigurationBuilder().Build(),
+            new OperatorNotificationNetworkPolicy(isDevelopment: false),
+            NullLogger<OperatorNotificationStore>.Instance)
+        {
+            BeforePublishTempFile = _ => throw new IOException("Simulated disk fault before atomic rename.")
+        })
+        {
+            await Assert.ThrowsExactlyAsync<IOException>(async () =>
+                await storeWithIoFault.SaveAsync(new OperatorNotificationsUpdateRequest(
+                    versionAfterRelay1, relay2Options, SmtpUsername: "relay2-user", SmtpPassword: "relay2-password"),
+                    "owner-1", CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+        }
+
+        // 3. Inject cancellation -> existing envelope stays intact.
+        using (var storeForCancel = CreateStore(dir.Path, isDevelopment: false, dpProvider: realProvider))
+        {
+            using var cts = new CancellationTokenSource();
+            await cts.CancelAsync().ConfigureAwait(false);
+            await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+                await storeForCancel.SaveAsync(new OperatorNotificationsUpdateRequest(
+                    versionAfterRelay1, relay2Options, SmtpUsername: "relay2-user", SmtpPassword: "relay2-password"),
+                    "owner-1", cts.Token).ConfigureAwait(false)).ConfigureAwait(false);
+        }
+
+        // 4. Fresh restart verifies consistent atomic pair (relay-one + relay1-password) and no leftover .tmp files.
+        using (var restarted = CreateStore(dir.Path, isDevelopment: false, dpProvider: realProvider))
+        {
+            var (opts, secrets) = await restarted.GetEffectiveForDeliveryAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual("relay-one.example.test", opts.Smtp.Host);
+            Assert.AreEqual("relay1-user", secrets.SmtpUsername);
+            Assert.AreEqual("relay1-password", secrets.SmtpPassword);
+            var leftovers = Directory.EnumerateFiles(dir.Path, "*.tmp").ToArray();
+            Assert.IsEmpty(leftovers);
+        }
+    }
+
+    [TestMethod]
+    public async Task CorruptOrUndecryptableStore_NeverFallsBackToHostCredentialsAndAllowsExplicitRecoveryAsync()
+    {
+        using var dir = TempStateDir.Create();
+        var hostConfig = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                [OperatorNotificationsOptions.SectionKey + ":Enabled"] = "true",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Enabled"] = "true",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Host"] = "fallback-host.example.test",
+                [ConfigurationOperatorNotificationConfigProvider.SmtpUsernameConfigKey] = "host-fallback-user",
+                [ConfigurationOperatorNotificationConfigProvider.SmtpPasswordConfigKey] = "host-fallback-password",
+                [ConfigurationOperatorNotificationConfigProvider.WebhookUrlConfigKey] = "https://host-fallback.example.test/secret"
+            })
+            .Build();
+
+        // Case A: Corrupt JSON on disk.
+        var storePath = Path.Combine(dir.Path, OperatorNotificationStore.ConfigFileName);
+        const string corruptPayload = "{ this is not valid json !!!";
+        await File.WriteAllTextAsync(storePath, corruptPayload).ConfigureAwait(false);
+
+        using (var store = CreateStore(dir.Path, isDevelopment: false, configuration: hostConfig))
+        {
+            Assert.AreEqual(NotificationReasonCodes.StoreCorrupt, store.ConfigurationErrorReasonCode);
+
+            var snapshot = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsTrue(snapshot.StoreCorrupt);
+            Assert.AreEqual(NotificationReasonCodes.StoreCorrupt, snapshot.StoreStatusReasonCode);
+            Assert.IsFalse(snapshot.Options.Enabled);
+            Assert.IsFalse(snapshot.Secrets.HasSmtpPassword, "Corrupt store must NOT silently fall back to host config secrets.");
+            Assert.IsFalse(snapshot.Secrets.HasWebhookUrl, "Corrupt store must NOT silently fall back to host config webhook URL.");
+
+            var effective = await store.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsTrue(effective.StoreCorrupt);
+            Assert.AreEqual(NotificationReasonCodes.StoreCorrupt, effective.ConfigurationErrorReasonCode);
+            Assert.IsFalse(effective.Options.Enabled);
+            Assert.IsTrue(effective.Secrets.IsEmpty);
+
+            // Damaged file MUST remain preserved intact on disk prior to operator recovery.
+            Assert.AreEqual(corruptPayload, await File.ReadAllTextAsync(storePath).ConfigureAwait(false));
+
+            // Explicit operator recovery PUT succeeds, quarantines damaged file, and restores normal state.
+            var recovered = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                snapshot.Version,
+                new OperatorNotificationsOptions { Enabled = false }), "owner-1", CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(OperatorNotificationsSaveOutcome.Applied, recovered.Outcome, recovered.Message);
+            Assert.IsNotNull(recovered.Snapshot);
+            Assert.IsFalse(recovered.Snapshot.StoreCorrupt);
+            Assert.IsNull(store.ConfigurationErrorReasonCode);
+            Assert.IsTrue(File.Exists(store.QuarantineFilePath));
+            Assert.AreEqual(corruptPayload, await File.ReadAllTextAsync(store.QuarantineFilePath).ConfigureAwait(false));
+        }
+
+        // Case B: Valid JSON envelope whose DataProtection ciphertext cannot be decrypted by a new key ring.
+        var keyRingA = DataProtectionProvider.Create(new DirectoryInfo(Path.Combine(dir.Path, "ring-a")));
+        var keyRingB = DataProtectionProvider.Create(new DirectoryInfo(Path.Combine(dir.Path, "ring-b")));
+        using (var writerStore = CreateStore(dir.Path, isDevelopment: false, dpProvider: keyRingA, configuration: hostConfig))
+        {
+            var snap = await writerStore.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+            var saved = await writerStore.SaveAsync(new OperatorNotificationsUpdateRequest(
+                snap.Version,
+                new OperatorNotificationsOptions
+                {
+                    Enabled = true,
+                    Smtp = new SmtpNotificationOptions
+                    {
+                        Enabled = true,
+                        Host = "smtp.example.test",
+                        Port = 587,
+                        SecurityMode = SmtpSecurityMode.StartTls,
+                        FromAddress = "camera@example.test",
+                        Recipients = ["ops@example.test"]
+                    }
+                },
+                SmtpUsername: "ring-a-user",
+                SmtpPassword: "ring-a-password"), "owner-1", CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(OperatorNotificationsSaveOutcome.Applied, saved.Outcome);
+        }
+
+        using (var readerStore = CreateStore(dir.Path, isDevelopment: false, dpProvider: keyRingB, configuration: hostConfig))
+        {
+            var effective = await readerStore.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsTrue(effective.StoreCorrupt);
+            Assert.AreEqual(NotificationReasonCodes.StoreCorrupt, effective.ConfigurationErrorReasonCode);
+            Assert.IsNull(effective.Secrets.SmtpPassword, "Undecryptable store must NOT fall back to host config password.");
+            Assert.IsNull(effective.Secrets.WebhookUrl, "Undecryptable store must NOT fall back to host config webhook URL.");
         }
     }
 
@@ -146,7 +366,7 @@ public sealed class OperatorNotificationStoreTests
         await File.WriteAllTextAsync(outsideFile, "decoy").ConfigureAwait(false);
         var stateDir = Path.Combine(dir.Path, "state");
         Directory.CreateDirectory(stateDir);
-        File.CreateSymbolicLink(Path.Combine(stateDir, OperatorNotificationStore.SecretsFileName), outsideFile);
+        File.CreateSymbolicLink(Path.Combine(stateDir, OperatorNotificationStore.ConfigFileName), outsideFile);
 
         using var store = CreateStore(stateDir, isDevelopment: false);
         await Assert.ThrowsExactlyAsync<IOException>(async () =>
@@ -180,7 +400,6 @@ public sealed class OperatorNotificationStoreTests
         Assert.IsNotNull(result.Problems);
         Assert.IsTrue(result.Problems.ContainsKey("smtp.host"));
         Assert.IsFalse(File.Exists(store.ConfigFilePath));
-        Assert.IsFalse(File.Exists(store.SecretsFilePath));
     }
 
     private static OperatorNotificationStore CreateStore(
@@ -197,6 +416,29 @@ public sealed class OperatorNotificationStoreTests
             configuration,
             new OperatorNotificationNetworkPolicy(isDevelopment),
             NullLogger<OperatorNotificationStore>.Instance);
+    }
+
+    private sealed class FaultInjectingDataProtectionProvider(IDataProtectionProvider inner) : IDataProtectionProvider
+    {
+        public bool FailProtect { get; set; }
+
+        public IDataProtector CreateProtector(string purpose) => new FaultInjectingProtector(inner.CreateProtector(purpose), this);
+
+        private sealed class FaultInjectingProtector(IDataProtector inner, FaultInjectingDataProtectionProvider owner) : IDataProtector
+        {
+            public IDataProtector CreateProtector(string purpose) => new FaultInjectingProtector(inner.CreateProtector(purpose), owner);
+
+            public byte[] Protect(byte[] plaintext)
+            {
+                if (owner.FailProtect)
+                {
+                    throw new CryptographicException("Simulated DataProtection failure during key rotation.");
+                }
+                return inner.Protect(plaintext);
+            }
+
+            public byte[] Unprotect(byte[] protectedData) => inner.Unprotect(protectedData);
+        }
     }
 
     private sealed class TempStateDir : IDisposable

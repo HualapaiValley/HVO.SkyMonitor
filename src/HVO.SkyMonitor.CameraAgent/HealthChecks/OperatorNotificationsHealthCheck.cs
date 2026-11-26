@@ -6,7 +6,7 @@ namespace HVO.SkyMonitor.CameraAgent.HealthChecks;
 /// <summary>
 /// Sanitized health check for optional local operator notifications. Reports Healthy with Availability=Disabled when
 /// notifications are opted out (default), Healthy when active channels are ready, and Degraded (never Unhealthy) when
-/// an outbound notification provider is experiencing failures so notification outages never fail host readiness.
+/// configuration/store corruption or outbound provider failures occur so notification faults never fail host readiness.
 /// </summary>
 internal sealed class OperatorNotificationsHealthCheck(
     IOperatorNotificationService notificationService) : IHealthCheck
@@ -16,6 +16,22 @@ internal sealed class OperatorNotificationsHealthCheck(
         CancellationToken cancellationToken = default)
     {
         var status = notificationService.GetStatus();
+
+        if (!string.IsNullOrEmpty(status.ConfigurationErrorReasonCode))
+        {
+            var errorData = new Dictionary<string, object>(StringComparer.Ordinal)
+            {
+                ["Availability"] = "Degraded",
+                ["ReasonCode"] = status.ConfigurationErrorReasonCode,
+                ["QueueDepth"] = status.QueueDepth,
+                ["SmtpState"] = status.Smtp.State.ToString(),
+                ["WebhookState"] = status.Webhook.State.ToString()
+            };
+            return Task.FromResult(HealthCheckResult.Degraded(
+                NotificationReasonCodes.DescribeForOperator(status.ConfigurationErrorReasonCode),
+                data: errorData));
+        }
+
         if (!status.Enabled)
         {
             return Task.FromResult(HealthCheckResult.Healthy(
