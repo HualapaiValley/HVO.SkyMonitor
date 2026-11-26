@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Xml.Linq;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
@@ -1614,58 +1615,35 @@ public sealed class CenteredPipelineQualificationTests
 
             await RunRetainedNovemberMonoEndToEndAsync(corpusRoot, token).ConfigureAwait(false);
 
-            // 3. Negative regressions for Mono16 manifest exposureSeconds: omitting exposureSeconds, setting null,
-            // or changing it to 19s must fail loudly before admission!
-            var missingExposureJson = JsonSerializer.Serialize(new[]
+            // Reject missing, null, and non-20-second exposures before admission, including a sub-tick difference.
+            var invalidManifest = JsonNode.Parse(monoManifestJson)!.AsArray();
+            var invalidEntry = invalidManifest[0]!.AsObject();
+            (string? ExposureJson, string ExpectedDiagnostic)[] invalidExposures =
+            [
+                (null, "must explicitly declare numeric exposureSeconds"),
+                ("null", "must explicitly declare numeric exposureSeconds"),
+                ("19.0", "must declare exposureSeconds=20"),
+                ("20.0000000005", "must declare exposureSeconds=20")
+            ];
+            foreach (var (exposureJson, expectedDiagnostic) in invalidExposures)
             {
-                new
+                if (exposureJson is null)
                 {
-                    artifact = "study-mono-1.bin",
-                    captureId = Guid.Parse("19280001-1111-4111-8111-192800010001"),
-                    rawSha256 = PayloadChecksum.ComputeSha256(monoBytes),
-                    width = Width,
-                    height = Height,
-                    blackLevel = (double)BlackLevel,
-                    whiteLevel = (double)WhiteLevel,
-                    pixelCount = monoStats.SampleCount,
-                    minAdu = monoStats.Minimum,
-                    maxAdu = monoStats.Maximum,
-                    sumAdu = monoStats.Sum,
-                    zeroCount = monoStats.ZeroCount,
-                    whiteLevelCount = monoStats.SaturatedCount
+                    invalidEntry.Remove("exposureSeconds");
                 }
-            });
-            await File.WriteAllTextAsync(Path.Combine(monoDir, "expected-mono.json"), missingExposureJson, token)
-                .ConfigureAwait(false);
-            await Assert.ThrowsExactlyAsync<AssertFailedException>(async () =>
-                await RunRetainedNovemberMonoEndToEndAsync(corpusRoot, token).ConfigureAwait(false))
-                .ConfigureAwait(false);
+                else
+                {
+                    invalidEntry["exposureSeconds"] = JsonNode.Parse(exposureJson);
+                }
 
-            var wrongExposureJson = JsonSerializer.Serialize(new[]
-            {
-                new
-                {
-                    artifact = "study-mono-1.bin",
-                    captureId = Guid.Parse("19280001-1111-4111-8111-192800010001"),
-                    rawSha256 = PayloadChecksum.ComputeSha256(monoBytes),
-                    width = Width,
-                    height = Height,
-                    blackLevel = (double)BlackLevel,
-                    whiteLevel = (double)WhiteLevel,
-                    exposureSeconds = 19.0,
-                    pixelCount = monoStats.SampleCount,
-                    minAdu = monoStats.Minimum,
-                    maxAdu = monoStats.Maximum,
-                    sumAdu = monoStats.Sum,
-                    zeroCount = monoStats.ZeroCount,
-                    whiteLevelCount = monoStats.SaturatedCount
-                }
-            });
-            await File.WriteAllTextAsync(Path.Combine(monoDir, "expected-mono.json"), wrongExposureJson, token)
-                .ConfigureAwait(false);
-            await Assert.ThrowsExactlyAsync<AssertFailedException>(async () =>
-                await RunRetainedNovemberMonoEndToEndAsync(corpusRoot, token).ConfigureAwait(false))
-                .ConfigureAwait(false);
+                await File.WriteAllTextAsync(Path.Combine(monoDir, "expected-mono.json"), invalidManifest.ToJsonString(), token)
+                    .ConfigureAwait(false);
+                var failure = await Assert.ThrowsExactlyAsync<AssertFailedException>(
+                    () => RunRetainedNovemberMonoEndToEndAsync(corpusRoot, token),
+                    $"Expected rejection for exposureSeconds {exposureJson ?? "(omitted)"}.")
+                    .ConfigureAwait(false);
+                StringAssert.Contains(failure.Message, expectedDiagnostic, StringComparison.Ordinal);
+            }
         }
         finally
         {
@@ -2145,7 +2123,6 @@ public sealed class CenteredPipelineQualificationTests
         Assert.AreEqual(
             expectedExposure.TotalSeconds,
             exposureSeconds,
-            1e-9,
             $"Manifest entry '{artifact}' must declare exposureSeconds={expectedExposure.TotalSeconds:0.###}, got {exposureSeconds}.");
         return TimeSpan.FromSeconds(exposureSeconds);
     }
