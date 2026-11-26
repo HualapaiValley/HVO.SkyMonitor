@@ -6,6 +6,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Focus;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture.Focus")]
 public sealed class MotorFocusSessionTests
 {
     private static readonly ManualFocusPreviewSettings Settings = new(TimeSpan.FromSeconds(1), 20);
