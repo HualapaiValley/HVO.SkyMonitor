@@ -106,27 +106,15 @@ public static class NotificationStateFilePublisher
 
             if (ancestorIsLink)
             {
-                try
+                // File.GetAttributes(ancestor) follows symlinks using kernel path-resolution semantics
+                // (handling relative '..' targets under symlinked parents accurately while leaving
+                // dangling links, links to non-directories, and inaccessible targets without Directory).
+                if ((ancestorAttributes & FileAttributes.Directory) == 0 ||
+                    (ancestorAttributes & FileAttributes.Device) != 0 ||
+                    (OperatingSystem.IsWindows() && !Directory.Exists(ancestor)))
                 {
-                    var finalTarget = Directory.ResolveLinkTarget(ancestor, returnFinalTarget: true);
-                    if (finalTarget is null || !finalTarget.Exists)
-                    {
-                        return new NotificationPathInspection(
-                            NotificationPathStatus.Unreadable, null, "state-dir-ancestor-symlink", nameof(IOException), IsSymlink: true);
-                    }
-
-                    var targetAttrs = File.GetAttributes(finalTarget.FullName);
-                    if ((targetAttrs & FileAttributes.Directory) == 0 || (targetAttrs & FileAttributes.Device) != 0)
-                    {
-                        return new NotificationPathInspection(
-                            NotificationPathStatus.Unreadable, null, "state-dir-ancestor-symlink-not-dir", nameof(IOException), IsSymlink: true);
-                    }
-                }
-                catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
-                {
-                    var exceptionName = ex.GetType().Name;
                     return new NotificationPathInspection(
-                        NotificationPathStatus.Unreadable, null, $"state-dir-ancestor-symlink:{exceptionName}", exceptionName, IsSymlink: true);
+                        NotificationPathStatus.Unreadable, null, "state-dir-ancestor-symlink-not-dir", nameof(IOException), IsSymlink: true);
                 }
             }
             else if ((ancestorAttributes & FileAttributes.Directory) == 0 || (ancestorAttributes & FileAttributes.Device) != 0)
@@ -506,8 +494,14 @@ public sealed class FileOperatorNotificationHeartbeatStore(string stateDirectory
         }
 
         var json = await File.ReadAllTextAsync(inspection.TargetPath, cancellationToken).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            throw new InvalidDataException("Operator notification heartbeat checkpoint is empty.");
+        }
+
         var payload = JsonSerializer.Deserialize<HeartbeatCheckpoint>(json, JsonOptions);
         if (payload is null ||
+            string.IsNullOrWhiteSpace(payload.LastSiteDate) ||
             !DateOnly.TryParseExact(payload.LastSiteDate, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed))
         {
             throw new InvalidDataException("Operator notification heartbeat checkpoint is malformed.");
@@ -526,5 +520,5 @@ public sealed class FileOperatorNotificationHeartbeatStore(string stateDirectory
             cancellationToken).ConfigureAwait(false);
     }
 
-    private sealed record HeartbeatCheckpoint(string LastSiteDate);
+    private sealed record HeartbeatCheckpoint(string? LastSiteDate);
 }

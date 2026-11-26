@@ -308,6 +308,9 @@ public sealed class ZwoAsiCameraModuleTests
             () => module.InitializeAsync(CreateConfig(), CancellationToken.None));
 
         StringAssert.Contains(exception.Message, "not connected", StringComparison.Ordinal);
+        Assert.AreEqual(nameof(AsiErrorCode.CameraRemoved), exception.Data["AsiErrorCode"]);
+        Assert.AreEqual(true, exception.Data["IsCameraDisconnected"]);
+        Assert.IsTrue(FleetRuntimeState.IsCameraDisconnectException(exception));
         Assert.DoesNotContain(Convert.ToHexString(PrivateSerial), exception.ToString(), StringComparison.OrdinalIgnoreCase);
     }
 
@@ -337,6 +340,14 @@ public sealed class ZwoAsiCameraModuleTests
     [DataRow((int)AsiErrorCode.GeneralError, "open2", false)]
     [DataRow((int)AsiErrorCode.CameraRemoved, "open2", true)]
     [DataRow((int)AsiErrorCode.CameraClosed, "open2", true)]
+    [DataRow((int)AsiErrorCode.Timeout, "property", false)]
+    [DataRow((int)AsiErrorCode.GeneralError, "property", false)]
+    [DataRow((int)AsiErrorCode.CameraRemoved, "property", true)]
+    [DataRow((int)AsiErrorCode.CameraClosed, "property", true)]
+    [DataRow((int)AsiErrorCode.Timeout, "select_open", false)]
+    [DataRow((int)AsiErrorCode.GeneralError, "select_open", false)]
+    [DataRow((int)AsiErrorCode.CameraRemoved, "select_open", true)]
+    [DataRow((int)AsiErrorCode.CameraClosed, "select_open", true)]
     [OSCondition(OperatingSystems.Linux)]
     [TestCategory("Unit")]
     public async Task NativeInitializationErrorCodes_PreserveExactCodeAndDisconnectClassification(
@@ -346,14 +357,22 @@ public sealed class ZwoAsiCameraModuleTests
     {
         var errorCode = (AsiErrorCode)rawErrorCode;
         var native = new FakeAsiNativeApi();
-        if (stage == "init")
+        switch (stage)
         {
-            native.InitError = errorCode;
-        }
-        else
-        {
-            native.OpenErrorCode = errorCode;
-            native.FailOpenOnCallByCameraId[7] = 2;
+            case "init":
+                native.InitError = errorCode;
+                break;
+            case "property":
+                native.FailPropertyByIndex[0] = errorCode;
+                break;
+            case "select_open":
+                native.OpenErrorCode = errorCode;
+                native.FailOpenOnCallByCameraId[7] = 1;
+                break;
+            default:
+                native.OpenErrorCode = errorCode;
+                native.FailOpenOnCallByCameraId[7] = 2;
+                break;
         }
         await using var module = Module(native);
 
@@ -367,6 +386,25 @@ public sealed class ZwoAsiCameraModuleTests
         Assert.AreEqual(expectDisconnected, exception.Data["IsCameraDisconnected"]);
         Assert.AreEqual(expectDisconnected, FleetRuntimeState.IsCameraDisconnectException(exception),
             $"Native ASI error {errorCode} at {stage} expected IsCameraDisconnected={expectDisconnected}.");
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux)]
+    [TestCategory("Unit")]
+    public async Task SelectionContinuesScanningWhenEarlierIndexThrowsGetCameraPropertyError()
+    {
+        var native = new FakeAsiNativeApi();
+        native.Cameras.Insert(0, Camera(1, "ZWO ASI676MC", Convert.FromHexString("1011223344556677")));
+        native.Cameras.Insert(1, Camera(2, "ZWO ASI676MC", Convert.FromHexString("2011223344556677")));
+        native.FailPropertyByIndex[0] = AsiErrorCode.Timeout;
+        native.FailPropertyByIndex[1] = AsiErrorCode.GeneralError;
+        await using var module = Module(native);
+
+        await module.InitializeAsync(CreateConfig(), CancellationToken.None);
+
+        Assert.Contains("Init:7", native.Calls);
+        Assert.DoesNotContain("Open:1", native.Calls);
+        Assert.DoesNotContain("Open:2", native.Calls);
     }
 
     [TestMethod]
@@ -1468,6 +1506,7 @@ public sealed class ZwoAsiCameraModuleTests
         internal TaskCompletionSource ExposureStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal HashSet<int> FailOpenCameraIds { get; } = [];
         internal Dictionary<int, int> FailOpenOnCallByCameraId { get; } = [];
+        internal Dictionary<int, AsiErrorCode> FailPropertyByIndex { get; } = [];
         internal AsiErrorCode OpenErrorCode { get; set; } = AsiErrorCode.CameraClosed;
         internal AsiErrorCode? InitError { get; set; }
         internal HashSet<int> FailSerialCameraIds { get; } = [];
@@ -1485,7 +1524,14 @@ public sealed class ZwoAsiCameraModuleTests
 
         public string GetSdkVersion() => "1.41";
         public int GetCameraCount() => Cameras.Count;
-        public AsiCameraInfo GetCameraProperty(int cameraIndex) => Cameras[cameraIndex].Info;
+        public AsiCameraInfo GetCameraProperty(int cameraIndex)
+        {
+            if (FailPropertyByIndex.TryGetValue(cameraIndex, out var error))
+            {
+                throw new AsiException("ASIGetCameraProperty", error);
+            }
+            return Cameras[cameraIndex].Info;
+        }
         public byte[] GetSerialNumber(int cameraId)
         {
             Calls.Add($"Serial:{cameraId}");

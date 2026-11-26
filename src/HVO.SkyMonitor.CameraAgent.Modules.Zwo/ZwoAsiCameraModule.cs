@@ -513,6 +513,7 @@ public sealed class ZwoAsiCameraModule :
         }
         var matches = new List<AsiCameraInfo>();
         AsiErrorCode? nonDisconnectProbeError = null;
+        AsiErrorCode? disconnectProbeError = null;
         for (var index = 0; index < count; index++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -521,8 +522,9 @@ public sealed class ZwoAsiCameraModule :
             {
                 camera = native.GetCameraProperty(index);
             }
-            catch (AsiException)
+            catch (AsiException ex)
             {
+                RecordSelectionProbeError(ex.ErrorCode, ref nonDisconnectProbeError, ref disconnectProbeError);
                 continue;
             }
             if (!string.Equals(NormalizeNativeModel(camera.Model), expectedModel, StringComparison.Ordinal))
@@ -543,10 +545,7 @@ public sealed class ZwoAsiCameraModule :
             }
             catch (AsiException ex)
             {
-                if (!AsiException.IsDisconnectError(ex.ErrorCode))
-                {
-                    nonDisconnectProbeError ??= ex.ErrorCode;
-                }
+                RecordSelectionProbeError(ex.ErrorCode, ref nonDisconnectProbeError, ref disconnectProbeError);
                 // Inventory entries that cannot safely identify themselves are not selection candidates.
             }
             finally
@@ -560,10 +559,7 @@ public sealed class ZwoAsiCameraModule :
                     }
                     catch (AsiException ex)
                     {
-                        if (!AsiException.IsDisconnectError(ex.ErrorCode))
-                        {
-                            nonDisconnectProbeError ??= ex.ErrorCode;
-                        }
+                        RecordSelectionProbeError(ex.ErrorCode, ref nonDisconnectProbeError, ref disconnectProbeError);
                         // An entry that cannot close cleanly is not safe to select.
                     }
                 }
@@ -577,9 +573,13 @@ public sealed class ZwoAsiCameraModule :
 
         if (matches.Count == 0)
         {
-            if (nonDisconnectProbeError is { } probeError)
+            if (nonDisconnectProbeError is { } nonDisconnectError)
             {
-                throw CreateInitializationException(probeError);
+                throw CreateInitializationException(nonDisconnectError);
+            }
+            if (disconnectProbeError is { } disconnectError)
+            {
+                throw CreateInitializationException(disconnectError);
             }
             throw new InvalidOperationException("The configured ASI camera is not connected.");
         }
@@ -592,6 +592,21 @@ public sealed class ZwoAsiCameraModule :
             throw new InvalidOperationException("The selected ASI camera does not match the configured expected model.");
         }
         return matches[0];
+    }
+
+    private static void RecordSelectionProbeError(
+        AsiErrorCode errorCode,
+        ref AsiErrorCode? nonDisconnectProbeError,
+        ref AsiErrorCode? disconnectProbeError)
+    {
+        if (AsiException.IsDisconnectError(errorCode))
+        {
+            disconnectProbeError ??= errorCode;
+        }
+        else
+        {
+            nonDisconnectProbeError ??= errorCode;
+        }
     }
 
     private static InvalidOperationException CreateInitializationException(AsiErrorCode errorCode)

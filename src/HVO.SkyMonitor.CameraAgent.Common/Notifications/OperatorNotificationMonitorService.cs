@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
+using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Deployment;
@@ -66,8 +67,8 @@ public sealed class OperatorNotificationMonitorService(
     private DateOnly? _lastPersistedHeartbeatSiteDate;
     private bool _heartbeatCheckpointLoaded;
     private int _consecutiveRuntimeStorageFailureEvaluations;
-    private string? _lastLoggedHeartbeatReadFailureKey;
-    private string? _lastLoggedHeartbeatWriteFailureKey;
+    private bool _heartbeatReadFailureActive;
+    private bool _heartbeatWriteFailureActive;
 
     /// <summary>Internal test seam to simulate transient fleet-snapshot lock timeouts deterministically.</summary>
     internal Func<TimeSpan, (bool Success, FleetRuntimeSnapshot? Snapshot)>? FleetSnapshotReader { get; init; }
@@ -702,22 +703,37 @@ public sealed class OperatorNotificationMonitorService(
             return;
         }
 
+        var (timeZone, zoneLabel) = ResolveSiteTimeZone();
+        var localNow = TimeZoneInfo.ConvertTime(now, timeZone);
+        var localDate = DateOnly.FromDateTime(localNow.DateTime);
+        var localTime = TimeOnly.FromDateTime(localNow.DateTime);
+
         if (!_heartbeatCheckpointLoaded && heartbeatStore is not null)
         {
             try
             {
                 var persistedDate = await heartbeatStore.ReadLastHeartbeatSiteDateAsync(cancellationToken).ConfigureAwait(false);
                 _heartbeatCheckpointLoaded = true;
-                _lastLoggedHeartbeatReadFailureKey = null;
-                if (persistedDate is not null)
+                var maxValidDate = localDate < DateOnly.MaxValue ? localDate.AddDays(1) : DateOnly.MaxValue;
+                if (persistedDate is { } loadedDate && loadedDate > maxValidDate)
                 {
-                    if (_lastPersistedHeartbeatSiteDate is null || persistedDate > _lastPersistedHeartbeatSiteDate)
+                    // Corrupted future-dated checkpoint (> today + 1d) must not suppress heartbeats indefinitely;
+                    // treat as malformed/absent so today's heartbeat dispatches and atomically overwrites it.
+                    LogHeartbeatReadFailureOnce(nameof(InvalidDataException));
+                }
+                else
+                {
+                    _heartbeatReadFailureActive = false;
+                    if (persistedDate is not null)
                     {
-                        _lastPersistedHeartbeatSiteDate = persistedDate;
-                    }
-                    if (_lastDispatchedHeartbeatSiteDate is null || persistedDate > _lastDispatchedHeartbeatSiteDate)
-                    {
-                        _lastDispatchedHeartbeatSiteDate = persistedDate;
+                        if (_lastPersistedHeartbeatSiteDate is null || persistedDate > _lastPersistedHeartbeatSiteDate)
+                        {
+                            _lastPersistedHeartbeatSiteDate = persistedDate;
+                        }
+                        if (_lastDispatchedHeartbeatSiteDate is null || persistedDate > _lastDispatchedHeartbeatSiteDate)
+                        {
+                            _lastDispatchedHeartbeatSiteDate = persistedDate;
+                        }
                     }
                 }
             }
@@ -725,18 +741,27 @@ public sealed class OperatorNotificationMonitorService(
             {
                 throw;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is JsonException or InvalidDataException)
+            {
+                // Verified regular checkpoint file is readable but malformed/empty/missing-date:
+                // log Warning 16209 once and treat as absent so daily heartbeats recover and atomically overwrite it.
+                LogHeartbeatReadFailureOnce(ex.GetType().Name);
+                _heartbeatCheckpointLoaded = true;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 LogHeartbeatReadFailureOnce(ex.GetType().Name);
                 // Defer daily heartbeat dispatch until checkpoint readability or genuine absence is confirmed.
                 return;
             }
+            catch (Exception ex)
+            {
+                LogHeartbeatReadFailureOnce(ex.GetType().Name);
+                // Defer daily heartbeat dispatch on unexpected non-format store failures.
+                return;
+            }
         }
 
-        var (timeZone, zoneLabel) = ResolveSiteTimeZone();
-        var localNow = TimeZoneInfo.ConvertTime(now, timeZone);
-        var localDate = DateOnly.FromDateTime(localNow.DateTime);
-        var localTime = TimeOnly.FromDateTime(localNow.DateTime);
         if (localTime < scheduledTime || (_lastDispatchedHeartbeatSiteDate is { } lastDate && localDate <= lastDate))
         {
             return;
@@ -787,7 +812,7 @@ public sealed class OperatorNotificationMonitorService(
         {
             await heartbeatStore!.WriteLastHeartbeatSiteDateAsync(siteDate, cancellationToken).ConfigureAwait(false);
             _lastPersistedHeartbeatSiteDate = siteDate;
-            _lastLoggedHeartbeatWriteFailureKey = null;
+            _heartbeatWriteFailureActive = false;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -801,20 +826,18 @@ public sealed class OperatorNotificationMonitorService(
 
     private void LogHeartbeatReadFailureOnce(string exceptionType)
     {
-        var failureKey = $"heartbeat-read:{exceptionType}";
-        if (!string.Equals(_lastLoggedHeartbeatReadFailureKey, failureKey, StringComparison.Ordinal))
+        if (!_heartbeatReadFailureActive)
         {
-            _lastLoggedHeartbeatReadFailureKey = failureKey;
+            _heartbeatReadFailureActive = true;
             OperatorNotificationLog.MonitorEvaluationFailed(_logger, exceptionType);
         }
     }
 
     private void LogHeartbeatWriteFailureOnce(string exceptionType)
     {
-        var failureKey = $"heartbeat-write:{exceptionType}";
-        if (!string.Equals(_lastLoggedHeartbeatWriteFailureKey, failureKey, StringComparison.Ordinal))
+        if (!_heartbeatWriteFailureActive)
         {
-            _lastLoggedHeartbeatWriteFailureKey = failureKey;
+            _heartbeatWriteFailureActive = true;
             OperatorNotificationLog.MonitorEvaluationFailed(_logger, exceptionType);
         }
     }

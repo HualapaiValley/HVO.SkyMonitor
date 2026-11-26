@@ -725,6 +725,10 @@ public sealed class OperatorNotificationMonitorServiceTests
     [DataRow((int)AsiErrorCode.GeneralError, "open2", false)]
     [DataRow((int)AsiErrorCode.CameraRemoved, "open2", true)]
     [DataRow((int)AsiErrorCode.CameraClosed, "open2", true)]
+    [DataRow((int)AsiErrorCode.Timeout, "property", false)]
+    [DataRow((int)AsiErrorCode.GeneralError, "property", false)]
+    [DataRow((int)AsiErrorCode.CameraRemoved, "property", true)]
+    [DataRow((int)AsiErrorCode.CameraClosed, "property", true)]
     public async Task RealPath_ZwoAsiModuleNativeInitializationErrors_ClassifyOnlyDisconnectCodesAsCameraDisconnectedAsync(
         int rawErrorCode,
         string stage,
@@ -747,6 +751,10 @@ public sealed class OperatorNotificationMonitorServiceTests
             if (stage == "init")
             {
                 native.InitError = errorCode;
+            }
+            else if (stage == "property")
+            {
+                native.FailPropertyByIndex[0] = errorCode;
             }
             else
             {
@@ -966,6 +974,260 @@ public sealed class OperatorNotificationMonitorServiceTests
     }
 
     [TestMethod]
+    [DataRow("malformed-date", "{\"lastSiteDate\":\"not-a-date\"}")]
+    [DataRow("empty-file", "")]
+    [DataRow("truncated-json", "{\"lastSiteDate\":\"2026-11")]
+    [DataRow("json-null", "null")]
+    [DataRow("empty-object", "{}")]
+    public async Task DailyHeartbeat_ReadableMalformedCheckpoint_RecoversAtomicallyAndResumesAcrossDaysAsync(
+        string scenario,
+        string corruptContent)
+    {
+        var clock = new MonitorClock(new DateTimeOffset(2026, 11, 26, 15, 5, 0, TimeSpan.Zero)); // 08:05 Phoenix
+        var stateDir = Path.Combine(Path.GetTempPath(), $"hvo-notif-hb-corrupt-{scenario}-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(stateDir);
+        var heartbeatFile = Path.Combine(stateDir, FileOperatorNotificationHeartbeatStore.HeartbeatFileName);
+        try
+        {
+            await File.WriteAllTextAsync(heartbeatFile, corruptContent).ConfigureAwait(false);
+            var hostOptions = Options.Create(new CameraAgentHostOptions
+            {
+                DisplayName = "HVO AllSky",
+                Observatory = new ObservatoryLocation(35.5, -113.9, 520, "America/Phoenix")
+            });
+            var options = EnabledOptions(captureStallMinutes: 120, heartbeatTime: "08:00");
+
+            // 1. Day 1: logs Warning 16209 once, recovers immediately, dispatches Day 1, and atomically overwrites checkpoint.
+            var publisher1 = new RecordingPublisher();
+            var logger1 = new RecordingMonitorLogger();
+            using (var monitor1 = new OperatorNotificationMonitorService(
+                new StaticConfigProvider(options),
+                publisher1,
+                hostOptions,
+                clock,
+                logger: logger1,
+                heartbeatStore: new FileOperatorNotificationHeartbeatStore(stateDir)))
+            {
+                await monitor1.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+                clock.Advance(TimeSpan.FromMinutes(5));
+                await monitor1.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+
+                var day1Events = publisher1.Events.Where(static e => e.Kind == OperatorNotificationEventKind.DailyHeartbeat).ToArray();
+                Assert.HasCount(1, day1Events, $"Scenario '{scenario}' must recover immediately on Day 1.");
+                Assert.AreEqual("daily_heartbeat:2026-11-26", day1Events[0].DedupeKey);
+                Assert.AreEqual(1, logger1.Warning16209Count,
+                    $"Scenario '{scenario}' must log Warning 16209 once when recovering a malformed checkpoint.");
+
+                var repairedDate = await new FileOperatorNotificationHeartbeatStore(stateDir)
+                    .ReadLastHeartbeatSiteDateAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(new DateOnly(2026, 11, 26), repairedDate,
+                    $"Scenario '{scenario}' must atomically repair the checkpoint file with today's valid site date.");
+                if (!OperatingSystem.IsWindows())
+                {
+                    Assert.AreEqual(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(heartbeatFile));
+                }
+            }
+
+            // 2. Same-day restart reads repaired checkpoint and sends ZERO duplicate and ZERO warnings.
+            clock.Advance(TimeSpan.FromMinutes(15));
+            var publisher2 = new RecordingPublisher();
+            var logger2 = new RecordingMonitorLogger();
+            using (var monitor2 = new OperatorNotificationMonitorService(
+                new StaticConfigProvider(options),
+                publisher2,
+                hostOptions,
+                clock,
+                logger: logger2,
+                heartbeatStore: new FileOperatorNotificationHeartbeatStore(stateDir)))
+            {
+                await monitor2.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.IsFalse(publisher2.Events.Any(static e => e.Kind == OperatorNotificationEventKind.DailyHeartbeat),
+                    $"Scenario '{scenario}': same-day restart after atomic repair must NOT send a duplicate heartbeat.");
+                Assert.AreEqual(0, logger2.Warning16209Count);
+
+                // 3. Subsequent days (Day 2, Day 3, Day 4) each dispatch exactly 1 heartbeat normally.
+                foreach (var expectedDate in new[] { "2026-11-27", "2026-11-28", "2026-11-29" })
+                {
+                    publisher2.Events.Clear();
+                    clock.Advance(TimeSpan.FromHours(24));
+                    await monitor2.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+                    var nextDay = publisher2.Events.Where(static e => e.Kind == OperatorNotificationEventKind.DailyHeartbeat).ToArray();
+                    Assert.HasCount(1, nextDay, $"Scenario '{scenario}' failed to dispatch daily heartbeat for {expectedDate}.");
+                    Assert.AreEqual($"daily_heartbeat:{expectedDate}", nextDay[0].DedupeKey);
+                }
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(stateDir))
+            {
+                Directory.Delete(stateDir, recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task DailyHeartbeat_FutureDatedCheckpoint_RecoversAsMalformedWhilePreservingOneDaySkewToleranceAsync()
+    {
+        var clock = new MonitorClock(new DateTimeOffset(2026, 11, 26, 15, 5, 0, TimeSpan.Zero)); // 08:05 Phoenix (2026-11-26)
+        var stateDir = Path.Combine(Path.GetTempPath(), $"hvo-notif-hb-future-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(stateDir);
+        try
+        {
+            var store = new FileOperatorNotificationHeartbeatStore(stateDir);
+            var hostOptions = Options.Create(new CameraAgentHostOptions
+            {
+                DisplayName = "HVO AllSky",
+                Observatory = new ObservatoryLocation(35.5, -113.9, 520, "America/Phoenix")
+            });
+            var options = EnabledOptions(captureStallMinutes: 120, heartbeatTime: "08:00");
+
+            // Case 1: Checkpoint dated 30 days in the future (> today.AddDays(1)) is treated as malformed and repaired.
+            await store.WriteLastHeartbeatSiteDateAsync(new DateOnly(2026, 11, 26).AddDays(30), CancellationToken.None).ConfigureAwait(false);
+            var publisher1 = new RecordingPublisher();
+            var logger1 = new RecordingMonitorLogger();
+            using (var monitor1 = new OperatorNotificationMonitorService(
+                new StaticConfigProvider(options),
+                publisher1,
+                hostOptions,
+                clock,
+                logger: logger1,
+                heartbeatStore: new FileOperatorNotificationHeartbeatStore(stateDir)))
+            {
+                await monitor1.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+                var day1 = publisher1.Events.Where(static e => e.Kind == OperatorNotificationEventKind.DailyHeartbeat).ToArray();
+                Assert.HasCount(1, day1, "Future-dated checkpoint (> today + 1d) must recover and dispatch today's heartbeat.");
+                Assert.AreEqual("daily_heartbeat:2026-11-26", day1[0].DedupeKey);
+                Assert.AreEqual(1, logger1.Warning16209Count);
+                Assert.AreEqual(new DateOnly(2026, 11, 26),
+                    await store.ReadLastHeartbeatSiteDateAsync(CancellationToken.None).ConfigureAwait(false));
+            }
+
+            // Same-day restart reads repaired date (no duplicate); next day resumes cleanly.
+            clock.Advance(TimeSpan.FromMinutes(15));
+            var publisher2 = new RecordingPublisher();
+            using (var monitor2 = new OperatorNotificationMonitorService(
+                new StaticConfigProvider(options),
+                publisher2,
+                hostOptions,
+                clock,
+                heartbeatStore: new FileOperatorNotificationHeartbeatStore(stateDir)))
+            {
+                await monitor2.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.IsFalse(publisher2.Events.Any(static e => e.Kind == OperatorNotificationEventKind.DailyHeartbeat));
+
+                clock.Advance(TimeSpan.FromHours(24));
+                await monitor2.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+                var day2 = publisher2.Events.Single(static e => e.Kind == OperatorNotificationEventKind.DailyHeartbeat);
+                Assert.AreEqual("daily_heartbeat:2026-11-27", day2.DedupeKey);
+            }
+
+            // Case 2: Checkpoint dated today.AddDays(1) (within 1-day timezone skew tolerance) is accepted without warning.
+            var skewClock = new MonitorClock(new DateTimeOffset(2026, 11, 26, 15, 5, 0, TimeSpan.Zero));
+            await store.WriteLastHeartbeatSiteDateAsync(new DateOnly(2026, 11, 27), CancellationToken.None).ConfigureAwait(false);
+            var skewPublisher = new RecordingPublisher();
+            var skewLogger = new RecordingMonitorLogger();
+            using var skewMonitor = new OperatorNotificationMonitorService(
+                new StaticConfigProvider(options),
+                skewPublisher,
+                hostOptions,
+                skewClock,
+                logger: skewLogger,
+                heartbeatStore: new FileOperatorNotificationHeartbeatStore(stateDir));
+            await skewMonitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsFalse(skewPublisher.Events.Any(static e => e.Kind == OperatorNotificationEventKind.DailyHeartbeat));
+            Assert.AreEqual(0, skewLogger.Warning16209Count);
+        }
+        finally
+        {
+            if (Directory.Exists(stateDir))
+            {
+                Directory.Delete(stateDir, recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task DailyHeartbeat_AlternatingReadAndWriteExceptionTypes_DeduplicatesWarning16209UntilRecoveryAsync()
+    {
+        var clock = new MonitorClock(new DateTimeOffset(2026, 11, 26, 15, 5, 0, TimeSpan.Zero)); // 08:05 Phoenix
+        var stateDir = Path.Combine(Path.GetTempPath(), $"hvo-notif-hb-alt-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(stateDir);
+        try
+        {
+            var backingStore = new FileOperatorNotificationHeartbeatStore(stateDir);
+            var alternatingStore = new QueuedExceptionHeartbeatStore(backingStore);
+            alternatingStore.ReadFailures.Enqueue(new IOException("Transient I/O error on read 1."));
+            alternatingStore.ReadFailures.Enqueue(new UnauthorizedAccessException("Transient permission error on read 2."));
+            alternatingStore.ReadFailures.Enqueue(new IOException("Transient I/O error on read 3."));
+
+            var hostOptions = Options.Create(new CameraAgentHostOptions
+            {
+                DisplayName = "HVO AllSky",
+                Observatory = new ObservatoryLocation(35.5, -113.9, 520, "America/Phoenix")
+            });
+            var options = EnabledOptions(captureStallMinutes: 120, heartbeatTime: "08:00");
+            var publisher = new RecordingPublisher();
+            var logger = new RecordingMonitorLogger();
+
+            using var monitor = new OperatorNotificationMonitorService(
+                new StaticConfigProvider(options),
+                publisher,
+                hostOptions,
+                clock,
+                logger: logger,
+                heartbeatStore: alternatingStore);
+
+            // 1. Alternating read exceptions during a single outage must emit ONLY 1 Warning 16209.
+            for (var i = 0; i < 3; i++)
+            {
+                await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+                clock.Advance(TimeSpan.FromMinutes(1));
+            }
+            Assert.AreEqual(0, publisher.Events.Count(static e => e.Kind == OperatorNotificationEventKind.DailyHeartbeat));
+            Assert.AreEqual(1, logger.Warning16209Count,
+                "Alternating read exception types during one outage must emit only 1 Warning 16209.");
+
+            // 2. Read recovers, heartbeat dispatches, then alternating write exceptions emit ONLY 1 Warning 16209.
+            alternatingStore.WriteFailures.Enqueue(new IOException("Transient I/O error on write 1."));
+            alternatingStore.WriteFailures.Enqueue(new UnauthorizedAccessException("Transient permission error on write 2."));
+            alternatingStore.WriteFailures.Enqueue(new IOException("Transient I/O error on write 3."));
+
+            for (var i = 0; i < 3; i++)
+            {
+                await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+                clock.Advance(TimeSpan.FromMinutes(1));
+            }
+            Assert.AreEqual(1, publisher.Events.Count(static e => e.Kind == OperatorNotificationEventKind.DailyHeartbeat));
+            Assert.AreEqual(2, logger.Warning16209Count,
+                "Alternating write exception types during one outage must emit only 1 Warning 16209.");
+
+            // 3. Write succeeds -> clears active write failure episode without logging another warning.
+            await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsTrue(File.Exists(backingStore.FilePath));
+            Assert.AreEqual(2, logger.Warning16209Count);
+
+            // 4. Next day new outage with alternating write exception types emits 1 new Warning 16209.
+            alternatingStore.WriteFailures.Enqueue(new UnauthorizedAccessException("Next-day permission error."));
+            alternatingStore.WriteFailures.Enqueue(new IOException("Next-day I/O error."));
+            clock.Advance(TimeSpan.FromHours(24));
+            await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+            clock.Advance(TimeSpan.FromMinutes(1));
+            await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(2, publisher.Events.Count(static e => e.Kind == OperatorNotificationEventKind.DailyHeartbeat));
+            Assert.AreEqual(3, logger.Warning16209Count,
+                "A new write outage after recovery must log Warning 16209 once even across alternating exception types.");
+        }
+        finally
+        {
+            if (Directory.Exists(stateDir))
+            {
+                Directory.Delete(stateDir, recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
     public async Task RuntimeCaptureStorageFailure_RequiresSustainedEvaluationsWhileStartupFailureAlertsImmediatelyAsync()
     {
         var clock = new MonitorClock(new DateTimeOffset(2026, 11, 26, 10, 0, 0, TimeSpan.Zero));
@@ -1115,6 +1377,30 @@ public sealed class OperatorNotificationMonitorServiceTests
                 Assert.Fail($"Condition not met within {timeout.TotalSeconds:0.0}s.");
             }
             await Task.Delay(15).ConfigureAwait(false);
+        }
+    }
+
+    private sealed class QueuedExceptionHeartbeatStore(IOperatorNotificationHeartbeatStore inner) : IOperatorNotificationHeartbeatStore
+    {
+        public Queue<Exception> ReadFailures { get; } = new();
+        public Queue<Exception> WriteFailures { get; } = new();
+
+        public ValueTask<DateOnly?> ReadLastHeartbeatSiteDateAsync(CancellationToken cancellationToken)
+        {
+            if (ReadFailures.Count > 0)
+            {
+                throw ReadFailures.Dequeue();
+            }
+            return inner.ReadLastHeartbeatSiteDateAsync(cancellationToken);
+        }
+
+        public ValueTask WriteLastHeartbeatSiteDateAsync(DateOnly siteDate, CancellationToken cancellationToken)
+        {
+            if (WriteFailures.Count > 0)
+            {
+                throw WriteFailures.Dequeue();
+            }
+            return inner.WriteLastHeartbeatSiteDateAsync(siteDate, cancellationToken);
         }
     }
 
