@@ -45,6 +45,17 @@ The optional central reconstruction boundary is the portable typed products;
 this slice adds no upload policy or automatic secondary archive publication.
 
 Installed orbital storage and the existing local time source supply the inputs.
+Capture and replay accept normalized CelesTrak CSV/OMM snapshots and retained
+GP JSON snapshots. The manifest carries the source format and credits the
+US Space Force / Space-Track for public GP data distributed by CelesTrak.
+Software & Catalog displays the source credit for the installed snapshot.
+The #528 refresh client currently requests GP JSON. Its two-hour minimum
+between attempts and operator-resumed halt on HTTP errors also apply after
+5xx responses. Prediction makes no provider requests. A supplemental
+Space-Track acquisition would require the site operator's own account and
+at most one poll per hour at a randomized minute. CameraAgent has no
+Space-Track client or shared HVO account.
+
 The source/time loader's ordinary startup/refresh warmup remains authoritative.
 This node performs any remaining local work after raw admission, on the existing
 standard lane. It never fetches a provider or starts a scheduler. Refresh may be
