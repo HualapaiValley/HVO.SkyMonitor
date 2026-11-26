@@ -535,7 +535,7 @@ public sealed class OperatorNotificationDispatcherTests
     }
 
     [TestMethod]
-    public void TryPublish_Under300msContention_ReturnsImmediatelyWithoutWaitingAndAccountsDrop()
+    public void TryPublish_Under300msContention_ReturnsImmediatelyWithoutWaitingAndAccountsContentionSeparately()
     {
         var clock = new ManualNotificationClock(new DateTimeOffset(2026, 11, 26, 12, 0, 0, TimeSpan.Zero));
         var options = new OperatorNotificationsOptions
@@ -550,8 +550,31 @@ public sealed class OperatorNotificationDispatcherTests
             }
         };
         var config = new InMemoryConfigProvider(options, OperatorNotificationSecrets.Empty);
+        var logger = new CapturingLogger<OperatorNotificationDispatcher>();
+        var droppedReasons = new ConcurrentBag<string>();
+        using var meterListener = new MeterListener();
+        meterListener.InstrumentPublished = (instrument, listener) =>
+        {
+            if (instrument.Meter.Name == OperatorNotificationTelemetry.MeterName &&
+                instrument.Name == "camera_agent.notifications.dropped")
+            {
+                listener.EnableMeasurementEvents(instrument);
+            }
+        };
+        meterListener.SetMeasurementEventCallback<long>((_, _, tags, _) =>
+        {
+            foreach (var tag in tags)
+            {
+                if (tag.Key == "reason" && tag.Value is string reason)
+                {
+                    droppedReasons.Add(reason);
+                }
+            }
+        });
+        meterListener.Start();
+
         using var telemetry = new OperatorNotificationTelemetry();
-        using var dispatcher = new OperatorNotificationDispatcher(config, new FakeSmtpTransport(), new FakeWebhookTransport(), telemetry, clock);
+        using var dispatcher = new OperatorNotificationDispatcher(config, new FakeSmtpTransport(), new FakeWebhookTransport(), telemetry, clock, logger);
 
         using var hold = dispatcher.HoldGateForTesting();
         var holdRelease = Task.Run(async () =>
@@ -568,7 +591,22 @@ public sealed class OperatorNotificationDispatcherTests
         Assert.IsLessThan(150, sw.ElapsedMilliseconds, $"TryPublish blocked for {sw.ElapsedMilliseconds}ms instead of returning immediately.");
 
         holdRelease.GetAwaiter().GetResult();
-        Assert.AreEqual(1, dispatcher.GetStatus().TotalDroppedQueueFull);
+        var status = dispatcher.GetStatus();
+        Assert.AreEqual(0, status.TotalDroppedQueueFull,
+            "Lock contention must NOT increment TotalDroppedQueueFull.");
+        Assert.AreEqual(1, status.TotalDroppedContended,
+            "Lock contention must increment TotalDroppedContended.");
+        Assert.IsTrue(droppedReasons.Contains("admission-contended"),
+            "Dropped metric must tag contention with reason=admission-contended.");
+        Assert.IsTrue(logger.Entries.Any(static e =>
+                e.Level == LogLevel.Debug &&
+                e.EventId.Id == 16213 &&
+                e.Message.Contains("admission-contended", StringComparison.Ordinal)),
+            "Lock contention must log at Debug with admission-contended.");
+        Assert.IsFalse(logger.Entries.Any(static e =>
+                e.EventId.Id == 16203 ||
+                e.Message.Contains("bounded queue is full", StringComparison.OrdinalIgnoreCase)),
+            "Lock contention must NOT emit a queue-full warning.");
         Assert.IsTrue(dispatcher.TryPublish(MakeEvent(OperatorNotificationEventKind.DiskPressure, "after-hold-key", clock.GetUtcNow())));
     }
 
@@ -941,13 +979,17 @@ public sealed class OperatorNotificationDispatcherTests
     private sealed class CapturingLogger<T> : ILogger<T>
     {
         private readonly ConcurrentQueue<string> _messages = new();
+        private readonly ConcurrentQueue<(LogLevel Level, EventId EventId, string Message)> _entries = new();
         public IReadOnlyList<string> Messages => [.. _messages];
+        public IReadOnlyList<(LogLevel Level, EventId EventId, string Message)> Entries => [.. _entries];
         public IDisposable BeginScope<TState>(TState state) where TState : notnull => NullScope.Instance;
         public bool IsEnabled(LogLevel logLevel) => true;
 
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
         {
-            _messages.Enqueue(formatter(state, exception));
+            var message = formatter(state, exception);
+            _entries.Enqueue((logLevel, eventId, message));
+            _messages.Enqueue(message);
             if (state is IEnumerable<KeyValuePair<string, object?>> kvs)
             {
                 foreach (var kv in kvs)

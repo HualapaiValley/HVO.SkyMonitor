@@ -385,7 +385,8 @@ internal sealed class CameraModuleRunner
                 _fleetRuntimeState?.CaptureFailed(
                     ex.GetType().Name,
                     isCameraDisconnected: !isStorageFailure && FleetRuntimeState.IsCameraDisconnectException(ex),
-                    isStorageFailure: isStorageFailure);
+                    isStorageFailure: isStorageFailure,
+                    isStartupStorageFailure: false);
                 // A centered dispatch can have changed the device. Only a reconciled owner can open a fresh target.
                 if (reservation is not null) throw;
                 cycleActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Error, "module-failure");

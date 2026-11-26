@@ -204,7 +204,8 @@ public sealed record OperatorNotificationDispatcherSnapshot(
     OperatorNotificationChannelStatus Smtp,
     OperatorNotificationChannelStatus Webhook,
     IReadOnlyList<OperatorNotificationAuditEntry> RecentDeliveries,
-    string? ConfigurationErrorReasonCode = null);
+    string? ConfigurationErrorReasonCode = null,
+    long TotalDroppedContended = 0);
 
 /// <summary>Sanitized per-channel result of an operator-initiated test delivery.</summary>
 public sealed record NotificationChannelTestResult(

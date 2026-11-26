@@ -1,9 +1,26 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using HVO.SkyMonitor.Storage.FileSystem;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Notifications;
+
+/// <summary>Result classification when inspecting a protected notification state file path.</summary>
+public enum NotificationPathStatus
+{
+    ExistsRegularFile = 0,
+    ConfirmedAbsent = 1,
+    Unreadable = 2
+}
+
+/// <summary>Structured result of verifying a state directory's ancestor chain, the directory itself, and target file.</summary>
+public readonly record struct NotificationPathInspection(
+    NotificationPathStatus Status,
+    string? TargetPath,
+    string? ReasonTag,
+    string? ExceptionTypeName,
+    bool IsSymlink);
 
 /// <summary>
 /// Restricted (0700/0600 on Unix), symlink-refusing, fsync'd atomic file publication helper backed by
@@ -16,6 +33,245 @@ public static class NotificationStateFilePublisher
 
     private const UnixFileMode RestrictedFileMode =
         UnixFileMode.UserRead | UnixFileMode.UserWrite;
+
+    /// <summary>
+    /// Walks and verifies the ancestor directory chain top-down, then inspects <paramref name="directoryPath"/> and
+    /// <paramref name="fileName"/>. Returns <see cref="NotificationPathStatus.ConfirmedAbsent"/> ONLY when every
+    /// existing ancestor is a valid traversable directory and the missing entry failed with genuine absence
+    /// (<see cref="FileNotFoundException"/>). Any non-directory ancestor (regular file, FIFO, device, symlink to
+    /// non-directory, dangling symlink), untraversable directory, or symlink/non-regular state entry returns
+    /// <see cref="NotificationPathStatus.Unreadable"/> so callers fail closed.
+    /// </summary>
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "Filesystem inspection errors must classify deterministically as Unreadable so callers fail closed without falling back.")]
+    public static NotificationPathInspection InspectStateFilePath(string directoryPath, string fileName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(directoryPath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(fileName);
+
+        var fullDirectory = Path.TrimEndingDirectorySeparator(Path.GetFullPath(directoryPath));
+        if (string.IsNullOrEmpty(fullDirectory))
+        {
+            fullDirectory = Path.GetPathRoot(Path.GetFullPath(directoryPath)) ?? directoryPath;
+        }
+
+        // 1. Walk proper ancestors top-down so ENOTDIR (regular file ancestor) or unreadable parents are detected
+        //    before treating a missing child as confirmed absence.
+        foreach (var ancestor in GetAncestorsTopDown(fullDirectory))
+        {
+            FileAttributes ancestorAttributes;
+            try
+            {
+                ancestorAttributes = File.GetAttributes(ancestor);
+            }
+            catch (FileNotFoundException)
+            {
+                if (TryDetectLinkTarget(ancestor, out var linkError))
+                {
+                    return new NotificationPathInspection(
+                        NotificationPathStatus.Unreadable, null, "state-dir-ancestor-symlink", nameof(IOException), IsSymlink: true);
+                }
+                if (linkError is not null)
+                {
+                    return new NotificationPathInspection(
+                        NotificationPathStatus.Unreadable, null, $"state-dir-ancestor:{linkError}", linkError, IsSymlink: false);
+                }
+
+                // Every existing ancestor above this segment is a verified traversable directory; ENOENT here is genuine absence.
+                return new NotificationPathInspection(
+                    NotificationPathStatus.ConfirmedAbsent, null, null, null, IsSymlink: false);
+            }
+            catch (DirectoryNotFoundException)
+            {
+                return new NotificationPathInspection(
+                    NotificationPathStatus.Unreadable, null, "state-dir-ancestor-not-directory", nameof(DirectoryNotFoundException), IsSymlink: false);
+            }
+            catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+            {
+                var exceptionName = ex.GetType().Name;
+                return new NotificationPathInspection(
+                    NotificationPathStatus.Unreadable, null, $"state-dir-ancestor:{exceptionName}", exceptionName, IsSymlink: false);
+            }
+
+            var ancestorIsLink = (ancestorAttributes & FileAttributes.ReparsePoint) != 0;
+            if (!ancestorIsLink)
+            {
+                ancestorIsLink = TryDetectLinkTarget(ancestor, out var linkErr);
+                if (linkErr is not null)
+                {
+                    return new NotificationPathInspection(
+                        NotificationPathStatus.Unreadable, null, $"state-dir-ancestor:{linkErr}", linkErr, IsSymlink: false);
+                }
+            }
+
+            if (ancestorIsLink)
+            {
+                try
+                {
+                    var finalTarget = Directory.ResolveLinkTarget(ancestor, returnFinalTarget: true);
+                    if (finalTarget is null || !finalTarget.Exists)
+                    {
+                        return new NotificationPathInspection(
+                            NotificationPathStatus.Unreadable, null, "state-dir-ancestor-symlink", nameof(IOException), IsSymlink: true);
+                    }
+
+                    var targetAttrs = File.GetAttributes(finalTarget.FullName);
+                    if ((targetAttrs & FileAttributes.Directory) == 0 || (targetAttrs & FileAttributes.Device) != 0)
+                    {
+                        return new NotificationPathInspection(
+                            NotificationPathStatus.Unreadable, null, "state-dir-ancestor-symlink-not-dir", nameof(IOException), IsSymlink: true);
+                    }
+                }
+                catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+                {
+                    var exceptionName = ex.GetType().Name;
+                    return new NotificationPathInspection(
+                        NotificationPathStatus.Unreadable, null, $"state-dir-ancestor-symlink:{exceptionName}", exceptionName, IsSymlink: true);
+                }
+            }
+            else if ((ancestorAttributes & FileAttributes.Directory) == 0 || (ancestorAttributes & FileAttributes.Device) != 0)
+            {
+                return new NotificationPathInspection(
+                    NotificationPathStatus.Unreadable, null, "state-dir-ancestor-not-directory", nameof(IOException), IsSymlink: false);
+            }
+        }
+
+        // 2. Inspect StateDirectory itself (symlinks are never permitted for the state directory itself).
+        if (TryDetectLinkTarget(fullDirectory, out var dirLinkError))
+        {
+            return new NotificationPathInspection(
+                NotificationPathStatus.Unreadable, null, "state-dir-symlink", nameof(IOException), IsSymlink: true);
+        }
+        if (dirLinkError is not null)
+        {
+            return new NotificationPathInspection(
+                NotificationPathStatus.Unreadable, null, $"state-dir:{dirLinkError}", dirLinkError, IsSymlink: false);
+        }
+
+        FileAttributes dirAttributes;
+        try
+        {
+            dirAttributes = File.GetAttributes(fullDirectory);
+        }
+        catch (FileNotFoundException)
+        {
+            return new NotificationPathInspection(
+                NotificationPathStatus.ConfirmedAbsent, null, null, null, IsSymlink: false);
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+        {
+            var exceptionName = ex.GetType().Name;
+            return new NotificationPathInspection(
+                NotificationPathStatus.Unreadable, null, $"state-dir:{exceptionName}", exceptionName, IsSymlink: false);
+        }
+
+        if ((dirAttributes & FileAttributes.ReparsePoint) != 0)
+        {
+            return new NotificationPathInspection(
+                NotificationPathStatus.Unreadable, null, "state-dir-symlink", nameof(IOException), IsSymlink: true);
+        }
+
+        if ((dirAttributes & FileAttributes.Directory) == 0 || (dirAttributes & FileAttributes.Device) != 0)
+        {
+            return new NotificationPathInspection(
+                NotificationPathStatus.Unreadable, null, "state-dir-not-directory", nameof(IOException), IsSymlink: false);
+        }
+
+        // 3. Inspect target file inside the verified StateDirectory.
+        var targetPath = Path.Combine(fullDirectory, fileName);
+        if (TryDetectLinkTarget(targetPath, out var targetLinkError))
+        {
+            return new NotificationPathInspection(
+                NotificationPathStatus.Unreadable, null, "target-symlink", nameof(IOException), IsSymlink: true);
+        }
+        if (targetLinkError is not null)
+        {
+            return new NotificationPathInspection(
+                NotificationPathStatus.Unreadable, null, $"target-stat:{targetLinkError}", targetLinkError, IsSymlink: false);
+        }
+
+        FileAttributes targetAttributes;
+        try
+        {
+            targetAttributes = File.GetAttributes(targetPath);
+        }
+        catch (FileNotFoundException)
+        {
+            return new NotificationPathInspection(
+                NotificationPathStatus.ConfirmedAbsent, null, null, null, IsSymlink: false);
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+        {
+            var exceptionName = ex.GetType().Name;
+            return new NotificationPathInspection(
+                NotificationPathStatus.Unreadable, null, $"target-stat:{exceptionName}", exceptionName, IsSymlink: false);
+        }
+
+        if ((targetAttributes & FileAttributes.ReparsePoint) != 0)
+        {
+            return new NotificationPathInspection(
+                NotificationPathStatus.Unreadable, null, "target-symlink", nameof(IOException), IsSymlink: true);
+        }
+
+        if ((targetAttributes & FileAttributes.Directory) != 0)
+        {
+            return new NotificationPathInspection(
+                NotificationPathStatus.Unreadable, null, "target-directory", nameof(IOException), IsSymlink: false);
+        }
+
+        if ((targetAttributes & FileAttributes.Device) != 0)
+        {
+            return new NotificationPathInspection(
+                NotificationPathStatus.Unreadable, null, "target-device", nameof(IOException), IsSymlink: false);
+        }
+
+        try
+        {
+            VerifyRegularFileNoSymlink(fullDirectory, fileName);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            var exceptionName = ex.GetType().Name;
+            var isSymlink = ex.Message.Contains("symbolic link", StringComparison.OrdinalIgnoreCase);
+            return new NotificationPathInspection(
+                NotificationPathStatus.Unreadable, null, $"target-verify:{exceptionName}", exceptionName, IsSymlink: isSymlink);
+        }
+
+        return new NotificationPathInspection(
+            NotificationPathStatus.ExistsRegularFile, targetPath, null, null, IsSymlink: false);
+    }
+
+    private static List<string> GetAncestorsTopDown(string fullPath)
+    {
+        var ancestors = new List<string>();
+        var current = Path.GetDirectoryName(fullPath);
+        while (!string.IsNullOrEmpty(current))
+        {
+            ancestors.Add(current);
+            var parent = Path.GetDirectoryName(current);
+            if (string.Equals(parent, current, StringComparison.Ordinal))
+            {
+                break;
+            }
+            current = parent;
+        }
+        ancestors.Reverse();
+        return ancestors;
+    }
+
+    private static bool TryDetectLinkTarget(string path, out string? errorExceptionTypeName)
+    {
+        errorExceptionTypeName = null;
+        try
+        {
+            return new FileInfo(path).LinkTarget is not null || new DirectoryInfo(path).LinkTarget is not null;
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+        {
+            errorExceptionTypeName = ex.GetType().Name;
+            return false;
+        }
+    }
 
     public static void EnsureRestrictedDirectory(string directoryPath)
     {
@@ -233,24 +489,28 @@ public sealed class FileOperatorNotificationHeartbeatStore(string stateDirectory
 
     public async ValueTask<DateOnly?> ReadLastHeartbeatSiteDateAsync(CancellationToken cancellationToken)
     {
-        var path = FilePath;
-        if (!File.Exists(path) && !Directory.Exists(path) &&
-            new FileInfo(path).LinkTarget is null && new DirectoryInfo(path).LinkTarget is null)
+        var inspection = NotificationStateFilePublisher.InspectStateFilePath(_stateDirectory, HeartbeatFileName);
+        if (inspection.Status == NotificationPathStatus.ConfirmedAbsent)
         {
             return null;
         }
-
-        NotificationStateFilePublisher.VerifyRegularFileNoSymlink(_stateDirectory, HeartbeatFileName);
-        if (Directory.Exists(path))
+        if (inspection.Status == NotificationPathStatus.Unreadable || inspection.TargetPath is null)
         {
-            throw new IOException("Refusing to read a directory as the operator notification heartbeat checkpoint.");
+            if (string.Equals(inspection.ExceptionTypeName, nameof(UnauthorizedAccessException), StringComparison.Ordinal))
+            {
+                throw new UnauthorizedAccessException("Operator notification heartbeat checkpoint path cannot be accessed.");
+            }
+            throw new IOException(inspection.IsSymlink
+                ? "Refusing to access a symbolic link in the operator notification heartbeat checkpoint."
+                : "Operator notification heartbeat checkpoint path is unreadable or not a regular file.");
         }
-        var json = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
+
+        var json = await File.ReadAllTextAsync(inspection.TargetPath, cancellationToken).ConfigureAwait(false);
         var payload = JsonSerializer.Deserialize<HeartbeatCheckpoint>(json, JsonOptions);
         if (payload is null ||
             !DateOnly.TryParseExact(payload.LastSiteDate, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed))
         {
-            return null;
+            throw new InvalidDataException("Operator notification heartbeat checkpoint is malformed.");
         }
         return parsed;
     }

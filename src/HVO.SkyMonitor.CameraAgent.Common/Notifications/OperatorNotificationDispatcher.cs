@@ -59,6 +59,7 @@ public sealed class OperatorNotificationDispatcher(
     private long _totalSuppressedCooldown;
     private long _totalSuppressedRateLimit;
     private long _totalDroppedQueueFull;
+    private long _totalDroppedContended;
     private DateTimeOffset? _lastTestSendUtc;
 
     /// <summary>Internal test visibility for bounded cooldown eviction verification.</summary>
@@ -132,9 +133,9 @@ public sealed class OperatorNotificationDispatcher(
             // Non-waiting admission: never block capture/processing threads if the dispatcher lock is contended.
             if (!Monitor.TryEnter(_gate))
             {
-                Interlocked.Increment(ref _totalDroppedQueueFull);
-                _telemetry.RecordDropped(slug);
-                OperatorNotificationLog.EventDropped(_logger, slug, queueCapacity);
+                Interlocked.Increment(ref _totalDroppedContended);
+                _telemetry.RecordDropped(slug, "admission-contended");
+                OperatorNotificationLog.EventAdmissionContended(_logger, slug);
                 return false;
             }
 
@@ -223,7 +224,7 @@ public sealed class OperatorNotificationDispatcher(
                     OperatorNotificationLog.EventSuppressed(_logger, slug, "hourly-cap");
                     return false;
                 case PublishOutcome.DroppedQueueFull:
-                    _telemetry.RecordDropped(slug);
+                    _telemetry.RecordDropped(slug, "queue-full");
                     OperatorNotificationLog.EventDropped(_logger, slug, queueCapacity);
                     return false;
                 case PublishOutcome.Admitted:
@@ -261,7 +262,8 @@ public sealed class OperatorNotificationDispatcher(
                 _smtpState.ToStatus(options.Enabled && options.Smtp.Enabled, now),
                 _webhookState.ToStatus(options.Enabled && options.Webhook.Enabled, now),
                 [.. _recentAudit.Reverse()],
-                configError);
+                configError,
+                Interlocked.Read(ref _totalDroppedContended));
         }
     }
 

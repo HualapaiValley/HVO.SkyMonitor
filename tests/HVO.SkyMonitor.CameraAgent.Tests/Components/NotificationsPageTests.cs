@@ -1,9 +1,19 @@
+using System.Security.Claims;
 using Bunit;
 using HVO.SkyMonitor.CameraAgent.Common.Notifications;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
+using HVO.SkyMonitor.CameraAgent.Configuration;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.Common.Security;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Components;
+using Microsoft.AspNetCore.Components.Authorization;
+using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
@@ -217,6 +227,131 @@ public sealed class NotificationsPageTests
 
         cut.WaitForAssertion(() =>
             StringAssert.EndsWith(navigation.Uri, "/Account/AccessDenied", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public async Task Save_AgainstRealStoreWithInvalidHiddenHostSettings_NormalizesHiddenFieldsAndPersistsCleanlyAsync()
+    {
+        var stateDir = Path.Combine(Path.GetTempPath(), $"hvo-notif-ui-hidden-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(stateDir);
+        try
+        {
+            var dpProvider = DataProtectionProvider.Create(new DirectoryInfo(Path.Combine(stateDir, "dp-keys")));
+            var hostConfig = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    [OperatorNotificationsOptions.SectionKey + ":Enabled"] = "true",
+                    [OperatorNotificationsOptions.SectionKey + ":QueueCapacity"] = "2",
+                    [OperatorNotificationsOptions.SectionKey + ":MaxRetryAttempts"] = "99",
+                    [OperatorNotificationsOptions.SectionKey + ":RetryInitialDelaySeconds"] = "200",
+                    [OperatorNotificationsOptions.SectionKey + ":RetryMaximumDelaySeconds"] = "50",
+                    [OperatorNotificationsOptions.SectionKey + ":OutageCooldownSeconds"] = "1",
+                    [OperatorNotificationsOptions.SectionKey + ":ConsecutiveOutageThreshold"] = "0",
+                    [OperatorNotificationsOptions.SectionKey + ":EvaluationIntervalSeconds"] = "1",
+                    [OperatorNotificationsOptions.SectionKey + ":CameraDisconnectedThresholdSeconds"] = "-5",
+                    [OperatorNotificationsOptions.SectionKey + ":TestSendMinimumIntervalSeconds"] = "999"
+                })
+                .Build();
+
+            using var store = new OperatorNotificationStore(
+                dpProvider,
+                Options.Create(new DeviceProvisioningOptions { StateDirectory = stateDir }),
+                hostConfig,
+                new OperatorNotificationNetworkPolicy(isDevelopment: false),
+                NullLogger<OperatorNotificationStore>.Instance);
+            using var telemetry = new OperatorNotificationTelemetry();
+            using var dispatcher = new OperatorNotificationDispatcher(
+                store,
+                new NoOpSmtpTransport(),
+                new NoOpWebhookTransport(),
+                telemetry,
+                TimeProvider.System);
+
+            var owner = new ClaimsPrincipal(new ClaimsIdentity(
+                [
+                    new Claim(ClaimTypes.NameIdentifier, "owner-1"),
+                    new Claim(CanonicalCredentialClaims.AccountTypeClaim, CanonicalCredentialClaims.UserAccountType)
+                ],
+                IdentityConstants.ApplicationScheme));
+
+            var uiService = new CameraAgentNotificationsUiService(
+                new StaticAuthStateProvider(owner),
+                new AllowAllAuthorizationService(),
+                dispatcher,
+                NullLogger<CameraAgentNotificationsUiService>.Instance);
+
+            using var context = new BunitContext();
+            context.Services.AddSingleton<ICameraAgentNotificationsUiService>(uiService);
+
+            var cut = context.Render<NotificationsPage>();
+            cut.WaitForAssertion(() =>
+            {
+                Assert.IsNotNull(cut.Find("#notifications-config-error-banner"));
+                Assert.IsNotNull(cut.Find("#notifications-enabled"));
+            });
+
+            // Operator unchecks master enable and saves via the real store: invalid hidden settings must NOT trap save.
+            await cut.Find("#notifications-enabled").ChangeAsync(new ChangeEventArgs { Value = false }).ConfigureAwait(false);
+            await cut.Find("form.notifications-form").SubmitAsync().ConfigureAwait(false);
+
+            cut.WaitForAssertion(() =>
+            {
+                var banner = cut.Find("#notifications-banner");
+                Assert.AreEqual("Notification settings saved.", banner.TextContent.Trim());
+                Assert.AreEqual("status", banner.GetAttribute("role"));
+                Assert.IsEmpty(cut.FindAll("#notifications-config-error-banner"));
+                Assert.AreEqual("Disabled", cut.Find("#notifications-master-state").TextContent.Trim());
+            });
+
+            // Verify persisted envelope in the real store normalized all invalid hidden fields to valid defaults while preserving valid RetryInitialDelaySeconds=200.
+            Assert.IsNull(store.ConfigurationErrorReasonCode);
+            var persisted = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsTrue(persisted.HasSavedOverrides);
+            Assert.IsFalse(persisted.Options.Enabled);
+            Assert.AreEqual(OperatorNotificationsOptions.DefaultQueueCapacity, persisted.Options.QueueCapacity);
+            Assert.AreEqual(OperatorNotificationsOptions.DefaultMaxRetryAttempts, persisted.Options.MaxRetryAttempts);
+            Assert.AreEqual(200, persisted.Options.RetryInitialDelaySeconds);
+            Assert.AreEqual(OperatorNotificationsOptions.DefaultRetryMaximumDelaySeconds, persisted.Options.RetryMaximumDelaySeconds);
+            Assert.AreEqual(OperatorNotificationsOptions.DefaultOutageCooldownSeconds, persisted.Options.OutageCooldownSeconds);
+            Assert.AreEqual(OperatorNotificationsOptions.DefaultConsecutiveOutageThreshold, persisted.Options.ConsecutiveOutageThreshold);
+            Assert.AreEqual(OperatorNotificationsOptions.DefaultEvaluationIntervalSeconds, persisted.Options.EvaluationIntervalSeconds);
+            Assert.AreEqual(OperatorNotificationsOptions.DefaultCameraDisconnectedThresholdSeconds, persisted.Options.CameraDisconnectedThresholdSeconds);
+            Assert.AreEqual(OperatorNotificationsOptions.DefaultTestSendMinimumIntervalSeconds, persisted.Options.TestSendMinimumIntervalSeconds);
+        }
+        finally
+        {
+            if (Directory.Exists(stateDir))
+            {
+                Directory.Delete(stateDir, recursive: true);
+            }
+        }
+    }
+
+    private sealed class StaticAuthStateProvider(ClaimsPrincipal principal) : AuthenticationStateProvider
+    {
+        public override Task<AuthenticationState> GetAuthenticationStateAsync()
+            => Task.FromResult(new AuthenticationState(principal));
+    }
+
+    private sealed class AllowAllAuthorizationService : IAuthorizationService
+    {
+        public Task<AuthorizationResult> AuthorizeAsync(ClaimsPrincipal user, object? resource, IEnumerable<IAuthorizationRequirement> requirements)
+            => Task.FromResult(AuthorizationResult.Success());
+
+        public Task<AuthorizationResult> AuthorizeAsync(ClaimsPrincipal user, object? resource, string policyName)
+            => Task.FromResult(AuthorizationResult.Success());
+    }
+
+    private sealed class NoOpSmtpTransport : ISmtpNotificationTransport
+    {
+        public Task<OperatorNotificationDeliveryResult> SendAsync(SmtpDeliveryRequest request, CancellationToken cancellationToken)
+            => Task.FromResult(OperatorNotificationDeliveryResult.Success(SmtpNotificationTransport.ChannelName, TimeSpan.Zero));
+    }
+
+    private sealed class NoOpWebhookTransport : IWebhookNotificationTransport
+    {
+        public Task<OperatorNotificationDeliveryResult> SendAsync(WebhookDeliveryRequest request, CancellationToken cancellationToken)
+            => Task.FromResult(OperatorNotificationDeliveryResult.Success(WebhookNotificationTransport.ChannelName, TimeSpan.Zero));
     }
 
     private static BunitContext CreateContext(out FakeNotificationsUiService service)

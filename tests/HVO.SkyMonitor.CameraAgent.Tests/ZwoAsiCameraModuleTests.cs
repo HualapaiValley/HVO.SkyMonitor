@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
+using HVO.SkyMonitor.CameraAgent.Common.Fleet;
 using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Modules.Zwo;
 using Microsoft.Extensions.DependencyInjection;
@@ -325,6 +326,47 @@ public sealed class ZwoAsiCameraModuleTests
         StringAssert.Contains(exception.Message, "not connected or accessible", StringComparison.Ordinal);
         Assert.IsNull(exception.InnerException);
         Assert.DoesNotContain(Convert.ToHexString(PrivateSerial), exception.ToString(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [TestMethod]
+    [DataRow((int)AsiErrorCode.Timeout, "init", false)]
+    [DataRow((int)AsiErrorCode.GeneralError, "init", false)]
+    [DataRow((int)AsiErrorCode.CameraRemoved, "init", true)]
+    [DataRow((int)AsiErrorCode.CameraClosed, "init", true)]
+    [DataRow((int)AsiErrorCode.Timeout, "open2", false)]
+    [DataRow((int)AsiErrorCode.GeneralError, "open2", false)]
+    [DataRow((int)AsiErrorCode.CameraRemoved, "open2", true)]
+    [DataRow((int)AsiErrorCode.CameraClosed, "open2", true)]
+    [OSCondition(OperatingSystems.Linux)]
+    [TestCategory("Unit")]
+    public async Task NativeInitializationErrorCodes_PreserveExactCodeAndDisconnectClassification(
+        int rawErrorCode,
+        string stage,
+        bool expectDisconnected)
+    {
+        var errorCode = (AsiErrorCode)rawErrorCode;
+        var native = new FakeAsiNativeApi();
+        if (stage == "init")
+        {
+            native.InitError = errorCode;
+        }
+        else
+        {
+            native.OpenErrorCode = errorCode;
+            native.FailOpenOnCallByCameraId[7] = 2;
+        }
+        await using var module = Module(native);
+
+        var exception = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => module.InitializeAsync(CreateConfig(), CancellationToken.None));
+
+        Assert.IsNull(exception.InnerException);
+        Assert.DoesNotContain(Convert.ToHexString(PrivateSerial), exception.ToString(), StringComparison.OrdinalIgnoreCase);
+        StringAssert.Contains(exception.Message, errorCode.ToString(), StringComparison.Ordinal);
+        Assert.AreEqual(errorCode.ToString(), exception.Data["AsiErrorCode"]);
+        Assert.AreEqual(expectDisconnected, exception.Data["IsCameraDisconnected"]);
+        Assert.AreEqual(expectDisconnected, FleetRuntimeState.IsCameraDisconnectException(exception),
+            $"Native ASI error {errorCode} at {stage} expected IsCameraDisconnected={expectDisconnected}.");
     }
 
     [TestMethod]
@@ -1426,6 +1468,8 @@ public sealed class ZwoAsiCameraModuleTests
         internal TaskCompletionSource ExposureStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal HashSet<int> FailOpenCameraIds { get; } = [];
         internal Dictionary<int, int> FailOpenOnCallByCameraId { get; } = [];
+        internal AsiErrorCode OpenErrorCode { get; set; } = AsiErrorCode.CameraClosed;
+        internal AsiErrorCode? InitError { get; set; }
         internal HashSet<int> FailSerialCameraIds { get; } = [];
         internal HashSet<int> FailCloseCameraIds { get; } = [];
         internal bool RepeatWorkingStatus { get; init; }
@@ -1458,10 +1502,17 @@ public sealed class ZwoAsiCameraModuleTests
             _openCallsByCameraId[cameraId] = call;
             if (FailOpenCameraIds.Contains(cameraId) || FailOpenOnCallByCameraId.GetValueOrDefault(cameraId) == call)
             {
-                throw new AsiException("ASIOpenCamera", AsiErrorCode.CameraClosed);
+                throw new AsiException("ASIOpenCamera", OpenErrorCode);
             }
         }
-        public void InitializeCamera(int cameraId) => Calls.Add($"Init:{cameraId}");
+        public void InitializeCamera(int cameraId)
+        {
+            Calls.Add($"Init:{cameraId}");
+            if (InitError is { } error)
+            {
+                throw new AsiException("ASIInitCamera", error);
+            }
+        }
         public void CloseCamera(int cameraId)
         {
             Calls.Add($"Close:{cameraId}");

@@ -464,120 +464,32 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
     }
 
     /// <summary>
-    /// Distinguishes confirmed file absence from directories, symlinks, non-regular entries, and permission/I/O errors.
-    /// ONLY confirmed absence is eligible to fall back to host configuration.
+    /// Distinguishes confirmed file absence from blocked/non-directory ancestors, directories, symlinks, non-regular
+    /// entries, and permission/I/O errors. ONLY confirmed absence is eligible to fall back to host configuration.
     /// </summary>
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
         Justification = "Filesystem inspection errors must classify as StoreUnreadable without falling back to host credentials.")]
     private PathInspectionResult InspectStorePath()
     {
-        var fullDirectory = Path.TrimEndingDirectorySeparator(Path.GetFullPath(_provisioningOptions.StateDirectory));
-
-        if (HasLinkTarget(fullDirectory))
+        var inspection = NotificationStateFilePublisher.InspectStateFilePath(_provisioningOptions.StateDirectory, ConfigFileName);
+        switch (inspection.Status)
         {
-            LogReadFailureOnce("unreadable:state-dir-symlink", nameof(IOException));
-            return new PathInspectionResult(null, StoreReadState.Unreadable("state-dir-symlink", canReplace: false, isSymlink: true));
-        }
-
-        FileAttributes dirAttributes;
-        try
-        {
-            dirAttributes = File.GetAttributes(fullDirectory);
-        }
-        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
-        {
-            _lastLoggedReadFailureKey = null;
-            var configOptions = ConfigurationOperatorNotificationConfigProvider.ReadOptionsFromConfiguration(
-                _configuration, out var bindingError);
-            return new PathInspectionResult(null, StoreReadState.Absent(configOptions, bindingError));
-        }
-        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
-        {
-            var exceptionName = ex.GetType().Name;
-            LogReadFailureOnce($"unreadable:state-dir:{exceptionName}", exceptionName);
-            return new PathInspectionResult(null, StoreReadState.Unreadable($"state-dir:{exceptionName}", canReplace: false, isSymlink: false));
-        }
-
-        if ((dirAttributes & FileAttributes.ReparsePoint) != 0)
-        {
-            LogReadFailureOnce("unreadable:state-dir-reparse", nameof(IOException));
-            return new PathInspectionResult(null, StoreReadState.Unreadable("state-dir-symlink", canReplace: false, isSymlink: true));
-        }
-
-        if ((dirAttributes & FileAttributes.Directory) == 0)
-        {
-            LogReadFailureOnce("unreadable:state-dir-not-directory", nameof(IOException));
-            return new PathInspectionResult(null, StoreReadState.Unreadable("state-dir-not-directory", canReplace: false, isSymlink: false));
-        }
-
-        var targetPath = Path.Combine(fullDirectory, ConfigFileName);
-        if (HasLinkTarget(targetPath))
-        {
-            LogReadFailureOnce("unreadable:target-symlink", nameof(IOException));
-            return new PathInspectionResult(null, StoreReadState.Unreadable("target-symlink", canReplace: false, isSymlink: true));
-        }
-
-        FileAttributes targetAttributes;
-        try
-        {
-            targetAttributes = File.GetAttributes(targetPath);
-        }
-        catch (FileNotFoundException)
-        {
-            _lastLoggedReadFailureKey = null;
-            var configOptions = ConfigurationOperatorNotificationConfigProvider.ReadOptionsFromConfiguration(
-                _configuration, out var bindingError);
-            return new PathInspectionResult(null, StoreReadState.Absent(configOptions, bindingError));
-        }
-        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
-        {
-            var exceptionName = ex.GetType().Name;
-            LogReadFailureOnce($"unreadable:target-stat:{exceptionName}", exceptionName);
-            return new PathInspectionResult(null, StoreReadState.Unreadable($"target-stat:{exceptionName}", canReplace: false, isSymlink: false));
-        }
-
-        if ((targetAttributes & FileAttributes.ReparsePoint) != 0)
-        {
-            LogReadFailureOnce("unreadable:target-reparse", nameof(IOException));
-            return new PathInspectionResult(null, StoreReadState.Unreadable("target-symlink", canReplace: false, isSymlink: true));
-        }
-
-        if ((targetAttributes & FileAttributes.Directory) != 0)
-        {
-            LogReadFailureOnce("unreadable:target-directory", nameof(IOException));
-            return new PathInspectionResult(null, StoreReadState.Unreadable("target-directory", canReplace: false, isSymlink: false));
-        }
-
-        if ((targetAttributes & FileAttributes.Device) != 0)
-        {
-            LogReadFailureOnce("unreadable:target-device", nameof(IOException));
-            return new PathInspectionResult(null, StoreReadState.Unreadable("target-device", canReplace: false, isSymlink: false));
-        }
-
-        try
-        {
-            NotificationStateFilePublisher.VerifyRegularFileNoSymlink(fullDirectory, ConfigFileName);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            var exceptionName = ex.GetType().Name;
-            var isSymlink = ex.Message.Contains("symbolic link", StringComparison.OrdinalIgnoreCase);
-            LogReadFailureOnce($"unreadable:target-verify:{exceptionName}", exceptionName);
-            return new PathInspectionResult(null, StoreReadState.Unreadable($"target-verify:{exceptionName}", canReplace: false, isSymlink: isSymlink));
-        }
-
-        return new PathInspectionResult(targetPath, null);
-    }
-
-    private static bool HasLinkTarget(string path)
-    {
-        try
-        {
-            return new FileInfo(path).LinkTarget is not null || new DirectoryInfo(path).LinkTarget is not null;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return false;
+            case NotificationPathStatus.ConfirmedAbsent:
+                {
+                    _lastLoggedReadFailureKey = null;
+                    var configOptions = ConfigurationOperatorNotificationConfigProvider.ReadOptionsFromConfiguration(
+                        _configuration, out var bindingError);
+                    return new PathInspectionResult(null, StoreReadState.Absent(configOptions, bindingError));
+                }
+            case NotificationPathStatus.ExistsRegularFile when !string.IsNullOrEmpty(inspection.TargetPath):
+                return new PathInspectionResult(inspection.TargetPath, null);
+            default:
+                {
+                    var reasonTag = string.IsNullOrWhiteSpace(inspection.ReasonTag) ? "state-path-unreadable" : inspection.ReasonTag;
+                    var exceptionName = string.IsNullOrWhiteSpace(inspection.ExceptionTypeName) ? nameof(IOException) : inspection.ExceptionTypeName;
+                    LogReadFailureOnce($"unreadable:{reasonTag}", exceptionName);
+                    return new PathInspectionResult(null, StoreReadState.Unreadable(reasonTag, canReplace: false, isSymlink: inspection.IsSymlink));
+                }
         }
     }
 

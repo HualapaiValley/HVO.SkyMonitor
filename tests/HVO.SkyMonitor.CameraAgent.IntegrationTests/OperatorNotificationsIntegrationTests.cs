@@ -306,6 +306,7 @@ public sealed class OperatorNotificationsIntegrationTests
         {
             return;
         }
+        RequireModesEnforced();
 
         using var fixture = new CameraAgentIntegrationFixture();
         await fixture.InitializeAsync(settings: new Dictionary<string, string?>
@@ -464,6 +465,94 @@ public sealed class OperatorNotificationsIntegrationTests
 
     [TestMethod]
     [DoNotParallelize]
+    [OSCondition(OperatingSystems.Linux)]
+    public async Task BlockedAncestorOfStateDirectorySuspendsWithoutHostFallbackReportsDegradedHealthAndReturns200OnGetAsync()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"hvo-notif-blocked-anc-{Guid.NewGuid():N}");
+        var ancestorPath = Path.Combine(tempRoot, "ancestor");
+        var stateDir = Path.Combine(ancestorPath, "nested", "state");
+        Directory.CreateDirectory(stateDir);
+        try
+        {
+            using var fixture = new CameraAgentIntegrationFixture();
+            await fixture.InitializeAsync(settings: new Dictionary<string, string?>
+            {
+                ["DeviceProvisioning:StateDirectory"] = stateDir,
+                ["CameraAgent:Notifications:Enabled"] = "true",
+                ["CameraAgent:Notifications:Smtp:Enabled"] = "true",
+                ["CameraAgent:Notifications:Smtp:Host"] = "fallback-relay.example.test",
+                ["CameraAgent:Notifications:Smtp:FromAddress"] = "fallback@example.test",
+                ["CameraAgent:Notifications:Smtp:Recipients:0"] = "ops@example.test",
+                [ConfigurationOperatorNotificationConfigProvider.SmtpUsernameConfigKey] = "host-fallback-user",
+                [ConfigurationOperatorNotificationConfigProvider.SmtpPasswordConfigKey] = "host-fallback-pass",
+                [ConfigurationOperatorNotificationConfigProvider.WebhookUrlConfigKey] = "https://host-fallback.example.test/secret"
+            }).ConfigureAwait(false);
+
+            string readWriteKey;
+            using (var scope = fixture.CreateCameraAgentScope())
+            {
+                var users = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+                var owner = (await users.FindByEmailAsync("owner@cameraagent.integration").ConfigureAwait(false))!;
+                var keys = scope.ServiceProvider.GetRequiredService<CameraAgentApiKeyStore>();
+                readWriteKey = (await keys.CreateAsync(owner.Id, "blocked-ancestor", ApiKeyAccessLevel.ReadWrite, CancellationToken.None).ConfigureAwait(false)).Token!;
+            }
+
+            // Replace an ancestor directory of StateDirectory with a regular file (triggers ENOTDIR on Linux).
+            Directory.Delete(ancestorPath, recursive: true);
+            await File.WriteAllTextAsync(ancestorPath, "regular-file-blocking-state-dir").ConfigureAwait(false);
+
+            using (var scope = fixture.CreateCameraAgentScope())
+            {
+                var configProvider = scope.ServiceProvider.GetRequiredService<IOperatorNotificationConfigProvider>();
+                var effective = await configProvider.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.IsTrue(effective.StoreCorrupt);
+                Assert.AreEqual(NotificationReasonCodes.StoreUnreadable, effective.ConfigurationErrorReasonCode);
+                Assert.IsFalse(effective.Options.Enabled, "Blocked ancestor must NOT fall back to enabled host settings.");
+                Assert.IsTrue(effective.Secrets.IsEmpty, "Blocked ancestor must NOT fall back to host credentials.");
+            }
+
+            using var anon = fixture.CreateCameraAgentClient();
+            using (var healthResp = await anon.GetAsync(new Uri("/health", UriKind.Relative)).ConfigureAwait(false))
+            {
+                var healthJson = await healthResp.Content.ReadAsStringAsync().ConfigureAwait(false);
+                Assert.AreEqual(HttpStatusCode.OK, healthResp.StatusCode, healthJson);
+                using var doc = JsonDocument.Parse(healthJson);
+                var check = doc.RootElement.GetProperty("checks").EnumerateArray()
+                    .Single(c => c.GetProperty("name").GetString() == "operator-notifications");
+                Assert.AreEqual("Degraded", check.GetProperty("status").GetString());
+                Assert.AreEqual(NotificationReasonCodes.StoreUnreadable, check.GetProperty("data").GetProperty("ReasonCode").GetString());
+            }
+
+            using var rwClient = CreateApiKeyClient(fixture, readWriteKey);
+            using (var getResp = await rwClient.GetAsync(new Uri(NotificationsPath, UriKind.Relative)).ConfigureAwait(false))
+            {
+                var getBody = await getResp.Content.ReadAsStringAsync().ConfigureAwait(false);
+                Assert.AreEqual(HttpStatusCode.OK, getResp.StatusCode, getBody);
+                using var doc = JsonDocument.Parse(getBody);
+                var cfg = doc.RootElement.GetProperty("configuration");
+                Assert.IsTrue(cfg.GetProperty("storeCorrupt").GetBoolean());
+                Assert.AreEqual(NotificationReasonCodes.StoreUnreadable, cfg.GetProperty("storeStatusReasonCode").GetString());
+                Assert.IsFalse(cfg.GetProperty("canPersist").GetBoolean());
+                Assert.IsFalse(cfg.GetProperty("options").GetProperty("enabled").GetBoolean());
+                Assert.IsFalse(cfg.GetProperty("secrets").GetProperty("hasSmtpPassword").GetBoolean());
+                Assert.IsFalse(cfg.GetProperty("secrets").GetProperty("hasWebhookUrl").GetBoolean());
+            }
+        }
+        finally
+        {
+            if (File.Exists(ancestorPath))
+            {
+                File.Delete(ancestorPath);
+            }
+            if (Directory.Exists(tempRoot))
+            {
+                Directory.Delete(tempRoot, recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
+    [DoNotParallelize]
     public async Task EndToEndEncryptedSaveLoopbackTlsSmtpAndWebhookDeliveryCaptureProgressDuringHeldOutageAndZeroSecretLeaksAsync()
     {
         var runId = Guid.NewGuid().ToString("N");
@@ -583,6 +672,10 @@ public sealed class OperatorNotificationsIntegrationTests
                         enabled = true,
                         format = 0, // Generic
                         authHeaderName = "Authorization"
+                    },
+                    events = new
+                    {
+                        dailyHeartbeatEnabled = false
                     }
                 },
                 smtpUsername = smtpUser,
@@ -777,6 +870,14 @@ public sealed class OperatorNotificationsIntegrationTests
         request.CertificateExtensions.Add(san.Build());
         using var created = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow.AddHours(1));
         return X509CertificateLoader.LoadPkcs12(created.Export(X509ContentType.Pfx), null);
+    }
+
+    private static void RequireModesEnforced()
+    {
+        if (Environment.UserName == "root")
+        {
+            Assert.Inconclusive("Needs a non-root user, for whom modes 0000 and 0200 are enforced.");
+        }
     }
 
     private static HttpClient CreateOwnerSessionClient(CameraAgentIntegrationFixture fixture)

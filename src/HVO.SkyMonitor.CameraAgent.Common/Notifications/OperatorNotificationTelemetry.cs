@@ -58,8 +58,8 @@ public sealed class OperatorNotificationTelemetry : IDisposable
     internal void RecordSuppressed(string eventSlug, string reason) =>
         _suppressed.Add(1, new TagList { { "event", eventSlug }, { "reason", reason } });
 
-    internal void RecordDropped(string eventSlug) =>
-        _dropped.Add(1, new TagList { { "event", eventSlug } });
+    internal void RecordDropped(string eventSlug, string reason = "queue-full") =>
+        _dropped.Add(1, new TagList { { "event", eventSlug }, { "reason", reason } });
 
     internal void RecordDelivery(string channel, string eventSlug, bool succeeded, string reasonCode, TimeSpan duration, bool isTest)
     {
@@ -131,4 +131,8 @@ internal static partial class OperatorNotificationLog
     [LoggerMessage(EventId = 16210, Level = LogLevel.Warning,
         Message = "Operator notification dispatcher cycle failed with {ExceptionType}; capture is unaffected.")]
     internal static partial void DispatcherCycleFailed(ILogger logger, string exceptionType);
+
+    [LoggerMessage(EventId = 16213, Level = LogLevel.Debug,
+        Message = "Operator notification dropped for event {EventKind} due to admission-contended.")]
+    internal static partial void EventAdmissionContended(ILogger logger, string eventKind);
 }

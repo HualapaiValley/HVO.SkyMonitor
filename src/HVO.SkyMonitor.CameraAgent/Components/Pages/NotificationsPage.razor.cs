@@ -131,27 +131,41 @@ public sealed partial class NotificationsPage : SiteTimeComponent, IDisposable
                 .Split([',', ';', '\n', '\r'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .ToList();
 
+            var retryInitialDelaySeconds = NormalizeHiddenInt(
+                current.RetryInitialDelaySeconds, 1, 300, OperatorNotificationsOptions.DefaultRetryInitialDelaySeconds);
+            var retryMaximumDelaySeconds = current.RetryMaximumDelaySeconds is >= 1 and <= 3600 &&
+                current.RetryMaximumDelaySeconds >= retryInitialDelaySeconds
+                ? current.RetryMaximumDelaySeconds
+                : OperatorNotificationsOptions.DefaultRetryMaximumDelaySeconds;
+
             var updatedOptions = new OperatorNotificationsOptions
             {
                 Enabled = _enabled,
-                QueueCapacity = current.QueueCapacity,
+                QueueCapacity = NormalizeHiddenInt(
+                    current.QueueCapacity, 4, 256, OperatorNotificationsOptions.DefaultQueueCapacity),
                 MaxNotificationsPerHour = _maxNotificationsPerHour,
                 RequestTimeoutSeconds = _requestTimeoutSeconds,
-                MaxRetryAttempts = current.MaxRetryAttempts,
-                RetryInitialDelaySeconds = current.RetryInitialDelaySeconds,
-                RetryMaximumDelaySeconds = current.RetryMaximumDelaySeconds,
-                OutageCooldownSeconds = current.OutageCooldownSeconds,
-                ConsecutiveOutageThreshold = current.ConsecutiveOutageThreshold,
-                EvaluationIntervalSeconds = current.EvaluationIntervalSeconds,
+                MaxRetryAttempts = NormalizeHiddenInt(
+                    current.MaxRetryAttempts, 0, 5, OperatorNotificationsOptions.DefaultMaxRetryAttempts),
+                RetryInitialDelaySeconds = retryInitialDelaySeconds,
+                RetryMaximumDelaySeconds = retryMaximumDelaySeconds,
+                OutageCooldownSeconds = NormalizeHiddenInt(
+                    current.OutageCooldownSeconds, 10, 3600, OperatorNotificationsOptions.DefaultOutageCooldownSeconds),
+                ConsecutiveOutageThreshold = NormalizeHiddenInt(
+                    current.ConsecutiveOutageThreshold, 1, 10, OperatorNotificationsOptions.DefaultConsecutiveOutageThreshold),
+                EvaluationIntervalSeconds = NormalizeHiddenInt(
+                    current.EvaluationIntervalSeconds, 5, 600, OperatorNotificationsOptions.DefaultEvaluationIntervalSeconds),
                 CaptureStallThresholdMinutes = _captureStallThresholdMinutes,
-                CameraDisconnectedThresholdSeconds = current.CameraDisconnectedThresholdSeconds,
-                TestSendMinimumIntervalSeconds = current.TestSendMinimumIntervalSeconds,
+                CameraDisconnectedThresholdSeconds = NormalizeHiddenInt(
+                    current.CameraDisconnectedThresholdSeconds, 0, 3600, OperatorNotificationsOptions.DefaultCameraDisconnectedThresholdSeconds),
+                TestSendMinimumIntervalSeconds = NormalizeHiddenInt(
+                    current.TestSendMinimumIntervalSeconds, 0, 300, OperatorNotificationsOptions.DefaultTestSendMinimumIntervalSeconds),
                 Smtp = new SmtpNotificationOptions
                 {
                     Enabled = _smtpEnabled,
                     Host = _smtpHost,
                     Port = _smtpPort,
-                    SecurityMode = _smtpSecurityMode,
+                    SecurityMode = Enum.IsDefined(_smtpSecurityMode) ? _smtpSecurityMode : SmtpSecurityMode.StartTls,
                     FromAddress = _smtpFromAddress,
                     FromDisplayName = _smtpFromDisplayName,
                     Recipients = recipients
@@ -159,7 +173,7 @@ public sealed partial class NotificationsPage : SiteTimeComponent, IDisposable
                 Webhook = new WebhookNotificationOptions
                 {
                     Enabled = _webhookEnabled,
-                    Format = _webhookFormat,
+                    Format = Enum.IsDefined(_webhookFormat) ? _webhookFormat : WebhookPayloadFormat.Generic,
                     AuthHeaderName = _webhookAuthHeaderName,
                     AllowPrivateNetwork = _webhookAllowPrivateNetwork
                 },
@@ -284,13 +298,13 @@ public sealed partial class NotificationsPage : SiteTimeComponent, IDisposable
         _smtpEnabled = options.Smtp.Enabled;
         _smtpHost = options.Smtp.Host;
         _smtpPort = options.Smtp.Port;
-        _smtpSecurityMode = options.Smtp.SecurityMode;
+        _smtpSecurityMode = Enum.IsDefined(options.Smtp.SecurityMode) ? options.Smtp.SecurityMode : SmtpSecurityMode.StartTls;
         _smtpFromAddress = options.Smtp.FromAddress;
         _smtpFromDisplayName = options.Smtp.FromDisplayName;
         _smtpRecipients = string.Join(", ", options.Smtp.Recipients);
 
         _webhookEnabled = options.Webhook.Enabled;
-        _webhookFormat = options.Webhook.Format;
+        _webhookFormat = Enum.IsDefined(options.Webhook.Format) ? options.Webhook.Format : WebhookPayloadFormat.Generic;
         _webhookAuthHeaderName = options.Webhook.AuthHeaderName;
         _webhookAllowPrivateNetwork = options.Webhook.AllowPrivateNetwork;
 
@@ -321,6 +335,9 @@ public sealed partial class NotificationsPage : SiteTimeComponent, IDisposable
         _clearWebhookUserKey = false;
         _clearWebhookNtfyTopic = false;
     }
+
+    private static int NormalizeHiddenInt(int value, int minimum, int maximum, int defaultValue) =>
+        value < minimum || value > maximum ? defaultValue : value;
 
     private static string ChannelStateLabel(OperatorNotificationChannelStatus status) => status.State switch
     {

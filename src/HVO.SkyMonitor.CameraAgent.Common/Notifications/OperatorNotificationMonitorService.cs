@@ -49,6 +49,7 @@ public sealed class OperatorNotificationMonitorService(
     private static readonly TimeSpan FailedReceiptWindow = TimeSpan.FromHours(24);
     private static readonly TimeSpan DisabledPollDelay = TimeSpan.FromSeconds(15);
     private const int MaximumTrackedFailedControlOperations = 512;
+    private const int RuntimeStorageFailureConfirmationEvaluations = 2;
 
     private readonly IOperatorNotificationConfigProvider _configProvider = configProvider ?? throw new ArgumentNullException(nameof(configProvider));
     private readonly IOperatorNotificationPublisher _publisher = publisher ?? throw new ArgumentNullException(nameof(publisher));
@@ -64,6 +65,9 @@ public sealed class OperatorNotificationMonitorService(
     private DateOnly? _lastDispatchedHeartbeatSiteDate;
     private DateOnly? _lastPersistedHeartbeatSiteDate;
     private bool _heartbeatCheckpointLoaded;
+    private int _consecutiveRuntimeStorageFailureEvaluations;
+    private string? _lastLoggedHeartbeatReadFailureKey;
+    private string? _lastLoggedHeartbeatWriteFailureKey;
 
     /// <summary>Internal test seam to simulate transient fleet-snapshot lock timeouts deterministically.</summary>
     internal Func<TimeSpan, (bool Success, FleetRuntimeSnapshot? Snapshot)>? FleetSnapshotReader { get; init; }
@@ -566,6 +570,11 @@ public sealed class OperatorNotificationMonitorService(
             }
         }
 
+        if (fleetRuntimeState?.IsStorageFailure != true)
+        {
+            _consecutiveRuntimeStorageFailureEvaluations = 0;
+        }
+
         if (admissionSnapshot is { IsInitialized: true, State: CaptureAdmissionState.Unavailable })
         {
             anyFault = true;
@@ -584,27 +593,39 @@ public sealed class OperatorNotificationMonitorService(
         }
         else if (fleetRuntimeState?.IsStorageFailure == true)
         {
-            anyFault = true;
-            if (options.Events.UpgradeOrRecoveryFailedEnabled)
+            var isStartupStorageFailure = fleetRuntimeState.IsStartupStorageFailure ||
+                admissionSnapshot is { IsInitialized: false };
+            if (!isStartupStorageFailure &&
+                _consecutiveRuntimeStorageFailureEvaluations < RuntimeStorageFailureConfirmationEvaluations)
             {
-                var storageReason = OperatorNotificationRedactor.SanitizeOperationalText(fleetSnapshot?.Capture.Reason, 64);
-                if (string.IsNullOrWhiteSpace(storageReason))
+                _consecutiveRuntimeStorageFailureEvaluations++;
+            }
+
+            if (isStartupStorageFailure ||
+                _consecutiveRuntimeStorageFailureEvaluations >= RuntimeStorageFailureConfirmationEvaluations)
+            {
+                anyFault = true;
+                if (options.Events.UpgradeOrRecoveryFailedEnabled)
                 {
-                    storageReason = "storage-unavailable";
-                }
-                _publisher.TryPublish(new OperatorNotificationEvent(
-                    OperatorNotificationEventKind.UpgradeOrRecoveryFailed,
-                    OperatorNotificationSeverity.Critical,
-                    "upgrade_recovery_failed:capture-storage",
-                    "Capture storage / startup recovery failed",
-                    $"CameraAgent '{cameraName}' could not access durable capture storage ({storageReason}); capture is unavailable until storage recovers.",
-                    now,
-                    cameraName,
-                    new Dictionary<string, string>(StringComparer.Ordinal)
+                    var storageReason = OperatorNotificationRedactor.SanitizeOperationalText(fleetSnapshot?.Capture.Reason, 64);
+                    if (string.IsNullOrWhiteSpace(storageReason))
                     {
-                        ["source"] = "capture-storage",
-                        ["reason"] = storageReason
-                    }));
+                        storageReason = "storage-unavailable";
+                    }
+                    _publisher.TryPublish(new OperatorNotificationEvent(
+                        OperatorNotificationEventKind.UpgradeOrRecoveryFailed,
+                        OperatorNotificationSeverity.Critical,
+                        "upgrade_recovery_failed:capture-storage",
+                        "Capture storage / startup recovery failed",
+                        $"CameraAgent '{cameraName}' could not access durable capture storage ({storageReason}); capture is unavailable until storage recovers.",
+                        now,
+                        cameraName,
+                        new Dictionary<string, string>(StringComparer.Ordinal)
+                        {
+                            ["source"] = "capture-storage",
+                            ["reason"] = storageReason
+                        }));
+                }
             }
         }
 
@@ -687,6 +708,7 @@ public sealed class OperatorNotificationMonitorService(
             {
                 var persistedDate = await heartbeatStore.ReadLastHeartbeatSiteDateAsync(cancellationToken).ConfigureAwait(false);
                 _heartbeatCheckpointLoaded = true;
+                _lastLoggedHeartbeatReadFailureKey = null;
                 if (persistedDate is not null)
                 {
                     if (_lastPersistedHeartbeatSiteDate is null || persistedDate > _lastPersistedHeartbeatSiteDate)
@@ -705,7 +727,9 @@ public sealed class OperatorNotificationMonitorService(
             }
             catch (Exception ex)
             {
-                OperatorNotificationLog.MonitorEvaluationFailed(_logger, ex.GetType().Name);
+                LogHeartbeatReadFailureOnce(ex.GetType().Name);
+                // Defer daily heartbeat dispatch until checkpoint readability or genuine absence is confirmed.
+                return;
             }
         }
 
@@ -763,6 +787,7 @@ public sealed class OperatorNotificationMonitorService(
         {
             await heartbeatStore!.WriteLastHeartbeatSiteDateAsync(siteDate, cancellationToken).ConfigureAwait(false);
             _lastPersistedHeartbeatSiteDate = siteDate;
+            _lastLoggedHeartbeatWriteFailureKey = null;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -770,7 +795,27 @@ public sealed class OperatorNotificationMonitorService(
         }
         catch (Exception ex)
         {
-            OperatorNotificationLog.MonitorEvaluationFailed(_logger, ex.GetType().Name);
+            LogHeartbeatWriteFailureOnce(ex.GetType().Name);
+        }
+    }
+
+    private void LogHeartbeatReadFailureOnce(string exceptionType)
+    {
+        var failureKey = $"heartbeat-read:{exceptionType}";
+        if (!string.Equals(_lastLoggedHeartbeatReadFailureKey, failureKey, StringComparison.Ordinal))
+        {
+            _lastLoggedHeartbeatReadFailureKey = failureKey;
+            OperatorNotificationLog.MonitorEvaluationFailed(_logger, exceptionType);
+        }
+    }
+
+    private void LogHeartbeatWriteFailureOnce(string exceptionType)
+    {
+        var failureKey = $"heartbeat-write:{exceptionType}";
+        if (!string.Equals(_lastLoggedHeartbeatWriteFailureKey, failureKey, StringComparison.Ordinal))
+        {
+            _lastLoggedHeartbeatWriteFailureKey = failureKey;
+            OperatorNotificationLog.MonitorEvaluationFailed(_logger, exceptionType);
         }
     }
 

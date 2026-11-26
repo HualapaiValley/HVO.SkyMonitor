@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
@@ -17,6 +18,7 @@ using HVO.SkyMonitor.Deployment.Contracts;
 using HVO.SkyMonitor.Fleet.Contracts;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -533,6 +535,10 @@ public sealed class OperatorNotificationMonitorServiceTests
                 rigProfileStore: namedRigs);
 
             await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsTrue(publisher.Events.Any(static e =>
+                e.Kind == OperatorNotificationEventKind.UpgradeOrRecoveryFailed &&
+                e.DedupeKey == "upgrade_recovery_failed:capture-storage"),
+                $"Pre-initialization startup {failureKind} storage failure must alert immediately on the first evaluation.");
             clock.Advance(TimeSpan.FromSeconds(30));
             await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
 
@@ -709,6 +715,322 @@ public sealed class OperatorNotificationMonitorServiceTests
         }
     }
 
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux)]
+    [DataRow((int)AsiErrorCode.Timeout, "init", false)]
+    [DataRow((int)AsiErrorCode.GeneralError, "init", false)]
+    [DataRow((int)AsiErrorCode.CameraRemoved, "init", true)]
+    [DataRow((int)AsiErrorCode.CameraClosed, "init", true)]
+    [DataRow((int)AsiErrorCode.Timeout, "open2", false)]
+    [DataRow((int)AsiErrorCode.GeneralError, "open2", false)]
+    [DataRow((int)AsiErrorCode.CameraRemoved, "open2", true)]
+    [DataRow((int)AsiErrorCode.CameraClosed, "open2", true)]
+    public async Task RealPath_ZwoAsiModuleNativeInitializationErrors_ClassifyOnlyDisconnectCodesAsCameraDisconnectedAsync(
+        int rawErrorCode,
+        string stage,
+        bool expectCameraDisconnected)
+    {
+        var errorCode = (AsiErrorCode)rawErrorCode;
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-notif-zwo-init-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var clock = new MonitorClock(new DateTimeOffset(2026, 11, 26, 10, 0, 0, TimeSpan.Zero));
+            var hostOptions = Options.Create(new CameraAgentHostOptions
+            {
+                RawIngressRoot = root,
+                RawIngressSqliteBusyTimeoutSeconds = 1,
+                DisplayName = "ZWO Native Boundary Dome"
+            });
+
+            var native = new ZwoAsiCameraModuleTests.FakeAsiNativeApi();
+            if (stage == "init")
+            {
+                native.InitError = errorCode;
+            }
+            else
+            {
+                native.OpenErrorCode = errorCode;
+                native.FailOpenOnCallByCameraId[7] = 2;
+            }
+
+            var zwoModule = ZwoAsiCameraModuleTests.Module(native, clock);
+            var ingress = new WorkingRawIngress(root);
+            using var telemetry = new CaptureControlTelemetry();
+            using var admission = new CaptureAdmissionCoordinator(ingress, hostOptions, clock, telemetry);
+            var fleet = new FleetRuntimeState(clock);
+            var namedRigs = new SqliteNamedRigProfileStore(ingress, hostOptions, clock);
+            using var lifetime = new TestHostApplicationLifetime();
+
+            using var captureService = new CameraCaptureService(
+                new StaticConfigAccessor(ZwoAsiCameraModuleTests.CreateCenteredTransportTestConfig()),
+                new SingleModuleFactory(zwoModule),
+                ingress,
+                new NoOpCaptureDistributor(),
+                clock,
+                new AstronomyEnginePlanetEphemeris(),
+                telemetry,
+                admission,
+                fleet,
+                lifetime,
+                NullLogger<CameraCaptureService>.Instance,
+                namedRigProfiles: namedRigs);
+
+            await captureService.StartAsync(CancellationToken.None).ConfigureAwait(false);
+            lifetime.NotifyStarted();
+            await WaitUntilAsync(() => fleet.Snapshot.Capture.Availability == FleetAvailability.Unavailable, TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            await captureService.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+            Assert.AreEqual(expectCameraDisconnected, fleet.IsCameraDisconnected,
+                $"Real ZwoAsiCameraModule native error {errorCode} at {stage} expected FleetRuntimeState.IsCameraDisconnected={expectCameraDisconnected}.");
+
+            var publisher = new RecordingPublisher();
+            var options = EnabledOptions(captureStallMinutes: 30, disconnectedSeconds: 10, heartbeatTime: "23:59");
+            using var monitor = new OperatorNotificationMonitorService(
+                new StaticConfigProvider(options),
+                publisher,
+                hostOptions,
+                clock,
+                fleetRuntimeState: fleet,
+                admissionCoordinator: admission,
+                rigProfileStore: namedRigs);
+
+            await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+            clock.Advance(TimeSpan.FromSeconds(30));
+            await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+
+            var emittedDisconnect = publisher.Events.Any(static e => e.Kind == OperatorNotificationEventKind.CameraDisconnected);
+            Assert.AreEqual(expectCameraDisconnected, emittedDisconnect,
+                $"Real ZwoAsiCameraModule native error {errorCode} at {stage} expected CameraDisconnected={expectCameraDisconnected}.");
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux)]
+    public async Task DailyHeartbeat_UnreadableCheckpointAfterRestart_DefersWithoutDuplicateAndResumesWhenRestoredAsync()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+        RequireModesEnforced();
+        var clock = new MonitorClock(new DateTimeOffset(2026, 11, 26, 15, 5, 0, TimeSpan.Zero)); // 08:05 Phoenix
+        var stateDir = Path.Combine(Path.GetTempPath(), $"hvo-notif-hb-unreadable-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(stateDir);
+        var heartbeatFile = Path.Combine(stateDir, FileOperatorNotificationHeartbeatStore.HeartbeatFileName);
+        try
+        {
+            var hostOptions = Options.Create(new CameraAgentHostOptions
+            {
+                DisplayName = "HVO AllSky",
+                Observatory = new ObservatoryLocation(35.5, -113.9, 520, "America/Phoenix")
+            });
+            var options = EnabledOptions(captureStallMinutes: 120, heartbeatTime: "08:00");
+            var cumulativeHeartbeats = 0;
+
+            // 1. Emit and persist today's daily heartbeat.
+            var publisher1 = new RecordingPublisher();
+            using (var monitor1 = new OperatorNotificationMonitorService(
+                new StaticConfigProvider(options),
+                publisher1,
+                hostOptions,
+                clock,
+                heartbeatStore: new FileOperatorNotificationHeartbeatStore(stateDir)))
+            {
+                await monitor1.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+                cumulativeHeartbeats += publisher1.Events.Count(static e => e.Kind == OperatorNotificationEventKind.DailyHeartbeat);
+                Assert.AreEqual(1, cumulativeHeartbeats);
+                Assert.IsTrue(File.Exists(heartbeatFile));
+            }
+
+            // 2. Make the checkpoint unreadable (0000) and restart the monitor on the same site day.
+            File.SetUnixFileMode(heartbeatFile, UnixFileMode.None);
+            clock.Advance(TimeSpan.FromMinutes(10));
+            var publisher2 = new RecordingPublisher();
+            var logger2 = new RecordingMonitorLogger();
+            using (var monitor2 = new OperatorNotificationMonitorService(
+                new StaticConfigProvider(options),
+                publisher2,
+                hostOptions,
+                clock,
+                logger: logger2,
+                heartbeatStore: new FileOperatorNotificationHeartbeatStore(stateDir)))
+            {
+                await monitor2.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+                clock.Advance(TimeSpan.FromMinutes(5));
+                await monitor2.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+
+                cumulativeHeartbeats += publisher2.Events.Count(static e => e.Kind == OperatorNotificationEventKind.DailyHeartbeat);
+                Assert.AreEqual(1, cumulativeHeartbeats,
+                    "Unreadable heartbeat checkpoint after restart MUST defer dispatch and NEVER publish a duplicate daily heartbeat.");
+                Assert.AreEqual(1, logger2.Warning16209Count,
+                    "Repeated checkpoint read failures in the same episode must deduplicate Warning 16209.");
+
+                // 3. Restore readability: same site day loads persisted date (still 1); next site day resumes normally (2).
+                File.SetUnixFileMode(heartbeatFile, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                clock.Advance(TimeSpan.FromMinutes(5));
+                await monitor2.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+                cumulativeHeartbeats += publisher2.Events.Count(static e => e.Kind == OperatorNotificationEventKind.DailyHeartbeat);
+                Assert.AreEqual(1, cumulativeHeartbeats,
+                    "After restoring readability on the same site day, persisted checkpoint must still prevent duplicates.");
+
+                clock.Advance(TimeSpan.FromHours(24));
+                await monitor2.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+                var nextDayHeartbeats = publisher2.Events.Where(static e => e.Kind == OperatorNotificationEventKind.DailyHeartbeat).ToArray();
+                Assert.HasCount(1, nextDayHeartbeats);
+                Assert.AreEqual("daily_heartbeat:2026-11-27", nextDayHeartbeats[0].DedupeKey);
+                cumulativeHeartbeats += nextDayHeartbeats.Length;
+                Assert.AreEqual(2, cumulativeHeartbeats);
+            }
+        }
+        finally
+        {
+            if (!OperatingSystem.IsWindows() && File.Exists(heartbeatFile))
+            {
+                File.SetUnixFileMode(heartbeatFile, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            }
+            if (Directory.Exists(stateDir))
+            {
+                Directory.Delete(stateDir, recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task DailyHeartbeat_RepeatedCheckpointWriteFailures_DeduplicatesWarning16209UntilRecoveryAsync()
+    {
+        var clock = new MonitorClock(new DateTimeOffset(2026, 11, 26, 15, 5, 0, TimeSpan.Zero)); // 08:05 Phoenix
+        var stateDir = Path.Combine(Path.GetTempPath(), $"hvo-notif-hb-logdedup-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(stateDir);
+        try
+        {
+            var backingStore = new FileOperatorNotificationHeartbeatStore(stateDir);
+            var toggleStore = new ControllableFailHeartbeatStore(backingStore) { FailWrites = true };
+            var hostOptions = Options.Create(new CameraAgentHostOptions
+            {
+                DisplayName = "HVO AllSky",
+                Observatory = new ObservatoryLocation(35.5, -113.9, 520, "America/Phoenix")
+            });
+            var options = EnabledOptions(captureStallMinutes: 120, heartbeatTime: "08:00");
+            var publisher = new RecordingPublisher();
+            var logger = new RecordingMonitorLogger();
+
+            using var monitor = new OperatorNotificationMonitorService(
+                new StaticConfigProvider(options),
+                publisher,
+                hostOptions,
+                clock,
+                logger: logger,
+                heartbeatStore: toggleStore);
+
+            // Fail persistence across 3 consecutive evaluations -> Warning 16209 logged ONCE.
+            await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+            clock.Advance(TimeSpan.FromMinutes(1));
+            await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+            clock.Advance(TimeSpan.FromMinutes(1));
+            await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(1, publisher.Events.Count(static e => e.Kind == OperatorNotificationEventKind.DailyHeartbeat));
+            Assert.AreEqual(3, toggleStore.WriteAttempts);
+            Assert.AreEqual(1, logger.Warning16209Count,
+                "Repeated heartbeat checkpoint write failures must log Warning 16209 once per failure episode.");
+
+            // Recover persistence -> next evaluation succeeds and resets failure log dedup.
+            toggleStore.FailWrites = false;
+            clock.Advance(TimeSpan.FromMinutes(1));
+            await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsTrue(File.Exists(backingStore.FilePath));
+            Assert.AreEqual(1, logger.Warning16209Count);
+
+            // Next site day: new write failure episode logs Warning 16209 once again.
+            toggleStore.FailWrites = true;
+            clock.Advance(TimeSpan.FromHours(24));
+            await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+            clock.Advance(TimeSpan.FromMinutes(1));
+            await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(2, logger.Warning16209Count,
+                "A new failure episode after a successful write must log Warning 16209 once again.");
+        }
+        finally
+        {
+            if (Directory.Exists(stateDir))
+            {
+                Directory.Delete(stateDir, recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task RuntimeCaptureStorageFailure_RequiresSustainedEvaluationsWhileStartupFailureAlertsImmediatelyAsync()
+    {
+        var clock = new MonitorClock(new DateTimeOffset(2026, 11, 26, 10, 0, 0, TimeSpan.Zero));
+        var hostOptions = Options.Create(new CameraAgentHostOptions { DisplayName = "Storage Threshold Cam" });
+        var options = EnabledOptions(captureStallMinutes: 120, disconnectedSeconds: 60, heartbeatTime: "23:59");
+        var dummyResult = new CaptureResult(
+            Frame: null,
+            NextSetpoint: new CaptureSetpoint(TimeSpan.FromMilliseconds(10), 0, null, null),
+            ProcessingLatency: TimeSpan.FromMilliseconds(10),
+            Mode: default,
+            RequiresImmediateUpload: false);
+
+        // 1. Pre-initialization startup storage failure alerts IMMEDIATELY on evaluation 1.
+        var startupFleet = new FleetRuntimeState(clock);
+        startupFleet.CaptureFailed("IOException", isCameraDisconnected: false, isStorageFailure: true, isStartupStorageFailure: true);
+        var startupPublisher = new RecordingPublisher();
+        using (var startupMonitor = new OperatorNotificationMonitorService(
+            new StaticConfigProvider(options), startupPublisher, hostOptions, clock, fleetRuntimeState: startupFleet))
+        {
+            await startupMonitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsTrue(startupPublisher.Events.Any(static e =>
+                e.Kind == OperatorNotificationEventKind.UpgradeOrRecoveryFailed &&
+                e.DedupeKey == "upgrade_recovery_failed:capture-storage"),
+                "Pre-initialization startup storage failure must alert immediately on evaluation 1.");
+        }
+
+        // 2. Runtime single transient capture-storage failure (clears before 2nd evaluation) produces ZERO alert.
+        var runtimeFleet = new FleetRuntimeState(clock);
+        runtimeFleet.ModuleAvailable();
+        var runtimePublisher = new RecordingPublisher();
+        using var runtimeMonitor = new OperatorNotificationMonitorService(
+            new StaticConfigProvider(options), runtimePublisher, hostOptions, clock, fleetRuntimeState: runtimeFleet);
+
+        runtimeFleet.CaptureFailed("IOException", isCameraDisconnected: false, isStorageFailure: true, isStartupStorageFailure: false);
+        await runtimeMonitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.IsFalse(runtimePublisher.Events.Any(static e => e.DedupeKey == "upgrade_recovery_failed:capture-storage"),
+            "A single transient runtime capture-storage error must NOT immediately raise a Critical alert.");
+
+        // Capture recovers before the next evaluation -> counter resets, still zero alerts.
+        runtimeFleet.CaptureSucceeded(dummyResult, TimeSpan.FromMilliseconds(10), TimeSpan.FromMilliseconds(5));
+        clock.Advance(TimeSpan.FromSeconds(30));
+        await runtimeMonitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.IsEmpty(runtimePublisher.Events);
+
+        // 3. Sustained runtime capture-storage failure across 2 consecutive evaluations raises Critical alert on eval 2.
+        runtimeFleet.CaptureFailed("SqliteException", isCameraDisconnected: false, isStorageFailure: true, isStartupStorageFailure: false);
+        clock.Advance(TimeSpan.FromSeconds(30));
+        await runtimeMonitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.IsEmpty(runtimePublisher.Events, "First evaluation of new runtime storage failure must still wait for confirmation.");
+
+        clock.Advance(TimeSpan.FromSeconds(30));
+        await runtimeMonitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
+        var sustainedAlert = runtimePublisher.Events.Single(static e => e.DedupeKey == "upgrade_recovery_failed:capture-storage");
+        Assert.AreEqual(OperatorNotificationEventKind.UpgradeOrRecoveryFailed, sustainedAlert.Kind);
+        Assert.AreEqual(OperatorNotificationSeverity.Critical, sustainedAlert.Severity);
+    }
+
+    private static void RequireModesEnforced()
+    {
+        if (Environment.UserName == "root")
+        {
+            Assert.Inconclusive("Needs a non-root user, for whom modes 0000 and 0200 are enforced.");
+        }
+    }
+
     private static OperatorNotificationsOptions EnabledOptions(
         int captureStallMinutes = 15,
         int disconnectedSeconds = 60,
@@ -793,6 +1115,43 @@ public sealed class OperatorNotificationMonitorServiceTests
                 Assert.Fail($"Condition not met within {timeout.TotalSeconds:0.0}s.");
             }
             await Task.Delay(15).ConfigureAwait(false);
+        }
+    }
+
+    private sealed class ControllableFailHeartbeatStore(IOperatorNotificationHeartbeatStore inner) : IOperatorNotificationHeartbeatStore
+    {
+        private int _writeAttempts;
+        public bool FailWrites { get; set; }
+        public int WriteAttempts => Volatile.Read(ref _writeAttempts);
+
+        public ValueTask<DateOnly?> ReadLastHeartbeatSiteDateAsync(CancellationToken cancellationToken)
+            => inner.ReadLastHeartbeatSiteDateAsync(cancellationToken);
+
+        public ValueTask WriteLastHeartbeatSiteDateAsync(DateOnly siteDate, CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref _writeAttempts);
+            if (FailWrites)
+            {
+                throw new IOException("Simulated persistent storage outage while writing heartbeat checkpoint.");
+            }
+            return inner.WriteLastHeartbeatSiteDateAsync(siteDate, cancellationToken);
+        }
+    }
+
+    private sealed class RecordingMonitorLogger : ILogger<OperatorNotificationMonitorService>
+    {
+        private readonly ConcurrentQueue<(LogLevel Level, EventId EventId, string Message)> _entries = new();
+        public int Warning16209Count => _entries.Count(static e => e.Level == LogLevel.Warning && e.EventId.Id == 16209);
+        public IDisposable BeginScope<TState>(TState state) where TState : notnull => NullScope.Instance;
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+            => _entries.Enqueue((logLevel, eventId, formatter(state, exception)));
+
+        private sealed class NullScope : IDisposable
+        {
+            public static NullScope Instance { get; } = new();
+            public void Dispose() { }
         }
     }
 

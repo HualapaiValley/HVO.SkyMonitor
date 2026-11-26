@@ -453,6 +453,7 @@ public sealed class OperatorNotificationStoreTests
         {
             return;
         }
+        RequireModesEnforced();
 
         using var dir = TempStateDir.Create();
         var dpProvider = DataProtectionProvider.Create(new DirectoryInfo(Path.Combine(dir.Path, "dp-keys")));
@@ -565,6 +566,78 @@ public sealed class OperatorNotificationStoreTests
         Assert.AreEqual(OperatorNotificationsSaveOutcome.Applied, saved.Outcome, saved.Message);
         Assert.IsNull(store.ConfigurationErrorReasonCode);
         Assert.IsNull(saved.Snapshot!.StoreStatusReasonCode);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux)]
+    public async Task BlockedAncestorOfStateDirectory_NeverFallsBackToHostSettingsOrCredentialsAndReportsStoreUnreadableAsync()
+    {
+        using var dir = TempStateDir.Create();
+        var dpProvider = DataProtectionProvider.Create(new DirectoryInfo(Path.Combine(dir.Path, "dp-keys")));
+        var hostConfig = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                [OperatorNotificationsOptions.SectionKey + ":Enabled"] = "true",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Enabled"] = "true",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Host"] = "fallback-host.example.test",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:FromAddress"] = "fallback@example.test",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Recipients:0"] = "ops@example.test",
+                [ConfigurationOperatorNotificationConfigProvider.SmtpUsernameConfigKey] = "host-fallback-user",
+                [ConfigurationOperatorNotificationConfigProvider.SmtpPasswordConfigKey] = "host-fallback-password",
+                [ConfigurationOperatorNotificationConfigProvider.WebhookUrlConfigKey] = "https://host-fallback.example.test/secret"
+            })
+            .Build();
+
+        // Case 1 & 2: Regular file directly at parent of StateDirectory and two levels above StateDirectory (ENOTDIR).
+        var blockerFile = Path.Combine(dir.Path, "not-a-directory");
+        await File.WriteAllTextAsync(blockerFile, "regular-file-blocking-ancestor").ConfigureAwait(false);
+
+        // Case 3: Symlink to a regular file at ancestor of StateDirectory.
+        var symlinkToFile = Path.Combine(dir.Path, "symlink-to-file");
+        File.CreateSymbolicLink(symlinkToFile, blockerFile);
+
+        // Case 4: Dangling symlink at ancestor of StateDirectory.
+        var danglingSymlink = Path.Combine(dir.Path, "dangling-symlink");
+        File.CreateSymbolicLink(danglingSymlink, Path.Combine(dir.Path, "does-not-exist"));
+
+        var blockedStateDirs = new[]
+        {
+            Path.Combine(blockerFile, "state"),
+            Path.Combine(blockerFile, "nested", "state"),
+            Path.Combine(symlinkToFile, "state"),
+            Path.Combine(danglingSymlink, "state")
+        };
+
+        foreach (var blockedStateDir in blockedStateDirs)
+        {
+            using var store = CreateStore(blockedStateDir, isDevelopment: false, dpProvider: dpProvider, configuration: hostConfig);
+
+            Assert.IsFalse(store.CurrentOptions.Enabled, $"Blocked ancestor '{blockedStateDir}' must NOT reactivate host Enabled=true.");
+            Assert.AreEqual(NotificationReasonCodes.StoreUnreadable, store.ConfigurationErrorReasonCode,
+                $"Blocked ancestor '{blockedStateDir}' must report store-unreadable.");
+
+            var effective = await store.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsTrue(effective.StoreCorrupt, $"Expected StoreCorrupt for '{blockedStateDir}'.");
+            Assert.AreEqual(NotificationReasonCodes.StoreUnreadable, effective.ConfigurationErrorReasonCode);
+            Assert.IsFalse(effective.Options.Enabled);
+            Assert.IsTrue(effective.Secrets.IsEmpty, $"Blocked ancestor '{blockedStateDir}' must NEVER fall back to host credentials.");
+
+            var snapshot = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsTrue(snapshot.StoreCorrupt);
+            Assert.AreEqual(NotificationReasonCodes.StoreUnreadable, snapshot.StoreStatusReasonCode);
+            Assert.IsFalse(snapshot.CanPersist, $"Blocked ancestor '{blockedStateDir}' must report CanPersist=false.");
+            Assert.IsFalse(snapshot.Options.Enabled);
+            Assert.IsFalse(snapshot.Secrets.HasSmtpPassword);
+            Assert.IsFalse(snapshot.Secrets.HasWebhookUrl);
+        }
+    }
+
+    private static void RequireModesEnforced()
+    {
+        if (Environment.UserName == "root")
+        {
+            Assert.Inconclusive("Needs a non-root user, for whom modes 0000 and 0200 are enforced.");
+        }
     }
 
     private static OperatorNotificationStore CreateStore(
