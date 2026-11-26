@@ -19,14 +19,37 @@ internal readonly record struct CenteredAuthoritativeAssociationWriter(string Pr
         string.Equals(slot.Variant, Variant, StringComparison.Ordinal);
 }
 
+internal enum CenteredAuthoritativeAssociationResolutionState
+{
+    Unresolved,
+    None,
+    Proven,
+    UnidentifiableExpired
+}
+
 internal readonly record struct CenteredAuthoritativeAssociationResolution(
-    bool IsResolved,
+    CenteredAuthoritativeAssociationResolutionState State,
     CenteredAuthoritativeAssociationWriter? Writer)
 {
+    internal bool IsResolved => State != CenteredAuthoritativeAssociationResolutionState.Unresolved;
+
+    internal bool SuppressesSceneExpectedNotDetected =>
+        State is CenteredAuthoritativeAssociationResolutionState.Proven or
+            CenteredAuthoritativeAssociationResolutionState.UnidentifiableExpired;
+
     internal static CenteredAuthoritativeAssociationResolution Unresolved => default;
-    internal static CenteredAuthoritativeAssociationResolution None => new(true, null);
-    internal static CenteredAuthoritativeAssociationResolution Resolved(CenteredAuthoritativeAssociationWriter writer) => new(true, writer);
-    internal static CenteredAuthoritativeAssociationResolution FromLookup(CenteredAuthoritativeAssociationWriter? writer) => new(true, writer);
+
+    internal static CenteredAuthoritativeAssociationResolution None =>
+        new(CenteredAuthoritativeAssociationResolutionState.None, null);
+
+    internal static CenteredAuthoritativeAssociationResolution Resolved(CenteredAuthoritativeAssociationWriter writer) =>
+        new(CenteredAuthoritativeAssociationResolutionState.Proven, writer);
+
+    internal static CenteredAuthoritativeAssociationResolution UnidentifiableExpired(CenteredAuthoritativeAssociationWriter writer) =>
+        new(CenteredAuthoritativeAssociationResolutionState.UnidentifiableExpired, writer);
+
+    internal static CenteredAuthoritativeAssociationResolution FromLookup(CenteredAuthoritativeAssociationWriter? writer) =>
+        writer is { } found ? Resolved(found) : None;
 }
 
 /// <summary>
@@ -205,14 +228,21 @@ internal static class CenteredViewLayerBindings
         string schemaVersion,
         string variant,
         string? recipeName,
-        string? implementationVersion)
+        string? implementationVersion,
+        IReadOnlyDictionary<(string Producer, string Schema, string Variant), IReadOnlyList<CenteredViewLayerBinding>>? configuredBindings = null)
     {
         var sourceSchema = SourceSchema(schemaVersion);
         if (!SupportsSchema(sourceSchema))
             return null;
 
         IReadOnlyList<string> layerKinds;
-        if (MeasuredStellarAssociationsV1.IsSupportedSchemaVersion(sourceSchema))
+        if (configuredBindings is not null)
+        {
+            layerKinds = configuredBindings.TryGetValue((node.Id, sourceSchema, variant), out var bound)
+                ? bound.Select(static binding => binding.Style.Kind).ToArray()
+                : [];
+        }
+        else if (MeasuredStellarAssociationsV1.IsSupportedSchemaVersion(sourceSchema))
         {
             var isExposureAssociation =
                 string.Equals(node.Alias, ExposureAssociationProducts.StepAlias, StringComparison.Ordinal) ||
@@ -280,7 +310,8 @@ internal static class CenteredViewLayerBindings
     internal static bool IsAuthoritativeAssociationSlot(
         ExposureProductSlot slot,
         CenteredAuthoritativeAssociationResolution authoritativeWriter,
-        CenteredProductSemanticProvenanceV1? semantics = null)
+        CenteredProductSemanticProvenanceV1? semantics = null,
+        ExposureProductAvailability? availability = null)
     {
         if (!MeasuredStellarAssociationsV1.IsSupportedSchemaVersion(SourceSchema(slot.SchemaVersion)))
             return false;
@@ -291,13 +322,28 @@ internal static class CenteredViewLayerBindings
                 string.Equals(semantics.StepAlias, ExposureAssociationProducts.StepAlias, StringComparison.Ordinal);
             if (!isExposureAssociation)
                 return false;
-            return !authoritativeWriter.IsResolved ||
-                authoritativeWriter.Writer is { } resolvedWriter && resolvedWriter.Matches(slot);
+            return authoritativeWriter.State switch
+            {
+                CenteredAuthoritativeAssociationResolutionState.Unresolved => true,
+                CenteredAuthoritativeAssociationResolutionState.Proven =>
+                    authoritativeWriter.Writer is { } resolvedWriter && resolvedWriter.Matches(slot),
+                CenteredAuthoritativeAssociationResolutionState.UnidentifiableExpired =>
+                    availability != ExposureProductAvailability.Available &&
+                    authoritativeWriter.Writer is { } expiredWriter && expiredWriter.Matches(slot),
+                _ => false
+            };
         }
-        if (authoritativeWriter.IsResolved)
-            return authoritativeWriter.Writer is { } writer && writer.Matches(slot);
-        return slot.Variant == ExposureAssociationProducts.Variant ||
-            slot.Producer == ExposureAssociationProducts.StepAlias;
+        return authoritativeWriter.State switch
+        {
+            CenteredAuthoritativeAssociationResolutionState.Proven =>
+                authoritativeWriter.Writer is { } writer && writer.Matches(slot),
+            CenteredAuthoritativeAssociationResolutionState.UnidentifiableExpired =>
+                availability != ExposureProductAvailability.Available &&
+                authoritativeWriter.Writer is { } expiredWriter && expiredWriter.Matches(slot),
+            CenteredAuthoritativeAssociationResolutionState.None => false,
+            _ => slot.Variant == ExposureAssociationProducts.Variant ||
+                slot.Producer == ExposureAssociationProducts.StepAlias
+        };
     }
 
     internal static bool IsSceneExpectedNotDetectedSlot(
@@ -327,11 +373,12 @@ internal static class CenteredViewLayerBindings
     internal static IReadOnlyList<CenteredViewLayerBinding> ReadLegacySlot(
         ExposureProductSlot slot,
         CenteredAuthoritativeAssociationResolution authoritativeWriter,
-        CenteredProductSemanticProvenanceV1? semantics = null)
+        CenteredProductSemanticProvenanceV1? semantics = null,
+        ExposureProductAvailability? availability = null)
     {
         var sourceSchema = SourceSchema(slot.SchemaVersion);
         if (MeasuredStellarAssociationsV1.IsSupportedSchemaVersion(sourceSchema))
-            return IsAuthoritativeAssociationSlot(slot, authoritativeWriter, semantics)
+            return IsAuthoritativeAssociationSlot(slot, authoritativeWriter, semantics, availability)
                 ? [MeasuredAssociations, ExpectedNotDetected]
                 : [];
 
@@ -339,23 +386,23 @@ internal static class CenteredViewLayerBindings
         {
             if (semantics is not null)
             {
-                if (string.Equals(semantics.RecipeImplementationVersion, MeasuredAssociationPresentation.ExpectedNotDetectedVersion, StringComparison.Ordinal))
-                    return authoritativeWriter.Writer is not null ? [] : [ExpectedNotDetected];
-                if (string.Equals(semantics.RecipeImplementationVersion, PresentationDeepSkyLayerProducer.ProducerVersion, StringComparison.Ordinal))
-                    return [DeepSky];
                 if (semantics.LayerKinds is not null)
                 {
                     var resolved = new List<CenteredViewLayerBinding>(semantics.LayerKinds.Count);
                     foreach (var kind in semantics.LayerKinds)
                     {
                         if (kind == MeasuredAssociationPresentation.ExpectedNotDetectedLayerKind &&
-                            authoritativeWriter.Writer is not null)
+                            authoritativeWriter.SuppressesSceneExpectedNotDetected)
                             continue;
                         if (KnownByKind.TryGetValue(kind, out var binding))
                             resolved.Add(binding);
                     }
                     return resolved;
                 }
+                if (string.Equals(semantics.RecipeImplementationVersion, MeasuredAssociationPresentation.ExpectedNotDetectedVersion, StringComparison.Ordinal))
+                    return authoritativeWriter.SuppressesSceneExpectedNotDetected ? [] : [ExpectedNotDetected];
+                if (string.Equals(semantics.RecipeImplementationVersion, PresentationDeepSkyLayerProducer.ProducerVersion, StringComparison.Ordinal))
+                    return [DeepSky];
             }
             return slot.Variant switch
             {
@@ -364,7 +411,7 @@ internal static class CenteredViewLayerBindings
                 "scene-image-circle-layer-v1" => [ImageCircle],
                 "scene-constellation-layer-v1" => [Constellations],
                 "scene-deep-sky-v1" => [DeepSky],
-                "expected-not-detected-layer-v1" => authoritativeWriter.Writer is not null ? [] : [ExpectedNotDetected],
+                "expected-not-detected-layer-v1" => authoritativeWriter.SuppressesSceneExpectedNotDetected ? [] : [ExpectedNotDetected],
                 "cloud-mask-layer-v1" => [CloudMask],
                 "cloud-label-layer-v1" => [CloudLabel],
                 "environment-layer-v1" => [Environment],
@@ -382,16 +429,103 @@ internal static class CenteredViewLayerBindings
         };
     }
 
-    internal static IReadOnlyDictionary<(string Producer, string Schema, string Variant), IReadOnlyList<CenteredViewLayerBinding>> ReadConfigured(
-        ProcessingGraphDefinition graph)
+    /// <summary>
+    /// Reconstructs per-slot centered-view bindings when the frozen graph revision is unavailable, preserving the
+    /// exact deterministic first-node-by-ordinal-id single-writer selection of <see cref="ReadConfigured(ProcessingGraphDefinition)"/>
+    /// across multi-node, custom-variant, renamed-alias, and legacy expired-writer executions.
+    /// </summary>
+    internal static IReadOnlyDictionary<(string Producer, string Schema, string Variant), IReadOnlyList<CenteredViewLayerBinding>>
+        BuildRecoveredBindings(
+            IReadOnlyList<(ExposureProductLookup Lookup, CenteredProductSemanticProvenanceV1? Semantics)> entries,
+            CenteredAuthoritativeAssociationResolution authoritativeWriter)
     {
+        var result = new Dictionary<(string Producer, string Schema, string Variant), IReadOnlyList<CenteredViewLayerBinding>>();
+        var boundLayers = new HashSet<(CenteredViewLayerScope Scope, string Kind)>();
+        var ordered = entries
+            .OrderBy(static entry => entry.Lookup.Slot.Producer, StringComparer.Ordinal)
+            .ThenBy(static entry => entry.Lookup.Revision ?? long.MaxValue)
+            .ThenBy(static entry => entry.Lookup.Slot.Variant, StringComparer.Ordinal);
+        foreach (var (lookup, semantics) in ordered)
+        {
+            var slot = lookup.Slot;
+            var key = (slot.Producer, SourceSchema(slot.SchemaVersion), slot.Variant);
+            if (result.ContainsKey(key))
+                continue;
+            var candidates = ReadLegacySlot(slot, authoritativeWriter, semantics, lookup.Availability);
+            if (candidates.Count == 0)
+                continue;
+            var claimed = candidates.Where(binding => boundLayers.Add((binding.Scope, binding.Style.Kind))).ToArray();
+            if (claimed.Length > 0)
+                result.Add(key, claimed);
+        }
+        return result;
+    }
+
+    internal static IReadOnlyDictionary<(string Producer, string Schema, string Variant), IReadOnlyList<CenteredViewLayerBinding>> ReadConfigured(
+        ProcessingGraphDefinition graph) => ReadConfiguredNodes(graph.Nodes);
+
+    internal static IReadOnlyDictionary<(string Producer, string Schema, string Variant), IReadOnlyList<CenteredViewLayerBinding>> ReadConfigured(
+        CaptureProcessingGraph graph)
+    {
+        if (graph.SharedPlan is { } sharedPlan)
+        {
+            return ReadConfiguredNodes(sharedPlan.Nodes
+                .Select(static planNode => planNode.Definition)
+                .OrderBy(static node => node.Id, StringComparer.Ordinal));
+        }
+
+        var nodes = graph.Nodes.OrderBy(static node => node.Id, StringComparer.Ordinal).ToArray();
+        var result = new Dictionary<(string, string, string), IReadOnlyList<CenteredViewLayerBinding>>();
+        var hasAuthoritativeAssociations = nodes.Any(static node =>
+            node.Alias == ExposureAssociationProducts.StepAlias);
+        var boundLayers = new HashSet<(CenteredViewLayerScope Scope, string Kind)>();
+        foreach (var node in nodes)
+        {
+            if (node.Step is not ICaptureProcessingGraphStep step)
+                continue;
+            var ports = PortBindings(node.Alias);
+            var declared = step is IMultiOutputCaptureProcessingGraphStep multi
+                ? multi.Outputs
+                : [new CaptureProcessingOutputDescriptor(step.OutputRole, step.OutputVariant, step.RecipeName,
+                    step.OutputSchemaVersion, step.SharedOutputRecipe)];
+            for (var index = 0; index < declared.Count; index++)
+            {
+                var output = declared[index];
+                if (output.SchemaVersion is not { } schema || !SupportsSchema(schema))
+                    continue;
+                IReadOnlyList<CenteredViewLayerBinding> candidates;
+                if (node.Alias is "ScenePresentationLayer" or SceneStylePresentation.StepAlias &&
+                    output.SharedRecipe?.ImplementationVersion == MeasuredAssociationPresentation.ExpectedNotDetectedVersion)
+                {
+                    candidates = hasAuthoritativeAssociations ? [] : [ExpectedNotDetected];
+                }
+                else if (index < ports.Count)
+                {
+                    candidates = ports[index];
+                }
+                else
+                {
+                    continue;
+                }
+                var bindings = candidates.Where(binding => boundLayers.Add((binding.Scope, binding.Style.Kind))).ToArray();
+                if (bindings.Length > 0)
+                    result.Add((node.Id, schema, output.Variant), bindings);
+            }
+        }
+        return result;
+    }
+
+    private static Dictionary<(string Producer, string Schema, string Variant), IReadOnlyList<CenteredViewLayerBinding>> ReadConfiguredNodes(
+        IEnumerable<ProcessingGraphNodeDefinition> nodes)
+    {
+        var enabledNodes = nodes.Where(static node => node.Enabled).ToArray();
         var result = new Dictionary<(string, string, string), IReadOnlyList<CenteredViewLayerBinding>>();
         // ExposureStellarAssociations is the single authoritative centered producer of expected-not-detected
         // when configured; prevent a second scene-presentation writer from racing or overwriting it.
-        var hasAuthoritativeAssociations = graph.Nodes.Any(static node =>
-            node.Enabled && node.StepAlias == ExposureAssociationProducts.StepAlias);
+        var hasAuthoritativeAssociations = enabledNodes.Any(static node =>
+            node.StepAlias == ExposureAssociationProducts.StepAlias);
         var boundLayers = new HashSet<(CenteredViewLayerScope Scope, string Kind)>();
-        foreach (var node in graph.Nodes.Where(node => node.Enabled))
+        foreach (var node in enabledNodes)
         {
             var ports = PortBindings(node.StepAlias);
             for (var index = 0; index < node.Outputs.Length; index++)

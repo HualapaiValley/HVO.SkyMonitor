@@ -652,33 +652,21 @@ public static class PresentationLayerProducers
         var deltaSeconds = Math.Abs((sceneEpoch - associationEpoch).TotalSeconds);
         if (!double.IsFinite(deltaSeconds) || deltaSeconds > MaximumCompatibleEpochSkewSeconds)
             return false;
+        if (deltaSeconds == 0)
+            return true;
         var maxScalePixelsPerRadian = MaximumDeliveredPixelScalePerRadian(scene);
-        return EarthSiderealAngularRateRadiansPerSecond * deltaSeconds * maxScalePixelsPerRadian
-            <= CompatibleSceneCoordinateTolerancePixels;
+        return double.IsFinite(maxScalePixelsPerRadian) &&
+            EarthSiderealAngularRateRadiansPerSecond * deltaSeconds * maxScalePixelsPerRadian
+                <= CompatibleSceneCoordinateTolerancePixels;
     }
 
     private static double MaximumDeliveredPixelScalePerRadian(ProjectedSceneV1 scene)
     {
-        var p = scene.Projection;
-        var t = scene.ImageTransform;
-        var fx = p.FocalLengthXPixels / Math.Max(1, t.BinX);
-        var fy = p.FocalLengthYPixels / Math.Max(1, t.BinY);
-        var maxFocal = Math.Max(fx, fy);
-        var minFocal = Math.Min(p.FocalLengthXPixels, p.FocalLengthYPixels);
-        var maxDx = Math.Max(p.PrincipalPointX, p.WidthPixels - p.PrincipalPointX);
-        var maxDy = Math.Max(p.PrincipalPointY, p.HeightPixels - p.PrincipalPointY);
-        var maxRadius = double.Hypot(maxDx, maxDy);
-        if (p.Aperture == ProjectionAperture.Circular && p.ImageCircleRadiusPixels is { } circleRadius)
-            maxRadius = Math.Min(maxRadius, circleRadius);
-        var normalizedRadiusSq = minFocal > 0 ? (maxRadius / minFocal) * (maxRadius / minFocal) : 0;
-        var modelFactor = p.Model switch
-        {
-            ProjectionModel.Perspective => 1.0 + normalizedRadiusSq,
-            ProjectionModel.StereographicFisheye => 1.0 + 0.25 * normalizedRadiusSq,
-            _ => 1.0
-        };
-        var distortionFactor = p.RadialDistortionK1 != 0 ? 1.0 + 3.0 * Math.Abs(p.RadialDistortionK1) * normalizedRadiusSq : 1.0;
-        return maxFocal * modelFactor * distortionFactor;
+        var projection = ProjectedSceneJson.ToProjectionContext(scene.Projection);
+        var boresight = new AltAzPoint(projection.BoresightAltitudeDegrees, projection.BoresightAzimuthDegrees);
+        var sourceScale = ProjectionSamplingBounds.MaximumPixelsPerRadian(projection, boresight, Math.PI);
+        var minBin = Math.Min(Math.Max(1, scene.ImageTransform.BinX), Math.Max(1, scene.ImageTransform.BinY));
+        return sourceScale / minBin;
     }
 
     internal static bool AssociationsBindScene(

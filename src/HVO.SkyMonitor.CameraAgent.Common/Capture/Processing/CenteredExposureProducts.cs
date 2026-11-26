@@ -118,7 +118,8 @@ internal sealed class CenteredExposureProductReader(
         DurableProcessingNodeStatus status,
         string? reason,
         IReadOnlyList<DurableProcessingOutput> outputs,
-        IReadOnlyList<DurableProcessingNodeInput> inputs)
+        IReadOnlyList<DurableProcessingNodeInput> inputs,
+        CaptureProcessingGraph? graph = null)
     {
         if (manifest.CenteredExposure is not { } centered ||
             status is not (DurableProcessingNodeStatus.Completed or DurableProcessingNodeStatus.Skipped or
@@ -130,6 +131,7 @@ internal sealed class CenteredExposureProductReader(
         if (node.Step is CalibrationCaptureProcessingStep)
             return [CreateLinearSettlement(key, raw, node, status, reason, outputs.SingleOrDefault(), inputs)];
 
+        var configuredBindings = graph is null ? null : CenteredViewLayerBindings.ReadConfigured(graph);
         var settlements = outputs.Select(output =>
         {
             var schema = output.ProductSchemaVersion ?? ArtifactManifestV2.CurrentSchemaVersion;
@@ -137,7 +139,7 @@ internal sealed class CenteredExposureProductReader(
             var semantics = ProjectedSceneV1.IsSupportedSchemaVersion(schema)
                 ? null
                 : CenteredViewLayerBindings.CreateSemanticProvenance(
-                    node, schema, output.Artifact.Variant, recipe?.Name, recipe?.ImplementationVersion);
+                    node, schema, output.Artifact.Variant, recipe?.Name, recipe?.ImplementationVersion, configuredBindings);
             return new CenteredProductSettlement(key, node.Id, schema, output.Artifact.Variant,
                 output.OutputIdentitySha256, output.Artifact.ChecksumSha256, ExposureProductAvailability.Available, null, null)
             {
@@ -146,24 +148,27 @@ internal sealed class CenteredExposureProductReader(
                 Semantics = semantics
             };
         }).ToList();
-        AddUnproducedViewProducts(key, node, status, reason, settlements);
+        AddUnproducedViewProducts(key, node, status, reason, settlements, configuredBindings);
         return settlements;
     }
 
     internal static IReadOnlyList<CenteredProductSettlement> CreateOutputlessViewSettlements(ArtifactManifestV2 manifest,
-        CaptureProcessingGraphNode node, DurableProcessingNodeStatus status, string? reason)
+        CaptureProcessingGraphNode node, DurableProcessingNodeStatus status, string? reason,
+        CaptureProcessingGraph? graph = null)
     {
         if (manifest.CenteredExposure is not { } admission || status is not
             (DurableProcessingNodeStatus.Completed or DurableProcessingNodeStatus.Skipped or DurableProcessingNodeStatus.TerminalFailure))
             return [];
+        var configuredBindings = graph is null ? null : CenteredViewLayerBindings.ReadConfigured(graph);
         var settlements = new List<CenteredProductSettlement>();
         AddUnproducedViewProducts(new(admission.Source.Camera, admission.Source.RunId,
-            manifest.Descriptor.Capture.CaptureId), node, status, reason, settlements);
+            manifest.Descriptor.Capture.CaptureId), node, status, reason, settlements, configuredBindings);
         return settlements;
     }
 
     private static void AddUnproducedViewProducts(ExposureKey key, CaptureProcessingGraphNode node,
-        DurableProcessingNodeStatus status, string? reason, List<CenteredProductSettlement> settlements)
+        DurableProcessingNodeStatus status, string? reason, List<CenteredProductSettlement> settlements,
+        IReadOnlyDictionary<(string Producer, string Schema, string Variant), IReadOnlyList<CenteredViewLayerBinding>>? configuredBindings)
     {
         var ports = CenteredViewLayerBindings.PortBindings(node.Alias);
         if (ports.Count == 0 || node.Step is not ICaptureProcessingGraphStep step)
@@ -184,7 +189,8 @@ internal sealed class CenteredExposureProductReader(
             var semantics = CenteredViewLayerBindings.CreateSemanticProvenance(
                 node, schema, output.Variant,
                 output.SharedRecipe?.Name ?? output.RecipeName,
-                output.SharedRecipe?.ImplementationVersion);
+                output.SharedRecipe?.ImplementationVersion,
+                configuredBindings);
             settlements.Add(new(key, node.Id, CenteredViewLayerBindings.DispositionPrefix + schema, output.Variant, null, null,
                 status == DurableProcessingNodeStatus.TerminalFailure ? ExposureProductAvailability.Failed : ExposureProductAvailability.Unavailable,
                 reason ?? "product.configured-output-not-retained", null)

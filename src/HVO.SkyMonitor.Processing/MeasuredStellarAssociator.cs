@@ -480,14 +480,28 @@ public static class MeasuredStellarAssociator
         }
     }
 
+    // Only compact footprints (solid/saturated blobs or filled axis-aligned trails filling at least half their
+    // axis-aligned bounding box) use the bounding-box center as a local exclusion anchor; hollow arcs or rings
+    // surrounding an interior star/planet must not falsely withhold the isolated target.
+    private const double CompactFootprintMinimumFillRatio = 0.5;
+
     private static PixelPoint FootprintCenter(StellarFootprintBounds footprint) =>
         new((footprint.MinX + footprint.MaxX + 1) * 0.5, (footprint.MinY + footprint.MaxY + 1) * 0.5);
+
+    private static bool IsCompactFootprint(StellarMeasurementExclusion exclusion, StellarFootprintBounds footprint)
+    {
+        var width = (long)footprint.MaxX - footprint.MinX + 1;
+        var height = (long)footprint.MaxY - footprint.MinY + 1;
+        if (width <= 0 || height <= 0 || exclusion.SampleCount <= 0)
+            return false;
+        return exclusion.SampleCount >= CompactFootprintMinimumFillRatio * ((double)width * height);
+    }
 
     private static double LocalExclusionDistanceSquared(
         StellarMeasurementExclusion exclusion, PixelPoint point, StellarFootprintBounds? footprint)
     {
         var peakDistance = DistanceSquared(exclusion.Peak, point);
-        return footprint is { } bounds
+        return footprint is { } bounds && IsCompactFootprint(exclusion, bounds)
             ? Math.Min(peakDistance, DistanceSquared(FootprintCenter(bounds), point))
             : peakDistance;
     }

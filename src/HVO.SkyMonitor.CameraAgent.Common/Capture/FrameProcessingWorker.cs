@@ -256,7 +256,7 @@ internal sealed class FrameProcessingWorker
                             rawCapture, node, DurableProcessingNodeStatus.Skipped, dependencyReason, persistedAttempt,
                             null, timeProvider.GetUtcNow(), null, ProcessingOutcomeStatus.Skipped,
                             item.WorkId, item.LeaseToken,
-                            [], context, item.Execution, cancellationToken).ConfigureAwait(false);
+                            [], context, item.Execution, cancellationToken, graph).ConfigureAwait(false);
                     }
                     statuses[node.Id] = DurableProcessingNodeStatus.Skipped;
                     context.AddStepTelemetry(new CaptureProcessingStepTelemetry(node.Id, TimeSpan.Zero, false, dependencyReason));
@@ -504,7 +504,7 @@ internal sealed class FrameProcessingWorker
                                 duration,
                                 outcome?.Status,
                                 context.CurrentExecutionRoute,
-                                cancellationToken, rawCapture.Manifest).ConfigureAwait(false);
+                                cancellationToken, rawCapture.Manifest, graph).ConfigureAwait(false);
                         }
                         if (item.Execution?.AllowAutomaticPublication != false &&
                             node.Step is IDurableCaptureProcessingPostCommit memoryOnlyCleanup)
@@ -525,7 +525,7 @@ internal sealed class FrameProcessingWorker
                                 startedUtc, completedUtc, duration,
                                 outcome?.Status,
                                 item.WorkId, item.LeaseToken,
-                                products, context, item.Execution, cancellationToken).ConfigureAwait(false);
+                                products, context, item.Execution, cancellationToken, graph).ConfigureAwait(false);
                         }
                         catch (IOException caught) when (
                             node == measurement && status == DurableProcessingNodeStatus.Completed &&
@@ -547,7 +547,7 @@ internal sealed class FrameProcessingWorker
                                 : ProcessingOutcomeStatus.TerminalFailure;
                             await persistence.CompleteOutputlessExecutionNodeAsync(item.Execution, node, status, reason,
                                 persistedAttempt, timeProvider.GetUtcNow(), duration, publicationOutcome,
-                                context.CurrentExecutionRoute, cancellationToken, rawCapture.Manifest).ConfigureAwait(false);
+                                context.CurrentExecutionRoute, cancellationToken, rawCapture.Manifest, graph).ConfigureAwait(false);
                         }
                         if (item.Execution?.AllowAutomaticPublication != false &&
                             status == DurableProcessingNodeStatus.Completed &&
