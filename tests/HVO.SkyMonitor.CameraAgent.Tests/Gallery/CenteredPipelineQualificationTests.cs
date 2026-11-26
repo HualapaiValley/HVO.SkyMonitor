@@ -1613,6 +1613,59 @@ public sealed class CenteredPipelineQualificationTests
                 .ConfigureAwait(false);
 
             await RunRetainedNovemberMonoEndToEndAsync(corpusRoot, token).ConfigureAwait(false);
+
+            // 3. Negative regressions for Mono16 manifest exposureSeconds: omitting exposureSeconds, setting null,
+            // or changing it to 19s must fail loudly before admission!
+            var missingExposureJson = JsonSerializer.Serialize(new[]
+            {
+                new
+                {
+                    artifact = "study-mono-1.bin",
+                    captureId = Guid.Parse("19280001-1111-4111-8111-192800010001"),
+                    rawSha256 = PayloadChecksum.ComputeSha256(monoBytes),
+                    width = Width,
+                    height = Height,
+                    blackLevel = (double)BlackLevel,
+                    whiteLevel = (double)WhiteLevel,
+                    pixelCount = monoStats.SampleCount,
+                    minAdu = monoStats.Minimum,
+                    maxAdu = monoStats.Maximum,
+                    sumAdu = monoStats.Sum,
+                    zeroCount = monoStats.ZeroCount,
+                    whiteLevelCount = monoStats.SaturatedCount
+                }
+            });
+            await File.WriteAllTextAsync(Path.Combine(monoDir, "expected-mono.json"), missingExposureJson, token)
+                .ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<AssertFailedException>(async () =>
+                await RunRetainedNovemberMonoEndToEndAsync(corpusRoot, token).ConfigureAwait(false))
+                .ConfigureAwait(false);
+
+            var wrongExposureJson = JsonSerializer.Serialize(new[]
+            {
+                new
+                {
+                    artifact = "study-mono-1.bin",
+                    captureId = Guid.Parse("19280001-1111-4111-8111-192800010001"),
+                    rawSha256 = PayloadChecksum.ComputeSha256(monoBytes),
+                    width = Width,
+                    height = Height,
+                    blackLevel = (double)BlackLevel,
+                    whiteLevel = (double)WhiteLevel,
+                    exposureSeconds = 19.0,
+                    pixelCount = monoStats.SampleCount,
+                    minAdu = monoStats.Minimum,
+                    maxAdu = monoStats.Maximum,
+                    sumAdu = monoStats.Sum,
+                    zeroCount = monoStats.ZeroCount,
+                    whiteLevelCount = monoStats.SaturatedCount
+                }
+            });
+            await File.WriteAllTextAsync(Path.Combine(monoDir, "expected-mono.json"), wrongExposureJson, token)
+                .ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<AssertFailedException>(async () =>
+                await RunRetainedNovemberMonoEndToEndAsync(corpusRoot, token).ConfigureAwait(false))
+                .ConfigureAwait(false);
         }
         finally
         {
@@ -1660,10 +1713,11 @@ public sealed class CenteredPipelineQualificationTests
             var expectedZeroCount = entry.GetProperty("zeroCount").GetInt64();
             var expectedWhiteLevelCount = entry.GetProperty("whiteLevelCount").GetInt64();
 
-            var exposureDuration = ResolveManifestExposureDuration(entry, TimeSpan.FromSeconds(20));
+            var expectedStudyExposure = TimeSpan.FromSeconds(20);
+            var exposureDuration = RequireExpectedManifestExposureDuration(entry, artifact, expectedStudyExposure);
             // Deterministic replay-harness submission clock & non-overlapping cadence (not claimed from manifest unless present).
             var replaySubmissionUtc = ResolveManifestStartedUtc(entry, BaseUtc.AddHours(index));
-            var replayHarnessCadence = exposureDuration + TimeSpan.FromSeconds(5);
+            var replayHarnessCadence = expectedStudyExposure + TimeSpan.FromSeconds(5);
 
             var monoLayout = new FrameLayoutDescriptor(
                 width, height, width * 2, CameraPixelFormat.Mono16, FrameByteOrder.LittleEndian,
@@ -1703,9 +1757,9 @@ public sealed class CenteredPipelineQualificationTests
                 Assert.AreEqual(expectedSha, descriptor.Artifact.ChecksumSha256);
                 Assert.AreEqual(expectedSourceTag, descriptor.Artifact.SourceId);
                 Assert.AreEqual(monoLayout, descriptor.Layout);
-                Assert.AreEqual(exposureDuration, descriptor.Controls.EffectiveExposure);
+                Assert.AreEqual(expectedStudyExposure, descriptor.Controls.EffectiveExposure);
                 Assert.AreEqual(replaySubmissionUtc, descriptor.Timing.ExposureStartedUtc);
-                Assert.AreEqual(exposureDuration, descriptor.Timing.ExposureEndedUtc - descriptor.Timing.ExposureStartedUtc);
+                Assert.AreEqual(expectedStudyExposure, descriptor.Timing.ExposureEndedUtc - descriptor.Timing.ExposureStartedUtc);
 
                 var stream = CenteredViewLookup.ResolveStream(
                     await ingress.ReadCurrentAsync(new(active.AgentId!, $"corpus-mono-study-{index}"), token).ConfigureAwait(false));
@@ -1721,9 +1775,9 @@ public sealed class CenteredPipelineQualificationTests
                     "Reopened durable raw descriptor must preserve the original manifest captureId provenance tag.");
                 StringAssert.Contains(reopenedRaw.Manifest.Descriptor.Artifact.SourceId, originalCaptureId.ToString("D"),
                     StringComparison.Ordinal);
-                Assert.AreEqual(exposureDuration, reopenedRaw.Manifest.Descriptor.Controls.EffectiveExposure);
+                Assert.AreEqual(expectedStudyExposure, reopenedRaw.Manifest.Descriptor.Controls.EffectiveExposure);
                 Assert.AreEqual(replaySubmissionUtc, reopenedRaw.Manifest.Descriptor.Timing.ExposureStartedUtc);
-                Assert.AreEqual(exposureDuration,
+                Assert.AreEqual(expectedStudyExposure,
                     reopenedRaw.Manifest.Descriptor.Timing.ExposureEndedUtc - reopenedRaw.Manifest.Descriptor.Timing.ExposureStartedUtc);
                 Assert.AreEqual(monoLayout, reopenedRaw.Manifest.Descriptor.Layout);
 
@@ -2081,18 +2135,19 @@ public sealed class CenteredPipelineQualificationTests
         }
     }
 
-    private static TimeSpan ResolveManifestExposureDuration(JsonElement entry, TimeSpan fallback)
+    private static TimeSpan RequireExpectedManifestExposureDuration(
+        JsonElement entry, string artifact, TimeSpan expectedExposure)
     {
-        if (entry.TryGetProperty("exposureSeconds", out var seconds) && seconds.ValueKind == JsonValueKind.Number)
-            return TimeSpan.FromSeconds(seconds.GetDouble());
-        if (entry.TryGetProperty("exposureDurationSeconds", out var durSeconds) && durSeconds.ValueKind == JsonValueKind.Number)
-            return TimeSpan.FromSeconds(durSeconds.GetDouble());
-        if (entry.TryGetProperty("exposureMs", out var ms) && ms.ValueKind == JsonValueKind.Number)
-            return TimeSpan.FromMilliseconds(ms.GetDouble());
-        if (entry.TryGetProperty("exposureDuration", out var durStr) && durStr.ValueKind == JsonValueKind.String &&
-            TimeSpan.TryParse(durStr.GetString(), CultureInfo.InvariantCulture, out var parsed))
-            return parsed;
-        return fallback;
+        Assert.IsTrue(
+            entry.TryGetProperty("exposureSeconds", out var secondsProp) && secondsProp.ValueKind == JsonValueKind.Number,
+            $"Manifest entry '{artifact}' must explicitly declare numeric exposureSeconds.");
+        var exposureSeconds = secondsProp.GetDouble();
+        Assert.AreEqual(
+            expectedExposure.TotalSeconds,
+            exposureSeconds,
+            1e-9,
+            $"Manifest entry '{artifact}' must declare exposureSeconds={expectedExposure.TotalSeconds:0.###}, got {exposureSeconds}.");
+        return TimeSpan.FromSeconds(exposureSeconds);
     }
 
     private static DateTimeOffset ResolveManifestStartedUtc(JsonElement entry, DateTimeOffset fallback)
