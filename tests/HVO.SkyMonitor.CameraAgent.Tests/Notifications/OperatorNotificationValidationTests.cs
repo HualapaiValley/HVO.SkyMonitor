@@ -519,6 +519,8 @@ public sealed class OperatorNotificationValidationTests
         Assert.IsNull(OperatorNotificationRedactor.FormatEndpointHost(invalidIdnUrl));
         Assert.IsNull(ConfigurationOperatorNotificationConfigProvider.FormatWebhookOriginKey(invalidIdnUrl));
         Assert.IsFalse(ConfigurationOperatorNotificationConfigProvider.HasMatchingWebhookOrigin(invalidIdnUrl, invalidIdnUrl));
+        Assert.IsNull(ConfigurationOperatorNotificationConfigProvider.FormatWebhookDestinationKey(invalidIdnUrl));
+        Assert.IsFalse(ConfigurationOperatorNotificationConfigProvider.HasMatchingWebhookDestination(invalidIdnUrl, invalidIdnUrl));
 
         using var transport = new WebhookNotificationTransport(ProductionPolicy, TimeProvider.System);
         var delivery = await transport.SendAsync(new WebhookDeliveryRequest(

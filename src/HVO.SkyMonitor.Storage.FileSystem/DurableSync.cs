@@ -762,11 +762,13 @@ public static class DurableSync
     /// On Linux and macOS (POSIX), pins <paramref name="directoryPath"/> with
     /// <c>O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC</c>, opens <paramref name="fileName"/> strictly relative to that
     /// directory descriptor via <c>openat(dirFd, fileName, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)</c>, and
-    /// verifies <c>S_ISREG</c> and <c>st_size &lt;= maxBytes</c> via <c>fstat</c>/<c>statx</c> on the opened
-    /// descriptor before returning the handle (preventing symlink TOCTOU, FIFO open hangs, and unbounded reads).
+    /// verifies <c>S_ISREG</c> and open-time file length (<c>st_size &lt;= maxBytes</c>) via <c>fstat</c>/<c>statx</c>
+    /// on the opened descriptor before returning the handle (preventing symlink TOCTOU, FIFO open hangs, and oversized
+    /// open-time handles; callers must still enforce read-time byte bounds when reading from the returned handle in
+    /// case the file grows after open).
     /// On Windows and other non-POSIX platforms, performs managed reparse-attribute, file-type, and size checks
-    /// before opening the pathname and re-checking the opened handle length (the descriptor-relative
-    /// <c>O_NOFOLLOW</c> TOCTOU guarantee applies only to POSIX).
+    /// before opening the pathname and re-checking the opened handle length at open time (the descriptor-relative
+    /// <c>O_NOFOLLOW</c> TOCTOU guarantee applies only to POSIX; callers must likewise enforce read-time byte bounds).
     /// </summary>
     public static RegularFileOpenResult OpenRegularFileReadOnlyNoFollow(
         string directoryPath,
