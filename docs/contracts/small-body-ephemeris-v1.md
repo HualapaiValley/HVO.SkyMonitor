@@ -223,7 +223,7 @@ Each `SmallBodyEphemerisKnot` contains (aligned identically with
 
 | Field | Units / Type | Source (`Horizons OBSERVER`) | Semantics |
 | --- | --- | --- | --- |
-| `utc` | UTC ISO-8601 | `Date__(UT)__HR:MN` (`TIME_TYPE='UT'`, `CAL_TYPE='GREGORIAN'`) | Exact knot UTC instant |
+| `utc` | UTC ISO-8601 | `Date__(UT)__HR:MN:SC` (`TIME_TYPE='UT'`, `CAL_TYPE='GREGORIAN'`, `TIME_DIGITS='SECONDS'`) | Exact knot UTC instant (seconds precision ensures half-step verification at `150 s` and `30 s` resolves every sample without minute truncation) |
 | `astrometricRaDeg` | degrees `[0, 360)` | `QUANTITIES=1` (`R.A.___(ICRF)`) | Topocentric light-time-corrected ICRF RA (no aberration/deflection/refraction) |
 | `astrometricDecDeg` | degrees `[-90, 90]` | `QUANTITIES=1` (`DEC____(ICRF)`) | Topocentric light-time-corrected ICRF Dec |
 | `apparentRaDeg` | degrees `[0, 360)` | `QUANTITIES=2` (`R.A.__(a-app)`) | Topocentric apparent RA of true equator & equinox of date, **airless** |
@@ -613,11 +613,18 @@ ValueTask<SmallBodySnapshotReadResult> ReadExactAsync(string manifestSha256, Can
      interval $[t_k, t_{k+1}]$ ($k \in [1, N-3]$) MUST be verified $\le 1.0''$
      using one of two approved methods:
      - **Method A (`HalfStepSample` — required for Horizons acquisition and live/cached verification):**
-       Fetch the Horizons `OBSERVER` ephemeris at half-step resolution $h/2$
-       ($h/2 \in \{1800, 450, 150, 60, 30\}\text{ s}$ — returned in a single
-       Horizons HTTP request, keeping even-indexed samples as the retained
-       $h$-spaced knots and odd-indexed samples as independent half-step
-       verification points). For every usable interval $k \in [1, N-3]$,
+       Fetch the Horizons `OBSERVER` ephemeris with `TIME_DIGITS='SECONDS'`
+       (producing seconds-precision `Date__(UT)__HR:MN:SC` timestamps) at
+       half-step resolution $h/2$ ($h/2 \in \{1800, 450, 150, 60, 30\}\text{ s}$)
+       in a single Horizons HTTP request using unitless equal-interval stepping
+       `STEP_SIZE='<N>'`, where
+       $N = (\text{paddedEndUtc} - \text{paddedStartUtc}) / (h/2)$ divides the
+       padded span into $N$ exact equal $h/2$ intervals ($N + 1$ uniformly
+       spaced rows; unitless integer `STEP_SIZE` is required because Horizons
+       calendar-unit stepping has a 1-minute floor and cannot express `150 s` or
+       `30 s` half-steps). Keep even-indexed samples as the retained $h$-spaced
+       knots and odd-indexed samples as independent half-step verification
+       points. For every usable interval $k \in [1, N_{\text{knots}}-3]$,
        evaluate the 4-point centered cubic Lagrange unit-vector interpolant on
        $\{k-1, k, k+1, k+2\}$ at $u = 0.5$ ($t_{k+1/2}$) and measure
        $e_{k+1/2} = \max\bigl(\angle(\hat{\mathbf{u}}_{\text{astrom}}^{\text{interp}}, \hat{\mathbf{u}}_{\text{astrom}}^{\text{ref}}),\; \angle(\hat{\mathbf{u}}_{\text{app}}^{\text{interp}}, \hat{\mathbf{u}}_{\text{app}}^{\text{ref}})\bigr)$.
