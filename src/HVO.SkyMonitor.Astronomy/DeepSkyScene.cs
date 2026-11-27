@@ -56,8 +56,8 @@ public sealed record ProjectedSceneDeepSkySelection(
     /// <summary>The largest accepted object bound.</summary>
     public const int MaximumObjectLimit = 128;
 
-    /// <summary>The largest accepted outline bound.</summary>
-    public const int MaximumOutlineLimit = 0;
+    /// <summary>The largest accepted outline bound for explicit contour selections.</summary>
+    public const int MaximumOutlineLimit = 32;
 
     /// <summary>The largest accepted resolvable-size threshold in output pixels.</summary>
     public const double MaximumMinimumGlyphPixels = 64;
@@ -73,11 +73,14 @@ public sealed record ProjectedSceneDeepSkySelection(
     public void Validate()
     {
         if (Query is not null) _ = Query.ToQuery(MaximumObjects);
+        var invalidOutlines = Query is null
+            ? MaximumOutlines != 0 || PreferredOutlineLevel != DeepSkyOutline.WidestLevel
+            : MaximumOutlines is < 0 or > MaximumOutlineLimit ||
+              PreferredOutlineLevel is < DeepSkyOutline.WidestLevel or > DeepSkyOutline.NarrowestLevel;
         if (PresetVersion != (Query is null ? CuratedDeepSkyOptions.PresetVersion : OpenNgcDeepSkyOptions.SelectionVersion) ||
             MaximumObjects is < 1 or > MaximumObjectLimit ||
             MaximumFootprints is < 0 or > 32 ||
-            MaximumOutlines != 0 ||
-            PreferredOutlineLevel != DeepSkyOutline.WidestLevel ||
+            invalidOutlines ||
             !double.IsFinite(MinimumGlyphPixels) || MinimumGlyphPixels is <= 0 or > MaximumMinimumGlyphPixels)
             throw new ArgumentException("Deep-sky selection is outside its accepted bounds.", "selection.deepSky");
     }
@@ -142,8 +145,10 @@ public sealed record ProjectedDeepSkyObject(
 }
 
 /// <summary>
-/// Reserved wire shape for source contours. Curated producers emit an empty collection and readers reject
-/// populated contours; expanded contour presentation belongs to a separate delivery.
+/// Projected sourced catalog contour carried in a <c>projected-scene-v3</c> document. Legacy curated presets emit an
+/// empty collection (<c>MaximumOutlines = 0</c>), whereas explicit OpenNGC query selections may opt in to bounded
+/// sourced contours (<c>MaximumOutlines</c> up to <see cref="ProjectedSceneDeepSkySelection.MaximumOutlineLimit"/>),
+/// validated by v3 readers and drawn by presentation layers as <c>Outline</c> geometry.
 /// </summary>
 public sealed record ProjectedDeepSkyOutline(
     [property: JsonRequired] string Id,
@@ -275,6 +280,8 @@ internal static class DeepSkySceneProjector
         var footprintBudget = Math.Min(selection.MaximumFootprints,
             ProjectedSceneJson.MaximumResolvedFootprintCount - scene.ResolvedFootprints.Count);
         var footprints = new List<ProjectedResolvedFootprint>();
+        var outlines = new List<ProjectedDeepSkyOutline>();
+        var totalOutlinePoints = 0;
         var objects = new List<ProjectedDeepSkyObject>();
         var source = $"{catalog.Semantics.SourceName} {catalog.Semantics.SourceVersion}";
         foreach (var item in candidates.Take(selection.MaximumObjects))
@@ -289,9 +296,19 @@ internal static class DeepSkySceneProjector
             };
             var pixel = request.HorizonPolicy == HorizonPolicy.GeometricHorizon && geometric.AltitudeDegrees < 0
                 ? null : projector.Project(apparent);
-            if (pixel is null && !IsDrawableExtent(item)) continue;
+            DeepSkyOutline? selectedOutline = null;
+            if (!item.IsStellar && selection.MaximumOutlines > 0)
+            {
+                var availableOutlines = catalog.GetOutlines(item.Id);
+                if (availableOutlines.Count > 0)
+                {
+                    selectedOutline = availableOutlines.FirstOrDefault(o => o.Level == selection.PreferredOutlineLevel)
+                        ?? availableOutlines[0];
+                }
+            }
+            if (pixel is null && !IsDrawableExtent(item) && selectedOutline is null) continue;
             // Preserve a limb that crosses the field even when its centre is outside.
-            if (pixel is null && !request.Refraction.Enabled &&
+            if (pixel is null && selectedOutline is null && !request.Refraction.Enabled &&
                 Math.Acos(Math.Clamp(EnuVector.Dot(boresight, CameraBasis.FromHorizontal(geometric)), -1d, 1d)) * 180d / Math.PI >
                 VisibleSceneBuilder.OpticalRadiusDegrees(request.Projection) + item.MajorAxisArcminutes!.Value / 120d + 1e-4)
                 continue;
@@ -299,13 +316,55 @@ internal static class DeepSkySceneProjector
                 ? MeasureMajorAxisPixels(request, basis, geometric, major) : null;
             var id = ProjectedDeepSkyObject.SceneId(item.Id);
             var representation = GlyphRepresentation(item.ObjectType, item.MajorAxisArcminutes, size, selection.MinimumGlyphPixels);
+            int? outlineLevel = null;
             DeepSkyDegradation? degradation = null;
-            if (!item.IsStellar && IsDrawableExtent(item) && (size is null || size >= selection.MinimumGlyphPixels))
+            if (selectedOutline is not null && (size is null || size >= selection.MinimumGlyphPixels))
+            {
+                if (outlines.Count < selection.MaximumOutlines)
+                {
+                    var sampled = DeepSkyOutlineSampler.Sample(request, selectedOutline, id);
+                    if (sampled.Status == DeepSkyOutlineSampleStatus.Valid && sampled.Outline is { } projectedOutline)
+                    {
+                        var pointCount = projectedOutline.Parts.Sum(static part => part.Points.Count);
+                        if (totalOutlinePoints + pointCount <= ProjectedDeepSky.MaximumTotalOutlinePointCount)
+                        {
+                            outlines.Add(projectedOutline);
+                            totalOutlinePoints += pointCount;
+                            representation = DeepSkyRepresentation.Outline;
+                            outlineLevel = projectedOutline.Level;
+                        }
+                        else
+                        {
+                            degradation = DeepSkyDegradation.OutlineLimit;
+                        }
+                    }
+                    else if (sampled.Status == DeepSkyOutlineSampleStatus.InvalidGeometry)
+                    {
+                        degradation = DeepSkyDegradation.OutlineLimit;
+                    }
+                }
+                else
+                {
+                    degradation = DeepSkyDegradation.OutlineLimit;
+                }
+            }
+            if (representation != DeepSkyRepresentation.Outline &&
+                !item.IsStellar && IsDrawableExtent(item) && (size is null || size >= selection.MinimumGlyphPixels))
             {
                 if (footprints.Count < footprintBudget)
                 {
-                    var footprint = ResolvedFootprintSampler.Sample(request, id, item.DisplayName,
-                        ResolvedFootprintSourceKind.DeepSkyObject, CreateExtent(item, source, request.Utc), geometric, null);
+                    ProjectedResolvedFootprint? footprint = null;
+                    try
+                    {
+                        footprint = ResolvedFootprintSampler.SampleBoundarySafe(request, id, item.DisplayName,
+                            ResolvedFootprintSourceKind.DeepSkyObject, CreateExtent(item, source, request.Utc), geometric, null);
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        // A single extent that overflows structural polyline bounds degrades honestly to its glyph
+                        // without aborting sibling objects in the scene.
+                        degradation = DeepSkyDegradation.FootprintLimit;
+                    }
                     if (footprint is not null)
                     {
                         footprints.Add(footprint);
@@ -314,18 +373,20 @@ internal static class DeepSkySceneProjector
                 }
                 else degradation = DeepSkyDegradation.FootprintLimit;
             }
-            if (pixel is null && representation != DeepSkyRepresentation.Footprint) continue;
+            if (pixel is null && representation is not (DeepSkyRepresentation.Outline or DeepSkyRepresentation.Footprint)) continue;
             objects.Add(new(id, item.Designation, item.DisplayName, item.ObjectType, item.CommonName,
                 item.MessierNumber, item.CaldwellNumber,
                 ProjectedDeepSkyObject.IsFeatured(item.MessierNumber, item.CaldwellNumber, item.CommonName),
                 j2000, geometric, apparent, pixel, item.VMagnitude, item.BMagnitude, item.MajorAxisArcminutes,
-                item.MinorAxisArcminutes, item.PositionAngleDegrees, size, representation, null, degradation));
+                item.MinorAxisArcminutes, item.PositionAngleDegrees, size, representation, outlineLevel, degradation));
         }
         var semantics = catalog.Semantics;
         return (new(ProjectedDeepSky.CurrentContractVersion, selection.Query is null ? ProjectedDeepSky.CurrentAlgorithmVersion : ProjectedDeepSky.QueryAlgorithmVersion,
             semantics.SourceName, semantics.SourceVersion, semantics.SourceCommit, semantics.SourceUrl, semantics.License,
             Math.Max(0, (queryPlan?.MatchCount ?? candidates.Count) - selection.MaximumObjects),
-            Freeze(objects.OrderBy(static item => item.Id, StringComparer.Ordinal)), [], semantics.SnapshotIdentity), footprints);
+            Freeze(objects.OrderBy(static item => item.Id, StringComparer.Ordinal)),
+            Freeze(outlines.OrderBy(static item => item.Id, StringComparer.Ordinal)),
+            semantics.SnapshotIdentity), footprints);
     }
 
     internal static bool IsDrawableExtent(DeepSkyObject item) => item.HasOrientedExtent &&

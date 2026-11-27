@@ -632,6 +632,66 @@ the lunar parallax between two sites at one instant. Astronomy Engine and
 Bennett refraction remain visualization models, and the fixtures are not
 physical lens qualification.
 
+### Extended deep-sky source rendering (#524)
+
+Opt-in `RenderDeepSkySources` (`VirtualSkyDeepSkyRenderOptions`) renders
+bounded, deterministic parametric extended deep-sky sources
+(`deep-sky-parametric-v1`, profile schema `deep-sky-parametric-profile-v1`) in
+`Mono16`, `Rgb24`, and `BayerRggb16` captures. Leaving `RenderDeepSkySources`
+unset or disabled (`Enabled = false`) omits it from scene identity serialization,
+bypasses all DSO work, and preserves exact prior `SceneId` identities and raw
+pixel bytes even with stochastic sensor noise enabled. When enabled, `SceneId`
+and `SceneProvenance.DeepSkyCatalog` bind the active DSO catalog snapshot and
+render-model identity independently of annotation selection; when an in-memory
+or custom `IDeepSkyCatalog` supplies `SnapshotIdentity == null`, `VirtualSky`
+derives a deterministic canonical content-hash fallback identity so distinct
+catalog rows never collide on `SceneId` or publish null DSO provenance.
+
+- **Pipeline order:** `DeepSkyRenderPlan` normalizes each source's compatible
+  integrated flux over its full angular profile before horizon, projection, PSF,
+  aperture, or sensor clipping (exterior energy is lost and never renormalized).
+  Unresolved emitters (`<= 0.5 * PsfSigmaPixels`) reuse
+  `StellarExposureGeometryBuilder` and `TemporalPointSpreadRaster` across the
+  full exposure (matching sidereal motion, horizon crossing, and instantaneous
+  cloud transmission to the stellar PSF path); unresolved diffuse emitters
+  evaluate overlapping dark-cloud optical depth at each exposure sample before
+  PSF deposition, while resolved diffuse emitters attenuate on the pre-PSF grid
+  before final PSF convolution. Overlapping rendered diffuse emission enters
+  local shot-noise variance when evaluating `MinimumSignalToNoise` admission.
+  Incident rates enter `RenderCore` in electron-rate space (pre-cloud diffuse/
+  extended rates before cloud attenuation; temporal point-source rates after
+  instantaneous cloud attenuation) before vignetting, exposure/gain, noise,
+  saturation, CFA sampling, defects, digital readout binning, and quantization.
+- **Catalog separation and honesty:** Parametric morphology and default class
+  spectra are labeled `IsSimulationParameter = true` and never mutate catalog
+  facts. Missing photometry or incomplete geometry stays annotation-only unless
+  an explicit `DeepSkySyntheticScenario` supplies validated overrides. Open
+  clusters and `Cl+N` composites deduct matched HYG star flux before unresolved
+  fallback to prevent double-counting. Dark nebulae (`DrkN`) compose optical
+  depth additively in sky space at each sample position
+  (`T = exp(-sum_k tau_k)`) before pixel coverage averaging, enforce
+  `MinimumSignalToNoise` against real absorption deficit and local pre-attenuation
+  variance before admission or slot consumption, attenuate only compatible
+  celestial diffuse background, and never attenuate foreground terrestrial
+  skyglow. Antipodal/near-antipodal outline edges are refused honestly without
+  aborting sibling objects.
+- **Diagnostics vs measured associations:** Frame metadata records bounded
+  `deepSky*` statistics, canonical `deepSkyDiagnosticsSha256` computed over the
+  final delivered (post-readout) diagnostics payload (plus
+  `deepSkyNativeDiagnosticsSha256` when readout transforms coordinates), and
+  `deepSkyDiagnostics` for scoring, while `StellarSourceMeasurer` continues to
+  measure associations solely from final pixels and canonical presentation
+  outlines (`projected-scene-v3`, including optional explicitly selected sourced
+  OpenNGC contours via `MaximumOutlines`) remain strictly separate from raw
+  imagery.
+- **Specification, limits, and measured resources:** See
+  [`docs/astronomy/deep-sky-rendering-v1.md`](astronomy/deep-sky-rendering-v1.md)
+  for the full profile table, morphology/photometry limits, independent analytic
+  clipping error budget, carried-over `#1191` mapping, and matched baseline vs
+  enabled `1936 × 1216` measured counts, per-operation latency breakdown, CPU,
+  allocations, sampled working set, and `projected-scene-v3` geometry
+  serialization / SQLite persistence overhead.
+
 ### Exposure-aware stellar visibility and motion
 
 The normal VirtualSky path uses `camera-aware-stellar-exposure-v1`. A frame now

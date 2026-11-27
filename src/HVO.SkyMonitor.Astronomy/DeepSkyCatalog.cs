@@ -1,5 +1,8 @@
+using System.Buffers.Binary;
 using System.Collections.ObjectModel;
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using HVO.SkyMonitor.AgentCore;
 
 namespace HVO.SkyMonitor.Astronomy;
@@ -342,6 +345,7 @@ public sealed class DeepSkyCatalog : IDeepSkyCatalog
     private readonly Dictionary<string, DeepSkyDesignations> _designationsById;
     private readonly SpatialEntry[] _byDeclination;
     private readonly double _maximumReachDegrees;
+    private readonly Lazy<string> _contentSha256;
 
     /// <summary>Validates and freezes a deep-sky collection.</summary>
     /// <exception cref="InvalidDataException">The collection breaks an invariant.</exception>
@@ -402,10 +406,17 @@ public sealed class DeepSkyCatalog : IDeepSkyCatalog
                 _designationsById[alias.ObjectId] |= Family(alias.Alias);
         _outlinesById = BuildOutlineIndex(outlines, _objectsById);
         (_byDeclination, _maximumReachDegrees) = BuildSpatialIndex(_objects, _outlinesById);
+        _contentSha256 = new Lazy<string>(ComputeContentSha256, LazyThreadSafetyMode.ExecutionAndPublication);
     }
 
     /// <inheritdoc />
     public DeepSkySemantics Semantics { get; }
+
+    /// <summary>
+    /// Gets the deterministic canonical SHA-256 hex digest of this immutable catalog's semantics, live objects,
+    /// aliases (including cross-references and duplicates), tombstones, and outlines. Computed lazily once.
+    /// </summary>
+    public string ContentSha256 => _contentSha256.Value;
 
     /// <inheritdoc />
     public IReadOnlyList<DeepSkyObject> Objects => _objects;
@@ -530,10 +541,19 @@ public sealed class DeepSkyCatalog : IDeepSkyCatalog
             var reach = (item.MajorAxisArcminutes ?? 0) / 120d;
             if (outlines.TryGetValue(item.Id, out var levels))
             {
-                foreach (var point in levels.SelectMany(static level => level.Rings).SelectMany(static ring => ring.Points))
+                foreach (var ring in levels.SelectMany(static level => level.Rings))
                 {
-                    reach = Math.Max(reach, Direction.AngleDegrees(
-                        direction, Direction.FromEquatorial(point.RightAscensionDegrees / 15d, point.DeclinationDegrees)));
+                    Direction? previous = null;
+                    foreach (var point in ring.Points)
+                    {
+                        var current = Direction.FromEquatorial(point.RightAscensionDegrees / 15d, point.DeclinationDegrees);
+                        reach = Math.Max(reach, Direction.AngleDegrees(direction, current));
+                        if (previous is { } start)
+                        {
+                            reach = Math.Max(reach, Direction.MaximumEdgeAngleDegrees(direction, start, current));
+                        }
+                        previous = current;
+                    }
                 }
             }
             entries[index] = new SpatialEntry(index, item.DeclinationDegrees, direction, reach);
@@ -735,6 +755,181 @@ public sealed class DeepSkyCatalog : IDeepSkyCatalog
     private static bool IsText(string? value)
         => !string.IsNullOrWhiteSpace(value) && string.Equals(value, value.Trim(), StringComparison.Ordinal);
 
+    private string ComputeContentSha256()
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        hash.AppendData("deep-sky-catalog-content-v2\n"u8);
+
+        AppendString(hash, Semantics.SourceName);
+        AppendString(hash, Semantics.SourceVersion);
+        AppendString(hash, Semantics.SourceCommit);
+        AppendString(hash, Semantics.SourceUrl.AbsoluteUri);
+        AppendString(hash, Semantics.License);
+        AppendString(hash, Semantics.CoordinateFrame);
+        AppendString(hash, Semantics.CoordinateEpoch);
+        AppendString(hash, Semantics.AxisUnit);
+        AppendString(hash, Semantics.PositionAngleConvention);
+        AppendString(hash, Semantics.OutlineLevelConvention);
+        AppendString(hash, Semantics.SurfaceBrightnessUnit);
+        if (Semantics.SnapshotIdentity is { } snap)
+        {
+            AppendByte(hash, 1);
+            AppendString(hash, snap.CatalogId);
+            AppendString(hash, snap.PackageVersion);
+            AppendString(hash, snap.SchemaVersion);
+            AppendString(hash, snap.PreprocessingVersion);
+            AppendString(hash, snap.DatabaseSha256);
+        }
+        else
+        {
+            AppendByte(hash, 0);
+        }
+
+        AppendInt32(hash, _objects.Count);
+        foreach (var item in _objects)
+        {
+            AppendString(hash, item.Id);
+            AppendString(hash, item.Designation);
+            AppendString(hash, item.DisplayName);
+            AppendString(hash, item.ObjectType);
+            AppendDouble(hash, item.RightAscensionHours);
+            AppendDouble(hash, item.DeclinationDegrees);
+            AppendString(hash, item.Constellation);
+            AppendNullableDouble(hash, item.MajorAxisArcminutes);
+            AppendNullableDouble(hash, item.MinorAxisArcminutes);
+            AppendNullableDouble(hash, item.PositionAngleDegrees);
+            AppendNullableDouble(hash, item.BMagnitude);
+            AppendNullableDouble(hash, item.VMagnitude);
+            AppendNullableDouble(hash, item.SurfaceBrightness);
+            AppendNullableString(hash, item.HubbleType);
+            AppendNullableInt32(hash, item.MessierNumber);
+            AppendNullableInt32(hash, item.CaldwellNumber);
+            AppendNullableString(hash, item.HipparcosId);
+            AppendNullableString(hash, item.CommonName);
+        }
+
+        var orderedAliases = _aliases.Values
+            .SelectMany(static values => values)
+            .OrderBy(static a => a.ObjectId, StringComparer.Ordinal)
+            .ThenBy(static a => a.Alias, StringComparer.Ordinal)
+            .ThenBy(static a => a.Kind, StringComparer.Ordinal)
+            .ToArray();
+        AppendInt32(hash, orderedAliases.Length);
+        foreach (var alias in orderedAliases)
+        {
+            AppendString(hash, alias.ObjectId);
+            AppendString(hash, alias.Alias);
+            AppendString(hash, alias.Kind);
+        }
+
+        AppendInt32(hash, _tombstones.Count);
+        foreach (var tombstone in _tombstones)
+        {
+            AppendString(hash, tombstone.Id);
+            AppendString(hash, tombstone.Designation);
+            AppendString(hash, tombstone.Reason);
+            AppendInt32(hash, tombstone.Candidates.Count);
+            foreach (var candidate in tombstone.Candidates)
+            {
+                AppendString(hash, candidate);
+            }
+        }
+
+        var outlineEntries = _outlinesById
+            .OrderBy(static pair => pair.Key, StringComparer.Ordinal)
+            .ToArray();
+        AppendInt32(hash, outlineEntries.Length);
+        foreach (var (objectId, outlines) in outlineEntries)
+        {
+            AppendString(hash, objectId);
+            AppendInt32(hash, outlines.Count);
+            foreach (var outline in outlines)
+            {
+                AppendInt32(hash, outline.Level);
+                AppendInt32(hash, outline.Rings.Count);
+                foreach (var ring in outline.Rings)
+                {
+                    AppendInt32(hash, ring.Points.Count);
+                    foreach (var point in ring.Points)
+                    {
+                        AppendDouble(hash, point.RightAscensionDegrees);
+                        AppendDouble(hash, point.DeclinationDegrees);
+                    }
+                }
+            }
+        }
+
+        return Convert.ToHexString(hash.GetHashAndReset());
+    }
+
+    private static void AppendByte(IncrementalHash hash, byte value)
+    {
+        Span<byte> buf = stackalloc byte[1];
+        buf[0] = value;
+        hash.AppendData(buf);
+    }
+
+    private static void AppendInt32(IncrementalHash hash, int value)
+    {
+        Span<byte> buf = stackalloc byte[4];
+        BinaryPrimitives.WriteInt32LittleEndian(buf, value);
+        hash.AppendData(buf);
+    }
+
+    private static void AppendDouble(IncrementalHash hash, double value)
+    {
+        Span<byte> buf = stackalloc byte[8];
+        var normalized = value == 0d ? 0d : value;
+        BinaryPrimitives.WriteInt64LittleEndian(buf, BitConverter.DoubleToInt64Bits(normalized));
+        hash.AppendData(buf);
+    }
+
+    private static void AppendNullableDouble(IncrementalHash hash, double? value)
+    {
+        if (value is { } v)
+        {
+            AppendByte(hash, 1);
+            AppendDouble(hash, v);
+        }
+        else
+        {
+            AppendByte(hash, 0);
+        }
+    }
+
+    private static void AppendNullableInt32(IncrementalHash hash, int? value)
+    {
+        if (value is { } v)
+        {
+            AppendByte(hash, 1);
+            AppendInt32(hash, v);
+        }
+        else
+        {
+            AppendByte(hash, 0);
+        }
+    }
+
+    private static void AppendString(IncrementalHash hash, string value)
+    {
+        var bytes = Encoding.UTF8.GetBytes(value);
+        AppendInt32(hash, bytes.Length);
+        hash.AppendData(bytes);
+    }
+
+    private static void AppendNullableString(IncrementalHash hash, string? value)
+    {
+        if (value is not null)
+        {
+            AppendByte(hash, 1);
+            AppendString(hash, value);
+        }
+        else
+        {
+            AppendByte(hash, 0);
+        }
+    }
+
     /// <summary>An object's place in the declination index: its J2000 direction and the reach of its extent.</summary>
     private readonly record struct SpatialEntry(int Index, double DeclinationDegrees, Direction Direction, double ReachDegrees);
 
@@ -758,6 +953,51 @@ public sealed class DeepSkyCatalog : IDeepSkyCatalog
             var z = left.X * right.Y - left.Y * right.X;
             var dot = left.X * right.X + left.Y * right.Y + left.Z * right.Z;
             return Math.Atan2(Math.Sqrt(x * x + y * y + z * z), dot) * 180d / Math.PI;
+        }
+
+        // Exact upper bound on the angular separation from center to any point on the shortest great-circle arc
+        // between start and end. An antipodal/near-antipodal edge has no unique shortest arc and gets a conservative
+        // full-sphere reach so spatial queries never silently drop it.
+        public static double MaximumEdgeAngleDegrees(Direction center, Direction start, Direction end)
+        {
+            var edgeDot = start.X * end.X + start.Y * end.Y + start.Z * end.Z;
+            if (edgeDot <= -1d + 1e-10)
+            {
+                return 180d;
+            }
+            var maxAngle = Math.Max(AngleDegrees(center, start), AngleDegrees(center, end));
+            var normalX = start.Y * end.Z - start.Z * end.Y;
+            var normalY = start.Z * end.X - start.X * end.Z;
+            var normalZ = start.X * end.Y - start.Y * end.X;
+            var normalLenSq = normalX * normalX + normalY * normalY + normalZ * normalZ;
+            if (normalLenSq <= 1e-24)
+            {
+                return maxAngle;
+            }
+            // Project -center onto the plane spanned by start and end to locate the farthest interior point.
+            var normalDot = (-center.X * normalX - center.Y * normalY - center.Z * normalZ) / normalLenSq;
+            var projX = -center.X - normalDot * normalX;
+            var projY = -center.Y - normalDot * normalY;
+            var projZ = -center.Z - normalDot * normalZ;
+            var projLen = Math.Sqrt(projX * projX + projY * projY + projZ * projZ);
+            if (projLen <= 1e-15)
+            {
+                return maxAngle;
+            }
+            var candidate = new Direction(projX / projLen, projY / projLen, projZ / projLen);
+            // candidate lies on the shortest arc iff (start x candidate) · n >= 0 and (candidate x end) · n >= 0.
+            var c1X = start.Y * candidate.Z - start.Z * candidate.Y;
+            var c1Y = start.Z * candidate.X - start.X * candidate.Z;
+            var c1Z = start.X * candidate.Y - start.Y * candidate.X;
+            var c2X = candidate.Y * end.Z - candidate.Z * end.Y;
+            var c2Y = candidate.Z * end.X - candidate.X * end.Z;
+            var c2Z = candidate.X * end.Y - candidate.Y * end.X;
+            if (c1X * normalX + c1Y * normalY + c1Z * normalZ >= 0 &&
+                c2X * normalX + c2Y * normalY + c2Z * normalZ >= 0)
+            {
+                maxAngle = Math.Max(maxAngle, AngleDegrees(center, candidate));
+            }
+            return maxAngle;
         }
     }
 }

@@ -335,9 +335,17 @@ internal sealed class ProjectedSceneCaptureProcessingStepOptions : IValidatableO
     [Range(0d, 1200d)] public double DeepSkyMinimumSizeArcminutes { get; init; }
     [Range(0d, 1200d)] public double DeepSkyMaximumSizeArcminutes { get; init; } = 1200;
     public bool DeepSkyIncludeUnknownSize { get; init; } = true;
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    [Range(0, ProjectedSceneDeepSkySelection.MaximumOutlineLimit)]
+    public int DeepSkyMaximumOutlines { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    [Range(DeepSkyOutline.WidestLevel, DeepSkyOutline.NarrowestLevel)]
+    public int? DeepSkyPreferredOutlineLevel { get; init; }
     public OpenNgcDeepSkyOptions DeepSkySelection() => new(DeepSkyEnabled, DeepSkyNgc, DeepSkyMessier, DeepSkyIc,
         DeepSkyMaximumMagnitude, DeepSkyIncludeUnknownMagnitude, DeepSkyMinimumSizeArcminutes,
-        DeepSkyMaximumSizeArcminutes, DeepSkyIncludeUnknownSize);
+        DeepSkyMaximumSizeArcminutes, DeepSkyIncludeUnknownSize,
+        MaximumOutlines: DeepSkyMaximumOutlines,
+        PreferredOutlineLevel: DeepSkyPreferredOutlineLevel);
 
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {

@@ -901,6 +901,62 @@ public sealed partial class TransientWorkerRuntimeTests
     }
 
     [TestMethod]
+    public async Task RuntimeInitializationRequiresRawIngressAndCanRetryAfterBootstrap()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "hvo-transient-runtime-bootstrap", Guid.NewGuid().ToString("N"));
+        try
+        {
+            using var provider = CreateProvider(root);
+            var runtime = provider.GetRequiredService<SqliteTransientRuntimeStore>();
+
+            var missingIngress = await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
+                runtime.InitializeAsync(CancellationToken.None).AsTask()).ConfigureAwait(false);
+            StringAssert.Contains(missingIngress.Message, "must initialize before transient runtime state", StringComparison.Ordinal);
+            Assert.IsFalse(File.Exists(Path.Combine(root, "journal", "raw-ingress.db")));
+
+            await provider.GetRequiredService<IRawCaptureIngress>()
+                .InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var quarantine = await runtime.ReadQuarantinePageAsync(10, null, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsEmpty(quarantine.Items);
+            Assert.IsNull(quarantine.NextCursor);
+        }
+        finally
+        {
+            Cleanup(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task RuntimeReadFrameDistinguishesExistingAndMissingRawCaptures()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "hvo-transient-runtime-missing-frame", Guid.NewGuid().ToString("N"));
+        try
+        {
+            using var provider = CreateProvider(root);
+            var configuration = CreateConfiguration();
+            provider.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(configuration);
+            var epoch = new DateTimeOffset(2025, 1, 15, 8, 0, 0, TimeSpan.Zero);
+            await StageVirtualFramesAsync(provider, configuration, epoch, frameCount: 1).ConfigureAwait(false);
+            var runtime = provider.GetRequiredService<SqliteTransientRuntimeStore>();
+            await runtime.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            using var connection = await OpenAsync(root).ConfigureAwait(false);
+            var rowId = await ScalarAsync(connection, "SELECT raw_capture_row_id FROM raw_captures;").ConfigureAwait(false);
+
+            var frame = await runtime.ReadFrameAsync(rowId, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(rowId, frame.RawCaptureRowId);
+            Assert.AreEqual(configuration.AgentId, frame.AgentId);
+
+            var missingFrame = await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
+                runtime.ReadFrameAsync(rowId + 1, CancellationToken.None).AsTask()).ConfigureAwait(false);
+            Assert.AreEqual("Transient runtime target no longer exists.", missingFrame.Message);
+        }
+        finally
+        {
+            Cleanup(root);
+        }
+    }
+
+    [TestMethod]
     public async Task RawIngressV10_DoesNotCreateRuntimeOperationAuditSchema()
     {
         var root = Path.Combine(Path.GetTempPath(), "hvo-transient-runtime-current-migration", Guid.NewGuid().ToString("N"));

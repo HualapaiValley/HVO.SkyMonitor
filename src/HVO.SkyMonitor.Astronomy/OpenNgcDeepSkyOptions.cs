@@ -26,7 +26,9 @@ public sealed record OpenNgcDeepSkyOptions(
     bool IncludeUnknownSize = true,
     int MaximumObjects = 128,
     int MaximumFootprints = 32,
-    double MinimumGlyphPixels = 8)
+    double MinimumGlyphPixels = 8,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] int MaximumOutlines = 0,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? PreferredOutlineLevel = null)
 {
     public const string SelectionVersion = "openngc-designation-query-v1";
 
@@ -49,8 +51,8 @@ public sealed record OpenNgcDeepSkyOptions(
     public ProjectedSceneDeepSkySelection ToSelection()
     {
         _ = ToQuery(MaximumObjects);
-        var selection = new ProjectedSceneDeepSkySelection(MaximumObjects, MaximumFootprints, 0,
-            DeepSkyOutline.WidestLevel, MinimumGlyphPixels, SelectionVersion, this);
+        var selection = new ProjectedSceneDeepSkySelection(MaximumObjects, MaximumFootprints, MaximumOutlines,
+            PreferredOutlineLevel ?? DeepSkyOutline.WidestLevel, MinimumGlyphPixels, SelectionVersion, this);
         selection.Validate();
         return selection;
     }
