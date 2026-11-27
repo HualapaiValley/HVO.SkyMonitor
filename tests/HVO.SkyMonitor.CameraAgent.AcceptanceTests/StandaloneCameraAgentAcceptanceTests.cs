@@ -54,7 +54,7 @@ public sealed partial class StandaloneCameraAgentAcceptanceTests
         {
             var summary = await WaitForStandaloneSummaryAsync(ownerClient).ConfigureAwait(false);
             AssertStandaloneSummary(summary);
-            await AssertDisabledHealthAsync(ownerClient).ConfigureAwait(false);
+            await AssertStandaloneHealthAsync(ownerClient).ConfigureAwait(false);
             await AssertCaptureHttpEvidenceAsync(ownerClient, fixture.Root, firstCapture).ConfigureAwait(false);
         }
         AssertNoProvisioningIdentity(fixture.Root);
@@ -685,14 +685,21 @@ public sealed partial class StandaloneCameraAgentAcceptanceTests
         Assert.IsGreaterThan(0L, storage.TotalBytes);
     }
 
-    private static async Task AssertDisabledHealthAsync(HttpClient client)
+    private static async Task AssertStandaloneHealthAsync(HttpClient client)
     {
         using var response = await client.GetAsync(new Uri("/health", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
         var health = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-        StringAssert.Contains(health, "Artifact delivery is disabled/not configured.", StringComparison.Ordinal);
-        StringAssert.Contains(health, "Fleet heartbeat is disabled/not configured.", StringComparison.Ordinal);
-        StringAssert.Contains(health, "Environmental delivery is disabled/not configured.", StringComparison.Ordinal);
+        using var document = JsonDocument.Parse(health);
+        var checkNames = document.RootElement.GetProperty("checks").EnumerateArray()
+            .Select(static check => check.GetProperty("name").GetString())
+            .ToArray();
+        CollectionAssert.IsSubsetOf(
+            new[] { "capture-admission", "calibration-library", "clock", "operator-notifications" }, checkNames);
+        foreach (var retiredCheck in new[] { "artifact-outbox", "fleet-heartbeat", "environmental-delivery" })
+        {
+            Assert.DoesNotContain(retiredCheck, checkNames);
+        }
         StringAssert.Contains(health, "Protected deployment-location history is available.", StringComparison.Ordinal);
         Assert.IsFalse(health.Contains("35.5599378", StringComparison.Ordinal));
         Assert.IsFalse(health.Contains("-113.9119818", StringComparison.Ordinal));
