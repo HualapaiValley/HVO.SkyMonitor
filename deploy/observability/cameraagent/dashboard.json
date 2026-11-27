@@ -41,7 +41,7 @@
         {
           "refId": "A",
           "expr": "sum by (instance) (rate(dotnet_process_cpu_time_seconds_total{job=\"cameraagent\"}[5m]))",
-          "legendFormat": "CPU cores {{instance}}"
+          "legendFormat": "CPU usage (100% = 1 core) {{instance}}"
         },
         {
           "refId": "B",
@@ -79,7 +79,7 @@
         {
           "refId": "B",
           "expr": "dotnet_gc_last_collection_heap_size_bytes{job=\"cameraagent\"}",
-          "legendFormat": "{{dotnet_gc_heap_generation}} {{instance}}"
+          "legendFormat": "{{gc_heap_generation}} {{instance}}"
         },
         {
           "refId": "C",
@@ -172,12 +172,12 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "dotnet_thread_pool_queue_length{job=\"cameraagent\"}",
+          "expr": "dotnet_thread_pool_queue_length_total{job=\"cameraagent\"}",
           "legendFormat": "Queued {{instance}}"
         },
         {
           "refId": "B",
-          "expr": "dotnet_thread_pool_thread_count{job=\"cameraagent\"}",
+          "expr": "dotnet_thread_pool_thread_count_total{job=\"cameraagent\"}",
           "legendFormat": "Workers {{instance}}"
         },
         {

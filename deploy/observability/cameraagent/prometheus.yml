@@ -17,7 +17,7 @@ scrape_configs:
     sample_limit: 10000
     body_size_limit: 4MB
     static_configs:
-      - targets: [cameraagent.example.invalid:443]
+      - targets: ['cameraagent.example.invalid:443']
 
   # Optionally add a private cAdvisor target. Confirm the Docker container name
   # and exact metric availability on the qualification host before enrolling it.
@@ -25,7 +25,7 @@ scrape_configs:
   #   sample_limit: 256
   #   body_size_limit: 4MB
   #   static_configs:
-  #     - targets: [127.0.0.1:8080]
+  #     - targets: ['127.0.0.1:8080']
   #   metric_relabel_configs:
   #     - source_labels: [name]
   #       regex: cameraagent

@@ -2,6 +2,8 @@ using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Text.Json;
+using System.Text.RegularExpressions;
 using HVO.SkyMonitor.CameraAgent.Authentication;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Configuration;
@@ -32,7 +34,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Authorization;
 [TestClass]
 [TestCategory("Unit")]
 [TestProperty("Area", "Hosting")]
-public sealed class CameraAgentMetricsAuthorizationTests
+public sealed partial class CameraAgentMetricsAuthorizationTests
 {
     private const string MetricName = "hvo_cameraagent_metrics_auth_probe";
 
@@ -133,6 +135,8 @@ public sealed class CameraAgentMetricsAuthorizationTests
         CameraAgentWorkloadTelemetry.Record(CameraAgentWorkloadTelemetry.Start(),
             CameraAgentWorkloadTelemetry.Operation.SqliteCheckpoint, CameraAgentWorkloadTelemetry.Outcome.Incomplete);
         CameraAgentWorkloadTelemetry.RecordSceneBytes(12345);
+        CameraAgentWorkloadTelemetry.RecordMaterializationPending(1);
+        CameraAgentWorkloadTelemetry.RecordMaterializationPending(-1);
         for (var index = 0; index < 100; index++)
         {
             Probe.Add(1, new KeyValuePair<string, object?>("sample", index));
@@ -147,7 +151,8 @@ public sealed class CameraAgentMetricsAuthorizationTests
             "outcome=\"incomplete\"", "le=\"0.001", "camera_agent_workload_scene_metadata_bytes_bucket",
             "dotnet_process_cpu_time_seconds_total", "dotnet_process_memory_working_set_bytes",
             "dotnet_gc_heap_total_allocated_bytes_total", "dotnet_gc_last_collection_heap_size_bytes",
-            "dotnet_gc_pause_time_seconds_total", "dotnet_thread_pool_queue_length",
+            "dotnet_gc_pause_time_seconds_total", "# TYPE dotnet_thread_pool_queue_length_total counter",
+            "# TYPE dotnet_thread_pool_thread_count_total counter",
             "camera_agent_ingress_accepting", "http_server_request_duration_seconds_bucket"
         })
         {
@@ -156,10 +161,90 @@ public sealed class CameraAgentMetricsAuthorizationTests
         Assert.IsFalse(body.Contains(privatePath, StringComparison.Ordinal));
         Assert.IsFalse(body.Contains("http_route=", StringComparison.Ordinal));
         Assert.IsFalse(body.Contains("url_path=", StringComparison.Ordinal));
-        var probeSamples = body.Split('\n').Where(line => line.StartsWith(MetricName, StringComparison.Ordinal)).ToArray();
+        var samples = body.Split('\n');
+        Assert.IsTrue(samples.Any(line => line.StartsWith("dotnet_gc_last_collection_heap_size_bytes{", StringComparison.Ordinal) &&
+            HasSampleLabel(line, "gc_heap_generation")));
+        var probeSamples = samples.Where(line => line.StartsWith(MetricName, StringComparison.Ordinal)).ToArray();
         Assert.AreEqual(64, probeSamples.Count(line => line.Contains("sample=", StringComparison.Ordinal)),
             string.Join('\n', probeSamples));
         Assert.IsTrue(probeSamples.Any(line => line.Contains("otel_metric_overflow", StringComparison.Ordinal)));
+        AssertDashboardMatchesProfilingScrape(samples);
+    }
+
+    [TestMethod]
+    public void ProductionProfilingScrapeConfigQuotesTargetsAndLoadsRecordingRules()
+    {
+        var directory = ObservabilityDirectory();
+        var configuration = File.ReadAllText(Path.Combine(directory, "prometheus.yml"));
+        StringAssert.Contains(configuration, "- targets: ['cameraagent.example.invalid:443']", StringComparison.Ordinal);
+        StringAssert.Contains(configuration, "#     - targets: ['127.0.0.1:8080']", StringComparison.Ordinal);
+        StringAssert.Contains(configuration, "- cameraagent.rules.yml", StringComparison.Ordinal);
+        Assert.IsTrue(File.Exists(Path.Combine(directory, "cameraagent.rules.yml")));
+    }
+
+    private static void AssertDashboardMatchesProfilingScrape(string[] samples)
+    {
+        var directory = ObservabilityDirectory();
+        using var dashboard = JsonDocument.Parse(File.ReadAllText(Path.Combine(directory, "dashboard.json")));
+        var rules = File.ReadAllText(Path.Combine(directory, "cameraagent.rules.yml"));
+
+        foreach (var panel in dashboard.RootElement.GetProperty("panels").EnumerateArray())
+        {
+            foreach (var target in panel.GetProperty("targets").EnumerateArray())
+            {
+                var expression = target.GetProperty("expr").GetString()!;
+                // Resolve the workload recording rule to the histogram that Prometheus scrapes.
+                if (expression.StartsWith("cameraagent:workload_", StringComparison.Ordinal))
+                {
+                    var rule = Regex.Match(rules,
+                        $@"(?m)^\s*- record: {Regex.Escape(expression)}[ \t]*\r?\n[ \t]*expr: (.+)$",
+                        RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+                    Assert.IsTrue(rule.Success, $"Missing recording rule for {expression}");
+                    expression = rule.Groups[1].Value;
+                }
+
+                foreach (Match match in ProfilingMetricSelector().Matches(expression))
+                {
+                    var metric = match.Groups[1].Value;
+                    var metricSamples = samples.Where(line => line.StartsWith(metric + "{", StringComparison.Ordinal) ||
+                        line.StartsWith(metric + " ", StringComparison.Ordinal)).ToArray();
+                    Assert.IsNotEmpty(metricSamples, $"Dashboard metric {metric} is absent from the scrape.");
+                    foreach (Match label in LegendLabel().Matches(target.GetProperty("legendFormat").GetString()!))
+                    {
+                        var name = label.Groups[1].Value;
+                        // Prometheus adds instance after the scrape.
+                        if (name != "instance")
+                        {
+                            Assert.IsTrue(metricSamples.Any(line => HasSampleLabel(line, name)),
+                                $"Dashboard label {name} is absent from {metric}.");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private static bool HasSampleLabel(string sample, string label)
+        => sample.Contains("{" + label + "=", StringComparison.Ordinal) ||
+           sample.Contains("," + label + "=", StringComparison.Ordinal);
+
+    [GeneratedRegex(@"\b((?:dotnet_|camera_agent_workload_|http_server_)[a-z0-9_]+)\b", RegexOptions.CultureInvariant)]
+    private static partial Regex ProfilingMetricSelector();
+
+    [GeneratedRegex(@"\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}", RegexOptions.CultureInvariant)]
+    private static partial Regex LegendLabel();
+
+    private static string ObservabilityDirectory()
+    {
+        for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "HVO.SkyMonitor.v9.slnx")))
+            {
+                return Path.Combine(directory.FullName, "deploy", "observability", "cameraagent");
+            }
+        }
+
+        throw new DirectoryNotFoundException($"Could not locate the SkyMonitor repository from {AppContext.BaseDirectory}.");
     }
 
     private static void AssertOpen(string environment, HttpResponseMessage response)
