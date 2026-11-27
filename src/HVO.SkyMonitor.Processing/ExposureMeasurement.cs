@@ -150,8 +150,10 @@ public static class ExposureMeasurementProducts
         if (input is null || !IsValidUtf16(raw.Variant) || !IsValidUtf16(linear?.Variant))
             throw Invalid("input");
         ValidateInput(input);
-        var hasRetainedCandidate = IsSha256(retainedOutputIdentitySha256);
-        if (!hasRetainedCandidate)
+        var normalizedRetained = retainedOutputIdentitySha256 is { } retainedCandidate && IsSha256(retainedCandidate)
+            ? retainedCandidate.ToUpperInvariant()
+            : null;
+        if (normalizedRetained is null)
         {
             ValidateFreshAdmissionEnvelopeBudget(input);
         }
@@ -165,27 +167,31 @@ public static class ExposureMeasurementProducts
         var format = input.Linear?.Layout.PixelFormat;
         if (format is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16))
         {
-            if (hasRetainedCandidate && !MatchesRetainedOutput(request, input, retainedOutputIdentitySha256!))
+            if (normalizedRetained is not null)
+            {
+                if (MatchesRetainedOutput(request, input, normalizedRetained))
+                    return request with { RetainedOutputIdentitySha256 = normalizedRetained };
                 ValidateFreshAdmissionEnvelopeBudget(input);
+            }
             return request;
         }
 
-        if (hasRetainedCandidate)
+        if (normalizedRetained is not null)
         {
-            if (MatchesRetainedOutput(request, input, retainedOutputIdentitySha256!))
-                return request;
+            if (MatchesRetainedOutput(request, input, normalizedRetained))
+                return request with { RetainedOutputIdentitySha256 = normalizedRetained };
             if (format == CameraPixelFormat.BayerRggb16)
             {
                 var priorBayer = request with { Options = SerializeParameters(input, ExposureFocusSamplingPolicy.BrightestWithBayerCoreCheck) };
-                if (MatchesRetainedOutput(priorBayer, input, retainedOutputIdentitySha256!))
-                    return priorBayer;
+                if (MatchesRetainedOutput(priorBayer, input, normalizedRetained))
+                    return priorBayer with { RetainedOutputIdentitySha256 = normalizedRetained };
             }
             var priorEligibleFirst = request with { Options = SerializeParameters(input, ExposureFocusSamplingPolicy.EligibleFirst) };
-            if (MatchesRetainedOutput(priorEligibleFirst, input, retainedOutputIdentitySha256!))
-                return priorEligibleFirst;
+            if (MatchesRetainedOutput(priorEligibleFirst, input, normalizedRetained))
+                return priorEligibleFirst with { RetainedOutputIdentitySha256 = normalizedRetained };
             var current = request with { Options = SerializeParameters(input, ExposureFocusSamplingPolicy.EligibleFirstWithOccupancy) };
-            if (MatchesRetainedOutput(current, input, retainedOutputIdentitySha256!))
-                return current;
+            if (MatchesRetainedOutput(current, input, normalizedRetained))
+                return current with { RetainedOutputIdentitySha256 = normalizedRetained };
             ValidateFreshAdmissionEnvelopeBudget(input);
             return current;
         }
@@ -454,38 +460,44 @@ public static class ExposureMeasurementProducts
             throw Invalid("linear disposition");
     }
 
-    private static long RawMetadataCharCount(ExposureMeasurementInputV1 input)
+    internal static long RawMetadataCharCount(ExposureMeasurementInputV1 input)
         => (long)(input.OpticalCalibrationVersion?.Length ?? 0) +
            (input.Exposure?.Camera?.AgentId?.Length ?? 0) +
            (input.Exposure?.Camera?.CameraId?.Length ?? 0);
 
-    private static void ValidateFreshAdmissionEnvelopeBudget(ExposureMeasurementInputV1 input)
+    internal static bool FitsFreshAdmissionEnvelopeBudget(ExposureMeasurementInputV1 input)
+        => RawMetadataCharCount(input) <= MaximumAdmittedEnvelopeBytes &&
+           WorstCaseEnvelopeBytes(input) <= MaximumAdmittedEnvelopeBytes;
+
+    internal static void ValidateFreshAdmissionEnvelopeBudget(ExposureMeasurementInputV1 input)
     {
         // O(1) lower-bound rejection before canonical JSON measurement so arbitrarily large metadata cannot allocate
         // huge buffers, followed by exact canonical UTF-8 byte accounting (including 6-byte \uXXXX JSON escaping).
-        if (RawMetadataCharCount(input) > MaximumAdmittedEnvelopeBytes ||
-            WorstCaseEnvelopeBytes(input) > MaximumAdmittedEnvelopeBytes)
+        if (!FitsFreshAdmissionEnvelopeBudget(input))
             throw Invalid("input envelope budget");
     }
 
-    private static bool IsValidUtf16(string? value)
-    {
-        if (value is null)
-            return true;
-        for (var i = 0; i < value.Length; i++)
-        {
-            var ch = value[i];
-            if (!char.IsSurrogate(ch))
-                continue;
-            if (char.IsHighSurrogate(ch) && i + 1 < value.Length && char.IsLowSurrogate(value[i + 1]))
-            {
-                i++;
-                continue;
-            }
-            return false;
-        }
-        return true;
-    }
+    internal static bool HasRetainedReplayCandidate(ProcessingExecutionRequest request, ExposureMeasurementInputV1 input)
+        => IsSha256(request.RetainedOutputIdentitySha256) &&
+           request.OutputVariant == Variant &&
+           request.Annotation is null &&
+           request.AuxiliaryInputs is not { Count: > 0 } &&
+           request.Inputs is not null &&
+           request.Inputs.Select(static source => source.ArtifactId).SequenceEqual(SourceIds(input));
+
+    internal static bool IsVerifiedRetainedReplay(
+        ProcessingExecutionRequest request,
+        ProcessingRecipeIdentity identity,
+        ExposureMeasurementInputV1 input)
+        => HasRetainedReplayCandidate(request, input) &&
+           RawMetadataCharCount(input) <= StructuredProcessingProductDescriptorV1.MaximumPayloadBytes &&
+           Same(ProcessingIdentity.CreateOutputIdentity(
+               FrameArtifactRole.Metadata,
+               request.OutputVariant,
+               identity.IdentitySha256,
+               SourceIds(input)), request.RetainedOutputIdentitySha256);
+
+    private static bool IsValidUtf16(string? value) => ProcessingIdentity.IsValidUtf16(value);
 
     private static bool ValidSource(ExposureMeasurementSourceV1? source)
         => source is { CaptureId: var captureId, ArtifactId: var artifactId, Layout: { } layout } &&

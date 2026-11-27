@@ -1335,7 +1335,14 @@ public sealed class ExposureMeasurementTests
         Assert.IsGreaterThan(ExposureMeasurementProducts.MaximumAdmittedEnvelopeBytes,
             ExposureMeasurementProducts.WorstCaseEnvelopeBytes(retainedInput));
 
-        // Produce the exact historical linear-stellar-local-v2 (EligibleFirst) product that merge-base emitted.
+        // Construct the exact historical linear-stellar-local-v2 (EligibleFirst) product that merge-base emitted
+        // from the same pixels without bypassing the fresh public ProcessingRecipeExecutor envelope cap.
+        var baselineInput = ExposureMeasurementBindings.FromAdmitted(baseLookup);
+        var baselineV2Request = ExposureMeasurementBindings.Request(baseLookup, boundRaw, baseBorrowed) with
+        {
+            Options = HistoricalEligibleFirstOptions(baselineInput)
+        };
+        var baselineV2Read = ExposureMeasurementProducts.Read(await Produce(baselineV2Request));
         var historicalV2Request = new ProcessingExecutionRequest(
             BuiltInProcessingRecipes.ExposureMeasurement,
             HistoricalEligibleFirstOptions(retainedInput),
@@ -1343,7 +1350,22 @@ public sealed class ExposureMeasurementTests
             [boundRaw, oversizedBorrowed.Linear],
             ExposureMeasurementProducts.Variant,
             InputArtifactId: boundRaw.ArtifactId);
-        var retainedV2Product = await Produce(historicalV2Request);
+        var historicalV2Recipe = BuiltInProcessingRecipes.CreateExecutionIdentity(historicalV2Request);
+        var retainedV2Payload = ExposureMeasurementProducts.Serialize(baselineV2Read with { Input = retainedInput });
+        var retainedV2Product = ProcessingRecipeSupport.CreateProduct(
+            FrameArtifactRole.Metadata,
+            ExposureMeasurementProducts.Variant,
+            ExposureMeasurementProducts.MediaType,
+            null,
+            retainedV2Payload,
+            historicalV2Recipe,
+            ExposureMeasurementRecipe.Algorithms(retainedInput, ExposureFocusSamplingPolicy.EligibleFirst),
+            [boundRaw, oversizedBorrowed.Linear],
+            boundRaw.Integration,
+            boundRaw.Compatibility,
+            ProcessingProductKind.Metadata,
+            ExposureMeasurementProducts.SchemaVersion,
+            ProcessingIdentity.ComputePayloadSha256(retainedV2Payload));
         Assert.IsGreaterThan(ExposureMeasurementProducts.MaximumAdmittedEnvelopeBytes, retainedV2Product.Payload.Length);
         Assert.IsTrue(retainedV2Product.Algorithms.Contains(
             new ProcessingAlgorithmIdentity("stellar-source-measurer", StellarSourceMeasurer.V2AlgorithmVersion)));
@@ -1368,6 +1390,25 @@ public sealed class ExposureMeasurementTests
         // Retained-output-identity replay MUST succeed and reproduce the exact bytes bit-for-bit.
         await AssertRetainedReplay(oversizedLookup, boundRaw, oversizedBorrowed, retainedV2Product);
 
+        // Direct submission to ProcessingRecipeExecutor.ExecuteAsync without verified retained-replay context
+        // (and any replay request whose Options were mutated after verification) MUST be rejected before measurement.
+        var executor = new ProcessingRecipeExecutor();
+        var directHistorical = await executor.ExecuteAsync(historicalV2Request);
+        Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, directHistorical.Status);
+        Assert.AreEqual(ProcessingReasonCodes.InvalidOptions, directHistorical.ReasonCode);
+        Assert.IsEmpty(directHistorical.Products);
+
+        var validReplayRequest = ExposureMeasurementBindings.Request(
+            oversizedLookup, boundRaw, oversizedBorrowed, null, null, retainedV2Product.OutputIdentitySha256);
+        var mutatedReplayInput = retainedInput with { OpticalCalibrationVersion = "x" + longCalibrationVersion[1..] };
+        var mutatedReplayOutcome = await executor.ExecuteAsync(validReplayRequest with
+        {
+            Options = HistoricalEligibleFirstOptions(mutatedReplayInput)
+        });
+        Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, mutatedReplayOutcome.Status);
+        Assert.AreEqual(ProcessingReasonCodes.InvalidOptions, mutatedReplayOutcome.ReasonCode);
+        Assert.IsEmpty(mutatedReplayOutcome.Products);
+
         // Fresh admission requests (and non-matching retained identities) MUST still reject the oversized envelope.
         StringAssert.Contains(Assert.ThrowsExactly<InvalidDataException>(() =>
             ExposureMeasurementProducts.Request(retainedInput, boundRaw, oversizedBorrowed.Linear)).Message,
@@ -1378,6 +1419,215 @@ public sealed class ExposureMeasurementTests
         StringAssert.Contains(Assert.ThrowsExactly<InvalidDataException>(() =>
             ExposureMeasurementBindings.Request(oversizedLookup, boundRaw, oversizedBorrowed, null, null, new string('A', 64))).Message,
             "envelope budget", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task DirectExecutorEnforcesFreshEnvelopeCapBeforeMeasurement()
+    {
+        // D11-H1: Submitting fresh oversized ProcessingExecutionRequest instances directly to
+        // ProcessingRecipeExecutor.ExecuteAsync (without verified retained-output-identity replay context) MUST be
+        // rejected BEFORE measurement (never reaching measurement.payload-budget-exceeded or producing a product).
+        const int size = 160;
+        var layout = Layout(size, size);
+        var center = new PixelPoint(80.5, 80.5);
+        var raw = CreateRaw(layout, Generate(layout, (x, y) =>
+        {
+            var r = double.Hypot(x + 0.5 - center.X, y + 0.5 - center.Y);
+            double value = 180 + Gaussian(x, y, center, 1.25, 2200);
+            if (r is >= 14.0 and <= 30.0)
+                value += 1400.0;
+            return (ushort)Math.Clamp(Math.Round(value), 0, 4095);
+        }));
+        var linear = await Normalize(raw);
+        var baseInput = Bind(raw, linear);
+        var executor = new ProcessingRecipeExecutor();
+
+        // Exact 3 repros: (1) 4,190,736 ASCII chars, (2) 493,752 '+' chars, (3) 131,073-byte worst-case envelope.
+        var maxAscii = PadToExactMaxAdmittedEnvelope(baseInput, plusEscaped: false);
+        var maxPlus = PadToExactMaxAdmittedEnvelope(baseInput, plusEscaped: true);
+        (string Label, ExposureMeasurementInputV1 Input)[] oversizedCases =
+        [
+            ("4,190,736 ASCII", baseInput with { OpticalCalibrationVersion = new string('v', 4_190_736) }),
+            ("493,752 '+'", baseInput with { OpticalCalibrationVersion = new string('+', 493_752) }),
+            ("131,073-byte ASCII envelope", maxAscii with { OpticalCalibrationVersion = maxAscii.OpticalCalibrationVersion + "v" }),
+            ("131,073-byte '+' envelope", maxPlus with { OpticalCalibrationVersion = maxPlus.OpticalCalibrationVersion + "v" })
+        ];
+        var tamperedRaw = raw with { Payload = new byte[raw.Payload.Length] };
+
+        foreach (var (label, oversizedInput) in oversizedCases)
+        {
+            Assert.IsGreaterThan(ExposureMeasurementProducts.MaximumAdmittedEnvelopeBytes,
+                ExposureMeasurementProducts.WorstCaseEnvelopeBytes(oversizedInput), label);
+            foreach (var policy in new[] { ExposureFocusSamplingPolicy.EligibleFirstWithOccupancy, ExposureFocusSamplingPolicy.EligibleFirst })
+            {
+                var directRequest = new ProcessingExecutionRequest(
+                    BuiltInProcessingRecipes.ExposureMeasurement,
+                    ExposureMeasurementProducts.SerializeParameters(oversizedInput, policy),
+                    ProcessingInputSelector.Raw(raw.Variant),
+                    [raw, linear],
+                    ExposureMeasurementProducts.Variant,
+                    InputArtifactId: raw.ArtifactId);
+                var outcome = await executor.ExecuteAsync(directRequest);
+                Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, outcome.Status, $"{label} ({policy})");
+                Assert.AreEqual(ProcessingReasonCodes.InvalidOptions, outcome.ReasonCode, $"{label} ({policy})");
+                Assert.AreNotEqual("measurement.payload-budget-exceeded", outcome.ReasonCode, $"{label} ({policy})");
+                Assert.IsEmpty(outcome.Products, $"{label} ({policy})");
+
+                // Submitting with a mismatched raw payload proves rejection happens BEFORE ExposureMeasurementRecipe.ExecuteAsync
+                // (never even reaching measurement.raw-binding-mismatch or reading pixels).
+                var preMeasurementOutcome = await executor.ExecuteAsync(directRequest with { Inputs = [tamperedRaw, linear] });
+                Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, preMeasurementOutcome.Status, $"{label} pre-measurement ({policy})");
+                Assert.AreEqual(ProcessingReasonCodes.InvalidOptions, preMeasurementOutcome.ReasonCode, $"{label} pre-measurement ({policy})");
+                Assert.IsEmpty(preMeasurementOutcome.Products, $"{label} pre-measurement ({policy})");
+            }
+        }
+
+        // Control: an exact 131,072-byte worst-case envelope submitted directly still succeeds and round-trips cleanly.
+        var boundaryRequest = new ProcessingExecutionRequest(
+            BuiltInProcessingRecipes.ExposureMeasurement,
+            ExposureMeasurementProducts.SerializeParameters(maxPlus, ExposureFocusSamplingPolicy.EligibleFirstWithOccupancy),
+            ProcessingInputSelector.Raw(raw.Variant),
+            [raw, linear],
+            ExposureMeasurementProducts.Variant,
+            InputArtifactId: raw.ArtifactId);
+        var boundaryOutcome = await executor.ExecuteAsync(boundaryRequest);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, boundaryOutcome.Status, boundaryOutcome.ReasonCode);
+        var boundaryProduct = boundaryOutcome.Products.Single();
+        Assert.AreEqual(maxPlus, ExposureMeasurementProducts.Read(boundaryProduct).Input);
+        Assert.AreEqual(maxPlus, ExposureMeasurementProducts.Read(ProductArtifact(boundaryProduct, raw), maxPlus).Input);
+    }
+
+    [TestMethod]
+    public async Task DirectExecutorRejectsUnpairedUtf16SelectorVariantsWhilePreservingAstralPairs()
+    {
+        // D11-M1: Submitting raw selector variants ending in unpaired U+D800 or U+DC00 directly to
+        // ProcessingRecipeExecutor.ExecuteAsync MUST be rejected BEFORE recipe-identity serialization (never colliding
+        // with literal U+FFFD), while valid astral Unicode surrogate pairs remain accepted and distinct from U+FFFD.
+        const int size = 96;
+        var layout = Layout(size, size);
+        var raw = CreateRaw(layout, Generate(layout, static (_, _) => 180));
+        var linear = await Normalize(raw);
+        var input = Bind(raw, linear);
+        var options = ExposureMeasurementProducts.SerializeParameters(input, ExposureFocusSamplingPolicy.EligibleFirstWithOccupancy);
+        var executor = new ProcessingRecipeExecutor();
+
+        foreach (var badVariant in new[] { "source-\uD800", "source-\uDC00", "\uDC00-source", "source-\uD800\uD800\uDC00" })
+        {
+            var badRaw = raw with { Variant = badVariant };
+            var badSelectorRequest = new ProcessingExecutionRequest(
+                BuiltInProcessingRecipes.ExposureMeasurement,
+                options,
+                ProcessingInputSelector.Raw(badVariant),
+                [badRaw, linear],
+                ExposureMeasurementProducts.Variant,
+                InputArtifactId: badRaw.ArtifactId);
+            var badSelectorOutcome = await executor.ExecuteAsync(badSelectorRequest);
+            Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, badSelectorOutcome.Status, badVariant);
+            Assert.AreEqual(ProcessingReasonCodes.InvalidSelector, badSelectorOutcome.ReasonCode, badVariant);
+            Assert.IsEmpty(badSelectorOutcome.Products, badVariant);
+
+            // Unpaired surrogate on the selector alone (with a valid raw artifact variant) MUST also be rejected.
+            var selectorOnlyOutcome = await executor.ExecuteAsync(badSelectorRequest with { Inputs = [raw, linear] });
+            Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, selectorOnlyOutcome.Status, badVariant);
+            Assert.AreEqual(ProcessingReasonCodes.InvalidSelector, selectorOnlyOutcome.ReasonCode, badVariant);
+            Assert.IsEmpty(selectorOnlyOutcome.Products, badVariant);
+
+            // Unpaired surrogate on the raw artifact variant with a wildcard selector MUST be rejected before identity binding.
+            var inputVariantOnlyOutcome = await executor.ExecuteAsync(badSelectorRequest with { Input = ProcessingInputSelector.Raw() });
+            Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, inputVariantOnlyOutcome.Status, badVariant);
+            Assert.AreEqual(ProcessingReasonCodes.InvalidInput, inputVariantOnlyOutcome.ReasonCode, badVariant);
+            Assert.IsEmpty(inputVariantOnlyOutcome.Products, badVariant);
+
+            // Unpaired surrogate on OutputVariant MUST also be rejected.
+            var badOutputVariantOutcome = await executor.ExecuteAsync(new ProcessingExecutionRequest(
+                BuiltInProcessingRecipes.ExposureMeasurement,
+                options,
+                ProcessingInputSelector.Raw(raw.Variant),
+                [raw, linear],
+                badVariant,
+                InputArtifactId: raw.ArtifactId));
+            Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, badOutputVariantOutcome.Status, badVariant);
+            Assert.AreEqual(ProcessingReasonCodes.InvalidOptions, badOutputVariantOutcome.ReasonCode, badVariant);
+            Assert.IsEmpty(badOutputVariantOutcome.Products, badVariant);
+
+            // Unpaired surrogate on an auxiliary selector variant or annotation MUST also be rejected before identity binding.
+            var badAuxOutcome = await executor.ExecuteAsync(new ProcessingExecutionRequest(
+                BuiltInProcessingRecipes.NoOpAnalyzer,
+                JsonSerializer.SerializeToElement(new { }),
+                ProcessingInputSelector.Raw(raw.Variant),
+                [raw],
+                "noop-v1",
+                AuxiliaryInputs:
+                [
+                    new ProcessingAuxiliaryInput(
+                        "aux",
+                        ProcessingAuxiliaryInputKind.Artifact,
+                        ProcessingInputSelector.Raw(badVariant),
+                        ArtifactId: raw.ArtifactId)
+                ],
+                InputArtifactId: raw.ArtifactId));
+            Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, badAuxOutcome.Status, badVariant);
+            Assert.AreEqual(ProcessingReasonCodes.InvalidInput, badAuxOutcome.ReasonCode, badVariant);
+            Assert.IsEmpty(badAuxOutcome.Products, badVariant);
+
+            var badAnnotationOutcome = await executor.ExecuteAsync(new ProcessingExecutionRequest(
+                BuiltInProcessingRecipes.NoOpAnalyzer,
+                JsonSerializer.SerializeToElement(new { }),
+                ProcessingInputSelector.Raw(raw.Variant),
+                [raw],
+                "noop-v1",
+                Annotation: new ProcessingAnnotationInput(
+                    [new ProjectedAnnotationObject("star:1", badVariant, new PixelPoint(1, 1))],
+                    [],
+                    new PreviewTransform(1, 1),
+                    null,
+                    new string('A', 64)),
+                InputArtifactId: raw.ArtifactId));
+            Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, badAnnotationOutcome.Status, badVariant);
+            Assert.AreEqual(ProcessingReasonCodes.InvalidAnnotation, badAnnotationOutcome.ReasonCode, badVariant);
+            Assert.IsEmpty(badAnnotationOutcome.Products, badVariant);
+
+            // Identity builders themselves MUST reject malformed UTF-16 directly.
+            Assert.ThrowsExactly<ArgumentException>(() => BuiltInProcessingRecipes.CreateExecutionIdentity(
+                BuiltInProcessingRecipes.ExposureMeasurement, options, ProcessingInputSelector.Raw(badVariant)));
+            Assert.ThrowsExactly<ArgumentException>(() => ProcessingIdentity.CreateOutputIdentity(
+                FrameArtifactRole.Metadata, badVariant, new string('A', 64), [raw.ArtifactId]));
+        }
+
+        // Valid astral Unicode surrogate pair (U+1F52D) and literal U+FFFD are both valid UTF-16, accepted, and
+        // produce strictly distinct recipe and output identities.
+        const string astralVariant = "source-\U0001F52D";
+        const string replacementVariant = "source-\uFFFD";
+        var astralRaw = raw with { Variant = astralVariant };
+        var replacementRaw = raw with { Variant = replacementVariant };
+
+        var astralOutcome = await executor.ExecuteAsync(new ProcessingExecutionRequest(
+            BuiltInProcessingRecipes.ExposureMeasurement,
+            options,
+            ProcessingInputSelector.Raw(astralVariant),
+            [astralRaw, linear],
+            ExposureMeasurementProducts.Variant,
+            InputArtifactId: astralRaw.ArtifactId));
+        var replacementOutcome = await executor.ExecuteAsync(new ProcessingExecutionRequest(
+            BuiltInProcessingRecipes.ExposureMeasurement,
+            options,
+            ProcessingInputSelector.Raw(replacementVariant),
+            [replacementRaw, linear],
+            ExposureMeasurementProducts.Variant,
+            InputArtifactId: replacementRaw.ArtifactId));
+
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, astralOutcome.Status, astralOutcome.ReasonCode);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, replacementOutcome.Status, replacementOutcome.ReasonCode);
+        var astralProduct = astralOutcome.Products.Single();
+        var replacementProduct = replacementOutcome.Products.Single();
+        Assert.AreNotEqual(astralProduct.Recipe.IdentitySha256, replacementProduct.Recipe.IdentitySha256);
+        Assert.AreNotEqual(astralProduct.OutputIdentitySha256, replacementProduct.OutputIdentitySha256);
+        Assert.AreEqual(astralVariant, astralProduct.Recipe.Descriptor.Options.GetProperty("input").GetProperty("variant").GetString());
+        Assert.AreEqual(replacementVariant, replacementProduct.Recipe.Descriptor.Options.GetProperty("input").GetProperty("variant").GetString());
+        Assert.AreEqual(input, ExposureMeasurementProducts.Read(astralProduct).Input);
+        Assert.AreEqual(input, ExposureMeasurementProducts.Read(ProductArtifact(astralProduct, astralRaw), input).Input);
+        Assert.AreEqual(input, ExposureMeasurementProducts.Read(replacementProduct).Input);
+        Assert.AreEqual(input, ExposureMeasurementProducts.Read(ProductArtifact(replacementProduct, replacementRaw), input).Input);
     }
 
     [TestMethod]

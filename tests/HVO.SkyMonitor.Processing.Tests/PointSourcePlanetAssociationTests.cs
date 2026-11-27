@@ -3662,6 +3662,7 @@ public sealed class PointSourcePlanetAssociationTests
         //    (e) still reject tampered non-null Occupancy when CoarseCellBudget == 0.
         var baselineV3Product = (await executor.ExecuteAsync(ExposureMeasurementProducts.Request(baseInput, raw, linear)).ConfigureAwait(false))
             .Products.Single();
+        var baselineV3Read = ExposureMeasurementProducts.Read(baselineV3Product);
         var retainedOversizedCameraId = "cam-" + new string('c', 4_184_000);
         var retainedOversizedInput = baseInput with
         {
@@ -3674,9 +3675,42 @@ public sealed class PointSourcePlanetAssociationTests
             [raw, linear],
             ExposureMeasurementProducts.Variant,
             InputArtifactId: raw.ArtifactId);
-        var retainedOversizedOutcome = await executor.ExecuteAsync(retainedOversizedRequest).ConfigureAwait(false);
-        Assert.AreEqual(ProcessingOutcomeStatus.Produced, retainedOversizedOutcome.Status, retainedOversizedOutcome.ReasonCode);
-        var retainedOversizedProduct = retainedOversizedOutcome.Products.Single();
+
+        // Fresh direct submission through ProcessingRecipeExecutor.ExecuteAsync without verified retained-replay context
+        // MUST reject the oversized envelope BEFORE measurement (never producing a product or failing late).
+        var directOversizedOutcome = await executor.ExecuteAsync(retainedOversizedRequest).ConfigureAwait(false);
+        Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, directOversizedOutcome.Status);
+        Assert.AreEqual(ProcessingReasonCodes.InvalidOptions, directOversizedOutcome.ReasonCode);
+        Assert.IsEmpty(directOversizedOutcome.Products);
+
+        // Construct the historical delta10 v3 fixture directly (zero occupancy budget -> Occupancy == null on exclusions)
+        // without bypassing the fresh public executor cap, then verify both readers, association, and bit-for-bit replay.
+        var retainedOversizedRecipe = BuiltInProcessingRecipes.CreateExecutionIdentity(retainedOversizedRequest);
+        var retainedOversizedMeasurement = baselineV3Read with
+        {
+            Input = retainedOversizedInput,
+            Sources = baselineV3Read.Sources with
+            {
+                Exclusions = baselineV3Read.Sources.Exclusions
+                    .Select(static e => e with { Occupancy = null })
+                    .ToArray()
+            }
+        };
+        var retainedOversizedPayload = ExposureMeasurementProducts.Serialize(retainedOversizedMeasurement);
+        var retainedOversizedProduct = ProcessingRecipeSupport.CreateProduct(
+            FrameArtifactRole.Metadata,
+            ExposureMeasurementProducts.Variant,
+            ExposureMeasurementProducts.MediaType,
+            null,
+            retainedOversizedPayload,
+            retainedOversizedRecipe,
+            ExposureMeasurementRecipe.Algorithms(retainedOversizedInput, ExposureFocusSamplingPolicy.EligibleFirstWithOccupancy),
+            [raw, linear],
+            raw.Integration,
+            raw.Compatibility,
+            ProcessingProductKind.Metadata,
+            ExposureMeasurementProducts.SchemaVersion,
+            ProcessingIdentity.ComputePayloadSha256(retainedOversizedPayload));
         Assert.IsGreaterThan(4_180_000, retainedOversizedProduct.Payload.Length);
         Assert.IsLessThanOrEqualTo(StructuredProcessingProductDescriptorV1.MaximumPayloadBytes, retainedOversizedProduct.Payload.Length);
         Assert.AreNotEqual(baselineV3Product.OutputIdentitySha256, retainedOversizedProduct.OutputIdentitySha256);

@@ -77,6 +77,21 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
         return ExposureMeasurementProducts.SerializeParameters(input, policy);
     }
 
+    internal static JsonElement NormalizeOptions(ProcessingExecutionRequest request)
+    {
+        var (input, policy) = ExposureMeasurementProducts.ReadParameters(request.Options);
+        if (!ExposureMeasurementProducts.HasRetainedReplayCandidate(request, input))
+        {
+            ExposureMeasurementProducts.ValidateFreshAdmissionEnvelopeBudget(input);
+        }
+        else if (ExposureMeasurementProducts.RawMetadataCharCount(input) >
+            StructuredProcessingProductDescriptorV1.MaximumPayloadBytes)
+        {
+            throw new InvalidDataException("Invalid exposure measurement input envelope budget.");
+        }
+        return ExposureMeasurementProducts.SerializeParameters(input, policy);
+    }
+
     internal static ExposureMeasurementInputV1 Input(ProcessingRecipeIdentity recipe)
         => Parameters(recipe).Input;
 
@@ -87,6 +102,10 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
         ProcessingRecipeIdentity identity, CancellationToken cancellationToken)
     {
         var (input, policy) = ExposureMeasurementProducts.ReadParameters(identity.Descriptor.Options.GetProperty("parameters"));
+        if (!ExposureMeasurementProducts.IsVerifiedRetainedReplay(request, identity, input) &&
+            !ExposureMeasurementProducts.FitsFreshAdmissionEnvelopeBudget(input))
+            return ValueTask.FromResult(ProcessingOutcome.TerminalFailure(
+                ProcessingReasonCodes.InvalidOptions, nameof(request.Options)));
         var sources = request.Inputs;
         if (request.OutputVariant != ExposureMeasurementProducts.Variant || request.Annotation is not null ||
             request.AuxiliaryInputs is { Count: > 0 } ||

@@ -215,7 +215,14 @@ public sealed record ProcessingExecutionRequest(
     string OutputVariant,
     ProcessingAnnotationInput? Annotation = null,
     IReadOnlyList<ProcessingAuxiliaryInput>? AuxiliaryInputs = null,
-    Guid? InputArtifactId = null);
+    Guid? InputArtifactId = null)
+{
+    /// <summary>
+    /// Verified retained output identity carried from replay-aware request builders so historical replay remains
+    /// compatible while fresh execution requests enforce admission envelope bounds before measurement.
+    /// </summary>
+    internal string? RetainedOutputIdentitySha256 { get; init; }
+}
 
 public sealed record ProcessingOutcome(
     ProcessingOutcomeStatus Status,

@@ -478,6 +478,7 @@ internal static class ProcessingRecipeSupport
             VariantIsValid(selector.Variant),
         ProcessingInputKind.RecipeResult => selector.Role != FrameArtifactRole.Raw &&
             !string.IsNullOrWhiteSpace(selector.Variant) &&
+            ProcessingIdentity.IsValidUtf16(selector.Variant) &&
             IsSha256(selector.RecipeIdentitySha256),
         _ => false
     };
@@ -490,7 +491,8 @@ internal static class ProcessingRecipeSupport
             selector.RecipeIdentitySha256,
             StringComparison.OrdinalIgnoreCase));
 
-    private static bool VariantIsValid(string? variant) => variant is null || !string.IsNullOrWhiteSpace(variant);
+    private static bool VariantIsValid(string? variant) =>
+        variant is null || !string.IsNullOrWhiteSpace(variant) && ProcessingIdentity.IsValidUtf16(variant);
 
     private static bool IsSha256(string? value) =>
         value is { Length: 64 } && value.All(Uri.IsHexDigit);
