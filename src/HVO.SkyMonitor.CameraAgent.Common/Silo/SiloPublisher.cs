@@ -21,6 +21,8 @@ internal sealed class SiloPublisher(
     TimeProvider clock,
     ISiloFaults? faults = null) : IDisposable
 {
+    internal const string StagedEvidenceMissing = "silo-staged-evidence-missing";
+    internal const string PayloadChecksumRejected = "silo.payload-checksum-rejected";
     private const int MaximumSteps = 12;
     private const int SweepBatch = 256;
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -306,7 +308,7 @@ internal sealed class SiloPublisher(
             }
             catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
             {
-                return await OutcomeAsync(groupId, revisionId, "silo-staged-evidence-missing", cancellationToken).ConfigureAwait(false);
+                return await OutcomeAsync(groupId, revisionId, StagedEvidenceMissing, cancellationToken).ConfigureAwait(false);
             }
             catch (SiloStoreUnavailableException)
             {
@@ -319,7 +321,7 @@ internal sealed class SiloPublisher(
                 {
                     SiloConflictException conflict => conflict.Code,
                     SiloStoreNotQualifiedException => "silo.store-not-qualified",
-                    _ => "silo.payload-checksum-rejected"
+                    _ => PayloadChecksumRejected
                 };
                 await state.BlockAsync(groupId, revisionId, code, exception.Message, cancellationToken).ConfigureAwait(false);
                 return await OutcomeAsync(groupId, revisionId, null, cancellationToken).ConfigureAwait(false);

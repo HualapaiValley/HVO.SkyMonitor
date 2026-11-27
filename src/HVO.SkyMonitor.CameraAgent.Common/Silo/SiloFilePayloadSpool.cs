@@ -74,6 +74,14 @@ internal sealed class SiloFilePayloadSpool : ISiloPayloadSpool
             }
         }
 
+        internal async ValueTask<bool> MatchesAsync(SiloDraftMember member, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return _projected.Contains(member.SourceToken)
+                ? spool._files[member.SourceToken] == member.Length
+                : await spool.MatchesAsync(member.SourceToken, member.Sha256, member.Length, cancellationToken).ConfigureAwait(false);
+        }
+
         internal void Release(string token)
         {
             _projected.Remove(token);
@@ -129,6 +137,9 @@ internal sealed class SiloFilePayloadSpool : ISiloPayloadSpool
         var token = TokenOf(member.Sha256);
         if (token != member.SourceToken)
             throw new ArgumentException("The staged source token must name the member's SHA-256.", nameof(member));
+
+        if (_bytes > _maximumBytes || _files.Count > _maximumFiles)
+            throw new SiloSpoolFullException();
 
         if (_files.TryGetValue(token, out var length))
         {

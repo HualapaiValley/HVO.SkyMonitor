@@ -275,6 +275,20 @@ internal sealed class SiloFixtureImport(ConfinedReadDirectory source, SiloFixtur
             throw new SiloConflictException("fixture-reopen-failed", "The fixture publication was abandoned.");
         if (receipt.State == SiloStagedState.Visible)
             await RequireReopenAsync(catalog, draft, cancellationToken).ConfigureAwait(false);
+        if (receipt.State == SiloStagedState.Staged)
+        {
+            // P1 opens staged bytes only for members that have no verified locator yet.
+            try
+            {
+                foreach (var member in draft.Members.Where(member => receipt.UnqualifiedPayloads.Contains(member.SourceToken)))
+                    if (!await spool.MatchesAsync(member, cancellationToken).ConfigureAwait(false))
+                        throw new SiloConflictException(SiloPublisher.PayloadChecksumRejected, "A required staged payload differs from its identity.");
+            }
+            catch (IOException exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
+            {
+                throw new SiloConflictException(SiloPublisher.StagedEvidenceMissing, "A required staged payload is missing.");
+            }
+        }
     }
 
     private static void RequireCompatiblePending(SiloGroupDraft draft, SiloPendingSegment? pending)
