@@ -52,7 +52,15 @@ internal sealed record SiloFixtureInventory(SiloFixtureSelection Selection, stri
         if (!IsSelectionFile(selectionFile))
             throw new ArgumentException("The selection filename must be a single '*.selection.json' name.", nameof(selectionFile));
 
-        var bytes = await ReadBoundedAsync(source, selectionFile, MaximumSelectionFileBytes, cancellationToken).ConfigureAwait(false);
+        byte[] bytes;
+        try
+        {
+            bytes = await ReadBoundedAsync(source, selectionFile, MaximumSelectionFileBytes, cancellationToken).ConfigureAwait(false);
+        }
+        catch (InvalidDataException)
+        {
+            throw new SiloConflictException("unsupported-source-size", "Fixture selection size is outside the supported bounds.");
+        }
         var selection = Parse<SiloFixtureSelection>(bytes);
         if (selection.Format != SelectionFormat || !SiloText.IsToken(selection.SourceId, 96) ||
             selection.MaximumBytes is < 1 or > MaximumSelectionBytes || selection.MinimumFreeBytes < 1 ||

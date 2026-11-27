@@ -116,15 +116,24 @@ public static class SiloFixtureImportCommand
     private static async Task RequireFirstBootPauseAsync(CameraAgentHostOptions options,
         PhysicalRoot stateRoot, TimeProvider clock, CancellationToken cancellationToken)
     {
+        const string pauseRequired = "fixture-first-boot-pause-required";
         var seed = options.FirstBootPause.Identity
-            ?? throw new SiloConflictException("fixture-first-boot-pause-required", "No first-boot pause is configured.");
-        var journal = stateRoot.Resolve(Path.Combine("journal", "raw-ingress.db"));
-        foreach (var suffix in new[] { "-wal", "-shm", "-journal" })
-            stateRoot.Verify(journal + suffix, "read-fixture-target-pause");
+            ?? throw new SiloConflictException(pauseRequired, "No first-boot pause is configured.");
+        string journal;
+        try
+        {
+            journal = stateRoot.Resolve(Path.Combine("journal", "raw-ingress.db"));
+            foreach (var suffix in new[] { "-wal", "-shm", "-journal" })
+                stateRoot.Verify(journal + suffix, "read-fixture-target-pause");
+        }
+        catch (FileSystemFaultException exception) when (exception.Kind == FileSystemFaultKind.Containment)
+        {
+            throw new SiloConflictException(pauseRequired, "The first-boot pause requires confined admission journal files.");
+        }
         var control = new SqliteCaptureControlStore(journal, options.RawIngressSqliteBusyTimeoutSeconds, clock);
         var pause = await control.ReadFirstBootPauseAsync(seed, cancellationToken, readOnly: true).ConfigureAwait(false);
         if (!pause.InForce || pause.Resumed || pause.Version != 1 || pause.State != "paused")
-            throw new SiloConflictException("fixture-first-boot-pause-required", "The disposable target must still be at its first-boot pause.");
+            throw new SiloConflictException(pauseRequired, "The disposable target must still be at its first-boot pause.");
     }
 
     private static bool IsCommandFailure(Exception exception) => exception is
