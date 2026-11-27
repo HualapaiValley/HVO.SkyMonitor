@@ -330,6 +330,28 @@ version after completion. An absent version without completed disposition is mis
 same key has its own custody, and a late arrival of the exact expired version remains expired until the archive
 administrator resolves it under the policy. Keep instance backups on their existing schedule.
 
+### Local tier retention
+
+New installations start with expiry held. Use the authenticated lifecycle routes under
+`/api/internal/deployment/lifecycle/silo/retention` to inspect and control Silo retention.
+
+| Request | Parameters or body |
+| --- | --- |
+| `GET /dry-run` | Supply `asOfUtc` and `underPressure`. The response identifies physical versions, participating roles, and candidate decisions. |
+| `PUT /policy` | Supply `expiryHeld` and `roles`. Each role may specify `maximumAge` as a .NET duration, `expireUnderPressure`, and `allowLastCopyExpiry`. Use a role name for a specific rule or `full`, `display`, or `metadata` for a tier default. |
+| `PUT /pin` | Supply `pinId`, `kind` (`member` or `manifest`), `artifactId`, `revision`, `active`, and `reason`. Use the same pin ID with `active: false` to release it. |
+
+For a canary, inspect a dry run at a fixed time while expiry is held. Enable a
+role's last-copy expiry only when losing its last usable copy is intentional.
+Keep display and manifest policies independent of full-fidelity payloads when
+maintaining display history.
+
+The archive reader verifies each survivor's exact version and its non-expiring
+legal hold. Optional `CameraAgent:SiloArchive:CustodyAccessKey` and
+`CustodySecretKey` credentials can establish that hold. Scope this separate
+credential to legal-hold updates on the intended versions. The archive owner
+manages subsequent release of the physical legal hold.
+
 ## Credentials
 
 | Credential | Where | Seen by |

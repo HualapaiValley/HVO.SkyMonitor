@@ -6,8 +6,10 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
+using HVO.SkyMonitor.CameraAgent.Tests.Silo;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
@@ -572,6 +574,57 @@ public sealed class SqliteCalibrationFamilyStoreTests
 
     private static CalibrationFamilyActivationRequest Activation(string key, string identity, string? reason = null)
         => new(key, Target(), identity, "operator", reason);
+
+    [TestMethod]
+    public async Task SiloExpiryRespectsTheConfiguredMasterAcrossRestartAndAfterDeactivation()
+    {
+        var token = CancellationToken.None;
+        using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
+        var member = Member(10);
+        var masterId = member.Masters[0].ArtifactId.ToString("D");
+        var draft = SiloDrafts.Capture(silo.Payloads, 1, rawRequired: false);
+        draft = draft with { Members = [draft.Members[0] with { ArtifactId = masterId, Role = "calibration-frame" }, draft.Members[1]] };
+        await silo.PublishAsync(draft).ConfigureAwait(false);
+        silo.Clock.Advance(TimeSpan.FromDays(2));
+        var retention = SiloRetentionTests.OpenForFixture(silo);
+        await retention.SetPolicyAsync(new(false, [new("calibration-frame", TimeSpan.Zero, false, true)]), token).ConfigureAwait(false);
+
+        static async ValueTask<IReadOnlyList<SiloRetentionHold>> ReadHoldsAsync(SqliteCalibrationFamilyStore store, CancellationToken token) =>
+            (await store.GetActiveMasterArtifactIdsAsync(token).ConfigureAwait(false)).Select(static id =>
+                new SiloRetentionHold(SiloHoldKind.CalibrationMaster, id.ToString("D"))).ToArray();
+        using (var first = CreateStore(silo.RootPath))
+        {
+            var configured = await first.StoreAsync(Family("retention-family", member), token).ConfigureAwait(false);
+            var service = new CalibrationFamilyActivationService(first, NullLogger<CalibrationFamilyActivationService>.Instance);
+            Assert.IsTrue((await service.ActivateAsync(Activation("retention-activate", configured.IdentitySha256), token).ConfigureAwait(false)).IsAccepted);
+            Assert.AreEqual("no-eligible-versions",
+                await retention.SweepAsync(true, ct => ReadHoldsAsync(first, ct), null, token).ConfigureAwait(false));
+        }
+        await silo.RestartAsync().ConfigureAwait(false);
+        using var reopened = CreateStore(silo.RootPath);
+        retention = SiloRetentionTests.OpenForFixture(silo);
+        var replacement = new CalibrationFamilyActivationService(reopened, NullLogger<CalibrationFamilyActivationService>.Instance);
+        var holdsCaptured = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var deactivated = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sweep = retention.SweepAsync(true, async ct =>
+        {
+            var holds = await ReadHoldsAsync(reopened, ct).ConfigureAwait(false);
+            holdsCaptured.SetResult();
+            await deactivated.Task.WaitAsync(ct).ConfigureAwait(false);
+            return holds;
+        }, null, token).AsTask();
+        try
+        {
+            await holdsCaptured.Task.WaitAsync(TimeSpan.FromSeconds(30), token).ConfigureAwait(false);
+            Assert.IsTrue((await replacement.DeactivateAsync(Deactivation("retention-release"), token).ConfigureAwait(false)).IsAccepted);
+        }
+        finally
+        {
+            deactivated.SetResult();
+        }
+        Assert.AreEqual("no-eligible-versions", await sweep.ConfigureAwait(false));
+        Assert.AreEqual("deleted", await retention.SweepAsync(true, ct => ReadHoldsAsync(reopened, ct), null, token).ConfigureAwait(false));
+    }
 
     private static CalibrationFamilyDeactivationRequest Deactivation(string key)
         => new(key, Agent, Rig, "operator", null);

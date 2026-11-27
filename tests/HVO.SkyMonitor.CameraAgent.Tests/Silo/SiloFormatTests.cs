@@ -99,6 +99,17 @@ public sealed class SiloFormatTests
             new(1, 2), previousSha);
     }
 
+    private static SiloJournalSegment GoldenRetentionSegment(string previousSha)
+    {
+        var locator = Payload(SiloRetentionClass.Full, Sha, "v-0001");
+        return new(SiloFormats.JournalSegment, Binding.InstanceId, Binding.BindingId, 1, 4, At,
+            [
+                new SiloExpiryAttemptRecord("attempt-1", locator, "prepared", ["intent-1"]),
+                new SiloExpiryAttemptRecord("attempt-1", locator, "issued", ["intent-1"]),
+                new SiloExpiryAttemptRecord("attempt-1", locator, "observed", ["intent-1"], SiloExpiryOutcome.Deleted)
+            ], new(1, 3), previousSha);
+    }
+
     private static IEnumerable<(string Name, byte[] Bytes)> GoldenObjects()
     {
         var manifest = SiloJson.Serialize(GoldenManifest());
@@ -116,8 +127,10 @@ public sealed class SiloFormatTests
         }
         var checkpoint = SiloJson.Serialize(new SiloJournalCheckpoint(SiloFormats.JournalCheckpoint, Binding.InstanceId, Binding.BindingId,
             new(1, 2), SiloHash.Sha256(segment), entries, [new("capture-0103", "r1")]));
+        var archive = SiloJson.Serialize(GoldenArchiveSegment(SiloHash.Sha256(segment)));
         return [("group-manifest.json", manifest), ("journal-segment-genesis.json", genesis), ("journal-segment.json", segment),
-            ("journal-checkpoint.json", checkpoint), ("journal-segment-archive.json", SiloJson.Serialize(GoldenArchiveSegment(SiloHash.Sha256(segment))))];
+            ("journal-checkpoint.json", checkpoint), ("journal-segment-archive.json", archive),
+            ("journal-segment-retention.json", SiloJson.Serialize(GoldenRetentionSegment(SiloHash.Sha256(archive))))];
     }
 
     [TestMethod]
@@ -142,7 +155,10 @@ public sealed class SiloFormatTests
         SiloJson.Serialize(SiloJson.ReadSegment(golden["journal-segment-genesis.json"], "genesis")).Should().Equal(golden["journal-segment-genesis.json"]);
         var archive = SiloJson.ReadSegment(golden["journal-segment-archive.json"], "archive segment");
         SiloJson.Serialize(archive).Should().Equal(golden["journal-segment-archive.json"]);
-        SiloJson.ReadSegment(golden["journal-segment.json"], "segment").Records.Concat(archive.Records).Select(SiloJson.RecordType).Distinct()
+        var retention = SiloJson.ReadSegment(golden["journal-segment-retention.json"], "retention segment");
+        SiloJson.Serialize(retention).Should().Equal(golden["journal-segment-retention.json"]);
+        SiloJson.ReadSegment(golden["journal-segment.json"], "segment").Records.Concat(archive.Records).Concat(retention.Records)
+            .Select(SiloJson.RecordType).Distinct()
             .Should().BeEquivalentTo(SiloRecordTypes.All.Except([SiloRecordTypes.GenerationOpen]));
         var checkpoint = SiloJson.ReadCheckpoint(golden["journal-checkpoint.json"], "checkpoint");
         checkpoint.Entries.Should().HaveCount(13);

@@ -23,6 +23,7 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
 {
     private readonly string root = StorageRootIdentity.CanonicalPath(options.Value.RawIngressRoot);
     private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
+    private SiloArtifactStorage? Silo => silo;
     // More than 30 days at the supported 15-second cadence (172,800 captures), including cleanup lag.
     internal const int MaximumWorkEntries = 262144;
     private const int MaximumHeaderBytes = 16 * 1024;
@@ -142,7 +143,7 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
             if (!File.Exists(path)) continue; // Interrupted pre-intent preparation acquired no reference.
             var header = await ReadHeaderAsync(path, cancellationToken).ConfigureAwait(false);
             var inventory = await processing.ReadSatelliteConsumersAsync(header.CaptureId, header.NodeId, cancellationToken).ConfigureAwait(false);
-            var archiveHeld = await discovery.HasArchivedCaptureAsync(header.CaptureId, cancellationToken).ConfigureAwait(false);
+            var archiveHeld = await discovery.HasArchivedCaptureAsync(header.CaptureId, header.RawArtifactId, cancellationToken).ConfigureAwait(false);
             var support = new List<SqliteCaptureProcessingStore.SatelliteConsumer>();
             var hasSupport = false;
             var external = false;
@@ -167,6 +168,26 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
             if (external || archiveHeld)
                 holds.AddRange(support.Select(static p =>
                     new ProcessingRetentionHold(p.ArtifactId, p.PayloadRelativePath, p.SidecarRelativePath)));
+        }
+        return holds;
+    }
+
+    // The local work header survives an interrupted prediction even when no support product was published.
+    internal async ValueTask<IReadOnlyList<SiloRetentionHold>> ReadSiloArchiveHoldsAsync(CancellationToken cancellationToken)
+    {
+        if (silo is null) return [];
+        var directory = Path.Combine(root, "journal", "capture-satellites");
+        RawIngressFileStore.EnsureNoSymbolicLinks(root, directory);
+        if (!Directory.Exists(directory)) return [];
+        var holds = new List<SiloRetentionHold>();
+        foreach (var entry in Directory.EnumerateDirectories(directory))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var path = Path.Combine(entry, "header.json");
+            RawIngressFileStore.EnsureNoSymbolicLinks(root, path);
+            if (!File.Exists(path)) continue;
+            var header = await ReadHeaderAsync(path, cancellationToken).ConfigureAwait(false);
+            holds.Add(new(SiloHoldKind.SatelliteArchiveReference, header.RawArtifactId.ToString("D")));
         }
         return holds;
     }
@@ -215,7 +236,7 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
                 .ConfigureAwait(false);
             if (headerConsumers.Any(static product => product.Unavailable) ||
                 await AnyRetainedAsync(headerConsumers.Select(static product => product.PayloadRelativePath), cancellationToken).ConfigureAwait(false) ||
-                await discovery.HasArchivedCaptureAsync(header.CaptureId, cancellationToken).ConfigureAwait(false)) continue;
+                await discovery.HasArchivedCaptureAsync(header.CaptureId, header.RawArtifactId, cancellationToken).ConfigureAwait(false)) continue;
             if (header.ManifestSha256 is { } manifest)
                 await orbital.RemoveReferenceAsync(manifest, Holder(header.Key), cancellationToken).ConfigureAwait(false);
             // Removal is idempotent. A crash before directory removal repeats it; no referenced product remains.
@@ -255,7 +276,8 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
                 var inventory = await processing.ReadSceneConsumersAsync(orphan.Descriptor.Capture.CaptureId, Guid.Empty,
                     AccountOrphanBytes, cancellationToken).ConfigureAwait(false);
                 if (inventory is null || await AnyRetainedAsync(inventory.CanonicalPayloadPaths, cancellationToken).ConfigureAwait(false) ||
-                    await discovery.HasArchivedCaptureAsync(orphan.Descriptor.Capture.CaptureId, cancellationToken).ConfigureAwait(false)) reclaim = false;
+                    await discovery.HasArchivedCaptureAsync(orphan.Descriptor.Capture.CaptureId, orphan.Descriptor.Artifact.ArtifactId,
+                        cancellationToken).ConfigureAwait(false)) reclaim = false;
                 var consumers = await processing.ReadSatelliteConsumersAsync(orphan.Descriptor.Capture.CaptureId,
                     string.Empty, cancellationToken).ConfigureAwait(false);
                 if (consumers.Any(static p => p.Unavailable)) reclaim = false;
@@ -306,9 +328,20 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
     private sealed class ArchiveDiscovery(CaptureSatelliteWorkStore owner)
     {
         private ProjectedSceneRetentionGuard guard = owner.CreateRetentionGuard();
+        private bool readSilo;
+        private IReadOnlySet<string>? siloReferences;
 
-        internal async ValueTask<bool> HasArchivedCaptureAsync(Guid captureId, CancellationToken cancellationToken)
+        internal async ValueTask<bool> HasArchivedCaptureAsync(Guid captureId, Guid rawArtifactId, CancellationToken cancellationToken)
         {
+            if (owner.Silo is { } silo)
+            {
+                if (!readSilo)
+                {
+                    siloReferences = await silo.ReadArchivedCaptureReferencesAsync(cancellationToken).ConfigureAwait(false);
+                    readSilo = true;
+                }
+                return siloReferences is null || siloReferences.Contains(rawArtifactId.ToString("D"));
+            }
             try { return await guard.HasArchivedCaptureAsync(captureId, cancellationToken).ConfigureAwait(false); }
             catch (InvalidDataException) when (guard.DiscoveryBudgetExhausted)
             {

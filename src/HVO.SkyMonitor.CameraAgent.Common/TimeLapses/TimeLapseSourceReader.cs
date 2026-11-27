@@ -72,7 +72,7 @@ internal sealed class TimeLapseSourceReader(IOptions<CameraAgentHostOptions> opt
         if (silo is not null)
         {
             var retained = await silo.ReadRawAsync(descriptor, token).ConfigureAwait(false)
-                ?? throw new FileNotFoundException("The frozen video source has no settled Silo publication.");
+                ?? throw new TimeLapseInputUnavailableException(descriptor.Artifact.ArtifactId);
             return Describe(descriptor) with { Payload = retained };
         }
         var path = PhysicalRoot.Open(options.Value.RawIngressRoot).Resolve(source.PayloadRelativePath);

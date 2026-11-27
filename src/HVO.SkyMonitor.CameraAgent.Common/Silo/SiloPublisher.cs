@@ -28,6 +28,8 @@ internal sealed class SiloPublisher(
 
     private ISiloObjectStore Local => journal.Store;
 
+    internal Func<SiloExactLocator?>? RetentionFence { get; set; }
+
     /// <summary>
     /// The stable operation key of one logical revision's commit: bounded for every valid group and revision identity,
     /// and unambiguous because the group identity is length-prefixed.
@@ -287,6 +289,9 @@ internal sealed class SiloPublisher(
 
     private async ValueTask<SiloPublicationOutcome> AdvanceLockedAsync(string groupId, string revisionId, CancellationToken cancellationToken)
     {
+        if (RetentionFence?.Invoke() is not null)
+            return await OutcomeAsync(groupId, revisionId, "silo-retention-delete-unsettled", cancellationToken).ConfigureAwait(false);
+
         // Proof never crosses the commit boundary or outlives its phase. P1 and P2 share the readbacks they just made; P3
         // reads every version it names again, after the manifest was written; the first P4 reads everything again after
         // the commit. After an interruption the bytes are read again.
@@ -667,6 +672,21 @@ internal sealed class SiloPublisher(
             }
             return removed;
         }, cancellationToken).ConfigureAwait(false);
+
+    // Retention takes the same gate as staging and P1–P4 so a version cannot gain a new
+    // local reference between the ownership check and the exact-version delete.
+    internal async ValueTask<T> WithPublicationLockAsync<T>(Func<ValueTask<T>> action, CancellationToken cancellationToken)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await action().ConfigureAwait(false);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
 
     public void Dispose() => _gate.Dispose();
 }

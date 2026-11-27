@@ -48,6 +48,9 @@ internal sealed class SiloInstalledStorage : ICameraAgentSiloVerification, IDisp
             Catalog = new(Index, new SiloStoreSet(decorateReadStore?.Invoke(_installed.Store) ?? _installed.Store), SiloNoAuthorityEvidence.Instance, faults);
             _journal = new(State, _root.Spool, _installed.Store, Binding, clock, faults);
             Publisher = new(State, _root.Spool, _journal, Catalog, Spool, Binding, clock, faults);
+            DiskBudget = SiloDiskBudget.ForState(_root.Root.Path, settings.MaximumStagedBytes);
+            Retention = new(State, Index, Publisher, Catalog, _journal, _root.Root, _installed.Store, DiskBudget, clock);
+            Publisher.RetentionFence = Retention.ReadUnsettledTarget;
         }
         catch
         {
@@ -66,6 +69,10 @@ internal sealed class SiloInstalledStorage : ICameraAgentSiloVerification, IDisp
     public SiloCatalogIndex Index { get; }
 
     public SiloPublisher Publisher { get; }
+
+    internal SiloRetention Retention { get; }
+
+    internal ISiloDiskBudget DiskBudget { get; }
 
     internal SiloJournalWriter ArchiveJournal => _journal;
 

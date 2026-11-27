@@ -119,6 +119,7 @@ internal static class SiloJson
         SiloPinRecord => SiloRecordTypes.Pin,
         SiloPolicyRecord => SiloRecordTypes.Policy,
         SiloExpiryIntentRecord => SiloRecordTypes.ExpiryIntent,
+        SiloExpiryAttemptRecord => SiloRecordTypes.ExpiryAttempt,
         SiloExpiryDispositionRecord => SiloRecordTypes.ExpiryDisposition,
         SiloAvailabilityRecord => SiloRecordTypes.Availability,
         SiloAnchorRecord => SiloRecordTypes.Anchor,
@@ -540,6 +541,8 @@ internal static class SiloJson
                 break;
             case SiloPolicyRecord policy:
                 SiloText.RequireToken(policy.PolicyId, nameof(policy.PolicyId), 128);
+                if (policy.PolicyId == SiloRetentionPolicy.PolicyId)
+                    SiloRetentionPolicy.Read(policy.Policy.GetRawText());
                 break;
             case SiloExpiryIntentRecord intent:
                 SiloText.RequireToken(intent.IntentId, nameof(intent.IntentId), 128);
@@ -562,6 +565,16 @@ internal static class SiloJson
                 disposition.Locator.Validate();
                 RequireUtc(disposition.ObservedUtc, nameof(disposition.ObservedUtc));
                 SiloText.RequireText(disposition.Evidence, nameof(disposition.Evidence), 1024);
+                break;
+            case SiloExpiryAttemptRecord attempt:
+                SiloText.RequireToken(attempt.AttemptId, nameof(attempt.AttemptId), 128);
+                attempt.Locator.Validate();
+                if (attempt.Phase is not ("prepared" or "issued" or "observed") ||
+                    (attempt.Phase == "observed") != attempt.Outcome.HasValue)
+                    throw new ArgumentException("The exact Silo delete attempt has an invalid phase or outcome.", nameof(record));
+                RequireElements(attempt.IntentIds, nameof(attempt.IntentIds));
+                foreach (var intentId in attempt.IntentIds)
+                    SiloText.RequireToken(intentId, nameof(attempt.IntentIds), 128);
                 break;
             case SiloAvailabilityRecord availability:
                 availability.Identity.Validate();

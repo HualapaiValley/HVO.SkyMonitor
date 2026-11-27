@@ -216,6 +216,60 @@ internal sealed partial class SiloArchiveStore(IAmazonS3 client, SiloArchiveMark
         }
     }
 
+    internal async ValueTask<bool> HasLegalHoldAsync(SiloExactLocator locator, CancellationToken cancellationToken)
+    {
+        if (locator.StoreId != Marker.StoreId || locator.Bucket != Marker.Bucket) return false;
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(RequestTimeout);
+        try
+        {
+            var result = await client.GetObjectLegalHoldAsync(new GetObjectLegalHoldRequest
+            {
+                BucketName = locator.Bucket,
+                Key = locator.Key,
+                VersionId = locator.VersionId
+            }, deadline.Token).ConfigureAwait(false);
+            return result.LegalHold?.Status == ObjectLockLegalHoldStatus.On;
+        }
+        catch (Exception exception) when (exception is AmazonServiceException or AmazonClientException or HttpRequestException or
+            IOException or OperationCanceledException)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return false;
+        }
+    }
+
+    internal async ValueTask<bool> TryPlaceLegalHoldAsync(IConfigurationSection settings, SiloExactLocator locator,
+        CancellationToken cancellationToken)
+    {
+        if (locator.StoreId != Marker.StoreId || locator.Bucket != Marker.Bucket ||
+            settings["CustodyAccessKey"] is not { Length: > 0 } key || settings["CustodySecretKey"] is not { Length: > 0 } secret ||
+            !AccessKeyPattern().IsMatch(key) || !SecretPattern().IsMatch(secret) ||
+            !Uri.TryCreate(settings["Endpoint"], UriKind.Absolute, out var endpoint) || endpoint.Scheme != Uri.UriSchemeHttps) return false;
+
+        using var authority = new SiloArchiveTransport(Required(settings, "AuthorityPem"));
+        using var custody = SiloS3ObjectStore.CreateClient(endpoint, key, secret, authority);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(RequestTimeout);
+        try
+        {
+            await custody.PutObjectLegalHoldAsync(new PutObjectLegalHoldRequest
+            {
+                BucketName = locator.Bucket,
+                Key = locator.Key,
+                VersionId = locator.VersionId,
+                LegalHold = new ObjectLockLegalHold { Status = ObjectLockLegalHoldStatus.On }
+            }, deadline.Token).ConfigureAwait(false);
+            return true;
+        }
+        catch (Exception exception) when (exception is AmazonServiceException or AmazonClientException or HttpRequestException or
+            IOException or OperationCanceledException)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return false;
+        }
+    }
+
     internal async ValueTask<bool> WasExpiredAsync(SiloExactLocator locator, CancellationToken cancellationToken)
     {
         if (!locator.Key.StartsWith("p/", StringComparison.Ordinal)) return false;

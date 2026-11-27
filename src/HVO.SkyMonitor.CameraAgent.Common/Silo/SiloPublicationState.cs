@@ -1026,6 +1026,15 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
         return result;
     }
 
+    internal async ValueTask RemoveRetentionOrphanAsync(SiloExactLocator locator, CancellationToken cancellationToken)
+    {
+        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await ExecuteAsync(connection, null, """
+            DELETE FROM orphan_candidates WHERE store_id = $store AND bucket = $bucket AND key = $key AND version_id = $version;
+            """, cancellationToken, ("$store", locator.StoreId), ("$bucket", locator.Bucket), ("$key", locator.Key),
+            ("$version", locator.VersionId)).ConfigureAwait(false);
+    }
+
     /// <summary>Spool names still needed: the pending segment and every manifest of work not yet visible or abandoned.</summary>
     public async ValueTask<IReadOnlySet<string>> ReferencedSpoolNamesAsync(CancellationToken cancellationToken)
     {

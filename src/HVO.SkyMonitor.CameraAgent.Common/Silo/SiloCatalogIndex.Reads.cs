@@ -380,7 +380,9 @@ internal sealed partial class SiloCatalogIndex
         using var command = CreateCommand(connection, null, """
             SELECT EXISTS (
                 SELECT 1 FROM publication_members m JOIN publications p ON p.group_id = m.group_id AND p.revision_id = m.revision_id
-                WHERE m.artifact_id = $artifact AND m.artifact_revision = $revision AND p.state = 'visible');
+                JOIN roles r ON r.kind = 'member' AND r.id = m.artifact_id AND r.revision = m.artifact_revision
+                WHERE m.artifact_id = $artifact AND m.artifact_revision = $revision AND p.state = 'visible'
+                    AND COALESCE(r.journaled, '') <> 'policy-expired');
             """, ("$artifact", artifactId), ("$revision", revision));
         return (long)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))! == 1;
     }
@@ -392,7 +394,9 @@ internal sealed partial class SiloCatalogIndex
         using var command = CreateCommand(connection, null, """
             SELECT COUNT(DISTINCT m.artifact_revision) = 2
             FROM publication_members m JOIN publications p ON p.group_id = m.group_id AND p.revision_id = m.revision_id
-            WHERE m.artifact_id = $artifact AND m.artifact_revision IN ($revision, $evidence) AND p.state = 'visible';
+            JOIN roles r ON r.kind = 'member' AND r.id = m.artifact_id AND r.revision = m.artifact_revision
+            WHERE m.artifact_id = $artifact AND m.artifact_revision IN ($revision, $evidence) AND p.state = 'visible'
+                AND COALESCE(r.journaled, '') <> 'policy-expired';
             """, ("$artifact", artifactId), ("$revision", revision), ("$evidence", evidenceRevision));
         return (long)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))! == 1;
     }
