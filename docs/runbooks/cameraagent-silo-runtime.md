@@ -839,7 +839,8 @@ journals, and in-flight work outside that directory.
 Use a flat directory. Each stem in the selection names one `<stem>.png` and one `<stem>.json`. Choose
 key-safe names and source IDs using ASCII letters, digits, dots, underscores or hyphens, with a non-dot first
 character. The importer opens only allowlisted filenames and refuses symbolic links and hard-linked input files.
-Limits are eight pairs per selection, 8 MiB per image, 16 KiB per sidecar and 32 MiB total selected payload.
+Limits are eight pairs per selection, 8 MiB and 16 megapixels per static decodable PNG, 16 KiB per sidecar
+and 32 MiB total selected payload.
 Use a lower budget for the fixture you need. Selection and sidecar JSON use the exact schemas below.
 
 A sidecar describes one PNG. Retain sanitized source IDs and the original UTC exposure interval.
@@ -871,7 +872,6 @@ for the same source image. Compute each expected digest from the final exact fil
   "sourceId": "sanitized-export-01",
   "maximumBytes": 1048576,
   "minimumFreeBytes": 10737418240,
-  "displayRetentionDays": 30,
   "records": [
     {
       "stem": "sample",
@@ -887,7 +887,10 @@ for the same source image. Compute each expected digest from the final exact fil
 Use the installed Compose project and rendered environment. Set `SNAPSHOT` to the physical snapshot path,
 `SILO_DATA` to the installed Silo service's `HVO_SILO_DATA_ROOT`, and `REPORTS` to an existing directory
 outside the snapshot and instance roots. The capacity probe needs a read-only view of the actual Silo data
-volume. Silo continues running as the one-off CameraAgent uses its installed scoped writer credential. Leave the
+volume. The authenticated endpoint's installation marker must identify that directory's Linux device and inode.
+Use a fresh disposable installation with a volume identity in its marker. A copied bucket and a marker created
+before volume identity was recorded both result in a volume mismatch. Silo continues running as the one-off
+CameraAgent uses its installed scoped writer credential. Leave the
 regular CameraAgent container stopped until import and any retry finish.
 
 ```bash
@@ -914,17 +917,21 @@ SELECTION_SHA=$(jq -er '.selectionSha256' "$REPORTS/dry-run.json")
 
 The inventory reads the snapshot only. The dry run also reads free space on the State and Silo volumes.
 `maximumBytes` charges the logical image and sidecar lengths in selection order, including already published
-pairs on a retry. `minimumFreeBytes` is the reserve on both volumes. Before each pair, publication checks both
+pairs on a retry. `minimumFreeBytes` is the reserve on both volumes. Exact already-imported pairs are verified
+without a free-space charge. Before each pending pair, publication checks both
 volumes again, budgeting two copies of the pair plus 1 MiB for publication overhead even if the roots are on
 separate filesystems. The dry run projects that charge cumulatively. A budget stop leaves the current pair and
-later pairs unstaged.
+later pairs unstaged. A capacity probe error keeps completed rows in the report, marks the current pair
+`capacity-probe-unavailable` and leaves later selected pairs deferred.
 
 The command writes one JSON object to stdout in format `hvo.cameraagent.silo.fixture-import-report/1`.
 It includes the mode, selection digest, source ID, evaluation time, capture range, byte budget, candidate and
 planned bytes and, when measured, initial free space. Each record reports its stem, status and any reason.
-Supported rows add source facts, Silo identities, roles, measured lengths and digests, usable dependency, and
-`immediatelyAgeEligible`. That flag compares age from `capturedToUtc` to the configured display retention
-window. It is an age-only assessment for the display image and its accompanying metadata.
+Supported rows add source facts, Silo identities, roles, measured lengths and digests, and any usable dependency.
+The object rows report the target retention class (`display` for the PNG and `metadata` for its sidecar).
+The target's immediate age-expiry verdict is unavailable to this command, so each object reports
+`immediatelyAgeEligible: null` and `ageEligibilityReason: target-retention-policy-unavailable`.
+The legacy export field `displayRetentionDays` is accepted for compatibility and has no effect on the verdict.
 
 Inventory rows are `selected`, dry-run rows are `would-import`, and successful publications are `imported`.
 A `skipped` row states why, including `already-imported` for an exact retry. A `failed` row identifies a refused
@@ -932,8 +939,10 @@ source or publication. Invalid requests can return a top-level `refused` with a 
 rows completed as requested or were already imported. Exit code 2 means at least one record needs attention
 or the command refused the request.
 
+The command checks the first-boot pause and inspects existing writer history before opening writable State.
 If interrupted, keep the target publication State and retry the same command with the same snapshot and
 selection digest. Before staging each pair the importer verifies both source files again. A changed file
 or conflicting source identity is refused. The normal Silo publisher recovers its durable staging and journal,
-verifies both exact versions and exposes one group per source artifact. Keep the import report with the
+verifies both exact versions and exposes an `import` group whose identity is derived from the source binding,
+source artifact ID and image digest. Keep the import report with the
 qualification evidence.

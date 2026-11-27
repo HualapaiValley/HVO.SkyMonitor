@@ -10,6 +10,21 @@ public static class PngImageCodec
     public const string MediaType = "image/png";
     public const string AlgorithmVersion = "skia-png-v2";
 
+    /// <summary>Verifies that a static PNG, including one with transparency, decodes within a pixel budget.</summary>
+    [SuppressMessage("Maintainability", "CA1508:Avoid dead conditional code", Justification = "The native codec factory can return null for malformed input despite its managed nullability annotation.")]
+    public static bool IsDecodablePng(ReadOnlySpan<byte> encodedData, int maximumPixels)
+    {
+        using var data = SKData.CreateCopy(encodedData);
+        using var codec = SKCodec.Create(data);
+        if (codec is null || codec.EncodedFormat != SKEncodedImageFormat.Png || codec.FrameCount > 1)
+            return false;
+        var (width, height) = (codec.Info.Width, codec.Info.Height);
+        if (width <= 0 || height <= 0 || (long)width * height > maximumPixels)
+            return false;
+        var info = new SKImageInfo(width, height, SKColorType.Rgba8888, SKAlphaType.Unpremul);
+        return codec.GetPixels(info, new byte[checked(width * height * 4)]) == SKCodecResult.Success;
+    }
+
     [SuppressMessage("Maintainability", "CA1508:Avoid dead conditional code", Justification = "The native codec factory can return null for malformed input despite its managed nullability annotation.")]
     public static EncodedImageInfo InspectPng(ReadOnlyMemory<byte> encodedData)
     {

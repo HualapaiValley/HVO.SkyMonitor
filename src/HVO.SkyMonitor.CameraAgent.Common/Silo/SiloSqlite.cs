@@ -185,7 +185,8 @@ internal static class SiloSqlite
     /// </summary>
     public static async ValueTask<bool> InspectAsync(
         string path, SiloSqliteFormat format, IReadOnlyDictionary<string, string> metadata, string scratchDirectory,
-        CancellationToken cancellationToken, string? walPath = null)
+        CancellationToken cancellationToken, string? walPath = null,
+        Func<SqliteConnection, SqliteTransaction, CancellationToken, ValueTask>? inspect = null)
     {
         if (!File.Exists(path))
         {
@@ -206,7 +207,11 @@ internal static class SiloSqlite
             await using (connection.ConfigureAwait(false))
             {
                 using var transaction = BeginImmediate(connection);
-                return await ValidateAsync(connection, transaction, format, metadata, cancellationToken).ConfigureAwait(false);
+                if (!await ValidateAsync(connection, transaction, format, metadata, cancellationToken).ConfigureAwait(false))
+                    return false;
+                if (inspect is not null)
+                    await inspect(connection, transaction, cancellationToken).ConfigureAwait(false);
+                return true;
             }
         }
         finally

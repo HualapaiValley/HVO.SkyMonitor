@@ -341,18 +341,49 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
 
     // ----- Journal writer head, pending segment and committed operations ---------------------------------------
 
-    internal async ValueTask RequireFixtureTargetAsync(IReadOnlySet<string> selectedGroups, CancellationToken cancellationToken)
+    internal async ValueTask<(SiloJournalHead? Head, SiloPendingSegment? Pending)> InspectFixtureTargetAsync(
+        string scratchDirectory, IReadOnlySet<string> selectedGroups, CancellationToken cancellationToken)
     {
-        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-        using var command = CreateCommand(connection, null, "SELECT group_id, revision_id, group_kind FROM staged_groups LIMIT $limit;",
-            ("$limit", SiloFixtureInventory.MaximumRecords + 1));
-        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        SiloJournalHead? head = null;
+        SiloPendingSegment? pending = null;
+        await InspectAsync(Path, Format, BindingMetadata(binding), scratchDirectory, cancellationToken,
+            inspect: async (connection, transaction, token) =>
+            {
+                await RequireFixtureTargetAsync(connection, transaction, selectedGroups, token).ConfigureAwait(false);
+                head = await ReadHeadAsync(connection, transaction, token).ConfigureAwait(false);
+                pending = await ReadPendingAsync(connection, transaction, token).ConfigureAwait(false);
+            }).ConfigureAwait(false);
+        return (head, pending);
+    }
+
+    private static async ValueTask RequireFixtureTargetAsync(SqliteConnection connection, SqliteTransaction transaction,
+        IReadOnlySet<string> selectedGroups, CancellationToken cancellationToken)
+    {
+        const string otherHistory = "fixture-target-has-other-history";
+        using (var command = CreateCommand(connection, transaction, "SELECT group_id, revision_id, group_kind FROM staged_groups LIMIT $limit;",
+                   ("$limit", SiloFixtureInventory.MaximumRecords + 1)))
+        using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
-            if (reader.GetString(2) != SiloFixtureInventory.GroupKind ||
-                reader.GetString(1) != SiloFixtureInventory.GroupRevision || !selectedGroups.Contains(reader.GetString(0)))
-                throw new SiloConflictException("fixture-target-has-other-history", "The target contains work outside the selected fixtures.");
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                if (reader.GetString(2) != SiloFixtureInventory.GroupKind ||
+                    reader.GetString(1) != SiloFixtureInventory.GroupRevision || !selectedGroups.Contains(reader.GetString(0)))
+                    throw new SiloConflictException(otherHistory, "The target contains work outside the selected fixtures.");
+            }
         }
+
+        var allowed = selectedGroups.Select(static id => SiloPublisher.PublishOperation(id, SiloFixtureInventory.GroupRevision))
+            .ToHashSet(StringComparer.Ordinal);
+        allowed.Add("generation-open:1");
+        using var operations = CreateCommand(connection, transaction, """
+            SELECT operation_id FROM journal_operations
+            UNION ALL SELECT operation_id FROM journal_pending
+            LIMIT $limit;
+            """, ("$limit", allowed.Count + 1));
+        using var operation = await operations.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await operation.ReadAsync(cancellationToken).ConfigureAwait(false))
+            if (!allowed.Remove(operation.GetString(0)))
+                throw new SiloConflictException(otherHistory, "The target journal contains an operation outside the selected fixtures.");
     }
 
     public async ValueTask<SiloJournalHead> ReadHeadAsync(CancellationToken cancellationToken)
@@ -410,7 +441,13 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
     public async ValueTask<SiloPendingSegment?> ReadPendingAsync(CancellationToken cancellationToken)
     {
         using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-        using var command = CreateCommand(connection, null, """
+        return await ReadPendingAsync(connection, null, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async ValueTask<SiloPendingSegment?> ReadPendingAsync(SqliteConnection connection,
+        SqliteTransaction? transaction, CancellationToken cancellationToken)
+    {
+        using var command = CreateCommand(connection, transaction, """
             SELECT generation, sequence, sha256, length, operation_id, operation_sha256, purpose_group_id, purpose_revision_id,
                 attempt_in_flight, may_have_landed
             FROM journal_pending WHERE pending_key = 1;

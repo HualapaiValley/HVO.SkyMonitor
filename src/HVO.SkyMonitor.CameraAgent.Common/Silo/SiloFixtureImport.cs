@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.Storage.FileSystem;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Silo;
@@ -11,16 +12,23 @@ internal sealed record SiloFixtureCapacity(long StateFreeBytes, long StoreFreeBy
 }
 
 internal sealed record SiloFixtureReport(string Format, SiloFixtureMode Mode, string SelectionSha256, string SourceId,
-    DateTimeOffset AsOfUtc, DateTimeOffset? CapturedFromUtc, DateTimeOffset? CapturedToUtc, int DisplayRetentionDays,
+    DateTimeOffset AsOfUtc, DateTimeOffset? CapturedFromUtc, DateTimeOffset? CapturedToUtc,
     long MaximumBytes, long MinimumFreeBytes, SiloFixtureCapacity? InitialCapacity, long CandidateBytes, long PlannedBytes,
-    IReadOnlyList<SiloFixtureRecord> Records, string Lineage = "source-processing-lineage-not-retained");
+    IReadOnlyList<SiloFixtureRecord> Records, string Lineage = "source-processing-lineage-not-retained")
+{
+    [JsonIgnore]
+    public int ExitCode => Records.Any(static row => row.Status == "failed" ||
+        row.Status == "skipped" && row.Reason != "already-imported") ? 2 : 0;
+}
 
 internal delegate ValueTask<bool> SiloFixturePublish(SiloGroupDraft draft,
-    Func<SiloDraftMember, CancellationToken, ValueTask<Stream>> open, CancellationToken cancellationToken);
+    Func<SiloDraftMember, CancellationToken, ValueTask<Stream>> open, Action requireHeadroom, CancellationToken cancellationToken);
 
 internal sealed class SiloFixtureImport(ConfinedReadDirectory source, SiloFixtureInventory inventory)
 {
     internal const string ReportFormat = "hvo.cameraagent.silo.fixture-import-report/1";
+    private const string ReserveFailure = "free-space-reserve";
+    private const string ProbeFailure = "capacity-probe-unavailable";
     // Charge both copies even when the two roots are on separate disks. Include filesystem, object and journal overhead.
     private const long PublicationOverheadBytes = 1024 * 1024;
 
@@ -31,7 +39,7 @@ internal sealed class SiloFixtureImport(ConfinedReadDirectory source, SiloFixtur
         var selection = inventory.Selection;
         var output = new List<SiloFixtureRecord>(inventory.Records.Count);
         var settled = new HashSet<string>(StringComparer.Ordinal);
-        var initialCapacity = readCapacity?.Invoke();
+        var initialCapacity = mode == SiloFixtureMode.DryRun ? readCapacity!() : null;
         long plannedBytes = 0;
         long projectedCharge = 0;
         string? stop = null;
@@ -52,11 +60,11 @@ internal sealed class SiloFixtureImport(ConfinedReadDirectory source, SiloFixtur
 
             var length = record.Objects!.Sum(static item => item.Length);
             var charge = 2 * length + PublicationOverheadBytes;
-            var capacity = mode == SiloFixtureMode.Publish ? readCapacity!() : initialCapacity;
             if (length > selection.MaximumBytes - plannedBytes)
                 stop = "byte-limit";
-            else if (capacity is not null && !capacity.Allows(selection.MinimumFreeBytes, charge + projectedCharge))
-                stop = "free-space-reserve";
+            else if (mode == SiloFixtureMode.DryRun &&
+                !initialCapacity!.Allows(selection.MinimumFreeBytes, charge + projectedCharge))
+                stop = ReserveFailure;
 
             if (stop is not null)
             {
@@ -73,12 +81,12 @@ internal sealed class SiloFixtureImport(ConfinedReadDirectory source, SiloFixtur
             if (mode == SiloFixtureMode.DryRun)
                 projectedCharge += charge;
 
-            var result = await ProcessAsync(mode, record, publish,
-                () => readCapacity!().Allows(selection.MinimumFreeBytes, charge), cancellationToken).ConfigureAwait(false);
+            var result = await ProcessAsync(mode, record, publish, RequireHeadroom, cancellationToken).ConfigureAwait(false);
             output.Add(result);
-            if (result.Reason == "free-space-reserve")
-            {
+            if (result.Reason is ReserveFailure or ProbeFailure)
                 plannedBytes -= length;
+            if (result.Reason == ReserveFailure)
+            {
                 stop = result.Reason;
             }
             else if (result.Status == "failed")
@@ -89,19 +97,35 @@ internal sealed class SiloFixtureImport(ConfinedReadDirectory source, SiloFixtur
             {
                 settled.Add(record.Source!.SourceArtifactId);
             }
+
+            void RequireHeadroom()
+            {
+                SiloFixtureCapacity capacity;
+                try
+                {
+                    capacity = readCapacity!();
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or SiloConflictException)
+                {
+                    throw new SiloConflictException(ProbeFailure, "Could not recheck free space on the target volumes.");
+                }
+                initialCapacity ??= capacity;
+                if (!capacity.Allows(selection.MinimumFreeBytes, charge))
+                    throw new SiloConflictException(ReserveFailure, "Publication would cross the free-space reserve.");
+            }
         }
 
         var timed = inventory.Records.Where(static record => record.Source is not null).ToArray();
         return new(ReportFormat, mode, inventory.SelectionSha256, selection.SourceId, inventory.AsOfUtc,
             timed.Select(static record => (DateTimeOffset?)record.Source!.CapturedFromUtc).Min(),
             timed.Select(static record => (DateTimeOffset?)record.Source!.CapturedToUtc).Max(),
-            selection.DisplayRetentionDays, selection.MaximumBytes, selection.MinimumFreeBytes, initialCapacity,
+            selection.MaximumBytes, selection.MinimumFreeBytes, initialCapacity,
             inventory.Records.Where(static record => record.Status == "selected")
                 .Sum(static record => record.Objects!.Sum(static item => item.Length)), plannedBytes, output);
     }
 
     private async ValueTask<SiloFixtureRecord> ProcessAsync(SiloFixtureMode mode, SiloFixtureRecord record,
-        SiloFixturePublish? publish, Func<bool> roomToPublish, CancellationToken cancellationToken)
+        SiloFixturePublish? publish, Action requireHeadroom, CancellationToken cancellationToken)
     {
         if (mode == SiloFixtureMode.Inventory)
             return record;
@@ -128,20 +152,17 @@ internal sealed class SiloFixtureImport(ConfinedReadDirectory source, SiloFixtur
             sidecarBytes.LongLength != sidecar.Length || SiloHash.Sha256(sidecarBytes) != sidecar.Sha256)
             return record with { Status = "failed", Reason = "source-changed-or-nonconfined" };
 
-        if (!roomToPublish())
-            return record with { Status = "skipped", Reason = "free-space-reserve" };
-
         var draft = BuildDraft(record, image, sidecar);
         try
         {
             var added = await publish!(draft, (member, token) => SiloArtifactStorage.OpenMemoryAsync(
                 member.ArtifactRevision == SiloFixtureInventory.ImageRevision ? imageBytes : sidecarBytes, token),
-                cancellationToken).ConfigureAwait(false);
+                requireHeadroom, cancellationToken).ConfigureAwait(false);
             return record with { Status = added ? "imported" : "skipped", Reason = added ? null : "already-imported" };
         }
         catch (SiloConflictException exception)
         {
-            return record with { Status = "failed", Reason = exception.Code };
+            return record with { Status = exception.Code == ReserveFailure ? "skipped" : "failed", Reason = exception.Code };
         }
         catch (Exception exception) when (exception is IOException or SiloDataException or SiloCatalogDivergedException or Microsoft.Data.Sqlite.SqliteException)
         {
@@ -155,14 +176,14 @@ internal sealed class SiloFixtureImport(ConfinedReadDirectory source, SiloFixtur
         var facts = record.Source!;
         var sourceId = inventory.Selection.SourceId;
         SiloManifestDependency[] dependencies = record.UsableReopenImage is { } prior
-            ? [new(SiloFixtureInventory.ArtifactIdFor(sourceId, prior.SourceArtifactId).ToString("D"),
+            ? [new(SiloFixtureInventory.ArtifactIdFor(sourceId, prior.SourceArtifactId, prior.Sha256).ToString("D"),
                 SiloFixtureInventory.ImageRevision, prior.Sha256, SiloDependencyKind.Reopen, Required: true)]
             : [];
         return new(SiloFixtureInventory.GroupKind, record.GroupId!, SiloFixtureInventory.GroupRevision, facts.CapturedToUtc,
             facts.CapturedFromUtc, facts.CapturedToUtc,
-            [SiloArtifactStorage.Member(id, SiloFixtureInventory.ImageRevision, image.Role, SiloRetentionClass.Display,
+            [SiloArtifactStorage.Member(id, SiloFixtureInventory.ImageRevision, image.Role, image.RetentionClass,
                  "image/png", image.Length, image.Sha256),
-             SiloArtifactStorage.Member(id, SiloFixtureInventory.SidecarRevision, sidecar.Role, SiloRetentionClass.Metadata,
+             SiloArtifactStorage.Member(id, SiloFixtureInventory.SidecarRevision, sidecar.Role, sidecar.RetentionClass,
                  "application/json", sidecar.Length, sidecar.Sha256)],
             dependencies, new([], ImportSource: SiloJson.SerializeToElement(new
             {
@@ -173,17 +194,24 @@ internal sealed class SiloFixtureImport(ConfinedReadDirectory source, SiloFixtur
                 facts.SourceCameraId,
                 facts.CapturedFromUtc,
                 facts.CapturedToUtc,
+                imageSha256 = image.Sha256,
+                sidecarSha256 = sidecar.Sha256,
                 lineage = "source-processing-lineage-not-retained"
             })), CameraId: facts.SourceCameraId);
     }
 
     internal static async ValueTask<bool> PublishPairAsync(SiloPublicationState state, SiloPublisher publisher, SiloCatalog catalog,
-        SiloGroupDraft draft, Func<SiloDraftMember, CancellationToken, ValueTask<Stream>> open, CancellationToken cancellationToken)
+        SiloGroupDraft draft, Func<SiloDraftMember, CancellationToken, ValueTask<Stream>> open, Action requireHeadroom,
+        CancellationToken cancellationToken)
     {
         var wasVisible = await state.ReachedFirstP4Async(draft.GroupId, draft.RevisionId, cancellationToken).ConfigureAwait(false);
-        var pending = await state.ReadPendingAsync(cancellationToken).ConfigureAwait(false);
-        if (!wasVisible && pending is not null && (pending.GroupId != draft.GroupId || pending.RevisionId != draft.RevisionId))
-            throw new SiloConflictException("fixture-other-publication-pending", "Another publication is still pending.");
+        if (!wasVisible)
+        {
+            var pending = await state.ReadPendingAsync(cancellationToken).ConfigureAwait(false);
+            if (pending is not null && (pending.GroupId != draft.GroupId || pending.RevisionId != draft.RevisionId))
+                throw new SiloConflictException("fixture-other-publication-pending", "Another publication is still pending.");
+            requireHeadroom();
+        }
 
         await publisher.StageAsync(draft, open, cancellationToken).ConfigureAwait(false);
         var outcome = await publisher.PublishAsync(draft.GroupId, draft.RevisionId, cancellationToken).ConfigureAwait(false);

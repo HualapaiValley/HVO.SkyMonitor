@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 
 namespace HVO.SkyMonitor.Storage.FileSystem.Tests;
 
@@ -35,6 +36,21 @@ public sealed class ConfinedReadDirectoryTests
         Directory.CreateSymbolicLink(link, physical.FullName);
 
         Assert.ThrowsExactly<IOException>(() => new ConfinedReadDirectory(Path.Combine(link, "child")));
+    }
+
+    [TestMethod]
+    public void LinuxLocationIdentifiesThePinnedDirectoryAndMeasuresItsFilesystem()
+    {
+        var child = _root.CreateSubdirectory("child space");
+        using var parent = new ConfinedReadDirectory(_root.FullName);
+        using var directory = new ConfinedReadDirectory(child.FullName);
+        var parentLocation = parent.ReadLinuxLocation();
+        var childLocation = directory.ReadLinuxLocation();
+
+        Assert.AreEqual(parentLocation.MountId, childLocation.MountId);
+        Assert.AreEqual(Path.Combine(parentLocation.FileSystemPath, child.Name), childLocation.FileSystemPath);
+        Assert.AreNotEqual(parentLocation.Inode, childLocation.Inode);
+        Assert.IsGreaterThan(0L, directory.ReadLinuxAvailableBytes());
     }
 
     [TestMethod]
@@ -142,4 +158,24 @@ public sealed class ConfinedReadDirectoryTests
         await process.WaitForExitAsync();
         Assert.AreEqual(0, process.ExitCode, $"{command} could not create the test fixture.");
     }
+}
+
+[TestClass]
+[TestCategory("Unit")]
+public sealed class ConfinedReadDarwinAbiTests
+{
+    [TestMethod]
+    [DataRow(Architecture.X64, true)]
+    [DataRow(Architecture.Arm64, false)]
+    public void SupportedArchitecturesSelectTheMatchingDarwinSymbol(Architecture architecture, bool inode64)
+    {
+        Assert.AreEqual(inode64, ConfinedReadDirectory.UsesDarwinInode64Symbol(architecture));
+        Assert.AreEqual(144, Marshal.SizeOf<ConfinedReadDirectory.DarwinStat>());
+        Assert.AreEqual((nint)4, Marshal.OffsetOf<ConfinedReadDirectory.DarwinStat>(nameof(ConfinedReadDirectory.DarwinStat.Mode)));
+        Assert.AreEqual((nint)6, Marshal.OffsetOf<ConfinedReadDirectory.DarwinStat>(nameof(ConfinedReadDirectory.DarwinStat.LinkCount)));
+    }
+
+    [TestMethod]
+    public void UnsupportedDarwinArchitecturesAreRefused() =>
+        Assert.ThrowsExactly<PlatformNotSupportedException>(() => ConfinedReadDirectory.UsesDarwinInode64Symbol(Architecture.X86));
 }

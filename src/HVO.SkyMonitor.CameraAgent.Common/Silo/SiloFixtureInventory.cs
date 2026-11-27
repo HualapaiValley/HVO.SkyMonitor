@@ -1,12 +1,13 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Storage.FileSystem;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Silo;
 
 internal sealed record SiloFixtureSelection(
-    string Format, string SourceId, long MaximumBytes, long MinimumFreeBytes, int DisplayRetentionDays,
-    IReadOnlyList<SiloFixtureSelectionEntry?> Records);
+    string Format, string SourceId, long MaximumBytes, long MinimumFreeBytes,
+    IReadOnlyList<SiloFixtureSelectionEntry?> Records, int? DisplayRetentionDays = null);
 
 internal sealed record SiloFixtureSelectionEntry(string Stem, string ImageSha256, string SidecarSha256);
 
@@ -16,11 +17,17 @@ internal sealed record SiloFixtureSidecar(
 
 internal sealed record SiloFixtureSourceDependency(string SourceArtifactId, string Sha256);
 
-internal sealed record SiloFixtureObject(string File, string Role, long Length, string Sha256);
+internal sealed record SiloFixtureObject(string File, string Role, long Length, string Sha256,
+    SiloRetentionClass RetentionClass)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public bool? ImmediatelyAgeEligible { get; }
+    public string AgeEligibilityReason { get; } = "target-retention-policy-unavailable";
+}
 
 internal sealed record SiloFixtureRecord(string? Stem, string Status, string? Reason = null,
     SiloFixtureSidecar? Source = null, string? GroupId = null, string? ArtifactId = null,
-    IReadOnlyList<SiloFixtureObject>? Objects = null, bool? ImmediatelyAgeEligible = null,
+    IReadOnlyList<SiloFixtureObject>? Objects = null,
     SiloFixtureSourceDependency? UsableReopenImage = null);
 
 internal sealed record SiloFixtureInventory(SiloFixtureSelection Selection, string SelectionSha256, DateTimeOffset AsOfUtc,
@@ -31,10 +38,11 @@ internal sealed record SiloFixtureInventory(SiloFixtureSelection Selection, stri
     internal const string ImageRevision = "image-1";
     internal const string SidecarRevision = "sidecar-1";
     internal const string GroupRevision = "1";
-    internal const string GroupKind = "history-fixture";
+    internal const string GroupKind = "import";
     internal const int MaximumRecords = 8;
     internal const int MaximumImageBytes = 8 * 1024 * 1024;
     internal const int MaximumSidecarBytes = 16 * 1024;
+    private const int MaximumImagePixels = 16 * 1024 * 1024;
     private const long MaximumSelectionBytes = 32 * 1024 * 1024;
     private const int MaximumSelectionFileBytes = 16 * 1024;
     private static ReadOnlySpan<byte> PngSignature => [137, 80, 78, 71, 13, 10, 26, 10];
@@ -64,8 +72,8 @@ internal sealed record SiloFixtureInventory(SiloFixtureSelection Selection, stri
         var selection = Parse<SiloFixtureSelection>(bytes);
         if (selection.Format != SelectionFormat || !SiloText.IsToken(selection.SourceId, 96) ||
             selection.MaximumBytes is < 1 or > MaximumSelectionBytes || selection.MinimumFreeBytes < 1 ||
-            selection.DisplayRetentionDays is < 1 or > 3650 || selection.Records.Count is < 1 or > MaximumRecords)
-            throw new InvalidDataException("Unsupported fixture selection format, source ID, budget, retention window or record count.");
+            selection.Records.Count is < 1 or > MaximumRecords)
+            throw new InvalidDataException("Unsupported fixture selection format, source ID, budget or record count.");
 
         var duplicateStems = selection.Records.Where(static entry => entry is not null)
             .GroupBy(static entry => entry!.Stem, StringComparer.OrdinalIgnoreCase)
@@ -115,14 +123,14 @@ internal sealed record SiloFixtureInventory(SiloFixtureSelection Selection, stri
             if (SiloHash.Sha256(image) != entry.ImageSha256)
                 return new(stem, "failed", "source-checksum-mismatch");
             if (image.Length < 45 || !image.AsSpan().StartsWith(PngSignature) ||
-                !image.AsSpan(8, 8).SequenceEqual("\0\0\0\rIHDR"u8) || !image.AsSpan().EndsWith(PngTrailer))
+                !image.AsSpan(8, 8).SequenceEqual("\0\0\0\rIHDR"u8) || !image.AsSpan().EndsWith(PngTrailer) ||
+                !PngImageCodec.IsDecodablePng(image, MaximumImagePixels))
                 return new(stem, "skipped", "unsupported-image");
 
-            var artifactId = ArtifactIdFor(selection.SourceId, facts.SourceArtifactId);
+            var artifactId = ArtifactIdFor(selection.SourceId, facts.SourceArtifactId, entry.ImageSha256);
             return new(stem, "selected", Source: facts, GroupId: "fixture-" + artifactId.ToString("N"), ArtifactId: artifactId.ToString("D"),
-                Objects: [new(stem + ".png", "fixture-image", image.LongLength, entry.ImageSha256),
-                          new(stem + ".json", "fixture-sidecar", sidecar.LongLength, entry.SidecarSha256)],
-                ImmediatelyAgeEligible: asOfUtc - facts.CapturedToUtc >= TimeSpan.FromDays(selection.DisplayRetentionDays));
+                Objects: [new(stem + ".png", "fixture-image", image.LongLength, entry.ImageSha256, SiloRetentionClass.Display),
+                          new(stem + ".json", "fixture-sidecar", sidecar.LongLength, entry.SidecarSha256, SiloRetentionClass.Metadata)]);
         }
         catch (JsonException)
         {
@@ -173,8 +181,9 @@ internal sealed record SiloFixtureInventory(SiloFixtureSelection Selection, stri
         }
     }
 
-    internal static Guid ArtifactIdFor(string sourceId, string artifactId) =>
-        new(Convert.FromHexString(SiloHash.Sha256(SiloJson.Serialize(new[] { SidecarFormat, sourceId, artifactId }))).AsSpan(0, 16));
+    internal static Guid ArtifactIdFor(string sourceId, string artifactId, string imageSha256) =>
+        new(Convert.FromHexString(SiloHash.Sha256(SiloJson.Serialize(new[] { SidecarFormat, sourceId, artifactId, imageSha256 })))
+            .AsSpan(0, 16));
 
     private static bool IsSelectionFile(string name) =>
         SiloText.IsToken(name, 95) && name.EndsWith(".selection.json", StringComparison.Ordinal);

@@ -38,7 +38,7 @@ internal sealed class SiloStateRoot : IDisposable
 
     public string IndexDatabasePath => Root.Resolve(IndexDatabaseFileName);
 
-    public static SiloStateRoot Acquire(string path)
+    public static SiloStateRoot Acquire(string path, bool prepareSpool = true)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         Directory.CreateDirectory(path);
@@ -55,20 +55,25 @@ internal sealed class SiloStateRoot : IDisposable
         }
         try
         {
-            var directory = root.Resolve(SpoolDirectoryName);
-            AtomicPublisher.EnsureDirectory(root, directory);
-            // The process lock is held and no metadata writer has started.
-            if (AtomicPublisher.CleanupTemporaries(root, directory, MaximumStartupMetadataPartials) > 0)
-            {
-                DurableSync.Directory(directory);
-            }
-            return new SiloStateRoot(root, lockStream);
+            var state = new SiloStateRoot(root, lockStream);
+            if (prepareSpool)
+                state.PrepareSpool();
+            return state;
         }
         catch
         {
             lockStream.Dispose();
             throw;
         }
+    }
+
+    internal void PrepareSpool()
+    {
+        var directory = Root.Resolve(SpoolDirectoryName);
+        AtomicPublisher.EnsureDirectory(Root, directory);
+        // The process lock is held and no metadata writer has started.
+        if (AtomicPublisher.CleanupTemporaries(Root, directory, MaximumStartupMetadataPartials) > 0)
+            DurableSync.Directory(directory);
     }
 
     public void Dispose()

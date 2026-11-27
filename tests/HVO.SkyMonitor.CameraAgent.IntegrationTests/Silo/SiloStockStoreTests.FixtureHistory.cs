@@ -6,6 +6,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Silo.S3;
 using HVO.SkyMonitor.Deployment.Contracts;
+using HVO.SkyMonitor.Storage.FileSystem;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
 
@@ -48,7 +49,10 @@ public sealed partial class SiloStockStoreTests
         using var admin = SiloS3ObjectStore.CreateClient(Endpoint(container), access, secret);
         await CreateVersionedBucketAsync(admin, binding.Bucket, token).ConfigureAwait(false);
         var writer = await CreateWriterAsync(container, binding, token).ConfigureAwait(false);
-        await InstallBindingAsync(admin, binding, writer.Access, token).ConfigureAwait(false);
+        using var storeDirectory = new ConfinedReadDirectory(dataRoot);
+        var location = storeDirectory.ReadLinuxLocation();
+        await InstallBindingAsync(admin, binding, writer.Access, token,
+            CameraAgentSiloBinding.LinuxDataRootIdentity(location.DeviceMajor, location.DeviceMinor, location.Inode)).ConfigureAwait(false);
         var pause = Guid.NewGuid();
         var settings = InstalledSettings(binding, Endpoint(container), writer, pause, RandomHex(24));
         settings["CameraAgent:RawIngressRoot"] = rawRoot;
@@ -61,12 +65,26 @@ public sealed partial class SiloStockStoreTests
         var sidecar = SiloJson.Serialize(new SiloFixtureSidecar(SiloFixtureInventory.SidecarFormat, "source-capture",
             "source-camera", "source-image", captured.AddSeconds(-1), captured));
         var selection = SiloJson.Serialize(new SiloFixtureSelection(SiloFixtureInventory.SelectionFormat,
-            "source-export", 1024 * 1024, 1024 * 1024, 30, [new("frame", SiloHash.Sha256(image), SiloHash.Sha256(sidecar))]));
+            "source-export", 1024 * 1024, 1024 * 1024, [new("frame", SiloHash.Sha256(image), SiloHash.Sha256(sidecar))]));
         await File.WriteAllBytesAsync(Path.Combine(source, "frame.png"), image, token).ConfigureAwait(false);
         await File.WriteAllBytesAsync(Path.Combine(source, "frame.json"), sidecar, token).ConfigureAwait(false);
         await File.WriteAllBytesAsync(Path.Combine(source, selectionFile), selection, token).ConfigureAwait(false);
 
         var arguments = new[] { SiloFixtureImportCommand.Argument, "dry-run", source, selectionFile, dataRoot };
+        var copyRoot = Directory.CreateDirectory(Path.Combine(root, "other-silo")).FullName;
+        Directory.CreateDirectory(Path.Combine(copyRoot, binding.Bucket));
+        var wrongVolume = arguments[..^1].Append(copyRoot).ToArray();
+        using var emptyBucket = await RunFixtureCommandAsync(wrongVolume, configuration, token, expectedExitCode: 2).ConfigureAwait(false);
+        Assert.AreEqual("fixture-silo-volume-mismatch", emptyBucket.RootElement.GetProperty("reason").GetString());
+        foreach (var path in Directory.EnumerateFiles(Path.Combine(dataRoot, binding.Bucket), "*", SearchOption.AllDirectories))
+        {
+            var destination = Path.Combine(copyRoot, Path.GetRelativePath(dataRoot, path));
+            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+            File.Copy(path, destination);
+        }
+        Assert.IsTrue(Directory.EnumerateFiles(copyRoot, "*", SearchOption.AllDirectories).Any());
+        using var copiedBucket = await RunFixtureCommandAsync(wrongVolume, configuration, token, expectedExitCode: 2).ConfigureAwait(false);
+        Assert.AreEqual("fixture-silo-volume-mismatch", copiedBucket.RootElement.GetProperty("reason").GetString());
         using var dryRun = await RunFixtureCommandAsync(arguments, configuration, token).ConfigureAwait(false);
         var sha = dryRun.RootElement.GetProperty("selectionSha256").GetString()!;
         Assert.AreEqual("would-import", dryRun.RootElement.GetProperty("records")[0].GetProperty("status").GetString());
@@ -77,6 +95,18 @@ public sealed partial class SiloStockStoreTests
         Assert.AreEqual("imported", imported.GetProperty("status").GetString());
         using var retry = await RunFixtureCommandAsync(command, configuration, token).ConfigureAwait(false);
         Assert.AreEqual("already-imported", retry.RootElement.GetProperty("records")[0].GetProperty("reason").GetString());
+
+        var alternateSelection = SiloJson.Serialize(new SiloFixtureSelection(SiloFixtureInventory.SelectionFormat,
+            "unrelated-export", 1024 * 1024, 1024 * 1024, [new("frame", SiloHash.Sha256(image), SiloHash.Sha256(sidecar))]));
+        await File.WriteAllBytesAsync(Path.Combine(source, "other.selection.json"), alternateSelection, token).ConfigureAwait(false);
+        var leftover = Path.Combine(rawRoot, ".silo", SiloStateRoot.SpoolDirectoryName, "unclaimed.tmp");
+        await File.WriteAllTextAsync(leftover, "still present after refusal", token).ConfigureAwait(false);
+        var before = SnapshotFixtureState(rawRoot);
+        using var unrelated = await RunFixtureCommandAsync(
+            [SiloFixtureImportCommand.Argument, "publish", source, "other.selection.json", dataRoot, SiloHash.Sha256(alternateSelection)],
+            configuration, token, expectedExitCode: 2).ConfigureAwait(false);
+        Assert.AreEqual("fixture-target-has-other-history", unrelated.RootElement.GetProperty("reason").GetString());
+        CollectionAssert.AreEqual(before, SnapshotFixtureState(rawRoot));
 
         var options = configuration.GetSection("CameraAgent").Get<CameraAgentHostOptions>()!;
         using var storage = new SiloInstalledStorage(SiloInstalledSettings.Read(configuration.GetSection("CameraAgent:Silo")),
@@ -101,11 +131,19 @@ public sealed partial class SiloStockStoreTests
         CollectionAssert.AreEqual(selection, await File.ReadAllBytesAsync(Path.Combine(source, selectionFile), token).ConfigureAwait(false));
     }
 
-    private static async Task<JsonDocument> RunFixtureCommandAsync(string[] args, IConfiguration configuration, CancellationToken token)
+    private static string[] SnapshotFixtureState(string stateRoot) =>
+        Directory.EnumerateFileSystemEntries(stateRoot, "*", SearchOption.AllDirectories).Order(StringComparer.Ordinal)
+            .Select(static path => File.Exists(path)
+                ? $"{path}|{File.GetLastWriteTimeUtc(path):O}|{SiloHash.Sha256(File.ReadAllBytes(path))}"
+                : path)
+            .ToArray();
+
+    private static async Task<JsonDocument> RunFixtureCommandAsync(string[] args, IConfiguration configuration, CancellationToken token,
+        int expectedExitCode = 0)
     {
         using var output = new StringWriter(CultureInfo.InvariantCulture);
         var exitCode = await SiloFixtureImportCommand.RunAsync(args, () => configuration, output, token).ConfigureAwait(false);
-        Assert.AreEqual(0, exitCode, output.ToString());
+        Assert.AreEqual(expectedExitCode, exitCode, output.ToString());
         return JsonDocument.Parse(output.ToString());
     }
 

@@ -30,15 +30,17 @@ internal sealed class SiloInstalledStorage : ICameraAgentSiloVerification, IDisp
 
     internal SiloInstalledStorage(SiloInstalledSettings settings, IOptions<CameraAgentHostOptions> options, TimeProvider clock,
         ISiloFaults? faults, Func<ISiloObjectStore, ISiloObjectStore>? decorateReadStore, SiloInstalledStore? installedStore,
-        ISiloPayloadSpool? payloadSpool)
+        ISiloPayloadSpool? payloadSpool, SiloStateRoot? fixtureLease = null)
     {
         var rawRoot = Path.GetFullPath(options.Value.RawIngressRoot);
         Directory.CreateDirectory(rawRoot);
         _rawRoot = PhysicalRoot.Open(rawRoot);
         var statePath = _rawRoot.Resolve(".silo");
-        _root = SiloStateRoot.Acquire(statePath);
+        _root = fixtureLease ?? SiloStateRoot.Acquire(statePath);
         try
         {
+            if (fixtureLease is not null)
+                _root.PrepareSpool();
             Binding = settings.Binding;
             _publicationStateExisted = File.Exists(_root.PublicationDatabasePath);
             Spool = payloadSpool ?? new SiloFilePayloadSpool(_root, settings.MaximumStagedBytes, settings.MaximumStagedFiles);

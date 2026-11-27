@@ -163,7 +163,9 @@ internal static class SiloInstallation
             throw new InstallerException("The Silo writer setting files do not hold the recorded credential.");
 
         var now = DateTimeOffset.UtcNow;
-        var marker = FixedBytes(Path.Combine(bootstrap, MarkerFile), () => SiloRuntimeProfile.Marker(instanceId, now));
+        var dataNode = NativeLinux.GetNodeIdentity(dataRootPath);
+        var dataRootIdentity = CameraAgentSiloBinding.LinuxDataRootIdentity(dataNode.DeviceMajor, dataNode.DeviceMinor, dataNode.Inode);
+        var marker = FixedBytes(Path.Combine(bootstrap, MarkerFile), () => SiloRuntimeProfile.Marker(instanceId, now, dataRootIdentity));
         var fence = FixedBytes(Path.Combine(bootstrap, FenceFile), () => SiloRuntimeProfile.Fence(instanceId, access, now));
         if (!SiloRuntimeProfile.MarkerBinds(marker, instanceId) || !FenceNames(fence, access))
             throw new InstallerException("The retained Silo bootstrap documents do not belong to this instance and writer.");
