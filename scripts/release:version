@@ -2,13 +2,13 @@
 # The product version (install contract section 1, #1310): the VersionPrefix in Directory.Build.props, the one version
 # every program and image carries.
 #
-#   scripts/release:version                    0.9.0, the version the next release carries
-#   scripts/release:version --dev              0.9.0-dev, the version of a build given none
+#   scripts/release:version                    the version the next release carries, such as 0.10.0
+#   scripts/release:version --dev              the version of a build given none, such as 0.10.0-dev
 #   scripts/release:version --check <version>  succeeds when <version> is the product version or a pre-release of it,
-#                                              such as 0.9.0, 0.9.0-rc.1 or 0.9.0-dev.3, and fails naming why otherwise
-#   scripts/release:version --tag <tag>        the version a final release or release candidate tag names, checked:
-#                                              v0.9.0 gives 0.9.0 and v0.9.0-rc.1 gives 0.9.0-rc.1; any other tag, or
-#                                              one for another version, fails
+#                                              such as 0.10.0, 0.10.0-beta.1, 0.10.0-rc.1 or 0.10.0-dev.3
+#   scripts/release:version --tag <tag>        prints the version named by vX.Y.Z, vX.Y.Z-beta.N or vX.Y.Z-rc.N
+#                                              when X.Y.Z matches the product version and N is a positive integer
+#                                              without leading zeros, e.g. v0.10.0-beta.1 gives 0.10.0-beta.1
 #
 # A release's builds are given its version as -p:Version (scripts/release:assets, and the CameraAgent image through
 # HVO_VERSION). Directory.Build.targets refuses a build given a version that --check would refuse.
@@ -30,7 +30,7 @@ prefix="$(sed -n 's:^[[:space:]]*<VersionPrefix>\([^<]*\)</VersionPrefix>[[:spac
 [[ "$(grep -c '<VersionPrefix>' "$props")" == 1 && -n "$prefix" ]] ||
     fail "Directory.Build.props must hold exactly one VersionPrefix, on a line of its own."
 [[ "$prefix" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] ||
-    fail "the VersionPrefix '$prefix' is not a release version such as 0.9.0."
+    fail "the VersionPrefix '$prefix' is not a release version such as 0.10.0."
 
 # A SemVer pre-release identifier: a number without a leading zero, or letters, digits and hyphens with a non-digit.
 identifier='(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'
@@ -48,15 +48,15 @@ case "${1:-}" in
         [[ $# -eq 2 ]] || usage
         version="$2"
         [[ "$version" =~ ^((0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*))(-${identifier}(\.${identifier})*)?$ ]] ||
-            fail "'$version' is not a release version such as $prefix, $prefix-rc.1 or $prefix-dev.1 (no build metadata)."
+            fail "'$version' is not a release version such as $prefix, $prefix-beta.1, $prefix-rc.1 or $prefix-dev.1 (no build metadata)."
         [[ "${BASH_REMATCH[1]}" == "$prefix" ]] ||
             fail "'$version' is for ${BASH_REMATCH[1]}, but Directory.Build.props holds $prefix. Change the VersionPrefix first, in its own pull request."
         ;;
     --tag)
         [[ $# -eq 2 ]] || usage
         tag="$2"
-        [[ "$tag" =~ ^v((0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*))(-rc\.([1-9][0-9]*))?$ ]] ||
-            fail "the tag '$tag' is not a release tag: use v$prefix for a release or v$prefix-rc.1 for a release candidate."
+        [[ "$tag" =~ ^v((0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*))(-(beta|rc)\.[1-9][0-9]*)?$ ]] ||
+            fail "the tag '$tag' is not a release tag: use v$prefix, v$prefix-beta.N or v$prefix-rc.N (N is a positive integer without leading zeros)."
         [[ "${BASH_REMATCH[1]}" == "$prefix" ]] ||
             fail "the tag '$tag' is for ${BASH_REMATCH[1]}, but Directory.Build.props holds $prefix. Change the VersionPrefix first, in its own pull request."
         printf '%s\n' "${tag#v}"

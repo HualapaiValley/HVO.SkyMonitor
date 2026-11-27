@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 # The GitHub checks the pre-release and release workflows' draft and publish jobs make before they write (install
-# contract section 3, #1309, #1310). A tag is a pre-release's, vX.Y.Z-dev.N, a release candidate's, vX.Y.Z-rc.N, or a
-# final release's, vX.Y.Z. It needs gh, signed in or with GH_TOKEN, and jq.
+# contract section 3, #1309, #1310). Tags are vX.Y.Z-dev.N, vX.Y.Z-beta.N, vX.Y.Z-rc.N or vX.Y.Z. It needs gh, signed
+# in or with GH_TOKEN, and jq.
 #
 #   scripts/release:prerelease-check unreleased <tag>   no release or draft has the tag yet; with a token that can write
 #                                                       (contents: write) the list includes drafts
 #   scripts/release:prerelease-check draft <tag>        exactly one release has the tag, and it is a draft, marked a
-#                                                       pre-release exactly when the tag is a pre-release's or a release
-#                                                       candidate's
+#                                                       pre-release exactly when the tag has a dev, beta or rc suffix
 #   scripts/release:prerelease-check attested <digest>  the image digest has at least one attestation of this
 #                                                       repository on record (attestations: read)
 #
@@ -33,8 +32,8 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$repo_root/scripts/lib/github-api.sh"
 
 require_tag() {
-    [[ "$1" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-dev\.(0|[1-9][0-9]*)|-rc\.([1-9][0-9]*))?$ ]] ||
-        fail "$1 is not a release tag: vX.Y.Z, vX.Y.Z-rc.N or vX.Y.Z-dev.N."
+    [[ "$1" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-dev\.(0|[1-9][0-9]*)|-(beta|rc)\.[1-9][0-9]*)?$ ]] ||
+        fail "$1 is not a release tag: vX.Y.Z, vX.Y.Z-beta.N, vX.Y.Z-rc.N or vX.Y.Z-dev.N."
 }
 
 # The releases with the tag, from every page of the list.
