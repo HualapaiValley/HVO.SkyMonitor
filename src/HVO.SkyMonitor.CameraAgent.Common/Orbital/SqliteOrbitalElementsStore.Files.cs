@@ -316,10 +316,15 @@ public sealed partial class SqliteOrbitalElementsStore
                     continue;
                 }
                 DurableSync.RequireRegularFile(source);
+                if (!await TryVerifyFileMatchesSha256Async(source, name, cancellationToken).ConfigureAwait(false))
+                {
+                    AmbiguousEntryLeft(_logger, QuarantineDirectoryName);
+                    continue;
+                }
                 if (File.Exists(destination))
                 {
                     DurableSync.RequireRegularFile(destination);
-                    if (await FileMatchesSha256Async(destination, name, cancellationToken).ConfigureAwait(false))
+                    if (await TryVerifyFileMatchesSha256Async(destination, name, cancellationToken).ConfigureAwait(false))
                     {
                         DurableSync.File(destination);
                         DeleteAndSyncQuarantineFile(source, quarantineDirectory);
@@ -336,6 +341,18 @@ public sealed partial class SqliteOrbitalElementsStore
             {
                 AmbiguousEntryLeft(_logger, QuarantineDirectoryName);
             }
+        }
+    }
+
+    private async ValueTask<bool> TryVerifyFileMatchesSha256Async(string path, string sha256, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await FileMatchesSha256Async(path, sha256, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (!cancellationToken.IsCancellationRequested && exception is IOException or UnauthorizedAccessException)
+        {
+            return false;
         }
     }
 

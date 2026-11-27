@@ -474,6 +474,31 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
         }
     }
 
+    private static readonly string[] EstablishedLedgerMarkerNames =
+    [
+        DatabaseName,
+        DatabaseName + "-journal",
+        DatabaseName + "-wal",
+        DatabaseName + "-shm",
+        CheckpointName,
+        "retained-integrity.v1.lock",
+        "deployment-location.v1.protected",
+        "manual-deployment-location.v1.protected"
+    ];
+
+    private static bool IsEstablishedLedgerMarkerName(string name)
+    {
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        foreach (var marker in EstablishedLedgerMarkerNames)
+        {
+            if (string.Equals(name, marker, comparison))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static bool HasEstablishedLedgerOnDisk(string fullPath)
     {
         var current = Path.GetDirectoryName(fullPath);
@@ -482,19 +507,38 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
             var locationDirectory = Path.Combine(current, ".location");
             if (Directory.Exists(locationDirectory))
             {
-                if (Path.Exists(Path.Combine(locationDirectory, DatabaseName)) ||
-                    Path.Exists(Path.Combine(locationDirectory, CheckpointName)) ||
-                    Path.Exists(Path.Combine(locationDirectory, "deployment-location.v1.protected")))
-                {
-                    return true;
-                }
                 try
                 {
-                    _ = Directory.EnumerateFileSystemEntries(locationDirectory).Any();
+                    foreach (var entry in Directory.EnumerateFileSystemEntries(locationDirectory))
+                    {
+                        if (IsEstablishedLedgerMarkerName(Path.GetFileName(entry)))
+                        {
+                            return true;
+                        }
+                    }
                 }
                 catch (Exception exception) when (exception is UnauthorizedAccessException or IOException)
                 {
                     return true;
+                }
+
+                foreach (var marker in EstablishedLedgerMarkerNames)
+                {
+                    try
+                    {
+                        _ = File.GetAttributes(Path.Combine(locationDirectory, marker));
+                        return true;
+                    }
+                    catch (FileNotFoundException)
+                    {
+                    }
+                    catch (DirectoryNotFoundException)
+                    {
+                    }
+                    catch (Exception exception) when (exception is UnauthorizedAccessException or IOException)
+                    {
+                        return true;
+                    }
                 }
             }
             var parent = Path.GetDirectoryName(current);

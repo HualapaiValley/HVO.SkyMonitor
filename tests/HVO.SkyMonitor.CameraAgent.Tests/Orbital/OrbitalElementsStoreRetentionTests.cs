@@ -106,6 +106,96 @@ public sealed class OrbitalElementsStoreRetentionTests : OrbitalStoreTestBase
     }
 
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task StartupMigrationPreservesLegacyQuarantineJsonWhenSourceDigestMismatches(bool validRawExists)
+    {
+        var root = CreateRoot();
+        var clock = new OrbitalElementsStoreTestData.Clock(OrbitalElementsStoreTestData.Start);
+        var settings = OrbitalElementsStoreTestData.Settings(root, maximumQuarantined: 4);
+        var quarantine = Path.Combine(root, "quarantine");
+        var validBody = "{\"OBJECT_NAME\":\"TRUNCATED"u8.ToArray();
+        var expectedSha = OrbitalElementsStoreTestData.Hash(validBody);
+        var mismatchedSource = "{\"OBJECT_NAME\":\"CORRUPTED-SOURCE"u8.ToArray();
+
+        using (var initial = OrbitalElementsStoreTestData.Open(root, clock, settings))
+        {
+            var attempt = await OrbitalElementsStoreTestData.AdmitAsync(initial).ConfigureAwait(false);
+            await initial.RecordQuarantineAsync(attempt, validBody, expectedSha, "orbital.json-syntax", "mismatched-source", CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+
+        var legacyJsonPath = Path.Combine(quarantine, expectedSha + ".json");
+        var rawPath = Path.Combine(quarantine, expectedSha + ".raw");
+        await File.WriteAllBytesAsync(legacyJsonPath, mismatchedSource).ConfigureAwait(false);
+        if (!validRawExists)
+        {
+            File.Delete(rawPath);
+        }
+
+        using (var restarted = OrbitalElementsStoreTestData.Open(root, clock, settings))
+        {
+            await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+
+        Assert.IsTrue(File.Exists(legacyJsonPath),
+            "Legacy quarantine .json whose bytes do not match its SHA-256 filename must be preserved untouched.");
+        CollectionAssert.AreEqual(mismatchedSource, await File.ReadAllBytesAsync(legacyJsonPath).ConfigureAwait(false));
+        Assert.AreEqual(validRawExists, File.Exists(rawPath),
+            validRawExists ? "Existing valid .raw must remain intact." : "Mismatched legacy .json must not be published as .raw.");
+        if (validRawExists)
+        {
+            CollectionAssert.AreEqual(validBody, await File.ReadAllBytesAsync(rawPath).ConfigureAwait(false));
+        }
+    }
+
+    [TestMethod]
+    public async Task StartupMigrationPreservesUnreadableLegacyQuarantineJson()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Inconclusive("Unix file permissions are required to make the legacy quarantine file unreadable.");
+            return;
+        }
+
+        var root = CreateRoot();
+        var clock = new OrbitalElementsStoreTestData.Clock(OrbitalElementsStoreTestData.Start);
+        var settings = OrbitalElementsStoreTestData.Settings(root, maximumQuarantined: 4);
+        var quarantine = Path.Combine(root, "quarantine");
+        var validBody = "{\"OBJECT_NAME\":\"TRUNCATED"u8.ToArray();
+        var expectedSha = OrbitalElementsStoreTestData.Hash(validBody);
+
+        using (var initial = OrbitalElementsStoreTestData.Open(root, clock, settings))
+        {
+            var attempt = await OrbitalElementsStoreTestData.AdmitAsync(initial).ConfigureAwait(false);
+            await initial.RecordQuarantineAsync(attempt, validBody, expectedSha, "orbital.json-syntax", "unreadable-source", CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+
+        var legacyJsonPath = Path.Combine(quarantine, expectedSha + ".json");
+        var rawPath = Path.Combine(quarantine, expectedSha + ".raw");
+        File.Move(rawPath, legacyJsonPath, overwrite: false);
+        var originalMode = File.GetUnixFileMode(legacyJsonPath);
+        File.SetUnixFileMode(legacyJsonPath, UnixFileMode.None);
+        try
+        {
+            using (var restarted = OrbitalElementsStoreTestData.Open(root, clock, settings))
+            {
+                await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+
+            Assert.IsTrue(File.Exists(legacyJsonPath));
+            Assert.IsFalse(File.Exists(rawPath));
+        }
+        finally
+        {
+            File.SetUnixFileMode(legacyJsonPath, originalMode);
+        }
+
+        CollectionAssert.AreEqual(validBody, await File.ReadAllBytesAsync(legacyJsonPath).ConfigureAwait(false));
+    }
+
+    [TestMethod]
     public async Task SnapshotsOutsideThePolicyAreTombstonedThenDeletedAndTheActivePairIsProtected()
     {
         var root = CreateRoot();

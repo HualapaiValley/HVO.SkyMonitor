@@ -226,6 +226,89 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
     }
 
     [TestMethod]
+    [DataRow(false, UnixFileMode.UserRead)]
+    [DataRow(true, UnixFileMode.UserRead)]
+    [DataRow(false, UnixFileMode.UserRead | UnixFileMode.UserWrite)]
+    [DataRow(true, UnixFileMode.UserRead | UnixFileMode.UserWrite)]
+    public async Task StartupMigrationPreservesLegacyQuarantineJsonWhileLocationDirectoryIsNonSearchable(
+        bool matchingDuplicateRawExists, UnixFileMode restrictedLocationMode)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Inconclusive("Unix file permissions are required to make the .location directory non-searchable.");
+            return;
+        }
+
+        var seed = CreateSeed(35, -113, 0, "America/Phoenix");
+        var token = CancellationToken.None;
+        var orbitalRoot = Path.Combine(_options.Value.RawIngressRoot, ".orbital-elements");
+        var quarantine = Path.Combine(orbitalRoot, "quarantine");
+        var clock = new OrbitalElementsStoreTestData.Clock(Now);
+        var malformedJson = "{\"OBJECT_NAME\":\"TRUNCATED"u8.ToArray();
+        var malformedSha = CelesTrakGpTestData.Sha256(malformedJson);
+        var legacyJsonPath = Path.Combine(quarantine, malformedSha + ".json");
+        var migratedRawPath = Path.Combine(quarantine, malformedSha + ".raw");
+        var locationDirectory = Path.Combine(_options.Value.RawIngressRoot, ".location");
+        DeploymentLocationSnapshot active;
+
+        using (var locations = CreateStore())
+        {
+            active = await locations.InitializeAsync(seed, token).ConfigureAwait(false);
+            using var orbital = OrbitalElementsStoreTestData.Open(orbitalRoot, clock,
+                OrbitalElementsStoreTestData.Settings(orbitalRoot, maximumQuarantined: 4));
+            var attempt = await OrbitalElementsStoreTestData.AdmitAsync(orbital).ConfigureAwait(false);
+            await orbital.RecordQuarantineAsync(attempt, malformedJson, malformedSha,
+                "orbital.json-syntax", "legacy malformed JSON body", token).ConfigureAwait(false);
+            RetainedFileMutations.Move(migratedRawPath, legacyJsonPath);
+            if (matchingDuplicateRawExists)
+            {
+                await File.WriteAllBytesAsync(migratedRawPath, malformedJson, token).ConfigureAwait(false);
+            }
+        }
+
+        // Mode 0400/0600 permits listing .location entries while failing stat/exists lookups with EACCES.
+        var originalMode = File.GetUnixFileMode(locationDirectory);
+        File.SetUnixFileMode(locationDirectory, restrictedLocationMode);
+        try
+        {
+            using (var unavailableOrbital = OrbitalElementsStoreTestData.Open(orbitalRoot, clock,
+                OrbitalElementsStoreTestData.Settings(orbitalRoot, maximumQuarantined: 4)))
+            {
+                await unavailableOrbital.InitializeAsync(token).ConfigureAwait(false);
+            }
+
+            Assert.IsTrue(File.Exists(legacyJsonPath),
+                "Legacy quarantine .json must be preserved untouched while .location is non-searchable.");
+            CollectionAssert.AreEqual(malformedJson, await File.ReadAllBytesAsync(legacyJsonPath, token).ConfigureAwait(false));
+            Assert.AreEqual(matchingDuplicateRawExists, File.Exists(migratedRawPath));
+            if (matchingDuplicateRawExists)
+            {
+                CollectionAssert.AreEqual(malformedJson, await File.ReadAllBytesAsync(migratedRawPath, token).ConfigureAwait(false));
+            }
+        }
+        finally
+        {
+            File.SetUnixFileMode(locationDirectory, originalMode);
+        }
+
+        // Restoring .location permissions lets restart migration complete and qualify cleanly.
+        using var recoveredLocations = CreateStore();
+        Assert.AreEqual(active, await recoveredLocations.InitializeAsync(seed, token).ConfigureAwait(false));
+        using (var recoveredOrbital = OrbitalElementsStoreTestData.Open(orbitalRoot, clock,
+            OrbitalElementsStoreTestData.Settings(orbitalRoot, maximumQuarantined: 4)))
+        {
+            await recoveredOrbital.InitializeAsync(token).ConfigureAwait(false);
+            Assert.IsFalse(File.Exists(legacyJsonPath));
+            Assert.IsTrue(File.Exists(migratedRawPath));
+            CollectionAssert.AreEqual(malformedJson, await File.ReadAllBytesAsync(migratedRawPath, token).ConfigureAwait(false));
+        }
+
+        Assert.AreEqual(active, await recoveredLocations.FullVerifyAsync(seed, token).ConfigureAwait(false));
+        Assert.AreEqual(active, await recoveredLocations.VerifyInstallationAsync(seed, token).ConfigureAwait(false));
+        Assert.IsFalse(recoveredLocations.RequiresRetainedIntegrityScrub);
+    }
+
+    [TestMethod]
     [DataRow(false, true)]
     [DataRow(false, false)]
     [DataRow(true, true)]
