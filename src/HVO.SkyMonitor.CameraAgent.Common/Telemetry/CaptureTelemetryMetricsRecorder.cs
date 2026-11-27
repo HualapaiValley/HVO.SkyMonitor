@@ -11,7 +11,6 @@ public sealed class CaptureTelemetryMetricsRecorder
 
     private readonly Counter<long> _captureCounter;
     private readonly Counter<long> _framesStoredCounter;
-    private readonly Counter<long> _immediateUploadCounter;
     private readonly Histogram<double> _intervalMs;
     private readonly Histogram<double> _exposureMs;
     private readonly Histogram<double> _processingMs;
@@ -30,11 +29,6 @@ public sealed class CaptureTelemetryMetricsRecorder
             name: "camera_agent.capture.frames.stored",
             unit: null,
             description: "Number of captures that produced a frame.");
-
-        _immediateUploadCounter = Meter.CreateCounter<long>(
-            name: "camera_agent.capture.immediate_uploads",
-            unit: null,
-            description: "Number of captures requesting immediate upload.");
 
         _intervalMs = Meter.CreateHistogram<double>(
             name: "camera_agent.capture.interval_ms",
@@ -86,11 +80,6 @@ public sealed class CaptureTelemetryMetricsRecorder
         if (sample.FrameStored)
         {
             _framesStoredCounter.Add(1, tags);
-        }
-
-        if (sample.RequiresImmediateUpload)
-        {
-            _immediateUploadCounter.Add(1, tags);
         }
 
         if (sample.TemperatureC is { } temperature && !double.IsNaN(temperature))

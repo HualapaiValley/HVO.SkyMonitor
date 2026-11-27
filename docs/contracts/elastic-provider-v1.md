@@ -1,5 +1,7 @@
 # elastic-provider-v1
 
+> Historical contract for the retired central integration. See the [current CameraAgent architecture](../project-plan.md#current-application-topology).
+
 Provider-neutral boundaries for elastic processing capacity (#430, `RM-005`).
 The host stays the scheduler and the authority for job state; a provider
 adapter only starts, lists, and retires runner instances. Instances join the

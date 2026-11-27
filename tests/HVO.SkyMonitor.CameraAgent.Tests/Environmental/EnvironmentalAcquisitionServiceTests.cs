@@ -151,7 +151,7 @@ public sealed class EnvironmentalAcquisitionServiceTests
                         kind, index, scheduleEpochUtc: startupEpoch, periodSeconds: 86_400)).ToArray()
                 }
             });
-            using var store = new SqliteEnvironmentalObservationOutbox();
+            using var store = new SqliteEnvironmentalObservationStore();
             var factory = new EnvironmentalSourceFactory(
                 services,
                 [new EnvironmentalSourceRegistration(
@@ -270,7 +270,7 @@ public sealed class EnvironmentalAcquisitionServiceTests
     }
 
     private static async Task WaitForAttemptsAsync(
-        SqliteEnvironmentalObservationOutbox store,
+        SqliteEnvironmentalObservationStore store,
         string root,
         int count)
     {
@@ -385,11 +385,11 @@ public sealed class EnvironmentalAcquisitionServiceTests
         {
             Interlocked.Increment(ref _publishCount);
             return ValueTask.FromResult(new EnvironmentalObservationPublishResult(
-                EnvironmentalObservationPublishDisposition.Enqueued, null));
+                EnvironmentalObservationPublishDisposition.Committed));
         }
     }
 
-    private sealed class StorePublisher(SqliteEnvironmentalObservationOutbox store, string root)
+    private sealed class StorePublisher(SqliteEnvironmentalObservationStore store, string root)
         : IEnvironmentalObservationPublisher, IEnvironmentalHeldPollPublisher
     {
         public bool SupportsHeldPollSettlement => true;
@@ -405,9 +405,8 @@ public sealed class EnvironmentalAcquisitionServiceTests
             var result = await store.CommitLocalAsync(root, fact, cancellationToken).ConfigureAwait(false);
             return new EnvironmentalObservationPublishResult(
                 result.Disposition == LocalEnvironmentalObservationCommitDisposition.Committed
-                    ? EnvironmentalObservationPublishDisposition.Enqueued
-                    : EnvironmentalObservationPublishDisposition.Duplicate,
-                null);
+                    ? EnvironmentalObservationPublishDisposition.Committed
+                    : EnvironmentalObservationPublishDisposition.Duplicate);
         }
     }
 

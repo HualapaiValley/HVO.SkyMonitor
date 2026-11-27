@@ -523,7 +523,7 @@ public sealed class InstallerControlVerifierTests
         {
             if (receipt?.Phase != CameraAgentControlPhase.Draining || !fixture.Client.Effects.Contains("drain")) return;
             if (++heartbeats == 3)
-                drain.SetResult(new("Paused", 8, 42, 0, 0, 0, 0, 0, 0, 0, 0));
+                drain.SetResult(new("Paused", 8, 42, 0, 0, 0, 0, 0, 0));
         };
         var terminal = await fixture.RunAsync();
         Assert.AreEqual(CameraAgentControlPhase.Succeeded, terminal.Phase);
@@ -722,7 +722,7 @@ public sealed class InstallerControlVerifierTests
             Version = 8;
             AfterDrain?.Invoke();
             return PendingDrain ?? (HungDrain ? new TaskCompletionSource<LifecycleContinuity>().Task : Task.FromResult(Boundary() with
-            { OutboxPending = Failure == "drain-backlog" ? 1 : 0, QueuesObserved = Failure != "unobserved-queues" }));
+            { LanePending = Failure == "drain-backlog" ? 1 : 0, QueuesObserved = Failure != "unobserved-queues" }));
         }
 
         public Task RestartAsync(CameraAgentControlReceipt receipt, CancellationToken cancellationToken)
@@ -754,6 +754,6 @@ public sealed class InstallerControlVerifierTests
             return Task.CompletedTask;
         }
 
-        private LifecycleContinuity Boundary() => new("Paused", Version, 42, 0, 0, 0, 0, 0, 0, 0, 0);
+        private LifecycleContinuity Boundary() => new("Paused", Version, 42, 0, 0, 0, 0, 0, 0);
     }
 }

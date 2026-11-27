@@ -346,7 +346,7 @@ public sealed partial class EnvironmentalAcquisitionService(
 
     private static bool IsJournalFailure(Exception failure)
         => failure is SqliteException or IOException or UnauthorizedAccessException or
-            LocalEnvironmentalObservationCapacityException or EnvironmentalObservationOutboxCapacityException;
+            LocalEnvironmentalObservationCapacityException;
 
     private sealed class HeldPollRetry
     {

@@ -121,7 +121,6 @@ public sealed class Issue1170ComposedPipelineEvidenceTests
                 ["CameraAgent:RawIngressRoot"] = Path.Combine(root, "ingress"),
                 ["CameraAgent:RawIngressReserveBytes"] = "0",
                 ["CameraAgent:AgentId"] = "issue1170-evidence",
-                ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false"
             }).Build());
             services.AddCameraModule<VirtualSkyCameraModule>("VirtualSky");
             var provider = services.BuildServiceProvider();
@@ -417,7 +416,6 @@ public sealed class Issue1170ComposedPipelineEvidenceTests
         {
             ConfigFilePath = path,
             AgentId = "issue1170-evidence",
-            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled },
             Observatory = new ObservatoryLocation(35.347, -113.878, 1000, "America/Phoenix")
         }), NullLogger<FileCameraAgentConfigurationLoader>.Instance);
         return await loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);

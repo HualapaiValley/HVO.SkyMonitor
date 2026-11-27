@@ -9,7 +9,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 public sealed partial class ControlPageTests
 {
     [TestMethod]
-    [DataRow(CameraAgentControlPhase.Draining, "Stopping acquisition and settling accepted processing and delivery.")]
+    [DataRow(CameraAgentControlPhase.Draining, "Stopping acquisition and settling accepted processing.")]
     [DataRow(CameraAgentControlPhase.Restarting, "Installer requested a supervised CameraAgent restart.")]
     [DataRow(CameraAgentControlPhase.Verifying, "Installer is waiting for a new process and verifying durable continuity.")]
     public void ClaimedLifecycleShowsHeldAdmissionAndItsPhaseWithFreshWorkerLease(CameraAgentControlPhase phase, string detail)
@@ -381,11 +381,11 @@ public sealed partial class ControlPageTests
             Assert.HasCount(2, rows);
             // Exactly the cancelled receipt carries the wording; a receipt without a cancellation gains none.
             var cancelled = rows.Single(static row => row.TextContent.Contains("Cancelled by", StringComparison.Ordinal));
-            StringAssert.Contains(cancelled.TextContent, "Stopping acquisition and settling accepted processing and delivery. " + expected, StringComparison.Ordinal);
+            StringAssert.Contains(cancelled.TextContent, "Stopping acquisition and settling accepted processing. " + expected, StringComparison.Ordinal);
             StringAssert.Contains(cancelled.TextContent, "Local owner", StringComparison.Ordinal);
             // The active-operation banner is the one that holds the cancel control; the page has other status banners.
             var banner = cut.Find("#control-lifecycle-cancel").ParentElement!;
-            StringAssert.Contains(banner.TextContent, "Stopping acquisition and settling accepted processing and delivery. " + expected, StringComparison.Ordinal);
+            StringAssert.Contains(banner.TextContent, "Stopping acquisition and settling accepted processing. " + expected, StringComparison.Ordinal);
             foreach (var text in new[] { cut.Find(".control-receipts").TextContent, banner.TextContent })
             {
                 Assert.DoesNotContain(subject, text, StringComparison.Ordinal);

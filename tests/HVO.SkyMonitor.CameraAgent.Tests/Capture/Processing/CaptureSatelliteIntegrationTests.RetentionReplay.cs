@@ -35,7 +35,7 @@ public sealed partial class CaptureSatelliteIntegrationTests
                 ? step with
                 {
                     Options = System.Text.Json.JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
-                    { StorageRoot = archive, QueueForUpload = false, UpdateLatestFrame = false })
+                    { StorageRoot = archive, UpdateLatestFrame = false })
                 } : step).ToArray()
                 }
             };

@@ -2,9 +2,7 @@ using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Data;
-using HVO.SkyMonitor.CameraAgent.IntegrationTests.Infrastructure;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.TestSupport;
 using Microsoft.AspNetCore.Authentication;
@@ -18,7 +16,7 @@ using Microsoft.Extensions.Hosting;
 namespace HVO.SkyMonitor.CameraAgent.IntegrationTests.Infrastructure;
 
 /// <summary>
-/// Boots one CameraAgent with no LogicHost or external service dependencies.
+/// Boots one CameraAgent with isolated local state.
 /// </summary>
 internal sealed class CameraAgentIntegrationFixture : IDisposable
 {
@@ -52,7 +50,6 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
             JsonSerializer.Serialize(new
             {
                 deviceId = "cameraagent-integration-test",
-                verificationCode = "INTEG2TEST",
                 createdUtc = DateTimeOffset.UtcNow
             })).ConfigureAwait(false);
         _catalogFixture = CatalogFixtureInstallation.Create(
@@ -94,13 +91,6 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
                         IntegrationUserAuthenticationHandler.SchemeName,
                         _ => { });
 
-                var drainService = services.SingleOrDefault(descriptor =>
-                    descriptor.ServiceType == typeof(IHostedService)
-                    && descriptor.ImplementationType == typeof(ArtifactOutboxDrainService));
-                if (drainService is not null)
-                {
-                    services.Remove(drainService);
-                }
                 configureServices?.Invoke(services);
             });
         });
@@ -178,7 +168,6 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
 
     private Dictionary<string, string?> BuildConfigurationOverrides(string provisioningRoot) => new(StringComparer.Ordinal)
     {
-        ["CameraAgent:CentralIntegration:Mode"] = "Disabled",
         ["CameraAgent:ConfigFilePath"] = _configurationPath,
         ["CameraAgent:RawIngressRoot"] = _storageRoot,
         ["CameraAgent:DiskPressureThresholdPercent"] = "1",

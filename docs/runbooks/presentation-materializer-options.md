@@ -34,4 +34,4 @@ Preview the changes, save a draft, validate it, and explicitly activate it.
 Saving does not activate. Roll back to the previous revision through the existing
 graph controls. Retained products and old revisions remain reconstructable with
 their recorded inputs. The descriptor and codec are host-neutral; both hosts use
-the same materialization executor. This slice adds no LogicHost editing surface.
+the same materialization executor.

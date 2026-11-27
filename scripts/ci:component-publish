@@ -45,14 +45,11 @@ mkdir -p "$evidence_root"
 
 case "$component" in
   shared)
-    publish_project src/HVO.SkyMonitor.ProcessingRunner/HVO.SkyMonitor.ProcessingRunner.csproj processing-runner-linux-x64 linux-x64
-    test -x "$evidence_root/processing-runner-linux-x64/HVO.SkyMonitor.ProcessingRunner"
     ;;
   cameraagent)
     publish_project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj cameraagent
     publish_project src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj replay-runner-linux-x64 linux-x64
     test -f "$evidence_root/cameraagent/HVO.SkyMonitor.CameraAgent.dll"
-    test ! -e "$evidence_root/cameraagent/HVO.SkyMonitor.LogicHost.dll"
     test -x "$evidence_root/replay-runner-linux-x64/HVO.SkyMonitor.CameraAgent.ReplayRunner"
     ;;
   delivery)

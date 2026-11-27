@@ -412,7 +412,7 @@ public sealed partial class LifecycleContractTests
         var manifest = fixture.Manifest with { LastLifecycleOperationId = id, PreviousStateSnapshot = retry };
         var lifecycle = new FakeLifecycleClient
         {
-            RecoveryContinuity = new LifecycleContinuity("Paused", 2, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+            RecoveryContinuity = new LifecycleContinuity("Paused", 2, 0, 0, 0, 0, 0, 0, 0)
         };
         var operation = new LifecycleOperationState(2, id, LifecycleOperationKind.Upgrade, fixture.InstanceId,
             new string('c', 64), LifecycleOperationPhase.Committed, InstallationStatus.Running, DateTimeOffset.UtcNow,

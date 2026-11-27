@@ -230,7 +230,6 @@ internal static class PrivilegedPreparation
     [
         productRoot,
         Path.Combine(productRoot, "cameraagents"),
-        Path.Combine(productRoot, "logichosts"),
         Path.Combine(productRoot, "catalogs")
     ];
 
@@ -279,7 +278,6 @@ internal static class PrivilegedPreparation
             {
                 paths.ProductRoot,
                 Path.Combine(paths.ProductRoot, "cameraagents"),
-                Path.Combine(paths.ProductRoot, "logichosts"),
                 Path.Combine(paths.ProductRoot, "catalogs"),
                 paths.InstanceRoot,
                 paths.CatalogRoot,

@@ -39,7 +39,7 @@ public sealed partial class ProcessingNodeOptionsTests
     }
 
     [TestMethod]
-    public void EnvironmentSelectionPreservesSourceSpellingsDuplicatesOrderAndHostNeutralIdentity()
+    public void EnvironmentSelectionPreservesSourceSpellingsDuplicatesOrderAndGraphIdentity()
     {
         var descriptor = RetainedLayerOptionDescriptors.Environment;
         const string json = """{ "EnvironmentalKinds" : [ 0, "aIrTemperature", "0", " WindSpeed ", "Cloud\u0043over" ], "WidthPixels":1936, "future":{"n":1e+02}, "Future":null }""";
@@ -53,15 +53,14 @@ public sealed partial class ProcessingNodeOptionsTests
         { ["environmentalKinds"] = ProcessingOptionValue.FromCollection(ProcessingOptionKind.EnumCollection, selection.Move(4, 0).RemoveAt(3)) });
         Assert.AreEqual("""{ "EnvironmentalKinds" : ["Cloud\u0043over",0,"aIrTemperature"," WindSpeed "], "WidthPixels":1936, "future":{"n":1e+02}, "Future":null }""", changed.Options!.Value.GetRawText());
         var graph = Graph(Node("environment", descriptor.StepAlias, descriptor.StepVersion, json));
-        var plans = new[] { ProcessingGraphHosts.CameraAgent, ProcessingGraphHosts.LogicHost }.Select(host =>
-        {
-            var before = ProcessingGraphCompiler.Compile(graph, new(host, []));
-            var after = ProcessingGraphCompiler.Compile(RoundTrip(ProcessingNodeOptionsCatalog.BuiltIn, graph), new(host, []));
-            Assert.IsTrue(before.IsValid);
-            Assert.AreEqual(before.Plan!.PlanIdentitySha256, after.Plan!.PlanIdentitySha256);
-            return before.Plan.Nodes.Single().Definition.EffectiveOptions.GetRawText();
-        }).ToArray();
-        Assert.AreEqual(plans[0], plans[1]);
+        var environment = new ProcessingGraphCompilationContext(ProcessingGraphHosts.CameraAgent, []);
+        var before = ProcessingGraphCompiler.Compile(graph, environment);
+        var after = ProcessingGraphCompiler.Compile(RoundTrip(ProcessingNodeOptionsCatalog.BuiltIn, graph), environment);
+        Assert.IsTrue(before.IsValid);
+        Assert.IsTrue(after.IsValid);
+        Assert.AreEqual(before.Plan!.PlanIdentitySha256, after.Plan!.PlanIdentitySha256);
+        Assert.AreEqual(before.Plan.Nodes.Single().Definition.EffectiveOptions.GetRawText(),
+            after.Plan.Nodes.Single().Definition.EffectiveOptions.GetRawText());
     }
 
     [TestMethod]

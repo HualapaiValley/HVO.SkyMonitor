@@ -55,7 +55,7 @@ public static class FrameFactsRetainedCatalog
                 name switch
                 {
                     "sourceUtc" => "FrameFactsRetainedCaptureExtrasV1.SourceTimestamp (CameraFrame.TimestampUtc)",
-                    "processingUtc" => "FrameFactsRetainedCaptureExtrasV1.ProcessingCompletedUtc (GraphExecutionEvidenceV1.CompletedUtc)",
+                    "processingUtc" => "FrameFactsRetainedCaptureExtrasV1.ProcessingCompletedUtc (retained execution completion)",
                     "captureLocal" => "ExposureStartedUtc + FrameFactsRetainedLocalTimeV1 frozen offset",
                     "artifactCreatedUtc" => descriptor + ".Artifact.CreatedUtc",
                     _ => descriptor + ".Timing.ExposureStartedUtc/ExposureEndedUtc"

@@ -35,49 +35,19 @@ evidence.
 
 ## 1. Objective
 
-Complete a production-like standalone CameraAgent and then the optional
-CameraAgent-to-LogicHost software path using VirtualSky before implementing
-production physical camera modules.
-
-The target system must:
-
-1. Acquire an immutable virtual raw frame through the ordinary camera contract.
-2. Durably accept the raw payload before optional processing.
-3. Fan out durable references to independent standard, upload, and secondary
-   processing lanes.
-4. Execute versioned local recipes for calibration, combination, preview, and
-   annotation.
-5. Evaluate local schedules, acquire virtual environmental observations, and
-   expose the complete local workflow through authenticated CameraAgent UI
-   without requiring LogicHost.
-6. Prove a full-catalog, calibrated, full-resolution standalone CameraAgent with
-   central services absent.
-7. Optionally upload a reconstruction-complete raw contract to LogicHost.
-8. Reconstruct the raw frame centrally without consulting current device state.
-9. Execute the same shared recipes centrally, with optional enhanced central
-   configuration and contextual inputs.
-10. Execute deterministic weather, cloud, and transient workflows through the
-   same durable processing substrate.
-11. Recover correctly across CameraAgent, network, LogicHost, SQL, object-store,
-   and worker failures.
-12. Expose durable operational state through authenticated APIs and secondary
-    operator UI.
-
-The final automated flow is:
+CameraAgent acquires and durably records a camera frame, then fans out local
+processing references. Versioned recipes produce calibrated and combined images,
+previews, annotations and secondary evidence. The operator can manage local
+schedules, environmental acquisition, retention and replay through authenticated
+interfaces. The VirtualSky path exercises this workflow without physical
+camera hardware.
 
 ```text
-VirtualSky acquisition
-  -> SQLite/file durable raw ingress
-  -> standard, upload, and secondary lanes
-  -> local schedule, environment, calibration, derivatives, and durable history
-  -> authenticated standalone CameraAgent operations and recovery
-  -> optional central integration
-  -> manifest-v2 upload
-  -> LogicHost reconstructable ingest
-  -> shared central recipe execution
-  -> multi-source and window processing
-  -> weather/cloud and virtual transient processing
-  -> authenticated retrieval, operations, and review
+VirtualSky or physical camera acquisition
+  -> durable raw ingress
+  -> standard and secondary local processing lanes
+  -> local artifacts, history and retention
+  -> authenticated CameraAgent operations and archived replay
 ```
 
 ## 2. Explicit Exclusions
@@ -107,23 +77,15 @@ implementation and acceptance remain later work.
 | `SYS-001` | One CameraAgent process owns exactly one configured camera; a host may run multiple isolated CameraAgent processes or containers. |
 | `SYS-002` | Each CameraAgent owns its configuration, local identity/device state, pipeline, bounded history, and telemetry. |
 | `SYS-003` | Camera modules normally run in process behind `ICameraModule`; a separate vendor service requires an explicit adapter decision. |
-| `SYS-004` | CameraAgent continues acquisition and bounded retention during LogicHost or network outage. |
-| `SYS-005` | One LogicHost accepts many CameraAgents across many observatories without becoming part of acquisition correctness. |
-| `SYS-006` | CameraAgent is not the permanent archive; LogicHost is the durable central system of record after verified ingest. |
-| `SYS-007` | Explicit standalone mode provides local schedule, environmental history, calibration, processing, storage, recovery, and authenticated operations with zero central network attempts. |
-| `SYS-008` | Optional central integration consumes durable edge facts and artifacts; it never determines whether local acquisition, processing, history, or operator control exists. |
+| `SYS-004` | CameraAgent continues acquisition and bounded retention during external network outages. |
+| `SYS-005`, `SYS-006`, `SYS-008` | Historical central-host requirements, superseded by the standalone cutover. |
+| `SYS-007` | CameraAgent provides local schedule, environmental history, calibration, processing, storage, recovery and authenticated operations. |
 
-CameraAgent owns camera discovery/acquisition, setpoint control, authoritative
-local schedule/rig/readout/calibration/pipeline revisions, raw normalization,
-local recipes and derivatives, bounded local history, offline authenticated
-operation, outbox, telemetry, and a local read-only catalog. LogicHost owns
-agent registration and received capture-time profile snapshots, streamed
-idempotent ingest, central lifecycle, contextual and cross-agent processing,
-durable history/UI, and reprocessing. LogicHost displays but does not edit
-CameraAgent-owned revisions. These ownership statements are tracked as
-`OWN-EDGE-001` through `OWN-EDGE-010` and `OWN-CENTRAL-001` through
-`OWN-CENTRAL-006` in the
-[requirements crosswalk](planning/requirements-crosswalk.md).
+CameraAgent owns camera discovery and acquisition, setpoint control, local
+schedule and configuration revisions, raw normalization, recipes and
+derivatives, bounded history, authenticated operations, telemetry and a
+read-only catalog. The [Silo cutover plan](planning/cameraagent-silo-cutover.md)
+owns the clean-install storage and archive scope.
 
 ### 3.2 Project boundaries
 
@@ -132,14 +94,13 @@ CameraAgent-owned revisions. These ownership statements are tracked as
 | `HVO.SkyMonitor.AgentCore` | Stable transport-neutral camera, rig, capture timing, frame-layout, artifact, identity, lineage, and version-descriptor contracts | Executable recipes, event assessments, ASP.NET Core, EF Core, object-store SDKs, SQLite, SkiaSharp, camera SDKs, host orchestration |
 | `HVO.SkyMonitor.Astronomy` | Catalog contracts, time, coordinates, ephemerides, camera geometry, projection, and visible-scene behavior | Storage, jobs, image filters, host APIs |
 | `HVO.SkyMonitor.Imaging` | Pure raw/image layout validation, renderers, calibration primitives, combination, demosaic, encoding, annotation, masks, and image-analysis algorithms | Host orchestration, SQL, object storage, UI |
-| `HVO.SkyMonitor.Fleet.Contracts` | Stable transport-neutral fleet status, health, timing, and acknowledgement contracts | HTTP, host orchestration, persistence, retention, authentication, UI |
 | `HVO.SkyMonitor.Processing` | Host-neutral recipe definitions/execution contracts, selectors, transforms, analyzers, gates, windows, environmental/event products, assessments, outcomes, and canonical recipe identity | Host persistence, HTTP, UI, background-service policy |
 | `HVO.SkyMonitor.Catalog.Sqlite` | Shared read-only SQLite catalog adapter | Shared SQL schema, mutable catalog state |
-| `HVO.SkyMonitor.Storage.FileSystem` | Host-neutral root confinement, symlink/reparse protection, atomic filesystem publication, durable file/directory synchronization, and bounded cleanup/error primitives | CameraAgent or LogicHost storage contracts, capture/artifact manifests, bucket/key or generation semantics, SQLite/EF persistence, retention/replay policy, ASP.NET, or provider SDKs |
-| `HVO.SkyMonitor.Common` | Reusable ASP.NET security, identity, API, middleware, and observability infrastructure used by either host | Camera acquisition, recipes/image algorithms, central/edge workflow ownership, or shared domain persistence |
-| `HVO.SkyMonitor.CameraAgent.Common` | Edge acquisition orchestration, SQLite WAL journal, durable lanes, local storage, outbox, retention, telemetry, and configuration | LogicHost references or central persistence |
+| `HVO.SkyMonitor.Storage.FileSystem` | Host-neutral root confinement, symlink/reparse protection, atomic filesystem publication, durable file/directory synchronization, and bounded cleanup/error primitives | CameraAgent storage contracts, capture/artifact manifests, bucket/key or generation semantics, SQLite/EF persistence, retention/replay policy, ASP.NET, or provider SDKs |
+| `HVO.SkyMonitor.Common` | Reusable ASP.NET security, identity, API, middleware, and observability infrastructure | Camera acquisition, recipes/image algorithms, central/edge workflow ownership, or shared domain persistence |
+| `HVO.SkyMonitor.CameraAgent.Common` | Edge acquisition orchestration, SQLite WAL journal, durable lanes, local storage, retention, telemetry, and configuration | Host UI or protocols for other applications |
 | `HVO.SkyMonitor.CameraAgent.Replay` | CameraAgent-local authenticated bounded transport, immutable request/result projection, capabilities, and per-dispatch transport evidence for explicitly requested archived replay | Durable job or lease authority, live/new-capture execution, cross-host evidence export, host persistence, UI, central scheduling, or provider placement |
-| `HVO.SkyMonitor.CameraAgent.ReplayRunner` | Self-contained local replay executable, warmup/probe behavior, and server composition for configured archived replay | Acquisition, durable replay state, publication authority, global scheduling, LogicHost/cloud dependencies, or host UI/API |
+| `HVO.SkyMonitor.CameraAgent.ReplayRunner` | Self-contained local replay executable, warmup/probe behavior, and server composition for configured archived replay | Acquisition, durable replay state, publication authority, global scheduling, cloud dependencies, or host UI/API |
 | `HVO.SkyMonitor.CameraAgent.Modules.Zwo` | Linux ZWO ASI SDK interop and full-frame bin-1 color RAW16 acquisition for the ASI676MC and ASI178MC | Host orchestration, processing, persistence, vendor artifacts, unsupported ZWO modes, or non-ZWO cameras |
 | `HVO.SkyMonitor.CameraAgent` | Local ASP.NET/Blazor host, local Identity, authenticated local APIs and composition | Central persistence or private processing algorithms |
 | `HVO.SkyMonitor.Deployment.Contracts` | Host-neutral installation, lifecycle, distribution, release, and compatibility records | Filesystem, network, signature verification, Docker/Compose, host runtime, or secrets |
@@ -213,7 +174,7 @@ the final unchanged-head release-readiness generation. This evidence handoff doe
 not reopen the delivered #425 implementation.
 
 The delivered LogicHost self-hosted processing runner protocol
-(`processing-runner-v1`, #428) retains these normative requirements:
+(`processing-runner-v1`, #428) retains these historical requirements:
 
 | ID | Requirement |
 | --- | --- |
@@ -245,6 +206,8 @@ normative requirements:
 | `SCHED-010` | Entitlements and fairness are host configuration, disabled by default, and work identically in a single-machine deployment; capacity guidance derives from the measured graph mix, frame size, and cadence in the fairness evidence harness rather than camera count alone. |
 
 ### Elastic provider adapters (#430)
+
+> Historical central-host requirements.
 
 | ID | Requirement |
 | --- | --- |
@@ -305,6 +268,8 @@ canonical options, and parameter SHA-256. Changing options without changing
 identity is prohibited.
 
 ### 3.6 LogicHost processing
+
+> Historical milestone scope. Central-host behavior and qualification apply to the revisions that shipped them.
 
 - SQL is authoritative for jobs, leases, state transitions, lineage, and
   historical metadata.
@@ -389,6 +354,8 @@ require a concrete architectural need rather than organizational preference.
 
 ### 3.11 Database engineering and shared-server operations
 
+> Historical milestone scope. Central-host behavior and qualification apply to the revisions that shipped them.
+
 SQL Server and SQLite critical-section, access-plan, schema-ownership, and
 shared-server readiness work is coordinated by
 [#243 Audit and harden SQL Server and SQLite critical sections and access plans](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/243).
@@ -425,6 +392,8 @@ database splits, and provider-wide procedure conversion are not default
 solutions.
 
 ### 3.12 Provider-neutral object storage
+
+> Historical milestone scope. Central-host behavior and qualification apply to the revisions that shipped them.
 
 | ID | Requirement |
 | --- | --- |
@@ -518,6 +487,8 @@ In particular:
   current repository topology.
 
 ## 6. Implemented Baseline
+
+> Historical milestone scope. Central-host behavior and qualification apply to the revisions that shipped them.
 
 The plan starts from the following completed foundation:
 
@@ -708,6 +679,8 @@ Exit gate `GATE-P03`:
 
 ## 11. Phase 4 - Durable Capture Distribution
 
+> Historical milestone scope. Central-host behavior and qualification apply to the revisions that shipped them.
+
 Issues:
 
 - [#95 Add durable capture distribution and independent lanes](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/95)
@@ -773,6 +746,8 @@ Exit gate `GATE-P05`:
 
 ## 13. Phase 6 - Cadence, Metering, Heartbeat, and Telemetry
 
+> Historical milestone scope. Central-host behavior and qualification apply to the revisions that shipped them.
+
 Issues:
 
 - [#58 Add capture cadence modes and host-metered exposure control](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/58)
@@ -805,6 +780,8 @@ Physical timing measurements are not required to close #58.
 
 ## 14. Phase 7 - Operational Manifest-v2 Outbox
 
+> Historical milestone scope. Central-host behavior and qualification apply to the revisions that shipped them.
+
 Issue:
 
 - [#97 Add operational manifest-v2 outbox and quarantine](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/97)
@@ -830,6 +807,8 @@ Exit gate `GATE-P07`:
 - Malformed records cannot terminate the drain service.
 
 ## 15. Phase 8 - Reconstructable LogicHost Ingest and Retrieval
+
+> Historical milestone scope. Central-host behavior and qualification apply to the revisions that shipped them.
 
 Issues:
 
@@ -858,6 +837,8 @@ Exit gate `GATE-P08`:
 - Retrieval re-verifies length and checksum.
 
 ## 16. Phase 9 - Central Derivative Execution
+
+> Historical milestone scope. Central-host behavior and qualification apply to the revisions that shipped them.
 
 Issue:
 
@@ -1035,6 +1016,8 @@ Exit gate `GATE-P12A`:
 
 ## 21. Phase 13 - Secondary Operator UI
 
+> Historical milestone scope. Central-host behavior and qualification apply to the revisions that shipped them.
+
 Issues:
 
 - [#106 Add CameraAgent operations and gallery UI](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/106)
@@ -1060,6 +1043,8 @@ Exit gate `GATE-P13`:
 - UI remains secondary to automated backend completion.
 
 ## 22. Phase 14 - End-to-End and Production Readiness
+
+> Historical milestone scope. Central-host behavior and qualification apply to the revisions that shipped them.
 
 Issues:
 
@@ -1138,6 +1123,8 @@ definition and current disposition are recorded in
 `docs/planning/phase14-evidence-campaign.md`.
 
 ## 23. Dependency Order
+
+> Historical milestone scope. Central-host behavior and qualification apply to the revisions that shipped them.
 
 ```text
 #90 --> #91 --> #110 CI quality gates
@@ -1252,6 +1239,8 @@ it is understood and corrected or rerun successfully on the same unchanged SHA.
 A stale green run from before a correction does not satisfy the gate.
 
 ## 25. Definition of Virtual-First Completion
+
+> Historical milestone scope. Central-host behavior and qualification apply to the revisions that shipped them.
 
 The milestone is complete when:
 

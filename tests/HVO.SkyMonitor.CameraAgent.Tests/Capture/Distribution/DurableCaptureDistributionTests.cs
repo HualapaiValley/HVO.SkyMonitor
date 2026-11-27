@@ -42,7 +42,6 @@ public sealed partial class DurableCaptureDistributionTests
     {
         using var fixture = CreateFixture(new CaptureDistributionOptions
         {
-            UploadEnabled = true,
             SecondaryLanes = [new SecondaryCaptureLaneOptions { Name = "secondary", Enabled = true }]
         });
         var receipt = await fixture.AcceptAsync(0).ConfigureAwait(false);
@@ -75,7 +74,7 @@ public sealed partial class DurableCaptureDistributionTests
     [TestMethod]
     public async Task AcceptAsync_UsesInjectedClockForLaneDefinitionAndWorkTimestamps()
     {
-        using var fixture = CreateFixture(new CaptureDistributionOptions { UploadEnabled = true });
+        using var fixture = CreateFixture(new CaptureDistributionOptions { });
         var expectedUnixMilliseconds = fixture.Time.GetUtcNow().ToUnixTimeMilliseconds();
 
         await fixture.AcceptAsync(0).ConfigureAwait(false);
@@ -235,7 +234,7 @@ public sealed partial class DurableCaptureDistributionTests
     [TestMethod]
     public async Task DuplicateAccept_DoesNotDuplicateLaneWorkOrContext()
     {
-        using var fixture = CreateFixture(new CaptureDistributionOptions { UploadEnabled = true });
+        using var fixture = CreateFixture(new CaptureDistributionOptions { });
         var submission = fixture.CreateSubmission(0);
         var first = await fixture.Ingress.AcceptAsync(
             fixture.Configuration, submission, CancellationToken.None).ConfigureAwait(false);
@@ -518,7 +517,6 @@ public sealed partial class DurableCaptureDistributionTests
     {
         using var fixture = CreateFixture(new CaptureDistributionOptions
         {
-            UploadEnabled = true,
             ShutdownDrainSeconds = 1,
             SecondaryLanes = [new SecondaryCaptureLaneOptions { Name = "secondary", Enabled = true }]
         });
@@ -817,7 +815,6 @@ public sealed partial class DurableCaptureDistributionTests
             }
             var distribution = new CaptureDistributionOptions
             {
-                UploadEnabled = true,
                 OptionalMaximumPendingCount = 1,
                 SecondaryLanes = [new SecondaryCaptureLaneOptions { Name = "secondary", Enabled = true }]
             };
@@ -1372,7 +1369,6 @@ public sealed partial class DurableCaptureDistributionTests
         using var fixture = CreateFixture(
             new CaptureDistributionOptions
             {
-                UploadEnabled = true,
                 ShutdownDrainSeconds = 1,
                 RequiredMaximumPendingCount = 16,
                 OptionalMaximumPendingCount = 16,

@@ -12,7 +12,7 @@ public sealed partial class PresentationMetadataFactsBuilderTests
     [DataRow(false, true)]
     public async Task OverlayRetainsAgeSourceAndMixedLabelsWithinTheLineLimit(bool legacyVirtualSource, bool longIdentity)
     {
-        using var store = new SqliteEnvironmentalObservationOutbox();
+        using var store = new SqliteEnvironmentalObservationStore();
         var station = Fact(Guid.NewGuid(), EnvironmentalObservationKind.AirTemperature, 20, sourceId: "station");
         station = station with
         {
@@ -57,7 +57,7 @@ public sealed partial class PresentationMetadataFactsBuilderTests
     [DataRow(true)]
     public async Task OneLocalEnvironmentDoesNotConsumeAMixedSourceOverlayRow(bool measured)
     {
-        using var store = new SqliteEnvironmentalObservationOutbox();
+        using var store = new SqliteEnvironmentalObservationStore();
         var air = Fact(Guid.NewGuid(), EnvironmentalObservationKind.AirTemperature, 20, sourceId: "standalone-temperature");
         air = air with
         {
@@ -97,7 +97,7 @@ public sealed partial class PresentationMetadataFactsBuilderTests
     [TestMethod]
     public async Task MixedOriginMarkerPreservesAllSevenEnvironmentalReadingRows()
     {
-        using var store = new SqliteEnvironmentalObservationOutbox();
+        using var store = new SqliteEnvironmentalObservationStore();
         (EnvironmentalObservationKind Kind, EnvironmentalObservationUnit Unit, double Value)[] values =
         [
             (EnvironmentalObservationKind.AirTemperature, EnvironmentalObservationUnit.DegreesCelsius, 20),

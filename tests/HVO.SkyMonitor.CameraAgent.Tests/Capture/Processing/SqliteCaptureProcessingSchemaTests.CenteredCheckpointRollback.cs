@@ -99,7 +99,7 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
             Assert.AreEqual(rehearsalPublisher ? 2 : 1, manifest.Databases.Count(static store => store.Present));
             if (environmentDatabase is not null)
             {
-                using var environment = new SqliteEnvironmentalObservationOutbox();
+                using var environment = new SqliteEnvironmentalObservationStore();
                 var refused = await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
                     await environment.InitializeAsync(raw, token).ConfigureAwait(false)).ConfigureAwait(false);
                 StringAssert.Contains(refused.Message, "state-disposition", StringComparison.Ordinal);
@@ -153,10 +153,10 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
 
     private static async Task<string> SeedRehearsalEnvironmentAsync(string raw, CancellationToken token)
     {
-        using (var environment = new SqliteEnvironmentalObservationOutbox())
+        using (var environment = new SqliteEnvironmentalObservationStore())
             await environment.InitializeAsync(raw, token).ConfigureAwait(false);
 
-        var database = Path.Combine(raw, ".environment", "environmental-observation-outbox.db");
+        var database = Path.Combine(raw, ".environment", "environmental-observations.db");
         using var connection = new SqliteConnection($"Data Source={database};Pooling=False");
         await connection.OpenAsync(token).ConfigureAwait(false);
         using var seed = connection.CreateCommand();

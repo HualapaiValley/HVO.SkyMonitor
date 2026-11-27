@@ -165,7 +165,6 @@ public sealed class LocalIdentityPasswordFileTests
             await File.WriteAllTextAsync(Path.Combine(root, "CameraAgent__RawIngressRoot"), "/app/data/raw").ConfigureAwait(false);
             await File.WriteAllTextAsync(Path.Combine(root, "CameraAgent__ProvisioningStartupGate__Enabled"), "true").ConfigureAwait(false);
             await File.WriteAllTextAsync(Path.Combine(root, "CameraAgent__CaptureDistribution__UploadEnabled"), "false").ConfigureAwait(false);
-            await File.WriteAllTextAsync(Path.Combine(root, "CameraAgent__CentralIntegration__Mode"), "Disabled").ConfigureAwait(false);
             Environment.SetEnvironmentVariable(DeploymentKeyPerFile.DirectoryVariable, root);
             var configuration = new ConfigurationManager();
 
@@ -176,8 +175,6 @@ public sealed class LocalIdentityPasswordFileTests
             Assert.AreEqual(modulePath, options.ConfigFilePath);
             Assert.AreEqual("/app/data/raw", options.RawIngressRoot);
             Assert.IsTrue(options.ProvisioningStartupGate.Enabled);
-            Assert.IsFalse(options.CaptureDistribution.UploadEnabled);
-            Assert.AreEqual(CentralIntegrationMode.Disabled, options.CentralIntegration.Mode);
             var loaded = await new FileCameraAgentConfigurationLoader(
                 Microsoft.Extensions.Options.Options.Create(options),
                 NullLogger<FileCameraAgentConfigurationLoader>.Instance).LoadAsync(CancellationToken.None).ConfigureAwait(false);

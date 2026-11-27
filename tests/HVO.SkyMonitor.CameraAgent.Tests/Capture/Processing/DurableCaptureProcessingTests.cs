@@ -11,7 +11,6 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Frames;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
@@ -997,7 +996,6 @@ public sealed partial class DurableCaptureProcessingTests
                     adapter)
             };
             var frameStorage = new Mock<IFrameStorageService>(MockBehavior.Strict);
-            using var outbox = new SqliteArtifactOutbox();
             var latest = new LatestFrameAccessor();
             var storageStep = new FileStorageCaptureProcessingStep(
                 new CaptureProcessingStepMetadata("storage", "Storage", 90),
@@ -1005,17 +1003,10 @@ public sealed partial class DurableCaptureProcessingTests
                 {
                     StorageRoot = root,
                     RetentionDays = 1,
-                    UpdateLatestFrame = true,
-                    QueueForUpload = false
+                    UpdateLatestFrame = true
                 },
                 latest,
                 frameStorage.Object,
-                outbox,
-                Options.Create(new CameraAgentHostOptions
-                {
-                    RawIngressRoot = root,
-                    CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
-                }),
                 NullLogger<FileStorageCaptureProcessingStep>.Instance);
             var graph = new CaptureProcessingGraph([
                 new CaptureProcessingGraphNode(
@@ -1044,14 +1035,7 @@ public sealed partial class DurableCaptureProcessingTests
                 1,
                 NullLogger.Instance,
                 CancellationToken.None).ConfigureAwait(false);
-            var upload = new UploadCaptureLaneHandler(
-                outbox,
-                Options.Create(new CameraAgentHostOptions { RawIngressRoot = root }));
-            var uploadResult = await upload.HandleAsync(new CaptureLaneHandlerContext(
-                "upload", 1, config, item.Submission, fixture.Item.RawCapture!), CancellationToken.None).ConfigureAwait(false);
-
             Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
-            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, uploadResult.Outcome);
             Assert.AreEqual(1, Directory.EnumerateFiles(root, "*.bin", SearchOption.AllDirectories).Count());
             Assert.AreEqual(3, Directory.EnumerateFiles(root, "*.jpg", SearchOption.AllDirectories).Count());
             Assert.IsFalse(Directory.EnumerateFiles(root, "*.json", SearchOption.AllDirectories)
@@ -1061,9 +1045,6 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.AreEqual(CameraPixelFormat.Mono8, latestFrame!.PixelFormat);
             Assert.AreEqual(annotation.OutputVariant, latestFrame.RecipeVersion);
             frameStorage.VerifyNoOtherCalls();
-            var outboxRecords = await outbox.GetRetentionHoldsAsync(root, CancellationToken.None).ConfigureAwait(false);
-            Assert.HasCount(1, outboxRecords);
-            Assert.AreEqual(fixture.Manifest.Descriptor.Artifact.ArtifactId, outboxRecords[0].ArtifactId);
         }
         finally
         {
@@ -2707,7 +2688,6 @@ public sealed partial class DurableCaptureProcessingTests
             new RetentionConfigurationAccessor(),
             Options.Create(new CameraAgentHostOptions { RawIngressRoot = root }),
             new RetentionTimeProvider(new DateTimeOffset(2026, 8, 25, 12, 0, 0, TimeSpan.Zero)),
-            new SqliteArtifactOutbox(),
             new RetentionCapacityProvider(),
             new StoragePressureState(),
             NullLogger<RetentionBackgroundService>.Instance,
@@ -3369,7 +3349,7 @@ public sealed partial class DurableCaptureProcessingTests
                 HeightPixels = 2,
                 DrawLabels = false
             });
-        using var environmentStore = new SqliteEnvironmentalObservationOutbox();
+        using var environmentStore = new SqliteEnvironmentalObservationStore();
         var hostOptions = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
         var associationService = new EnvironmentalAssociationService(
             environmentStore, environmentStore, hostOptions, TimeProvider.System);

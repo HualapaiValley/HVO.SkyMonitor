@@ -1,16 +1,13 @@
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.AgentCore;
-using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
-using HVO.SkyMonitor.CameraAgent.Common.Evidence;
-using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Common.Deployment;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
@@ -335,12 +332,8 @@ public sealed partial class CameraAgentLifecycleEndpointsTests
                 new NoQueueSnapshotRefresh(),
                 new CaptureLaneState(TimeProvider.System, options),
                 new CaptureProcessingState(),
-                new ArtifactOutboxState(),
                 new StoragePressureState(),
-                new FleetRuntimeState(TimeProvider.System),
-                new FleetHeartbeatState(),
-                new EnvironmentalObservationDeliveryState(),
-                new ExecutionEvidenceExportState(),
+                new CaptureRuntimeState(TimeProvider.System),
                 new TransientWorkerState(TimeProvider.System),
                 new CaptureTelemetrySink(),
                 configuration,

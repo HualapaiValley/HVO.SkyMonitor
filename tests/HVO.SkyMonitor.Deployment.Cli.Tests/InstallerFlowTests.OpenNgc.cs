@@ -191,7 +191,7 @@ public sealed partial class InstallerFlowTests
 
     private sealed class OpenNgcInstallerLifecycleClient : ICameraAgentLifecycleClient
     {
-        private static readonly LifecycleContinuity Drained = new("Paused", 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, ReplayCatalogIndependent: true);
+        private static readonly LifecycleContinuity Drained = new("Paused", 1, 0, 0, 0, 0, 0, 0, 0, ReplayCatalogIndependent: true);
         public Task<LifecycleContinuity> PauseAndDrainAsync(Guid operationId, string verificationToken, CancellationToken cancellationToken) => Task.FromResult(Drained);
         public Task<LifecycleContinuity> ConfirmDrainedAsync(string verificationToken, CancellationToken cancellationToken) => Task.FromResult(Drained);
         public Task ResumeAsync(Guid operationId, string verificationToken, CancellationToken cancellationToken) => Task.CompletedTask;

@@ -97,9 +97,6 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
             }
             var overrides = new Dictionary<string, string?>
             {
-                ["CameraAgent:CentralIntegration:Mode"] = "Disabled",
-                ["CameraAgent:CaptureDistribution:UploadEnabled"] = "true",
-                ["CameraAgent:EnvironmentalDelivery:Enabled"] = "true",
                 ["CameraAgent:ConfigFilePath"] = configPath,
                 ["CameraAgent:RawIngressRoot"] = root,
                 ["CameraAgent:RawIngressReserveBytes"] = "0",
@@ -114,7 +111,6 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
                 ["Catalog:Root"] = catalog.Root,
                 ["Catalog:RequiredCatalogId"] = "hyg-v42-fixture",
                 ["Catalog:RequiredPackageKind"] = "Fixture",
-                ["CentralIdentity:ServiceUrl"] = "http://central-forbidden.invalid/",
                 ["SkyMonitor:BaseUrl"] = "http://central-forbidden.invalid",
                 ["OTEL_EXPORTER_OTLP_ENDPOINT"] = string.Empty,
                 ["Logging:LogLevel:Default"] = "Warning",
@@ -169,10 +165,7 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
             await WriteProductionSmokeConfigurationAsync(configPath, root).ConfigureAwait(false);
             var overrides = new Dictionary<string, string?>
             {
-                ["CameraAgent:CentralIntegration:Mode"] = "Disabled",
-                ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false",
                 ["CameraAgent:CaptureDistribution:ShutdownDrainSeconds"] = "1",
-                ["CameraAgent:EnvironmentalDelivery:Enabled"] = "false",
                 ["CameraAgent:ConfigFilePath"] = configPath,
                 ["CameraAgent:RawIngressRoot"] = root,
                 ["CameraAgent:RawIngressReserveBytes"] = "0",
@@ -194,7 +187,6 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
                 ["Catalog:Root"] = Path.GetFullPath(catalogRoot),
                 ["Catalog:RequiredCatalogId"] = "hyg-v42-production",
                 ["Catalog:RequiredPackageKind"] = "Production",
-                ["CentralIdentity:ServiceUrl"] = "http://central-forbidden.invalid/",
                 ["SkyMonitor:BaseUrl"] = "http://central-forbidden.invalid",
                 ["OTEL_EXPORTER_OTLP_ENDPOINT"] = string.Empty,
                 ["Logging:LogLevel:Default"] = "Warning",
@@ -520,19 +512,8 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
             moduleOptions["fixedSceneUtc"] = "2025-01-15T08:00:00Z";
         }
         var steps = configuration["pipeline"]!["steps"]!.AsArray();
-        var localStorage = steps
-            .Select(static node => node!.AsObject())
-            .Single(static step => step["id"]!.GetValue<string>() == "LocalStorage");
-        var options = localStorage["options"]!.AsObject();
-        options["queueForUpload"] = true;
-        foreach (var policy in options["policies"]!.AsArray())
-        {
-            policy!.AsObject()["queueForUpload"] = true;
-        }
         if (useProjectedScene)
         {
-            options["queueForUpload"] = false;
-            foreach (var policy in options["policies"]!.AsArray()) policy!.AsObject()["queueForUpload"] = false;
             var projectedScene = steps.Select(static node => node!.AsObject())
                 .Single(static step => step["type"]!.GetValue<string>() == "ProjectedScene");
             projectedScene["order"] = 1;

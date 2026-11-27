@@ -14,7 +14,7 @@
 <PageTitle>Observatory &amp; location</PageTitle>
 
 <OperationsPageHeading Eyebrow="Setup / geometry authority" Title="@("Observatory & location")" HeadingId="site-heading"
-                       Description="Keep local capture geometry available offline while showing the separate LogicHost Observatory assignment and review state.">
+                       Description="Manage the observer coordinates, site profile, and local sky preview.">
     <Actions>
         @* An icon keeps the prototype's two-action heading on one line with the title; the label names it for assistive technology. *@
         <button type="button" class="icon-button" aria-label="Refresh" title="Refresh" disabled="@(_loading || _busy)" @onclick="LoadAsync">
@@ -131,58 +131,19 @@ else
 
     <div class="ops-grid two">
         <section class="ops-panel" aria-labelledby="site-authority-heading">
-            <header class="ops-panel-heading"><div><h2 id="site-authority-heading">Authority boundary</h2><p>Local and central facts remain explicit.</p></div></header>
+            <header class="ops-panel-heading"><div><h2 id="site-authority-heading">Authority boundary</h2><p>Local settings and their effects.</p></div></header>
             <div class="ops-table-wrap">
                 <table class="ops-table">
                     <thead><tr><th scope="col">Fact</th><th scope="col">Authority</th><th scope="col">Local behavior</th></tr></thead>
                     <tbody>
                         <tr><td><strong>Capture geometry</strong></td><td>CameraAgent</td><td>Editable as versioned local draft</td></tr>
                         <tr><td><strong>Offline schedule location</strong></td><td>CameraAgent</td><td>Uses active protected snapshot</td></tr>
-                        <tr><td><strong>Observatory and camera names</strong></td><td>CameraAgent</td><td>Descriptive only; not sent to LogicHost</td></tr>
-                        <tr><td><strong>Observatory membership</strong></td><td>LogicHost</td><td>Read-only assignment</td></tr>
-                        <tr><td><strong>Reconciliation decision</strong></td><td>LogicHost</td><td>Never silently replaces local facts</td></tr>
+                        <tr><td><strong>Observatory and camera names</strong></td><td>CameraAgent</td><td>Used to label the workspace</td></tr>
                     </tbody>
                 </table>
             </div>
         </section>
 
-        <section class="ops-panel" aria-labelledby="site-assignment-heading">
-            <header class="ops-panel-heading"><div><h2 id="site-assignment-heading">LogicHost assignment</h2><p>@AssignmentLead</p></div><span class="state-chip @AssignmentChip.Css">@AssignmentChip.Text</span></header>
-            @if (_site?.Assignment is not { } assignment)
-            {
-                <p class="site-note">The LogicHost assignment could not be read. Local geometry is unaffected.</p>
-            }
-            else if (assignment.State == CameraAgentSiteAssignmentState.Standalone)
-            {
-                <dl class="ops-facts">
-                    <div><dt>Mode</dt><dd>Standalone</dd></div>
-                    <div><dt>Observatory</dt><dd>Not assigned</dd></div>
-                </dl>
-                <p class="site-note">Central integration is turned off, so this camera never contacts LogicHost. There is no Observatory membership to show and nothing is reviewed centrally; the local location governs on its own.</p>
-            }
-            else if (assignment.State == CameraAgentSiteAssignmentState.Registered)
-            {
-                <dl class="ops-facts">
-                    <div class="full"><dt>Registered as</dt><dd>@(assignment.RegistrationName ?? "Not named")</dd></div>
-                    <div><dt>Location review</dt><dd>@LocationReviewText(assignment.LocationReview)</dd></div>
-                    <div><dt>Observatory membership</dt><dd>Not reported to this camera</dd></div>
-                    <div><dt>Last check</dt><dd>@(assignment.LastAttemptUtc is { } attempt ? Timestamp(attempt) : "Not yet run")</dd></div>
-                    <div><dt>Acknowledged version</dt><dd>@(assignment.AcknowledgedVersion?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "None")</dd></div>
-                    <div><dt>Proposed version</dt><dd>@(assignment.ProposedVersion?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "None")</dd></div>
-                </dl>
-                <p class="site-note">LogicHost owns the Observatory record, its name and this camera's membership, and does not send them to the camera. What the camera keeps is LogicHost's review of its location.</p>
-            }
-            else
-            {
-                <p class="site-note">@(assignment.State == CameraAgentSiteAssignmentState.NotRegistered
-                    ? "Central integration is on, but this camera has not completed device registration, so LogicHost has not assigned it to an Observatory. Local geometry governs until it does."
-                    : "The registration record could not be read. Local geometry is unaffected.")</p>
-            }
-            @if (_site?.Assignment is { State: not CameraAgentSiteAssignmentState.Standalone })
-            {
-                <a class="text-button" href="@RegistrationHref">View registration state</a>
-            }
-        </section>
     </div>
 
     <div class="ops-grid two">
@@ -347,7 +308,7 @@ else
             }
             else if (_manual.History.Count == 0)
             {
-                <p class="site-note">No local location draft has been recorded. The active location came from installation or LogicHost.</p>
+                <p class="site-note">No local location draft has been recorded. The active location came from installation.</p>
             }
             else
             {
@@ -444,14 +405,6 @@ else
                 captures recorded until then keep version @manual.ActiveVersion, and earlier versions and their captures never change.
                 Entry is offline: nothing is geocoded and no browser location is read.
             </p>
-            @if (manual.CentralAcknowledgementRequired)
-            {
-                <div class="dialog-note"><strong>LogicHost reviews this draft first.</strong><span>Central integration is on, so the version is proposed to LogicHost and activates only after it is acknowledged and CameraAgent restarts. LogicHost can acknowledge or reject it; it never replaces these coordinates with its own.</span></div>
-            }
-            @if (manual.StagedAcknowledgementPending)
-            {
-                <div class="dialog-note"><strong>An acknowledged version is already staged.</strong><span>It activates first at the next start, and this draft is then proposed as its successor.</span></div>
-            }
             @if (manual.OverrideSupersededAtUtc is { } supersededAtUtc)
             {
                 <div class="dialog-note"><strong>An earlier draft was superseded.</strong><span>The installation's configured location changed at @Timestamp(supersededAtUtc), so configured coordinates govern this deployment.</span></div>
@@ -469,7 +422,7 @@ else
         }
         else if (_dialog == SiteDialog.Profile && _site is { } site)
         {
-            <p class="dialog-intro">Names and contact details label this camera in the workspace. They stay on this CameraAgent; capture, geometry, and LogicHost registration never read them. Saving writes them to the operator settings file, which can also be edited by hand.</p>
+            <p class="dialog-intro">Names and contact details label this camera in the workspace. They stay on this CameraAgent; capture geometry uses the protected coordinates. Saving writes them to the operator settings file, which can also be edited by hand.</p>
             <fieldset disabled="@_busy">
                 <legend class="visually-hidden">Site profile</legend>
                 <div class="site-dialog-grid">

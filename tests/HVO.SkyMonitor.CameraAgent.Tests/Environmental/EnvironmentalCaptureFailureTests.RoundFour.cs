@@ -132,7 +132,7 @@ public sealed partial class EnvironmentalCaptureFailureTests
         using var clock = new RetentionClock(Epoch.AddDays(32));
         try
         {
-            using var store = new SqliteEnvironmentalObservationOutbox(clock);
+            using var store = new SqliteEnvironmentalObservationStore(clock);
             await store.InitializeAsync(root, CancellationToken.None).ConfigureAwait(false);
             using var services = new ServiceCollection().BuildServiceProvider();
             var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
@@ -160,7 +160,7 @@ public sealed partial class EnvironmentalCaptureFailureTests
 
     private static async Task SeedExpiredReceiptsAsync(string root, DateTimeOffset completed, int hour)
     {
-        using var connection = new SqliteConnection($"Data Source={Path.Combine(root, ".environment", "environmental-observation-outbox.db")}");
+        using var connection = new SqliteConnection($"Data Source={Path.Combine(root, ".environment", "environmental-observations.db")}");
         await connection.OpenAsync().ConfigureAwait(false);
         using var seed = connection.CreateCommand();
         seed.CommandText = """

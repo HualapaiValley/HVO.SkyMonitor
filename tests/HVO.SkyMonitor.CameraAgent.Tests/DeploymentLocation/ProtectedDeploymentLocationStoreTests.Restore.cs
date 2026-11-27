@@ -48,8 +48,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
             InstallerFiles.CreateOwnerDirectory(directory);
         _options = Options.Create(new CameraAgentHostOptions
         {
-            RawIngressRoot = Path.Combine(paths.StateRoot, "raw"),
-            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
+            RawIngressRoot = Path.Combine(paths.StateRoot, "raw")
         });
         _protector = new DataProtectionDeploymentLocationProtector(_options);
         var seed = CreateSeed(35, -113, 0, "America/Phoenix");
@@ -185,8 +184,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
             InstallerFiles.CreateOwnerDirectory(directory);
         _options = Options.Create(new CameraAgentHostOptions
         {
-            RawIngressRoot = Path.Combine(paths.StateRoot, "raw"),
-            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
+            RawIngressRoot = Path.Combine(paths.StateRoot, "raw")
         });
         _protector = new DataProtectionDeploymentLocationProtector(_options);
         var seed = CreateSeed(35, -113, 0, "America/Phoenix");
@@ -250,8 +248,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         }
         _options = Options.Create(new CameraAgentHostOptions
         {
-            RawIngressRoot = stagedRaw,
-            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
+            RawIngressRoot = stagedRaw
         });
         _protector = new DataProtectionDeploymentLocationProtector(_options);
         using var restored = CreateStore();
@@ -289,8 +286,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
             InstallerFiles.CreateOwnerDirectory(directory);
         _options = Options.Create(new CameraAgentHostOptions
         {
-            RawIngressRoot = Path.Combine(paths.StateRoot, "raw"),
-            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
+            RawIngressRoot = Path.Combine(paths.StateRoot, "raw")
         });
         _protector = new DataProtectionDeploymentLocationProtector(_options);
         var seed = CreateSeed(35, -113, 0, "America/Phoenix");

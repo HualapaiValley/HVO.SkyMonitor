@@ -10,10 +10,8 @@
   "HVO.SkyMonitor.Common.Tests",
   "HVO.SkyMonitor.Deployment.Cli.Tests",
   "HVO.SkyMonitor.Deployment.Distribution.Tests",
-  "HVO.SkyMonitor.Fleet.Contracts.Tests",
   "HVO.SkyMonitor.Imaging.Tests",
   "HVO.SkyMonitor.Processing.Tests",
-  "HVO.SkyMonitor.ProcessingRunner.Tests",
   "HVO.SkyMonitor.Storage.FileSystem.Tests",
   "HVO.SkyMonitor.TestSupport.Tests"
 ]

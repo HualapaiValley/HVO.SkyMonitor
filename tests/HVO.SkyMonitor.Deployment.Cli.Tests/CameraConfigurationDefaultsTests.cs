@@ -35,8 +35,8 @@ public sealed class CameraConfigurationDefaultsTests
     internal static readonly (string Id, string Sha256)[] FrozenGenerations =
     [
         // The value IlluminationModeTests froze before the cloud steps (Refs #1722) re-froze it, i.e. what every earlier installer wrote.
-        ("installer-defaults-1", "6ec0a9605d346d76f5869accda8a5ac50b32d3cfda8942dbb05b0a36085e7f41"),
-        ("installer-defaults-2", "3694bb506f528030cb2b61e6a8c6ba01f8057357afb186d6b876eecf055a2141")
+        ("installer-defaults-1", "0912c3133d740f00f91232d8fbed24a280b5e345f525268d560e00d36997dabd"),
+        ("installer-defaults-2", "4b668bf691defcf0a5ce57f9e68adb9851d82110dae42e2e3b9812b9acd661a1")
     ];
 
     /// <summary>The installer's current default-configuration hash: that of the newest frozen generation.</summary>

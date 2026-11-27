@@ -57,7 +57,7 @@ public sealed class CameraAgentEnvironmentalUiServiceIntegrationTests
         publisher.Setup(service => service.PublishAsync(
                 It.IsAny<EnvironmentalObservationFactV1>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new EnvironmentalObservationPublishResult(
-                EnvironmentalObservationPublishDisposition.Enqueued, null));
+                EnvironmentalObservationPublishDisposition.Committed));
         using var coordinator = new EnvironmentalAcquisitionCoordinator(
             factory,
             publisher.Object,
@@ -82,7 +82,6 @@ public sealed class CameraAgentEnvironmentalUiServiceIntegrationTests
             Mock.Of<IEnvironmentalAcquisitionStateStore>(),
             Mock.Of<ILocalEnvironmentalObservationStore>(),
             commandService,
-            new EnvironmentalObservationDeliveryState(),
             options,
             null!,
             TimeProvider.System,

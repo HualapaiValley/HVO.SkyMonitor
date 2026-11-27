@@ -1,21 +1,7 @@
-# Deployment-Location Reconciliation
+# Local Deployment Location
 
-CameraAgent owns the protected deployment snapshot used for capture. Standalone
-installations use local geometry. If central integration is explicitly enabled,
-a pending or rejected acknowledgement leaves the active local snapshot in use.
-
-> Historical procedures for the retired LogicHost owner API, health check, and
-> meter are in the [pre-retirement runbook](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/66e6aa237b40c70342815af6e2511122daa56bb6/docs/runbooks/deployment-location-reconciliation.md#owner-api).
-
-## Runtime Behavior
-
-- With central integration enabled, v2 bootstrap requires the active protected
-  deployment snapshot and source kind.
-- CameraAgent retries the same immutable version at
-  `POST /api/device/deployment-location` on the configured service using the
-  per-device key.
-- Captures retain their original deployment provenance across local versions
-  and acknowledgement decisions.
+CameraAgent owns the protected deployment snapshot used for capture. The active
+snapshot binds each capture to the observer coordinates and time zone in use.
 
 ## Manual Local Coordinates
 
@@ -28,9 +14,7 @@ takes part in it.
 
 - **Where it is stored.** The entry is written to its own protected file,
   `<RawIngressRoot>/.location/manual-deployment-location.v1.protected`, next to
-  the protected history. The history document keeps schema `1` and its exact
-  property set, so a deployment rolled back to an earlier image can still open
-  it; that baseline simply ignores the sidecar. Both files are Data Protection
+  the protected history. Both files are Data Protection
   encrypted, written through a temporary file with `fsync` and rename, and
   restricted to the owning user.
 - **When it takes effect.** The command never moves the active snapshot. It
@@ -45,13 +29,6 @@ takes part in it.
   the configured seed itself supersedes the manual entry: the next startup marks
   the record superseded, keeps its audit history, and appends a configured
   version. A superseded record never governs again.
-- **Central acknowledgement.** With `CentralIntegration:Mode=Enabled` the manual
-  version becomes the protected local candidate instead of activating. The
-  reconciliation worker proposes it to the configured service for a decision on
-  that exact version. An acknowledged version is staged and activates at the
-  following restart. If a central acknowledgement is already staged when the
-  entry is made, that staged version activates first and the manual entry is
-  then proposed as its successor.
 - **Validation.** Latitude, longitude, the portable IANA time zone, and the
   canonical hash are validated by the deployment-location contract; elevation is
   additionally bounded to -500 m to 9000 m for a manual entry. That bound is
@@ -59,7 +36,7 @@ takes part in it.
   tightening it can never make a recorded entry unreadable. Coordinates equal to
   the ones already governing return `Unchanged` and create no version.
 - **Concurrency.** A command carries both `expectedVersion` (the highest version
-  the protected history knows, including a candidate or staged one) and
+  in protected history) and
   `expectedManualSequence` (the newest recorded manual entry, or `0`). The second
   token exists because the command deliberately never touches the history, so the
   version alone cannot detect a competing pending entry. A stale value in either
@@ -80,35 +57,11 @@ takes part in it.
   `<RawIngressRoot>/.location/manual-deployment-location.v1.protected` to recover;
   the deployment then returns to its configured coordinates and every version
   already appended to the protected history is retained.
-- **Rollback.** A rollback to a baseline image discards the manual override
-  because the baseline does not read the sidecar. The protected history stays
-  valid, so the baseline starts, appends a configured version, and the versions
-  recorded while the manual entry was active remain intact with their captures.
-  The sidecar file itself survives the rollback, so rolling forward again with an
-  unchanged configuration seed makes the same entry govern once more and appends a
-  further version. Delete the sidecar before rolling forward to avoid that.
 
 ## Health and Telemetry
 
-- The local `deployment-location` check is `Healthy` while protected geometry
-  is usable. With central integration enabled,
-  `deployment-location-reconciliation` reports its own `Degraded` status while
-  acknowledgement is pending or the service is offline.
-- Meter `HVO.SkyMonitor.CameraAgent.DeploymentLocation` reports bounded local and
-  reconciliation outcomes, including the `manual` operation with `applied`,
-  `replayed`, `unchanged`, `conflict`, `invalid`, and `failed` outcomes.
-- Deployment-location authority logs, metrics, and spans never include
-  coordinates, hashes, credentials, protected payloads, owner reasons, or entity
-  IDs. General bootstrap audit logs retain bounded device and registration IDs.
-
-## Troubleshooting
-
-1. Confirm the local `deployment-location` check reports `Healthy`.
-2. In enabled mode, check `deployment-location-reconciliation` for a rejected
-   credential. Re-bootstrap only when device credentials are invalid or expired.
-3. A future acknowledged successor reports `restart-scheduled` and remains staged
-   while the current geometry stays active. If its interval expires before a
-   restart, the next startup preserves the active snapshot, clears the unusable
-   stage, and exposes the protected candidate for reproposal or replacement.
-   Correct an expired configured interval before reproposing; an expired central
-   acknowledgment reports `acknowledgment-expired` and is never activated.
+- The local `deployment-location` check reports whether protected geometry is usable.
+- Meter `HVO.SkyMonitor.CameraAgent.DeploymentLocation` records bounded local outcomes,
+  including applied, replayed, unchanged, conflict, invalid and failed manual operations.
+- Deployment-location logs, metrics and traces exclude coordinates, hashes, credentials,
+  protected payloads, owner reasons and entity identifiers.

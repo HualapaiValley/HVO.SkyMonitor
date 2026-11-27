@@ -5,15 +5,13 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
-using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
-using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Data;
 using HVO.SkyMonitor.Processing;
@@ -59,7 +57,6 @@ public sealed partial class StandaloneCameraAgentAcceptanceTests
             await AssertDisabledHealthAsync(ownerClient).ConfigureAwait(false);
             await AssertCaptureHttpEvidenceAsync(ownerClient, fixture.Root, firstCapture).ConfigureAwait(false);
         }
-        await AssertCentralStateIsEmptyAsync(fixture.Services, fixture.Root).ConfigureAwait(false);
         AssertNoProvisioningIdentity(fixture.Root);
         AssertNoOutboundAttempts(fixture);
 
@@ -84,7 +81,6 @@ public sealed partial class StandaloneCameraAgentAcceptanceTests
             Assert.AreNotEqual(CameraAgentPresentationImageFreshness.Empty, preRestartPresentation.ImageFreshness);
             Assert.IsNotNull(preRestartPresentation.DisplayCapture);
         }
-        await AssertCentralStateIsEmptyAsync(fixture.Services, fixture.Root).ConfigureAwait(false);
         AssertNoOutboundAttempts(fixture);
 
         await fixture.RestartHostAsync().ConfigureAwait(false);
@@ -125,7 +121,6 @@ public sealed partial class StandaloneCameraAgentAcceptanceTests
             Assert.IsLessThanOrEqualTo(2_048, image.Height);
         }
         Assert.AreEqual(preRestartMaximumSequence, await ReadMaximumSequenceAsync(fixture.Services).ConfigureAwait(false));
-        await AssertCentralStateIsEmptyAsync(fixture.Services, fixture.Root).ConfigureAwait(false);
         AssertNoProvisioningIdentity(fixture.Root);
         AssertNoOutboundAttempts(fixture);
 
@@ -144,7 +139,6 @@ public sealed partial class StandaloneCameraAgentAcceptanceTests
         Assert.IsGreaterThan(preRestartMaximumSequence, resumedCapture.CaptureSequence);
         Assert.AreEqual(StandaloneCameraAgentKestrelFixture.AgentId, resumedCapture.AgentId);
         Assert.AreEqual(firstLocation.ToProvenance(), ReadActiveLocation(fixture.Services).ToProvenance());
-        await AssertCentralStateIsEmptyAsync(fixture.Services, fixture.Root).ConfigureAwait(false);
         AssertNoOutboundAttempts(fixture);
 
         await fixture.StopHostAsync().ConfigureAwait(false);
@@ -547,8 +541,6 @@ public sealed partial class StandaloneCameraAgentAcceptanceTests
         {
             AssertLineageReachesRaw(artifact, selected.Artifacts);
         }
-        Assert.IsTrue(selected.Detail!.ArtifactStates.All(static state =>
-            state.DeliveryAvailability == "Disabled" && state.DeliveryStatuses.Count == 0));
         return selected;
     }
 
@@ -688,34 +680,6 @@ public sealed partial class StandaloneCameraAgentAcceptanceTests
         Assert.AreEqual("validated", summary.Configuration.Value.ValidationStatus);
         Assert.AreEqual(StandaloneCameraAgentKestrelFixture.AgentId, summary.Configuration.Value.AgentId);
         Assert.AreEqual("VirtualSky", summary.Configuration.Value.ModuleType);
-        Assert.AreEqual("Disabled", summary.Configuration.Value.CentralIntegration);
-        Assert.AreEqual("Disabled", summary.ArtifactOutbox.Value.Availability);
-        Assert.AreEqual(0L, summary.ArtifactOutbox.Value.PendingCount);
-        Assert.AreEqual(0L, summary.ArtifactOutbox.Value.PendingBytes);
-        Assert.AreEqual(0L, summary.ArtifactOutbox.Value.LeasedCount);
-        Assert.AreEqual(0L, summary.ArtifactOutbox.Value.RetryCount);
-        Assert.AreEqual(0L, summary.ArtifactOutbox.Value.QuarantineCount);
-        Assert.IsNull(summary.ArtifactOutbox.Value.OldestPendingUtc);
-        Assert.AreEqual("Disabled", summary.Heartbeat.Value.Availability);
-        Assert.AreEqual(0L, summary.Heartbeat.Value.PendingCount);
-        Assert.AreEqual(0L, summary.Heartbeat.Value.PendingBytes);
-        Assert.AreEqual(0L, summary.Heartbeat.Value.LeasedCount);
-        Assert.AreEqual(0L, summary.Heartbeat.Value.RetryCount);
-        Assert.AreEqual(0L, summary.Heartbeat.Value.QuarantineCount);
-        Assert.AreEqual(0L, summary.Heartbeat.Value.OverflowCount);
-        Assert.AreEqual(0L, summary.Heartbeat.Value.BlockedCount);
-        Assert.IsNull(summary.Heartbeat.Value.OldestPendingUtc);
-        Assert.AreEqual("Disabled", summary.EnvironmentalDelivery.Value.Availability);
-        Assert.AreEqual(0L, summary.EnvironmentalDelivery.Value.StoredCount);
-        Assert.AreEqual(0L, summary.EnvironmentalDelivery.Value.StoredBytes);
-        Assert.AreEqual(0L, summary.EnvironmentalDelivery.Value.PendingCount);
-        Assert.AreEqual(0L, summary.EnvironmentalDelivery.Value.PendingBytes);
-        Assert.AreEqual(0L, summary.EnvironmentalDelivery.Value.LeasedCount);
-        Assert.AreEqual(0L, summary.EnvironmentalDelivery.Value.RetryCount);
-        Assert.AreEqual(0L, summary.EnvironmentalDelivery.Value.QuarantineCount);
-        Assert.AreEqual(0L, summary.EnvironmentalDelivery.Value.TerminalCount);
-        Assert.AreEqual(0L, summary.EnvironmentalDelivery.Value.OverflowCount);
-        Assert.IsNull(summary.EnvironmentalDelivery.Value.OldestPendingUtc);
         var storage = summary.Storage.Value.Single(static location => location.Alias == "raw-ingress");
         Assert.IsTrue(storage.ProbeSucceeded);
         Assert.IsGreaterThan(0L, storage.TotalBytes);
@@ -868,46 +832,6 @@ public sealed partial class StandaloneCameraAgentAcceptanceTests
             }
         }
         throw new AssertFailedException($"Artifact {artifactId:D} has no local manifest.");
-    }
-
-    private static async Task AssertCentralStateIsEmptyAsync(IServiceProvider services, string root)
-    {
-        var artifactOutbox = services.GetRequiredService<IArtifactOutbox>();
-        var artifact = await artifactOutbox.GetSnapshotAsync(root, CancellationToken.None).ConfigureAwait(false);
-        Assert.AreEqual(0L, artifact.HeldCount);
-        Assert.AreEqual(0L, artifact.HeldBytes);
-        Assert.IsNull(artifact.OldestHeldUtc);
-        Assert.AreEqual(0L, artifact.PendingCount);
-        Assert.AreEqual(0L, artifact.LeasedCount);
-        Assert.AreEqual(0L, artifact.RetryCount);
-        Assert.AreEqual(0L, artifact.AcknowledgedCount);
-        Assert.AreEqual(0L, artifact.QuarantinedCount);
-        Assert.AreEqual(0L, artifact.AbandonedCount);
-        Assert.IsEmpty(await artifactOutbox.GetRetentionHoldsAsync(root, CancellationToken.None).ConfigureAwait(false));
-
-        var fleet = await services.GetRequiredService<IFleetStatusOutbox>()
-            .GetSnapshotAsync(root, CancellationToken.None).ConfigureAwait(false);
-        Assert.AreEqual(0L, fleet.PendingCount);
-        Assert.AreEqual(0L, fleet.PendingBytes);
-        Assert.AreEqual(0L, fleet.LeasedCount);
-        Assert.AreEqual(0L, fleet.RetryCount);
-        Assert.AreEqual(0L, fleet.QuarantineCount);
-        Assert.AreEqual(0L, fleet.OverflowCount);
-        Assert.AreEqual(0L, fleet.BlockedCount);
-        Assert.IsNull(fleet.OldestPendingUtc);
-
-        var environmental = await services.GetRequiredService<IEnvironmentalObservationOutbox>()
-            .GetSnapshotAsync(root, CancellationToken.None).ConfigureAwait(false);
-        Assert.AreEqual(0L, environmental.StoredCount);
-        Assert.AreEqual(0L, environmental.StoredBytes);
-        Assert.AreEqual(0L, environmental.PendingCount);
-        Assert.AreEqual(0L, environmental.PendingBytes);
-        Assert.AreEqual(0L, environmental.LeasedCount);
-        Assert.AreEqual(0L, environmental.RetryCount);
-        Assert.AreEqual(0L, environmental.QuarantineCount);
-        Assert.AreEqual(0L, environmental.TerminalCount);
-        Assert.AreEqual(0L, environmental.OverflowCount);
-        Assert.IsNull(environmental.OldestPendingUtc);
     }
 
     private static async Task WaitForDurableConvergenceAsync(string root)

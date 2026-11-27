@@ -6,7 +6,6 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -500,7 +499,6 @@ public sealed class Issue247TransientCandidateReservationIndependentReviewTests
             new StubConfigurationAccessor(),
             Options.Create(new CameraAgentHostOptions { RawIngressRoot = root }),
             new FixedTimeProvider(new DateTimeOffset(2035, 1, 1, 12, 0, 0, TimeSpan.Zero)),
-            new SqliteArtifactOutbox(),
             new SignalingCapacityProvider(capacityEntered),
             new StoragePressureState(),
             NullLogger<RetentionBackgroundService>.Instance,

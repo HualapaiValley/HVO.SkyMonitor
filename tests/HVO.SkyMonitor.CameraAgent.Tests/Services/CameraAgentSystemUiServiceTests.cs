@@ -31,39 +31,6 @@ public sealed partial class CameraAgentSystemUiServiceTests
     private static readonly DateTimeOffset Start = new(2026, 9, 30, 12, 0, 0, TimeSpan.Zero);
 
     [TestMethod]
-    public async Task Health_MapsEveryCheckToAFixedLabelInScopeOrder()
-    {
-        using var fixture = new Fixture();
-        fixture.Report(
-            ("brand-new-check", Entry(HealthStatus.Healthy)),
-            ("artifact-outbox", Entry(HealthStatus.Unhealthy)),
-            ("identity-database", Entry(HealthStatus.Healthy)),
-            ("capture-processing", Entry(HealthStatus.Degraded)),
-            ("environmental-acquisition", Entry(HealthStatus.Healthy, availability: "Disabled")),
-            ("self", Entry(HealthStatus.Healthy)));
-
-        var result = await fixture.Service.GetHealthAsync(CancellationToken.None).ConfigureAwait(false);
-
-        Assert.IsTrue(result.IsSuccess);
-        var view = result.Value!;
-        string[] expectedLabels =
-            ["Host process", "Environmental acquisition", "Capture processing", "Identity database", "Artifact delivery", "brand-new-check"];
-        CollectionAssert.AreEqual(expectedLabels, view.Checks.Select(static check => check.Label).ToArray());
-        string[] expectedScopes = ["Host", "Acquisition", "Processing", "Local", "Central", "Other"];
-        CollectionAssert.AreEqual(expectedScopes, view.Checks.Select(static check => check.Scope).ToArray());
-        Assert.AreEqual(SystemCheckState.Disabled, Check(view, "environmental-acquisition").State);
-        Assert.AreEqual(SystemCheckState.Degraded, Check(view, "capture-processing").State);
-        Assert.AreEqual(SystemCheckState.Unhealthy, Check(view, "artifact-outbox").State);
-        Assert.AreEqual("/operations/pipeline", Check(view, "capture-processing").Href);
-        Assert.IsNull(Check(view, "brand-new-check").Href);
-        Assert.AreEqual(TimeSpan.FromMilliseconds(7), Check(view, "self").Duration);
-        Assert.AreEqual(SystemCheckState.Unhealthy, view.Overall);
-        Assert.IsTrue(view.CentralIntegrationEnabled);
-        Assert.AreEqual(Start, view.EvaluatedUtc);
-        Assert.IsGreaterThan(0, view.Host.ProcessorCount);
-    }
-
-    [TestMethod]
     public async Task Health_ReportsTheClockCheckUnderAcquisitionAndTheDriftAsAgentMinusNetwork()
     {
         var monitor = new Mock<IClockSyncMonitor>();
@@ -110,24 +77,6 @@ public sealed partial class CameraAgentSystemUiServiceTests
         var view = (await fixture.Service.GetHealthAsync(CancellationToken.None).ConfigureAwait(false)).Value!;
 
         Assert.IsNull(view.Clock);
-    }
-
-    [TestMethod]
-    public async Task Health_WhenStandalone_SwitchesOffCentralChecksAndLeavesThemOutOfTheOverall()
-    {
-        using var fixture = new Fixture(centralEnabled: false);
-        fixture.Report(
-            ("artifact-outbox", Entry(HealthStatus.Unhealthy)),
-            ("fleet-heartbeat", Entry(HealthStatus.Unhealthy)),
-            ("capture-processing", Entry(HealthStatus.Degraded)));
-
-        var result = await fixture.Service.GetHealthAsync(CancellationToken.None).ConfigureAwait(false);
-
-        var view = result.Value!;
-        Assert.IsFalse(view.CentralIntegrationEnabled);
-        Assert.AreEqual(SystemCheckState.Disabled, Check(view, "artifact-outbox").State);
-        Assert.AreEqual(SystemCheckState.Disabled, Check(view, "fleet-heartbeat").State);
-        Assert.AreEqual(SystemCheckState.Degraded, view.Overall);
     }
 
     [TestMethod]
@@ -370,11 +319,7 @@ public sealed partial class CameraAgentSystemUiServiceTests
             var options = Options.Create(new CameraAgentHostOptions
             {
                 RawIngressRoot = _root,
-                RawIngressSqliteBusyTimeoutSeconds = 1,
-                CentralIntegration = new CentralIntegrationOptions
-                {
-                    Mode = centralEnabled ? CentralIntegrationMode.Enabled : CentralIntegrationMode.Disabled
-                }
+                RawIngressSqliteBusyTimeoutSeconds = 1
             });
             var ingress = Ingress;
             ingress.Setup(value => value.InitializeAsync(It.IsAny<CancellationToken>()))
@@ -402,7 +347,6 @@ public sealed partial class CameraAgentSystemUiServiceTests
                 new CatalogSnapshotResult("2026.09.1", CatalogSnapshotPackageKind.Fixture, 2, "hyg-v42-production", "4.2",
                     "celestial-v2", "3", "/opt/hvo/catalog/manifest.json", "/opt/hvo/catalog/catalog.db",
                     new string('a', 64), 52_428_800, 118_218, null!),
-                options,
                 Clock,
                 NullLogger<CameraAgentSystemUiService>.Instance,
                 clockMonitor, Controls);

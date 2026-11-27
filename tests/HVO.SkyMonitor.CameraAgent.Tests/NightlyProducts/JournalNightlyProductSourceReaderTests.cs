@@ -260,7 +260,6 @@ public sealed class JournalNightlyProductSourceReaderTests
             {
                 ["CameraAgent:RawIngressRoot"] = root,
                 ["CameraAgent:RawIngressReserveBytes"] = "0",
-                ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false"
             }).Build());
         return services.BuildServiceProvider();
     }

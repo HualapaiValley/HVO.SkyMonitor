@@ -47,11 +47,23 @@ public sealed class PreviousReleaseStoreReadabilityTests
     private static readonly string[] StoresAddedByThisRelease =
     [
         "raw/.orbital-elements/orbital-elements.db", "raw/.space-weather/space-weather.db",
-        "raw/.calibration-families/calibration-families.db"
+        "raw/.calibration-families/calibration-families.db", "raw/.environment/environmental-observations.db"
     ];
 
+    // These paths belong to the retired integration. The standalone environmental
+    // journal now has its own path and is validated by the state-contract label tests.
+    private static readonly HashSet<string> RetiredStoreLocations = new(StringComparer.Ordinal)
+    {
+        "archive/outbox/artifact-outbox.db",
+        "archive/products/outbox/artifact-outbox.db",
+        "raw/.environment/environmental-observation-outbox.db",
+        "raw/.fleet/fleet-status.db",
+        "raw/evidence/execution-evidence-outbox.db",
+        "raw/outbox/artifact-outbox.db"
+    };
+
     [TestMethod]
-    public async Task CurrentStores_AreThePreviousReleaseStoresPlusTheStoresThisReleaseAdds()
+    public async Task CurrentStores_ContainAllRetainedAndNewStoreLocations()
     {
         var previous = PreviousRelease.Load();
         using var harness = CameraAgentStateStoreHarness.Create(previous.StorageRoots);
@@ -65,9 +77,9 @@ public sealed class PreviousReleaseStoreReadabilityTests
         Assert.IsEmpty(StoresAddedByThisRelease.Intersect(previous.Locations, StringComparer.Ordinal).ToArray(),
             "A store this release declares it adds is already a previous-release store; remove it from StoresAddedByThisRelease.");
         CollectionAssert.AreEqual(
-            previous.Locations.Concat(StoresAddedByThisRelease).Order(StringComparer.Ordinal).ToArray(),
+            previous.RetainedLocations.Concat(StoresAddedByThisRelease).Order(StringComparer.Ordinal).ToArray(),
             harness.StoreLocations().ToArray(),
-            "This release keeps a different set of SQLite stores than the previous release plus StoresAddedByThisRelease.");
+            "This release keeps a different set of SQLite stores than the retained and new store inventory.");
         AssertReadableByThePreviousRelease(previous, harness);
     }
 
@@ -76,7 +88,7 @@ public sealed class PreviousReleaseStoreReadabilityTests
     {
         var previous = PreviousRelease.Load();
         using var harness = CameraAgentStateStoreHarness.Create(previous.StorageRoots);
-        foreach (var location in previous.Locations)
+        foreach (var location in previous.RetainedLocations)
         {
             CameraAgentStateStoreHarness.Rebuild(harness.StorePath(location), previous.Dump(location));
         }
@@ -93,10 +105,7 @@ public sealed class PreviousReleaseStoreReadabilityTests
     [DataRow("raw/journal/raw-ingress.db", "CREATE INDEX ix_processing_centered_view_unknown ON processing_centered_view_bases(base_id);")]
     [DataRow("raw/journal/raw-ingress.db", "PRAGMA user_version = 99;")]
     [DataRow("raw/journal/raw-ingress.db", "PRAGMA ignore_check_constraints = ON; UPDATE capture_processing_schema SET version = 99;")]
-    [DataRow("raw/.fleet/fleet-status.db", "ALTER TABLE fleet_status_records ADD COLUMN added_by_next_release TEXT;")]
-    [DataRow("archive/outbox/artifact-outbox.db", "CREATE INDEX ix_added_by_next_release ON artifact_outbox_records(record_id);")]
     [DataRow("identity/cameraagent_identity.db", "ALTER TABLE AspNetUsers ADD COLUMN added_by_next_release TEXT;")]
-    [DataRow("raw/.fleet/fleet-status.db", "UPDATE fleet_status_metadata SET schema_version = schema_version + 1;")]
     [DataRow("identity/cameraagent_identity.db", "INSERT INTO \"__EFMigrationsHistory\" VALUES('29990101000000_AddedByNextRelease', '10.0.13');")]
     public async Task TheRuleRefusesAStoreThePreviousReleaseWouldReject(string location, string change)
     {
@@ -127,7 +136,7 @@ public sealed class PreviousReleaseStoreReadabilityTests
     private static List<string> UnreadableObjects(PreviousRelease previous, CameraAgentStateStoreHarness harness)
     {
         var unreadable = new List<string>();
-        foreach (var location in previous.Locations)
+        foreach (var location in previous.RetainedLocations)
         {
             var path = harness.StorePath(location);
             if (!File.Exists(path))
@@ -183,6 +192,8 @@ public sealed class PreviousReleaseStoreReadabilityTests
         public IReadOnlyList<string> StorageRoots { get; }
 
         public string[] Locations => [.. dumps.Keys.Order(StringComparer.Ordinal)];
+
+        public IEnumerable<string> RetainedLocations => Locations.Where(location => !RetiredStoreLocations.Contains(location));
 
         public string Dump(string location) => File.ReadAllText(Path.Combine(directory, dumps[location]));
 

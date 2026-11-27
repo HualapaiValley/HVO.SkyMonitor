@@ -56,8 +56,6 @@ internal static class CameraAgentTestAreas
     internal const string DeploymentLocation = "DeploymentLocation";
     internal const string Diagnostics = "Diagnostics";
     internal const string Environmental = "Environmental";
-    internal const string Evidence = "Evidence";
-    internal const string Fleet = "Fleet";
     internal const string Gallery = "Gallery";
     internal const string ModulesVirtualSky = "Modules.VirtualSky";
     internal const string NightlyProducts = "NightlyProducts";
@@ -78,7 +76,6 @@ internal static class CameraAgentTestAreas
     internal const string TimeLapses = "TimeLapses";
     internal const string TimeSync = "TimeSync";
     internal const string Transients = "Transients";
-    internal const string Upload = "Upload";
 
     // Outside CameraAgent.Common (CameraAgent host, CLI, UI, ZWO module, shared test contracts)
     internal const string Cli = "Cli";
@@ -106,8 +103,6 @@ internal static class CameraAgentTestAreas
         Diagnostics,
         Endpoints,
         Environmental,
-        Evidence,
-        Fleet,
         Gallery,
         Hosting,
         ModulesVirtualSky,
@@ -133,7 +128,6 @@ internal static class CameraAgentTestAreas
         TimeSync,
         Transients,
         Ui,
-        Upload
     }.ToFrozenSet(StringComparer.Ordinal);
 
     private const BindingFlags InspectedMethodFlags =

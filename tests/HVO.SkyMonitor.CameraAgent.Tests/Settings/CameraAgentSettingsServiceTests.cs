@@ -406,7 +406,6 @@ public sealed class CameraAgentSettingsServiceTests
         {
             KnownVersion = 4,
             ManualSequence = 2,
-            PendingVersion = 4,
             Override = new ManualDeploymentLocationOverride(
                 30, -110, 1200, "America/Denver", PendingRestart: true, DateTimeOffset.UnixEpoch, "owner-id", null)
         };

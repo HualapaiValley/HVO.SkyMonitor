@@ -49,8 +49,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
             InstallerFiles.CreateOwnerDirectory(directory);
         _options = Options.Create(new CameraAgentHostOptions
         {
-            RawIngressRoot = Path.Combine(paths.StateRoot, "raw"),
-            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
+            RawIngressRoot = Path.Combine(paths.StateRoot, "raw")
         });
         _protector = new DataProtectionDeploymentLocationProtector(_options);
         var database = Path.Combine(paths.StateRoot, "identity", "cameraagent_identity.db");

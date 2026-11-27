@@ -3,14 +3,12 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
-using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Deployment;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
-using HVO.SkyMonitor.CameraAgent.Common.Evidence;
-using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
@@ -18,7 +16,6 @@ using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Endpoints;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Tests.Automation;
@@ -200,7 +197,7 @@ public sealed class InstallerLifecycleControlIntegrationTests
     [DataRow(true, true)]
     public async Task StandaloneDrainCancelledOrBoundedAfterClaim_PublishesMatchingReceiptAndStaysPausedUntilExplicitResume(bool cancel, bool backlog)
     {
-        var fixture = new Fixture(false) { OutboxPending = backlog ? 1 : 0, OutboxRetry = backlog };
+        var fixture = new Fixture(false) { ProcessingPending = backlog ? 1 : 0 };
         await using var owned = fixture.ConfigureAwait(false);
         await fixture.InitializeAsync().ConfigureAwait(false);
         using var client = new InstallerControlHttpClient(new Uri("http://virtual-cameraagent"), "test-installation-token", Guid.NewGuid(), fixture.Handler);
@@ -282,9 +279,9 @@ public sealed class InstallerLifecycleControlIntegrationTests
     [DataRow(true, false)]
     [DataRow(false, true)]
     [DataRow(true, true)]
-    public async Task RealScheduledRestartTimeoutRestoresPriorRunningStateAndKeepsAcceptedDelivery(bool initiallyPaused, bool quarantined)
+    public async Task RealScheduledRestartTimeoutRestoresPriorRunningStateAndKeepsAcceptedLocalWork(bool initiallyPaused, bool quarantined)
     {
-        var fixture = new Fixture(false) { OutboxPending = quarantined ? 0 : 1, OutboxRetry = !quarantined, OutboxQuarantine = quarantined, HistoricalQuarantine = true };
+        var fixture = new Fixture(false) { ProcessingPending = quarantined ? 0 : 1, HistoricalQuarantine = true };
         await using var owned = fixture.ConfigureAwait(false);
         await fixture.InitializeAsync().ConfigureAwait(false);
         using var client = new InstallerControlHttpClient(new Uri("http://virtual-cameraagent"), "test-installation-token", Guid.NewGuid(), fixture.Handler);
@@ -301,8 +298,7 @@ public sealed class InstallerLifecycleControlIntegrationTests
         Assert.AreEqual(!initiallyPaused, terminal.ResumeConfirmed);
         Assert.IsFalse(terminal.RestartRequested);
         Assert.AreEqual(0, fixture.RestartCalls);
-        Assert.AreEqual(quarantined ? 0 : 1, fixture.OutboxPending, "Failure must preserve accepted delivery evidence.");
-        Assert.AreEqual(quarantined, fixture.OutboxQuarantine);
+        Assert.AreEqual(quarantined ? 0 : 1, fixture.ProcessingPending, "Failure must preserve accepted local work.");
         Assert.AreEqual(LocalAutomationRunOutcome.Failed,
             (await fixture.Automations.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).Runs.Single().Outcome);
         if (!initiallyPaused)
@@ -449,9 +445,9 @@ public sealed class InstallerLifecycleControlIntegrationTests
         internal HttpMessageHandler Handler => _handler ??= new EndpointHandler(this);
         internal int RestartCalls;
         internal TaskCompletionSource Stopped { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        internal bool LoseResumeResponse, ResumeFenceHeld, HistoricalQuarantine, OutboxRetry;
-        internal bool LoseResumeByTimeout, OutboxQuarantine;
-        internal int OutboxPending;
+        internal bool LoseResumeResponse, ResumeFenceHeld, HistoricalQuarantine;
+        internal bool LoseResumeByTimeout;
+        internal int ProcessingPending;
         internal Func<Task>? AfterRestartAccepted;
         internal Action? AfterPause;
         internal Func<Task>? AfterPauseAsync, BeforePause, BeforeResume;
@@ -473,7 +469,7 @@ public sealed class InstallerLifecycleControlIntegrationTests
 
         internal async Task InitializeAsync()
         {
-            var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = Root.FullName, RawIngressSqliteBusyTimeoutSeconds = 1, CentralIntegration = new() { Mode = CentralIntegrationMode.Enabled } });
+            var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = Root.FullName, RawIngressSqliteBusyTimeoutSeconds = 1 });
             var builder = WebApplication.CreateBuilder();
             builder.Logging.ClearProviders();
             builder.Configuration["LifecycleControl:Token"] = "test-installation-token";
@@ -498,14 +494,10 @@ public sealed class InstallerLifecycleControlIntegrationTests
             var lanes = new CaptureLaneState(TimeProvider.System, options);
             lanes.Update([]);
             var processing = new CaptureProcessingState();
-            processing.SetDurable(0, 0, 0, 0, null);
-            var outbox = new ArtifactOutboxState();
-            outbox.Update(Root.FullName, new(OutboxPending + (OutboxQuarantine ? 1 : 0), 0, null, OutboxPending, 0, OutboxRetry ? 1 : 0, 0,
-                OutboxQuarantine ? 1 : 0, 0, DateTimeOffset.UtcNow));
+            processing.SetDurable(ProcessingPending, 0, 0, 0, null);
             builder.Services.AddSingleton(new CameraAgentOperationsSummaryProvider(TimeProvider.System, Capture,
                 raw, new NoQueueRefresh(), lanes,
-                processing, outbox, new StoragePressureState(), new FleetRuntimeState(TimeProvider.System),
-                new FleetHeartbeatState(), new EnvironmentalObservationDeliveryState(), new ExecutionEvidenceExportState(),
+                processing, new StoragePressureState(), new CaptureRuntimeState(TimeProvider.System),
                 new TransientWorkerState(TimeProvider.System), new CaptureTelemetrySink(), configuration,
                 new CameraAgentStorageResolver(configuration, options), options));
             builder.Services.AddSingleton(new DeploymentContinuityReader());

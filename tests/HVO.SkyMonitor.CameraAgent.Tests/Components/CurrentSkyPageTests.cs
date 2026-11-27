@@ -61,7 +61,6 @@ public sealed partial class CurrentSkyPageTests
 
     [TestMethod]
     [DataRow("absent", "No retained outcome")]
-    [DataRow("central", "No retained outcome")]
     [DataRow("waiting", "Waiting for detector")]
     [DataRow("unassessed", "Not assessed")]
     [DataRow("clear", "No causal candidates")]
@@ -80,15 +79,14 @@ public sealed partial class CurrentSkyPageTests
             if (scenario == "unavailable") throw new IOException("private-storage-location");
             if (scenario == "denied") return ValueTask.FromResult(
                 OperatorUiResult<CameraAgentCaptureTransientView>.Failure(OperatorUiResultKind.Unauthorized, "Denied"));
-            var run = scenario is "absent" or "central" ? null : new HVO.SkyMonitor.CameraAgent.Common.Transients.TransientCaptureRunState(
+            var run = scenario == "absent" ? null : new HVO.SkyMonitor.CameraAgent.Common.Transients.TransientCaptureRunState(
                 scenario == "failed" ? "quarantined" : "completed",
                 scenario switch { "waiting" => null, "retry" => "retry_wait", "failed" => "quarantined", _ => "completed" },
                 scenario is "clear" or "candidate" or "foreign" ? true : null,
                 1, scenario == "candidate" ? 2 : 0, scenario == "candidate" ? 1 : 0, 0, OperatorUiTestData.Now);
             return ValueTask.FromResult(OperatorUiResult<CameraAgentCaptureTransientView>.Success(new(
                 scenario == "foreign" ? Guid.NewGuid() : id,
-                scenario == "central" ? HVO.SkyMonitor.CameraAgent.Common.Options.TransientOperatingMode.Central
-                    : HVO.SkyMonitor.CameraAgent.Common.Options.TransientOperatingMode.Off, run)));
+                HVO.SkyMonitor.CameraAgent.Common.Options.TransientOperatingMode.Off, run)));
         };
 
         var cut = context.Render<CurrentSkyPage>();
@@ -106,7 +104,7 @@ public sealed partial class CurrentSkyPageTests
         Assert.IsFalse(cut.Markup.Contains("private-storage-location", StringComparison.Ordinal));
         if (scenario == "candidate")
             StringAssert.Contains(cut.Find(".metric-icon.transient + div").TextContent, "Candidates are not confirmed events", StringComparison.Ordinal);
-        if (scenario is "absent" or "central")
+        if (scenario == "absent")
             StringAssert.Contains(cut.Find(".metric-icon.transient + div").TextContent, "now", StringComparison.Ordinal);
     }
 
@@ -240,25 +238,6 @@ public sealed partial class CurrentSkyPageTests
         var before = reads;
         await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
         cut.WaitForAssertion(() => Assert.IsTrue(reads > before));
-    }
-
-    [TestMethod]
-    [DataRow(false, false, "Disabled")]
-    [DataRow(true, false, "Uploads disabled")]
-    [DataRow(true, true, "Delivery configured")]
-    public void CurrentOperationalStatusDoesNotInventCentralAcknowledgement(bool centralEnabled, bool uploadEnabled, string label)
-    {
-        using var context = new BunitContext();
-        var service = Configure(context);
-        service.CurrentSkyHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(
-            new(OperatorUiTestData.CurrentImage(), null, null, new(centralEnabled, uploadEnabled, null, null))));
-        var cut = context.Render<CurrentSkyPage>();
-        cut.WaitForAssertion(() =>
-        {
-            Assert.AreEqual(label, cut.Find(".dashboard-status a[href='/operations/delivery']").TextContent);
-            Assert.AreEqual("Not verified yet", cut.Find(".dashboard-status a[href='/operations/storage']").TextContent);
-            Assert.IsFalse(cut.Find(".dashboard-status").TextContent.Contains("Acknowledged", StringComparison.Ordinal));
-        });
     }
 
     [TestMethod]

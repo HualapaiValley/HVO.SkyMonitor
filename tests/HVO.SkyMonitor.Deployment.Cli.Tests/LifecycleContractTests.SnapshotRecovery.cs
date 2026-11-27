@@ -417,7 +417,7 @@ public sealed partial class LifecycleContractTests
                 if (reader.Read()) sequence = Math.Max(sequence, Math.Max(reader.GetInt64(0), reader.GetInt64(1)));
             }
             return new LifecycleContinuity(state == "running" ? "Running" : "Paused", version, sequence,
-                0, 0, 0, 0, 0, 0, 0, 0, ReplayCatalogIndependent: true);
+                0, 0, 0, 0, 0, 0, ReplayCatalogIndependent: true);
         }
 
         private void Move(string state)

@@ -171,7 +171,7 @@ public sealed class TransientPageTests
         {
             Assert.AreEqual(3, cut.FindAll("[role='tab'][disabled]").Count);
             Assert.AreEqual(5, cut.FindAll(".context-frame.unavailable").Count);
-            Assert.AreEqual(3, cut.FindAll("button.btn[disabled][aria-describedby]").Count);
+            Assert.AreEqual(1, cut.FindAll("button.btn[disabled][aria-describedby]").Count);
             StringAssert.Contains(cut.Markup, "Not measured", StringComparison.Ordinal);
             StringAssert.Contains(cut.Markup, "Requires genuine correlation", StringComparison.Ordinal);
             Assert.AreEqual("/transients", cut.Find(".breadcrumb a").GetAttribute("href"));

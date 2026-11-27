@@ -132,7 +132,7 @@ internal sealed class StandardCaptureLaneHandler(
             catch (ProcessingPlanSupersededException exception)
             {
                 // The raw evidence is intact; only the plan it was accepted under is gone. Abandoning the row keeps
-                // the ordered lane and ingress moving, and leaves the raw to its upload lane and archived replay.
+                // the ordered lane and ingress moving, and preserves the raw for archived replay.
                 _logger.CaptureProcessingPlanSuperseded(item.Execution?.GraphRevisionId, exception.Message);
                 result = CaptureLaneHandlerResult.Abandon(ProcessingPlanSupersededException.LaneReason);
             }

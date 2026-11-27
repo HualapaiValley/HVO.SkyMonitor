@@ -102,8 +102,7 @@
         "options": {
           "storageRoot": __STORAGE_ROOT__,
           "retentionDays": 1,
-          "updateLatestFrame": true,
-          "queueForUpload": false
+          "updateLatestFrame": true
         }
       },
       {

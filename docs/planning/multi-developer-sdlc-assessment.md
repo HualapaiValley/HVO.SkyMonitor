@@ -1,5 +1,8 @@
 # Multi-Developer SDLC Assessment
 
+> Historical record of the earlier two-host topology and its qualification.
+> Use the [current project plan](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/development/v1/docs/project-plan.md) for standalone CameraAgent.
+
 Assessment date: 2026-09-16
 Evidence base: `b7237a42e84460985e1dc2cd02fb0ec22edcff9f`
 

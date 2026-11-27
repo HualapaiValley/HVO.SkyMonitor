@@ -121,7 +121,7 @@ public sealed partial class InstallRecordTests
         Assert.IsNotNull(InstallRecordStore.EntryProblem(Entry(First) with { ImageId = "cameraagent:latest" }));
         Assert.IsNotNull(InstallRecordStore.EntryProblem(Entry(First) with { FriendlyName = "bad\nname" }));
         Assert.IsNotNull(InstallRecordStore.EntryProblem(Entry(First) with { Url = new Uri("http://user:pass@localhost:5130/") }));
-        Assert.IsNotNull(InstallRecordStore.EntryProblem(Entry(First) with { Component = "LogicHost" }));
+        Assert.IsNotNull(InstallRecordStore.EntryProblem(Entry(First) with { Component = "OtherProduct" }));
         Assert.IsNotNull(InstallRecordStore.EntryProblem(Entry(First) with { Resources = CameraAgentContainerResources.Legacy }));
         Assert.IsNotNull(InstallRecordStore.EntryProblem(Entry(First) with { UpdatedUtc = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.FromHours(-7)) }));
     }

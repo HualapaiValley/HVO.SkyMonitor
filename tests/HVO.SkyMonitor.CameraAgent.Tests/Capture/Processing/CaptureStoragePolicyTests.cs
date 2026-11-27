@@ -94,7 +94,6 @@ public sealed class CaptureStoragePolicyTests
     [DataRow("storageRoot", "StorageRoot")]
     [DataRow("retentionDays", "RetentionDays")]
     [DataRow("updateLatestFrame", "UpdateLatestFrame")]
-    [DataRow("queueForUpload", "QueueForUpload")]
     [DataRow("policies", "Policies")]
     public void MismatchNamesOnlyDifferingFields(string member, string expected)
     {
@@ -121,7 +120,7 @@ public sealed class CaptureStoragePolicyTests
         var options = new FileStorageCaptureProcessingStepOptions
         {
             StorageRoot = "/tmp/storage-policy",
-            Policies = [new() { StepId = "preview", QueueForUpload = true }, new() { Role = FrameArtifactRole.Preview, QueueForUpload = false }]
+            Policies = [new() { StepId = "preview" }, new() { Role = FrameArtifactRole.Preview }]
         };
         var first = profile with { Steps = [profile.Steps[0] with { Options = JsonSerializer.SerializeToElement(options) }] };
         var secondOptions = JsonSerializer.SerializeToNode(options)!;
@@ -140,7 +139,7 @@ public sealed class CaptureStoragePolicyTests
     private static CapturePipelineConfig Pipeline(string root, string selector)
         => new([new("Storage", "storage", Options: JsonSerializer.SerializeToElement(new
         {
-            storageRoot = root, retentionDays = 30, updateLatestFrame = true, queueForUpload = true,
+            storageRoot = root, retentionDays = 30, updateLatestFrame = true,
             policies = new[] { new { stepId = selector, retentionDays = 90 } }
         }))]);
 }

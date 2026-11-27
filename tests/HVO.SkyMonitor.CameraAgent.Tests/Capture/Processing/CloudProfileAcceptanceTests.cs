@@ -49,7 +49,6 @@ public sealed class CloudProfileAcceptanceTests
         {
             ConfigFilePath = Path.Combine(AppContext.BaseDirectory, "cameraagent.sample.json"),
             AgentId = "cloud-acceptance",
-            Observatory = new ObservatoryLocation(35.347, -113.878, 1000, "America/Phoenix"),
-            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
+            Observatory = new ObservatoryLocation(35.347, -113.878, 1000, "America/Phoenix")
         }), NullLogger<FileCameraAgentConfigurationLoader>.Instance).LoadAsync(CancellationToken.None);
 }

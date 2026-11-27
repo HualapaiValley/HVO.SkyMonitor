@@ -512,10 +512,7 @@ its schema in today, and what `io.hvo.skymonitor.state-contracts` and `stateCont
 | --- | --- | --- | --- |
 | `identity` | `identity/cameraagent_identity.db` | The applied EF Core migrations in `__EFMigrationsHistory` (their number is the store's schema) | Writes 1, reads 1 to 1. `io.hvo.skymonitor.identity-migration` also names the newest, `20260827053715_InitialIdentity` |
 | `rawIngress` | `raw/journal/raw-ingress.db` | `PRAGMA user_version` | `development/v1` writes 17 and accepts canonical schemas 13 through 17. The migration contract is `canonical-v13-v14-v15-v16-to-v17`. The journal also holds the separately versioned processing schema 12 |
-| `artifactOutbox` | `outbox/artifact-outbox.db` in each storage root (`raw`, `archive`, and every FileStorage root) | The `artifact_outbox_schema.version` column | Writes 2, reads 2 to 2 |
-| `fleetStatus` | `raw/.fleet/fleet-status.db` | The `fleet_status_metadata.schema_version` column | Writes 1, reads 1 to 1 |
-| `environmentalOutbox` | `raw/.environment/environmental-observation-outbox.db` | `PRAGMA user_version` | Writes 5, reads 3 to 5. Combined reader boundary `e7b9af4b98d1521c3939ef5925608a3663c63302` selects a paired checkpoint before upgrade from schema 3 or 4, from either single-reader image for #1901 or #1938, or from the earlier private joined reader. Rollback restores the previous image's paired state |
-| `executionEvidenceOutbox` | `raw/evidence/execution-evidence-outbox.db` | The `execution_evidence_schema.version` column | Writes 1, reads 1 to 1 |
+| `environmentalObservations` | `raw/.environment/environmental-observations.db` | `PRAGMA user_version` | Writes 5, reads 3 to 5 |
 | `timeLapses` | `raw/.time-lapses/time-lapses.db` | `PRAGMA user_version` | Writes 1, reads 1 to 1 |
 | `nightlyProducts` | `raw/.nightly-products/nightly-products.db` | `PRAGMA user_version` | Writes 3, reads 2 to 3 |
 | `localAutomations` | `raw/.automation/local-automations.db` | `PRAGMA user_version` | Writes 4, reads 3 to 4. The current image boundary also preserves the paired checkpoint first required by `bc5ca7489c4090c299c416309519ab72da4a8cdb` for adoption from development/v1 `38320d3a` (processing schema 9, automation schema 3). Rollback restores schema 3 for that previous reader |

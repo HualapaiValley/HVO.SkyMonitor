@@ -88,7 +88,7 @@ public sealed partial class ProcessingNodeOptionsTests
                 [new(FrameArtifactRole.Combined, "mixed", ProcessingProductKind.PixelData,
                     new(BuiltInProcessingRecipes.MixedGainNormalizedMean, "1.0.0", descriptor.StepVersion, ProcessingOperationKind.Window))],
                 requirement, template.CapabilityLabels, template.HostApplicability);
-            foreach (var host in new[] { ProcessingGraphHosts.CameraAgent, ProcessingGraphHosts.LogicHost })
+            foreach (var host in new[] { ProcessingGraphHosts.CameraAgent })
             {
                 Assert.IsTrue(ProcessingGraphCompiler.Compile(Graph(WithWindow(window)), new(host, [])).IsValid);
                 foreach (var mismatch in new[] { window with { MaximumInputCount = 5 }, window with { RequiredPositions = [-99, 0] } })

@@ -788,11 +788,6 @@ internal static class CatalogLifecycleManager
         }
         var history = Path.Combine(paths.CatalogReferencesRoot, version, "historical");
         if (Directory.Exists(history) && Directory.EnumerateFiles(history, "*.json", SearchOption.AllDirectories).Any()) return true;
-        var logicHostsRoot = Path.Combine(paths.ProductRoot, "logichosts");
-        if (Directory.Exists(logicHostsRoot) && Directory.EnumerateFileSystemEntries(logicHostsRoot).Any())
-        {
-            throw new InstallerException("Catalog garbage collection cannot prove zero references while an unsupported LogicHost manifest exists.");
-        }
         var agentsRoot = Path.Combine(paths.ProductRoot, "cameraagents");
         if (Directory.Exists(agentsRoot))
         {

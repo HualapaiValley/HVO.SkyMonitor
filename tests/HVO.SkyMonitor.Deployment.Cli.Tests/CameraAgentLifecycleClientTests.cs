@@ -113,7 +113,7 @@ public sealed class CameraAgentLifecycleClientTests
             () => client.ConfirmDrainedAsync("lifecycle-token", CancellationToken.None));
 
         StringAssert.Contains(exception.Message, "before the lifecycle deadline", StringComparison.Ordinal);
-        StringAssert.Contains(exception.Message, "leased raw/lane/processing/outbox 0/0/2/0", StringComparison.Ordinal);
+        StringAssert.Contains(exception.Message, "leased raw/lane/processing 0/0/2", StringComparison.Ordinal);
         Assert.IsTrue(handler.RequestCount > 1, $"expected repeated reads before the deadline, saw {handler.RequestCount} requests");
     }
 
@@ -154,7 +154,7 @@ public sealed class CameraAgentLifecycleClientTests
             () => client.ConfirmDrainedAsync("lifecycle-token", CancellationToken.None));
 
         StringAssert.Contains(exception.Message,
-            "leased raw/lane/processing/outbox 0/0/2/0; archived replay pending/leased 3/1, which the drain does not wait for)",
+            "leased raw/lane/processing 0/0/2; archived replay pending/leased 3/1, which the drain does not wait for)",
             StringComparison.Ordinal);
     }
 
@@ -360,7 +360,7 @@ public sealed class CameraAgentLifecycleClientTests
         var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
             () => client.ConfirmDrainedAsync("lifecycle-token", CancellationToken.None));
 
-        StringAssert.Contains(exception.Message, "rejected the lifecycle state read with status 404; last observed capture control 'PauseRequested' (initialized: True, leased raw/lane/processing/outbox 2/0/0/0).", StringComparison.Ordinal);
+        StringAssert.Contains(exception.Message, "rejected the lifecycle state read with status 404; last observed capture control 'PauseRequested' (initialized: True, leased raw/lane/processing 2/0/0).", StringComparison.Ordinal);
         Assert.AreEqual(2, handler.RequestCount);
     }
 
@@ -396,7 +396,7 @@ public sealed class CameraAgentLifecycleClientTests
             () => client.ConfirmDrainedAsync("lifecycle-token", CancellationToken.None));
 
         StringAssert.Contains(exception.Message, "before the lifecycle deadline", StringComparison.Ordinal);
-        StringAssert.Contains(exception.Message, "last observed capture control 'Unavailable' (initialized: False, leased raw/lane/processing/outbox 3/0/0/0)", StringComparison.Ordinal);
+        StringAssert.Contains(exception.Message, "last observed capture control 'Unavailable' (initialized: False, leased raw/lane/processing 3/0/0)", StringComparison.Ordinal);
         StringAssert.Contains(exception.Message, "the last state read failed: CameraAgent lifecycle state could not be read", StringComparison.Ordinal);
         Assert.IsTrue(handler.RequestCount > 1, $"expected retries before the deadline, saw {handler.RequestCount} requests");
     }
@@ -757,8 +757,7 @@ public sealed class CameraAgentLifecycleClientTests
               "captureControl": { "value": { "state": "{{captureState}}", "version": {{version}}, "isInitialized": {{(initialized ? "true" : "false")}} } },
               "rawIngress": { "value": { "pendingCount": 0, "leasedCount": {{rawLeased}} } },
               "captureLanes": { "value": { "pendingCount": 0, "leasedCount": 0 } },
-              "captureProcessing": { "value": { "pendingCount": {{processingLeased}}, "leasedCount": {{processingLeased}} } },
-              "artifactOutbox": { "value": { "pendingCount": 0, "leasedCount": 0 } },{{replay}}{{independence}}
+              "captureProcessing": { "value": { "pendingCount": {{processingLeased}}, "leasedCount": {{processingLeased}} } },{{replay}}{{independence}}
               "captureSequence": {{captureSequence}}
             }
             """;

@@ -407,7 +407,6 @@ public sealed partial class ProcessingGraphOperationsTests
                         Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
                         {
                             StorageRoot = Path.Combine(root, "archive"),
-                            QueueForUpload = false,
                             UpdateLatestFrame = false
                         }), DependsOn: ["projected-scene"])
                 ]

@@ -234,7 +234,7 @@ public sealed class UpgradeVolumeTests
 
     private sealed class VolumeLifecycleClient : ICameraAgentLifecycleClient
     {
-        private static LifecycleContinuity Paused() => new("Paused", 42, 100, 0, 0, 0, 0, 0, 0, 0, 0, ReplayCatalogIndependent: true);
+        private static LifecycleContinuity Paused() => new("Paused", 42, 100, 0, 0, 0, 0, 0, 0, ReplayCatalogIndependent: true);
 
         public Task<LifecycleContinuity> ReadContinuityAsync(string verificationToken, CancellationToken cancellationToken)
             => Task.FromResult(Paused());

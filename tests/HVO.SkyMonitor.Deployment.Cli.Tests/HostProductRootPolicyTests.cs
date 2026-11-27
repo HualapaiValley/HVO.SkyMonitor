@@ -237,7 +237,6 @@ public sealed partial class HostProductRootPolicyTests
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     [DataRow("cameraagents", DisplayName = "cameraagent")]
-    [DataRow("logichosts", DisplayName = "logichost")]
     public void Apply_RefusesToMoveARootThatAlreadyHoldsInstances(string component)
     {
         using var host = new PolicyHost();
@@ -550,12 +549,12 @@ public sealed partial class HostProductRootPolicyTests
         string[] defaultNamespaces =
         [
             "/var/lib/hvo-sky", "/var/lib/hvo-sky/cameraagents",
-            "/var/lib/hvo-sky/logichosts", "/var/lib/hvo-sky/catalogs"
+            "/var/lib/hvo-sky/catalogs"
         ];
         string[] policyNamespaces =
         [
             "/srv/data/hvo-skymonitor", "/srv/data/hvo-skymonitor/cameraagents",
-            "/srv/data/hvo-skymonitor/logichosts", "/srv/data/hvo-skymonitor/catalogs"
+            "/srv/data/hvo-skymonitor/catalogs"
         ];
         CollectionAssert.AreEqual(
             defaultNamespaces, PrivilegedPreparation.RootOwnedNamespaces(InstallRequest.DefaultProductRoot).ToArray());

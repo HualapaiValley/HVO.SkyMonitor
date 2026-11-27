@@ -1,21 +1,17 @@
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
-using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
-using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
-using HVO.SkyMonitor.Fleet.Contracts;
 using Microsoft.Extensions.Options;
-using HVO.SkyMonitor.CameraAgent.Common.Evidence;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Operations;
 
@@ -42,7 +38,7 @@ public sealed class CameraAgentOperationsSummaryTests
         var options = Options.Create(new CameraAgentHostOptions
         {
             RawIngressRoot = root,
-            CaptureDistribution = new CaptureDistributionOptions { UploadEnabled = true }
+            CaptureDistribution = new CaptureDistributionOptions { }
         });
         var rawIngress = new RawIngressState(timeProvider);
         rawIngress.Set(RawIngressAvailability.Degraded, "secret-raw-reason", 7, 700, 2, 200, now.AddMinutes(-1));
@@ -56,8 +52,6 @@ public sealed class CameraAgentOperationsSummaryTests
         var processing = new CaptureProcessingState();
         processing.SetDurable(5, 3, 2, 1, now.AddMinutes(-3));
         processing.SetReplayDurable(6, 2, 1, 4, now.AddMinutes(-7), 600, 3);
-        var artifactOutbox = new ArtifactOutboxState();
-        artifactOutbox.ReportUnavailable(root, "secret-outbox-exception");
         var storage = new StoragePressureState();
         storage.Set(new StoragePressureSnapshot(
             root,
@@ -66,19 +60,9 @@ public sealed class CameraAgentOperationsSummaryTests
             2,
             now,
             "secret-probe-path"));
-        var runtime = new FleetRuntimeState(timeProvider);
+        var runtime = new CaptureRuntimeState(timeProvider);
         runtime.ModuleAvailable();
         runtime.CaptureFailed("secret-module-exception");
-        var heartbeat = new FleetHeartbeatState();
-        heartbeat.Update(
-            new FleetStatusOutboxSnapshot(6, 600, 1, 2, 3, 4, 5, now.AddMinutes(-4), now),
-            FleetAvailability.Degraded,
-            "https://private-heartbeat/secret");
-        var environmental = new EnvironmentalObservationDeliveryState();
-        environmental.Update(
-            new EnvironmentalObservationOutboxSnapshot(20, 2_000, 8, 800, 1, 2, 3, 4, 5, now.AddMinutes(-5), now),
-            EnvironmentalObservationDeliveryAvailability.Degraded,
-            "secret-environmental-reason");
         var transient = new TransientWorkerState(timeProvider);
         transient.Set(TransientWorkerAvailability.Degraded, "secret-transient-reason", 9, 10);
         var telemetryProvider = new CaptureTelemetrySink();
@@ -89,7 +73,6 @@ public sealed class CameraAgentOperationsSummaryTests
             12,
             null,
             CaptureMode.Still,
-            false,
             true,
             TimeSpan.FromMilliseconds(50),
             TimeSpan.FromMilliseconds(1200),
@@ -108,12 +91,8 @@ public sealed class CameraAgentOperationsSummaryTests
             laneSnapshotRefresher,
             lanes,
             processing,
-            artifactOutbox,
             storage,
             runtime,
-            heartbeat,
-            environmental,
-            new ExecutionEvidenceExportState(),
             transient,
             telemetryProvider,
             configuration,
@@ -142,20 +121,15 @@ public sealed class CameraAgentOperationsSummaryTests
         Assert.AreEqual(4L, summary.ArchivedReplay.Value.TerminalCount);
         Assert.AreEqual(3L, summary.ArchivedReplay.Value.AbandonedCount, "Abandoned archived replay is reported apart from terminal failures.");
         Assert.AreEqual(now.AddMinutes(-7), summary.ArchivedReplay.Value.OldestPendingUtc);
-        Assert.AreEqual("Unavailable", summary.ArtifactOutbox.Value.Availability);
         Assert.AreEqual("raw-ingress", summary.Storage.Value[0].Alias);
         Assert.IsFalse(summary.Storage.Value[0].ProbeSucceeded);
-        Assert.AreEqual(6L, summary.Heartbeat.Value.PendingCount);
-        Assert.AreEqual(8L, summary.EnvironmentalDelivery.Value.PendingCount);
         Assert.AreEqual(9L, summary.TransientWorker.Value.PendingFrames);
         Assert.AreEqual(32, summary.TransientWorker.Value.MaximumCandidates);
         Assert.AreEqual(1, summary.CaptureTelemetry.Value.SampleCount);
         Assert.IsNotNull(summary.CaptureProcessing.ObservedUtc);
-        Assert.IsNotNull(summary.ArtifactOutbox.ObservedUtc);
         Assert.AreEqual("agent-operations", summary.Configuration.Value.AgentId);
         Assert.AreEqual("VirtualSky", summary.Configuration.Value.ModuleType);
         Assert.AreEqual("validated", summary.Configuration.Value.ValidationStatus);
-        Assert.AreEqual("Enabled", summary.Configuration.Value.CentralIntegration);
         Assert.AreEqual("Off", summary.Configuration.Value.TransientDetection);
         Assert.IsFalse(string.IsNullOrWhiteSpace(summary.RawIngress.Source));
         Assert.IsFalse(string.IsNullOrWhiteSpace(summary.RawIngress.Freshness));
@@ -190,7 +164,6 @@ public sealed class CameraAgentOperationsSummaryTests
         var options = Options.Create(new CameraAgentHostOptions
         {
             RawIngressRoot = root,
-            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled },
             TransientDetection = new TransientDetectionOptions { Mode = TransientOperatingMode.Off }
         });
         var rawIngress = new RawIngressState(timeProvider);
@@ -210,12 +183,8 @@ public sealed class CameraAgentOperationsSummaryTests
             new RecordingLaneSnapshotRefresher(),
             new CaptureLaneState(timeProvider, options),
             new CaptureProcessingState(),
-            new ArtifactOutboxState(),
             new StoragePressureState(),
-            new FleetRuntimeState(timeProvider),
-            new FleetHeartbeatState(),
-            new EnvironmentalObservationDeliveryState(),
-            new ExecutionEvidenceExportState(),
+            new CaptureRuntimeState(timeProvider),
             transientWorker,
             new CaptureTelemetrySink(),
             configuration,
@@ -224,13 +193,8 @@ public sealed class CameraAgentOperationsSummaryTests
 
         var summary = await provider.GetAsync(CancellationToken.None).ConfigureAwait(false);
 
-        Assert.AreEqual(OperationsFreshness.Disabled, summary.ArtifactOutbox.Freshness);
-        Assert.AreEqual(OperationsFreshness.Disabled, summary.Heartbeat.Freshness);
-        Assert.AreEqual(OperationsFreshness.Disabled, summary.EnvironmentalDelivery.Freshness);
-        Assert.AreEqual(OperationsFreshness.Disabled, summary.ExecutionEvidenceExport.Freshness);
         Assert.AreEqual(OperationsFreshness.Disabled, summary.TransientWorker.Freshness);
         Assert.AreEqual(OperationsFreshness.Static, summary.Configuration.Freshness);
-        Assert.AreEqual("Disabled", summary.ArtifactOutbox.Value.Availability);
         // The observation time survives: the deployment drain bounds the transient section by it.
         Assert.IsNotNull(summary.TransientWorker.ObservedUtc);
         // An observed section is unaffected by the switch.
@@ -260,12 +224,8 @@ public sealed class CameraAgentOperationsSummaryTests
             new RecordingLaneSnapshotRefresher(),
             new CaptureLaneState(clock, options),
             new CaptureProcessingState(),
-            new ArtifactOutboxState(),
             new StoragePressureState(),
-            new FleetRuntimeState(clock),
-            new FleetHeartbeatState(),
-            new EnvironmentalObservationDeliveryState(),
-            new ExecutionEvidenceExportState(),
+            new CaptureRuntimeState(clock),
             new TransientWorkerState(clock),
             new CaptureTelemetrySink(),
             configuration,

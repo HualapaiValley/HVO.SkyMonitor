@@ -14,7 +14,6 @@ internal static class SkyMapTestData
         new CameraAgentSkyMapObserver(
             "hvo-observatory", 1, new string('B', 64), "startup-seed",
             DeploymentLocationSourceKind.Manual, CameraAgentSkyMapLocationOrigin.StartupSeed,
-            StagedAcknowledgementPending: false,
             35.2, -111.65, 2100, "America/Phoenix", 5,
             DateTimeOffset.UnixEpoch, null, EffectiveAtInstant: true),
         new CameraAgentSkyMapGeometry(

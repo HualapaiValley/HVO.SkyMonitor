@@ -8,7 +8,6 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Orbital;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.TimeLapses;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Tests.NightlyProducts;
 using HVO.SkyMonitor.CameraAgent.Tests.TimeLapses;
@@ -117,9 +116,8 @@ public sealed class StorageRetentionRootIntegrationTests
     private static async Task SweepAsync(ServiceProvider provider, CameraModuleConfig config,
         IOptions<CameraAgentHostOptions> options, IProcessingRetentionHolds holds, DateTimeOffset now)
     {
-        using var outbox = new SqliteArtifactOutbox();
         using var retention = new RetentionBackgroundService(provider.GetRequiredService<ICameraAgentConfigurationAccessor>(),
-            options, new NightlyClock(now), outbox, new Capacity(), new StoragePressureState(),
+            options, new NightlyClock(now), new Capacity(), new StoragePressureState(),
             NullLogger<RetentionBackgroundService>.Instance, processingHolds: holds);
         await retention.ApplyRetentionAsync(config, CancellationToken.None).ConfigureAwait(false);
     }

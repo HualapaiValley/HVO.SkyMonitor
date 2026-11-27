@@ -926,7 +926,7 @@ public sealed partial class LifecycleContractTests
     [TestMethod]
     public void CatalogTransition_RequiresImageDeclaringCatalogIndependentReplay()
     {
-        var declared = new LifecycleContinuity("Paused", 2, 1812, 0, 0, 0, 0, 0, 0, 0, 0,
+        var declared = new LifecycleContinuity("Paused", 2, 1812, 0, 0, 0, 0, 0, 0,
             ReplayPending: 3, ReplayLeased: 1, ReplayCatalogIndependent: true);
         CatalogLifecycleManager.EnsureReplayCatalogIndependent(declared, LifecycleOperationKind.CatalogSelect);
         CatalogLifecycleManager.EnsureReplayCatalogIndependent(declared, LifecycleOperationKind.CatalogRollback);
@@ -3645,7 +3645,7 @@ public sealed partial class LifecycleContractTests
         public TimeSpan RecoveryReceiptClockOffset { get; set; }
         public HashSet<Guid> RecoveryCommands { get; } = [];
         public LifecycleContinuity RecoveryContinuity { get; set; } =
-            new("Paused", 2, 1812, 0, 0, 0, 0, 0, 0, 0, 0, ReplayCatalogIndependent: true);
+            new("Paused", 2, 1812, 0, 0, 0, 0, 0, 0, ReplayCatalogIndependent: true);
 
         public Task<LifecycleContinuity> ReadContinuityAsync(string verificationToken, CancellationToken cancellationToken)
         {
@@ -3704,7 +3704,7 @@ public sealed partial class LifecycleContractTests
         {
             Assert.AreEqual("lifecycle-token", verificationToken);
             PauseCount++;
-            return Task.FromResult(new LifecycleContinuity("Paused", 42, 100, 0, 0, 0, 0, DrainedProcessingPending, 0, 0, 0,
+            return Task.FromResult(new LifecycleContinuity("Paused", 42, 100, 0, 0, 0, 0, DrainedProcessingPending, 0,
                 ReplayPending: DrainedReplayPending, ReplayLeased: DrainedReplayLeased));
         }
 
@@ -3712,7 +3712,7 @@ public sealed partial class LifecycleContractTests
         {
             Assert.AreEqual("lifecycle-token", verificationToken);
             ConfirmCount++;
-            return Task.FromResult(new LifecycleContinuity("Paused", 42, 100, 0, 0, 0, 0, 0, 0, 0, 0,
+            return Task.FromResult(new LifecycleContinuity("Paused", 42, 100, 0, 0, 0, 0, 0, 0,
                 ReplayPending: DrainedReplayPending, ReplayLeased: DrainedReplayLeased));
         }
 

@@ -243,13 +243,13 @@ internal static class CameraConfiguration
             "LocalStorage",
             "Storage",
             100,
-            new { storageRoot = "/app/data/raw", retentionDays = 7, updateLatestFrame = true, queueForUpload = false },
+            new { storageRoot = "/app/data/raw", retentionDays = 7, updateLatestFrame = true },
             PresentationDependencies));
         steps.Add(Step(
             "ArchiveStorage",
             "Storage",
             110,
-            new { storageRoot = "/app/data/archive", retentionDays = 30, updateLatestFrame = false, queueForUpload = false },
+            new { storageRoot = "/app/data/archive", retentionDays = 30, updateLatestFrame = false },
             PresentationDependencies));
         steps.Add(Step(
             "Telemetry",

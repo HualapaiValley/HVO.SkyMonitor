@@ -137,7 +137,7 @@ public sealed class ProcessingGraphDraftModelTests
     public void RegionalVisibilityEditsPreserveRetainedStepSettingsAndPruneUnusedPrediction()
     {
         var storage = new CaptureProcessingStepConfig("Storage", "archive", Order: 75,
-            Options: JsonSerializer.SerializeToElement(new { queueForUpload = false, futureOption = 7 }),
+            Options: JsonSerializer.SerializeToElement(new { updateLatestFrame = false, futureOption = 7 }),
             DependsOn: ["$raw"], Enabled: true, Publication: new(CaptureProcessingPersistenceMode.DurableLocal));
         var measurement = new CaptureProcessingStepConfig(ExposureMeasurementProducts.StepAlias,
             ExposureMeasurementProducts.StepAlias, Order: 4, DependsOn: ["$raw"], Required: false);

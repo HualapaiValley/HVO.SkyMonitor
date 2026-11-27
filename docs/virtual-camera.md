@@ -16,7 +16,7 @@ The implementation combines three independent concerns:
 3. Sensor simulation converts scene irradiance into mono or color raw pixels
    using exposure, gain, noise, and defect parameters.
 
-Keeping these concerns separate lets CameraAgent and LogicHost reuse identical
+Keeping these concerns separate lets CameraAgent  reuse identical
 projection and annotation behavior while physical camera modules replace only
 the sensor-acquisition stage.
 
@@ -1183,9 +1183,8 @@ inverse projection, field edges, and visibility rejection.
 
 ### 2. Shared projector conformance
 
-For every fixture, the virtual renderer, CameraAgent annotations, and LogicHost
-annotations must receive identical projected coordinates from the shared
-Astronomy assembly. Tests compare object visibility and pixel positions within
+For every fixture, the virtual renderer and CameraAgent annotations must
+receive identical projected coordinates from the shared Astronomy assembly. Tests compare object visibility and pixel positions within
 a documented sub-pixel tolerance.
 
 ### 3. Synthetic geometry fixtures

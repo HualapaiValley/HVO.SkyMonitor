@@ -14,7 +14,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 public sealed class OperationsLayoutTests
 {
     private static readonly RenderFragment Body = builder => builder.AddMarkupContent(0, "<h1>Section body</h1>");
-    private static readonly string[] ExpectedSlugs = ["overview", "site", "camera", "registration", "schedule", "focus", "calibration", "pipeline", "environment", "space-weather", "transients", "automations", "delivery", "storage", "health", "notifications", "control", "software"];
+    private static readonly string[] ExpectedSlugs = ["overview", "site", "camera", "schedule", "focus", "calibration", "pipeline", "environment", "space-weather", "transients", "automations", "storage", "health", "notifications", "control", "software"];
     private static readonly string[] ExpectedGroups = ["Setup", "Capture", "Processing", "Automation", "Data", "System"];
 
     [TestMethod]
@@ -37,8 +37,8 @@ public sealed class OperationsLayoutTests
         Assert.AreEqual("overview", OperationsSectionCatalog.Resolve("/operations/")!.Slug);
         Assert.AreEqual("storage", OperationsSectionCatalog.Resolve("/operations/quarantine")!.Slug);
         Assert.AreEqual("schedule", OperationsSectionCatalog.Resolve("/schedule")!.Slug);
-        Assert.AreEqual("registration", OperationsSectionCatalog.Resolve("/devices/bootstrap")!.Slug);
-        Assert.AreEqual("registration", OperationsSectionCatalog.Resolve("/devices")!.Slug);
+        Assert.IsNull(OperationsSectionCatalog.Resolve("/devices/bootstrap"));
+        Assert.IsNull(OperationsSectionCatalog.Resolve("/devices"));
         Assert.AreEqual("health", OperationsSectionCatalog.Resolve("/operations/system")!.Slug);
         Assert.AreEqual("notifications", OperationsSectionCatalog.Resolve("/operations/notifications")!.Slug);
         Assert.AreEqual("control", OperationsSectionCatalog.Resolve("/operations/control")!.Slug);
@@ -98,10 +98,9 @@ public sealed class OperationsLayoutTests
             ("/operations/notifications", "notifications"),
             ("/operations/control", "control"),
             ("/operations/software", "software"),
-            ("/operations/quarantine?kind=Artifact", "storage"),
+            ("/operations/quarantine?kind=RawEvidence", "storage"),
             ("/operations/data", "storage"),
             ("/operations/storage", "storage"),
-            ("/operations/delivery", "delivery"),
             ("/operations/pipeline", "pipeline"),
             ("/operations/pipeline/executions", "pipeline"),
             ("/operations/pipeline/executions/00000000-0000-0000-0000-000000000000", "pipeline"),
@@ -111,10 +110,7 @@ public sealed class OperationsLayoutTests
             ("/operations/automations", "automations"),
             ("/operations/camera", "camera"),
             ("/operations/site", "site"),
-            ("/operations/sky-map", "site"),
-            ("/operations/registration", "registration"),
-            ("/devices/bootstrap", "registration"),
-            ("/devices", "registration")
+            ("/operations/sky-map", "site")
         })
         {
             navigation.NavigateTo(path);
@@ -181,9 +177,6 @@ public sealed class OperationsLayoutTests
         Assert.IsEmpty(cut.FindAll(".ops-nav-badge.attention"));
         Assert.AreEqual("North Camera / Virtual Sky", cut.Find(".operations-scope small").TextContent.Trim());
         Assert.DoesNotContain("agent-test", cut.Find(".operations-scope").TextContent);
-        var registration = cut.Find(".operations-scope a");
-        Assert.AreEqual("/operations/registration", registration.GetAttribute("href"));
-        Assert.AreEqual("View registration", registration.GetAttribute("aria-label"));
     }
 
     [TestMethod]
@@ -221,36 +214,13 @@ public sealed class OperationsLayoutTests
     {
         using var context = CreateContext(out var service);
         service.OperationsHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentOperationsView>.Success(
-            OperatorUiTestData.Operations(heartbeat: "Unavailable", storagePressure: true)));
+            OperatorUiTestData.Operations(storagePressure: true)));
 
         var cut = context.Render<OperationsLayout>(parameters => parameters.Add(static layout => layout.Body, Body));
 
         cut.WaitForAssertion(() => Assert.AreEqual("Attention", cut.Find(".operations-sidebar-head .state-chip").TextContent.Trim()));
         Assert.AreEqual("state-chip warning", cut.Find(".operations-sidebar-head .state-chip").GetAttribute("class"));
-        Assert.HasCount(2, cut.FindAll(".ops-nav-badge.attention"));
-        Assert.AreEqual("1 open attention item", Badge(cut, "storage"));
-        Assert.AreEqual("1 open attention item", Badge(cut, "health"));
-    }
-
-    [TestMethod]
-    public void Render_DeliveryRetriesBadgeDeliveryAndQuarantineBadgesStorage()
-    {
-        using var context = CreateContext(out var service);
-        var current = OperatorUiTestData.Operations();
-        service.OperationsHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentOperationsView>.Success(current with
-        {
-            Summary = current.Summary with
-            {
-                ArtifactOutbox = current.Summary.ArtifactOutbox with
-                {
-                    Value = current.Summary.ArtifactOutbox.Value with { RetryCount = 2, QuarantineCount = 1 }
-                },
-            },
-        }));
-
-        var cut = context.Render<OperationsLayout>(parameters => parameters.Add(static layout => layout.Body, Body));
-
-        cut.WaitForAssertion(() => Assert.AreEqual("1 open attention item", Badge(cut, "delivery")));
+        Assert.HasCount(1, cut.FindAll(".ops-nav-badge.attention"));
         Assert.AreEqual("1 open attention item", Badge(cut, "storage"));
     }
 
@@ -315,7 +285,6 @@ public sealed class OperationsLayoutTests
 
         cut.WaitForAssertion(() => Assert.AreEqual("Attention", cut.Find(".operations-sidebar-head .state-chip").TextContent.Trim()));
         Assert.AreEqual("1 open attention item", Badge(cut, "storage"));
-        Assert.AreEqual("1 open attention item", Badge(cut, "health"));
     }
 
     [TestMethod]

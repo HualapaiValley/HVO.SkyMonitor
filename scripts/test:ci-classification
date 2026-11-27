@@ -2402,13 +2402,10 @@ run_work_components_pre_csproj() {
     "src/HVO.SkyMonitor.Astronomy/Projection.cs|full|false|false|true|true|true"
     "src/HVO.SkyMonitor.Imaging/Codec.cs|full|false|false|true|true|true"
     "src/HVO.SkyMonitor.Processing/Recipe.cs|full|false|false|true|true|true"
-    "src/HVO.SkyMonitor.ProcessingRunner/Program.cs|full|false|false|true|true|true"
-    "src/HVO.SkyMonitor.ProcessingRunner.Contracts/Contract.cs|full|false|false|true|true|true"
     "src/HVO.SkyMonitor.Catalog.Sqlite/Catalog.cs|full|false|false|true|true|true|M"
     "src/HVO.SkyMonitor.Storage.FileSystem/PhysicalRoot.cs|full|false|false|true|true|true"
     "tests/HVO.SkyMonitor.Storage.FileSystem.Tests/RootTests.cs|full|false|false|true|true|true"
     "src/HVO.SkyMonitor.Common/Security/ApiKey.cs|full|false|false|true|true|true"
-    "src/HVO.SkyMonitor.Fleet.Contracts/Registration.cs|full|false|false|true|true|true"
     "src/HVO.SkyMonitor.TestSupport/Fixture.cs|full|false|false|true|true|true"
     "tests/HVO.SkyMonitor.Astronomy.Tests/ProjectionTests.cs|full|false|false|true|true|true"
     "tests/HVO.SkyMonitor.AgentCore.Tests/ContractTests.cs|full|false|false|true|true|true"
@@ -2619,7 +2616,6 @@ run_work_projdirs_and_complete() {
     "scripts/test:ci-classification" \
     "Directory.Build.props" \
     "tests/fixtures/catalog/hyg-v42-bright-stars.sqlite" \
-    "docs/validation/cameraagent-transient-fault-matrix.json" \
     "tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/VirtualSkyPipelineTests.cs"
   # Verify enumerator widenings (src/ projects and links outside src/tests/tools).
   local -a link_including_projects=() src_project_names=()
@@ -2651,7 +2647,7 @@ run_work_projdirs_and_complete() {
     probe_dirs+=("$project_directory")
     probe_specs+=("$project_directory/ClassificationProbe.cs|probe $project_directory"$'\n')
   done
-  if (( project_directory_count < 40 )); then
+  if (( project_directory_count < 36 )); then
     printf 'Only %s project directories were classified; the orphan cross-check is not enumerating the repository.\n' \
       "$project_directory_count" >&2
     exit 1
@@ -2707,7 +2703,6 @@ run_work_projdirs_and_complete() {
     "tests/Example.Tests/ExampleTests.cs|A"
     "tests/fixtures/frames/sample.bin|A"
     "tests/fixtures/catalog/hyg-v42-bright-stars.sqlite|M"
-    "docs/validation/cameraagent-transient-fault-matrix.json|M"
     "tools/asi-capture/capture.sh|A"
     "docker/local/Dockerfile|A"
   )
@@ -3545,10 +3540,12 @@ run_workflow_shape() {
       printf 'Component lane must enforce its own coverage baseline: %s\n' "$component" >&2
       exit 1
     }
-    grep -Fq "./scripts/ci:component-publish $component" <<< "$job_body" || {
-      printf 'Component lane must publish its own shipping outputs: %s\n' "$component" >&2
-      exit 1
-    }
+    if [[ "$component" != shared ]]; then
+      grep -Fq "./scripts/ci:component-publish $component" <<< "$job_body" || {
+        printf 'Component lane must publish its own shipping outputs: %s\n' "$component" >&2
+        exit 1
+      }
+    fi
     [[ -f "$repo_root/scripts/coverage/baseline.$component.json" ]] || {
       printf 'Component lane has no coverage baseline: %s\n' "$component" >&2
       exit 1
@@ -3587,8 +3584,8 @@ run_workflow_shape() {
       fi
     done < <("$repo_root/scripts/coverage:component" --list-slots "$component")
   done < <("$repo_root/scripts/coverage:component" --list-components)
-  if (( slot_count != 17 )); then
-    printf 'Expected 17 component coverage slots across the three active lanes, found %s.\n' "$slot_count" >&2
+  if (( slot_count != 16 )); then
+    printf 'Expected 16 component coverage slots across the three active lanes, found %s.\n' "$slot_count" >&2
     exit 1
   fi
 

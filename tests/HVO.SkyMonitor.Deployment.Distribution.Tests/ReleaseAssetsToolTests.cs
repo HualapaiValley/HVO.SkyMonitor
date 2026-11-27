@@ -232,7 +232,7 @@ public sealed class ReleaseAssetsToolTests
         {
             case "version": fixture.Build(labels: static (platform, labels) => Relabel(platform, labels, "org.opencontainers.image.version", "1.2.0-dev.4")); break;
             case "revision": fixture.Build(labels: static (platform, labels) => Relabel(platform, labels, "org.opencontainers.image.revision", new string('f', 40))); break;
-            case "component": fixture.Build(labels: static (platform, labels) => Relabel(platform, labels, "io.hvo.skymonitor.component", "LogicHost")); break;
+            case "component": fixture.Build(labels: static (platform, labels) => Relabel(platform, labels, "io.hvo.skymonitor.component", "OtherProduct")); break;
             case "created-missing": fixture.Build(labels: static (platform, labels) => Unlabel(platform, labels, "org.opencontainers.image.created")); break;
             case "created-other": fixture.Build(labels: static (platform, labels) => Relabel(platform, labels, "org.opencontainers.image.created", "2026-10-17T18:00:00+00:00")); break;
             case "state-contracts-missing": fixture.Build(labels: static (platform, labels) => Unlabel(platform, labels, StateContractsLabel)); break;

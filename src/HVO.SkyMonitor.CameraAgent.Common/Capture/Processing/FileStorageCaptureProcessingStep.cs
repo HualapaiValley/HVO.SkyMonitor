@@ -8,7 +8,6 @@ using HVO.SkyMonitor.CameraAgent.Common.Frames;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -20,8 +19,6 @@ internal sealed class FileStorageCaptureProcessingStep(
     FileStorageCaptureProcessingStepOptions options,
     ILatestFrameAccessor latestFrameAccessor,
     IFrameStorageService frameStorageService,
-    IArtifactOutbox artifactOutbox,
-    IOptions<CameraAgentHostOptions> hostOptions,
     ILogger<FileStorageCaptureProcessingStep> logger,
     CaptureProcessingPersistence? processingPersistence = null,
     ICaptureProcessingFaultInjector? faults = null) : ConfigurableCaptureProcessingStep<FileStorageCaptureProcessingStepOptions>(metadata, options), ICaptureProcessingArtifactConsumer, IDurableCaptureProcessingPostCommit
@@ -31,9 +28,6 @@ internal sealed class FileStorageCaptureProcessingStep(
 
     private readonly ILatestFrameAccessor _latestFrameAccessor = latestFrameAccessor;
     private readonly IFrameStorageService _frameStorageService = frameStorageService;
-    private readonly IArtifactOutbox _artifactOutbox = artifactOutbox;
-    private readonly bool _centralIntegrationEnabled =
-        hostOptions.Value.CentralIntegration.Mode == CentralIntegrationMode.Enabled;
     private readonly ILogger<FileStorageCaptureProcessingStep> _logger = logger;
     private readonly CaptureProcessingPersistence? _processingPersistence = processingPersistence;
 
@@ -63,7 +57,7 @@ internal sealed class FileStorageCaptureProcessingStep(
         }
 
         _logger.FileStorageStarted(Name, artifacts.Raw.Frame.TimestampUtc, Options.StorageRoot, Options.RetentionDays);
-        var durableGraphOwnsStorage = !_centralIntegrationEnabled && context.RawCapture is { } durableRaw &&
+        var durableGraphOwnsStorage = context.ProcessingExecution is not null && context.RawCapture is { } durableRaw &&
             IsStoredUnderRoot(durableRaw.StoredFrame, Options.StorageRoot);
         var metadataAlreadyStoredUnderRoot = context.RawCapture is { } metadataRaw &&
             IsStoredUnderRoot(metadataRaw.StoredFrame, Options.StorageRoot);
@@ -98,18 +92,6 @@ internal sealed class FileStorageCaptureProcessingStep(
             UpdateLatestFrame(selectedArtifacts, allowAutomaticPublication);
             return;
         }
-        var compactScene = (context.RawCapture?.Manifest.Scene ?? artifacts.Raw.Frame.Metadata.Scene)?.RequiresProjectedScene == true;
-        var needsSceneUpload = allowAutomaticPublication && compactScene && selectedArtifacts.Any(artifact =>
-        {
-            var product = context.GetProcessingProduct(artifact.ArtifactId);
-            return artifact.Role != FrameArtifactRole.Metadata &&
-                (artifact.Role != FrameArtifactRole.Raw || context.RawCapture is not { } raw ||
-                    IsStoredUnderRoot(raw.StoredFrame, Options.StorageRoot)) &&
-                QueuesUpload(context.GetDependencyProducerStepId(artifact.ArtifactId), artifact.Role,
-                    product?.Variant, product?.Recipe.Descriptor.Name);
-        });
-        await QueueCanonicalScenesAsync(context, selectedProducts, allowAutomaticPublication, needsSceneUpload,
-            cancellationToken).ConfigureAwait(false);
         await StorageLifecycleLock.WaitAsync(lifecycleGate, "capture-storage", _logger, cancellationToken).ConfigureAwait(false);
         try
         {
@@ -119,116 +101,30 @@ internal sealed class FileStorageCaptureProcessingStep(
                 var producerStepId = context.GetDependencyProducerStepId(artifact.ArtifactId);
                 var policy = ResolvePolicy(producerStepId, artifact, product);
                 var publication = context.GetDependencyPublicationPolicy(artifact.ArtifactId);
-                if (publication is not null)
+                if (publication is not null || artifact.Role == FrameArtifactRole.Raw && context.RawCapture is not null ||
+                    durableGraphOwnsStorage && product is not null)
                 {
-                    if (allowAutomaticPublication && _centralIntegrationEnabled &&
-                        (policy?.QueueForUpload ?? Options.QueueForUpload))
-                    {
-                        if (product is null || context.RawCapture is not { } rawCapture)
-                        {
-                            throw new InvalidDataException(
-                                "Per-step upload publication requires a reconstructable processing product.");
-                        }
-                        var (published, descriptor) = await SaveDerivativeAsync(context, rawCapture, artifact, product,
-                            producerStepId, producerStepId, exportsCenteredCopy, cancellationToken).ConfigureAwait(false);
-                        await _artifactOutbox.EnqueueAsync(
-                            Options.StorageRoot,
-                            new ArtifactManifestV2(
-                                ArtifactManifestV2.CurrentSchemaVersion,
-                                descriptor,
-                                published.RelativePath,
-                                artifact.Frame.Metadata.Scene,
-                                producerStepId),
-                            cancellationToken).ConfigureAwait(false);
-                    }
                     continue;
                 }
-                StoredFrameReference stored;
-                ArtifactManifestV2? uploadManifest = null;
-                if (artifact.Role == FrameArtifactRole.Raw && context.RawCapture is { } ingress)
+                if (product is null || context.RawCapture is not { } rawCapture)
                 {
-                    if (!IsStoredUnderRoot(ingress.StoredFrame, Options.StorageRoot))
-                    {
-                        continue;
-                    }
-                    stored = ingress.StoredFrame;
-                    uploadManifest = ingress.Manifest;
+                    throw new InvalidDataException(
+                        "File storage requires a reconstruction descriptor for every artifact.");
                 }
-                else
-                {
-                    if (durableGraphOwnsStorage && product is not null)
-                    {
-                        continue;
-                    }
-                    if (product is not null && context.RawCapture is { } rawCapture)
-                    {
-                        // Canonical pixels were already committed with their producer identity.
-                        // Reuse those exact facts even when a broad Storage policy selects them.
-                        var manifestProducerStepId = metadataAlreadyStoredUnderRoot || policy?.StepId is not null
-                            ? producerStepId : null;
-                        ReconstructionDescriptor descriptor;
-                        (stored, descriptor) = await SaveDerivativeAsync(context, rawCapture, artifact, product,
-                            producerStepId, manifestProducerStepId, exportsCenteredCopy, cancellationToken).ConfigureAwait(false);
-                        uploadManifest = new ArtifactManifestV2(
-                            ArtifactManifestV2.CurrentSchemaVersion,
-                            descriptor,
-                            stored.RelativePath,
-                            artifact.Frame.Metadata.Scene,
-                            manifestProducerStepId);
-                    }
-                    else
-                    {
-                        throw new InvalidDataException(
-                            "File storage requires a reconstruction descriptor for every artifact.");
-                    }
-                }
-                if (allowAutomaticPublication && _centralIntegrationEnabled &&
-                    (policy?.QueueForUpload ?? Options.QueueForUpload))
-                {
-                    if (uploadManifest is null)
-                    {
-                        throw new InvalidDataException("Only reconstructable manifest-v2 artifacts can be queued for upload.");
-                    }
-                    await _artifactOutbox.EnqueueAsync(
-                        Options.StorageRoot, uploadManifest, cancellationToken).ConfigureAwait(false);
-                }
+                // Canonical pixels already carry their producer identity.
+                var manifestProducerStepId = metadataAlreadyStoredUnderRoot || policy?.StepId is not null
+                    ? producerStepId : null;
+                await SaveDerivativeAsync(context, rawCapture, artifact, product,
+                    producerStepId, manifestProducerStepId, exportsCenteredCopy, cancellationToken).ConfigureAwait(false);
             }
             foreach (var product in selectedProducts.Where(static product => product.Layout is null))
             {
                 var artifactId = CaptureProcessingContext.CreateArtifactId(product.OutputIdentitySha256);
                 var producerStepId = context.GetDependencyProducerStepId(artifactId);
                 var publication = context.GetDependencyPublicationPolicy(artifactId);
-                var policy = ResolvePolicy(producerStepId, product);
-                var queueForUpload = allowAutomaticPublication && _centralIntegrationEnabled &&
-                    (policy?.QueueForUpload ?? Options.QueueForUpload);
-                if (publication is not null)
-                {
-                    if (!queueForUpload)
-                    {
-                        continue;
-                    }
-                }
-                if (product.Role != FrameArtifactRole.Metadata)
-                {
-                    if (queueForUpload)
-                    {
-                        throw new InvalidDataException("Layoutless encoded products are not supported by structured upload v1.");
-                    }
-                    continue;
-                }
-                var isStructuredProduct = product.Kind == ProcessingProductKind.Metadata &&
-                    product.SchemaVersion is not null && product.ContentIdentitySha256 is not null &&
-                    StructuredProcessingProductContracts.IsSupported(product.MediaType, product.SchemaVersion);
-                if (queueForUpload && !isStructuredProduct)
-                {
-                    if (policy?.QueueForUpload == true)
-                    {
-                        throw new InvalidDataException("Structured upload requires a supported typed metadata contract.");
-                    }
-                    queueForUpload = false;
-                }
-                var isProjectedScene = SceneProvenance.IsRetainedProjectedSceneSchemaVersion(product.SchemaVersion);
-                if (isProjectedScene || metadataAlreadyStoredUnderRoot && !queueForUpload)
+                if (publication is not null || product.Role != FrameArtifactRole.Metadata ||
+                    SceneProvenance.IsRetainedProjectedSceneSchemaVersion(product.SchemaVersion) ||
+                    metadataAlreadyStoredUnderRoot)
                 {
                     continue;
                 }
@@ -237,33 +133,12 @@ internal sealed class FileStorageCaptureProcessingStep(
                     throw new InvalidOperationException("Layoutless metadata storage requires durable reconstruction context.");
                 }
                 var productRoot = Options.StorageRoot;
-                var output = await CaptureProcessingPersistence.CopyMetadataProductAsync(
+                await CaptureProcessingPersistence.CopyMetadataProductAsync(
                     productRoot,
                     descriptor,
                     producerStepId ?? Name,
                     product,
                     cancellationToken).ConfigureAwait(false);
-                if (queueForUpload)
-                {
-                    await _artifactOutbox.EnqueueAsync(
-                        productRoot,
-                        new StructuredProcessingProductManifestV1(
-                            StructuredProcessingProductManifestV1.CurrentSchemaVersion,
-                            new StructuredProcessingProductDescriptorV1(
-                                descriptor,
-                                output.Artifact,
-                                product.OutputIdentitySha256,
-                                product.Algorithms,
-                                product.Compatibility,
-                                product.TotalIntegration.Ticks,
-                                product.Payload.Length,
-                                product.Kind,
-                            product.SchemaVersion!,
-                            product.ContentIdentitySha256!),
-                        output.PayloadRelativePath,
-                        producerStepId),
-                        cancellationToken).ConfigureAwait(false);
-                }
             }
         }
         finally
@@ -296,47 +171,6 @@ internal sealed class FileStorageCaptureProcessingStep(
             }
         }
 
-    }
-
-    private async ValueTask QueueCanonicalScenesAsync(
-        CaptureProcessingContext context,
-        IReadOnlyList<ProcessingProduct> products,
-        bool allowAutomaticPublication,
-        bool needsSceneUpload,
-        CancellationToken cancellationToken)
-    {
-        if (!allowAutomaticPublication || !_centralIntegrationEnabled) return;
-        var scenes = products.Where(product =>
-            SceneProvenance.IsRetainedProjectedSceneSchemaVersion(product.SchemaVersion) &&
-            !CaptureProcessingPersistence.IsExposurePredictionOutput(context.ReconstructionDescriptor,
-                context.GetDependencyProducerStepId(ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256)),
-                product.Variant)).ToArray();
-        if (needsSceneUpload && scenes.Length != 1)
-            throw new InvalidDataException("Compact image upload requires one declared canonical scene dependency.");
-        foreach (var product in scenes)
-        {
-            var producer = context.GetDependencyProducerStepId(ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256));
-            // Legacy image manifests already transported geometry regardless of the optional
-            // metadata mask. Compact images preserve that information through one dependency.
-            if (!needsSceneUpload && !(ResolvePolicy(producer, product)?.QueueForUpload ?? Options.QueueForUpload)) continue;
-            if (_processingPersistence is null || context.ReconstructionDescriptor is not { } descriptor)
-                throw new InvalidOperationException("Canonical scene upload requires durable reconstruction context.");
-            var root = _processingPersistence.StorageRoot;
-            var gate = StorageLifecycleLock.ForRoot(root);
-            await StorageLifecycleLock.WaitAsync(gate, "capture-storage", _logger, cancellationToken).ConfigureAwait(false);
-            try
-            {
-                var output = await _processingPersistence.RequireCommittedSceneAsync(
-                    descriptor.Capture.CaptureId, product, cancellationToken).ConfigureAwait(false);
-                var manifest = await _processingPersistence.CreateSceneUploadManifestAsync(
-                    descriptor, output, cancellationToken).ConfigureAwait(false);
-                await _artifactOutbox.EnqueueAsync(root, manifest, cancellationToken).ConfigureAwait(false);
-            }
-            finally
-            {
-                gate.Release();
-            }
-        }
     }
 
     private static bool IsExplicitPipeline(CameraModuleConfig config)
@@ -410,10 +244,6 @@ internal sealed class FileStorageCaptureProcessingStep(
         }
     }
 
-    internal bool QueuesUpload(string? producerStepId, FrameArtifactRole role, string? variant, string? recipeName)
-        => _centralIntegrationEnabled &&
-            (ResolvePolicy(producerStepId, role, variant, recipeName)?.QueueForUpload ?? Options.QueueForUpload);
-
     private ArtifactStoragePolicyOptions? ResolvePolicy(
         string? producerStepId, FrameArtifact artifact, ProcessingProduct? product)
         => ResolvePolicy(producerStepId, artifact.Role, product?.Variant, product?.Recipe.Descriptor.Name);
@@ -451,7 +281,6 @@ public sealed class FileStorageCaptureProcessingStepOptions : IValidatableObject
 
     public bool UpdateLatestFrame { get; init; } = true;
 
-    public bool QueueForUpload { get; init; }
 
     public IReadOnlyList<ArtifactStoragePolicyOptions> Policies { get; init; } = [];
 
@@ -495,7 +324,6 @@ public sealed class ArtifactStoragePolicyOptions
 
     public string? RecipeName { get; init; }
 
-    public bool? QueueForUpload { get; init; }
 
     [Range(1, 3650)]
     public int? RetentionDays { get; init; }

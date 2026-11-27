@@ -3,7 +3,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Notifications;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Configuration;
@@ -2943,7 +2943,7 @@ public sealed class OperatorNotificationStoreTests
                 telemetry,
                 TimeProvider.System);
 
-            var fleet = new FleetRuntimeState(TimeProvider.System);
+            var fleet = new CaptureRuntimeState(TimeProvider.System);
             fleet.CaptureFailed("USB camera disconnected", isCameraDisconnected: true);
 
             using var monitor = new OperatorNotificationMonitorService(
@@ -2951,7 +2951,7 @@ public sealed class OperatorNotificationStoreTests
                 dispatcher,
                 Options.Create(new CameraAgentHostOptions { DisplayName = "Unattended Dome" }),
                 TimeProvider.System,
-                fleetRuntimeState: fleet);
+                captureRuntimeState: fleet);
 
             // Initially disabled: monitor skips evaluation and sends zero alerts.
             Assert.IsFalse(store.CurrentOptions.Enabled);

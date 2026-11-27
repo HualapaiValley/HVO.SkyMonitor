@@ -496,7 +496,6 @@ public sealed class AnnotationEnvironmentSourceTests
         const string prefix = "CameraAgent:EnvironmentalAcquisition:";
         var settings = new Dictionary<string, string?>
         {
-            ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false"
         };
         switch (profile)
         {
@@ -561,7 +560,7 @@ public sealed class AnnotationEnvironmentSourceTests
                         Required: required),
                     new CaptureProcessingStepConfig(
                         "Storage", "storage", Order: 30,
-                        Options: JsonSerializer.SerializeToElement(new { storageRoot = root, queueForUpload = false }),
+                        Options: JsonSerializer.SerializeToElement(new { storageRoot = root }),
                         DependsOn: ["$raw"]),
                     new CaptureProcessingStepConfig("Telemetry", "telemetry", Order: 40, DependsOn: ["storage"])
                 ],
@@ -595,7 +594,7 @@ public sealed class AnnotationEnvironmentSourceTests
                         DependsOn: ["preview"]),
                     new CaptureProcessingStepConfig(
                         "Storage", "storage", Order: 30,
-                        Options: JsonSerializer.SerializeToElement(new { storageRoot = root, queueForUpload = false }),
+                        Options: JsonSerializer.SerializeToElement(new { storageRoot = root }),
                         DependsOn: ["$raw"]),
                     new CaptureProcessingStepConfig("Telemetry", "telemetry", Order: 40, DependsOn: ["storage"])
                 ],

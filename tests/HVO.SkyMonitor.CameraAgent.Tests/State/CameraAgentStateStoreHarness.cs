@@ -5,15 +5,13 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
-using HVO.SkyMonitor.CameraAgent.Common.Evidence;
-using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
 using HVO.SkyMonitor.CameraAgent.Common.Orbital;
 using HVO.SkyMonitor.CameraAgent.Common.SpaceWeather.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.TimeLapses;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Data;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -85,17 +83,7 @@ internal sealed class CameraAgentStateStoreHarness : IDisposable
             .InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         await provider.GetRequiredService<SqliteCaptureProcessingStore>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         await provider.GetRequiredService<SqliteTransientRuntimeStore>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-        foreach (var storageRoot in StorageRoots)
-        {
-            await new SqliteArtifactOutbox().InitializeAsync(HostPath(storageRoot), CancellationToken.None).ConfigureAwait(false);
-        }
-        using (var fleet = new SqliteFleetStatusOutbox())
-        {
-            _ = await fleet.GetSnapshotAsync(RawRoot, CancellationToken.None).ConfigureAwait(false);
-        }
-        await provider.GetRequiredService<SqliteEnvironmentalObservationOutbox>().InitializeAsync(RawRoot, CancellationToken.None).ConfigureAwait(false);
-        await ((SqliteExecutionEvidenceOutbox)provider.GetRequiredService<IExecutionEvidenceOutbox>())
-            .InitializeAsync(RawRoot, CancellationToken.None).ConfigureAwait(false);
+        await provider.GetRequiredService<SqliteEnvironmentalObservationStore>().InitializeAsync(RawRoot, CancellationToken.None).ConfigureAwait(false);
         await provider.GetRequiredService<SqliteTimeLapseStore>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         _ = await provider.GetRequiredService<SqliteNightlyProductStore>()
             .ListAsync(new DateOnly(2026, 10, 16), CancellationToken.None).ConfigureAwait(false);

@@ -34,7 +34,7 @@ public sealed partial class DurableCaptureDistributionTests
     [DataRow(true)]
     public async Task EvidenceRecoveryHostStartsWithCaptureClosedAndOwnerReleaseResumesAdmission(bool writeOff)
     {
-        using var fixture = CreateFixture(new() { UploadEnabled = false, PollIntervalMilliseconds = 50, ShutdownDrainSeconds = 1 });
+        using var fixture = CreateFixture(new() { PollIntervalMilliseconds = 50, ShutdownDrainSeconds = 1 });
         var receipt = await fixture.AcceptAsync(0).ConfigureAwait(false);
         var backup = Path.Combine(fixture.Root, "recovered-original.bin");
         File.Move(receipt.StoredFrame.AbsolutePath, backup);
@@ -57,7 +57,7 @@ public sealed partial class DurableCaptureDistributionTests
             web.ConfigureServices(services =>
             {
                 services.AddSingleton<IRawEvidenceOperations>(ingress);
-                services.AddSingleton(new OutboxOperationsTokenService(new EphemeralDataProtectionProvider(), TimeSpan.FromMinutes(5)));
+                services.AddSingleton(new LocalOperationsTokenService(new EphemeralDataProtectionProvider(), TimeSpan.FromMinutes(5)));
                 services.AddDataProtection().UseEphemeralDataProtectionProvider();
                 services.AddAuthentication(RecoveryOwnerAuthentication.SchemeName)
                     .AddScheme<AuthenticationSchemeOptions, RecoveryOwnerAuthentication>(RecoveryOwnerAuthentication.SchemeName, _ => { });
@@ -128,7 +128,7 @@ public sealed partial class DurableCaptureDistributionTests
     [DataRow("evidence-unavailable")]
     public async Task RevalidationSettlesActualEvidenceLaneFailurePreservesRawAndAllowsFreshCapture(string reason)
     {
-        using var fixture = CreateFixture(new() { UploadEnabled = false });
+        using var fixture = CreateFixture(new() { });
         var receipt = await fixture.AcceptAsync(0).ConfigureAwait(false);
         var backup = Path.Combine(fixture.Root, "recovery-backup.bin");
         var sidecar = Path.ChangeExtension(receipt.StoredFrame.AbsolutePath, ".json");
@@ -174,7 +174,7 @@ public sealed partial class DurableCaptureDistributionTests
     [TestMethod]
     public async Task RevalidationPreservesUnrelatedRequiredLaneQuarantine()
     {
-        using var fixture = CreateFixture(new() { UploadEnabled = true });
+        using var fixture = CreateFixture(new() { });
         var receipt = await fixture.AcceptAsync(0).ConfigureAwait(false);
         var upload = await fixture.ClaimAsync("upload").ConfigureAwait(false);
         Assert.IsNotNull(upload);

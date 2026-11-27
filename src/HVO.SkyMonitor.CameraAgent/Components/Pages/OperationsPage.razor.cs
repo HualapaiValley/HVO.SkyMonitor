@@ -11,9 +11,9 @@ using Microsoft.JSInterop;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
-public sealed record OperatorOutboxActionRequest(
-    OperatorOutboxItem Item,
-    OutboxOperationAction Action,
+public sealed record QuarantineActionRequest(
+    OperatorQuarantineItem Item,
+    QuarantineOperationAction Action,
     string TriggerId);
 
 /// <summary>
@@ -455,8 +455,6 @@ public sealed partial class OperationsPage : SiteTimeComponent, IAsyncDisposable
     private string CaptureState => _view?.Summary.CaptureControl.Value.State ?? string.Empty;
     private bool CanPause => CaptureState == "Running";
     private bool CanResume => CaptureState == "Paused";
-    private bool IsCentralIntegrationDisabled =>
-        _view?.Summary.Configuration.Value.CentralIntegration == "Disabled";
     private bool HasStaleSection => HasFreshness("stale");
     private bool HasUnknownSection => HasFreshness("unknown");
 
@@ -473,11 +471,8 @@ public sealed partial class OperationsPage : SiteTimeComponent, IAsyncDisposable
             summary.RawIngress.Freshness,
             summary.CaptureLanes.Freshness,
             summary.CaptureProcessing.Freshness,
-            summary.ArtifactOutbox.Freshness,
             summary.Storage.Freshness,
             summary.CaptureRuntime.Freshness,
-            summary.Heartbeat.Freshness,
-            summary.EnvironmentalDelivery.Freshness,
             summary.TransientWorker.Freshness,
             summary.CaptureTelemetry.Freshness,
             summary.Configuration.Freshness
@@ -592,17 +587,6 @@ public sealed partial class OperationsPage : SiteTimeComponent, IAsyncDisposable
         {
             var queue = _view!.Summary.CaptureProcessing.Value;
             return queue.LeasedCount > 0 ? CountText(queue.LeasedCount, "active") : CountText(queue.PendingCount, "pending");
-        }
-    }
-
-    private string DeliveryLaneText
-    {
-        get
-        {
-            var queue = _view!.Summary.ArtifactOutbox.Value;
-            return IsCentralIntegrationDisabled
-                ? "Disabled"
-                : queue.RetryCount > 0 ? CountText(queue.RetryCount, "retry") : CountText(queue.PendingCount, "pending");
         }
     }
 

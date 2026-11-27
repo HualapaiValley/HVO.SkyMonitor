@@ -323,8 +323,7 @@
         "options": {
           "storageRoot": "/app/data/raw",
           "retentionDays": 7,
-          "updateLatestFrame": true,
-          "queueForUpload": false
+          "updateLatestFrame": true
         },
         "dependsOn": [
           "$raw",
@@ -346,8 +345,7 @@
         "options": {
           "storageRoot": "/app/data/archive",
           "retentionDays": 30,
-          "updateLatestFrame": false,
-          "queueForUpload": false
+          "updateLatestFrame": false
         },
         "dependsOn": [
           "$raw",

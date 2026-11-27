@@ -44,8 +44,7 @@ shared descriptor is `scene-style-presentation-options-v1`. New layers use
 `presentation-layer-payload-v5-scene-style` and
 `typed-presentation-compositor-v8-scene-style`, retaining the style identity,
 pinned font-set identity through that hash, scene identity and actual source
-lineage. Readers that do not support the new payload reject it. CameraAgent
-and LogicHost use shared payload readers, raster materialization and grouped
+lineage. Readers that do not support the new payload reject it. CameraAgent uses shared payload readers, raster materialization and grouped
 SVG glyph paths; retained layers do not consult the currently active style.
 Old v12/v13/v14 graph JSON and v1–v4 retained payloads (as well as retained v14
 scene-style payloads) retain their previous identities and rendering.

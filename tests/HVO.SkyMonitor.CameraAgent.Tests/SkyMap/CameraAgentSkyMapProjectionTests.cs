@@ -167,7 +167,6 @@ public sealed class CameraAgentSkyMapProjectionTests
         Assert.AreEqual("sky-map-fixture-location", result.Observer.LocationId);
         Assert.AreEqual(1, result.Observer.Version);
         Assert.AreEqual(CameraAgentSkyMapLocationOrigin.StartupSeed, result.Observer.Origin);
-        Assert.IsFalse(result.Observer.StagedAcknowledgementPending);
         Assert.IsTrue(result.Observer.EffectiveAtInstant);
         Assert.AreEqual(35d, result.Observer.LatitudeDegrees);
         Assert.AreEqual(-115d, result.Observer.LongitudeDegrees);

@@ -1,10 +1,8 @@
 using HVO.SkyMonitor.AgentCore;
-using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
-using HVO.SkyMonitor.CameraAgent.Common.Fleet;
-using HVO.SkyMonitor.Fleet.Contracts;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -339,7 +337,7 @@ public sealed partial class CaptureAdmissionCoordinatorTests
                 await Assert.ThrowsExactlyAsync<CaptureAdmissionUnavailableException>(async () =>
                     await pause.ConfigureAwait(false)).ConfigureAwait(false);
                 Assert.AreEqual(CaptureAdmissionState.Unavailable, fixture.Coordinator.Snapshot.State);
-                Assert.AreEqual(FleetAvailability.Unavailable, fixture.RuntimeState.Snapshot.Capture.Availability);
+                Assert.AreEqual(CaptureAvailability.Unavailable, fixture.RuntimeState.Snapshot.Capture.Availability);
 
                 _ = await Assert.ThrowsExactlyAsync<CaptureAdmissionUnavailableException>(() =>
                     fixture.Coordinator.ResumeAsync("resume-after-failed-publication", null, "owner-1", null,
@@ -590,7 +588,7 @@ public sealed partial class CaptureAdmissionCoordinatorTests
         private CoordinatorFixture(
             CaptureAdmissionCoordinator coordinator,
             CaptureControlTelemetry telemetry,
-            FleetRuntimeState runtimeState)
+            CaptureRuntimeState runtimeState)
         {
             Coordinator = coordinator;
             _telemetry = telemetry;
@@ -599,13 +597,13 @@ public sealed partial class CaptureAdmissionCoordinatorTests
 
         internal CaptureAdmissionCoordinator Coordinator { get; }
 
-        internal FleetRuntimeState RuntimeState { get; }
+        internal CaptureRuntimeState RuntimeState { get; }
 
         internal static async Task<CoordinatorFixture> CreateAsync(
             string root, bool provisioningGate = false, Guid? firstBootPauseId = null)
         {
             var telemetry = new CaptureControlTelemetry();
-            var runtimeState = new FleetRuntimeState(TimeProvider.System);
+            var runtimeState = new CaptureRuntimeState(TimeProvider.System);
             var coordinator = new CaptureAdmissionCoordinator(
                 new InitializingIngress(root, new FirstBootPauseOptions { Id = firstBootPauseId }.Identity),
                 Options.Create(new CameraAgentHostOptions

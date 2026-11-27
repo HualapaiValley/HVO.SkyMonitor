@@ -107,7 +107,7 @@ public sealed partial class ProcessingGraphOperationsTests
                         new("Storage", "archive", DependsOn: ["jpeg", "annotation", "projected-scene"],
                             Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
                             {
-                                StorageRoot = archiveRoot, QueueForUpload = false, UpdateLatestFrame = false
+                                StorageRoot = archiveRoot, UpdateLatestFrame = false
                             }))
                     ]
                 }

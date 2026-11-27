@@ -15,7 +15,6 @@ using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using System.Net;
 using HVO.SkyMonitor.AgentCore;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
@@ -82,7 +81,6 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
         Action<IServiceCollection>? configureServices = null,
         bool useCalibrationLibrary = false,
         bool requireOwnerPasswordReplacement = false,
-        bool enableCentralIntegration = false,
         bool useEnvironmentalAcquisition = false,
         Func<string, Task>? prepareRoot = null,
         bool useTransientEvidence = false,
@@ -145,18 +143,6 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
         }
         await File.WriteAllTextAsync(configPath, configured).ConfigureAwait(false);
         var provisioningRoot = Path.Combine(root, "provisioning");
-        if (enableCentralIntegration)
-        {
-            Directory.CreateDirectory(provisioningRoot);
-            await File.WriteAllTextAsync(
-                Path.Combine(provisioningRoot, "device-identity.json"),
-                JsonSerializer.Serialize(new
-                {
-                    deviceId = AgentId,
-                    verificationCode = "BROWSER106",
-                    createdUtc = DateTimeOffset.UnixEpoch
-                })).ConfigureAwait(false);
-        }
 
         var overrides = new Dictionary<string, string?>
         {
@@ -174,12 +160,8 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
             ["CameraAgent:ConfigFilePath"] = configPath,
             ["CameraAgent:RawIngressRoot"] = root,
             ["CameraAgent:RawIngressReserveBytes"] = "0",
-            ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false",
-            ["CameraAgent:EnvironmentalDelivery:Enabled"] = "false",
-            ["CameraAgent:CentralIntegration:Mode"] = enableCentralIntegration ? "Enabled" : "Disabled",
             ["CameraAgent:TransientDetection:Mode"] = useTransientEvidence ? "Edge" : "Off",
             ["DeviceProvisioning:StateDirectory"] = provisioningRoot,
-            ["CentralIdentity:ServiceUrl"] = "http://127.0.0.1:1/",
             ["SkyMonitor:BaseUrl"] = "http://127.0.0.1:1",
             ["SkyMonitor:PublicBaseUrl"] = "http://127.0.0.1:1",
             ["Logging:LogLevel:Default"] = "Warning",
@@ -219,7 +201,6 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
                 await CompleteOwnerBootstrapForExistingAcceptanceTestsAsync(fixture.Services).ConfigureAwait(false);
             }
             await SeedNonOwnerAsync(fixture.Services).ConfigureAwait(false);
-            await SeedArtifactQuarantineAsync(fixture.Services, root).ConfigureAwait(false);
             return fixture;
         }
         catch
@@ -290,72 +271,6 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
             _factory = null;
         }
         SqliteConnection.ClearAllPools();
-    }
-
-    private static async Task SeedArtifactQuarantineAsync(IServiceProvider services, string root)
-    {
-        var outbox = services.GetRequiredService<IArtifactOutbox>();
-        var recipe = RecipeIdentityDescriptor.Create(
-            "browser-quarantine",
-            "1.0.0",
-            "issue-106-v1",
-            JsonSerializer.SerializeToElement(new { }));
-        var profileHash = new string('A', 64);
-        for (var index = 0; index < 30; index++)
-        {
-            var payload = new byte[] { (byte)index, 1, 2, 3 };
-            var artifactId = CreateDeterministicGuid(index, 1);
-            var captureId = CreateDeterministicGuid(index, 2);
-            var relativePath = $"browser-quarantine/{artifactId:N}.bin";
-            var path = Path.Combine(root, relativePath.Replace('/', Path.DirectorySeparatorChar));
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            await File.WriteAllBytesAsync(path, payload).ConfigureAwait(false);
-            var now = new DateTimeOffset(2026, 7, 23, 0, 0, index, TimeSpan.Zero);
-            var descriptor = new ReconstructionDescriptor(
-                new CaptureIdentityDescriptor("browser-fixture", "rig-v1", index + 1, captureId),
-                new CaptureTimingDescriptor(now, now, now, now, now),
-                new CaptureControlDescriptor(TimeSpan.FromMilliseconds(1), TimeSpan.FromMilliseconds(1), 1, 1, null, null, null, null),
-                new CaptureProfileSet(
-                    new("rig", "1", profileHash),
-                    new("calibration", "1", profileHash),
-                    new("mask", "1", profileHash),
-                    new("sensor", "1", profileHash),
-                    new("processing", "1", profileHash)),
-                new FrameLayoutDescriptor(
-                    2, 2, 2, CameraPixelFormat.Mono8, FrameByteOrder.NotApplicable,
-                    8, 8, FrameSamplePacking.ByteAligned, ColorFilterArrayPattern.None, 0, 255, payload.LongLength),
-                new ArtifactDescriptor(
-                    artifactId,
-                    FrameArtifactRole.Raw,
-                    "browser-fixture",
-                    "quarantine",
-                    now,
-                    [],
-                    recipe,
-                    "application/octet-stream",
-                    PayloadChecksum.ComputeSha256(payload)));
-            var manifest = new ArtifactManifestV2(
-                ArtifactManifestV2.CurrentSchemaVersion, descriptor, relativePath);
-#if HVO_BASELINE
-            await File.WriteAllBytesAsync(
-#else
-            await HVO.SkyMonitor.CameraAgent.Common.Storage.RetainedFileMutations.WriteAllBytesAsync(
-#endif
-                Path.ChangeExtension(path, ".json"),
-                CaptureContractJson.Serialize(manifest)).ConfigureAwait(false);
-            await outbox.EnqueueAsync(root, manifest, CancellationToken.None).ConfigureAwait(false);
-        }
-        for (var index = 0; index < 30; index++)
-        {
-            var lease = await outbox.ClaimAsync(
-                root, "browser-fixture", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
-            if (lease is null)
-            {
-                throw new InvalidOperationException("Could not seed deterministic artifact quarantine.");
-            }
-            await outbox.QuarantineAsync(
-                root, lease, "browser-fixture", CancellationToken.None).ConfigureAwait(false);
-        }
     }
 
     private static Guid CreateDeterministicGuid(int index, byte kind)
@@ -576,7 +491,7 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
 
     private sealed class FixedStorageResolver(CameraAgentStorageLocation location) : ICameraAgentStorageResolver
     {
-        public ValueTask<IReadOnlyList<CameraAgentStorageLocation>> GetUploadLocationsAsync(
+        public ValueTask<IReadOnlyList<CameraAgentStorageLocation>> GetStorageLocationsAsync(
             CancellationToken cancellationToken) => ValueTask.FromResult<IReadOnlyList<CameraAgentStorageLocation>>([location]);
 
         public ValueTask<CameraAgentStorageLocation?> ResolveAliasAsync(

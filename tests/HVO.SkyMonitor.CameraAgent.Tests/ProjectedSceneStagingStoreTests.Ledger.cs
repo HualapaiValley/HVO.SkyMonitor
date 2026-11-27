@@ -19,8 +19,7 @@ public sealed partial class ProjectedSceneStagingStoreTests
         {
             var options = Options.Create(new CameraAgentHostOptions
             {
-                RawIngressRoot = root,
-                CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
+                RawIngressRoot = root
             });
             var protector = new DataProtectionDeploymentLocationProtector(
                 DataProtectionProvider.Create(Directory.CreateDirectory(Path.Combine(root, "keys"))));

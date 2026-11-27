@@ -39,11 +39,9 @@ public sealed class OperatorRouteTests
             typeof(ControlPage),
             typeof(SoftwarePage),
             typeof(SpaceWeatherPage),
-            typeof(RegistrationPage),
             typeof(PipelineSummaryPage),
             typeof(AutomationsPage),
             typeof(CameraRigPage),
-            typeof(DeliveryPage),
             typeof(StoragePage),
             typeof(ObservatoryLocationPage),
             typeof(ProcessingExecutionsPage),
@@ -112,7 +110,6 @@ public sealed class OperatorRouteTests
             ("/operations/schedule", "Operations"),
             ("/operations/camera", "Operations"),
             ("/operations/data", "Operations"),
-            ("/operations/delivery", "Operations"),
             ("/operations/storage", "Operations"),
             ("/operations/site", "Operations"),
             ("/operations/sky-map", "Operations"),
@@ -121,8 +118,7 @@ public sealed class OperatorRouteTests
             ("/operations/notifications", "Operations"),
             ("/operations/control", "Operations"),
             ("/operations/software", "Operations"),
-            ("/operations/space-weather", "Operations"),
-            ("/operations/registration", "Operations")
+            ("/operations/space-weather", "Operations")
         })
         {
             navigation.NavigateTo(path);
@@ -156,7 +152,6 @@ public sealed class OperatorRouteTests
             (typeof(PipelineSummaryPage), ["/operations/pipeline"]),
             (typeof(AutomationsPage), ["/operations/automations"]),
             (typeof(CameraRigPage), ["/operations/camera"]),
-            (typeof(DeliveryPage), ["/operations/delivery"]),
             (typeof(StoragePage), ["/operations/storage", "/operations/data"]),
             (typeof(ObservatoryLocationPage), ["/operations/site", "/operations/sky-map"]),
             (typeof(ProcessingExecutionsPage), ["/operations/pipeline/executions"]),
@@ -169,7 +164,6 @@ public sealed class OperatorRouteTests
                 "/operations/pipeline/graphs/{RevisionId}/nodes/{NodeId}",
                 "/operations/pipeline/configure/{NodeId}"
             ]),
-            (typeof(RegistrationPage), ["/operations/registration", "/devices/bootstrap", "/devices"])
         })
         {
             var layout = type.GetCustomAttribute<LayoutAttribute>();
