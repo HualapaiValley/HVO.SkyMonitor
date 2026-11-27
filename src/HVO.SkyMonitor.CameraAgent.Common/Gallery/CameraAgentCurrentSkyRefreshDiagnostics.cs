@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.Diagnostics;
 using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 
@@ -13,6 +14,7 @@ public sealed partial class CameraAgentCurrentSkyRefreshDiagnostics : IDisposabl
     private readonly TimeProvider _clock;
     private readonly ILogger _logger;
     private readonly long _started;
+    private readonly long _metricStarted = CameraAgentWorkloadTelemetry.Start();
     private bool _deadlineLogged;
     private bool _disposed;
 
@@ -59,8 +61,16 @@ public sealed partial class CameraAgentCurrentSkyRefreshDiagnostics : IDisposabl
 
     public void Dispose()
     {
-        lock (_gate) _disposed = true;
+        bool deadlineLogged;
+        lock (_gate)
+        {
+            if (_disposed) return;
+            _disposed = true;
+            deadlineLogged = _deadlineLogged;
+        }
         _activity.Dispose();
+        CameraAgentWorkloadTelemetry.Record(_metricStarted, CameraAgentWorkloadTelemetry.Operation.CurrentSkyRefresh,
+            deadlineLogged ? CameraAgentWorkloadTelemetry.Outcome.Incomplete : CameraAgentWorkloadTelemetry.Outcome.Observed);
     }
 
     [LoggerMessage(EventId = 14720, Level = LogLevel.Debug,

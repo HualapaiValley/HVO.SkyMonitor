@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.Diagnostics;
 using System.ComponentModel.DataAnnotations;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
@@ -530,7 +531,7 @@ internal sealed class PresentationMaterializerCaptureProcessingStep(
             .Select(layer => new PresentationLayerProductInput(layer,
                 CameraAgentRecipeExecutionAdapter.CreateArtifact(context, suppliedLayers[layer.SourceProduct.ArtifactId])))
             .ToArray();
-        var product = PresentationMaterializationExecutor.MaterializePacked(
+        var product = CameraAgentWorkloadTelemetry.MaterializePacked(
             CameraAgentRecipeExecutionAdapter.CreateArtifact(context, baseProduct),
             CameraAgentRecipeExecutionAdapter.CreateArtifact(context, manifestProduct), manifest, layers,
             manifest.Layers.Where(layer => Options.EnabledLayerKinds.Count == 0

@@ -122,7 +122,14 @@ public static class SkyMonitorObservabilityExtensions
     public static IHostApplicationBuilder AddSkyMonitorObservability(
         this IHostApplicationBuilder builder,
         string? serviceVersion = null)
-        => AddSkyMonitorObservability(builder, serviceVersion, Environment.GetEnvironmentVariable);
+        => AddSkyMonitorObservability(builder, serviceVersion, enableCollection: true);
+
+    /// <summary>Configures the telemetry stack, with an option to leave only local console logging enabled.</summary>
+    public static IHostApplicationBuilder AddSkyMonitorObservability(
+        this IHostApplicationBuilder builder,
+        string? serviceVersion,
+        bool enableCollection)
+        => AddSkyMonitorObservability(builder, serviceVersion, Environment.GetEnvironmentVariable, enableCollection);
 
     /// <summary>
     /// Configures observability, reading the OTLP environment variables that the log sink applies through
@@ -131,12 +138,17 @@ public static class SkyMonitorObservabilityExtensions
     internal static IHostApplicationBuilder AddSkyMonitorObservability(
         IHostApplicationBuilder builder,
         string? serviceVersion,
-        Func<string, string?> getEnvironmentVariable)
+        Func<string, string?> getEnvironmentVariable,
+        bool enableCollection = true)
     {
         ArgumentNullException.ThrowIfNull(builder);
         var telemetrySection = builder.Configuration.GetSection("Telemetry");
         var resolvedServiceVersion = ResolveServiceVersion(telemetrySection["ServiceVersion"], serviceVersion);
-        ConfigureSerilog(builder, resolvedServiceVersion, getEnvironmentVariable);
+        ConfigureSerilog(builder, resolvedServiceVersion, getEnvironmentVariable, enableCollection);
+        if (!enableCollection)
+        {
+            return builder;
+        }
         builder.Services.AddTelemetry(telemetrySection);
         if (resolvedServiceVersion is not null)
         {
@@ -309,7 +321,8 @@ public static class SkyMonitorObservabilityExtensions
     private static void ConfigureSerilog(
         IHostApplicationBuilder builder,
         string? serviceVersion,
-        Func<string, string?> getEnvironmentVariable)
+        Func<string, string?> getEnvironmentVariable,
+        bool enableCollection)
     {
         var loggerConfiguration = new LoggerConfiguration()
             .MinimumLevel.Information()
@@ -327,7 +340,7 @@ public static class SkyMonitorObservabilityExtensions
         }
 
         var endpoint = builder.Configuration["OTEL_EXPORTER_OTLP_ENDPOINT"];
-        if (!string.IsNullOrWhiteSpace(endpoint))
+        if (enableCollection && !string.IsNullOrWhiteSpace(endpoint))
         {
             var serviceName = builder.Configuration["OTEL_SERVICE_NAME"] ?? builder.Environment.ApplicationName;
             var resourceAttributes = new Dictionary<string, object>

@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.Diagnostics;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
@@ -148,7 +149,15 @@ internal sealed partial class CaptureProcessingPersistence(
         }
 
         var lifecycleGate = StorageLifecycleLock.ForRoot(_storageRoot);
-        await StorageLifecycleLock.WaitAsync(lifecycleGate, "capture-storage", _logger, cancellationToken).ConfigureAwait(false);
+        CameraAgentWorkloadTelemetry.RecordMaterializationPending(1);
+        try
+        {
+            await StorageLifecycleLock.WaitAsync(lifecycleGate, "capture-storage", _logger, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            CameraAgentWorkloadTelemetry.RecordMaterializationPending(-1);
+        }
         try
         {
             var manifestOutput = await RequireOutputAsync(manifestArtifactId, captureId, cancellationToken).ConfigureAwait(false);
@@ -177,7 +186,7 @@ internal sealed partial class CaptureProcessingPersistence(
             }
 
             var started = _timeProvider.GetUtcNow();
-            var product = PresentationMaterializationExecutor.MaterializePacked(
+            var product = CameraAgentWorkloadTelemetry.MaterializePacked(
                 baseArtifact,
                 manifestArtifact,
                 manifest,
