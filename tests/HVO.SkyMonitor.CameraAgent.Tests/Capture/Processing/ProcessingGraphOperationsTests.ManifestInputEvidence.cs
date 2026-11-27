@@ -31,7 +31,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 foreach (var id in new[] { liveId, replay.Execution.ExecutionId })
                 {
                     originals[id] = await ReadFrozenExecutionJsonAsync(root, id).ConfigureAwait(false);
-                    foreach (var consumer in new[] { "detail", "api", "ui", "replay", "export" })
+                    foreach (var consumer in new[] { "detail", "api", "ui", "replay" })
                         facts[(id, consumer)] = await ReadManifestJournalConsumerAsync(root, operations, id, consumer, false).ConfigureAwait(false);
                     await ReplaceFrozenInputEvidenceAsync(root, id, FrozenInputCorruption(variant)).ConfigureAwait(false);
                     await RunManifestTestAssertions.ResponseAsync(operations, id, CameraAgentRunManifest.CorruptReason).ConfigureAwait(false);

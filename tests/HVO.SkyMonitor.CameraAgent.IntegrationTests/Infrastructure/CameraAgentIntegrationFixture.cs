@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
@@ -20,6 +21,8 @@ namespace HVO.SkyMonitor.CameraAgent.IntegrationTests.Infrastructure;
 /// </summary>
 internal sealed class CameraAgentIntegrationFixture : IDisposable
 {
+    [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed",
+        Justification = "The base WebApplicationFactory owns and disposes its derived factories.")]
     private WebApplicationFactory<Program>? _agentFactory;
     private WebApplicationFactory<Program>? _agentBaseFactory;
     private string? _configurationPath;

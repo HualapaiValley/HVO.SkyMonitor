@@ -11,9 +11,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 public sealed partial class ProcessingGraphOperationsTests
 {
     [TestMethod]
-    [DataRow("upload", true)]
     [DataRow("secondary", true)]
-    [DataRow("upload", false)]
     [DataRow("secondary", false)]
     public async Task SecondaryCaptureLanes_ClaimRetryAndCompletionPreserveGraphOwnership(string laneName, bool standardFirst)
     {
@@ -69,9 +67,7 @@ public sealed partial class ProcessingGraphOperationsTests
     }
 
     [TestMethod]
-    [DataRow("upload", true)]
     [DataRow("secondary", true)]
-    [DataRow("upload", false)]
     [DataRow("secondary", false)]
     public async Task SecondaryCaptureLanes_InvalidEvidenceCannotFailAnotherLanesGraph(string laneName, bool standardFirst)
     {

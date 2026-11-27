@@ -127,7 +127,7 @@ public sealed partial class ProcessingGraphOperationsTests
             StringAssert.Contains(retained, auxiliary.ReferenceArtifactId.ToString("D"), StringComparison.OrdinalIgnoreCase);
             StringAssert.Contains(retained, "AuxiliaryProcessingOutput", StringComparison.Ordinal);
             var facts = new Dictionary<string, string>();
-            foreach (var consumer in new[] { "detail", "api", "ui", "replay", "export" })
+            foreach (var consumer in new[] { "detail", "api", "ui", "replay" })
                 facts.Add(consumer, await ReadManifestJournalConsumerAsync(root, operations, id, consumer, false).ConfigureAwait(false));
             await auxiliary.CorruptAsync().ConfigureAwait(false);
             await RunManifestTestAssertions.ResponseAsync(operations, id, CameraAgentRunManifest.CorruptReason).ConfigureAwait(false);

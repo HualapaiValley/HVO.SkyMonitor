@@ -13,10 +13,11 @@ using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
 using InstallerFiles = InstallerRuntime::HVO.SkyMonitor.Deployment.SafeFileSystem;
 using InstallerLabels = InstallerRuntime::HVO.SkyMonitor.Deployment.CameraAgentImageLabels;
-using InstallerLayout = InstallerRuntime::HVO.SkyMonitor.Deployment.CameraAgentStateLayout;
+using InstallerInventory = InstallerRuntime::HVO.SkyMonitor.Deployment.CameraAgentStateInventory;
 using InstallerMigration = InstallerRuntime::HVO.SkyMonitor.Deployment.CameraAgentStateMigration;
 using InstallerNative = InstallerRuntime::HVO.SkyMonitor.Deployment.NativeLinux;
 using InstallerPaths = InstallerRuntime::HVO.SkyMonitor.Deployment.InstallationPaths;
+using ReplayProfile = HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile;
 using SnapshotApi = InstallerRuntime::HVO.SkyMonitor.Deployment.CameraAgentStateSnapshot;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
@@ -93,7 +94,7 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
             Assert.AreEqual($"{boundary} installed {previousLabels[boundary]}, candidate {candidateLabels[boundary]}",
                 Assert.ContainsSingle(changes));
             Assert.IsEmpty(InstallerMigration.DeclaredChanges(paths, candidate, candidate.UpgradeCompatibility, candidate, database));
-            var snapshot = await SnapshotApi.CreateAsync(paths, instance, Guid.NewGuid(), previous, InstallerLayout.SqliteStores, token)
+            var snapshot = await SnapshotApi.CreateAsync(paths, instance, Guid.NewGuid(), previous, InstallerInventory.Stores(paths, ReplayProfile.InProcess), token)
                 .ConfigureAwait(false);
             var manifest = await SnapshotApi.VerifyAsync(paths, instance, snapshot, token).ConfigureAwait(false);
             Assert.AreEqual(rehearsalPublisher ? 2 : 1, manifest.Databases.Count(static store => store.Present));
