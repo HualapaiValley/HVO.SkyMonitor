@@ -60,4 +60,7 @@ internal sealed record SiloRetentionReference(SiloObjectIdentity Identity, strin
     IReadOnlyList<SiloExactLocator> Copies);
 
 internal sealed record SiloRetentionCandidate(SiloExactLocator Locator, IReadOnlyList<SiloRetentionReference> References,
-    string Decision, bool AuthorizesRoleExpiry = false);
+    string Decision, bool AuthorizesRoleExpiry = false)
+{
+    internal long? OrphanLength { get; init; }
+}

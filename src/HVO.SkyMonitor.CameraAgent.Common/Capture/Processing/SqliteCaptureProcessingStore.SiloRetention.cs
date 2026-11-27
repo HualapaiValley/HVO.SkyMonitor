@@ -12,7 +12,11 @@ internal sealed partial class SqliteCaptureProcessingStore
     {
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT DISTINCT base_id, revision_id FROM processing_centered_view_selections;";
+        command.CommandText = """
+            SELECT base_id, revision_id FROM processing_centered_view_selections
+            UNION
+            SELECT base_id, revision_id FROM processing_centered_view_intervals WHERE ended_order IS NULL;
+            """;
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         var result = new List<SiloRetentionHold>();
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))

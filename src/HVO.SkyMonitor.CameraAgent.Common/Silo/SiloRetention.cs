@@ -239,15 +239,15 @@ internal sealed class SiloRetention(
             result.Add(new(locator, references, decision, allowRoleExpiry));
         }
 
-        foreach (var locator in (await state.ListOrphansAsync(cancellationToken).ConfigureAwait(false))
-            .Select(static orphan => orphan.Locator).Distinct())
+        foreach (var orphan in await state.ListOrphansAsync(cancellationToken).ConfigureAwait(false))
         {
+            var locator = orphan.Locator;
             if (!authority.CompleteThroughPrefixEnd || (only is not null && locator != only) ||
                 locator.VersionId.Length == 0 || staged.Contains(locator.Key) ||
                 leased.Contains(locator) || saved.Attempt?.Target == locator ||
                 await index.HasRetentionLocatorAsync(locator, cancellationToken).ConfigureAwait(false))
                 continue;
-            result.Add(new(locator, [], Abandoned));
+            result.Add(new(locator, [], Abandoned) { OrphanLength = orphan.Length });
         }
 
         return result.OrderBy(static candidate => candidate.Decision switch { Abandoned => 0, Evict => 1, Expire => 2, _ => 3 })
@@ -366,7 +366,9 @@ internal sealed class SiloRetention(
             intents.Add(new(intentId, roleExpiry ? SiloExpiryScope.Role : SiloExpiryScope.Copy, reference.Identity,
                 SiloRetentionPolicy.PolicyId, targets, roleExpiry ? Expire : candidate.Decision, roleExpiry, null));
         }
-        return new(id, candidate.Locator, intents, reservations, physical, Allocation: allocation);
+        var length = candidate.OrphanLength ?? candidate.References.Max(static reference => reference.Identity.Length);
+        return new(id, candidate.Locator, intents, reservations, physical, Allocation: allocation,
+            ReclaimUpperBoundBytes: allocation is null ? SiloReclaimLedger.EstimateUpperBound(length) : null);
     }
 
     private async ValueTask<string> IssueAsync(SiloRetentionAttempt attempt, ISiloRetentionArchive? archive,
@@ -468,7 +470,8 @@ internal sealed class SiloRetention(
             }
             await AppendAsync(records, "retention-outcome:" + attempt.Id, cancellationToken).ConfigureAwait(false);
             if (absent)
-                reclaim = SiloReclaimLedger.Add(reclaim, attempt, budget.Observe() ?? attempt.AfterDelete ?? attempt.Before);
+                reclaim = SiloReclaimLedger.Add(reclaim, attempt, budget.ObserveReclamation() ?? attempt.AfterDelete ?? attempt.Before,
+                    clock.GetUtcNow());
         }
 
         if (absent && attempt.Intents.Count == 0)

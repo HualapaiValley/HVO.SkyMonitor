@@ -15,7 +15,8 @@ internal sealed record SiloRetentionAttempt(
     string? Evidence = null,
     SiloPhysicalAllocation? Allocation = null,
     bool DispositionCommitted = false,
-    SiloPhysicalHeadroom? AfterDelete = null);
+    SiloPhysicalHeadroom? AfterDelete = null,
+    long? ReclaimUpperBoundBytes = null);
 
 internal sealed record SiloReclaimObservation(SiloPhysicalHeadroom BeforeDelete, DateTimeOffset ObservedUtc,
     SiloPhysicalAllocation? Allocation = null);

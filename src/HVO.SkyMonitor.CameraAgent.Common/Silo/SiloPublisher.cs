@@ -179,17 +179,22 @@ internal sealed class SiloPublisher(
         }
     }
 
-    internal async ValueTask PublishLiveViewAsync(SiloLiveIssueRecord record, CancellationToken cancellationToken)
+    internal async ValueTask<bool> PublishLiveViewAsync(SiloLiveIssueRecord record, CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            if (!await catalog.Index.CanPinViewAsync(record.GroupId, record.RevisionId, RetentionFence?.Invoke(), cancellationToken)
+                .ConfigureAwait(false))
+                return false;
+
             var operation = "centered-live:" + record.ChangeOrder.ToString(System.Globalization.CultureInfo.InvariantCulture);
             await journal.AppendAsync([record], operation, cancellationToken).ConfigureAwait(false);
             var end = await catalog.CatchUpAsync(await state.ReadWriterEvidenceAsync(cancellationToken).ConfigureAwait(false), null,
                 cancellationToken).ConfigureAwait(false);
             if (end.Reason != SiloPrefixEnd.Tail)
                 throw new SiloStoreUnavailableException(binding.StoreId, "index centered live view", writeMayHaveLanded: true);
+            return true;
         }
         finally
         {
