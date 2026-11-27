@@ -12,9 +12,9 @@ public sealed record ScientificExportEncoding(
 {
     public static ScientificExportEncoding For(ScientificExportFormat format) => format switch
     {
-        ScientificExportFormat.Fits => new("image/fits", ".fits", "hvo-fits", "1.0", "compression=none"),
-        ScientificExportFormat.FitsTileGzip => new("application/fits", ".fits.fz", "hvo-fits", "1.0", "compression=GZIP_1;tile=8192-sample-budget"),
-        ScientificExportFormat.Xisf => new("application/xisf", ".xisf", "hvo-xisf", "1.0", "compression=none;checksum=sha256"),
+        ScientificExportFormat.Fits => new("image/fits", ".fits", "hvo-fits", "1.1", "compression=none"),
+        ScientificExportFormat.FitsTileGzip => new("application/fits", ".fits.fz", "hvo-fits", "1.1", FitsScientificWriter.CompressionOptions),
+        ScientificExportFormat.Xisf => new("application/xisf", ".xisf", "hvo-xisf", "1.1", "compression=none;checksum=sha256"),
         _ => throw new ArgumentOutOfRangeException(nameof(format))
     };
 }
@@ -53,6 +53,16 @@ public static class ScientificCaptureExport
         => format is CameraPixelFormat.Mono8 or CameraPixelFormat.Mono16 or
             CameraPixelFormat.BayerRggb8 or CameraPixelFormat.BayerRggb16;
 
+    /// <summary>Returns a staging-space bound including headers, padding, and any compression overhead.</summary>
+    public static long MaximumOutputBytes(ReconstructionDescriptor descriptor, ScientificExportFormat format,
+        ScientificExportObservation? observation = null)
+    {
+        var metadata = CreateMetadata(descriptor, format, observation);
+        return format == ScientificExportFormat.Xisf
+            ? XisfScientificWriter.MaximumOutputBytes(metadata)
+            : FitsScientificWriter.MaximumOutputBytes(format, metadata);
+    }
+
     public static async Task<ScientificExportReceipt> WriteAsync(
         Stream source, Stream destination, ReconstructionDescriptor descriptor, ScientificExportFormat format,
         ScientificExportObservation? observation = null, CancellationToken cancellationToken = default)
@@ -65,17 +75,7 @@ public static class ScientificCaptureExport
             !destination.CanWrite || !destination.CanSeek || destination.Length != 0)
             throw new ArgumentException("A readable source and an empty, readable, seekable output are required.");
 
-        if (!descriptor.Validate().IsValid)
-            throw new ScientificExportException(CorruptSource);
-        if (descriptor.Artifact.Role != FrameArtifactRole.Raw || !Supports(descriptor.Layout.PixelFormat))
-            throw new ScientificExportException(UnsupportedSource);
-        if (descriptor.Layout.ByteLength > MaximumSourceBytes)
-            throw new ScientificExportException(SourceTooLarge);
-
-        var encoding = ScientificExportEncoding.For(format);
-        var lineage = new ScientificExportLineage(descriptor.Artifact.ArtifactId, descriptor.Capture.CaptureId,
-            descriptor.Capture.CaptureSequence, descriptor.Artifact.ChecksumSha256.ToUpperInvariant());
-        var metadata = new ScientificExportMetadata(descriptor, observation ?? new(), encoding, lineage);
+        var metadata = CreateMetadata(descriptor, format, observation);
         using var pixels = new PixelReader(source, descriptor.Layout);
         destination.Position = 0;
         switch (format)
@@ -92,13 +92,61 @@ public static class ScientificCaptureExport
             default:
                 throw new ArgumentOutOfRangeException(nameof(format));
         }
-        await pixels.VerifyAsync(lineage.Sha256, cancellationToken).ConfigureAwait(false);
+        await VerifySourceEndAsync(source, pixels.Digest(), metadata.Lineage.Sha256, cancellationToken).ConfigureAwait(false);
 
         var length = destination.Length;
         destination.Position = 0;
         var digest = await SHA256.HashDataAsync(destination, cancellationToken).ConfigureAwait(false);
         destination.Position = 0;
-        return new(encoding, length, Convert.ToHexString(digest), lineage);
+        return new(metadata.Encoding, length, Convert.ToHexString(digest), metadata.Lineage);
+    }
+
+    /// <summary>Rechecks the exact source length and checksum before serving a previously encoded representation.</summary>
+    public static async ValueTask VerifySourceAsync(Stream source, long length, string sha256, CancellationToken token)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentOutOfRangeException.ThrowIfNegative(length);
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var buffer = new byte[64 * 1024];
+        try
+        {
+            while (length > 0)
+            {
+                var bytes = buffer.AsMemory(0, (int)Math.Min(length, buffer.Length));
+                await source.ReadExactlyAsync(bytes, token).ConfigureAwait(false);
+                hash.AppendData(bytes.Span);
+                length -= bytes.Length;
+            }
+        }
+        catch (EndOfStreamException)
+        {
+            throw new ScientificExportException(CorruptSource);
+        }
+        await VerifySourceEndAsync(source, hash.GetHashAndReset(), sha256, token).ConfigureAwait(false);
+    }
+
+    private static async ValueTask VerifySourceEndAsync(Stream source, byte[] digest, string expected, CancellationToken token)
+    {
+        if (await source.ReadAsync(new byte[1], token).ConfigureAwait(false) != 0 ||
+            !string.Equals(Convert.ToHexString(digest), expected, StringComparison.OrdinalIgnoreCase))
+            throw new ScientificExportException(CorruptSource);
+    }
+
+    private static ScientificExportMetadata CreateMetadata(ReconstructionDescriptor descriptor, ScientificExportFormat format,
+        ScientificExportObservation? observation)
+    {
+        ArgumentNullException.ThrowIfNull(descriptor);
+        if (!descriptor.Validate().IsValid)
+            throw new ScientificExportException(CorruptSource);
+        if (descriptor.Artifact.Role != FrameArtifactRole.Raw || !Supports(descriptor.Layout.PixelFormat))
+            throw new ScientificExportException(UnsupportedSource);
+        if (descriptor.Layout.ByteLength > MaximumSourceBytes)
+            throw new ScientificExportException(SourceTooLarge);
+
+        var encoding = ScientificExportEncoding.For(format);
+        var lineage = new ScientificExportLineage(descriptor.Artifact.ArtifactId, descriptor.Capture.CaptureId,
+            descriptor.Capture.CaptureSequence, descriptor.Artifact.ChecksumSha256.ToUpperInvariant());
+        return new(descriptor, observation ?? new(), encoding, lineage);
     }
 
     internal sealed class PixelReader(Stream source, FrameLayoutDescriptor layout) : IDisposable
@@ -154,12 +202,7 @@ public static class ScientificCaptureExport
             _hash.AppendData(bytes.Span);
         }
 
-        public async ValueTask VerifyAsync(string expected, CancellationToken token)
-        {
-            if (await source.ReadAsync(_buffer.AsMemory(0, 1), token).ConfigureAwait(false) != 0 ||
-                !string.Equals(Convert.ToHexString(_hash.GetHashAndReset()), expected, StringComparison.Ordinal))
-                throw new ScientificExportException(CorruptSource);
-        }
+        public byte[] Digest() => _hash.GetHashAndReset();
 
         public void Dispose() => _hash.Dispose();
     }
