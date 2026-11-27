@@ -30,9 +30,13 @@ an independent analytic clipping reference completing the carried-over #1191 ver
   `SnapshotIdentity == null`, `VirtualSky` binds its lazily-cached full canonical content digest
   (`DeepSkyCatalog.ContentSha256`, covering semantics, objects, aliases including cross-references,
   tombstones, and outlines in `O(1)` per capture), and for custom snapshotless `IDeepSkyCatalog`
-  implementations `VirtualSky` derives a bounded selection-content digest over semantics, summary
-  counts, and only the bounded per-frame selected candidates and their cached outlines (`<= MaximumCandidates`
-  outline lookups per capture) so distinct selection-relevant catalog facts never collide on `SceneId`
+  implementations `VirtualSky` computes one unified final effective candidate selection via
+  `DeepSkyRenderPlan.SelectCandidates` (incorporating any
+  `DeepSkySyntheticScenario.AdditionalObjects` promotion before truncation) shared by both
+  rendering and identity hashing, deriving a bounded selection-content digest over semantics,
+  summary counts, and only those selected candidates and their per-capture cached outlines
+  (`<= MaximumCandidates` outline lookups per capture, skipping displaced rows and synthetically
+  overridden outlines) so distinct selection-relevant catalog facts never collide on `SceneId`
   while keeping per-frame work strictly bounded.
 
 ## Shared Geometry, Antipodal Safety, and Clipping (#1191)
@@ -198,17 +202,22 @@ deterministic profiles (`HVO.SkyMonitor.Imaging/DeepSkySourceProfile.cs`):
    background, RGB `ChannelResponse` & `WhiteBalance`, Bayer CFA response, cloud transmission/scatter,
    vignetting, and source-caused saturation bound to the exact normalized `LinearSceneRenderOptions`
    validated by `DeepSkyRenderPlan.ValidateFor`.
-6. **Dark-nebula common-subpixel optical depth composition, S/N gating & post-attenuation PSF:**
-   Overlapping dark nebulae compose total optical depth `tau_total(x,y) = sum_k tau_k(x,y)` and
-   transmission `T(x,y) = exp(-tau_total(x,y))` once across all overlapping absorbers in a component
-   at common subpixel positions before averaging pixel coverage (layering subpixel fine clouds on
-   top of resolved clouds with exact prior optical-depth integration), guaranteeing strict
-   monotonicity (`T_all <= T_subset`), exact optical-depth additivity (`tau1 + tau2 == tau_combined`),
-   and order invariance for arbitrary `N >= 2` overlapping resolved and unresolved clouds. Before
-   committing transmission or consuming a `MaximumRenderedSources` slot, each dark nebula computes
+6. **Order-independent dark-nebula overlap composition, exact work charging & post-attenuation PSF:**
+   Connected overlapping dark-cloud components fix their common subpixel density and
+   resolved-vs-fine classification purely from the unordered component set
+   (`PlanDarkOverlapComponents`), cache per-pixel unprojected subpixel directions and per-cloud
+   fine interior samples in canonical geometric order (charging `MaximumTotalSamplePoints` before
+   work and never rebuilding prior rasters), and commit exact canonical transmission
+   `T(x,y) = exp(-sum_k tau_k(x,y))` without retaining stale earlier estimates — guaranteeing
+   strict monotonicity (`T_all <= T_subset`), exact optical-depth additivity
+   (`tau1 + tau2 == tau_combined`), order invariance across arbitrary `N >= 2` overlapping
+   resolved and unresolved clouds, and exact sample-budget accounting. Before committing
+   transmission or consuming a `MaximumRenderedSources` slot, each dark nebula computes
    diffuse-only absorption deficit electrons, null-hypothesis pre-attenuation local variance
-   (`CompleteBinSupport`, including co-located foreground non-diffuse DSO and HYG star shot noise),
-   and S/N via `EvaluateDarkSignalPrediction`, enforcing `MinimumSignalToNoise` and publishing real
+   (`CompleteBinSupport`, including co-located foreground non-diffuse DSO and exposure-integrated
+   HYG star shot noise strictly charged against `MaximumTotalSamplePoints`,
+   `MaximumKernelCellVisits`, and `MaximumSparsePixels` with zero unbounded helpers), and S/N via
+   `EvaluateDarkSignalPrediction`, enforcing `MinimumSignalToNoise` and publishing real
    `PredictedSignal` in diagnostics; `E * T - Bg_diffuse * (1 - T)` is convolved once with the
    configured PSF kernel after Pass 2.
 7. **Existing `#518`/`#522` sensor order & final-coordinate diagnostics hash:** `DeepSkyPreCloudRate`
@@ -246,15 +255,22 @@ nebula, `NGC 2023` missing-photometry control, and `LDN-M42` dark nebula overlap
 | Metric | Baseline (Disabled) | Enabled (7 DSOs) | Delta / Bound |
 | --- | --- | --- | --- |
 | Candidate / eligible / admitted sources | `0` / `0` / `0` | `7` / `6` / `5` (`2` annotation-only, `1` unresolved PSF, `0` dark attenuation above S/N 1.0) | Caps: `128` / `64` |
-| Total sampled points / sparse pixels / PSF kernel visits | `0` / `0` / `0` | `1,588` / `1,064` / `25,738` | Caps: `2,000,000` / `524,288` / `67,108,864` |
+| Total sampled points / sparse pixels / PSF kernel visits | `0` / `0` / `0` | `2,056` / `1,064` / `25,003` | Caps: `2,000,000` / `524,288` / `67,108,864` (prior pre-delta4 historical baseline: `1,588` / `1,064` / `25,738`) |
 | Serialized `deepSkyDiagnostics` metadata size | `0 B` | `8,126 B` | Bounded (`< 64 KiB` for 7 sources) |
-| Stellar projection / prediction / reference scene (median wall) | `0.02 ms` / `0.06 ms` / `0.01 ms` | `0.02 ms` / `0.07 ms` / `0.02 ms` | Unchanged |
-| DSO candidate select / total DSO prepare (incl. select) / diagnostics serialize (median wall) | `0.00 ms` / `0.00 ms` / `0.00 ms` | `0.01 ms` / `4.92 ms` / `0.05 ms` | `+4.97 ms` DSO pipeline work |
-| Sensor plane render (median wall) | `34.22 ms` | `34.22 ms` | `+0.00 ms` (sparse scatter avoids per-pixel lookup overhead) |
-| Full `1936 × 1216` capture latency (median wall) | `34.51 ms` | `39.58 ms` | `+5.07 ms` |
-| Full `1936 × 1216` capture CPU time (mean process CPU) | `38.32 ms` | `51.17 ms` | `+12.86 ms` |
-| Mean managed allocations per full-frame capture | `22.56 MiB` | `23.50 MiB` | `+0.95 MiB` |
-| Sampled process working set (start / sampled peak across capture loop) | `247.2 MiB` / `292.2 MiB` | `234.1 MiB` / `342.6 MiB` | Sampled between captures (not continuous RSS tracing) |
+| Stellar projection / prediction / reference scene (median wall) | `0.02 ms` / `0.06 ms` / `0.02 ms` | `0.02 ms` / `0.07 ms` / `0.02 ms` | Unchanged |
+| DSO candidate select / total DSO prepare (incl. select) / diagnostics serialize (median wall) | `0.00 ms` / `0.00 ms` / `0.00 ms` | `0.02 ms` / `4.99 ms` / `0.05 ms` | `+5.04 ms` DSO pipeline work |
+| Sensor plane render (median wall) | `34.22 ms` | `34.57 ms` | `+0.35 ms` (sparse scatter avoids per-pixel lookup overhead) |
+| Full `1936 × 1216` capture latency (median wall) | `34.63 ms` | `39.87 ms` | `+5.24 ms` |
+| Full `1936 × 1216` capture CPU time (mean process CPU) | `38.41 ms` | `52.85 ms` | `+14.44 ms` |
+| Mean managed allocations per full-frame capture | `22.56 MiB` | `23.54 MiB` | `+0.98 MiB` |
+| Sampled process working set (start / sampled peak across capture loop) | `251.1 MiB` / `296.1 MiB` | `234.3 MiB` / `342.5 MiB` | Sampled between captures (not continuous RSS tracing) |
+
+Compared with the earlier pre-delta4 baseline (`1,588` sampled points, `25,738` kernel visits),
+the final delta4 deterministic counters (`2,056` sampled points, `1,064` sparse pixels, `25,003`
+kernel visits, `8,126 B` diagnostics, baseline/enabled pixel digests `9A27D3E30C4DE05F` /
+`CA8CEE0583EF177D`) reflect pre-work charging of the full conservative padded subpixel grid for
+dark-cloud overlap evaluation and exact `StellarExposureRenderPlan` footprint culling (with strict
+budget charging for overlapping foreground stars).
 
 #### `#1191` Geometry Serialization & SQLite Persistence I/O Overhead (`projected-scene-v1` vs `projected-scene-v3`)
 
@@ -268,9 +284,9 @@ comparing matched `1936 × 1216` Mono16 captures executed through the real `RawC
 | --- | --- | --- | --- |
 | Serialized projected-scene payload size | `2,774 B` | `16,090 B` | `+13,316 B` (`< 256 KiB` bound) |
 | Projected DSO objects / outlines (parts, vertices) / footprints (parts, vertices) | `0` / `0` (`0`, `0`) / `0` (`0`, `0`) | `6` / `1` (`1`, `4`) / `2` (`2`, `128`) | Within contract point caps |
-| Capture + staging latency (median wall) | `42.63 ms` | `46.65 ms` | `+4.02 ms` |
-| Ingress + lane processing + SQLite/file persistence latency (median wall) | `30.06 ms` | `33.06 ms` | `+2.99 ms` |
-| End-to-end capture + persistence latency (median wall) | `71.88 ms` | `79.50 ms` | `+7.62 ms` |
-| End-to-end CPU time (mean process CPU per capture) | `49.99 ms` | `61.58 ms` | `+11.59 ms` |
-| Mean managed allocations per end-to-end capture | `24.20 MiB` | `27.01 MiB` | `+2.80 MiB` |
+| Capture + staging latency (median wall) | `42.86 ms` | `48.51 ms` | `+5.65 ms` |
+| Ingress + lane processing + SQLite/file persistence latency (median wall) | `30.28 ms` | `31.39 ms` | `+1.11 ms` |
+| End-to-end capture + persistence latency (median wall) | `72.07 ms` | `82.75 ms` | `+10.68 ms` |
+| End-to-end CPU time (mean process CPU per capture) | `51.04 ms` | `63.93 ms` | `+12.89 ms` |
+| Mean managed allocations per end-to-end capture | `24.22 MiB` | `27.04 MiB` | `+2.82 MiB` |
 | SQLite database + WAL/SHM footprint on disk (after 4 captures) | `3,131,344 B` | `3,156,064 B` | `+24,720 B` |

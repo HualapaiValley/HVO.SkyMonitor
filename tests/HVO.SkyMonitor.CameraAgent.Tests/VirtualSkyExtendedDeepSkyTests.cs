@@ -513,6 +513,131 @@ public sealed class VirtualSkyExtendedDeepSkyTests
     }
 
     [TestMethod]
+    public async Task SyntheticScenarioPromotionUsesUnifiedSelectionForIdentityAndBoundsOutlineLookups()
+    {
+        // Exact F2 + F22 regression: with annotations disabled, caps=(1,1), and a 2,048-row snapshotless custom
+        // catalog where a synthetic scenario promotes catalog row NGC0002 above NGC0001:
+        // (1) changing ONLY NGC0002's catalog square outline (0.08 deg -> 0.40 deg) changes raw pixels AND MUST
+        //     change SceneId, stellarNoiseIdentity, and DeepSkyCatalog.DatabaseSha256;
+        // (2) per-capture outline lookups on the underlying catalog stay strictly <= 1 (never 2 for promoted + displaced).
+        var nullSnapshotSemantics = OpenNgcSemantics with { SnapshotIdentity = null };
+        var midpoint = FixtureUtc.AddSeconds(1);
+        var centerPos = AltAzToJ2000(new AltAzPoint(60.0, 180.0), midpoint);
+
+        const int totalObjects = 2_048;
+        var objects = new List<DeepSkyObject>(totalObjects);
+        var aliases = new List<DeepSkyAlias>(totalObjects + 1);
+        for (var i = 0; i < totalObjects; i++)
+        {
+            var id = $"NGC{i + 1:D4}";
+            var designation = $"NGC {i + 1}";
+            var raOffset = i <= 1 ? 0d : ((i % 32) - 16) * 0.002;
+            var decOffset = i <= 1 ? 0d : ((i / 32) - 32) * 0.02;
+            var ra = (((centerPos.RaHours + raOffset) % 24d) + 24d) % 24d;
+            var dec = Math.Clamp(centerPos.DecDegrees + decOffset, -89.0, 89.0);
+            var item = new DeepSkyObject(
+                id, designation, i == 0 ? "M2" : designation, "Neb",
+                ra, dec, "Tau", 6, 6, 0, 8.4, i == 0 ? 4.0 : 12.0 + (i % 5) * 0.1,
+                null, null, i == 0 ? 2 : null, null, null, null);
+            objects.Add(item);
+            aliases.Add(new DeepSkyAlias(designation, id, DeepSkyAliasKinds.Designation));
+            if (i == 0)
+            {
+                aliases.Add(new DeepSkyAlias("M2", id, DeepSkyAliasKinds.Messier));
+            }
+        }
+
+        var displacedOutline = CreateSquareOutline("NGC0001", centerPos.RaHours, centerPos.DecDegrees, 0.10);
+        var promotedOutlineSmall = CreateSquareOutline("NGC0002", centerPos.RaHours, centerPos.DecDegrees, 0.08);
+        var promotedOutlineLarge = CreateSquareOutline("NGC0002", centerPos.RaHours, centerPos.DecDegrees, 0.40);
+        var innerSmall = new DeepSkyCatalog(nullSnapshotSemantics, objects, aliases, [], [displacedOutline, promotedOutlineSmall]);
+        var innerLarge = new DeepSkyCatalog(nullSnapshotSemantics, objects, aliases, [], [displacedOutline, promotedOutlineLarge]);
+        var spySmall = new RecordingDeepSkyCatalog(innerSmall);
+        var spyLarge = new RecordingDeepSkyCatalog(innerLarge);
+
+        var promotedRow = new DeepSkyObject(
+            "NGC0002", "NGC 2", "M1", "Neb",
+            centerPos.RaHours, centerPos.DecDegrees, "Tau", 6, 6, 0, 4.0, 3.0,
+            null, null, 1, null, null, null);
+        var promotionScenario = new DeepSkySyntheticScenario(
+            "f2-f22-promotion-v1",
+            AdditionalObjects: [promotedRow]);
+
+        var baseConfig = CreateModuleConfig(
+            CameraPixelFormat.Mono16, 128, 128, renderDeepSky: false, enableDeepSkyAnnotations: false);
+        var baseOpts = JsonSerializer.Deserialize<VirtualSkyCameraModuleOptions>(
+            baseConfig.Module.Options!.Value.GetRawText(), WebJsonOptions)!;
+        var promotedConfig = baseConfig with
+        {
+            Module = new CameraModuleDescriptor(
+                "VirtualSky",
+                JsonSerializer.SerializeToElement(
+                    new VirtualSkyCameraModuleOptions
+                    {
+                        Seed = baseOpts.Seed,
+                        FixedSceneUtc = baseOpts.FixedSceneUtc,
+                        FixedSequenceStartUtc = baseOpts.FixedSequenceStartUtc,
+                        IlluminationMode = baseOpts.IlluminationMode,
+                        BackgroundElectronsPerSecond = baseOpts.BackgroundElectronsPerSecond,
+                        MagnitudeZeroElectronsPerSecond = baseOpts.MagnitudeZeroElectronsPerSecond,
+                        PsfSigmaPixels = baseOpts.PsfSigmaPixels,
+                        PsfRadiusPixels = baseOpts.PsfRadiusPixels,
+                        VignettingStrength = baseOpts.VignettingStrength,
+                        Bias = baseOpts.Bias,
+                        ReadNoiseStandardDeviation = baseOpts.ReadNoiseStandardDeviation,
+                        ShotNoiseEnabled = baseOpts.ShotNoiseEnabled,
+                        DarkCurrentElectronsPerSecond = baseOpts.DarkCurrentElectronsPerSecond,
+                        RenderDeepSkySources = new VirtualSkyDeepSkyRenderOptions(
+                            Enabled: true,
+                            MinimumSignalToNoise: 1.0,
+                            MaximumCandidates: 1,
+                            MaximumRenderedSources: 1,
+                            SamplesPerProjectedPixel: 2,
+                            PreferCatalogOutlines: true,
+                            SyntheticScenario: promotionScenario)
+                    },
+                    WebJsonOptions))
+        };
+        var request = new CaptureRequest(FixtureUtc, TimeSpan.FromSeconds(1), CaptureMode.Still,
+            new CaptureSetpoint(TimeSpan.FromSeconds(2), 1, null, null));
+
+        var modSmall = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(),
+            new CombinedVirtualCatalog([], spySmall), new ProjectedSceneStore());
+        await using var lifeSmall = modSmall.ConfigureAwait(false);
+        await modSmall.InitializeAsync(promotedConfig, CancellationToken.None).ConfigureAwait(false);
+        var frameSmall = (await modSmall.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false)).Frame!;
+
+        var modLarge = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(),
+            new CombinedVirtualCatalog([], spyLarge), new ProjectedSceneStore());
+        await using var lifeLarge = modLarge.ConfigureAwait(false);
+        await modLarge.InitializeAsync(promotedConfig, CancellationToken.None).ConfigureAwait(false);
+        var frameLarge = (await modLarge.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false)).Frame!;
+
+        Assert.AreEqual(1, spySmall.OutlineLookupCount,
+            $"Synthetic promotion with MaximumCandidates=1 must perform at most 1 outline lookup; got {spySmall.OutlineLookupCount}.");
+        Assert.AreEqual(1, spyLarge.OutlineLookupCount,
+            $"Synthetic promotion with MaximumCandidates=1 must perform at most 1 outline lookup; got {spyLarge.OutlineLookupCount}.");
+
+        var diagSmall = JsonSerializer.Deserialize<DeepSkySourceDiagnostic[]>(
+            frameSmall.Metadata.Extra!["deepSkyDiagnostics"], WebJsonOptions)!;
+        Assert.HasCount(1, diagSmall);
+        Assert.AreEqual("NGC0002", diagSmall[0].ObjectId);
+        Assert.AreEqual(DeepSkyGeometryBasis.CatalogOutline, diagSmall[0].GeometryBasis);
+
+        var hashSmall = Convert.ToHexString(SHA256.HashData(frameSmall.PixelData.Span));
+        var hashLarge = Convert.ToHexString(SHA256.HashData(frameLarge.PixelData.Span));
+        Assert.AreNotEqual(hashSmall, hashLarge,
+            "Changing promoted NGC0002 square outline from 0.08 deg to 0.40 deg must change raw pixel SHA-256.");
+        Assert.AreNotEqual(frameSmall.Metadata.Scene!.SceneId, frameLarge.Metadata.Scene!.SceneId,
+            "Distinct raw frames from promoted row's outline change must never share a SceneId.");
+        Assert.AreNotEqual(frameSmall.Metadata.Extra!["stellarNoiseIdentity"], frameLarge.Metadata.Extra!["stellarNoiseIdentity"]);
+        Assert.AreNotEqual(
+            frameSmall.Metadata.Scene!.DeepSkyCatalog!.DatabaseSha256,
+            frameLarge.Metadata.Scene!.DeepSkyCatalog!.DatabaseSha256,
+            "Catalog provenance hash must bind the promoted rendered row's outline, not the displaced row.");
+    }
+
+    [TestMethod]
     public async Task HostDeepSkyCandidateSelectionUsesBoundedCatalogQueryLimitAndBinnedHashMatchesDeliveredDiagnostics()
     {
         // F12 host query bound check: SelectDeepSkyRenderCandidates must never request int.MaxValue from IDeepSkyCatalog.Query.

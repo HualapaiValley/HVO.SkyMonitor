@@ -510,7 +510,7 @@ public sealed class VirtualSkyCameraModule(
                 captureDeepSkyCatalog,
                 dsoCandidates,
                 stellarPlan.Sources.Select(static source => source.Source.Source),
-                initialRenderOptions,
+                initialRenderOptions with { StellarExposure = stellarPlan },
                 dsoSettings,
                 cancellationToken);
             deepSkyPrepareMilliseconds = Stopwatch.GetElapsedTime(dsoStarted).TotalMilliseconds;
@@ -573,7 +573,9 @@ public sealed class VirtualSkyCameraModule(
                 activeRenderDeepSkyCatalog,
                 outlineCachingCatalog,
                 dsoCandidates,
-                dsoQueryMatchCount);
+                dsoQueryMatchCount,
+                deepSkyRenderIdentity.PreferCatalogOutlines,
+                deepSkyRenderIdentity.SyntheticScenario);
             var renderCatalogIdentity = activeRenderDeepSkyCatalog is null
                 ? "none"
                 : CaptureContractJson.ComputeCanonicalJsonSha256(
@@ -1719,7 +1721,9 @@ public sealed class VirtualSkyCameraModule(
         IDeepSkyCatalog? catalog,
         PerCaptureOutlineCachingDeepSkyCatalog? outlineCache,
         DeepSkyObject[]? selectedCandidates,
-        int queryMatchCount)
+        int queryMatchCount,
+        bool preferCatalogOutlines,
+        DeepSkySyntheticScenario? syntheticScenario)
     {
         if (catalog is null)
         {
@@ -1745,10 +1749,10 @@ public sealed class VirtualSkyCameraModule(
         }
 
         // For custom snapshotless IDeepSkyCatalog implementations, bind semantics, summary counts, and ONLY the
-        // bounded per-frame selected candidates and their cached outlines so per-frame work stays strictly bounded
-        // by MaximumCandidates without enumerating or querying outlines for the entire catalog.
+        // unified final effective selected candidates and their cached outlines so per-frame work stays strictly
+        // bounded by MaximumCandidates without enumerating or querying outlines for displaced or unselected rows.
         var selectionSha256 = ComputeBoundedSelectionContentSha256(
-            catalog, outlineCache, selectedCandidates, queryMatchCount);
+            catalog, outlineCache, selectedCandidates, queryMatchCount, preferCatalogOutlines, syntheticScenario);
         return new CatalogSnapshotIdentity(
             CatalogId: $"{semantics.SourceName}:selection",
             PackageVersion: semantics.SourceVersion,
@@ -1761,7 +1765,9 @@ public sealed class VirtualSkyCameraModule(
         IDeepSkyCatalog catalog,
         PerCaptureOutlineCachingDeepSkyCatalog? outlineCache,
         DeepSkyObject[]? selectedCandidates,
-        int queryMatchCount)
+        int queryMatchCount,
+        bool preferCatalogOutlines,
+        DeepSkySyntheticScenario? syntheticScenario)
     {
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         hash.AppendData("deep-sky-selection-content-v1\n"u8);
@@ -1774,6 +1780,16 @@ public sealed class VirtualSkyCameraModule(
 
         if (selectedCandidates is { Length: > 0 })
         {
+            HashSet<string>? syntheticOutlineIds = null;
+            if (preferCatalogOutlines && syntheticScenario?.AdditionalOutlines is { Count: > 0 } syntheticOutlines)
+            {
+                syntheticOutlineIds = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var outline in syntheticOutlines)
+                {
+                    syntheticOutlineIds.Add(outline.ObjectId);
+                }
+            }
+
             var sorted = new DeepSkyObject[selectedCandidates.Length];
             Array.Copy(selectedCandidates, sorted, selectedCandidates.Length);
             Array.Sort(sorted, static (left, right) => StringComparer.Ordinal.Compare(left.Id, right.Id));
@@ -1782,16 +1798,19 @@ public sealed class VirtualSkyCameraModule(
                 var canonicalObj = CaptureContractJson.Canonicalize(CaptureContractJson.SerializeToElement(item));
                 hash.AppendData(JsonSerializer.SerializeToUtf8Bytes(canonicalObj));
                 hash.AppendData("\n"u8);
-                var outlines = outlineCache is not null
-                    ? outlineCache.GetOutlines(item.Id)
-                    : catalog.GetOutlines(item.Id);
-                if (outlines.Count > 0)
+                if (preferCatalogOutlines && (syntheticOutlineIds is null || !syntheticOutlineIds.Contains(item.Id)))
                 {
-                    foreach (var outline in outlines.OrderBy(static o => o.Level))
+                    var outlines = outlineCache is not null
+                        ? outlineCache.GetOutlines(item.Id)
+                        : catalog.GetOutlines(item.Id);
+                    if (outlines.Count > 0)
                     {
-                        var canonicalOutline = CaptureContractJson.Canonicalize(CaptureContractJson.SerializeToElement(outline));
-                        hash.AppendData(JsonSerializer.SerializeToUtf8Bytes(canonicalOutline));
-                        hash.AppendData("\n"u8);
+                        foreach (var outline in outlines.OrderBy(static o => o.Level))
+                        {
+                            var canonicalOutline = CaptureContractJson.Canonicalize(CaptureContractJson.SerializeToElement(outline));
+                            hash.AppendData(JsonSerializer.SerializeToUtf8Bytes(canonicalOutline));
+                            hash.AppendData("\n"u8);
+                        }
                     }
                 }
             }
@@ -1805,7 +1824,12 @@ public sealed class VirtualSkyCameraModule(
         VirtualSkyDeepSkyRenderOptions options,
         VisibleSceneRequest sceneRequest)
     {
-        if (catalog is null) return null;
+        if (catalog is null)
+        {
+            return options.SyntheticScenario?.AdditionalObjects is { Count: > 0 }
+                ? (DeepSkyRenderPlan.SelectCandidates(null, options.SyntheticScenario, options.MaximumCandidates), 0)
+                : null;
+        }
         var projection = sceneRequest.Projection;
         var boresightHorizontal = new AltAzPoint(projection.BoresightAltitudeDegrees, projection.BoresightAzimuthDegrees);
         var boresightJ2000 = EquatorialPrecession.PrecessToJ2000(
@@ -1826,12 +1850,11 @@ public sealed class VirtualSkyCameraModule(
             ? query.ToQuery(queryLimit) with { Region = cap }
             : new DeepSkyQuery(queryLimit, Region: cap);
         var queryResult = catalog.Query(baseQuery);
-        var matches = queryResult.Objects.ToArray();
-        Array.Sort(matches, DeepSkyRenderPlan.CompareCandidatePriority);
-        var bounded = matches.Length <= options.MaximumCandidates
-            ? matches
-            : matches[..options.MaximumCandidates];
-        return (bounded, queryResult.MatchCount);
+        var effectiveCandidates = DeepSkyRenderPlan.SelectCandidates(
+            queryResult.Objects,
+            options.SyntheticScenario,
+            options.MaximumCandidates);
+        return (effectiveCandidates, queryResult.MatchCount);
     }
 
     /// <summary>

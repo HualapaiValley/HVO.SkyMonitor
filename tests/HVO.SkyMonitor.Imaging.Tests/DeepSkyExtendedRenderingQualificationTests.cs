@@ -1446,6 +1446,239 @@ public sealed class DeepSkyExtendedRenderingQualificationTests
         }
     }
 
+    [TestMethod]
+    [DataRow(225)]
+    [DataRow(64)]
+    public void OffsetOverlappingDarkCloudsUnderTightPerSourceSampleCapAreOrderIndependent(int maxSamplesPerSource)
+    {
+        // Exact F5 regression: 3' and 6' dark clouds offset by 0.025 deg with a tight per-source sample cap
+        // (e.g., 225 or 64) and S/N gating off MUST yield identical admission counts and pixel-summed deficits
+        // regardless of candidate priority order.
+        var projection = new ProjectionContext(
+            ProjectionModel.Perspective, 80, 80, 1400, 1400, 160, 160,
+            ProjectionAperture.Rectangular, BoresightAltitudeDegrees: 60, BoresightAzimuthDegrees: 180);
+        var req = CreateRequest(projection, HorizonPolicy.GeometricHorizon);
+        var opts = CreateDeterministicMonoOptions(background: 0, exposureSeconds: 1.0, readNoise: 0);
+        var posSmall = AltAzToJ2000(new AltAzPoint(60.0, 180.0));
+        var posLarge = AltAzToJ2000(new AltAzPoint(60.025, 180.0));
+
+        var smallFirst = CreateDso("LDN-3ARCMIN", "Small 3'", "DrkN",
+            posSmall.RaHours, posSmall.DecDegrees, 3.0, 3.0, 0, null, null, null, null, 1);
+        var largeSecond = CreateDso("LDN-6ARCMIN", "Large 6'", "DrkN",
+            posLarge.RaHours, posLarge.DecDegrees, 6.0, 6.0, 0, null, null, null, null, 2);
+
+        var largeFirst = largeSecond with { MessierNumber = 1 };
+        var smallSecond = smallFirst with { MessierNumber = 2 };
+
+        const double bg = 100.0;
+        var settings = CreateSettings(opts, req, minSnr: 0, celestialDiffuseBg: bg) with
+        {
+            MaximumSamplePointsPerSource = maxSamplesPerSource
+        };
+
+        var planSmallFirst = DeepSkyRenderPlan.Prepare(req, null, [smallFirst, largeSecond], null, opts, settings);
+        var planLargeFirst = DeepSkyRenderPlan.Prepare(req, null, [largeFirst, smallSecond], null, opts, settings);
+
+        Assert.AreEqual(2, planSmallFirst.Statistics.AdmittedCount,
+            $"Small-first order must admit both offset clouds (cap={maxSamplesPerSource}).");
+        Assert.AreEqual(2, planLargeFirst.Statistics.AdmittedCount,
+            $"Large-first order must admit both offset clouds (cap={maxSamplesPerSource}).");
+        Assert.AreEqual(2, planSmallFirst.Statistics.DarkAttenuationCount);
+        Assert.AreEqual(2, planLargeFirst.Statistics.DarkAttenuationCount);
+
+        double SumDeficit(DeepSkyRenderPlan plan)
+        {
+            var sum = 0d;
+            for (var y = 0; y < projection.HeightPixels; y++)
+            {
+                for (var x = 0; x < projection.WidthPixels; x++)
+                {
+                    sum += bg - plan.ElectronRate(x, y);
+                }
+            }
+            return sum;
+        }
+
+        var deficitSmallFirst = SumDeficit(planSmallFirst);
+        var deficitLargeFirst = SumDeficit(planLargeFirst);
+        Assert.IsTrue(deficitSmallFirst > 0d);
+        Assert.AreEqual(deficitSmallFirst, deficitLargeFirst, 1e-10,
+            $"Reversing ONLY priority on offset 3'+6' dark clouds (cap={maxSamplesPerSource}) must preserve identical pixel-summed deficit " +
+            $"(smallFirst={deficitSmallFirst:F9}, largeFirst={deficitLargeFirst:F9}).");
+
+        var maxPixelDiff = 0d;
+        for (var y = 0; y < projection.HeightPixels; y++)
+        {
+            for (var x = 0; x < projection.WidthPixels; x++)
+            {
+                maxPixelDiff = Math.Max(maxPixelDiff,
+                    Math.Abs(planSmallFirst.ElectronRate(x, y) - planLargeFirst.ElectronRate(x, y)));
+            }
+        }
+        Assert.IsTrue(maxPixelDiff <= 1e-12,
+            $"Per-pixel rates must match identically across priority order; maxPixelDiff={maxPixelDiff:E4}.");
+    }
+
+    [TestMethod]
+    public void ThreeCoincidentFineDarkCloudsNeverExceedReportedOrConfiguredSampleBudget()
+    {
+        // Exact F23 regression: three coincident 0.6' dark clouds each sample 316 interior points once (cached),
+        // totaling 948 interior evaluations == TotalSampledPoints == 948 (never rebuilding 1+2+3 = 1,896 points!).
+        // Tight MaximumTotalSamplePoints = 948 succeeds with exact 3*tau=4.8 additivity, while 947 throws before work.
+        var projection = new ProjectionContext(
+            ProjectionModel.Perspective, 80, 80, 1400, 1400, 160, 160,
+            ProjectionAperture.Rectangular, BoresightAltitudeDegrees: 60, BoresightAzimuthDegrees: 180);
+        var req = CreateRequest(projection, HorizonPolicy.GeometricHorizon);
+        var opts = CreateDeterministicMonoOptions(background: 0, exposureSeconds: 1.0, readNoise: 0);
+        var centerJ2000 = AltAzToJ2000(new AltAzPoint(60.0, 180.0));
+
+        var c1 = CreateDso("LDN-C1", "Coinc 1", "DrkN", centerJ2000.RaHours, centerJ2000.DecDegrees, 0.6, 0.6, 0, null, null, null, null, 1);
+        var c2 = CreateDso("LDN-C2", "Coinc 2", "DrkN", centerJ2000.RaHours, centerJ2000.DecDegrees, 0.6, 0.6, 0, null, null, null, null, 2);
+        var c3 = CreateDso("LDN-C3", "Coinc 3", "DrkN", centerJ2000.RaHours, centerJ2000.DecDegrees, 0.6, 0.6, 0, null, null, null, null, 3);
+        var combinedTau48 = CreateDso("LDN-TAU48", "Combined 4.8", "DrkN", centerJ2000.RaHours, centerJ2000.DecDegrees, 0.6, 0.6, 0, null, null, null, null, 1);
+
+        const double bg = 100.0;
+        var exactBudgetSettings = CreateSettings(opts, req, minSnr: 0, celestialDiffuseBg: bg) with
+        {
+            MaximumTotalSamplePoints = 948
+        };
+        var plan = DeepSkyRenderPlan.Prepare(req, null, [c1, c2, c3], null, opts, exactBudgetSettings);
+        Assert.AreEqual(3, plan.Statistics.AdmittedCount);
+        Assert.AreEqual(948L, plan.Statistics.TotalSampledPoints);
+        Assert.AreEqual(948, plan.Diagnostics.Sum(static d => d.SampledPoints));
+        Assert.IsTrue(plan.Diagnostics.All(static d => d.SampledPoints == 316));
+
+        var single48Plan = DeepSkyRenderPlan.Prepare(
+            req, null, [combinedTau48], null, opts,
+            CreateSettings(opts, req, minSnr: 0, celestialDiffuseBg: bg,
+                syntheticScenario: new DeepSkySyntheticScenario("f23-tau48-v1",
+                    Overrides: [new DeepSkySyntheticSourceOverride(combinedTau48.Id, PeakOpticalDepth: 4.8)])));
+        var threeAbsorbed = plan.Diagnostics.Sum(static d => d.AttenuatedDiffuseElectronRate);
+        var single48Absorbed = single48Plan.Diagnostics.Single().AttenuatedDiffuseElectronRate;
+        Assert.AreEqual(single48Absorbed, threeAbsorbed, single48Absorbed * 1e-6,
+            "Three cached coincident 0.6' tau=1.6 clouds must match a single 0.6' tau=4.8 cloud.");
+
+        var underBudgetSettings = exactBudgetSettings with { MaximumTotalSamplePoints = 947 };
+        Assert.ThrowsExactly<InvalidOperationException>(() =>
+            DeepSkyRenderPlan.Prepare(req, null, [c1, c2, c3], null, opts, underBudgetSettings));
+    }
+
+    [TestMethod]
+    public void DarkNebulaForegroundStarKernelVisitsStrictlyObeyConfiguredBudget()
+    {
+        // Exact F24 regression: a 20' dark cloud has a fixed baseline kernel-visit count. Adding 100 foreground HYG
+        // stars inside its aperture MUST charge their kernel visits against MaximumKernelCellVisits (throwing when
+        // the budget is pinned at the starless baseline and reporting > baseline visits when allowed to succeed).
+        var projection = new ProjectionContext(
+            ProjectionModel.Perspective, 80, 80, 1400, 1400, 160, 160,
+            ProjectionAperture.Rectangular, BoresightAltitudeDegrees: 60, BoresightAzimuthDegrees: 180);
+        var req = CreateRequest(projection, HorizonPolicy.GeometricHorizon);
+        var opts = CreateDeterministicMonoOptions(background: 0, exposureSeconds: 1.0, readNoise: 0);
+        var centerJ2000 = AltAzToJ2000(new AltAzPoint(60.0, 180.0));
+
+        var darkCloud = CreateDso("LDN-20-BUDGET", "20' Dark Cloud", "DrkN",
+            centerJ2000.RaHours, centerJ2000.DecDegrees, 20, 20, 0, null, null, null, null, null);
+        var baseSettings = CreateSettings(opts, req, minSnr: 0, celestialDiffuseBg: 100.0);
+        var starlessPlan = DeepSkyRenderPlan.Prepare(req, null, [darkCloud], null, opts, baseSettings);
+        var baselineKernelVisits = starlessPlan.Statistics.TotalKernelCellVisits;
+        Assert.IsTrue(baselineKernelVisits > 0);
+
+        var hundredStars = Enumerable.Range(0, 100)
+            .Select(i =>
+            {
+                var dAlt = ((i % 10) - 4.5) * 0.01;
+                var dAz = ((i / 10) - 4.5) * 0.01;
+                var pos = AltAzToJ2000(new AltAzPoint(60.0 + dAlt, 180.0 + dAz));
+                return new CelestialCatalogObject($"HIP-FG-{i:D3}", $"FgStar{i}", pos.RaHours, pos.DecDegrees, 1.0, 0.0);
+            })
+            .ToArray();
+
+        // Pinning MaximumKernelCellVisits to starless baseline MUST fail instead of bypassing with long.MaxValue!
+        Assert.ThrowsExactly<InvalidOperationException>(() =>
+            DeepSkyRenderPlan.Prepare(req, null, [darkCloud], hundredStars, opts,
+                baseSettings with { MaximumKernelCellVisits = baselineKernelVisits }));
+
+        // With generous budget, foreground star kernel visits are honestly counted in TotalKernelCellVisits.
+        var withStarsPlan = DeepSkyRenderPlan.Prepare(req, null, [darkCloud], hundredStars, opts, baseSettings);
+        Assert.IsTrue(withStarsPlan.Statistics.TotalKernelCellVisits > baselineKernelVisits,
+            $"Adding 100 foreground stars inside dark cloud aperture must increase TotalKernelCellVisits above {baselineKernelVisits}; " +
+            $"got {withStarsPlan.Statistics.TotalKernelCellVisits}.");
+        Assert.IsTrue(
+            withStarsPlan.Diagnostics.Single().PredictedSignal.NoiseVariance >
+            starlessPlan.Diagnostics.Single().PredictedSignal.NoiseVariance * 10.0,
+            "100 bright foreground stars must materially increase dark-cloud aperture noise variance.");
+    }
+
+    [TestMethod]
+    public async Task DarkNebulaForegroundStarVarianceUsesExposureIntegratedRasterAcrossLongExposure()
+    {
+        // Exact F25 regression: for a 60 s exposure with a mag -4 star offset by 0.023 h in RA from a 20' dark cloud,
+        // sidereal drift over the 60 s exposure puts ~43.5% of the star's flux inside the dark cloud's aperture
+        // (S/N ~45.9 < 48), whereas a midpoint-only calculation predicts S/N ~51.2 > 48. Both direct Prepare and
+        // StellarExposure-backed Prepare MUST match the exposure-integrated stellar raster and reject at S/N = 48.
+        var exposure = TimeSpan.FromSeconds(60);
+        var startUtc = Utc;
+        var midUtc = startUtc.AddTicks(exposure.Ticks / 2);
+        var projection = new ProjectionContext(
+            ProjectionModel.Perspective, 80, 80, 1400, 1400, 160, 160,
+            ProjectionAperture.Rectangular, BoresightAltitudeDegrees: 60, BoresightAzimuthDegrees: 180);
+        var req = new VisibleSceneRequest(midUtc, HvoObserver, projection, new CatalogQuery(20, 100), CatalogMeta,
+            new RefractionOptions(false), HorizonPolicy.GeometricHorizon);
+        var opts = CreateDeterministicMonoOptions(background: 0, exposureSeconds: 60.0, readNoise: 0);
+
+        var centerEqDate = CoordinateTransforms.HorizontalToEquatorial(
+            new AltAzPoint(60.0, 180.0), midUtc, HvoObserver.LatitudeDegrees, HvoObserver.LongitudeDegrees);
+        var centerJ2000 = EquatorialPrecession.PrecessToJ2000(centerEqDate, midUtc);
+
+        var darkCloud = CreateDso("LDN-20-60S", "20' Dark Cloud 60s", "DrkN",
+            centerJ2000.RightAscensionHours, centerJ2000.DeclinationDegrees, 20, 20, 0, null, null, null, null, null);
+        var starRaHours = (((centerJ2000.RightAscensionHours + 0.023) % 24d) + 24d) % 24d;
+        var movingStar = new CelestialCatalogObject(
+            "HIP-MOVING-M4", "MovingMagMinus4", starRaHours, centerJ2000.DeclinationDegrees, -4.0, 0.0);
+
+        var starCatalog = new InMemoryCelestialCatalog([movingStar]);
+        var stellarGeom = await new StellarExposureGeometryBuilder(starCatalog)
+            .BuildAsync(req, startUtc, exposure, new StellarExposureGeometryOptions(
+                MaximumCandidates: 1, MaximumSamplesPerSource: 64, MaximumStepPixels: 0.15, PsfSupportRadiusPixels: 4.0))
+            .ConfigureAwait(false);
+        var stellarPlan = StellarExposureRenderPlan.Prepare(
+            stellarGeom, opts, new StellarExposureRenderSettings(MinimumSignalToNoise: 1e-3));
+        Assert.IsTrue(stellarPlan.Sources.Single().Samples.Count >= 30,
+            $"60 s exposure moving star must span many temporal samples; got {stellarPlan.Sources.Single().Samples.Count}.");
+
+        var settingsAt48 = CreateSettings(opts, req, minSnr: 48.0, celestialDiffuseBg: 100.0) with
+        {
+            ExposureStartUtc = startUtc,
+            MaximumTemporalSamples = 64,
+            MaximumTemporalStepPixels = 0.15
+        };
+
+        var directPlan = DeepSkyRenderPlan.Prepare(req, null, [darkCloud], [movingStar], opts, settingsAt48);
+        var reusedStellarPlan = DeepSkyRenderPlan.Prepare(
+            req, null, [darkCloud], [movingStar], opts with { StellarExposure = stellarPlan }, settingsAt48);
+
+        var directDiag = directPlan.Diagnostics.Single();
+        var reusedDiag = reusedStellarPlan.Diagnostics.Single();
+
+        Assert.AreEqual(directDiag.PredictedSignal.SourceElectrons, reusedDiag.PredictedSignal.SourceElectrons, 1e-9);
+        Assert.AreEqual(directDiag.PredictedSignal.NoiseVariance, reusedDiag.PredictedSignal.NoiseVariance, 1e-6,
+            "Direct Prepare and StellarExposure-backed Prepare must compute identical exposure-integrated foreground variance.");
+        Assert.AreEqual(directDiag.PredictedSignal.SignalToNoise, reusedDiag.PredictedSignal.SignalToNoise, 1e-9);
+
+        Assert.IsFalse(directDiag.Admitted,
+            $"Exposure-integrated moving mag -4 star must pull 20' dark-cloud S/N below 48; got S/N={directDiag.PredictedSignal.SignalToNoise:F4}.");
+        Assert.AreEqual("annotation-only-below-snr", directDiag.Reason);
+        Assert.IsFalse(reusedDiag.Admitted);
+        Assert.AreEqual("annotation-only-below-snr", reusedDiag.Reason);
+        Assert.IsTrue(directDiag.PredictedSignal.SignalToNoise is > 43.0 and < 48.0,
+            $"Expected exposure-integrated S/N ~45.9 < 48; got {directDiag.PredictedSignal.SignalToNoise:F4}.");
+
+        // Control: lowering threshold to 40 admits the dark cloud cleanly.
+        var planAt40 = DeepSkyRenderPlan.Prepare(req, null, [darkCloud], [movingStar], opts,
+            settingsAt48 with { MinimumSignalToNoise = 40.0 });
+        Assert.IsTrue(planAt40.Diagnostics.Single().Admitted);
+    }
+
     private static ImageLayout Mono16Layout(int width, int height) =>
         new(width, height, CameraPixelFormat.Mono16, width * 2);
 
