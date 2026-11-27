@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using HVO.SkyMonitor.Storage.FileSystem;
 using Microsoft.Data.Sqlite;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
@@ -18,6 +19,7 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
     private static readonly AsyncLocal<Mutation?> Current = new();
     internal static Action? BeforeNestedMutationForTest { get; set; }
     internal static Action? RegistrationBlockedForTest { get; set; }
+    internal static Action<string>? BeforePendingDirectorySyncForTest { get; set; }
     private readonly string _root;
     private readonly string _directory;
     private readonly string _checkpoint;
@@ -314,12 +316,12 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
         {
             if (!_locked) throw new InvalidOperationException("A scrub must finish before publication.");
             if (_drift) return; // Startup/recovery stays available, but unexplained changes never replace expected evidence.
+            owner.SyncPendingIntents();
             using var transaction = owner._database.BeginTransaction();
             var verified = owner.ComputeEntriesRoot("scan_entries", transaction);
             if (!verified.AsSpan().SequenceEqual(_scanChain))
                 throw new InvalidDataException("Retained verification staging authentication failed.");
             owner.Execute("DELETE FROM entries; INSERT INTO entries SELECT * FROM scan_entries; DELETE FROM scan_entries; DELETE FROM pending;", transaction);
-            owner._pending.Clear();
             owner._generation++;
             owner._binding = binding;
             owner._count = owner.Scalar("SELECT COUNT(*) FROM entries WHERE kind<>0;", transaction);
@@ -327,6 +329,7 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
             owner._established = true;
             owner.WriteMetadata(transaction);
             transaction.Commit();
+            owner._pending.Clear();
             owner.ValidatePathMetadata();
             owner._qualified = !_invalid;
             if (owner._qualified) owner._warned = false;
@@ -616,6 +619,143 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
             }
         }
         return false;
+    }
+
+    // Reconciling an interrupted managed mutation commits the observed filesystem outcome and clears
+    // its pending intent. Durably sync any present target file and every existing parent/ancestor
+    // directory first so power loss after clearing the pending row cannot revert directory entries.
+    private void SyncPendingIntents()
+    {
+        if (_pending.Count == 0) return;
+        var directories = new List<string>();
+        var seenDirectories = new HashSet<string>(StringComparer.Ordinal);
+        var syncedFiles = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var intent in _pending)
+        {
+            CollectPendingSyncTargets(intent, syncedFiles, directories, seenDirectories);
+        }
+        foreach (var directory in directories)
+        {
+            RawIngressFileStore.EnsureNoSymbolicLinks(_root, directory);
+            BeforePendingDirectorySyncForTest?.Invoke(directory);
+            DurableSync.Directory(directory);
+        }
+    }
+
+    private void CollectPendingSyncTargets(
+        Intent intent,
+        HashSet<string> syncedFiles,
+        List<string> directories,
+        HashSet<string> seenDirectories)
+    {
+        if (intent.Key.StartsWith("J|", StringComparison.Ordinal))
+        {
+            var journalDirectory = Path.Combine(_root, "journal");
+            var journalDatabase = Path.Combine(journalDirectory, "raw-ingress.db");
+            SyncPendingFileIfPresent(journalDatabase, syncedFiles);
+            AddPendingDirectoryHierarchy(journalDirectory, directories, seenDirectories);
+            return;
+        }
+        if (!intent.Key.StartsWith("F|", StringComparison.Ordinal)) return;
+        if (intent.Tree)
+        {
+            var treeDirectory = Path.Combine(_root, intent.Key[2..].TrimEnd(Path.DirectorySeparatorChar));
+            CollectPendingTreeSyncTargets(treeDirectory, syncedFiles, directories, seenDirectories);
+            if (intent.Source is not null && intent.Source.StartsWith("F|", StringComparison.Ordinal))
+            {
+                var sourceDirectory = Path.Combine(_root, intent.Source[2..].TrimEnd(Path.DirectorySeparatorChar));
+                var normalizedSource = Path.TrimEndingDirectorySeparator(Path.GetFullPath(sourceDirectory));
+                if (!IsRootDirectory(normalizedSource))
+                    AddPendingDirectoryHierarchy(Path.GetDirectoryName(normalizedSource), directories, seenDirectories);
+            }
+            return;
+        }
+        var path = Path.Combine(_root, intent.Key[2..]);
+        SyncPendingFileIfPresent(path, syncedFiles);
+        AddPendingDirectoryHierarchy(Path.GetDirectoryName(path), directories, seenDirectories);
+    }
+
+    private void CollectPendingTreeSyncTargets(
+        string treeDirectory,
+        HashSet<string> syncedFiles,
+        List<string> directories,
+        HashSet<string> seenDirectories)
+    {
+        var fullTree = Path.TrimEndingDirectorySeparator(Path.GetFullPath(treeDirectory));
+        if (!IsRootOrDescendant(fullTree))
+            throw new InvalidDataException("Pending integrity tree path escaped the retained root.");
+        RawIngressFileStore.EnsureNoSymbolicLinks(_root, fullTree);
+        if (Directory.Exists(fullTree))
+        {
+            var subdirectories = new List<string>();
+            var stack = new Stack<string>();
+            stack.Push(fullTree);
+            while (stack.TryPop(out var current))
+            {
+                subdirectories.Add(current);
+                foreach (var entry in Directory.EnumerateFileSystemEntries(current))
+                {
+                    RawIngressFileStore.EnsureNoSymbolicLinks(_root, entry);
+                    if (Directory.Exists(entry))
+                    {
+                        stack.Push(Path.TrimEndingDirectorySeparator(Path.GetFullPath(entry)));
+                    }
+                    else if (Tracked(entry))
+                    {
+                        SyncPendingFileIfPresent(entry, syncedFiles);
+                    }
+                }
+            }
+            for (var index = subdirectories.Count - 1; index >= 0; index--)
+            {
+                if (seenDirectories.Add(subdirectories[index]))
+                    directories.Add(subdirectories[index]);
+            }
+        }
+        if (!IsRootDirectory(fullTree))
+            AddPendingDirectoryHierarchy(Path.GetDirectoryName(fullTree), directories, seenDirectories);
+    }
+
+    private void SyncPendingFileIfPresent(string path, HashSet<string> syncedFiles)
+    {
+        var fullPath = Path.GetFullPath(path);
+        if (!IsRootOrDescendant(fullPath))
+            throw new InvalidDataException("Pending integrity path escaped the retained root.");
+        RawIngressFileStore.EnsureNoSymbolicLinks(_root, fullPath);
+        if (!File.Exists(fullPath) || !syncedFiles.Add(fullPath)) return;
+        DurableSync.File(fullPath);
+    }
+
+    private void AddPendingDirectoryHierarchy(
+        string? directory,
+        List<string> directories,
+        HashSet<string> seenDirectories)
+    {
+        if (string.IsNullOrWhiteSpace(directory)) return;
+        var current = Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory));
+        if (!IsRootOrDescendant(current))
+            throw new InvalidDataException("Pending integrity directory escaped the retained root.");
+        RawIngressFileStore.EnsureNoSymbolicLinks(_root, current);
+        while (IsRootOrDescendant(current))
+        {
+            if (Directory.Exists(current) && seenDirectories.Add(current))
+                directories.Add(current);
+            if (IsRootDirectory(current)) break;
+            var parent = Path.GetDirectoryName(current);
+            if (string.IsNullOrWhiteSpace(parent)) break;
+            current = Path.TrimEndingDirectorySeparator(parent);
+        }
+    }
+
+    private bool IsRootDirectory(string normalizedPath)
+        => string.Equals(normalizedPath, _root, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+
+    private bool IsRootOrDescendant(string fullPath)
+    {
+        var normalized = Path.TrimEndingDirectorySeparator(Path.GetFullPath(fullPath));
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        return string.Equals(normalized, _root, comparison) ||
+            normalized.StartsWith(_root + Path.DirectorySeparatorChar, comparison);
     }
 
     private bool UnexpectedBefore(Intent intent)

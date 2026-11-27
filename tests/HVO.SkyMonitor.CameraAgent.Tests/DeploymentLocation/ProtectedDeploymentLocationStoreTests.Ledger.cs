@@ -1,9 +1,13 @@
 using System.Security.Cryptography;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Orbital;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using HVO.SkyMonitor.CameraAgent.Tests.Orbital;
 
@@ -237,6 +241,348 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         Assert.AreEqual(active, await recoveredLocations.FullVerifyAsync(seed, token).ConfigureAwait(false));
         Assert.AreEqual(active, await recoveredLocations.VerifyInstallationAsync(seed, token).ConfigureAwait(false));
         Assert.IsFalse(recoveredLocations.RequiresRetainedIntegrityScrub);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task ScrubServiceReconciliationSyncsQuarantineDirectoryBeforeClearingPendingIntent(
+        bool matchingDuplicateRawExists)
+    {
+        var token = CancellationToken.None;
+        _options = Options.Create(new CameraAgentHostOptions
+        {
+            RawIngressRoot = _options.Value.RawIngressRoot,
+            ConfigFilePath = Path.Combine(AppContext.BaseDirectory, "cameraagent.sample.json"),
+            AgentId = "synthetic",
+            Observatory = new ObservatoryLocation(35, -113, 0, "America/Phoenix"),
+            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
+        });
+        var seed = new DeploymentLocationSeed(
+            _options.Value.DeploymentLocation.LocationId,
+            _options.Value.DeploymentLocation.Source,
+            _options.Value.DeploymentLocation.HorizontalAccuracyMeters,
+            _options.Value.DeploymentLocation.EffectiveFromUtc,
+            _options.Value.DeploymentLocation.EffectiveUntilUtc,
+            _options.Value.Observatory,
+            _options.Value.DeploymentLocation.SourceKind);
+        var orbitalRoot = Path.Combine(_options.Value.RawIngressRoot, ".orbital-elements");
+        var quarantine = Path.Combine(orbitalRoot, "quarantine");
+        var clock = new OrbitalElementsStoreTestData.Clock(Now);
+        var malformedJson = "{\"OBJECT_NAME\":\"TRUNCATED"u8.ToArray();
+        var malformedSha = CelesTrakGpTestData.Sha256(malformedJson);
+        var legacyJsonPath = Path.Combine(quarantine, malformedSha + ".json");
+        var migratedRawPath = Path.Combine(quarantine, malformedSha + ".raw");
+        var expectedKey = RetainedIntegrityLedger.FileKey(_options.Value.RawIngressRoot, legacyJsonPath);
+        var ledgerPath = Path.Combine(_options.Value.RawIngressRoot, ".location", RetainedIntegrityLedger.DatabaseName);
+        DeploymentLocationSnapshot active;
+
+        using (var locations = CreateStore())
+        {
+            active = await locations.InitializeAsync(seed, token).ConfigureAwait(false);
+            using var orbital = OrbitalElementsStoreTestData.Open(orbitalRoot, clock,
+                OrbitalElementsStoreTestData.Settings(orbitalRoot, maximumQuarantined: 4));
+            var attempt = await OrbitalElementsStoreTestData.AdmitAsync(orbital).ConfigureAwait(false);
+            await orbital.RecordQuarantineAsync(attempt, malformedJson, malformedSha,
+                "orbital.json-syntax", "legacy malformed JSON body", token).ConfigureAwait(false);
+            RetainedFileMutations.Move(migratedRawPath, legacyJsonPath);
+            if (matchingDuplicateRawExists)
+            {
+                await File.WriteAllBytesAsync(migratedRawPath, malformedJson, token).ConfigureAwait(false);
+            }
+        }
+
+        // Interrupt startup migration just before quarantine directory fsync so the pending row stays open.
+        using (var interruptedLocations = CreateStore())
+        {
+            Assert.AreEqual(active, await interruptedLocations.InitializeAsync(seed, token).ConfigureAwait(false));
+            var faults = new OrbitalElementsStoreTestData.Faults
+            {
+                ArmedPoint = OrbitalStorageFaultPoint.BeforeQuarantineDirectorySync,
+                Throw = static () => new InvalidOperationException("simulated power loss before quarantine directory sync")
+            };
+            using var interruptedOrbital = OrbitalElementsStoreTestData.Open(orbitalRoot, clock,
+                OrbitalElementsStoreTestData.Settings(orbitalRoot, maximumQuarantined: 4), faults);
+            await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
+                interruptedOrbital.InitializeAsync(token).AsTask()).ConfigureAwait(false);
+        }
+
+        Assert.AreEqual(1L, await QueryPendingCountAsync(ledgerPath, expectedKey, token).ConfigureAwait(false));
+
+        // Run RetainedIntegrityScrubService on a restarted host BEFORE the orbital store re-initializes.
+        // The ledger must durably sync the quarantine directory before committing and clearing the pending row.
+        var syncedDirectories = new List<string>();
+        long pendingCountAtQuarantineSync = -1;
+        var quarantineSynced = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        RetainedIntegrityLedger.BeforePendingDirectorySyncForTest = directory =>
+        {
+            syncedDirectories.Add(directory);
+            if (string.Equals(directory, quarantine, StringComparison.Ordinal))
+            {
+                pendingCountAtQuarantineSync = QueryPendingCount(ledgerPath, expectedKey);
+                quarantineSynced.TrySetResult();
+            }
+        };
+        try
+        {
+            using var restartedLocations = CreateStore();
+            var lifetime = new IncrementalStartedLifetime();
+            var loader = new FileCameraAgentConfigurationLoader(
+                _options, NullLogger<FileCameraAgentConfigurationLoader>.Instance, restartedLocations,
+                hostLifetime: lifetime, timeProvider: _timeProvider);
+            _ = await loader.LoadAsync(token).ConfigureAwait(false);
+            using var scrubService = new RetainedIntegrityScrubService(
+                loader, NullLogger<RetainedIntegrityScrubService>.Instance, _timeProvider,
+                locations: restartedLocations, hostLifetime: lifetime);
+            await scrubService.StartAsync(token).ConfigureAwait(false);
+            try
+            {
+                await quarantineSynced.Task.WaitAsync(TimeSpan.FromSeconds(10), token).ConfigureAwait(false);
+                await loader.DrainRetainedIntegrityScrubAsync(token).ConfigureAwait(false);
+            }
+            finally
+            {
+                await scrubService.StopAsync(token).ConfigureAwait(false);
+            }
+
+            CollectionAssert.Contains(syncedDirectories, quarantine,
+                "Pending-intent reconciliation must durably sync the quarantine directory before clearing the pending row.");
+            Assert.AreEqual(1L, pendingCountAtQuarantineSync,
+                "The pending intent row must still be open when DurableSync.Directory(quarantine) executes.");
+            Assert.AreEqual(0L, await QueryPendingCountAsync(ledgerPath, expectedKey, token).ConfigureAwait(false),
+                "Once directory sync and scrub publication succeed, the pending intent row must be cleared.");
+            Assert.IsFalse(restartedLocations.RequiresRetainedIntegrityScrub);
+            Assert.AreEqual(active, await restartedLocations.VerifyInstallationAsync(seed, token).ConfigureAwait(false));
+            Assert.IsFalse(File.Exists(legacyJsonPath));
+            Assert.IsTrue(File.Exists(migratedRawPath));
+
+            // Subsequent orbital store initialization remains idempotent and preserves verification.
+            using var restartedOrbital = OrbitalElementsStoreTestData.Open(orbitalRoot, clock,
+                OrbitalElementsStoreTestData.Settings(orbitalRoot, maximumQuarantined: 4));
+            await restartedOrbital.InitializeAsync(token).ConfigureAwait(false);
+            Assert.AreEqual(active, await restartedLocations.VerifyInstallationAsync(seed, token).ConfigureAwait(false));
+        }
+        finally
+        {
+            RetainedIntegrityLedger.BeforePendingDirectorySyncForTest = null;
+        }
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task ScrubPendingDirectorySyncFailurePreservesPendingIntentAndRecoversRevertedQuarantineJson(
+        bool matchingDuplicateRawExists)
+    {
+        var token = CancellationToken.None;
+        _options = Options.Create(new CameraAgentHostOptions
+        {
+            RawIngressRoot = _options.Value.RawIngressRoot,
+            ConfigFilePath = Path.Combine(AppContext.BaseDirectory, "cameraagent.sample.json"),
+            AgentId = "synthetic",
+            Observatory = new ObservatoryLocation(35, -113, 0, "America/Phoenix"),
+            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
+        });
+        var seed = new DeploymentLocationSeed(
+            _options.Value.DeploymentLocation.LocationId,
+            _options.Value.DeploymentLocation.Source,
+            _options.Value.DeploymentLocation.HorizontalAccuracyMeters,
+            _options.Value.DeploymentLocation.EffectiveFromUtc,
+            _options.Value.DeploymentLocation.EffectiveUntilUtc,
+            _options.Value.Observatory,
+            _options.Value.DeploymentLocation.SourceKind);
+        var orbitalRoot = Path.Combine(_options.Value.RawIngressRoot, ".orbital-elements");
+        var quarantine = Path.Combine(orbitalRoot, "quarantine");
+        var clock = new OrbitalElementsStoreTestData.Clock(Now);
+        var malformedJson = "{\"OBJECT_NAME\":\"TRUNCATED"u8.ToArray();
+        var malformedSha = CelesTrakGpTestData.Sha256(malformedJson);
+        var legacyJsonPath = Path.Combine(quarantine, malformedSha + ".json");
+        var migratedRawPath = Path.Combine(quarantine, malformedSha + ".raw");
+        var expectedKey = RetainedIntegrityLedger.FileKey(_options.Value.RawIngressRoot, legacyJsonPath);
+        var ledgerPath = Path.Combine(_options.Value.RawIngressRoot, ".location", RetainedIntegrityLedger.DatabaseName);
+        DeploymentLocationSnapshot active;
+
+        using (var locations = CreateStore())
+        {
+            active = await locations.InitializeAsync(seed, token).ConfigureAwait(false);
+            using var orbital = OrbitalElementsStoreTestData.Open(orbitalRoot, clock,
+                OrbitalElementsStoreTestData.Settings(orbitalRoot, maximumQuarantined: 4));
+            var attempt = await OrbitalElementsStoreTestData.AdmitAsync(orbital).ConfigureAwait(false);
+            await orbital.RecordQuarantineAsync(attempt, malformedJson, malformedSha,
+                "orbital.json-syntax", "legacy malformed JSON body", token).ConfigureAwait(false);
+            RetainedFileMutations.Move(migratedRawPath, legacyJsonPath);
+            if (matchingDuplicateRawExists)
+            {
+                await File.WriteAllBytesAsync(migratedRawPath, malformedJson, token).ConfigureAwait(false);
+            }
+        }
+
+        // Interrupt startup migration before quarantine directory sync.
+        using (var interruptedLocations = CreateStore())
+        {
+            Assert.AreEqual(active, await interruptedLocations.InitializeAsync(seed, token).ConfigureAwait(false));
+            var faults = new OrbitalElementsStoreTestData.Faults
+            {
+                ArmedPoint = OrbitalStorageFaultPoint.BeforeQuarantineDirectorySync,
+                Throw = static () => new InvalidOperationException("simulated power loss before quarantine directory sync")
+            };
+            using var interruptedOrbital = OrbitalElementsStoreTestData.Open(orbitalRoot, clock,
+                OrbitalElementsStoreTestData.Settings(orbitalRoot, maximumQuarantined: 4), faults);
+            await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
+                interruptedOrbital.InitializeAsync(token).AsTask()).ConfigureAwait(false);
+        }
+
+        // Inject a directory sync failure when RetainedIntegrityScrubService and FullVerifyAsync attempt
+        // to reconcile the pending intent before orbital store re-initialization.
+        var syncAttempted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var syncAttempts = 0;
+        RetainedIntegrityLedger.BeforePendingDirectorySyncForTest = directory =>
+        {
+            if (string.Equals(directory, quarantine, StringComparison.Ordinal))
+            {
+                Interlocked.Increment(ref syncAttempts);
+                syncAttempted.TrySetResult();
+                throw new IOException("simulated quarantine directory fsync failure during scrub", 5);
+            }
+        };
+        try
+        {
+            using var failedScrubLocations = CreateStore();
+            var lifetime = new IncrementalStartedLifetime();
+            var loader = new FileCameraAgentConfigurationLoader(
+                _options, NullLogger<FileCameraAgentConfigurationLoader>.Instance, failedScrubLocations,
+                hostLifetime: lifetime, timeProvider: _timeProvider);
+            _ = await loader.LoadAsync(token).ConfigureAwait(false);
+            using var scrubService = new RetainedIntegrityScrubService(
+                loader, NullLogger<RetainedIntegrityScrubService>.Instance, _timeProvider,
+                locations: failedScrubLocations, hostLifetime: lifetime);
+            await scrubService.StartAsync(token).ConfigureAwait(false);
+            try
+            {
+                await syncAttempted.Task.WaitAsync(TimeSpan.FromSeconds(10), token).ConfigureAwait(false);
+                await loader.DrainRetainedIntegrityScrubAsync(token).ConfigureAwait(false);
+            }
+            finally
+            {
+                await scrubService.StopAsync(token).ConfigureAwait(false);
+            }
+
+            Assert.IsGreaterThan(0, Volatile.Read(ref syncAttempts));
+            Assert.IsTrue(failedScrubLocations.RequiresRetainedIntegrityScrub);
+            await Assert.ThrowsExactlyAsync<InstallationVerificationPendingException>(async () =>
+                await failedScrubLocations.VerifyInstallationAsync(seed, token).ConfigureAwait(false)).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<IOException>(async () =>
+                await failedScrubLocations.FullVerifyAsync(seed, token).ConfigureAwait(false)).ConfigureAwait(false);
+        }
+        finally
+        {
+            RetainedIntegrityLedger.BeforePendingDirectorySyncForTest = null;
+        }
+
+        // The pending intent must remain open and the legacy .json entry must remain intact in entries.
+        Assert.AreEqual(1L, await QueryPendingCountAsync(ledgerPath, expectedKey, token).ConfigureAwait(false),
+            "Failed pending-intent directory sync must keep the pending intent open.");
+        using (var connection = new SqliteConnection($"Data Source={ledgerPath};Pooling=False"))
+        {
+            await connection.OpenAsync(token).ConfigureAwait(false);
+            using var entryCommand = connection.CreateCommand();
+            entryCommand.CommandText = "SELECT kind FROM entries WHERE key = $key;";
+            entryCommand.Parameters.AddWithValue("$key", expectedKey);
+            Assert.AreNotEqual(0L, (long)(await entryCommand.ExecuteScalarAsync(token).ConfigureAwait(false))!,
+                "Legacy quarantine JSON entry must not be tombstoned when directory sync fails during scrub.");
+        }
+
+        // Simulate power loss reverting the unsynced quarantine directory entry so the intact legacy .json reappears.
+        if (matchingDuplicateRawExists)
+        {
+            await File.WriteAllBytesAsync(legacyJsonPath, malformedJson, token).ConfigureAwait(false);
+        }
+        else
+        {
+            File.Move(migratedRawPath, legacyJsonPath, overwrite: false);
+        }
+        Assert.IsTrue(File.Exists(legacyJsonPath));
+
+        // Restarting after power loss must recover cleanly without rejecting the reverted .json as drift.
+        using var recoveredLocations = CreateStore();
+        Assert.AreEqual(active, await recoveredLocations.InitializeAsync(seed, token).ConfigureAwait(false));
+        using (var recoveredOrbital = OrbitalElementsStoreTestData.Open(orbitalRoot, clock,
+            OrbitalElementsStoreTestData.Settings(orbitalRoot, maximumQuarantined: 4)))
+        {
+            await recoveredOrbital.InitializeAsync(token).ConfigureAwait(false);
+            Assert.IsFalse(File.Exists(legacyJsonPath));
+            Assert.IsTrue(File.Exists(migratedRawPath));
+            CollectionAssert.AreEqual(malformedJson, await File.ReadAllBytesAsync(migratedRawPath, token).ConfigureAwait(false));
+        }
+
+        Assert.AreEqual(active, await recoveredLocations.FullVerifyAsync(seed, token).ConfigureAwait(false));
+        Assert.AreEqual(active, await recoveredLocations.VerifyInstallationAsync(seed, token).ConfigureAwait(false));
+        Assert.IsFalse(recoveredLocations.RequiresRetainedIntegrityScrub);
+        Assert.AreEqual(0L, await QueryPendingCountAsync(ledgerPath, expectedKey, token).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task ScrubPendingIntentReconciliationHandlesMissingParentDirectoryGracefully()
+    {
+        var token = CancellationToken.None;
+        var seed = CreateSeed(35, -113, 0, "America/Phoenix");
+        var root = _options.Value.RawIngressRoot;
+        var nestedDirectory = Path.Combine(root, "ephemeral", "sub");
+        var nestedPath = Path.Combine(nestedDirectory, "orphan.json");
+        var expectedKey = RetainedIntegrityLedger.FileKey(root, nestedPath);
+        var ledgerPath = Path.Combine(root, ".location", RetainedIntegrityLedger.DatabaseName);
+        DeploymentLocationSnapshot active;
+
+        using (var locations = CreateStore())
+        {
+            active = await locations.InitializeAsync(seed, token).ConfigureAwait(false);
+            Directory.CreateDirectory(nestedDirectory);
+            await RetainedFileMutations.WriteAllBytesAsync(nestedPath, "{}"u8.ToArray(), token).ConfigureAwait(false);
+            using (RetainedIntegrityLedger.BeginDelete(nestedPath))
+            {
+                Directory.Delete(Path.Combine(root, "ephemeral"), recursive: true);
+                RetainedIntegrityLedger.AbandonCurrentMutation();
+            }
+        }
+
+        Assert.IsFalse(Directory.Exists(nestedDirectory));
+        Assert.AreEqual(1L, await QueryPendingCountAsync(ledgerPath, expectedKey, token).ConfigureAwait(false));
+
+        var syncedDirectories = new List<string>();
+        RetainedIntegrityLedger.BeforePendingDirectorySyncForTest = syncedDirectories.Add;
+        try
+        {
+            using var restarted = CreateStore();
+            Assert.AreEqual(active, await restarted.FullVerifyAsync(seed, token).ConfigureAwait(false));
+            Assert.AreEqual(active, await restarted.VerifyInstallationAsync(seed, token).ConfigureAwait(false));
+            CollectionAssert.Contains(syncedDirectories, Path.TrimEndingDirectorySeparator(Path.GetFullPath(root)),
+                "When the pending intent's parent directory no longer exists, reconciliation must sync its nearest existing ancestor.");
+            Assert.AreEqual(0L, await QueryPendingCountAsync(ledgerPath, expectedKey, token).ConfigureAwait(false));
+        }
+        finally
+        {
+            RetainedIntegrityLedger.BeforePendingDirectorySyncForTest = null;
+        }
+    }
+
+    private static long QueryPendingCount(string ledgerPath, string key)
+    {
+        using var connection = new SqliteConnection($"Data Source={ledgerPath};Pooling=False");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM pending WHERE key = $key AND planned IS NULL AND denied = 0;";
+        command.Parameters.AddWithValue("$key", key);
+        return (long)command.ExecuteScalar()!;
+    }
+
+    private static async Task<long> QueryPendingCountAsync(string ledgerPath, string key, CancellationToken cancellationToken)
+    {
+        using var connection = new SqliteConnection($"Data Source={ledgerPath};Pooling=False");
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM pending WHERE key = $key AND planned IS NULL AND denied = 0;";
+        command.Parameters.AddWithValue("$key", key);
+        return (long)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!;
     }
 
     [TestMethod]
