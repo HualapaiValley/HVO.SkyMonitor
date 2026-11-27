@@ -211,13 +211,13 @@ public sealed partial class CameraAgentOperatorUiServiceTests
         var operations = await service.GetOperationsAsync(CancellationToken.None).ConfigureAwait(false);
         var gallery = await service.GetGalleryPageAsync(new CameraAgentGalleryQuery(), CancellationToken.None).ConfigureAwait(false);
         var current = await service.GetCurrentImagePresentationAsync(CancellationToken.None).ConfigureAwait(false);
-        var quarantine = await service.GetQuarantinePageAsync("Artifact", null, null, 25, CancellationToken.None).ConfigureAwait(false);
+        var quarantine = await service.GetQuarantinePageAsync("RawEvidence", null, null, 25, CancellationToken.None).ConfigureAwait(false);
         var detail = await service.GetGalleryCaptureAsync(Guid.NewGuid(), CancellationToken.None).ConfigureAwait(false);
         var detailView = await service.GetCaptureDetailViewAsync(Guid.NewGuid(), CancellationToken.None).ConfigureAwait(false);
         var system = await service.GetSystemStatusAsync(CancellationToken.None).ConfigureAwait(false);
         var capture = await service.SetCapturePausedAsync(true, 1, "operation-key", null, CancellationToken.None).ConfigureAwait(false);
-        var outbox = await service.ResolveQuarantineAsync(
-            "Artifact",
+        var rawEvidence = await service.ResolveQuarantineAsync(
+            "RawEvidence",
             QuarantineOperationAction.Replay,
             "action-token",
             "evidence-restored",
@@ -261,7 +261,7 @@ public sealed partial class CameraAgentOperatorUiServiceTests
         Assert.AreEqual(OperatorUiResultKind.Unauthorized, detailView.Kind);
         Assert.AreEqual(OperatorUiResultKind.Unauthorized, system.Kind);
         Assert.AreEqual(OperatorUiResultKind.Unauthorized, capture.Kind);
-        Assert.AreEqual(OperatorUiResultKind.Unauthorized, outbox.Kind);
+        Assert.AreEqual(OperatorUiResultKind.Unauthorized, rawEvidence.Kind);
         Assert.AreEqual(OperatorUiResultKind.Unauthorized, captureLane.Kind);
         Assert.AreEqual(OperatorUiResultKind.Unauthorized, ownership.Kind);
         authorization.Verify(service => service.AuthorizeAsync(
@@ -272,6 +272,19 @@ public sealed partial class CameraAgentOperatorUiServiceTests
             principal,
             null,
             CameraAgentAuthorizationPolicyNames.OperationsMutateV1), Times.Exactly(5));
+    }
+
+    [TestMethod]
+    [DataRow("Artifact")]
+    [DataRow("Environmental")]
+    public async Task GetQuarantinePageAsync_RejectsRetiredSourceAtEntryAsync(string kind)
+    {
+        var service = CreateReadService();
+
+        var result = await service.GetQuarantinePageAsync(kind, null, null, 25, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(OperatorUiResultKind.Invalid, result.Kind);
+        Assert.AreEqual("The quarantine source or cursor is invalid.", result.Message);
     }
 
     [TestMethod]

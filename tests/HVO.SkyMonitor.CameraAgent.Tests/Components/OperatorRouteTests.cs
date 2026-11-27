@@ -104,7 +104,6 @@ public sealed class OperatorRouteTests
             ("/transients", "Events"),
             ("/transients/candidate-id", "Events"),
             ("/transients?from=2026-09-23", "Events"),
-            ("/devices", "Operations"),
             ("/operations/pipeline", "Operations"),
             ("/operations/automations", "Operations"),
             ("/operations/schedule", "Operations"),

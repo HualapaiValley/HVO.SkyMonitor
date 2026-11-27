@@ -7,6 +7,7 @@ using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Endpoints;
 using HVO.SkyMonitor.Common.Security;
@@ -174,11 +175,13 @@ public sealed partial class DurableCaptureDistributionTests
     [TestMethod]
     public async Task RevalidationPreservesUnrelatedRequiredLaneQuarantine()
     {
-        using var fixture = CreateFixture(new() { });
+        const string transientFailure = "transient-evidence-invalid";
+        using var fixture = CreateFixture(new(),
+            transient: new TransientDetectionOptions { Mode = TransientOperatingMode.Edge, Required = true });
         var receipt = await fixture.AcceptAsync(0).ConfigureAwait(false);
-        var upload = await fixture.ClaimAsync("upload").ConfigureAwait(false);
-        Assert.IsNotNull(upload);
-        await fixture.Store.FailAsync(upload, CaptureLaneHandlerResult.Terminal("provider-configuration-invalid"), CancellationToken.None).ConfigureAwait(false);
+        var transient = await fixture.ClaimAsync("transient").ConfigureAwait(false);
+        Assert.IsNotNull(transient);
+        await fixture.Store.FailAsync(transient, CaptureLaneHandlerResult.Terminal(transientFailure), CancellationToken.None).ConfigureAwait(false);
         var backup = Path.Combine(fixture.Root, "unrelated-recovery.bin");
         File.Move(receipt.StoredFrame.AbsolutePath, backup);
         Assert.IsNull(await fixture.Store.ClaimAsync(fixture.Policy.Definitions.Single(lane => lane.Name == "standard"),
@@ -188,8 +191,8 @@ public sealed partial class DurableCaptureDistributionTests
         await fixture.Ingress.ReleaseEvidenceAsync(item.Target, RawEvidenceReleaseAction.Revalidate,
             "unrelated-revalidation", "recovery-owner", "evidence-restored", CancellationToken.None).ConfigureAwait(false);
         using var connection = await OpenAsync(fixture.Root).ConfigureAwait(false);
-        Assert.AreEqual("quarantined", await ScalarStringAsync(connection, "SELECT state FROM capture_lane_work WHERE lane_name='upload';").ConfigureAwait(false));
-        Assert.AreEqual("provider-configuration-invalid", await ScalarStringAsync(connection, "SELECT failure_reason FROM capture_lane_work WHERE lane_name='upload';").ConfigureAwait(false));
+        Assert.AreEqual("quarantined", await ScalarStringAsync(connection, "SELECT state FROM capture_lane_work WHERE lane_name='transient';").ConfigureAwait(false));
+        Assert.AreEqual(transientFailure, await ScalarStringAsync(connection, "SELECT failure_reason FROM capture_lane_work WHERE lane_name='transient';").ConfigureAwait(false));
         await Assert.ThrowsExactlyAsync<CaptureLaneBackpressureException>(() => fixture.AcceptAsync(1)).ConfigureAwait(false);
         CollectionAssert.AreEqual(new byte[] { 1, 2, 0, 4 }, await File.ReadAllBytesAsync(receipt.StoredFrame.AbsolutePath).ConfigureAwait(false));
     }

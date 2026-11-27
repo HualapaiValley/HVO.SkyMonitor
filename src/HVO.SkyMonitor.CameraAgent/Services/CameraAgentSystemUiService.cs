@@ -186,7 +186,6 @@ internal sealed class CameraAgentSystemUiService(
             ["capture-lanes"] = ("Capture lanes", "Acquisition", "/operations/storage"),
             ["environmental-acquisition"] = ("Environmental acquisition", "Acquisition", "/operations/environment"),
             ["capture-processing"] = ("Capture processing", "Processing", "/operations/pipeline"),
-            ["processing-graph-delivery"] = ("Processing graph delivery", "Processing", "/operations/pipeline"),
             ["calibration-library"] = ("Calibration library", "Processing", "/operations/calibration"),
             ["transient-worker"] = ("Transient worker", "Processing", "/operations/transients"),
         };

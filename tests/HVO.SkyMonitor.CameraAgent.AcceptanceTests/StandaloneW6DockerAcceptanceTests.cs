@@ -1531,7 +1531,6 @@ public sealed class StandaloneW6DockerAcceptanceTests
             ("/operations/environment", "Environment"),
             ("/operations/transients", "Transients"),
             ("/operations/automations", "Automations"),
-            ("/operations/delivery", "Delivery"),
             ("/operations/storage", "Storage & retention"),
             ("/operations/pipeline/executions", "Processing executions"),
             ("/operations/pipeline/graphs", "Named graphs"),
@@ -1543,8 +1542,9 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 .WaitForAsync().ConfigureAwait(false);
             await page.Locator(".page-state[role='status'] .spinner-border")
                 .WaitForAsync(new() { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
+            var sectionContent = route == "/operations/automations" ? "main #automation-definitions .ops-status-rail" : "main h2";
+            await page.Locator(sectionContent).First.WaitForAsync().ConfigureAwait(false);
             Assert.AreEqual(0, await page.Locator(".page-state--error").CountAsync().ConfigureAwait(false), $"{route} rendered an error notice.");
-            Assert.IsGreaterThan(0, await page.Locator("main h2").CountAsync().ConfigureAwait(false), $"{route} rendered no section content.");
         }
     }
 

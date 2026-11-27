@@ -50,25 +50,6 @@ public static class SkyMonitorObservabilityExtensions
         "LaneQuarantineTerminalCount", "ProcessingQuarantineCount", "MissingProductCount", "DurableStateUnavailable",
         "ReconciliationFailed", "ReplayTerminalCount", "ReplayRetryCount"
     };
-    private static readonly HashSet<string> ArtifactConsistencyHealthDataKeys = new(StringComparer.Ordinal)
-    {
-        "Condition", "ReconciliationWindowSeconds"
-    };
-    private static readonly HashSet<string> ArtifactRetentionHealthDataKeys = new(StringComparer.Ordinal)
-    {
-        "Condition", "PendingCount", "PendingBytes", "PendingOldestAgeSeconds"
-    };
-    private static readonly HashSet<string> EnvironmentalObservationHealthDataKeys = new(StringComparer.Ordinal)
-    {
-        "SourceCount", "ObservationCount", "NewestReceivedAgeSeconds", "RetentionEligibleCount",
-        "RetentionOldestAgeSeconds", "RetentionLastSucceededUtc"
-    };
-    private static readonly HashSet<string> DeploymentLocationHealthDataKeys = new(StringComparer.Ordinal)
-    {
-        "PendingCount", "OldestAgeSeconds", "PendingWorkCount", "PendingCaptureCount",
-        "OldestWorkAgeSeconds", "OldestWorkProgressAgeSeconds", "UndiscoveredWorkCount", "RetryCount",
-        "ExpiredLeaseCount"
-    };
     private static readonly HashSet<string> EnvironmentalAcquisitionHealthDataKeys = new(StringComparer.Ordinal)
     {
         "Availability", "ConfiguredSourceCount", "RequiredSourceCount", "InitializedSourceCount",
@@ -259,14 +240,10 @@ public static class SkyMonitorObservabilityExtensions
             "raw-ingress" => RawIngressHealthDataKeys,
             "capture-lanes" => CaptureLaneHealthDataKeys,
             "capture-processing" => CaptureProcessingHealthDataKeys,
-            "artifact-consistency" => ArtifactConsistencyHealthDataKeys,
-            "artifact-retention" => ArtifactRetentionHealthDataKeys,
-            "environmental-observations" => EnvironmentalObservationHealthDataKeys,
             "environmental-acquisition" => EnvironmentalAcquisitionHealthDataKeys,
             "orbital-elements" => OrbitalElementsHealthDataKeys,
             "space-weather" => SpaceWeatherHealthDataKeys,
             "operator-notifications" => OperatorNotificationsHealthDataKeys,
-            "deployment-location" => DeploymentLocationHealthDataKeys,
             "calibration-library" => CalibrationLibraryHealthDataKeys,
             _ => null
         };

@@ -43,7 +43,7 @@ public sealed partial class DurableCaptureDistributionTests
         using var fixture = CreateFixture(new CaptureDistributionOptions
         {
             SecondaryLanes = [new SecondaryCaptureLaneOptions { Name = "secondary", Enabled = true }]
-        });
+        }, transient: new TransientDetectionOptions { Mode = TransientOperatingMode.Edge, Required = true });
         var receipt = await fixture.AcceptAsync(0).ConfigureAwait(false);
         using var connection = await OpenAsync(fixture.Root).ConfigureAwait(false);
 
@@ -59,9 +59,9 @@ public sealed partial class DurableCaptureDistributionTests
         await fixture.Store.CompleteAsync(standard, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(1L, await ScalarLongAsync(connection, "SELECT retention_hold FROM raw_captures;").ConfigureAwait(false));
 
-        var upload = await fixture.ClaimAsync("upload").ConfigureAwait(false);
-        Assert.IsNotNull(upload);
-        await fixture.Store.CompleteAsync(upload, CancellationToken.None).ConfigureAwait(false);
+        var transient = await fixture.ClaimAsync("transient").ConfigureAwait(false);
+        Assert.IsNotNull(transient);
+        await fixture.Store.CompleteAsync(transient, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(0L, await ScalarLongAsync(connection, "SELECT retention_hold FROM raw_captures;").ConfigureAwait(false));
 
         var optional = await fixture.ClaimAsync("secondary").ConfigureAwait(false);
@@ -234,7 +234,8 @@ public sealed partial class DurableCaptureDistributionTests
     [TestMethod]
     public async Task DuplicateAccept_DoesNotDuplicateLaneWorkOrContext()
     {
-        using var fixture = CreateFixture(new CaptureDistributionOptions { });
+        using var fixture = CreateFixture(new CaptureDistributionOptions(),
+            transient: new TransientDetectionOptions { Mode = TransientOperatingMode.Edge, Required = true });
         var submission = fixture.CreateSubmission(0);
         var first = await fixture.Ingress.AcceptAsync(
             fixture.Configuration, submission, CancellationToken.None).ConfigureAwait(false);
@@ -519,7 +520,7 @@ public sealed partial class DurableCaptureDistributionTests
         {
             ShutdownDrainSeconds = 1,
             SecondaryLanes = [new SecondaryCaptureLaneOptions { Name = "secondary", Enabled = true }]
-        });
+        }, transient: new TransientDetectionOptions { Mode = TransientOperatingMode.Edge, Required = true });
         await fixture.AcceptAsync(0).ConfigureAwait(false);
         using var standard = new StandardCaptureLaneHandler(
             new EmptyPipelineFactory(),
@@ -531,7 +532,7 @@ public sealed partial class DurableCaptureDistributionTests
             fixture.Ingress,
             fixture.Store,
             fixture.Policy,
-            [standard, new SuccessfulLaneHandler("upload"), secondary],
+            [standard, new SuccessfulLaneHandler("transient"), secondary],
             standard,
             fixture.Options,
             fixture.Time,
@@ -544,14 +545,14 @@ public sealed partial class DurableCaptureDistributionTests
         await secondary.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         await WaitForCountAsync(
             fixture.Root,
-            "SELECT COUNT(*) FROM capture_lane_work WHERE lane_name IN ('standard', 'upload') AND state = 'completed';",
+            "SELECT COUNT(*) FROM capture_lane_work WHERE lane_name IN ('standard', 'transient') AND state = 'completed';",
             2).ConfigureAwait(false);
 
         await fixture.AcceptAsync(1).ConfigureAwait(false);
         service.NotifyCommittedCapture();
         await WaitForCountAsync(
             fixture.Root,
-            "SELECT COUNT(*) FROM capture_lane_work WHERE lane_name IN ('standard', 'upload') AND state = 'completed';",
+            "SELECT COUNT(*) FROM capture_lane_work WHERE lane_name IN ('standard', 'transient') AND state = 'completed';",
             4).ConfigureAwait(false);
         await fixture.Store.EnsureCanAcceptAsync(4, CancellationToken.None).ConfigureAwait(false);
 
@@ -565,9 +566,9 @@ public sealed partial class DurableCaptureDistributionTests
             "SELECT COUNT(*) FROM capture_lane_work WHERE lane_name = 'secondary' AND state = 'pending';").ConfigureAwait(false));
         await Phase14ScenarioEvidence.RecordAsync(
             "optional-lane-backlog",
-            "secondary-blocked-standard-and-upload-drained",
+            "secondary-blocked-standard-and-transient-drained",
             null,
-            ["optional-lane-remained-pending", "standard-lane-drained", "upload-lane-drained", "leased-work-released-on-shutdown"])
+            ["optional-lane-remained-pending", "standard-lane-drained", "transient-lane-drained", "leased-work-released-on-shutdown"])
             .ConfigureAwait(false);
     }
 
@@ -725,22 +726,22 @@ public sealed partial class DurableCaptureDistributionTests
         {
             var baseline = await RunCadenceScenarioAsync(cadenceMode, blockedLane: null).ConfigureAwait(false);
             var optionalOutage = await RunCadenceScenarioAsync(cadenceMode, "secondary").ConfigureAwait(false);
-            var uploadOutage = await RunCadenceScenarioAsync(cadenceMode, "upload").ConfigureAwait(false);
+            var transientOutage = await RunCadenceScenarioAsync(cadenceMode, "transient").ConfigureAwait(false);
 
             CollectionAssert.AreEqual(baseline.RequestedStarts, optionalOutage.RequestedStarts, cadenceMode.ToString());
-            CollectionAssert.AreEqual(baseline.RequestedStarts, uploadOutage.RequestedStarts, cadenceMode.ToString());
+            CollectionAssert.AreEqual(baseline.RequestedStarts, transientOutage.RequestedStarts, cadenceMode.ToString());
             CollectionAssert.AreEqual(baseline.ActualStarts, optionalOutage.ActualStarts, cadenceMode.ToString());
-            CollectionAssert.AreEqual(baseline.ActualStarts, uploadOutage.ActualStarts, cadenceMode.ToString());
+            CollectionAssert.AreEqual(baseline.ActualStarts, transientOutage.ActualStarts, cadenceMode.ToString());
             CollectionAssert.AreEqual(baseline.MonotonicJitter, optionalOutage.MonotonicJitter, cadenceMode.ToString());
-            CollectionAssert.AreEqual(baseline.MonotonicJitter, uploadOutage.MonotonicJitter, cadenceMode.ToString());
+            CollectionAssert.AreEqual(baseline.MonotonicJitter, transientOutage.MonotonicJitter, cadenceMode.ToString());
             Assert.IsTrue(baseline.MonotonicJitter.All(static jitter => jitter >= TimeSpan.Zero), cadenceMode.ToString());
             Assert.IsTrue(optionalOutage.MonotonicJitter.All(static jitter => jitter >= TimeSpan.Zero), cadenceMode.ToString());
-            Assert.IsTrue(uploadOutage.MonotonicJitter.All(static jitter => jitter >= TimeSpan.Zero), cadenceMode.ToString());
+            Assert.IsTrue(transientOutage.MonotonicJitter.All(static jitter => jitter >= TimeSpan.Zero), cadenceMode.ToString());
 
             var expectedTimerCount = cadenceMode == CaptureCadenceMode.Continuous ? 0 : 3;
             Assert.AreEqual(expectedTimerCount, baseline.TimerCreationCount, cadenceMode.ToString());
             Assert.AreEqual(expectedTimerCount, optionalOutage.TimerCreationCount, cadenceMode.ToString());
-            Assert.AreEqual(expectedTimerCount, uploadOutage.TimerCreationCount, cadenceMode.ToString());
+            Assert.AreEqual(expectedTimerCount, transientOutage.TimerCreationCount, cadenceMode.ToString());
         }
     }
 
@@ -1160,7 +1161,7 @@ public sealed partial class DurableCaptureDistributionTests
             new EmptyPipelineFactory(), NullLogger<StandardCaptureLaneHandler>.Instance, fixture.Ingress);
         using var service = new CaptureDistributionService(
             new ConfigurationAccessor(fixture.Configuration), fixture.Ingress, fixture.Store, fixture.Policy,
-            [standard, new SuccessfulLaneHandler("upload")], standard, fixture.Options, fixture.Time,
+            [standard], standard, fixture.Options, fixture.Time,
             fault, fixture.LaneTelemetry, fixture.LaneState, NullLogger<CaptureDistributionService>.Instance);
 
         await service.StartAsync(CancellationToken.None).ConfigureAwait(false);
@@ -1293,7 +1294,7 @@ public sealed partial class DurableCaptureDistributionTests
                 new EmptyPipelineFactory(), NullLogger<StandardCaptureLaneHandler>.Instance, fixture.Ingress);
             using var service = new CaptureDistributionService(
                 new ConfigurationAccessor(fixture.Configuration), fixture.Ingress, fixture.Store, fixture.Policy,
-                [standard, new SuccessfulLaneHandler("upload")], standard, fixture.Options, fixture.Time,
+                [standard], standard, fixture.Options, fixture.Time,
                 fault, fixture.LaneTelemetry, fixture.LaneState, NullLogger<CaptureDistributionService>.Instance);
 
             await service.StartAsync(CancellationToken.None).ConfigureAwait(false);
@@ -1374,20 +1375,21 @@ public sealed partial class DurableCaptureDistributionTests
                 OptionalMaximumPendingCount = 16,
                 SecondaryLanes = [new SecondaryCaptureLaneOptions { Name = "secondary", Enabled = true }]
             },
-            configuration: configuration);
+            configuration: configuration,
+            transient: new TransientDetectionOptions { Mode = TransientOperatingMode.Edge, Required = true });
         using var standard = new StandardCaptureLaneHandler(
             new EmptyPipelineFactory(),
             NullLogger<StandardCaptureLaneHandler>.Instance,
             fixture.Ingress);
         var gate = blockedLane is null ? null : new GatedLaneHandler(blockedLane);
-        ICaptureLaneHandler upload = blockedLane == "upload" ? gate! : new SuccessfulLaneHandler("upload");
+        ICaptureLaneHandler transient = blockedLane == "transient" ? gate! : new SuccessfulLaneHandler("transient");
         ICaptureLaneHandler secondary = blockedLane == "secondary" ? gate! : new SuccessfulLaneHandler("secondary");
         using var service = new CaptureDistributionService(
             new ConfigurationAccessor(configuration),
             fixture.Ingress,
             fixture.Store,
             fixture.Policy,
-            [standard, upload, secondary],
+            [standard, transient, secondary],
             standard,
             fixture.Options,
             fixture.Time,
@@ -1467,11 +1469,11 @@ public sealed partial class DurableCaptureDistributionTests
                 .Single(item => item.Lane == blockedLane);
             Assert.AreEqual(captureCount, backlog.PendingCount);
             Assert.AreEqual(1L, backlog.LeasedCount);
-            Assert.AreEqual(blockedLane == "upload", backlog.Required);
+            Assert.AreEqual(blockedLane == "transient", backlog.Required);
             await WaitForCountAsync(
                 fixture.Root,
                 "SELECT COUNT(*) FROM raw_captures WHERE retention_hold = 1;",
-                blockedLane == "upload" ? captureCount : backlog.LeasedCount).ConfigureAwait(false);
+                blockedLane == "transient" ? captureCount : backlog.LeasedCount).ConfigureAwait(false);
             gate.Release();
         }
 

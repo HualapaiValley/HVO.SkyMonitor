@@ -533,8 +533,6 @@ internal sealed partial class CameraAgentOperatorUiService(
             return Denied<OperatorQuarantinePage>();
         }
         if (pageSize is < 1 or > 50 ||
-            !string.Equals(kind, "Artifact", StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(kind, "Environmental", StringComparison.OrdinalIgnoreCase) &&
             !string.Equals(kind, "TransientRuntime", StringComparison.OrdinalIgnoreCase) &&
             !string.Equals(kind, "RawEvidence", StringComparison.OrdinalIgnoreCase) &&
             !string.Equals(kind, "ProcessingLane", StringComparison.OrdinalIgnoreCase))

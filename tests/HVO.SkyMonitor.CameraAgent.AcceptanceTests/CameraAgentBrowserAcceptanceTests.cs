@@ -2642,7 +2642,7 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         {
             ("/", "Current sky"),
             ("/operations", "Operations"),
-            ("/operations/quarantine?kind=Artifact", "Quarantine browser"),
+            ("/operations/quarantine?kind=RawEvidence", "Quarantine and retry browser"),
             ("/gallery?pageSize=24", "Archive"),
             (detailUrl, $"Capture #{capture.CaptureSequence}"),
             ("/schedule", "Schedule"),
@@ -2730,6 +2730,7 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
 
     private static readonly HashSet<string> WorkspaceFormRoutes = new(StringComparer.Ordinal)
     {
+        "/schedule", "/operations/camera", "/operations/pipeline", "/operations/automations", "/operations/storage",
         "/operations/site",
         "/operations/pipeline/executions", "/operations/pipeline/graphs", "/operations/pipeline/graphs/new"
     };
