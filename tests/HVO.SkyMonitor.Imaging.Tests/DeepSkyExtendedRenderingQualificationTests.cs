@@ -3074,9 +3074,9 @@ public sealed class DeepSkyExtendedRenderingQualificationTests
     }
 
     [TestMethod]
-    [DataRow(700, 316)]
-    [DataRow(1000, 632)]
-    public void RepeatedBorderlineRejectionsRespectActualTargetCapAndPreserveAdmittedOutput(int cap, int expectedTargetEvaluations)
+    [DataRow(700)]
+    [DataRow(1000)]
+    public void RepeatedBorderlineRejectionsRespectActualTargetCapAndPreserveAdmittedOutput(int cap)
     {
         var (projection, request, options, settings, strong, weak, secondWeak, _) = CreateBorderlineDarkFixture();
         settings = settings with { MaximumSamplePointsPerSource = cap };
@@ -3096,7 +3096,7 @@ public sealed class DeepSkyExtendedRenderingQualificationTests
             // clouds have identical sample directions and are grouped whenever both are present.
             var actualTargetEvaluations = plan.Statistics.TotalSampledPoints - rejectionCount * 316L;
             Assert.IsTrue(actualTargetEvaluations <= cap, $"The strong cloud used {actualTargetEvaluations} actual evaluations.");
-            Assert.AreEqual((long)expectedTargetEvaluations, actualTargetEvaluations);
+            Assert.AreEqual(316L, actualTargetEvaluations, "Rejected pairs must not spend fresh profile evaluations.");
             for (var y = 0; y < projection.HeightPixels; y++)
             {
                 for (var x = 0; x < projection.WidthPixels; x++)
@@ -3135,6 +3135,141 @@ public sealed class DeepSkyExtendedRenderingQualificationTests
                 Assert.AreEqual(baseline.ElectronRate(x, y), plan.ElectronRate(x, y));
             }
         }
+    }
+
+    [TestMethod]
+    public void RejectedCloudLeavesBothLimbPairsExactAfterBackfill()
+    {
+        var (request, options, settings, strong, weak, limb, oppositeLimb) = CreateDarkCrossBudgetFixture();
+        var weakSolo = DeepSkyRenderPlan.Prepare(request, null, [weak], null, options, settings).Diagnostics.Single();
+        settings = settings with { MinimumSignalToNoise = 0.8d * weakSolo.PredictedSignal.SignalToNoise };
+
+        var baseline = DeepSkyRenderPlan.Prepare(request, null, [strong, limb, oppositeLimb], null, options, settings);
+        var backfilled = DeepSkyRenderPlan.Prepare(request, null, [strong, weak, limb, oppositeLimb], null, options, settings);
+        Assert.AreEqual(5 * 316L, baseline.Statistics.TotalSampledPoints, "Both surviving pairs require exact batches.");
+        Assert.AreEqual("annotation-only-below-snr", backfilled.Diagnostics.Single(d => d.ObjectId == weak.Id).Reason);
+        CollectionAssert.AreEquivalent(new[] { strong.Id, limb.Id, oppositeLimb.Id },
+            backfilled.Diagnostics.Where(d => d.Admitted).Select(d => d.ObjectId).ToArray());
+        Assert.AreEqual(6 * 316L, backfilled.Statistics.TotalSampledPoints);
+        for (var y = 0; y < request.Projection.HeightPixels; y++)
+        {
+            for (var x = 0; x < request.Projection.WidthPixels; x++)
+            {
+                Assert.AreEqual(BitConverter.DoubleToInt64Bits(baseline.ElectronRate(x, y)),
+                    BitConverter.DoubleToInt64Bits(backfilled.ElectronRate(x, y)), $"Pixel ({x}, {y})");
+            }
+        }
+    }
+
+    [TestMethod]
+    public void LimbCloudPassesExactSnrDespiteCoarseLookupAtCap700()
+    {
+        var (request, options, settings, strong, _, _, limb) = CreateDarkCrossBudgetFixture();
+        settings = settings with { MaximumSamplePointsPerSource = 700 };
+        var solo = DeepSkyRenderPlan.Prepare(request, null, [limb], null, options, settings).Diagnostics.Single();
+        var exact = DeepSkyRenderPlan.Prepare(request, null, [strong, limb], null, options, settings);
+        var exactLimb = exact.Diagnostics.Single(d => d.ObjectId == limb.Id);
+        var threshold = 0.8d * solo.PredictedSignal.SignalToNoise;
+        Assert.IsTrue(exactLimb.PredictedSignal.SignalToNoise > threshold);
+        Assert.AreEqual(3 * 316L, exact.Statistics.TotalSampledPoints);
+
+        var screened = DeepSkyRenderPlan.Prepare(request, null, [strong, limb], null, options,
+            settings with { MinimumSignalToNoise = threshold });
+        Assert.AreEqual(exactLimb, screened.Diagnostics.Single(d => d.ObjectId == limb.Id));
+        Assert.AreEqual(exact.Statistics.TotalSampledPoints, screened.Statistics.TotalSampledPoints);
+    }
+
+    [TestMethod]
+    public void CallerDoesNotSpendThreeFreshBatchesAcrossBackfillRetries()
+    {
+        var (request, options, settings, strong, weak, _, _) = CreateDarkCrossBudgetFixture();
+        var center = new AltAzPoint(60d, 180d);
+        var nearby = DarkCloudAtOffset("LDN-D9-C", 3, center, 0.2 * (0.00003 / 60d * Math.PI / 180d), 0, 0.00006);
+        var weak2 = weak with { Id = "LDN-D9-B2", MessierNumber = 4 };
+        var weak3 = weak with { Id = "LDN-D9-B3", MessierNumber = 5 };
+        var scenario = new DeepSkySyntheticScenario("cross-budget-retries", Overrides:
+        [
+            new(strong.Id, PeakOpticalDepth: 1.6), new(weak.Id, PeakOpticalDepth: 1.2),
+            new(weak2.Id, PeakOpticalDepth: 1.2), new(weak3.Id, PeakOpticalDepth: 1.2),
+            new(nearby.Id, PeakOpticalDepth: 1.0)
+        ]);
+        settings = settings with { SyntheticScenario = scenario };
+        var solo = DeepSkyRenderPlan.Prepare(request, null, [weak], null, options, settings).Diagnostics.Single();
+        settings = settings with { MinimumSignalToNoise = 0.8d * solo.PredictedSignal.SignalToNoise };
+
+        var plan = DeepSkyRenderPlan.Prepare(request, null, [strong, weak, nearby, weak2, weak3], null, options, settings);
+        foreach (var rejected in new[] { weak, weak2, weak3 })
+        {
+            Assert.AreEqual("annotation-only-below-snr", plan.Diagnostics.Single(d => d.ObjectId == rejected.Id).Reason);
+        }
+        // Every possible batch uses 316 points. Once all four small clouds fail behind A,
+        // none of their tentative cross-pairs may have made a fresh evaluation.
+        Assert.AreEqual(5 * 316L, plan.Statistics.TotalSampledPoints);
+        Assert.AreEqual(strong.Id, plan.Diagnostics.Single(d => d.Admitted).ObjectId);
+    }
+
+    [TestMethod]
+    public void DisjointCloudsInOneSummedBinUseMarginalNoiseVariance()
+    {
+        var center = new AltAzPoint(60d, 180d);
+        var projection = new ProjectionContext(ProjectionModel.Perspective, 80.5, 80.5, 1400, 1400, 160, 160,
+            ProjectionAperture.Rectangular, BoresightAltitudeDegrees: center.AltitudeDegrees, BoresightAzimuthDegrees: center.AzimuthDegrees);
+        var request = CreateRequest(projection, HorizonPolicy.GeometricHorizon);
+        var options = CreateDeterministicMonoOptions(psfSigma: 0.2, psfRadius: 0.5);
+        var a = DarkCloudAtOffset("LDN-D9-A", 1, center, 0, 0, 0.6);
+        var b = DarkCloudAtOffset("LDN-D9-B", 2, center, 0, Math.Atan(1d / 1400), 0.6);
+        var scenario = new DeepSkySyntheticScenario("shared-output-bin", Overrides:
+        [new(a.Id, PeakOpticalDepth: 1.6), new(b.Id, PeakOpticalDepth: 1.2)]);
+        var settings = CreateSettings(options, request, celestialDiffuseBg: 100d, syntheticScenario: scenario) with
+        {
+            DigitalBinX = 2,
+            DigitalAverage = false
+        };
+
+        var exact = DeepSkyRenderPlan.Prepare(request, null, [a, b], null, options, settings);
+        var screened = DeepSkyRenderPlan.Prepare(request, null, [a, b], null, options, settings with { MinimumSignalToNoise = 1e-6 });
+        var first = exact.Diagnostics.Single(d => d.ObjectId == a.Id);
+        var second = exact.Diagnostics.Single(d => d.ObjectId == b.Id);
+        Assert.AreEqual(200d, first.PredictedSignal.NoiseVariance);
+        Assert.AreEqual(200d - first.AttenuatedDiffuseElectronRate, second.PredictedSignal.NoiseVariance, 1e-12);
+        Assert.AreEqual(second.PredictedSignal, screened.Diagnostics.Single(d => d.ObjectId == b.Id).PredictedSignal);
+    }
+
+    private static (VisibleSceneRequest Request, Mono16SceneRenderOptions Options, DeepSkyRenderSettings Settings,
+        DeepSkyObject Strong, DeepSkyObject Weak, DeepSkyObject Limb, DeepSkyObject OppositeLimb) CreateDarkCrossBudgetFixture()
+    {
+        var center = new AltAzPoint(60d, 180d);
+        var projection = new ProjectionContext(ProjectionModel.Perspective, 80.5, 80.5, 1400, 1400, 160, 160,
+            ProjectionAperture.Rectangular, BoresightAltitudeDegrees: center.AltitudeDegrees, BoresightAzimuthDegrees: center.AzimuthDegrees);
+        var request = CreateRequest(projection, HorizonPolicy.GeometricHorizon);
+        var options = CreateDeterministicMonoOptions(psfSigma: 0.2, psfRadius: 0.5);
+        var radius = 0.3d / 60d * Math.PI / 180d;
+        var strong = DarkCloudAtOffset("LDN-D9-A", 1, center, 0, 0, 0.6);
+        var weak = DarkCloudAtOffset("LDN-D9-B", 2, center, 0, 0, 0.00006);
+        var limb = DarkCloudAtOffset("LDN-D9-C", 3, center, -0.15 * radius, -0.985 * radius, 0.0006);
+        var opposite = DarkCloudAtOffset("LDN-D9-D", 4, center, 0.15 * radius, 0.985 * radius, 0.0006);
+        var scenario = new DeepSkySyntheticScenario("cross-budget-limbs", Overrides:
+        [
+            new(strong.Id, PeakOpticalDepth: 1.6), new(weak.Id, PeakOpticalDepth: 1.2),
+            new(limb.Id, PeakOpticalDepth: 1.0), new(opposite.Id, PeakOpticalDepth: 0.9)
+        ]);
+        var settings = CreateSettings(options, request, celestialDiffuseBg: 100d, syntheticScenario: scenario) with
+        {
+            MaximumSamplePointsPerSource = 1000,
+            MaximumRenderedSources = 3
+        };
+        return (request, options, settings, strong, weak, limb, opposite);
+    }
+
+    private static DeepSkyObject DarkCloudAtOffset(string id, int priority, AltAzPoint center,
+        double northRadians, double eastRadians, double diameterArcminutes)
+    {
+        var frame = ResolvedSourceFrame.Create(center, HvoObserver.LatitudeDegrees);
+        var direction = frame.DirectionFromCelestial(northRadians, eastRadians);
+        var coordinates = AltAzToJ2000(new AltAzPoint(
+            Math.Asin(direction.Up) * 180d / Math.PI, Math.Atan2(direction.East, direction.North) * 180d / Math.PI));
+        return CreateDso(id, id, "DrkN", coordinates.RaHours, coordinates.DecDegrees, diameterArcminutes,
+            diameterArcminutes, 0, null, null, null, null, priority);
     }
 
     private static (ProjectionContext Projection, VisibleSceneRequest Request, Mono16SceneRenderOptions Options,
