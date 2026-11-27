@@ -81,7 +81,10 @@ internal sealed record SiloPendingSegment(
 internal sealed record SiloCommittedOperation(
     string OperationId, SiloJournalPosition Position, string Sha256, string VersionId, string OperationSha256);
 
-internal sealed record SiloFixtureReceipt(string DraftSha256, SiloStagedState State, string? BlockedCode)
+internal sealed record SiloFixtureManifestVersion(string Sha256, long Length, string VersionId);
+
+internal sealed record SiloFixtureReceipt(string DraftSha256, SiloStagedState State, string? BlockedCode,
+    SiloFixtureManifestVersion? Manifest)
 {
     internal HashSet<string> UnreleasedPayloads { get; } = new(StringComparer.Ordinal);
     internal Dictionary<int, string> QualifiedPayloadVersions { get; } = [];
@@ -373,7 +376,9 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
     {
         const string otherHistory = "fixture-target-has-other-history";
         using (var command = CreateCommand(connection, transaction, """
-                   SELECT group_id, revision_id, group_kind, draft_sha256, state, blocked_code FROM staged_groups LIMIT $limit;
+                   SELECT group_id, revision_id, group_kind, draft_sha256, state, blocked_code,
+                       manifest_sha256, manifest_length, manifest_version_id
+                   FROM staged_groups LIMIT $limit;
                    """,
                    ("$limit", SiloFixtureInventory.MaximumRecords + 1)))
         using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
@@ -383,7 +388,11 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
                 if (reader.GetString(2) != SiloFixtureInventory.GroupKind ||
                     reader.GetString(1) != SiloFixtureInventory.GroupRevision || !selectedGroups.Contains(reader.GetString(0)))
                     throw new SiloConflictException(otherHistory, "The target contains work outside the selected fixtures.");
-                receipts.Add(reader.GetString(0), new(reader.GetString(3), ParseState(reader.GetString(4)), NullableString(reader, 5)));
+                var state = ParseState(reader.GetString(4));
+                var manifest = state is SiloStagedState.ManifestQualified or SiloStagedState.Recorded
+                    ? new SiloFixtureManifestVersion(reader.GetString(6), reader.GetInt64(7), reader.GetString(8))
+                    : null;
+                receipts.Add(reader.GetString(0), new(reader.GetString(3), state, NullableString(reader, 5), manifest));
             }
         }
 
@@ -397,7 +406,8 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
                 if (!receipts.TryGetValue(reader.GetString(0), out var receipt))
                     throw new SiloConflictException(otherHistory, "The target contains payload claims outside the selected fixtures.");
                 receipt.UnreleasedPayloads.Add(reader.GetString(2));
-                if (receipt.State == SiloStagedState.Staged && NullableString(reader, 3) is { } version)
+                if (receipt.State is not (SiloStagedState.Visible or SiloStagedState.Abandoned) &&
+                    NullableString(reader, 3) is { } version)
                     receipt.QualifiedPayloadVersions.Add(reader.GetInt32(1), version);
             }
         }

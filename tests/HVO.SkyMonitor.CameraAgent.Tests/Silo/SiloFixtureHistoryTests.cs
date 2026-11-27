@@ -173,11 +173,26 @@ public sealed class SiloFixtureHistoryTests
     }
 
     [TestMethod]
-    [DataRow("damaged", "silo.qualified-version-damaged")]
-    [DataRow("absent-without-spool", "silo-staged-evidence-missing")]
-    [DataRow("absent-with-spool", null)]
-    public async Task CommandDryRunRevalidatesQualifiedVersionOnStagedRetry(string versionState, string? reason)
+    [DataRow("staged", "damaged-payload", "silo.qualified-version-damaged")]
+    [DataRow("staged", "absent-payload-without-spool", "silo-staged-evidence-missing")]
+    [DataRow("staged", "absent-payload", null)]
+    [DataRow("payloads-qualified", "damaged-payload", "silo.qualified-version-damaged")]
+    [DataRow("payloads-qualified", "absent-payload-without-spool", "silo-staged-evidence-missing")]
+    [DataRow("payloads-qualified", "absent-payload", null)]
+    [DataRow("manifest-qualified", "damaged-payload", "silo.qualified-version-damaged")]
+    [DataRow("manifest-qualified", "absent-payload-without-spool", "silo-staged-evidence-missing")]
+    [DataRow("manifest-qualified", "absent-payload", null)]
+    [DataRow("manifest-qualified", "damaged-manifest", "silo.qualified-version-damaged")]
+    [DataRow("manifest-qualified", "absent-manifest", null)]
+    [DataRow("recorded", "damaged-payload", "silo.qualified-version-damaged")]
+    [DataRow("recorded", "absent-payload-without-spool", "silo-staged-evidence-missing")]
+    [DataRow("recorded", "absent-payload", "fixture-reopen-failed")]
+    [DataRow("recorded", "damaged-manifest", "silo.qualified-version-damaged")]
+    [DataRow("recorded", "absent-manifest", "fixture-reopen-failed")]
+    [DataRow("recorded", "healthy", null)]
+    public async Task CommandDryRunRevalidatesQualifiedVersionsBeforeVisibility(string receiptState, string damage, string? reason)
     {
+        ArgumentNullException.ThrowIfNull(damage);
         using var source = new Fixture();
         var entry = source.WritePair("frame", "art-1");
         var digest = source.Select([entry]);
@@ -185,24 +200,49 @@ public sealed class SiloFixtureHistoryTests
         await target.InitializeAsync().ConfigureAwait(false);
         var imageKey = SiloObjectNamespace.PayloadKey(SiloRetentionClass.Display, entry.ImageSha256);
         var sidecarKey = SiloObjectNamespace.PayloadKey(SiloRetentionClass.Metadata, entry.SidecarSha256);
-        target.Remote.FailBeforeLanding = key => key == sidecarKey;
-        (await target.RunAsync("publish", 2).ConfigureAwait(false)).Should().Equal(("failed", "silo.store-unavailable"));
-        target.Remote.FailBeforeLanding = null;
-        var exactVersion = target.Remote.Current(imageKey);
-        exactVersion.Should().NotBeNull();
-        target.Remote.Current(sidecarKey).Should().BeNull();
-
-        if (versionState == "damaged")
+        var publishKey = SiloObjectNamespace.SegmentKey(new(1, 2));
+        target.Remote.FailBeforeLanding = receiptState switch
         {
-            target.Remote.Damage(imageKey, exactVersion!);
-            // The current version is healthy, but it cannot prove the recorded version.
-            target.Remote.Plant(imageKey, Png);
+            "staged" => key => key == sidecarKey,
+            "payloads-qualified" => static key => key.StartsWith("m/", StringComparison.Ordinal),
+            "manifest-qualified" => key => key == publishKey,
+            _ => null
+        };
+        if (receiptState == "recorded")
+        {
+            // Keep the exact payload unavailable for first P4 after the publish segment lands.
+            target.Remote.AfterLanding = key =>
+            {
+                if (key == publishKey)
+                    target.Remote.MissOnRead = name => name == imageKey;
+            };
         }
-        else
+        (await target.RunAsync("publish", 2).ConfigureAwait(false))
+            .Should().Equal(("failed", receiptState == "recorded" ? "fixture-reopen-failed" : "silo.store-unavailable"));
+        target.Remote.FailBeforeLanding = null;
+        target.Remote.AfterLanding = null;
+        target.Remote.MissOnRead = null;
+        var receipt = await target.ReadReceiptAsync().ConfigureAwait(false);
+        SiloPublicationState.StateName(receipt.State).Should().Be(receiptState);
+        var objectKey = damage.EndsWith("-manifest", StringComparison.Ordinal) ? target.Remote.Keys("m/").Single() : imageKey;
+        var exactVersion = target.Remote.Current(objectKey);
+        exactVersion.Should().NotBeNull();
+
+        if (damage.StartsWith("damaged-", StringComparison.Ordinal))
         {
-            target.Remote.Delete(imageKey, exactVersion!);
-            if (versionState == "absent-without-spool")
+            var original = target.Remote.Read(objectKey, exactVersion!);
+            target.Remote.Damage(objectKey, exactVersion!);
+            // The current version is healthy, but it cannot prove the recorded version.
+            target.Remote.Plant(objectKey, original);
+        }
+        else if (damage.StartsWith("absent-", StringComparison.Ordinal))
+        {
+            target.Remote.Delete(objectKey, exactVersion!);
+            if (damage == "absent-payload-without-spool")
                 File.Delete(Path.Combine(target.SiloState, "payloads-v1", SiloFilePayloadSpool.TokenOf(entry.ImageSha256)));
+            if (receiptState == "manifest-qualified" && damage == "absent-manifest")
+                File.Delete(Path.Combine(target.SiloState, SiloStateRoot.SpoolDirectoryName,
+                    SiloObjectSpool.NameOf(Path.GetFileNameWithoutExtension(objectKey))));
         }
 
         var expectedExit = reason is null ? 0 : 2;
@@ -210,6 +250,16 @@ public sealed class SiloFixtureHistoryTests
         var published = await target.RunAsync("publish", expectedExit).ConfigureAwait(false);
         forecast.Should().Equal((reason is null ? "would-import" : "failed", reason));
         published.Should().Equal((reason is null ? "imported" : "failed", reason));
+        if (reason is null)
+        {
+            (await target.ReadReceiptAsync().ConfigureAwait(false)).State.Should().Be(SiloStagedState.Visible);
+            if (damage.StartsWith("absent-", StringComparison.Ordinal))
+            {
+                var replacement = target.Remote.Current(objectKey);
+                replacement.Should().NotBeNull().And.NotBe(exactVersion);
+            }
+            (await target.RunAsync("publish", 0).ConfigureAwait(false)).Should().Equal(("skipped", "already-imported"));
+        }
     }
 
     [TestMethod]
@@ -546,7 +596,8 @@ public sealed class SiloFixtureHistoryTests
 
         var import = new SiloFixtureImport(source, inventory);
         var forecast = await import.RunForecastAsync(target, null, silo.Local, silo.Clock, () => new(Reserve * 2, Reserve * 2),
-            () => SiloFilePayloadSpool.Inspect(PhysicalRoot.Open(silo.RootPath), ".", 1024 * 1024, 8), Token).ConfigureAwait(false);
+            () => SiloFilePayloadSpool.Inspect(PhysicalRoot.Open(silo.RootPath), ".", 1024 * 1024, 8),
+            silo.StateRoot.Spool, silo.Binding, Token).ConfigureAwait(false);
         var result = await PublishAsync(import, silo).ConfigureAwait(false);
 
         result.Records.Select(static row => row.Status).Should().Equal("failed", "skipped");
@@ -1182,6 +1233,18 @@ public sealed class SiloFixtureHistoryTests
 
         internal async Task InitializeAsync() =>
             await FirstBootStateInitializer.InitializeAsync(_stateRoot, 1, _seed, Token).ConfigureAwait(false);
+
+        internal async Task<SiloFixtureReceipt> ReadReceiptAsync()
+        {
+            using var source = _source.Open();
+            var inventory = await InventoryAsync(source).ConfigureAwait(false);
+            using var scratch = new Fixture();
+            var settings = SiloInstalledSettings.Read(Configuration.GetSection("CameraAgent:Silo"));
+            var state = new SiloPublicationState(Path.Combine(SiloState, SiloStateRoot.PublicationDatabaseFileName), settings.Binding, TimeProvider.System);
+            var target = await state.InspectFixtureTargetAsync(scratch.Root,
+                inventory.Records.Select(static row => row.GroupId!).ToHashSet(StringComparer.Ordinal), Token).ConfigureAwait(false);
+            return target.Receipts.Values.Single();
+        }
 
         internal async Task<(string? Status, string? Reason)[]> RunAsync(string mode, int expectedExit)
         {

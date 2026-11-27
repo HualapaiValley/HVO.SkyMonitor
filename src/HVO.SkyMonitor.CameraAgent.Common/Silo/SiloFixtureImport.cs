@@ -27,13 +27,15 @@ internal delegate ValueTask<bool> SiloFixturePublish(SiloGroupDraft draft,
 internal sealed class SiloFixtureImport(ConfinedReadDirectory source, SiloFixtureInventory inventory)
 {
     internal const string ReportFormat = "hvo.cameraagent.silo.fixture-import-report/1";
+    internal const string ReopenFailed = "fixture-reopen-failed";
     private const string ReserveFailure = "free-space-reserve";
     private const string ProbeFailure = "capacity-probe-unavailable";
     // Charge both copies even when the two roots are on separate disks. Include filesystem, object and journal overhead.
     private const long PublicationOverheadBytes = 1024 * 1024;
 
     internal ValueTask<SiloFixtureReport> RunForecastAsync(SiloFixtureTarget target, SiloCatalog? catalog, ISiloObjectStore store, TimeProvider clock,
-        Func<SiloFixtureCapacity> readCapacity, Func<SiloFilePayloadSpool.Inspection> inspectSpool, CancellationToken cancellationToken)
+        Func<SiloFixtureCapacity> readCapacity, Func<SiloFilePayloadSpool.Inspection> inspectSpool,
+        SiloObjectSpool metadata, SiloStorageBinding binding, CancellationToken cancellationToken)
     {
         var pending = target.Pending;
         SiloFilePayloadSpool.Inspection? spool = null;
@@ -51,7 +53,10 @@ internal sealed class SiloFixtureImport(ConfinedReadDirectory source, SiloFixtur
                 requireHeadroom();
             }
             spool ??= inspectSpool();
-            await ForecastPairAsync(receipt, catalog, spool, draft, store, clock, token).ConfigureAwait(false);
+            var versionsFixed = receipt?.State == SiloStagedState.Recorded ||
+                pending is { ProvablyUnapplied: false } && pending.GroupId == draft.GroupId;
+            await ForecastPairAsync(receipt, catalog, spool, draft, store, clock, versionsFixed, metadata, binding,
+                target.Head?.WriterGeneration ?? 1, token).ConfigureAwait(false);
             if (!visible && pending?.GroupId == draft.GroupId)
                 pending = null;
 
@@ -254,14 +259,15 @@ internal sealed class SiloFixtureImport(ConfinedReadDirectory source, SiloFixtur
         if (outcome.BlockedCode is { } conflict)
             throw new SiloConflictException(conflict, "Silo could not settle the fixture publication.");
         if (outcome.State != SiloStagedState.Visible)
-            throw new SiloConflictException("fixture-reopen-failed", "The fixture did not pass exact Silo reopen verification.");
+            throw new SiloConflictException(ReopenFailed, "The fixture did not pass exact Silo reopen verification.");
         await RequireReopenAsync(catalog, draft, cancellationToken).ConfigureAwait(false);
         return !wasVisible;
     }
 
     private static async ValueTask ForecastPairAsync(SiloFixtureReceipt? receipt,
         SiloCatalog? catalog, SiloFilePayloadSpool.Inspection spool, SiloGroupDraft draft,
-        ISiloObjectStore store, TimeProvider clock, CancellationToken cancellationToken)
+        ISiloObjectStore store, TimeProvider clock, bool versionsFixed, SiloObjectSpool metadata, SiloStorageBinding binding,
+        long writerGeneration, CancellationToken cancellationToken)
     {
         SiloPublisher.ValidateDraft(draft);
         if (receipt is null)
@@ -273,33 +279,55 @@ internal sealed class SiloFixtureImport(ConfinedReadDirectory source, SiloFixtur
         if (receipt.State is SiloStagedState.Visible or SiloStagedState.Abandoned && receipt.BlockedCode is { } conflict)
             throw new SiloConflictException(conflict, "Silo could not settle the fixture publication.");
         if (receipt.State == SiloStagedState.Abandoned)
-            throw new SiloConflictException("fixture-reopen-failed", "The fixture publication was abandoned.");
+            throw new SiloConflictException(ReopenFailed, "The fixture publication was abandoned.");
         if (receipt.State == SiloStagedState.Visible)
-            await RequireReopenAsync(catalog, draft, cancellationToken).ConfigureAwait(false);
-        if (receipt.State != SiloStagedState.Staged)
-            return;
-
-        spool.RequireWithinCapacity();
-        // Follow publication order: P1 needs staged bytes for unqualified members. P2 reads each prior exact version.
-        for (var ordinal = 0; ordinal < draft.Members.Count; ordinal++)
         {
-            if (!receipt.QualifiedPayloadVersions.ContainsKey(ordinal))
-                await RequireStagedEvidenceAsync(draft.Members[ordinal]).ConfigureAwait(false);
+            await RequireReopenAsync(catalog, draft, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        if (receipt.State == SiloStagedState.Staged)
+        {
+            spool.RequireWithinCapacity();
+            // P1 first needs staged bytes for unqualified members.
+            for (var ordinal = 0; ordinal < draft.Members.Count; ordinal++)
+            {
+                if (!receipt.QualifiedPayloadVersions.ContainsKey(ordinal))
+                    await RequireStagedEvidenceAsync(draft.Members[ordinal]).ConfigureAwait(false);
+            }
         }
 
         try
         {
+            var missingPayload = false;
             for (var ordinal = 0; ordinal < draft.Members.Count; ordinal++)
             {
                 if (!receipt.QualifiedPayloadVersions.TryGetValue(ordinal, out var version))
                     continue;
                 var member = draft.Members[ordinal];
                 var locator = SiloPublisher.PayloadLocator(store, member, version);
-                var probe = await SiloPublisher.ProbeQualifiedPayloadAsync(store, locator, member, clock, cancellationToken)
+                var probe = await SiloPublisher.ProbeQualifiedVersionAsync(store, locator, member.Length, member.Sha256, clock, cancellationToken)
                     .ConfigureAwait(false);
                 if (probe.Status == SiloProbeStatus.Absent)
+                {
                     await RequireStagedEvidenceAsync(member).ConfigureAwait(false);
+                    missingPayload = true;
+                }
             }
+
+            // Before P3 a replacement payload supersedes its old manifest. A pending commit that may have landed pins both.
+            var missingManifest = false;
+            if (receipt.Manifest is { } manifest && (!missingPayload || versionsFixed))
+            {
+                var locator = SiloPublisher.ManifestLocator(store, draft, manifest.Sha256, manifest.VersionId);
+                var probe = await SiloPublisher.ProbeQualifiedVersionAsync(store, locator, manifest.Length, manifest.Sha256, clock, cancellationToken)
+                    .ConfigureAwait(false);
+                missingManifest = probe.Status == SiloProbeStatus.Absent;
+                if (missingManifest && !versionsFixed)
+                    await RequireManifestRecoveryAsync(manifest).ConfigureAwait(false);
+            }
+            if (versionsFixed && (missingPayload || missingManifest))
+                throw new SiloConflictException(ReopenFailed, "An exact version named by the committed fixture is missing.");
         }
         catch (SiloStoreUnavailableException exception)
         {
@@ -318,6 +346,20 @@ internal sealed class SiloFixtureImport(ConfinedReadDirectory source, SiloFixtur
                 throw new SiloConflictException(SiloPublisher.StagedEvidenceMissing, "A required staged payload is missing.");
             }
         }
+
+        async ValueTask RequireManifestRecoveryAsync(SiloFixtureManifestVersion manifest)
+        {
+            if (await metadata.ReadAsync(SiloObjectSpool.NameOf(manifest.Sha256), manifest.Sha256, cancellationToken)
+                .ConfigureAwait(false) is not null)
+                return;
+
+            var locators = draft.Members.Select((member, ordinal) =>
+                SiloPublisher.PayloadLocator(store, member, receipt.QualifiedPayloadVersions[ordinal])).ToArray();
+            // The fixture target permits only the first writer generation.
+            var bytes = SiloJson.Serialize(SiloPublisher.BuildManifest(draft, binding, writerGeneration, locators));
+            if (SiloHash.Sha256(bytes) != manifest.Sha256)
+                throw new SiloConflictException(SiloPublisher.ManifestSpoolLost, "The fixture manifest cannot be reproduced exactly.");
+        }
     }
 
     private static void RequireCompatiblePending(SiloGroupDraft draft, SiloPendingSegment? pending)
@@ -330,6 +372,6 @@ internal sealed class SiloFixtureImport(ConfinedReadDirectory source, SiloFixtur
     {
         if (catalog is null ||
             !(await catalog.ReopenAsync(draft.GroupId, draft.RevisionId, cancellationToken).ConfigureAwait(false)).Reopenable)
-            throw new SiloConflictException("fixture-reopen-failed", "The fixture did not pass exact Silo reopen verification.");
+            throw new SiloConflictException(ReopenFailed, "The fixture did not pass exact Silo reopen verification.");
     }
 }
