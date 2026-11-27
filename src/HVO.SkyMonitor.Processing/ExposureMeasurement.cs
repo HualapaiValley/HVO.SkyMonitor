@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
@@ -306,6 +307,27 @@ public static class ExposureMeasurementProducts
         return input;
     }
 
+    private const int MaximumSourcesHeaderAndHfdBytes = 8_192;
+
+    private static readonly ExposureSourcesV1 EmptySourcesShell = new(
+        ExposureMeasurementStatus.Empty, "shell", 0, 0, null, null, [], []);
+
+    private static readonly ExposureHfdV1 EmptyHfdShell = new(
+        ExposureMeasurementStatus.Unavailable, "shell", null, null, null, 0, null, []);
+
+    internal static int ReservedEnvelopeBytes(
+        ExposureMeasurementInputV1 input,
+        ExposureBrightnessV1? rawBrightness,
+        string? rawBrightnessUnavailableReason,
+        ExposureClippingV1? linearOutputClipping)
+    {
+        var shell = new ExposureMeasurementV1(
+            SchemaVersion, input, rawBrightness, rawBrightnessUnavailableReason, linearOutputClipping,
+            EmptySourcesShell, EmptyHfdShell);
+        var measured = Serialize(shell).Length + MaximumSourcesHeaderAndHfdBytes;
+        return Math.Max(StellarFootprintOccupancy.DefaultReservedEnvelopeBytes, measured);
+    }
+
     internal static byte[] Serialize(ExposureMeasurementV1 value)
         => JsonSerializer.SerializeToUtf8Bytes(
             CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(value, Json)));
@@ -442,34 +464,42 @@ public static class ExposureMeasurementProducts
                 throw Invalid("detection");
         }
         var allowOccupancy = policy == ExposureFocusSamplingPolicy.EligibleFirstWithOccupancy;
-        var subgridBitBudget = 0;
-        if (allowOccupancy)
+        var occupancyBudget = default(StellarFootprintOccupancyBudget);
+        if (allowOccupancy && measuredLayout is not null)
         {
-            var refinableCount = 0;
+            var nonSolidFootprints = new List<StellarFootprintBounds>();
             foreach (var item in sources.Exclusions)
             {
-                if (item?.Footprint is { } fp && measuredLayout is not null &&
+                if (item?.Footprint is { } fp &&
                     fp.MinX >= 0 && fp.MinY >= 0 && fp.MaxX >= fp.MinX && fp.MaxY >= fp.MinY &&
                     fp.MaxX < measuredLayout.Width && fp.MaxY < measuredLayout.Height)
                 {
                     var fpWidth = fp.MaxX - fp.MinX + 1;
                     var fpHeight = fp.MaxY - fp.MinY + 1;
                     var fpArea = (long)fpWidth * fpHeight;
-                    if (item.SampleCount > 0 && item.SampleCount < fpArea &&
-                        StellarFootprintOccupancy.UsesCoarseGrid(fpWidth, fpHeight))
-                        refinableCount++;
+                    if (item.SampleCount > 0 && item.SampleCount < fpArea)
+                        nonSolidFootprints.Add(fp);
                 }
             }
-            subgridBitBudget = StellarFootprintOccupancy.SubgridBitBudgetPerExclusion(refinableCount);
+            var reservedEnvelopeBytes = ReservedEnvelopeBytes(
+                value.Input, value.RawBrightness, value.RawBrightnessUnavailableReason, value.LinearOutputClipping);
+            occupancyBudget = StellarFootprintOccupancy.ComputeProductBudgets(
+                sources.Detections.Count,
+                sources.Exclusions.Count,
+                CollectionsMarshal.AsSpan(nonSolidFootprints),
+                reservedEnvelopeBytes);
         }
-        if (sources.Exclusions.Any(item => !IsValidExclusion(item, measuredLayout, allowOccupancy, subgridBitBudget)))
+        if (sources.Exclusions.Any(item => !IsValidExclusion(item, measuredLayout, allowOccupancy, occupancyBudget)))
             throw Invalid("exclusion");
 
         ValidateFocus(sources, hfd, measuredLayout, policy);
     }
 
     private static bool IsValidExclusion(
-        StellarMeasurementExclusion? item, FrameLayoutDescriptor? measuredLayout, bool allowOccupancy, int subgridBitBudget)
+        StellarMeasurementExclusion? item,
+        FrameLayoutDescriptor? measuredLayout,
+        bool allowOccupancy,
+        StellarFootprintOccupancyBudget occupancyBudget)
     {
         if (item is null || measuredLayout is null || !Inside(item.Peak, measuredLayout) ||
             !StellarExclusionReasons.All.Contains(item.ReasonCode) || item.SampleCount <= 0)
@@ -488,10 +518,12 @@ public static class ExposureMeasurementProducts
                 return false;
             if (allowOccupancy)
             {
-                if (item.SampleCount == fpArea)
+                if (item.SampleCount == fpArea || occupancyBudget.CoarseCellBudget <= 0)
                     return item.Occupancy is null;
                 return item.Occupancy is not null &&
-                    item.Occupancy.IsValid(fp, item.Peak, item.SampleCount, subgridBitBudget);
+                    item.Occupancy.IsValid(
+                        fp, item.Peak, item.SampleCount,
+                        occupancyBudget.CoarseCellBudget, occupancyBudget.SubgridBitBudget);
             }
         }
         else if (allowOccupancy)

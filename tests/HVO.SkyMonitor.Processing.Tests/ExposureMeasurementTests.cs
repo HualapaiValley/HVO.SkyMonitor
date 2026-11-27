@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
@@ -928,6 +929,202 @@ public sealed class ExposureMeasurementTests
         };
         Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(
             WithMeasurement(product, read with { Sources = read.Sources with { Exclusions = stripped } })));
+    }
+
+    [TestMethod]
+    public async Task FourThousandNinetySixPlusHeavyCoarseMasksOn3968FrameStayWithinEnvelopeAndRoundTrip()
+    {
+        // D8-H1 / Delta10 exact regression probe: a supported 3968x3968 Mono16 frame with 4,096 separate exclusions
+        // (64x64 grid of 62x62 tiles, each containing a 48x42 bright patch at offset (8, 8) with bright perimeter and
+        // every tenth interior column dark x % 10 == 6; background=180, bright=2,200). Previously generated 655,360
+        // Base64 '+' chars escaped as 6-byte \u002B (5,689,059 bytes > 4,194,304) and failed Step 4 with
+        // TerminalFailure (measurement.payload-budget-exceeded).
+        const int tileCountPerAxis = 64;
+        const int tileSize = 62;
+        const int size = tileCountPerAxis * tileSize; // 3968
+        const int patchOffset = 8;
+        const int patchWidth = 48;
+        const int patchHeight = 42;
+        var layout = Layout(size, size);
+        var rawBytes = new byte[checked((int)layout.ByteLength)];
+        for (var y = 0; y < size; y++)
+        {
+            var rowSpan = rawBytes.AsSpan(y * layout.StrideBytes, size * 2);
+            var ly = y % tileSize;
+            var inPatchY = ly >= patchOffset && ly < patchOffset + patchHeight;
+            var onBorderY = ly == patchOffset || ly == patchOffset + patchHeight - 1;
+            for (var x = 0; x < size; x++)
+            {
+                ushort code = 180;
+                if (inPatchY)
+                {
+                    var lx = x % tileSize;
+                    if (lx >= patchOffset && lx < patchOffset + patchWidth)
+                    {
+                        var onBorderX = lx == patchOffset || lx == patchOffset + patchWidth - 1;
+                        var localPatchX = lx - patchOffset;
+                        if (onBorderY || onBorderX || localPatchX % 10 != 6)
+                            code = 2200;
+                    }
+                }
+                BinaryPrimitives.WriteUInt16LittleEndian(rowSpan[(x * 2)..], code);
+            }
+        }
+
+        var raw = CreateRaw(layout, rawBytes);
+        var linear = await Normalize(raw);
+        var input = Bind(raw, linear);
+        var request = ExposureMeasurementProducts.Request(input, raw, linear);
+        var outcome = await new ProcessingRecipeExecutor().ExecuteAsync(request);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status, outcome.ReasonCode);
+        var product = outcome.Products.Single();
+
+        Assert.IsLessThanOrEqualTo(StructuredProcessingProductDescriptorV1.MaximumPayloadBytes, product.Payload.Length,
+            $"3968x3968 4,096-exclusion frame must stay within 4 MiB envelope (got {product.Payload.Length} bytes).");
+
+        var readFromProduct = ExposureMeasurementProducts.Read(product);
+        var artifact = ProductArtifact(product, raw);
+        var readFromArtifact = ExposureMeasurementProducts.Read(artifact, input);
+        Assert.HasCount(4096, readFromProduct.Sources.Exclusions);
+        Assert.HasCount(4096, readFromArtifact.Sources.Exclusions);
+        Assert.IsTrue(readFromProduct.Sources.Exclusions.All(static e => e.Occupancy is not null),
+            "All 4,096 non-solid exclusions should retain deterministic budgeted coarse occupancy.");
+
+        // Stripping Occupancy from any exclusion on the 4,096-exclusion product must still be rejected by both readers.
+        var tamperedExclusions = readFromProduct.Sources.Exclusions.ToArray();
+        tamperedExclusions[0] = tamperedExclusions[0] with { Occupancy = null };
+        var tamperedProduct = WithMeasurement(product, readFromProduct with
+        {
+            Sources = readFromProduct.Sources with { Exclusions = tamperedExclusions }
+        });
+        var tamperedArtifact = ProductArtifact(tamperedProduct, raw);
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(tamperedProduct));
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(tamperedArtifact, input));
+    }
+
+    [TestMethod]
+    public async Task WorstCasePostBudgetPlusEscapingAndEnvelopeOmissionStayWithinBudget()
+    {
+        // 1. Real 3968x3968 Mono16 frame with 4,096 non-solid 48x42 tiles specifically patterned so that every
+        //    post-budget 16x14 (3x3) coarse mask repeats bytes [0xFB, 0xEF, 0xBE] -> 37 '+' chars out of 40 Base64
+        //    chars (each JSON-escaped as 6-byte \u002B!). Step 4 must still emit Produced <= 4 MiB and round-trip.
+        const int tileCountPerAxis = 64;
+        const int tileSize = 62;
+        const int size = tileCountPerAxis * tileSize; // 3968
+        const int patchOffset = 8;
+        const int patchWidth = 48;
+        const int patchHeight = 42;
+        byte[] allPlusPattern = [0xFB, 0xEF, 0xBE];
+
+        var sampleTile = new StellarFootprintBounds(patchOffset, patchOffset, patchOffset + patchWidth - 1, patchOffset + patchHeight - 1);
+        var expectedBudget = StellarFootprintOccupancy.ComputeProductBudgets(
+            0, 4096, Enumerable.Repeat(sampleTile, 4096).ToArray());
+        var probeOccupancy = StellarFootprintOccupancy.Create(
+            sampleTile, static (x, y) => x == patchOffset && y == patchOffset,
+            expectedBudget.CoarseCellBudget, expectedBudget.SubgridBitBudget);
+        var coarseCols = probeOccupancy.Columns;
+        var cellW = probeOccupancy.CellWidth;
+        var cellH = probeOccupancy.CellHeight;
+        Assert.AreEqual(16, coarseCols);
+        Assert.AreEqual(14, probeOccupancy.Rows);
+        Assert.AreEqual(3, cellW);
+        Assert.AreEqual(3, cellH);
+
+        var layout = Layout(size, size);
+        var rawBytes = new byte[checked((int)layout.ByteLength)];
+        for (var y = 0; y < size; y++)
+        {
+            var rowSpan = rawBytes.AsSpan(y * layout.StrideBytes, size * 2);
+            var ly = y % tileSize;
+            var inPatchY = ly >= patchOffset && ly < patchOffset + patchHeight;
+            var coarseRow = inPatchY ? (ly - patchOffset) / cellH : -1;
+            for (var x = 0; x < size; x++)
+            {
+                ushort code = 180;
+                if (inPatchY)
+                {
+                    var lx = x % tileSize;
+                    if (lx >= patchOffset && lx < patchOffset + patchWidth)
+                    {
+                        var coarseCol = (lx - patchOffset) / cellW;
+                        var bit = coarseRow * coarseCols + coarseCol;
+                        var patternByte = allPlusPattern[(bit >> 3) % 3];
+                        if ((patternByte & (1 << (bit & 7))) != 0)
+                            code = 2200;
+                    }
+                }
+                BinaryPrimitives.WriteUInt16LittleEndian(rowSpan[(x * 2)..], code);
+            }
+        }
+
+        var raw = CreateRaw(layout, rawBytes);
+        var linear = await Normalize(raw);
+        var input = Bind(raw, linear);
+        var outcome = await new ProcessingRecipeExecutor().ExecuteAsync(ExposureMeasurementProducts.Request(input, raw, linear));
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status, outcome.ReasonCode);
+        var product = outcome.Products.Single();
+        Assert.IsLessThanOrEqualTo(StructuredProcessingProductDescriptorV1.MaximumPayloadBytes, product.Payload.Length,
+            $"Worst-case post-budget '+' escaping payload must stay <= 4 MiB (got {product.Payload.Length} bytes).");
+
+        var escapedPlusCount = 0;
+        var jsonText = Encoding.UTF8.GetString(product.Payload.Span);
+        for (var idx = 0; (idx = jsonText.IndexOf("\\u002B", idx, StringComparison.Ordinal)) >= 0; idx += 6)
+            escapedPlusCount++;
+        Assert.IsGreaterThanOrEqualTo(4096 * 35, escapedPlusCount,
+            $"Expected heavy post-budget \\u002B escaping across all 4,096 coarse masks (got {escapedPlusCount}).");
+
+        var readProduct = ExposureMeasurementProducts.Read(product);
+        var readArtifact = ExposureMeasurementProducts.Read(ProductArtifact(product, raw), input);
+        Assert.HasCount(4096, readProduct.Sources.Exclusions);
+        Assert.HasCount(4096, readArtifact.Sources.Exclusions);
+        Assert.IsTrue(readProduct.Sources.Exclusions.All(static e =>
+            e.Occupancy is { Columns: 16, Rows: 14, CellWidth: 3, CellHeight: 3 } occ &&
+            occ.BitsBase64.Count(static ch => ch == '+') >= 35));
+
+        // 2. When non-source envelope fields consume almost the entire 4 MiB envelope so even 1-cell coarse masks do
+        //    not fit, Step 4 omits Occupancy cleanly (bounding-box fallback), both Read overloads verify it, and
+        //    injecting a non-null Occupancy is rejected by both Read overloads.
+        const int smallSize = 160;
+        var smallLayout = Layout(smallSize, smallSize);
+        var smallCenter = new PixelPoint(80.5, 80.5);
+        var smallRaw = CreateRaw(smallLayout, Generate(smallLayout, (x, y) =>
+        {
+            var r = double.Hypot(x + 0.5 - smallCenter.X, y + 0.5 - smallCenter.Y);
+            double value = 180 + Gaussian(x, y, smallCenter, 1.25, 2200);
+            if (r is >= 14.0 and <= 30.0)
+                value += 1400.0;
+            return (ushort)Math.Clamp(Math.Round(value), 0, 4095);
+        }));
+        var smallLinear = await Normalize(smallRaw);
+        var oversizedInput = Bind(smallRaw, smallLinear) with
+        {
+            OpticalCalibrationVersion = new string('v', StructuredProcessingProductDescriptorV1.MaximumPayloadBytes - 10_000)
+        };
+        var omittedOutcome = await new ProcessingRecipeExecutor().ExecuteAsync(
+            ExposureMeasurementProducts.Request(oversizedInput, smallRaw, smallLinear));
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, omittedOutcome.Status, omittedOutcome.ReasonCode);
+        var omittedProduct = omittedOutcome.Products.Single();
+        Assert.IsLessThanOrEqualTo(StructuredProcessingProductDescriptorV1.MaximumPayloadBytes, omittedProduct.Payload.Length);
+
+        var omittedRead = ExposureMeasurementProducts.Read(omittedProduct);
+        var omittedArtifact = ProductArtifact(omittedProduct, smallRaw);
+        var omittedVerified = ExposureMeasurementProducts.Read(omittedArtifact, oversizedInput);
+        var omittedRing = omittedRead.Sources.Exclusions.Single(e => e.ReasonCode == StellarExclusionReasons.ExtendedRegion);
+        Assert.IsNull(omittedRing.Occupancy, "Exhausted whole-product envelope must fall back to bounding-box exclusion.");
+        Assert.HasCount(omittedRead.Sources.Exclusions.Count, omittedVerified.Sources.Exclusions);
+
+        // Tampering to inject a non-null Occupancy when CoarseCellBudget == 0 must be rejected.
+        var injectedRing = omittedRing with
+        {
+            Occupancy = StellarFootprintOccupancy.Create(omittedRing.Footprint!.Value, static (_, _) => true)
+        };
+        var injectedProduct = WithMeasurement(omittedProduct, omittedRead with
+        {
+            Sources = omittedRead.Sources with { Exclusions = [injectedRing] }
+        });
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(injectedProduct));
+        Assert.ThrowsExactly<InvalidDataException>(() =>
+            ExposureMeasurementProducts.Read(ProductArtifact(injectedProduct, smallRaw), oversizedInput));
     }
 
     private static ProjectedSceneV1 WithProjection(ProjectedSceneV1 scene, ProjectedSceneProjection projection)

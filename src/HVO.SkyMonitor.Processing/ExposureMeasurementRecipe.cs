@@ -101,8 +101,11 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
 
         var rawBrightness = Brightness(raw, cancellationToken);
         var linearClipping = linear is null ? null : Brightness(linear, cancellationToken).SensorClipping;
+        var reservedEnvelopeBytes = policy == ExposureFocusSamplingPolicy.EligibleFirstWithOccupancy
+            ? ExposureMeasurementProducts.ReservedEnvelopeBytes(input, rawBrightness, null, linearClipping)
+            : StellarFootprintOccupancy.DefaultReservedEnvelopeBytes;
         var (stars, hfd) = Measure(raw, linear, rawBrightness.SensorClipping, linearClipping,
-            input.ApertureProjection, policy, cancellationToken);
+            input.ApertureProjection, policy, reservedEnvelopeBytes, cancellationToken);
         var result = new ExposureMeasurementV1(ExposureMeasurementProducts.SchemaVersion,
             input, rawBrightness, null, linearClipping, stars, hfd);
         var payload = ExposureMeasurementProducts.Serialize(result);
@@ -183,7 +186,7 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
 
     private static (ExposureSourcesV1, ExposureHfdV1) Measure(ProcessingArtifact raw,
         ProcessingArtifact? linear, ExposureClippingV1 sensorClipping, ExposureClippingV1? outputClipping,
-        ProjectionContext? aperture, ExposureFocusSamplingPolicy policy,
+        ProjectionContext? aperture, ExposureFocusSamplingPolicy policy, int reservedEnvelopeBytes,
         CancellationToken cancellationToken)
     {
         if (sensorClipping.StoredWhite is not { } sensorWhite)
@@ -207,7 +210,7 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
         var options = MeasuredStellarAssociationRecipe.MeasurementOptions(layout.PixelFormat);
         var measured = policy == ExposureFocusSamplingPolicy.EligibleFirstWithOccupancy
             ? StellarSourceMeasurer.Measure(samples.Span, valid.Span, clipped,
-                layout.Width, layout.Height, options, cancellationToken)
+                layout.Width, layout.Height, options, reservedEnvelopeBytes, cancellationToken)
             : StellarSourceMeasurer.MeasureLegacyV2(samples.Span, valid.Span, clipped,
                 layout.Width, layout.Height, options, cancellationToken);
         var (status, reason) = measured switch
