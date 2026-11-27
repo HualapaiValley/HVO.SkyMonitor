@@ -69,7 +69,9 @@ public sealed partial class CameraAgentLifecycleEndpointsTests
     }
 
     [TestMethod]
-    public async Task ArchiveReadVerifiesBytesDisposesDownloadAndMapsArchiveOutcomes()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task ArchiveReadVerifiesBytesDisposesDownloadAndMapsArchiveOutcomes(bool partialExpiry)
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var token = deadline.Token;
@@ -78,10 +80,16 @@ public sealed partial class CameraAgentLifecycleEndpointsTests
         await using var upstreamLease = upstream.ConfigureAwait(false);
         var (reference, commit, publish) = await SiloArchiveTests.PublishAndReplicateAsync(
             silo, upstream, SiloDrafts.Capture(silo.Payloads, 1), token).ConfigureAwait(false);
+        var expired = publish.Members[0];
+        if (partialExpiry)
+        {
+            upstream.WriteExpiry(expired.Locator, silo.Clock.GetUtcNow());
+            upstream.Delete(expired.Locator);
+        }
         using var archive = SiloArchiveStore.Create(upstream.Settings, silo.Clock);
         var records = await new SiloArchiveVerification(archive, silo.Clock)
-            .VerifyPublicationAsync(reference, commit, silo.Index, token).ConfigureAwait(false);
-        var journal = await silo.AppendAsync([.. records]).ConfigureAwait(false);
+            .VerifyPublicationAsync(reference, commit, silo.Index, prefix: 0, token).ConfigureAwait(false);
+        var journal = await silo.AppendAsync([.. records.Records]).ConfigureAwait(false);
         upstream.Replicate(silo.Local, journal);
 
         var builder = ArchiveHostBuilder();
@@ -99,7 +107,7 @@ public sealed partial class CameraAgentLifecycleEndpointsTests
         var receipt = new CameraAgentSiloArchiveReceipt(archive.Marker.StoreId, archive.Marker.Bucket, reference.GroupId, reference.RevisionId,
             reference.Position.Generation, reference.Position.Sequence, reference.Index, journal.Position.Generation, journal.Position.Sequence,
             journal.VersionId, journal.Sha256);
-        var member = publish.Members[0];
+        var member = publish.Members[1];
         var read = new CameraAgentSiloArchiveRead(receipt, member.ArtifactId, member.ArtifactRevision);
         var worker = host.Services.GetRequiredService<ICameraAgentSiloArchive>();
         using (var open = await worker.ReadAsync(read, token).ConfigureAwait(false))
@@ -119,6 +127,8 @@ public sealed partial class CameraAgentLifecycleEndpointsTests
         }
 
         await AssertHttpReadAsync(HttpStatusCode.NotFound, read with { ArtifactId = "unknown-artifact" }).ConfigureAwait(false);
+        if (partialExpiry)
+            await AssertHttpReadAsync(HttpStatusCode.Gone, new(receipt, expired.ArtifactId, expired.ArtifactRevision)).ConfigureAwait(false);
         await AssertHttpReadAsync(HttpStatusCode.BadRequest, read with { Receipt = receipt with { ReceiptVersionId = "\0" } })
             .ConfigureAwait(false);
         await AssertHttpReadAsync(HttpStatusCode.Conflict, read with { Receipt = receipt with { ReceiptSha256 = new string('d', 64) } })

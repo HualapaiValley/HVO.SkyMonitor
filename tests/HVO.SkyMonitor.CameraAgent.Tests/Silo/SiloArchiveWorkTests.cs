@@ -34,14 +34,14 @@ public sealed class SiloArchiveWorkTests
         var first = new SiloCommittedSegment(new(1, 5), new string('a', 64), "receipt-1");
         var second = new SiloCommittedSegment(new(1, 6), new string('b', 64), "receipt-2");
         var third = new SiloCommittedSegment(new(1, 7), new string('c', 64), "receipt-3");
-        await index.CompleteAttemptAsync(work[0], "reachable", null, now, first, now, token).ConfigureAwait(false);
-        await index.CompleteAttemptAsync(work[2], "reachable", null, now, third, now, token).ConfigureAwait(false);
+        await index.CompleteAttemptAsync(work[0], "reachable", null, now, first, now, resetAttempts: true, token).ConfigureAwait(false);
+        await index.CompleteAttemptAsync(work[2], "reachable", null, now, third, now, resetAttempts: true, token).ConfigureAwait(false);
         await index.SavePrefixAsync(7, third.Sha256, token).ConfigureAwait(false);
         Assert.AreEqual(work[0].Publication.GroupId, (await index.ReadBacklogAsync(token).ConfigureAwait(false)).Cutoff?.GroupId);
-        await index.CompleteAttemptAsync(work[0], "policy-expired", "archive-publication-policy-expired", now, null, now, token)
+        await index.CompleteAttemptAsync(work[0], "policy-expired", null, now, null, now, resetAttempts: false, token, expirySequence: 7)
             .ConfigureAwait(false);
         Assert.IsNull((await index.ReadBacklogAsync(token).ConfigureAwait(false)).Cutoff);
-        await index.CompleteAttemptAsync(work[1], "reachable", null, now, second, now, token).ConfigureAwait(false);
+        await index.CompleteAttemptAsync(work[1], "reachable", null, now, second, now, resetAttempts: true, token).ConfigureAwait(false);
 
         var caughtUp = await index.ReadBacklogAsync(token).ConfigureAwait(false);
         Assert.AreEqual(0L, caughtUp.Count);
@@ -74,9 +74,10 @@ public sealed class SiloArchiveWorkTests
         var index = new SiloArchiveIndex(source.PhysicalState.Resolve(fixture.Marker.StoreId + ".db"), fixture.Marker);
         await index.InitializeAsync(token).ConfigureAwait(false);
         await index.DiscoverAsync(source.Index, 1, token).ConfigureAwait(false);
-        var now = silo.Clock.GetUtcNow();
-        var previous = (await index.ReadDueAsync(now, 1, token).ConfigureAwait(false)).Single();
-        await index.CompleteAttemptAsync(previous, "policy-expired", "archive-copy-policy-expired", now, null, now, token).ConfigureAwait(false);
+        using (var connection = await SiloSqlite.OpenAsync(source.PhysicalState.Resolve(fixture.Marker.StoreId + ".db"), token).ConfigureAwait(false))
+            await SiloSqlite.ExecuteAsync(connection, null, """
+                UPDATE archive_work SET state = 'policy-expired', reason = 'archive-publication-policy-expired';
+                """, token).ConfigureAwait(false);
         using var services = new ServiceCollection().AddSingleton(source).BuildServiceProvider();
         using var worker = new SiloArchiveWorker(fixture.Configuration, services, silo.Clock, NullLogger<SiloArchiveWorker>.Instance);
         await worker.RunCycleAsync(token).ConfigureAwait(false);
@@ -95,14 +96,120 @@ public sealed class SiloArchiveWorkTests
         fixture.UnavailableKey = null;
         silo.Clock.Advance(TimeSpan.FromSeconds(4));
         var settled = await worker.RunCycleAsync(token).ConfigureAwait(false);
-        Assert.AreEqual("policy-expired", (await worker.FindAsync(first.GroupId, first.RevisionId, token).ConfigureAwait(false))?.State);
+        Assert.AreEqual("pending", (await worker.FindAsync(first.GroupId, first.RevisionId, token).ConfigureAwait(false))?.State);
+        Assert.AreEqual(1L, settled.BacklogCount);
+        Assert.IsNull(settled.VerifiedCutoff);
+        await ReplicateJournalAsync(source, store, fixture, token).ConfigureAwait(false);
+        silo.Clock.Advance(TimeSpan.FromSeconds(8));
+        settled = await worker.RunCycleAsync(token).ConfigureAwait(false);
+        Assert.AreEqual("reachable", (await worker.FindAsync(first.GroupId, first.RevisionId, token).ConfigureAwait(false))?.State);
         Assert.AreEqual(0L, settled.BacklogCount);
         Assert.AreEqual(second.GroupId, settled.VerifiedCutoff?.GroupId);
 
     }
 
     [TestMethod]
-    public async Task JournaledLocalLastCopyExpiryLetsTheCutoffReachTheNextReceipt()
+    [DataRow(false, "preview")]
+    [DataRow(true, "preview")]
+    [DataRow(false, "manifest")]
+    [DataRow(false, "expiredManifest")]
+    public async Task MixedExpiryPersistsSurvivingProofAndRechecksAfterRestart(bool firstReceiptEarned, string damaged)
+    {
+        var token = TestContext.CancellationToken;
+        using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
+        var (settings, store) = LocalStore();
+        InstallBinding(settings, store);
+        using var source = OpenLocal(settings, store, Path.Combine(silo.RootPath, "installed"), silo.Clock, silo.Payloads);
+        await source.VerifyReadinessAsync(token).ConfigureAwait(false);
+        var fixture = await SiloArchiveFixture.StartAsync(source.Binding.BindingId, token).ConfigureAwait(false);
+        await using var lease = fixture.ConfigureAwait(false);
+        fixture.Settings["ReadScratchRoot"] = silo.RootPath;
+        var first = await PublishInstalledAsync(source, store, fixture, SiloDrafts.Capture(silo.Payloads, 1), token).ConfigureAwait(false);
+        var second = await PublishInstalledAsync(source, store, fixture, SiloDrafts.Capture(silo.Payloads, 2), token).ConfigureAwait(false);
+        var raw = first.Members[0];
+        var preview = first.Members[1];
+        using var services = new ServiceCollection().AddSingleton(source).BuildServiceProvider();
+        using var worker = new SiloArchiveWorker(fixture.Configuration, services, silo.Clock, NullLogger<SiloArchiveWorker>.Instance);
+        CameraAgentSiloArchiveReceipt? original = null;
+        if (firstReceiptEarned)
+        {
+            await worker.RunCycleAsync(token).ConfigureAwait(false);
+            await ReplicateJournalAsync(source, store, fixture, token).ConfigureAwait(false);
+            silo.Clock.Advance(TimeSpan.FromSeconds(2));
+            await worker.RunCycleAsync(token).ConfigureAwait(false);
+            original = (await worker.FindAsync(first.GroupId, first.RevisionId, token).ConfigureAwait(false))?.Receipt;
+            Assert.IsNotNull(original);
+            silo.Clock.Advance(TimeSpan.FromDays(1));
+        }
+
+        fixture.WriteExpiry(raw.Locator, silo.Clock.GetUtcNow());
+        fixture.Delete(raw.Locator);
+        if (damaged == "expiredManifest")
+        {
+            await JournalLocalExpiryAsync(source, store, SiloHarness.ManifestIdentity(first), first.Manifest.Locator, silo.Clock.GetUtcNow(), token)
+                .ConfigureAwait(false);
+            fixture.Delete(first.Manifest.Locator);
+            await ReplicateJournalAsync(source, store, fixture, token).ConfigureAwait(false);
+        }
+        await worker.RunCycleAsync(token).ConfigureAwait(false);
+        await ReplicateJournalAsync(source, store, fixture, token).ConfigureAwait(false);
+        silo.Clock.Advance(TimeSpan.FromSeconds(2));
+        var settled = await worker.RunCycleAsync(token).ConfigureAwait(false);
+        if (firstReceiptEarned || damaged == "expiredManifest")
+        {
+            await ReplicateJournalAsync(source, store, fixture, token).ConfigureAwait(false);
+            silo.Clock.Advance(TimeSpan.FromSeconds(4));
+            settled = await worker.RunCycleAsync(token).ConfigureAwait(false);
+        }
+
+        Assert.AreEqual("reachable", settled.State);
+        Assert.AreEqual(second.GroupId, settled.VerifiedCutoff?.GroupId);
+        var receipt = (await worker.FindAsync(first.GroupId, first.RevisionId, token).ConfigureAwait(false))?.Receipt;
+        Assert.IsNotNull(receipt);
+        Assert.AreNotEqual(original?.ReceiptSha256, receipt.ReceiptSha256);
+        var segment = SiloJson.ReadSegment(store.Read(SiloObjectNamespace.SegmentKey(new(receipt.ReceiptGeneration, receipt.ReceiptSequence)),
+            receipt.ReceiptVersionId), "partial receipt");
+        Assert.AreEqual(new SiloArchiveMemberAvailability(raw.ArtifactId, raw.ArtifactRevision, "policy-expired"),
+            ((SiloArchiveReceiptRecord)segment.Records[0]).UnverifiedMembers?.Single());
+        var expectedCopies = damaged == "expiredManifest" ? new[] { preview.Sha256 } : [first.Manifest.Sha256, preview.Sha256];
+        CollectionAssert.AreEquivalent(expectedCopies,
+            segment.Records.OfType<SiloCopyRecord>().Select(copy => copy.Identity.Sha256).ToArray());
+        using (var read = await worker.ReadAsync(new(receipt, preview.ArtifactId, preview.ArtifactRevision), token).ConfigureAwait(false))
+            Assert.AreEqual(preview.Sha256, read.Sha256);
+
+        worker.Dispose();
+        using var restarted = new SiloArchiveWorker(fixture.Configuration, services, silo.Clock, NullLogger<SiloArchiveWorker>.Instance);
+        if (damaged == "expiredManifest")
+        {
+            fixture.WriteExpiry(preview.Locator, silo.Clock.GetUtcNow());
+            fixture.Delete(preview.Locator);
+            silo.Clock.Advance(TimeSpan.FromDays(1));
+            var expired = await restarted.RunCycleAsync(token).ConfigureAwait(false);
+            Assert.AreEqual("policy-expired", (await restarted.FindAsync(first.GroupId, first.RevisionId, token).ConfigureAwait(false))?.State);
+            Assert.AreEqual(0L, expired.BacklogCount);
+            Assert.AreEqual(second.GroupId, expired.VerifiedCutoff?.GroupId);
+            return;
+        }
+        var lost = damaged == "manifest" ? first.Manifest.Locator : preview.Locator;
+        if (firstReceiptEarned)
+        {
+            var damagedBytes = store.Read(lost.Key, lost.VersionId);
+            damagedBytes[0] ^= 0x80;
+            fixture.Put(lost.Key, lost.VersionId, damagedBytes);
+        }
+        else
+        {
+            fixture.Delete(lost);
+        }
+        silo.Clock.Advance(TimeSpan.FromDays(1));
+        var failure = await restarted.RunCycleAsync(token).ConfigureAwait(false);
+        Assert.AreEqual(firstReceiptEarned ? "failed" : "pending", failure.State);
+        Assert.AreEqual(1L, failure.BacklogCount);
+        Assert.IsNull(failure.VerifiedCutoff);
+    }
+
+    [TestMethod]
+    public async Task JournaledLocalLastCopyExpiryWaitsForTheAuthorizingSegment()
     {
         var token = TestContext.CancellationToken;
         using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
@@ -115,31 +222,37 @@ public sealed class SiloArchiveWorkTests
         var draft = SiloDrafts.Capture(silo.Payloads, 1, rawRequired: false);
         var first = await PublishInstalledAsync(source, store, fixture, draft, token, replicateMembers: false).ConfigureAwait(false);
         var second = await PublishInstalledAsync(source, store, fixture, SiloDrafts.Capture(silo.Payloads, 2), token).ConfigureAwait(false);
-        var member = first.Members.Single(member => member.Required);
-        var identity = SiloHarness.Identity(first, member.ArtifactId);
-        var now = silo.Clock.GetUtcNow();
-        await source.ArchiveJournal.AppendAsync(
-            [new SiloExpiryIntentRecord("local-expiry", SiloExpiryScope.Role, identity, "last-copy-policy:operator",
-                [new(member.Locator, "local")], "retention elapsed", LastCopy: true)], "local-expiry-intent", token).ConfigureAwait(false);
-        store.Delete(member.Locator);
-        await source.ArchiveJournal.AppendAsync(
-            [new SiloExpiryDispositionRecord("local-expiry", member.Locator, SiloExpiryOutcome.Deleted, now, "NoSuchVersion"),
-                new SiloAvailabilityRecord(SiloAvailabilityScope.Role, identity, SiloAvailabilityState.PolicyExpired,
-                    now, "last copy expired", IntentId: "local-expiry")], "local-expiry-settlement", token).ConfigureAwait(false);
-        await source.Catalog.CatchUpAsync(await source.State.ReadWriterEvidenceAsync(token).ConfigureAwait(false), null, token).ConfigureAwait(false);
-        Assert.AreEqual(SiloDisposition.PolicyExpired, (await source.Index.ReadRoleAsync(identity.Role, token).ConfigureAwait(false))?.Disposition);
-        await ReplicateJournalAsync(source, store, fixture, token).ConfigureAwait(false);
-
         using var services = new ServiceCollection().AddSingleton(source).BuildServiceProvider();
         using var worker = new SiloArchiveWorker(fixture.Configuration, services, silo.Clock, NullLogger<SiloArchiveWorker>.Instance);
         await worker.RunCycleAsync(token).ConfigureAwait(false);
         await ReplicateJournalAsync(source, store, fixture, token).ConfigureAwait(false);
         silo.Clock.Advance(TimeSpan.FromSeconds(2));
+        var initial = await worker.RunCycleAsync(token).ConfigureAwait(false);
+        Assert.AreEqual(second.GroupId, initial.LatestVerifiedReceipt?.GroupId);
+
+        var member = first.Members.Single(member => member.Required);
+        var identity = SiloHarness.Identity(first, member.ArtifactId);
+        await JournalLocalExpiryAsync(source, store, identity, member.Locator, silo.Clock.GetUtcNow(), token).ConfigureAwait(false);
+
+        silo.Clock.Advance(TimeSpan.FromSeconds(4));
+        var awaitingExpiry = await worker.RunCycleAsync(token).ConfigureAwait(false);
+        Assert.AreEqual(1L, awaitingExpiry.BacklogCount);
+        Assert.AreEqual(second.GroupId, awaitingExpiry.LatestVerifiedReceipt?.GroupId);
+        Assert.IsNull(awaitingExpiry.VerifiedCutoff);
+        Assert.IsNull((await worker.FindAsync(first.GroupId, first.RevisionId, token).ConfigureAwait(false))?.Receipt);
+
+        await ReplicateJournalAsync(source, store, fixture, token).ConfigureAwait(false);
+        silo.Clock.Advance(TimeSpan.FromSeconds(2));
+        await worker.RunCycleAsync(token).ConfigureAwait(false);
+        silo.Clock.Advance(TimeSpan.FromSeconds(6));
+        await worker.RunCycleAsync(token).ConfigureAwait(false);
+        await ReplicateJournalAsync(source, store, fixture, token).ConfigureAwait(false);
+        silo.Clock.Advance(TimeSpan.FromSeconds(16));
         var status = await worker.RunCycleAsync(token).ConfigureAwait(false);
 
         var settled = await worker.FindAsync(first.GroupId, first.RevisionId, token).ConfigureAwait(false);
-        Assert.AreEqual("policy-expired", settled?.State);
-        Assert.IsNull(settled?.Receipt);
+        Assert.AreEqual("reachable", settled?.State);
+        Assert.IsNotNull(settled?.Receipt);
         Assert.AreEqual(0L, status.BacklogCount);
         Assert.AreEqual(second.GroupId, status.VerifiedCutoff?.GroupId);
     }
@@ -183,16 +296,27 @@ public sealed class SiloArchiveWorkTests
         fixture.UnavailableKey = null;
         fixture.Replicate(store, member.Locator);
         silo.Clock.Advance(TimeSpan.FromDays(1));
+        var payloadKey = dependent.Members[0].Locator.Key;
+        var payloadGets = fixture.Gets(payloadKey);
         var catchingUp = await worker.RunCycleAsync(token).ConfigureAwait(false);
         Assert.AreEqual(oldReceipt.ReceiptSha256, catchingUp.VerifiedCutoff?.ReceiptSha256);
         Assert.AreEqual(0L, catchingUp.BacklogCount);
+        Assert.AreEqual(payloadGets + 1, fixture.Gets(payloadKey));
+        Assert.AreEqual((1, SiloSqlite.Ticks(silo.Clock.GetUtcNow().AddSeconds(2))), await ReadRetryAsync().ConfigureAwait(false));
         var head = await source.State.ReadHeadAsync(token).ConfigureAwait(false);
+
+        silo.Clock.Advance(TimeSpan.FromSeconds(2));
+        var waiting = await worker.RunCycleAsync(token).ConfigureAwait(false);
+        Assert.AreEqual(oldReceipt.ReceiptSha256, waiting.VerifiedCutoff?.ReceiptSha256);
+        Assert.AreEqual(payloadGets + 2, fixture.Gets(payloadKey));
+        Assert.AreEqual((2, SiloSqlite.Ticks(silo.Clock.GetUtcNow().AddSeconds(4))), await ReadRetryAsync().ConfigureAwait(false));
         await ReplicateJournalAsync(source, store, fixture, token).ConfigureAwait(false);
 
         using var restarted = new SiloArchiveWorker(fixture.Configuration, services, silo.Clock, NullLogger<SiloArchiveWorker>.Instance);
         silo.Clock.Advance(TimeSpan.FromSeconds(2));
         var prefixAdvanced = await restarted.RunCycleAsync(token).ConfigureAwait(false);
         Assert.AreEqual(oldReceipt.ReceiptSha256, prefixAdvanced.VerifiedCutoff?.ReceiptSha256);
+        Assert.AreEqual(payloadGets + 2, fixture.Gets(payloadKey), "The worker should wait until the persisted due time.");
         silo.Clock.Advance(TimeSpan.FromSeconds(2));
         var caughtUp = await restarted.RunCycleAsync(token).ConfigureAwait(false);
         var lookup = await restarted.FindAsync(dependent.GroupId, dependent.RevisionId, token).ConfigureAwait(false);
@@ -200,6 +324,8 @@ public sealed class SiloArchiveWorkTests
         Assert.IsNotNull(newReceipt);
         Assert.AreNotEqual(oldReceipt.ReceiptSha256, newReceipt.ReceiptSha256);
         Assert.AreEqual(newReceipt, caughtUp.VerifiedCutoff);
+        Assert.AreEqual(payloadGets + 3, fixture.Gets(payloadKey));
+        Assert.AreEqual((0, SiloSqlite.Ticks(silo.Clock.GetUtcNow().AddDays(1))), await ReadRetryAsync().ConfigureAwait(false));
         Assert.AreEqual(head, await source.State.ReadHeadAsync(token).ConfigureAwait(false), "A restart must reuse the committed refresh.");
         using (var reachable = await restarted.ReadAsync(new(newReceipt, member.ArtifactId, member.ArtifactRevision), token).ConfigureAwait(false))
         {
@@ -208,6 +334,16 @@ public sealed class SiloArchiveWorkTests
         }
         using var original = await restarted.ReadAsync(new(oldReceipt, member.ArtifactId, member.ArtifactRevision), token).ConfigureAwait(false);
         Assert.AreEqual(unavailable ? "blocked" : "missing", original.State, "Previously issued receipt IDs remain immutable.");
+
+        async Task<(int Attempts, long Next)> ReadRetryAsync()
+        {
+            using var connection = await SiloSqlite.OpenAsync(source.PhysicalState.Resolve(fixture.Marker.StoreId + ".db"), token).ConfigureAwait(false);
+            using var command = SiloSqlite.CreateCommand(connection, null,
+                "SELECT attempts, next_ticks FROM archive_work WHERE group_id = $group;", ("$group", dependent.GroupId));
+            using var reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false);
+            Assert.IsTrue(await reader.ReadAsync(token).ConfigureAwait(false));
+            return (reader.GetInt32(0), reader.GetInt64(1));
+        }
     }
 
     [TestMethod]
@@ -290,7 +426,7 @@ public sealed class SiloArchiveWorkTests
         var now = silo.Clock.GetUtcNow();
         var work = (await ownCatalog.ReadDueAsync(now, 10, token).ConfigureAwait(false)).Single();
         var commit = new SiloCommittedSegment(new(1, 3), new string('e', 64), "persisted-receipt");
-        await ownCatalog.CompleteAttemptAsync(work, "reachable", null, now, commit, now, token).ConfigureAwait(false);
+        await ownCatalog.CompleteAttemptAsync(work, "reachable", null, now, commit, now, resetAttempts: true, token).ConfigureAwait(false);
         await ownCatalog.SavePrefixAsync(commit.Position.Sequence, commit.Sha256, token).ConfigureAwait(false);
 
         section["StoreId"] = marker.StoreId;
@@ -443,5 +579,20 @@ public sealed class SiloArchiveWorkTests
             Assert.IsNotNull(commit);
             fixture.Replicate(store, commit);
         }
+    }
+
+    private static async Task JournalLocalExpiryAsync(SiloInstalledStorage source, SiloTestStore store,
+        SiloObjectIdentity identity, SiloExactLocator locator, DateTimeOffset now, CancellationToken token)
+    {
+        await source.ArchiveJournal.AppendAsync(
+            [new SiloExpiryIntentRecord("local-expiry", SiloExpiryScope.Role, identity, "last-copy-policy:operator",
+                [new(locator, "local")], "retention elapsed", LastCopy: true)], "local-expiry-intent", token).ConfigureAwait(false);
+        store.Delete(locator);
+        await source.ArchiveJournal.AppendAsync(
+            [new SiloExpiryDispositionRecord("local-expiry", locator, SiloExpiryOutcome.Deleted, now, "NoSuchVersion"),
+                new SiloAvailabilityRecord(SiloAvailabilityScope.Role, identity, SiloAvailabilityState.PolicyExpired,
+                    now, "last copy expired", IntentId: "local-expiry")], "local-expiry-settlement", token).ConfigureAwait(false);
+        await source.Catalog.CatchUpAsync(await source.State.ReadWriterEvidenceAsync(token).ConfigureAwait(false), null, token).ConfigureAwait(false);
+        Assert.AreEqual(SiloDisposition.PolicyExpired, (await source.Index.ReadRoleAsync(identity.Role, token).ConfigureAwait(false))?.Disposition);
     }
 }

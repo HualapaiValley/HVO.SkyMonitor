@@ -263,7 +263,8 @@ internal sealed record SiloArchiveReceiptRecord(
     string PublicationVersionId,
     string PublicationSha256,
     DateTimeOffset VerifiedUtc,
-    IReadOnlyList<SiloArchiveMemberAvailability>? UnverifiedMembers = null) : SiloJournalRecord;
+    IReadOnlyList<SiloArchiveMemberAvailability>? UnverifiedMembers = null,
+    string? ManifestState = null) : SiloJournalRecord;
 
 internal sealed record SiloArchiveMemberAvailability(string ArtifactId, string ArtifactRevision, string State)
 {

@@ -11,6 +11,8 @@ internal sealed record SiloArchiveBacklog(long Count, long Bytes, DateTimeOffset
 /// <summary>Restartable work and reporting projection. The copy records in the journal are the authority.</summary>
 internal sealed class SiloArchiveIndex(string path, SiloArchiveMarker marker)
 {
+    private const string SettledExpiry = "archive-publication-expiry-verified";
+
     private static readonly SiloSqliteFormat Format = new("hvo.cameraagent.silo.archive-index/1", 0x48534149, 1, """
         CREATE TABLE silo_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
         CREATE TABLE archive_work(
@@ -56,11 +58,11 @@ internal sealed class SiloArchiveIndex(string path, SiloArchiveMarker marker)
             await InspectAsync(path, Format, metadata, Path.GetDirectoryName(path)!, cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(path, cancellationToken).ConfigureAwait(false);
         await EnsureSchemaAsync(connection, Format, metadata, cancellationToken).ConfigureAwait(false);
-        // Earlier workers marked the whole publication expired after the first expired copy.
+        // Older terminal rows have no proof that all required copies expired and any local expiry joined the prefix.
         await ExecuteAsync(connection, null, """
             UPDATE archive_work SET state = 'pending', reason = NULL, next_ticks = 0, attempts = 0
-            WHERE state = 'policy-expired' AND reason = 'archive-copy-policy-expired';
-            """, cancellationToken).ConfigureAwait(false);
+            WHERE state = 'policy-expired' AND reason IS NOT $settled;
+            """, cancellationToken, ("$settled", SettledExpiry)).ConfigureAwait(false);
     }
 
     internal bool Matches(SiloArchiveMarker archive) => marker == archive;
@@ -128,17 +130,23 @@ internal sealed class SiloArchiveIndex(string path, SiloArchiveMarker marker)
     }
 
     internal async ValueTask CompleteAttemptAsync(SiloArchiveWork work, string state, string? reason, DateTimeOffset next,
-        SiloCommittedSegment? receipt, DateTimeOffset verifiedUtc, CancellationToken cancellationToken)
+        SiloCommittedSegment? receipt, DateTimeOffset verifiedUtc, bool resetAttempts, CancellationToken cancellationToken,
+        long? expirySequence = null)
     {
         using var connection = await OpenAsync(path, cancellationToken).ConfigureAwait(false);
         await ExecuteAsync(connection, null, """
-            UPDATE archive_work SET state = $state, reason = $reason, next_ticks = $next, attempts = $attempts,
+            UPDATE archive_work SET state = CASE WHEN $state = 'policy-expired' AND
+                    ($expiry IS NULL OR $expiry > (SELECT sequence FROM archive_prefix WHERE row_id = 1)) THEN 'pending' ELSE $state END,
+                reason = CASE WHEN $state = 'policy-expired' AND
+                    $expiry <= (SELECT sequence FROM archive_prefix WHERE row_id = 1) THEN $settled ELSE $reason END,
+                next_ticks = $next, attempts = $attempts,
                 receipt_generation = COALESCE($rg, receipt_generation), receipt_sequence = COALESCE($rs, receipt_sequence),
                 receipt_version = COALESCE($version, receipt_version), receipt_sha256 = COALESCE($sha, receipt_sha256),
                 verified_ticks = COALESCE($verified, verified_ticks)
             WHERE generation = $g AND sequence = $s AND record_index = $i;
             """, cancellationToken, ("$state", state), ("$reason", reason), ("$next", Ticks(next)),
-            ("$attempts", state == "reachable" ? 0 : Math.Min(work.Attempts + 1, 16)), ("$rg", receipt?.Position.Generation),
+            ("$expiry", expirySequence), ("$settled", SettledExpiry),
+            ("$attempts", resetAttempts ? 0 : Math.Min(work.Attempts + 1, 16)), ("$rg", receipt?.Position.Generation),
             ("$rs", receipt?.Position.Sequence), ("$version", receipt?.VersionId), ("$sha", receipt?.Sha256),
             ("$verified", receipt is null ? null : Ticks(verifiedUtc)),
             ("$g", work.Publication.Position.Generation), ("$s", work.Publication.Position.Sequence), ("$i", work.Publication.Index))
@@ -183,7 +191,7 @@ internal sealed class SiloArchiveIndex(string path, SiloArchiveMarker marker)
         using var cutoff = CreateCommand(connection, transaction, """
             WITH first_gap AS (
                 SELECT generation, sequence, record_index FROM archive_work
-                WHERE state <> 'policy-expired' AND (
+                WHERE (state <> 'policy-expired' OR reason IS NOT $settled) AND (
                     state <> 'reachable' OR receipt_generation IS NOT 1 OR receipt_sequence IS NULL OR
                     receipt_sequence > (SELECT sequence FROM archive_prefix WHERE row_id = 1))
                 ORDER BY generation, sequence, record_index LIMIT 1
@@ -194,7 +202,7 @@ internal sealed class SiloArchiveIndex(string path, SiloArchiveMarker marker)
              AND NOT EXISTS (SELECT 1 FROM first_gap
                  WHERE (first_gap.generation, first_gap.sequence, first_gap.record_index) <= (w.generation, w.sequence, w.record_index))
             ORDER BY generation DESC, sequence DESC, record_index DESC LIMIT 1;
-            """);
+            """, ("$settled", SettledExpiry));
         using var latest = CreateCommand(connection, transaction, """
             SELECT group_id, revision_id, generation, sequence, record_index, receipt_generation, receipt_sequence, receipt_version, receipt_sha256, verified_ticks
             FROM archive_work WHERE state = 'reachable' ORDER BY generation DESC, sequence DESC, record_index DESC LIMIT 1;

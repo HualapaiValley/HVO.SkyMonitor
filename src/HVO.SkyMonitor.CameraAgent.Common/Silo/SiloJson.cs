@@ -501,6 +501,8 @@ internal static class SiloJson
                 SiloText.RequireText(receipt.PublicationVersionId, nameof(receipt.PublicationVersionId), 1024);
                 SiloHash.Require(receipt.PublicationSha256, nameof(receipt.PublicationSha256));
                 RequireUtc(receipt.VerifiedUtc, nameof(receipt.VerifiedUtc));
+                if (receipt.ManifestState is not (null or "policy-expired"))
+                    throw new ArgumentException("The receipt has invalid manifest availability.");
                 if (receipt.UnverifiedMembers is { } unavailable)
                 {
                     RequireElements(unavailable, nameof(receipt.UnverifiedMembers));

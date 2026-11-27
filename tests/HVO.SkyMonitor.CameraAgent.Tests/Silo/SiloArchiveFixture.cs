@@ -103,6 +103,8 @@ internal sealed class SiloArchiveFixture : IAsyncDisposable
 
     internal void Put(string key, string version, byte[] bytes) => _versions[(key, version)] = bytes;
 
+    internal void Delete(SiloExactLocator locator) => _versions.TryRemove((locator.Key, locator.VersionId), out _);
+
     internal void Replicate(SiloTestStore store, SiloExactLocator locator) =>
         Put(locator.Key, locator.VersionId, store.Read(locator.Key, locator.VersionId));
 

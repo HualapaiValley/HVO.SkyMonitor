@@ -155,8 +155,8 @@ public sealed class SiloArchiveTests
         var (reference, source, published) = await PublishAndReplicateAsync(silo, fixture, draft, token).ConfigureAwait(false);
         using var archive = SiloArchiveStore.Create(fixture.Settings, silo.Clock);
         var verification = new SiloArchiveVerification(archive, silo.Clock);
-        var records = await verification.VerifyPublicationAsync(reference, source, silo.Index, token).ConfigureAwait(false);
-        var receipt = await silo.AppendAsync([.. records]).ConfigureAwait(false);
+        var records = await verification.VerifyPublicationAsync(reference, source, silo.Index, prefix: 0, token).ConfigureAwait(false);
+        var receipt = await silo.AppendAsync([.. records.Records]).ConfigureAwait(false);
         fixture.Replicate(silo.Local, receipt);
         var copies = await verification.ReadReceiptAsync(receipt, reference, verifyCopies: true, token).ConfigureAwait(false);
         Assert.HasCount(published.Members.Count + 1, copies.Copies);
@@ -188,8 +188,8 @@ public sealed class SiloArchiveTests
         using var archive = SiloArchiveStore.Create(fixture.Settings, silo.Clock);
         var verification = new SiloArchiveVerification(archive, silo.Clock);
 
-        var records = await verification.VerifyPublicationAsync(reference, source, silo.Index, token).ConfigureAwait(false);
-        var receipt = await silo.AppendAsync([.. records]).ConfigureAwait(false);
+        var records = await verification.VerifyPublicationAsync(reference, source, silo.Index, prefix: 0, token).ConfigureAwait(false);
+        var receipt = await silo.AppendAsync([.. records.Records]).ConfigureAwait(false);
         fixture.Replicate(silo.Local, receipt);
         var evidence = await verification.ReadReceiptAsync(receipt, reference, verifyCopies: true, token).ConfigureAwait(false);
 
@@ -214,16 +214,16 @@ public sealed class SiloArchiveTests
         var (reference, source, _) = await PublishAndReplicateAsync(silo, fixture, draft, token).ConfigureAwait(false);
         using var archive = SiloArchiveStore.Create(fixture.Settings, silo.Clock);
         var verification = new SiloArchiveVerification(archive, silo.Clock);
-        var initial = await verification.VerifyPublicationAsync(reference, source, silo.Index, token).ConfigureAwait(false);
-        var firstReceipt = await silo.AppendAsync([.. initial]).ConfigureAwait(false);
+        var initial = await verification.VerifyPublicationAsync(reference, source, silo.Index, prefix: 0, token).ConfigureAwait(false);
+        var firstReceipt = await silo.AppendAsync([.. initial.Records]).ConfigureAwait(false);
         fixture.Replicate(silo.Local, firstReceipt);
         fixture.UnavailableKey = member.Locator.Key;
 
         var previous = await verification.ReadReceiptAsync(firstReceipt, reference, verifyCopies: true, token).ConfigureAwait(false);
         var role = new SiloRoleKey(SiloIdentityKind.Member, member.ArtifactId, member.ArtifactRevision);
         Assert.IsTrue(previous.Copies.Any(copy => copy.Identity.Role == role));
-        var records = await verification.VerifyPublicationAsync(reference, source, silo.Index, token).ConfigureAwait(false);
-        var receipt = await silo.AppendAsync([.. records]).ConfigureAwait(false);
+        var records = await verification.VerifyPublicationAsync(reference, source, silo.Index, prefix: 0, token).ConfigureAwait(false);
+        var receipt = await silo.AppendAsync([.. records.Records]).ConfigureAwait(false);
         fixture.Replicate(silo.Local, receipt);
         var evidence = await verification.ReadReceiptAsync(receipt, reference, verifyCopies: true, token).ConfigureAwait(false);
 
@@ -235,7 +235,7 @@ public sealed class SiloArchiveTests
     [DataRow(true, true)]
     [DataRow(false, false)]
     [DataRow(true, false)]
-    public async Task DeliberateDependencyExpiryBlocksOnlyRequiredReopen(bool required, bool compute)
+    public async Task DeliberateDependencyExpiryPreservesSurvivingCopies(bool required, bool compute)
     {
         var token = TestContext.CancellationToken;
         using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
@@ -250,9 +250,9 @@ public sealed class SiloArchiveTests
         var (reference, source, _) = await PublishAndReplicateAsync(silo, fixture, draft, token).ConfigureAwait(false);
         using var archive = SiloArchiveStore.Create(fixture.Settings, silo.Clock);
         var verification = new SiloArchiveVerification(archive, silo.Clock);
-        var records = await verification.VerifyPublicationAsync(reference, source, silo.Index, token).ConfigureAwait(false);
-        Assert.IsTrue(records.OfType<SiloCopyRecord>().Any(copy => copy.Identity.Id == dependency.ArtifactId));
-        var receipt = await silo.AppendAsync([.. records]).ConfigureAwait(false);
+        var records = await verification.VerifyPublicationAsync(reference, source, silo.Index, prefix: 0, token).ConfigureAwait(false);
+        Assert.IsTrue(records.Records.OfType<SiloCopyRecord>().Any(copy => copy.Identity.Id == dependency.ArtifactId));
+        var receipt = await silo.AppendAsync([.. records.Records]).ConfigureAwait(false);
         fixture.Replicate(silo.Local, receipt);
         fixture.WriteExpiry(dependency.Locator, silo.Clock.GetUtcNow());
 
@@ -261,16 +261,22 @@ public sealed class SiloArchiveTests
             var refused = await Assert.ThrowsExactlyAsync<SiloArchiveException>(() =>
                 verification.ReadReceiptAsync(receipt, reference, verifyCopies: true, token).AsTask()).ConfigureAwait(false);
             Assert.AreEqual("archive-copy-policy-expired", refused.Reason);
-            await Assert.ThrowsExactlyAsync<SiloArchiveException>(() =>
-                verification.VerifyPublicationAsync(reference, source, silo.Index, token).AsTask()).ConfigureAwait(false);
+            var current = await verification.VerifyPublicationAsync(reference, source, silo.Index, prefix: 0, token).ConfigureAwait(false);
+            var receiptRecord = (SiloArchiveReceiptRecord)current.Records[0];
+            Assert.AreEqual("policy-expired", receiptRecord.UnverifiedMembers?.Single().State);
+            var partial = await silo.AppendAsync([.. current.Records]).ConfigureAwait(false);
+            fixture.Replicate(silo.Local, partial);
+            var evidence = await verification.ReadReceiptAsync(partial, reference, verifyCopies: true, token).ConfigureAwait(false);
+            Assert.HasCount(draft.Members.Count + 1, evidence.Copies);
+            Assert.AreEqual("policy-expired", evidence.Unverified.Single().Value);
         }
         else
         {
             var historic = await verification.ReadReceiptAsync(receipt, reference, verifyCopies: true, token).ConfigureAwait(false);
             Assert.IsTrue(historic.Copies.Any(copy => copy.Identity.Id == dependency.ArtifactId));
-            var current = await verification.VerifyPublicationAsync(reference, source, silo.Index, token).ConfigureAwait(false);
-            Assert.IsFalse(current.OfType<SiloCopyRecord>().Any(copy => copy.Identity.Id == dependency.ArtifactId));
-            var laterReceipt = await silo.AppendAsync([.. current]).ConfigureAwait(false);
+            var current = await verification.VerifyPublicationAsync(reference, source, silo.Index, prefix: 0, token).ConfigureAwait(false);
+            Assert.IsFalse(current.Records.OfType<SiloCopyRecord>().Any(copy => copy.Identity.Id == dependency.ArtifactId));
+            var laterReceipt = await silo.AppendAsync([.. current.Records]).ConfigureAwait(false);
             fixture.Replicate(silo.Local, laterReceipt);
             Assert.HasCount(draft.Members.Count + 1, (await verification.ReadReceiptAsync(laterReceipt, reference, verifyCopies: true, token)
                 .ConfigureAwait(false)).Copies);

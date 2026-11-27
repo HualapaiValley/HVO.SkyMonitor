@@ -256,12 +256,17 @@ CameraAgent publishes and opens local captures independently of the archive. The
 publication journal entry, manifest, payloads and dependencies by exact version, computes lengths and SHA-256
 from returned bytes, then appends copy receipts to the instance journal. Stock Silo preserves the source
 version ID on this qualified pairing. A current object, ETag, replication status, or replica arriving ahead of
-one of its required reopen dependencies cannot prove a copy. A receipt requires the manifest, required
-members and required reopen dependencies. Optional members and compute inputs have their own availability.
+one of its required reopen dependencies cannot prove a copy. The manifest, required members and required
+reopen dependencies need exact copy proof or an authorized policy-expiry disposition. Local last-copy
+expiry counts after the archive has verified the journal prefix through its settlement. A partial-expiry
+receipt preserves verified surviving copies and records the expired roles. The worker continues to recheck
+any surviving manifest or required copy after restart. Optional members and compute inputs have their own
+availability.
 When a late copy verifies, the publication lookup adopts a new receipt after its journal version joins the
 verified prefix. Previously issued receipt identities remain valid for the evidence they record. The verifier
 confirms the receipt segment and rechecks the required closure at the archive before reporting the publication
-reachable. Local SQLite keeps the retry and receipt index. The archive prefix check includes journal segments
+reachable. The worker backs off while a replacement receipt awaits prefix coverage. Local SQLite keeps the
+retry and receipt index. The archive prefix check includes journal segments
 and any referenced checkpoints.
 
 ### Inspect, disable and restore

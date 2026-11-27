@@ -352,6 +352,28 @@ internal sealed partial class SiloCatalogIndex
         return (long)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))! == 1;
     }
 
+    internal async ValueTask<SiloJournalPosition?> ReadRoleExpiryAsync(SiloObjectIdentity identity, CancellationToken cancellationToken)
+    {
+        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        using var command = CreateCommand(connection, null, """
+            SELECT j.generation, j.sequence
+            FROM roles r JOIN journal_records j
+                ON (j.generation, j.sequence, j.record_index) > (r.generation, r.sequence, r.record_index)
+            WHERE r.kind = $kind AND r.id = $id AND r.revision = $revision AND r.sha256 = $sha AND r.length = $length
+                AND r.journaled = 'policy-expired' AND r.disposition = 'policy-expired'
+                AND j.record_type = 'availability' AND j.rejection IS NULL
+                AND json_extract(j.record_json, '$.scope') = 'role' AND json_extract(j.record_json, '$.state') = 'policy-expired'
+                AND json_extract(j.record_json, '$.identity.kind') = r.kind
+                AND json_extract(j.record_json, '$.identity.id') = r.id
+                AND json_extract(j.record_json, '$.identity.revision') = r.revision
+            ORDER BY j.generation DESC, j.sequence DESC, j.record_index DESC LIMIT 1;
+            """, ("$kind", KindName(identity.Kind)), ("$id", identity.Id), ("$revision", identity.Revision),
+            ("$sha", identity.Sha256), ("$length", identity.Length));
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? new(reader.GetInt64(0), reader.GetInt64(1)) : null;
+    }
+
     internal async ValueTask<bool> HasVisibleMemberAsync(string artifactId, string revision, CancellationToken cancellationToken)
     {
         using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);

@@ -176,13 +176,28 @@ internal sealed partial class SiloArchiveWorker(IConfiguration configuration, IS
         string? reason = null;
         SiloCommittedSegment? receipt = null;
         var awaitingRefresh = false;
+        long? expirySequence = null;
         using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken))
         {
             deadline.CancelAfter(AttemptLimit);
             try
             {
-                (receipt, awaitingRefresh) = await VerifyReceiptAsync(source, archive, verification, index, work, deadline.Token)
+                var prefix = (await index.ReadPrefixAsync(deadline.Token).ConfigureAwait(false)).Sequence;
+                var position = work.Publication.Position;
+                var committed = await source.State.ReadCommittedSegmentAsync(position, deadline.Token).ConfigureAwait(false)
+                    ?? throw new SiloArchiveException("failed", "archive-source-commit-missing");
+                var evidence = await verification.VerifyPublicationAsync(work.Publication, committed, source.Index, prefix, deadline.Token)
                     .ConfigureAwait(false);
+                if (evidence.Records.Count == 0)
+                {
+                    state = "policy-expired";
+                    expirySequence = evidence.LocalExpirySequence;
+                }
+                else
+                {
+                    (receipt, awaitingRefresh) = await VerifyReceiptAsync(source, archive, verification, work, evidence, prefix, deadline.Token)
+                        .ConfigureAwait(false);
+                }
             }
             catch (SiloArchiveException exception)
             {
@@ -202,21 +217,20 @@ internal sealed partial class SiloArchiveWorker(IConfiguration configuration, IS
         }
         stoppingToken.ThrowIfCancellationRequested();
         var now = clock.GetUtcNow();
-        var retry = now + (state == "reachable" && !awaitingRefresh
+        var resetAttempts = state == "reachable" && !awaitingRefresh;
+        var retry = now + (resetAttempts
             ? TimeSpan.FromDays(1)
             : TimeSpan.FromSeconds(2 << Math.Min(work.Attempts, 7)));
-        await index.CompleteAttemptAsync(work, state, reason, retry, state == "reachable" ? receipt : null, now, stoppingToken)
+        await index.CompleteAttemptAsync(work, state, reason, retry, receipt, now, resetAttempts, stoppingToken, expirySequence)
             .ConfigureAwait(false);
     }
 
     private static async ValueTask<(SiloCommittedSegment Receipt, bool AwaitingRefresh)> VerifyReceiptAsync(
-        SiloInstalledStorage source, SiloArchiveStore archive, SiloArchiveVerification verification, SiloArchiveIndex index,
-        SiloArchiveWork work, CancellationToken cancellationToken)
+        SiloInstalledStorage source, SiloArchiveStore archive, SiloArchiveVerification verification, SiloArchiveWork work,
+        SiloArchivePublicationEvidence evidence, long prefix, CancellationToken cancellationToken)
     {
         var position = work.Publication.Position;
-        var committed = await source.State.ReadCommittedSegmentAsync(position, cancellationToken).ConfigureAwait(false)
-            ?? throw new SiloArchiveException("failed", "archive-source-commit-missing");
-        var records = await verification.VerifyPublicationAsync(work.Publication, committed, source.Index, cancellationToken).ConfigureAwait(false);
+        var records = evidence.Records;
 
         var previous = work.Receipt;
         var operation = FormattableString.Invariant($"archive-copy/{archive.Marker.StoreId}/{position.Generation}/{position.Sequence}/{work.Publication.Index}");
@@ -234,31 +248,31 @@ internal sealed partial class SiloArchiveWorker(IConfiguration configuration, IS
         {
             if (previous is not null)
             {
-                var historical = await verification.ReadReceiptAsync(previous, work.Publication, verifyCopies: false, cancellationToken)
+                var historical = await verification.ReadReceiptAsync(previous, work.Publication, verifyCopies: false, cancellationToken, evidence)
                     .ConfigureAwait(false);
-                if (RefreshReceipt(records, historical) is not { } refreshed) return (previous, false);
+                if (RefreshReceipt(evidence, historical) is not { } refreshed) return (previous, false);
                 records = refreshed;
             }
             receipt = await source.ArchiveJournal.AppendAsync(records, operation, cancellationToken).ConfigureAwait(false);
         }
 
-        if (previous is not null && (receipt.Position.Generation != 1 ||
-            receipt.Position.Sequence > (await index.ReadPrefixAsync(cancellationToken).ConfigureAwait(false)).Sequence))
+        if (previous is not null && (receipt.Position.Generation != 1 || receipt.Position.Sequence > prefix))
         {
             // Keep the receipt which supports the cutoff until the journal prefix includes its replacement.
-            await verification.ReadReceiptAsync(previous, work.Publication, verifyCopies: true, cancellationToken).ConfigureAwait(false);
+            await verification.ReadReceiptAsync(previous, work.Publication, verifyCopies: true, cancellationToken, evidence).ConfigureAwait(false);
             return (previous, true);
         }
-        await verification.ReadReceiptAsync(receipt, work.Publication, verifyCopies: true, cancellationToken).ConfigureAwait(false);
-        return (receipt, recorded is not null);
+        await verification.ReadReceiptAsync(receipt, work.Publication, verifyCopies: true, cancellationToken, evidence).ConfigureAwait(false);
+        return (receipt, false);
     }
 
-    private static IReadOnlyList<SiloJournalRecord>? RefreshReceipt(IReadOnlyList<SiloJournalRecord> records, SiloArchiveReceiptEvidence historical)
+    private static IReadOnlyList<SiloJournalRecord>? RefreshReceipt(SiloArchivePublicationEvidence current, SiloArchiveReceiptEvidence historical)
     {
-        var receipt = (SiloArchiveReceiptRecord)records[0];
-        var copies = historical.Copies.ToDictionary(static copy => copy.Identity.Role);
-        var changed = false;
-        foreach (var copy in records.Skip(1).Cast<SiloCopyRecord>())
+        var receipt = (SiloArchiveReceiptRecord)current.Records[0];
+        var copies = historical.Copies.Where(copy => !current.Expired.Contains(copy.Identity.Role))
+            .ToDictionary(static copy => copy.Identity.Role);
+        var changed = copies.Count != historical.Copies.Count;
+        foreach (var copy in current.Records.Skip(1).Cast<SiloCopyRecord>())
         {
             if (copies.TryGetValue(copy.Identity.Role, out var existing) && existing.Locator == copy.Locator && existing.Identity == copy.Identity)
                 continue;
@@ -269,7 +283,8 @@ internal sealed partial class SiloArchiveWorker(IConfiguration configuration, IS
         if (!changed && unverified.Length == historical.Unverified.Count &&
             unverified.All(member => historical.Unverified.TryGetValue(member.Role, out var state) && state == member.State))
             return null;
-        return [receipt with { UnverifiedMembers = unverified.Length == 0 ? null : unverified }, .. copies.Values];
+        return [receipt with { UnverifiedMembers = unverified.Length == 0 ? null : unverified },
+            .. copies.Values.OrderBy(static copy => copy.Identity.Kind != SiloIdentityKind.Manifest)];
     }
 
     private async ValueTask<SiloArchiveException?> AdvancePrefixAsync(SiloInstalledStorage source, SiloArchiveStore archive,

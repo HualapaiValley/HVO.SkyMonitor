@@ -4,12 +4,16 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Silo;
 
 internal sealed record SiloArchiveReceiptEvidence(IReadOnlyList<SiloCopyRecord> Copies, IReadOnlyDictionary<SiloRoleKey, string> Unverified);
 
+internal sealed record SiloArchivePublicationEvidence(SiloCommittedSegment Publication, SiloGroupManifest Manifest, IReadOnlySet<SiloRoleKey> Expired,
+    IReadOnlyList<SiloJournalRecord> Records, long LocalExpirySequence,
+    Dictionary<(SiloExactLocator Locator, long Length, string Sha256), SiloProbe> Verified);
+
 internal sealed class SiloArchiveVerification(SiloArchiveStore archive, TimeProvider clock)
 {
     private const int CandidateLimit = 32;
 
-    internal async ValueTask<IReadOnlyList<SiloJournalRecord>> VerifyPublicationAsync(
-        SiloPublicationRef reference, SiloCommittedSegment commit, SiloCatalogIndex index, CancellationToken cancellationToken)
+    internal async ValueTask<SiloArchivePublicationEvidence> VerifyPublicationAsync(
+        SiloPublicationRef reference, SiloCommittedSegment commit, SiloCatalogIndex index, long prefix, CancellationToken cancellationToken)
     {
         var journal = await archive.ReadSegmentAsync(commit, cancellationToken).ConfigureAwait(false);
         var publish = GetPublication(journal, reference);
@@ -21,27 +25,37 @@ internal sealed class SiloArchiveVerification(SiloArchiveStore archive, TimeProv
         var copies = new Dictionary<SiloRoleKey, SiloCopyRecord>();
         var unverified = new Dictionary<SiloRoleKey, SiloArchiveMemberAvailability>();
         var verified = new Dictionary<(SiloExactLocator, long, string), SiloProbe>();
+        var expired = new HashSet<SiloRoleKey>();
+        var localExpirySequence = 0L;
         var manifestLocator = archive.ReplicaOf(publish.Manifest.Locator);
         byte[] manifestBytes;
-        var expired = false;
         try
         {
-            var proof = await RequireCopyAsync(manifestIdentity, manifestLocator, captureBytes: true, cancellationToken).ConfigureAwait(false);
+            var proof = await RequireCopyAsync(manifestIdentity, manifestLocator, captureBytes: true, cancellationToken, verified).ConfigureAwait(false);
             manifestBytes = proof.Bytes!;
             copies.Add(manifestIdentity.Role, await MakeCopyAsync(manifestIdentity, proof, cancellationToken).ConfigureAwait(false));
         }
         catch (SiloArchiveException exception) when (exception.Reason == "archive-exact-version-pending")
         {
-            if (!await IsLocallyExpiredAsync(index, manifestIdentity, cancellationToken).ConfigureAwait(false) ||
+            if (!await IsLocallyExpiredAsync(manifestIdentity).ConfigureAwait(false) ||
                 await index.ReadProjectedManifestAsync(reference, cancellationToken).ConfigureAwait(false) is not { } bytes ||
                 bytes.LongLength != manifestIdentity.Length || SiloHash.Sha256(bytes) != manifestIdentity.Sha256)
                 throw;
             manifestBytes = bytes;
-            expired = true;
+            expired.Add(manifestIdentity.Role);
         }
         var manifest = ReadManifest(manifestBytes, journal, publish);
         var required = RequiredRoles(publish, manifest);
         var members = new Dictionary<SiloRoleKey, SiloObjectIdentity>();
+
+        async ValueTask<bool> IsLocallyExpiredAsync(SiloObjectIdentity identity)
+        {
+            if (await index.ReadRoleExpiryAsync(identity, cancellationToken).ConfigureAwait(false) is not { Generation: 1 } expiry ||
+                expiry.Sequence > prefix)
+                return false;
+            localExpirySequence = Math.Max(localExpirySequence, expiry.Sequence);
+            return true;
+        }
 
         async ValueTask CheckRoleAsync(SiloObjectIdentity identity, IReadOnlyList<SiloExactLocator> candidates)
         {
@@ -51,12 +65,7 @@ internal sealed class SiloArchiveVerification(SiloArchiveStore archive, TimeProv
             {
                 try
                 {
-                    var key = (locator, identity.Length, identity.Sha256);
-                    if (!verified.TryGetValue(key, out var proof))
-                    {
-                        proof = await RequireCopyAsync(identity, locator, captureBytes: false, cancellationToken).ConfigureAwait(false);
-                        verified.Add(key, proof);
-                    }
+                    var proof = await RequireCopyAsync(identity, locator, captureBytes: false, cancellationToken, verified).ConfigureAwait(false);
                     copies.Add(identity.Role, await MakeCopyAsync(identity, proof, cancellationToken).ConfigureAwait(false));
                     unverified.Remove(identity.Role);
                     return;
@@ -73,12 +82,11 @@ internal sealed class SiloArchiveVerification(SiloArchiveStore archive, TimeProv
 
             if ((unresolved is null && sawExpiry && candidates.Count <= CandidateLimit) ||
                 ((unresolved is null || unresolved.Reason == "archive-exact-version-pending") &&
-                    await IsLocallyExpiredAsync(index, identity, cancellationToken).ConfigureAwait(false)))
+                    await IsLocallyExpiredAsync(identity).ConfigureAwait(false)))
             {
                 if (required.Contains(identity.Role))
-                    expired = true;
-                else
-                    RecordUnavailable(identity.Role, "policy-expired");
+                    expired.Add(identity.Role);
+                RecordUnavailable(identity.Role, "policy-expired");
                 return;
             }
             if (required.Contains(identity.Role))
@@ -128,17 +136,17 @@ internal sealed class SiloArchiveVerification(SiloArchiveStore archive, TimeProv
             await CheckRoleAsync(identity, candidates).ConfigureAwait(false);
         }
 
-        if (expired)
-            throw new SiloArchiveException("policy-expired", "archive-publication-policy-expired");
+        if (!copies.ContainsKey(manifestIdentity.Role) && !required.Overlaps(copies.Keys))
+            return new(commit, manifest, expired, [], localExpirySequence, verified);
 
         var receipt = new SiloArchiveReceiptRecord(archive.Marker.StoreId, archive.Marker.Bucket, publish.GroupId, publish.RevisionId,
             commit.Position, reference.Index, commit.VersionId, commit.Sha256, clock.GetUtcNow(),
-            unverified.Count == 0 ? null : unverified.Values.ToArray());
-        return [receipt, .. copies.Values];
+            unverified.Count == 0 ? null : unverified.Values.ToArray(), expired.Contains(manifestIdentity.Role) ? "policy-expired" : null);
+        return new(commit, manifest, expired, [receipt, .. copies.Values], localExpirySequence, verified);
     }
 
     internal async ValueTask<SiloArchiveReceiptEvidence> ReadReceiptAsync(SiloCommittedSegment commit, SiloPublicationRef reference,
-        bool verifyCopies, CancellationToken cancellationToken)
+        bool verifyCopies, CancellationToken cancellationToken, SiloArchivePublicationEvidence? current = null)
     {
         var segment = await archive.ReadSegmentAsync(commit, cancellationToken).ConfigureAwait(false);
         if (segment.Records.Count == 0 || segment.Records[0] is not SiloArchiveReceiptRecord receipt ||
@@ -147,8 +155,10 @@ internal sealed class SiloArchiveVerification(SiloArchiveStore archive, TimeProv
             receipt.Publication != reference.Position || receipt.PublicationIndex != reference.Index || receipt.Publication >= commit.Position)
             throw new SiloArchiveException("failed", "archive-receipt-identity-mismatch");
 
-        var journal = await archive.ReadSegmentAsync(new(receipt.Publication, receipt.PublicationSha256, receipt.PublicationVersionId),
-            cancellationToken).ConfigureAwait(false);
+        var publication = new SiloCommittedSegment(receipt.Publication, receipt.PublicationSha256, receipt.PublicationVersionId);
+        if (current is not null && publication != current.Publication)
+            throw new SiloArchiveException("failed", "archive-receipt-publication-mismatch");
+        var journal = await archive.ReadSegmentAsync(publication, cancellationToken).ConfigureAwait(false);
         var publish = GetPublication(journal, reference);
         var copies = segment.Records.OfType<SiloCopyRecord>().ToArray();
         if (copies.Length + 1 != segment.Records.Count || copies.Length == 0 ||
@@ -159,12 +169,23 @@ internal sealed class SiloArchiveVerification(SiloArchiveStore archive, TimeProv
 
         var manifestIdentity = new SiloObjectIdentity(SiloIdentityKind.Manifest, publish.GroupId, publish.RevisionId,
             publish.Manifest.Sha256, publish.Manifest.Length);
-        if (copies[0].Identity != manifestIdentity || copies[0].Locator != archive.ReplicaOf(publish.Manifest.Locator))
+        var manifest = current?.Manifest;
+        var hasManifest = copies[0].Identity.Kind == SiloIdentityKind.Manifest;
+        if (hasManifest == (receipt.ManifestState == "policy-expired"))
             throw new SiloArchiveException("failed", "archive-receipt-manifest-mismatch");
-        var manifestProof = await RequireCopyAsync(manifestIdentity, copies[0].Locator, captureBytes: true, cancellationToken).ConfigureAwait(false);
-        var manifest = ReadManifest(manifestProof.Bytes!, journal, publish);
+        if (hasManifest)
+        {
+            if (copies[0].Identity != manifestIdentity || copies[0].Locator != archive.ReplicaOf(publish.Manifest.Locator))
+                throw new SiloArchiveException("failed", "archive-receipt-manifest-mismatch");
+            if (current?.Expired.Contains(manifestIdentity.Role) != true)
+            {
+                var proof = await RequireCopyAsync(manifestIdentity, copies[0].Locator, captureBytes: true, cancellationToken, current?.Verified)
+                    .ConfigureAwait(false);
+                manifest ??= ReadManifest(proof.Bytes!, journal, publish);
+            }
+        }
         var roles = new Dictionary<SiloRoleKey, SiloCopyRecord>();
-        foreach (var copy in copies.Skip(1))
+        foreach (var copy in copies.Skip(hasManifest ? 1 : 0))
         {
             if (copy.Identity.Kind != SiloIdentityKind.Member || !roles.TryAdd(copy.Identity.Role, copy))
                 throw new SiloArchiveException("failed", "archive-receipt-members-mismatch");
@@ -179,31 +200,35 @@ internal sealed class SiloArchiveVerification(SiloArchiveStore archive, TimeProv
                 copy.Identity.Length != member.Length || copy.Locator != archive.ReplicaOf(member.Locator)))
                 throw new SiloArchiveException("failed", "archive-receipt-members-mismatch");
         }
-        foreach (var dependency in manifest.Dependencies)
+        foreach (var dependency in manifest?.Dependencies ?? [])
         {
             var role = DependencyRole(dependency);
             declared.Add(role);
             if (roles.TryGetValue(role, out var copy) && copy.Identity.Sha256 != dependency.Sha256)
                 throw new SiloArchiveException("failed", "archive-receipt-dependencies-mismatch");
         }
-        if (!required.IsSubsetOf(roles.Keys) || !declared.IsSupersetOf(roles.Keys))
+        if (manifest is not null && !declared.IsSupersetOf(roles.Keys))
             throw new SiloArchiveException("failed", "archive-receipt-dependencies-mismatch");
         var unverified = new Dictionary<SiloRoleKey, string>();
         foreach (var member in receipt.UnverifiedMembers ?? [])
         {
-            if (!declared.Contains(member.Role) || required.Contains(member.Role) ||
+            if ((manifest is not null && !declared.Contains(member.Role)) ||
+                (required.Contains(member.Role) && member.State != "policy-expired") ||
                 roles.ContainsKey(member.Role) || !unverified.TryAdd(member.Role, member.State))
                 throw new SiloArchiveException("failed", "archive-receipt-members-mismatch");
         }
+        if (required.Any(role => !roles.ContainsKey(role) && unverified.GetValueOrDefault(role) != "policy-expired"))
+            throw new SiloArchiveException("failed", "archive-receipt-dependencies-mismatch");
 
         if (verifyCopies)
         {
-            foreach (var group in roles.Values.GroupBy(static copy => (copy.Locator, copy.Identity.Length, copy.Identity.Sha256)))
+            foreach (var group in roles.Values.Where(copy => current?.Expired.Contains(copy.Identity.Role) != true)
+                .GroupBy(static copy => (copy.Locator, copy.Identity.Length, copy.Identity.Sha256)))
             {
                 var copy = group.First();
                 try
                 {
-                    await RequireCopyAsync(copy.Identity, copy.Locator, captureBytes: false, cancellationToken).ConfigureAwait(false);
+                    await RequireCopyAsync(copy.Identity, copy.Locator, captureBytes: false, cancellationToken, current?.Verified).ConfigureAwait(false);
                 }
                 catch (SiloArchiveException exception) when (!group.Any(copy => required.Contains(copy.Identity.Role)) &&
                     IsCopyFailure(exception))
@@ -212,6 +237,10 @@ internal sealed class SiloArchiveVerification(SiloArchiveStore archive, TimeProv
                 }
             }
         }
+        // An archive-only read with an expired manifest can authenticate the directly published members.
+        if (manifest is null)
+            return new(copies.Where(copy => declared.Contains(copy.Identity.Role)).ToArray(),
+                unverified.Where(member => declared.Contains(member.Key)).ToDictionary());
         return new(copies, unverified);
     }
 
@@ -226,11 +255,16 @@ internal sealed class SiloArchiveVerification(SiloArchiveStore archive, TimeProv
     }
 
     private async ValueTask<SiloProbe> RequireCopyAsync(SiloObjectIdentity identity, SiloExactLocator locator, bool captureBytes,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, Dictionary<(SiloExactLocator, long, string), SiloProbe>? verified = null)
     {
+        var key = (locator, identity.Length, identity.Sha256);
+        if (verified is not null && verified.TryGetValue(key, out var previous) && (!captureBytes || previous.Bytes is not null))
+            return previous;
         await RequireNotExpiredAsync(locator, cancellationToken).ConfigureAwait(false);
         var proof = await archive.ProbeAsync(identity, locator, captureBytes, cancellationToken).ConfigureAwait(false);
         await RequireVerifiedAsync(proof, cancellationToken).ConfigureAwait(false);
+        if (verified is not null)
+            verified[key] = proof;
         return proof;
     }
 
@@ -263,13 +297,6 @@ internal sealed class SiloArchiveVerification(SiloArchiveStore archive, TimeProv
             SiloFormats.ExactGetSha256, RetentionPolicy: SiloArchiveStore.RetentionPolicy,
             ArchiveRetention: await archive.ReadRetentionAsync(proof.Locator, cancellationToken).ConfigureAwait(false));
 
-    private static async ValueTask<bool> IsLocallyExpiredAsync(SiloCatalogIndex index, SiloObjectIdentity identity,
-        CancellationToken cancellationToken) =>
-        await index.ReadRoleAsync(identity.Role, cancellationToken).ConfigureAwait(false) is
-        {
-            Journaled: SiloDisposition.PolicyExpired, Disposition: SiloDisposition.PolicyExpired
-        } role && role.Sha256 == identity.Sha256 && role.Length == identity.Length;
-
     private static bool IsCopyFailure(SiloArchiveException exception) =>
         exception.Reason is "archive-exact-version-pending" or "archive-copy-policy-expired" or "archive-version-unreachable" or
             "archive-version-digest-mismatch" or "archive-retention-version-pending" or "archive-retention-unavailable";
@@ -277,10 +304,10 @@ internal sealed class SiloArchiveVerification(SiloArchiveStore archive, TimeProv
     private static SiloRoleKey DependencyRole(SiloManifestDependency dependency) =>
         new(SiloIdentityKind.Member, dependency.ArtifactId, dependency.ArtifactRevision);
 
-    private static HashSet<SiloRoleKey> RequiredRoles(SiloPublishRecord publish, SiloGroupManifest manifest) =>
+    private static HashSet<SiloRoleKey> RequiredRoles(SiloPublishRecord publish, SiloGroupManifest? manifest) =>
         [.. publish.Members.Where(static member => member.Required)
                 .Select(static member => new SiloRoleKey(SiloIdentityKind.Member, member.ArtifactId, member.ArtifactRevision)),
-            .. manifest.Dependencies.Where(static dependency => dependency.Kind == SiloDependencyKind.Reopen && dependency.Required)
+            .. (manifest?.Dependencies ?? []).Where(static dependency => dependency.Kind == SiloDependencyKind.Reopen && dependency.Required)
                 .Select(DependencyRole)];
 
     private static SiloPublishRecord GetPublication(SiloJournalSegment segment, SiloPublicationRef reference)

@@ -217,7 +217,8 @@ public sealed partial class SiloStockStoreTests
             clock.AdvanceRetry();
             var status = await caughtUp.RunCycleAsync(token).ConfigureAwait(false);
             if (status.State == "failed") Assert.Fail(status.Reason ?? "Archive verification failed.");
-            return (await caughtUp.FindAsync(isolated.GroupId, "1", token).ConfigureAwait(false))?.State == "policy-expired" &&
+            var partial = (await caughtUp.FindAsync(isolated.GroupId, "1", token).ConfigureAwait(false))?.Receipt;
+            return partial is not null && partial.ReceiptSha256 != isolatedReceipt.ReceiptSha256 &&
                 status is { State: "reachable", BacklogCount: 0 } && status.VerifiedCutoff?.GroupId == later.GroupId;
         }, token).ConfigureAwait(false);
 
