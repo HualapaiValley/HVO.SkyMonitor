@@ -638,12 +638,16 @@ public sealed class DurableSyncTests
                 Assert.AreEqual(0, mkfifo.ExitCode);
             }
 
-            var sw = System.Diagnostics.Stopwatch.StartNew();
-            using (var fifo = DurableSync.OpenRegularFileReadOnlyNoFollow(dir, fifoName, maxBytes: 1024))
+            var openTask = Task.Run(() => DurableSync.OpenRegularFileReadOnlyNoFollow(dir, fifoName, maxBytes: 1024));
+            if (!openTask.Wait(TimeSpan.FromSeconds(5)))
             {
-                sw.Stop();
+                TryUnblockFifoReader(fifoPath);
+                Assert.Fail("Opening a FIFO without a writer blocked past the 5s bounded timeout (O_NONBLOCK regression).");
+            }
+
+            using (var fifo = openTask.GetAwaiter().GetResult())
+            {
                 Assert.AreEqual(RegularFileOpenStatus.FileNonRegular, fifo.Status);
-                Assert.IsLessThan(TimeSpan.FromSeconds(5), sw.Elapsed, "Opening a FIFO with O_NONBLOCK must never block.");
             }
 
             // 8. Unreadable write-only (0200) oversized vs normal-sized regular files classify via pinned fstatat/statx.
@@ -672,6 +676,20 @@ public sealed class DurableSyncTests
                     File.SetUnixFileMode(unreadableSmallPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
                 }
             }
+        }
+    }
+
+    private static void TryUnblockFifoReader(string fifoPath)
+    {
+        try
+        {
+            using var _ = File.Open(fifoPath, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite);
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
         }
     }
 }

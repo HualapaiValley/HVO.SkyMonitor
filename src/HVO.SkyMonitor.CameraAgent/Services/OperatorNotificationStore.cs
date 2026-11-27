@@ -1238,27 +1238,10 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
         return evictedDestination;
     }
 
-    private static bool HasTruncatedHistoryForOtherDestination(
+    private static bool HasAnyTruncatedHistory(
         HashSet<string> truncatedDestinations,
-        bool anyTruncated,
-        string? currentDestination)
-    {
-        if (anyTruncated)
-        {
-            return true;
-        }
-
-        foreach (var dest in truncatedDestinations)
-        {
-            if (currentDestination is null ||
-                !string.Equals(dest, currentDestination, StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
+        bool anyTruncated)
+        => anyTruncated || truncatedDestinations.Count > 0;
 
     private static (OperatorNotificationSecrets Sanitized, RetiredSecretBindings NextRetired, string? EffectiveWebhookUrl)
         SanitizeSecretStoreSaveInput(
@@ -1397,7 +1380,12 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                 currentState.Options.Smtp,
                 existingBindings.SmtpEndpoint,
                 effectiveSmtp);
+        var sameWebhookDestination = string.Equals(
+            existingActiveWebhookDestFp,
+            currentWebhookDestFp,
+            StringComparison.Ordinal);
         var canCarryWebhookCreds = hasValidDiskState &&
+            sameWebhookDestination &&
             ConfigurationOperatorNotificationConfigProvider.CanApplyProtectedWebhookCredentials(
                 existingSecrets,
                 existingBindings.WebhookOrigin,
@@ -1423,13 +1411,13 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
             var smtpUserStripped = false;
             var smtpPassStripped = false;
 
-            // Fail closed on unversioned SMTP credential replays once any prior destination's retired
-            // fingerprint history was truncated beyond MaxRetiredBindingsPerChannel.
+            // Fail closed on unversioned/provenance-free SMTP credential saves once ANY destination's retired
+            // fingerprint history (including the current endpoint's own history) was truncated beyond
+            // MaxRetiredBindingsPerChannel so evicted credentials can never be admitted or overwrite newer secrets.
             if (!hasCurrentSmtpDestinationProvenance &&
-                HasTruncatedHistoryForOtherDestination(
+                HasAnyTruncatedHistory(
                     retired.TruncatedSmtpEndpoints,
-                    retired.AnySmtpHistoryTruncated,
-                    currentSmtpEndpoint))
+                    retired.AnySmtpHistoryTruncated))
             {
                 if (!smtpUsernameUntouchedByStaleRead &&
                     !string.IsNullOrEmpty(smtpUsername) &&
@@ -1493,11 +1481,14 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
 
             if (canCarrySmtpCreds)
             {
-                if (smtpUserStripped || (smtpPassStripped && string.IsNullOrEmpty(smtpUsername)))
+                var restoreEmptySiblingsOnUnverifiedReplay =
+                    !hasCurrentSmtpDestinationProvenance &&
+                    (smtpUserStripped || smtpPassStripped);
+                if (smtpUserStripped || (restoreEmptySiblingsOnUnverifiedReplay && string.IsNullOrEmpty(smtpUsername)))
                 {
                     smtpUsername = existingSecrets.SmtpUsername;
                 }
-                if (smtpPassStripped || (smtpUserStripped && string.IsNullOrEmpty(smtpPassword)))
+                if (smtpPassStripped || (restoreEmptySiblingsOnUnverifiedReplay && string.IsNullOrEmpty(smtpPassword)))
                 {
                     smtpPassword = existingSecrets.SmtpPassword;
                 }
@@ -1557,13 +1548,13 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                 }
             }
 
-            // Fail closed on unversioned webhook credential replays once any prior origin's retired
-            // fingerprint history was truncated beyond MaxRetiredBindingsPerChannel.
+            // Fail closed on unversioned/provenance-free webhook credential saves once ANY origin's retired
+            // fingerprint history (including the current origin's own history) was truncated beyond
+            // MaxRetiredBindingsPerChannel so evicted credentials can never be admitted or overwrite newer secrets.
             if (!hasCurrentWebhookDestinationProvenance &&
-                HasTruncatedHistoryForOtherDestination(
+                HasAnyTruncatedHistory(
                     retired.TruncatedWebhookOrigins,
-                    retired.AnyWebhookHistoryTruncated,
-                    currentWebhookOrigin))
+                    retired.AnyWebhookHistoryTruncated))
             {
                 if (!webhookAuthTokenUntouchedByStaleRead &&
                     !string.IsNullOrEmpty(webhookAuthToken) &&
@@ -1648,16 +1639,18 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
 
             if (canCarryWebhookCreds)
             {
-                var anyWebhookStripped = webhookTokenStripped || webhookUserKeyStripped || webhookTopicStripped;
-                if (webhookTokenStripped || (anyWebhookStripped && string.IsNullOrEmpty(webhookAuthToken)))
+                var restoreEmptySiblingsOnUnverifiedReplay =
+                    !hasCurrentWebhookDestinationProvenance &&
+                    (webhookTokenStripped || webhookUserKeyStripped || webhookTopicStripped);
+                if (webhookTokenStripped || (restoreEmptySiblingsOnUnverifiedReplay && string.IsNullOrEmpty(webhookAuthToken)))
                 {
                     webhookAuthToken = existingSecrets.WebhookAuthToken;
                 }
-                if (webhookUserKeyStripped || (anyWebhookStripped && string.IsNullOrEmpty(webhookUserKey)))
+                if (webhookUserKeyStripped || (restoreEmptySiblingsOnUnverifiedReplay && string.IsNullOrEmpty(webhookUserKey)))
                 {
                     webhookUserKey = existingSecrets.WebhookUserKey;
                 }
-                if (webhookTopicStripped || (anyWebhookStripped && string.IsNullOrEmpty(webhookNtfyTopic)))
+                if (webhookTopicStripped || (restoreEmptySiblingsOnUnverifiedReplay && string.IsNullOrEmpty(webhookNtfyTopic)))
                 {
                     webhookNtfyTopic = existingSecrets.WebhookNtfyTopic;
                 }
@@ -2133,9 +2126,9 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
         IReadOnlyList<RetiredWebhookBinding>? RetiredWebhooks = null,
         IReadOnlyList<RetiredSmtpBinding>? RetiredSmtps = null,
         IReadOnlyList<string>? TruncatedWebhookOrigins = null,
-        bool AnyWebhookHistoryTruncated = false,
+        bool? AnyWebhookHistoryTruncated = null,
         IReadOnlyList<string>? TruncatedSmtpEndpoints = null,
-        bool AnySmtpHistoryTruncated = false)
+        bool? AnySmtpHistoryTruncated = null)
     {
         public OperatorNotificationSecrets ToSecrets() => new(
             SmtpUsername,
@@ -2152,7 +2145,10 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
         public RetiredSecretBindings ToRetiredBindings()
         {
             var truncatedWebhooks = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var anyWebhookTruncated = AnyWebhookHistoryTruncated;
+            var anyWebhookTruncated = AnyWebhookHistoryTruncated ?? false;
+            var hasExplicitWebhookTruncationMetadata =
+                AnyWebhookHistoryTruncated.HasValue ||
+                TruncatedWebhookOrigins is not null;
             if (TruncatedWebhookOrigins is { Count: > 0 })
             {
                 foreach (var origin in TruncatedWebhookOrigins)
@@ -2172,7 +2168,10 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
             }
 
             var truncatedSmtps = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var anySmtpTruncated = AnySmtpHistoryTruncated;
+            var anySmtpTruncated = AnySmtpHistoryTruncated ?? false;
+            var hasExplicitSmtpTruncationMetadata =
+                AnySmtpHistoryTruncated.HasValue ||
+                TruncatedSmtpEndpoints is not null;
             if (TruncatedSmtpEndpoints is { Count: > 0 })
             {
                 foreach (var endpoint in TruncatedSmtpEndpoints)
@@ -2197,6 +2196,14 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
             {
                 if (RetiredWebhooks is { Count: > 0 })
                 {
+                    if (!hasExplicitWebhookTruncationMetadata && RetiredWebhooks.Count >= MaxRetiredBindingsPerChannel)
+                    {
+                        // Conservative legacy migration rule: pre-truncation-marker envelopes capped RetiredWebhooks
+                        // at MaxRetiredBindingsPerChannel (128) without recording evicted origins, so a full legacy
+                        // list must be treated as truncated so unversioned retries cannot admit forgotten credentials.
+                        anyWebhookTruncated = true;
+                    }
+
                     webhooks = new List<RetiredWebhookBinding>(Math.Min(RetiredWebhooks.Count, MaxRetiredBindingsPerChannel));
                     var start = Math.Max(0, RetiredWebhooks.Count - MaxRetiredBindingsPerChannel);
                     for (var i = 0; i < start; i++)
@@ -2245,6 +2252,14 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
 
                 if (RetiredSmtps is { Count: > 0 })
                 {
+                    if (!hasExplicitSmtpTruncationMetadata && RetiredSmtps.Count >= MaxRetiredBindingsPerChannel)
+                    {
+                        // Conservative legacy migration rule: pre-truncation-marker envelopes capped RetiredSmtps
+                        // at MaxRetiredBindingsPerChannel (128) without recording evicted endpoints, so a full legacy
+                        // list must be treated as truncated so unversioned retries cannot admit forgotten credentials.
+                        anySmtpTruncated = true;
+                    }
+
                     smtps = new List<RetiredSmtpBinding>(Math.Min(RetiredSmtps.Count, MaxRetiredBindingsPerChannel));
                     var start = Math.Max(0, RetiredSmtps.Count - MaxRetiredBindingsPerChannel);
                     for (var i = 0; i < start; i++)

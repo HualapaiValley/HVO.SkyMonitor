@@ -17,7 +17,11 @@ public enum PathEntryKind
     IoError = 7
 }
 
-/// <summary>Classification of attempting to open an existing regular file relative to a pinned directory descriptor.</summary>
+/// <summary>
+/// Classification of attempting to open an existing regular file via
+/// <see cref="DurableSync.OpenRegularFileReadOnlyNoFollow(string, string, int)"/> (descriptor-relative on POSIX;
+/// managed reparse-attribute check before open on non-POSIX platforms).
+/// </summary>
 public enum RegularFileOpenStatus
 {
     Opened = 0,
@@ -34,8 +38,9 @@ public enum RegularFileOpenStatus
 }
 
 /// <summary>
-/// Result of opening an existing regular file relative to its pinned parent directory descriptor via
-/// <see cref="DurableSync.OpenRegularFileReadOnlyNoFollow(string, string, int)"/>.
+/// Result of opening an existing regular file via
+/// <see cref="DurableSync.OpenRegularFileReadOnlyNoFollow(string, string, int)"/> (relative to a pinned parent
+/// directory descriptor on POSIX; managed reparse-attribute check before pathname open on non-POSIX platforms).
 /// </summary>
 public sealed class RegularFileOpenResult : IDisposable
 {
@@ -754,12 +759,14 @@ public static class DurableSync
     }
 
     /// <summary>
-    /// Pins <paramref name="directoryPath"/> with <c>O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC</c> on POSIX, opens
-    /// <paramref name="fileName"/> strictly relative to that directory descriptor via
-    /// <c>openat(dirFd, fileName, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)</c>, verifies <c>S_ISREG</c> and
-    /// <c>st_size &lt;= maxBytes</c> via <c>fstat</c>/<c>statx</c> on the opened descriptor before returning the handle
-    /// (preventing symlink TOCTOU, FIFO open hangs, and unbounded reads), and enforces equivalent non-following checks
-    /// on Windows.
+    /// On Linux and macOS (POSIX), pins <paramref name="directoryPath"/> with
+    /// <c>O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC</c>, opens <paramref name="fileName"/> strictly relative to that
+    /// directory descriptor via <c>openat(dirFd, fileName, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)</c>, and
+    /// verifies <c>S_ISREG</c> and <c>st_size &lt;= maxBytes</c> via <c>fstat</c>/<c>statx</c> on the opened
+    /// descriptor before returning the handle (preventing symlink TOCTOU, FIFO open hangs, and unbounded reads).
+    /// On Windows and other non-POSIX platforms, performs managed reparse-attribute, file-type, and size checks
+    /// before opening the pathname and re-checking the opened handle length (the descriptor-relative
+    /// <c>O_NOFOLLOW</c> TOCTOU guarantee applies only to POSIX).
     /// </summary>
     public static RegularFileOpenResult OpenRegularFileReadOnlyNoFollow(
         string directoryPath,
