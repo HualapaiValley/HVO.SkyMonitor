@@ -21,7 +21,6 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 /// <c>src/HVO.SkyMonitor.CameraAgent.Common</c>. Most classes match their test folder, with dot-delimited
 /// sub-areas for <c>Capture/*</c> and <c>Modules/VirtualSky</c>. Exceptions follow the SUT:
 /// <c>Contracts/</c>, root-level classes, and specific SUT-owned tests (such as
-/// <c>ProcessingGraphDeliveryServiceTests</c> → <see cref="CaptureProcessing"/> and
 /// <c>CameraModuleOwnershipTests</c> → <see cref="Capture"/>) map to their SUT's Area; domain health checks
 /// map to their domain Area; and host authentication, authorization, data, settings, and controllers map to
 /// <see cref="Hosting"/>. The <c>CameraAgent.Common</c> folders <c>DependencyInjection</c>, <c>Frames</c>,

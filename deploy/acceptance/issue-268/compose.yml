@@ -26,8 +26,6 @@ services:
       LocalIdentity__DatabasePath: /var/lib/hvo/data/agent/identity/cameraagent_identity.db
       LocalIdentity__AdminPasswordFile: /run/secrets/owner_password
       DeviceProvisioning__StateDirectory: /var/lib/hvo/data/agent/provisioning
-      CentralIdentity__ServiceUrl: http://central-deny:8080/
-      SkyMonitor__BaseUrl: http://central-deny:8080
       HVO_ZWO_SDK_LIBRARY: ${HVO_ZWO_SDK_LIBRARY:?HVO_ZWO_SDK_LIBRARY must be set}
       HVO_ZWO_CAMERA_SERIAL: ${HVO_ZWO_CAMERA_SERIAL:?HVO_ZWO_CAMERA_SERIAL must be set privately}
       OTEL_SERVICE_NAME: hvo-camera-physical-268

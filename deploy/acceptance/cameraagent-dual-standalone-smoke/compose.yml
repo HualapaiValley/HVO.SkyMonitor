@@ -32,8 +32,6 @@ services:
       LocalIdentity__DatabasePath: ${CAMERA_AGENT_RUNTIME_TARGET}/identity/cameraagent_identity.db
       LocalIdentity__AdminPasswordFile: /run/secrets/owner_password
       DeviceProvisioning__StateDirectory: ${CAMERA_AGENT_RUNTIME_TARGET}/provisioning
-      CentralIdentity__ServiceUrl: http://central-deny:8080/
-      SkyMonitor__BaseUrl: http://central-deny:8080
       OTEL_SERVICE_NAME: ${CAMERA_AGENT_OTEL_SERVICE_NAME:?CAMERA_AGENT_OTEL_SERVICE_NAME must be set}
       OTEL_RESOURCE_ATTRIBUTES: service.instance.id=${CAMERA_AGENT_SERVICE_INSTANCE_ID:?CAMERA_AGENT_SERVICE_INSTANCE_ID must be set}
       OTEL_EXPORTER_OTLP_ENDPOINT: http://collector:4318
