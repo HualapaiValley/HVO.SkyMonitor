@@ -70,12 +70,21 @@ were verified by DOI or NTRS citation. Throughout this audit:
 - **Source repository:** <https://github.com/CroatianMeteorNetwork/RMS>
 - **Verified code status (2026-11-27):** Active (`pushed_at: 2026-11-26`,
   Python/Cython, 227 stars, not archived).
-- **Verified license:** `GPL-3.0` (`LICENSE` SHA `733c072369ca77331f392c40da7404c85c36542c`;
-  source headers in `RMS/BufferedCapture.py` and `RMS/EventMonitor.py` state
-  `GPL-3.0-or-later`). Bundled ML classifier (`RMS/MLFilter.py`) derives from
-  <https://github.com/fiachraf/meteorml> (also verified `GPL-3.0`, last pushed
-  `2022-07-25`) and ships binary `.tflite` weights (`share/meteorml32.tflite`,
-  `share/hyper_model.tflite`) without separate permissive model cards.
+- **Verified license (by artifact):**
+  - **RMS code:** `GPL-3.0` (`LICENSE` SHA `733c072369ca77331f392c40da7404c85c36542c`;
+    source headers in `RMS/BufferedCapture.py` and `RMS/EventMonitor.py` state
+    `GPL-3.0-or-later`).
+  - **Bundled ML code & weights:** `RMS/MLFilter.py` derives from
+    <https://github.com/fiachraf/meteorml> (also verified `GPL-3.0`, last pushed
+    `2022-07-25`) and ships binary `.tflite` weights (`share/meteorml32.tflite`,
+    `share/hyper_model.tflite`) without separate permissive model or
+    training-image licenses.
+  - **GMN high-level public data products:** High-level reduced outputs
+    (radiants, orbits, trajectories, magnitudes, and masses) published at
+    <https://globalmeteornetwork.org/data/> are released under **CC BY 4.0**
+    (attribution required). Raw station image/video archives are not covered by
+    that blanket CC BY 4.0 data grant unless separately licensed (unknown/separate
+    image rights).
 - **Architecture & acquisition:** Multi-process Python capture (`BufferedCapture`
   in `RMS/BufferedCapture.py`) reading H.264/H.265 RTSP IP cameras (commonly
   Sony IMX291/IMX307 boards at 25 fps, 1280×720) via GStreamer (`gi.repository.Gst`)
@@ -99,12 +108,18 @@ were verified by DOI or NTRS citation. Throughout this audit:
   2. Optional `RMS/MLFilter.py` post-filter using LiteRT (`ai_edge_litert`) /
      `tflite_runtime` / TensorFlow Lite over extracted crops to reject clouds,
      insects, planes, and artifacts.
-- **Timing & dropped-frame handling:** Relies on NTP-disciplined host UTC for
-  block start timestamps (`start_time1`/`start_time2`), assuming nominal FPS
-  across the 256-frame block; RTSP reconnect diagnostics (`RtspProbeResult`) and
-  dropped-frame heuristics track stream interruptions, though encoded IP camera
-  latency/jitter can introduce multi-frame timing offsets unless externally
-  calibrated.
+- **Timing & dropped-frame handling (distinguishing capture vs. archived timing):**
+  - **Live capture timing:** Current RMS (`RMS/BufferedCapture.py#L545`) reads
+    **per-frame GStreamer PTS**, applies online smoothing/regression to track
+    frame timing, and **resets the regression when frame drops are detected**,
+    complemented by RTSP reconnect diagnostics (`RtspProbeResult`). Separate
+    clock-domain issues remain: camera-clock drift relative to host NTP and
+    encoded IP-camera pipeline latency/jitter still require external calibration
+    for sub-frame absolute accuracy.
+  - **Archived `FF` block timing:** Each 256-frame `FF*.fits` summary records a
+    block-start UTC timestamp (`start_time1`/`start_time2`) and per-pixel
+    `maxframe` index, so downstream FTP reduction commonly reconstructs frame
+    times from block start plus nominal FPS unless externally corrected.
 - **Calibration & products:** Automated nightly star extraction (`CALSTARS`),
   platepar radial-polynomial astrometry, photometric zero-point calibration,
   `FF*.fits`, `FR*.bin`, `FTPdetectinfo*.txt`, and nightly archive tarballs.
@@ -144,10 +159,11 @@ were verified by DOI or NTRS citation. Throughout this audit:
   the pre-event + event + post-event frames to disk as FITS 2D/3D cubes,
   stacked composites, and optional video.
 - **Timing & dropped-frame handling:** Timestamps frames against the
-  NTP-disciplined Linux system clock; Colas et al. (2020) report roughly
-  `±20 ms` absolute timing accuracy across the distributed network. Separate
-  scheduled long-exposure acquisitions (e.g., every 10 minutes) provide
-  astrometric/photometric star calibration frames.
+  NTP-disciplined Linux system clock; Colas et al. (2020) describe typical
+  **~20 ms NTP host clock accuracy** for FreeTure stations rather than a
+  guaranteed network-wide absolute exposure-timing bound across all stations
+  and camera readout paths. Separate scheduled long-exposure acquisitions (e.g.,
+  every 10 minutes) provide astrometric/photometric star calibration frames.
 - **Dependency risk:** Native C++/Boost/OpenCV/Aravis/CFITSIO dependencies,
   stagnant upstream GitHub maintenance since 2021, and `GPL-3.0` copyleft.
   Its architectural separation of acquisition, circular buffer, temporal
@@ -160,14 +176,15 @@ were verified by DOI or NTRS citation. Throughout this audit:
   International Meteor Conference (IMC 2011, Sibiu), NASA Technical Reports
   Server (NTRS) Document ID `20120004179` (Report M12-1533).
   <https://ntrs.nasa.gov/citations/20120004179>
-- **Software availability & license:** The NTRS paper itself carries *Public
-  Use Permitted* distribution. However, **ASGARD** (*All Sky and Guided
-  Automatic Real-time Detection*, originally developed by R. Weryk at the
-  University of Western Ontario for the Southern Ontario Meteor Network and
-  adopted by NASA MEO) is **not published in an open, maintained public
-  repository under a verified OSI-approved license** suitable for third-party
-  reuse. Published literature describes its concepts; the software is not
-  available as reusable open-source code for HVO.SkyMonitor.
+- **Software availability & license (by artifact):** The NASA NTRS *Public Use
+  Permitted* determination applies **only to the published NTRS paper
+  (`20120004179`)**, not to ASGARD software or network datasets. **ASGARD**
+  (*All Sky and Guided Automatic Real-time Detection*, originally developed by
+  R. Weryk at the University of Western Ontario for the Southern Ontario Meteor
+  Network and adopted by NASA MEO) is **not published in an open, maintained
+  public repository under a verified OSI-approved license** suitable for
+  third-party reuse. Published literature describes its concepts; the software
+  is not available as reusable open-source code for HVO.SkyMonitor.
 - **Architecture & methodology (from published descriptions):** Autonomous
   Linux stations capturing continuous 30 fps all-sky monochrome video (originally
   analog NTSC/Watec cameras through frame grabbers, later upgraded to digital
@@ -211,13 +228,18 @@ were verified by DOI or NTRS citation. Throughout this audit:
 - **Source repository:** <https://github.com/satmonkey/MeteorDL>
 - **Verified code status (2026-11-27):** Python prototype, 20 stars, not
   archived, last pushed `2021-09-11` (unmaintained for >5 years).
-- **Verified license:** Repository `LICENSE` is `MIT` (SHA
-  `6c63ebdb0540932a2779c4065c5315efdb7a7f11`). **Critical compliance gap:**
-  the repository commits pre-trained neural network weights
-  (`tflite-real-640-4/model_full_integer_quant_edgetpu.tflite`,
-  `tflite-real-640-4/saved_model/model_float32.tflite`,
-  `trt_fp16_dir/saved_model/saved_model.pb`) trained on GMN/RMS imagery with
-  **no documented dataset license, training-data provenance, or model card**.
+- **Verified license (by artifact):**
+  - **Code:** Repository `LICENSE` is `MIT` (SHA
+    `6c63ebdb0540932a2779c4065c5315efdb7a7f11`).
+  - **Training images & committed model weights (unknown rights / compliance gap):**
+    The repository commits pre-trained SSD MobileNet V2 FPNLite 640×640 weights
+    (`tflite-real-640-4/model_full_integer_quant_edgetpu.tflite`,
+    `tflite-real-640-4/saved_model/model_float32.tflite`,
+    `trt_fp16_dir/saved_model/saved_model.pb`). The `MeteorDL` README describes
+    retraining on **`~1,000` custom meteor images in Pascal VOC format** with
+    augmentation, **without identifying any upstream source (such as GMN/RMS)**
+    and with **unknown/undocumented image dataset rights, weight license, or
+    model card**.
 - **Architecture & buffering:** Captures RTSP/IP/USB/MIPI camera streams via
   OpenCV (FFmpeg or GStreamer backend). Maintains a ring buffer of frames (GPU
   ring buffer on CUDA PC; `dvg-ringbuffer` Cython CPU ring buffer on Jetson
@@ -263,11 +285,16 @@ were verified by DOI or NTRS citation. Throughout this audit:
      optional/simplifiable for fixed ground cameras).
   4. k-NN ROI association and multi-frame track classification (star, meteor,
      noise).
-- **Published embedded performance evidence:** On the 2022 Tau-Herculids
-  1920×1200 HD video campaign, the authors report **30–42 fps real-time CPU
-  processing on a Raspberry Pi 4 (1.5 GHz) at ~3.8–6 W** instant power, with
-  ~80.4% tracking rate across visible campaign meteors (Ciocan et al. 2023;
-  FMDT README).
+- **Published embedded performance evidence (attributed per source):**
+  - **Ciocan et al. (2023, `arXiv:2309.06027`):** Report **26 fps at ~6 W** on
+    a Raspberry Pi 4 and an **84% aggregate detection rate** on their evaluated
+    meteor campaign video workload.
+  - **`alsoc/fmdt` repository README:** Self-reports **30 fps at ~4 W** instant
+    power on a Raspberry Pi 4 (`1.5 GHz`) on an HD video sequence (summary note
+    without a full benchmark table or detection-rate table).
+  - Hardware throughput and detection rates on HVO's own sensor geometry and
+    operating conditions remain open target-hardware qualification questions
+    (`W7–W12`).
 - **Limitations & relevance:** Designed primarily as a stream/file offline or
   airborne CLI tracker (8-bit video input via `ffmpeg-io`, no native FITS/Mono16
   linear astrometry or ring-buffered Silo durability). Crucially, it is the
@@ -350,24 +377,30 @@ were verified by DOI or NTRS citation. Throughout this audit:
   gradient-weighted class activation mapping.* Planetary and Space Science,
   238, 105802 (`arXiv:2310.16826`).
   <https://doi.org/10.1016/j.pss.2023.105802>
-- **Key findings relevant to V2:**
-  - Transfer-learned CNN classifiers paired with **Grad-CAM** spatial
-    activation maps provide high rejection accuracy on classical-detector
-    candidates (filtering insects, clouds, aircraft, lightning, and lens flares)
-    while producing human-inspectable localization evidence rather than opaque
-    scores.
-  - Confirms the superiority of a **two-stage architecture** (fast classical
-    candidate generation + optional ML/AI secondary assessment on candidate
-    crops/summaries) over running heavy end-to-end neural object detectors on
-    every raw camera frame, because:
-    1. Classical stage 1 guarantees deterministic linear residual measurement,
-       bounded CPU-only execution, and zero missed saturated fireballs caused by
-       domain shift in training weights.
-    2. Stage 2 AI assessment runs only on candidate events (seconds/minutes
-       apart, not 5–30 times per second continuously), eliminating continuous
-       GPU/NPU thermal load and making CPU fallback viable on Raspberry Pi 5.
-    3. Stage 2 outputs remain append-only assessments (`transient-assessment-producer-v2`)
-       that never overwrite deterministic measurements.
+- **Verified findings from Peña-Asensio et al. (2023, `arXiv:2310.16826`):**
+  - Evaluated transfer-learned CNN candidate-image classifiers on Spanish Meteor
+    Network (**SPMN**) candidate images, reporting high meteor-class precision
+    (up to 98% on evaluated SPMN candidate sets) when distinguishing meteors
+    from false triggers such as clouds, insects, aircraft, and static artifacts.
+  - Demonstrated **Grad-CAM** (combined with early convolutional activations)
+    for spatial localization and human-inspectable visual attribution on those
+    candidate images.
+  - **Scope limit of cited paper:** Peña-Asensio et al. (2023) did **not**
+    benchmark two-stage classical + ML pipelines against continuous end-to-end
+    neural video detectors, did **not** evaluate Raspberry Pi CPU fallback
+    latency/thermals, and did **not** establish saturated-fireball recall
+    guarantees.
+- **Resulting HVO V2 architectural design choices and open qualification questions:**
+  - HVO selects a **two-stage architecture** (mandatory deterministic Stage 1
+    classical candidate generation + optional asynchronous Stage 2 AI
+    assessment with append-only `transient-assessment-producer-v2` records) as
+    an **HVO engineering and scientific-integrity decision**, motivated by
+    preserving deterministic linear residual measurement on raw streams and
+    decoupling acquisition from optional ML execution.
+  - **Open qualification questions (to be measured in `W7–W12`, not assumed
+    from literature):** actual Raspberry Pi 5 CPU Stage 2 inference latency and
+    thermal headroom, Stage 1 vs. Stage 2 recall on saturated/fragmenting
+    fireballs, and precision/recall tradeoffs on HVO optics and sky conditions.
 
 ---
 
@@ -383,16 +416,16 @@ paper descriptions.
 | **Acquisition formats** | RTSP H.264/H.265 (GStreamer/OpenCV), 8-bit 1280×720 @ 25 fps typical | Raw GigE (Aravis/Pylon/TIS), V4L2, USB, video; 8/12-bit 1296×964 @ 30 fps | Monochrome all-sky 30 fps video (analog grabber / digital) | 8-bit analog/digital video @ 25–30 fps | RTSP/USB/MIPI via OpenCV (FFmpeg/GStreamer) 720p/1080p | 8-bit video via `ffmpeg-io` (FFmpeg pipe) | 14-bit DSLR RAW still exposures (~30 s) + video (`freeture_DFN`) | Dual RTSP H.264 (HD 1080p + SD 576p) @ 25 fps | Consumes reduced astrometric/photometric text/pickle files |
 | **Buffering** | Ping-pong shared-memory 256-frame blocks (~10.24 s) | In-memory `boost::circular_buffer<Frame>` | In-memory rolling frame buffer | 256-frame RAM block compressed to 4-plane FTP | CUDA GPU ring (PC) or `dvg-ringbuffer` CPU ring (Jetson/Pi) | Streaming pipeline frames (no long pre-event ring) | On-disk RAW capture spool + event pruning | Disk ring of rolling 1-minute MP4 segments | N/A (offline post-processing) |
 | **Trigger behavior** | Continuous 256-frame FTP + online bright-pixel `FR` fireball extractor | Temporal frame-diff + ROI clustering -> wait post-trigger frames -> flush ring | Real-time frame-diff/threshold -> save event clip + summary | Post-block detection on FTP maxpixel/maxframe planes | 1-second maxpixel -> TF2/TFLite object detector -> save pre/post clip | Continuous per-frame CCL + motion comp + k-NN tracker | Post-exposure streak detection on 30 s stills | Async detection on SD 1-min MP4 -> promote HD+SD clips | N/A |
-| **Timing model** | Host NTP UTC at block start + nominal FPS interpolation | Host NTP UTC per frame; ~±20 ms network accuracy (Colas et al. 2020) | NTP/GPS host clock per video frame | NTP/GPS-stamped block start + frame index | Host wall clock / video timestamps | Frame index in input stream | GNSS-disciplined LC shutter De Bruijn timecode (sub-ms relative) | NTP/GPS + 1-min MP4 timestamps | Requires per-frame UTC + timing uncertainty inputs |
-| **Dropped-frame handling** | `RtspProbeResult` reconnects + block frame-count tracking; jitter can skew timing | Acquisition thread logs/handles drops; ring preserves actual captured frames | Frame drop monitoring in capture loop | Frame-index gaps break nominal FPS assumption if undetected | Best-effort OpenCV capture loop | Sequential decoded frame stream | Shutter pulse sequence encodes gaps directly | Missing MP4/frame gaps handled at segment boundary | Models timing offsets between stations via Monte Carlo |
+| **Timing model** | Capture: per-frame GStreamer PTS with online smoothing/regression (`RMS/BufferedCapture.py#L545`); archived `FF` blocks store block-start UTC + `maxframe` index (commonly reduced with nominal FPS) | Host NTP UTC per frame; Colas et al. (2020) describe typical ~20 ms NTP host clock accuracy (not a guaranteed network-wide absolute exposure bound) | NTP/GPS host clock per video frame | NTP/GPS-stamped block start + frame index | Host wall clock / video timestamps | Frame index in input stream | GNSS-disciplined LC shutter De Bruijn timecode (sub-ms relative) | NTP/GPS + 1-min MP4 timestamps | Requires per-frame UTC + timing uncertainty inputs |
+| **Dropped-frame handling** | `RMS/BufferedCapture.py#L545` resets PTS smoothing/regression on detected drops + `RtspProbeResult` reconnects; camera-clock drift and IP latency remain separate calibration concerns | Acquisition thread logs/handles drops; ring preserves actual captured frames | Frame drop monitoring in capture loop | Frame-index gaps break nominal FPS assumption if undetected | Best-effort OpenCV capture loop | Sequential decoded frame stream | Shutter pulse sequence encodes gaps directly | Missing MP4/frame gaps handled at segment boundary | Models timing offsets between stations via Monte Carlo |
 | **Calibration** | Nightly star `CALSTARS` + `platepar` radial polynomial + photometry | Periodic long-exposure FITS captures + central astrometry | All-sky star plate astrometry | Star field calibration per camera | Static mask BMP only (no astrometry/photometry) | None in C core (`pyFMDT` adds astrophotometry) | Deep-star astrometry on high-res RAW stills | Star-plate astrometry via AMS pipeline | Consumes externally calibrated RA/Dec & magnitudes |
 | **Event products** | `FF*.fits` (4-plane), `FR*.bin` (cropped fireball video), `FTPdetectinfo`, tarballs | FITS 2D/3D frame cubes, stacked FITS/PNG, optional video | Event video clip, composite still, astrometry logs | `FF*.bin` (4-plane FTP), detection logs | MP4 event video clip only | Track logs, bounding boxes, annotated MP4 (`fmdt-visu`) | RAW/FITS stills, cropped event stacks, timecode tables | HD/SD MP4 event clips, stacked composites, JSON | Solved trajectory pickles, orbit tables, plots |
 | **Detector stages** | Threshold + 3D grouping + KHT + optional `MLFilter` (TFLite/LiteRT) | Dynamic mask + frame diff + ROI clustering (`DetectionTemporal`) | Frame diff + thresholding + linear motion validation | FTP compression -> matched filter / Hough (`FTP_Detect`) | Single-stage neural object detector on 1 s maxpixel | Hysteresis -> CCL -> motion comp -> k-NN track classifier | Classical streak + CNN verification (GFO literature) | Classical motion/streak + ML rejection | Multi-station Monte Carlo solver (background) |
 | **Multi-station (background)** | Central GMN server runs WMPL daily | Central FRIPON server triangulates + meteorite search | NASA MEO central trajectory/orbit pipeline | CAMS central coincidence + orbit catalog | None (standalone or feeds RMS) | Designed for multi-camera airborne/space campaigns | GFO central triangulation + dark-flight meteorite recovery | AMS central multi-station solver | Core Monte Carlo trajectory & orbit engine |
-| **Performance evidence** | Proven on 1,000+ RPi3/4/5 stations @ 720p 25 fps (Vida et al. 2021) | Proven on 100+ Debian mini-PCs @ 1296×964 30 fps (Colas et al. 2020) | Operational US all-sky network (Cooke & Moser 2012) | Operational multi-camera clusters (Jenniskens et al. 2011) | Tested on GTX 1080, Jetson Nano 4 GB, RPi4 + Coral TPU (README, no formal benchmark paper) | **Published:** 30–42 fps on RPi4 @ 1.5 GHz, ~3.8–6 W on 1920×1200 HD; ~80.4% tracking (Ciocan et al. 2023) | Operational continental/global network (Howie et al. 2017; Devillepoix et al. 2020) | Operational Ubuntu Mini-PCs running 7× dual-stream cameras | Benchmarked on simulated & real multi-station datasets (Vida et al. 2020) |
+| **Performance evidence** | Vida et al. (2021) report **>450 GMN cameras across 30 countries** (mid-2021, RPi 3/4-class @ 720p 25 fps) | Proven on 100+ Debian mini-PCs @ 1296×964 30 fps (Colas et al. 2020) | Operational US all-sky network (Cooke & Moser 2012) | Operational multi-camera clusters (Jenniskens et al. 2011) | Tested on GTX 1080, Jetson Nano 4 GB, RPi4 + Coral TPU (README, no formal benchmark paper) | **Ciocan et al. (2023):** 26 fps at ~6 W on RPi4, 84% aggregate detection.<br>**FMDT README:** 30 fps at ~4 W on RPi4 (1.5 GHz) HD sequence. | Operational continental/global network (Howie et al. 2017; Devillepoix et al. 2020) | Operational Ubuntu Mini-PCs running 7× dual-stream cameras | Benchmarked on simulated & real multi-station datasets (Vida et al. 2020) |
 | **Maintenance status (2026-11-27)** | **Active** (`pushed_at: 2026-11-26`) | **Low/Stagnant** on GitHub (`fripon/freeture`: `2021-11-15`; `freeture_DFN`: `2023-02-13`) | Institutional (no public GitHub repo) | Institutional / private binaries | **Unmaintained** (`2021-09-11`) | **Active** (`pushed_at: 2026-06-10`; `streampu`: `2026-11-25`) | Mixed active/archived repos (`2019–2026`) | Active network (`allsky7_contrib`: `2024-09-28`) | **Active** (`pushed_at: 2026-11-26`) |
 | **Dependency risk** | Python + Cython + GStreamer + OpenCV + LiteRT/TFLite + GPL | C++ + Boost + OpenCV + Aravis/Pylon + CFITSIO + GPL | Closed/hardware-specific legacy stack | Closed binaries, Windows/legacy focus | Deprecated TF2 Object Detection API + Coral EdgeTPU + unverified weights | C/C++ + CMake + external `ffmpeg` CLI + optional OpenCV | Mixed/missing licenses across repos | Closed/non-commercial ecosystem | Python scientific stack (SciPy/Astropy/Numba) |
-| **Software / data / model license** | **Code:** `GPL-3.0` (`GPL-3.0-or-later`). **ML:** `meteorml` `GPL-3.0`; `.tflite` weights lack separate permissive model license. | **Code:** `GPL-3.0` (`GPL-3.0-or-later`). | **Paper:** Public Use Permitted. **Code:** Not available under public OSI license. | **Papers:** Academic. **Code:** Closed/restricted binaries; no OSI license. | **Code:** `MIT`. **Weights:** Unverified dataset/model license provenance. | **Code:** `MIT`. **Submodules:** `ffmpeg-io` (`MIT`), `nrc2` (`BSL-1.0`), `c-vector` (`BSD-3-Clause`), `streampu` (`MIT`). | **Mixed:** `RAW2FITS`/`dtf_triangulation` `MIT`; `freeture_DFN` `GPL-3.0`; `data-pipeline_de-bruijn` & `GFE_converters` unlicensed. | **Restrictive:** `AS7-CLA v1` (non-commercial, non-compete); not OSI. | **Code:** `MIT`. |
+| **Software / data / model license** | **Code:** `GPL-3.0` (`GPL-3.0-or-later`). **ML:** `meteorml` `GPL-3.0`; `.tflite` weights & training images lack separate permissive license. **High-level GMN data** (radiants/orbits/magnitudes/masses at `globalmeteornetwork.org/data/`): **`CC BY 4.0`** (raw imagery separate/unknown). | **Code:** `GPL-3.0` (`GPL-3.0-or-later`). | **NTRS Paper only:** Public Use Permitted. **ASGARD Code & data:** Not available under public OSI license. | **Papers:** Academic. **Code:** Closed/restricted binaries; no OSI license. | **Code:** `MIT`. **Training images (~1,000 custom VOC) & committed weights:** Unknown/undocumented rights. | **Code:** `MIT`. **Submodules:** `ffmpeg-io` (`MIT`), `nrc2` (`BSL-1.0`), `c-vector` (`BSD-3-Clause`), `streampu` (`MIT`). | **Mixed:** `RAW2FITS`/`dtf_triangulation` `MIT`; `freeture_DFN` `GPL-3.0`; `data-pipeline_de-bruijn` & `GFE_converters` unlicensed. | **Restrictive:** `AS7-CLA v1` (non-commercial, non-compete); not OSI. | **Code:** `MIT`. |
 
 ---
 
@@ -402,15 +435,15 @@ paper descriptions.
 
 | Component / Candidate | Verified License | Permitted Use in HVO.SkyMonitor | Prohibited Actions / Constraints |
 | --- | --- | --- | --- |
-| **GMN / RMS** (`CroatianMeteorNetwork/RMS`) | `GPL-3.0` (`GPL-3.0-or-later`) | Study published Vida et al. (2021) paper and architectural concepts only. | **Do NOT copy source files, Cython modules, or `.tflite` weights** into `HVO.SkyMonitor`. |
+| **GMN / RMS** (`CroatianMeteorNetwork/RMS`) | **Code:** `GPL-3.0` (`GPL-3.0-or-later`); **high-level data** (`globalmeteornetwork.org/data/`): `CC BY 4.0`; **raw imagery & `.tflite` weights:** separate / undocumented | Study published Vida et al. (2021) paper and architectural concepts; high-level GMN tabular data (`CC BY 4.0`) may be used with attribution where applicable. | **Do NOT copy RMS source files, Cython modules, `.tflite` weights, or unverified raw station imagery** into `HVO.SkyMonitor`. |
 | **FRIPON / FreeTure** (`fripon/freeture`, `freeture_DFN`) | `GPL-3.0` (`GPL-3.0-or-later`) | Study Colas et al. (2020) paper and ring-buffer/thread architecture only. | **Do NOT copy or link C++ code** into `HVO.SkyMonitor`. |
 | **fiachraf/meteorml** | `GPL-3.0` | Study ML feature ideas only. | **Do NOT copy code or trained weights.** |
 | **AllSky7** (`mikehankey/allsky7_contrib`) | Custom `AS7-CLA v1` (non-commercial, non-compete) | High-level architectural comparison only. | **Strictly prohibited:** no code copying, derivative works, or CLA adoption. |
-| **NASA ASGARD & CAMS `FTP_Detect`** | Closed / institutional / no OSI grant | Clean-room implementation of peer-reviewed published mathematics (FTP 4-plane summary, matched-filter/Hough concepts). | **Do NOT incorporate binaries or non-public source.** |
-| **MeteorDL** (`satmonkey/MeteorDL`) | Code `MIT`; model weights **unverified provenance** | Architectural reference (1 s maxpixel screening + ring buffer). | **Do NOT ship or embed `tflite-real-640-4` / `trt_fp16_dir` weights** without verified dataset/model licensing. |
+| **NASA ASGARD & CAMS `FTP_Detect`** | **NTRS Paper `20120004179` only:** Public Use Permitted; **ASGARD & CAMS code/binaries:** closed / institutional / no OSI grant | Clean-room implementation of peer-reviewed published mathematics (FTP 4-plane summary, matched-filter/Hough concepts). | **Do NOT incorporate binaries or non-public source**, and do not treat the NTRS paper determination as a license for ASGARD software or data. |
+| **MeteorDL** (`satmonkey/MeteorDL`) | **Code:** `MIT`; **~1,000 custom VOC training images & committed weights:** unknown/undocumented rights | Architectural reference (1 s maxpixel screening + ring buffer). | **Do NOT ship or embed `tflite-real-640-4` / `trt_fp16_dir` weights** without verified dataset/model licensing. |
 | **FMDT** (`alsoc/fmdt` + submodules) | `MIT` + `BSL-1.0` + `BSD-3-Clause` | Permissive reference; could be invoked as an optional external CLI/runner prototype under `#140` or clean-room adapted in C# with attribution in `THIRD-PARTY-NOTICES.md`. | Must retain MIT/BSL-1.0/BSD-3-Clause notices if any code is vendored; optional OpenCV (`Apache-2.0`) avoided in core. |
 | **WMPL** (`wmpg/WesternMeteorPyLib`) | `MIT` | Scientific reference for single-station export fields; optional offline analysis outside CameraAgent. | Out of scope for standalone CameraAgent runtime. |
-| **FFmpeg CLI** (operator/container installed, already used via `src/HVO.SkyMonitor.Video.FFmpeg`) | Core `LGPL-2.1+`; `libx264`/`libx265` force `GPL-2.0+`; native `NVENC` SDK flags force `--enable-nonfree` (non-redistributable) | Invoke external `/usr/bin/ffmpeg` and `/usr/bin/ffprobe` across an OS process boundary (matching `FFmpegOptions` in `src/HVO.SkyMonitor.Video.FFmpeg/FFmpegOptions.cs`), never statically link GPL/nonfree FFmpeg libraries into .NET assemblies. | **Redistribution & patent gate:** HVO release images must audit distro FFmpeg build flags (`LGPL` vs `GPL`), avoid bundling `--enable-nonfree` builds, and account for H.264/H.265 patent exposure (prefer passthrough bitstream copy for native clips, distro-supplied packages or VAAPI/royalty-free codecs where redistributed). |
+| **FFmpeg CLI** (operator/container installed, already used via `src/HVO.SkyMonitor.Video.FFmpeg`) | Core `LGPL-2.1+`; optional GPL components (e.g., `libx264`/`libx265`) require `--enable-gpl`; upstream NVENC via `ffnvcodec` (`FFmpeg/configure#L3592`) loads the NVIDIA driver dynamically and **does not by itself force `--enable-nonfree`**, whereas linking proprietary SDKs (e.g., `--enable-cuda-nvcc`, `--enable-libnpp`, `libfdk_aac`) does force `--enable-nonfree` | Invoke external `/usr/bin/ffmpeg` and `/usr/bin/ffprobe` across an OS process boundary (matching `FFmpegOptions` in `src/HVO.SkyMonitor.Video.FFmpeg/FFmpegOptions.cs`), never statically link GPL/nonfree FFmpeg libraries into .NET assemblies. | **Redistribution & patent gate:** Base redistribution decisions on the **actual `ffmpeg -buildconf` flags and linked components** of any shipped binary/image (`LGPL` vs `GPL` vs `--enable-nonfree`), avoid bundling `--enable-nonfree` builds, and account for H.264/H.265 patent exposure (prefer passthrough bitstream copy for native clips, distro-supplied packages or VAAPI/royalty-free codecs where redistributed). |
 | **ONNX Runtime** (`Microsoft.ML.OnnxRuntime`) | `MIT` (core & managed .NET bindings); vendor EPs (`CUDA`, `TensorRT`, `OpenVINO`, `DirectML`, `CoreML`) carry separate vendor redistributable terms | Preferred optional local AI inference engine for V2 Stage 2 classifiers (CPU EP built-in; GPU/NPU EPs optional via `#140` certified extension packages or operator-installed runtimes). | Never bundle proprietary CUDA/TensorRT runtimes inside base CameraAgent images without explicit vendor redistribution review; keep CPU EP as deterministic baseline. |
 | **ZWO ASI SDK** (`libASICamera2.so`, already wrapped in `src/HVO.SkyMonitor.CameraAgent.Modules.Zwo`) | Proprietary vendor binary SDK | Operator-supplied or separately qualified native library loaded dynamically via `AsiNativeApi`, matching delivered `#265`–`#267` boundary. | Extending `AsiNativeApi` with video-mode entry points (`ASIStartVideoCapture`, `ASIGetVideoData`, `ASIStopVideoCapture`, `ASIGetDroppedFrames`) requires no new license category beyond existing ZWO runtime loading. |
 
@@ -418,8 +451,10 @@ paper descriptions.
 
 Unlike source code, a neural network checkpoint carries **two independent legal
 layers**: (a) the weight license itself and (b) the license and redistribution
-rights of the training dataset (e.g., GMN public data, FRIPON archives, or
-synthetic VirtualSky renders). For V2:
+rights of the training dataset (distinguishing, for example, GMN's `CC BY 4.0`
+high-level tabular data at `globalmeteornetwork.org/data/` from raw station
+imagery with separate/unverified rights, FRIPON archives, or synthetic
+VirtualSky renders). For V2:
 
 1. **No third-party weights without provenance:** CameraAgent will never ship
    or certify model files whose training dataset license and weight redistribution
