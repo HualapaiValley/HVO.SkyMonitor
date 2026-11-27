@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Decides whether a pushed tag may become a final release, vX.Y.Z, or a release candidate, vX.Y.Z-rc.N (install
-# contract section 3, #1310), before anything is built. It needs gh, signed in or with GH_TOKEN (contents and actions
-# read), and jq, and runs in a checkout of the tagged commit.
+# Decides whether a pushed tag may become a final release or a beta or release candidate (install contract section 3,
+# #1310), before anything is built. It needs gh, signed in or with GH_TOKEN (contents and actions read), and jq, and
+# runs in a checkout of the tagged commit.
 #
 #   scripts/release:gate <tag> <commit>
 #
 # Every one of these must hold, or it fails naming the first that does not:
 #   - the tag names the product version, the VersionPrefix in Directory.Build.props (scripts/release:version), as
-#     vX.Y.Z or vX.Y.Z-rc.N; it is an annotated tag, and it names <commit>;
+#     vX.Y.Z, vX.Y.Z-beta.N or vX.Y.Z-rc.N; it is an annotated tag, and it names <commit>;
 #   - <commit> is on main, the release branch: its head, or a commit before it;
 #   - a final release has its CHANGELOG.md section and its upgrade notes (scripts/release:notes);
 #   - no published release has the tag yet (the drafting job checks drafts too, with a token that can see them);

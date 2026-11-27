@@ -24,9 +24,12 @@ internal sealed class OciReleaseFixture : IDisposable
     public const string IndexMediaType = "application/vnd.oci.image.index.v1+json";
     public const string ManifestMediaType = "application/vnd.oci.image.manifest.v1+json";
 
-    private OciReleaseFixture(string root)
+    private readonly string _version;
+
+    private OciReleaseFixture(string root, string version)
     {
         Root = root;
+        _version = version;
         X64 = WriteElf("x64", 0x3e);
         Arm64 = WriteElf("arm64", 0xb7);
         Notes = Path.Combine(root, "upgrade-notes");
@@ -44,9 +47,9 @@ internal sealed class OciReleaseFixture : IDisposable
 
     public string IndexDigest { get; private set; } = string.Empty;
 
-    public static OciReleaseFixture Create()
+    public static OciReleaseFixture Create(string version = Version)
     {
-        var fixture = new OciReleaseFixture(Directory.CreateTempSubdirectory("hvo-release-tool-").FullName);
+        var fixture = new OciReleaseFixture(Directory.CreateTempSubdirectory("hvo-release-tool-").FullName, version);
         fixture.Build();
         return fixture;
     }
@@ -82,7 +85,7 @@ internal sealed class OciReleaseFixture : IDisposable
             var imageLabels = new JsonObject
             {
                 ["io.hvo.skymonitor.component"] = "CameraAgent",
-                ["org.opencontainers.image.version"] = Version,
+                ["org.opencontainers.image.version"] = _version,
                 ["org.opencontainers.image.revision"] = Commit,
                 ["org.opencontainers.image.created"] = Created,
                 ["io.hvo.skymonitor.state-contracts"] = StateContracts
@@ -153,7 +156,7 @@ internal sealed class OciReleaseFixture : IDisposable
         =>
         [
             "create-release",
-            "--version", Version,
+            "--version", _version,
             "--commit", Commit,
             "--created-utc", Created,
             "--image-archive", ImageArchive,

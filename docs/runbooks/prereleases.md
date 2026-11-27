@@ -7,7 +7,7 @@ section 4. It is a GitHub pre-release, needs no CHANGELOG section, and never mov
 Pending changelog fragments carry forward to the final release. See the
 [release runbook](releases.md#cutting-a-release).
 
-Final releases and release candidates, `vX.Y.Z` and `vX.Y.Z-rc.<n>` from `main`, follow [releases.md](releases.md).
+Final releases, betas and release candidates from `main` follow [releases.md](releases.md).
 A pre-release's version is a pre-release of the product version, `VersionPrefix` in `Directory.Build.props`
 ([The product version](releases.md#the-product-version)): `scripts/release:assets` refuses a tag for another version
 in the Build job, before anything is pushed.

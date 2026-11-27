@@ -53,9 +53,13 @@ class ReleaseImages(unittest.TestCase):
             self.assertIn('--prebuilt-image "$RUNNER_TEMP/image/skymonitor-cameraagent.oci.tar"', build)
             draft = job(text, "draft")
             self.assertIn("needs: [gate, build]", draft)
+            self.assertIn("sha256sum --check --strict SHA256SUMS", draft)
+            self.assertIn("subject-digest: ${{ steps.push.outputs.digest }}", draft)
             self.assertIn("subject-path: ${{ runner.temp }}/release/*", draft)
             publish = job(text, "publish")
             self.assertIn("needs: [gate, draft, install-test]", publish)
+            self.assertIn("sha256sum --check --strict SHA256SUMS", publish)
+            self.assertIn('scripts/release:prerelease-check" attested "$DIGEST"', publish)
             self.assertIn("--deny-self-hosted-runners", publish)
             self.assertIn(f".github/workflows/{name}.yml@$GITHUB_REF", publish)
 

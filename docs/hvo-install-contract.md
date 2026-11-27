@@ -26,6 +26,7 @@ controller's verified Stop and idle-only redeploy, and CameraAgent's capture pau
   | Workstation | `X.Y.Z-dev` |
   | CI | `X.Y.Z-ci.<run>` |
   | Integration pre-release | `X.Y.Z-dev.<n>` (SkyMonitor `development/v1` only) |
+  | Beta | `X.Y.Z-beta.N` (SkyMonitor `main`) |
   | Release candidate | `X.Y.Z-rc.<n>` |
   | Release | `X.Y.Z` |
 
@@ -56,13 +57,15 @@ controller's verified Stop and idle-only redeploy, and CameraAgent's capture pau
 ## 3. Cutting a release
 
 1. A version-bump PR.
-2. A release PR. Use `scripts/release:changelog` to assemble the pending fragments and any remaining Unreleased
-   entries into the version section in `CHANGELOG.md`. Add a non-empty `docs/upgrade-notes/X.Y.Z.md`.
-3. An annotated tag `vX.Y.Z` (or `vX.Y.Z-rc.<n>`) on the release branch. That is the default branch, except in
-   SkyMonitor, whose default branch is the `development/v1` integration branch and whose release branch is `main`.
+2. A release PR for the final release. Use `scripts/release:changelog` to assemble the pending fragments and any
+   remaining Unreleased entries into the version section in `CHANGELOG.md`. Add a non-empty `docs/upgrade-notes/X.Y.Z.md`.
+3. An annotated tag `vX.Y.Z`, `vX.Y.Z-rc.<n>` or (for SkyMonitor) `vX.Y.Z-beta.N` on the release branch. That is the
+   default branch, except in SkyMonitor, whose default branch is the `development/v1` integration branch and whose
+   release branch is `main`.
 
 The release workflow then:
-- checks that the tag matches the version, is on the release branch, and has its CHANGELOG section and upgrade notes;
+- checks that the tag matches the version and is on the release branch, and that a final release has its CHANGELOG
+  section and upgrade notes;
 - calls the CI and scenario workflows (`workflow_call`) as gates, so the tested binaries are the shipped binaries;
 - builds and pushes the images, collects CI's binaries, and writes `release.json` and `SHA256SUMS`;
 - creates a **draft** GitHub release, in an environment that needs the owner's approval;
@@ -76,7 +79,7 @@ candidate, a pre-release or a fix to an older line never moves it.
 same assets, are marked as GitHub pre-releases, need no CHANGELOG section, and never move `latest`.
 
 **The pre-release exception** (decision D8). The approval and the end-to-end job above are for final releases and
-release candidates. An integration pre-release follows them except in these ways:
+release candidates and SkyMonitor betas. An integration pre-release follows them except in these ways:
 - **The human step is the owner's tag.** An annotated `vX.Y.Z-dev.<n>` tag that only the owner can push, under the
   release-tag ruleset, on a commit the integration branch's required checks passed. There is no environment approval.
   The workflow publishes the tested draft itself.
@@ -89,10 +92,10 @@ Reason: an integration pre-release exists to put a branch head on a real host qu
 deliberate act on a reviewed, green commit, and a second approval would add a wait without adding a check. A final
 release is what operators install from `latest`, so it keeps the approval and both platforms.
 
-**Today:** SkyMonitor cuts pre-releases this way (`.github/workflows/prerelease.yml`, #1309), and its final releases
-and release candidates by the final-release path above (`.github/workflows/release.yml`, #1310), with the approval in
-its `production-release` environment. RoofController cuts no integration pre-releases; its release candidates follow
-the final-release path.
+**Today:** SkyMonitor cuts integration pre-releases this way (`.github/workflows/prerelease.yml`, #1309). Its final
+releases, betas and release candidates follow the release path above (`.github/workflows/release.yml`, #1310), with
+approval in its `production-release` environment. RoofController cuts no integration pre-releases; its release
+candidates follow the final-release path.
 
 ## 4. Release assets
 
