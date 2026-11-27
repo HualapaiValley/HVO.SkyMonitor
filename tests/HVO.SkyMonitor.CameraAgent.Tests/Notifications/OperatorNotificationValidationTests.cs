@@ -430,6 +430,65 @@ public sealed class OperatorNotificationValidationTests
     }
 
     [TestMethod]
+    public void Validate_NtfyTopic_NormalizesSurroundingWhitespaceBeforeLengthAndRequiredChecks()
+    {
+        // Delta17 M-ntfy-a: Public validator must canonicalize/trim ntfy topics before checking length,
+        // control characters, and non-empty requirements so 128-char topics with surrounding whitespace
+        // validate identically to the canonical 128-char topic.
+        var ntfyOptions = new OperatorNotificationsOptions
+        {
+            Enabled = true,
+            Webhook = new WebhookNotificationOptions
+            {
+                Enabled = true,
+                Format = WebhookPayloadFormat.Ntfy
+            }
+        };
+
+        var topic128 = new string('t', WebhookNotificationOptions.MaximumTopicLength);
+        var topic129 = new string('t', WebhookNotificationOptions.MaximumTopicLength + 1);
+
+        var canonicalOk = OperatorNotificationValidation.Validate(
+            ntfyOptions,
+            new OperatorNotificationSecrets(WebhookUrl: "https://ntfy.example.test/", WebhookNtfyTopic: topic128),
+            ProductionPolicy);
+        Assert.IsEmpty(canonicalOk, "Canonical 128-character ntfy topic must pass validation.");
+
+        var spacePaddedOk = OperatorNotificationValidation.Validate(
+            ntfyOptions,
+            new OperatorNotificationSecrets(WebhookUrl: "https://ntfy.example.test/", WebhookNtfyTopic: $"   {topic128}   "),
+            ProductionPolicy);
+        Assert.IsEmpty(spacePaddedOk, "128-character ntfy topic padded with leading/trailing spaces must validate identically.");
+
+        var tabPaddedOk = OperatorNotificationValidation.Validate(
+            ntfyOptions,
+            new OperatorNotificationSecrets(WebhookUrl: "https://ntfy.example.test/", WebhookNtfyTopic: $"\t {topic128} \t"),
+            ProductionPolicy);
+        Assert.IsEmpty(tabPaddedOk, "128-character ntfy topic padded with leading/trailing whitespace must validate identically.");
+
+        var tooLongPadded = OperatorNotificationValidation.Validate(
+            ntfyOptions,
+            new OperatorNotificationSecrets(WebhookUrl: "https://ntfy.example.test/", WebhookNtfyTopic: $"  {topic129}  "),
+            ProductionPolicy);
+        Assert.IsTrue(tooLongPadded.ContainsKey("webhook.ntfyTopic"),
+            "129-character canonical ntfy topic must be rejected even with surrounding spaces.");
+
+        var whitespaceOnly = OperatorNotificationValidation.Validate(
+            ntfyOptions,
+            new OperatorNotificationSecrets(WebhookUrl: "https://ntfy.example.test/", WebhookNtfyTopic: "     "),
+            ProductionPolicy);
+        Assert.IsTrue(whitespaceOnly.ContainsKey("webhook.ntfyTopic"),
+            "Whitespace-only ntfy topic must be rejected when targeting the ntfy server root.");
+
+        var embeddedControl = OperatorNotificationValidation.Validate(
+            ntfyOptions,
+            new OperatorNotificationSecrets(WebhookUrl: "https://ntfy.example.test/", WebhookNtfyTopic: "  bad\r\ntopic  "),
+            ProductionPolicy);
+        Assert.IsTrue(embeddedControl.ContainsKey("webhook.ntfyTopic"),
+            "Embedded control characters in ntfy topic must still be rejected.");
+    }
+
+    [TestMethod]
     public void RedactorAndContracts_NeverExposeCredentialsOrSecretPaths()
     {
         const string secretUrl = "https://hooks.example.test:8443/services/synthetic-secret-segment?token=synthetic-query-token#frag";

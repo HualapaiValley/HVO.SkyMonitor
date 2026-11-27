@@ -202,6 +202,38 @@ public sealed class HostConfigurationSnapshotTracker : IDisposable
     }
 
     /// <summary>
+    /// Read-only, non-secret check returning <c>true</c> ONLY when <paramref name="candidateValue"/> matches the
+    /// currently active, non-withheld host credential that carries an explicit same-provider destination binding
+    /// (<c>Smtp:BoundEndpoint</c> or <c>Webhook:BoundOrigin</c>) for the exact canonical
+    /// <paramref name="targetDestination"/>.
+    /// </summary>
+    public bool IsCurrentlyExplicitlyAuthorizedForDestination(
+        HostCredentialField field,
+        string? candidateValue,
+        string? targetDestination)
+    {
+        var effectiveCandidate = field == HostCredentialField.WebhookNtfyTopic
+            ? OperatorNotificationValidation.NormalizeNtfyTopic(candidateValue)
+            : candidateValue;
+        if (string.IsNullOrEmpty(effectiveCandidate))
+        {
+            return false;
+        }
+
+        var canonicalTarget = NormalizeTargetDestination(field, targetDestination);
+        if (canonicalTarget is null)
+        {
+            return false;
+        }
+
+        var state = GetFieldState(field);
+        lock (_refreshLock)
+        {
+            return state.IsCurrentlyExplicitlyAuthorizedForDestination(effectiveCandidate, canonicalTarget);
+        }
+    }
+
+    /// <summary>
     /// Read-only, non-secret check returning <c>true</c> if any retired credential history for <paramref name="field"/>
     /// has been evicted/truncated in this live tracker.
     /// </summary>
@@ -297,6 +329,11 @@ public sealed class HostConfigurationSnapshotTracker : IDisposable
             // binding errors so an older empty destination move can never survive an intervening malformed callback.
             ClearAllDestinationChangedWhileEmptyLocked();
             ClearAllCurrentPublicationStatesLocked();
+            // H4a (delta17): Any previously waiting split-provider credential is interrupted by a binding error.
+            PromoteAllPendingWaitingToRetiredLocked();
+            // H2b (delta17): Record destination-unknown withheld fingerprints for every raw credential visible
+            // across providers during an options-binding error so clearing the source later never erases history.
+            RecordBindingErrorWithheldCredentialsLocked(metadata.BindingErrorRawCredentials);
             return raw;
         }
 
@@ -319,6 +356,52 @@ public sealed class HostConfigurationSnapshotTracker : IDisposable
         _webhookAuthTokenState.ClearCurrentPublicationState();
         _webhookUserKeyState.ClearCurrentPublicationState();
         _webhookNtfyTopicState.ClearCurrentPublicationState();
+    }
+
+    private void PromoteAllPendingWaitingToRetiredLocked()
+    {
+        _smtpUsernameState.PromotePendingWaitingToRetired();
+        _smtpPasswordState.PromotePendingWaitingToRetired();
+        _webhookAuthTokenState.PromotePendingWaitingToRetired();
+        _webhookUserKeyState.PromotePendingWaitingToRetired();
+        _webhookNtfyTopicState.PromotePendingWaitingToRetired();
+    }
+
+    private void RecordBindingErrorWithheldCredentialsLocked(BindingErrorRawCredentials rawCredentials)
+    {
+        if (rawCredentials.IsEmpty)
+        {
+            return;
+        }
+
+        RecordBindingErrorFieldWithheld(_smtpUsernameState, rawCredentials.SmtpUsernames);
+        RecordBindingErrorFieldWithheld(_smtpPasswordState, rawCredentials.SmtpPasswords);
+        RecordBindingErrorFieldWithheld(_webhookAuthTokenState, rawCredentials.WebhookAuthTokens);
+        RecordBindingErrorFieldWithheld(_webhookUserKeyState, rawCredentials.WebhookUserKeys);
+        RecordBindingErrorFieldWithheld(_webhookNtfyTopicState, rawCredentials.WebhookNtfyTopics);
+    }
+
+    private static void RecordBindingErrorFieldWithheld(
+        TrackedFieldBindingState state,
+        IReadOnlyList<string>? rawValues)
+    {
+        if (rawValues is null || rawValues.Count == 0)
+        {
+            return;
+        }
+
+        for (var i = 0; i < rawValues.Count; i++)
+        {
+            var rawValue = rawValues[i];
+            if (string.IsNullOrEmpty(rawValue))
+            {
+                continue;
+            }
+
+            var valFp = state.ComputeValueFingerprint(rawValue);
+            state.RecordRetiredFingerprints(destinationFingerprint: null, valFp);
+            state.RecordWithheldValueFingerprint(valFp);
+        }
     }
 
     private HostConfigurationSnapshot ApplyCrossProviderDestinationCouplingLocked(
@@ -446,6 +529,17 @@ public sealed class HostConfigurationSnapshotTracker : IDisposable
             ? state.ComputeValueFingerprint(rawValue)
             : null;
 
+        // H4a (delta17): Distinguish an uninterrupted active split-provider rotation from an abandoned/cleared
+        // waiting credential. Whenever a previously suppressed waiting value is cleared, replaced, reverted, or
+        // stripped by a binding check, promote it to destination-unknown retired history BEFORE evaluating the
+        // new revision so live admission refuses to publish it at any later destination without explicit binding.
+        if (state.PendingWaitingValueFingerprint is not null &&
+            (rawValueFp is null ||
+             !TrackedFieldBindingState.FixedTimeHexEquals(state.PendingWaitingValueFingerprint, rawValueFp)))
+        {
+            state.PromotePendingWaitingToRetired();
+        }
+
         // H5: When destination becomes temporarily absent, retain retired history, preserve prior split-SMTP
         // guard state, and preserve an established-empty guard (stored strictly as salted fingerprints) rather
         // than resetting to cold-start admission.
@@ -463,9 +557,11 @@ public sealed class HostConfigurationSnapshotTracker : IDisposable
                 if (rawValueFp is not null)
                 {
                     state.RecordWithheldValueFingerprint(rawValueFp);
+                    state.SetPendingWaitingValueFingerprint(rawValueFp);
                 }
                 return null;
             }
+            state.ClearPendingWaiting();
             return rawValue;
         }
 
@@ -514,6 +610,7 @@ public sealed class HostConfigurationSnapshotTracker : IDisposable
                 state.RecordRetiredFingerprints(state.BoundDestinationFingerprint, state.BoundValueFingerprint);
             }
 
+            state.ClearPendingWaiting();
             state.SetBound(currentDestFp, rawValueFp, isExplicitlyAuthorized: true);
             state.ClearEstablishedEmpty();
             if (!isCurrentSplitOrOpaqueSmtp && !isCrossProvider)
@@ -526,6 +623,7 @@ public sealed class HostConfigurationSnapshotTracker : IDisposable
         // 2. Cold-start initial snapshot (constructor's first read only): establish initial binding.
         if (isInitialSnapshot)
         {
+            state.ClearPendingWaiting();
             state.SetBound(currentDestFp, rawValueFp, isExplicitlyAuthorized: false);
             state.ClearEstablishedEmpty();
             return rawValue;
@@ -547,12 +645,14 @@ public sealed class HostConfigurationSnapshotTracker : IDisposable
                 {
                     if (sameBoundVal)
                     {
+                        state.ClearPendingWaiting();
                         state.MarkCurrentlyPublished(isExplicitlyAuthorized: false);
                         return rawValue;
                     }
 
                     if (state.IsRetiredForOtherDestinationFingerprint(rawValueFp, currentDestFp))
                     {
+                        state.ClearPendingWaiting();
                         state.RecordWithheldValueFingerprint(rawValueFp);
                         return null;
                     }
@@ -562,6 +662,7 @@ public sealed class HostConfigurationSnapshotTracker : IDisposable
                         state.RecordRetiredFingerprints(state.BoundDestinationFingerprint, state.BoundValueFingerprint);
                     }
 
+                    state.ClearPendingWaiting();
                     state.SetBound(currentDestFp, rawValueFp, isExplicitlyAuthorized: false);
                     state.ClearEstablishedEmpty();
                     return rawValue;
@@ -571,6 +672,7 @@ public sealed class HostConfigurationSnapshotTracker : IDisposable
                 // withhold unchanged or previously retired credentials until a fresh value is provided.
                 if (sameBoundVal || state.IsRetiredForOtherDestinationFingerprint(rawValueFp, currentDestFp))
                 {
+                    state.ClearPendingWaiting();
                     state.RecordWithheldValueFingerprint(rawValueFp);
                     return null;
                 }
@@ -580,6 +682,7 @@ public sealed class HostConfigurationSnapshotTracker : IDisposable
                     state.RecordRetiredFingerprints(state.BoundDestinationFingerprint, state.BoundValueFingerprint);
                 }
 
+                state.ClearPendingWaiting();
                 state.SetBound(currentDestFp, rawValueFp, isExplicitlyAuthorized: false);
                 state.ClearEstablishedEmpty();
                 return rawValue;
@@ -587,10 +690,12 @@ public sealed class HostConfigurationSnapshotTracker : IDisposable
 
             if (state.IsRetiredForOtherDestinationFingerprint(rawValueFp, currentDestFp))
             {
+                state.ClearPendingWaiting();
                 state.RecordWithheldValueFingerprint(rawValueFp);
                 return null;
             }
 
+            state.ClearPendingWaiting();
             state.SetBound(currentDestFp, rawValueFp, isExplicitlyAuthorized: false);
             state.ClearEstablishedEmpty();
             return rawValue;
@@ -606,17 +711,24 @@ public sealed class HostConfigurationSnapshotTracker : IDisposable
             {
                 if (sameValue)
                 {
+                    state.ClearPendingWaiting();
                     state.MarkCurrentlyPublished(isExplicitlyAuthorized: false);
                     return rawValue;
                 }
 
-                // H2b (delta16): Keep the prior (A, oldValue) binding intact on an unbound credential-first change
-                // or waiting leaf reveal AND record the suppressed credential's salted fingerprint in withheld
-                // tracking (destination-unknown wildcard) so settings saves cannot bind it to ANY destination.
+                // H2b (delta16) / H4a (delta17): Keep the prior (A, oldValue) binding intact on an unbound
+                // credential-first change or waiting leaf reveal AND record the suppressed credential's salted
+                // fingerprint in withheld tracking (plus PendingWaitingValueFingerprint so any intervening clear
+                // or replacement promotes it to destination-unknown retired history).
                 state.RecordWithheldValueFingerprint(rawValueFp);
                 if (isSmtpField && state.HasPriorSplitOrOpaqueSmtp)
                 {
                     state.RecordRetiredFingerprints(destinationFingerprint: null, rawValueFp);
+                    state.ClearPendingWaiting();
+                }
+                else
+                {
+                    state.SetPendingWaitingValueFingerprint(rawValueFp);
                 }
                 return null;
             }
@@ -629,12 +741,14 @@ public sealed class HostConfigurationSnapshotTracker : IDisposable
                 // H2b (delta16): Record split-SMTP suppressed waiting credential with destination-unknown semantics.
                 state.RecordWithheldValueFingerprint(rawValueFp);
                 state.RecordRetiredFingerprints(destinationFingerprint: null, rawValueFp);
+                state.ClearPendingWaiting();
                 return null;
             }
 
             // Destination rotated (A -> B): reject unchanged or previously retired credentials from other destinations.
             if (sameValue || state.IsRetiredForOtherDestinationFingerprint(rawValueFp, currentDestFp))
             {
+                state.ClearPendingWaiting();
                 state.RecordWithheldValueFingerprint(rawValueFp);
                 return null;
             }
@@ -644,6 +758,7 @@ public sealed class HostConfigurationSnapshotTracker : IDisposable
                 state.RecordRetiredFingerprints(state.BoundDestinationFingerprint, state.BoundValueFingerprint);
             }
 
+            state.ClearPendingWaiting();
             state.SetBound(currentDestFp, rawValueFp, isExplicitlyAuthorized: false);
             state.ClearEstablishedEmpty();
             return rawValue;
@@ -652,6 +767,7 @@ public sealed class HostConfigurationSnapshotTracker : IDisposable
         // 5. No currently active binding, cross-provider OR split/opaque credential (including prior split/opaque SMTP guard) without explicit binding.
         if (state.IsRetiredForOtherDestinationFingerprint(rawValueFp, currentDestFp))
         {
+            state.ClearPendingWaiting();
             state.RecordWithheldValueFingerprint(rawValueFp);
             return null;
         }
@@ -661,6 +777,7 @@ public sealed class HostConfigurationSnapshotTracker : IDisposable
         {
             state.RecordWithheldValueFingerprint(rawValueFp);
             state.RecordRetiredFingerprints(destinationFingerprint: null, rawValueFp);
+            state.ClearPendingWaiting();
             return null;
         }
 
@@ -673,6 +790,7 @@ public sealed class HostConfigurationSnapshotTracker : IDisposable
             if (sameAsEstablishedEmpty && !wasDestinationChangedWhileEmpty)
             {
                 state.RecordWithheldValueFingerprint(rawValueFp);
+                state.SetPendingWaitingValueFingerprint(rawValueFp);
                 return null;
             }
         }
@@ -680,9 +798,11 @@ public sealed class HostConfigurationSnapshotTracker : IDisposable
         {
             // Defense in depth: never fall back to cold-start admission after prior runtime state was observed.
             state.RecordWithheldValueFingerprint(rawValueFp);
+            state.SetPendingWaitingValueFingerprint(rawValueFp);
             return null;
         }
 
+        state.ClearPendingWaiting();
         state.SetBound(currentDestFp, rawValueFp, isExplicitlyAuthorized: false);
         state.ClearEstablishedEmpty();
         return rawValue;
@@ -713,6 +833,7 @@ public sealed class HostConfigurationSnapshotTracker : IDisposable
 
         public string? BoundDestinationFingerprint { get; private set; }
         public string? BoundValueFingerprint { get; private set; }
+        public string? PendingWaitingValueFingerprint { get; private set; }
         public bool IsCurrentlyPublished { get; private set; }
         public bool IsCurrentlyPublishedWithExplicitBinding { get; private set; }
         public string? EstablishedEmptyDestinationFingerprint { get; private set; }
@@ -811,6 +932,29 @@ public sealed class HostConfigurationSnapshotTracker : IDisposable
             DestinationChangedWhileEmpty = false;
         }
 
+        public void SetPendingWaitingValueFingerprint(string valueFingerprint)
+        {
+            PendingWaitingValueFingerprint = valueFingerprint;
+        }
+
+        public void ClearPendingWaiting()
+        {
+            PendingWaitingValueFingerprint = null;
+        }
+
+        public void PromotePendingWaitingToRetired()
+        {
+            if (PendingWaitingValueFingerprint is null)
+            {
+                return;
+            }
+
+            var pending = PendingWaitingValueFingerprint;
+            PendingWaitingValueFingerprint = null;
+            RecordRetiredFingerprints(destinationFingerprint: null, pending);
+            RecordWithheldValueFingerprint(pending);
+        }
+
         public void RecordWithheldValueFingerprint(string valueFingerprint)
         {
             for (var i = _withheldValueFingerprints.Count - 1; i >= 0; i--)
@@ -875,6 +1019,25 @@ public sealed class HostConfigurationSnapshotTracker : IDisposable
             }
 
             return false;
+        }
+
+        public bool IsCurrentlyExplicitlyAuthorizedForDestination(
+            string candidateValue,
+            string targetDestination)
+        {
+            if (string.IsNullOrEmpty(candidateValue) ||
+                !IsCurrentlyPublished ||
+                !IsCurrentlyPublishedWithExplicitBinding ||
+                BoundDestinationFingerprint is null ||
+                BoundValueFingerprint is null)
+            {
+                return false;
+            }
+
+            var targetDestFp = ComputeDestinationFingerprint(targetDestination);
+            var candidateValFp = ComputeValueFingerprint(candidateValue);
+            return FixedTimeHexEquals(BoundDestinationFingerprint, targetDestFp) &&
+                   FixedTimeHexEquals(BoundValueFingerprint, candidateValFp);
         }
 
         public bool IsRetiredOrBoundForOtherDestination(
@@ -1040,6 +1203,48 @@ internal readonly record struct WithheldHostCredential(
     string RawValue,
     string? DeclaredDestination);
 
+internal readonly record struct BindingErrorRawCredentials(
+    IReadOnlyList<string>? SmtpUsernames = null,
+    IReadOnlyList<string>? SmtpPasswords = null,
+    IReadOnlyList<string>? WebhookAuthTokens = null,
+    IReadOnlyList<string>? WebhookUserKeys = null,
+    IReadOnlyList<string>? WebhookNtfyTopics = null)
+{
+    public bool IsEmpty =>
+        (SmtpUsernames is null or { Count: 0 }) &&
+        (SmtpPasswords is null or { Count: 0 }) &&
+        (WebhookAuthTokens is null or { Count: 0 }) &&
+        (WebhookUserKeys is null or { Count: 0 }) &&
+        (WebhookNtfyTopics is null or { Count: 0 });
+
+    public static bool AreEquivalent(BindingErrorRawCredentials left, BindingErrorRawCredentials right) =>
+        ListsEqual(left.SmtpUsernames, right.SmtpUsernames) &&
+        ListsEqual(left.SmtpPasswords, right.SmtpPasswords) &&
+        ListsEqual(left.WebhookAuthTokens, right.WebhookAuthTokens) &&
+        ListsEqual(left.WebhookUserKeys, right.WebhookUserKeys) &&
+        ListsEqual(left.WebhookNtfyTopics, right.WebhookNtfyTopics);
+
+    private static bool ListsEqual(IReadOnlyList<string>? left, IReadOnlyList<string>? right)
+    {
+        var leftCount = left?.Count ?? 0;
+        var rightCount = right?.Count ?? 0;
+        if (leftCount != rightCount)
+        {
+            return false;
+        }
+
+        for (var i = 0; i < leftCount; i++)
+        {
+            if (!string.Equals(left![i], right![i], StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+}
+
 internal readonly record struct HostConfigurationReadMetadata(
     bool IsSmtpUsernameCrossProvider,
     bool IsSmtpPasswordCrossProvider,
@@ -1061,7 +1266,28 @@ internal readonly record struct HostConfigurationReadMetadata(
     WithheldHostCredential? WithheldSmtpPassword = null,
     WithheldHostCredential? WithheldWebhookAuthToken = null,
     WithheldHostCredential? WithheldWebhookUserKey = null,
-    WithheldHostCredential? WithheldWebhookNtfyTopic = null);
+    WithheldHostCredential? WithheldWebhookNtfyTopic = null,
+    BindingErrorRawCredentials BindingErrorRawCredentials = default)
+{
+    public static HostConfigurationReadMetadata ForBindingError(BindingErrorRawCredentials rawCredentials) => new(
+        IsSmtpUsernameCrossProvider: false,
+        IsSmtpPasswordCrossProvider: false,
+        IsWebhookAuthTokenCrossProvider: false,
+        IsWebhookUserKeyCrossProvider: false,
+        IsWebhookNtfyTopicCrossProvider: false,
+        SmtpUsernameHasExplicitBinding: false,
+        SmtpPasswordHasExplicitBinding: false,
+        WebhookAuthTokenHasExplicitBinding: false,
+        WebhookUserKeyHasExplicitBinding: false,
+        WebhookNtfyTopicHasExplicitBinding: false,
+        IsSmtpDestinationSplitOrOpaque: false,
+        SmtpUsernameProvider: null,
+        SmtpPasswordProvider: null,
+        WebhookAuthTokenProvider: null,
+        WebhookUserKeyProvider: null,
+        WebhookNtfyTopicProvider: null,
+        BindingErrorRawCredentials: rawCredentials);
+}
 
 /// <summary>
 /// Read-only <see cref="IConfiguration"/>-backed provider for operator notifications. Used as the default fallback
@@ -1213,6 +1439,16 @@ public sealed class ConfigurationOperatorNotificationConfigProvider : IOperatorN
             includeTruncatedHistory);
 
     /// <summary>
+    /// Read-only, non-secret check returning <c>true</c> ONLY when <paramref name="candidateValue"/> matches the
+    /// currently active, non-withheld host credential explicitly bound to <paramref name="targetDestination"/>.
+    /// </summary>
+    public bool IsCurrentlyExplicitlyAuthorizedForDestination(
+        HostCredentialField field,
+        string? candidateValue,
+        string? targetDestination)
+        => _hostSnapshots.IsCurrentlyExplicitlyAuthorizedForDestination(field, candidateValue, targetDestination);
+
+    /// <summary>
     /// Read-only, non-secret check returning <c>true</c> if any retired host credential history for
     /// <paramref name="field"/> has been evicted/truncated in this provider's live tracker.
     /// </summary>
@@ -1284,6 +1520,9 @@ public sealed class ConfigurationOperatorNotificationConfigProvider : IOperatorN
             var bindingState1 = bindingError1 is null
                 ? ReadProviderBindingState(configuration, options1, secrets1)
                 : default;
+            var bindingErrorCreds1 = bindingError1 is not null
+                ? ScanRawCredentialsAcrossProviders(configuration, rootProviders)
+                : default;
 
             if (tokenBefore.HasChanged || AnyProviderTokenChanged(providerTokensBefore))
             {
@@ -1301,6 +1540,9 @@ public sealed class ConfigurationOperatorNotificationConfigProvider : IOperatorN
             var bindingState2 = bindingError2 is null
                 ? ReadProviderBindingState(configuration, options2, secrets2)
                 : default;
+            var bindingErrorCreds2 = bindingError2 is not null
+                ? ScanRawCredentialsAcrossProviders(configuration, rootProviders)
+                : default;
             var tokenAfter = configuration.GetReloadToken();
 
             var sameToken = ReferenceEquals(tokenBefore, tokenAfter) || tokenBefore is not ConfigurationReloadToken;
@@ -1312,14 +1554,15 @@ public sealed class ConfigurationOperatorNotificationConfigProvider : IOperatorN
                 string.Equals(bindingError1, bindingError2, StringComparison.Ordinal) &&
                 AreOptionsEquivalent(options1, options2) &&
                 secrets1 == secrets2 &&
-                bindingState1 == bindingState2)
+                bindingState1 == bindingState2 &&
+                BindingErrorRawCredentials.AreEquivalent(bindingErrorCreds1, bindingErrorCreds2))
             {
                 var boundSecrets = bindingError1 is null
                     ? ApplyExplicitAndEmbeddedHostBindings(secrets1, bindingState1)
                     : OperatorNotificationSecrets.Empty;
                 metadata = bindingError1 is null
                     ? bindingState1.ToMetadata(boundSecrets)
-                    : default;
+                    : HostConfigurationReadMetadata.ForBindingError(bindingErrorCreds1);
                 return new HostConfigurationSnapshot(options1, boundSecrets, bindingError1);
             }
 
@@ -1329,11 +1572,87 @@ public sealed class ConfigurationOperatorNotificationConfigProvider : IOperatorN
             }
         }
 
-        metadata = default;
+        metadata = HostConfigurationReadMetadata.ForBindingError(
+            ScanRawCredentialsAcrossProviders(
+                configuration,
+                configuration is IConfigurationRoot fallbackRoot
+                    ? CollectProvidersForReloadObservation(fallbackRoot)
+                    : null));
         return new HostConfigurationSnapshot(
             new OperatorNotificationsOptions { Enabled = false },
             OperatorNotificationSecrets.Empty,
             NotificationReasonCodes.InvalidConfiguration);
+    }
+
+    private static BindingErrorRawCredentials ScanRawCredentialsAcrossProviders(
+        IConfiguration configuration,
+        List<IConfigurationProvider>? rootProviders)
+    {
+        List<string>? smtpUsernames = null;
+        List<string>? smtpPasswords = null;
+        List<string>? webhookAuthTokens = null;
+        List<string>? webhookUserKeys = null;
+        List<string>? webhookNtfyTopics = null;
+
+        static void AddDistinct(ref List<string>? target, string? value)
+        {
+            if (string.IsNullOrEmpty(value))
+            {
+                return;
+            }
+
+            target ??= [];
+            for (var i = 0; i < target.Count; i++)
+            {
+                if (string.Equals(target[i], value, StringComparison.Ordinal))
+                {
+                    return;
+                }
+            }
+
+            target.Add(value);
+        }
+
+        AddDistinct(ref smtpUsernames, NullIfEmpty(configuration[SmtpUsernameConfigKey]));
+        AddDistinct(ref smtpPasswords, NullIfEmpty(configuration[SmtpPasswordConfigKey]));
+        AddDistinct(ref webhookAuthTokens, NullIfEmpty(configuration[WebhookAuthTokenConfigKey]));
+        AddDistinct(ref webhookUserKeys, NullIfEmpty(configuration[WebhookUserKeyConfigKey]));
+        AddDistinct(ref webhookNtfyTopics, OperatorNotificationValidation.NormalizeNtfyTopic(configuration[WebhookNtfyTopicConfigKey]));
+
+        if (rootProviders is not null)
+        {
+            for (var i = 0; i < rootProviders.Count; i++)
+            {
+                var provider = rootProviders[i];
+                if (provider.TryGet(SmtpUsernameConfigKey, out var smtpUser))
+                {
+                    AddDistinct(ref smtpUsernames, NullIfEmpty(smtpUser));
+                }
+                if (provider.TryGet(SmtpPasswordConfigKey, out var smtpPass))
+                {
+                    AddDistinct(ref smtpPasswords, NullIfEmpty(smtpPass));
+                }
+                if (provider.TryGet(WebhookAuthTokenConfigKey, out var webhookTok))
+                {
+                    AddDistinct(ref webhookAuthTokens, NullIfEmpty(webhookTok));
+                }
+                if (provider.TryGet(WebhookUserKeyConfigKey, out var webhookUkey))
+                {
+                    AddDistinct(ref webhookUserKeys, NullIfEmpty(webhookUkey));
+                }
+                if (provider.TryGet(WebhookNtfyTopicConfigKey, out var webhookTopic))
+                {
+                    AddDistinct(ref webhookNtfyTopics, OperatorNotificationValidation.NormalizeNtfyTopic(webhookTopic));
+                }
+            }
+        }
+
+        return new BindingErrorRawCredentials(
+            SmtpUsernames: smtpUsernames,
+            SmtpPasswords: smtpPasswords,
+            WebhookAuthTokens: webhookAuthTokens,
+            WebhookUserKeys: webhookUserKeys,
+            WebhookNtfyTopics: webhookNtfyTopics);
     }
 
     private static bool AnyProviderTokenChanged(IChangeToken[]? providerTokens)
@@ -2080,7 +2399,25 @@ public sealed class ConfigurationOperatorNotificationConfigProvider : IOperatorN
             effectiveOptions,
             configurationOptions,
             protectedBindings,
-            persistedOptions);
+            persistedOptions,
+            allowHostFallbackCredential: null);
+
+    public static OperatorNotificationSecrets MergeSecrets(
+        OperatorNotificationSecrets protectedSecrets,
+        OperatorNotificationSecrets configurationSecrets,
+        OperatorNotificationsOptions? effectiveOptions,
+        OperatorNotificationsOptions? configurationOptions,
+        ProtectedSecretBindings protectedBindings,
+        OperatorNotificationsOptions? persistedOptions,
+        Func<HostCredentialField, string, bool>? allowHostFallbackCredential)
+        => MergeSecretsCore(
+            protectedSecrets,
+            configurationSecrets,
+            effectiveOptions,
+            configurationOptions,
+            protectedBindings,
+            persistedOptions,
+            allowHostFallbackCredential);
 
     private static OperatorNotificationSecrets MergeSecretsCore(
         OperatorNotificationSecrets protectedSecrets,
@@ -2088,7 +2425,8 @@ public sealed class ConfigurationOperatorNotificationConfigProvider : IOperatorN
         OperatorNotificationsOptions? effectiveOptions,
         OperatorNotificationsOptions? configurationOptions,
         ProtectedSecretBindings protectedBindings,
-        OperatorNotificationsOptions? persistedOptions)
+        OperatorNotificationsOptions? persistedOptions,
+        Func<HostCredentialField, string, bool>? allowHostFallbackCredential = null)
     {
         ArgumentNullException.ThrowIfNull(protectedSecrets);
         ArgumentNullException.ThrowIfNull(configurationSecrets);
@@ -2106,13 +2444,25 @@ public sealed class ConfigurationOperatorNotificationConfigProvider : IOperatorN
         var inheritHostWebhookSecrets = HasMatchingWebhookDestination(effectiveWebhookUrl, configurationSecrets.WebhookUrl);
         var inheritHostSmtpSecrets = HasMatchingSmtpEndpoint(effectiveOptions?.Smtp, configurationOptions?.Smtp);
 
+        string? ResolveHostFallback(HostCredentialField field, bool canInheritChannel, string? hostValue)
+        {
+            if (!canInheritChannel || string.IsNullOrEmpty(hostValue))
+            {
+                return null;
+            }
+
+            return allowHostFallbackCredential is null || allowHostFallbackCredential(field, hostValue)
+                ? hostValue
+                : null;
+        }
+
         return new OperatorNotificationSecrets(
-            SmtpUsername: Choose(boundProtected.SmtpUsername, inheritHostSmtpSecrets ? configurationSecrets.SmtpUsername : null),
-            SmtpPassword: Choose(boundProtected.SmtpPassword, inheritHostSmtpSecrets ? configurationSecrets.SmtpPassword : null),
+            SmtpUsername: Choose(boundProtected.SmtpUsername, ResolveHostFallback(HostCredentialField.SmtpUsername, inheritHostSmtpSecrets, configurationSecrets.SmtpUsername)),
+            SmtpPassword: Choose(boundProtected.SmtpPassword, ResolveHostFallback(HostCredentialField.SmtpPassword, inheritHostSmtpSecrets, configurationSecrets.SmtpPassword)),
             WebhookUrl: effectiveWebhookUrl,
-            WebhookAuthToken: Choose(boundProtected.WebhookAuthToken, inheritHostWebhookSecrets ? configurationSecrets.WebhookAuthToken : null),
-            WebhookUserKey: Choose(boundProtected.WebhookUserKey, inheritHostWebhookSecrets ? configurationSecrets.WebhookUserKey : null),
-            WebhookNtfyTopic: Choose(boundProtected.WebhookNtfyTopic, inheritHostWebhookSecrets ? configurationSecrets.WebhookNtfyTopic : null));
+            WebhookAuthToken: Choose(boundProtected.WebhookAuthToken, ResolveHostFallback(HostCredentialField.WebhookAuthToken, inheritHostWebhookSecrets, configurationSecrets.WebhookAuthToken)),
+            WebhookUserKey: Choose(boundProtected.WebhookUserKey, ResolveHostFallback(HostCredentialField.WebhookUserKey, inheritHostWebhookSecrets, configurationSecrets.WebhookUserKey)),
+            WebhookNtfyTopic: Choose(boundProtected.WebhookNtfyTopic, ResolveHostFallback(HostCredentialField.WebhookNtfyTopic, inheritHostWebhookSecrets, configurationSecrets.WebhookNtfyTopic)));
     }
 
     public static OperatorNotificationSecretPresence BuildSecretPresence(
@@ -2152,7 +2502,25 @@ public sealed class ConfigurationOperatorNotificationConfigProvider : IOperatorN
             effectiveOptions,
             configurationOptions,
             protectedBindings,
-            persistedOptions);
+            persistedOptions,
+            allowHostFallbackCredential: null);
+
+    public static OperatorNotificationSecretPresence BuildSecretPresence(
+        OperatorNotificationSecrets protectedSecrets,
+        OperatorNotificationSecrets configurationSecrets,
+        OperatorNotificationsOptions? effectiveOptions,
+        OperatorNotificationsOptions? configurationOptions,
+        ProtectedSecretBindings protectedBindings,
+        OperatorNotificationsOptions? persistedOptions,
+        Func<HostCredentialField, string, bool>? allowHostFallbackCredential)
+        => BuildSecretPresenceCore(
+            protectedSecrets,
+            configurationSecrets,
+            effectiveOptions,
+            configurationOptions,
+            protectedBindings,
+            persistedOptions,
+            allowHostFallbackCredential);
 
     private static OperatorNotificationSecretPresence BuildSecretPresenceCore(
         OperatorNotificationSecrets protectedSecrets,
@@ -2160,7 +2528,8 @@ public sealed class ConfigurationOperatorNotificationConfigProvider : IOperatorN
         OperatorNotificationsOptions? effectiveOptions,
         OperatorNotificationsOptions? configurationOptions,
         ProtectedSecretBindings protectedBindings,
-        OperatorNotificationsOptions? persistedOptions)
+        OperatorNotificationsOptions? persistedOptions,
+        Func<HostCredentialField, string, bool>? allowHostFallbackCredential = null)
     {
         ArgumentNullException.ThrowIfNull(protectedSecrets);
         ArgumentNullException.ThrowIfNull(configurationSecrets);
@@ -2176,17 +2545,29 @@ public sealed class ConfigurationOperatorNotificationConfigProvider : IOperatorN
         var inheritHostWebhookSecrets = HasMatchingWebhookDestination(effectiveUrl, configurationSecrets.WebhookUrl);
         var inheritHostSmtpSecrets = HasMatchingSmtpEndpoint(effectiveOptions?.Smtp, configurationOptions?.Smtp);
 
+        string? ResolveHostFallback(HostCredentialField field, bool canInheritChannel, string? hostValue)
+        {
+            if (!canInheritChannel || string.IsNullOrEmpty(hostValue))
+            {
+                return null;
+            }
+
+            return allowHostFallbackCredential is null || allowHostFallbackCredential(field, hostValue)
+                ? hostValue
+                : null;
+        }
+
         var (hasSmtpUser, smtpUserSource) = Presence(
-            boundProtected.SmtpUsername, inheritHostSmtpSecrets ? configurationSecrets.SmtpUsername : null);
+            boundProtected.SmtpUsername, ResolveHostFallback(HostCredentialField.SmtpUsername, inheritHostSmtpSecrets, configurationSecrets.SmtpUsername));
         var (hasSmtpPass, smtpPassSource) = Presence(
-            boundProtected.SmtpPassword, inheritHostSmtpSecrets ? configurationSecrets.SmtpPassword : null);
+            boundProtected.SmtpPassword, ResolveHostFallback(HostCredentialField.SmtpPassword, inheritHostSmtpSecrets, configurationSecrets.SmtpPassword));
         var (hasWebhookUrl, webhookUrlSource) = Presence(boundProtected.WebhookUrl, configurationSecrets.WebhookUrl);
         var (hasWebhookToken, webhookTokenSource) = Presence(
-            boundProtected.WebhookAuthToken, inheritHostWebhookSecrets ? configurationSecrets.WebhookAuthToken : null);
+            boundProtected.WebhookAuthToken, ResolveHostFallback(HostCredentialField.WebhookAuthToken, inheritHostWebhookSecrets, configurationSecrets.WebhookAuthToken));
         var (hasWebhookUserKey, webhookUserKeySource) = Presence(
-            boundProtected.WebhookUserKey, inheritHostWebhookSecrets ? configurationSecrets.WebhookUserKey : null);
+            boundProtected.WebhookUserKey, ResolveHostFallback(HostCredentialField.WebhookUserKey, inheritHostWebhookSecrets, configurationSecrets.WebhookUserKey));
         var (hasWebhookNtfyTopic, webhookNtfyTopicSource) = Presence(
-            boundProtected.WebhookNtfyTopic, inheritHostWebhookSecrets ? configurationSecrets.WebhookNtfyTopic : null);
+            boundProtected.WebhookNtfyTopic, ResolveHostFallback(HostCredentialField.WebhookNtfyTopic, inheritHostWebhookSecrets, configurationSecrets.WebhookNtfyTopic));
 
         var endpointHost = OperatorNotificationRedactor.FormatEndpointHost(effectiveUrl);
 

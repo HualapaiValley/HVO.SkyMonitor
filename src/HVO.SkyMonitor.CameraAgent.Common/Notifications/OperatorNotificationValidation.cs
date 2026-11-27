@@ -648,7 +648,9 @@ public static partial class OperatorNotificationValidation
             problems["webhook.authToken"] = "Webhook auth token must be a single line of at most 1024 characters without control characters.";
         if (secrets.WebhookUserKey is { Length: > MaximumSecretLength } || HasHeaderInjectionCharacters(secrets.WebhookUserKey))
             problems["webhook.userKey"] = "Webhook user key must be a single line of at most 1024 characters without control characters.";
-        if (secrets.WebhookNtfyTopic is { Length: > WebhookNotificationOptions.MaximumTopicLength } || HasHeaderInjectionCharacters(secrets.WebhookNtfyTopic))
+        var normalizedNtfyTopic = NormalizeNtfyTopic(secrets.WebhookNtfyTopic);
+        if (normalizedNtfyTopic is { Length: > WebhookNotificationOptions.MaximumTopicLength } ||
+            HasHeaderInjectionCharacters(normalizedNtfyTopic))
             problems["webhook.ntfyTopic"] = "ntfy topic must be at most 128 printable characters without control characters.";
     }
 
@@ -755,7 +757,7 @@ public static partial class OperatorNotificationValidation
 
         if (masterEnabled && webhook.Enabled && webhook.Format == WebhookPayloadFormat.Ntfy &&
             parsedWebhookUri is not null && IsNtfyRootPath(parsedWebhookUri) &&
-            string.IsNullOrWhiteSpace(secrets.WebhookNtfyTopic) &&
+            NormalizeNtfyTopic(secrets.WebhookNtfyTopic) is null &&
             !problems.ContainsKey("webhook.ntfyTopic"))
         {
             problems["webhook.ntfyTopic"] = "An ntfy topic is required when the webhook URL targets the ntfy server root.";
