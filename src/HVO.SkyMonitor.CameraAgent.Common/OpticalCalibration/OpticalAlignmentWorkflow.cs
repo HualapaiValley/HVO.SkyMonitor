@@ -36,6 +36,13 @@ public sealed class OpticalAlignmentProposal
     public int TrainingCount { get; }
 }
 
+public sealed class OpticalAlignmentFitInProgressException : InvalidOperationException
+{
+    public OpticalAlignmentFitInProgressException() : base("An optical alignment fit is already running.") { }
+    public OpticalAlignmentFitInProgressException(string message) : base(message) { }
+    public OpticalAlignmentFitInProgressException(string message, Exception innerException) : base(message, innerException) { }
+}
+
 /// <summary>Bounded operator-requested fitting over verified archive evidence for the active named rig.</summary>
 public sealed class OpticalAlignmentWorkflow(SqliteNamedRigProfileStore store,
     ICameraAgentRetainedAstrometryService astrometry, VirtualOpticalCalibrationReviewService reviewService) : IDisposable
@@ -58,7 +65,7 @@ public sealed class OpticalAlignmentWorkflow(SqliteNamedRigProfileStore store,
         if (ids.Contains(Guid.Empty) || ids.Distinct().Count() != ids.Length)
             throw new ArgumentException("Training and held-out capture identities must be nonempty and distinct.");
         if (!await _fitSlot.WaitAsync(0, cancellationToken).ConfigureAwait(false))
-            throw new CaptureScheduleStoreConflictException("An optical alignment fit is already running.");
+            throw new OpticalAlignmentFitInProgressException();
 
         try
         {
@@ -72,7 +79,8 @@ public sealed class OpticalAlignmentWorkflow(SqliteNamedRigProfileStore store,
             for (var index = 0; index < captures.Length; index++)
             {
                 var evidence = await astrometry.GetOpticalAlignmentInputAsync(ids[index], cancellationToken).ConfigureAwait(false);
-                if (evidence is null || evidence.Frame.Frame.CaptureId != ids[index] || evidence.RigIdentitySha256 != rigIdentity)
+                if (evidence is null || evidence.Frame.Frame.CaptureId != ids[index] ||
+                    !string.Equals(evidence.RigIdentitySha256, rigIdentity, StringComparison.OrdinalIgnoreCase))
                     throw new ArgumentException("Every capture needs verified associations and readout geometry from the active rig.");
                 captures[index] = evidence;
             }

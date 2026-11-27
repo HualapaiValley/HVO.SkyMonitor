@@ -271,7 +271,7 @@ public sealed class VirtualOpticalCalibrationReviewServiceTests
         using var harness = await Harness.CreateAsync("VirtualSky").ConfigureAwait(false);
         var active = await harness.Named.GetAsync(CancellationToken.None).ConfigureAwait(false);
         var rig = active.Revisions.Single(r => r.RevisionId == active.Selection.ActiveRevisionId).Rig;
-        var rigIdentity = CameraRigProfileIdentity.ComputeSha256(rig);
+        var rigIdentity = Convert.ToHexStringLower(Convert.FromHexString(CameraRigProfileIdentity.ComputeSha256(rig)));
         var truth = RigProjectionContextFactory.CreateNative(rig) with
         {
             FocalLengthXPixels = NominalFocal * 1.012,

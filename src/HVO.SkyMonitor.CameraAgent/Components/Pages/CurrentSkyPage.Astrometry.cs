@@ -435,7 +435,9 @@ public sealed partial class CurrentSkyPage
     private void CalculatePixelToSky((long Revision, CameraAgentPresentationStage? Stage) requested)
     {
         if (requested != (_astrometryReadRevision, _selectedStage) || !CanCalculate) return;
-        _calculatorResult = "Enter finite source-pixel coordinates inside the retained aperture and above the geometric horizon.";
+        _calculatorResult = _pixelSpace == AstrometricPixelSpace.NativeSensor
+            ? "Enter finite native-sensor pixel coordinates inside the retained aperture and above the geometric horizon."
+            : "Enter finite source-pixel coordinates inside the retained aperture and above the geometric horizon.";
         if (_pixelX is not { } x || _pixelY is not { } y || Calculator().PixelToSky(new(x, y), _pixelSpace) is not { } point) return;
         _skyCoordinates = "equatorial";
         _skyFirst = point.EquatorialMeanOfDate.RightAscensionHours;

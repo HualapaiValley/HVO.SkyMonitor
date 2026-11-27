@@ -24,6 +24,40 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 public sealed partial class DurableCaptureProcessingTests
 {
     [TestMethod]
+    [TestCategory("Unit")]
+    [DataRow("astrometry.capture-cadence", "CadenceSkipped", "astrometry.capture-cadence")]
+    [DataRow("processing.dependency-unavailable", "Unavailable", "astrometry.inputs-unavailable")]
+    public async Task RetainedAstrometry_ReadsTheJournaledSkipReason(string reason, string availability, string assessmentReason)
+    {
+        var root = CreateTestRoot();
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            using var store = new SqliteCaptureProcessingStore(fixture.Options);
+            using var artifacts = new CameraAgentArtifactService(fixture.Options, store, new CameraAgentPreviewEncoder());
+            using var service = new CameraAgentRetainedAstrometryService(store, artifacts);
+            var captureId = fixture.Manifest.Descriptor.Capture.CaptureId;
+            var node = new CaptureProcessingGraphNode("astrometry", new OutcomeStep(ProcessingOutcome.Skipped(reason)),
+                ["$raw"], false, BuiltInProcessingRecipes.MeasuredAstrometry, FrameArtifactRole.Metadata, "assessment",
+                new string('A', 64));
+            await store.WriteNodeAsync(captureId, node, DurableProcessingNodeStatus.Skipped, reason, 1, null,
+                null, fixture.Manifest.Descriptor.Timing.DurableIngressUtc, TimeSpan.Zero, ProcessingOutcomeStatus.Skipped,
+                [], 0, null, [], CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(reason, await store.ReadAstrometrySkipReasonAsync(captureId, CancellationToken.None).ConfigureAwait(false));
+            var assessment = await service.GetAsync(captureId, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(captureId, assessment.CaptureId);
+            Assert.AreEqual(availability, assessment.Availability);
+            Assert.AreEqual(assessmentReason, assessment.Reason);
+            Assert.IsNull(assessment.Solution);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
     [TestCategory("Integration")]
     [DataRow("accepted")]
     [DataRow("sparse")]

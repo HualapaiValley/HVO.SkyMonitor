@@ -67,9 +67,9 @@
             }
             </ul>
         </details>
-        @if (proposal.Review.Blocker == "physical-rig")
+        @if (ReviewBlockerGuidance(proposal.Review.Blocker) is { } guidance)
         {
-            <p>Physical rigs require separate qualification before an alignment can be accepted here.</p>
+            <p>@guidance</p>
         }
         <div class="optical-actions">
             <button class="button primary" type="button" @onclick="() => DecideAsync(true)" disabled="@(Busy || RigChangePending || !proposal.Review.CanAccept)">Accept as rig draft</button>

@@ -26,6 +26,15 @@ public sealed partial class OpticalAlignmentPanel : IDisposable
 
     private bool Busy => _command is not null;
 
+    private static string? ReviewBlockerGuidance(string? blocker) => blocker switch
+    {
+        "physical-rig" => "Physical rigs require separate qualification before an alignment can be accepted here.",
+        "nominal-mismatch" => "The fit uses different nominal geometry. Select archive captures from the active rig and fit again.",
+        "unrepresentable" => "The rig’s optics profile cannot store the proposed geometry. Check the optics settings and try a different set of archive captures.",
+        "rig-change-pending" => "Resolve the staged rig change, then fit the captures again before accepting an alignment.",
+        _ => null
+    };
+
     protected override void OnParametersSet() => ClearStaleProposal();
 
     private void ClearStaleProposal()

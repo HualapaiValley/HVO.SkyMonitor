@@ -889,6 +889,10 @@ public sealed partial class CurrentSkyPage
         var reason = view.Revision.Layers.FirstOrDefault(layer => layer.Key is
         { Scope: CenteredViewLayerScope.Reference, Kind: AstrometricDiagnosticPresentation.ResidualsLayer } &&
             layer.Key.SourceCaptureId == captureId)?.Reason;
+        const string unavailablePrefix = "centered.product-unavailable/";
+        if (reason?.StartsWith(unavailablePrefix, StringComparison.Ordinal) == true)
+            reason = reason[unavailablePrefix.Length..];
+
         return reason switch
         {
             "astrometry.capture-cadence" => new(captureId, "CadenceSkipped", reason),

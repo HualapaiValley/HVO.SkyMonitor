@@ -65,16 +65,13 @@ public sealed class AstrometricCaptureCalculator
     /// <summary>Converts geometric horizontal coordinates above or on the horizon, without refraction.</summary>
     public PixelPoint? HorizontalToPixel(AltAzPoint horizontal, AstrometricPixelSpace space = AstrometricPixelSpace.Readout)
     {
+        if (!Enum.IsDefined(space)) throw new ArgumentOutOfRangeException(nameof(space));
         if (!(horizontal.AltitudeDegrees is >= 0 and <= 90 && horizontal.AzimuthDegrees is >= 0 and < 360) ||
             _mapping.ProjectHorizontal(horizontal) is not { } pixel || !InsideReadout(pixel)) return null;
-        return space switch
-        {
-            AstrometricPixelSpace.Readout => pixel,
-            AstrometricPixelSpace.NativeSensor when _readout is { } readout =>
-                new(readout.RoiX + pixel.X * readout.BinX, readout.RoiY + pixel.Y * readout.BinY),
-            AstrometricPixelSpace.NativeSensor => null,
-            _ => throw new ArgumentOutOfRangeException(nameof(space))
-        };
+        if (space == AstrometricPixelSpace.Readout) return pixel;
+        return _readout is { } readout
+            ? new(readout.RoiX + pixel.X * readout.BinX, readout.RoiY + pixel.Y * readout.BinY)
+            : null;
     }
 
     /// <summary>Maps ordered samples at the exposure midpoint. Invalid samples retain their positions as null.</summary>
@@ -82,6 +79,7 @@ public sealed class AstrometricCaptureCalculator
         AstrometricPixelSpace space = AstrometricPixelSpace.Readout, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(samples);
+        if (!Enum.IsDefined(space)) throw new ArgumentOutOfRangeException(nameof(space));
         cancellationToken.ThrowIfCancellationRequested();
         if (samples.Count > MaximumTrackSamples) throw new ArgumentException("Too many angular track samples.", nameof(samples));
         var mapped = new AstrometricSkyPoint?[samples.Count];

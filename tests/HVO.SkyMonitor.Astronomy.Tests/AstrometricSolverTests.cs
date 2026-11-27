@@ -71,6 +71,9 @@ public sealed class AstrometricSolverTests
         Assert.IsNull(calculator.HorizontalToPixel(new(-.001, 180)));
         Assert.IsNull(calculator.EquatorialToPixel(new(24, 0)));
         Assert.IsNull(calculator.EquatorialToPixel(new(2, double.NaN)));
+        const AstrometricPixelSpace invalidSpace = (AstrometricPixelSpace)(-1);
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => calculator.HorizontalToPixel(new(-.001, 180), invalidSpace));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => calculator.MapTrack([], invalidSpace));
         Assert.ThrowsExactly<ArgumentException>(() => mapping.CreateCalculator(readout with { RoiWidth = 1023 }));
         Assert.ThrowsExactly<ArgumentException>(() => calculator.MapTrack(new PixelPoint[AstrometricCaptureCalculator.MaximumTrackSamples + 1]));
         using var cancelled = new CancellationTokenSource();

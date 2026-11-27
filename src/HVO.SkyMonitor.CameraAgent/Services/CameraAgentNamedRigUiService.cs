@@ -148,6 +148,10 @@ internal sealed partial class CameraAgentNamedRigUiService(
         }
         catch (ArgumentException) { return OperatorUiResult<T>.Failure(OperatorUiResultKind.Invalid, "The rig command is invalid."); }
         catch (KeyNotFoundException) { return OperatorUiResult<T>.Failure(OperatorUiResultKind.NotFound, "The revision was not found."); }
+        catch (OpticalAlignmentFitInProgressException)
+        {
+            return OperatorUiResult<T>.Failure(OperatorUiResultKind.Conflict, "An optical alignment fit is already running. Wait for it to finish before retrying.");
+        }
         catch (CaptureScheduleStoreConflictException) { return OperatorUiResult<T>.Failure(OperatorUiResultKind.Conflict, "Rig state changed. Refresh before retrying."); }
         catch (SqliteException exception) when (exception.SqliteErrorCode == 19)
         {
