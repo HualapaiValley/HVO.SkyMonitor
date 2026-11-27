@@ -93,7 +93,7 @@ public sealed class WebhookNotificationTransport(
             }
         }
 
-        var ntfyTopic = request.NtfyTopic?.Trim() ?? string.Empty;
+        var ntfyTopic = OperatorNotificationValidation.NormalizeNtfyTopic(request.NtfyTopic) ?? string.Empty;
         if (ntfyTopic.Length > WebhookNotificationOptions.MaximumTopicLength ||
             OperatorNotificationValidation.HasHeaderInjectionCharacters(ntfyTopic))
         {
@@ -234,7 +234,11 @@ public sealed class WebhookNotificationTransport(
         var uri = Uri.TryCreate(request.Url, UriKind.Absolute, out var parsed)
             ? parsed
             : new Uri("https://webhook.invalid/");
-        var wire = BuildWirePayload(request, uri, request.NtfyTopic?.Trim() ?? string.Empty, headers: null);
+        var wire = BuildWirePayload(
+            request,
+            uri,
+            OperatorNotificationValidation.NormalizeNtfyTopic(request.NtfyTopic) ?? string.Empty,
+            headers: null);
         return Encoding.UTF8.GetString(wire.BodyBytes);
     }
 

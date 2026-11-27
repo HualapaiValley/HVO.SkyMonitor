@@ -2964,6 +2964,7 @@ public sealed class OperatorNotificationStoreTests
             {
                 [OperatorNotificationsOptions.SectionKey + ":Enabled"] = "true",
                 [OperatorNotificationsOptions.SectionKey + ":CameraDisconnectedThresholdSeconds"] = "0",
+                [OperatorNotificationsOptions.SectionKey + ":Events:DailyHeartbeatEnabled"] = "false",
                 [OperatorNotificationsOptions.SectionKey + ":Webhook:Enabled"] = "true",
                 [ConfigurationOperatorNotificationConfigProvider.WebhookUrlConfigKey] = webhookUrl,
                 [ConfigurationOperatorNotificationConfigProvider.WebhookAuthTokenConfigKey] = "reloaded-host-token"
@@ -7511,7 +7512,7 @@ public sealed class OperatorNotificationStoreTests
         };
         var envelopeV3 = new
         {
-            schemaVersion = 1,
+            schemaVersion = 3,
             revision = "v3-untruncated-rev-1",
             options = optionsB,
             protectedSecrets = protectorV3.Protect(JsonSerializer.Serialize(genuineV3Payload, WebJsonOptions))
@@ -9745,6 +9746,7 @@ public sealed class OperatorNotificationStoreTests
         var diskBytes = await File.ReadAllBytesAsync(Path.Combine(dir.Path, OperatorNotificationStore.ConfigFileName), CancellationToken.None).ConfigureAwait(false);
         using (var envelopeDoc = JsonDocument.Parse(diskBytes))
         {
+            Assert.AreEqual(3, envelopeDoc.RootElement.GetProperty("schemaVersion").GetInt32());
             var innerJson = protector.Unprotect(envelopeDoc.RootElement.GetProperty("protectedSecrets").GetString()!);
             using var innerDoc = JsonDocument.Parse(innerJson);
             Assert.AreEqual(3, innerDoc.RootElement.GetProperty("retiredCredentialHistoryVersion").GetInt32());
@@ -9995,6 +9997,1084 @@ public sealed class OperatorNotificationStoreTests
         Assert.AreEqual(OperatorNotificationsSaveOutcome.Invalid, rejectWithheld.Outcome);
         Assert.IsTrue(rejectWithheld.Problems!.ContainsKey("webhook.authToken"),
             "Withheld host credential bound to a prior destination MUST be rejected even after an options-only save.");
+    }
+
+    [TestMethod]
+    public async Task HigherPriorityOverrideMismatchedBoundEndpointOrOrigin_DoesNotAttributeOwningCredentialAndRejectsAcrossDestinationsAsync()
+    {
+        // Delta16 H2a: When a higher-priority override provider has a mismatched Smtp:BoundEndpoint or
+        // Webhook:BoundOrigin over an owning credential provider bound elsewhere, NEVER attribute the withheld
+        // credential to the override's destination and ALWAYS inspect the owning provider (recording withheld
+        // credentials with destination-unknown wildcard rejection across ALL destinations).
+        const string urlA = "https://d16-h2a-a.example.test/hook";
+        const string urlB = "https://d16-h2a-b.example.test/hook";
+        const string urlC = "https://d16-h2a-c.example.test/hook";
+        const string endpointA = "relay-d16-h2a-a.example.test:587:StartTls";
+        const string endpointB = "relay-d16-h2a-b.example.test:587:StartTls";
+
+        static OperatorNotificationsOptions BuildOptions(string smtpHost) => new()
+        {
+            Enabled = true,
+            Smtp = new SmtpNotificationOptions
+            {
+                Enabled = true,
+                Host = smtpHost,
+                Port = 587,
+                SecurityMode = SmtpSecurityMode.StartTls,
+                FromAddress = "camera@example.test",
+                Recipients = ["ops@example.test"]
+            },
+            Webhook = new WebhookNotificationOptions
+            {
+                Enabled = true,
+                Format = WebhookPayloadFormat.Generic
+            }
+        };
+
+        // Case 1: Higher-priority override supplies mismatched BoundEndpoint=B / BoundOrigin=B with effective dest C,
+        //         while lower-priority owning provider supplies credentials bound to destination A!
+        {
+            var owningProv = new RotatingHostConfigurationProvider(new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+            {
+                [OperatorNotificationsOptions.SectionKey + ":Enabled"] = "true",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Enabled"] = "true",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Host"] = "relay-d16-h2a-a.example.test",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Port"] = "587",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:SecurityMode"] = nameof(SmtpSecurityMode.StartTls),
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:FromAddress"] = "camera@example.test",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Recipients:0"] = "ops@example.test",
+                [ConfigurationOperatorNotificationConfigProvider.SmtpBoundEndpointConfigKey] = endpointA,
+                [ConfigurationOperatorNotificationConfigProvider.SmtpUsernameConfigKey] = "h2a-owned-user-a",
+                [ConfigurationOperatorNotificationConfigProvider.SmtpPasswordConfigKey] = "h2a-owned-pass-a",
+                [OperatorNotificationsOptions.SectionKey + ":Webhook:Enabled"] = "true",
+                [ConfigurationOperatorNotificationConfigProvider.WebhookUrlConfigKey] = urlA,
+                [ConfigurationOperatorNotificationConfigProvider.WebhookBoundOriginConfigKey] = urlA,
+                [ConfigurationOperatorNotificationConfigProvider.WebhookAuthTokenConfigKey] = "h2a-owned-tok-a",
+                [ConfigurationOperatorNotificationConfigProvider.WebhookUserKeyConfigKey] = "h2a-owned-ukey-a",
+                [ConfigurationOperatorNotificationConfigProvider.WebhookNtfyTopicConfigKey] = "h2a-owned-topic-a"
+            });
+            var overrideProv = new RotatingHostConfigurationProvider(new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+            {
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Host"] = "relay-d16-h2a-c.example.test",
+                [ConfigurationOperatorNotificationConfigProvider.SmtpBoundEndpointConfigKey] = endpointB,
+                [ConfigurationOperatorNotificationConfigProvider.WebhookUrlConfigKey] = urlC,
+                [ConfigurationOperatorNotificationConfigProvider.WebhookBoundOriginConfigKey] = urlB
+            });
+            var root = new ConfigurationRoot([owningProv, overrideProv]);
+
+            using var dir = TempStateDir.Create();
+            using var store = CreateStore(dir.Path, isDevelopment: false, configuration: root);
+
+            // Runtime snapshot MUST withhold ALL 5 credentials!
+            var eff = await store.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNull(eff.Secrets.SmtpUsername);
+            Assert.IsNull(eff.Secrets.SmtpPassword);
+            Assert.IsNull(eff.Secrets.WebhookAuthToken);
+            Assert.IsNull(eff.Secrets.WebhookUserKey);
+            Assert.IsNull(eff.Secrets.WebhookNtfyTopic);
+
+            // Settings save targeting the OVERRIDE's destination B MUST REJECT all 5 fields (never attributed to B!).
+            var snap = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+            foreach (var (targetHost, targetUrl, label) in new[]
+            {
+                ("relay-d16-h2a-b.example.test", urlB, "override destination B"),
+                ("relay-d16-h2a-c.example.test", urlC, "effective destination C"),
+                ("relay-d16-h2a-a.example.test", urlA, "owning destination A while withheld")
+            })
+            {
+                var reject = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                    snap.Version,
+                    BuildOptions(targetHost),
+                    SmtpUsername: "h2a-owned-user-a",
+                    SmtpPassword: "h2a-owned-pass-a",
+                    WebhookUrl: targetUrl,
+                    WebhookAuthToken: "h2a-owned-tok-a",
+                    WebhookUserKey: "h2a-owned-ukey-a",
+                    WebhookNtfyTopic: "h2a-owned-topic-a"), "owner-1", CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(OperatorNotificationsSaveOutcome.Invalid, reject.Outcome, $"Withheld creds must reject at {label}.");
+                Assert.IsTrue(reject.Problems!.ContainsKey("smtp.username"), $"smtp.username must reject at {label}.");
+                Assert.IsTrue(reject.Problems.ContainsKey("smtp.password"), $"smtp.password must reject at {label}.");
+                Assert.IsTrue(reject.Problems.ContainsKey("webhook.authToken"), $"webhook.authToken must reject at {label}.");
+                Assert.IsTrue(reject.Problems.ContainsKey("webhook.userKey"), $"webhook.userKey must reject at {label}.");
+                Assert.IsTrue(reject.Problems.ContainsKey("webhook.ntfyTopic"), $"webhook.ntfyTopic must reject at {label}.");
+            }
+
+            // Unversioned secret-store save targeting override destination B MUST also strip all 5 withheld creds!
+            var movedToB = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                snap.Version,
+                BuildOptions("relay-d16-h2a-b.example.test"),
+                WebhookUrl: urlB), "owner-1", CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(OperatorNotificationsSaveOutcome.Applied, movedToB.Outcome, movedToB.Message);
+
+            var readB = await ((IOperatorNotificationSecretStore)store).ReadAsync(CancellationToken.None).ConfigureAwait(false);
+            await ((IOperatorNotificationSecretStore)store).SaveAsync(
+                readB with
+                {
+                    SmtpUsername = "h2a-owned-user-a",
+                    SmtpPassword = "h2a-owned-pass-a",
+                    WebhookAuthToken = "h2a-owned-tok-a",
+                    WebhookUserKey = "h2a-owned-ukey-a",
+                    WebhookNtfyTopic = "h2a-owned-topic-a"
+                },
+                CancellationToken.None).ConfigureAwait(false);
+            var effAfterUnversioned = await store.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNull(effAfterUnversioned.Secrets.SmtpUsername);
+            Assert.IsNull(effAfterUnversioned.Secrets.SmtpPassword);
+            Assert.IsNull(effAfterUnversioned.Secrets.WebhookAuthToken);
+            Assert.IsNull(effAfterUnversioned.Secrets.WebhookUserKey);
+            Assert.IsNull(effAfterUnversioned.Secrets.WebhookNtfyTopic);
+        }
+
+        // Case 2: Higher-priority override supplies MATCHING BoundEndpoint=C / BoundOrigin=C for effective dest C
+        //         over an owning provider bound to A -> owning provider MUST be inspected, withhold creds, and reject at C and A!
+        {
+            var owningProv = new RotatingHostConfigurationProvider(new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+            {
+                [OperatorNotificationsOptions.SectionKey + ":Enabled"] = "true",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Enabled"] = "true",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Host"] = "relay-d16-h2a-a.example.test",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Port"] = "587",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:SecurityMode"] = nameof(SmtpSecurityMode.StartTls),
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:FromAddress"] = "camera@example.test",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Recipients:0"] = "ops@example.test",
+                [ConfigurationOperatorNotificationConfigProvider.SmtpBoundEndpointConfigKey] = endpointA,
+                [ConfigurationOperatorNotificationConfigProvider.SmtpPasswordConfigKey] = "h2a-case2-pass-a",
+                [OperatorNotificationsOptions.SectionKey + ":Webhook:Enabled"] = "true",
+                [ConfigurationOperatorNotificationConfigProvider.WebhookUrlConfigKey] = urlA,
+                [ConfigurationOperatorNotificationConfigProvider.WebhookBoundOriginConfigKey] = urlA,
+                [ConfigurationOperatorNotificationConfigProvider.WebhookAuthTokenConfigKey] = "h2a-case2-tok-a"
+            });
+            var overrideProv = new RotatingHostConfigurationProvider(new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+            {
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Host"] = "relay-d16-h2a-c.example.test",
+                [ConfigurationOperatorNotificationConfigProvider.SmtpBoundEndpointConfigKey] = "relay-d16-h2a-c.example.test:587:StartTls",
+                [ConfigurationOperatorNotificationConfigProvider.WebhookUrlConfigKey] = urlC,
+                [ConfigurationOperatorNotificationConfigProvider.WebhookBoundOriginConfigKey] = urlC
+            });
+            var root = new ConfigurationRoot([owningProv, overrideProv]);
+
+            using var dir = TempStateDir.Create();
+            using var store = CreateStore(dir.Path, isDevelopment: false, configuration: root);
+
+            var eff = await store.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNull(eff.Secrets.SmtpPassword);
+            Assert.IsNull(eff.Secrets.WebhookAuthToken);
+
+            var snap = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+            var rejectAtC = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                snap.Version,
+                BuildOptions("relay-d16-h2a-c.example.test"),
+                SmtpPassword: "h2a-case2-pass-a",
+                WebhookUrl: urlC,
+                WebhookAuthToken: "h2a-case2-tok-a"), "owner-1", CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(OperatorNotificationsSaveOutcome.Invalid, rejectAtC.Outcome);
+            Assert.IsTrue(rejectAtC.Problems!.ContainsKey("smtp.password"));
+            Assert.IsTrue(rejectAtC.Problems.ContainsKey("webhook.authToken"));
+        }
+    }
+
+    [TestMethod]
+    public async Task WithheldCredentialsFromSplitProviderSuppressionAndMalformedExplicitBindings_RejectedInSubsequentSettingsSavesAsync()
+    {
+        // Delta16 H2b: Record salted credential fingerprints with destination-unknown wildcard fail-closed semantics
+        // for ALL withheld values — including (a) split-provider suppressed waiting credentials and (b) credentials
+        // withheld under malformed explicit BoundEndpoint / BoundOrigin values — so subsequent settings saves
+        // cannot bind them to ANY destination without fresh rotation.
+        static Dictionary<string, string?> FullSmtpLeaf(string host, int port, string user, string pass) => new(StringComparer.OrdinalIgnoreCase)
+        {
+            [OperatorNotificationsOptions.SectionKey + ":Enabled"] = "true",
+            [OperatorNotificationsOptions.SectionKey + ":Smtp:Enabled"] = "true",
+            [OperatorNotificationsOptions.SectionKey + ":Smtp:Host"] = host,
+            [OperatorNotificationsOptions.SectionKey + ":Smtp:Port"] = port.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            [OperatorNotificationsOptions.SectionKey + ":Smtp:SecurityMode"] = nameof(SmtpSecurityMode.StartTls),
+            [OperatorNotificationsOptions.SectionKey + ":Smtp:FromAddress"] = "camera@example.test",
+            [OperatorNotificationsOptions.SectionKey + ":Smtp:Recipients:0"] = "ops@example.test",
+            [ConfigurationOperatorNotificationConfigProvider.SmtpUsernameConfigKey] = user,
+            [ConfigurationOperatorNotificationConfigProvider.SmtpPasswordConfigKey] = pass
+        };
+
+        // Part A1: Split-provider guard suppresses a newly visible waiting SMTP credential on SAME tuple (line 573).
+        {
+            var baseLeaf = new RotatingHostConfigurationProvider(
+                FullSmtpLeaf("relay-h2b-same.example.test", 587, "waiting-same-user", "waiting-same-pass"));
+            var overrideProv = new RotatingHostConfigurationProvider(new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+            {
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Host"] = "relay-h2b-same.example.test",
+                [ConfigurationOperatorNotificationConfigProvider.SmtpUsernameConfigKey] = "override-same-user",
+                [ConfigurationOperatorNotificationConfigProvider.SmtpPasswordConfigKey] = "override-same-pass"
+            });
+            var root = new ConfigurationRoot([baseLeaf, overrideProv]);
+            using var dir = TempStateDir.Create();
+            using var store = CreateStore(dir.Path, isDevelopment: false, configuration: root);
+
+            // Remove override -> waiting-same-user / waiting-same-pass become visible and are suppressed while prior binding remains.
+            overrideProv.Rotate(new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase));
+            var effAfterRemove = await store.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNull(effAfterRemove.Secrets.SmtpUsername);
+            Assert.IsNull(effAfterRemove.Secrets.SmtpPassword);
+
+            // Settings save to BOTH the same endpoint AND another endpoint MUST reject the suppressed waiting credentials!
+            var snap = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+            foreach (var targetHost in new[] { "relay-h2b-same.example.test", "relay-h2b-other.example.test" })
+            {
+                var reject = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                    snap.Version,
+                    CreateSmtpOptions(targetHost, 587, SmtpSecurityMode.StartTls),
+                    SmtpUsername: "waiting-same-user",
+                    SmtpPassword: "waiting-same-pass"), "owner-1", CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(OperatorNotificationsSaveOutcome.Invalid, reject.Outcome, $"Waiting split cred must reject at {targetHost}.");
+                Assert.IsTrue(reject.Problems!.ContainsKey("smtp.username"));
+                Assert.IsTrue(reject.Problems.ContainsKey("smtp.password"));
+            }
+        }
+
+        // Part A2: Split-provider guard suppresses a newly visible waiting SMTP credential on DIFFERENT tuple (line 581).
+        {
+            var baseLeaf = new RotatingHostConfigurationProvider(
+                FullSmtpLeaf("relay-h2b-diff-b.example.test", 587, "waiting-diff-user", "waiting-diff-pass"));
+            var overrideProv = new RotatingHostConfigurationProvider(new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+            {
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Host"] = "relay-h2b-diff-a.example.test",
+                [ConfigurationOperatorNotificationConfigProvider.SmtpUsernameConfigKey] = "override-diff-user",
+                [ConfigurationOperatorNotificationConfigProvider.SmtpPasswordConfigKey] = "override-diff-pass"
+            });
+            var root = new ConfigurationRoot([baseLeaf, overrideProv]);
+            using var dir = TempStateDir.Create();
+            using var store = CreateStore(dir.Path, isDevelopment: false, configuration: root);
+
+            overrideProv.Rotate(new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase));
+            var snap = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+            foreach (var targetHost in new[] { "relay-h2b-diff-b.example.test", "relay-h2b-diff-c.example.test" })
+            {
+                var reject = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                    snap.Version,
+                    CreateSmtpOptions(targetHost, 587, SmtpSecurityMode.StartTls),
+                    SmtpUsername: "waiting-diff-user",
+                    SmtpPassword: "waiting-diff-pass"), "owner-1", CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(OperatorNotificationsSaveOutcome.Invalid, reject.Outcome);
+                Assert.IsTrue(reject.Problems!.ContainsKey("smtp.username"));
+                Assert.IsTrue(reject.Problems.ContainsKey("smtp.password"));
+            }
+        }
+
+        // Part A3: Cross-provider webhook credential-first waiting value suppressed at line 573 is rejected in settings save!
+        {
+            const string urlA = "https://d16-h2b-a.example.test/hook";
+            const string urlB = "https://d16-h2b-b.example.test/hook";
+            var destProv = new RotatingHostConfigurationProvider(new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+            {
+                [OperatorNotificationsOptions.SectionKey + ":Enabled"] = "true",
+                [OperatorNotificationsOptions.SectionKey + ":Webhook:Enabled"] = "true",
+                [ConfigurationOperatorNotificationConfigProvider.WebhookUrlConfigKey] = urlA
+            });
+            var credsProv = new RotatingHostConfigurationProvider(new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+            {
+                [ConfigurationOperatorNotificationConfigProvider.WebhookAuthTokenConfigKey] = "initial-tok-a"
+            });
+            var root = new ConfigurationRoot([destProv, credsProv]);
+            using var dir = TempStateDir.Create();
+            using var store = CreateStore(dir.Path, isDevelopment: false, configuration: root);
+
+            // Creds provider rotates ahead of destination -> "waiting-tok-b" is suppressed while (urlA, initial-tok-a) stays bound!
+            credsProv.Rotate(new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+            {
+                [ConfigurationOperatorNotificationConfigProvider.WebhookAuthTokenConfigKey] = "waiting-tok-b"
+            });
+            var effMid = await store.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNull(effMid.Secrets.WebhookAuthToken);
+
+            var snap = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+            foreach (var targetUrl in new[] { urlA, urlB })
+            {
+                var reject = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                    snap.Version,
+                    new OperatorNotificationsOptions
+                    {
+                        Enabled = true,
+                        Webhook = new WebhookNotificationOptions { Enabled = true }
+                    },
+                    WebhookUrl: targetUrl,
+                    WebhookAuthToken: "waiting-tok-b"), "owner-1", CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(OperatorNotificationsSaveOutcome.Invalid, reject.Outcome);
+                Assert.IsTrue(reject.Problems!.ContainsKey("webhook.authToken"),
+                    $"Cross-provider suppressed waiting token must reject at {targetUrl}.");
+            }
+        }
+
+        // Part B: Malformed explicit BoundEndpoint and BoundOrigin MUST record withheld fingerprints and reject across ALL destinations!
+        {
+            const string urlCurrent = "https://d16-h2b-malformed.example.test/hook";
+            const string urlOther = "https://d16-h2b-other.example.test/hook";
+            var hostProv = new RotatingHostConfigurationProvider(new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+            {
+                [OperatorNotificationsOptions.SectionKey + ":Enabled"] = "true",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Enabled"] = "true",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Host"] = "relay-h2b-malformed.example.test",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Port"] = "587",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:SecurityMode"] = nameof(SmtpSecurityMode.StartTls),
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:FromAddress"] = "camera@example.test",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Recipients:0"] = "ops@example.test",
+                [ConfigurationOperatorNotificationConfigProvider.SmtpBoundEndpointConfigKey] = "not-a-valid-smtp-endpoint",
+                [ConfigurationOperatorNotificationConfigProvider.SmtpUsernameConfigKey] = "malformed-smtp-user",
+                [ConfigurationOperatorNotificationConfigProvider.SmtpPasswordConfigKey] = "malformed-smtp-pass",
+                [OperatorNotificationsOptions.SectionKey + ":Webhook:Enabled"] = "true",
+                [ConfigurationOperatorNotificationConfigProvider.WebhookUrlConfigKey] = urlCurrent,
+                [ConfigurationOperatorNotificationConfigProvider.WebhookBoundOriginConfigKey] = "://malformed-not-a-url",
+                [ConfigurationOperatorNotificationConfigProvider.WebhookAuthTokenConfigKey] = "malformed-wh-tok",
+                [ConfigurationOperatorNotificationConfigProvider.WebhookUserKeyConfigKey] = "malformed-wh-ukey",
+                [ConfigurationOperatorNotificationConfigProvider.WebhookNtfyTopicConfigKey] = "malformed-wh-topic"
+            });
+            var root = new ConfigurationRoot([hostProv]);
+            using var dir = TempStateDir.Create();
+            using var store = CreateStore(dir.Path, isDevelopment: false, configuration: root);
+
+            var eff = await store.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNull(eff.Secrets.SmtpUsername);
+            Assert.IsNull(eff.Secrets.SmtpPassword);
+            Assert.IsNull(eff.Secrets.WebhookAuthToken);
+            Assert.IsNull(eff.Secrets.WebhookUserKey);
+            Assert.IsNull(eff.Secrets.WebhookNtfyTopic);
+
+            var snap = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+            foreach (var (targetHost, targetUrl) in new[]
+            {
+                ("relay-h2b-malformed.example.test", urlCurrent),
+                ("relay-h2b-other.example.test", urlOther)
+            })
+            {
+                var options = new OperatorNotificationsOptions
+                {
+                    Enabled = true,
+                    Smtp = new SmtpNotificationOptions
+                    {
+                        Enabled = true,
+                        Host = targetHost,
+                        Port = 587,
+                        SecurityMode = SmtpSecurityMode.StartTls,
+                        FromAddress = "camera@example.test",
+                        Recipients = ["ops@example.test"]
+                    },
+                    Webhook = new WebhookNotificationOptions { Enabled = true }
+                };
+                var reject = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                    snap.Version,
+                    options,
+                    SmtpUsername: "malformed-smtp-user",
+                    SmtpPassword: "malformed-smtp-pass",
+                    WebhookUrl: targetUrl,
+                    WebhookAuthToken: "malformed-wh-tok",
+                    WebhookUserKey: "malformed-wh-ukey",
+                    WebhookNtfyTopic: "malformed-wh-topic"), "owner-1", CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(OperatorNotificationsSaveOutcome.Invalid, reject.Outcome);
+                Assert.IsTrue(reject.Problems!.ContainsKey("smtp.username"));
+                Assert.IsTrue(reject.Problems.ContainsKey("smtp.password"));
+                Assert.IsTrue(reject.Problems.ContainsKey("webhook.authToken"));
+                Assert.IsTrue(reject.Problems.ContainsKey("webhook.userKey"));
+                Assert.IsTrue(reject.Problems.ContainsKey("webhook.ntfyTopic"));
+            }
+
+            // Unversioned secret-store save MUST ALSO strip credentials withheld under malformed explicit bindings!
+            await ((IOperatorNotificationSecretStore)store).SaveAsync(
+                new OperatorNotificationSecrets(
+                    SmtpUsername: "malformed-smtp-user",
+                    SmtpPassword: "malformed-smtp-pass",
+                    WebhookUrl: urlOther,
+                    WebhookAuthToken: "malformed-wh-tok",
+                    WebhookUserKey: "malformed-wh-ukey",
+                    WebhookNtfyTopic: "malformed-wh-topic"),
+                CancellationToken.None).ConfigureAwait(false);
+            var effAfterUnversioned = await store.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNull(effAfterUnversioned.Secrets.SmtpUsername);
+            Assert.IsNull(effAfterUnversioned.Secrets.SmtpPassword);
+            Assert.IsNull(effAfterUnversioned.Secrets.WebhookAuthToken);
+            Assert.IsNull(effAfterUnversioned.Secrets.WebhookUserKey);
+            Assert.IsNull(effAfterUnversioned.Secrets.WebhookNtfyTopic);
+        }
+    }
+
+    [TestMethod]
+    public async Task PreV3EnvelopeWithMatchingLegacySmtpBinding_WithholdsSmtpPasswordNeverAcquiresV3TrustOnUnrelatedSaveAndUpgradesSchemaVersionTo3Async()
+    {
+        // Delta16 H4a: Persisted envelopes MUST write SchemaVersion = 3 (matching RetiredCredentialHistoryVersion = 3),
+        // and strict fail-closed < 3 migration MUST apply to BOTH SMTP and webhook bindings so a pre-v3 SMTP password
+        // with a matching legacy BoundSmtpEndpoint (whether SchemaVersion=1/v2 or delta15 SchemaVersion=1/v3) NEVER
+        // remains effective or acquires v3 trust on an unrelated save without explicit v3 reauthorization.
+        const string endpointB = "RELAY-D16-H4A.EXAMPLE.TEST:587:StartTls";
+        const string urlB = "https://d16-h4a.example.test/hook";
+        const string destB = "HTTPS://D16-H4A.EXAMPLE.TEST:443/hook";
+        var optionsB = new OperatorNotificationsOptions
+        {
+            Enabled = true,
+            Smtp = new SmtpNotificationOptions
+            {
+                Enabled = true,
+                Host = "relay-d16-h4a.example.test",
+                Port = 587,
+                SecurityMode = SmtpSecurityMode.StartTls,
+                FromAddress = "camera@example.test",
+                Recipients = ["ops@example.test"]
+            },
+            Webhook = new WebhookNotificationOptions { Enabled = true }
+        };
+
+        foreach (var (legacySchemaVersion, legacyHistoryVersion, label) in new (int, int?, string)[]
+        {
+            (1, null, "schema1-no-history-version"),
+            (1, 2, "schema1-history2"),
+            (1, 3, "delta15-schema1-history3"),
+            (2, 2, "schema2-history2")
+        })
+        {
+            using var dir = TempStateDir.Create();
+            var dpProvider = DataProtectionProvider.Create(new DirectoryInfo(Path.Combine(dir.Path, "dp-keys")));
+            var protector = dpProvider.CreateProtector("CameraAgent", "OperatorNotifications", "v1");
+
+            var legacyPayload = new
+            {
+                smtpUsername = $"pre-v3-user-{label}",
+                smtpPassword = $"pre-v3-pass-{label}",
+                boundSmtpEndpoint = endpointB,
+                webhookUrl = urlB,
+                webhookAuthToken = $"pre-v3-tok-{label}",
+                boundWebhookOrigin = "HTTPS://D16-H4A.EXAMPLE.TEST:443",
+                boundWebhookDestination = destB,
+                retiredCredentialHistoryVersion = legacyHistoryVersion
+            };
+            var envelope = new
+            {
+                schemaVersion = legacySchemaVersion,
+                revision = $"legacy-rev-{label}",
+                options = optionsB,
+                protectedSecrets = protector.Protect(JsonSerializer.Serialize(legacyPayload, WebJsonOptions))
+            };
+            await File.WriteAllTextAsync(
+                Path.Combine(dir.Path, OperatorNotificationStore.ConfigFileName),
+                JsonSerializer.Serialize(envelope, WebJsonOptions),
+                CancellationToken.None).ConfigureAwait(false);
+
+            using (var store = CreateStore(dir.Path, isDevelopment: false, dpProvider: dpProvider))
+            {
+                // 1. Pre-v3 SMTP username/password AND webhook token MUST be withheld on snapshot, effective config, and direct read!
+                var snap = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.IsFalse(snap.StoreCorrupt, $"{label}: pre-v3 envelope must migrate rather than corrupt.");
+                Assert.IsFalse(snap.Secrets.HasSmtpUsername, $"{label}: pre-v3 SMTP username must be withheld.");
+                Assert.IsFalse(snap.Secrets.HasSmtpPassword, $"{label}: pre-v3 SMTP password must be withheld.");
+                Assert.IsFalse(snap.Secrets.HasWebhookAuthToken, $"{label}: pre-v3 webhook token must be withheld.");
+
+                var eff = await store.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.IsNull(eff.Secrets.SmtpUsername, $"{label}: pre-v3 SMTP username must not remain effective.");
+                Assert.IsNull(eff.Secrets.SmtpPassword, $"{label}: pre-v3 SMTP password must not remain effective.");
+                Assert.IsNull(eff.Secrets.WebhookAuthToken, $"{label}: pre-v3 webhook token must not remain effective.");
+
+                var directRead = await ((IOperatorNotificationSecretStore)store).ReadAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.IsNull(directRead.SmtpUsername);
+                Assert.IsNull(directRead.SmtpPassword);
+                Assert.IsNull(directRead.WebhookAuthToken);
+
+                // 2. Unrelated settings save MUST NOT carry over or stamp the pre-v3 SMTP password into v3!
+                var unrelatedOptions = new OperatorNotificationsOptions
+                {
+                    Enabled = optionsB.Enabled,
+                    EvaluationIntervalSeconds = 45,
+                    Smtp = optionsB.Smtp,
+                    Webhook = optionsB.Webhook
+                };
+                var unrelatedSave = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                    snap.Version,
+                    unrelatedOptions), "owner-1", CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(OperatorNotificationsSaveOutcome.Applied, unrelatedSave.Outcome, unrelatedSave.Message);
+                Assert.IsFalse(unrelatedSave.Snapshot!.Secrets.HasSmtpUsername);
+                Assert.IsFalse(unrelatedSave.Snapshot.Secrets.HasSmtpPassword);
+                Assert.IsFalse(unrelatedSave.Snapshot.Secrets.HasWebhookAuthToken);
+            }
+
+            // 3. Verify persisted disk envelope upgraded to SchemaVersion = 3 and RetiredCredentialHistoryVersion = 3 with SMTP password dropped!
+            var diskBytes = await File.ReadAllBytesAsync(Path.Combine(dir.Path, OperatorNotificationStore.ConfigFileName), CancellationToken.None).ConfigureAwait(false);
+            using (var doc = JsonDocument.Parse(diskBytes))
+            {
+                Assert.AreEqual(3, doc.RootElement.GetProperty("schemaVersion").GetInt32(),
+                    $"{label}: saved envelope MUST advance SchemaVersion to 3.");
+                var innerJson = protector.Unprotect(doc.RootElement.GetProperty("protectedSecrets").GetString()!);
+                using var innerDoc = JsonDocument.Parse(innerJson);
+                Assert.AreEqual(3, innerDoc.RootElement.GetProperty("retiredCredentialHistoryVersion").GetInt32());
+                Assert.IsFalse(innerDoc.RootElement.TryGetProperty("smtpPassword", out _),
+                    $"{label}: pre-v3 SMTP password must be dropped on unrelated save.");
+                Assert.IsFalse(innerDoc.RootElement.TryGetProperty("boundSmtpEndpoint", out _),
+                    $"{label}: pre-v3 BoundSmtpEndpoint must NOT be stamped on unrelated save.");
+            }
+
+            // 4. Reload after unrelated save: pre-v3 SMTP password is STILL absent AND resubmitting it is REJECTED even at same endpoint!
+            using (var reloaded = CreateStore(dir.Path, isDevelopment: false, dpProvider: dpProvider))
+            {
+                var effReloaded = await reloaded.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.IsNull(effReloaded.Secrets.SmtpUsername);
+                Assert.IsNull(effReloaded.Secrets.SmtpPassword);
+
+                var snapReloaded = await reloaded.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+                var resubmitOld = await reloaded.SaveAsync(new OperatorNotificationsUpdateRequest(
+                    snapReloaded.Version,
+                    snapReloaded.Options,
+                    SmtpUsername: $"pre-v3-user-{label}",
+                    SmtpPassword: $"pre-v3-pass-{label}"), "owner-1", CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(OperatorNotificationsSaveOutcome.Invalid, resubmitOld.Outcome,
+                    $"{label}: resubmitting dropped pre-v3 SMTP credentials MUST fail closed even at same endpoint.");
+                Assert.IsTrue(resubmitOld.Problems!.ContainsKey("smtp.username"));
+                Assert.IsTrue(resubmitOld.Problems.ContainsKey("smtp.password"));
+
+                // 5. Explicit v3 reauthorization with fresh credentials succeeds and persists across reload!
+                var freshReauth = await reloaded.SaveAsync(new OperatorNotificationsUpdateRequest(
+                    snapReloaded.Version,
+                    snapReloaded.Options,
+                    SmtpUsername: $"fresh-v3-user-{label}",
+                    SmtpPassword: $"fresh-v3-pass-{label}",
+                    WebhookAuthToken: $"fresh-v3-tok-{label}"), "owner-1", CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(OperatorNotificationsSaveOutcome.Applied, freshReauth.Outcome, freshReauth.Message);
+                Assert.IsTrue(freshReauth.Snapshot!.Secrets.HasSmtpPassword);
+            }
+
+            using (var steadyV3 = CreateStore(dir.Path, isDevelopment: false, dpProvider: dpProvider))
+            {
+                var effV3 = await steadyV3.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual($"fresh-v3-user-{label}", effV3.Secrets.SmtpUsername);
+                Assert.AreEqual($"fresh-v3-pass-{label}", effV3.Secrets.SmtpPassword);
+                Assert.AreEqual($"fresh-v3-tok-{label}", effV3.Secrets.WebhookAuthToken);
+            }
+        }
+
+        // Unsupported future or invalid schema versions (< 1 or > 3) MUST fail closed as StoreCorrupt.
+        foreach (var badVersion in new[] { 0, 4 })
+        {
+            using var dirBad = TempStateDir.Create();
+            var badEnvelope = JsonSerializer.Serialize(new
+            {
+                schemaVersion = badVersion,
+                revision = $"bad-schema-{badVersion}",
+                options = optionsB,
+                protectedSecrets = (string?)null
+            }, WebJsonOptions);
+            await File.WriteAllTextAsync(
+                Path.Combine(dirBad.Path, OperatorNotificationStore.ConfigFileName),
+                badEnvelope,
+                CancellationToken.None).ConfigureAwait(false);
+            using var badStore = CreateStore(dirBad.Path, isDevelopment: false);
+            var badSnap = await badStore.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsTrue(badSnap.StoreCorrupt, $"SchemaVersion {badVersion} must fail closed as StoreCorrupt.");
+        }
+    }
+
+    [TestMethod]
+    public async Task MigratedPreV3RetiredWebhookCredentialWithLegacyDestinationA_StillRejectedAtDestinationAAsync()
+    {
+        // Delta16 H4b: Migration from < 3 MUST discard untrusted destination/origin/endpoint attribution on retired
+        // pre-v3 credentials (treating them as destination-unknown / wildcard-rejected across ALL destinations) so
+        // the same-destination exemption can NEVER admit a migrated < 3 retired token even at its legacy destination A.
+        static string SaltedHash(string s, string value)
+            => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes($"{s}:{value}")));
+        static string SaltedDestFp(string s, string canonicalDest)
+            => Convert.ToHexStringLower(HMACSHA256.HashData(Encoding.UTF8.GetBytes(s), Encoding.UTF8.GetBytes($"webhook-dest:{canonicalDest}")));
+
+        const string urlA = "https://d16-h4b.example.test/receiver-a";
+        const string canonicalDestA = "HTTPS://D16-H4B.EXAMPLE.TEST:443/receiver-a";
+        const string endpointA = "RELAY-D16-H4B-A.EXAMPLE.TEST:587:StartTls";
+        const string salt = "00112233445566778899aabbccddeeff";
+
+        var optionsA = new OperatorNotificationsOptions
+        {
+            Enabled = true,
+            Smtp = new SmtpNotificationOptions
+            {
+                Enabled = true,
+                Host = "relay-d16-h4b-a.example.test",
+                Port = 587,
+                SecurityMode = SmtpSecurityMode.StartTls,
+                FromAddress = "camera@example.test",
+                Recipients = ["ops@example.test"]
+            },
+            Webhook = new WebhookNotificationOptions
+            {
+                Enabled = true,
+                Format = WebhookPayloadFormat.Generic
+            }
+        };
+
+        foreach (var (legacySchemaVersion, legacyHistoryVersion, label) in new (int, int, string)[]
+        {
+            (1, 2, "schema1-history2"),
+            (1, 3, "delta15-schema1-history3")
+        })
+        {
+            using var dir = TempStateDir.Create();
+            var dpProvider = DataProtectionProvider.Create(new DirectoryInfo(Path.Combine(dir.Path, "dp-keys")));
+            var protector = dpProvider.CreateProtector("CameraAgent", "OperatorNotifications", "v1");
+
+            // Legacy record carries BOTH explicit `destination` AND salted `destinationFingerprint` claiming destination A!
+            var legacyPayload = new
+            {
+                webhookUrl = urlA,
+                retiredSalt = salt,
+                retiredWebhooks = new object[]
+                {
+                    new
+                    {
+                        destination = canonicalDestA,
+                        destinationFingerprint = SaltedDestFp(salt, canonicalDestA),
+                        authTokenHash = SaltedHash(salt, "legacy-retired-tok-a"),
+                        userKeyHash = SaltedHash(salt, "legacy-retired-ukey-a"),
+                        ntfyTopicHash = SaltedHash(salt, "legacy-retired-topic-a")
+                    }
+                },
+                retiredSmtps = new object[]
+                {
+                    new
+                    {
+                        endpoint = endpointA,
+                        usernameHash = SaltedHash(salt, "legacy-retired-user-a"),
+                        passwordHash = SaltedHash(salt, "legacy-retired-pass-a")
+                    }
+                },
+                anyWebhookHistoryTruncated = false,
+                anySmtpHistoryTruncated = false,
+                retiredCredentialHistoryVersion = legacyHistoryVersion
+            };
+            var envelope = new
+            {
+                schemaVersion = legacySchemaVersion,
+                revision = $"h4b-legacy-{label}",
+                options = optionsA,
+                protectedSecrets = protector.Protect(JsonSerializer.Serialize(legacyPayload, WebJsonOptions))
+            };
+            await File.WriteAllTextAsync(
+                Path.Combine(dir.Path, OperatorNotificationStore.ConfigFileName),
+                JsonSerializer.Serialize(envelope, WebJsonOptions),
+                CancellationToken.None).ConfigureAwait(false);
+
+            using (var store = CreateStore(dir.Path, isDevelopment: false, dpProvider: dpProvider))
+            {
+                // 1. Versioned settings save targeting the EXACT SAME legacy destination A MUST REJECT all migrated retired credentials!
+                var snap = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+                var rejectAtA = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                    snap.Version,
+                    optionsA,
+                    SmtpUsername: "legacy-retired-user-a",
+                    SmtpPassword: "legacy-retired-pass-a",
+                    WebhookAuthToken: "legacy-retired-tok-a",
+                    WebhookUserKey: "legacy-retired-ukey-a",
+                    WebhookNtfyTopic: "legacy-retired-topic-a"), "owner-1", CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(OperatorNotificationsSaveOutcome.Invalid, rejectAtA.Outcome,
+                    $"{label}: migrated <3 retired credentials claiming destination A MUST still be rejected at destination A.");
+                Assert.IsTrue(rejectAtA.Problems!.ContainsKey("smtp.username"));
+                Assert.IsTrue(rejectAtA.Problems.ContainsKey("smtp.password"));
+                Assert.IsTrue(rejectAtA.Problems.ContainsKey("webhook.authToken"));
+                Assert.IsTrue(rejectAtA.Problems.ContainsKey("webhook.userKey"));
+                Assert.IsTrue(rejectAtA.Problems.ContainsKey("webhook.ntfyTopic"));
+
+                // 2. Unversioned save WITH fresh read provenance at A MUST ALSO strip migrated <3 retired credentials!
+                var readAtA = await ((IOperatorNotificationSecretStore)store).ReadAsync(CancellationToken.None).ConfigureAwait(false);
+                await ((IOperatorNotificationSecretStore)store).SaveAsync(
+                    readAtA with
+                    {
+                        SmtpUsername = "legacy-retired-user-a",
+                        SmtpPassword = "legacy-retired-pass-a",
+                        WebhookAuthToken = "legacy-retired-tok-a",
+                        WebhookUserKey = "legacy-retired-ukey-a",
+                        WebhookNtfyTopic = "legacy-retired-topic-a"
+                    },
+                    CancellationToken.None).ConfigureAwait(false);
+                var effAfterUnversioned = await store.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.IsNull(effAfterUnversioned.Secrets.SmtpUsername);
+                Assert.IsNull(effAfterUnversioned.Secrets.SmtpPassword);
+                Assert.IsNull(effAfterUnversioned.Secrets.WebhookAuthToken);
+                Assert.IsNull(effAfterUnversioned.Secrets.WebhookUserKey);
+                Assert.IsNull(effAfterUnversioned.Secrets.WebhookNtfyTopic);
+            }
+
+            // 3. Reload from the now-upgraded v3 disk envelope: discarded destination attribution MUST persist across reload!
+            using (var reloaded = CreateStore(dir.Path, isDevelopment: false, dpProvider: dpProvider))
+            {
+                var snapReloaded = await reloaded.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+                var rejectAfterV3Upgrade = await reloaded.SaveAsync(new OperatorNotificationsUpdateRequest(
+                    snapReloaded.Version,
+                    optionsA,
+                    SmtpPassword: "legacy-retired-pass-a",
+                    WebhookAuthToken: "legacy-retired-tok-a",
+                    WebhookUserKey: "legacy-retired-ukey-a",
+                    WebhookNtfyTopic: "legacy-retired-topic-a"), "owner-1", CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(OperatorNotificationsSaveOutcome.Invalid, rejectAfterV3Upgrade.Outcome,
+                    $"{label}: migrated <3 retired credentials MUST stay destination-unknown after v3 rewrite and reload.");
+                Assert.IsTrue(rejectAfterV3Upgrade.Problems!.ContainsKey("smtp.password"));
+                Assert.IsTrue(rejectAfterV3Upgrade.Problems.ContainsKey("webhook.authToken"));
+                Assert.IsTrue(rejectAfterV3Upgrade.Problems.ContainsKey("webhook.userKey"));
+                Assert.IsTrue(rejectAfterV3Upgrade.Problems.ContainsKey("webhook.ntfyTopic"));
+
+                // Fresh credentials at A succeed cleanly!
+                var freshAtA = await reloaded.SaveAsync(new OperatorNotificationsUpdateRequest(
+                    snapReloaded.Version,
+                    optionsA,
+                    SmtpUsername: "fresh-v3-user-a",
+                    SmtpPassword: "fresh-v3-pass-a",
+                    WebhookAuthToken: "fresh-v3-tok-a"), "owner-1", CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(OperatorNotificationsSaveOutcome.Applied, freshAtA.Outcome, freshAtA.Message);
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task WhitespacePaddedRetiredNtfyTopic_RejectedAcrossUnversionedVersionedAndHostHistoryAsync()
+    {
+        // Delta16 M-ntfy: Canonicalize/trim ntfy topics identically via OperatorNotificationValidation.NormalizeNtfyTopic
+        // across transport, secret-store recording/validation (unversioned & versioned), and host tracker history so
+        // whitespace-padded retired topics (e.g. "  retired-topic  ") are NEVER accepted on another webhook.
+        const string urlA = "https://d16-ntfy-a.example.test/";
+        const string urlB = "https://d16-ntfy-b.example.test/";
+        const string urlC = "https://d16-ntfy-c.example.test/";
+
+        var ntfyOptions = new OperatorNotificationsOptions
+        {
+            Enabled = true,
+            Webhook = new WebhookNotificationOptions
+            {
+                Enabled = true,
+                Format = WebhookPayloadFormat.Ntfy
+            }
+        };
+
+        // Verify shared canonicalizer matches transport payload serialization.
+        Assert.AreEqual("retired-topic", OperatorNotificationValidation.NormalizeNtfyTopic("  retired-topic  "));
+        Assert.IsNull(OperatorNotificationValidation.NormalizeNtfyTopic("   \t  "));
+        var transportJson = WebhookNotificationTransport.BuildPayloadJson(new WebhookDeliveryRequest(
+            Url: urlB,
+            Format: WebhookPayloadFormat.Ntfy,
+            AuthHeaderName: WebhookNotificationOptions.DefaultAuthHeaderName,
+            NtfyTopic: "  retired-topic  ",
+            AllowPrivateNetwork: false,
+            AuthToken: null,
+            UserKey: null,
+            Event: new OperatorNotificationEvent(
+                OperatorNotificationEventKind.CaptureStalled,
+                OperatorNotificationSeverity.Warning,
+                "ntfy-canon-test",
+                "Test",
+                "Body",
+                DateTimeOffset.UnixEpoch),
+            CoalescedCount: 1,
+            SuppressedDuringCooldown: 0,
+            IsTest: true,
+            Timeout: TimeSpan.FromSeconds(5)));
+        using (var payloadDoc = JsonDocument.Parse(transportJson))
+        {
+            Assert.AreEqual("retired-topic", payloadDoc.RootElement.GetProperty("topic").GetString());
+        }
+
+        // Part A: Store-retired ntfy topic rejected when resubmitted with whitespace padding to webhook B (unversioned & versioned).
+        {
+            using var dir = TempStateDir.Create();
+            using var store = CreateStore(dir.Path, isDevelopment: false);
+
+            var s0 = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+            var savedA = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                s0.Version,
+                ntfyOptions,
+                WebhookUrl: urlA,
+                WebhookNtfyTopic: "retired-topic"), "owner-1", CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(OperatorNotificationsSaveOutcome.Applied, savedA.Outcome, savedA.Message);
+
+            // Move to webhook B without a topic (retiring "retired-topic" for webhook A).
+            var movedB = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                savedA.Snapshot!.Version,
+                new OperatorNotificationsOptions
+                {
+                    Enabled = false,
+                    Webhook = new WebhookNotificationOptions { Enabled = true, Format = WebhookPayloadFormat.Ntfy }
+                },
+                WebhookUrl: urlB), "owner-1", CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(OperatorNotificationsSaveOutcome.Applied, movedB.Outcome, movedB.Message);
+
+            // Unversioned secret-store save submitting "  retired-topic  " at webhook B MUST strip it!
+            var readB = await ((IOperatorNotificationSecretStore)store).ReadAsync(CancellationToken.None).ConfigureAwait(false);
+            await ((IOperatorNotificationSecretStore)store).SaveAsync(
+                readB with { WebhookNtfyTopic = "  retired-topic  " },
+                CancellationToken.None).ConfigureAwait(false);
+            var effAfterUnversioned = await store.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNull(effAfterUnversioned.Secrets.WebhookNtfyTopic,
+                "Whitespace-padded retired ntfy topic MUST be stripped on unversioned save to webhook B.");
+
+            // Versioned save submitting "  retired-topic  " at webhook B MUST also reject!
+            var snapB = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+            var rejectVersioned = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                snapB.Version,
+                ntfyOptions,
+                WebhookNtfyTopic: "  retired-topic  "), "owner-1", CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(OperatorNotificationsSaveOutcome.Invalid, rejectVersioned.Outcome);
+            Assert.IsTrue(rejectVersioned.Problems!.ContainsKey("webhook.ntfyTopic"));
+
+            // Unversioned save with padded fresh topic "  topic-b-canonical  " canonicalizes on save & retires canonically!
+            var readB2 = await ((IOperatorNotificationSecretStore)store).ReadAsync(CancellationToken.None).ConfigureAwait(false);
+            await ((IOperatorNotificationSecretStore)store).SaveAsync(
+                readB2 with { WebhookNtfyTopic = "  topic-b-canonical  " },
+                CancellationToken.None).ConfigureAwait(false);
+            var effCanonB = await store.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual("topic-b-canonical", effCanonB.Secrets.WebhookNtfyTopic);
+
+            // Rotate B -> C (retiring "topic-b-canonical"), then verify BOTH raw and whitespace-padded forms are stripped at C!
+            var snapB2 = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+            var movedC = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                snapB2.Version,
+                new OperatorNotificationsOptions
+                {
+                    Enabled = false,
+                    Webhook = new WebhookNotificationOptions { Enabled = true, Format = WebhookPayloadFormat.Ntfy }
+                },
+                WebhookUrl: urlC), "owner-1", CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(OperatorNotificationsSaveOutcome.Applied, movedC.Outcome, movedC.Message);
+
+            var readC = await ((IOperatorNotificationSecretStore)store).ReadAsync(CancellationToken.None).ConfigureAwait(false);
+            await ((IOperatorNotificationSecretStore)store).SaveAsync(
+                readC with { WebhookNtfyTopic = "\t topic-b-canonical \t" },
+                CancellationToken.None).ConfigureAwait(false);
+            var effC = await store.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNull(effC.Secrets.WebhookNtfyTopic);
+        }
+
+        // Part B: Host-retired ntfy topic rejected when resubmitted with whitespace padding to webhook B!
+        {
+            var hostProv = new RotatingHostConfigurationProvider(new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+            {
+                [OperatorNotificationsOptions.SectionKey + ":Enabled"] = "true",
+                [OperatorNotificationsOptions.SectionKey + ":Webhook:Enabled"] = "true",
+                [OperatorNotificationsOptions.SectionKey + ":Webhook:Format"] = nameof(WebhookPayloadFormat.Ntfy),
+                [ConfigurationOperatorNotificationConfigProvider.WebhookUrlConfigKey] = urlA,
+                [ConfigurationOperatorNotificationConfigProvider.WebhookNtfyTopicConfigKey] = "host-retired-ntfy"
+            });
+            var root = new ConfigurationRoot([hostProv]);
+            using var dir = TempStateDir.Create();
+            using var store = CreateStore(dir.Path, isDevelopment: false, configuration: root);
+
+            // Rotate host topic at A so "host-retired-ntfy" lives only in live host tracker retired history.
+            hostProv.Rotate(new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+            {
+                [OperatorNotificationsOptions.SectionKey + ":Enabled"] = "true",
+                [OperatorNotificationsOptions.SectionKey + ":Webhook:Enabled"] = "true",
+                [OperatorNotificationsOptions.SectionKey + ":Webhook:Format"] = nameof(WebhookPayloadFormat.Ntfy),
+                [ConfigurationOperatorNotificationConfigProvider.WebhookUrlConfigKey] = urlA,
+                [ConfigurationOperatorNotificationConfigProvider.WebhookNtfyTopicConfigKey] = "host-active-ntfy"
+            });
+
+            var snap = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+            var rejectHostVersioned = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                snap.Version,
+                ntfyOptions,
+                WebhookUrl: urlB,
+                WebhookNtfyTopic: "  host-retired-ntfy  "), "owner-1", CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(OperatorNotificationsSaveOutcome.Invalid, rejectHostVersioned.Outcome);
+            Assert.IsTrue(rejectHostVersioned.Problems!.ContainsKey("webhook.ntfyTopic"));
+
+            await ((IOperatorNotificationSecretStore)store).SaveAsync(
+                new OperatorNotificationSecrets(WebhookUrl: urlB, WebhookNtfyTopic: "  host-retired-ntfy  "),
+                CancellationToken.None).ConfigureAwait(false);
+            var effHostUnversioned = await store.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNull(effHostUnversioned.Secrets.WebhookNtfyTopic,
+                "Whitespace-padded host-retired ntfy topic MUST be stripped on unversioned save to webhook B.");
+        }
+    }
+
+    [TestMethod]
+    public async Task HostExplicitlyReauthorizesPreviouslyRetiredValueAtDestinationB_AllowsSameDestinationProtectedMigrationAndRejectsDestinationCAsync()
+    {
+        // Delta16 M2: Host authorizes value at destination A -> rotates/retires it -> host explicitly reauthorizes
+        // the SAME value at destination B (same-provider BoundEndpoint/BoundOrigin) -> options-only save ->
+        // migrating that currently active, explicitly authorized value into protected storage at destination B
+        // SUCCEEDS, while submitting it for destination C REJECTS!
+        const string urlA = "https://d16-m2-a.example.test/hook";
+        const string urlB = "https://d16-m2-b.example.test/hook";
+        const string urlC = "https://d16-m2-c.example.test/hook";
+        const string urlD = "https://d16-m2-d.example.test/hook";
+        const string hostA = "relay-d16-m2-a.example.test";
+        const string hostB = "relay-d16-m2-b.example.test";
+        const string hostC = "relay-d16-m2-c.example.test";
+        const string hostD = "relay-d16-m2-d.example.test";
+
+        static Dictionary<string, string?> BuildHostDict(
+            string smtpHost,
+            string smtpUser,
+            string smtpPass,
+            string webhookUrl,
+            string webhookTok,
+            string webhookUkey,
+            string webhookTopic,
+            string? smtpBound = null,
+            string? webhookBound = null)
+        {
+            var dict = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+            {
+                [OperatorNotificationsOptions.SectionKey + ":Enabled"] = "true",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Enabled"] = "true",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Host"] = smtpHost,
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Port"] = "587",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:SecurityMode"] = nameof(SmtpSecurityMode.StartTls),
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:FromAddress"] = "camera@example.test",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Recipients:0"] = "ops@example.test",
+                [ConfigurationOperatorNotificationConfigProvider.SmtpUsernameConfigKey] = smtpUser,
+                [ConfigurationOperatorNotificationConfigProvider.SmtpPasswordConfigKey] = smtpPass,
+                [OperatorNotificationsOptions.SectionKey + ":Webhook:Enabled"] = "true",
+                [OperatorNotificationsOptions.SectionKey + ":Webhook:Format"] = nameof(WebhookPayloadFormat.Pushover),
+                [ConfigurationOperatorNotificationConfigProvider.WebhookUrlConfigKey] = webhookUrl,
+                [ConfigurationOperatorNotificationConfigProvider.WebhookAuthTokenConfigKey] = webhookTok,
+                [ConfigurationOperatorNotificationConfigProvider.WebhookUserKeyConfigKey] = webhookUkey,
+                [ConfigurationOperatorNotificationConfigProvider.WebhookNtfyTopicConfigKey] = webhookTopic
+            };
+            if (smtpBound is not null)
+            {
+                dict[ConfigurationOperatorNotificationConfigProvider.SmtpBoundEndpointConfigKey] = smtpBound;
+            }
+            if (webhookBound is not null)
+            {
+                dict[ConfigurationOperatorNotificationConfigProvider.WebhookBoundOriginConfigKey] = webhookBound;
+            }
+            return dict;
+        }
+
+        // Step 1: Host authorizes value V at destination A.
+        var hostProv = new RotatingHostConfigurationProvider(BuildHostDict(
+            hostA, "m2-reauth-user", "m2-reauth-pass",
+            urlA, "m2-reauth-tok", "m2-reauth-ukey", "m2-reauth-topic"));
+        var root = new ConfigurationRoot([hostProv]);
+
+        using var dir = TempStateDir.Create();
+        var dpProvider = DataProtectionProvider.Create(new DirectoryInfo(Path.Combine(dir.Path, "dp-keys")));
+        using (var store = CreateStore(dir.Path, isDevelopment: false, dpProvider: dpProvider, configuration: root))
+        {
+            var effA = await store.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual("m2-reauth-pass", effA.Secrets.SmtpPassword);
+            Assert.AreEqual("m2-reauth-tok", effA.Secrets.WebhookAuthToken);
+
+            // Step 2: Host rotates/retires V at destination A (recording (A, V) in live tracker retired history!).
+            hostProv.Rotate(BuildHostDict(
+                hostA, "m2-other-user-a2", "m2-other-pass-a2",
+                urlA, "m2-other-tok-a2", "m2-other-ukey-a2", "m2-other-topic-a2"));
+
+            // Step 3: Host explicitly reauthorizes the SAME value V at destination B via same-provider BoundEndpoint/BoundOrigin!
+            hostProv.Rotate(BuildHostDict(
+                hostB, "m2-reauth-user", "m2-reauth-pass",
+                urlB, "m2-reauth-tok", "m2-reauth-ukey", "m2-reauth-topic",
+                smtpBound: $"{hostB}:587:StartTls",
+                webhookBound: urlB));
+
+            var effB = await store.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual("m2-reauth-user", effB.Secrets.SmtpUsername);
+            Assert.AreEqual("m2-reauth-pass", effB.Secrets.SmtpPassword);
+            Assert.AreEqual("m2-reauth-tok", effB.Secrets.WebhookAuthToken);
+            Assert.AreEqual("m2-reauth-ukey", effB.Secrets.WebhookUserKey);
+            Assert.AreEqual("m2-reauth-topic", effB.Secrets.WebhookNtfyTopic);
+
+            // Step 4: Options-only save at destination B.
+            var s0 = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+            var optionsB = new OperatorNotificationsOptions
+            {
+                Enabled = true,
+                EvaluationIntervalSeconds = 45,
+                Smtp = s0.Options.Smtp,
+                Webhook = s0.Options.Webhook
+            };
+            var savedOptionsOnly = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                s0.Version,
+                optionsB), "owner-1", CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(OperatorNotificationsSaveOutcome.Applied, savedOptionsOnly.Outcome, savedOptionsOnly.Message);
+
+            // Step 5: Submitting that same value V for DIFFERENT destination C MUST REJECT on all 5 fields!
+            var optionsC = new OperatorNotificationsOptions
+            {
+                Enabled = true,
+                EvaluationIntervalSeconds = 45,
+                Smtp = new SmtpNotificationOptions
+                {
+                    Enabled = true,
+                    Host = hostC,
+                    Port = 587,
+                    SecurityMode = SmtpSecurityMode.StartTls,
+                    FromAddress = "camera@example.test",
+                    Recipients = ["ops@example.test"]
+                },
+                Webhook = s0.Options.Webhook
+            };
+            var rejectAtC = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                savedOptionsOnly.Snapshot!.Version,
+                optionsC,
+                SmtpUsername: "m2-reauth-user",
+                SmtpPassword: "m2-reauth-pass",
+                WebhookUrl: urlC,
+                WebhookAuthToken: "m2-reauth-tok",
+                WebhookUserKey: "m2-reauth-ukey",
+                WebhookNtfyTopic: "m2-reauth-topic"), "owner-1", CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(OperatorNotificationsSaveOutcome.Invalid, rejectAtC.Outcome);
+            Assert.IsTrue(rejectAtC.Problems!.ContainsKey("smtp.username"));
+            Assert.IsTrue(rejectAtC.Problems.ContainsKey("smtp.password"));
+            Assert.IsTrue(rejectAtC.Problems.ContainsKey("webhook.authToken"));
+            Assert.IsTrue(rejectAtC.Problems.ContainsKey("webhook.userKey"));
+            Assert.IsTrue(rejectAtC.Problems.ContainsKey("webhook.ntfyTopic"));
+
+            // Step 6: Migrating that active, explicitly authorized value V into protected storage at destination B MUST SUCCEED!
+            var migrateAtB = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                savedOptionsOnly.Snapshot.Version,
+                optionsB,
+                SmtpUsername: "m2-reauth-user",
+                SmtpPassword: "m2-reauth-pass",
+                WebhookUrl: urlB,
+                WebhookAuthToken: "m2-reauth-tok",
+                WebhookUserKey: "m2-reauth-ukey",
+                WebhookNtfyTopic: "m2-reauth-topic"), "owner-1", CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(OperatorNotificationsSaveOutcome.Applied, migrateAtB.Outcome, migrateAtB.Message);
+            Assert.AreEqual(NotificationSecretSource.ProtectedStore, migrateAtB.Snapshot!.Secrets.SmtpUsernameSource);
+            Assert.AreEqual(NotificationSecretSource.ProtectedStore, migrateAtB.Snapshot.Secrets.SmtpPasswordSource);
+            Assert.AreEqual(NotificationSecretSource.ProtectedStore, migrateAtB.Snapshot.Secrets.WebhookUrlSource);
+            Assert.AreEqual(NotificationSecretSource.ProtectedStore, migrateAtB.Snapshot.Secrets.WebhookAuthTokenSource);
+            Assert.AreEqual(NotificationSecretSource.ProtectedStore, migrateAtB.Snapshot.Secrets.WebhookUserKeySource);
+            Assert.AreEqual(NotificationSecretSource.ProtectedStore, migrateAtB.Snapshot.Secrets.WebhookNtfyTopicSource);
+        }
+
+        // Reload with empty host config: migrated credentials persist cleanly under v3 bindings at destination B!
+        using (var reloaded = CreateStore(dir.Path, isDevelopment: false, dpProvider: dpProvider))
+        {
+            var effReloaded = await reloaded.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual("m2-reauth-user", effReloaded.Secrets.SmtpUsername);
+            Assert.AreEqual("m2-reauth-pass", effReloaded.Secrets.SmtpPassword);
+            Assert.AreEqual(urlB, effReloaded.Secrets.WebhookUrl);
+            Assert.AreEqual("m2-reauth-tok", effReloaded.Secrets.WebhookAuthToken);
+            Assert.AreEqual("m2-reauth-ukey", effReloaded.Secrets.WebhookUserKey);
+            Assert.AreEqual("m2-reauth-topic", effReloaded.Secrets.WebhookNtfyTopic);
+        }
+
+        // Step 7: Once host moves B -> D without explicit reauth (withholding V), V is NO LONGER active/explicitly
+        //         authorized at B, so submitting V at B or D after an options-only save MUST fail closed again!
+        using var dirWithheld = TempStateDir.Create();
+        var hostProv2 = new RotatingHostConfigurationProvider(BuildHostDict(
+            hostA, "m2-reauth-user", "m2-reauth-pass",
+            urlA, "m2-reauth-tok", "m2-reauth-ukey", "m2-reauth-topic"));
+        var root2 = new ConfigurationRoot([hostProv2]);
+        using var store2 = CreateStore(dirWithheld.Path, isDevelopment: false, configuration: root2);
+
+        hostProv2.Rotate(BuildHostDict(
+            hostA, "m2-other-user-a2", "m2-other-pass-a2",
+            urlA, "m2-other-tok-a2", "m2-other-ukey-a2", "m2-other-topic-a2"));
+        hostProv2.Rotate(BuildHostDict(
+            hostB, "m2-reauth-user", "m2-reauth-pass",
+            urlB, "m2-reauth-tok", "m2-reauth-ukey", "m2-reauth-topic",
+            smtpBound: $"{hostB}:587:StartTls",
+            webhookBound: urlB));
+        // Now move to D leaving V without matching explicit binding -> V is withheld!
+        hostProv2.Rotate(BuildHostDict(
+            hostD, "m2-reauth-user", "m2-reauth-pass",
+            urlD, "m2-reauth-tok", "m2-reauth-ukey", "m2-reauth-topic"));
+
+        var snapD = await store2.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+        var rejectWithheldAtB = await store2.SaveAsync(new OperatorNotificationsUpdateRequest(
+            snapD.Version,
+            CreateSmtpOptions(hostB, 587, SmtpSecurityMode.StartTls),
+            SmtpPassword: "m2-reauth-pass",
+            WebhookUrl: urlB,
+            WebhookAuthToken: "m2-reauth-tok"), "owner-1", CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(OperatorNotificationsSaveOutcome.Invalid, rejectWithheldAtB.Outcome);
+        Assert.IsTrue(rejectWithheldAtB.Problems!.ContainsKey("smtp.password"));
+        Assert.IsTrue(rejectWithheldAtB.Problems.ContainsKey("webhook.authToken"));
     }
 
     private static List<string> CollectReachableStringsExcludingConfiguration(object root)

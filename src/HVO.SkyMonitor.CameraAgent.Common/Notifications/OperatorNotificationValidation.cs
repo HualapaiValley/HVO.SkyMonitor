@@ -154,6 +154,14 @@ public static partial class OperatorNotificationValidation
         return string.IsNullOrEmpty(path) || path == "/";
     }
 
+    /// <summary>
+    /// Canonicalizes an ntfy topic by trimming surrounding whitespace, returning <c>null</c> when absent or
+    /// whitespace-only. Shared across transport delivery, host configuration reading, live host tracker history,
+    /// and protected secret-store history and validation.
+    /// </summary>
+    public static string? NormalizeNtfyTopic(string? topic)
+        => string.IsNullOrWhiteSpace(topic) ? null : topic.Trim();
+
     public static bool IsValidAuthHeaderName(string? name)
     {
         if (string.IsNullOrWhiteSpace(name) ||
