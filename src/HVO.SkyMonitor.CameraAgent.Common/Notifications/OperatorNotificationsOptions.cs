@@ -184,7 +184,11 @@ public sealed class SmtpNotificationOptions : IValidatableObject
     [MaxLength(MaximumDisplayNameLength)]
     public string FromDisplayName { get; init; } = "HVO SkyMonitor CameraAgent";
 
-    /// <summary>Recipient email addresses (up to <see cref="OperatorNotificationsOptions.MaximumRecipients"/>).</summary>
+    /// <summary>
+    /// Recipient email addresses (up to <see cref="OperatorNotificationsOptions.MaximumRecipients"/>).
+    /// Remains a concrete mutable <see cref="List{T}"/> for configuration binder compatibility; configuration providers
+    /// and trackers return isolated defensive copies via <see cref="ConfigurationOperatorNotificationConfigProvider.CloneOptions"/>.
+    /// </summary>
     [SuppressMessage("Usage", "CA2227:Collection properties should be read only",
         Justification = "Configuration binder populates list properties from appsettings.")]
     [SuppressMessage("Design", "CA1002:Do not expose generic lists",

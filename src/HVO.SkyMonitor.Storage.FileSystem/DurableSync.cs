@@ -4,6 +4,19 @@ using Microsoft.Win32.SafeHandles;
 
 namespace HVO.SkyMonitor.Storage.FileSystem;
 
+/// <summary>Result of a single non-following (or following) filesystem metadata inspection.</summary>
+public enum PathEntryKind
+{
+    NotFound = 0,
+    Directory = 1,
+    RegularFile = 2,
+    SymbolicLink = 3,
+    Other = 4,
+    NotDirectory = 5,
+    PermissionDenied = 6,
+    IoError = 7
+}
+
 /// <summary>
 /// The two durability boundaries a filesystem offers: flushing a file's data to its medium, and
 /// flushing a directory's entries so that a rename or create is itself durable. Neither is a
@@ -23,6 +36,7 @@ public static class DurableSync
     private const ushort UnixFileTypeMask = 0xF000;
     private const ushort UnixDirectoryType = 0x4000;
     private const ushort UnixRegularFileType = 0x8000;
+    private const ushort UnixSymbolicLinkType = 0xA000;
     private const int MacOsOpenReadOnly = 0;
     private const int MacOsOpenNoFollow = 0x0100;
     private const int MacOsOpenDirectory = 0x100000;
@@ -109,6 +123,164 @@ public static class DurableSync
             throw FileSystemFaultException.From("sync-file", absolutePath, exception);
         }
     }
+
+    /// <summary>
+    /// Classifies <paramref name="absolutePath"/> using a SINGLE non-following filesystem metadata
+    /// observation (<c>statx(AT_SYMLINK_NOFOLLOW)</c> on Linux, <c>lstat(2)</c> on macOS, or a single
+    /// <see cref="System.IO.File.GetAttributes(string)"/> call elsewhere) so callers never combine
+    /// two pathname observations that could reclassify a normal directory as a permitted symlink.
+    /// </summary>
+    public static PathEntryKind InspectPathNoFollow(string absolutePath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(absolutePath);
+        if (OperatingSystem.IsLinux())
+        {
+            return InspectPathLinux(absolutePath, followSymlinks: false);
+        }
+        if (OperatingSystem.IsMacOS())
+        {
+            return InspectPathMacOs(absolutePath, followSymlinks: false);
+        }
+        return InspectPathManaged(absolutePath, followSymlinks: false);
+    }
+
+    /// <summary>
+    /// Classifies the resolved target of <paramref name="absolutePath"/> by following symbolic links
+    /// using kernel path-resolution semantics (<c>statx(0)</c> on Linux, <c>stat(2)</c> on macOS).
+    /// Intended strictly for verifying the target of an ancestor already observed to be a pre-existing
+    /// symbolic link via <see cref="InspectPathNoFollow(string)"/>.
+    /// </summary>
+    public static PathEntryKind InspectPathFollow(string absolutePath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(absolutePath);
+        if (OperatingSystem.IsLinux())
+        {
+            return InspectPathLinux(absolutePath, followSymlinks: true);
+        }
+        if (OperatingSystem.IsMacOS())
+        {
+            return InspectPathMacOs(absolutePath, followSymlinks: true);
+        }
+        return InspectPathManaged(absolutePath, followSymlinks: true);
+    }
+
+    private static PathEntryKind InspectPathLinux(string absolutePath, bool followSymlinks)
+    {
+        var flags = followSymlinks ? 0 : AtSymbolicLinkNoFollow;
+        int result;
+        int errno;
+        LinuxFileStatus status;
+        do
+        {
+            result = StatX(AtFileDescriptorCurrentWorkingDirectory, absolutePath, flags, StatxType, out status);
+            errno = Marshal.GetLastPInvokeError();
+        }
+        while (result < 0 && errno == ErrnoIntr);
+
+        if (result < 0)
+        {
+            return MapStatErrno(errno);
+        }
+
+        if ((status.Mask & StatxType) != StatxType)
+        {
+            return PathEntryKind.IoError;
+        }
+
+        return MapUnixMode(status.Mode);
+    }
+
+    private static PathEntryKind InspectPathMacOs(string absolutePath, bool followSymlinks)
+    {
+        int result;
+        int errno;
+        MacOsFileStatus status;
+        var isX64 = RuntimeInformation.ProcessArchitecture == Architecture.X64;
+        do
+        {
+            result = followSymlinks
+                ? (isX64 ? NativeMacOsStat64(absolutePath, out status) : NativeMacOsStat(absolutePath, out status))
+                : (isX64 ? NativeMacOsLstat64(absolutePath, out status) : NativeMacOsLstat(absolutePath, out status));
+            errno = Marshal.GetLastPInvokeError();
+        }
+        while (result < 0 && errno == ErrnoIntr);
+
+        if (result < 0)
+        {
+            return MapStatErrno(errno);
+        }
+
+        return MapUnixMode(status.Mode);
+    }
+
+    private static PathEntryKind InspectPathManaged(string absolutePath, bool followSymlinks)
+    {
+        try
+        {
+            if (followSymlinks)
+            {
+                if (System.IO.Directory.Exists(absolutePath))
+                {
+                    return PathEntryKind.Directory;
+                }
+                if (System.IO.File.Exists(absolutePath))
+                {
+                    var targetAttrs = System.IO.File.GetAttributes(absolutePath);
+                    return (targetAttrs & FileAttributes.Device) != 0
+                        ? PathEntryKind.Other
+                        : PathEntryKind.RegularFile;
+                }
+                return PathEntryKind.NotFound;
+            }
+
+            var attrs = System.IO.File.GetAttributes(absolutePath);
+            if ((attrs & FileAttributes.ReparsePoint) != 0)
+            {
+                return PathEntryKind.SymbolicLink;
+            }
+            if ((attrs & FileAttributes.Device) != 0)
+            {
+                return PathEntryKind.Other;
+            }
+            if ((attrs & FileAttributes.Directory) != 0)
+            {
+                return PathEntryKind.Directory;
+            }
+            return PathEntryKind.RegularFile;
+        }
+        catch (FileNotFoundException)
+        {
+            return PathEntryKind.NotFound;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return PathEntryKind.NotDirectory;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return PathEntryKind.PermissionDenied;
+        }
+        catch (IOException)
+        {
+            return PathEntryKind.IoError;
+        }
+    }
+
+    private static PathEntryKind MapUnixMode(ushort mode) => (ushort)(mode & UnixFileTypeMask) switch
+    {
+        UnixDirectoryType => PathEntryKind.Directory,
+        UnixRegularFileType => PathEntryKind.RegularFile,
+        UnixSymbolicLinkType => PathEntryKind.SymbolicLink,
+        _ => PathEntryKind.Other
+    };
+
+    private static PathEntryKind MapStatErrno(int errno) => errno switch
+    {
+        ErrnoNoEnt => PathEntryKind.NotFound,
+        ErrnoNotDir => PathEntryKind.NotDirectory,
+        ErrnoAccess or ErrnoPerm => PathEntryKind.PermissionDenied,
+        _ => PathEntryKind.IoError
+    };
 
     /// <summary>
     /// Prove that <paramref name="absolutePath"/> is a regular Linux file without following
@@ -777,6 +949,22 @@ public static class DurableSync
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [DllImport("libSystem", EntryPoint = "fstat$INODE64", SetLastError = true)]
     private static extern int NativeMacOsFstat64(SafeFileHandle handle, out MacOsFileStatus status);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [DllImport("libSystem", EntryPoint = "lstat", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
+    private static extern int NativeMacOsLstat(string path, out MacOsFileStatus status);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [DllImport("libSystem", EntryPoint = "lstat$INODE64", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
+    private static extern int NativeMacOsLstat64(string path, out MacOsFileStatus status);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [DllImport("libSystem", EntryPoint = "stat", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
+    private static extern int NativeMacOsStat(string path, out MacOsFileStatus status);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [DllImport("libSystem", EntryPoint = "stat$INODE64", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
+    private static extern int NativeMacOsStat64(string path, out MacOsFileStatus status);
 #pragma warning restore SYSLIB1054
 
     [StructLayout(LayoutKind.Explicit, Size = 256)]

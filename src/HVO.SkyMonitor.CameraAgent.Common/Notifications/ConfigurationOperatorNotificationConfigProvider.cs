@@ -15,16 +15,22 @@ public readonly record struct ProtectedSecretBindings(
     string? WebhookOrigin = null,
     string? SmtpEndpoint = null);
 
-/// <summary>Immutable host configuration options and secrets snapshot captured with reload-stability and provider-binding guards.</summary>
+/// <summary>
+/// Point-in-time host configuration options and secrets snapshot captured with reload-stability and provider-binding
+/// guards. Top-level record properties and <see cref="OperatorNotificationSecrets"/> are init-only, while
+/// <see cref="SmtpNotificationOptions.Recipients"/> remains a mutable <see cref="List{T}"/> for configuration binder
+/// compatibility; callers sharing a snapshot instance must treat <see cref="Options"/> as read-only or copy via
+/// <see cref="ConfigurationOperatorNotificationConfigProvider.CloneOptions"/>.
+/// </summary>
 public sealed record HostConfigurationSnapshot(
     OperatorNotificationsOptions Options,
     OperatorNotificationSecrets Secrets,
     string? BindingErrorReasonCode);
 
 /// <summary>
-/// Maintains an immutable <see cref="HostConfigurationSnapshot"/> updated atomically via
-/// <see cref="Interlocked.Exchange{T}(ref T, T)"/> and always returns defensive option clones so callers
-/// cannot mutate cached state (such as SMTP <see cref="SmtpNotificationOptions.Recipients"/>).
+/// Maintains an atomically published <see cref="HostConfigurationSnapshot"/> updated via
+/// <see cref="Interlocked.Exchange{T}(ref T, T)"/> and always returns defensive option clones (including a fresh
+/// <see cref="SmtpNotificationOptions.Recipients"/> list) so callers cannot mutate the tracker's cached state.
 /// </summary>
 /// <remarks>
 /// Standard .NET file providers (<c>FileConfigurationProvider</c>/<c>JsonConfigurationProvider</c>) invoke
@@ -32,16 +38,23 @@ public sealed record HostConfigurationSnapshot(
 /// root change token after each reloading provider rather than only once after <see cref="IConfigurationRoot.Reload"/>
 /// completes every provider. To prevent mixed destination/credential publication across multi-provider reloads:
 /// <list type="bullet">
-/// <item>Single-provider snapshots use reload-token observation plus double-read stability validation.</item>
+/// <item>Single-provider snapshots use reload-token observation (recursively unwrapping chained
+/// <see cref="IConfigurationRoot"/> providers) plus double-read stability validation.</item>
 /// <item>Explicit bindings (<c>Smtp:BoundEndpoint</c>, <c>Webhook:BoundOrigin</c>) are verified fail-closed and
-/// authorize a credential strictly when supplied by that exact credential field's winning
-/// <see cref="IConfigurationProvider"/> (a binding on a destination provider or another credential provider never
-/// authorizes an unbound provider's credentials).</item>
+/// authorize a credential strictly when supplied by that exact credential field's winning leaf
+/// <see cref="IConfigurationProvider"/> (a binding on a destination provider, another credential provider, or an
+/// opaque non-<see cref="IConfigurationRoot"/> chained provider never authorizes an unbound provider's credentials).</item>
 /// <item>Cross-provider credential bindings are tracked independently per individual credential field (SMTP username
-/// and password; webhook auth token, user key, and ntfy topic). On an established tracker, destination-first reloads
-/// suppress unchanged credentials from prior destinations across subsequent callbacks, unbound credential-first
-/// reloads withhold rotated credentials while the destination has not yet moved, and both orders converge cleanly
-/// to the new destination and credentials without host restart once both reflect the rotated target.</item>
+/// and password; webhook auth token, user key, and ntfy topic), retaining up to
+/// <see cref="MaxRetiredFieldBindings"/> (1024) salted retired credential fingerprints per field (evicting oldest
+/// entries from the highest-cardinality destination first so same-destination churn does not evict other destinations).
+/// Every credential replacement or clear (including same-destination rotations) retires the displaced fingerprint for
+/// its prior destination. On an established tracker, destination-first reloads suppress unchanged or retired
+/// credentials from prior destinations across subsequent callbacks, unbound credential-first reloads withhold rotated
+/// credentials while the destination has not yet moved, empty-to-non-empty transitions bind immediately at the active
+/// destination (unless the supplied value is retired for another destination), split SMTP Host/Port/SecurityMode
+/// rotations converge once remaining un-moved destination components finish updating, and full rotations converge
+/// cleanly without host restart.</item>
 /// <item>Because <see cref="IConfiguration"/> has no cross-provider transaction epoch, a tracker constructed mid-reload
 /// (or a stateless <see cref="ConfigurationOperatorNotificationConfigProvider.ReadHostSnapshot"/> call) has no prior
 /// reload history and cannot distinguish an already-torn quiescent cross-provider state without same-provider bindings.
@@ -52,7 +65,7 @@ public sealed record HostConfigurationSnapshot(
 /// </remarks>
 public sealed class HostConfigurationSnapshotTracker : IDisposable
 {
-    private const int MaxRetiredFieldBindings = 16;
+    internal const int MaxRetiredFieldBindings = 1024;
 
     private readonly IConfiguration _configuration;
     private readonly object _refreshLock = new();
@@ -187,31 +200,41 @@ public sealed class HostConfigurationSnapshotTracker : IDisposable
             currentSmtpEndpoint,
             raw.Secrets.SmtpUsername,
             metadata.IsSmtpUsernameCrossProvider,
-            metadata.SmtpUsernameHasExplicitBinding);
+            metadata.SmtpUsernameHasExplicitBinding,
+            isSmtpField: true,
+            isSplitSmtpDestination: metadata.IsSmtpDestinationSplit);
         var smtpPassword = EvaluateTrackedFieldLocked(
             _smtpPasswordState,
             currentSmtpEndpoint,
             raw.Secrets.SmtpPassword,
             metadata.IsSmtpPasswordCrossProvider,
-            metadata.SmtpPasswordHasExplicitBinding);
+            metadata.SmtpPasswordHasExplicitBinding,
+            isSmtpField: true,
+            isSplitSmtpDestination: metadata.IsSmtpDestinationSplit);
         var webhookAuthToken = EvaluateTrackedFieldLocked(
             _webhookAuthTokenState,
             currentWebhookOrigin,
             raw.Secrets.WebhookAuthToken,
             metadata.IsWebhookAuthTokenCrossProvider,
-            metadata.WebhookAuthTokenHasExplicitBinding);
+            metadata.WebhookAuthTokenHasExplicitBinding,
+            isSmtpField: false,
+            isSplitSmtpDestination: false);
         var webhookUserKey = EvaluateTrackedFieldLocked(
             _webhookUserKeyState,
             currentWebhookOrigin,
             raw.Secrets.WebhookUserKey,
             metadata.IsWebhookUserKeyCrossProvider,
-            metadata.WebhookUserKeyHasExplicitBinding);
+            metadata.WebhookUserKeyHasExplicitBinding,
+            isSmtpField: false,
+            isSplitSmtpDestination: false);
         var webhookNtfyTopic = EvaluateTrackedFieldLocked(
             _webhookNtfyTopicState,
             currentWebhookOrigin,
             raw.Secrets.WebhookNtfyTopic,
             metadata.IsWebhookNtfyTopicCrossProvider,
-            metadata.WebhookNtfyTopicHasExplicitBinding);
+            metadata.WebhookNtfyTopicHasExplicitBinding,
+            isSmtpField: false,
+            isSplitSmtpDestination: false);
 
         if (ReferenceEquals(smtpUsername, raw.Secrets.SmtpUsername) &&
             ReferenceEquals(smtpPassword, raw.Secrets.SmtpPassword) &&
@@ -239,7 +262,9 @@ public sealed class HostConfigurationSnapshotTracker : IDisposable
         string? currentDestination,
         string? rawValue,
         bool isCrossProvider,
-        bool hasSameProviderExplicitBinding)
+        bool hasSameProviderExplicitBinding,
+        bool isSmtpField,
+        bool isSplitSmtpDestination)
     {
         if (currentDestination is null)
         {
@@ -248,10 +273,19 @@ public sealed class HostConfigurationSnapshotTracker : IDisposable
 
         if (string.IsNullOrEmpty(rawValue))
         {
-            if (state.BoundDestination is null)
+            if (state.BoundDestination is not null && state.BoundValue is not null)
             {
-                state.LastObservedEmptyDestination = currentDestination;
+                state.RecordRetired(state.BoundDestination, state.BoundValue);
+                state.BoundDestination = null;
+                state.BoundValue = null;
+                state.SplitTransitionOriginDestination = null;
+                state.FirstObservedEmptyDestination = currentDestination;
             }
+            else if (state.FirstObservedEmptyDestination is null)
+            {
+                state.FirstObservedEmptyDestination = currentDestination;
+            }
+
             return null;
         }
 
@@ -259,9 +293,10 @@ public sealed class HostConfigurationSnapshotTracker : IDisposable
         // the supplying provider itself attests that rawValue belongs to currentDestination.
         if (!isCrossProvider || hasSameProviderExplicitBinding)
         {
+            // Retire the previous credential on EVERY replacement (including same-destination rotation
+            // A(tok1) -> A(tok2)) so a later A -> B rotation still recognizes tok1 as retired-for-A.
             if (state.BoundDestination is not null &&
                 state.BoundValue is not null &&
-                !string.Equals(state.BoundDestination, currentDestination, StringComparison.OrdinalIgnoreCase) &&
                 !string.Equals(state.BoundValue, rawValue, StringComparison.Ordinal))
             {
                 state.RecordRetired(state.BoundDestination, state.BoundValue);
@@ -269,26 +304,33 @@ public sealed class HostConfigurationSnapshotTracker : IDisposable
 
             state.BoundDestination = currentDestination;
             state.BoundValue = rawValue;
-            state.LastObservedEmptyDestination = null;
+            state.FirstObservedEmptyDestination = null;
+            state.SplitTransitionOriginDestination = null;
             return rawValue;
         }
 
         // Cross-provider credential without a same-provider explicit binding.
         if (state.BoundDestination is null)
         {
-            // If currentDestination was already observed earlier without this credential and a separate
-            // unbound provider introduces rawValue while currentDestination has not moved, withhold it
-            // until currentDestination moves (prevents credential-first leak when migrating from an
-            // unauthenticated destination A to an authenticated destination B).
-            if (state.LastObservedEmptyDestination is not null &&
-                string.Equals(state.LastObservedEmptyDestination, currentDestination, StringComparison.OrdinalIgnoreCase))
+            // Transitioning empty -> non-empty at currentDestination accepts and binds rawValue immediately
+            // unless rawValue is already retired for a different destination.
+            if (state.IsRetiredForOtherDestination(rawValue, currentDestination))
             {
                 return null;
             }
 
+            var splitOrigin = isSmtpField &&
+                state.FirstObservedEmptyDestination is not null &&
+                ConfigurationOperatorNotificationConfigProvider.HasRemainingSplitSmtpOriginComponent(
+                    state.FirstObservedEmptyDestination,
+                    currentDestination)
+                ? state.FirstObservedEmptyDestination
+                : null;
+
             state.BoundDestination = currentDestination;
             state.BoundValue = rawValue;
-            state.LastObservedEmptyDestination = null;
+            state.FirstObservedEmptyDestination = null;
+            state.SplitTransitionOriginDestination = splitOrigin;
             return rawValue;
         }
 
@@ -303,6 +345,30 @@ public sealed class HostConfigurationSnapshotTracker : IDisposable
             return sameValue ? rawValue : null;
         }
 
+        // When SMTP Host, Port, and/or SecurityMode reload from separate providers during a rotation
+        // from origin (hostA, portA, modeA) to final (hostB, portB, modeB), a fresh credential that bound
+        // transiently at an intermediate destination (e.g. (hostB, portA, modeA)) advances cleanly as each
+        // remaining un-moved component finishes updating, without allowing reversion to origin or a second
+        // move of an already-moved component.
+        if (sameValue &&
+            isSmtpField &&
+            isSplitSmtpDestination &&
+            state.SplitTransitionOriginDestination is not null &&
+            ConfigurationOperatorNotificationConfigProvider.IsSplitSmtpRotationContinuation(
+                state.SplitTransitionOriginDestination,
+                state.BoundDestination,
+                currentDestination))
+        {
+            state.BoundDestination = currentDestination;
+            if (!ConfigurationOperatorNotificationConfigProvider.HasRemainingSplitSmtpOriginComponent(
+                    state.SplitTransitionOriginDestination,
+                    currentDestination))
+            {
+                state.SplitTransitionOriginDestination = null;
+            }
+            return rawValue;
+        }
+
         // Destination rotated (A -> B): reject unchanged or previously retired credentials from other
         // destinations across all subsequent callbacks, while converging cleanly once a distinct new
         // credential value arrives for B.
@@ -311,14 +377,21 @@ public sealed class HostConfigurationSnapshotTracker : IDisposable
             return null;
         }
 
+        var priorDestination = state.BoundDestination;
         if (state.BoundValue is not null)
         {
-            state.RecordRetired(state.BoundDestination, state.BoundValue);
+            state.RecordRetired(priorDestination, state.BoundValue);
         }
 
         state.BoundDestination = currentDestination;
         state.BoundValue = rawValue;
-        state.LastObservedEmptyDestination = null;
+        state.FirstObservedEmptyDestination = null;
+        state.SplitTransitionOriginDestination = isSmtpField &&
+            ConfigurationOperatorNotificationConfigProvider.HasRemainingSplitSmtpOriginComponent(
+                priorDestination,
+                currentDestination)
+            ? priorDestination
+            : null;
         return rawValue;
     }
 
@@ -335,42 +408,79 @@ public sealed class HostConfigurationSnapshotTracker : IDisposable
 
     private sealed class TrackedFieldBindingState
     {
+        private readonly string _salt = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(16));
+        private readonly List<(string Destination, string ValueHash)> _retired = [];
+
         public string? BoundDestination { get; set; }
         public string? BoundValue { get; set; }
-        public string? LastObservedEmptyDestination { get; set; }
-        private readonly List<(string Destination, string Value)> _retired = [];
+        public string? FirstObservedEmptyDestination { get; set; }
+        public string? SplitTransitionOriginDestination { get; set; }
 
         public void RecordRetired(string destination, string value)
         {
+            var valueHash = ComputeSaltedHash(value);
             for (var i = _retired.Count - 1; i >= 0; i--)
             {
                 if (string.Equals(_retired[i].Destination, destination, StringComparison.OrdinalIgnoreCase) &&
-                    string.Equals(_retired[i].Value, value, StringComparison.Ordinal))
+                    string.Equals(_retired[i].ValueHash, valueHash, StringComparison.Ordinal))
                 {
                     _retired.RemoveAt(i);
                 }
             }
 
-            _retired.Add((destination, value));
-            if (_retired.Count > MaxRetiredFieldBindings)
+            _retired.Add((destination, valueHash));
+            while (_retired.Count > MaxRetiredFieldBindings)
             {
-                _retired.RemoveRange(0, _retired.Count - MaxRetiredFieldBindings);
+                EvictHighestCardinalityOldest();
             }
         }
 
         public bool IsRetiredForOtherDestination(string candidateValue, string currentDestination)
         {
+            if (_retired.Count == 0)
+            {
+                return false;
+            }
+
+            var candidateHashBytes = Encoding.ASCII.GetBytes(ComputeSaltedHash(candidateValue));
             for (var i = 0; i < _retired.Count; i++)
             {
                 var entry = _retired[i];
-                if (string.Equals(entry.Value, candidateValue, StringComparison.Ordinal) &&
-                    !string.Equals(entry.Destination, currentDestination, StringComparison.OrdinalIgnoreCase))
+                if (!string.Equals(entry.Destination, currentDestination, StringComparison.OrdinalIgnoreCase) &&
+                    CryptographicOperations.FixedTimeEquals(Encoding.ASCII.GetBytes(entry.ValueHash), candidateHashBytes))
                 {
                     return true;
                 }
             }
 
             return false;
+        }
+
+        private string ComputeSaltedHash(string value)
+            => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes($"{_salt}:{value}")));
+
+        private void EvictHighestCardinalityOldest()
+        {
+            var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            for (var i = 0; i < _retired.Count; i++)
+            {
+                var dest = _retired[i].Destination;
+                counts[dest] = counts.TryGetValue(dest, out var existing) ? existing + 1 : 1;
+            }
+
+            var evictIndex = 0;
+            var maxCount = -1;
+            for (var i = 0; i < _retired.Count; i++)
+            {
+                var count = counts[_retired[i].Destination];
+                if (count > maxCount)
+                {
+                    maxCount = count;
+                    evictIndex = i;
+                }
+            }
+
+            _retired.RemoveAt(evictIndex);
         }
     }
 }
@@ -386,6 +496,7 @@ internal readonly record struct HostConfigurationReadMetadata(
     bool WebhookAuthTokenHasExplicitBinding,
     bool WebhookUserKeyHasExplicitBinding,
     bool WebhookNtfyTopicHasExplicitBinding,
+    bool IsSmtpDestinationSplit,
     IConfigurationProvider? SmtpUsernameProvider,
     IConfigurationProvider? SmtpPasswordProvider,
     IConfigurationProvider? WebhookAuthTokenProvider,
@@ -529,19 +640,22 @@ public sealed class ConfigurationOperatorNotificationConfigProvider : IOperatorN
 
     /// <summary>
     /// Performs a stateless point-in-time read of host options and host credentials using reload-token observation
-    /// (including per-provider reload tokens on <see cref="IConfigurationRoot"/>) plus double-read stability validation
-    /// and fail-closed verification of explicit (<see cref="SmtpBoundEndpointConfigKey"/>,
-    /// <see cref="WebhookBoundOriginConfigKey"/>) and embedded destination bindings on each credential-supplying
-    /// provider. Fails closed if configuration never stabilizes.
+    /// (including per-provider reload tokens recursively unwrapped across chained <see cref="IConfigurationRoot"/>
+    /// providers) plus double-read stability validation and fail-closed verification of explicit
+    /// (<see cref="SmtpBoundEndpointConfigKey"/>, <see cref="WebhookBoundOriginConfigKey"/>) and embedded destination
+    /// bindings on each credential-supplying leaf provider. Fails closed if configuration never stabilizes.
     /// </summary>
     /// <remarks>
-    /// Because this method is stateless and <see cref="IConfiguration"/> has no cross-provider transaction epoch,
-    /// it guarantees a consistent revision against a single provider, co-located destination and credentials, or
-    /// separate providers where each credential-supplying provider carries a matching same-provider explicit binding.
-    /// When called mid-reload between notifications from separate unbound providers, a quiescent torn pair cannot be
-    /// distinguished without prior reload history; long-lived hosts should use <see cref="HostConfigurationSnapshotTracker"/>
-    /// (used by <see cref="ConfigurationOperatorNotificationConfigProvider"/> and <c>OperatorNotificationStore</c>)
-    /// and co-locate credentials or configure same-provider explicit bindings.
+    /// Returns a fresh snapshot instance whose <see cref="SmtpNotificationOptions.Recipients"/> list remains mutable
+    /// for configuration binder compatibility; callers sharing a snapshot must treat <see cref="HostConfigurationSnapshot.Options"/>
+    /// as read-only or clone via <see cref="CloneOptions"/>. Because this method is stateless and
+    /// <see cref="IConfiguration"/> has no cross-provider transaction epoch, it guarantees a consistent revision
+    /// against a single provider, co-located destination and credentials, or separate providers where each
+    /// credential-supplying leaf provider carries a matching same-provider explicit binding. When called mid-reload
+    /// between notifications from separate unbound providers, a quiescent torn pair cannot be distinguished without
+    /// prior reload history; long-lived hosts should use <see cref="HostConfigurationSnapshotTracker"/> (used by
+    /// <see cref="ConfigurationOperatorNotificationConfigProvider"/> and <c>OperatorNotificationStore</c>) and
+    /// co-locate credentials or configure same-provider explicit bindings.
     /// </remarks>
     public static HostConfigurationSnapshot ReadHostSnapshot(IConfiguration configuration)
         => ReadHostSnapshotCore(configuration, out _);
@@ -555,11 +669,11 @@ public sealed class ConfigurationOperatorNotificationConfigProvider : IOperatorN
         for (var attempt = 0; attempt < MaxConsistentHostReadAttempts; attempt++)
         {
             var tokenBefore = configuration.GetReloadToken();
-            IList<IConfigurationProvider>? rootProviders = null;
+            List<IConfigurationProvider>? rootProviders = null;
             IChangeToken[]? providerTokensBefore = null;
             if (configuration is IConfigurationRoot root)
             {
-                rootProviders = root.Providers as IList<IConfigurationProvider> ?? [.. root.Providers];
+                rootProviders = CollectProvidersForReloadObservation(root);
                 providerTokensBefore = new IChangeToken[rootProviders.Count];
                 for (var i = 0; i < rootProviders.Count; i++)
                 {
@@ -645,7 +759,7 @@ public sealed class ConfigurationOperatorNotificationConfigProvider : IOperatorN
     }
 
     private static bool AreProviderTokensStable(
-        IList<IConfigurationProvider>? providers,
+        List<IConfigurationProvider>? providers,
         IChangeToken[]? providerTokensBefore)
     {
         if (providers is null || providerTokensBefore is null)
@@ -701,79 +815,116 @@ public sealed class ConfigurationOperatorNotificationConfigProvider : IOperatorN
         var webhookUserKeyHasExplicitBinding = false;
         var webhookNtfyTopicHasExplicitBinding = false;
 
-        IConfigurationProvider? smtpHostProvider = null;
-        IConfigurationProvider? smtpPortProvider = null;
-        IConfigurationProvider? smtpSecurityModeProvider = null;
-        IConfigurationProvider? smtpUsernameProvider = null;
-        IConfigurationProvider? smtpPasswordProvider = null;
-        IConfigurationProvider? webhookUrlProvider = null;
-        IConfigurationProvider? webhookAuthTokenProvider = null;
-        IConfigurationProvider? webhookUserKeyProvider = null;
-        IConfigurationProvider? webhookNtfyTopicProvider = null;
+        ResolvedConfigurationProvider smtpHostProvider = default;
+        ResolvedConfigurationProvider smtpPortProvider = default;
+        ResolvedConfigurationProvider smtpSecurityModeProvider = default;
+        ResolvedConfigurationProvider smtpUsernameProvider = default;
+        ResolvedConfigurationProvider smtpPasswordProvider = default;
+        ResolvedConfigurationProvider webhookUrlProvider = default;
+        ResolvedConfigurationProvider webhookAuthTokenProvider = default;
+        ResolvedConfigurationProvider webhookUserKeyProvider = default;
+        ResolvedConfigurationProvider webhookNtfyTopicProvider = default;
 
         if (configuration is IConfigurationRoot root)
         {
-            var providers = root.Providers as IList<IConfigurationProvider> ?? [.. root.Providers];
-            smtpHostProvider = FindWinningProvider(providers, SmtpHostConfigKey);
-            smtpPortProvider = FindWinningProvider(providers, SmtpPortConfigKey);
-            smtpSecurityModeProvider = FindWinningProvider(providers, SmtpSecurityModeConfigKey);
+            smtpHostProvider = FindWinningLeafProvider(root, SmtpHostConfigKey);
+            smtpPortProvider = FindWinningLeafProvider(root, SmtpPortConfigKey);
+            smtpSecurityModeProvider = FindWinningLeafProvider(root, SmtpSecurityModeConfigKey);
             smtpUsernameProvider = !string.IsNullOrEmpty(rawSecrets.SmtpUsername)
-                ? FindWinningProvider(providers, SmtpUsernameConfigKey)
-                : null;
+                ? FindWinningLeafProvider(root, SmtpUsernameConfigKey)
+                : default;
             smtpPasswordProvider = !string.IsNullOrEmpty(rawSecrets.SmtpPassword)
-                ? FindWinningProvider(providers, SmtpPasswordConfigKey)
-                : null;
+                ? FindWinningLeafProvider(root, SmtpPasswordConfigKey)
+                : default;
 
             webhookUrlProvider = !string.IsNullOrEmpty(rawSecrets.WebhookUrl)
-                ? FindWinningProvider(providers, WebhookUrlConfigKey)
-                : null;
+                ? FindWinningLeafProvider(root, WebhookUrlConfigKey)
+                : default;
             webhookAuthTokenProvider = !string.IsNullOrEmpty(rawSecrets.WebhookAuthToken)
-                ? FindWinningProvider(providers, WebhookAuthTokenConfigKey)
-                : null;
+                ? FindWinningLeafProvider(root, WebhookAuthTokenConfigKey)
+                : default;
             webhookUserKeyProvider = !string.IsNullOrEmpty(rawSecrets.WebhookUserKey)
-                ? FindWinningProvider(providers, WebhookUserKeyConfigKey)
-                : null;
+                ? FindWinningLeafProvider(root, WebhookUserKeyConfigKey)
+                : default;
             webhookNtfyTopicProvider = !string.IsNullOrEmpty(rawSecrets.WebhookNtfyTopic)
-                ? FindWinningProvider(providers, WebhookNtfyTopicConfigKey)
-                : null;
+                ? FindWinningLeafProvider(root, WebhookNtfyTopicConfigKey)
+                : default;
 
-            if (smtpUsernameAllowed && smtpUsernameProvider is not null)
+            if (smtpUsernameAllowed && smtpUsernameProvider.Provider is not null)
             {
                 smtpUsernameAllowed = IsProviderSmtpBindingCompatible(
                     smtpUsernameProvider, effectiveOptions.Smtp, effectiveSmtpEndpoint, out smtpUsernameHasExplicitBinding);
             }
-            if (smtpPasswordAllowed && smtpPasswordProvider is not null)
+            if (smtpPasswordAllowed && smtpPasswordProvider.Provider is not null)
             {
                 smtpPasswordAllowed = IsProviderSmtpBindingCompatible(
                     smtpPasswordProvider, effectiveOptions.Smtp, effectiveSmtpEndpoint, out smtpPasswordHasExplicitBinding);
             }
 
-            if (webhookAuthTokenAllowed && webhookAuthTokenProvider is not null)
+            if (webhookAuthTokenAllowed && webhookAuthTokenProvider.Provider is not null)
             {
                 webhookAuthTokenAllowed = IsProviderWebhookBindingCompatible(
                     webhookAuthTokenProvider, effectiveWebhookOrigin, out webhookAuthTokenHasExplicitBinding);
             }
-            if (webhookUserKeyAllowed && webhookUserKeyProvider is not null)
+            if (webhookUserKeyAllowed && webhookUserKeyProvider.Provider is not null)
             {
                 webhookUserKeyAllowed = IsProviderWebhookBindingCompatible(
                     webhookUserKeyProvider, effectiveWebhookOrigin, out webhookUserKeyHasExplicitBinding);
             }
-            if (webhookNtfyTopicAllowed && webhookNtfyTopicProvider is not null)
+            if (webhookNtfyTopicAllowed && webhookNtfyTopicProvider.Provider is not null)
             {
                 webhookNtfyTopicAllowed = IsProviderWebhookBindingCompatible(
                     webhookNtfyTopicProvider, effectiveWebhookOrigin, out webhookNtfyTopicHasExplicitBinding);
             }
         }
 
+        static bool AreSameVerifiableProvider(ResolvedConfigurationProvider left, ResolvedConfigurationProvider right) =>
+            left.HasVerifiableIdentity &&
+            right.HasVerifiableIdentity &&
+            ReferenceEquals(left.Provider, right.Provider);
+
         static bool IsSmtpCredCrossProvider(
-            IConfigurationProvider? credProvider,
-            IConfigurationProvider? hostProvider,
-            IConfigurationProvider? portProvider,
-            IConfigurationProvider? securityModeProvider) =>
-            credProvider is not null && (
-                !ReferenceEquals(credProvider, hostProvider) ||
-                (portProvider is not null && !ReferenceEquals(credProvider, portProvider)) ||
-                (securityModeProvider is not null && !ReferenceEquals(credProvider, securityModeProvider)));
+            ResolvedConfigurationProvider credProvider,
+            ResolvedConfigurationProvider hostProvider,
+            ResolvedConfigurationProvider portProvider,
+            ResolvedConfigurationProvider securityModeProvider) =>
+            credProvider.Provider is not null && (
+                !credProvider.HasVerifiableIdentity ||
+                !AreSameVerifiableProvider(credProvider, hostProvider) ||
+                (portProvider.Provider is not null && !AreSameVerifiableProvider(credProvider, portProvider)) ||
+                (securityModeProvider.Provider is not null && !AreSameVerifiableProvider(credProvider, securityModeProvider)));
+
+        static bool IsSmtpDestinationSplit(
+            ResolvedConfigurationProvider hostProvider,
+            ResolvedConfigurationProvider portProvider,
+            ResolvedConfigurationProvider securityModeProvider)
+        {
+            if (hostProvider.IsOpaqueChained || portProvider.IsOpaqueChained || securityModeProvider.IsOpaqueChained)
+            {
+                return true;
+            }
+
+            IConfigurationProvider? first = hostProvider.Provider;
+            if (portProvider.Provider is not null)
+            {
+                if (first is not null && !ReferenceEquals(first, portProvider.Provider))
+                {
+                    return true;
+                }
+                first ??= portProvider.Provider;
+            }
+            if (securityModeProvider.Provider is not null &&
+                first is not null &&
+                !ReferenceEquals(first, securityModeProvider.Provider))
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        var isSmtpDestinationSplit = IsSmtpDestinationSplit(
+            smtpHostProvider, smtpPortProvider, smtpSecurityModeProvider);
 
         var isSmtpUsernameCrossProvider = IsSmtpCredCrossProvider(
             smtpUsernameProvider, smtpHostProvider, smtpPortProvider, smtpSecurityModeProvider);
@@ -781,11 +932,14 @@ public sealed class ConfigurationOperatorNotificationConfigProvider : IOperatorN
             smtpPasswordProvider, smtpHostProvider, smtpPortProvider, smtpSecurityModeProvider);
 
         var isWebhookAuthTokenCrossProvider =
-            webhookAuthTokenProvider is not null && !ReferenceEquals(webhookAuthTokenProvider, webhookUrlProvider);
+            webhookAuthTokenProvider.Provider is not null &&
+            !AreSameVerifiableProvider(webhookAuthTokenProvider, webhookUrlProvider);
         var isWebhookUserKeyCrossProvider =
-            webhookUserKeyProvider is not null && !ReferenceEquals(webhookUserKeyProvider, webhookUrlProvider);
+            webhookUserKeyProvider.Provider is not null &&
+            !AreSameVerifiableProvider(webhookUserKeyProvider, webhookUrlProvider);
         var isWebhookNtfyTopicCrossProvider =
-            webhookNtfyTopicProvider is not null && !ReferenceEquals(webhookNtfyTopicProvider, webhookUrlProvider);
+            webhookNtfyTopicProvider.Provider is not null &&
+            !AreSameVerifiableProvider(webhookNtfyTopicProvider, webhookUrlProvider);
 
         return new HostProviderBindingState(
             SmtpUsernameAllowed: smtpUsernameAllowed,
@@ -803,11 +957,12 @@ public sealed class ConfigurationOperatorNotificationConfigProvider : IOperatorN
             WebhookAuthTokenHasExplicitBinding: webhookAuthTokenAllowed && webhookAuthTokenHasExplicitBinding,
             WebhookUserKeyHasExplicitBinding: webhookUserKeyAllowed && webhookUserKeyHasExplicitBinding,
             WebhookNtfyTopicHasExplicitBinding: webhookNtfyTopicAllowed && webhookNtfyTopicHasExplicitBinding,
-            SmtpUsernameProvider: smtpUsernameProvider,
-            SmtpPasswordProvider: smtpPasswordProvider,
-            WebhookAuthTokenProvider: webhookAuthTokenProvider,
-            WebhookUserKeyProvider: webhookUserKeyProvider,
-            WebhookNtfyTopicProvider: webhookNtfyTopicProvider);
+            IsSmtpDestinationSplit: isSmtpDestinationSplit,
+            SmtpUsernameProvider: smtpUsernameProvider.Provider,
+            SmtpPasswordProvider: smtpPasswordProvider.Provider,
+            WebhookAuthTokenProvider: webhookAuthTokenProvider.Provider,
+            WebhookUserKeyProvider: webhookUserKeyProvider.Provider,
+            WebhookNtfyTopicProvider: webhookNtfyTopicProvider.Provider);
     }
 
     private static OperatorNotificationSecrets ApplyExplicitAndEmbeddedHostBindings(
@@ -832,16 +987,84 @@ public sealed class ConfigurationOperatorNotificationConfigProvider : IOperatorN
             WebhookNtfyTopic: state.WebhookNtfyTopicAllowed ? rawSecrets.WebhookNtfyTopic : null);
     }
 
-    private static IConfigurationProvider? FindWinningProvider(IList<IConfigurationProvider> providers, string key)
+    private readonly record struct ResolvedConfigurationProvider(
+        IConfigurationProvider? Provider,
+        bool IsOpaqueChained)
     {
-        for (var i = providers.Count - 1; i >= 0; i--)
+        public bool HasVerifiableIdentity => Provider is not null && !IsOpaqueChained;
+    }
+
+    private static List<IConfigurationProvider> CollectProvidersForReloadObservation(IConfigurationRoot root)
+    {
+        var collected = new List<IConfigurationProvider>();
+        var visited = new HashSet<IConfiguration>(ReferenceEqualityComparer.Instance) { root };
+        CollectCore(root, collected, visited);
+        return collected;
+
+        static void CollectCore(
+            IConfigurationRoot currentRoot,
+            List<IConfigurationProvider> target,
+            HashSet<IConfiguration> visitedRoots)
         {
-            if (providers[i].TryGet(key, out _))
+            foreach (var provider in currentRoot.Providers)
             {
-                return providers[i];
+                target.Add(provider);
+                if (provider is ChainedConfigurationProvider { Configuration: IConfigurationRoot innerRoot } &&
+                    visitedRoots.Add(innerRoot))
+                {
+                    CollectCore(innerRoot, target, visitedRoots);
+                }
             }
         }
-        return null;
+    }
+
+    private static ResolvedConfigurationProvider FindWinningLeafProvider(IConfigurationRoot root, string key)
+    {
+        var visited = new HashSet<IConfiguration>(ReferenceEqualityComparer.Instance) { root };
+        return FindWinningLeafProviderCore(root, key, visited);
+    }
+
+    private static ResolvedConfigurationProvider FindWinningLeafProviderCore(
+        IConfigurationRoot root,
+        string key,
+        HashSet<IConfiguration> visited)
+    {
+        var providers = root.Providers as IList<IConfigurationProvider> ?? [.. root.Providers];
+        for (var i = providers.Count - 1; i >= 0; i--)
+        {
+            var provider = providers[i];
+            if (provider is ChainedConfigurationProvider chained)
+            {
+                if (chained.Configuration is IConfigurationRoot innerRoot)
+                {
+                    if (visited.Add(innerRoot))
+                    {
+                        var resolved = FindWinningLeafProviderCore(innerRoot, key, visited);
+                        visited.Remove(innerRoot);
+                        if (resolved.Provider is not null)
+                        {
+                            return resolved;
+                        }
+                    }
+                    continue;
+                }
+
+                // Opaque chained IConfiguration (e.g. IConfigurationSection or custom non-IConfigurationRoot):
+                // inner providers cannot be inspected, so mark as opaque to fail closed on co-location/binding authority.
+                if (chained.TryGet(key, out _))
+                {
+                    return new ResolvedConfigurationProvider(chained, IsOpaqueChained: true);
+                }
+                continue;
+            }
+
+            if (provider.TryGet(key, out _))
+            {
+                return new ResolvedConfigurationProvider(provider, IsOpaqueChained: false);
+            }
+        }
+
+        return default;
     }
 
     private static bool IsGlobalSmtpBindingCompatible(string? rawBoundEndpoint, string? effectiveEndpoint)
@@ -869,18 +1092,19 @@ public sealed class ConfigurationOperatorNotificationConfigProvider : IOperatorN
     }
 
     private static bool IsProviderSmtpBindingCompatible(
-        IConfigurationProvider provider,
+        ResolvedConfigurationProvider resolvedProvider,
         SmtpNotificationOptions effectiveSmtp,
         string? effectiveEndpoint,
         out bool hasExplicitBinding)
     {
         hasExplicitBinding = false;
+        var provider = resolvedProvider.Provider!;
         if (provider.TryGet(SmtpBoundEndpointConfigKey, out var rawBound) && !string.IsNullOrWhiteSpace(rawBound))
         {
             var compatible = effectiveEndpoint is not null &&
                              TryNormalizeSmtpEndpointBinding(rawBound, out var normalizedBound) &&
                              string.Equals(normalizedBound, effectiveEndpoint, StringComparison.OrdinalIgnoreCase);
-            hasExplicitBinding = compatible;
+            hasExplicitBinding = compatible && resolvedProvider.HasVerifiableIdentity;
             return compatible;
         }
 
@@ -920,17 +1144,18 @@ public sealed class ConfigurationOperatorNotificationConfigProvider : IOperatorN
     }
 
     private static bool IsProviderWebhookBindingCompatible(
-        IConfigurationProvider provider,
+        ResolvedConfigurationProvider resolvedProvider,
         string? effectiveOrigin,
         out bool hasExplicitBinding)
     {
         hasExplicitBinding = false;
+        var provider = resolvedProvider.Provider!;
         if (provider.TryGet(WebhookBoundOriginConfigKey, out var rawBound) && !string.IsNullOrWhiteSpace(rawBound))
         {
             var compatible = effectiveOrigin is not null &&
                              TryFormatWebhookOriginKey(rawBound, out var normalizedBound) &&
                              string.Equals(normalizedBound, effectiveOrigin, StringComparison.OrdinalIgnoreCase);
-            hasExplicitBinding = compatible;
+            hasExplicitBinding = compatible && resolvedProvider.HasVerifiableIdentity;
             return compatible;
         }
 
@@ -944,24 +1169,68 @@ public sealed class ConfigurationOperatorNotificationConfigProvider : IOperatorN
         return true;
     }
 
-    private static bool TryNormalizeSmtpEndpointBinding(string? rawBinding, [NotNullWhen(true)] out string? normalizedEndpoint)
+    internal static bool HasRemainingSplitSmtpOriginComponent(string originEndpointKey, string currentEndpointKey)
     {
-        normalizedEndpoint = null;
-        if (string.IsNullOrWhiteSpace(rawBinding))
+        if (!TrySplitSmtpEndpointKey(originEndpointKey, out var originHost, out var originPort, out var originMode) ||
+            !TrySplitSmtpEndpointKey(currentEndpointKey, out var currentHost, out var currentPort, out var currentMode))
         {
             return false;
         }
 
-        var trimmed = rawBinding.Trim();
+        var sameHost = string.Equals(originHost, currentHost, StringComparison.OrdinalIgnoreCase);
+        var samePort = string.Equals(originPort, currentPort, StringComparison.Ordinal);
+        var sameMode = string.Equals(originMode, currentMode, StringComparison.OrdinalIgnoreCase);
+        var anyDifferent = !sameHost || !samePort || !sameMode;
+        var anyUnmoved = sameHost || samePort || sameMode;
+        return anyDifferent && anyUnmoved;
+    }
+
+    internal static bool IsSplitSmtpRotationContinuation(
+        string originEndpointKey,
+        string boundEndpointKey,
+        string currentEndpointKey)
+    {
+        if (!TrySplitSmtpEndpointKey(originEndpointKey, out var originHost, out var originPort, out var originMode) ||
+            !TrySplitSmtpEndpointKey(boundEndpointKey, out var boundHost, out var boundPort, out var boundMode) ||
+            !TrySplitSmtpEndpointKey(currentEndpointKey, out var currentHost, out var currentPort, out var currentMode))
+        {
+            return false;
+        }
+
+        static bool ComponentValid(string origin, string bound, string current, StringComparison comparison)
+        {
+            if (string.Equals(bound, current, comparison))
+            {
+                return true;
+            }
+
+            // A component may advance only if it had NOT yet moved away from origin and does NOT revert to origin.
+            return string.Equals(bound, origin, comparison) &&
+                   !string.Equals(current, origin, comparison);
+        }
+
+        return ComponentValid(originHost, boundHost, currentHost, StringComparison.OrdinalIgnoreCase) &&
+               ComponentValid(originPort, boundPort, currentPort, StringComparison.Ordinal) &&
+               ComponentValid(originMode, boundMode, currentMode, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool TrySplitSmtpEndpointKey(
+        string? rawKey,
+        [NotNullWhen(true)] out string? host,
+        [NotNullWhen(true)] out string? port,
+        [NotNullWhen(true)] out string? securityMode)
+    {
+        host = null;
+        port = null;
+        securityMode = null;
+        if (string.IsNullOrWhiteSpace(rawKey))
+        {
+            return false;
+        }
+
+        var trimmed = rawKey.Trim();
         var lastColon = trimmed.LastIndexOf(':');
         if (lastColon <= 0 || lastColon >= trimmed.Length - 1)
-        {
-            return false;
-        }
-
-        var modeText = trimmed[(lastColon + 1)..].Trim();
-        if (!Enum.TryParse<SmtpSecurityMode>(modeText, ignoreCase: true, out var securityMode) ||
-            !Enum.IsDefined(securityMode))
         {
             return false;
         }
@@ -973,13 +1242,31 @@ public sealed class ConfigurationOperatorNotificationConfigProvider : IOperatorN
             return false;
         }
 
-        var portText = hostAndPort[(portColon + 1)..].Trim();
+        host = hostAndPort[..portColon].Trim();
+        port = hostAndPort[(portColon + 1)..].Trim();
+        securityMode = trimmed[(lastColon + 1)..].Trim();
+        return host.Length > 0 && port.Length > 0 && securityMode.Length > 0;
+    }
+
+    private static bool TryNormalizeSmtpEndpointBinding(string? rawBinding, [NotNullWhen(true)] out string? normalizedEndpoint)
+    {
+        normalizedEndpoint = null;
+        if (!TrySplitSmtpEndpointKey(rawBinding, out var host, out var portText, out var modeText))
+        {
+            return false;
+        }
+
+        if (!Enum.TryParse<SmtpSecurityMode>(modeText, ignoreCase: true, out var securityMode) ||
+            !Enum.IsDefined(securityMode))
+        {
+            return false;
+        }
+
         if (!int.TryParse(portText, NumberStyles.None, CultureInfo.InvariantCulture, out var port))
         {
             return false;
         }
 
-        var host = hostAndPort[..portColon].Trim();
         return TryFormatSmtpEndpointKey(
             new SmtpNotificationOptions
             {
@@ -1006,6 +1293,7 @@ public sealed class ConfigurationOperatorNotificationConfigProvider : IOperatorN
         bool WebhookAuthTokenHasExplicitBinding,
         bool WebhookUserKeyHasExplicitBinding,
         bool WebhookNtfyTopicHasExplicitBinding,
+        bool IsSmtpDestinationSplit,
         IConfigurationProvider? SmtpUsernameProvider,
         IConfigurationProvider? SmtpPasswordProvider,
         IConfigurationProvider? WebhookAuthTokenProvider,
@@ -1023,6 +1311,7 @@ public sealed class ConfigurationOperatorNotificationConfigProvider : IOperatorN
             WebhookAuthTokenHasExplicitBinding && !string.IsNullOrEmpty(boundSecrets.WebhookAuthToken),
             WebhookUserKeyHasExplicitBinding && !string.IsNullOrEmpty(boundSecrets.WebhookUserKey),
             WebhookNtfyTopicHasExplicitBinding && !string.IsNullOrEmpty(boundSecrets.WebhookNtfyTopic),
+            IsSmtpDestinationSplit,
             string.IsNullOrEmpty(boundSecrets.SmtpUsername) ? null : SmtpUsernameProvider,
             string.IsNullOrEmpty(boundSecrets.SmtpPassword) ? null : SmtpPasswordProvider,
             string.IsNullOrEmpty(boundSecrets.WebhookAuthToken) ? null : WebhookAuthTokenProvider,

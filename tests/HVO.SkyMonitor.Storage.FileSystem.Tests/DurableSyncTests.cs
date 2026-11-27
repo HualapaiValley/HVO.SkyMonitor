@@ -485,4 +485,54 @@ public sealed class DurableSyncTests
             }
         }
     }
+
+    [TestMethod]
+    public void InspectPathNoFollowAndFollow_ClassifyDirectoriesFilesSymlinksAndDanglingLinksInSingleObservation()
+    {
+        var realDir = Path.Combine(_temp, "inspect-dir");
+        Directory.CreateDirectory(realDir);
+        var realFile = Path.Combine(_temp, "inspect-file.txt");
+        File.WriteAllText(realFile, "hello");
+        var missingPath = Path.Combine(_temp, "does-not-exist");
+
+        Assert.AreEqual(PathEntryKind.Directory, DurableSync.InspectPathNoFollow(realDir));
+        Assert.AreEqual(PathEntryKind.RegularFile, DurableSync.InspectPathNoFollow(realFile));
+        Assert.AreEqual(PathEntryKind.NotFound, DurableSync.InspectPathNoFollow(missingPath));
+        Assert.AreEqual(PathEntryKind.NotDirectory, DurableSync.InspectPathNoFollow(Path.Combine(realFile, "child")));
+
+        if (!OperatingSystem.IsWindows())
+        {
+            var linkToDir = Path.Combine(_temp, "link-to-dir");
+            var linkToFile = Path.Combine(_temp, "link-to-file");
+            var danglingLink = Path.Combine(_temp, "dangling-link");
+            Directory.CreateSymbolicLink(linkToDir, realDir);
+            File.CreateSymbolicLink(linkToFile, realFile);
+            File.CreateSymbolicLink(danglingLink, Path.Combine(_temp, "missing-target"));
+
+            Assert.AreEqual(PathEntryKind.SymbolicLink, DurableSync.InspectPathNoFollow(linkToDir));
+            Assert.AreEqual(PathEntryKind.Directory, DurableSync.InspectPathFollow(linkToDir));
+
+            Assert.AreEqual(PathEntryKind.SymbolicLink, DurableSync.InspectPathNoFollow(linkToFile));
+            Assert.AreEqual(PathEntryKind.RegularFile, DurableSync.InspectPathFollow(linkToFile));
+
+            // Non-following inspection distinguishes a dangling symlink (SymbolicLink) from genuine absence (NotFound).
+            Assert.AreEqual(PathEntryKind.SymbolicLink, DurableSync.InspectPathNoFollow(danglingLink));
+            Assert.AreEqual(PathEntryKind.NotFound, DurableSync.InspectPathFollow(danglingLink));
+
+            if (Environment.UserName != "root")
+            {
+                var lockedDir = Path.Combine(_temp, "inspect-locked");
+                Directory.CreateDirectory(lockedDir);
+                File.SetUnixFileMode(lockedDir, UnixFileMode.UserRead | UnixFileMode.UserWrite); // 0600 (not traversable)
+                try
+                {
+                    Assert.AreEqual(PathEntryKind.PermissionDenied, DurableSync.InspectPathNoFollow(Path.Combine(lockedDir, "child")));
+                }
+                finally
+                {
+                    File.SetUnixFileMode(lockedDir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+                }
+            }
+        }
+    }
 }
