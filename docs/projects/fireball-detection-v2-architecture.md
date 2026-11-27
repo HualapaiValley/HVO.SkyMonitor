@@ -313,7 +313,18 @@ truncation metadata inside **required, SHA-256-verified JSON payload members**
      4. **Cross-check and unavailable historical promotion-payload disposition:**
         - When the `transient-event-promotion-v1` payload verifies, lazy verification/reopen cross-checks that every `segments[]` entry's `(payloadArtifactId, payloadArtifactRevision, payloadSha256)` and `(descriptorArtifactId, descriptorArtifactRevision, descriptorSha256)` match the `SiloGroupManifest.Dependencies` of the `transient-event-v2` manifest and resolve to the rebuilt `roles`/`locators` from the `transient-event-segment-v1` publications — deterministically recovering exact segment order, frame/PTS ranges, and truncation state (`SpoolExhaustedTruncated`, `missingSegmentRange`) solely from Silo objects after complete loss of local SQLite promotion rows. Exact event reopen still requires verifying required segment/member bytes per `cameraagent-silo-cutover.md` Section 6.1.
         - When a historical `transient-event-promotion-v1` payload is **unavailable** (or damaged/conflicting), live capture is **not** blocked from resuming once existing `resume-ready` gates pass. Instead, the catalog records the event's promotion role disposition per `cameraagent-silo-cutover.md` Sections 5.3, 5.4, and 6.2 (`unverified` before the lazy phase reaches it or when an authority-unknown interval prevents concluding absence; `temporarily-unavailable` / degraded with background retry when an eligible source cannot be checked; `missing` when every eligible source is checked without verifiable bytes and no authority-unknown interval or settled role-scoped expiry exists; or `conflict` when authenticated evidence contradicts itself, such as `segments[]` contradicting manifest `Dependencies`). Until its required `transient-event-promotion` payload (and required reopen members) verify, **that specific event stays closed/unfinalized** (not reopenable in UI or `ReplayRunner`, while its P3 `publish` record and manifest `Dependencies` stay authoritative), **non-reclaimable**, and surfaced as degraded/unverified in recovery health and diagnostics.
-     5. **Expiry and orphan-reclamation fence preservation:** Any P4 `transient-event-segment-v1` group whose member artifact revisions are not referenced by any P4 `transient-event-v2` manifest is classified under the same four-state hold rule as Section 6.2: when local SQLite promotion state is intact, any segment held by a non-terminal promotion row (`Pending`, `Staged`, `PublishedP4`, or `PendingFinalization`) remains **protected** from orphan reclamation and policy expiry, and only segments not referenced by any P4 `transient-event-v2` manifest **and** not held by any active non-terminal promotion row are eligible for retention sweep. When local SQLite promotion rows have been lost and segment ownership is unknown — or while any historical `transient-event-v2` promotion payload remains `unverified`, `temporarily-unavailable`, or otherwise unfinalized — unlinked or unverified P4 segments are surfaced as unlinked/unverified only, unfinalized events remain non-reclaimable, and **expiry and orphan reclamation remain fenced** until required promotion payloads verify and explicit operator confirmation clears the recovery expiry hold (`cameraagent-silo-cutover.md` Section 7.5).
+     5. **Expiry and orphan-reclamation fence preservation:** Any P4 `transient-event-segment-v1` group whose member artifact revisions are not referenced by any P4 `transient-event-v2` manifest is classified under the same four-state hold rule as Section 6.2: when local SQLite promotion state is intact, any segment held by a non-terminal promotion row (`Pending`, `Staged`, `PublishedP4`, or `PendingFinalization`) remains **protected** from orphan reclamation and policy expiry, and only segments not referenced by any P4 `transient-event-v2` manifest **and** not held by any active non-terminal promotion row are eligible for retention sweep.
+        After cold catalog rebuild, explicit operator confirmation clears the
+        **recovery-wide** expiry and orphan-reclamation fence
+        ([Silo recovery §7.5](../planning/cameraagent-silo-cutover.md#75-recovery)).
+        Resolve holds for each candidate using its own evidence. Segments whose
+        ownership is still unknown remain individually protected and surface as
+        unlinked/unverified. An unfinalized historical event and its segments
+        remain non-reclaimable, including when its promotion JSON is permanently
+        missing. After confirmation, unrelated segments with proven ownership
+        and retention eligibility may proceed through normal retention or
+        orphan-reclamation checks
+        ([Silo expiry §7.3](../planning/cameraagent-silo-cutover.md#73-expiry-protocol)).
    - **Visibility invariant:** Under the Silo layout, a `transient-event-v2`
      promotion is never browsable or replayable until its final manifest group
      reaches Silo **P4** (`visible` in SQLite catalog, matching
@@ -603,14 +614,10 @@ finish (AD-3).
        orphan reclamation and policy expiry** across retries and restarts until
        either the final `transient-event-v2` manifest group reaches Silo P4
        (transferring `Reopen` dependency ownership into Silo) or an operator
-       explicitly abandons the promotion. When local SQLite promotion rows have
-       been lost (e.g., during cold catalog rebuild from Silo, where historical
-       `transient-event-promotion-v1` payload verification runs post-`resume-ready`
-       in the lazy phase per Section 4.4 and any unavailable historical event
-       stays closed/unfinalized and non-reclaimable) and segment ownership is
-       unknown, expiry and orphan reclamation remain fenced until required
-       promotion payloads verify and explicit operator confirmation clears the
-       recovery expiry hold (`cameraagent-silo-cutover.md` Section 7.5).
+       explicitly abandons the promotion. After cold catalog rebuild, explicit
+       operator confirmation clears the recovery-wide expiry and
+       orphan-reclamation fence. Any segment with unknown ownership remains
+       individually protected under Section 4.4.
     5. **Exact operator visibility until final P4 completes:** Preserving the
        single P4 visibility boundary (`cameraagent-silo-cutover.md:349`), the
        truncated event remains **hidden** from the browsable P4 event catalog
@@ -641,15 +648,12 @@ finish (AD-3).
        Only segment groups not referenced by any P4 `transient-event-v2`
        manifest **and** not held by any active non-terminal promotion row
        (`Pending`, `Staged`, `PublishedP4`, or `PendingFinalization`) become
-       eligible for orphan reclamation when local promotion state is intact; if
-       local promotion rows have been lost and ownership is unknown — or while
-       any historical `transient-event-v2` promotion payload remains
-       `unverified`, `temporarily-unavailable`, or otherwise unfinalized in the
-       post-`resume-ready` lazy phase (Section 4.4) — unfinalized events remain
-       non-reclaimable and expiry and orphan reclamation remain fenced until
-       required promotion payloads verify and explicit operator confirmation
-       clears the recovery expiry hold (`cameraagent-silo-cutover.md` Section
-       7.5).
+       eligible for orphan reclamation when local promotion state is intact.
+       After cold catalog rebuild and operator confirmation, the sweep resolves
+       holds per candidate under Section 4.4. A historical event whose promotion
+       JSON fails verification or is permanently missing stays closed and
+       non-reclaimable along with its segments. An unrelated segment with proven
+       ownership and retention eligibility can pass the normal checks.
   - **Required concrete verification scenario (executed in `V2-4` / `W9` / `W11`):**
     1. Run a multi-segment promotion until segment `0` reaches Silo **P4**
        (`PublishedP4`).
@@ -681,6 +685,14 @@ finish (AD-3).
        completes the final `transient-event-v2` manifest group to **P4**
        (`visible`), exposing the truncated event with verified segment `0`
        intact and clearing the pending-finalization alert.
+    7. In the cold-loss recovery case, make historical event A's required
+       promotion JSON permanently missing from every eligible copy. Include an
+       unrelated event B with a segment whose ownership and eligibility for
+       retention expiry are proven. Verify that the recovery-wide fence blocks
+       expiry and orphan reclamation before operator confirmation. After the
+       operator confirms, verify that A stays closed, A and its segments remain
+       non-reclaimable, any segment with unknown ownership stays protected, and
+       B's segment passes normal retention checks.
 - **Commit-rate & `MINIO_FS_OSYNC` sizing (publication groups vs. synchronized PUTs):**
   - Under the qualified profile (`MINIO_FS_OSYNC=on`), Silo issues `sync(2)`
     before acknowledging **each individual PUT** — not once per publication
