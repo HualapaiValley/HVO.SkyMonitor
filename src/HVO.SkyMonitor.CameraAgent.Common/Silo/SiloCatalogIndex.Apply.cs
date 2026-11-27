@@ -111,6 +111,7 @@ internal sealed partial class SiloCatalogIndex
             SiloLiveIssueRecord live => await ApplyLiveIssueAsync(connection, transaction, live, at, cancellationToken).ConfigureAwait(false),
             SiloCopyRecord copy => await ApplyLocatorRecordAsync(connection, transaction, copy.Identity, copy.Locator, "copy", at,
                 copy.StoreClass, copy.Retrieval, copy.Custody, qualified: true, cancellationToken).ConfigureAwait(false),
+            SiloArchiveReceiptRecord => null,
             SiloRemapRecord remap => await ApplyLocatorRecordAsync(connection, transaction, remap.Identity, remap.To, "remap", at,
                 null, null, "remap", remap.PersistenceQualified, cancellationToken).ConfigureAwait(false),
             SiloReserveSurvivorRecord reserve => await ApplyReserveAsync(connection, transaction, reserve, at, cancellationToken).ConfigureAwait(false),

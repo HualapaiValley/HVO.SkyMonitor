@@ -176,8 +176,8 @@ headroom and optional archive again, and confirms that CameraAgent reports the f
 
 ## Optional archive configuration
 
-An instance may name one archive store for #1969's replication, held to this boundary: the installer verifies it
-read-only and sets up no replication, hold or copy.
+An instance may use one independent archive. The installer offers a read-only admission probe. Archive setup and
+CameraAgent verification are explicit maintenance steps after the source bucket exists.
 
 ```bash
   --silo-archive-endpoint https://archive.example:9443 --silo-archive-bucket hvo-archive \
@@ -202,8 +202,122 @@ read-only and sets up no replication, hold or copy.
 | temporarily unavailable | `archive-unreachable`, `archive-timeout`, `archive-server-error` | degraded: local capture is unaffected |
 | refused | `archive-tls-untrusted`, `archive-tls-failed`, `archive-credential-refused`, `archive-bucket-missing`, `archive-versioning-not-enabled`, `archive-unexpected-response`, `archive-authority-changed`, `archive-credential-changed` | not ready |
 
-**Replica version pairing.** The archive should run the same qualified Silo release as the instance. This boundary
-verifies the archive's identity, authentication and versioning, not its release. #1969 qualifies the pairing.
+### Provision one-way replication
+
+Use the same pinned November 12, 2026 stock image for both Silo servers and use `mc` from that image. The archive
+has a separate Silo deployment identity, failure domain, ext4 data root and credentials. Run both stores with
+`MINIO_FS_OSYNC=on`. Give the source Silo an outbound route to the archive's HTTPS name and trust its CA in
+Silo's `certs/CAs` directory. For an installed source on an internal Docker network, one option is an
+operator-managed TCP relay bound to the private bridge gateway. Resolve the archive's canonical name to that
+gateway inside the source Silo, forward only to the archive, and pass TLS through. CameraAgent separately needs
+direct HTTPS access to the same archive with the same authority. Keep the local Silo listener private.
+
+On the maintenance system, set `MC_HOST_source`, `MC_HOST_archive`, `MC_HOST_replica` and `MC_HOST_reader` using
+protected service credentials. Use three distinct identities at the archive. Give the stock clients the
+archive CA, for example through `SSL_CERT_FILE` on a private maintenance session. Create an empty dedicated archive
+bucket with `mc mb --with-lock` and two dedicated enabled archive users with no group memberships or attached
+policies. Use the archive administrator for object holds and exact version expiry. Export the source bucket and
+binding from the installed Silo record. Allocate a permanent archive store ID of the form
+`silo-archive-<32 lowercase hexadecimal UUID digits>` and retain it when the endpoint moves.
+
+```bash
+./scripts/silo:archive enable --source-bucket "$source_bucket" --archive-bucket "$archive_bucket" \
+  --store-id "$archive_store_id" --binding "$source_binding_id"
+./scripts/silo:archive verify-enabled --source-bucket "$source_bucket" --archive-bucket "$archive_bucket" \
+  --store-id "$archive_store_id" --binding "$source_binding_id"
+```
+
+The setup checks the server pairing and versioning, writes the archive binding marker on the empty bucket, and
+installs bucket-scoped stock Silo policies. The replication user can receive replicas and tags. Explicit denies
+exclude delete markers, exact version deletes, replicated deletes, lifecycle changes, holds, and retention
+changes. Archive binding and expiry evidence are writable only by archive administration. CameraAgent uses the
+separate reader user. The tool verifies the rule, target, and credential scope after setup and on rerun. Rule
+readback must show asynchronous one-way existing-object replication, both delete options disabled, replica
+metadata modification sync disabled, and proxy reads disabled.
+
+### Activate CameraAgent verification
+
+Configure `CameraAgent:SiloArchive` with the following keys. On an installed instance the existing KeyPerFile
+mount accepts these as owner-only files named `CameraAgent__SiloArchive__<Key>`. Apply the settings before starting
+the app. Use the same values as the verified archive binding and the dedicated read credential.
+
+| Key | Value |
+| --- | --- |
+| `StoreId`, `Bucket`, `SourceBindingId` | The qualified archive store and original source binding |
+| `Endpoint`, `AuthorityPem` | The HTTPS origin and PEM CA content |
+| `AccessKey`, `SecretKey` | The scoped archive reader |
+| `ReplicationEnabled` | `true` after successful rule readback, `false` for archive-only reads |
+| `ReadScratchRoot` | Optional absolute writable physical directory for checked downloads. Defaults to CameraAgent's raw state directory. |
+| `MaximumReadBytes` | Optional per-download limit. Defaults to 512 MiB and can be set up to 5 GiB. |
+
+CameraAgent publishes and opens local captures independently of the archive. The verifier reads the archived
+publication journal entry, manifest, payloads and dependencies by exact version, computes lengths and SHA-256
+from returned bytes, then appends copy receipts to the instance journal. Stock Silo preserves the source
+version ID on this qualified pairing. A current object, ETag, replication status, or replica arriving ahead of
+one of its dependencies cannot prove a copy. The verifier confirms the receipt segment and rechecks the closure
+at the archive before reporting the publication reachable. Local SQLite projects the durable journal and
+keeps the retry and receipt index. The archive prefix check includes journal segments and any referenced
+checkpoints.
+
+### Inspect, disable and restore
+
+Use the instance lifecycle token in `X-HVO-Installation-Token` for these routes under
+`/api/internal/deployment/lifecycle/silo/archive`.
+
+| Method and route | Result |
+| --- | --- |
+| `GET` | Archive state, qualified store ID and bucket, backlog count, age and logical bytes, latest receipt, and the verified cutoff across the contiguous publication history |
+| `GET /publication?groupId=<id>&revisionId=<revision>` | Status and exact receipt identity for that publication |
+| `POST /read` | Verified bytes for one artifact, with `X-HVO-Content-Sha256`. Send `receipt` from the publication response, `artifactId` and `artifactRevision`. |
+
+`disabled` means verification of new work is off. `pending` means a local publication still needs archive proof.
+`reachable` means the archive answered and the discovered backlog verified. `blocked` covers failed
+authentication, outages, and copies that remain pending through bounded retries, including a capped target.
+`failed` means the evidence or configuration was refused. Backlog bytes include known referenced logical bytes
+and can count shared data more than once. The cutoff records the verified archive prefix and never advances across
+a gap. Each receipt reports its verification time. An archive publication with a completed expiry shows
+`policy-expired` and keeps its historical receipt. Retain exact receipt identities and digests with recovery
+records for selected restores.
+
+The worker uses at most four publication attempts per pass, a 45-second deadline per attempt, and exponential
+retry from two seconds to about four minutes per publication. A verified publication becomes due for a repeat
+check after one day. Restore reads are serialized and use one bounded scratch file. Use a scratch filesystem with
+headroom for the configured limit. When connectivity, credentials or headroom recover, the worker rechecks the same versions.
+Silo retries asynchronous replication through its scanner. Check archive capacity and the source's replication
+target separately, then use the stock resync command only for an authorized catch-up. Resync can re-transfer
+previously expired versions, so archive disposition remains authoritative for the exact version.
+
+To disable new replication, use `scripts/silo:archive disable` with the same arguments and verify with
+`verify-disabled`. Set `ReplicationEnabled=false` and keep the reader settings. A replacement CameraAgent can
+use those reader settings with replication disabled and the retained receipt identity. It reads the archive
+directly after complete source loss, rechecks the receipt and manifest, and streams the selected artifact
+only after its exact byte length and digest verify. This selected restore path is separate from backup and
+instance recovery.
+
+### Archive retention and expiry
+
+Source delete markers suppress the source's current object. An explicit source version deletion removes that
+version at the source. Both operations leave an already verified archive version intact under the installed
+rule. Treat source lifecycle results as source-only. The pinned release has separate lifecycle actions for
+current versions, noncurrent versions and delete markers. The qualified archive uses no bucket lifecycle
+rules. It keeps journal, checkpoint, manifest and disposition metadata; payload expiry uses exact versions
+under the archive owner's independent policy.
+
+Each copy receipt records archive custody, the exact-version retention policy, and observed Object Lock
+protection. An archive administrator can qualify protection with an exact-version legal hold. Archive expiry
+must wait for applicable holds and all references to a shared payload. After that review, use the archive
+administrator's protected alias to run the explicit expiry operation:
+
+```bash
+./scripts/silo:archive expire --archive-bucket "$archive_bucket" --store-id "$archive_store_id" \
+  --binding "$source_binding_id" --key "$payload_key" --version-id "$version_id"
+```
+
+The tool records an immutable intent before deleting the exact version, and a completion entry after it
+confirms absence. A rerun completes an interrupted operation. A selected read returns `policy-expired` for that
+version after completion. An absent version without completed disposition is missing. A newer version of the
+same key has its own custody, and a late arrival of the exact expired version remains expired until the archive
+administrator resolves it under the policy. Keep instance backups on their existing schedule.
 
 ## Credentials
 
@@ -211,7 +325,9 @@ verifies the archive's identity, authentication and versioning, not its release.
 | --- | --- | --- |
 | Silo root user and password | `config/silo-root/` (0600), mounted read-only at `/run/hvo-silo` | Silo only |
 | Writer access key and secret | `config/secrets/CameraAgent__Silo__AccessKey`, `__SecretKey` (0600) | CameraAgent only |
-| Archive authority and credential | `config/silo-archive/authority.pem`, `credential` (0600) | The installer only, until #1969 |
+| Read-only installer probe | `config/silo-archive/authority.pem`, `credential` (0600) | Installer |
+| Runtime archive reader | Archive KeyPerFile settings (0600) | CameraAgent |
+| Archive replication user | Stock source Silo's target configuration | Source Silo |
 
 - No secret is ever on a command line. The installer runs its scripts inside the Silo container through standard
   input. Silo itself generates the writer key.

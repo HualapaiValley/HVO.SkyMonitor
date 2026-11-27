@@ -112,6 +112,7 @@ internal static class SiloJson
         SiloPublishRecord => SiloRecordTypes.Publish,
         SiloLiveIssueRecord => SiloRecordTypes.LiveIssue,
         SiloCopyRecord => SiloRecordTypes.Copy,
+        SiloArchiveReceiptRecord => SiloRecordTypes.ArchiveReceipt,
         SiloReserveSurvivorRecord => SiloRecordTypes.ReserveSurvivor,
         SiloReleaseSurvivorRecord => SiloRecordTypes.ReleaseSurvivor,
         SiloRemapRecord => SiloRecordTypes.Remap,
@@ -480,6 +481,26 @@ internal static class SiloJson
                 SiloText.RequireToken(copy.Custody, nameof(copy.Custody), 64);
                 RequireMethod(copy.Method);
                 RequireUtc(copy.VerifiedUtc, nameof(copy.VerifiedUtc));
+                if (copy.RetentionPolicy is { } retentionPolicy)
+                    SiloText.RequireToken(retentionPolicy, nameof(copy.RetentionPolicy), 128);
+                if (copy.ArchiveRetention is { } retention)
+                {
+                    if (copy.StoreClass != SiloStoreClass.Archive || (retention.Mode is null) != (retention.RetainUntilUtc is null) ||
+                        retention.Mode is not (null or "GOVERNANCE" or "COMPLIANCE"))
+                        throw new ArgumentException("The copy has invalid archive retention.");
+                    if (retention.RetainUntilUtc is { } until) RequireUtc(until, nameof(retention.RetainUntilUtc));
+                }
+                break;
+            case SiloArchiveReceiptRecord receipt:
+                SiloText.RequireStoreId(receipt.ArchiveStoreId);
+                SiloText.RequireToken(receipt.ArchiveBucket, nameof(receipt.ArchiveBucket), 63);
+                SiloText.RequireToken(receipt.GroupId, nameof(receipt.GroupId), 128);
+                SiloText.RequireToken(receipt.RevisionId, nameof(receipt.RevisionId), 128);
+                _ = SiloObjectNamespace.SegmentKey(receipt.Publication);
+                ArgumentOutOfRangeException.ThrowIfNegative(receipt.PublicationIndex);
+                SiloText.RequireText(receipt.PublicationVersionId, nameof(receipt.PublicationVersionId), 1024);
+                SiloHash.Require(receipt.PublicationSha256, nameof(receipt.PublicationSha256));
+                RequireUtc(receipt.VerifiedUtc, nameof(receipt.VerifiedUtc));
                 break;
             case SiloRemapRecord remap:
                 remap.Identity.Validate();

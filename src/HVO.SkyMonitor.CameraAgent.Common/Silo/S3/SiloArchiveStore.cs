@@ -1,0 +1,255 @@
+using System.Net;
+using System.Net.Security;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
+using System.Text;
+using System.Text.Json;
+using Amazon.Runtime;
+using Amazon.S3;
+using Amazon.S3.Model;
+using Microsoft.Extensions.Configuration;
+
+namespace HVO.SkyMonitor.CameraAgent.Common.Silo.S3;
+
+internal sealed record SiloArchiveMarker(string Format, string StoreId, string Bucket, string SourceBindingId, string RetentionPolicy);
+
+internal sealed record SiloArchiveExpiry(string Format, string StoreId, string Bucket, string Key, string VersionId,
+    string Disposition, DateTimeOffset ObservedUtc);
+
+internal sealed class SiloArchiveStore(AmazonS3Client client, SiloArchiveMarker marker, TimeProvider clock,
+    IDisposable transport) : IDisposable
+{
+    internal const string MarkerKey = "meta/archive.v1.json";
+    internal const string MarkerFormat = "hvo.cameraagent.silo.archive/1";
+    internal const string ExpiryFormat = "hvo.cameraagent.silo.archive-expiry/1";
+    internal const string RetentionPolicy = "archive-owner-exact-version-v1";
+    internal const string Custody = "archive-owner";
+    internal static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(10);
+
+    internal SiloArchiveMarker Marker { get; } = marker;
+
+    internal SiloS3ObjectStore Objects { get; } = new(client,
+        new(marker.StoreId, marker.Bucket, SiloStoreClass.Archive, SiloRetrieval.Online, PersistenceQualified: true), RequestTimeout);
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000", Justification = "The returned store owns the S3 client.")]
+    internal static SiloArchiveStore Create(IConfigurationSection section, TimeProvider clock)
+    {
+        string Required(string name) => section[name] is { Length: > 0 } value ? value :
+            throw new ArgumentException("The archive configuration is incomplete.");
+
+        var id = Required("StoreId");
+        if (!id.StartsWith("silo-archive-", StringComparison.Ordinal) || !Guid.TryParseExact(id.AsSpan(13), "N", out var archiveId) ||
+            archiveId == Guid.Empty || id != $"silo-archive-{archiveId:N}")
+            throw new ArgumentException("The archive store identity must name its independently provisioned bucket.");
+        var bucket = Required("Bucket");
+        SiloText.RequireToken(bucket, nameof(bucket), 63);
+        var sourceBinding = Required("SourceBindingId");
+        SiloHash.Require(sourceBinding, nameof(sourceBinding));
+        if (!Uri.TryCreate(Required("Endpoint"), UriKind.Absolute, out var endpoint) || endpoint.Scheme != Uri.UriSchemeHttps)
+            throw new ArgumentException("The archive endpoint must be an HTTPS service origin.");
+
+        var transport = new SiloArchiveTransport(Required("AuthorityPem"));
+        try
+        {
+            return new(SiloS3ObjectStore.CreateClient(endpoint, Required("AccessKey"), Required("SecretKey"), transport),
+                new(MarkerFormat, id, bucket, sourceBinding, RetentionPolicy), clock, transport);
+        }
+        catch
+        {
+            transport.Dispose();
+            throw;
+        }
+    }
+
+    internal async ValueTask VerifyAsync(CancellationToken cancellationToken)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(RequestTimeout);
+        try
+        {
+            var versioning = await client.GetBucketVersioningAsync(new GetBucketVersioningRequest { BucketName = Marker.Bucket },
+                deadline.Token).ConfigureAwait(false);
+            var locking = await client.GetObjectLockConfigurationAsync(new GetObjectLockConfigurationRequest { BucketName = Marker.Bucket },
+                deadline.Token).ConfigureAwait(false);
+            if (versioning.VersioningConfig?.Status != VersionStatus.Enabled ||
+                locking.ObjectLockConfiguration?.ObjectLockEnabled != ObjectLockEnabled.Enabled ||
+                locking.ObjectLockConfiguration.Rule is not null)
+                throw new SiloArchiveException("blocked", "archive-versioning-or-lock-profile");
+
+            await RequireNoLifecycleAsync(deadline.Token).ConfigureAwait(false);
+            var current = await SiloVerifier.ReadCurrentAsync(Objects, MarkerKey, 4096, deadline.Token).ConfigureAwait(false);
+            if (current is null || JsonSerializer.Deserialize<SiloArchiveMarker>(current.Value.Bytes, SiloJson.Options) != Marker)
+                throw new SiloArchiveException("blocked", "archive-binding-mismatch");
+        }
+        catch (AmazonS3Exception exception) when (exception.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        {
+            throw new SiloArchiveException("blocked", "archive-credentials-refused");
+        }
+        catch (AmazonS3Exception exception) when (exception.StatusCode == HttpStatusCode.NotFound)
+        {
+            throw new SiloArchiveException("blocked", "archive-bucket-or-lock-missing");
+        }
+        catch (Exception exception) when (exception is AmazonServiceException or AmazonClientException or HttpRequestException or
+            IOException or OperationCanceledException)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            throw new SiloArchiveException("blocked", "archive-unreachable");
+        }
+        catch (Exception exception) when (exception is JsonException or SiloDataException)
+        {
+            throw new SiloArchiveException("failed", "archive-marker-invalid");
+        }
+    }
+
+    private async ValueTask RequireNoLifecycleAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var response = await client.GetLifecycleConfigurationAsync(new GetLifecycleConfigurationRequest { BucketName = Marker.Bucket },
+                cancellationToken).ConfigureAwait(false);
+            if (response.Configuration?.Rules is not { Count: > 0 }) return;
+        }
+        catch (AmazonS3Exception exception) when (exception.ErrorCode == "NoSuchLifecycleConfiguration")
+        {
+            return;
+        }
+        throw new SiloArchiveException("blocked", "archive-lifecycle-profile-changed");
+    }
+
+    internal SiloExactLocator ReplicaOf(SiloExactLocator source) => source with { StoreId = Marker.StoreId, Bucket = Marker.Bucket };
+
+    internal SiloExactLocator SegmentLocator(SiloCommittedSegment segment) =>
+        new(Marker.StoreId, Marker.Bucket, SiloObjectNamespace.SegmentKey(segment.Position), segment.VersionId);
+
+    internal async ValueTask<SiloJournalSegment> ReadSegmentAsync(SiloCommittedSegment segment, CancellationToken cancellationToken)
+    {
+        var bytes = await SiloVerifier.ReadExactMetadataAsync(Objects, SegmentLocator(segment), cancellationToken).ConfigureAwait(false);
+        if (bytes is null)
+            throw new SiloArchiveException("pending", "archive-journal-version-pending");
+        if (SiloHash.Sha256(bytes) != segment.Sha256)
+            throw new SiloArchiveException("failed", "archive-journal-digest-mismatch");
+        var journal = SiloJson.ReadSegment(bytes, "archive journal");
+        if (journal.StorageBindingId != Marker.SourceBindingId || journal.Position != segment.Position)
+            throw new SiloArchiveException("failed", "archive-journal-binding-mismatch");
+        return journal;
+    }
+
+    internal async ValueTask<SiloProbe> ProbeAsync(SiloObjectIdentity identity, SiloExactLocator locator, bool captureBytes,
+        CancellationToken cancellationToken)
+    {
+        if (locator.StoreId != Marker.StoreId || locator.Bucket != Marker.Bucket ||
+            captureBytes && identity.Length > SiloJson.MaximumMetadataObjectBytes || identity.Length > SiloS3ObjectStore.MaximumPutBytes)
+            throw new SiloArchiveException("failed", "archive-copy-identity-mismatch");
+        return await SiloVerifier.ProbeAsync(Objects, locator, identity.Length, identity.Sha256, clock, captureBytes,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    internal async ValueTask<SiloArchiveRetention> ReadRetentionAsync(SiloExactLocator locator, CancellationToken cancellationToken)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(RequestTimeout);
+        try
+        {
+            var response = await client.GetObjectMetadataAsync(new GetObjectMetadataRequest
+            {
+                BucketName = locator.Bucket,
+                Key = locator.Key,
+                VersionId = locator.VersionId
+            }, deadline.Token).ConfigureAwait(false);
+            if (response.VersionId != locator.VersionId)
+                throw new SiloArchiveException("failed", "archive-retention-version-mismatch");
+            var mode = response.ObjectLockMode?.Value;
+            return new(response.ObjectLockLegalHoldStatus == ObjectLockLegalHoldStatus.On, mode,
+                mode is null ? null : new DateTimeOffset(response.ObjectLockRetainUntilDate!.Value.ToUniversalTime()));
+        }
+        catch (AmazonS3Exception exception) when (exception.StatusCode == HttpStatusCode.NotFound)
+        {
+            throw new SiloArchiveException("pending", "archive-retention-version-pending");
+        }
+        catch (Exception exception) when (exception is AmazonServiceException or AmazonClientException or HttpRequestException or
+            IOException or OperationCanceledException)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            throw new SiloArchiveException("blocked", "archive-retention-unavailable");
+        }
+    }
+
+    internal async ValueTask<bool> WasExpiredAsync(SiloExactLocator locator, CancellationToken cancellationToken)
+    {
+        if (!locator.Key.StartsWith("p/", StringComparison.Ordinal)) return false;
+        var identity = Encoding.UTF8.GetBytes(string.Join('\n', locator.StoreId, locator.Bucket, locator.Key, locator.VersionId));
+        var key = "meta/archive-expiry/" + SiloHash.Sha256(identity) + ".json";
+        var current = await SiloVerifier.ReadCurrentAsync(Objects, key, 4096, cancellationToken).ConfigureAwait(false);
+        if (current is null) return false;
+        var record = JsonSerializer.Deserialize<SiloArchiveExpiry>(current.Value.Bytes, SiloJson.Options);
+        if (record is null || record.Format != ExpiryFormat || record.StoreId != locator.StoreId ||
+            record.Bucket != locator.Bucket || record.Key != locator.Key || record.VersionId != locator.VersionId ||
+            record.Disposition != "policy-expired" || record.ObservedUtc.Offset != TimeSpan.Zero ||
+            record.ObservedUtc == default || record.ObservedUtc > clock.GetUtcNow())
+            throw new SiloArchiveException("failed", "archive-expiry-disposition-invalid");
+        return true;
+    }
+
+    public void Dispose()
+    {
+        client.Dispose();
+        transport.Dispose();
+    }
+}
+
+/// <summary>Trust only the operator's archive CA and the configured HTTPS origin.</summary>
+internal sealed class SiloArchiveTransport : HttpClientFactory, IDisposable
+{
+    private readonly X509Certificate2Collection _authority = [];
+    private readonly HttpClient _client;
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000", Justification = "HttpClient owns its socket handler.")]
+    public SiloArchiveTransport(string pem)
+    {
+        if (pem.Length is 0 or > 65536) throw new ArgumentException("The archive authority must be a bounded PEM file.", nameof(pem));
+        try
+        {
+            _authority.ImportFromPem(pem);
+            if (_authority.Count == 0) throw new ArgumentException("The archive authority contains no certificates.", nameof(pem));
+            var chain = new X509ChainPolicy
+            {
+                TrustMode = X509ChainTrustMode.CustomRootTrust,
+                RevocationMode = X509RevocationMode.NoCheck,
+                DisableCertificateDownloads = true
+            };
+            chain.CustomTrustStore.AddRange(_authority);
+            chain.ApplicationPolicy.Add(new Oid("1.3.6.1.5.5.7.3.1"));
+            _client = new HttpClient(new SocketsHttpHandler
+            {
+                AllowAutoRedirect = false,
+                UseProxy = false,
+                UseCookies = false,
+                ConnectTimeout = TimeSpan.FromSeconds(5),
+                SslOptions = new SslClientAuthenticationOptions { CertificateChainPolicy = chain }
+            });
+        }
+        catch (CryptographicException exception)
+        {
+            foreach (var certificate in _authority) certificate.Dispose();
+            throw new ArgumentException("The archive authority could not be parsed.", nameof(pem), exception);
+        }
+    }
+
+    public override HttpClient CreateHttpClient(IClientConfig clientConfig) => _client;
+    public override bool UseSDKHttpClientCaching(IClientConfig clientConfig) => false;
+    public override bool DisposeHttpClientsAfterUse(IClientConfig clientConfig) => false;
+
+    public void Dispose()
+    {
+        _client.Dispose();
+        foreach (var certificate in _authority) certificate.Dispose();
+    }
+}
+
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1032:Implement standard exception constructors",
+    Justification = "Archive attempts expose fixed operator-facing states and reason codes.")]
+internal sealed class SiloArchiveException(string state, string reason) : InvalidOperationException(reason)
+{
+    internal string State { get; } = state;
+    internal string Reason { get; } = reason;
+}

@@ -19,7 +19,7 @@ internal sealed class SiloS3ObjectStore(
 
     public SiloStoreDescriptor Descriptor { get; } = descriptor;
 
-    public static AmazonS3Client CreateClient(Uri endpoint, string accessKey, string secretKey)
+    public static AmazonS3Client CreateClient(Uri endpoint, string accessKey, string secretKey, HttpClientFactory? transport = null)
     {
         ArgumentNullException.ThrowIfNull(endpoint);
         if (!endpoint.IsAbsoluteUri || endpoint.Scheme is not ("http" or "https") ||
@@ -34,6 +34,7 @@ internal sealed class SiloS3ObjectStore(
             ForcePathStyle = true,
             AuthenticationRegion = "us-east-1",
             MaxErrorRetry = 0,
+            HttpClientFactory = transport,
             RequestChecksumCalculation = RequestChecksumCalculation.WHEN_REQUIRED,
             ResponseChecksumValidation = ResponseChecksumValidation.WHEN_REQUIRED
         });

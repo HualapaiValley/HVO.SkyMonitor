@@ -4,7 +4,9 @@ using System.Security.Cryptography;
 using Amazon.S3;
 using Amazon.S3.Model;
 using DotNet.Testcontainers.Builders;
+using DotNet.Testcontainers.Configurations;
 using DotNet.Testcontainers.Containers;
+using DotNet.Testcontainers.Networks;
 using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Silo.S3;
 
@@ -43,8 +45,10 @@ public sealed partial class SiloStockStoreTests
         await CheckStockVersionsAsync(container, client, store, descriptor, accessKey, secretKey, token).ConfigureAwait(false);
     }
 
-    private static IContainer BuildStockContainer(string accessKey, string secretKey, string sync) =>
-        new ContainerBuilder(StockImage)
+    private static IContainer BuildStockContainer(string accessKey, string secretKey, string sync, INetwork? network = null,
+        string? certificateDirectory = null)
+    {
+        var builder = new ContainerBuilder(StockImage)
             .WithEnvironment("MINIO_ROOT_USER", accessKey)
             .WithEnvironment("MINIO_ROOT_PASSWORD", secretKey)
             .WithEnvironment("MINIO_BROWSER", "off")
@@ -60,8 +64,20 @@ public sealed partial class SiloStockStoreTests
                 }
             })
             .WithWaitStrategy(Wait.ForUnixContainer().UntilHttpRequestIsSucceeded(
-                request => request.ForPort(Port).ForPath("/minio/health/ready")))
-            .Build();
+                request => request.ForPort(Port).ForPath("/minio/health/ready")));
+        if (network is not null)
+        {
+            builder = builder.WithNetwork(network)
+                .WithEnvironment("MINIO_SCANNER_CYCLE", "1s")
+                .WithEnvironment("MINIO_SCANNER_SPEED", "fastest");
+        }
+        if (certificateDirectory is not null)
+        {
+            builder = builder.WithBindMount(certificateDirectory, "/tmp/.minio/certs", AccessMode.ReadOnly)
+                .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(Port));
+        }
+        return builder.Build();
+    }
 
     private static Uri Endpoint(IContainer container) => new UriBuilder("http", container.Hostname, container.GetMappedPublicPort(Port)).Uri;
 

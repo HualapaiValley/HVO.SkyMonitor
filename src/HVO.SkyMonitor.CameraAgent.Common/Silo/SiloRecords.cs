@@ -153,6 +153,7 @@ internal sealed record SiloCheckpointEntry(long Generation, long Sequence, int I
 [JsonDerivedType(typeof(SiloPublishRecord), SiloRecordTypes.Publish)]
 [JsonDerivedType(typeof(SiloLiveIssueRecord), SiloRecordTypes.LiveIssue)]
 [JsonDerivedType(typeof(SiloCopyRecord), SiloRecordTypes.Copy)]
+[JsonDerivedType(typeof(SiloArchiveReceiptRecord), SiloRecordTypes.ArchiveReceipt)]
 [JsonDerivedType(typeof(SiloReserveSurvivorRecord), SiloRecordTypes.ReserveSurvivor)]
 [JsonDerivedType(typeof(SiloReleaseSurvivorRecord), SiloRecordTypes.ReleaseSurvivor)]
 [JsonDerivedType(typeof(SiloRemapRecord), SiloRecordTypes.Remap)]
@@ -170,6 +171,7 @@ internal static class SiloRecordTypes
     public const string Publish = "publish";
     public const string LiveIssue = "live-issue";
     public const string Copy = "copy";
+    public const string ArchiveReceipt = "archive-receipt";
     public const string ReserveSurvivor = "reserve-survivor";
     public const string ReleaseSurvivor = "release-survivor";
     public const string Remap = "remap";
@@ -182,7 +184,7 @@ internal static class SiloRecordTypes
 
     public static readonly IReadOnlySet<string> All = new HashSet<string>(StringComparer.Ordinal)
     {
-        GenerationOpen, Publish, LiveIssue, Copy, ReserveSurvivor, ReleaseSurvivor, Remap, Pin, Policy,
+        GenerationOpen, Publish, LiveIssue, Copy, ArchiveReceipt, ReserveSurvivor, ReleaseSurvivor, Remap, Pin, Policy,
         ExpiryIntent, ExpiryDisposition, Availability, Anchor
     };
 }
@@ -244,7 +246,23 @@ internal sealed record SiloCopyRecord(
     string Custody,
     DateTimeOffset VerifiedUtc,
     string Method,
-    string? Endpoint = null) : SiloJournalRecord;
+    string? Endpoint = null,
+    string? RetentionPolicy = null,
+    SiloArchiveRetention? ArchiveRetention = null) : SiloJournalRecord;
+
+internal sealed record SiloArchiveRetention(bool LegalHold, string? Mode = null, DateTimeOffset? RetainUntilUtc = null);
+
+/// <summary>Completes one archive verification. The exact copies are the other records in this same segment.</summary>
+internal sealed record SiloArchiveReceiptRecord(
+    string ArchiveStoreId,
+    string ArchiveBucket,
+    string GroupId,
+    string RevisionId,
+    SiloJournalPosition Publication,
+    int PublicationIndex,
+    string PublicationVersionId,
+    string PublicationSha256,
+    DateTimeOffset VerifiedUtc) : SiloJournalRecord;
 
 internal sealed record SiloReserveSurvivorRecord(
     string ReservationId,
