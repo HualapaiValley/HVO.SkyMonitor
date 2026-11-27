@@ -320,10 +320,12 @@ public sealed class ReleaseAcquirerTests
         var root = Directory.CreateTempSubdirectory("hvo-mkfifo-hang-");
         var fifoPath = Path.Combine(root.FullName, "release.json");
         var pidFile = fifoPath + ".pid";
+        var script = Path.Combine(root.FullName, "hang.sh");
         try
         {
-            var script = Path.Combine(root.FullName, "hang.sh");
-            await File.WriteAllTextAsync(script, "#!/bin/sh\nset -e\nprintf '%s' \"$$\" > \"$1.pid\"\nexec sleep 30\n");
+            await File.WriteAllTextAsync(
+                script,
+                "#!/bin/sh\nset -e\nIFS= read -r stat_line < \"/proc/$$/stat\"\nprintf '%s\\n%s\\n' \"$$\" \"$stat_line\" > \"$1.pid.tmp\"\nmv -f \"$1.pid.tmp\" \"$1.pid\"\nexec sleep 30\n");
             File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
 
             var stopwatch = Stopwatch.StartNew();
@@ -333,12 +335,12 @@ public sealed class ReleaseAcquirerTests
 
             StringAssert.Contains(failure.Message, "timed out", StringComparison.Ordinal);
             Assert.IsLessThan(5.0, stopwatch.Elapsed.TotalSeconds, $"Expected bounded timeout, took {stopwatch.Elapsed}.");
-            var pid = await ReadFixturePidAsync(pidFile);
-            Assert.IsFalse(Directory.Exists($"/proc/{pid}"), $"Timed-out command PID {pid} was not reaped.");
+            var fixtureProcess = await ReadFixtureProcessIdentityAsync(pidFile);
+            Assert.IsFalse(Directory.Exists($"/proc/{fixtureProcess.Pid}"), $"Timed-out command PID {fixtureProcess.Pid} was not reaped.");
         }
         finally
         {
-            await CleanUpFifoFixtureAsync(root, pidFile);
+            await CleanUpFifoFixtureAsync(root, pidFile, script, allowZombieAsTerminated: false);
         }
     }
 
@@ -349,10 +351,12 @@ public sealed class ReleaseAcquirerTests
         var root = Directory.CreateTempSubdirectory("hvo-mkfifo-pipe-");
         var fifoPath = Path.Combine(root.FullName, "release.json");
         var pidFile = fifoPath + ".pid";
+        var script = Path.Combine(root.FullName, "hold-pipes.sh");
         try
         {
-            var script = Path.Combine(root.FullName, "hold-pipes.sh");
-            await File.WriteAllTextAsync(script, "#!/bin/sh\nset -e\nsleep 30 &\nprintf '%s' \"$!\" > \"$1.pid\"\nexit 0\n");
+            await File.WriteAllTextAsync(
+                script,
+                "#!/bin/sh\nset -e\nsleep 30 &\nchild_pid=$!\nIFS= read -r stat_line < \"/proc/$child_pid/stat\"\nprintf '%s\\n%s\\n' \"$child_pid\" \"$stat_line\" > \"$1.pid.tmp\"\nmv -f \"$1.pid.tmp\" \"$1.pid\"\nexit 0\n");
             File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
 
             var stopwatch = Stopwatch.StartNew();
@@ -362,13 +366,179 @@ public sealed class ReleaseAcquirerTests
 
             StringAssert.Contains(failure.Message, "remained open", StringComparison.Ordinal);
             Assert.IsLessThan(5.0, stopwatch.Elapsed.TotalSeconds, $"Expected bounded pipe drain timeout, took {stopwatch.Elapsed}.");
-            Assert.IsTrue(File.Exists(pidFile), "The pipe-holding descendant did not record its PID.");
+            _ = await ReadFixtureProcessIdentityAsync(pidFile);
         }
         finally
         {
             // The command has exited, so the fixture owns cleanup of its reparented descendant.
-            await CleanUpFifoFixtureAsync(root, pidFile);
+            // Minimal containers whose PID 1 does not reap adopted orphans may leave the killed sleep in state 'Z'.
+            await CleanUpFifoFixtureAsync(root, pidFile, script, allowZombieAsTerminated: true);
         }
+    }
+
+    [TestMethod]
+    public void TryParseLinuxProcessStat_ParsesStateAndStartTimeIncludingComplexComm()
+    {
+        Assert.IsTrue(
+            TryParseLinuxProcessStat(
+                "12345 (sleep) S 1 12345 12345 0 -1 4194304 89 0 0 0 0 0 0 0 20 0 1 0 987654321 4096 128\n",
+                out var sleeping));
+        Assert.AreEqual(new LinuxProcessStat(12345, 'S', 987654321UL), sleeping);
+
+        Assert.IsTrue(
+            TryParseLinuxProcessStat(
+                "23456 (sleep) Z 1 23456 23456 0 -1 4194308 89 0 0 0 0 0 0 0 20 0 1 0 42000 0 0\n",
+                out var zombie));
+        Assert.AreEqual(new LinuxProcessStat(23456, 'Z', 42000UL), zombie);
+
+        Assert.IsTrue(
+            TryParseLinuxProcessStat(
+                "34567 (my (weird) proc)) ) Z 1 34567 34567 0 -1 4194308 89 0 0 0 0 0 0 0 20 0 1 0 18446744073709551615 0 0\n",
+                out var complexComm));
+        Assert.AreEqual(new LinuxProcessStat(34567, 'Z', ulong.MaxValue), complexComm);
+
+        Assert.IsTrue(
+            TryParseLinuxProcessStat(
+                "45678 (line1\nline2) R 1 45678 45678 0 -1 4194304 10 0 0 0 0 0 0 0 20 0 1 0 555 0 0\n",
+                out var multilineComm));
+        Assert.AreEqual(new LinuxProcessStat(45678, 'R', 555UL), multilineComm);
+
+        Assert.IsFalse(TryParseLinuxProcessStat(null, out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(string.Empty, out _));
+        Assert.IsFalse(TryParseLinuxProcessStat("12345 sleep S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19", out _));
+        Assert.IsFalse(TryParseLinuxProcessStat("(sleep) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19", out _));
+        Assert.IsFalse(TryParseLinuxProcessStat("12345 )sleep( S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19", out _));
+        Assert.IsFalse(TryParseLinuxProcessStat("12345 (sleep)S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19", out _));
+        Assert.IsFalse(TryParseLinuxProcessStat("0 (swapper) S 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 1 0 0", out _));
+        Assert.IsFalse(TryParseLinuxProcessStat("12345 (sleep) S 1 2 3", out _));
+        Assert.IsFalse(TryParseLinuxProcessStat("12345 (sleep) ZZ 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19", out _));
+        Assert.IsFalse(TryParseLinuxProcessStat("12345 (sleep) 9 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19", out _));
+        Assert.IsFalse(TryParseLinuxProcessStat("12345 (sleep) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 not-ticks", out _));
+    }
+
+    [TestMethod]
+    public void TryParseFixtureProcessIdentity_ParsesAtomicIdentityAndRejectsTruncatedOrMismatchedContent()
+    {
+        const string validStat = "12345 (hang (fixture) sh) S 1 12345 12345 0 -1 4194304 89 0 0 0 0 0 0 0 20 0 1 0 987654321 4096 128\n";
+
+        Assert.IsTrue(TryParseFixtureProcessIdentity($"12345\n{validStat}", out var identity));
+        Assert.AreEqual(new FixtureProcessIdentity(12345, 987654321UL), identity);
+
+        Assert.IsTrue(TryParseFixtureProcessIdentity($"12345\r\n{validStat}", out var crlfIdentity));
+        Assert.AreEqual(new FixtureProcessIdentity(12345, 987654321UL), crlfIdentity);
+
+        Assert.IsFalse(TryParseFixtureProcessIdentity(null, out _));
+        Assert.IsFalse(TryParseFixtureProcessIdentity(string.Empty, out _));
+        Assert.IsFalse(TryParseFixtureProcessIdentity("   \n", out _));
+        Assert.IsFalse(TryParseFixtureProcessIdentity("12345", out _));
+        Assert.IsFalse(TryParseFixtureProcessIdentity("12345\n", out _));
+        Assert.IsFalse(TryParseFixtureProcessIdentity("12345\n12345 (sleep) S 1 2 3", out _));
+        Assert.IsFalse(TryParseFixtureProcessIdentity($"not-a-pid\n{validStat}", out _));
+        Assert.IsFalse(TryParseFixtureProcessIdentity("1\n1 (init) S 0 1 1 0 -1 4194304 89 0 0 0 0 0 0 0 20 0 1 0 1 4096 128\n", out _));
+        Assert.IsFalse(TryParseFixtureProcessIdentity($"99999\n{validStat}", out _));
+    }
+
+    [TestMethod]
+    public async Task TryReadFixtureProcessIdentityAsync_HandlesMissingEmptyPartialAndAtomicFilesWithoutThrowing()
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-pidfile-parse-");
+        try
+        {
+            var pidFile = Path.Combine(root.FullName, "release.json.pid");
+            Assert.IsNull(await TryReadFixtureProcessIdentityAsync(pidFile));
+
+            await File.WriteAllTextAsync(pidFile, string.Empty);
+            Assert.IsNull(await TryReadFixtureProcessIdentityAsync(pidFile));
+
+            await File.WriteAllTextAsync(pidFile, "12345");
+            Assert.IsNull(await TryReadFixtureProcessIdentityAsync(pidFile));
+
+            await File.WriteAllTextAsync(pidFile, "12345\n12345 (sleep) S 1 2");
+            Assert.IsNull(await TryReadFixtureProcessIdentityAsync(pidFile));
+
+            var tempFile = pidFile + ".tmp";
+            await File.WriteAllTextAsync(
+                tempFile,
+                "12345\n12345 (sleep) S 1 12345 12345 0 -1 4194304 89 0 0 0 0 0 0 0 20 0 1 0 987654321 4096 128\n");
+            File.Move(tempFile, pidFile, overwrite: true);
+
+            Assert.AreEqual(
+                new FixtureProcessIdentity(12345, 987654321UL),
+                await TryReadFixtureProcessIdentityAsync(pidFile));
+        }
+        finally
+        {
+            if (root.Exists)
+            {
+                root.Delete(recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
+    public void ShouldKillFixtureProcess_RejectsIdentityAndCommandLineMismatches()
+    {
+        var expected = new FixtureProcessIdentity(12345, 987654321UL);
+        var matchingStat = new LinuxProcessStat(12345, 'S', 987654321UL);
+        const string scriptPath = "/tmp/hvo-mkfifo-hang/hang.sh";
+
+        Assert.IsTrue(ShouldKillFixtureProcess(expected, matchingStat, "sleep\030\0", scriptPath));
+        Assert.IsTrue(ShouldKillFixtureProcess(expected, matchingStat, "/usr/bin/sleep\030\0", scriptPath));
+        Assert.IsTrue(ShouldKillFixtureProcess(expected, matchingStat, "busybox\0sleep\030\0", scriptPath));
+        Assert.IsTrue(ShouldKillFixtureProcess(expected, matchingStat, $"/bin/sh\0{scriptPath}\0/tmp/hvo-mkfifo-hang/release.json\0", scriptPath));
+
+        // Reused PID with a different start time must never be killed even if the command line happens to match.
+        var reusedPidStat = new LinuxProcessStat(12345, 'S', 999999999UL);
+        Assert.IsFalse(ShouldKillFixtureProcess(expected, reusedPidStat, "sleep\030\0", scriptPath));
+
+        // Different PID, unrelated command line, empty command line, zombie, or missing stat must not be signaled.
+        Assert.IsFalse(ShouldKillFixtureProcess(expected, new LinuxProcessStat(54321, 'S', 987654321UL), "sleep\030\0", scriptPath));
+        Assert.IsFalse(ShouldKillFixtureProcess(expected, matchingStat, "/usr/bin/dotnet\0test\0", scriptPath));
+        Assert.IsFalse(ShouldKillFixtureProcess(expected, matchingStat, "sleep\060\0", scriptPath));
+        Assert.IsFalse(ShouldKillFixtureProcess(expected, matchingStat, string.Empty, scriptPath));
+        Assert.IsFalse(ShouldKillFixtureProcess(expected, matchingStat, null, scriptPath));
+        Assert.IsFalse(ShouldKillFixtureProcess(expected, new LinuxProcessStat(12345, 'Z', 987654321UL), string.Empty, scriptPath));
+        Assert.IsFalse(ShouldKillFixtureProcess(expected, null, "sleep\030\0", scriptPath));
+    }
+
+    [TestMethod]
+    public void IsFixtureProcessTerminated_TreatsZombieAsTerminatedOnlyWhenAllowed()
+    {
+        var expected = new FixtureProcessIdentity(12345, 987654321UL);
+        var liveStat = new LinuxProcessStat(12345, 'S', 987654321UL);
+        var zombieStat = new LinuxProcessStat(12345, 'Z', 987654321UL);
+        var reusedPidStat = new LinuxProcessStat(12345, 'S', 999999999UL);
+
+        Assert.IsTrue(IsFixtureProcessTerminated(expected, null, allowZombieAsTerminated: false));
+        Assert.IsTrue(IsFixtureProcessTerminated(expected, null, allowZombieAsTerminated: true));
+
+        Assert.IsTrue(IsFixtureProcessTerminated(expected, reusedPidStat, allowZombieAsTerminated: false));
+        Assert.IsTrue(IsFixtureProcessTerminated(expected, reusedPidStat, allowZombieAsTerminated: true));
+
+        Assert.IsFalse(IsFixtureProcessTerminated(expected, liveStat, allowZombieAsTerminated: false));
+        Assert.IsFalse(IsFixtureProcessTerminated(expected, liveStat, allowZombieAsTerminated: true));
+
+        Assert.IsFalse(IsFixtureProcessTerminated(expected, zombieStat, allowZombieAsTerminated: false));
+        Assert.IsTrue(IsFixtureProcessTerminated(expected, zombieStat, allowZombieAsTerminated: true));
+    }
+
+    [TestMethod]
+    [DataRow(null)]
+    [DataRow("")]
+    [DataRow("12345")]
+    [DataRow("not-a-pid")]
+    public async Task CleanUpFifoFixtureAsync_WhenPidFileMissingEmptyOrPartial_DeletesFixtureWithoutThrowing(string? pidFileContent)
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-cleanup-");
+        var pidFile = Path.Combine(root.FullName, "release.json.pid");
+        if (pidFileContent is not null)
+        {
+            await File.WriteAllTextAsync(pidFile, pidFileContent);
+        }
+
+        await CleanUpFifoFixtureAsync(root, pidFile, allowZombieAsTerminated: true);
+
+        Assert.IsFalse(Directory.Exists(root.FullName), "Fixture directory should be removed even when the PID file is absent or partial.");
     }
 
     [TestMethod]
@@ -573,55 +743,337 @@ public sealed class ReleaseAcquirerTests
     private static bool IsErrnoIdentifierCharacter(char character)
         => char.IsLetterOrDigit(character) || character == '_';
 
-    private static async Task<int> ReadFixturePidAsync(string pidFile)
+    private readonly record struct LinuxProcessStat(int Pid, char State, ulong StartTimeTicks);
+
+    private readonly record struct FixtureProcessIdentity(int Pid, ulong StartTimeTicks);
+
+    private static async Task<FixtureProcessIdentity> ReadFixtureProcessIdentityAsync(string pidFile)
     {
-        var pid = int.Parse(await File.ReadAllTextAsync(pidFile), CultureInfo.InvariantCulture);
-        Assert.IsGreaterThan(1, pid, $"Invalid FIFO fixture PID in '{pidFile}'.");
-        return pid;
+        Assert.IsTrue(File.Exists(pidFile), $"FIFO fixture PID file '{pidFile}' was not written.");
+        var content = await File.ReadAllTextAsync(pidFile);
+        Assert.IsTrue(
+            TryParseFixtureProcessIdentity(content, out var identity),
+            $"Invalid FIFO fixture identity in '{pidFile}': '{content.Trim()}'.");
+        return identity;
     }
 
-    private static async Task CleanUpFifoFixtureAsync(DirectoryInfo root, string pidFile)
+    private static async Task<FixtureProcessIdentity?> TryReadFixtureProcessIdentityAsync(string pidFile)
+    {
+        if (!File.Exists(pidFile))
+        {
+            return null;
+        }
+
+        try
+        {
+            var content = await File.ReadAllTextAsync(pidFile);
+            return TryParseFixtureProcessIdentity(content, out var identity) ? identity : null;
+        }
+        catch (FileNotFoundException)
+        {
+            return null;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return null;
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+    }
+
+    private static bool TryParseFixtureProcessIdentity(string? content, out FixtureProcessIdentity identity)
+    {
+        identity = default;
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            return false;
+        }
+
+        var newlineIndex = content.IndexOf('\n', StringComparison.Ordinal);
+        if (newlineIndex <= 0)
+        {
+            return false;
+        }
+
+        var pidLine = content.AsSpan(0, newlineIndex).Trim();
+        if (!int.TryParse(pidLine, NumberStyles.None, CultureInfo.InvariantCulture, out var pid) || pid <= 1)
+        {
+            return false;
+        }
+
+        var statLine = content[(newlineIndex + 1)..];
+        if (!TryParseLinuxProcessStat(statLine, out var stat) || stat.Pid != pid)
+        {
+            return false;
+        }
+
+        identity = new FixtureProcessIdentity(pid, stat.StartTimeTicks);
+        return true;
+    }
+
+    private static bool TryParseLinuxProcessStat(string? statContent, out LinuxProcessStat stat)
+    {
+        stat = default;
+        if (string.IsNullOrWhiteSpace(statContent))
+        {
+            return false;
+        }
+
+        var openParen = statContent.IndexOf('(', StringComparison.Ordinal);
+        var closeParen = statContent.LastIndexOf(')');
+        if (openParen <= 0 || closeParen <= openParen || closeParen + 1 >= statContent.Length || statContent[closeParen + 1] != ' ')
+        {
+            return false;
+        }
+
+        var pidSpan = statContent.AsSpan(0, openParen).Trim();
+        if (!int.TryParse(pidSpan, NumberStyles.None, CultureInfo.InvariantCulture, out var pid) || pid <= 0)
+        {
+            return false;
+        }
+
+        var remainder = statContent[(closeParen + 1)..];
+        var fields = remainder.Split([' ', '\t', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
+        // After "(comm)", /proc/{pid}/stat starts at field 3 (state) at index 0;
+        // field 22 (starttime in clock ticks since boot) is at index 19.
+        const int StateFieldIndex = 0;
+        const int StartTimeFieldIndex = 19;
+        if (fields.Length <= StartTimeFieldIndex || fields[StateFieldIndex].Length != 1)
+        {
+            return false;
+        }
+
+        var state = fields[StateFieldIndex][0];
+        if (!char.IsAsciiLetter(state))
+        {
+            return false;
+        }
+
+        if (!ulong.TryParse(fields[StartTimeFieldIndex], NumberStyles.None, CultureInfo.InvariantCulture, out var startTimeTicks))
+        {
+            return false;
+        }
+
+        stat = new LinuxProcessStat(pid, state, startTimeTicks);
+        return true;
+    }
+
+    private static bool IsSameFixtureProcess(FixtureProcessIdentity expected, LinuxProcessStat actual)
+        => actual.Pid == expected.Pid && actual.StartTimeTicks == expected.StartTimeTicks;
+
+    private static bool IsExpectedFixtureCommandLine(string? cmdline, string? expectedScriptPath)
+    {
+        if (string.IsNullOrEmpty(cmdline))
+        {
+            return false;
+        }
+
+        var args = cmdline.Split('\0', StringSplitOptions.RemoveEmptyEntries);
+        if (args.Length == 0)
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrEmpty(expectedScriptPath)
+            && args.Any(arg => string.Equals(arg, expectedScriptPath, StringComparison.Ordinal)))
+        {
+            return true;
+        }
+
+        var executable = Path.GetFileName(args[0]);
+        if (string.Equals(executable, "sleep", StringComparison.Ordinal)
+            && args.Length == 2
+            && string.Equals(args[1], "30", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (string.Equals(executable, "busybox", StringComparison.Ordinal)
+            && args.Length == 3
+            && string.Equals(args[1], "sleep", StringComparison.Ordinal)
+            && string.Equals(args[2], "30", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (string.Equals(executable, "coreutils", StringComparison.Ordinal)
+            && args.Length >= 3
+            && string.Equals(args[^1], "30", StringComparison.Ordinal)
+            && args.Any(static arg => string.Equals(Path.GetFileName(arg), "sleep", StringComparison.Ordinal)
+                || arg.EndsWith("=sleep", StringComparison.Ordinal)))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool ShouldKillFixtureProcess(
+        FixtureProcessIdentity expected,
+        LinuxProcessStat? currentStat,
+        string? currentCmdline,
+        string? expectedScriptPath)
+    {
+        if (currentStat is null || !IsSameFixtureProcess(expected, currentStat.Value) || currentStat.Value.State == 'Z')
+        {
+            return false;
+        }
+
+        return IsExpectedFixtureCommandLine(currentCmdline, expectedScriptPath);
+    }
+
+    private static bool IsFixtureProcessTerminated(
+        FixtureProcessIdentity expected,
+        LinuxProcessStat? currentStat,
+        bool allowZombieAsTerminated)
+    {
+        if (currentStat is null || !IsSameFixtureProcess(expected, currentStat.Value))
+        {
+            return true;
+        }
+
+        return allowZombieAsTerminated && currentStat.Value.State == 'Z';
+    }
+
+    private static LinuxProcessStat? TryReadLinuxProcessStat(int pid)
     {
         try
         {
-            if (!File.Exists(pidFile))
+            var content = File.ReadAllText($"/proc/{pid}/stat");
+            return TryParseLinuxProcessStat(content, out var stat) ? stat : null;
+        }
+        catch (FileNotFoundException)
+        {
+            return null;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return null;
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    private static string? TryReadLinuxProcessCmdline(int pid)
+    {
+        try
+        {
+            return File.ReadAllText($"/proc/{pid}/cmdline");
+        }
+        catch (FileNotFoundException)
+        {
+            return null;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return null;
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    private static async Task CleanUpFifoFixtureAsync(
+        DirectoryInfo root,
+        string pidFile,
+        string? expectedScriptPath = null,
+        bool allowZombieAsTerminated = false)
+    {
+        try
+        {
+            var identity = await TryReadFixtureProcessIdentityAsync(pidFile);
+            if (identity is null)
             {
                 return;
             }
 
-            var pid = await ReadFixturePidAsync(pidFile);
-            var procPath = $"/proc/{pid}";
-            if (!Directory.Exists(procPath))
+            var currentStat = TryReadLinuxProcessStat(identity.Value.Pid);
+            if (IsFixtureProcessTerminated(identity.Value, currentStat, allowZombieAsTerminated))
             {
                 return;
             }
 
-            try
+            if (currentStat!.Value.State != 'Z')
             {
-                using var process = Process.GetProcessById(pid);
-                process.Kill();
-            }
-            catch (ArgumentException) when (!Directory.Exists(procPath))
-            {
-                return;
-            }
-            catch (InvalidOperationException) when (!Directory.Exists(procPath))
-            {
-                return;
+                var currentCmdline = TryReadLinuxProcessCmdline(identity.Value.Pid);
+                if (!ShouldKillFixtureProcess(identity.Value, currentStat, currentCmdline, expectedScriptPath))
+                {
+                    // Re-check /proc/{pid}/stat in case the process exited or became a zombie while reading cmdline.
+                    currentStat = TryReadLinuxProcessStat(identity.Value.Pid);
+                    if (IsFixtureProcessTerminated(identity.Value, currentStat, allowZombieAsTerminated)
+                        || currentStat is { State: not 'Z' })
+                    {
+                        return;
+                    }
+                }
+                else
+                {
+                    try
+                    {
+                        using var process = Process.GetProcessById(identity.Value.Pid);
+                        var preKillStat = TryReadLinuxProcessStat(identity.Value.Pid);
+                        var preKillCmdline = preKillStat is { State: not 'Z' }
+                            ? TryReadLinuxProcessCmdline(identity.Value.Pid)
+                            : null;
+                        if (ShouldKillFixtureProcess(identity.Value, preKillStat, preKillCmdline, expectedScriptPath))
+                        {
+                            process.Kill();
+                        }
+                        else if (IsFixtureProcessTerminated(identity.Value, preKillStat, allowZombieAsTerminated)
+                            || preKillStat is { State: not 'Z' })
+                        {
+                            return;
+                        }
+                    }
+                    catch (ArgumentException)
+                    {
+                        // Process exited before or during signaling; verify final state below.
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        // Process exited before or during signaling; verify final state below.
+                    }
+                    catch (Win32Exception) when (IsFixtureProcessTerminated(identity.Value, TryReadLinuxProcessStat(identity.Value.Pid), allowZombieAsTerminated))
+                    {
+                        return;
+                    }
+                }
             }
 
-            // A zombie still has a /proc entry until its parent reaps it.
+            // A zombie still has a /proc entry until its parent reaps it; reparented pipe-holders may remain 'Z'
+            // on minimal containers whose PID 1 does not reap adopted orphans.
             var stopwatch = Stopwatch.StartNew();
-            while (Directory.Exists(procPath) && stopwatch.Elapsed < TimeSpan.FromSeconds(5))
+            while (!IsFixtureProcessTerminated(identity.Value, TryReadLinuxProcessStat(identity.Value.Pid), allowZombieAsTerminated)
+                && stopwatch.Elapsed < TimeSpan.FromSeconds(5))
             {
                 await Task.Delay(20);
             }
 
-            Assert.IsFalse(Directory.Exists(procPath), $"FIFO fixture PID {pid} was not reaped during cleanup.");
+            Assert.IsTrue(
+                IsFixtureProcessTerminated(identity.Value, TryReadLinuxProcessStat(identity.Value.Pid), allowZombieAsTerminated),
+                allowZombieAsTerminated
+                    ? $"FIFO fixture PID {identity.Value.Pid} did not terminate during cleanup."
+                    : $"FIFO fixture PID {identity.Value.Pid} was not reaped during cleanup.");
         }
         finally
         {
-            root.Delete(recursive: true);
+            if (root.Exists)
+            {
+                root.Delete(recursive: true);
+            }
         }
     }
 
