@@ -34,7 +34,7 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
     /// </summary>
     internal const int MaxRetiredBindingsPerChannel = 128;
     private const int CurrentSchemaVersion = 1;
-    private const int CurrentRetiredHistoryVersion = 2;
+    private const int CurrentRetiredHistoryVersion = 3;
     private const string AbsentStoreRevision = "0";
 
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
@@ -183,7 +183,8 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                 secrets,
                 state,
                 options.Smtp,
-                hostSecrets.WebhookUrl);
+                hostSecrets.WebhookUrl,
+                _hostSnapshots);
             var bindings = ComputeProtectedBindings(sanitizedSecrets, options.Smtp, effectiveWebhookUrl);
             var revision = Guid.NewGuid().ToString("N");
             await PublishAtomicEnvelopeUnlockedAsync(
@@ -394,9 +395,9 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                     currentState.ProtectedBindings.WebhookDestination,
                     nextEffectiveWebhookUrl);
 
-            // H1/H3: Reject copied or previously retired cross-destination credential values submitted alongside a
-            // changed destination (or unbound legacy credential) so a client resubmitting old fields can never
-            // transfer credentials onto a new webhook URL/path/query or SMTP (host, port, securityMode) tuple.
+            // H1/H2/H3/M2: Reject copied, host-retired/withheld, or store-retired cross-destination credential values
+            // (and fail closed on destination changes when either store or host history is truncated) while permitting
+            // same-destination migration of a currently authorized, non-withheld host credential into protected storage.
             var credentialReuseProblems = ValidateNoCrossDestinationCredentialReuse(
                 request,
                 currentState,
@@ -408,7 +409,8 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                 nextEffectiveWebhookUrl,
                 normalizedOptions,
                 preserveStoredSmtpSecrets,
-                preserveStoredWebhookSecrets);
+                preserveStoredWebhookSecrets,
+                _hostSnapshots);
 
             var nextProtected = new OperatorNotificationSecrets(
                 SmtpUsername: ResolveSecretUpdate(
@@ -979,7 +981,8 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
         string? nextEffectiveWebhookUrl,
         OperatorNotificationsOptions normalizedOptions,
         bool preserveStoredSmtpSecrets,
-        bool preserveStoredWebhookSecrets)
+        bool preserveStoredWebhookSecrets,
+        HostConfigurationSnapshotTracker hostSnapshots)
     {
         var problems = new Dictionary<string, string>(StringComparer.Ordinal);
 
@@ -990,8 +993,10 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
             hostOptions?.Smtp,
             normalizedOptions.Smtp);
         var nextSmtpEndpoint = ConfigurationOperatorNotificationConfigProvider.FormatSmtpEndpointKey(normalizedOptions.Smtp);
-        var blockExistingSmtpTransfer = smtpDestinationChanged ||
-            (currentState.Kind == StoreStateKind.Valid && !preserveStoredSmtpSecrets);
+        // M2: Only treat existing protected secrets (not an options-only save with empty protected secrets) as
+        // unbound protected transfer candidates when !preserveStoredSmtpSecrets, so migrating a currently authorized
+        // non-withheld host credential into protected storage at the SAME canonical destination succeeds cleanly.
+        var blockUnboundProtectedSmtp = currentState.Kind == StoreStateKind.Valid && !preserveStoredSmtpSecrets;
 
         var webhookDestinationChanged = request.ClearWebhookUrl ||
             !ConfigurationOperatorNotificationConfigProvider.HasMatchingWebhookDestination(
@@ -1001,19 +1006,42 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
             configSecrets.WebhookUrl,
             nextEffectiveWebhookUrl);
         var nextWebhookDestination = ConfigurationOperatorNotificationConfigProvider.FormatWebhookDestinationKey(nextEffectiveWebhookUrl);
-        var blockExistingWebhookTransfer = webhookDestinationChanged ||
-            (currentState.Kind == StoreStateKind.Valid && !preserveStoredWebhookSecrets);
+        var blockUnboundProtectedWebhook = currentState.Kind == StoreStateKind.Valid && !preserveStoredWebhookSecrets;
 
         var retired = currentState.Kind == StoreStateKind.Valid ? currentState.RetiredBindings : default;
         var retiredSalt = retired.Salt;
         var retiredSmtps = retired.Smtps;
         var retiredWebhooks = retired.Webhooks;
+        var smtpHistoryTruncated = retired.AnySmtpHistoryTruncated ||
+            retired.TruncatedSmtpEndpoints is { Count: > 0 };
+        var webhookHistoryTruncated = retired.AnyWebhookHistoryTruncated ||
+            retired.TruncatedWebhookOrigins is { Count: > 0 };
         var nextWebhookDestSaltedFp = !string.IsNullOrEmpty(retiredSalt) && nextWebhookDestination is not null
             ? ComputeSaltedDestinationFingerprint(nextWebhookDestination, retiredSalt)
             : null;
 
-        bool IsRetiredSmtpForDifferentEndpoint(string candidate, bool isPassword)
+        bool IsRetiredOrTruncatedSmtpForDifferentEndpoint(string candidate, bool isPassword)
         {
+            // H1 (delta15): Enforce the exact same fail-closed history truncation invariant on destination-changing
+            // versioned saves as on unversioned saves so evicted credentials can never be accepted on destination change.
+            if (smtpDestinationChanged && smtpHistoryTruncated)
+            {
+                return true;
+            }
+
+            // H2 (delta15): Consult the live host tracker's non-secret retired/withheld/bound fingerprints and
+            // truncation state so host-retired or host-withheld credentials for another destination are rejected.
+            var hostField = isPassword ? HostCredentialField.SmtpPassword : HostCredentialField.SmtpUsername;
+            if ((smtpDestinationChanged && hostSnapshots.HasAnyTruncatedHistory(hostField)) ||
+                hostSnapshots.IsCredentialRetiredOrBoundForOtherDestination(
+                    hostField,
+                    candidate,
+                    nextSmtpEndpoint,
+                    includeTruncatedHistory: smtpDestinationChanged))
+            {
+                return true;
+            }
+
             if (retiredSmtps is null || retiredSmtps.Count == 0 || string.IsNullOrEmpty(retiredSalt))
             {
                 return false;
@@ -1039,8 +1067,33 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
             return false;
         }
 
-        bool IsRetiredWebhookForDifferentDestination(string candidate, int fieldKind)
+        bool IsRetiredOrTruncatedWebhookForDifferentDestination(string candidate, int fieldKind)
         {
+            // H1 (delta15): Enforce the exact same fail-closed history truncation invariant on destination-changing
+            // versioned saves as on unversioned saves so evicted credentials can never be accepted on destination change.
+            if (webhookDestinationChanged && webhookHistoryTruncated)
+            {
+                return true;
+            }
+
+            // H2 (delta15): Consult the live host tracker's non-secret retired/withheld/bound fingerprints and
+            // truncation state so host-retired or host-withheld credentials for another destination are rejected.
+            var hostField = fieldKind switch
+            {
+                0 => HostCredentialField.WebhookAuthToken,
+                1 => HostCredentialField.WebhookUserKey,
+                _ => HostCredentialField.WebhookNtfyTopic
+            };
+            if ((webhookDestinationChanged && hostSnapshots.HasAnyTruncatedHistory(hostField)) ||
+                hostSnapshots.IsCredentialRetiredOrBoundForOtherDestination(
+                    hostField,
+                    candidate,
+                    nextWebhookDestination,
+                    includeTruncatedHistory: webhookDestinationChanged))
+            {
+                return true;
+            }
+
             if (retiredWebhooks is null || retiredWebhooks.Count == 0 || string.IsNullOrEmpty(retiredSalt))
             {
                 return false;
@@ -1076,12 +1129,14 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
 
         if (!request.ClearSmtpUsername && !string.IsNullOrEmpty(request.SmtpUsername))
         {
-            var reusedExisting = blockExistingSmtpTransfer &&
-                (string.Equals(request.SmtpUsername, existingProtected.SmtpUsername, StringComparison.Ordinal) ||
-                 string.Equals(request.SmtpUsername, previousEffectiveSecrets.SmtpUsername, StringComparison.Ordinal));
+            var reusedProtected = (smtpDestinationChanged || blockUnboundProtectedSmtp) &&
+                string.Equals(request.SmtpUsername, existingProtected.SmtpUsername, StringComparison.Ordinal);
+            var reusedPreviousEffective = smtpDestinationChanged &&
+                string.Equals(request.SmtpUsername, previousEffectiveSecrets.SmtpUsername, StringComparison.Ordinal);
             var reusedOtherHost = !hostSmtpMatchesTarget &&
                 string.Equals(request.SmtpUsername, configSecrets.SmtpUsername, StringComparison.Ordinal);
-            if (reusedExisting || reusedOtherHost || IsRetiredSmtpForDifferentEndpoint(request.SmtpUsername, isPassword: false))
+            if (reusedProtected || reusedPreviousEffective || reusedOtherHost ||
+                IsRetiredOrTruncatedSmtpForDifferentEndpoint(request.SmtpUsername, isPassword: false))
             {
                 problems["smtp.username"] =
                     "A fresh SMTP username is required when changing the SMTP endpoint; reusing a credential from another endpoint is not allowed.";
@@ -1090,12 +1145,14 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
 
         if (!request.ClearSmtpPassword && !string.IsNullOrEmpty(request.SmtpPassword))
         {
-            var reusedExisting = blockExistingSmtpTransfer &&
-                (string.Equals(request.SmtpPassword, existingProtected.SmtpPassword, StringComparison.Ordinal) ||
-                 string.Equals(request.SmtpPassword, previousEffectiveSecrets.SmtpPassword, StringComparison.Ordinal));
+            var reusedProtected = (smtpDestinationChanged || blockUnboundProtectedSmtp) &&
+                string.Equals(request.SmtpPassword, existingProtected.SmtpPassword, StringComparison.Ordinal);
+            var reusedPreviousEffective = smtpDestinationChanged &&
+                string.Equals(request.SmtpPassword, previousEffectiveSecrets.SmtpPassword, StringComparison.Ordinal);
             var reusedOtherHost = !hostSmtpMatchesTarget &&
                 string.Equals(request.SmtpPassword, configSecrets.SmtpPassword, StringComparison.Ordinal);
-            if (reusedExisting || reusedOtherHost || IsRetiredSmtpForDifferentEndpoint(request.SmtpPassword, isPassword: true))
+            if (reusedProtected || reusedPreviousEffective || reusedOtherHost ||
+                IsRetiredOrTruncatedSmtpForDifferentEndpoint(request.SmtpPassword, isPassword: true))
             {
                 problems["smtp.password"] =
                     "A fresh SMTP password is required when changing the SMTP endpoint; reusing a credential from another endpoint is not allowed.";
@@ -1104,12 +1161,14 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
 
         if (!request.ClearWebhookAuthToken && !string.IsNullOrEmpty(request.WebhookAuthToken))
         {
-            var reusedExisting = blockExistingWebhookTransfer &&
-                (string.Equals(request.WebhookAuthToken, existingProtected.WebhookAuthToken, StringComparison.Ordinal) ||
-                 string.Equals(request.WebhookAuthToken, previousEffectiveSecrets.WebhookAuthToken, StringComparison.Ordinal));
+            var reusedProtected = (webhookDestinationChanged || blockUnboundProtectedWebhook) &&
+                string.Equals(request.WebhookAuthToken, existingProtected.WebhookAuthToken, StringComparison.Ordinal);
+            var reusedPreviousEffective = webhookDestinationChanged &&
+                string.Equals(request.WebhookAuthToken, previousEffectiveSecrets.WebhookAuthToken, StringComparison.Ordinal);
             var reusedOtherHost = !hostWebhookMatchesTarget &&
                 string.Equals(request.WebhookAuthToken, configSecrets.WebhookAuthToken, StringComparison.Ordinal);
-            if (reusedExisting || reusedOtherHost || IsRetiredWebhookForDifferentDestination(request.WebhookAuthToken, fieldKind: 0))
+            if (reusedProtected || reusedPreviousEffective || reusedOtherHost ||
+                IsRetiredOrTruncatedWebhookForDifferentDestination(request.WebhookAuthToken, fieldKind: 0))
             {
                 problems["webhook.authToken"] =
                     "A fresh webhook auth token is required when changing the webhook destination; reusing a credential from another destination is not allowed.";
@@ -1118,12 +1177,14 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
 
         if (!request.ClearWebhookUserKey && !string.IsNullOrEmpty(request.WebhookUserKey))
         {
-            var reusedExisting = blockExistingWebhookTransfer &&
-                (string.Equals(request.WebhookUserKey, existingProtected.WebhookUserKey, StringComparison.Ordinal) ||
-                 string.Equals(request.WebhookUserKey, previousEffectiveSecrets.WebhookUserKey, StringComparison.Ordinal));
+            var reusedProtected = (webhookDestinationChanged || blockUnboundProtectedWebhook) &&
+                string.Equals(request.WebhookUserKey, existingProtected.WebhookUserKey, StringComparison.Ordinal);
+            var reusedPreviousEffective = webhookDestinationChanged &&
+                string.Equals(request.WebhookUserKey, previousEffectiveSecrets.WebhookUserKey, StringComparison.Ordinal);
             var reusedOtherHost = !hostWebhookMatchesTarget &&
                 string.Equals(request.WebhookUserKey, configSecrets.WebhookUserKey, StringComparison.Ordinal);
-            if (reusedExisting || reusedOtherHost || IsRetiredWebhookForDifferentDestination(request.WebhookUserKey, fieldKind: 1))
+            if (reusedProtected || reusedPreviousEffective || reusedOtherHost ||
+                IsRetiredOrTruncatedWebhookForDifferentDestination(request.WebhookUserKey, fieldKind: 1))
             {
                 problems["webhook.userKey"] =
                     "A fresh webhook user key is required when changing the webhook destination; reusing a credential from another destination is not allowed.";
@@ -1133,12 +1194,14 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
         var trimmedNtfyTopic = request.WebhookNtfyTopic?.Trim();
         if (!request.ClearWebhookNtfyTopic && !string.IsNullOrEmpty(trimmedNtfyTopic))
         {
-            var reusedExisting = blockExistingWebhookTransfer &&
-                (string.Equals(trimmedNtfyTopic, existingProtected.WebhookNtfyTopic, StringComparison.Ordinal) ||
-                 string.Equals(trimmedNtfyTopic, previousEffectiveSecrets.WebhookNtfyTopic, StringComparison.Ordinal));
+            var reusedProtected = (webhookDestinationChanged || blockUnboundProtectedWebhook) &&
+                string.Equals(trimmedNtfyTopic, existingProtected.WebhookNtfyTopic, StringComparison.Ordinal);
+            var reusedPreviousEffective = webhookDestinationChanged &&
+                string.Equals(trimmedNtfyTopic, previousEffectiveSecrets.WebhookNtfyTopic, StringComparison.Ordinal);
             var reusedOtherHost = !hostWebhookMatchesTarget &&
                 string.Equals(trimmedNtfyTopic, configSecrets.WebhookNtfyTopic, StringComparison.Ordinal);
-            if (reusedExisting || reusedOtherHost || IsRetiredWebhookForDifferentDestination(trimmedNtfyTopic, fieldKind: 2))
+            if (reusedProtected || reusedPreviousEffective || reusedOtherHost ||
+                IsRetiredOrTruncatedWebhookForDifferentDestination(trimmedNtfyTopic, fieldKind: 2))
             {
                 problems["webhook.ntfyTopic"] =
                     "A fresh ntfy topic is required when changing the webhook destination; reusing a credential from another destination is not allowed.";
@@ -1295,9 +1358,9 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
             displacedWebhookUserKey is not null ||
             displacedWebhookTopic is not null)
         {
-            // H1: Only associate displaced webhook credentials with a destination fingerprint when an explicit
-            // v2 BoundWebhookDestination exists; unbound legacy credentials retire with null destination so
-            // they can never be exempted as "same destination" anywhere.
+            // H1 (delta14) / H4 (delta15): Only associate displaced webhook credentials with a destination fingerprint
+            // when a trusted v3 BoundWebhookDestination exists; unbound or pre-v3 legacy credentials retire with null
+            // destination so they can never be exempted as "same destination" anywhere.
             var hasDisplacedWebhookCreds =
                 displacedWebhookToken is not null ||
                 displacedWebhookUserKey is not null ||
@@ -1571,7 +1634,8 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
             OperatorNotificationSecrets incomingSecrets,
             StoreReadState currentState,
             SmtpNotificationOptions effectiveSmtp,
-            string? hostWebhookUrl)
+            string? hostWebhookUrl,
+            HostConfigurationSnapshotTracker hostSnapshots)
     {
         var hasValidDiskState = currentState.Kind == StoreStateKind.Valid;
         var existingSecrets = hasValidDiskState ? currentState.ProtectedSecrets : OperatorNotificationSecrets.Empty;
@@ -1809,6 +1873,35 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                 }
             }
 
+            // H2 (delta15): Also consult the live host configuration tracker so credentials retired, withheld,
+            // or bound for a different SMTP endpoint by the host provider (or under a truncated host history)
+            // are stripped on unversioned/provenance saves too.
+            var checkHostSmtpTruncation = !hasCurrentSmtpWrittenDestinationProvenance;
+            if (!smtpUsernameUntouchedByStaleRead &&
+                !string.IsNullOrEmpty(smtpUsername) &&
+                (!canCarrySmtpCreds || !string.Equals(smtpUsername, existingSecrets.SmtpUsername, StringComparison.Ordinal)) &&
+                hostSnapshots.IsCredentialRetiredOrBoundForOtherDestination(
+                    HostCredentialField.SmtpUsername,
+                    smtpUsername,
+                    currentSmtpEndpoint,
+                    includeTruncatedHistory: checkHostSmtpTruncation))
+            {
+                smtpUsername = null;
+                smtpUserStripped = true;
+            }
+            if (!smtpPasswordUntouchedByStaleRead &&
+                !string.IsNullOrEmpty(smtpPassword) &&
+                (!canCarrySmtpCreds || !string.Equals(smtpPassword, existingSecrets.SmtpPassword, StringComparison.Ordinal)) &&
+                hostSnapshots.IsCredentialRetiredOrBoundForOtherDestination(
+                    HostCredentialField.SmtpPassword,
+                    smtpPassword,
+                    currentSmtpEndpoint,
+                    includeTruncatedHistory: checkHostSmtpTruncation))
+            {
+                smtpPassword = null;
+                smtpPassStripped = true;
+            }
+
             if (canCarrySmtpCreds)
             {
                 var restoreEmptySiblingsOnUnverifiedReplay =
@@ -1977,6 +2070,47 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                     webhookNtfyTopic = null;
                     webhookTopicStripped = true;
                 }
+            }
+
+            // H2 (delta15): Also consult the live host configuration tracker so webhook credentials retired,
+            // withheld, or bound for another destination by the host provider (or under a truncated host history)
+            // are stripped on unversioned/provenance saves too.
+            var checkHostWebhookTruncation = !hasCurrentWebhookWrittenDestinationProvenance;
+            if (!webhookAuthTokenUntouchedByStaleRead &&
+                !string.IsNullOrEmpty(webhookAuthToken) &&
+                (!canCarryWebhookCreds || !string.Equals(webhookAuthToken, existingSecrets.WebhookAuthToken, StringComparison.Ordinal)) &&
+                hostSnapshots.IsCredentialRetiredOrBoundForOtherDestination(
+                    HostCredentialField.WebhookAuthToken,
+                    webhookAuthToken,
+                    currentWebhookDestination,
+                    includeTruncatedHistory: checkHostWebhookTruncation))
+            {
+                webhookAuthToken = null;
+                webhookTokenStripped = true;
+            }
+            if (!webhookUserKeyUntouchedByStaleRead &&
+                !string.IsNullOrEmpty(webhookUserKey) &&
+                (!canCarryWebhookCreds || !string.Equals(webhookUserKey, existingSecrets.WebhookUserKey, StringComparison.Ordinal)) &&
+                hostSnapshots.IsCredentialRetiredOrBoundForOtherDestination(
+                    HostCredentialField.WebhookUserKey,
+                    webhookUserKey,
+                    currentWebhookDestination,
+                    includeTruncatedHistory: checkHostWebhookTruncation))
+            {
+                webhookUserKey = null;
+                webhookUserKeyStripped = true;
+            }
+            if (!webhookNtfyTopicUntouchedByStaleRead &&
+                !string.IsNullOrEmpty(webhookNtfyTopic) &&
+                (!canCarryWebhookCreds || !string.Equals(webhookNtfyTopic, existingSecrets.WebhookNtfyTopic, StringComparison.Ordinal)) &&
+                hostSnapshots.IsCredentialRetiredOrBoundForOtherDestination(
+                    HostCredentialField.WebhookNtfyTopic,
+                    webhookNtfyTopic,
+                    currentWebhookDestination,
+                    includeTruncatedHistory: checkHostWebhookTruncation))
+            {
+                webhookNtfyTopic = null;
+                webhookTopicStripped = true;
             }
 
             if (canCarryWebhookCreds)
@@ -2485,17 +2619,27 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
             WebhookUserKey,
             WebhookNtfyTopic);
 
-        public ProtectedSecretBindings ToBindings() => new(
-            BoundWebhookOrigin,
-            BoundSmtpEndpoint,
-            BoundWebhookDestination);
+        public ProtectedSecretBindings ToBindings()
+        {
+            // H4 (delta15): Delta13 (v2) could stamp BoundWebhookDestination onto an unbound legacy webhook
+            // credential during an unrelated save. Require RetiredCredentialHistoryVersion >= CurrentRetiredHistoryVersion (3)
+            // before trusting BoundWebhookDestination so any pre-v3 (missing/v1/v2) webhook binding fails closed
+            // and withholds legacy webhook credentials until explicit v3 re-authorization.
+            var trustedWebhookDestination = RetiredCredentialHistoryVersion is >= CurrentRetiredHistoryVersion
+                ? BoundWebhookDestination
+                : null;
+            return new ProtectedSecretBindings(
+                BoundWebhookOrigin,
+                BoundSmtpEndpoint,
+                trustedWebhookDestination);
+        }
 
         public RetiredSecretBindings ToRetiredBindings()
         {
-            // H2: Treat ALL pre-v2 envelopes (RetiredCredentialHistoryVersion < 2, regardless of entry count
-            // — including 0-entry, 1-entry, 16-entry, and 128-entry writers — and regardless of stored false flags)
-            // as potentially truncated during migration so an unversioned save can NEVER admit a forgotten
-            // credential from a pre-v2 history at a different destination.
+            // H2 (delta14) / H4 (delta15): Treat ALL pre-v3 envelopes (RetiredCredentialHistoryVersion < 3 —
+            // including missing, v1, and delta13 v2 writers — regardless of entry count or stored false flags)
+            // as potentially truncated during migration so neither versioned destination-changing saves nor
+            // unversioned saves can admit a forgotten pre-v3 credential at another destination.
             var hasTrustedHistoryVersion = RetiredCredentialHistoryVersion is >= CurrentRetiredHistoryVersion;
             var anyWebhookTruncated = !hasTrustedHistoryVersion || (AnyWebhookHistoryTruncated ?? true);
             var anySmtpTruncated = !hasTrustedHistoryVersion || (AnySmtpHistoryTruncated ?? true);
