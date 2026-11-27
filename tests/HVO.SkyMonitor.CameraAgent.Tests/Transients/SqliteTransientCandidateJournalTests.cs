@@ -61,6 +61,50 @@ public sealed class SqliteTransientCandidateJournalTests
     }
 
     [TestMethod]
+    public async Task RuntimeStore_RequiresRawIngressSchemaWithoutCreatingAnEmptyDatabase()
+    {
+        using var fixture = await Fixture.CreateAsync().ConfigureAwait(false);
+        var store = fixture.CreateRuntimeStore();
+        var databasePath = Path.Combine(fixture.Root, "journal", "raw-ingress.db");
+        var savedPath = databasePath + ".saved";
+        SqliteConnection.ClearAllPools();
+        File.Move(databasePath, savedPath);
+
+        var error = await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
+            store.InitializeAsync(CancellationToken.None).AsTask()).ConfigureAwait(false);
+        StringAssert.Contains(error.Message, "must initialize before transient runtime state", StringComparison.Ordinal);
+        Assert.IsFalse(File.Exists(databasePath));
+
+        File.Move(savedPath, databasePath);
+        await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNull(await store.ReadNextAsync(CancellationToken.None).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task RuntimeStore_ReadFrameRejectsMissingRawCapture()
+    {
+        using var fixture = await Fixture.CreateAsync().ConfigureAwait(false);
+        var store = fixture.CreateRuntimeStore();
+        await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
+            store.ReadFrameAsync(1, CancellationToken.None).AsTask()).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    [DataRow(0)]
+    [DataRow(101)]
+    public async Task RuntimeStore_ReadQuarantinePageRejectsOutOfRangeSize(int pageSize)
+    {
+        using var fixture = await Fixture.CreateAsync().ConfigureAwait(false);
+        var store = fixture.CreateRuntimeStore();
+
+        var error = await Assert.ThrowsExactlyAsync<ArgumentOutOfRangeException>(() =>
+            store.ReadQuarantinePageAsync(pageSize, null, CancellationToken.None).AsTask()).ConfigureAwait(false);
+        Assert.AreEqual(nameof(pageSize), error.ParamName);
+    }
+
+    [TestMethod]
     public async Task RuntimeStore_LegacyFrameSchemaIsRejectedWithoutRewrite()
     {
         using var fixture = await Fixture.CreateAsync().ConfigureAwait(false);

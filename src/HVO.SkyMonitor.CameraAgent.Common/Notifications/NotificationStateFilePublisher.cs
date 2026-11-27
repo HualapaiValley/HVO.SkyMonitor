@@ -124,7 +124,7 @@ public static class NotificationStateFilePublisher
         }
 
         // 2. Inspect StateDirectory itself using a single non-following observation (symlinks are never permitted).
-        switch (DurableSync.InspectPathNoFollow(fullDirectory))
+        switch (SecureFileSystem.InspectPathNoFollow(fullDirectory))
         {
             case PathEntryKind.NotFound:
                 return new NotificationPathInspection(
@@ -153,7 +153,7 @@ public static class NotificationStateFilePublisher
 
         // 3. Inspect target file inside the verified StateDirectory using a single non-following observation.
         var targetPath = Path.Combine(fullDirectory, fileName);
-        switch (DurableSync.InspectPathNoFollow(targetPath))
+        switch (SecureFileSystem.InspectPathNoFollow(targetPath))
         {
             case PathEntryKind.NotFound:
                 return new NotificationPathInspection(
@@ -202,7 +202,7 @@ public static class NotificationStateFilePublisher
     {
         foreach (var ancestor in GetAncestorsTopDown(fullDirectory))
         {
-            var entry = DurableSync.InspectPathNoFollow(ancestor);
+            var entry = SecureFileSystem.InspectPathNoFollow(ancestor);
             switch (entry)
             {
                 case PathEntryKind.NotFound:
@@ -215,7 +215,7 @@ public static class NotificationStateFilePublisher
                     continue;
                 case PathEntryKind.SymbolicLink:
                     {
-                        var resolved = DurableSync.InspectPathFollow(ancestor);
+                        var resolved = SecureFileSystem.InspectPathFollow(ancestor);
                         if (resolved == PathEntryKind.Directory)
                         {
                             continue;
@@ -366,7 +366,7 @@ public static class NotificationStateFilePublisher
                     // during the initial ancestor walk may bypass O_NOFOLLOW on anchor acquisition.
                     var allowSymlinkedAnchor = validatedSymlinkAncestors.Contains(anchorParent);
                     beforeAnchorOpen?.Invoke(anchorParent);
-                    DurableSync.EnsureAndHardenDirectoryChain(
+                    SecureFileSystem.EnsureAndHardenDirectoryChain(
                         anchorParent,
                         protectedComponents,
                         RestrictedDirectoryMode,
@@ -533,7 +533,7 @@ public static class NotificationStateFilePublisher
         {
             try
             {
-                DurableSync.SetDirectoryModeNoFollow(directoryPath, RestrictedDirectoryMode);
+                SecureFileSystem.SetDirectoryModeNoFollow(directoryPath, RestrictedDirectoryMode);
             }
             catch (FileSystemFaultException ex)
             {
@@ -616,7 +616,7 @@ public static class NotificationStateFilePublisher
             // Single non-following metadata observation per ancestor: a normal directory is classified
             // immediately and NEVER re-probed by pathname (preventing a race from reclassifying it as
             // a permitted symlink and disabling O_NOFOLLOW).
-            var entry = DurableSync.InspectPathNoFollow(ancestor);
+            var entry = SecureFileSystem.InspectPathNoFollow(ancestor);
             switch (entry)
             {
                 case PathEntryKind.NotFound:
@@ -631,7 +631,7 @@ public static class NotificationStateFilePublisher
                     break;
                 case PathEntryKind.SymbolicLink:
                     {
-                        var resolved = DurableSync.InspectPathFollow(ancestor);
+                        var resolved = SecureFileSystem.InspectPathFollow(ancestor);
                         if (resolved == PathEntryKind.PermissionDenied)
                         {
                             throw new UnauthorizedAccessException(
@@ -659,7 +659,7 @@ public static class NotificationStateFilePublisher
             }
         }
 
-        switch (DurableSync.InspectPathNoFollow(fullDirectory))
+        switch (SecureFileSystem.InspectPathNoFollow(fullDirectory))
         {
             case PathEntryKind.NotFound:
                 missingDirectories.Add(fullDirectory);
@@ -712,7 +712,7 @@ public static class NotificationStateFilePublisher
             {
                 if (!allowSymlinkedAncestor && OperatingSystem.IsMacOS())
                 {
-                    DurableSync.VerifyDirectoryNoFollow(directoryPath);
+                    SecureFileSystem.VerifyDirectoryNoFollow(directoryPath);
                 }
                 DurableSync.Directory(syncPath);
             }
@@ -759,7 +759,7 @@ public static class NotificationStateFilePublisher
         }
 
         var targetPath = Path.Combine(fullDirectory, fileName);
-        using var openResult = DurableSync.OpenRegularFileReadOnlyNoFollow(fullDirectory, fileName, maxBytes);
+        using var openResult = SecureFileSystem.OpenRegularFileReadOnlyNoFollow(fullDirectory, fileName, maxBytes);
         if (openResult.Status != RegularFileOpenStatus.Opened)
         {
             return MapFailedOpen(openResult, targetPath);
@@ -840,7 +840,7 @@ public static class NotificationStateFilePublisher
         }
 
         var targetPath = Path.Combine(fullDirectory, fileName);
-        using var openResult = DurableSync.OpenRegularFileReadOnlyNoFollow(fullDirectory, fileName, maxBytes);
+        using var openResult = SecureFileSystem.OpenRegularFileReadOnlyNoFollow(fullDirectory, fileName, maxBytes);
         if (openResult.Status != RegularFileOpenStatus.Opened)
         {
             return MapFailedOpen(openResult, targetPath);
@@ -912,7 +912,7 @@ public static class NotificationStateFilePublisher
     {
         cancellationToken.ThrowIfCancellationRequested();
         var (directoryPath, fileName, fullPath) = SplitAbsoluteFilePath(filePath);
-        using var openResult = DurableSync.OpenRegularFileReadOnlyNoFollow(directoryPath, fileName, maxBytes);
+        using var openResult = SecureFileSystem.OpenRegularFileReadOnlyNoFollow(directoryPath, fileName, maxBytes);
         if (openResult.Status == RegularFileOpenStatus.FileOversized)
         {
             return new BoundedFileReadResult(ExceededLimit: true, Content: ReadOnlyMemory<byte>.Empty);
@@ -935,7 +935,7 @@ public static class NotificationStateFilePublisher
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxBytes);
 
         var (directoryPath, fileName, fullPath) = SplitAbsoluteFilePath(filePath);
-        using var openResult = DurableSync.OpenRegularFileReadOnlyNoFollow(directoryPath, fileName, maxBytes);
+        using var openResult = SecureFileSystem.OpenRegularFileReadOnlyNoFollow(directoryPath, fileName, maxBytes);
         if (openResult.Status == RegularFileOpenStatus.FileOversized)
         {
             return new BoundedFileReadResult(ExceededLimit: true, Content: ReadOnlyMemory<byte>.Empty);
@@ -1324,7 +1324,7 @@ public static class NotificationStateFilePublisher
                 {
                     if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
                     {
-                        DurableSync.SetFileMode(stream.SafeFileHandle, RestrictedFileMode, tempPath);
+                        SecureFileSystem.SetFileMode(stream.SafeFileHandle, RestrictedFileMode, tempPath);
                     }
                     DurableSync.File(stream.SafeFileHandle, tempPath);
                 }
@@ -1420,7 +1420,7 @@ public static class NotificationStateFilePublisher
 
     private static void VerifyPathIsNotSymlink(string path)
     {
-        var entry = DurableSync.InspectPathNoFollow(path);
+        var entry = SecureFileSystem.InspectPathNoFollow(path);
         if (entry == PathEntryKind.SymbolicLink)
         {
             throw new IOException("Refusing to access a symbolic link in the protected operator notification store.");
