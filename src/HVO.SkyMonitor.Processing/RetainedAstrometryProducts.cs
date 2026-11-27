@@ -133,4 +133,19 @@ public static class RetainedAstrometryProducts
             throw new ArgumentException("Retained astrometry differs from its frozen evidence.");
         return MeasuredAstrometryJson.Parse(solution.Payload);
     }
+
+    /// <summary>Converts verified retained associations into native-session input without remeasuring pixels.</summary>
+    public static OpticalCalibrationFrame CreateOpticalCalibrationFrame(MeasuredAstrometryContextV1 context,
+        FrameLayoutDescriptor layout, MeasuredStellarAssociationsV1 measured)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(layout);
+        ArgumentNullException.ThrowIfNull(measured);
+        if (layout.Readout is not { } readout ||
+            !MeasuredAstrometryJson.Same(context.ReadoutIdentitySha256, MeasuredAstrometryJson.ComputeReadoutIdentity(layout)) ||
+            !MeasuredAstrometryJson.Same(context.MeasuredIdentitySha256, measured.AssociationIdentitySha256))
+            throw new ArgumentException("Optical calibration requires the capture's exact associations and documented readout geometry.");
+        return new(context.Frame, readout, context.ReadoutIdentitySha256,
+            Array.AsReadOnly(MeasuredAstrometryRecipe.Detections(MeasuredAstrometryRecipe.Qualified(measured, scientific: true))));
+    }
 }

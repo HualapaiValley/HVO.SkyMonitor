@@ -237,7 +237,7 @@ internal static class BuiltInProcessingProductContracts
                         MeasuredAstrometryJson.Catalog(frozenContext)) is not null) return false;
                 if (solution.Uncertainty is { } uncertainty)
                 {
-                    var qualified = MeasuredAstrometryRecipe.Qualified(measuredPayload);
+                    var qualified = MeasuredAstrometryRecipe.Qualified(measuredPayload, normalized.UseScientificAssociations);
                     HVO.SkyMonitor.Astronomy.AstrometricUncertaintyEvidence.ValidateInputs(uncertainty, solution.Assessment,
                         new(frozenContext.Projection, frozenContext.CalibrationVersion, frozenContext.ReadoutIdentitySha256),
                         MeasuredAstrometryRecipe.Detections(qualified), MeasuredAstrometryRecipe.Covariances(qualified),

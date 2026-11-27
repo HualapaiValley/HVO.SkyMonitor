@@ -586,8 +586,10 @@ public sealed partial class CurrentSkyPage
         }
 
         var astrometryPin = FindCenteredAstrometryEvidence(nextDisplay.View);
+        var astrometryOutcome = astrometryPin is null ? CenteredAstrometryWithoutEvidence(nextDisplay.View) : null;
         var retryTransient = astrometryPin is not null && IsTransientCenteredAstrometryFailure(_astrometry);
-        if (captureChanged || !_centeredAstrometryEvidenceSet || _centeredAstrometryEvidence != astrometryPin || retryTransient)
+        if (captureChanged || !_centeredAstrometryEvidenceSet || _centeredAstrometryEvidence != astrometryPin || retryTransient ||
+            astrometryOutcome is not null && _astrometry?.Reason != astrometryOutcome.Reason)
         {
             _centeredAstrometryEvidence = astrometryPin;
             _centeredAstrometryEvidenceSet = true;
@@ -598,7 +600,7 @@ public sealed partial class CurrentSkyPage
             }
             else if (astrometryPin is null)
             {
-                _astrometry = new(referenceCaptureId, "NotRetained", "centered-evidence-not-pinned");
+                _astrometry = astrometryOutcome;
             }
         }
     }
@@ -879,6 +881,24 @@ public sealed partial class CurrentSkyPage
                 layer.Key.Kind is AstrometricDiagnosticPresentation.ResidualsLayer or AstrometricDiagnosticPresentation.AssociationsLayer &&
                 layer.Evidence is not null)
             ?.Evidence;
+    }
+
+    private static CameraAgentRetainedAstrometry CenteredAstrometryWithoutEvidence(CenteredView view)
+    {
+        var captureId = view.Base.Definition.Reference.Capture.CaptureId;
+        var reason = view.Revision.Layers.FirstOrDefault(layer => layer.Key is
+        { Scope: CenteredViewLayerScope.Reference, Kind: AstrometricDiagnosticPresentation.ResidualsLayer } &&
+            layer.Key.SourceCaptureId == captureId)?.Reason;
+        const string unavailablePrefix = "centered.product-unavailable/";
+        if (reason?.StartsWith(unavailablePrefix, StringComparison.Ordinal) == true)
+            reason = reason[unavailablePrefix.Length..];
+
+        return reason switch
+        {
+            "astrometry.capture-cadence" => new(captureId, "CadenceSkipped", reason),
+            "processing.dependency-unavailable" => new(captureId, "Unavailable", "astrometry.inputs-unavailable"),
+            _ => new(captureId, "NotRetained", "centered-evidence-not-pinned")
+        };
     }
 
     private static string CenteredVisibilityScopeKey(CenteredViewBase viewBase)

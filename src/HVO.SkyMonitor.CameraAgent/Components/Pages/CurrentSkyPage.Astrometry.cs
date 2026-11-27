@@ -324,10 +324,12 @@ public sealed partial class CurrentSkyPage
     private double? _skyFirst;
     private double? _skySecond;
     private string _skyCoordinates = "equatorial";
+    private AstrometricPixelSpace _pixelSpace;
     private string AstrometryStatus => _astrometryLoading ? "Loading" : _astrometry?.Solution?.Assessment.Status switch
     {
         AstrometricAssessmentStatus.BudgetExceeded => "Budget exceeded",
         { } status => status.ToString(),
+        _ when _astrometry?.Availability == "CadenceSkipped" => "Cadence skipped",
         _ => "Unavailable"
     };
     private string AstrometryChipClass => _astrometry?.Solution?.Assessment.Status switch
@@ -351,7 +353,7 @@ public sealed partial class CurrentSkyPage
           centered.View.Base.Definition.Preview.Transform.ReferenceWidth == _astrometry.WidthPixels &&
           centered.View.Base.Definition.Preview.Transform.ReferenceHeight == _astrometry.HeightPixels));
     private string CalculatorAvailability => CanCalculate
-        ? "Source output pixels (zero-based); equatorial coordinates are mean of date at the capture midpoint. Geometric horizon; no refraction. Never updates rig calibration."
+        ? "Zero-based pixel-edge coordinates. Equatorial coordinates are mean of date at the exposure midpoint. Uses the geometric horizon without refraction."
         : "Requires an accepted retained mapping and an exact source mapping to the selected image. Never updates rig calibration.";
 
     private void ClearAstrometry()
@@ -361,6 +363,7 @@ public sealed partial class CurrentSkyPage
         _astrometryLoading = false;
         _calculatorResult = null;
         _pixelX = _pixelY = _skyFirst = _skySecond = null;
+        _pixelSpace = AstrometricPixelSpace.Readout;
     }
 
     private void ApplyAstrometry(Guid captureId, CameraAgentRetainedAstrometry value)
@@ -432,10 +435,10 @@ public sealed partial class CurrentSkyPage
     private void CalculatePixelToSky((long Revision, CameraAgentPresentationStage? Stage) requested)
     {
         if (requested != (_astrometryReadRevision, _selectedStage) || !CanCalculate) return;
-        _calculatorResult = "Enter finite source-pixel coordinates inside the retained aperture and above the geometric horizon.";
-        if (_pixelX is not { } x || _pixelY is not { } y || !InsideSource(x, y)) return;
-        var point = _astrometry!.Mapping!.PixelToSky(new(x, y));
-        if (point is not { AboveGeometricHorizon: true }) return;
+        _calculatorResult = _pixelSpace == AstrometricPixelSpace.NativeSensor
+            ? "Enter finite native-sensor pixel coordinates inside the retained aperture and above the geometric horizon."
+            : "Enter finite source-pixel coordinates inside the retained aperture and above the geometric horizon.";
+        if (_pixelX is not { } x || _pixelY is not { } y || Calculator().PixelToSky(new(x, y), _pixelSpace) is not { } point) return;
         _skyCoordinates = "equatorial";
         _skyFirst = point.EquatorialMeanOfDate.RightAscensionHours;
         _skySecond = point.EquatorialMeanOfDate.DeclinationDegrees;
@@ -446,32 +449,30 @@ public sealed partial class CurrentSkyPage
     {
         if (requested != (_astrometryReadRevision, _selectedStage) || !CanCalculate) return;
         _calculatorResult = "Enter finite RA [0, 24) h / Dec [−90, 90]°, or altitude [0, 90]° / azimuth [0, 360)°. The point must lie within the retained aperture above the horizon.";
-        if (_skyFirst is not { } first || _skySecond is not { } second || !double.IsFinite(first) || !double.IsFinite(second)) return;
-        EquatorialPoint equatorial;
-        if (_skyCoordinates == "horizontal")
-        {
-            if (first < 0 || first > 90 || second < 0 || second >= 360) return;
-            var frame = _astrometry!.Solution!.Assessment.Frame;
-            equatorial = CoordinateTransforms.HorizontalToEquatorial(new(first, second), frame.MidpointUtc,
-                frame.Observer.LatitudeDegrees, frame.Observer.LongitudeDegrees);
-        }
-        else
-        {
-            if (first < 0 || first >= 24 || second < -90 || second > 90) return;
-            equatorial = new(first, second);
-        }
-        var mapping = _astrometry!.Mapping!;
-        if (mapping.SkyToPixel(equatorial) is not { } pixel || !InsideSource(pixel.X, pixel.Y) || mapping.PixelToSky(pixel) is not { AboveGeometricHorizon: true }) return;
+        if (_skyFirst is not { } first || _skySecond is not { } second) return;
+        var calculator = Calculator();
+        var result = _skyCoordinates == "horizontal"
+            ? calculator.HorizontalToPixel(new(first, second), _pixelSpace)
+            : calculator.EquatorialToPixel(new(first, second), _pixelSpace);
+        if (result is not { } pixel) return;
         _pixelX = pixel.X; _pixelY = pixel.Y;
-        _calculatorResult = FormattableString.Invariant($"X {pixel.X:0.########}, Y {pixel.Y:0.########} source pixels. Point uncertainty withheld; fit RMS is not prediction uncertainty.");
+        var space = _pixelSpace == AstrometricPixelSpace.NativeSensor ? "native sensor" : "source";
+        _calculatorResult = FormattableString.Invariant($"X {pixel.X:0.########}, Y {pixel.Y:0.########} {space} pixels. Point uncertainty withheld; fit RMS is not prediction uncertainty.");
     }
 
-    private bool InsideSource(double x, double y) => double.IsFinite(x) && double.IsFinite(y) &&
-        x >= 0 && y >= 0 && x < _astrometry!.WidthPixels && y < _astrometry.HeightPixels;
+    private AstrometricCaptureCalculator Calculator() => _astrometry!.Mapping!.CreateCalculator(_astrometry.SourceDescriptor?.Layout.Readout);
+
+    private void ChangePixelSpace()
+    {
+        _pixelX = _pixelY = null;
+        _calculatorResult = null;
+    }
 
     private string AstrometryAbsence => _astrometry?.Reason switch
     {
         "assessment-not-retained" => "No astrometric assessment was retained for this capture.",
+        "astrometry.capture-cadence" => "This exposure was outside the configured fit cadence.",
+        "astrometry.inputs-unavailable" => "Measured associations or the catalog prediction were unavailable for this exposure.",
         "capture-source-mismatch" => "The retained assessment does not match this capture's source. Mapping is unavailable.",
         _ => "Retained astrometric evidence is unavailable for this capture."
     };

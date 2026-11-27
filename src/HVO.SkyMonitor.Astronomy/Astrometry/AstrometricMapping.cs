@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using HVO.SkyMonitor.AgentCore;
 
 namespace HVO.SkyMonitor.Astronomy;
 
@@ -48,6 +49,10 @@ public sealed class AstrometricMapping
     /// <summary>Returns a celestial WCS when standard projection keywords represent the measured optics.</summary>
     public CelestialWcs? ToCelestialWcs() => CelestialWcs.FromMeasuredProjection(measuredProjection, EnuToJ2000);
 
+    /// <summary>Creates a bounded calculator for this capture. Supply only its verified raw readout declaration.</summary>
+    public AstrometricCaptureCalculator CreateCalculator(FrameReadoutDescriptor? readout = null) =>
+        new(this, assessment, measuredProjection.WidthPixels, measuredProjection.HeightPixels, readout);
+
     public AstrometricSkyPoint? PixelToSky(PixelPoint pixel)
     {
         if (projector.Unproject(pixel) is not { } h) return null;
@@ -56,6 +61,7 @@ public sealed class AstrometricMapping
     }
     public PixelPoint? SkyToPixel(EquatorialPoint meanOfDate) => projector.Project(CoordinateTransforms.EquatorialToHorizontal(meanOfDate,
         assessment.Frame.MidpointUtc, assessment.Frame.Observer.LatitudeDegrees, assessment.Frame.Observer.LongitudeDegrees));
+    internal PixelPoint? ProjectHorizontal(AltAzPoint horizontal) => projector.Project(horizontal);
     public AstrometricLocalPixelScale LocalPixelScale(PixelPoint pixel)
     {
         double? Along(PixelPoint a, PixelPoint b)

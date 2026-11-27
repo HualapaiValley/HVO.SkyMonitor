@@ -388,6 +388,8 @@ public class Program
         builder.Services.AddScoped<ICameraAgentOperatorUiService, CameraAgentOperatorUiService>();
         builder.Services.AddScoped<ICameraAgentScheduleUiService, CameraAgentScheduleUiService>();
         builder.Services.AddScoped<ICameraAgentNamedRigUiService, CameraAgentNamedRigUiService>();
+        builder.Services.AddSingleton<HVO.SkyMonitor.CameraAgent.Common.OpticalCalibration.VirtualOpticalCalibrationReviewService>();
+        builder.Services.AddSingleton<HVO.SkyMonitor.CameraAgent.Common.OpticalCalibration.OpticalAlignmentWorkflow>();
         builder.Services.AddScoped<ICameraAgentCalibrationUiService, CameraAgentCalibrationUiService>();
         builder.Services.AddScoped<ICameraAgentFocusUiService, CameraAgentFocusUiService>();
         builder.Services.AddScoped<CircuitConnectionState>();

@@ -6,10 +6,12 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.CameraAgent.Tests.Gallery;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.TestSupport;
 using Microsoft.AspNetCore.Components;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
@@ -352,6 +354,54 @@ public sealed partial class CurrentSkyPageTests
                 row.QuerySelector("small")?.TextContent);
             Assert.Contains("US Space Force / Space-Track public GP data via CelesTrak",
                 cut.Find("[aria-label='Diagnostics layers'] .satellite-source-credit").TextContent, StringComparison.Ordinal);
+        });
+    }
+
+    [TestMethod]
+    [DataRow("astrometry.capture-cadence", true, "Cadence skipped", "This exposure was outside the configured fit cadence.")]
+    [DataRow("processing.dependency-unavailable", true, "Unavailable", "Measured associations or the catalog prediction were unavailable for this exposure.")]
+    [DataRow("astrometry.capture-cadence", false, "Cadence skipped", "This exposure was outside the configured fit cadence.")]
+    [DataRow("processing.dependency-unavailable", false, "Unavailable", "Measured associations or the catalog prediction were unavailable for this exposure.")]
+    public async Task CenteredAstrometryShowsThePersistedSkipReason(string reason, bool productUnavailable, string status, string explanation)
+    {
+        using var fixture = await CameraAgentArtifactServiceTests.ArtifactFixture.CreateAsync().ConfigureAwait(false);
+        using var context = new BunitContext();
+        var (service, clock) = ConfigurePolling(context);
+        var now = clock.GetUtcNow();
+        var reference = CenteredExposure(103, now.AddSeconds(-10));
+        var definition = CenteredSingle(reference, 1).Base.Definition;
+        var views = new SqliteCenteredViews(fixture.ProcessingStore, clock, NullLogger<SqliteCenteredViews>.Instance);
+        var initial = await views.RegisterBaseAsync(definition, []).ConfigureAwait(false);
+        var key = new CenteredViewLayerKey(AstrometricDiagnosticPresentation.ResidualsLayer,
+            CenteredViewLayerScope.Reference, reference.Capture.CaptureId);
+        if (productUnavailable)
+        {
+            var slot = new ExposureProductSlot(reference.ExecutionId, BuiltInProcessingRecipes.MeasuredAstrometry,
+                MeasuredAstrometrySolutionV1.CurrentSchemaVersion, "assessment");
+            await views.PublishUnavailableProductLayerAsync(initial.Base.BaseId, key,
+                new(reference.Input.Key, slot, ExposureProductAvailability.Unavailable, 1, null, reason),
+                now, CancellationToken.None).ConfigureAwait(false);
+        }
+        else
+        {
+            await views.PublishLayerAsync(initial.Base.BaseId,
+                new(key, 1, null, now, CenteredViewReadiness.Incompatible, reason, null)).ConfigureAwait(false);
+        }
+
+        var view = await views.ReadLatestSingleAsync(definition.Stream).ConfigureAwait(false);
+        Assert.IsNotNull(view);
+        Assert.AreEqual(productUnavailable ? $"centered.product-unavailable/{reason}" : reason,
+            view.Revision.Layers.Single(layer => layer.Key == key).Reason);
+        service.CenteredCurrentSkyHandler = (_, _) =>
+            ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(
+                CenteredSkyView(view, reference, CenteredViewLiveState.Ready, now)));
+
+        var cut = context.Render<CurrentSkyPage>();
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual(status, cut.Find(".astrometry-card .state-chip").TextContent);
+            Assert.AreEqual(explanation, cut.Find(".astrometry-card .astrometry-reason").TextContent);
+            Assert.IsTrue(cut.Find(".pixel-sky-calculator button").HasAttribute("disabled"));
         });
     }
 
@@ -2436,8 +2486,13 @@ public sealed partial class CurrentSkyPageTests
         descriptor = descriptor with
         {
             Capture = descriptor.Capture with { AgentId = "agent-test", CaptureId = captureId, CaptureSequence = sequence },
-            Timing = descriptor.Timing with { ExposureStartedUtc = startedUtc, ExposureEndedUtc = startedUtc.AddSeconds(2) },
-            Artifact = descriptor.Artifact with { ArtifactId = Guid.Parse($"19231000-0000-0000-0000-{sequence:D12}") }
+            Timing = new(startedUtc.AddSeconds(-1), startedUtc, startedUtc.AddSeconds(2),
+                startedUtc.AddSeconds(3), startedUtc.AddSeconds(4)),
+            Artifact = descriptor.Artifact with
+            {
+                ArtifactId = Guid.Parse($"19231000-0000-0000-0000-{sequence:D12}"),
+                CreatedUtc = startedUtc.AddSeconds(4)
+            }
         };
         var input = new ExposureInputV1(
             new(CenteredStream.Camera, CenteredStream.RunId, captureId),

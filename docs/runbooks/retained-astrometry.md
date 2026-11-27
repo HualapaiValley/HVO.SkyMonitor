@@ -124,8 +124,10 @@ or the selected archive capture ID; no latest-fit cache or prediction occurs.
 
 `CameraAgentRetainedAstrometry` contains `CaptureId`, `Availability`, `Reason`,
 optional `ArtifactId`, `SolutionIdentitySha256`, `GeometryBasis`, and `Solution`.
-Availability is `Retained`, `NotRetained` or `Unavailable` (including busy read
-capacity or invalid evidence). A retained solution's `Assessment.Status` is
+Availability is `Retained`, `NotRetained`, `CadenceSkipped` or `Unavailable`.
+`CadenceSkipped` means the exposure fell outside the configured fit cadence.
+`Unavailable` includes missing inputs, busy read capacity or invalid evidence.
+A retained solution's `Assessment.Status` is
 `Accepted`, `Rejected`, `Unavailable` or `BudgetExceeded`; retain its reason.
 Only `HasMeasuredMapping` yields `GeometryBasis=MeasuredFit`. All other outcomes
 have `Unavailable` geometry. Configured scene geometry is never labeled a fit.
