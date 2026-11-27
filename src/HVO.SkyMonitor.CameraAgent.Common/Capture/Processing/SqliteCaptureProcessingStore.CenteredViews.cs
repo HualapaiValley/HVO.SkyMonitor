@@ -210,23 +210,48 @@ internal sealed partial class SqliteCaptureProcessingStore
             """;
         SqliteRawCaptureJournal.AddExposureParameters(command, key);
         command.Parameters.AddWithValue("$execution", executionId.ToString("N"));
-        using var reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false);
         var entries = new List<(ExposureProductLookup Lookup, CenteredProductSemanticProvenanceV1? Semantics)>();
-        while (await reader.ReadAsync(token).ConfigureAwait(false))
+        using (var reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false))
         {
-            var lookup = ReadCenteredLookup(reader, out _);
-            var provenanceJson = await reader.IsDBNullAsync(12, token).ConfigureAwait(false)
-                ? null : await reader.GetFieldValueAsync<byte[]>(12, token).ConfigureAwait(false);
-            var descriptorJson = await reader.IsDBNullAsync(21, token).ConfigureAwait(false)
-                ? null : await reader.GetFieldValueAsync<byte[]>(21, token).ConfigureAwait(false);
-            var outputsJson = await reader.IsDBNullAsync(22, token).ConfigureAwait(false)
-                ? null : reader.GetString(22);
-            var outputOrdinal = await reader.IsDBNullAsync(23, token).ConfigureAwait(false)
-                ? (int?)null : reader.GetInt32(23);
-            var semantics = ResolveProductSemantics(provenanceJson, descriptorJson, outputsJson, lookup.Slot.Variant, outputOrdinal);
-            entries.Add((lookup, semantics));
+            while (await reader.ReadAsync(token).ConfigureAwait(false))
+            {
+                var lookup = ReadCenteredLookup(reader, out _);
+                var provenanceJson = await reader.IsDBNullAsync(12, token).ConfigureAwait(false)
+                    ? null : await reader.GetFieldValueAsync<byte[]>(12, token).ConfigureAwait(false);
+                var descriptorJson = await reader.IsDBNullAsync(21, token).ConfigureAwait(false)
+                    ? null : await reader.GetFieldValueAsync<byte[]>(21, token).ConfigureAwait(false);
+                var outputsJson = await reader.IsDBNullAsync(22, token).ConfigureAwait(false)
+                    ? null : reader.GetString(22);
+                var outputOrdinal = await reader.IsDBNullAsync(23, token).ConfigureAwait(false)
+                    ? (int?)null : reader.GetInt32(23);
+                var semantics = ResolveProductSemantics(provenanceJson, descriptorJson, outputsJson, lookup.Slot.Variant, outputOrdinal);
+                entries.Add((lookup, semantics));
+            }
         }
-        return CenteredViewLayerBindings.BuildRecoveredBindings(entries, authoritativeResolution);
+
+        var declaredOutputs = new List<RecoveredNodeDeclaredOutput>();
+        using (var nodeCommand = connection.CreateCommand())
+        {
+            nodeCommand.CommandText = """
+                SELECT node_id, outputs_json
+                FROM processing_execution_nodes
+                WHERE execution_id = $execution
+                ORDER BY node_id COLLATE BINARY;
+                """;
+            nodeCommand.Parameters.AddWithValue("$execution", executionId.ToString("N"));
+            using var nodeReader = await nodeCommand.ExecuteReaderAsync(token).ConfigureAwait(false);
+            while (await nodeReader.ReadAsync(token).ConfigureAwait(false))
+            {
+                var nodeId = nodeReader.GetString(0);
+                var outputsJson = await nodeReader.IsDBNullAsync(1, token).ConfigureAwait(false)
+                    ? null : nodeReader.GetString(1);
+                var parsed = CenteredProductSemanticProvenanceV1.ParseDeclaredNodeOutputs(nodeId, outputsJson);
+                if (parsed.Count > 0)
+                    declaredOutputs.AddRange(parsed);
+            }
+        }
+
+        return CenteredViewLayerBindings.BuildRecoveredBindings(entries, authoritativeResolution, declaredOutputs);
     }
 
     internal async ValueTask<CenteredAuthoritativeAssociationWriter?> ReadAuthoritativeAssociationWriterAsync(
@@ -345,10 +370,13 @@ internal sealed partial class SqliteCaptureProcessingStore
                     AND product.execution_id = $execution
                     AND product.schema_version IN ($v1, $v2, $dispV1, $dispV2)
             )
+            -- Order by ordinal producer before match_rank so an expired higher-priority writer whose
+            -- provenance/outputs metadata was cleared fails closed (UnidentifiableExpired) rather than
+            -- promoting a surviving lower-priority writer.
             SELECT producer, variant, match_rank
             FROM candidates
             WHERE match_rank >= 0
-            ORDER BY match_rank, producer COLLATE BINARY, revision, variant COLLATE BINARY
+            ORDER BY producer COLLATE BINARY, match_rank, revision, variant COLLATE BINARY
             LIMIT 1;
             """;
         SqliteRawCaptureJournal.AddExposureParameters(productCommand, key);

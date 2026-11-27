@@ -1047,6 +1047,170 @@ public sealed partial class VirtualSkyCameraModuleTests
         }
     }
 
+    private sealed class HistoricalEligibleFirstV2MeasurementExecutor : IProcessingRecipeExecutor
+    {
+        private readonly ProcessingRecipeExecutor _executor = new();
+
+        public ValueTask<ProcessingOutcome> ExecuteAsync(ProcessingExecutionRequest request, CancellationToken cancellationToken = default)
+        {
+            if (request.RecipeName == BuiltInProcessingRecipes.ExposureMeasurement &&
+                request.Options.ValueKind == JsonValueKind.Object &&
+                request.Options.TryGetProperty("stellarMeasurement", out _))
+            {
+                var (input, _) = ExposureMeasurementProducts.ReadParameters(request.Options);
+                request = request with
+                {
+                    Options = ExposureMeasurementProducts.SerializeParameters(input, ExposureFocusSamplingPolicy.EligibleFirst)
+                };
+            }
+            return _executor.ExecuteAsync(request, cancellationToken);
+        }
+    }
+
+    [TestMethod]
+    public async Task ExposureMeasurement_ArchivedReplayOfLegacyV2EligibleFirstReproducesExactBytesInInsertOutputAsync()
+    {
+        // H1 end-to-end SQLite InsertOutputAsync replay test: commit a live centered Mono16 exposure containing a
+        // non-solid excluded source under the historical delta6 EligibleFirst (linear-stellar-local-v2) recipe, then
+        // reopen with the production executor (linear-stellar-local-v3) and replay through CompleteReplayAsync /
+        // InsertOutputAsync. The replay must select the legacy v2 identity and reproduce exact bytes/checksums without
+        // conflict, while a fresh live request for the same inputs emits linear-stellar-local-v3 with a distinct identity.
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-h1-v2-replay");
+        try
+        {
+            var now = new DateTimeOffset(2026, 11, 22, 5, 0, 0, TimeSpan.Zero);
+            var profile = StoragePolicyRawIngressIntegrationTests.Profile(root);
+            var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
+            var camera = CreateConfig(CameraPixelFormat.Mono16, 224, 224);
+            var ra = AstronomyTime.LocalMeanSiderealDegrees(now, -113.878) / 15d;
+            var location = DeploymentLocationSnapshot.Create("h1-test", 1, "virtual", null,
+                DateTimeOffset.UnixEpoch, null, 35.347, -113.878, 0, "America/Phoenix");
+            var readout = new SensorReadoutProfile(new SensorCrop(0, 0, 224, 224), 1, 1, FrameBinningAlgorithm.IdentityV1,
+                CameraPixelFormat.Mono16, 12, 16, FrameSamplePacking.ByteAligned, FrameStoredCodeTransform.RightAlignedV1,
+                FrameLevelCodeSpace.NativeSample, 64, 4095);
+            // Two closely spaced bright stars so VirtualSky produces a non-solid blended/crowded exclusion in addition to clean detections.
+            var starA = new CelestialCatalogObject("h1-star-a", "H1 Star A", ra, 35.347, -1.5, 0.65);
+            var starB = new CelestialCatalogObject("h1-star-b", "H1 Star B", (ra + 0.012) % 24, 35.347 + 0.12, -1.2, 0.65);
+            var starC = new CelestialCatalogObject("h1-star-c", "H1 Star C", (ra + 0.5) % 24, 35.347 + 6.0, 1.0, 0.65);
+            var catalog = new InMemoryCelestialCatalog([starA, starB, starC]);
+            var file = camera with
+            {
+                AgentId = profile.AgentId,
+                Schedule = profile.Schedule,
+                Rig = camera.Rig with { ControlPolicy = profile.Rig.ControlPolicy, Readout = readout },
+                DeploymentLocation = location,
+                Module = new("VirtualSky", JsonSerializer.SerializeToElement(new
+                {
+                    seed = 52681,
+                    fixedSequenceStartUtc = now,
+                    illuminationMode = "ControlledNight",
+                    magnitudeZeroElectronsPerSecond = 8000
+                })),
+                CenteredExposure = new("fixture-camera", CenteredExposureProfile.CurrentExecutionVersion),
+                Pipeline = profile.Pipeline with
+                {
+                    Steps =
+                    [
+                        new("Calibration", "linear", DependsOn: ["$raw"],
+                            Publication: new(CaptureProcessingPersistenceMode.MemoryOnly),
+                            Options: JsonSerializer.SerializeToElement(new { strategy = "None", outputVariant = "qualified-linear" })),
+                        new("ProjectedScene", "scene", DependsOn: ["$raw"], Required: false, Publication: durable),
+                        new("Storage", "storage", DependsOn: ["$raw"], Options: JsonSerializer.SerializeToElement(
+                            new FileStorageCaptureProcessingStepOptions
+                            {
+                                StorageRoot = Path.Combine(root, "storage"), QueueForUpload = false, UpdateLatestFrame = false
+                            }))
+                    ]
+                }
+            };
+
+            ProcessingGraphExecutionState originalExecution;
+            ExposureMeasurementV1 originalMeasurement;
+            string originalOutputIdentity;
+            byte[] originalPayloadBytes;
+            using (var provider = MeasurementProvider(root, location, new InMemoryCelestialCatalog([]),
+                configureServices: static services =>
+                    services.AddSingleton<IProcessingRecipeExecutor>(new HistoricalEligibleFirstV2MeasurementExecutor())))
+            {
+                var active = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(provider, file).ConfigureAwait(false);
+                var module = new VirtualSkyCameraModule(new ExposureTestTimeProvider(now, autoAdvance: true), catalog, new ProjectedSceneStore(),
+                    stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
+                await using var lifetime = module.ConfigureAwait(false);
+                await module.InitializeAsync(active, CancellationToken.None).ConfigureAwait(false);
+                var ingress = provider.GetRequiredService<RawCaptureIngress>();
+                var resources = provider.GetRequiredService<CaptureProjectedSceneStager>().FrozenResources;
+                var setpoint = new CaptureSetpoint(TimeSpan.FromSeconds(1), 1, null, null);
+                var reservation = await ingress.ReserveCenteredAsync(active, resources, null, CancellationToken.None).ConfigureAwait(false);
+                await ingress.DispatchCenteredAsync(reservation.Pending.Key, setpoint, null, "h1-fixture", CancellationToken.None).ConfigureAwait(false);
+                var request = new CaptureRequest(now, TimeSpan.FromSeconds(1), CaptureMode.Still, setpoint)
+                {
+                    BoundGraphRevisionId = reservation.Revision.State.RevisionId,
+                    BoundGraph = reservation.Revision.Pipeline
+                };
+                var capture = await module.CaptureBoundAsync(reservation.Pending.Key, request, CancellationToken.None).ConfigureAwait(false);
+                var receipt = await ingress.AcceptCenteredAsync(active, new(request, capture, now, request.TargetInterval,
+                    request.TargetInterval), reservation, CancellationToken.None).ConfigureAwait(false);
+                var laneStore = provider.GetRequiredService<ICaptureLaneStore>();
+                await laneStore.InitializeLanesAsync(CancellationToken.None).ConfigureAwait(false);
+                var lane = provider.GetRequiredService<CaptureLanePolicy>().Definitions.Single(item => item.Name == "standard");
+                var lease = await laneStore.ClaimAsync(lane, "h1-live", active, CancellationToken.None).ConfigureAwait(false);
+                Assert.IsNotNull(lease);
+                var outcome = await provider.GetRequiredService<StandardCaptureLaneHandler>().HandleAsync(lease.Context, CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, outcome.Outcome, outcome.Reason);
+                await laneStore.CompleteAsync(lease, CancellationToken.None).ConfigureAwait(false);
+
+                var operations = provider.GetRequiredService<IProcessingGraphOperations>();
+                var detail = await operations.ReadExecutionDetailAsync(lease.Context.Execution!.ExecutionId, CancellationToken.None).ConfigureAwait(false);
+                Assert.IsNotNull(detail);
+                originalExecution = detail.Execution;
+                var measOutput = Assert.ContainsSingle(detail.Nodes.Single(n => n.NodeId == ExposureMeasurementProducts.StepAlias).Outputs);
+                originalOutputIdentity = measOutput.OutputIdentitySha256;
+                var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
+                var stored = await store.ReadOutputByArtifactIdAsync(measOutput.ArtifactId, CancellationToken.None).ConfigureAwait(false);
+                Assert.IsNotNull(stored);
+                Assert.IsTrue(stored.Algorithms.Contains(
+                    new ProcessingAlgorithmIdentity("stellar-source-measurer", StellarSourceMeasurer.V2AlgorithmVersion)));
+                var retained = Assert.ContainsSingle(await provider.GetRequiredService<CaptureProcessingPersistence>()
+                    .RestoreWindowInputsAsync([stored], CancellationToken.None).ConfigureAwait(false));
+                originalPayloadBytes = retained.Payload.ToArray();
+                var (input, policy) = ExposureMeasurementProducts.ReadParameters(retained.RecipeDescriptor!.Options.GetProperty("parameters"));
+                Assert.AreEqual(ExposureFocusSamplingPolicy.EligibleFirst, policy);
+                originalMeasurement = ExposureMeasurementProducts.Read(retained, input);
+                Assert.IsTrue(originalMeasurement.Sources.Exclusions.All(static e => e.Occupancy is null));
+                Assert.IsNotEmpty(originalMeasurement.Sources.Exclusions,
+                    "Fixture must produce at least one exclusion so v2 vs v3 divergence is exercised.");
+            }
+
+            // Reopen with the default production v3 executor and replay through CompleteReplayAsync / InsertOutputAsync!
+            using var reopened = MeasurementProvider(root, location, new InMemoryCelestialCatalog([]));
+            await reopened.GetRequiredService<RawCaptureIngress>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            await AssertMeasurementReplayAsync(reopened, originalExecution, originalMeasurement, fit: false).ConfigureAwait(false);
+
+            // Confirm stored bytes on disk are unchanged and a fresh v3 request for the exact same inputs gets a distinct output identity!
+            var reopenedStore = reopened.GetRequiredService<SqliteCaptureProcessingStore>();
+            var liveDetail = await reopened.GetRequiredService<IProcessingGraphOperations>()
+                .ReadExecutionDetailAsync(originalExecution.ExecutionId, CancellationToken.None).ConfigureAwait(false);
+            var measArtifactId = Assert.ContainsSingle(liveDetail!.Nodes.Single(n => n.NodeId == ExposureMeasurementProducts.StepAlias).Outputs).ArtifactId;
+            var storedAfter = await reopenedStore.ReadOutputByArtifactIdAsync(measArtifactId, CancellationToken.None).ConfigureAwait(false);
+            var restoredAfter = Assert.ContainsSingle(await reopened.GetRequiredService<CaptureProcessingPersistence>()
+                .RestoreWindowInputsAsync([storedAfter!], CancellationToken.None).ConfigureAwait(false));
+            CollectionAssert.AreEqual(originalPayloadBytes, restoredAfter.Payload.ToArray());
+            var freshV3Recipe = BuiltInProcessingRecipes.CreateExecutionIdentity(
+                BuiltInProcessingRecipes.ExposureMeasurement,
+                ExposureMeasurementProducts.SerializeParameters(originalMeasurement.Input, ExposureFocusSamplingPolicy.EligibleFirstWithOccupancy),
+                ProcessingInputSelector.Raw("source"));
+            var freshV3OutputIdentity = ProcessingIdentity.CreateOutputIdentity(
+                FrameArtifactRole.Metadata, ExposureMeasurementProducts.Variant,
+                freshV3Recipe.IdentitySha256, restoredAfter.SourceArtifactIds!);
+            Assert.AreNotEqual(originalOutputIdentity, freshV3OutputIdentity,
+                "New v3 runs must produce a distinct output identity from archived legacy v2 runs.");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     private sealed class MeasurementPublicationIo(int failures) : ICaptureProcessingFaultInjector
     {
         public int Attempts { get; private set; }

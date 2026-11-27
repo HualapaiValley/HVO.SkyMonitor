@@ -45,6 +45,8 @@ public static class ExposureAssociationProducts
 
         var scene = ExposureCatalogPredictionProducts.Read(sceneArtifact, raw, expected);
         var measured = ExposureMeasurementProducts.Read(retained, expected).Sources;
+        var (_, measurementPolicy) = ExposureMeasurementProducts.ReadParameters(
+            retained.RecipeDescriptor!.Options.GetProperty("parameters"));
         if (measured.Status == ExposureMeasurementStatus.Unavailable ||
             measured.Status == ExposureMeasurementStatus.Unsuitable && measured.Reason != ExposureMeasurementSourceReasonCodes.AllCandidatesRejected)
             return ProcessingOutcome.Skipped("association.measurement-unavailable");
@@ -57,8 +59,9 @@ public static class ExposureAssociationProducts
             ? $"{LinearBayerReconstruction.AlgorithmVersion}:{bayer.ToString().ToUpperInvariant()}:rec709-luminance"
             : MeasuredStellarAssociationRecipe.MonoReconstruction;
         var evidence = MeasuredStellarAssociationRecipe.CreateEvidence(raw, source.Layout, source.CaptureId, source.DescriptorSha256,
-            scene, new(StellarSourceMeasurer.AlgorithmVersion, measured.SettingsSha256!, method, StellarMeasurementStatus.Completed,
-                null, null, measured.CandidateCount!.Value, measured.Detections.Count, measured.Exclusions.Count),
+            scene, new(ExposureMeasurementRecipe.StellarAlgorithmVersion(measurementPolicy), measured.SettingsSha256!, method,
+                StellarMeasurementStatus.Completed, null, null, measured.CandidateCount!.Value,
+                measured.Detections.Count, measured.Exclusions.Count),
             settings, policy, association.Entries);
         var identity = ProcessingIdentity.CreateRecipeIdentity(Definition, ProcessingRecipeSupport.Normalize(
             new AssociationBinding(raw.ArtifactId, retained.ArtifactId, retained.ContentIdentitySha256!,

@@ -493,8 +493,12 @@ public sealed class ExposureMeasurementTests
         Assert.AreEqual(ExposureMeasurementStatus.Empty, read.Sources.Status);
         Assert.AreEqual(0, read.Hfd.ValidCount);
         await AssertRetainedReplay(lookup, raw, borrowed, current);
+        var legacyEligibleFirst = await Produce(request with { Options = HistoricalEligibleFirstOptions(read.Input) });
+        Assert.AreNotEqual(current.OutputIdentitySha256, legacyEligibleFirst.OutputIdentitySha256);
+        await AssertRetainedReplay(lookup, raw, borrowed, legacyEligibleFirst);
         var legacy = await Produce(request with { Options = HistoricalFocusOptions(read.Input, bayerCoreCheck: false) });
         Assert.AreNotEqual(current.OutputIdentitySha256, legacy.OutputIdentitySha256);
+        Assert.AreNotEqual(legacyEligibleFirst.OutputIdentitySha256, legacy.OutputIdentitySha256);
         await AssertRetainedReplay(lookup, raw, borrowed, legacy);
         if (bayer)
         {
@@ -700,6 +704,136 @@ public sealed class ExposureMeasurementTests
         var reread = ExposureMeasurementProducts.Read(retained, expected);
         Assert.HasCount(1, reread.Sources.Detections);
         Assert.AreEqual(1, reread.Hfd.ValidCount);
+    }
+
+    [TestMethod]
+    public async Task OccupancyUpgradeHasDistinctIdentityReplaysLegacyV2BitForBitAndRejectsImpossibleOccupancy()
+    {
+        // H1 + M7: verify that (a) new runs emit linear-stellar-local-v3 with occupancy and a distinct output identity,
+        // (b) replaying a frozen legacy linear-stellar-local-v2 EligibleFirst identity reproduces exact legacy bytes,
+        // checksum, and algorithms bit-for-bit, and (c) ExposureMeasurementProducts.Read rejects internally impossible
+        // occupancy (1 sample with multiple occupied cells, peak outside occupied mask, legacy product with occupancy).
+        const int size = 160;
+        var layout = Layout(size, size);
+        var center = new PixelPoint(80.5, 80.5);
+        var light = CreateRaw(layout, Generate(layout, (x, y) =>
+        {
+            var r = double.Hypot(x + 0.5 - center.X, y + 0.5 - center.Y);
+            double value = 180 + Gaussian(x, y, center, 1.25, 2200);
+            if (r is >= 14.0 and <= 30.0)
+                value += 1400.0;
+            return (ushort)Math.Clamp(Math.Round(value), 0, 4095);
+        }));
+        var (lookup, raw, borrowed) = await BindToAdmission(light);
+        var currentRequest = ExposureMeasurementBindings.Request(lookup, raw, borrowed);
+        var currentProduct = await Produce(currentRequest);
+        var currentMeasurement = ExposureMeasurementProducts.Read(currentProduct);
+        var input = currentMeasurement.Input;
+
+        // Produce the exact frozen legacy v2 (EligibleFirst) product for the same exposure & inputs.
+        var legacyV2Request = currentRequest with { Options = HistoricalEligibleFirstOptions(input) };
+        var legacyV2Product = await Produce(legacyV2Request);
+        var legacyV2Measurement = ExposureMeasurementProducts.Read(legacyV2Product);
+
+        // (a) Distinct output identity, algorithm identity, settings identity, and occupancy presence:
+        Assert.AreNotEqual(legacyV2Product.OutputIdentitySha256, currentProduct.OutputIdentitySha256);
+        Assert.AreNotEqual(legacyV2Product.ChecksumSha256, currentProduct.ChecksumSha256);
+        Assert.IsTrue(currentProduct.Algorithms.Contains(
+            new ProcessingAlgorithmIdentity("stellar-source-measurer", StellarSourceMeasurer.AlgorithmVersion)));
+        Assert.IsTrue(legacyV2Product.Algorithms.Contains(
+            new ProcessingAlgorithmIdentity("stellar-source-measurer", StellarSourceMeasurer.V2AlgorithmVersion)));
+        Assert.AreEqual(
+            StellarSourceMeasurer.SettingsIdentity(MeasuredStellarAssociationRecipe.MeasurementOptions(CameraPixelFormat.Mono16),
+                StellarSourceMeasurer.AlgorithmVersion).ToUpperInvariant(),
+            currentMeasurement.Sources.SettingsSha256);
+        Assert.AreEqual(
+            StellarSourceMeasurer.SettingsIdentity(MeasuredStellarAssociationRecipe.MeasurementOptions(CameraPixelFormat.Mono16),
+                StellarSourceMeasurer.V2AlgorithmVersion).ToUpperInvariant(),
+            legacyV2Measurement.Sources.SettingsSha256);
+        var v3Ring = currentMeasurement.Sources.Exclusions.Single(e => e.ReasonCode == StellarExclusionReasons.ExtendedRegion);
+        var v2Ring = legacyV2Measurement.Sources.Exclusions.Single(e => e.ReasonCode == StellarExclusionReasons.ExtendedRegion);
+        Assert.IsNotNull(v3Ring.Occupancy);
+        Assert.IsNull(v2Ring.Occupancy);
+        ProcessingRecipeTests.AssertProductMatchesContract(currentRequest, currentProduct);
+        ProcessingRecipeTests.AssertProductMatchesContract(legacyV2Request, legacyV2Product);
+
+        // (b) Replaying the frozen v2 output identity reproduces exact legacy bytes, checksum, and algorithms bit-for-bit:
+        var replayRequest = ExposureMeasurementBindings.Request(
+            lookup, raw, borrowed, null, null, legacyV2Product.OutputIdentitySha256);
+        var replayed = await Produce(replayRequest);
+        Assert.AreEqual(legacyV2Product.OutputIdentitySha256, replayed.OutputIdentitySha256);
+        Assert.AreEqual(legacyV2Product.ChecksumSha256, replayed.ChecksumSha256);
+        CollectionAssert.AreEqual(legacyV2Product.Payload.ToArray(), replayed.Payload.ToArray());
+        CollectionAssert.AreEqual(legacyV2Product.Algorithms.ToArray(), replayed.Algorithms.ToArray());
+
+        // (c) M7 negative tests on canonical, rehashed ExposureMeasurementV1 products:
+        // 1. SampleCount = 1 with multiple occupied cells (coarse 1x1 grid):
+        var smallFp = new StellarFootprintBounds(10, 10, 13, 13);
+        var multiCellOcc = StellarFootprintOccupancy.Create(smallFp, static (x, y) => (x == 10 && y == 10) || (x == 13 && y == 13));
+        var oneSampleManyCells = new StellarMeasurementExclusion(new PixelPoint(10.5, 10.5), 500, 1, StellarExclusionReasons.HotPixelOrCosmicRay)
+        {
+            Footprint = smallFp,
+            Occupancy = multiCellOcc
+        };
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(
+            WithMeasurement(currentProduct, currentMeasurement with
+            {
+                Sources = currentMeasurement.Sources with { Exclusions = [oneSampleManyCells] }
+            })));
+
+        // 2. SampleCount = 1 with multi-cell two-level subgrid (ring occupancy):
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(
+            WithMeasurement(currentProduct, currentMeasurement with
+            {
+                Sources = currentMeasurement.Sources with { Exclusions = [v3Ring with { SampleCount = 1 }] }
+            })));
+
+        // 3. Recorded peak outside the occupied mask (coarse cell = 0, inside footprint):
+        var peakOutsideMask = new StellarMeasurementExclusion(new PixelPoint(11.5, 11.5), 500, 2, StellarExclusionReasons.TooBroad)
+        {
+            Footprint = smallFp,
+            Occupancy = multiCellOcc
+        };
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(
+            WithMeasurement(currentProduct, currentMeasurement with
+            {
+                Sources = currentMeasurement.Sources with { Exclusions = [peakOutsideMask] }
+            })));
+
+        // 4. Recorded peak in hollow interior of the ring (subgrid cell = 0, inside ring footprint):
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(
+            WithMeasurement(currentProduct, currentMeasurement with
+            {
+                Sources = currentMeasurement.Sources with { Exclusions = [v3Ring with { Peak = center }] }
+            })));
+
+        // 5. Recorded peak outside footprint bounds:
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(
+            WithMeasurement(currentProduct, currentMeasurement with
+            {
+                Sources = currentMeasurement.Sources with
+                {
+                    Exclusions = [new StellarMeasurementExclusion(new PixelPoint(5.5, 5.5), 500, 2, StellarExclusionReasons.TooBroad)
+                    {
+                        Footprint = smallFp,
+                        Occupancy = multiCellOcc
+                    }]
+                }
+            })));
+
+        // 6. SampleCount exceeding total capacity of occupied 1x1 cells:
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(
+            WithMeasurement(currentProduct, currentMeasurement with
+            {
+                Sources = currentMeasurement.Sources with { Exclusions = [oneSampleManyCells with { SampleCount = 3 }] }
+            })));
+
+        // 7. Legacy v2 product tampered to include Occupancy:
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(
+            WithMeasurement(legacyV2Product, legacyV2Measurement with
+            {
+                Sources = legacyV2Measurement.Sources with { Exclusions = [v2Ring with { Occupancy = v3Ring.Occupancy }] }
+            })));
     }
 
     private static ProjectedSceneV1 WithProjection(ProjectedSceneV1 scene, ProjectedSceneProjection projection)
@@ -911,7 +1045,13 @@ public sealed class ExposureMeasurementTests
         CollectionAssert.AreEqual(original.Sources.Detections.ToArray(), result.Sources.Detections.ToArray());
         Assert.AreEqual("trailed-source", original.Hfd.Samples[focus.DetectionIndex].Reason);
         var previous = await Produce(request with { Options = HistoricalFocusOptions(result.Input, bayerCoreCheck: true) });
-        CollectionAssert.AreEqual(previous.Payload.ToArray(), currentProduct.Payload.ToArray());
+        var previousResult = ExposureMeasurementProducts.Read(previous);
+        Assert.AreNotEqual(previous.OutputIdentitySha256, currentProduct.OutputIdentitySha256);
+        CollectionAssert.AreEqual(previousResult.Sources.Detections.ToArray(), result.Sources.Detections.ToArray());
+        CollectionAssert.AreEqual(previousResult.Hfd.Samples.ToArray(), result.Hfd.Samples.ToArray());
+        var previousEligibleFirst = await Produce(request with { Options = HistoricalEligibleFirstOptions(result.Input) });
+        Assert.AreNotEqual(previousEligibleFirst.OutputIdentitySha256, currentProduct.OutputIdentitySha256);
+        CollectionAssert.AreEqual(previous.Payload.ToArray(), previousEligibleFirst.Payload.ToArray());
 
         Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(ReplaceSample(
             currentProduct, focus with { BayerCoreTrailUpperPixels = 3 })));
@@ -931,6 +1071,9 @@ public sealed class ExposureMeasurementTests
         => bayerCoreCheck
             ? JsonSerializer.SerializeToElement(new { BayerFocus = "noise-corrected-bayer-core-v1", Input = input }, MeasurementJson)
             : JsonSerializer.SerializeToElement(input, MeasurementJson);
+
+    private static JsonElement HistoricalEligibleFirstOptions(ExposureMeasurementInputV1 input)
+        => JsonSerializer.SerializeToElement(new { HfdAllocation = "eligible-first-v1", Input = input }, MeasurementJson);
 
     private static ProcessingProduct WithMeasurement(ProcessingProduct product, ExposureMeasurementV1 measurement)
     {

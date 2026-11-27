@@ -258,7 +258,9 @@ internal sealed class MeasuredAstrometryRecipe : IProcessingRecipe
                 measured.Method.LabelPolicyVersion == StellarLabelPolicy.V1Version,
             _ => false
         };
-        if (measured.Measurement.AlgorithmVersion != StellarSourceMeasurer.AlgorithmVersion || !supportedMethod)
+        var supportedMeasurer = measured.Measurement.AlgorithmVersion is
+            StellarSourceMeasurer.AlgorithmVersion or StellarSourceMeasurer.V2AlgorithmVersion;
+        if (!supportedMeasurer || !supportedMethod)
             return "astrometry.unsupported-measurement";
         var frame = context.Frame;
         var source = measured.Source;

@@ -489,6 +489,17 @@ public static class MeasuredStellarAssociator
         return dx * dx + dy * dy;
     }
 
+    // Explicit legacy policy for retained v2 / external exclusions lacking an occupancy bitmap:
+    // a 100%-solid box, any saturated-excessive core (whose peak often lands on a flat clipped edge far from center
+    // and whose window is bounded below MaximumWindowSamples), or a compact (>= 50% filled) non-extended footprint
+    // covers its bounding footprint; sparse or extended-region legacy footprints without occupancy fall back to peak
+    // proximity so distant streaks or hollow arcs do not suppress isolated planets.
+    private static bool LegacyFootprintCoversInterior(StellarMeasurementExclusion exclusion, long boxArea) =>
+        exclusion.SampleCount >= boxArea ||
+        exclusion.ReasonCode == StellarExclusionReasons.SaturatedExcessive ||
+        (exclusion.ReasonCode != StellarExclusionReasons.ExtendedRegion &&
+         exclusion.SampleCount * 2L >= boxArea);
+
     private static double OccupiedFootprintDistanceSquared(
         StellarMeasurementExclusion exclusion, PixelPoint point, double maxRadiusPixels)
     {
@@ -498,7 +509,7 @@ public static class MeasuredStellarAssociator
             return occupancy.DistanceSquaredToOccupied(footprint, point, maxRadiusPixels);
         var width = (long)footprint.MaxX - footprint.MinX + 1;
         var height = (long)footprint.MaxY - footprint.MinY + 1;
-        return width > 0 && height > 0 && exclusion.SampleCount >= width * height
+        return width > 0 && height > 0 && LegacyFootprintCoversInterior(exclusion, width * height)
             ? BoundsDistanceSquared(footprint, point)
             : double.PositiveInfinity;
     }
@@ -523,13 +534,13 @@ public static class MeasuredStellarAssociator
             }
             else
             {
-                // Legacy/external exclusion without occupancy bitmap: a 100%-filled box occupies every interior pixel;
-                // otherwise require the exclusion peak itself to lie within the planet's search window.
                 var width = (long)footprint.MaxX - footprint.MinX + 1;
                 var height = (long)footprint.MaxY - footprint.MinY + 1;
-                if (width > 0 && height > 0 && exclusion.SampleCount >= width * height)
+                if (width > 0 && height > 0 && LegacyFootprintCoversInterior(exclusion, width * height))
                 {
                     distance = BoundsDistanceSquared(footprint, point);
+                    if (distance > maxMarginSquared)
+                        continue;
                 }
                 else
                 {

@@ -119,8 +119,9 @@ internal static class BuiltInProcessingProductContracts
                     request.RecipeName, request.Options, request.Input);
                 var measurement = ExposureMeasurementProducts.Read(contract.Role, request.OutputVariant, contract.Kind,
                     contract.MediaType, contract.SchemaVersion, payload, contentIdentitySha256, recipe, contract.SourceArtifactIds);
+                var (_, policy) = ExposureMeasurementRecipe.Parameters(recipe);
                 return recipe.IdentitySha256 == recipeIdentitySha256 &&
-                    algorithms.SequenceEqual(ExposureMeasurementRecipe.Algorithms(measurement.Input));
+                    algorithms.SequenceEqual(ExposureMeasurementRecipe.Algorithms(measurement.Input, policy));
             }
             catch (Exception exception) when (exception is ArgumentException or InvalidDataException or JsonException)
             {
@@ -388,10 +389,7 @@ internal static class BuiltInProcessingProductContracts
                 "application/json",
                 [new("image-statistics", ImageStatisticsCalculator.AlgorithmVersion)],
                 primary),
-            ExposureMeasurement => new(ExposureMeasurementProducts.MediaType, false, null,
-                ExposureMeasurementProducts.SchemaVersion, true, null,
-                ExposureMeasurementRecipe.Algorithms(ExposureMeasurementRecipe.Input(identity)),
-                primary.Integration, primary.Compatibility, null, null),
+            ExposureMeasurement => CreateExposureMeasurementDetails(identity, primary),
             NoOpAnalyzer => MetadataDetails(
                 "application/json",
                 [new("no-op", "v1")],
@@ -407,6 +405,17 @@ internal static class BuiltInProcessingProductContracts
                 primary.Integration, primary.Compatibility, null, null),
             _ => throw new InvalidOperationException("The built-in recipe output details are unavailable.")
         };
+
+    private static ProductDetails CreateExposureMeasurementDetails(
+        ProcessingRecipeIdentity identity,
+        ProcessingArtifact primary)
+    {
+        var (input, policy) = ExposureMeasurementRecipe.Parameters(identity);
+        return new(ExposureMeasurementProducts.MediaType, false, null,
+            ExposureMeasurementProducts.SchemaVersion, true, null,
+            ExposureMeasurementRecipe.Algorithms(input, policy),
+            primary.Integration, primary.Compatibility, null, null);
+    }
 
     private static ProductDetails CreateEncodedPreviewDetails(
         ProcessingRecipeIdentity identity,

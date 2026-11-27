@@ -640,12 +640,18 @@ public static class PresentationLayerProducers
     }
 
     private const double CompatibleSceneCoordinateTolerancePixels = 0.5;
-    // Earth's sidereal rotation rate: 2*pi / 86164.0905 s (~7.292115855e-5 rad/s, ~15.041 arcsec/s).
-    private const double EarthSiderealAngularRateRadiansPerSecond = 2.0 * Math.PI / 86164.0905;
+    private const double DegreesToRadians = Math.PI / 180.0;
+    // Earth's sidereal rotation rate matching AstronomyTime.GreenwichMeanSiderealDegrees:
+    // 360.98564736629 deg/day (~7.2921158553e-5 rad/s, ~15.041 arcsec/s).
+    private const double EarthSiderealAngularRateRadiansPerSecond = 360.98564736629 * DegreesToRadians / 86400.0;
+    // Conservative upper bound on geocentric proper angular motion of any point-source solar-system planet
+    // (Mercury peaks near ~2.25 deg/day prograde at superior conjunction and ~1.4 deg/day retrograde near inferior
+    // conjunction, plus IAU-1976 equatorial precession ~50.3 arcsec/year). Including this in the angular-shift bound
+    // ensures solar-system body motion (including across enabled refraction cutoffs) cannot exceed the 0.5 px tolerance.
+    private const double MaximumPlanetProperMotionRadiansPerSecond = 3.0 * DegreesToRadians / 86400.0;
     // Hard upper cap on allowed epoch difference even for tiny-focal-length all-sky optics while cleanly accepting
     // real request-to-shutter latency (hundreds of milliseconds) and sub-millisecond timing truncation.
     private const double MaximumCompatibleEpochSkewSeconds = 30.0;
-    private const double DegreesToRadians = Math.PI / 180.0;
     // Bennett's refraction formula is smooth and strictly compressive (0 < d(apparent)/d(geometric) < 1) only on
     // [-1 deg, 90 deg]; below -1 deg it becomes non-monotonic and singular.
     private const double BennettMonotoneFloorDegrees = -1.0;
@@ -668,9 +674,9 @@ public static class PresentationLayerProducers
 
     private static double MaximumApparentAngularShiftRadians(double deltaSeconds, RefractionOptions refraction)
     {
-        var siderealRadians = EarthSiderealAngularRateRadiansPerSecond * deltaSeconds;
+        var geometricRadians = (EarthSiderealAngularRateRadiansPerSecond + MaximumPlanetProperMotionRadiansPerSecond) * deltaSeconds;
         if (!refraction.Enabled)
-            return siderealRadians;
+            return geometricRadians;
         if (refraction.MinimumAltitudeDegrees < BennettMonotoneFloorDegrees)
             return double.PositiveInfinity;
         // Crossing MinimumAltitudeDegrees introduces a step jump of |Apply(m) - m|, and Bennett's slight negative
@@ -682,8 +688,12 @@ public static class PresentationLayerProducers
         if (!double.IsFinite(cutoffJumpDegrees) || !double.IsFinite(zenithOffsetDegrees))
             return double.PositiveInfinity;
         var azimuthalScale = 1.0 / Math.Cos(DegreesToRadians);
-        return siderealRadians * azimuthalScale + (cutoffJumpDegrees + zenithOffsetDegrees) * DegreesToRadians;
+        return geometricRadians * azimuthalScale + (cutoffJumpDegrees + zenithOffsetDegrees) * DegreesToRadians;
     }
+
+    private static bool IsBoundedPlanetEphemeris(string? ephemerisModelVersion) =>
+        string.Equals(ephemerisModelVersion, "astronomy-engine-2.1.19-eqj-v1", StringComparison.Ordinal) ||
+        string.Equals(ephemerisModelVersion, "fixed-fixture-v1", StringComparison.Ordinal);
 
     private static double MaximumDeliveredPixelScalePerRadian(ProjectedSceneV1 scene)
     {
@@ -724,6 +734,8 @@ public static class PresentationLayerProducers
 
         if (associations.PointSourcePlanets is { } planetEvidence &&
             (!AreEpochsCompatibleForScene(planetEvidence.EffectiveUtc, scene.EffectiveUtc, scene) ||
+             (planetEvidence.EffectiveUtc != scene.EffectiveUtc &&
+              !IsBoundedPlanetEphemeris(planetEvidence.EphemerisModelVersion)) ||
              !planetEvidence.ProjectionMappingVersion.StartsWith(
                  $"{scene.Projection.Model}:{scene.Projection.CalibrationVersion}:", StringComparison.Ordinal)))
             return false;

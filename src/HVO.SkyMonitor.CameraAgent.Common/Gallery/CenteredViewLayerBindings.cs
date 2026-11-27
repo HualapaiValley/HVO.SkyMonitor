@@ -49,6 +49,13 @@ internal readonly record struct CenteredAuthoritativeAssociationResolution(
         new(CenteredAuthoritativeAssociationResolutionState.UnidentifiableExpired, writer);
 }
 
+internal sealed record RecoveredNodeDeclaredOutput(
+    string Producer,
+    string SchemaVersion,
+    string Variant,
+    int PortIndex,
+    CenteredProductSemanticProvenanceV1? Semantics);
+
 /// <summary>
 /// Durable producer, recipe, and semantic layer-role metadata persisted on <c>centered_exposure_products.provenance_json</c>
 /// for non-linear, non-scene centered products so missing-graph recovery preserves exact semantic roles even after
@@ -141,6 +148,57 @@ internal sealed record CenteredProductSemanticProvenanceV1(
         catch (JsonException)
         {
             return null;
+        }
+    }
+
+    internal static IReadOnlyList<RecoveredNodeDeclaredOutput> ParseDeclaredNodeOutputs(string nodeId, string? outputsJson)
+    {
+        if (string.IsNullOrWhiteSpace(nodeId) || string.IsNullOrWhiteSpace(outputsJson))
+            return [];
+        try
+        {
+            using var doc = JsonDocument.Parse(outputsJson);
+            if (doc.RootElement.ValueKind != JsonValueKind.Array)
+                return [];
+            var outputs = new List<RecoveredNodeDeclaredOutput>();
+            var index = 0;
+            foreach (var item in doc.RootElement.EnumerateArray())
+            {
+                if (item.ValueKind == JsonValueKind.Object)
+                {
+                    var variant = GetStringIgnoreCase(item, "variant");
+                    var schema = GetStringIgnoreCase(item, "schemaVersion");
+                    if (!string.IsNullOrWhiteSpace(variant) && !string.IsNullOrWhiteSpace(schema))
+                    {
+                        var sourceSchema = CenteredViewLayerBindings.SourceSchema(schema);
+                        if (CenteredViewLayerBindings.SupportsSchema(sourceSchema))
+                        {
+                            string? recipeName = null;
+                            string? implVersion = null;
+                            if (TryGetObjectIgnoreCase(item, "recipe", out var recipe))
+                            {
+                                recipeName = GetStringIgnoreCase(recipe, "name");
+                                implVersion = GetStringIgnoreCase(recipe, "implementationVersion");
+                            }
+                            CenteredProductSemanticProvenanceV1? semantics = null;
+                            if (recipeName is not null || implVersion is not null)
+                            {
+                                var layerKinds = PresentationLayerPayloadV1.SupportsSchema(sourceSchema)
+                                    ? CenteredViewLayerBindings.InferPresentationLayerKinds(recipeName, implVersion, index)
+                                    : null;
+                                semantics = new(CurrentSchemaVersion, null, recipeName, implVersion, layerKinds);
+                            }
+                            outputs.Add(new(nodeId, sourceSchema, variant, index, semantics));
+                        }
+                    }
+                }
+                index++;
+            }
+            return outputs;
+        }
+        catch (JsonException)
+        {
+            return [];
         }
     }
 
@@ -466,24 +524,48 @@ internal static class CenteredViewLayerBindings
     /// <summary>
     /// Reconstructs per-slot centered-view bindings when the frozen graph revision is unavailable, preserving the
     /// exact deterministic first-node-by-ordinal-id single-writer selection of <see cref="ReadConfigured(ProcessingGraphDefinition)"/>
-    /// across multi-node, custom-variant, renamed-alias, and legacy expired-writer executions.
+    /// across multi-node, custom-variant, renamed-alias, missing-winning-row, and legacy expired-writer executions.
     /// </summary>
     internal static IReadOnlyDictionary<(string Producer, string Schema, string Variant), IReadOnlyList<CenteredViewLayerBinding>>
         BuildRecoveredBindings(
             IReadOnlyList<(ExposureProductLookup Lookup, CenteredProductSemanticProvenanceV1? Semantics)> entries,
-            CenteredAuthoritativeAssociationResolution authoritativeWriter)
+            CenteredAuthoritativeAssociationResolution authoritativeWriter,
+            IReadOnlyList<RecoveredNodeDeclaredOutput>? declaredOutputs = null)
     {
         var result = new Dictionary<(string Producer, string Schema, string Variant), IReadOnlyList<CenteredViewLayerBinding>>();
         var boundLayers = new HashSet<(CenteredViewLayerScope Scope, string Kind)>();
         var scenePortCounters = new Dictionary<string, int>(StringComparer.Ordinal);
         var cloudPortCounters = new Dictionary<string, int>(StringComparer.Ordinal);
-        var ordered = entries
-            .OrderBy(static entry => entry.Lookup.Slot.Producer, StringComparer.Ordinal)
-            .ThenBy(static entry => entry.Lookup.Revision ?? long.MaxValue)
-            .ThenBy(static entry => entry.Lookup.Slot.Variant, StringComparer.Ordinal);
-        foreach (var (lookup, semantics) in ordered)
+        var presentKeys = new HashSet<(string Producer, string Schema, string Variant)>();
+        var items = new List<(ExposureProductSlot Slot, long OrderKey, ExposureProductAvailability? Availability,
+            CenteredProductSemanticProvenanceV1? Semantics)>(entries.Count + (declaredOutputs?.Count ?? 0));
+        foreach (var (lookup, semantics) in entries)
         {
             var slot = lookup.Slot;
+            var key = (slot.Producer, SourceSchema(slot.SchemaVersion), slot.Variant);
+            presentKeys.Add(key);
+            items.Add((slot, lookup.Revision ?? long.MaxValue, lookup.Availability, semantics));
+        }
+        if (declaredOutputs is { Count: > 0 })
+        {
+            // Include declared node output contracts whose product row is absent so a missing winning writer
+            // still reserves layer ownership and never falls back to a lower-priority writer's row.
+            foreach (var declared in declaredOutputs)
+            {
+                var key = (declared.Producer, declared.SchemaVersion, declared.Variant);
+                if (!presentKeys.Add(key))
+                    continue;
+                var syntheticSlot = new ExposureProductSlot(Guid.Empty, declared.Producer, declared.SchemaVersion, declared.Variant);
+                items.Add((syntheticSlot, declared.PortIndex, null, declared.Semantics));
+            }
+        }
+
+        var ordered = items
+            .OrderBy(static item => item.Slot.Producer, StringComparer.Ordinal)
+            .ThenBy(static item => item.OrderKey)
+            .ThenBy(static item => item.Slot.Variant, StringComparer.Ordinal);
+        foreach (var (slot, _, availability, semantics) in ordered)
+        {
             var key = (slot.Producer, SourceSchema(slot.SchemaVersion), slot.Variant);
             if (result.ContainsKey(key))
                 continue;
@@ -508,7 +590,7 @@ internal static class CenteredViewLayerBindings
                         effectiveSemantics = effectiveSemantics with { LayerKinds = inferred };
                 }
             }
-            var candidates = ReadLegacySlot(slot, authoritativeWriter, effectiveSemantics, lookup.Availability);
+            var candidates = ReadLegacySlot(slot, authoritativeWriter, effectiveSemantics, availability);
             if (candidates.Count == 0)
                 continue;
             var claimed = candidates.Where(binding => boundLayers.Add((binding.Scope, binding.Style.Kind))).ToArray();

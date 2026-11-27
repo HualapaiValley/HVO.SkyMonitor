@@ -51,12 +51,19 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
         BuiltInProcessingRecipes.ExposureMeasurement, "1.0.0", ExposureMeasurementProducts.SchemaVersion,
         ProcessingOperationKind.Analyzer);
 
-    internal static IReadOnlyList<ProcessingAlgorithmIdentity> Algorithms(ExposureMeasurementInputV1 input)
+    internal static string StellarAlgorithmVersion(ExposureFocusSamplingPolicy policy)
+        => policy == ExposureFocusSamplingPolicy.EligibleFirstWithOccupancy
+            ? StellarSourceMeasurer.AlgorithmVersion
+            : StellarSourceMeasurer.V2AlgorithmVersion;
+
+    internal static IReadOnlyList<ProcessingAlgorithmIdentity> Algorithms(
+        ExposureMeasurementInputV1 input,
+        ExposureFocusSamplingPolicy policy = ExposureFocusSamplingPolicy.EligibleFirstWithOccupancy)
     {
         List<ProcessingAlgorithmIdentity> algorithms =
         [
             new("image-statistics", ImageStatisticsCalculator.StoredCodeAlgorithmVersion),
-            new("stellar-source-measurer", StellarSourceMeasurer.AlgorithmVersion),
+            new("stellar-source-measurer", StellarAlgorithmVersion(policy)),
             new("focus-star-measurer", FocusStarMeasurer.AlgorithmVersion)
         ];
         if (input.Linear?.Layout.PixelFormat == CameraPixelFormat.BayerRggb16)
@@ -71,7 +78,10 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
     }
 
     internal static ExposureMeasurementInputV1 Input(ProcessingRecipeIdentity recipe)
-        => ExposureMeasurementProducts.ReadParameters(recipe.Descriptor.Options.GetProperty("parameters")).Input;
+        => Parameters(recipe).Input;
+
+    internal static (ExposureMeasurementInputV1 Input, ExposureFocusSamplingPolicy Policy) Parameters(ProcessingRecipeIdentity recipe)
+        => ExposureMeasurementProducts.ReadParameters(recipe.Descriptor.Options.GetProperty("parameters"));
 
     public ValueTask<ProcessingOutcome> ExecuteAsync(ProcessingExecutionRequest request,
         ProcessingRecipeIdentity identity, CancellationToken cancellationToken)
@@ -98,7 +108,7 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
         var payload = ExposureMeasurementProducts.Serialize(result);
         var product = ProcessingRecipeSupport.CreateProduct(FrameArtifactRole.Metadata,
             ExposureMeasurementProducts.Variant, ExposureMeasurementProducts.MediaType, null, payload,
-            identity, Algorithms(input), sources, raw.Integration, raw.Compatibility,
+            identity, Algorithms(input, policy), sources, raw.Integration, raw.Compatibility,
             ProcessingProductKind.Metadata, ExposureMeasurementProducts.SchemaVersion,
             ProcessingIdentity.ComputePayloadSha256(payload));
         cancellationToken.ThrowIfCancellationRequested();
@@ -193,8 +203,11 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
 
         var (samples, clipped, valid) = Prepare(raw, linear, sensorWhite, outputWhite, pattern, aperture, cancellationToken);
         var options = MeasuredStellarAssociationRecipe.MeasurementOptions(layout.PixelFormat);
-        var measured = StellarSourceMeasurer.Measure(samples.Span, valid.Span, clipped,
-            layout.Width, layout.Height, options, cancellationToken);
+        var measured = policy == ExposureFocusSamplingPolicy.EligibleFirstWithOccupancy
+            ? StellarSourceMeasurer.Measure(samples.Span, valid.Span, clipped,
+                layout.Width, layout.Height, options, cancellationToken)
+            : StellarSourceMeasurer.MeasureLegacyV2(samples.Span, valid.Span, clipped,
+                layout.Width, layout.Height, options, cancellationToken);
         var (status, reason) = measured switch
         {
             { Status: StellarMeasurementStatus.CandidateBudgetExceeded } =>
@@ -255,7 +268,7 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
         if (stars.Detections.Count == 0)
             return new(stars.Status, stars.Reason, 0, null, null, 0, null, []);
 
-        var eligibleFirst = policy == ExposureFocusSamplingPolicy.EligibleFirst;
+        var eligibleFirst = policy is ExposureFocusSamplingPolicy.EligibleFirst or ExposureFocusSamplingPolicy.EligibleFirstWithOccupancy;
         var cfa = layout.PixelFormat == CameraPixelFormat.BayerRggb16;
         var bayerCoreTrail = cfa && policy != ExposureFocusSamplingPolicy.Brightest;
         var count = Math.Min(stars.Detections.Count, ExposureMeasurementProducts.MaximumHfdSamples);
