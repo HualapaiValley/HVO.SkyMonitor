@@ -99,8 +99,18 @@ All objects in `hvo-meteor-showers-v1` enforce strict JSON schema semantics
 | `showers` | array of `MeteorShowerRecord` ($\le 1,500$ entries, sorted by `iauNumber` ascending) | Active/established/working shower definitions |
 | `removedShowers` | array of `RemovedMeteorShowerTombstone` ($\le 1,500$ entries, sorted by `iauNumber` ascending) | Tombstones for IAU MDC Removed showers |
 
-**Hard validation ceilings (Proposed defaults):**
+**Hard validation & canonical serialization ceilings (Proposed defaults):**
 - Maximum snapshot JSON file size: **2 MiB**; `provenance.json` $\le 64\text{ KiB}$.
+- **Exact canonical JSON serialization rule (matching `.NET System.Text.Json` /
+  `CaptureContractJson` / `OrbitalCanonicalJson` and RFC 8785 JCS):**
+  - Compact UTF-8 JSON (no insignificant whitespace), `StringComparer.Ordinal`
+    property order, uppercase 64-hex SHA-256 digests;
+  - Finite IEEE 754 numbers serialized in shortest round-trip decimal form with
+    `-0.0` normalized to `0` and **integer-valued finite numbers serialized
+    WITHOUT a trailing `.0`** (for example, `41`, `49`, `230`, `276`, `292`
+    rather than `41.0`, matching `.NET System.Text.Json` and
+    `tests/fixtures/orbital/contract-v1/pass.json`);
+  - UTC ISO-8601 `"Z"` timestamps.
 - Reject duplicate `iauNumber`, duplicate active `iauCode`, nonfinite numbers,
   `NaN`/`Infinity`, out-of-range coordinates (`raDeg` $\notin [0, 360)$, `decDeg`
   $\notin [-90, 90]$, $\lambda_\odot \notin [0, 360)$), invalid occurrence
@@ -123,7 +133,7 @@ All objects in `hvo-meteor-showers-v1` enforce strict JSON schema semantics
 | `geocentricVelocityKmPerSec` | finite number $> 0$ or `null` | Mean geocentric velocity $V_g$ (km/s) |
 | `parentBodyName` | string or `null` | Informational parent-body text only (e.g. `"(196256) 2003 EH1"`); never used for orbit computation |
 | `nominalActivity` | object or `null` | **Optional/nullable** J2000.0 solar-longitude activity metadata so MDC-only records never fabricate bounds:<br>• `source`: enum (`"IAU-MDC"`, `"AnnualActivitySource"`, `"OperatorCurated"`)<br>• `peakSolarLonDeg`: finite number `[0, 360)` or `null`<br>• `activeStartSolarLonDeg`: finite number `[0, 360)` or `null` (**must stay `null` if source omits active start**)<br>• `activeEndSolarLonDeg`: finite number `[0, 360)` or `null` (**must stay `null` if source omits active end**)<br>If both start and end are non-null, handles circular wrap where `start > end` (e.g. `355° → 15°`). If either is `null`, both must be `null` (no one-sided fabricated interval) |
-| `annualForecasts` | array of `MeteorShowerAnnualForecast` (0–2 entries, sorted by `occurrenceYear` ascending then `windowStartUtc` ascending; `[]` when `activitySource` is `null` or does not cover this shower) | Each entry binds one specific shower occurrence:<br>• `editionYear` (integer, e.g., `2026`, `2027`)<br>• `occurrenceYear` (integer, calendar year of the occurrence's nominal peak)<br>• `windowStartUtc` (UTC ISO-8601 start of this occurrence's active window)<br>• `peakUtc` (UTC ISO-8601 or `null`)<br>• `windowEndUtc` (UTC ISO-8601 exclusive end of this occurrence's active window, strictly `> windowStartUtc`)<br>• `validFromUtc` / `validUntilUtc` (edition validity, half-open `validFromUtc <= queryUtc < validUntilUtc`; typically `(editionYear-1)-12-01T00:00:00Z` to `(editionYear+1)-01-15T00:00:00Z`)<br>• `peakTimeSource` (`"SourceCalendarUtc"` or `"DerivedFromSolarLongitudeUtc"`)<br>• `peakWindowStartUtc` / `peakWindowEndUtc` (nullable UTC bounds)<br>• `peakUncertaintyHours` (finite number $\ge 0$ or `null`)<br>• `peakUncertaintySolarLongitudeDeg` (finite number $\ge 0$ or `null`)<br>• `peakProfile` (`"Sharp"`, `"Broad"`, `"Variable"`, `"OutburstSuspected"`, `"Unknown"`)<br>• `activityConfidence` (`"NominalAnnual"`, `"VariableOrUncertain"`, `"ModelPrediction"`, `"Unknown"`)<br>• `idealizedZhrMin` / `idealizedZhrMax` (nullable integers $\ge 0$, or `null` when variable/unknown)<br>• `idealizedZhrQualifier` (string, e.g. `"Variable"`, `"Nominal"`, `"OutburstModel"`)<br>• `populationIndexR` (finite number or `null`)<br>• `notes` (short plain-text non-HTML observing note $\le 280$ chars or `null`) |
+| `annualForecasts` | array of `MeteorShowerAnnualForecast` (0–2 entries, sorted by `occurrenceYear` ascending then `windowStartUtc` ascending; `[]` when `activitySource` is `null` or does not cover this shower) | Each entry binds one specific shower occurrence:<br>• `editionYear` (integer, e.g., `2026`, `2027`)<br>• `occurrenceYear` (integer, calendar year of the occurrence's nominal peak)<br>• `windowStartUtc` (UTC ISO-8601 start of this occurrence's active window)<br>• `peakUtc` (UTC ISO-8601 or `null`)<br>• `windowEndUtc` (UTC ISO-8601 exclusive end of this occurrence's active window, strictly `> windowStartUtc`)<br>• `validFromUtc` / `validUntilUtc` (edition validity, half-open `validFromUtc <= queryUtc < validUntilUtc`; typically `(editionYear-1)-12-01T00:00:00Z` to `(editionYear+1)-01-15T00:00:00Z`)<br>• `peakTimeSource` (`"SourceCalendarUtc"` or `"DerivedFromSolarLongitudeUtc"`)<br>• `peakWindowStartUtc` / `peakWindowEndUtc` (nullable UTC bounds)<br>• `peakUncertaintyHours` (finite number $\ge 0$ or `null`)<br>• `peakUncertaintySolarLongitudeDeg` (finite number $\ge 0$ or `null`)<br>• `peakProfile` (`"Sharp"`, `"Broad"`, `"Variable"`, `"OutburstSuspected"`, `"Unknown"`)<br>• `activityConfidence` (`"NominalAnnual"`, `"VariableOrUncertain"`, `"ModelPrediction"`, `"Unknown"`)<br>• `idealizedZhrNominal` (nullable integer $\ge 0$, source nominal idealized ZHR when published, e.g. `80`)<br>• `idealizedZhrMin` / `idealizedZhrMax` (nullable integers $\ge 0$, observed/published variation bounds when supplied, e.g. `60`–`200`, or `null` when unavailable)<br>• `idealizedZhrQualifier` (string, e.g. `"Nominal"`, `"NominalWithObservedVariation"`, `"Variable"`, `"OutburstModel"`)<br>• `populationIndexR` (finite number or `null`)<br>• `notes` (short plain-text non-HTML observing note $\le 280$ chars or `null`) |
 
 ### 3.3 `RemovedMeteorShowerTombstone`
 
@@ -133,10 +143,17 @@ All objects in `hvo-meteor-showers-v1` enforce strict JSON schema semantics
 
 ### 3.4 Canonical JSON Examples
 
-All SHA-256 hashes below are computed over compact ordinal-sorted canonical JSON
-with `snapshotSha256` excluded.
+All SHA-256 hashes below are computed under the exact Section 3.1
+`.NET System.Text.Json` / RFC 8785 JCS canonical serializer (compact
+ordinal-sorted JSON, integer-valued finite numbers without trailing `.0`, with
+`snapshotSha256` excluded).
 
-#### Example A: Annual Activity + IAU MDC (Local Operator Import, 2027 Quadrantids Occurrence)
+#### Example A: Annual Activity + IAU MDC (Local Operator Import, 2027 Quadrantids Occurrence — Verified Against IMO 2027 Calendar `cal2027.pdf#page=4`)
+
+Values match `cal2027.pdf` page 4 verbatim: active December 28–January 12,
+maximum January 4 `03:25 UTC` ($\lambda_\odot = 283.15^\circ$), nominal
+`ZHR = 80` (observed variation `~60–200`), timing uncertainty `~2.5 h`
+(`~0.1°`), $V_\infty = 41\text{ km/s}$, $r = 2.1$ at maximum.
 
 ```json
 {
@@ -176,18 +193,19 @@ with `snapshotSha256` excluded.
         {
           "activityConfidence": "NominalAnnual",
           "editionYear": 2027,
-          "idealizedZhrMax": 120,
+          "idealizedZhrMax": 200,
           "idealizedZhrMin": 60,
-          "idealizedZhrQualifier": "Nominal",
-          "notes": "Sharp peak; idealized ZHR assumes dark sky, zenith radiant, and limiting magnitude 6.5.",
+          "idealizedZhrNominal": 80,
+          "idealizedZhrQualifier": "NominalWithObservedVariation",
+          "notes": "Sharp peak (2027 IMO calendar p. 4: Jan 4 03:25 UTC, nominal ZHR 80, variation ~60-200, timing uncertainty ~2.5 h); idealized ZHR assumes dark sky, zenith radiant, and limiting magnitude 6.5.",
           "occurrenceYear": 2027,
           "peakProfile": "Sharp",
           "peakTimeSource": "SourceCalendarUtc",
-          "peakUncertaintyHours": 2.0,
-          "peakUncertaintySolarLongitudeDeg": 0.08,
-          "peakUtc": "2027-01-04T02:00:00Z",
-          "peakWindowEndUtc": "2027-01-04T04:00:00Z",
-          "peakWindowStartUtc": "2027-01-04T00:00:00Z",
+          "peakUncertaintyHours": 2.5,
+          "peakUncertaintySolarLongitudeDeg": 0.1,
+          "peakUtc": "2027-01-04T03:25:00Z",
+          "peakWindowEndUtc": null,
+          "peakWindowStartUtc": null,
           "populationIndexR": 2.1,
           "validFromUtc": "2026-12-01T00:00:00Z",
           "validUntilUtc": "2028-01-15T00:00:00Z",
@@ -195,15 +213,15 @@ with `snapshotSha256` excluded.
           "windowStartUtc": "2026-12-28T00:00:00Z"
         }
       ],
-      "geocentricVelocityKmPerSec": 41.0,
+      "geocentricVelocityKmPerSec": 41,
       "iauCode": "QUA",
       "iauNumber": 10,
       "mdcDatasetRef": "MDC-0010-REF",
       "name": "Quadrantids",
       "nominalActivity": {
-        "activeEndSolarLonDeg": 292.0,
-        "activeStartSolarLonDeg": 276.0,
-        "peakSolarLonDeg": 283.16,
+        "activeEndSolarLonDeg": 292,
+        "activeStartSolarLonDeg": 276,
+        "peakSolarLonDeg": 283.15,
         "source": "AnnualActivitySource"
       },
       "parentBodyName": "(196256) 2003 EH1",
@@ -212,17 +230,17 @@ with `snapshotSha256` excluded.
         "dRaDegPerSolarLonDeg": 0.6
       },
       "referenceRadiant": {
-        "decDeg": 49.0,
+        "decDeg": 49,
         "equinox": "J2000",
-        "raDeg": 230.0,
-        "referenceSolarLongitudeDeg": 283.16
+        "raDeg": 230,
+        "referenceSolarLongitudeDeg": 283.15
       },
       "showerGroupId": null,
       "status": "Established"
     }
   ],
   "snapshotId": "local-mdc-2026-activity-2027-r1",
-  "snapshotSha256": "106E7D11183EAAF704BE9F3B97BA5C54964762A2A56440C5D13404E6BD2D0FF7"
+  "snapshotSha256": "5196D5290715CE913E210E8265AC789F1F096FC2BA71310E4934AA5F1DAB618F"
 }
 ```
 
@@ -246,7 +264,7 @@ with `snapshotSha256` excluded.
   "showers": [
     {
       "annualForecasts": [],
-      "geocentricVelocityKmPerSec": 41.0,
+      "geocentricVelocityKmPerSec": 41,
       "iauCode": "QUA",
       "iauNumber": 10,
       "mdcDatasetRef": "MDC-0010-REF",
@@ -260,9 +278,9 @@ with `snapshotSha256` excluded.
       "parentBodyName": "(196256) 2003 EH1",
       "radiantDrift": null,
       "referenceRadiant": {
-        "decDeg": 49.0,
+        "decDeg": 49,
         "equinox": "J2000",
-        "raDeg": 230.0,
+        "raDeg": 230,
         "referenceSolarLongitudeDeg": 283.16
       },
       "showerGroupId": null,
@@ -270,7 +288,7 @@ with `snapshotSha256` excluded.
     }
   ],
   "snapshotId": "local-mdc-only-2026-r1",
-  "snapshotSha256": "B75523E0C0FC7A86D123E1F6934996F0919B00D7292BB8D4FD11193B2D8A442C"
+  "snapshotSha256": "520B979494E8EBBC3FCE953A2CC42E8B9C315B37D116AB144D00BE475E26BDFA"
 }
 ```
 
@@ -298,26 +316,30 @@ with `snapshotSha256` excluded.
 2. **Freshness, Occurrence-Window Binding, Overlapping Editions, and Exclusive Expiry:**
    - **Identity freshness:** Static IAU MDC identity/radiant records remain
      usable offline with their recorded `mdcExportDate`.
-   - **Edition validity (exact half-open boundary):** An annual forecast entry's
-     edition is valid at `queryUtc` iff **`validFromUtc <= queryUtc < validUntilUtc`**.
-     At and past `validUntilUtc` (`queryUtc >= validUntilUtc`), `annualForecastStatus`
-     is strictly **`Expired`**; expired peak times and ZHRs are **never**
-     silently presented as current-year forecasts.
-   - **Occurrence-window binding:** A valid edition entry is eligible for display
-     at `queryUtc` with lookahead duration $L$ (Proposed default: `30 days`) iff:
-     - **Active:** `validFromUtc <= queryUtc < validUntilUtc` **and**
-       `windowStartUtc <= queryUtc < windowEndUtc`.
-     - **Upcoming:** `queryUtc < validUntilUtc` **and**
-       `validFromUtc <= min(queryUtc + L, windowEndUtc)` **and**
-       `queryUtc < windowStartUtc < queryUtc + L`.
-     - **Past occurrence exclusion:** Any forecast with **`windowEndUtc <= queryUtc`**
-       is strictly excluded from active and upcoming lists even while
-       `queryUtc < validUntilUtc`.
-   - **Overlapping-edition precedence:** When a snapshot (or merged active +
-     next-year operator import) supplies multiple non-expired forecast entries
-     for the same `(iauNumber, occurrenceYear)`, select the entry with the
-     **highest `editionYear`** (breaking ties by `generatedUtc` descending, then
-     `snapshotId` ordinal).
+   - **Stage 1 — Edition validity gate (applied FIRST, before occurrence selection
+     and before overlapping-edition precedence):** An annual forecast entry's
+     edition is eligible at `queryUtc` **iff**
+     **`validFromUtc <= queryUtc < validUntilUtc`**. Any entry with
+     `queryUtc < validFromUtc` (`NotYetValid`) or `queryUtc >= validUntilUtc`
+     (`Expired`) is strictly excluded before Stage 2 runs; expired or
+     not-yet-valid editions are **never** surfaced as active or upcoming and
+     expired peak times/ZHRs are **never** silently recycled.
+   - **Stage 2 — Occurrence-window binding & overlapping-edition precedence
+     (applied ONLY to Stage-1-valid entries):**
+     - **Past occurrence exclusion:** Any forecast with
+       **`windowEndUtc <= queryUtc`** is strictly excluded from active and
+       upcoming lists even while `validFromUtc <= queryUtc < validUntilUtc`.
+     - **Overlapping-edition precedence:** Among remaining Stage-1-valid,
+       non-past entries for the same `(iauNumber, occurrenceYear)`, select the
+       entry with the **highest `editionYear`** (breaking ties by `generatedUtc`
+       descending, then `snapshotId` ordinal).
+     - **Active:** `windowStartUtc <= queryUtc < windowEndUtc` (with Stage 1
+       already enforcing `validFromUtc <= queryUtc < validUntilUtc`).
+     - **Upcoming (lookahead duration $L$, Proposed default `30 days`):**
+       `queryUtc < windowStartUtc < queryUtc + L` (with Stage 1 already
+       enforcing `validFromUtc <= queryUtc < validUntilUtc` — an edition whose
+       `validFromUtc > queryUtc` is **never** admitted into `Upcoming` merely
+       because `windowStartUtc` falls inside `queryUtc + L`).
    - **Verified boundary cases (mandatory Slice M0/M1 tests):**
      - **Case (a) — `2027-01-03T12:00:00Z` with only a 2026 edition present**
        (`QUA` entry: `editionYear = 2026`, `occurrenceYear = 2026`,
@@ -326,24 +348,40 @@ with `snapshotSha256` excluded.
        Because `windowEndUtc (2026-01-13) <= queryUtc (2027-01-03)`, the January
        2026 Quadrantids entry is **NOT** surfaced as active or upcoming.
        Quadrantids instead reports `NoForecastForOccurrence` (optional
-       HVO-derived solar-longitude estimate only, with `idealizedZhr = null`).
+       HVO-derived solar-longitude estimate only when `nominalActivity.peakSolarLonDeg`
+       is present, with `idealizedZhr = null`).
      - **Case (b) — `2026-12-28T00:00:00Z` with 30-day lookahead and both 2026
-       and 2027 editions present:** The 2026 edition's `occurrenceYear = 2026`
-       entry is excluded (`windowEndUtc <= queryUtc`), and for
-       `occurrenceYear = 2027` (`windowStartUtc = 2026-12-28T00:00:00Z`,
-       `peakUtc = 2027-01-04T02:00:00Z`, `windowEndUtc = 2027-01-13T00:00:00Z`),
-       overlapping-edition precedence selects the **2027 edition**
-       (`editionYear = 2027 > 2026`).
-     - **Case (c) — Exact expiry boundary `queryUtc == validUntilUtc`**
-       (`2027-01-15T00:00:00Z` for a 2026 edition): strictly `Expired`.
-   - **Fallback when annual activity is absent or expired:** If `activitySource`
-     is `null` or no valid occurrence forecast exists, the evaluator may compute
+       and 2027 editions present:** Both editions pass Stage 1 at `2026-12-28`.
+       The 2026 edition's `occurrenceYear = 2026` entry is excluded
+       (`windowEndUtc <= queryUtc`), and for `occurrenceYear = 2027`
+       (`windowStartUtc = 2026-12-28T00:00:00Z`, `peakUtc = 2027-01-04T03:25:00Z`,
+       `windowEndUtc = 2027-01-13T00:00:00Z`), overlapping-edition precedence
+       selects the **2027 edition** (`editionYear = 2027 > 2026`).
+     - **Case (c) — Exact upper expiry boundary `queryUtc == validUntilUtc`**
+       (`2027-01-15T00:00:00Z` for a 2026 edition): excluded by Stage 1 as
+       strictly `Expired`.
+     - **Case (d) — Pre-validity lookahead boundary `queryUtc = 2026-11-30T00:00:00Z`
+       with 30-day lookahead ($L = 30\text{ d}$) against the canonical 2027 edition**
+       (`validFromUtc = 2026-12-01T00:00:00Z`, `windowStartUtc = 2026-12-28T00:00:00Z`,
+       `validUntilUtc = 2028-01-15T00:00:00Z`): Even though `windowStartUtc`
+       (`2026-12-28`) lies within `queryUtc + 30 d` (`2026-12-30`), Stage 1
+       strictly excludes the 2027 edition because `queryUtc < validFromUtc`.
+       The 2027 edition becomes eligible starting at `2026-12-01T00:00:00Z`.
+   - **Fallback when annual activity is absent or expired (no peak date from
+     radiant reference longitude alone):** If `activitySource` is `null` or no
+     Stage-1/Stage-2 valid occurrence forecast exists, the evaluator may compute
      a nominal peak date from J2000 solar longitude (`peakTimeSource =
-     "DerivedFromSolarLongitudeUtc"`) **only** when `peakSolarLonDeg` (or
-     `referenceRadiant.referenceSolarLongitudeDeg`) is present, with explicit
-     qualifier *"Annual calendar forecast unavailable/expired; reference peak
-     date below is derived locally from J2000 solar longitude by HVO SkyMonitor"*
-     and `idealizedZhr = null` — **never** fabricating active start/end bounds.
+     "DerivedFromSolarLongitudeUtc"`) **ONLY** when a source-qualified
+     **`nominalActivity.peakSolarLonDeg`** is non-null — **NEVER** from
+     `referenceRadiant.referenceSolarLongitudeDeg` alone. When `nominalActivity`
+     is `null` or `nominalActivity.peakSolarLonDeg` is `null`, no derived peak
+     date is emitted (`derivedPeakUtc = null`), and
+     `referenceRadiant.referenceSolarLongitudeDeg` serves solely as the radiant
+     reference longitude. When a derived peak date is emitted from
+     `nominalActivity.peakSolarLonDeg`, it carries the explicit qualifier
+     *"Annual calendar forecast unavailable/expired; reference peak date below
+     is derived locally from J2000 solar longitude by HVO SkyMonitor"* and
+     `idealizedZhr = null` — **never** fabricating active start/end bounds.
 
 ## 5. Evaluation Semantics (Solar Longitude, Radiant, Darkness, Moon, Cloud)
 
@@ -397,16 +435,15 @@ with `snapshotSha256` excluded.
   omitting `/ 15.0` throws `ArgumentOutOfRangeException`) and an `raDeg < 24°`
   case (e.g., `raDeg = 15.0° -> 1.0 h`, where omitting `/ 15.0` silently
   evaluates `15.0 h = 225°`, a `210°` pointing error without throwing!).
-- **Frozen golden horizontal vector (verified bit-for-bit against
+- **Frozen golden horizontal vectors (verified bit-for-bit against
   `AstronomyTime.cs`, `Precession.cs`, and `Projection.cs`):**
 
   | Quantity | Exact Frozen Value |
   | --- | --- |
-  | Shower & reference J2000 radiant | Quadrantids (`QUA`, IAU #10): `raDeg = 230.0°` (`raHours = 15.333333333 h`), `decDeg = +49.0°` (zero drift) |
-  | Observer (`ObserverLocation`) | HVO reference site: `latitudeDegrees = 35.5599378`, `longitudeDegrees = -113.9119818`, `elevationMeters = 1000.0` |
-  | Query instant (`utc`) | `2027-01-04T11:00:00Z` (`JD = 2461409.9583333335`, `GMST = 268.830818°`, `LMST = 154.918836°`) |
-  | Precessed mean-of-date (`PrecessJ2000`) | `RightAscensionHours = 15.347572454 h` (`230.213587°`), `DeclinationDegrees = 48.903563°` |
-  | Unrefracted geometric horizontal (`EquatorialToHorizontal`) | **`altitudeDeg = 35.029920°`**, **`azimuthDeg = 50.936604°`** |
+  | Shower & reference J2000 radiant | Quadrantids (`QUA`, IAU #10): `raDeg = 230` (`raHours = 15.333333333 h`), `decDeg = 49` (zero drift) |
+  | Observer (`ObserverLocation`) | HVO reference site: `latitudeDegrees = 35.5599378`, `longitudeDegrees = -113.9119818`, `elevationMeters = 1000` |
+  | **Vector 1 — HVO pre-dawn dark-window instant** (`2027-01-04T11:00:00Z`, 04:00 MST, after the `03:25 UTC` IMO peak) | `JD = 2461409.9583333335`, `GMST = 268.830818°`, `LMST = 154.918836°`; precessed `RightAscensionHours = 15.347572454 h` (`230.213587°`), `DeclinationDegrees = 48.903563°`; **`altitudeDeg = 35.029920°`**, **`azimuthDeg = 50.936604°`** (`RadiantAboveHorizon`) |
+  | **Vector 2 — Exact 2027 IMO peak instant** (`2027-01-04T03:25:00Z`, 20:25 MST) | `JD = 2461409.6423611110`, `GMST = 154.769381°`, `LMST = 40.857399°`; precessed `RightAscensionHours = 15.347571998 h` (`230.213580°`), `DeclinationDegrees = 48.903566°`; **`altitudeDeg = -5.127134°`**, **`azimuthDeg = 353.840761°`** (`RadiantBelowHorizon` at HVO) |
 
 - Over the site's local night window, compute radiant altitude at the query
   instant, maximum radiant altitude during local astronomical darkness, and
@@ -433,26 +470,49 @@ Displayed on **Observatory & location** (`/operations/site`) only when enabled
 and independent of satellite planning. Each listed shower row displays:
 - **Identity:** `name`, `iauCode`, `iauNumber`, and `status` badge (`Established`
   or `Working` when opted in).
-- **Activity & Peak (when valid annual forecast is present):** Occurrence window
-  (`windowStartUtc`–`windowEndUtc`) and peak time in **both** site-local civil
-  date/time (`SiteTimeZone`) and UTC, peak uncertainty (`peakUncertaintyHours` /
-  `peakUncertaintySolarLongitudeDeg`), `peakProfile`, `activityConfidence`, and
-  `peakTimeSource` (`SourceCalendarUtc` vs `DerivedFromSolarLongitudeUtc`).
-- **Qualified Rate (when valid annual forecast is present):** Source idealized
-  ZHR (or `Unknown`/`Variable`) accompanied by mandatory informational
-  disclaimer: *"Idealized source ZHR under ideal dark zenith conditions — not an
-  expected count for this camera or site."*
-- **Identity/Radiant-Only Mode (MDC-only baseline or missing/expired annual activity):**
-  When `activitySource == null`, `annualForecasts` has no valid entry for the
-  current/upcoming occurrence, or `nominalActivity` lacks start/end bounds, the
-  card **never** displays fabricated start/end dates or placeholder ZHR values.
-  It displays shower identity, reference radiant / current & dark-window
-  geometric radiant altitude (or `"Below horizon at this site"`), optional
-  locally derived nominal peak reference date (if `peakSolarLonDeg` is present,
-  explicitly labelled as derived from J2000 solar longitude), and exact UI copy:
-  *"Activity window and ZHR unavailable (identity/radiant snapshot only — no
-  annual activity source loaded)."* (or *"Annual activity forecast expired —
-  no current-year forecast loaded."* when expired).
+- **Card Mode Selection (Driven Strictly by Annual Activity Forecast State, Never by `nominalActivity` Bounds):**
+  1. **Annual Activity Mode (`activitySource != null` AND a Stage-1/Stage-2 valid
+     `MeteorShowerAnnualForecast` entry matches the active/upcoming occurrence):**
+     Displays the occurrence window (`windowStartUtc`–`windowEndUtc`) and peak
+     time in **both** site-local civil date/time (`SiteTimeZone`) and UTC, peak
+     uncertainty (`peakUncertaintyHours` / `peakUncertaintySolarLongitudeDeg`),
+     `peakProfile`, `activityConfidence`, `peakTimeSource` (`SourceCalendarUtc`
+     vs `DerivedFromSolarLongitudeUtc`), and qualified source idealized ZHR
+     (`idealizedZhrNominal` and/or `idealizedZhrMin`–`idealizedZhrMax`, or
+     `Unknown`/`Variable`) with mandatory disclaimer: *"Idealized source ZHR
+     under ideal dark zenith conditions — not an expected count for this camera
+     or site."* This mode applies **even when `nominalActivity` is `null` or
+     omits solar-longitude start/end bounds** (absent nominal bounds never
+     demote a valid annual occurrence into `"no annual activity source loaded"`
+     mode).
+  2. **Annual Forecast Expired / Missing-Occurrence Mode (`activitySource != null`,
+     but the edition is expired/not-yet-valid or no Stage-1/Stage-2 valid
+     `annualForecasts` entry covers this shower's current/upcoming occurrence):**
+     Never displays fabricated start/end dates or placeholder/expired ZHR values.
+     Displays shower identity, reference radiant / current & dark-window
+     geometric radiant altitude (or `"Below horizon at this site"`), optional
+     locally derived nominal peak reference date **only** when a source-qualified
+     `nominalActivity.peakSolarLonDeg` is non-null (**never** from
+     `referenceRadiant.referenceSolarLongitudeDeg` alone), and exact UI copy:
+     *"Annual activity forecast expired — no current-year forecast loaded."*
+     (when expired) or *"No current-year annual activity forecast available for
+     this shower."* (when not yet valid or omitted for this occurrence).
+  3. **Identity/Radiant-Only Mode (`activitySource == null`, MDC-only baseline):**
+     Never displays fabricated start/end dates or placeholder ZHR values.
+     Displays shower identity, reference radiant / current & dark-window
+     geometric radiant altitude (or `"Below horizon at this site"`), optional
+     locally derived nominal peak reference date **only** when a source-qualified
+     `nominalActivity.peakSolarLonDeg` is non-null (**never** from
+     `referenceRadiant.referenceSolarLongitudeDeg` alone), and exact UI copy:
+     *"Activity window and ZHR unavailable (identity/radiant snapshot only — no
+     annual activity source loaded)."*
+  - **Mandatory Slice M0/M1 mode-separation tests:** Verify (a) an MDC-only
+    record with `nominalActivity: null` and non-null
+    `referenceRadiant.referenceSolarLongitudeDeg` emits **no** derived peak
+    date; and (b) a record with `activitySource != null`, a valid
+    `annualForecasts` entry (source window + ZHR), and `nominalActivity: null`
+    renders in **Annual Activity Mode** (never `"no annual activity source
+    loaded"`).
 - **Site Context:** Current & max dark-window geometric radiant altitude (or
   explicit `"Below horizon at this site"`), local darkness window, Moon
   illumination & altitude, and optional `#1004` cloud state (`Unknown` when absent).

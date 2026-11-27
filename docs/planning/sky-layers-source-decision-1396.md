@@ -53,9 +53,14 @@ production math implementation. Accordingly:
 2. **Slice S0** (small bodies) and **Slice M0** (meteor showers) MUST publish
    and record approval of the full immutable offline golden input/output fixture
    sets (`tests/fixtures/small-bodies/v1/` and `tests/fixtures/meteor-showers/v1/`,
-   with exact query parameters, retrieval UTC, SHA-256 hashes, and verified
-   terms/gate compliance) **strictly before** any production math, parser, or
-   provider code in `src/` begins in Slice S1 or Slice M1.
+   with exact provenance, SHA-256 hashes, and verified terms/gate compliance)
+   **strictly before** any production math, parser, or provider code in `src/`
+   begins in Slice S1 or Slice M1. Until/unless primary JPL/Caltech reuse and
+   redistribution terms are directly verified and recorded under Gate
+   **`S0-Clearance`**, all repository-committed Slice S0 fixtures MUST use
+   **strictly HVO-authored synthetic inputs** (with live Horizons/SBDB wire and
+   numerical parity verified locally/on-demand against an uncommitted local
+   cache rather than committing uncleared upstream headers or payloads).
 3. Any release-bundled third-party meteor-shower fixture or snapshot remains
    additionally gated behind external redistribution gates **`M1`** (IMO) and
    **`M2`** (IAU MDC).
@@ -80,19 +85,19 @@ Each decision carries one of three explicit dispositions (following
 
 | ID | Domain | Decision | Status | Remaining Boundary |
 | --- | --- | --- | --- | --- |
-| `SB-01` | Small bodies | **JPL Horizons API** (`EPHEM_TYPE='OBSERVER'`, `CENTER='coord@399'`, `APPARENT='AIRLESS'`, `QUANTITIES='1,2,9,20,23,24,36'`) as primary bounded ephemeris source for an explicit operator watchlist | Approved (Pending Review Merge) | Bounded to explicit watchlist ($\le 32$ bodies); local runtime caching only, no bulk redistribution or full minor-planet survey catalog |
-| `SB-02` | Small bodies | **JPL SBDB API** (`sbdb.api` v1.3) and **Horizons Lookup API** (`horizons_lookup.api` v1.1) as authoritative object-identity, alias, disambiguation, and orbit-solution metadata companions | Approved (Pending Review Merge) | Strict separation between canonical object identity (`spkid`, SBDB `object.des`) and orbit-solution identity (`orbit_id` / `soln_date`); mandatory Horizons ↔ SBDB solution match before pairing |
+| `SB-01` | Small bodies | **JPL Horizons API** (`EPHEM_TYPE='OBSERVER'`, `CENTER='coord@399'`, `APPARENT='AIRLESS'`, `QUANTITIES='1,2,9,20,23,24,36'`) as primary bounded ephemeris source for an explicit operator watchlist | Approved (Pending Review Merge) for local runtime acquisition / **Unresolved Gate `S0-Clearance`** for committing verbatim upstream fixtures | Bounded to explicit watchlist ($\le 32$ bodies); local runtime caching only, no bulk redistribution or full minor-planet survey catalog; repository-committed S0 fixtures use strictly synthetic inputs unless Gate `S0-Clearance` records verified primary JPL/Caltech reuse terms |
+| `SB-02` | Small bodies | **JPL SBDB API** (`sbdb.api` v1.3) and **Horizons Lookup API** (`horizons_lookup.api` v1.1) as authoritative object-identity, alias, disambiguation, and orbit-solution metadata companions | Approved (Pending Review Merge) for local runtime acquisition / **Unresolved Gate `S0-Clearance`** for committing verbatim upstream fixtures | Strict separation between canonical object identity (`spkid`, SBDB `object.des`) and orbit-solution identity (`orbit_id` / `soln_date`); mandatory Horizons ↔ SBDB solution match before pairing |
 | `SB-03` | Small bodies | **MPC** (`CometEls.txt`, `AllCometEls.txt`, `MPCORB.DAT.gz`, `mpcorb_extended.json.gz`) **not selected** as primary propagation authority; **satellite GP/TLE/SGP4** explicitly prohibited | Approved (Pending Review Merge) | MPC comet exports may only serve as an optional external reference or future separately-qualified discovery aid |
 | `SB-04` | Small bodies | **Horizons `VECTORS` / binary `SPK`** not selected for v1; retained as documented future multi-site extension (`REF_SYSTEM='ICRF'`, `REF_PLANE='FRAME'` required for equatorial ICRF) | Approved (Pending Review Merge) | Avoids vendoring a binary DAF/SPK parser and duplicating comet photometric/covariance projection in v1 |
 | `SB-05` | Small bodies | **Topocentric unrefracted coordinates**: retain both astrometric ICRF (`Q=1`) and apparent true-of-date airless (`Q=2`) knots on UTC (`TIME_TYPE='UT'`, `CAL_TYPE='GREGORIAN'`), bound to exact `DeploymentLocation` | Approved (Pending Review Merge) | Site/observer mismatch fails closed (`ObserverMismatch`); refraction applied only at display/projection time via `AtmosphericRefraction` after `#1394` geometric horizon check |
-| `SB-06` | Small bodies | **Local interpolation & error bound**: 4-point centered cubic Lagrange interpolation on 3D topocentric unit vectors ($S^2$) with 1-knot padding at both ends, **motion-sensitive step sizing** ($\omega_{\max} h \le 2.5^\circ$ over `stepSeconds ∈ {3600, 900, 300, 120, 60}` + distance-tier diurnal-parallax caps), and **mandatory per-series midpoint / `2h`-stride residual verification**; never interpolate `AltAz` directly | Approved (Pending Review Merge) | Verified residual $\le 1.0''$ (refines step down to `60 s` or withholds interval with `InterpolationBoundExceeded`); never extrapolate beyond `[validFromUtc, validUntilUtc]` |
+| `SB-06` | Small bodies | **Local interpolation & error bound**: 4-point centered cubic Lagrange interpolation on 3D topocentric unit vectors ($S^2$) with 1-knot padding at both ends, **motion-sensitive step sizing** ($\omega_{\max} h \le 2.5^\circ$ over `stepSeconds ∈ {3600, 900, 300, 120, 60}` + distance-tier diurnal-parallax caps), and **mandatory independent half-step midpoint verification** (or rigorous analytical 4th-derivative remainder bound for closed-form fixtures); never interpolate `AltAz` directly | Approved (Pending Review Merge) | Verified midpoint accuracy $\le 1.0''$ required for every usable interval (integer-knot-only `2h`-stride checks are insufficient and cannot mark a series verified); refines step down to `60 s` or withholds any unverified or $> 1.0''$ interval with `InterpolationBoundExceeded`; never extrapolates beyond `[validFromUtc, validUntilUtc]` |
 | `SB-07` | Small bodies | **Local Earth rotation, time inputs & replay pinning**: reuse existing bundled/refreshed `OrbitalTimeData` (`finals2000A.daily.extended` + `leap-seconds.list`) for UT1 + polar motion when covering the query instant; pin `manifestSha256`, `earthOrientationSha256`, `leapSecondsSha256`, and `timeDataBundleId` alongside retained evaluated outputs; explicit degraded `ut1-approximated-by-utc-v1` fallback allowed for planning only, never for measured astrometric association | Approved (Pending Review Merge) | Leap-second-crossing intervals explicitly withheld; exact recomputation fails closed with `TimeDataUnavailable` if pinned time-data bytes were pruned |
-| `SB-08` | Small bodies | **Acquisition topology, rate policy & partial-refresh carry-forward**: one CameraAgent-local single-flight serial refresher per deployment via the existing local automation registry (`SmallBodyEphemerisRefresh`); no browser calls (NASA CORS), no second scheduler, $\ge 1\text{ s}$ inter-request pacing, 6 h floor, 24 h default cadence, persisted halts, per-body carry-forward on partial refresh, and all-failed last-known-good retention | Proposed (cadence/pacing defaults) / Approved (architecture, serial Fair Use & carry-forward rules) | Watchlist $\le 32$ objects; disabled by default until explicitly enabled and populated; carried-forward bodies keep their original retrieval/validity/staleness metadata |
+| `SB-08` | Small bodies | **Acquisition topology, rate policy & partial-refresh carry-forward**: one CameraAgent-local single-flight serial refresher per deployment via the existing local automation registry (`SmallBodyEphemerisRefresh`); no browser calls (NASA CORS), no second scheduler, $\ge 1\text{ s}$ inter-request pacing, 6 h floor, 24 h default cadence, persisted halts, per-body carry-forward on partial refresh, and all-failed last-known-good retention | Proposed (cadence/pacing defaults) / Approved (architecture, serial Fair Use & carry-forward rules) | Watchlist $\le 32$ objects; disabled by default until explicitly enabled and populated; carried-forward bodies retain their original retrieval/validity/staleness metadata, per-series producing `parserVersion`/`normalizerVersion`/API versions, unchanged `recordSha256`, and immutable `originManifestSha256` |
 | `SB-09` | Small bodies | **Closed `SolarSystemBody` preserved**: new `HVO.SkyMonitor.Astronomy.SmallBodies` types and separate optional `PredictedSmallBodyLayer` in `Processing`; never extend `SolarSystemBody` enum with arbitrary body names | Approved (Pending Review Merge) | Distinguishes geometric position, uncertain predicted magnitude (`predictedTotalMagnitude`/`predictedNuclearOrSurface` + `magnitudeModel`), and measured detection; no coma/tail synthesis |
 | `MS-01` | Meteor showers | **IAU Meteor Data Center (MDC) Shower Database (SD)** as authoritative source for shower identity (`IAU No.`, 3-letter `Code`, canonical `Name`), status (`Established` / `Working` / `Removed` / `Group`), mean geocentric radiant (J2000), peak $\lambda_\odot$, and $V_g$ | **Approved** for source authority & local schema / **Unresolved Gate `M2`** for release bundling | `ta3.sk` was unreachable during probes and MDC compiles externally published journal records; releases do **not** bundle MDC tables until `M2` verifies primary redistribution terms. Operators may explicitly import locally acquired MDC snapshots with SHA-256 verification; never polled automatically by CameraAgent |
 | `MS-02` | Meteor showers | **IMO Meteor Shower Calendar / Working List** evaluated for annual activity context: **no live HTML scraping and no PDF parsing**; IMO policy allows attribution-bearing use in apps but requires contacting IMO before republishing a full calendar or standalone dataset | **Unresolved Gate `M1`** for bundled IMO redistribution; Approved for local schema & operator-import boundary | Bundling IMO-derived annual activity tables in HVO.SkyMonitor releases is gated on recorded written IMO confirmation (`M1`). Without `M1`, annual activity fields come only from explicit local operator import; MDC-only records leave `nominalActivity` start/end and ZHR `null` without fabrication |
 | `MS-03` | Meteor showers | **No second scheduler and no dependency on satellite refresh**: bounded versioned local snapshot (`hvo-meteor-showers-v1`) distributed via explicit verified local override/import (`SnapshotPath` + `SnapshotSha256`) and (only after `M2` / `M1`) optional release-curated bundle | Approved (Pending Review Merge) | Zero network calls on Observatory, capture, or frame paths; last-known-good preserved on invalid import |
-| `MS-04` | Meteor showers | **Solar-longitude anchor, occurrence-window binding & exclusive annual expiry**: anchor physical windows to J2000.0 geocentric ecliptic solar longitude $\lambda_\odot \in [0^\circ, 360^\circ)$; bind each annual forecast entry to explicit `(editionYear, occurrenceYear, windowStartUtc, peakUtc, windowEndUtc)` with overlapping-edition precedence and exact exclusive expiry `validFromUtc <= queryUtc < validUntilUtc` | Approved (Pending Review Merge) | Expired editions and past occurrences (`windowEndUtc <= queryUtc`) are never silently recycled; higher `editionYear` wins for overlapping `(iauNumber, occurrenceYear)`; HVO-derived UTC conversions from $\lambda_\odot$ are labelled separately |
+| `MS-04` | Meteor showers | **Solar-longitude anchor, edition-validity-first occurrence binding & exclusive annual expiry**: anchor physical windows to J2000.0 geocentric ecliptic solar longitude $\lambda_\odot \in [0^\circ, 360^\circ)$; gate every annual forecast entry on edition validity `validFromUtc <= queryUtc < validUntilUtc` **before** occurrence selection and overlapping-edition precedence over `(editionYear, occurrenceYear, windowStartUtc, peakUtc, windowEndUtc)` | Approved (Pending Review Merge) | Not-yet-valid (`queryUtc < validFromUtc`), expired (`queryUtc >= validUntilUtc`), and past (`windowEndUtc <= queryUtc`) entries are strictly excluded and never silently recycled; higher `editionYear` wins among valid entries for the same `(iauNumber, occurrenceYear)`; HVO-derived UTC conversions require a source-qualified activity peak (`nominalActivity.peakSolarLonDeg`) and are never derived from radiant reference longitude alone |
 | `MS-05` | Meteor showers | **Observatory card required; radiant labels optional**: v1 requires an optional Observatory information card (active/upcoming showers, peak window/uncertainty, qualified idealized ZHR or explicit MDC-only identity/radiant wording, radiant altitude, Sun/Moon context, optional `#1004` cloud evidence where missing stays `Unknown`); separately togglable radiant labels are an optional later slice | Approved (Pending Review Merge) | Card-only delivery may close `#1396`'s meteor-shower slice when optional radiant labels are explicitly recorded as omitted; zero forced capture annotation |
 | `MS-06` | Meteor showers | **Strict epistemic separation**: informational forecast context only; **prohibited** from automatic meteor classification, individual streak prediction, inferred shower membership from radiant proximity, or IMO/AMS fireball-catalog ingestion | Approved (Pending Review Merge) | Enforced by separate types, UI copy rules, and regression tests |
 
@@ -167,17 +172,31 @@ All candidate URLs and policies listed in `#1396` were verified directly on
        responses locally for offline computation, replay, and local backup.
        CameraAgent **never** mirrors, republishes, or exposes raw SBDB/Horizons
        responses as a public feed, API, or bundled release catalog.
-     - **Repository immutable verification fixtures (Slice S0):** Small
-       immutable Horizons ephemeris test fixtures under
-       `tests/fixtures/small-bodies/v1/` (numerical DE441/JPL-computed ephemeris
-       coordinates and query headers for verification of `433 Eros`, `1P/Halley`,
-       and ambiguity checks, analogous to `tests/fixtures/horizons/issue-518/`)
-       record exact query parameters, retrieval UTC, SHA-256 hashes, and
-       NASA/JPL-Caltech attribution, and **must not** bundle bulk MPC catalogs
-       or reproduce third-party copyrighted literature text from `phys_par[].ref`.
-       Any redistribution of JPL/SBDB-derived data beyond bounded local runtime
-       caching and minimal numerical verification fixtures requires recording
-       primary JPL/Caltech written/browser-verified redistribution clearance.
+     - **Repository immutable verification fixtures (Slice S0 — Gate `S0-Clearance`):**
+       Because NASA/JPL SSD's policy (`https://ssd-api.jpl.nasa.gov/doc/`)
+       governs API access and local caching rather than public repository
+       redistribution, and both `https://www.jpl.nasa.gov/copyrights.php` and
+       `https://www.jpl.nasa.gov/jpl-image-use-policy/` returned HTTP 403 to
+       non-browser clients, **no blanket exemption is claimed** for committing
+       verbatim JPL Horizons, SBDB, or Lookup query headers or responses into
+       this repository. Repository publication of any verbatim upstream
+       provider material (including Horizons query headers or raw JSON/CSV
+       payloads) is explicitly gated on **`S0-Clearance`** — a recorded,
+       directly reachable primary JPL/Caltech reuse/redistribution basis (or
+       written JPL/Caltech clearance) verified prior to committing such files.
+       Until/unless **`S0-Clearance`** is recorded, all repository-committed
+       Slice S0 unit/contract verification fixtures under
+       `tests/fixtures/small-bodies/v1/` MUST use **strictly HVO-authored
+       synthetic inputs** (synthetic Horizons-format grammar/CSV/JSON payloads
+       and closed-form analytical trajectories), while live-API wire-format
+       and numerical parity are verified locally/on-demand against the
+       developer's or operator's uncommitted local cache rather than
+       committing uncleared upstream headers or payloads. Even if
+       `S0-Clearance` is recorded later, committed fixtures **must never**
+       bundle bulk MPC catalogs or reproduce third-party copyrighted
+       literature text from `phys_par[].ref`. Any other redistribution of
+       JPL/SBDB-derived data beyond bounded local runtime caching likewise
+       remains gated on recorded primary JPL/Caltech clearance.
    - **Required UI & provenance attribution text:**
      > *"Small-body ephemerides and orbit metadata: NASA/JPL-Caltech Solar System Dynamics (Horizons / Small-Body Database). Displayed by HVO SkyMonitor; not endorsed by NASA, JPL, or Caltech."*
    - **Proposed `User-Agent`:**
@@ -201,13 +220,13 @@ All candidate URLs and policies listed in `#1396` were verified directly on
 | **Coordinate Frames** | Retain **both** `QUANTITIES=1` (**topocentric astrometric RA/Dec in ICRF**, light-time corrected, no aberration/deflection/precession/refraction) and `QUANTITIES=2` (**topocentric apparent RA/Dec of true equator & equinox of date**, light-time + annual/diurnal stellar aberration + solar gravitational light deflection + IAU precession/nutation, **airless**) per knot (`ANG_FORMAT='DEG'`, `EXTRA_PREC='YES'`) | `Q=1` provides exact J2000/ICRF coordinates for catalog/WCS cross-reference; `Q=2` provides the exact true-of-date apparent direction for horizontal (`AltAzPoint`) and calibrated rig projection without reimplementing solar light-time iteration, aberration, or relativistic light bending |
 | **Time Scale** | `TIME_TYPE='UT'`, `CAL_TYPE='GREGORIAN'`. Horizons `UT` is UTC post-1962; every stored knot timestamp is normalized UTC (`DateTimeOffset` with offset `0`). Orbit solution `epoch` in metadata is preserved explicitly in **TDB** (Julian Date `epochTdbJd`) and never conflated with UTC | Matches `HVO.SkyMonitor.Astronomy` UTC query contract while preserving JPL's exact TDB osculating epoch provenance. Leap-second-crossing intervals are explicitly withheld using `OrbitalTimeData` leap-table checks |
 | **Atmospheric Refraction** | **Strictly unrefracted (`APPARENT='AIRLESS'`)** in retained ephemeris snapshots and geometric evaluation. Optional atmospheric refraction is applied **only** at projection/display time via existing `AtmosphericRefraction.Apply` (`bennett-1982-standard-atmosphere-v1`) **after** `#1394` geometric horizon-obstruction evaluation | Mandatory per `docs/contracts/horizon-obstruction-v1.md`: geometric horizon and site-obstruction masks must never receive refracted/apparent elevations; keeps small bodies consistent with stars, planets, and satellites |
-| **Solar Ephemeris, EOP Inputs & Replay Pinning** | **Upstream ephemeris generation:** JPL Horizons DE441 planetary ephemeris, SB441-N16 perturbers, and JPL's active EOP file — exact header values (`DE441`, `EOP file`, `EOP coverage`) are parsed and recorded in snapshot provenance.<br>**Local horizontal conversion (`Q=2` → `AltAzPoint`):** Reuse existing `OrbitalTimeData` (`finals2000A.daily.extended` + `leap-seconds.list`) for exact UT1 (via DUT1), GAST (IAU equation of equinoxes), and polar motion $(x_p, y_p)$ when covering the query instant. If EOP is unavailable or uncovered, planning mode may fall back to `ut1-approximated-by-utc-v1` (via `AstronomyTime`) with explicit degraded provenance and an uncalibrated $\le 15''$ timing-basis caveat; **measured astrometric association rejects UTC≈UT1 fallback**.<br>**Replay pinning:** Because managed time-data retains only the active pair plus one intact predecessor (`docs/astronomy/bundled-time-data-v1.md`), every recorded evaluation/replay artifact pins `(manifestSha256, earthOrientationSha256, leapSecondsSha256, timeDataBundleId)` **and retains exact evaluated horizontal outputs**. Exact recomputation against pruned time-data bytes fails closed with `TimeDataUnavailable` (never silently substituting a newer EOP pair).<br>**Local Sun/Moon darkness context:** Reuse existing `IPlanetEphemeris` (`AstronomyEnginePlanetEphemeris`), `SolarAltitudeClassifier`, `SolarDiskEphemeris`, and `ISolarEventCalculator` | Avoids duplicating EOP storage or solar ephemeris models; guarantees sub-arcsecond agreement with Horizons `QUANTITIES=4` airless Alt/Az when EOP covers the instant while remaining fail-closed and auditable across time-data retirement |
+| **Solar Ephemeris, EOP Inputs & Replay Pinning** | **Upstream ephemeris generation:** JPL Horizons DE441 planetary ephemeris, SB441-N16 perturbers, and JPL's active EOP file — exact header values (`planetaryEphemeris: "DE441"`, `smallBodyPerturbers: "SB441-N16"`, `horizonsEopFile`, and structured `horizonsEopCoverage: { dataBasedStartDate, dataBasedEndDate, predictsEndDate }` parsed from Horizons' `EOP coverage : DATA-BASED ... TO ... PREDICTS-> ...` header) are recorded in strict `SmallBodyOrbitSolution` provenance.<br>**Local horizontal conversion (`Q=2` → `AltAzPoint`):** Reuse existing `OrbitalTimeData` (`finals2000A.daily.extended` + `leap-seconds.list`) for exact UT1 (via DUT1), GAST (IAU equation of equinoxes), and polar motion $(x_p, y_p)$ when covering the query instant. If EOP is unavailable or uncovered, planning mode may fall back to `ut1-approximated-by-utc-v1` (via `AstronomyTime`) with explicit degraded provenance and an uncalibrated $\le 15''$ timing-basis caveat; **measured astrometric association rejects UTC≈UT1 fallback**.<br>**Replay pinning:** Because managed time-data retains only the active pair plus one intact predecessor (`docs/astronomy/bundled-time-data-v1.md`), every recorded evaluation/replay artifact pins `(manifestSha256, earthOrientationSha256, leapSecondsSha256, timeDataBundleId)` **and retains exact evaluated horizontal outputs**. Exact recomputation against pruned time-data bytes fails closed with `TimeDataUnavailable` (never silently substituting a newer EOP pair).<br>**Local Sun/Moon darkness context:** Reuse existing `IPlanetEphemeris` (`AstronomyEnginePlanetEphemeris`), `SolarAltitudeClassifier`, `SolarDiskEphemeris`, and `ISolarEventCalculator` | Avoids duplicating EOP storage or solar ephemeris models; guarantees sub-arcsecond agreement with Horizons `QUANTITIES=4` airless Alt/Az when EOP covers the instant while remaining fail-closed and auditable across time-data retirement |
 | **Object Identity vs Orbit-Solution Identity (Provider Precedence & Cross-Check)** | **Object identity & field precedence:** `authority = "jpl-spk"`, canonical decimal `spkId` from SBDB `object.spkid` / Lookup `spkid` (resolving 7-digit historical asteroid SPK-IDs such as `2000433` to canonical 8-digit `20000433`), `bodyKind` (`Asteroid` / `Comet`), **`primaryDesignation` authoritatively from SBDB `object.des`** (e.g. `"433"`, `"1P"`, `"73P-C"` — never overwritten by Horizons Lookup `pdes`, which returns `"A898 PA"` for `433 Eros`; any differing Lookup `pdes` is preserved in `aliases[]`), optional `fragmentCode`.<br>**Aliases:** `fullName` (SBDB `object.fullname`), `shortName` (SBDB `object.shortname`, nullable), optional `mpcPackedDesignation`, and deduplicated ordinal-sorted `aliases[]` (SBDB `des_alt` + Lookup `alias[]` + differing `pdes`) — never used as primary key.<br>**Orbit-solution identity & timezone/partial-date rules:** `solutionAuthority` (`"JPL"`), `orbitId` (`"<source>#<orbit_id>"`, e.g. `"JPL#659"`, `"JPL#75"`), `horizonsRecordNumber`, verbatim `solutionDateSourceRaw` (`"YYYY-MM-DD HH:MM:SS"`) with explicit `solutionDateSourceTimeZone = "America/Los_Angeles"` plus deterministically converted `solutionDateUtc` (nullable if an ambiguous fall-back wall time occurs), `epochTdbJd` (from matched SBDB `orbit.epoch`), **unparsed partial-date strings** `firstObsDateRaw` / `lastObsDateRaw` (matching `^\d{4}-(\d{2}\|\?\?)-(\d{2}\|\?\?)$`, e.g. `"1919-??-??"`, never parsed as strict ISO timestamps), `dataArcDays`, `observationCount`, `conditionCode` (0–9 or `null`), `residualRmsArcsec`, `magnitudeModel`, `nonGravitationalModel`, `notValidBeforeUtc`, `notValidAfterUtc`.<br>**Mandatory Horizons ↔ SBDB match:** Before attaching SBDB metadata to a Horizons `OBSERVER` series, canonical `spkId`, Horizons `{source: <AUTHORITY>#<ID>}` vs `<sbdb.orbit.source>#<sbdb.orbit.orbit_id>`, and Horizons `Soln.date:` vs SBDB `orbit.soln_date` MUST match; mismatch fails closed with `SolutionMetadataMismatch` | Live 2026-11-26 probes confirmed `433 Eros` returns SBDB `object.des="433"` vs Lookup `pdes="A898 PA"`, `soln_date` in JPL Pasadena `America/Los_Angeles` local time, partial observation dates in SBDB (`1919-??-??`), and `73P` matching **74** Horizons records across apparition epochs (`90000734`–`90000740`) and fragments (`73P-A`..`73P-BT`). Ambiguous queries fail closed with `AmbiguousDesignation`; comet fetches pin `DES=<spkid>;CAP;NOFRAG` (or exact fragment `spkid` + `CAP`) |
 | **Validity Interval & Extrapolation** | Every per-object ephemeris carries `[validFromUtc, validUntilUtc]` (the usable knot window, excluding the 1-knot padding at each end) plus any SBDB `notValidBeforeUtc`/`notValidAfterUtc`. Queries outside the intersection **never extrapolate** and return explicit `OutOfRange` / `Expired` / `OutsideSourceValidity` | Prevents silent polynomial blow-up or unvalidated orbital projections beyond fetched bounds |
 | **Covariance & Uncertainty Availability** | Parse `QUANTITIES=36` (`ra3SigmaArcsec`, `dec3SigmaArcsec`) per knot and `(+COV)` header presence; retain SBDB `conditionCode`, `dataArcDays`, and `solutionDateUtc`. Live 2026-11-26 probes confirmed `433 Eros` returns finite `0.009", 0.006"` while `1P/Halley` returns `n.a., n.a.`. Missing/unavailable values **must remain `null`** with explicit `UncertaintyStatus = Unavailable` — **never coerced to `0.0`**. Label withholding rule (Proposed): if `max(ra3Sigma, dec3Sigma) > 1800"` ($0.5^\circ$) or projects to $> 10\text{ px}$ in the active rig, display an explicit large-uncertainty warning or withhold the point label | Preserves scientific honesty when comet outgassing or short discovery arcs lack formal covariance or carry large sky-plane uncertainty |
 | **Predicted Magnitude vs Detection** | Retain `QUANTITIES=9` (`predictedTotalMagnitude` = `APmag`/`T-mag`, `predictedNuclearOrSurface` = `S-brt`/`N-mag`) per knot plus explicit `magnitudeModel` metadata (`AsteroidHG`: `H`/`G`; `CometM1K1M2K2`: `M1`/`K1`/`M2`/`K2`/`PHCOF`; or `Unknown`) on `SmallBodyOrbitSolution` as **uncertain predicted values** (`null` when `n.a.`). Field names match [`small-body-ephemeris-v1.md`](../contracts/small-body-ephemeris-v1.md) identically. Products carry **no `Visible` or `Detected` boolean**, no coma/tail synthesis, and no image-identification claim | Satisfies `#1396` requirement separating geometric position, uncertain predicted magnitude/activity, and measured camera detection |
-| **Interpolation & Error Bounds (Motion-Sensitive + Verified)** | **4-point centered cubic Lagrange interpolation** on 3D unit vectors $\hat{\mathbf{u}}(t) \in S^2$ (re-normalized to unit length) over uniform UTC knots, applied separately to `Q=1` (ICRF) and `Q=2` (apparent of date), and scalar cubic/linear on range $\Delta$, elongation, phase, and magnitude (returning `null` if any stencil knot is `null`). Request **1 extra padding knot before `validFromUtc` and 1 after `validUntilUtc`** so every instant in `[validFromUtc, validUntilUtc]` uses a full centered 4-point stencil.<br>**Combined distance-tier + motion-sensitive step rule** over supported uniform `stepSeconds ∈ {3600, 900, 300, 120, 60}`:<br>1. Distance-tier ceiling (bounds diurnal parallax): $\Delta_{\min} \ge 0.2\text{ AU} \to h \le 3600\text{ s}$ (14 d, 339 knots); $0.01 \le \Delta_{\min} < 0.2\text{ AU} \to h \le 900\text{ s}$ (3 d, 291 knots); $0.002 \le \Delta_{\min} < 0.01\text{ AU} \to h \le 300\text{ s}$ (24 h, 291 knots); $\Delta_{\min} < 0.002\text{ AU} \to$ `CloseApproachUnsupported` in v1.<br>2. **Motion-sensitive angular-step cap:** enforce $\omega_{\max} \cdot h \le 2.5^\circ$ ($0.04363\text{ rad}$, where $\omega_{\max}$ is maximum apparent angular speed $\approx v_{\perp,\max}/\Delta_{\min}$ or observed $\max_k \angle(\hat{\mathbf{u}}_{k+1},\hat{\mathbf{u}}_k)/h$), selecting the largest supported $h \in \{3600, 900, 300, 120, 60\}\text{ s}$ satisfying **both** caps (bounding total knots $\le 1024$: e.g. 24 h at `120 s` = 723 knots; 12 h at `60 s` = 723 knots).<br>3. **Mandatory per-series residual verification:** during normalization/validation, compute the centered `2h`-stride leave-one-out cubic residual $\hat{e}_k = \|\hat{\mathbf{u}}(t_k) - \hat{\mathbf{u}}_{\text{4pt,2h}}(t_k)\| / 16$ across all interior knots (and direct mid-knot `t_k + h/2` Horizons verification for golden fixtures). If any interval exceeds `1.0"`, acquisition refines to the next smaller `stepSeconds` (down to `60 s`); any interval still exceeding `1.0"` is explicitly withheld with `InterpolationBoundExceeded`.<br>**Verified fast-flyby benchmark ($\Delta_{\min}=0.002\text{ AU}$, $v_\perp=75\text{ km/s}$, $\omega_{\max}=51.705''/\text{s}$):** distance-only `h = 300 s` yields `1.1156"` true max residual (`1.0753"` `2h`-stride estimate — caught as `> 1.0"`!). The motion-sensitive cap requires $h \le 174.1\text{ s}$ and selects **`h = 120 s` (`2 m`)**, yielding **`0.0288"`** true max residual (`0.0286"` `2h`-stride estimate; even `h = 180 s` yields `0.1456"`), well inside the **$\le 1.0''$ ($0.00028^\circ$)** bound | Eliminates zenith/azimuth-wrap singularities (never interpolating `AltAz`), eliminates boundary-order drops (1-knot padding), and guarantees $\le 1.0''$ even for extreme fast close-approaching NEAs through both proactive motion-aware step selection and mandatory per-series residual verification |
-| **Staleness, Refresh & Per-Body Carry-Forward** | **Freshness vs Validity kept distinct:**<br>• Retrieval freshness warning (`Stale`): per-series `seriesRetrievedUtc` age $> 72\text{ h}$ for comets/NEAs or $> 168\text{ h}$ for numbered main-belt/outer asteroids (Proposed defaults).<br>• Ephemeris validity (`Expired` / `OutOfRange`): `now` outside `[validFromUtc, validUntilUtc]` or outside SBDB `notValidBeforeUtc..notValidAfterUtc`.<br>• **Refresh policy:** Disabled by default. Single-flight durable task (`SmallBodyEphemerisRefresh`) registered in CameraAgent's existing local automation store (same seam as `OrbitalElementsRefresh` and `SpaceWeatherRefresh`). Default interval 86,400 s (24 h), hard floor 21,600 s (6 h), max 604,800 s (7 d). Sequential requests only, $\ge 1,000\text{ ms}$ inter-request delay, 30 s per-request timeout, no redirects, no cookies, no automatic retry loops. HTTP 403 or 3 consecutive 429s trigger a persisted provider halt requiring explicit operator resume.<br>• **Unambiguous partial-refresh rule (Per-Body Carry-Forward):** If **some** watchlist bodies refresh cleanly and others fail, the new atomic manifest **carries forward** each failed body's prior valid `SmallBodyEphemerisSeries` for the **same** `observerBindingSha256` verbatim — preserving its original `seriesRetrievedUtc`, `[validFromUtc, validUntilUtc]`, `solution`, `recordSha256`, and resulting `freshness` — while recording the failed attempt in `failedRefreshObjects[]` (`carryForwardApplied: true`). If **zero** bodies succeed (total transport failure, halt, or candidate quarantine), **no new manifest is activated** and the existing last-known-good manifest remains active untouched. Historical snapshots remain readable by exact `manifestSha256` | Strictly adheres to JPL SSD Fair Use Policy, eliminates partial-failure vs last-known-good ambiguity, never masks staleness on carried-forward bodies, and mirrors the proven `#528`/`#1398` durable store, quarantine, halt, and rollback guarantees |
+| **Interpolation & Error Bounds (Motion-Sensitive + Independent Half-Step Verified)** | **4-point centered cubic Lagrange interpolation** on 3D unit vectors $\hat{\mathbf{u}}(t) \in S^2$ (re-normalized to unit length) over uniform UTC knots, applied separately to `Q=1` (ICRF) and `Q=2` (apparent of date), and scalar cubic/linear on range $\Delta$, elongation, phase, and magnitude (returning `null` if any stencil knot is `null`). Request **1 extra padding knot before `validFromUtc` and 1 after `validUntilUtc`** so every instant in `[validFromUtc, validUntilUtc]` uses a full centered 4-point stencil.<br>**Combined distance-tier + motion-sensitive step rule** over supported uniform `stepSeconds ∈ {3600, 900, 300, 120, 60}`:<br>1. Distance-tier ceiling (bounds diurnal parallax): $\Delta_{\min} \ge 0.2\text{ AU} \to h \le 3600\text{ s}$ (14 d, 339 knots); $0.01 \le \Delta_{\min} < 0.2\text{ AU} \to h \le 900\text{ s}$ (3 d, 291 knots); $0.002 \le \Delta_{\min} < 0.01\text{ AU} \to h \le 300\text{ s}$ (24 h, 291 knots); $\Delta_{\min} < 0.002\text{ AU} \to$ `CloseApproachUnsupported` in v1.<br>2. **Motion-sensitive angular-step cap:** enforce $\omega_{\max} \cdot h \le 2.5^\circ$ ($0.04363\text{ rad}$, where $\omega_{\max}$ is maximum apparent angular speed $\approx v_{\perp,\max}/\Delta_{\min}$ or observed $\max_k \angle(\hat{\mathbf{u}}_{k+1},\hat{\mathbf{u}}_k)/h$), selecting the largest supported $h \in \{3600, 900, 300, 120, 60\}\text{ s}$ satisfying **both** caps (bounding stored knots $\le 1024$: e.g. 24 h at `120 s` = 723 knots; 12 h at `60 s` = 723 knots).<br>3. **Mandatory independent half-step midpoint verification (integer-knot-only checks prohibited as proof):** An integer-knot-only `2h`-stride check misses oscillatory perturbations such as $2'' \sin(\pi t/h)$, which vanish at every integer knot (`0.000000"` at $k=3$) yet produce a `2.000000"` error at every usable midpoint $t_{k+1/2}$. Therefore, every usable interval $[t_k, t_{k+1}]$ MUST be verified $\le 1.0''$ by either: (a) **`HalfStepSample`** — fetching Horizons at half-step resolution $h/2$ (one HTTP request returning both retained $h$-spaced knots and independent $t_{k+1/2}$ midpoint samples for `Q=1` and `Q=2`) and verifying $\max(\angle_{\text{astrom}}, \angle_{\text{app}}) \le 1.0''$ at every usable midpoint; or (b) **`AnalyticalDerivativeBound`** (closed-form analytical fixtures only) — proving $\frac{3}{128} h^4 \sup \|\mathbf{u}^{(4)}\| \le 1.0''$. If any usable interval exceeds `1.0"`, acquisition refines to the next smaller `stepSeconds` (down to `60 s`) and re-verifies; **any interval lacking verified midpoint accuracy evidence (`Unverified`) or still exceeding `1.0"` is explicitly withheld with `InterpolationBoundExceeded`**.<br>**Verified benchmarks:**<br>• *Fast flyby ($\Delta_{\min}=0.002\text{ AU}$, $v_\perp=75\text{ km/s}$, $\omega_{\max}=51.705''/\text{s}$):* `h = 300 s` yields `1.115471"` half-step midpoint residual (`1.115644"` continuous max — rejected as `> 1.0"`). Motion-sensitive cap selects **`h = 120 s` (`2 m`)**, yielding **`0.028812"`** half-step midpoint residual (`0.028818"` continuous max), well inside `<= 1.0"`.<br>• *Oscillatory counterexample ($2'' \sin(\pi t/h)$ on 7 knots):* integer-knot `2h`-stride reports `0.000000"`, while mandatory half-step verification catches **`2.000000"`** at $t=1.5h$ and withholds the interval.<br>• *Live `433 Eros` 1 h knots vs independent `2026-11-27 00:30 UTC` Horizons sample:* **`0.000238"`** astrometric (`0.000237907"`) and **`0.000223"`** apparent (`0.000222838"`) | Eliminates zenith/azimuth-wrap singularities (never interpolating `AltAz`), eliminates boundary-order drops (1-knot padding), catches oscillatory inter-knot errors, and guarantees verified $\le 1.0''$ midpoint accuracy or fail-closed withholding |
+| **Staleness, Refresh & Per-Body Carry-Forward** | **Freshness vs Validity kept distinct:**<br>• Retrieval freshness warning (`Stale`): per-series `seriesRetrievedUtc` age $> 72\text{ h}$ for comets/NEAs or $> 168\text{ h}$ for numbered main-belt/outer asteroids (Proposed defaults).<br>• Ephemeris validity (`Expired` / `OutOfRange`): `now` outside `[validFromUtc, validUntilUtc]` or outside SBDB `notValidBeforeUtc..notValidAfterUtc`.<br>• **Refresh policy:** Disabled by default. Single-flight durable task (`SmallBodyEphemerisRefresh`) registered in CameraAgent's existing local automation store (same seam as `OrbitalElementsRefresh` and `SpaceWeatherRefresh`). Default interval 86,400 s (24 h), hard floor 21,600 s (6 h), max 604,800 s (7 d). Sequential requests only, $\ge 1,000\text{ ms}$ inter-request delay, 30 s per-request timeout, no redirects, no cookies, no automatic retry loops. HTTP 403 or 3 consecutive 429s trigger a persisted provider halt requiring explicit operator resume.<br>• **Unambiguous partial-refresh rule (Per-Body Carry-Forward with Per-Series Provenance):** If **some** watchlist bodies refresh cleanly and others fail, the new atomic manifest **carries forward** each failed body's prior valid `SmallBodyEphemerisSeries` for the **same** `observerBindingSha256` verbatim — preserving its original `seriesRetrievedUtc`, `[validFromUtc, validUntilUtc]`, `solution`, **per-series producing provenance (`parserVersion`, `normalizerVersion`, `horizonsApiVersion`, `sbdbApiVersion`, `lookupApiVersion`)**, exact unchanged `recordSha256`, and resulting `freshness`, while setting `carriedForward: true` and pinning immutable `originManifestSha256` to the originating manifest's `manifestSha256` — and recording the failed attempt in `failedRefreshObjects[]` (`carryForwardApplied: true`). Thus a v2 refresh that refreshes Eros and carries Halley forward from a v1 manifest preserves Halley's exact v1 producing parser/normalizer provenance and origin manifest SHA-256. If **zero** bodies succeed (total transport failure, halt, or candidate quarantine), **no new manifest is activated** and the existing last-known-good manifest remains active untouched. Historical snapshots remain readable by exact `manifestSha256` | Strictly adheres to JPL SSD Fair Use Policy, eliminates partial-failure vs last-known-good ambiguity, preserves exact per-body producing-tool provenance across upgrades and carry-forwards, never masks staleness, and mirrors the proven `#528`/`#1398` durable store, quarantine, halt, and rollback guarantees |
 
 ---
 
@@ -234,21 +253,31 @@ All candidate URLs and policies listed in `#1396` were verified directly on
      `removedNote`, optional `supersededByIauNumber`) so explicit lookups
      explain why a code was retired.
    - `Group`: Preserved only as optional `showerGroupId` grouping metadata.
-2. **MDC-Only Baseline (No Fabricated Activity Bounds):**
+2. **MDC-Only Baseline & Separation of Radiant/Nominal Metadata from Annual Activity:**
    - `nominalActivity` on `MeteorShowerRecord` is **optional/nullable** and each
      subfield (`peakSolarLonDeg`, `activeStartSolarLonDeg`, `activeEndSolarLonDeg`)
      is individually nullable and source-qualified (`source`: `"IAU-MDC"`,
      `"AnnualActivitySource"`, or `"OperatorCurated"`).
-   - When only IAU MDC identity/radiant data is loaded (`activitySource == null`,
-     `annualForecasts == []`, and `activeStartSolarLonDeg`/`activeEndSolarLonDeg`
-     are `null`), evaluators **must never fabricate** active window start/end
-     bounds or placeholder ZHR values. The Observatory card displays shower
-     identity, reference radiant / site geometric radiant altitude, peak solar
-     longitude (with optional locally derived nominal reference date if
-     `peakSolarLonDeg` or `referenceSolarLongitudeDeg` is present), and explicit
-     wording: *"Activity window and ZHR unavailable (identity/radiant snapshot
-     only — no annual activity source loaded)"*.
-3. **Time Convention, Solar Longitude, Occurrence-Window Binding, and Exclusive Expiry:**
+   - **No peak date from radiant reference longitude alone:** A locally derived
+     nominal peak date (`DerivedFromSolarLongitudeUtc`) may be emitted **only**
+     when a source-qualified activity peak (`nominalActivity.peakSolarLonDeg`,
+     or a valid annual forecast entry) is present — **never** from
+     `referenceRadiant.referenceSolarLongitudeDeg` alone. When `nominalActivity`
+     is `null` or `nominalActivity.peakSolarLonDeg` is `null` (and no valid
+     annual forecast exists), `referenceRadiant.referenceSolarLongitudeDeg` is
+     strictly the radiant reference longitude and no peak date is emitted.
+   - **Card mode driven strictly by annual activity forecast state:** The
+     Observatory card enters Annual Activity Mode whenever `activitySource != null`
+     and a valid non-expired `annualForecasts` entry matches the current/upcoming
+     occurrence — **even when `nominalActivity` is `null` or omits solar-longitude
+     bounds**. When `activitySource == null` (MDC-only baseline), evaluators
+     **must never fabricate** active window start/end bounds or placeholder ZHR
+     values; the card displays shower identity, reference radiant / site geometric
+     radiant altitude, an optional locally derived nominal reference date **only**
+     when `nominalActivity.peakSolarLonDeg` is present, and explicit wording:
+     *"Activity window and ZHR unavailable (identity/radiant snapshot only — no
+     annual activity source loaded)."*
+3. **Time Convention, Solar Longitude, Edition-Validity-First Occurrence Binding, and Exclusive Expiry:**
    - Physical activity intervals (when supplied) and nominal peaks are stored in
      **J2000.0 geocentric ecliptic solar longitude** $\lambda_\odot \in [0^\circ, 360^\circ)$
      with explicit circular wrap handling across $360^\circ / 0^\circ$ (vernal
@@ -265,22 +294,30 @@ All candidate URLs and policies listed in `#1396` were verified directly on
      - Edition validity `[validFromUtc, validUntilUtc)` — typically
        `(YYYY-1)-12-01T00:00:00Z` through `(YYYY+1)-01-15T00:00:00Z` — evaluated
        strictly as **half-open** `validFromUtc <= queryUtc < validUntilUtc`.
-   - **Exact occurrence-window & overlapping-edition precedence rules:**
-     - An occurrence with `windowEndUtc <= queryUtc` is **never** returned as
-       active or upcoming, even if its parent edition's `validUntilUtc` is still
-       in the future (e.g., querying on **`2027-01-03T12:00:00Z`** with only a
-       2026 edition present does **not** surface the January 2026 Quadrantids
-       occurrence whose `windowEndUtc = 2026-01-13T00:00:00Z`).
-     - When multiple editions cover the same `(iauNumber, occurrenceYear)`
-       within the active/lookahead window (e.g., querying on **`2026-12-28T00:00:00Z`**
-       with a 30-day lookahead when both 2026 and 2027 editions are available),
-       the **higher `editionYear`** takes precedence — selecting the January 2027
-       Quadrantids occurrence from the **2027 edition**.
-     - Once **`queryUtc >= validUntilUtc`** (exact exclusive upper boundary),
-       annual activity forecasts are explicitly marked **`Expired`** and **never
-       silently recycled for a later year**; static IAU MDC identity/radiant
-       records remain separately inspectable with an explicit `"Annual activity
-       data expired / unavailable"` notice.
+   - **Exact two-stage edition-validity & occurrence-window precedence rules:**
+     - **Stage 1 (Edition validity gate FIRST):** Apply
+       `validFromUtc <= queryUtc < validUntilUtc` **before** occurrence
+       selection (both `Active` and `Upcoming`) and **before** overlapping-edition
+       precedence. Thus querying on **`2026-11-30T00:00:00Z`** with a 30-day
+       lookahead strictly excludes the canonical 2027 edition
+       (`validFromUtc = 2026-12-01T00:00:00Z`) even though `windowStartUtc =
+       2026-12-28T00:00:00Z` falls within 30 days.
+     - **Stage 2 (Occurrence binding & overlapping-edition precedence on valid entries):**
+       - An occurrence with `windowEndUtc <= queryUtc` is **never** returned as
+         active or upcoming, even if its parent edition's `validUntilUtc` is still
+         in the future (e.g., querying on **`2027-01-03T12:00:00Z`** with only a
+         2026 edition present does **not** surface the January 2026 Quadrantids
+         occurrence whose `windowEndUtc = 2026-01-13T00:00:00Z`).
+       - When multiple Stage-1-valid editions cover the same `(iauNumber, occurrenceYear)`
+         within the active/lookahead window (e.g., querying on **`2026-12-28T00:00:00Z`**
+         with a 30-day lookahead when both 2026 and 2027 editions are available),
+         the **higher `editionYear`** takes precedence — selecting the January 2027
+         Quadrantids occurrence from the **2027 edition**.
+       - Once **`queryUtc >= validUntilUtc`** (exact exclusive upper boundary),
+         annual activity forecasts are explicitly marked **`Expired`** and **never
+         silently recycled for a later year**; static IAU MDC identity/radiant
+         records remain separately inspectable with an explicit `"Annual activity
+         forecast expired — no current-year forecast loaded."` notice.
    - Peak timestamps distinguish:
      - **`SourceCalendarUtc`**: explicit annual peak UTC (and/or peak window
        `[peakWindowStartUtc, peakWindowEndUtc]`) provided by a verified annual
@@ -469,25 +506,45 @@ immutable fixture publication slice (`S0` or `M0`) is reviewed, merged, and
 explicitly approved on `#1396`:
 
 1. **Slice S0 (First-Checkpoint Completion — Small-Body Approved Immutable Fixture & Golden Reference Publication Gate; zero `src/` edits):**
+   - **Gate `S0-Clearance` compliance:** Until/unless a directly reachable
+     primary JPL/Caltech reuse/redistribution basis (or written clearance) is
+     verified and recorded under **Gate `S0-Clearance`**, all committed fixtures
+     under `tests/fixtures/small-bodies/v1/` MUST use **strictly HVO-authored
+     synthetic inputs** (zero uncleared verbatim JPL Horizons/SBDB/Lookup
+     headers or raw wire payloads; live-API wire-format and numerical parity are
+     verified locally/on-demand against an uncommitted local cache). Even if
+     `S0-Clearance` is recorded later, fixtures must never bundle bulk MPC
+     mirrors or third-party copyrighted literature text from `phys_par[].ref`.
    - Publish and obtain recorded approval on `#1396` for immutable offline test
-     fixtures under `tests/fixtures/small-bodies/v1/` (with exact query
-     parameters, retrieval UTC, SHA-256 manifest, and NASA/JPL-Caltech
-     attribution; no third-party literature text or bulk MPC mirrors):
-     - **One asteroid case** (`433 Eros`, `spkid="20000433"`, finite `APmag`,
-       finite `QUANTITIES=36` 3-sigma RA/Dec uncertainty, `AsteroidHG` model)
-       with independent Horizons mid-knot `QUANTITIES=4` airless Alt/Az
-       reference outputs;
-     - **One comet case** (`1P/Halley`, `spkid="1000036"`, `T-mag`/`N-mag`,
-       `CometM1K1M2K2` + non-gravitational model metadata, `n.a.` `QUANTITIES=36`)
-       with independent Horizons mid-knot `QUANTITIES=4` airless Alt/Az
-       reference outputs;
-     - **Fast close-approach rectilinear/NEA test vector** ($\Delta_{\min}=0.002\text{ AU}$,
-       $v_\perp=75\text{ km/s}$) proving `h = 300 s` exceeds `1.0"` (`1.1156"`)
-       and motion-sensitive `h = 120 s` passes (`0.0288"`);
-     - **Ambiguity & provider-precedence fixtures:** `73P` multi-apparition +
-       fragments, `433` SBDB `object.des="433"` vs Lookup `pdes="A898 PA"`,
-       `America/Los_Angeles` `soln_date` (PST & PDT), partial observation dates
-       (`1919-??-??`), and Horizons/SBDB solution-ID mismatch;
+     fixtures under `tests/fixtures/small-bodies/v1/` (with exact provenance,
+     SHA-256 manifest, and verified canonical `.NET System.Text.Json`/JCS number
+     formatting):
+     - **Asteroid contract & parser fixture** (finite `APmag`, finite
+       `QUANTITIES=36` 3-sigma RA/Dec uncertainty, `AsteroidHG` model, parsed
+       `horizonsEopFile` + structured `horizonsEopCoverage`, independent
+       half-step `HalfStepSample` midpoint verification);
+     - **Comet contract & parser fixture** (`T-mag`/`N-mag`, `CometM1K1M2K2` +
+       non-gravitational model metadata, `n.a.` `QUANTITIES=36` → `null`, never
+       `0.0`, independent half-step midpoint verification);
+     - **Fast close-approach rectilinear/NEA analytical test vector**
+       ($\Delta_{\min}=0.002\text{ AU}$, $v_\perp=75\text{ km/s}$) proving
+       `h = 300 s` exceeds `1.0"` (`1.115471"` midpoint / `1.115644"` true max)
+       and motion-sensitive `h = 120 s` passes (`0.028812"` midpoint / `0.028818"`
+       true max);
+     - **Oscillatory inter-knot counterexample fixture** ($2'' \sin(\pi t/h)$ on
+       7 knots) proving integer-knot-only `2h`-stride checks yield `0.000000"`,
+       while mandatory independent half-step verification catches `2.000000"` and
+       withholds the interval (`InterpolationBoundExceeded`), plus an `Unverified`
+       series fixture proving intervals lacking midpoint verification evidence
+       fail closed;
+     - **Ambiguity, provider-precedence & mixed-version carry-forward fixtures:**
+       multi-apparition + fragment ambiguity (`AmbiguousDesignation`), SBDB
+       `object.des` vs Lookup `pdes` precedence, `America/Los_Angeles` `soln_date`
+       (PST, PDT, and ambiguous fall-back → `solutionDateUtc: null`), partial
+       observation dates (`1919-??-??`), Horizons/SBDB solution-ID mismatch, and
+       a v2 manifest refreshing one body while carrying another forward from a v1
+       manifest (preserving v1 per-series `parserVersion`/`normalizerVersion`,
+       unchanged `recordSha256`, and `originManifestSha256`);
      - **Negative/edge fixtures:** wrong observer (`ObserverMismatch`), stale
        retrieval, expired/out-of-range query (refusing extrapolation), pruned
        time-data replay (`TimeDataUnavailable`), missing EOP (planning fallback
@@ -498,14 +555,17 @@ explicitly approved on `#1396`:
 2. **Slice S1 (Small-Body Executable Contracts, Parser & Math — `HVO.SkyMonitor.Astronomy`):**
    - Implement `HVO.SkyMonitor.Astronomy.SmallBodies` contracts, strict canonical
      JSON serializer/validator (`hvo-small-body-ephemeris-v1`,
-     `hvo-small-body-manifest-v1`), 4-point centered cubic unit-vector
-     interpolator with motion-sensitive step enforcement + `2h`-stride residual
-     verification, EOP-aware/fallback `AltAzPoint` evaluator, and
+     `hvo-small-body-manifest-v1`, matching `.NET System.Text.Json` / JCS
+     shortest round-trip number formatting without trailing `.0` on integers),
+     4-point centered cubic unit-vector interpolator with motion-sensitive step
+     enforcement + **mandatory independent half-step midpoint verification**
+     (withholding any unverified or $> 1.0''$ interval), EOP-aware/fallback
+     `AltAzPoint` evaluator, and
      `ProjectorFactory.Create(AstrometricMapping.Projection(calibration, assessment))`
      measured projection path.
-   - Verify all Slice S0 fixtures offline: $\le 1.0''$ interpolation residual
-     with EOP, exact round-trip canonical hashes, fail-closed `TimeDataUnavailable`
-     replay, and equivalent host outputs.
+   - Verify all Slice S0 fixtures offline: verified $\le 1.0''$ midpoint
+     residual with EOP, exact round-trip canonical hashes, fail-closed
+     `TimeDataUnavailable` replay, and equivalent host outputs.
 3. **Slice S2 (Small-Body Acquisition, Store & Refresh — `CameraAgent.Common`):**
    - Implement `.small-bodies/` STRICT SQLite store, content-addressed raw/normalized
      snapshots, quarantine, rollback, serial JPL Horizons + SBDB + Lookup client
@@ -533,14 +593,20 @@ explicitly approved on `#1396`:
    - Publish and obtain recorded approval on `#1396` for immutable offline
      fixtures under `tests/fixtures/meteor-showers/v1/` (without redistributing
      ungated third-party datasets) covering:
-     - Both annual-activity snapshots and **MDC-only baseline** snapshots
-       (`activitySource: null`, `nominalActivity` without fabricated start/end
+     - Both annual-activity snapshots (including a valid annual forecast with
+       `nominalActivity: null`, verifying the card stays in Annual Activity Mode)
+       and **MDC-only baseline** snapshots (`activitySource: null`,
+       `nominalActivity: null` verifying NO derived peak date is emitted from
+       `referenceRadiant.referenceSolarLongitudeDeg` alone, plus
+       `nominalActivity.peakSolarLonDeg` present without fabricated start/end
        bounds, `annualForecasts: []`);
      - `Established`, `Working`, and `Removed` status filtering/tombstones;
-     - Occurrence-window & year-boundary cases (`URS` Dec 17–26, `QUA` Dec
-       28–Jan 12, vernal equinox $359^\circ \to 0^\circ$ wrap, `2027-01-03`
-       with 2026 edition only, `2026-12-28` lookahead with 2026 + 2027 editions,
-       exact exclusive expiry `queryUtc == validUntilUtc`);
+     - Occurrence-window, edition-validity-first, & year-boundary cases (`URS`
+       Dec 17–26, `QUA` Dec 28–Jan 12, vernal equinox $359^\circ \to 0^\circ$
+       wrap, `2026-11-30` with 30-day lookahead excluding the 2027 edition whose
+       `validFromUtc = 2026-12-01`, `2027-01-03` with 2026 edition only,
+       `2026-12-28` lookahead with 2026 + 2027 editions, exact exclusive expiry
+       `queryUtc == validUntilUtc`);
      - Frozen radiant horizontal golden vectors (`QUA` `230.0° -> 15.333333333 h`
        plus an `RA < 24°` case catching missing `/ 15.0`);
      - UTC vs site-local civil dates (crossing midnight and DST transitions),
@@ -582,17 +648,17 @@ explicitly approved on `#1396`:
   - `https://ssd-api.jpl.nasa.gov/sbdb.api` (`433 Eros` `object.des="433"`, `orbit_id="659"`, `soln_date="2021-05-24 17:55:05"`; `1P/Halley` `object.des="1P"`, `orbit_id="75"`, `soln_date="2025-11-21 15:57:34"`)
   - `https://ssd.jpl.nasa.gov/api/horizons_lookup.api` (`433` returning `pdes="A898 PA"`, `spkid="20000433"`; `Halley`; `73P`)
   - `https://ssd.jpl.nasa.gov/api/horizons.api`:
-    - `433 Eros` `OBSERVER` CSV 4-knot live sample (`2026-11-26 23:00`..`2026-11-27 02:00 UT`, `14,239 B`, SHA-256 `328B71E9AC42D134E0AB6B0086E868586885443878195B08046636403560965A`, `EOP file: eop.261126.p270222`, `{source: JPL#659}`, `Soln.date: 2021-May-24_17:55:05`);
+    - `433 Eros` `OBSERVER` CSV 4-knot live sample (`2026-11-26 23:00`..`2026-11-27 02:00 UT`, `14,239 B`, SHA-256 `328B71E9AC42D134E0AB6B0086E868586885443878195B08046636403560965A`, `EOP file: eop.261126.p270222`, `EOP coverage: DATA-BASED 1962-JAN-20 TO 2026-NOV-26. PREDICTS-> 2027-FEB-21`, `{source: JPL#659}`, `Soln.date: 2021-May-24_17:55:05`), plus independent `30 m` live sample at `2026-11-27 00:30 UT` confirming cubic midpoint residuals of **`0.000238"`** astrometric ICRF (`0.000237907"`) and **`0.000223"`** apparent airless (`0.000222838"`);
     - `1P/Halley` `OBSERVER` (`DES=1000036;CAP;NOFRAG`, `{source: JPL#75}`, `Soln.date: 2025-Nov-21_15:57:34`, `Rec #:90000030`);
     - `433 Eros` `VECTORS` confirming `REF_SYSTEM='ICRF'` alone returns `Reference frame : Ecliptic of J2000.0` while `REF_SYSTEM='ICRF'` + `REF_PLANE='FRAME'` returns `Reference frame : ICRF`;
     - `73P` ambiguity (74 matching records)
   - `https://minorplanetcenter.net/data`, `https://minorplanetcenter.net/iau/MPCORB.html`, `https://docs.minorplanetcenter.net/mpc-ops-docs/orbits/comet-orbit-format/`, and `HEAD` size checks for `MPCORB.DAT.gz`, `mpcorb_extended.json.gz`, `nea_extended.json.gz`, `CometEls.txt`, `AllCometEls.txt`, and `Soft00Cmt.txt`
   - `https://www.iaumeteordatacenter.org/` (HTTP 200) and `ta3.sk` endpoint reachability probes (timeout / `Errno 65` — recorded under Gate `M2`)
-  - `https://www.imo.net/`, `https://www.imo.net/about/using-imo-data/`, `https://www.imo.net/calendar/`, `https://www.imo.net/meteor-shower-calendar-2027/`, `https://www.imo.net/resources/calendar/` (404), and `https://www.imo.net/members/imo_showers/working_shower_list/` (rebuild placeholder — recorded under Gate `M1`)
+  - `https://www.imo.net/`, `https://www.imo.net/about/using-imo-data/`, `https://www.imo.net/calendar/`, `https://www.imo.net/meteor-shower-calendar-2027/`, `https://www.imo.net/files/data/calendar/cal2027.pdf` (page 4 Quadrantids: active Dec 28–Jan 12, max Jan 4 `03:25 UTC`, $\lambda_\odot = 283.15^\circ$, nominal ZHR `80`, observed variation `~60–200`, timing uncertainty `~2.5 h` / `0.1°`), `https://www.imo.net/resources/calendar/` (404), and `https://www.imo.net/members/imo_showers/working_shower_list/` (rebuild placeholder — recorded under Gate `M1`)
 - Programmatic numerical & schema checks verified at this checkpoint:
-  - Fast close-approach flyby ($\Delta_{\min}=0.002\text{ AU}$, $v_\perp=75\text{ km/s}$): `h = 300 s` gives `1.115644"` (> `1.0"`), motion-sensitive cap selects `h = 120 s` giving `0.028818"` (`2h`-stride estimate `0.028641"`).
-  - Quadrantids (`QUA`, `raDeg = 230.0° -> 15.333333333 h`, `decDeg = +49.0°`) at HVO (`35.5599378°N, -113.9119818°E`, `2027-01-04T11:00:00Z`) verified against `HVO.SkyMonitor.Astronomy` exact IAU 1976 precession + GMST/LMST horizontal transforms: `altitudeDeg = 35.029920°`, `azimuthDeg = 50.936604°`.
-  - All strict canonical JSON examples in both contracts validated programmatically for schema compliance, exact field alignment, and canonical SHA-256 hashes.
+  - Fast close-approach flyby ($\Delta_{\min}=0.002\text{ AU}$, $v_\perp=75\text{ km/s}$): `h = 300 s` gives `1.115471"` half-step midpoint residual (`1.115644"` continuous max > `1.0"`), motion-sensitive cap selects `h = 120 s` giving `0.028812"` half-step midpoint residual (`0.028818"` continuous max); oscillatory counterexample $2'' \sin(\pi t/h)$ on 7 knots gives `0.000000"` integer-knot `2h`-stride vs `2.000000"` half-step caught and rejected.
+  - Quadrantids (`QUA`, `raDeg = 230 -> 15.333333333 h`, `decDeg = +49`) at HVO (`35.5599378°N, -113.9119818°E`) verified against `HVO.SkyMonitor.Astronomy` exact IAU 1976 precession + GMST/LMST horizontal transforms: at HVO pre-dawn dark-window instant `2027-01-04T11:00:00Z`, `altitudeDeg = 35.029920°`, `azimuthDeg = 50.936604°`; at the 2027 IMO peak instant `2027-01-04T03:25:00Z`, `altitudeDeg = -5.127134°`, `azimuthDeg = 353.840761°` (`RadiantBelowHorizon`).
+  - All 5 strict canonical JSON examples in both contracts validated programmatically for schema compliance (`additionalProperties: false`), exact field alignment, and bit-for-bit canonical SHA-256 hashes and byte lengths matching `.NET System.Text.Json` / RFC 8785 JCS (shortest round-trip numbers without trailing `.0` on integers).
 - Contract specifications frozen alongside this decision:
   - [`docs/contracts/small-body-ephemeris-v1.md`](../contracts/small-body-ephemeris-v1.md)
   - [`docs/contracts/meteor-shower-context-v1.md`](../contracts/meteor-shower-context-v1.md)

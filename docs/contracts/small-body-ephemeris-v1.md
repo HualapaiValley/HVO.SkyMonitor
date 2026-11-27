@@ -13,6 +13,16 @@ This is a bounded watchlist small-body (comets and asteroids) ephemeris
 contract. It is **not** a satellite GP/SGP4 contract, **not** a full
 minor-planet survey catalog, and **not** a generalized data-feed platform.
 
+**Repository fixture publication gate (`S0-Clearance`):** Consistent with
+Section A.2 of [`sky-layers-source-decision-1396.md`](../planning/sky-layers-source-decision-1396.md),
+no blanket exemption is claimed for committing verbatim JPL Horizons, SBDB, or
+Lookup query headers or raw wire payloads into this repository. Until/unless
+primary JPL/Caltech reuse/redistribution terms are directly verified and
+recorded under Gate **`S0-Clearance`**, all repository-committed Slice S0
+fixtures under `tests/fixtures/small-bodies/v1/` MUST use strictly HVO-authored
+synthetic inputs, with live-API wire-format and numerical parity verified
+locally/on-demand against an uncommitted local cache.
+
 ## 1. Ownership and Architectural Boundaries
 
 - **`HVO.SkyMonitor.Astronomy` (`HVO.SkyMonitor.Astronomy.SmallBodies`)** owns
@@ -95,6 +105,7 @@ ephemeris queries pin `DES=<spkId>;CAP;NOFRAG` (or exact fragment `spkId` with
 | `planetaryEphemeris` | string (e.g. `"DE441"`) | Planetary ephemeris model reported by Horizons header |
 | `smallBodyPerturbers` | string or `null` | Perturber model reported by Horizons header (e.g. `"SB441-N16"`) |
 | `horizonsEopFile` | string or `null` | JPL EOP file name reported by Horizons header (e.g. `"eop.261126.p270222"`) |
+| `horizonsEopCoverage` | object or `null` | Structured Horizons EOP coverage parsed from the Horizons `EOP coverage : DATA-BASED <start> TO <end>. PREDICTS-> <end>` header (`additionalProperties: false`): `{ dataBasedStartDate, dataBasedEndDate, predictsEndDate }` (each ISO calendar date `YYYY-MM-DD` or `null`, e.g., `dataBasedStartDate: "1962-01-20"`, `dataBasedEndDate: "2026-11-26"`, `predictsEndDate: "2027-02-21"`). `null` only when the Horizons header omits `EOP coverage` |
 
 **Mandatory Horizons ↔ SBDB solution-metadata consistency check:** Because
 Horizons `OBSERVER` ephemeris tables and SBDB orbit metadata come from two
@@ -128,11 +139,11 @@ Every snapshot is bound to one terrestrial observer location:
 {
   "deploymentLocationId": "loc-hvo-primary",
   "deploymentLocationVersion": 3,
-  "elevationMeters": 1000.0,
+  "elevationMeters": 1000,
   "heightDatum": "AssumedEllipsoidal",
   "latitudeDegrees": 35.5599378,
   "longitudeDegrees": -113.9119818,
-  "observerBindingSha256": "2720EB0FF049EBF6787BE3B2274DFE59D2792F3BCBCD3581724DA1A86709E1F4"
+  "observerBindingSha256": "08A23071971928E2783C214B9EC5FBF307D87219E4E37C392C6660B52DD3E8B5"
 }
 ```
 
@@ -157,15 +168,28 @@ Each watched body in the normalized snapshot carries:
 - `identity`: `SmallBodyIdentity`
 - `solution`: `SmallBodyOrbitSolution`
 - `recordSha256`: 64-char uppercase SHA-256 of canonical series JSON excluding
-  `recordSha256`, `seriesRetrievedUtc`, and `carriedForward` (preserving
-  content-identity stability across unchanged carries, matching
-  `orbital-elements-v1`)
+  `recordSha256`, `seriesRetrievedUtc`, `carriedForward`, and
+  `originManifestSha256` (so per-series producing provenance — `parserVersion`,
+  `normalizerVersion`, `horizonsApiVersion`, `sbdbApiVersion`,
+  `lookupApiVersion` — is bound into `recordSha256` and content identity stays
+  100% invariant across carry-forward, matching `orbital-elements-v1`)
 - `seriesRetrievedUtc`: UTC ISO-8601 instant when **this specific series** was
   retrieved from JPL (preserved verbatim when carried forward across a partial
   refresh failure so staleness is never masked)
 - `carriedForward`: boolean (`false` when freshly fetched in this manifest;
   `true` when carried forward verbatim from the prior active manifest for the
   same `observerBindingSha256`)
+- `originManifestSha256`: 64-char uppercase hex string or `null` (`null` iff
+  `carriedForward == false`, since the enclosing manifest is its origin;
+  **required non-null** when `carriedForward == true`, pointing to the exact
+  immutable `manifestSha256` of the originating manifest where this series was
+  first produced, and preserved unchanged across any subsequent multi-hop
+  carry-forwards)
+- `parserVersion`, `normalizerVersion`, `horizonsApiVersion`, `sbdbApiVersion`,
+  `lookupApiVersion`: exact producing parser, normalizer, and JPL API signature
+  versions that built **this specific series** (bound inside `recordSha256` and
+  preserved verbatim on carry-forward — never overwritten by a newer manifest's
+  tool versions)
 - `ephemerisProfile`: `"jpl-horizons-observer-airless-v1"`
 - `center`: `"coord@399"` (ITRF93/WGS84 topocentric)
 - `refractionApplied`: `false` (always `AIRLESS` in stored knots)
@@ -178,13 +202,20 @@ Each watched body in the normalized snapshot carries:
   (guaranteeing a centered 4-point cubic stencil everywhere inside
   `[validFromUtc, validUntilUtc]`)
 - `minimumRangeAu`: minimum topocentric range $\Delta_{\min}$ across knots
-- `maxEstimatedInterpolationResidualArcsec`: non-negative finite number
-  recording the maximum estimated/verified cubic interpolation residual across
-  the series in arcseconds (from `2h`-stride leave-one-out verification for
-  $N \ge 7$ knots, or direct mid-knot/analytical verification for shorter test
-  series)
-- `interpolationBoundVerified`: boolean (`true` iff every verified interval in
-  the series satisfies $\le 1.0''$; `false` flags unverified/withheld intervals)
+- `interpolationVerificationMethod`: enum (`"HalfStepSample"`,
+  `"AnalyticalDerivativeBound"`, `"Unverified"`) recording the midpoint
+  verification evidence backing this series (Section 4.2)
+- `maxVerifiedMidpointResidualArcsec`: non-negative finite number or `null`
+  (`null` iff `interpolationVerificationMethod == "Unverified"`); records the
+  maximum verified midpoint angular residual (or rigorous analytical remainder
+  bound) across all usable intervals in arcseconds, covering both `Q=1`
+  astrometric and `Q=2` apparent directions and **never understating** the
+  measured/bounded residual
+- `interpolationBoundVerified`: boolean (`true` **iff**
+  `interpolationVerificationMethod != "Unverified"`,
+  `maxVerifiedMidpointResidualArcsec != null`, and every usable interval in the
+  series has verified midpoint accuracy $\le 1.0''$; `false` otherwise, failing
+  closed with `InterpolationBoundExceeded`)
 - `knots`: strictly ascending uniform UTC array (`count >= 4`, `count <= 1024`)
 
 Each `SmallBodyEphemerisKnot` contains (aligned identically with
@@ -215,7 +246,10 @@ The manifest binds:
   `manifestSha256` excluded
 - `normalizedPayloadSha256` and `normalizedPayloadBytes`
 - `provider`: `"nasa-jpl-ssd"`, `horizonsApiVersion`, `sbdbApiVersion`,
-  `lookupApiVersion`, `parserVersion`, `normalizerVersion`
+  `lookupApiVersion`, `parserVersion`, `normalizerVersion` (recording the active
+  refresh run's tool/API versions that built this manifest and match every
+  `carriedForward: false` series; carried-forward series retain their own
+  authoritative per-series producing provenance and `originManifestSha256`)
 - `termsReference`: `"https://ssd-api.jpl.nasa.gov/doc/"` and exact
   `attributionText` (`NASA/JPL-Caltech Solar System Dynamics...`)
 - `observerBinding`: Section 3.1 object
@@ -229,23 +263,43 @@ The manifest binds:
 - `rawSources[]`: sanitized per-object source descriptor (`spkId`, sanitized
   `querySummary` without secrets, `rawSha256`, `rawBytes`, `httpStatus`)
 
-**Hard validation & memory ceilings (Proposed defaults):**
+**Hard validation, canonical serialization, & memory ceilings (Proposed defaults):**
 - Maximum watched bodies per snapshot: **32**
 - Maximum knots per body: **1,024**
 - Maximum raw Horizons/SBDB wire response per request: **2 MiB** (decoded **4 MiB**)
 - Maximum normalized snapshot JSON payload: **16 MiB**
-- Canonical JSON serialization uses the repository's canonical writer with
-  ordinal property order, uppercase 64-hex SHA-256, normalized `-0.0` → `0`,
-  UTC timestamps, and rejection of `NaN`/`Infinity`, duplicate keys, unknown
-  fields (`additionalProperties: false`), or nesting $> 64$ levels.
+- **Exact canonical JSON serialization rule (matching `.NET System.Text.Json` /
+  `CaptureContractJson` / `OrbitalCanonicalJson` and RFC 8785 JCS):**
+  - Compact UTF-8 JSON (no insignificant whitespace), object properties ordered
+    by `StringComparer.Ordinal`, uppercase 64-hex SHA-256 digests;
+  - **Canonical number encoding:** finite IEEE 754 numbers serialized in shortest
+    round-trip decimal form with `-0.0` normalized to `0` and **integer-valued
+    finite numbers serialized WITHOUT a trailing `.0`** (for example, `1000`
+    rather than `1000.0`, matching `.NET System.Text.Json` and
+    `tests/fixtures/orbital/contract-v1/pass.json`);
+  - UTC ISO-8601 `"Z"` timestamps (`yyyy-MM-ddTHH:mm:ssZ`, trimming trailing
+    fractional zeros only when sub-second);
+  - Reject `NaN`/`Infinity`, duplicate keys, unknown fields
+    (`additionalProperties: false`), or nesting $> 64$ levels.
 
-### 3.4 Canonical JSON Examples (`433 Eros`, Live-Verified 2026-11-26/27)
+### 3.4 Canonical JSON Examples (`433 Eros`, Schema Verification Example)
 
-The following canonical examples use live 2026-11-26/27 JPL Horizons `OBSERVER`
-and SBDB/Lookup values for `433 Eros` (`spkid="20000433"`, `object.des="433"`,
-Lookup `pdes="A898 PA"` preserved in `aliases[]`, `JPL#659`,
-`soln_date="2021-05-24 17:55:05"` `America/Los_Angeles` → `2021-05-25T00:55:05Z`).
-All SHA-256 hashes are computed over compact ordinal-sorted canonical JSON.
+The following normalized schema-verification examples use numerical values
+observed during a local 2026-11-26/27 JPL Horizons `OBSERVER` + SBDB/Lookup
+probe for `433 Eros` (`spkid="20000433"`, `object.des="433"`, Lookup
+`pdes="A898 PA"` preserved in `aliases[]`, `JPL#659`,
+`soln_date="2021-05-24 17:55:05"` `America/Los_Angeles` → `2021-05-25T00:55:05Z`,
+`EOP file: eop.261126.p270222`, `EOP coverage: DATA-BASED 1962-JAN-20 TO
+2026-NOV-26. PREDICTS-> 2027-FEB-21`). No verbatim upstream Horizons header
+text or raw wire payload is committed here; repository-committed Slice S0
+fixtures obey Gate `S0-Clearance` in
+[`sky-layers-source-decision-1396.md`](../planning/sky-layers-source-decision-1396.md).
+The recorded midpoint residual `0.000238"` (`HalfStepSample`) reflects the
+exact measured cubic unit-vector residual against the independent Horizons
+`2026-11-27 00:30 UTC` sample (`0.000237907"` astrometric ICRF, `0.000222838"`
+apparent airless). All SHA-256 hashes and byte lengths are computed under the
+exact Section 3.3 `.NET System.Text.Json` / RFC 8785 JCS canonical serializer
+(without trailing `.0` on integer-valued numbers).
 
 **Normalized payload (`hvo-small-body-ephemeris-v1`):**
 
@@ -254,11 +308,11 @@ All SHA-256 hashes are computed over compact ordinal-sorted canonical JSON.
   "observerBinding": {
     "deploymentLocationId": "loc-hvo-primary",
     "deploymentLocationVersion": 3,
-    "elevationMeters": 1000.0,
+    "elevationMeters": 1000,
     "heightDatum": "AssumedEllipsoidal",
     "latitudeDegrees": 35.5599378,
     "longitudeDegrees": -113.9119818,
-    "observerBindingSha256": "2720EB0FF049EBF6787BE3B2274DFE59D2792F3BCBCD3581724DA1A86709E1F4"
+    "observerBindingSha256": "08A23071971928E2783C214B9EC5FBF307D87219E4E37C392C6660B52DD3E8B5"
   },
   "schemaVersion": "hvo-small-body-ephemeris-v1",
   "series": [
@@ -266,6 +320,7 @@ All SHA-256 hashes are computed over compact ordinal-sorted canonical JSON.
       "carriedForward": false,
       "center": "coord@399",
       "ephemerisProfile": "jpl-horizons-observer-airless-v1",
+      "horizonsApiVersion": "1.2",
       "identity": {
         "aliases": ["1956 PC", "2000433", "A898 PA", "I98P00A"],
         "authority": "jpl-spk",
@@ -281,6 +336,7 @@ All SHA-256 hashes are computed over compact ordinal-sorted canonical JSON.
         "spkId": "20000433"
       },
       "interpolationBoundVerified": true,
+      "interpolationVerificationMethod": "HalfStepSample",
       "knots": [
         {
           "apparentDecDeg": -25.355799762,
@@ -347,12 +403,17 @@ All SHA-256 hashes are computed over compact ordinal-sorted canonical JSON.
           "utc": "2026-11-27T02:00:00Z"
         }
       ],
-      "maxEstimatedInterpolationResidualArcsec": 0.0001,
+      "lookupApiVersion": "1.1",
+      "maxVerifiedMidpointResidualArcsec": 0.000238,
       "minimumRangeAu": 2.56309135056611,
+      "normalizerVersion": "small-body-normalizer-v1",
+      "originManifestSha256": null,
       "paddedEndUtc": "2026-11-27T02:00:00Z",
       "paddedStartUtc": "2026-11-26T23:00:00Z",
-      "recordSha256": "4DECA0FBFE633BB3A7EB4406671685DBDF2996AB5246EAFEF8A6E4FB83D49F79",
+      "parserVersion": "jpl-horizons-csv-v1",
+      "recordSha256": "E536448B4F827DB627B9E7E4613357BF8AB57CABBF0716B76C107087C12D3377",
       "refractionApplied": false,
+      "sbdbApiVersion": "1.3",
       "seriesRetrievedUtc": "2026-11-26T23:47:29Z",
       "solution": {
         "conditionCode": 0,
@@ -360,6 +421,11 @@ All SHA-256 hashes are computed over compact ordinal-sorted canonical JSON.
         "epochTdbJd": 2461200.5,
         "firstObsDateRaw": "1893-10-29",
         "hasCovariance": true,
+        "horizonsEopCoverage": {
+          "dataBasedEndDate": "2026-11-26",
+          "dataBasedStartDate": "1962-01-20",
+          "predictsEndDate": "2027-02-21"
+        },
         "horizonsEopFile": "eop.261126.p270222",
         "horizonsRecordNumber": "433",
         "lastObsDateRaw": "2021-05-13",
@@ -403,18 +469,18 @@ All SHA-256 hashes are computed over compact ordinal-sorted canonical JSON.
   "failedRefreshObjects": [],
   "horizonsApiVersion": "1.2",
   "lookupApiVersion": "1.1",
-  "manifestSha256": "DEA2B09A365C722E84925B15ED7D4966DFA4ABF4AB551BD8F0E9C9138BBBE06E",
-  "normalizedPayloadBytes": 3685,
-  "normalizedPayloadSha256": "C75433FA857C64C534CF0F4BF93CEAD45CB8809F46280B90A0D01D6A2BFD8407",
+  "manifestSha256": "0F6ACCBA929C3245602B46B74362F9D6BB28C10EEFAAB971D3FFE02EF744728B",
+  "normalizedPayloadBytes": 4039,
+  "normalizedPayloadSha256": "0F4E39DB0A64DE1ACB764FA54E240522EDACC65D2FD41ECF4B38D6FDA85C68F7",
   "normalizerVersion": "small-body-normalizer-v1",
   "observerBinding": {
     "deploymentLocationId": "loc-hvo-primary",
     "deploymentLocationVersion": 3,
-    "elevationMeters": 1000.0,
+    "elevationMeters": 1000,
     "heightDatum": "AssumedEllipsoidal",
     "latitudeDegrees": 35.5599378,
     "longitudeDegrees": -113.9119818,
-    "observerBindingSha256": "2720EB0FF049EBF6787BE3B2274DFE59D2792F3BCBCD3581724DA1A86709E1F4"
+    "observerBindingSha256": "08A23071971928E2783C214B9EC5FBF307D87219E4E37C392C6660B52DD3E8B5"
   },
   "overallValidFromUtc": "2026-11-27T00:00:00Z",
   "overallValidUntilUtc": "2026-11-27T01:00:00Z",
@@ -467,29 +533,64 @@ ValueTask<SmallBodySnapshotReadResult> ReadExactAsync(string manifestSha256, Can
    - Reject if `observer` does not match `snapshot.observerBinding` →
      `ObserverMismatch`.
    - Reject if `utc` crosses an unsupported leap second → `UnsupportedLeapCrossing`.
-   - Reject if `!series.interpolationBoundVerified` or the bracketing interval's
-     verified cubic residual exceeds `1.0"` → `InterpolationBoundExceeded`.
-2. **Motion-sensitive step selection & mandatory per-series residual verification:**
+   - Reject if `!series.interpolationBoundVerified`,
+     `series.interpolationVerificationMethod == "Unverified"`,
+     `series.maxVerifiedMidpointResidualArcsec == null`, or the bracketing
+     interval lacks verified midpoint accuracy $\le 1.0''$ →
+     `InterpolationBoundExceeded`.
+2. **Motion-sensitive step selection & mandatory independent half-step midpoint verification:**
    - Acquisition selects the largest supported uniform step
      `stepSeconds ∈ {3600, 900, 300, 120, 60}` that satisfies **both**:
      1. **Distance-tier ceiling** (diurnal parallax): $\Delta_{\min} \ge 0.2\text{ AU} \to \le 3600\text{ s}$; $0.01 \le \Delta_{\min} < 0.2\text{ AU} \to \le 900\text{ s}$; $0.002 \le \Delta_{\min} < 0.01\text{ AU} \to \le 300\text{ s}$; $\Delta_{\min} < 0.002\text{ AU} \to$ `CloseApproachUnsupported`.
-     2. **Motion-sensitive angular-step cap:** $\omega_{\max} \cdot h \le 2.5^\circ$ ($0.04363\text{ rad}$), where $\omega_{\max}$ is the maximum apparent angular speed (estimated from $v_{\perp,\max}/\Delta_{\min}$ or observed $\max_k \angle(\hat{\mathbf{u}}_{k+1}, \hat{\mathbf{u}}_k)/h$). Window duration is reduced when needed so knot count stays $\le 1024$ (e.g., 24 h at `120 s` = 723 knots, 12 h at `60 s` = 723 knots).
-   - **Mandatory residual check:** For every series with $N \ge 7$ knots,
-     normalization computes the centered `2h`-stride leave-one-out cubic
-     residual at every interior knot $k \in [3, N-4]$ (predicting $\hat{\mathbf{u}}(t_k)$
-     from $\{k-3, k-1, k+1, k+3\}$ and scaling $\hat{e}_k = r_{2h,k}/16$, since
-     4-point cubic error scales as $h^4$). For short reference series ($4 \le N < 7$),
-     acceptance verifies directly against independent Horizons mid-knot points.
-     If any interval exceeds `1.0"`, acquisition steps down to the next smaller
-     `stepSeconds` (down to `60 s`) and re-verifies; if still $> 1.0"$ at `60 s`,
-     `interpolationBoundVerified` is set to `false` and the affected interval
-     fails closed with `InterpolationBoundExceeded`.
-   - **Verified rectilinear flyby check ($\Delta_{\min}=0.002\text{ AU}$, $v_\perp=75\text{ km/s}$):**
-     At `h = 300 s`, true max error is `1.115644"` (`2h`-stride estimate
-     `1.075339"` — rejected). Under $\omega_{\max} h \le 2.5^\circ$
-     ($\omega_{\max}=51.7048''/\text{s} \implies h \le 174.1\text{ s}$), the
-     contract selects **`h = 120 s`**, yielding **`0.028818"`** true max error
-     (`2h`-stride estimate `0.028641"`), well under `1.0"`.
+     2. **Motion-sensitive angular-step cap:** $\omega_{\max} \cdot h \le 2.5^\circ$ ($0.04363\text{ rad}$), where $\omega_{\max}$ is the maximum apparent angular speed (estimated from $v_{\perp,\max}/\Delta_{\min}$ or observed $\max_k \angle(\hat{\mathbf{u}}_{k+1}, \hat{\mathbf{u}}_k)/h$). Window duration is reduced when needed so stored knot count stays $\le 1024$ (e.g., 24 h at `120 s` = 723 knots, 12 h at `60 s` = 723 knots).
+   - **Mandatory independent midpoint verification (integer-knot-only checks prohibited as proof):**
+     Integer-knot-only `2h`-stride leave-one-out checks are **NOT sufficient**
+     to verify midpoint accuracy: for example, on a 7-knot series with an
+     oscillatory perturbation $2'' \sin(\pi t / h)$, the curve passes the
+     $\omega_{\max} h \le 2.5^\circ$ cap and evaluates to `0.000000"` residual
+     at every integer knot (including `k = 3`), yet has a **`2.000000"` error**
+     at every usable midpoint $t_{k+1/2} = t_k + h/2$. Therefore, every usable
+     interval $[t_k, t_{k+1}]$ ($k \in [1, N-3]$) MUST be verified $\le 1.0''$
+     using one of two approved methods:
+     - **Method A (`HalfStepSample` — required for Horizons acquisition and live/cached verification):**
+       Fetch the Horizons `OBSERVER` ephemeris at half-step resolution $h/2$
+       ($h/2 \in \{1800, 450, 150, 60, 30\}\text{ s}$ — returned in a single
+       Horizons HTTP request, keeping even-indexed samples as the retained
+       $h$-spaced knots and odd-indexed samples as independent half-step
+       verification points). For every usable interval $k \in [1, N-3]$,
+       evaluate the 4-point centered cubic Lagrange unit-vector interpolant on
+       $\{k-1, k, k+1, k+2\}$ at $u = 0.5$ ($t_{k+1/2}$) and measure
+       $e_{k+1/2} = \max\bigl(\angle(\hat{\mathbf{u}}_{\text{astrom}}^{\text{interp}}, \hat{\mathbf{u}}_{\text{astrom}}^{\text{ref}}),\; \angle(\hat{\mathbf{u}}_{\text{app}}^{\text{interp}}, \hat{\mathbf{u}}_{\text{app}}^{\text{ref}})\bigr)$.
+       Record `interpolationVerificationMethod = "HalfStepSample"` and
+       `maxVerifiedMidpointResidualArcsec = max_k e_{k+1/2}` (rounded upward if
+       formatted, never understated).
+     - **Method B (`AnalyticalDerivativeBound` — allowed only for closed-form analytical/synthetic fixtures):**
+       Prove a rigorous conservative upper bound on the cubic midpoint remainder
+       $\frac{3}{128} h^4 \sup_{\xi \in [t_{k-1}, t_{k+2}]} \|\mathbf{u}^{(4)}(\xi)\| \le 1.0''$
+       (plus spherical re-normalization bound) over every usable interval, and
+       record `interpolationVerificationMethod = "AnalyticalDerivativeBound"`
+       with that conservative bound in `maxVerifiedMidpointResidualArcsec`.
+     - **Fail-closed withholding rule:** If any usable interval has
+       $e_{k+1/2} > 1.0''$, acquisition refines to the next smaller
+       `stepSeconds` (down to `60 s`) and re-verifies. Any usable interval that
+       **lacks** verified midpoint accuracy evidence (`Unverified`) or still
+       exceeds `1.0"` at `60 s` MUST be withheld (`interpolationBoundVerified = false`,
+       failing closed with `InterpolationBoundExceeded`).
+   - **Verified benchmarks (mandatory Slice S0/S1 tests):**
+     - *Rectilinear fast flyby ($\Delta_{\min}=0.002\text{ AU}$, $v_\perp=75\text{ km/s}$):*
+       At `h = 300 s`, half-step midpoint max error is `1.115471"` (continuous
+       max `1.115644"` — rejected as `> 1.0"`). Under $\omega_{\max} h \le 2.5^\circ$
+       ($\omega_{\max}=51.7048''/\text{s} \implies h \le 174.1\text{ s}$), the
+       contract selects **`h = 120 s`**, yielding **`0.028812"`** half-step
+       midpoint max error (continuous max `0.028818"`), well under `1.0"`.
+     - *Oscillatory counterexample ($2'' \sin(\pi t/h)$ on 7 knots):*
+       Integer-knot `2h`-stride at `k = 3` reports `0.000000"`, whereas Method A
+       half-step verification at $t = 1.5h$ measures **`2.000000"`** and
+       rejects/withholds the interval.
+     - *`433 Eros` Section 3.4 example (1 h knots vs independent Horizons
+       `2026-11-27 00:30 UTC` sample):* **`0.000237907"`** astrometric ICRF and
+       **`0.000222838"`** apparent airless → recorded conservatively as
+       **`0.000238"`**.
 3. **4-point centered cubic Lagrange on unit vectors:**
    - Locate knot index $k$ such that $t_k \le t \le t_{k+1}$ with stencil
      $\{k-1, k, k+1, k+2\}$ (always in-bounds because of the 1-knot padding).
@@ -636,13 +737,20 @@ CameraAgent.Common exposes an operational status DTO mirroring
    - For each failed body, its **last-known-good `SmallBodyEphemerisSeries`**
      from the prior active manifest (when one exists for the **exact same**
      `observerBindingSha256`), carried forward verbatim with
-     `carriedForward: true` and its **original** `seriesRetrievedUtc`,
-     `validFromUtc`, `validUntilUtc`, `solution`, and `recordSha256` unchanged
-     (so staleness/expiry are never masked), while recording the failure in
-     `failedRefreshObjects[]` with `carryForwardApplied: true`. If the failed
-     body has no prior valid series for the current observer, it is omitted from
-     `series[]` and recorded in `failedRefreshObjects[]` with
-     `carryForwardApplied: false`.
+     `carriedForward: true`, **`originManifestSha256`** pinned to the immutable
+     originating manifest's `manifestSha256` (preserved unchanged across
+     multi-hop carry-forwards), and its **original** producing tool/API
+     provenance (`parserVersion`, `normalizerVersion`, `horizonsApiVersion`,
+     `sbdbApiVersion`, `lookupApiVersion`), `seriesRetrievedUtc`,
+     `validFromUtc`, `validUntilUtc`, `solution`, and unchanged `recordSha256`
+     (so neither staleness/expiry nor producing parser/normalizer provenance is
+     ever masked — for example, a v2 refresh that succeeds for Eros and carries
+     Halley forward from a v1 manifest `M1` records v2 on the new manifest and
+     Eros while preserving v1 provenance and `originManifestSha256 = M1` on
+     Halley), while recording the failure in `failedRefreshObjects[]` with
+     `carryForwardApplied: true`. If the failed body has no prior valid series
+     for the current observer, it is omitted from `series[]` and recorded in
+     `failedRefreshObjects[]` with `carryForwardApplied: false`.
 2. **Total failure, halt, or quarantine (`refreshedCount == 0`):**
    **No new manifest is activated.** The existing last-known-good manifest
    remains active and readable untouched while `lastAttemptUtc`, `providerHalt`,
