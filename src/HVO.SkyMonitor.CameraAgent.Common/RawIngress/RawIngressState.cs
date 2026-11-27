@@ -63,10 +63,15 @@ public sealed class RawIngressState(TimeProvider timeProvider)
         timeProvider.GetUtcNow());
 
     private RawIngressReconciliationReport? _lastReconciliation;
+    private long _lastCapturePayloadBytes;
 
     public RawIngressSnapshot Snapshot => Volatile.Read(ref _snapshot);
 
     public RawIngressReconciliationReport? LastReconciliation => Volatile.Read(ref _lastReconciliation);
+
+    internal long LastCapturePayloadBytes => Volatile.Read(ref _lastCapturePayloadBytes);
+
+    internal void RecordCapturePayloadBytes(long bytes) => Volatile.Write(ref _lastCapturePayloadBytes, bytes);
 
     internal void RecordReconciliation(RawIngressReconciliationSummary summary) => Volatile.Write(
         ref _lastReconciliation,

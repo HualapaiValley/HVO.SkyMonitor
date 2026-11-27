@@ -175,6 +175,9 @@ public sealed partial class DurableCaptureProcessingTests
             var missingReceipt = await reconciler.RunAsync(token).ConfigureAwait(false);
             Assert.AreEqual(1, missingReceipt.Missing);
             Assert.AreEqual("Missing", (await store.ReadOutputByArtifactIdAsync(missing.ArtifactId, token).ConfigureAwait(false))?.AvailabilityState);
+            var selectedMissing = await service.GetAsync(newest.Capture.CaptureId, token).ConfigureAwait(false);
+            Assert.IsTrue(selectedMissing.HasMissingEvidence);
+            Assert.IsNull(selectedMissing.Mapping);
             var pending = await service.ReadLatestAcceptedAsync(expectedNew, token).ConfigureAwait(false);
             Assert.IsFalse(pending.Completed);
             Assert.IsFalse(pending.PreviousSummaryQuarantined);
@@ -221,6 +224,7 @@ public sealed partial class DurableCaptureProcessingTests
                 File.Move(displaced, missingPath);
                 await reconciler.RunAsync(token).ConfigureAwait(false);
                 Assert.AreEqual("Available", (await store.ReadOutputByArtifactIdAsync(missing.ArtifactId, token).ConfigureAwait(false))?.AvailabilityState);
+                Assert.IsFalse((await service.GetAsync(newest.Capture.CaptureId, token).ConfigureAwait(false)).HasMissingEvidence);
                 Assert.AreEqual(expectedNew, (await service.ReadLatestAcceptedAsync(token).ConfigureAwait(false)).Summary);
             }
         }
