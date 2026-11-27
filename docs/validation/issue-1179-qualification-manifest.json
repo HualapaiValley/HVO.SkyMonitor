@@ -1,0 +1,30 @@
+{
+  "schema": "astrometric-long-exposure-qualification-v1",
+  "issue": 1179,
+  "base": "5fc81cc78b202e128d97c3e68d0e91536c561849",
+  "catalogDatabaseSha256": "b51d18b722199e89aa8fe4622ebe507346c75effb375e546881452a263f0b9e2",
+  "cells": [
+    { "family": "equidistant", "exposureSeconds": 20, "profiles": 7 },
+    { "family": "equidistant", "exposureSeconds": 60, "profiles": 7 },
+    { "family": "rectilinear", "exposureSeconds": 20, "profiles": 6 }
+  ],
+  "tuning": {
+    "method": "TuningLongExposureRelease",
+    "profileRealizationsPerNight": 8,
+    "nights": [{ "utcDate": "2026-02-18", "seed": 117902 }, { "utcDate": "2026-08-19", "seed": 117908 }]
+  },
+  "held-out": {
+    "method": "HeldOutLongExposureRelease",
+    "profileRealizationsPerNight": 20,
+    "nights": [{ "utcDate": "2026-03-20", "seed": 117903 }, { "utcDate": "2026-07-22", "seed": 117907 }, { "utcDate": "2026-11-18", "seed": 117911 }]
+  },
+  "rules": [
+    "Commit this manifest, the runner and the exact evaluator together before collecting evidence. Execute tuning, seal its per-cell floors, then execute held-out once on the same clean revision. Run all cells in both partitions without a retry, floor change or sample replacement. Statistical failures are results, while an incomplete workload or missing evidence invalidates the pack.",
+    "Use the #1168 configured-resolution sensor fixtures, unvaried render to magnitude 5, gain 150, HYG 4.2 (1637 complete solver entries at magnitude 5), ordinary v2 pixel conversion, measurement and blind/warm solve. A realization changes seed by 1000 and UTC by one minute. Keep the #1168 seven-capture session geometry per night. Score truth after solving. Bind each sensor frame to the actual exposure midpoint and record its raw and configuration SHA-256.",
+    "The versioned internal evaluator runs the shared #1168 numerical model with nominal or session-calibrated optics. The public estimator must withhold every covariance component on every accepted study mapping, including shared covariance. The internal schema is rejected by retained validation. Map failures and absent covariance remain reported. Short-exposure compatibility is checked independently by the existing boundary and canonical retained-product tests.",
+    "Tuning starts from the frozen #1168 floors. For each of the 20 family/exposure/profile combinations take the nearest-rank 90th percentile of the 16 required per-frame floors, round upward to 0.001 readout px, and freeze that value. The required floor is the existing fitting chi-square per degree of freedom equals one diagnostic. If any of the 16 values is absent or invalid, record the reason in the tuning evidence and retain the historical floor for that profile. No other budget, parameter or code is fitted or selected from the data.",
+    "Use the original #1168 thresholds with candidate floors on held-out only. Withholds must not exceed 0.02*n + 1 per profile or pooled. Per-profile and pooled ellipsoid and four marginal coverages at 0.6827, 0.95 and 0.99 must fall within 3.5 binomial standard errors of the targets, using released diagnostic samples, with all withheld frames counted by the withholding gate. Each session must yield an available total in all three evaluation views with a Mahalanobis square at most 18.4668.",
+    "Retain the #1168 budget of 250 ms or half the frame's measure-and-solve time, whichever is smaller, and 32 MiB allocations per estimation. Run Release on the Linux host under the heavy gate lock with tiered compilation disabled.",
+    "A failing cell is unsupported and cannot authorize a release. Even a passing cell is evidence only for its exact simulated workload and floors. It cannot qualify production release under arbitrary recipe settings, readouts, catalog selections or physical captures. This campaign registers no release profile. The default above one second is fail closed. Renderer capacity, mono clouds, ambiguous acquisition, adverse scene acceptance, trail-length metadata and physical accuracy get explicit envelope dispositions; their algorithms are outside this covariance experiment."
+  ]
+}

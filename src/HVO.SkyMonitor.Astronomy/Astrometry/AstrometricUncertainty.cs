@@ -178,6 +178,7 @@ public static class AstrometricUncertaintyEstimator
     public const string Available = "available";
     public const string Withheld = "withheld";
     public const string ExposureReleasePolicyVersion = "astrometric-exposure-release-v1";
+    internal const string QualificationSchema = "astrometric-long-exposure-qualification-v1";
     private const double DerivativeStep = 1e-6;
     private static readonly double[] CalibrationSteps = [1e-6, 1e-3, 1e-3, 1e-6];
     private const double SiderealDegreesPerSecond = 360.98564736629 / 86400;
@@ -186,7 +187,23 @@ public static class AstrometricUncertaintyEstimator
         AstrometricSolverOptions solverOptions, AstrometricSolveResult result, IReadOnlyList<AstrometricDetection> detections,
         IReadOnlyList<AstrometricPixelCovariance> covariances, AstrometricClockFacts clock, FrameReadoutDescriptor? readout = null,
         AstrometricCalibrationCovariance? sharedCalibration = null, AstrometricUncertaintyOptions? options = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        EstimateCore(calibration, catalog, solverOptions, result, detections, covariances, clock, readout,
+            sharedCalibration, options, AstrometricFrameUncertainty.CurrentSchemaVersion, cancellationToken);
+
+    /// <summary>Runs the same numerical model for an exposure study. The result schema is rejected by retained-evidence validation.</summary>
+    internal static AstrometricFrameUncertainty EstimateForLongExposureQualification(AstrometricCalibration calibration,
+        AstrometricCatalogData catalog, AstrometricSolverOptions solverOptions, AstrometricSolveResult result,
+        IReadOnlyList<AstrometricDetection> detections, IReadOnlyList<AstrometricPixelCovariance> covariances,
+        FrameReadoutDescriptor? readout, AstrometricCalibrationCovariance? sharedCalibration, AstrometricUncertaintyOptions options) =>
+        EstimateCore(calibration, catalog, solverOptions, result, detections, covariances, AstrometricClockFacts.NotSupplied, readout,
+            sharedCalibration, options, QualificationSchema, CancellationToken.None);
+
+    private static AstrometricFrameUncertainty EstimateCore(AstrometricCalibration calibration, AstrometricCatalogData catalog,
+        AstrometricSolverOptions solverOptions, AstrometricSolveResult result, IReadOnlyList<AstrometricDetection> detections,
+        IReadOnlyList<AstrometricPixelCovariance> covariances, AstrometricClockFacts clock, FrameReadoutDescriptor? readout,
+        AstrometricCalibrationCovariance? sharedCalibration, AstrometricUncertaintyOptions? options, string schemaVersion,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(calibration); ArgumentNullException.ThrowIfNull(catalog); ArgumentNullException.ThrowIfNull(solverOptions);
         ArgumentNullException.ThrowIfNull(result); ArgumentNullException.ThrowIfNull(detections); ArgumentNullException.ThrowIfNull(covariances);
@@ -245,7 +262,7 @@ public static class AstrometricUncertaintyEstimator
             AstrometricPoseCovarianceComponent conditional, AstrometricPoseCovarianceComponent systematic, AstrometricSharedCalibrationComponent shared,
             AstrometricPoseCovarianceComponent total, AstrometricModelValidity validity)
         {
-            var value = new AstrometricFrameUncertainty(AstrometricFrameUncertainty.CurrentSchemaVersion, string.Empty, assessment.IdentitySha256,
+            var value = new AstrometricFrameUncertainty(schemaVersion, string.Empty, assessment.IdentitySha256,
                 calibration.IdentitySha256, readoutIdentity, catalog.IdentitySha256, catalog.SelectionIdentitySha256, solverOptions.IdentitySha256, measurementIdentity,
                 options.IdentityForExposure(frame.ExposureEndUtc - frame.ExposureStartUtc), conventions, clock, status, code, reason,
                 estimate, centroid, conditional, systematic, shared, total, clockComponent, validity);
@@ -264,7 +281,7 @@ public static class AstrometricUncertaintyEstimator
             return Withhold("assessment-not-accepted", "Only an accepted measured mapping has an uncertainty; this assessment carries none.");
         // Long-exposure held-out coverage failed even on frames passing the residual gates. Neither a good fit
         // nor a larger declared floor qualifies those exposures; preserve the mapping but publish no covariance.
-        if (!IsExposureEligible(frame.ExposureEndUtc - frame.ExposureStartUtc))
+        if (schemaVersion == AstrometricFrameUncertainty.CurrentSchemaVersion && !IsExposureEligible(frame.ExposureEndUtc - frame.ExposureStartUtc))
             return Withhold("exposure-not-qualified", "Astrometric covariance is unsupported for exposures longer than one second; use a qualified short exposure until long-exposure uncertainty is requalified.");
         var scale = assessment.Parameters!.FocalScale;
         if (Math.Abs(scale - solverOptions.MinimumFocalScale) <= 1e-9 * Math.Max(1, scale) || Math.Abs(scale - solverOptions.MaximumFocalScale) <= 1e-9 * Math.Max(1, scale))
@@ -354,7 +371,8 @@ public static class AstrometricUncertaintyEstimator
     {
         ArgumentNullException.ThrowIfNull(a); ArgumentNullException.ThrowIfNull(b); ArgumentNullException.ThrowIfNull(calibration);
         foreach (var frame in new[] { a, b })
-            if (!frame.IsAvailable || !IsExposureEligible(frame.Conventions.ExposureEndUtc - frame.Conventions.ExposureStartUtc) ||
+            if (frame.SchemaVersion != AstrometricFrameUncertainty.CurrentSchemaVersion || !frame.IsAvailable ||
+                !IsExposureEligible(frame.Conventions.ExposureEndUtc - frame.Conventions.ExposureStartUtc) ||
                 frame.SharedCalibration.Status != Available || frame.SharedCalibration.CalibrationCovarianceIdentitySha256 != calibration.IdentitySha256 ||
                 frame.SharedCalibration.Sensitivity is null)
                 throw new ArgumentException("Both frames must carry an available shared-calibration component for this exact calibration covariance.");
