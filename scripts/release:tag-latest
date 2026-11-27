@@ -6,8 +6,8 @@
 #   scripts/release:tag-latest <repository> <tag> <digest>
 #
 # It moves latest only when the release for <tag> is published, final and the newest final release, decided as
-# scripts/release:publish decides it, and GitHub's latest release is that release; a release candidate, or a fix to an
-# older version, leaves latest alone and says so. The image must still be <digest> under its version tag, the digest
+# scripts/release:publish decides it, and GitHub's latest release is that release. Betas, release candidates and fixes
+# to older versions leave latest alone. The image must still be <digest> under its version tag, the digest
 # release.json names: latest is copied from that digest, with every platform and its digests (skopeo copy --all
 # --preserve-digests), and read back. Running it again moves nothing further. Every GitHub read is strict
 # (scripts/lib/github-api.sh), and a read that is not certain fails rather than move or keep latest by guess. The
@@ -36,7 +36,7 @@ source "$repo_root/scripts/lib/github-api.sh"
 source "$repo_root/scripts/lib/releases.sh"
 version="$("$repo_root/scripts/release:version" --tag "$tag" 2>&1)" || fail "${version#release:version: }"
 if [[ "$version" == *-* ]]; then
-    printf '%s is a release candidate: the image latest tag stays where it is.\n' "$tag"
+    printf '%s is a pre-release. The image latest tag stays where it is.\n' "$tag"
     exit 0
 fi
 

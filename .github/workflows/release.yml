@@ -1,7 +1,7 @@
 name: Release
 
-# A final release, vX.Y.Z, or a release candidate, vX.Y.Z-rc.N, is cut from a commit on main (install contract section
-# 3, #1310). Only the owner pushes v* tags; this workflow does the rest, and publishes only after the owner approves:
+# A final release (vX.Y.Z), beta (vX.Y.Z-beta.N) or release candidate (vX.Y.Z-rc.N) is cut from a commit on main
+# (install contract section 3, #1310). The owner pushes the tag and approves publishing:
 #
 #   gate          admit the tag, read-only: annotated, names the product version (Directory.Build.props), on main, a
 #                 final release's notes present, not yet released, and the production-release environment requires a
@@ -17,8 +17,8 @@ name: Release
 #   latest        when publishing made it the latest release, move the image's latest tag to its image
 #                 (scripts/release:tag-latest)
 #
-# A release candidate is published as a GitHub pre-release and never moves latest; neither does a fix to an older
-# version. Each tag's run is its own concurrency group, but publish and latest also share one release-wide group,
+# Betas and release candidates are published as GitHub pre-releases. Only the newest final release moves latest.
+# Each tag's run is its own concurrency group, but publish and latest also share one release-wide group,
 # release-promotion, so two releases never decide or move latest at once. Nothing here changes a repository or
 # environment setting: the owner applies them (docs/runbooks/releases.md).
 
@@ -27,6 +27,7 @@ on:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
       - 'v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-beta.[0-9]+'
 
 permissions:
   contents: read
@@ -210,7 +211,7 @@ jobs:
           sha256sum --check --strict SHA256SUMS
           # Every file is listed in SHA256SUMS, and nothing else is here.
           [[ "$(find . -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)" == "$( (cut -c 67- SHA256SUMS; printf 'SHA256SUMS\n') | sort)" ]]
-          # A final release's release.json carries its upgrade notes; a release candidate's is marked a pre-release.
+          # A final release's release.json carries its upgrade notes. Betas and release candidates are marked pre-release.
           jq -e --arg version "$VERSION" --arg tag "$TAG" --arg commit "$COMMIT" --arg created "$CREATED" \
             --argjson prerelease "$PRERELEASE" --arg repository "$IMAGE_REPOSITORY" '
             .version == $version and .tag == $tag and .commit == $commit and .created == $created
@@ -276,7 +277,7 @@ jobs:
           notes="$RUNNER_TEMP/release-notes.md"
           {
             if [[ "$PRERELEASE" == true ]]; then
-              echo "Release candidate $VERSION, from \`$COMMIT\` on main. It is published as a pre-release and never becomes the latest release."
+              echo "SkyMonitor $VERSION, from \`$COMMIT\` on main. It is published as a pre-release and never becomes the latest release."
             else
               echo "SkyMonitor $VERSION, from \`$COMMIT\` on main."
             fi

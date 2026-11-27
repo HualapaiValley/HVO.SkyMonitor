@@ -20,20 +20,16 @@ public sealed class ReleaseAssetsToolTests
     private static readonly string[] OfflineArchiveEntries =
         ["oci-layout", "index.json", "manifest.json", "blobs/", "blobs/sha256/"];
 
-    private static readonly string[] ReleaseFiles =
-    [
-        "SHA256SUMS", "hvo-sky-install-linux-arm64", "hvo-sky-install-linux-x64", "release.json",
-        "skymonitor-cameraagent-1.2.0-dev.3-linux-amd64.oci.tar", "skymonitor-cameraagent-1.2.0-dev.3-linux-arm64.oci.tar"
-    ];
-
     private const string StateContractsLabel = "io.hvo.skymonitor.state-contracts";
 
     private static readonly string[] Platforms = ["linux/amd64", "linux/arm64"];
 
     [TestMethod]
-    public async Task CreateRelease_WritesTheContractsAssetsReleaseJsonAndSha256Sums()
+    [DataRow(OciReleaseFixture.Version)]
+    [DataRow("1.2.0-beta.1")]
+    public async Task CreateRelease_WritesTheContractsAssetsReleaseJsonAndSha256Sums(string version)
     {
-        using var fixture = OciReleaseFixture.Create();
+        using var fixture = OciReleaseFixture.Create(version);
         fixture.WriteNote("1.1.0", "Eleven.\r\nSecond line.");
         fixture.WriteNote("1.2.0", "Twelve.\n\tIndented.");
         fixture.WriteNote("1.3.0", "A later release's notes are not this release's.");
@@ -42,22 +38,26 @@ public sealed class ReleaseAssetsToolTests
         Assert.AreEqual(0, await Program.Main(fixture.Arguments(output)));
 
         var names = Directory.GetFiles(output).Select(Path.GetFileName).Order(StringComparer.Ordinal).ToArray();
-        CollectionAssert.AreEqual(ReleaseFiles, names);
+        CollectionAssert.AreEqual(new[]
+        {
+            "SHA256SUMS", "hvo-sky-install-linux-arm64", "hvo-sky-install-linux-x64", "release.json",
+            $"skymonitor-cameraagent-{version}-linux-amd64.oci.tar", $"skymonitor-cameraagent-{version}-linux-arm64.oci.tar"
+        }, names);
         var release = JsonNode.Parse(await File.ReadAllBytesAsync(Path.Combine(output, "release.json")))!.AsObject();
         Assert.AreEqual(1, (int)release["schemaVersion"]!);
         Assert.AreEqual("HVO SkyMonitor", (string)release["product"]!);
-        Assert.AreEqual(OciReleaseFixture.Version, (string)release["version"]!);
-        Assert.AreEqual($"v{OciReleaseFixture.Version}", (string)release["tag"]!);
+        Assert.AreEqual(version, (string)release["version"]!);
+        Assert.AreEqual($"v{version}", (string)release["tag"]!);
         Assert.IsTrue((bool)release["prerelease"]!);
         Assert.AreEqual(OciReleaseFixture.Commit, (string)release["commit"]!);
         Assert.AreEqual(OciReleaseFixture.Created, (string)release["created"]!);
         Assert.AreEqual("https://github.com/HualapaiValley/HVO.SkyMonitor", (string)release["repository"]!);
         var image = release["images"]!["cameraAgent"]!.AsObject();
         Assert.AreEqual("ghcr.io/hualapaivalley/skymonitor-cameraagent", (string)image["repository"]!);
-        Assert.AreEqual(OciReleaseFixture.Version, (string)image["tag"]!);
+        Assert.AreEqual(version, (string)image["tag"]!);
         Assert.AreEqual(fixture.IndexDigest, (string)image["digest"]!);
         Assert.AreEqual(
-            $"ghcr.io/hualapaivalley/skymonitor-cameraagent:{OciReleaseFixture.Version}@{fixture.IndexDigest}", (string)image["reference"]!);
+            $"ghcr.io/hualapaivalley/skymonitor-cameraagent:{version}@{fixture.IndexDigest}", (string)image["reference"]!);
         CollectionAssert.AreEqual(Platforms, image["platforms"]!.AsArray().Select(static node => (string)node!).ToArray());
         // The image's state contract label, as the image declares it, under the image's key (install contract section 6).
         Assert.AreEqual($$"""{"cameraAgent":{{OciReleaseFixture.StateContracts}}}""", release["stateContracts"]!.ToJsonString());

@@ -158,8 +158,9 @@ internal sealed partial class SqliteCenteredViews
             // A deferred older change can enter the archive after recovery, but cannot replace a newer live issue.
             if (current is null || current.StartedOrder <= order)
             {
-                await silo.Publisher.PublishLiveViewAsync(new(camera, section.StreamId, view.Base.BaseId, view.Revision.RevisionId,
-                    order, committedUtc.ToUniversalTime()), cancellationToken).ConfigureAwait(false);
+                if (!await silo.Publisher.PublishLiveViewAsync(new(camera, section.StreamId, view.Base.BaseId, view.Revision.RevisionId,
+                    order, committedUtc.ToUniversalTime()), cancellationToken).ConfigureAwait(false))
+                    return false;
             }
         }
         Notify(definition.Stream);
@@ -187,7 +188,7 @@ internal sealed partial class SqliteCenteredViews
 
     private async ValueTask<bool> IsSiloViewVisibleAsync(string baseId, string revisionId, CancellationToken cancellationToken) =>
         silo is null || silo.BindingVerified &&
-        await silo.Index.ReadPublicationAsync(baseId, revisionId, cancellationToken).ConfigureAwait(false) is { State: "visible" };
+        await silo.Index.HasVisibleViewManifestAsync(baseId, revisionId, cancellationToken).ConfigureAwait(false);
 
     private async ValueTask<CenteredViewCurrent?> ReadSiloCurrentAsync(SqliteConnection connection, string cameraId,
         string? streamId, CancellationToken cancellationToken)

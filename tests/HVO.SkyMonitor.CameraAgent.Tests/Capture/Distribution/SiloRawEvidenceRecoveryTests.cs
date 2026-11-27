@@ -19,7 +19,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Distribution;
 [TestCategory("Unit")]
 [TestProperty("Area", "Silo")]
 [DoNotParallelize]
-public sealed class SiloRawEvidenceRecoveryTests
+public sealed partial class SiloRawEvidenceRecoveryTests
 {
     [TestMethod]
     [DataRow(false)]
@@ -432,13 +432,13 @@ public sealed class SiloRawEvidenceRecoveryTests
         Assert.AreEqual(0L, state.Snapshot.QuarantineCount);
     }
 
-    private static async Task<(SiloInstalledSettings Settings, SiloInstalledStore Store)> CreateRecoverySiloAsync()
+    internal static async Task<(SiloInstalledSettings Settings, SiloInstalledStore Store)> CreateRecoverySiloAsync()
     {
         var (settings, installed, _) = await CreateRecoverySiloWithStoreAsync().ConfigureAwait(false);
         return (settings, installed);
     }
 
-    private static async Task<(SiloInstalledSettings Settings, SiloInstalledStore Store, SiloTestStore TestStore)> CreateRecoverySiloWithStoreAsync()
+    private static async Task<(SiloInstalledSettings Settings, SiloInstalledStore Store, SiloTestStore TestStore)> CreateRecoverySiloWithStoreAsync(string? dataRoot = null)
     {
         var instance = Guid.NewGuid();
         var binding = new SiloStorageBinding(instance.ToString("D"), CameraAgentSiloBinding.StoreIdFor(instance),
@@ -451,6 +451,7 @@ public sealed class SiloRawEvidenceRecoveryTests
         section["Silo:StorageBindingId"] = binding.BindingId;
         section["Silo:WriterGeneration"] = "1";
         section["Silo:Endpoint"] = "http://127.0.0.1";
+        section["Silo:DataRoot"] = dataRoot;
         section["Silo:AccessKey"] = accessKey;
         section["Silo:SecretKey"] = "fixturewritersecret";
         var settings = SiloInstalledSettings.Read(section.GetSection("Silo"));

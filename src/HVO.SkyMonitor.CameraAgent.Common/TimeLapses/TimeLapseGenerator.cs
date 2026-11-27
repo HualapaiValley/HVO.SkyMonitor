@@ -133,7 +133,7 @@ internal sealed class TimeLapseGenerator(SqliteTimeLapseStore store, TimeLapseSo
         var encoded = await encoder.AssembleAsync(products.Select(product => new TimeLapseAssemblySegment(
                 product.StartUtc, product.EndUtc, product.Encoding)).ToArray(), job.Preset.Timing.Compression,
             async (index, cancellationToken) => await store.OpenVideoAsync(products[index].ProductId, cancellationToken).ConfigureAwait(false)
-                ?? throw new InvalidDataException("A retained hourly video payload is missing."), token).ConfigureAwait(false);
+                ?? throw new TimeLapseInputUnavailableException(products[index].ProductId), token).ConfigureAwait(false);
         await using var encodedLifetime = encoded.ConfigureAwait(false);
         var exclusions = products.SelectMany(static product => product.Exclusions).GroupBy(static pair => pair.Key)
             .ToDictionary(static group => group.Key, static group => group.Sum(pair => pair.Value), StringComparer.Ordinal);
@@ -147,7 +147,7 @@ internal sealed class TimeLapseGenerator(SqliteTimeLapseStore store, TimeLapseSo
     private async ValueTask CompleteWithProductAsync(CameraAgentTimeLapseJob job, CameraAgentTimeLapseProduct product, CancellationToken token)
     {
         using var stream = await store.OpenVideoAsync(product.ProductId, token).ConfigureAwait(false)
-            ?? throw new InvalidDataException("The retained video payload is unavailable.");
+            ?? throw new TimeLapseInputUnavailableException(product.ProductId);
         await store.RecordExclusionsAsync(job.JobId, product.Exclusions, token).ConfigureAwait(false);
         await store.CompleteAsync(job.JobId, CameraAgentTimeLapseState.Produced, null, product.ProductId, token).ConfigureAwait(false);
     }

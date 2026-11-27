@@ -1003,7 +1003,7 @@
   },
   "projects": {
     "scripts/coverage/HVO.SkyMonitor.CoverageGate.csproj": {
-      "graphSha256": "de378ad818c91ec559360246b9326c5a8805c32a8cd1236612ad4ed5c1b98d18",
+      "graphSha256": "dc3804512398faf5118852e8f6fe67bd8330719a4b83bf58a1a5321693476771",
       "props": {
         "imports": [],
         "sha256": "47a873ed94d0d2d224bdf6cc2529ae4706fb0fc51fb0f11f13ce834565f08864"
@@ -1017,7 +1017,7 @@
       }
     },
     "src/HVO.SkyMonitor.AgentCore/HVO.SkyMonitor.AgentCore.csproj": {
-      "graphSha256": "df918c65d3426b8241e74e1a23b14467e4ef4ded2bc17e388025c48e0be9f90d",
+      "graphSha256": "4b6aedf73811232b3f7277d8dea13660ede90e00e5123e6425e51336ccba7325",
       "props": {
         "imports": [],
         "sha256": "47a873ed94d0d2d224bdf6cc2529ae4706fb0fc51fb0f11f13ce834565f08864"
@@ -1031,7 +1031,7 @@
       }
     },
     "src/HVO.SkyMonitor.Astronomy/HVO.SkyMonitor.Astronomy.csproj": {
-      "graphSha256": "10bdc20ac899b27a70e8555dabb9a94e7261071d4d705ba583be0f9e3a7fce2c",
+      "graphSha256": "c65688c3e67645be3c09e0fe9b1a35e93ccf24e58e5410099a06442d78058a19",
       "props": {
         "imports": [],
         "sha256": "47a873ed94d0d2d224bdf6cc2529ae4706fb0fc51fb0f11f13ce834565f08864"
@@ -1045,7 +1045,7 @@
       }
     },
     "src/HVO.SkyMonitor.CameraAgent.Cli/HVO.SkyMonitor.CameraAgent.Cli.csproj": {
-      "graphSha256": "5b07b5f80f2d06014899109a971a1b84e4a989959bc3ffb33dd3f2305992418f",
+      "graphSha256": "9446cd3213f49a7a640878e59c9e9d6f39b6de2aa0390a02869a1817bf8e91ca",
       "props": {
         "imports": [
           "microsoft.net.illink.tasks/10.0.13/build/Microsoft.NET.ILLink.Tasks.props"
@@ -1065,7 +1065,7 @@
       }
     },
     "src/HVO.SkyMonitor.CameraAgent.Common/HVO.SkyMonitor.CameraAgent.Common.csproj": {
-      "graphSha256": "ce5d47f192c9827d2c208352de53026854499ccb801df3270d1f4ebf80256285",
+      "graphSha256": "b50bb0b1b36d1093a6e49b984440e75a701a237cbe5a398772c357eb5eaf36de",
       "props": {
         "imports": [],
         "sha256": "cbd883281d1b6f28b66c77180af450851c75f511c2384ff8a44ecd64eb7a8dbf"
@@ -1084,7 +1084,7 @@
       }
     },
     "src/HVO.SkyMonitor.CameraAgent.Modules.Zwo/HVO.SkyMonitor.CameraAgent.Modules.Zwo.csproj": {
-      "graphSha256": "f2704ba8dad8c8116efb6c8325602c68b2f8f9506bafa8aeb3d99285bd08f0fd",
+      "graphSha256": "011e6cf34139147a2678193dfc6f9c1c3dab5d8a5ed63881a169f9863e9c2983",
       "props": {
         "imports": [],
         "sha256": "47a873ed94d0d2d224bdf6cc2529ae4706fb0fc51fb0f11f13ce834565f08864"
@@ -1098,7 +1098,7 @@
       }
     },
     "src/HVO.SkyMonitor.CameraAgent.Replay/HVO.SkyMonitor.CameraAgent.Replay.csproj": {
-      "graphSha256": "a63e92c37542c7f762e345b7fcfa3549fc9533c3bdc463b0df48d7a10580840b",
+      "graphSha256": "5d04b1426f27a72f55a4d515509b0921521f2233dc7e54e8132b5d6aad81c280",
       "props": {
         "imports": [],
         "sha256": "47a873ed94d0d2d224bdf6cc2529ae4706fb0fc51fb0f11f13ce834565f08864"
@@ -1112,7 +1112,7 @@
       }
     },
     "src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj": {
-      "graphSha256": "a8ebaef4a5b3a3a23e20aa47c595905e1d4d2444e660474e74d0bc0d37bdb6a9",
+      "graphSha256": "8dcd804533e0a0cb064d45c826a8a4d448a7136e597dc1ef5e12b684e1dbeb8a",
       "props": {
         "imports": [],
         "sha256": "47a873ed94d0d2d224bdf6cc2529ae4706fb0fc51fb0f11f13ce834565f08864"
@@ -1126,7 +1126,7 @@
       }
     },
     "src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj": {
-      "graphSha256": "e336a4ba6a20d955339d7e538163972d71f4560e44470b61e914b0edd800ff82",
+      "graphSha256": "a131ea7f4658d2e25c667f050a2ae734eebbc66cdf140c15a9bf4a4e83fededf",
       "props": {
         "imports": [
           "microsoft.entityframeworkcore/10.0.14/buildTransitive/net10.0/Microsoft.EntityFrameworkCore.props",
@@ -1154,7 +1154,7 @@
       }
     },
     "src/HVO.SkyMonitor.Catalog.Sqlite/HVO.SkyMonitor.Catalog.Sqlite.csproj": {
-      "graphSha256": "95ff346ec2d3694170ec638bb2887186426a78441ac414b62d8b962d8187075a",
+      "graphSha256": "232fe874a474130d41a8451dc9f5933ed89c55ba5d76f398aa21d63bbddf0b57",
       "props": {
         "imports": [],
         "sha256": "47a873ed94d0d2d224bdf6cc2529ae4706fb0fc51fb0f11f13ce834565f08864"
@@ -1172,7 +1172,7 @@
       }
     },
     "src/HVO.SkyMonitor.Common/HVO.SkyMonitor.Common.csproj": {
-      "graphSha256": "99874d9fc2aa515c9cfbad47e0ca85a87f65fe7861073141f1b6b818d3e42950",
+      "graphSha256": "2663580b27e1c59e01fd8606733e0bb25c52fa008aa61b2307237ecde360a3be",
       "props": {
         "imports": [],
         "sha256": "47a873ed94d0d2d224bdf6cc2529ae4706fb0fc51fb0f11f13ce834565f08864"
@@ -1188,7 +1188,7 @@
       }
     },
     "src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj": {
-      "graphSha256": "0dbfa2c0713b1a7547764714e8ac77847aa3953475e79d75909746baf3826be5",
+      "graphSha256": "ae11e882fc7a2eef0ae76ea9032dea5b70cdc48535e4a036a991af83a64fc77a",
       "props": {
         "imports": [
           "microsoft.net.illink.tasks/10.0.13/build/Microsoft.NET.ILLink.Tasks.props"
@@ -1209,7 +1209,7 @@
       }
     },
     "src/HVO.SkyMonitor.Deployment.Contracts/HVO.SkyMonitor.Deployment.Contracts.csproj": {
-      "graphSha256": "6163c4a0fd27da27cfb803b58d032137003ca532abf8bb73c623f78d8a5a6acf",
+      "graphSha256": "4c4c49b74c991b75d2a9443491c906a0144fcee0e18ee6b52ecf23d8d7a9d321",
       "props": {
         "imports": [],
         "sha256": "47a873ed94d0d2d224bdf6cc2529ae4706fb0fc51fb0f11f13ce834565f08864"
@@ -1223,7 +1223,7 @@
       }
     },
     "src/HVO.SkyMonitor.Imaging/HVO.SkyMonitor.Imaging.csproj": {
-      "graphSha256": "beeb2d6199155701bf58cfcf63bae8878689e8d0daf5498f49752f645e0c81da",
+      "graphSha256": "6220d9f2836fff0b0e990b4729e4bf0a99e0cb2094e186b096c9af1cd063ad04",
       "props": {
         "imports": [],
         "sha256": "47a873ed94d0d2d224bdf6cc2529ae4706fb0fc51fb0f11f13ce834565f08864"
@@ -1237,7 +1237,7 @@
       }
     },
     "src/HVO.SkyMonitor.Processing/HVO.SkyMonitor.Processing.csproj": {
-      "graphSha256": "3bfab923a37e94c42c3f9f02d511d3839a98400791bf4fe08120950fc85da173",
+      "graphSha256": "b2aef662c08e42f292c664f337e209809f6089fda868c1aa16d604b06592f5bf",
       "props": {
         "imports": [],
         "sha256": "47a873ed94d0d2d224bdf6cc2529ae4706fb0fc51fb0f11f13ce834565f08864"
@@ -1251,7 +1251,7 @@
       }
     },
     "src/HVO.SkyMonitor.Storage.FileSystem/HVO.SkyMonitor.Storage.FileSystem.csproj": {
-      "graphSha256": "6c67f22580542592563751d02ebee05670b03d0290c870be429941512c720a97",
+      "graphSha256": "62301cb0625e3c14063252e4f44ed515106a8196c9b6cc02c65acffb6fe39b0d",
       "props": {
         "imports": [],
         "sha256": "47a873ed94d0d2d224bdf6cc2529ae4706fb0fc51fb0f11f13ce834565f08864"
@@ -1265,7 +1265,7 @@
       }
     },
     "src/HVO.SkyMonitor.TerminalUi/HVO.SkyMonitor.TerminalUi.csproj": {
-      "graphSha256": "bd30e11e2606b23f4e59abadaa4c07985be5676f8fb03b0f98c059f642080649",
+      "graphSha256": "753973bbdbac9e3cbe07bd95840f5c9540c28ce7ba6942b4cfdfd560e52e2886",
       "props": {
         "imports": [
           "onigwrap/1.0.11/buildTransitive/netstandard1.0/Onigwrap.props"
@@ -1286,7 +1286,7 @@
       }
     },
     "src/HVO.SkyMonitor.TestSupport/HVO.SkyMonitor.TestSupport.csproj": {
-      "graphSha256": "239919533b34989c6d787fb4ee8ff3d1af2892f492143f0125e19fbd3a8bd30a",
+      "graphSha256": "c4f1954714abf2f79135f4057dad18620c493962d265234bf313f1918eabc31f",
       "props": {
         "imports": [],
         "sha256": "47a873ed94d0d2d224bdf6cc2529ae4706fb0fc51fb0f11f13ce834565f08864"
@@ -1300,7 +1300,7 @@
       }
     },
     "src/HVO.SkyMonitor.Video.FFmpeg/HVO.SkyMonitor.Video.FFmpeg.csproj": {
-      "graphSha256": "039aed04e173ff44673864eb457e5a80d986916ab840e42712e6287376a23305",
+      "graphSha256": "77ad46e37e9d897b73360f2720dd9e7a84ab345b5130fe57e86fcefb0e643e82",
       "props": {
         "imports": [],
         "sha256": "47a873ed94d0d2d224bdf6cc2529ae4706fb0fc51fb0f11f13ce834565f08864"
@@ -1314,7 +1314,7 @@
       }
     },
     "tests/HVO.SkyMonitor.AgentCore.Tests/HVO.SkyMonitor.AgentCore.Tests.csproj": {
-      "graphSha256": "8c51334636ff7f33d4cd430569288be2df04012dce13edf99b952cb03d28dcba",
+      "graphSha256": "16f9471383b0f50a4951b88821ed0eb16789bcf75ca0d3c38848190462addb38",
       "props": {
         "imports": [
           "mstest.analyzers/4.5.3/buildTransitive/MSTest.Analyzers.props",
@@ -1350,7 +1350,7 @@
       }
     },
     "tests/HVO.SkyMonitor.Architecture.Tests/HVO.SkyMonitor.Architecture.Tests.csproj": {
-      "graphSha256": "39ef5001a1ffd233ab2c83ef5c971636c22a950450784e4fcafac5760db42925",
+      "graphSha256": "d6235f191b739581d8660cc3f774a8b745f51ee3ba796642f30c1fd36142954e",
       "props": {
         "imports": [
           "mstest.analyzers/4.5.3/buildTransitive/MSTest.Analyzers.props",
@@ -1386,7 +1386,7 @@
       }
     },
     "tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj": {
-      "graphSha256": "3eff3820770034ed4cb7b7be43102c911d8edfc43ba00870da20334c957896ea",
+      "graphSha256": "8532f0a7f8609fcb71111e7b3ff4df6e7837efc0209ee5344189cd7afdfc5133",
       "props": {
         "imports": [
           "mstest.analyzers/4.5.3/buildTransitive/MSTest.Analyzers.props",
@@ -1422,7 +1422,7 @@
       }
     },
     "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj": {
-      "graphSha256": "3072e10b6faf8b19422ba2341d5f2e51de776642768f95e09db542b7f4113827",
+      "graphSha256": "7391483a8ef534e02d91410bb7330690b4940cd1c7111ba726981ae25ed2e561",
       "props": {
         "imports": [
           "mstest.analyzers/4.5.3/buildTransitive/MSTest.Analyzers.props",
@@ -1470,7 +1470,7 @@
       }
     },
     "tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj": {
-      "graphSha256": "e0de3a20c0eea6e212e03b667df7cc65cb78eb3367fe8f8d3100017fa2412b7b",
+      "graphSha256": "a5430dc72035fa5471c2b856ad226003f03375070cdad864855e6931c137a7d5",
       "props": {
         "imports": [
           "onigwrap/1.0.11/buildTransitive/netstandard1.0/Onigwrap.props",
@@ -1519,7 +1519,7 @@
       }
     },
     "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj": {
-      "graphSha256": "eb184ff147b4901fbdd7eec1c1661e7e5ba248fb783907cbe538249013604d85",
+      "graphSha256": "90f32fff22833794d458455e0b685a5af13e6eaa02e6df15d133dc44c3e6cf7f",
       "props": {
         "imports": [
           "mstest.analyzers/4.5.3/buildTransitive/MSTest.Analyzers.props",
@@ -1565,7 +1565,7 @@
       }
     },
     "tests/HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests/HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests.csproj": {
-      "graphSha256": "c308180142d29ce843915f2ab5c74ed48cfdef95e32dcf8245801f22516beb66",
+      "graphSha256": "620bef729fd8a9b5f821b4af51926402e41ecd7b1e0720829adc459d491c605f",
       "props": {
         "imports": [
           "mstest.analyzers/4.5.3/buildTransitive/MSTest.Analyzers.props",
@@ -1604,7 +1604,7 @@
       }
     },
     "tests/HVO.SkyMonitor.Catalog.Sqlite.Tests/HVO.SkyMonitor.Catalog.Sqlite.Tests.csproj": {
-      "graphSha256": "817ae96c9025a77fdac5eb04b9ce4288a9fd6d3d0cc90237d9ebc3680466957b",
+      "graphSha256": "7073dc42c1350a45e62607fee2ce65a5bb510e1ec9e035bc5d4b00e30db7fad4",
       "props": {
         "imports": [
           "mstest.analyzers/4.5.3/buildTransitive/MSTest.Analyzers.props",
@@ -1643,7 +1643,7 @@
       }
     },
     "tests/HVO.SkyMonitor.Common.Tests/HVO.SkyMonitor.Common.Tests.csproj": {
-      "graphSha256": "10de44da71ba6c1e067ada39f17b68b5c98f051fac62dfcce97b93f67353b7b7",
+      "graphSha256": "7a714732057c55d4b0a2099376ef4b1a018f9e28f9a18f847a03516423d7b58e",
       "props": {
         "imports": [
           "mstest.analyzers/4.5.3/buildTransitive/MSTest.Analyzers.props",
@@ -1680,7 +1680,7 @@
       }
     },
     "tests/HVO.SkyMonitor.Deployment.Cli.Tests/HVO.SkyMonitor.Deployment.Cli.Tests.csproj": {
-      "graphSha256": "d182a18d668ec87b5f7c1c5ff1e1e3972846930dd134f34883d0316d09db3a6a",
+      "graphSha256": "0d2ac2c18011bbbf8c386e4d77f5ba45bd376c8f422ba3fcf777657842e067e2",
       "props": {
         "imports": [
           "mstest.analyzers/4.5.3/buildTransitive/MSTest.Analyzers.props",
@@ -1717,7 +1717,7 @@
       }
     },
     "tests/HVO.SkyMonitor.Deployment.Distribution.Tests/HVO.SkyMonitor.Deployment.Distribution.Tests.csproj": {
-      "graphSha256": "83c8ceaef21a083f4fc97a25fafeaff836b35cd93158c584ea5de6bef3547adf",
+      "graphSha256": "b5009439c5c82097d68f68b3f43dd45821eb5e95f3d9603e057fc2c909ec30aa",
       "props": {
         "imports": [
           "mstest.analyzers/4.5.3/buildTransitive/MSTest.Analyzers.props",
@@ -1756,7 +1756,7 @@
       }
     },
     "tests/HVO.SkyMonitor.Imaging.Tests/HVO.SkyMonitor.Imaging.Tests.csproj": {
-      "graphSha256": "7f7a2f0990cad03a2e7a47f883b26a00e0332225235befdd80c5d8ede41f1af0",
+      "graphSha256": "b4d7c3a76d629b2d0085a495ebc8bf5709a1573f9c442e7c1f6b2ac8c2c11db6",
       "props": {
         "imports": [
           "mstest.analyzers/4.5.3/buildTransitive/MSTest.Analyzers.props",
@@ -1792,7 +1792,7 @@
       }
     },
     "tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj": {
-      "graphSha256": "b219641d915796c399c976893608659b1800fcbc557ca18096a28922b47b5628",
+      "graphSha256": "b2cb420789f556276366dd542de43716a6998b68f953dce7bc5c17e6c08cb501",
       "props": {
         "imports": [
           "mstest.analyzers/4.5.3/buildTransitive/MSTest.Analyzers.props",
@@ -1828,7 +1828,7 @@
       }
     },
     "tests/HVO.SkyMonitor.Storage.FileSystem.Tests/HVO.SkyMonitor.Storage.FileSystem.Tests.csproj": {
-      "graphSha256": "2c353a0054c4c2032075c2868599366a83383079e156a350350eaeb6c6f86cd3",
+      "graphSha256": "0244f473eee8d16bb97caa52226aad342d023568447ba8a1e978ded2be223414",
       "props": {
         "imports": [
           "mstest.analyzers/4.5.3/buildTransitive/MSTest.Analyzers.props",
@@ -1864,7 +1864,7 @@
       }
     },
     "tests/HVO.SkyMonitor.TestSupport.Tests/HVO.SkyMonitor.TestSupport.Tests.csproj": {
-      "graphSha256": "c6a0aa62cc6eff712b2e0f3bdb0f86aeab98abe890d115f2eab85f36c28d2d47",
+      "graphSha256": "f3106b7b298f4c9c17e6c63ff80ced5bd8bb0bc93681682294fd9c77ea069f37",
       "props": {
         "imports": [
           "mstest.analyzers/4.5.3/buildTransitive/MSTest.Analyzers.props",
@@ -1900,7 +1900,7 @@
       }
     },
     "tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj": {
-      "graphSha256": "13fd108482ae906c32024fd6366d040c8a0c367bec68d894f430a20fae65f806",
+      "graphSha256": "b3716fcfbb428b35d3e41c7294c7fc623c42a23f5e2dafb6f36ce8048336b82a",
       "props": {
         "imports": [],
         "sha256": "47a873ed94d0d2d224bdf6cc2529ae4706fb0fc51fb0f11f13ce834565f08864"
@@ -1918,7 +1918,7 @@
       }
     },
     "tools/HVO.SkyMonitor.VirtualSkyPoc/HVO.SkyMonitor.VirtualSkyPoc.csproj": {
-      "graphSha256": "f341ad9b461795963778a749a9545b6044baa045d450f4faeb7a471018d5fc3f",
+      "graphSha256": "3c675dfffc895a12b05b84c16c211fc709343811adfaa5c6c7fee6ca176cf31c",
       "props": {
         "imports": [],
         "sha256": "cbd883281d1b6f28b66c77180af450851c75f511c2384ff8a44ecd64eb7a8dbf"
@@ -1942,6 +1942,6 @@
     "sha256": "4ef9f528ca027157ca455a5b7bd54deddaae38be12827581255c8204d23dd72f",
     "version": "10.0.402"
   },
-  "sourceSha256": "fcfcd5bb6a87937315a4cbb1e766da9e200901bfc1c72ec203c3861a6e05615d",
+  "sourceSha256": "679037ead9ac99e542b5ad69953dc55195d3e6d64add255491ec3a21210b2811",
   "version": 1
 }

@@ -12,6 +12,7 @@ internal static class CalibrationFamilyActivationReasonCodes
     public const string IdentityMismatch = "calibration.family.activation.identity-mismatch";
     public const string AcquisitionModelMismatch = "calibration.family.activation.acquisition-model-mismatch";
     public const string IdempotencyConflict = "calibration.family.activation.idempotency-conflict";
+    public const string MasterUnavailable = "calibration.family.activation.master-unavailable";
 }
 
 /// <summary>A stored calibration family: its verified canonical contract and the identity it is keyed by.</summary>

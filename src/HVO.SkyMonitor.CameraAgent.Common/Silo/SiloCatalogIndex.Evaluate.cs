@@ -454,7 +454,7 @@ internal sealed partial class SiloCatalogIndex
     /// </summary>
     private async ValueTask<(string Disposition, byte[]? Bytes, SiloExactLocator? ServedFrom, bool Damaged)> ProbeRoleAsync(
         SqliteConnection connection, SiloStoreSet stores, SiloRoleKey role, string sha256, long length, bool captureBytes,
-        SiloFreshEvidence fresh, CancellationToken cancellationToken)
+        SiloFreshEvidence fresh, CancellationToken cancellationToken, bool reportConfiguredStoresOnly = false)
     {
         var locators = new List<SiloExactLocator>();
         using (var command = CreateCommand(connection, null, """
@@ -506,7 +506,8 @@ internal sealed partial class SiloCatalogIndex
             }
         }
         var unknown = await UnknownIntervalAsync(connection, null, cancellationToken).ConfigureAwait(false);
-        var disposition = await RecomputeRoleAsync(connection, null, role, unknown, cancellationToken, stores).ConfigureAwait(false);
+        var disposition = await RecomputeRoleAsync(connection, null, role, unknown, cancellationToken, stores, reportConfiguredStoresOnly)
+            .ConfigureAwait(false);
         return (disposition, bytes, servedFrom, damaged && disposition == SiloDisposition.Missing);
     }
 
@@ -613,7 +614,7 @@ internal sealed partial class SiloCatalogIndex
                 foreach (var row in rows)
                 {
                     var result = await ProbeRoleAsync(connection, stores, row.Role, row.Sha256, row.Length, captureBytes: false,
-                        fresh, cancellationToken).ConfigureAwait(false);
+                        fresh, cancellationToken, reportConfiguredStoresOnly: true).ConfigureAwait(false);
                     switch (result.Disposition)
                     {
                         case SiloDisposition.Available: verified++; break;

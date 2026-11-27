@@ -42,7 +42,10 @@ internal sealed class SiloArchiveVerification(SiloArchiveStore archive, TimeProv
             manifestBytes = bytes;
         }
         var manifest = ReadManifest(manifestBytes, journal, publish);
-        var required = RequiredRoles(publish, manifest);
+        // Without a retained manifest, a replacement reader can authenticate only direct members
+        // against the publication record. Dependency copies remain discoverable by their own receipts.
+        var hasManifest = copies.ContainsKey(manifestIdentity.Role);
+        var required = RequiredRoles(publish, hasManifest ? manifest : null);
         var members = new Dictionary<SiloRoleKey, SiloObjectIdentity>();
 
         async ValueTask<bool> IsLocallyExpiredAsync(SiloObjectIdentity identity)
@@ -101,7 +104,7 @@ internal sealed class SiloArchiveVerification(SiloArchiveStore archive, TimeProv
             await CheckRoleAsync(identity, [archive.ReplicaOf(member.Locator)]).ConfigureAwait(false);
         }
 
-        foreach (var dependency in manifest.Dependencies)
+        foreach (var dependency in hasManifest ? manifest.Dependencies : [])
         {
             var role = DependencyRole(dependency);
             if (members.TryGetValue(role, out var existing))
@@ -131,8 +134,7 @@ internal sealed class SiloArchiveVerification(SiloArchiveStore archive, TimeProv
             await CheckRoleAsync(identity, candidates).ConfigureAwait(false);
         }
 
-        var hasManifest = copies.ContainsKey(manifestIdentity.Role);
-        if (!hasManifest && !required.Overlaps(copies.Keys))
+        if (copies.Count == 0)
             return new(commit, manifest, [], localExpirySequence, copies);
 
         var receipt = new SiloArchiveReceiptRecord(archive.Marker.StoreId, archive.Marker.Bucket, publish.GroupId, publish.RevisionId,
@@ -179,6 +181,11 @@ internal sealed class SiloArchiveVerification(SiloArchiveStore archive, TimeProv
                     .ConfigureAwait(false);
                 manifest = ReadManifest(proof.Bytes!, journal, publish);
             }
+        }
+        else
+        {
+            // Use the same proof available on a replacement, even when refreshing on the writer.
+            manifest = null;
         }
         var roles = new Dictionary<SiloRoleKey, SiloCopyRecord>();
         foreach (var copy in copies.Skip(hasManifest ? 1 : 0))

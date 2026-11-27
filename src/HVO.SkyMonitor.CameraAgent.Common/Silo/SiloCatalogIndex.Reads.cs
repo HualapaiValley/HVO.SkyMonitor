@@ -134,6 +134,17 @@ internal sealed partial class SiloCatalogIndex
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? ReadPublication(reader) : null;
     }
 
+    internal async ValueTask<bool> HasVisibleViewManifestAsync(string groupId, string revisionId, CancellationToken cancellationToken)
+    {
+        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        return await ScalarLongAsync(connection, null, """
+            SELECT EXISTS (
+                SELECT 1 FROM publications p JOIN roles r ON r.kind = 'manifest' AND r.id = p.group_id AND r.revision = p.revision_id
+                WHERE p.group_id = $group AND p.revision_id = $revision AND p.state = 'visible'
+                    AND COALESCE(r.journaled, '') <> 'policy-expired');
+            """, cancellationToken, ("$group", groupId), ("$revision", revisionId)).ConfigureAwait(false) != 0;
+    }
+
     /// <summary>Every committed revision of a group in publish order, original revisions included.</summary>
     public async ValueTask<IReadOnlyList<SiloIndexedPublication>> ReadRevisionsAsync(string groupId, CancellationToken cancellationToken)
     {
@@ -262,7 +273,9 @@ internal sealed partial class SiloCatalogIndex
         return await ScalarStringAsync(connection, null, """
             SELECT i.revision_id FROM live_intervals i
             JOIN publications p ON p.group_id = i.group_id AND p.revision_id = i.revision_id
-            WHERE i.group_id = $group AND p.state = 'visible' ORDER BY i.change_order DESC LIMIT 1;
+            JOIN roles r ON r.kind = 'manifest' AND r.id = p.group_id AND r.revision = p.revision_id
+            WHERE i.group_id = $group AND p.state = 'visible' AND COALESCE(r.journaled, '') <> 'policy-expired'
+            ORDER BY i.change_order DESC LIMIT 1;
             """, cancellationToken, ("$group", groupId)).ConfigureAwait(false);
     }
 
@@ -380,21 +393,30 @@ internal sealed partial class SiloCatalogIndex
         using var command = CreateCommand(connection, null, """
             SELECT EXISTS (
                 SELECT 1 FROM publication_members m JOIN publications p ON p.group_id = m.group_id AND p.revision_id = m.revision_id
-                WHERE m.artifact_id = $artifact AND m.artifact_revision = $revision AND p.state = 'visible');
+                JOIN roles r ON r.kind = 'member' AND r.id = m.artifact_id AND r.revision = m.artifact_revision
+                WHERE m.artifact_id = $artifact AND m.artifact_revision = $revision AND p.state = 'visible'
+                    AND COALESCE(r.journaled, '') <> 'policy-expired');
             """, ("$artifact", artifactId), ("$revision", revision));
         return (long)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))! == 1;
     }
 
-    internal async ValueTask<bool> HasVisibleMemberPairAsync(string artifactId, string revision, string evidenceRevision,
-        CancellationToken cancellationToken)
+    internal async ValueTask<bool> HasReadableLocalMembersAsync(string artifactId, string revision, string? evidenceRevision,
+        SiloExactLocator? fenced, CancellationToken cancellationToken)
     {
+        var localFence = fenced?.StoreId == Binding.StoreId && fenced.Bucket == Binding.Bucket ? fenced : null;
         using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-        using var command = CreateCommand(connection, null, """
-            SELECT COUNT(DISTINCT m.artifact_revision) = 2
+        return await ScalarLongAsync(connection, null, """
+            SELECT COUNT(DISTINCT m.artifact_revision) = CASE WHEN $evidence IS NULL THEN 1 ELSE 2 END
             FROM publication_members m JOIN publications p ON p.group_id = m.group_id AND p.revision_id = m.revision_id
-            WHERE m.artifact_id = $artifact AND m.artifact_revision IN ($revision, $evidence) AND p.state = 'visible';
-            """, ("$artifact", artifactId), ("$revision", revision), ("$evidence", evidenceRevision));
-        return (long)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))! == 1;
+            JOIN roles r ON r.kind = 'member' AND r.id = m.artifact_id AND r.revision = m.artifact_revision
+            JOIN locators l ON (l.kind, l.id, l.revision) = (r.kind, r.id, r.revision)
+            WHERE m.artifact_id = $artifact AND m.artifact_revision IN ($revision, $evidence) AND p.state = 'visible'
+                AND COALESCE(r.journaled, '') <> 'policy-expired'
+                AND l.store_id = $local AND l.bucket = $bucket AND l.eligible = 1 AND l.copy_state = 'active'
+                AND ($key IS NULL OR (l.key, l.version_id) <> ($key, $version));
+            """, cancellationToken, ("$artifact", artifactId), ("$revision", revision), ("$evidence", evidenceRevision),
+            ("$local", Binding.StoreId), ("$bucket", Binding.Bucket), ("$key", localFence?.Key), ("$version", localFence?.VersionId))
+            .ConfigureAwait(false) != 0;
     }
 
     /// <summary>Whether an artifact revision is already published with another length, digest or set of facts.</summary>

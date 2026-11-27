@@ -71,6 +71,11 @@ public static class CameraAgentServiceCollectionExtensions
             services.AddSingleton<ICameraAgentSiloVerification>(provider => provider.GetRequiredService<SiloInstalledStorage>());
             services.AddSingleton<SiloStorageWorker>();
             services.AddHostedService(provider => provider.GetRequiredService<SiloStorageWorker>());
+            services.AddSingleton<SiloRetentionWorker>();
+            services.AddHostedService(provider => provider.GetRequiredService<SiloRetentionWorker>());
+            services.AddSingleton<ICameraAgentSiloRetention>(provider => provider.GetRequiredService<SiloRetentionWorker>());
+            services.AddSingleton<ISiloObjectLeases>(provider => provider.GetRequiredService<SiloInstalledStorage>().Retention);
+            services.AddSingleton<ISiloDiskBudget>(provider => provider.GetRequiredService<SiloInstalledStorage>().DiskBudget);
             services.AddHealthChecks().AddCheck<SiloStorageWorker>("silo-storage", tags: ["dependency"]);
         }
 
