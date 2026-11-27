@@ -1,0 +1,37 @@
+global:
+  scrape_interval: 30s
+  scrape_timeout: 5s
+  evaluation_interval: 30s
+
+rule_files:
+  - cameraagent.rules.yml
+
+scrape_configs:
+  - job_name: cameraagent
+    scheme: https
+    metrics_path: /metrics
+    follow_redirects: false
+    authorization:
+      type: Bearer
+      credentials_file: /run/secrets/cameraagent-metrics-token
+    sample_limit: 10000
+    body_size_limit: 4MB
+    static_configs:
+      - targets: [cameraagent.example.invalid:443]
+
+  # Optionally add a private cAdvisor target. Confirm the Docker container name
+  # and exact metric availability on the qualification host before enrolling it.
+  # - job_name: cameraagent-host
+  #   sample_limit: 256
+  #   body_size_limit: 4MB
+  #   static_configs:
+  #     - targets: [127.0.0.1:8080]
+  #   metric_relabel_configs:
+  #     - source_labels: [name]
+  #       regex: cameraagent
+  #       action: keep
+  #     - source_labels: [__name__]
+  #       regex: 'container_(cpu_(cfs_(periods|throttled_periods|throttled_seconds)_total|usage_seconds_total)|spec_(cpu_(quota|period)|memory_limit_bytes)|memory_working_set_bytes|oom_events_total|pressure_(cpu|io|memory)_(waiting|stalled)_seconds_total|fs_(reads|writes)_bytes_total|network_(receive|transmit)_bytes_total)'
+  #       action: keep
+  #     - action: labeldrop
+  #       regex: 'id|image|container_label_.*'

@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.Diagnostics;
 namespace HVO.SkyMonitor.CameraAgent.Common.Silo;
 
 /// <summary>Where one group revision stands: its staged state, any reason the writer stopped, and its catalog state.</summary>
@@ -145,14 +146,32 @@ internal sealed class SiloPublisher(
     /// <summary>Advance one group revision as far as it can go now.</summary>
     public async ValueTask<SiloPublicationOutcome> PublishAsync(string groupId, string revisionId, CancellationToken cancellationToken)
     {
-        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var started = CameraAgentWorkloadTelemetry.Start();
+        var outcome = CameraAgentWorkloadTelemetry.Outcome.Failure;
         try
         {
-            return await AdvanceLockedAsync(groupId, revisionId, cancellationToken).ConfigureAwait(false);
+            await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var result = await AdvanceLockedAsync(groupId, revisionId, cancellationToken).ConfigureAwait(false);
+                outcome = result.State == SiloStagedState.Visible && result.BlockedCode is null
+                    ? CameraAgentWorkloadTelemetry.Outcome.Success
+                    : CameraAgentWorkloadTelemetry.Outcome.Incomplete;
+                return result;
+            }
+            finally
+            {
+                _gate.Release();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            outcome = CameraAgentWorkloadTelemetry.Outcome.Cancelled;
+            throw;
         }
         finally
         {
-            _gate.Release();
+            CameraAgentWorkloadTelemetry.Record(started, CameraAgentWorkloadTelemetry.Operation.SiloPublish, outcome);
         }
     }
 

@@ -1,0 +1,56 @@
+rule_files:
+  - cameraagent.rules.yml
+evaluation_interval: 30s
+
+tests:
+  - interval: 30s
+    input_series:
+      - series: 'up{job="cameraagent",instance="camera"}'
+        values: '1 0 0 0 0 0 1 1'
+      - series: 'camera_agent_ingress_accepting{job="cameraagent",instance="camera"}'
+        values: '1 0 0 0 0 0 1 1'
+      - series: 'container_oom_events_total{job="cameraagent-host",instance="host",name="cameraagent"}'
+        values: '0 0 0 0 1 1 1 1'
+      - series: 'container_cpu_cfs_throttled_periods_total{job="cameraagent-host",instance="host",name="cameraagent"}'
+        values: '0+15x7'
+      - series: 'container_cpu_cfs_periods_total{job="cameraagent-host",instance="host",name="cameraagent"}'
+        values: '0+30x7'
+    promql_expr_test:
+      - expr: cameraagent:throttled_periods:ratio_5m
+        eval_time: 3m
+        exp_samples:
+          - labels: 'cameraagent:throttled_periods:ratio_5m{instance="host"}'
+            value: 0.5
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: CameraAgentMetricsUnavailable
+      - eval_time: 2m30s
+        alertname: CameraAgentMetricsUnavailable
+        exp_alerts:
+          - exp_labels:
+              job: cameraagent
+              instance: camera
+            exp_annotations:
+              summary: Four or more scheduled CameraAgent scrapes have failed.
+              description: Check collector reachability, trust and the read key. Verify process and capture readiness independently.
+      - eval_time: 3m
+        alertname: CameraAgentMetricsUnavailable
+      - eval_time: 2m30s
+        alertname: CameraAgentIngressNotAccepting
+        exp_alerts:
+          - exp_labels:
+              job: cameraagent
+              instance: camera
+            exp_annotations:
+              summary: CameraAgent reports that durable ingress is not accepting work.
+              description: Check local ingress health, disk headroom and journal state.
+      - eval_time: 3m
+        alertname: CameraAgentContainerOom
+        exp_alerts:
+          - exp_labels:
+              job: cameraagent-host
+              instance: host
+              name: cameraagent
+            exp_annotations:
+              summary: The selected CameraAgent container recorded an OOM event.
+              description: Compare cgroup memory use to its limit and check process restart and capture continuity.

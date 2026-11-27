@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.Diagnostics;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using System.Security.Cryptography;
@@ -656,8 +657,23 @@ internal sealed class ProjectedSceneStagingStore :
         }
     }
 
-    private static byte[] Serialize(StagedProjectedSceneDocument document) => JsonSerializer.SerializeToUtf8Bytes(
-        CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(document, SerializerOptions)));
+    private static byte[] Serialize(StagedProjectedSceneDocument document)
+    {
+        var started = CameraAgentWorkloadTelemetry.Start();
+        var outcome = CameraAgentWorkloadTelemetry.Outcome.Failure;
+        try
+        {
+            var bytes = JsonSerializer.SerializeToUtf8Bytes(
+                CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(document, SerializerOptions)));
+            CameraAgentWorkloadTelemetry.RecordSceneBytes(bytes.Length);
+            outcome = CameraAgentWorkloadTelemetry.Outcome.Success;
+            return bytes;
+        }
+        finally
+        {
+            CameraAgentWorkloadTelemetry.Record(started, CameraAgentWorkloadTelemetry.Operation.ProjectedSceneSerialization, outcome);
+        }
+    }
 
     private static string ComputeIdentity(StagedProjectedSceneDocument document) =>
         CaptureContractJson.ComputeCanonicalJsonSha256(JsonSerializer.SerializeToElement(

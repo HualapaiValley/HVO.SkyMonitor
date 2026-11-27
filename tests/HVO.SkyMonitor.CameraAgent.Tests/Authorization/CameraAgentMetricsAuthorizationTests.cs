@@ -5,6 +5,8 @@ using System.Net.Http.Headers;
 using HVO.SkyMonitor.CameraAgent.Authentication;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Configuration;
+using HVO.SkyMonitor.CameraAgent.Common.Diagnostics;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Data;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.Common.Observability;
@@ -117,6 +119,49 @@ public sealed class CameraAgentMetricsAuthorizationTests
         Assert.IsFalse(fixture.Logs.Any(entry => entry.Contains(readSecret, StringComparison.Ordinal) || entry.Contains(readKey, StringComparison.Ordinal)), environment);
     }
 
+    [TestMethod]
+    public async Task ProductionProfilingScrapeHasBoundedBucketsRuntimeAndNoRequestIdentifiers()
+    {
+        var fixture = await MetricsFixture.CreateAsync("Production", profiling: true).ConfigureAwait(false);
+        await using var fixtureLease = fixture.ConfigureAwait(false);
+        var readKey = await fixture.CreateKeyAsync(ApiKeyAccessLevel.Read).ConfigureAwait(false);
+        using var client = fixture.Client(readKey);
+        const string privatePath = "profiling-test-private-path";
+        using var missing = await client.GetAsync(new Uri($"/{privatePath}", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.NotFound, missing.StatusCode);
+
+        CameraAgentWorkloadTelemetry.Record(CameraAgentWorkloadTelemetry.Start(),
+            CameraAgentWorkloadTelemetry.Operation.SqliteCheckpoint, CameraAgentWorkloadTelemetry.Outcome.Incomplete);
+        CameraAgentWorkloadTelemetry.RecordSceneBytes(12345);
+        for (var index = 0; index < 100; index++)
+        {
+            Probe.Add(1, new KeyValuePair<string, object?>("sample", index));
+        }
+
+        using var response = await client.GetAsync(new Uri("/metrics", UriKind.Relative)).ConfigureAwait(false);
+        await AssertScrapedAsync("Production", response, SecretOf(readKey)).ConfigureAwait(false);
+        var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+        foreach (var expected in new[]
+        {
+            "camera_agent_workload_duration_seconds_bucket", "operation=\"sqlite_checkpoint\"",
+            "outcome=\"incomplete\"", "le=\"0.001", "camera_agent_workload_scene_metadata_bytes_bucket",
+            "dotnet_process_cpu_time_seconds_total", "dotnet_process_memory_working_set_bytes",
+            "dotnet_gc_heap_total_allocated_bytes_total", "dotnet_gc_last_collection_heap_size_bytes",
+            "dotnet_gc_pause_time_seconds_total", "dotnet_thread_pool_queue_length",
+            "camera_agent_ingress_accepting", "http_server_request_duration_seconds_bucket"
+        })
+        {
+            StringAssert.Contains(body, expected, StringComparison.Ordinal);
+        }
+        Assert.IsFalse(body.Contains(privatePath, StringComparison.Ordinal));
+        Assert.IsFalse(body.Contains("http_route=", StringComparison.Ordinal));
+        Assert.IsFalse(body.Contains("url_path=", StringComparison.Ordinal));
+        var probeSamples = body.Split('\n').Where(line => line.StartsWith(MetricName, StringComparison.Ordinal)).ToArray();
+        Assert.AreEqual(64, probeSamples.Count(line => line.Contains("sample=", StringComparison.Ordinal)),
+            string.Join('\n', probeSamples));
+        Assert.IsTrue(probeSamples.Any(line => line.Contains("otel_metric_overflow", StringComparison.Ordinal)));
+    }
+
     private static void AssertOpen(string environment, HttpResponseMessage response)
     {
         Assert.AreEqual(HttpStatusCode.OK, response.StatusCode, environment);
@@ -167,7 +212,7 @@ public sealed class CameraAgentMetricsAuthorizationTests
 
         internal IReadOnlyCollection<string> Logs { get; }
 
-        internal static async Task<MetricsFixture> CreateAsync(string environmentName)
+        internal static async Task<MetricsFixture> CreateAsync(string environmentName, bool profiling = false)
         {
             var root = Path.Combine(Path.GetTempPath(), "hvo-metrics-auth", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(root);
@@ -207,7 +252,15 @@ public sealed class CameraAgentMetricsAuthorizationTests
             {
                 metrics.AddPrometheusExporter();
                 metrics.AddMeter(ProbeMeter.Name);
+                if (profiling)
+                {
+                    ProductionProfiling.ConfigureMetrics(metrics);
+                    metrics.AddRuntimeInstrumentation();
+                    metrics.AddMeter(RawIngressTelemetry.MeterName);
+                }
             });
+            builder.Services.AddSingleton(new RawIngressState(TimeProvider.System));
+            builder.Services.AddSingleton<RawIngressTelemetry>();
             var app = builder.Build();
             try
             {
@@ -273,6 +326,8 @@ public sealed class CameraAgentMetricsAuthorizationTests
 
                 await app.StartAsync().ConfigureAwait(false);
                 Probe.Add(1);
+                if (profiling)
+                    _ = app.Services.GetRequiredService<RawIngressTelemetry>();
                 return new MetricsFixture(app, root, ownerId, logs);
             }
             catch

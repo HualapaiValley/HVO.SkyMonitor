@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.Diagnostics;
 using Microsoft.Data.Sqlite;
 using System.Diagnostics.CodeAnalysis;
 using HVO.SkyMonitor.AgentCore;
@@ -1844,51 +1845,90 @@ internal sealed partial class SqliteRawCaptureJournal(
 
     internal async Task CheckpointAsync(CancellationToken cancellationToken)
     {
+        var started = CameraAgentWorkloadTelemetry.Start();
+        var outcome = CameraAgentWorkloadTelemetry.Outcome.Failure;
         try
         {
             using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
             using var command = connection.CreateCommand();
             command.CommandText = "PRAGMA wal_checkpoint(PASSIVE);";
             using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false) || reader.GetInt32(0) != 0)
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
                 throw new IOException("Raw ingress WAL checkpoint could not complete without a busy writer.");
             }
+            if (reader.GetInt32(0) != 0)
+            {
+                outcome = CameraAgentWorkloadTelemetry.Outcome.Busy;
+                throw new IOException("Raw ingress WAL checkpoint could not complete without a busy writer.");
+            }
+            // PASSIVE can return OK with unread WAL frames that a reader still pins.
+            outcome = reader.GetInt32(2) < reader.GetInt32(1)
+                ? CameraAgentWorkloadTelemetry.Outcome.Incomplete
+                : CameraAgentWorkloadTelemetry.Outcome.Success;
             _checkpointRecorder?.Invoke(true);
         }
-        catch
+        catch (Exception exception)
         {
             _checkpointRecorder?.Invoke(false);
+            if (outcome != CameraAgentWorkloadTelemetry.Outcome.Busy)
+                outcome = ClassifySqliteFailure(exception);
             throw;
+        }
+        finally
+        {
+            CameraAgentWorkloadTelemetry.Record(started, CameraAgentWorkloadTelemetry.Operation.SqliteCheckpoint, outcome);
         }
     }
 
+    internal static CameraAgentWorkloadTelemetry.Outcome ClassifySqliteFailure(Exception exception) => exception switch
+    {
+        OperationCanceledException => CameraAgentWorkloadTelemetry.Outcome.Cancelled,
+        SqliteException { SqliteErrorCode: 5 } => CameraAgentWorkloadTelemetry.Outcome.Busy,
+        SqliteException { SqliteErrorCode: 6 } => CameraAgentWorkloadTelemetry.Outcome.Locked,
+        _ => CameraAgentWorkloadTelemetry.Outcome.Failure
+    };
+
     private async Task<T> TrackTransactionAsync<T>(string operation, Func<Task<T>> transaction)
     {
+        var started = CameraAgentWorkloadTelemetry.Start();
+        var outcome = CameraAgentWorkloadTelemetry.Outcome.Success;
         try
         {
             var result = await transaction().ConfigureAwait(false);
             _transactionRecorder?.Invoke(operation, true);
             return result;
         }
-        catch
+        catch (Exception exception)
         {
+            outcome = ClassifySqliteFailure(exception);
             _transactionRecorder?.Invoke(operation, false);
             throw;
+        }
+        finally
+        {
+            CameraAgentWorkloadTelemetry.Record(started, CameraAgentWorkloadTelemetry.Operation.SqliteWrite, outcome);
         }
     }
 
     private async Task TrackWriteAsync(string operation, Func<Task> transaction)
     {
+        var started = CameraAgentWorkloadTelemetry.Start();
+        var outcome = CameraAgentWorkloadTelemetry.Outcome.Success;
         try
         {
             await transaction().ConfigureAwait(false);
             _transactionRecorder?.Invoke(operation, true);
         }
-        catch
+        catch (Exception exception)
         {
+            outcome = ClassifySqliteFailure(exception);
             _transactionRecorder?.Invoke(operation, false);
             throw;
+        }
+        finally
+        {
+            CameraAgentWorkloadTelemetry.Record(started, CameraAgentWorkloadTelemetry.Operation.SqliteWrite, outcome);
         }
     }
 

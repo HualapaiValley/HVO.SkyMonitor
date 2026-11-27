@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
@@ -47,7 +48,22 @@ internal sealed partial class SiloStorageWorker(SiloInstalledStorage storage, Ra
             using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken))
             {
                 deadline.CancelAfter(TimeSpan.FromSeconds(10));
-                await storage.VerifyReadinessAsync(deadline.Token).ConfigureAwait(false);
+                var started = CameraAgentWorkloadTelemetry.Start();
+                var outcome = CameraAgentWorkloadTelemetry.Outcome.Failure;
+                try
+                {
+                    await storage.VerifyReadinessAsync(deadline.Token).ConfigureAwait(false);
+                    outcome = CameraAgentWorkloadTelemetry.Outcome.Success;
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    outcome = CameraAgentWorkloadTelemetry.Outcome.Cancelled;
+                    throw;
+                }
+                finally
+                {
+                    CameraAgentWorkloadTelemetry.Record(started, CameraAgentWorkloadTelemetry.Operation.SiloReadiness, outcome);
+                }
             }
             verifyingBinding = false;
 

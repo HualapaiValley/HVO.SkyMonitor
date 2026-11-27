@@ -17,6 +17,7 @@ readonly DOCS=(
     docs/runbooks/space-weather-refresh.md
     docs/runbooks/cameraagent-retention.md
     docs/runbooks/cameraagent-arm64-ci.md
+    docs/runbooks/cameraagent-production-profiling.md
     docs/runbooks/infra-operations.md
     docs/runbooks/local-dev.md
     docs/runbooks/smoke-test.md
