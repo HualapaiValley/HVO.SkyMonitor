@@ -81,6 +81,60 @@ public sealed class AutomationWindowWizardTests
     }
 
     [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task RunHistory_UsesTheRecordedRevisionForRetryAvailability(bool recordedTargetAccepted)
+    {
+        using var fixture = new AutomationWizardFixture();
+        var request = AutomationWizardFixture.Request();
+        var saved = await fixture.Service.SaveAsync(request, CancellationToken.None);
+        var original = saved.Value!.State.Definitions.Single().NextOccurrence!;
+        fixture.Clock.Advance(original.ScheduledForUtc - fixture.Clock.GetUtcNow());
+        Assert.IsTrue(await fixture.Store.TryBeginOccurrenceAsync(original, CancellationToken.None));
+        await fixture.Store.CompleteRunAsync(original.RunKey, LocalAutomationRunOutcome.Failed, "Fixture failure", CancellationToken.None);
+
+        var edited = await fixture.Service.SaveAsync(request with
+        {
+            TaskTarget = "star-trail",
+            SourceWindow = request.SourceWindow! with { Selection = LocalAutomationSourceSelection.DarkNightActualSources },
+            ExpectedVersion = 1,
+            IdempotencyKey = "edit-target"
+        }, CancellationToken.None);
+        Assert.AreEqual(LocalAutomationCommandStatus.Applied, edited.Value!.Status);
+        if (recordedTargetAccepted)
+        {
+            fixture.Registry.Targets.Remove("star-trail");
+        }
+        else
+        {
+            fixture.Registry.KeogramSelection = LocalAutomationSourceSelection.DarkNightActualSources;
+        }
+
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        context.Services.AddSingleton<ICameraAgentAutomationUiService>(fixture.Service);
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(new SchedulePageTests.ScheduleUiService(SchedulePageTests.State()));
+        var cut = context.Render<AutomationsPage>();
+        cut.WaitForElement("#automation-definition-daily");
+        await cut.FindAll(".automation-tabs button")[2].ClickAsync(new());
+        Assert.Contains("keogram", cut.Find(".automation-run-provenance").TextContent, StringComparison.Ordinal);
+        Assert.AreEqual(recordedTargetAccepted, cut.FindAll(".automation-run-control summary").Any(summary => summary.TextContent == "Retry"));
+        if (!recordedTargetAccepted)
+        {
+            return;
+        }
+
+        await cut.Find(".automation-run-control input[maxlength]").InputAsync(new ChangeEventArgs { Value = "Retry retained source" });
+        await cut.Find(".automation-run-control button").ClickAsync(new());
+        var state = await fixture.Store.GetStateAsync(CancellationToken.None);
+        var queued = state.ActiveRuns.Single();
+        Assert.AreEqual(original, queued.Occurrence);
+        Assert.AreEqual(2, queued.Attempt);
+        Assert.AreEqual("wizard-owner", queued.Preparation!.Actor);
+        cut.WaitForAssertion(() => Assert.IsEmpty(cut.FindAll(".automation-run-control")));
+    }
+
+    [TestMethod]
     public void Wizard_FailedPreviewStaysInEditorAndPolicyChangeGetsANewCommandKey()
     {
         using var context = Context(out var service);

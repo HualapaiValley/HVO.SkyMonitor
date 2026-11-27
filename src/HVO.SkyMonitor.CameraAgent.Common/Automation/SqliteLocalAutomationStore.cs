@@ -1378,6 +1378,8 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
             runs)
         {
             ActiveRuns = activeRuns,
+            RetryableSourceWindowRunKeys = await ProjectRetryableSourceWindowRunsAsync(
+                connection, transaction, definitions, runs, activeRuns, now, cancellationToken).ConfigureAwait(false),
             RunningRunCount = checked((int)await ScalarLongAsync(connection, transaction,
                 "SELECT COUNT(*) FROM automation_runs WHERE outcome = 'Running';", cancellationToken).ConfigureAwait(false)),
             QueuedRunCount = checked((int)await ScalarLongAsync(connection, transaction,
