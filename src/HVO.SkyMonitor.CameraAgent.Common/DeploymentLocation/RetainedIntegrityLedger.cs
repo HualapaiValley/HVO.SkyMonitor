@@ -13,8 +13,13 @@ namespace HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 // A process epoch authenticates complete expectations before incremental or full qualification.
 internal sealed partial class RetainedIntegrityLedger : IDisposable
 {
+    internal const string LocationDirectoryName = ".location";
     internal const string DatabaseName = "retained-integrity.v1.db";
     internal const string CheckpointName = "retained-integrity.v1.protected";
+    internal const string LockFileName = "retained-integrity.v1.lock";
+    internal const string HistoryFileName = "deployment-location.v1.protected";
+    internal const string ManualFileName = "manual-deployment-location.v1.protected";
+    internal const string IdentityMarkerName = ".deployment-location.v1.identity";
     private static readonly ConcurrentDictionary<string, RetainedIntegrityLedger> Roots = new(StringComparer.Ordinal);
     private static readonly AsyncLocal<Mutation?> Current = new();
     internal static Action? BeforeNestedMutationForTest { get; set; }
@@ -65,7 +70,7 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
         Func<string, Entry?> readCurrent, Action unqualifiedWarning, TimeProvider timeProvider, string? requiredNonce = null)
     {
         _root = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar);
-        _directory = Path.Combine(_root, ".location");
+        _directory = Path.Combine(_root, LocationDirectoryName);
         _checkpoint = Path.Combine(_directory, CheckpointName);
         _protector = protector;
         _readCurrent = readCurrent;
@@ -82,7 +87,7 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
             Mode = SqliteOpenMode.ReadWriteCreate,
             DefaultTimeout = 1
         }.ToString());
-        var ownershipPath = Path.Combine(_directory, "retained-integrity.v1.lock");
+        var ownershipPath = Path.Combine(_directory, LockFileName);
         RawIngressFileStore.EnsureNoSymbolicLinks(_root, ownershipPath);
         try { _ownership = new FileStream(ownershipPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
         catch (IOException exception)
@@ -481,9 +486,9 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
         DatabaseName + "-wal",
         DatabaseName + "-shm",
         CheckpointName,
-        "retained-integrity.v1.lock",
-        "deployment-location.v1.protected",
-        "manual-deployment-location.v1.protected"
+        LockFileName,
+        HistoryFileName,
+        ManualFileName
     ];
 
     private static bool IsEstablishedLedgerMarkerName(string name)
@@ -499,47 +504,99 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
         return false;
     }
 
+    internal static bool PathExistsOrInaccessible(string path)
+    {
+        try
+        {
+            _ = File.GetAttributes(path);
+            return true;
+        }
+        catch (FileNotFoundException)
+        {
+            return false;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return false;
+        }
+        catch (Exception exception) when (exception is UnauthorizedAccessException or IOException)
+        {
+            return true;
+        }
+    }
+
+    internal static bool HasEstablishedAuthorityAtRoot(string rootDirectory)
+    {
+        // Detect the durable root-level deployment-location identity marker even if .location
+        // is offline, missing, or recreated empty during recovery startup.
+        if (PathExistsOrInaccessible(Path.Combine(rootDirectory, IdentityMarkerName)))
+        {
+            return true;
+        }
+
+        var locationDirectory = Path.Combine(rootDirectory, LocationDirectoryName);
+        FileAttributes locationAttributes;
+        try
+        {
+            locationAttributes = File.GetAttributes(locationDirectory);
+        }
+        catch (FileNotFoundException)
+        {
+            return false;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return false;
+        }
+        catch (Exception exception) when (exception is UnauthorizedAccessException or IOException)
+        {
+            return true;
+        }
+
+        if ((locationAttributes & FileAttributes.ReparsePoint) != 0)
+        {
+            return true;
+        }
+
+        if ((locationAttributes & FileAttributes.Directory) == 0)
+        {
+            return false;
+        }
+
+        try
+        {
+            foreach (var entry in Directory.EnumerateFileSystemEntries(locationDirectory))
+            {
+                if (IsEstablishedLedgerMarkerName(Path.GetFileName(entry)))
+                {
+                    return true;
+                }
+            }
+        }
+        catch (Exception exception) when (exception is UnauthorizedAccessException or IOException)
+        {
+            return true;
+        }
+
+        foreach (var marker in EstablishedLedgerMarkerNames)
+        {
+            if (PathExistsOrInaccessible(Path.Combine(locationDirectory, marker)))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static bool HasEstablishedLedgerOnDisk(string fullPath)
     {
         var current = Path.GetDirectoryName(fullPath);
         while (!string.IsNullOrEmpty(current))
         {
-            var locationDirectory = Path.Combine(current, ".location");
-            if (Directory.Exists(locationDirectory))
+            if (HasEstablishedAuthorityAtRoot(current))
             {
-                try
-                {
-                    foreach (var entry in Directory.EnumerateFileSystemEntries(locationDirectory))
-                    {
-                        if (IsEstablishedLedgerMarkerName(Path.GetFileName(entry)))
-                        {
-                            return true;
-                        }
-                    }
-                }
-                catch (Exception exception) when (exception is UnauthorizedAccessException or IOException)
-                {
-                    return true;
-                }
-
-                foreach (var marker in EstablishedLedgerMarkerNames)
-                {
-                    try
-                    {
-                        _ = File.GetAttributes(Path.Combine(locationDirectory, marker));
-                        return true;
-                    }
-                    catch (FileNotFoundException)
-                    {
-                    }
-                    catch (DirectoryNotFoundException)
-                    {
-                    }
-                    catch (Exception exception) when (exception is UnauthorizedAccessException or IOException)
-                    {
-                        return true;
-                    }
-                }
+                return true;
             }
             var parent = Path.GetDirectoryName(current);
             if (string.Equals(parent, current, StringComparison.Ordinal))

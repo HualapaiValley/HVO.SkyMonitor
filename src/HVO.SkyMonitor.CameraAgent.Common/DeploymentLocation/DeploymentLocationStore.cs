@@ -251,7 +251,7 @@ public sealed partial class ProtectedDeploymentLocationStore(
                 throw new InvalidDataException("Protected deployment-location history disappeared from the running installation.");
             if (!historyExists && !fullScrub && !startupRecentOnly)
                 throw new InstallationVerificationPendingException(requiresScrub: true);
-            if (!historyExists && (File.Exists(markerPath) ||
+            if (!historyExists && (RetainedIntegrityLedger.PathExistsOrInaccessible(markerPath) ||
                 (startupRecentOnly ? HasAnyRetainedStateBounded(cancellationToken) : HasLocationBearingEvidence(cancellationToken))))
             {
                 if (startupRecentOnly)
@@ -1082,24 +1082,24 @@ public sealed partial class ProtectedDeploymentLocationStore(
         RawIngressFileStore.EnsureNoSymbolicLinks(parent, root);
         RestrictDirectory(root);
         CameraAgentFileSystem.EnsureStorageRootDurable(root);
-        var directory = Path.GetFullPath(Path.Combine(root, ".location"));
+        var directory = Path.GetFullPath(Path.Combine(root, RetainedIntegrityLedger.LocationDirectoryName));
         Directory.CreateDirectory(directory);
         RawIngressFileStore.EnsureNoSymbolicLinks(root, directory);
         RestrictDirectory(directory);
         BeforeStateDirectorySyncForTest?.Invoke(root);
         RawIngressFileStore.SyncDirectoryHierarchy(root, directory);
-        var path = Path.GetFullPath(Path.Combine(directory, "deployment-location.v1.protected"));
+        var path = Path.GetFullPath(Path.Combine(directory, RetainedIntegrityLedger.HistoryFileName));
         // The manual record is a separate protected file rather than a field of the history document:
         // the baseline ignores this sidecar. Ledger adoption seals the history itself;
         // rollback across that reader boundary restores the paired pre-upgrade files.
-        var manualPath = Path.GetFullPath(Path.Combine(directory, "manual-deployment-location.v1.protected"));
+        var manualPath = Path.GetFullPath(Path.Combine(directory, RetainedIntegrityLedger.ManualFileName));
         var rootPrefix = string.Concat(Path.TrimEndingDirectorySeparator(root), Path.DirectorySeparatorChar);
         var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
         if (!path.StartsWith(rootPrefix, comparison) || !manualPath.StartsWith(rootPrefix, comparison))
         {
             throw new InvalidOperationException("Deployment-location state path escapes the CameraAgent data root.");
         }
-        return (path, Path.Combine(root, ".deployment-location.v1.identity"), manualPath);
+        return (path, Path.Combine(root, RetainedIntegrityLedger.IdentityMarkerName), manualPath);
     }
 
     private static void ValidateHistory(DeploymentLocationHistory history)

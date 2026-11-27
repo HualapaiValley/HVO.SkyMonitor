@@ -309,6 +309,208 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
     }
 
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task StartupMigrationPreservesLegacyQuarantineJsonWhileLocationDirectoryIsOffline(
+        bool matchingDuplicateRawExists)
+    {
+        var seed = CreateSeed(35, -113, 0, "America/Phoenix");
+        var token = CancellationToken.None;
+        var orbitalRoot = Path.Combine(_options.Value.RawIngressRoot, ".orbital-elements");
+        var quarantine = Path.Combine(orbitalRoot, "quarantine");
+        var clock = new OrbitalElementsStoreTestData.Clock(Now);
+        var malformedJson = "{\"OBJECT_NAME\":\"TRUNCATED"u8.ToArray();
+        var malformedSha = CelesTrakGpTestData.Sha256(malformedJson);
+        var legacyJsonPath = Path.Combine(quarantine, malformedSha + ".json");
+        var migratedRawPath = Path.Combine(quarantine, malformedSha + ".raw");
+        var locationDirectory = Path.Combine(_options.Value.RawIngressRoot, RetainedIntegrityLedger.LocationDirectoryName);
+        var offlineLocationDirectory = Path.Combine(_root, "offline-location-backup");
+        var identityMarkerPath = Path.Combine(_options.Value.RawIngressRoot, RetainedIntegrityLedger.IdentityMarkerName);
+        DeploymentLocationSnapshot active;
+
+        using (var locations = CreateStore())
+        {
+            active = await locations.InitializeAsync(seed, token).ConfigureAwait(false);
+            using var orbital = OrbitalElementsStoreTestData.Open(orbitalRoot, clock,
+                OrbitalElementsStoreTestData.Settings(orbitalRoot, maximumQuarantined: 4));
+            var attempt = await OrbitalElementsStoreTestData.AdmitAsync(orbital).ConfigureAwait(false);
+            await orbital.RecordQuarantineAsync(attempt, malformedJson, malformedSha,
+                "orbital.json-syntax", "legacy malformed JSON body", token).ConfigureAwait(false);
+            RetainedFileMutations.Move(migratedRawPath, legacyJsonPath);
+            if (matchingDuplicateRawExists)
+            {
+                await File.WriteAllBytesAsync(migratedRawPath, malformedJson, token).ConfigureAwait(false);
+            }
+        }
+
+        Assert.IsTrue(File.Exists(identityMarkerPath),
+            "The durable root identity marker must exist at the data root before taking .location offline.");
+
+        // Take the original .location directory offline while keeping .deployment-location.v1.identity at the data root.
+        Directory.Move(locationDirectory, offlineLocationDirectory);
+        Assert.IsFalse(Directory.Exists(locationDirectory));
+        Assert.IsTrue(File.Exists(identityMarkerPath));
+
+        // 1. Orbital reconciliation while .location is completely absent must defer migration.
+        using (var absentLocationOrbital = OrbitalElementsStoreTestData.Open(orbitalRoot, clock,
+            OrbitalElementsStoreTestData.Settings(orbitalRoot, maximumQuarantined: 4)))
+        {
+            await absentLocationOrbital.InitializeAsync(token).ConfigureAwait(false);
+        }
+
+        Assert.IsTrue(File.Exists(legacyJsonPath),
+            "Legacy quarantine .json must be preserved untouched while .location is absent and root identity marker exists.");
+        CollectionAssert.AreEqual(malformedJson, await File.ReadAllBytesAsync(legacyJsonPath, token).ConfigureAwait(false));
+        Assert.AreEqual(matchingDuplicateRawExists, File.Exists(migratedRawPath));
+        if (matchingDuplicateRawExists)
+        {
+            CollectionAssert.AreEqual(malformedJson, await File.ReadAllBytesAsync(migratedRawPath, token).ConfigureAwait(false));
+        }
+
+        // 2. CameraAgent recovery load (which recreates an empty .location directory without opening a ledger)
+        // followed by orbital reconciliation must still defer BOTH rename and duplicate-delete mutations.
+        using (var recoveryLocations = CreateStore())
+        {
+            _ = await recoveryLocations.LoadCurrentAsync(seed, verification: false, () => true, token).ConfigureAwait(false);
+            Assert.IsFalse(recoveryLocations.RecentRetainedEvidenceReady);
+            Assert.IsTrue(recoveryLocations.RequiresDeploymentLocationReconciliation);
+            await Assert.ThrowsExactlyAsync<InstallationVerificationPendingException>(async () =>
+                await recoveryLocations.VerifyInstallationAsync(seed, token).ConfigureAwait(false)).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+                await recoveryLocations.FullVerifyAsync(seed, token).ConfigureAwait(false)).ConfigureAwait(false);
+
+            using (var recoveryOrbital = OrbitalElementsStoreTestData.Open(orbitalRoot, clock,
+                OrbitalElementsStoreTestData.Settings(orbitalRoot, maximumQuarantined: 4)))
+            {
+                await recoveryOrbital.InitializeAsync(token).ConfigureAwait(false);
+            }
+
+            Assert.IsTrue(File.Exists(legacyJsonPath),
+                "Legacy quarantine .json must be preserved untouched after recovery load while .location is offline.");
+            CollectionAssert.AreEqual(malformedJson, await File.ReadAllBytesAsync(legacyJsonPath, token).ConfigureAwait(false));
+            Assert.AreEqual(matchingDuplicateRawExists, File.Exists(migratedRawPath));
+            if (matchingDuplicateRawExists)
+            {
+                CollectionAssert.AreEqual(malformedJson, await File.ReadAllBytesAsync(migratedRawPath, token).ConfigureAwait(false));
+            }
+        }
+
+        // Restore the original .location directory (replacing any empty .location created by recovery load).
+        if (Directory.Exists(locationDirectory))
+        {
+            Directory.Delete(locationDirectory, recursive: true);
+        }
+        Directory.Move(offlineLocationDirectory, locationDirectory);
+
+        // Restarting with the restored .location lets migration complete through the ledger and qualify with zero drift.
+        using var recoveredLocations = CreateStore();
+        Assert.AreEqual(active, await recoveredLocations.InitializeAsync(seed, token).ConfigureAwait(false));
+        using (var recoveredOrbital = OrbitalElementsStoreTestData.Open(orbitalRoot, clock,
+            OrbitalElementsStoreTestData.Settings(orbitalRoot, maximumQuarantined: 4)))
+        {
+            await recoveredOrbital.InitializeAsync(token).ConfigureAwait(false);
+            Assert.IsFalse(File.Exists(legacyJsonPath));
+            Assert.IsTrue(File.Exists(migratedRawPath));
+            CollectionAssert.AreEqual(malformedJson, await File.ReadAllBytesAsync(migratedRawPath, token).ConfigureAwait(false));
+        }
+
+        Assert.AreEqual(active, await recoveredLocations.FullVerifyAsync(seed, token).ConfigureAwait(false));
+        Assert.AreEqual(active, await recoveredLocations.VerifyInstallationAsync(seed, token).ConfigureAwait(false));
+        Assert.IsFalse(recoveredLocations.RequiresRetainedIntegrityScrub);
+    }
+
+    [TestMethod]
+    [DataRow(false, UnixFileMode.None)]
+    [DataRow(true, UnixFileMode.None)]
+    [DataRow(false, UnixFileMode.UserExecute)]
+    [DataRow(true, UnixFileMode.UserExecute)]
+    [DataRow(false, UnixFileMode.UserWrite)]
+    [DataRow(true, UnixFileMode.UserWrite)]
+    [DataRow(false, UnixFileMode.UserRead)]
+    [DataRow(true, UnixFileMode.UserRead)]
+    [DataRow(false, UnixFileMode.UserRead | UnixFileMode.UserWrite)]
+    [DataRow(true, UnixFileMode.UserRead | UnixFileMode.UserWrite)]
+    public async Task StartupMigrationPreservesLegacyQuarantineJsonWhileLocationDirectoryIsInaccessibleWithoutIdentityMarker(
+        bool matchingDuplicateRawExists, UnixFileMode restrictedLocationMode)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Inconclusive("Unix file permissions are required to restrict the .location directory.");
+            return;
+        }
+
+        var seed = CreateSeed(35, -113, 0, "America/Phoenix");
+        var token = CancellationToken.None;
+        var orbitalRoot = Path.Combine(_options.Value.RawIngressRoot, ".orbital-elements");
+        var quarantine = Path.Combine(orbitalRoot, "quarantine");
+        var clock = new OrbitalElementsStoreTestData.Clock(Now);
+        var malformedJson = "{\"OBJECT_NAME\":\"TRUNCATED"u8.ToArray();
+        var malformedSha = CelesTrakGpTestData.Sha256(malformedJson);
+        var legacyJsonPath = Path.Combine(quarantine, malformedSha + ".json");
+        var migratedRawPath = Path.Combine(quarantine, malformedSha + ".raw");
+        var locationDirectory = Path.Combine(_options.Value.RawIngressRoot, RetainedIntegrityLedger.LocationDirectoryName);
+        var identityMarkerPath = Path.Combine(_options.Value.RawIngressRoot, RetainedIntegrityLedger.IdentityMarkerName);
+        DeploymentLocationSnapshot active;
+
+        using (var locations = CreateStore())
+        {
+            active = await locations.InitializeAsync(seed, token).ConfigureAwait(false);
+            using var orbital = OrbitalElementsStoreTestData.Open(orbitalRoot, clock,
+                OrbitalElementsStoreTestData.Settings(orbitalRoot, maximumQuarantined: 4));
+            var attempt = await OrbitalElementsStoreTestData.AdmitAsync(orbital).ConfigureAwait(false);
+            await orbital.RecordQuarantineAsync(attempt, malformedJson, malformedSha,
+                "orbital.json-syntax", "legacy malformed JSON body", token).ConfigureAwait(false);
+            RetainedFileMutations.Move(migratedRawPath, legacyJsonPath);
+            if (matchingDuplicateRawExists)
+            {
+                await File.WriteAllBytesAsync(migratedRawPath, malformedJson, token).ConfigureAwait(false);
+            }
+        }
+
+        var identityMarkerBytes = await File.ReadAllBytesAsync(identityMarkerPath, token).ConfigureAwait(false);
+        var originalMode = File.GetUnixFileMode(locationDirectory);
+        File.Delete(identityMarkerPath);
+        File.SetUnixFileMode(locationDirectory, restrictedLocationMode);
+        try
+        {
+            using (var unavailableOrbital = OrbitalElementsStoreTestData.Open(orbitalRoot, clock,
+                OrbitalElementsStoreTestData.Settings(orbitalRoot, maximumQuarantined: 4)))
+            {
+                await unavailableOrbital.InitializeAsync(token).ConfigureAwait(false);
+            }
+
+            Assert.IsTrue(File.Exists(legacyJsonPath),
+                "Legacy quarantine .json must be preserved untouched while .location is inaccessible even without the root identity marker.");
+            CollectionAssert.AreEqual(malformedJson, await File.ReadAllBytesAsync(legacyJsonPath, token).ConfigureAwait(false));
+            Assert.AreEqual(matchingDuplicateRawExists, File.Exists(migratedRawPath));
+            if (matchingDuplicateRawExists)
+            {
+                CollectionAssert.AreEqual(malformedJson, await File.ReadAllBytesAsync(migratedRawPath, token).ConfigureAwait(false));
+            }
+        }
+        finally
+        {
+            File.SetUnixFileMode(locationDirectory, originalMode);
+            await File.WriteAllBytesAsync(identityMarkerPath, identityMarkerBytes, token).ConfigureAwait(false);
+        }
+
+        using var recoveredLocations = CreateStore();
+        Assert.AreEqual(active, await recoveredLocations.InitializeAsync(seed, token).ConfigureAwait(false));
+        using (var recoveredOrbital = OrbitalElementsStoreTestData.Open(orbitalRoot, clock,
+            OrbitalElementsStoreTestData.Settings(orbitalRoot, maximumQuarantined: 4)))
+        {
+            await recoveredOrbital.InitializeAsync(token).ConfigureAwait(false);
+            Assert.IsFalse(File.Exists(legacyJsonPath));
+            Assert.IsTrue(File.Exists(migratedRawPath));
+            CollectionAssert.AreEqual(malformedJson, await File.ReadAllBytesAsync(migratedRawPath, token).ConfigureAwait(false));
+        }
+
+        Assert.AreEqual(active, await recoveredLocations.FullVerifyAsync(seed, token).ConfigureAwait(false));
+        Assert.AreEqual(active, await recoveredLocations.VerifyInstallationAsync(seed, token).ConfigureAwait(false));
+        Assert.IsFalse(recoveredLocations.RequiresRetainedIntegrityScrub);
+    }
+
+    [TestMethod]
     [DataRow(false, true)]
     [DataRow(false, false)]
     [DataRow(true, true)]
