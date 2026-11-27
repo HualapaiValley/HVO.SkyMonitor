@@ -46,6 +46,7 @@ public sealed partial class ArchitectureBoundaryTests
     // dependency rule is asserted by StorageFileSystemBoundaryIsNarrowWhenPresent.
     private const string StorageFileSystem = "HVO.SkyMonitor.Storage.FileSystem";
     private const string TestSupport = "HVO.SkyMonitor.TestSupport";
+    private const int FixtureCatalogLength = 20_480;
     private const string FixtureCatalogSha256 = "7912C279A5C6FD3FC26FCEB35987B6CAA72425232E65DB991F28D657BA70B682";
 
     private static readonly string[] ProjectSearchDirectories = ["src", "tests", "scripts", "tools"];
@@ -2385,6 +2386,7 @@ public sealed partial class ArchitectureBoundaryTests
             var violations = FindForbiddenPublishArtifacts(output, Set(TestSupport, testAssemblyName));
 
             Assert.HasCount(6, violations);
+            CollectionAssert.Contains(violations, "File 'renamed-catalog.dat' contains the test catalog fixture.");
             Assert.IsTrue(violations.Any(violation => violation.Contains(testAssemblyName, StringComparison.Ordinal)));
             Assert.IsTrue(violations.Any(violation => violation.Contains("MSTest", StringComparison.Ordinal)));
         }
@@ -2493,7 +2495,7 @@ public sealed partial class ArchitectureBoundaryTests
                 }
             }
 
-            if (new FileInfo(file).Length == 16_384 &&
+            if (new FileInfo(file).Length == FixtureCatalogLength &&
                 string.Equals(Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(file))),
                     FixtureCatalogSha256, StringComparison.Ordinal))
             {
