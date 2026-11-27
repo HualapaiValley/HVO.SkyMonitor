@@ -398,25 +398,36 @@ $V_\infty$ into $V_g$).
      surfaced as active or upcoming and expired peak times/ZHRs are **never**
      silently recycled.
    - **Stage 2 — Occurrence-window binding & overlapping-edition precedence
-     (applied ONLY to Stage-1-valid entries):**
-     - **Past occurrence exclusion:** Any forecast with
-       **`windowEndUtc <= queryUtc`** is strictly excluded from active and
-       upcoming lists even while `effectiveValidFromUtc <= queryUtc < effectiveValidUntilUtc`.
-     - **Overlapping-edition precedence:** Among remaining Stage-1-valid,
-       non-past entries for the same `(iauNumber, occurrenceYear)`, select the
-       entry with the **highest `editionYear`**, breaking equal-`editionYear`
-       ties within a snapshot deterministically by `editionId` ordinal
-       descending (equivalently later position in the canonical
-       `(editionYear, editionId)`-sorted `activitySources[]` array), and when
-       comparing across candidate snapshots, by `generatedUtc` descending then
-       `snapshotId` ordinal ascending.
-     - **Active:** `windowStartUtc <= queryUtc < windowEndUtc` (with Stage 1
-       already enforcing `effectiveValidFromUtc <= queryUtc < effectiveValidUntilUtc`).
-     - **Upcoming (lookahead duration $L$, Proposed default `30 days`):**
-       `queryUtc < windowStartUtc < queryUtc + L` (with Stage 1 already
-       enforcing `effectiveValidFromUtc <= queryUtc < effectiveValidUntilUtc` —
-       an edition whose `effectiveValidFromUtc > queryUtc` is **never** admitted
-       into `Upcoming` merely because `windowStartUtc` falls inside `queryUtc + L`).
+     (applied ONLY to Stage-1-valid entries, in this exact normative order):**
+     1. **Step 2.1 — Past occurrence exclusion:** Strictly exclude any forecast
+        with **`windowEndUtc <= queryUtc`** from active and upcoming lists even
+        while `effectiveValidFromUtc <= queryUtc < effectiveValidUntilUtc`.
+     2. **Step 2.2 — Overlapping-edition precedence (FIRST, before lookahead
+        filtering/classification):** Group remaining Stage-1-valid, non-past
+        entries by `(iauNumber, occurrenceYear)` and select the **single
+        authoritative winning forecast** per `(iauNumber, occurrenceYear)`: the
+        entry with the **highest `editionYear`**, breaking equal-`editionYear`
+        ties within a snapshot deterministically by `editionId` ordinal
+        descending (equivalently later position in the canonical
+        `(editionYear, editionId)`-sorted `activitySources[]` array), and when
+        comparing across candidate snapshots, by `generatedUtc` descending then
+        `snapshotId` ordinal ascending. Discard all superseded lower-precedence
+        entries for that `(iauNumber, occurrenceYear)`.
+     3. **Step 2.3 — Window classification (THEN, on the single winning
+        authoritative forecast only):** Classify each winning forecast (which
+        already satisfies `windowEndUtc > queryUtc` and Stage 1 validity
+        `effectiveValidFromUtc <= queryUtc < effectiveValidUntilUtc`) against
+        `queryUtc` and the half-open lookahead window `[queryUtc, queryUtc + L)`
+        (Proposed default $L = 30\text{ days}$):
+        - **`Active`:** `windowStartUtc <= queryUtc < windowEndUtc`.
+        - **`Upcoming`:** `queryUtc < windowStartUtc < queryUtc + L` (an edition
+          whose `effectiveValidFromUtc > queryUtc` was already excluded by Stage
+          1 and is **never** admitted into `Upcoming` merely because
+          `windowStartUtc` falls inside `queryUtc + L`).
+        - **`OutsideWindow` (omitted):** `windowStartUtc >= queryUtc + L`.
+          **Never** fall back to a superseded lower-`editionYear` forecast for
+          that `(iauNumber, occurrenceYear)` when the authoritative winning
+          forecast falls outside the lookahead window.
    - **Verified boundary cases (mandatory Slice M0/M1 tests):**
      - **Case (a) — `2027-01-03T12:00:00Z` with only a 2026 edition present**
        (`QUA` entry: `editionId = "imo-calendar-2026"`, `editionYear = 2026`,
@@ -428,23 +439,32 @@ $V_\infty$ into $V_g$).
        reports `NoForecastForOccurrence` (optional HVO-derived solar-longitude
        estimate only when `nominalActivity.peakSolarLonDeg` is present, with
        `idealizedZhr = null`).
-     - **Case (b) — `2026-12-28T00:00:00Z` with 30-day lookahead in a single
-       schema-valid dual-edition snapshot carrying both `2026` and `2027` in
+     - **Case (b) — Dual-edition rollover retention (`2026-12-14T00:00:00Z` and
+       `2026-12-28T00:00:00Z`) with 30-day lookahead in a single schema-valid
+       dual-edition snapshot carrying both `2026` and `2027` in
        `activitySources[]`:** Because one atomic `current.json` snapshot carries
        `1`–`2` entries in `activitySources[]`, importing the 2027 edition on
-       `2026-12-01` retains `imo-calendar-2026` alongside `imo-calendar-2027` so
-       December 2026 showers (e.g., Geminids `GEM` and Ursids `URS`) remain
-       active while January 2027 forecasts become eligible. At
-       `2026-12-28T00:00:00Z`, both `imo-calendar-2026` (`validFromUtc =
-       2025-12-01T00:00:00Z`, `validUntilUtc = 2027-01-15T00:00:00Z`) and
+       `2026-12-01` retains `imo-calendar-2026` (`validFromUtc =
+       2025-12-01T00:00:00Z`, `validUntilUtc = 2027-01-15T00:00:00Z`) alongside
        `imo-calendar-2027` (`validFromUtc = 2026-12-01T00:00:00Z`,
-       `validUntilUtc = 2028-01-15T00:00:00Z`) pass Stage 1. On `QUA`, the 2026
-       edition's `occurrenceYear = 2026` entry is excluded (`windowEndUtc <=
-       queryUtc`), and between the 2026 and 2027 editions' `occurrenceYear =
-       2027` entries (`windowStartUtc = 2026-12-28T00:00:00Z`, `peakUtc =
-       2027-01-04T03:25:00Z`, `windowEndUtc = 2027-01-13T00:00:00Z`),
-       overlapping-edition precedence selects the **2027 edition**
-       (`editionYear = 2027 > 2026`).
+       `validUntilUtc = 2028-01-15T00:00:00Z`) so December 2026 showers remain
+       available during their active windows while January 2027 forecasts become
+       eligible:
+       1. **Mid-December retention check (`2026-12-14T00:00:00Z`):** Both
+          editions pass Stage 1, and December 2026 Geminids (`GEM`,
+          `occurrenceYear = 2026`, from `imo-calendar-2026`) is classified
+          **`Active`** (while `URS` 2026 and `QUA` 2027 are `Upcoming`).
+       2. **Year-end rollover precedence check (`2026-12-28T00:00:00Z`):** Both
+          editions pass Stage 1. December 2026 Geminids (`GEM`) and Ursids
+          (`URS`) remain present in the atomic snapshot but are excluded as past
+          by Stage 2 Step 2.1 (`windowEndUtc <= queryUtc`). On `QUA`, the 2026
+          edition's `occurrenceYear = 2026` entry is likewise excluded as past
+          (`windowEndUtc <= queryUtc`), and between the 2026 and 2027 editions'
+          `occurrenceYear = 2027` entries (`windowStartUtc =
+          2026-12-28T00:00:00Z`, `peakUtc = 2027-01-04T03:25:00Z`,
+          `windowEndUtc = 2027-01-13T00:00:00Z`), Step 2.2 overlapping-edition
+          precedence selects the **2027 edition** (`editionYear = 2027 > 2026`)
+          and Step 2.3 classifies it **`Active`**.
      - **Case (c) — Exact upper expiry boundary `queryUtc == validUntilUtc`**
        (`2027-01-15T00:00:00Z` for a 2026 edition): excluded by Stage 1 as
        strictly `Expired`.
@@ -469,6 +489,22 @@ $V_\infty$ into $V_g$).
        rejected at **Stage 1 runtime** because
        `max(2026-12-01, 2026-11-01) = 2026-12-01 > 2026-11-30` (`NotYetValid`)
        and unmatched/mismatched `editionId`/`editionYear` fail closed.
+     - **Case (f) — Precedence-before-lookahead cutoff boundary
+       (`queryUtc = 2026-12-01T00:00:00Z`, $L = 30\text{ d}$, exclusive cutoff
+       `queryUtc + L = 2026-12-31T00:00:00Z`):** In a dual-edition snapshot
+       carrying both Stage-1-valid `imo-calendar-2026` and `imo-calendar-2027`,
+       suppose a January 2027 occurrence (`occurrenceYear = 2027`) has two
+       non-past forecasts: `imo-calendar-2026` with
+       `windowStartUtc = 2026-12-30T00:00:00Z` (inside `[2026-12-01, 2026-12-31)`)
+       and `imo-calendar-2027` with `windowStartUtc = 2026-12-31T00:00:00Z` (at
+       the exclusive cutoff `queryUtc + L`). Under Stage 2's normative order,
+       Step 2.2 resolves edition precedence per `(iauNumber, occurrenceYear)`
+       **first**, selecting `imo-calendar-2027` (`editionYear = 2027 > 2026`)
+       and discarding the superseded 2026 entry; Step 2.3 then classifies the
+       winning 2027 forecast as **`OutsideWindow`** (`2026-12-31T00:00:00Z >=
+       2026-12-31T00:00:00Z`). Expected outcome: the occurrence is **omitted**
+       (NOT shown as `Upcoming`, and NEVER falling back to the superseded 2026
+       edition).
    - **Fallback when annual activity is absent or expired (no peak date from
      radiant reference longitude alone):** If `activitySources` is `null` or no
      Stage-1/Stage-2 valid occurrence forecast exists, the evaluator may compute

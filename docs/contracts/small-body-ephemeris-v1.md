@@ -223,7 +223,7 @@ Each `SmallBodyEphemerisKnot` contains (aligned identically with
 
 | Field | Units / Type | Source (`Horizons OBSERVER`) | Semantics |
 | --- | --- | --- | --- |
-| `utc` | UTC ISO-8601 | `Date__(UT)__HR:MN:SC` (`TIME_TYPE='UT'`, `CAL_TYPE='GREGORIAN'`, `TIME_DIGITS='SECONDS'`) | Exact knot UTC instant (seconds precision ensures half-step verification at `150 s` and `30 s` resolves every sample without minute truncation) |
+| `utc` | UTC ISO-8601 (`YYYY-MM-DDTHH:MM:SSZ`) | Seconds-precision UTC time column (`TIME_TYPE='UT'`, `CAL_TYPE='GREGORIAN'`, `TIME_DIGITS='SECONDS'`) | Exact knot UTC instant (seconds precision ensures half-step verification at `150 s` and `30 s` resolves every sample without minute truncation). Because Horizons API v1.2 with `TIME_DIGITS='SECONDS'` and unitless `STEP_SIZE='<N>'` can emit fractional-second timestamp column/value forms (for example, an optional `.000` fractional-seconds suffix in CSV rows), the parser MUST accept both whole-second and fractional-second timestamp column/value forms, verify exact alignment to the requested whole-second UTC grid (rejecting non-zero sub-second drift beyond strict sub-millisecond tolerance rather than silently truncating), and normalize parsed timestamps to canonical ISO-8601 UTC (`YYYY-MM-DDTHH:MM:SSZ`) |
 | `astrometricRaDeg` | degrees `[0, 360)` | `QUANTITIES=1` (`R.A.___(ICRF)`) | Topocentric light-time-corrected ICRF RA (no aberration/deflection/refraction) |
 | `astrometricDecDeg` | degrees `[-90, 90]` | `QUANTITIES=1` (`DEC____(ICRF)`) | Topocentric light-time-corrected ICRF Dec |
 | `apparentRaDeg` | degrees `[0, 360)` | `QUANTITIES=2` (`R.A.__(a-app)`) | Topocentric apparent RA of true equator & equinox of date, **airless** |
@@ -610,11 +610,10 @@ ValueTask<SmallBodySnapshotReadResult> ReadExactAsync(string manifestSha256, Can
      $\omega_{\max} h \le 2.5^\circ$ cap and evaluates to `0.000000"` residual
      at every integer knot (including `k = 3`), yet has a **`2.000000"` error**
      at every usable midpoint $t_{k+1/2} = t_k + h/2$. Therefore, every usable
-     interval $[t_k, t_{k+1}]$ ($k \in [1, N-3]$) MUST be verified $\le 1.0''$
+     interval $[t_k, t_{k+1}]$ ($k \in [1, N_{\text{knots}} - 3]$) MUST be verified $\le 1.0''$
      using one of two approved methods:
      - **Method A (`HalfStepSample` — required for Horizons acquisition and live/cached verification):**
-       Fetch the Horizons `OBSERVER` ephemeris with `TIME_DIGITS='SECONDS'`
-       (producing seconds-precision `Date__(UT)__HR:MN:SC` timestamps) at
+       Fetch the Horizons `OBSERVER` ephemeris with `TIME_DIGITS='SECONDS'` at
        half-step resolution $h/2$ ($h/2 \in \{1800, 450, 150, 60, 30\}\text{ s}$)
        in a single Horizons HTTP request using unitless equal-interval stepping
        `STEP_SIZE='<N>'`, where
@@ -622,7 +621,15 @@ ValueTask<SmallBodySnapshotReadResult> ReadExactAsync(string manifestSha256, Can
        padded span into $N$ exact equal $h/2$ intervals ($N + 1$ uniformly
        spaced rows; unitless integer `STEP_SIZE` is required because Horizons
        calendar-unit stepping has a 1-minute floor and cannot express `150 s` or
-       `30 s` half-steps). Keep even-indexed samples as the retained $h$-spaced
+       `30 s` half-steps). Because Horizons API v1.2 with
+       `TIME_DIGITS='SECONDS'` and unitless `STEP_SIZE='<N>'` emits
+       fractional-second timestamp column/value forms (for example, an optional
+       `.000` fractional-seconds suffix in CSV rows), the CSV parser MUST accept
+       both whole-second and fractional-second timestamp column/value forms,
+       verify exact alignment of every row to the requested whole-second UTC
+       grid (rejecting non-zero sub-second drift beyond strict sub-millisecond
+       tolerance), and normalize parsed timestamps to canonical ISO-8601 UTC
+       (`YYYY-MM-DDTHH:MM:SSZ`). Keep even-indexed samples as the retained $h$-spaced
        knots and odd-indexed samples as independent half-step verification
        points. For every usable interval $k \in [1, N_{\text{knots}}-3]$,
        evaluate the 4-point centered cubic Lagrange unit-vector interpolant on
