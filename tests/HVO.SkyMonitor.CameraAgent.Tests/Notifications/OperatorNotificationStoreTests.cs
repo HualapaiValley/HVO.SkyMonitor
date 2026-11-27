@@ -12914,9 +12914,11 @@ public sealed class OperatorNotificationStoreTests
     }
 
     [TestMethod]
-    [DataRow(false)]
-    [DataRow(true)]
-    public async Task SameTargetDurableRetirement_AfterClearAndRestart_BlocksCredentialWritesAsync(bool directSave)
+    [DataRow(false, false)]
+    [DataRow(true, false)]
+    [DataRow(false, true)]
+    [DataRow(true, true)]
+    public async Task SameTargetDurableRetirement_AfterClearAndRestart_BlocksCredentialWritesAsync(bool directSave, bool evictRetirement)
     {
         const string host = "same-target-relay.example.test";
         const string url = "https://same-target-hook.example.test/";
@@ -12927,15 +12929,51 @@ public sealed class OperatorNotificationStoreTests
         const string topic = "retired-topic";
         var options = CreateSmtpOptions(host, 587, SmtpSecurityMode.StartTls);
         using var dir = TempStateDir.Create();
+        var dpProvider = DataProtectionProvider.Create(new DirectoryInfo(Path.Combine(dir.Path, "dp-keys")));
 
-        using (var initial = CreateStore(dir.Path, isDevelopment: false))
+        using (var initial = CreateStore(dir.Path, isDevelopment: false, dpProvider: dpProvider))
         {
             var snapshot = await initial.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
             var saved = await initial.SaveAsync(new OperatorNotificationsUpdateRequest(
                 snapshot.Version, options, SmtpUsername: username, SmtpPassword: password, WebhookUrl: url,
                 WebhookAuthToken: token, WebhookUserKey: userKey, WebhookNtfyTopic: topic), "owner", CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(OperatorNotificationsSaveOutcome.Applied, saved.Outcome, saved.Message);
+
+            if (evictRetirement)
+            {
+                // Clear retires the last rotation, taking both histories past their entry limit.
+                for (var i = 0; i < OperatorNotificationStore.MaxRetiredBindingsPerChannel; i++)
+                {
+                    var read = await initial.ReadAsync(CancellationToken.None).ConfigureAwait(false);
+                    await initial.SaveAsync(read with
+                    {
+                        SmtpUsername = $"rotated-username-{i}",
+                        SmtpPassword = $"rotated-password-{i}",
+                        WebhookAuthToken = $"rotated-token-{i}",
+                        WebhookUserKey = $"rotated-user-key-{i}",
+                        WebhookNtfyTopic = $"rotated-topic-{i}"
+                    }, CancellationToken.None).ConfigureAwait(false);
+                }
+            }
+
             await initial.ClearAsync(CancellationToken.None).ConfigureAwait(false);
+
+            if (evictRetirement)
+            {
+                var protector = dpProvider.CreateProtector("CameraAgent", "OperatorNotifications", "v1");
+                var envelope = JsonNode.Parse(await File.ReadAllTextAsync(initial.ConfigFilePath).ConfigureAwait(false))!;
+                var payload = JsonNode.Parse(protector.Unprotect(envelope["protectedSecrets"]!.GetValue<string>()))!;
+                var salt = payload["retiredSalt"]!.GetValue<string>();
+                AssertEvicted(payload["retiredSmtps"]!.AsArray(), "passwordHash", password);
+                AssertEvicted(payload["retiredWebhooks"]!.AsArray(), "authTokenHash", token);
+
+                void AssertEvicted(JsonArray history, string hashProperty, string value)
+                {
+                    Assert.HasCount(OperatorNotificationStore.MaxRetiredBindingsPerChannel, history);
+                    var hash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes($"{salt}:{value}")));
+                    Assert.IsFalse(history.Any(entry => entry?[hashProperty]?.GetValue<string>() == hash));
+                }
+            }
         }
 
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
@@ -12950,7 +12988,7 @@ public sealed class OperatorNotificationStoreTests
             [ConfigurationOperatorNotificationConfigProvider.WebhookUserKeyConfigKey] = userKey,
             [ConfigurationOperatorNotificationConfigProvider.WebhookNtfyTopicConfigKey] = $"  {topic}  "
         }).Build();
-        using var restarted = CreateStore(dir.Path, isDevelopment: false, configuration: configuration);
+        using var restarted = CreateStore(dir.Path, isDevelopment: false, dpProvider: dpProvider, configuration: configuration);
         var (_, delivery) = await restarted.GetEffectiveForDeliveryAsync(CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(new OperatorNotificationSecrets(WebhookUrl: url), delivery);
 
@@ -12976,7 +13014,7 @@ public sealed class OperatorNotificationStoreTests
         {
             var snapshot = await restarted.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
             var update = await restarted.SaveAsync(new OperatorNotificationsUpdateRequest(
-                snapshot.Version, options, SmtpUsername: username, SmtpPassword: password,
+                snapshot.Version, snapshot.Options, SmtpUsername: username, SmtpPassword: password,
                 WebhookAuthToken: token, WebhookUserKey: userKey, WebhookNtfyTopic: $"  {topic}  "), "owner", CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(OperatorNotificationsSaveOutcome.Invalid, update.Outcome);
             CollectionAssert.AreEquivalent(CredentialProblemKeys, update.Problems!.Keys.ToArray());

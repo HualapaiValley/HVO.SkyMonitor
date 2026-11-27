@@ -531,8 +531,15 @@ public sealed class WebhookNotificationTransportTests
             while (!_cts.IsCancellationRequested)
             {
                 TcpClient client;
-                try { client = await _listener.AcceptTcpClientAsync(_cts.Token).ConfigureAwait(false); }
-                catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException or SocketException) { break; }
+                try
+                {
+                    client = await _listener.AcceptTcpClientAsync(_cts.Token).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is OperationCanceledException or SocketException or ObjectDisposedException)
+                {
+                    break;
+                }
+
                 _ = Task.Run(() => HandleClientAsync(client));
             }
         }
@@ -626,10 +633,15 @@ public sealed class WebhookNotificationTransportTests
         public async ValueTask DisposeAsync()
         {
             await _cts.CancelAsync().ConfigureAwait(false);
-            _listener.Stop();
-            try { await _acceptLoop.ConfigureAwait(false); }
-            catch (OperationCanceledException) { }
-            _cts.Dispose();
+            try
+            {
+                await _acceptLoop.ConfigureAwait(false);
+            }
+            finally
+            {
+                _listener.Stop();
+                _cts.Dispose();
+            }
         }
     }
 
