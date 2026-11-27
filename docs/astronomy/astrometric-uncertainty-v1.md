@@ -133,12 +133,13 @@ gate. A good residual fit or a supplied session covariance cannot qualify an
 unsupported exposure. The mapping and its exposure midpoint remain usable
 within their own qualified envelope. Clock facts remain separately reported.
 
-The [long-exposure held-out evidence](virtual-astrometry-long-exposure-v1.md#held-out-astrometric-uncertainty)
-failed withholding and coverage, including overconfident released log-focal-scale
-intervals at 60 s. This release restriction enforces that existing envelope; it
-does not requalify long exposures. Durations at or below one second retain the
-same numerical path, subject to all existing validity gates; only the previously
-qualified profiles carry a qualification claim.
+The original held-out evidence failed withholding and coverage, including
+overconfident log-focal-scale intervals at 60 s. The independent #1179 study
+tested per-profile systematic floors and still found qualification failures
+in all three long-exposure cells. Durations at or below one second retain the
+same numerical path and validity gates. The existing profile qualifications
+apply. See the [#1168 result](virtual-astrometry-long-exposure-v1.md#held-out-astrometric-uncertainty)
+and [#1179 report](../validation/issue-1179-qualification.md).
 
 The result JSON schema, numerical estimator version and Processing algorithm list
 remain v1. `IdentityForExposure` preserves the exact original settings identity at
@@ -149,9 +150,9 @@ long-exposure results receive a policy-bound identity without a storage migratio
 Retained validation rejects historical available long-exposure covariance; old
 long-exposure products may become unavailable and are never silently rewritten
 or refitted by a viewer, restart or replay. See the retained-astrometry runbook
-for that fail-closed boundary. A future campaign must explicitly version its
-qualification/evaluation path before collecting evidence; the current Manual
-long-exposure uncertainty harness will correctly report the policy withholding.
+for that fail-closed boundary. The versioned #1179 evaluator is internal.
+Retained validation and cross-covariance reject its qualification schema.
+The public estimator and its retained evidence enforce the exposure gate.
 
 The [frozen slice plan and validation](../validation/issue-1179-exposure-withholding.md)
 records the baseline comparison and remaining work.

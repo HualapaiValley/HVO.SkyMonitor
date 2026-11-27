@@ -1,10 +1,11 @@
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 /// <summary>
-/// Pins the frozen issue #1168 matrix (variants, seeds, refusals) and the truth-trail geometry the long-exposure scorers
+/// Pins the long-exposure matrix (variants, seeds, refusals) and the truth-trail geometry the long-exposure scorers
 /// rely on, so a qualification outcome cannot come from a drifted fixture or a scorer defect.
 /// </summary>
 [TestClass]
@@ -62,7 +63,7 @@ public sealed class VirtualLongExposureFixtureTests
     }
 
     [TestMethod]
-    public void DeclaredRefusal_NamesOnlyTheRectilinearFullFrameSixtySecondAndMonoCloudCells()
+    public void DeclaredRefusal_RespectsTheTemporalBudgetAndMonoCloudReadoutBoundary()
     {
         var none = VirtualAstrometryFixture.Variants[0];
         foreach (var family in VirtualAstrometryFixture.Families.Where(f => f.Name != "rectilinear"))
@@ -84,15 +85,47 @@ public sealed class VirtualLongExposureFixtureTests
         }
         var equidistant = VirtualAstrometryFixture.Families[0];
         foreach (var variant in VirtualAstrometryFixture.Variants.Where(v => v.CloudScenario is not null))
-            foreach (var profile in VirtualAstrometryFixture.Profiles(1, equidistant, variant))
+            foreach (var profile in VirtualAstrometryFixture.Profiles(1, equidistant, none))
             {
                 var refusal = VirtualAstrometryFixture.DeclaredRefusal(equidistant, profile, 20, variant);
-                if (profile.Config.Rig.Sensor.PixelFormat == CameraPixelFormat.BayerRggb16)
-                    Assert.IsNull(refusal, $"{variant.Name} {profile.Name}");
-                else
+                if (profile.Name is "mono-roi" or "mono-bin2" or "mono-roi-bin2")
                     Assert.AreEqual(new VirtualRenderRefusal("initialize", typeof(NotSupportedException).FullName!,
-                        VirtualRenderRefusal.NativeReadoutClouds), refusal, $"{variant.Name} {profile.Name}");
+                        VirtualRenderRefusal.NonIdentityCloudReadout), refusal, $"{variant.Name} {profile.Name}");
+                else
+                    Assert.IsNull(refusal, $"{variant.Name} {profile.Name}");
             }
+    }
+
+    [TestMethod]
+    [DataRow("clouds-partial")]
+    [DataRow("overcast")]
+    public async Task DeclaredRefusal_MatchesVirtualSkyInitializationForMonoCloudProfiles(string variantName)
+    {
+        var family = VirtualAstrometryFixture.Families[0];
+        var variant = VirtualAstrometryFixture.Variants.Single(v => v.Name == variantName);
+        var cloudyModule = VirtualAstrometryFixture.Profiles(1, family, variant)
+            .Single(p => p.Name == "mono-native").Config.Module;
+        var monoProfiles = VirtualAstrometryFixture.Profiles(1, family)
+            .Where(p => p.Config.Rig.Sensor.PixelFormat == CameraPixelFormat.Mono16);
+
+        foreach (var profile in monoProfiles)
+        {
+            var cloudyProfile = profile with { Config = profile.Config with { Module = cloudyModule } };
+            var refusal = VirtualAstrometryFixture.DeclaredRefusal(family, cloudyProfile, 20, variant);
+            var module = new VirtualSkyCameraModule(TimeProvider.System, new InMemoryCelestialCatalog([]), new ProjectedSceneStore());
+            await using var lifetime = module.ConfigureAwait(false);
+            if (refusal is null)
+            {
+                await module.InitializeAsync(cloudyProfile.Config, CancellationToken.None).ConfigureAwait(false);
+            }
+            else
+            {
+                Assert.AreEqual("initialize", refusal.Stage, profile.Name);
+                var exception = await Assert.ThrowsExactlyAsync<NotSupportedException>(
+                    () => module.InitializeAsync(cloudyProfile.Config, CancellationToken.None), profile.Name).ConfigureAwait(false);
+                Assert.IsTrue(refusal.Matches(exception), $"{profile.Name}: {exception.Message}");
+            }
+        }
     }
 
     [TestMethod]
