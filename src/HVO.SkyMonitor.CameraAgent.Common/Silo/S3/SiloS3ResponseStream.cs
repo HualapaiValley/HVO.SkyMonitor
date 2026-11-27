@@ -4,7 +4,7 @@ using Amazon.S3.Model;
 namespace HVO.SkyMonitor.CameraAgent.Common.Silo.S3;
 
 /// <summary>Owns one GET response for the duration of streaming. The per-read deadline also covers a stalled body.</summary>
-internal sealed class SiloS3ResponseStream(GetObjectResponse response, string storeId, TimeSpan timeout) : Stream
+internal sealed class SiloS3ResponseStream(GetObjectResponse response, SiloStoreDescriptor store, TimeSpan timeout) : Stream
 {
     private Stream Source => response.ResponseStream;
 
@@ -33,10 +33,15 @@ internal sealed class SiloS3ResponseStream(GetObjectResponse response, string st
             deadline.Token.ThrowIfCancellationRequested();
             return await Source.ReadAsync(buffer, deadline.Token).ConfigureAwait(false);
         }
+        catch (Exception exception) when (store.StoreClass == SiloStoreClass.Archive && SiloS3ObjectStore.IsTlsFailure(exception))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            throw SiloArchiveStore.TlsFailure();
+        }
         catch (Exception exception) when (exception is IOException or HttpRequestException or OperationCanceledException or AmazonClientException)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            throw new SiloStoreUnavailableException(storeId, "read exact version body", writeMayHaveLanded: false);
+            throw new SiloStoreUnavailableException(store.StoreId, "read exact version body", writeMayHaveLanded: false);
         }
     }
 

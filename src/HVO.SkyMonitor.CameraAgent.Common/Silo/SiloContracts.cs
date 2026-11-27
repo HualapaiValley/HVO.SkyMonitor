@@ -154,11 +154,14 @@ internal static class SiloText
 
     public static void RequireText(string? value, string name, int maximum)
     {
-        if (string.IsNullOrWhiteSpace(value) || value.Length > maximum || value.Any(char.IsControl))
+        if (!IsText(value, maximum))
         {
             throw new ArgumentException($"A nonblank value of at most {maximum} characters without control characters is required.", name);
         }
     }
+
+    public static bool IsText(string? value, int maximum) =>
+        !string.IsNullOrWhiteSpace(value) && value.Length <= maximum && !value.Any(char.IsControl);
 
     /// <summary>A key-safe token: ASCII letters, digits, '.', '_' and '-' only.</summary>
     public static bool IsToken(string? value, int maximum) =>

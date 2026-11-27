@@ -224,8 +224,9 @@ internal sealed class SiloArtifactStorage(SiloInstalledStorage storage, TimeProv
     {
         foreach (var candidate in role.Locators.Where(static locator => locator.Eligible && locator.CopyState == "active"))
         {
+            // Custody records for other stores remain in the catalog. Installed reads use only configured routes.
             if (!storage.Catalog.Stores.TryResolve(candidate.Locator.StoreId, candidate.Locator.Bucket, out var store))
-                throw new SiloStoreUnavailableException(candidate.Locator.StoreId, "resolve committed member", writeMayHaveLanded: false);
+                continue;
             var proof = destination is null
                 ? await SiloVerifier.ProbeAsync(store, candidate.Locator, role.Length, role.Sha256, clock,
                     captureBytes: true, cancellationToken).ConfigureAwait(false)

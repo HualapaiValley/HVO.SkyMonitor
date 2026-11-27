@@ -26,7 +26,62 @@ internal static class CameraAgentLifecycleEndpoints
         group.MapGet("/first-boot", ReadFirstBootAsync);
         group.MapPost("/first-resume", FirstResumeAsync);
         group.MapPost("/silo/verify-history", VerifySiloHistoryAsync);
+        group.MapGet("/silo/archive", ReadArchiveStatus);
+        group.MapGet("/silo/archive/publication", FindArchivePublicationAsync);
+        group.MapPost("/silo/archive/read", ReadArchiveAsync);
         return endpoints;
+    }
+
+    private static IResult ReadArchiveStatus(HttpContext context, IConfiguration configuration)
+    {
+        if (!IsAuthorized(context, configuration)) return Results.Unauthorized();
+        context.Response.Headers.CacheControl = "no-store";
+        var archive = context.RequestServices.GetService<ICameraAgentSiloArchive>();
+        return Results.Ok(archive?.Status ?? new CameraAgentSiloArchiveStatus("disabled", null));
+    }
+
+    private static async Task<IResult> FindArchivePublicationAsync(string groupId, string revisionId, HttpContext context,
+        IConfiguration configuration, CancellationToken cancellationToken)
+    {
+        if (!IsAuthorized(context, configuration)) return Results.Unauthorized();
+        if (groupId.Length is < 1 or > 128 || revisionId.Length is < 1 or > 128) return Results.BadRequest();
+        context.Response.Headers.CacheControl = "no-store";
+        var archive = context.RequestServices.GetService<ICameraAgentSiloArchive>();
+        if (archive is null) return Results.NotFound();
+        try
+        {
+            var publication = await archive.FindAsync(groupId, revisionId, cancellationToken).ConfigureAwait(false);
+            return publication is null ? Results.NotFound() : Results.Ok(publication);
+        }
+        catch (Exception exception) when (exception is IOException or InvalidOperationException or System.Data.Common.DbException)
+        {
+            return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+        }
+    }
+
+    private static async Task<IResult> ReadArchiveAsync(CameraAgentSiloArchiveRead request, HttpContext context,
+        IConfiguration configuration, CancellationToken cancellationToken)
+    {
+        if (!IsAuthorized(context, configuration)) return Results.Unauthorized();
+        context.Response.Headers.CacheControl = "no-store";
+        var archive = context.RequestServices.GetService<ICameraAgentSiloArchive>();
+        if (archive is null) return Results.NotFound();
+        var downloaded = await archive.ReadAsync(request, cancellationToken).ConfigureAwait(false);
+        context.Response.RegisterForDispose(downloaded);
+        if (downloaded.Content is { } content)
+        {
+            context.Response.Headers["X-HVO-Content-Sha256"] = downloaded.Sha256;
+            return Results.Stream(content, "application/octet-stream");
+        }
+        var status = downloaded.State switch
+        {
+            "invalid-request" => StatusCodes.Status400BadRequest,
+            "disabled" or "missing" => StatusCodes.Status404NotFound,
+            "policy-expired" => StatusCodes.Status410Gone,
+            "failed" => StatusCodes.Status409Conflict,
+            _ => StatusCodes.Status503ServiceUnavailable
+        };
+        return Results.Json(new { downloaded.State }, statusCode: status);
     }
 
     private static async Task<IResult> VerifySiloHistoryAsync(HttpContext context, IConfiguration configuration,

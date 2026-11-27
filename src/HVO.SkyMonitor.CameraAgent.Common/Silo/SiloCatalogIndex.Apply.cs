@@ -111,6 +111,7 @@ internal sealed partial class SiloCatalogIndex
             SiloLiveIssueRecord live => await ApplyLiveIssueAsync(connection, transaction, live, at, cancellationToken).ConfigureAwait(false),
             SiloCopyRecord copy => await ApplyLocatorRecordAsync(connection, transaction, copy.Identity, copy.Locator, "copy", at,
                 copy.StoreClass, copy.Retrieval, copy.Custody, qualified: true, cancellationToken).ConfigureAwait(false),
+            SiloArchiveReceiptRecord => null,
             SiloRemapRecord remap => await ApplyLocatorRecordAsync(connection, transaction, remap.Identity, remap.To, "remap", at,
                 null, null, "remap", remap.PersistenceQualified, cancellationToken).ConfigureAwait(false),
             SiloReserveSurvivorRecord reserve => await ApplyReserveAsync(connection, transaction, reserve, at, cancellationToken).ConfigureAwait(false),
@@ -733,7 +734,8 @@ internal sealed partial class SiloCatalogIndex
     /// implies a role state, and absence is concluded only when no authority-unknown interval could hold a later copy.
     /// </summary>
     private async ValueTask<string> RecomputeRoleAsync(
-        SqliteConnection connection, SqliteTransaction? transaction, SiloRoleKey role, bool unknownInterval, CancellationToken cancellationToken)
+        SqliteConnection connection, SqliteTransaction? transaction, SiloRoleKey role, bool unknownInterval, CancellationToken cancellationToken,
+        SiloStoreSet? stores = null)
     {
         var journaled = await ScalarStringAsync(connection, transaction,
             "SELECT journaled FROM roles WHERE kind = $kind AND id = $id AND revision = $revision;",
@@ -748,8 +750,10 @@ internal sealed partial class SiloCatalogIndex
         {
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                probes.Add((new(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3)),
-                    NullableString(reader, 4), NullableLong(reader, 5)));
+                var locator = new SiloExactLocator(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3));
+                // An archive copy stays in custody history even when this reader has no route to it.
+                if (stores is null || stores.TryResolve(locator.StoreId, locator.Bucket, out _))
+                    probes.Add((locator, NullableString(reader, 4), NullableLong(reader, 5)));
             }
         }
         // Settled authority first, then present physical evidence. A journaled or earlier `missing` observation is only

@@ -79,6 +79,10 @@ public static class CameraAgentServiceCollectionExtensions
             services.AddHealthChecks().AddCheck<SiloStorageWorker>("silo-storage", tags: ["dependency"]);
         }
 
+        services.AddSingleton<SiloArchiveWorker>();
+        services.AddSingleton<ICameraAgentSiloArchive>(provider => provider.GetRequiredService<SiloArchiveWorker>());
+        services.AddHostedService(provider => provider.GetRequiredService<SiloArchiveWorker>());
+
         services.AddSingleton<ICameraAgentConfigurationAccessor, CameraAgentConfigurationAccessor>();
         services.AddSingleton<DeploymentLocationTelemetry>();
         services.AddSingleton<IDeploymentLocationStore, ProtectedDeploymentLocationStore>();

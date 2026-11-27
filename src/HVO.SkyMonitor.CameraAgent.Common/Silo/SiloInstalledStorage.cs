@@ -67,6 +67,8 @@ internal sealed class SiloInstalledStorage : ICameraAgentSiloVerification, IDisp
 
     public SiloPublisher Publisher { get; }
 
+    internal SiloJournalWriter ArchiveJournal => _journal;
+
     public ISiloPayloadSpool Spool { get; }
 
     internal PhysicalRoot PhysicalState => _root.Root;
