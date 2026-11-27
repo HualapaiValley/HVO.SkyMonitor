@@ -478,10 +478,54 @@ public sealed class ReleaseAcquirerTests
     }
 
     [TestMethod]
+    public void ReadLinuxProcessStat_ClassifiesPresentNotFoundAndUnreadableOrMalformed()
+    {
+        const int fixturePid = 12345;
+        const string validStat = "12345 (sleep) S 1 12345 12345 0 -1 4194304 89 0 0 0 0 0 0 0 20 0 1 0 987654321 4096 128\n";
+
+        var present = ReadLinuxProcessStat(fixturePid, path =>
+        {
+            Assert.AreEqual("/proc/12345/stat", path);
+            return validStat;
+        });
+        Assert.AreEqual(
+            new LinuxProcessStatReadResult.Present(new LinuxProcessStat(fixturePid, 'S', 987654321UL)),
+            present);
+
+        var fileNotFound = ReadLinuxProcessStat(fixturePid, static _ => throw new FileNotFoundException("gone"));
+        Assert.AreSame(LinuxProcessStatReadResult.NotFound.Instance, fileNotFound);
+
+        var directoryNotFound = ReadLinuxProcessStat(fixturePid, static _ => throw new DirectoryNotFoundException("gone"));
+        Assert.AreSame(LinuxProcessStatReadResult.NotFound.Instance, directoryNotFound);
+
+        var unauthorized = ReadLinuxProcessStat(fixturePid, static _ => throw new UnauthorizedAccessException("hidepid"));
+        var unauthorizedResult = Assert.IsInstanceOfType<LinuxProcessStatReadResult.UnreadableOrMalformed>(unauthorized);
+        StringAssert.Contains(unauthorizedResult.Diagnostic, "UnauthorizedAccessException", StringComparison.Ordinal);
+        StringAssert.Contains(unauthorizedResult.Diagnostic, "/proc/12345/stat", StringComparison.Ordinal);
+
+        var ioFailure = ReadLinuxProcessStat(fixturePid, static _ => throw new IOException("read error"));
+        var ioFailureResult = Assert.IsInstanceOfType<LinuxProcessStatReadResult.UnreadableOrMalformed>(ioFailure);
+        StringAssert.Contains(ioFailureResult.Diagnostic, "IOException", StringComparison.Ordinal);
+        StringAssert.Contains(ioFailureResult.Diagnostic, "/proc/12345/stat", StringComparison.Ordinal);
+
+        var malformed = ReadLinuxProcessStat(fixturePid, static _ => "12345 (sleep) S truncated");
+        var malformedResult = Assert.IsInstanceOfType<LinuxProcessStatReadResult.UnreadableOrMalformed>(malformed);
+        StringAssert.Contains(malformedResult.Diagnostic, "malformed", StringComparison.Ordinal);
+        StringAssert.Contains(malformedResult.Diagnostic, "/proc/12345/stat", StringComparison.Ordinal);
+
+        var mismatchedPid = ReadLinuxProcessStat(
+            fixturePid,
+            static _ => "54321 (sleep) S 1 54321 54321 0 -1 4194304 89 0 0 0 0 0 0 0 20 0 1 0 987654321 4096 128\n");
+        var mismatchedPidResult = Assert.IsInstanceOfType<LinuxProcessStatReadResult.UnreadableOrMalformed>(mismatchedPid);
+        StringAssert.Contains(mismatchedPidResult.Diagnostic, "mismatched PID 54321", StringComparison.Ordinal);
+        StringAssert.Contains(mismatchedPidResult.Diagnostic, "/proc/12345/stat", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public void ShouldKillFixtureProcess_RejectsIdentityAndCommandLineMismatches()
     {
         var expected = new FixtureProcessIdentity(12345, 987654321UL);
-        var matchingStat = new LinuxProcessStat(12345, 'S', 987654321UL);
+        var matchingStat = new LinuxProcessStatReadResult.Present(new LinuxProcessStat(12345, 'S', 987654321UL));
         const string scriptPath = "/tmp/hvo-mkfifo-hang/hang.sh";
 
         Assert.IsTrue(ShouldKillFixtureProcess(expected, matchingStat, "sleep\030\0", scriptPath));
@@ -490,29 +534,31 @@ public sealed class ReleaseAcquirerTests
         Assert.IsTrue(ShouldKillFixtureProcess(expected, matchingStat, $"/bin/sh\0{scriptPath}\0/tmp/hvo-mkfifo-hang/release.json\0", scriptPath));
 
         // Reused PID with a different start time must never be killed even if the command line happens to match.
-        var reusedPidStat = new LinuxProcessStat(12345, 'S', 999999999UL);
+        var reusedPidStat = new LinuxProcessStatReadResult.Present(new LinuxProcessStat(12345, 'S', 999999999UL));
         Assert.IsFalse(ShouldKillFixtureProcess(expected, reusedPidStat, "sleep\030\0", scriptPath));
 
-        // Different PID, unrelated command line, empty command line, zombie, or missing stat must not be signaled.
-        Assert.IsFalse(ShouldKillFixtureProcess(expected, new LinuxProcessStat(54321, 'S', 987654321UL), "sleep\030\0", scriptPath));
+        // Different PID, unrelated command line, empty command line, zombie, missing stat, or unreadable stat must not be signaled.
+        Assert.IsFalse(ShouldKillFixtureProcess(expected, new LinuxProcessStatReadResult.Present(new LinuxProcessStat(54321, 'S', 987654321UL)), "sleep\030\0", scriptPath));
         Assert.IsFalse(ShouldKillFixtureProcess(expected, matchingStat, "/usr/bin/dotnet\0test\0", scriptPath));
         Assert.IsFalse(ShouldKillFixtureProcess(expected, matchingStat, "sleep\060\0", scriptPath));
         Assert.IsFalse(ShouldKillFixtureProcess(expected, matchingStat, string.Empty, scriptPath));
         Assert.IsFalse(ShouldKillFixtureProcess(expected, matchingStat, null, scriptPath));
-        Assert.IsFalse(ShouldKillFixtureProcess(expected, new LinuxProcessStat(12345, 'Z', 987654321UL), string.Empty, scriptPath));
-        Assert.IsFalse(ShouldKillFixtureProcess(expected, null, "sleep\030\0", scriptPath));
+        Assert.IsFalse(ShouldKillFixtureProcess(expected, new LinuxProcessStatReadResult.Present(new LinuxProcessStat(12345, 'Z', 987654321UL)), string.Empty, scriptPath));
+        Assert.IsFalse(ShouldKillFixtureProcess(expected, LinuxProcessStatReadResult.NotFound.Instance, "sleep\030\0", scriptPath));
+        Assert.IsFalse(ShouldKillFixtureProcess(expected, new LinuxProcessStatReadResult.UnreadableOrMalformed("permission denied"), "sleep\030\0", scriptPath));
     }
 
     [TestMethod]
     public void IsFixtureProcessTerminated_TreatsZombieAsTerminatedOnlyWhenAllowed()
     {
         var expected = new FixtureProcessIdentity(12345, 987654321UL);
-        var liveStat = new LinuxProcessStat(12345, 'S', 987654321UL);
-        var zombieStat = new LinuxProcessStat(12345, 'Z', 987654321UL);
-        var reusedPidStat = new LinuxProcessStat(12345, 'S', 999999999UL);
+        var liveStat = new LinuxProcessStatReadResult.Present(new LinuxProcessStat(12345, 'S', 987654321UL));
+        var zombieStat = new LinuxProcessStatReadResult.Present(new LinuxProcessStat(12345, 'Z', 987654321UL));
+        var reusedPidStat = new LinuxProcessStatReadResult.Present(new LinuxProcessStat(12345, 'S', 999999999UL));
+        var unreadableStat = new LinuxProcessStatReadResult.UnreadableOrMalformed("unable to read '/proc/12345/stat'");
 
-        Assert.IsTrue(IsFixtureProcessTerminated(expected, null, allowZombieAsTerminated: false));
-        Assert.IsTrue(IsFixtureProcessTerminated(expected, null, allowZombieAsTerminated: true));
+        Assert.IsTrue(IsFixtureProcessTerminated(expected, LinuxProcessStatReadResult.NotFound.Instance, allowZombieAsTerminated: false));
+        Assert.IsTrue(IsFixtureProcessTerminated(expected, LinuxProcessStatReadResult.NotFound.Instance, allowZombieAsTerminated: true));
 
         Assert.IsTrue(IsFixtureProcessTerminated(expected, reusedPidStat, allowZombieAsTerminated: false));
         Assert.IsTrue(IsFixtureProcessTerminated(expected, reusedPidStat, allowZombieAsTerminated: true));
@@ -522,6 +568,9 @@ public sealed class ReleaseAcquirerTests
 
         Assert.IsFalse(IsFixtureProcessTerminated(expected, zombieStat, allowZombieAsTerminated: false));
         Assert.IsTrue(IsFixtureProcessTerminated(expected, zombieStat, allowZombieAsTerminated: true));
+
+        Assert.IsFalse(IsFixtureProcessTerminated(expected, unreadableStat, allowZombieAsTerminated: false));
+        Assert.IsFalse(IsFixtureProcessTerminated(expected, unreadableStat, allowZombieAsTerminated: true));
     }
 
     [TestMethod]
@@ -581,6 +630,21 @@ public sealed class ReleaseAcquirerTests
 
     private static readonly string[] ExpectedInitialReadOnlySequence = ["read-stat"];
 
+    private static readonly string[] ExpectedUnreadableInitialStatSequence =
+    [
+        "read-stat",
+        "read-stat"
+    ];
+
+    private static readonly string[] ExpectedUnreadableVerifiedStatSequence =
+    [
+        "read-stat",
+        "open-pidfd:12345",
+        "read-stat",
+        "close-pidfd:42",
+        "read-stat"
+    ];
+
     [TestMethod]
     public async Task CleanUpFifoFixtureAsync_OpensPidFdBeforeIdentityVerificationSignalsViaPidFdAndClosesInFinally()
     {
@@ -599,8 +663,8 @@ public sealed class ReleaseAcquirerTests
                 events.Add("read-stat");
                 statReadCount++;
                 return statReadCount <= 2
-                    ? new LinuxProcessStat(fixturePid, 'S', startTimeTicks)
-                    : null;
+                    ? new LinuxProcessStatReadResult.Present(new LinuxProcessStat(fixturePid, 'S', startTimeTicks))
+                    : LinuxProcessStatReadResult.NotFound.Instance;
             },
             ReadProcessCmdline: pid =>
             {
@@ -646,8 +710,8 @@ public sealed class ReleaseAcquirerTests
                 events.Add("read-stat");
                 statReadCount++;
                 return statReadCount == 1
-                    ? new LinuxProcessStat(fixturePid, 'S', startTimeTicks)
-                    : new LinuxProcessStat(fixturePid, 'S', startTimeTicks + 1);
+                    ? new LinuxProcessStatReadResult.Present(new LinuxProcessStat(fixturePid, 'S', startTimeTicks))
+                    : new LinuxProcessStatReadResult.Present(new LinuxProcessStat(fixturePid, 'S', startTimeTicks + 1));
             },
             ReadProcessCmdline: _ =>
             {
@@ -688,7 +752,7 @@ public sealed class ReleaseAcquirerTests
             ReadProcessStat: _ =>
             {
                 events.Add("read-stat");
-                return new LinuxProcessStat(fixturePid, 'S', startTimeTicks);
+                return new LinuxProcessStatReadResult.Present(new LinuxProcessStat(fixturePid, 'S', startTimeTicks));
             },
             ReadProcessCmdline: _ =>
             {
@@ -734,7 +798,7 @@ public sealed class ReleaseAcquirerTests
             ReadProcessStat: _ =>
             {
                 events.Add("read-stat");
-                return new LinuxProcessStat(fixturePid, 'S', startTimeTicks);
+                return new LinuxProcessStatReadResult.Present(new LinuxProcessStat(fixturePid, 'S', startTimeTicks));
             },
             ReadProcessCmdline: _ =>
             {
@@ -780,8 +844,8 @@ public sealed class ReleaseAcquirerTests
                 events.Add("read-stat");
                 statReadCount++;
                 return statReadCount <= 2
-                    ? new LinuxProcessStat(fixturePid, 'S', startTimeTicks)
-                    : null;
+                    ? new LinuxProcessStatReadResult.Present(new LinuxProcessStat(fixturePid, 'S', startTimeTicks))
+                    : LinuxProcessStatReadResult.NotFound.Instance;
             },
             ReadProcessCmdline: _ =>
             {
@@ -825,8 +889,8 @@ public sealed class ReleaseAcquirerTests
                 events.Add("read-stat");
                 statReadCount++;
                 return statReadCount == 1
-                    ? new LinuxProcessStat(fixturePid, 'S', startTimeTicks)
-                    : null;
+                    ? new LinuxProcessStatReadResult.Present(new LinuxProcessStat(fixturePid, 'S', startTimeTicks))
+                    : LinuxProcessStatReadResult.NotFound.Instance;
             },
             ReadProcessCmdline: _ =>
             {
@@ -874,10 +938,12 @@ public sealed class ReleaseAcquirerTests
                 statReadCount++;
                 if (statReadCount <= 2)
                 {
-                    return new LinuxProcessStat(fixturePid, 'S', startTimeTicks);
+                    return new LinuxProcessStatReadResult.Present(new LinuxProcessStat(fixturePid, 'S', startTimeTicks));
                 }
 
-                return pidReused ? new LinuxProcessStat(fixturePid, 'S', startTimeTicks + 10) : null;
+                return pidReused
+                    ? new LinuxProcessStatReadResult.Present(new LinuxProcessStat(fixturePid, 'S', startTimeTicks + 10))
+                    : LinuxProcessStatReadResult.NotFound.Instance;
             },
             ReadProcessCmdline: _ =>
             {
@@ -920,7 +986,9 @@ public sealed class ReleaseAcquirerTests
             ReadProcessStat: _ =>
             {
                 events.Add("read-stat");
-                return pidReused ? new LinuxProcessStat(fixturePid, 'S', startTimeTicks + 1) : null;
+                return pidReused
+                    ? new LinuxProcessStatReadResult.Present(new LinuxProcessStat(fixturePid, 'S', startTimeTicks + 1))
+                    : LinuxProcessStatReadResult.NotFound.Instance;
             },
             ReadProcessCmdline: _ =>
             {
@@ -961,7 +1029,7 @@ public sealed class ReleaseAcquirerTests
 
         var closedPidFd = false;
         var operations = new FifoFixtureCleanupOperations(
-            ReadProcessStat: _ => new LinuxProcessStat(fixturePid, 'S', startTimeTicks),
+            ReadProcessStat: _ => new LinuxProcessStatReadResult.Present(new LinuxProcessStat(fixturePid, 'S', startTimeTicks)),
             ReadProcessCmdline: _ => "sleep\030\0",
             OpenPidFd: _ => failOnOpen
                 ? PidFdOpenResult.Failure(PosixOperationNotPermitted)
@@ -997,7 +1065,7 @@ public sealed class ReleaseAcquirerTests
 
         var closedPidFd = -1;
         var operations = new FifoFixtureCleanupOperations(
-            ReadProcessStat: _ => new LinuxProcessStat(fixturePid, 'S', startTimeTicks),
+            ReadProcessStat: _ => new LinuxProcessStatReadResult.Present(new LinuxProcessStat(fixturePid, 'S', startTimeTicks)),
             ReadProcessCmdline: _ => "sleep\030\0",
             OpenPidFd: _ => PidFdOpenResult.Success(99),
             SendPidFdSignal: (_, _) => throw new InvalidOperationException("injected signal fault"),
@@ -1011,6 +1079,318 @@ public sealed class ReleaseAcquirerTests
         Assert.AreEqual(99, closedPidFd);
         Assert.IsFalse(Directory.Exists(root.FullName));
     }
+
+    [TestMethod]
+    [DataRow(false, "unauthorized", true)]
+    [DataRow(true, "unauthorized", true)]
+    [DataRow(false, "malformed", false)]
+    [DataRow(true, "malformed", false)]
+    [DataRow(false, "io-error", false)]
+    [DataRow(true, "io-error", true)]
+    public async Task CleanUpFifoFixtureAsync_WhenStatUnreadableOrMalformedAfterCmdlineRefusal_FailsExplicitly(
+        bool allowZombieAsTerminated,
+        string statFault,
+        bool unreadableCmdline)
+    {
+        ArgumentNullException.ThrowIfNull(statFault);
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-stat-fault-cmdline-");
+        var pidFile = Path.Combine(root.FullName, "release.json.pid");
+        const int fixturePid = 12345;
+        const ulong startTimeTicks = 987654321UL;
+        await WriteFixturePidFileAsync(pidFile, fixturePid, startTimeTicks);
+
+        var events = new List<string>();
+        var statReadCount = 0;
+        var operations = new FifoFixtureCleanupOperations(
+            ReadProcessStat: pid =>
+            {
+                events.Add("read-stat");
+                statReadCount++;
+                if (statReadCount <= 2)
+                {
+                    return new LinuxProcessStatReadResult.Present(new LinuxProcessStat(fixturePid, 'S', startTimeTicks));
+                }
+
+                return ReadSimulatedFaultyStat(pid, statFault);
+            },
+            ReadProcessCmdline: _ =>
+            {
+                events.Add("read-cmdline");
+                return unreadableCmdline ? null : "/usr/bin/dotnet\0test\0";
+            },
+            OpenPidFd: pid =>
+            {
+                events.Add($"open-pidfd:{pid}");
+                return PidFdOpenResult.Success(42);
+            },
+            SendPidFdSignal: (pidfd, signal) =>
+            {
+                events.Add($"send-signal:{pidfd}:{signal}");
+                return PidFdSignalResult.Success();
+            },
+            ClosePidFd: pidfd => events.Add($"close-pidfd:{pidfd}"),
+            TerminationTimeout: TimeSpan.Zero,
+            PollInterval: TimeSpan.Zero);
+
+        var failure = await Assert.ThrowsExactlyAsync<AssertFailedException>(
+            () => CleanUpFifoFixtureAsync(root, pidFile, expectedScriptPath: null, allowZombieAsTerminated, operations));
+
+        StringAssert.Contains(
+            failure.Message,
+            unreadableCmdline ? "cmdline could not be read" : "cmdline did not match",
+            StringComparison.Ordinal);
+        StringAssert.Contains(failure.Message, ExpectedStatFaultDiagnosticToken(statFault), StringComparison.Ordinal);
+        CollectionAssert.AreEqual(ExpectedRefusedSignalSequence, events);
+        Assert.IsFalse(Directory.Exists(root.FullName));
+    }
+
+    [TestMethod]
+    [DataRow(false, "unauthorized", false)]
+    [DataRow(true, "unauthorized", false)]
+    [DataRow(false, "malformed", false)]
+    [DataRow(true, "malformed", false)]
+    [DataRow(false, "unauthorized", true)]
+    [DataRow(true, "malformed", true)]
+    public async Task CleanUpFifoFixtureAsync_WhenStatUnreadableOrMalformedAfterFailedSignal_FailsExplicitly(
+        bool allowZombieAsTerminated,
+        string statFault,
+        bool failOnOpen)
+    {
+        ArgumentNullException.ThrowIfNull(statFault);
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-stat-fault-signal-");
+        var pidFile = Path.Combine(root.FullName, "release.json.pid");
+        const int fixturePid = 12345;
+        const ulong startTimeTicks = 987654321UL;
+        await WriteFixturePidFileAsync(pidFile, fixturePid, startTimeTicks);
+
+        var events = new List<string>();
+        var statReadCount = 0;
+        var presentReadLimit = failOnOpen ? 1 : 2;
+        var operations = new FifoFixtureCleanupOperations(
+            ReadProcessStat: pid =>
+            {
+                events.Add("read-stat");
+                statReadCount++;
+                if (statReadCount <= presentReadLimit)
+                {
+                    return new LinuxProcessStatReadResult.Present(new LinuxProcessStat(fixturePid, 'S', startTimeTicks));
+                }
+
+                return ReadSimulatedFaultyStat(pid, statFault);
+            },
+            ReadProcessCmdline: _ =>
+            {
+                events.Add("read-cmdline");
+                return "sleep\030\0";
+            },
+            OpenPidFd: pid =>
+            {
+                events.Add($"open-pidfd:{pid}");
+                return failOnOpen
+                    ? PidFdOpenResult.Failure(PosixOperationNotPermitted)
+                    : PidFdOpenResult.Success(42);
+            },
+            SendPidFdSignal: (pidfd, signal) =>
+            {
+                events.Add($"send-signal:{pidfd}:{signal}");
+                return PidFdSignalResult.Failure(PosixOperationNotPermitted);
+            },
+            ClosePidFd: pidfd => events.Add($"close-pidfd:{pidfd}"),
+            TerminationTimeout: TimeSpan.Zero,
+            PollInterval: TimeSpan.Zero);
+
+        var failure = await Assert.ThrowsExactlyAsync<AssertFailedException>(
+            () => CleanUpFifoFixtureAsync(root, pidFile, expectedScriptPath: null, allowZombieAsTerminated, operations));
+
+        StringAssert.Contains(
+            failure.Message,
+            failOnOpen ? "pidfd_open failed with errno 1" : "pidfd_send_signal(SIGKILL) failed with errno 1",
+            StringComparison.Ordinal);
+        StringAssert.Contains(failure.Message, ExpectedStatFaultDiagnosticToken(statFault), StringComparison.Ordinal);
+        CollectionAssert.AreEqual(
+            failOnOpen ? ExpectedOpenEsrchSequence : ExpectedSignalSequence,
+            events);
+        Assert.IsFalse(Directory.Exists(root.FullName));
+    }
+
+    [TestMethod]
+    [DataRow(false, "unauthorized")]
+    [DataRow(true, "unauthorized")]
+    [DataRow(false, "malformed")]
+    [DataRow(true, "malformed")]
+    public async Task CleanUpFifoFixtureAsync_WhenStatInitiallyUnreadableOrMalformed_NeverSignalsAndFailsExplicitly(
+        bool allowZombieAsTerminated,
+        string statFault)
+    {
+        ArgumentNullException.ThrowIfNull(statFault);
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-stat-fault-initial-");
+        var pidFile = Path.Combine(root.FullName, "release.json.pid");
+        const int fixturePid = 12345;
+        const ulong startTimeTicks = 987654321UL;
+        await WriteFixturePidFileAsync(pidFile, fixturePid, startTimeTicks);
+
+        var events = new List<string>();
+        var operations = new FifoFixtureCleanupOperations(
+            ReadProcessStat: pid =>
+            {
+                events.Add("read-stat");
+                return ReadSimulatedFaultyStat(pid, statFault);
+            },
+            ReadProcessCmdline: _ =>
+            {
+                events.Add("read-cmdline");
+                return "sleep\030\0";
+            },
+            OpenPidFd: pid =>
+            {
+                events.Add($"open-pidfd:{pid}");
+                return PidFdOpenResult.Success(42);
+            },
+            SendPidFdSignal: (pidfd, signal) =>
+            {
+                events.Add($"send-signal:{pidfd}:{signal}");
+                return PidFdSignalResult.Success();
+            },
+            ClosePidFd: pidfd => events.Add($"close-pidfd:{pidfd}"),
+            TerminationTimeout: TimeSpan.Zero,
+            PollInterval: TimeSpan.Zero);
+
+        var failure = await Assert.ThrowsExactlyAsync<AssertFailedException>(
+            () => CleanUpFifoFixtureAsync(root, pidFile, expectedScriptPath: null, allowZombieAsTerminated, operations));
+
+        StringAssert.Contains(failure.Message, ExpectedStatFaultDiagnosticToken(statFault), StringComparison.Ordinal);
+        CollectionAssert.AreEqual(ExpectedUnreadableInitialStatSequence, events);
+        Assert.IsFalse(Directory.Exists(root.FullName));
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task CleanUpFifoFixtureAsync_WhenStatUnreadableOrMalformedAfterOpeningPidFd_ClosesPidFdWithoutSignalingAndFails(
+        bool allowZombieAsTerminated)
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-stat-fault-verified-");
+        var pidFile = Path.Combine(root.FullName, "release.json.pid");
+        const int fixturePid = 12345;
+        const ulong startTimeTicks = 987654321UL;
+        await WriteFixturePidFileAsync(pidFile, fixturePid, startTimeTicks);
+
+        var events = new List<string>();
+        var statReadCount = 0;
+        var operations = new FifoFixtureCleanupOperations(
+            ReadProcessStat: pid =>
+            {
+                events.Add("read-stat");
+                statReadCount++;
+                return statReadCount == 1
+                    ? new LinuxProcessStatReadResult.Present(new LinuxProcessStat(fixturePid, 'S', startTimeTicks))
+                    : ReadSimulatedFaultyStat(pid, "unauthorized");
+            },
+            ReadProcessCmdline: _ =>
+            {
+                events.Add("read-cmdline");
+                return "sleep\030\0";
+            },
+            OpenPidFd: pid =>
+            {
+                events.Add($"open-pidfd:{pid}");
+                return PidFdOpenResult.Success(42);
+            },
+            SendPidFdSignal: (pidfd, signal) =>
+            {
+                events.Add($"send-signal:{pidfd}:{signal}");
+                return PidFdSignalResult.Success();
+            },
+            ClosePidFd: pidfd => events.Add($"close-pidfd:{pidfd}"),
+            TerminationTimeout: TimeSpan.Zero,
+            PollInterval: TimeSpan.Zero);
+
+        var failure = await Assert.ThrowsExactlyAsync<AssertFailedException>(
+            () => CleanUpFifoFixtureAsync(root, pidFile, expectedScriptPath: null, allowZombieAsTerminated, operations));
+
+        StringAssert.Contains(failure.Message, "UnauthorizedAccessException", StringComparison.Ordinal);
+        CollectionAssert.AreEqual(ExpectedUnreadableVerifiedStatSequence, events);
+        Assert.IsFalse(Directory.Exists(root.FullName));
+    }
+
+    [TestMethod]
+    [DataRow(false, true, true)]
+    [DataRow(true, true, false)]
+    [DataRow(false, false, true)]
+    [DataRow(true, false, false)]
+    public async Task CleanUpFifoFixtureAsync_WhenStatNotFoundAfterCmdlineRefusalOrFailedSignal_SucceedsCleanly(
+        bool allowZombieAsTerminated,
+        bool refuseByCmdline,
+        bool useFileNotFound)
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-stat-notfound-");
+        var pidFile = Path.Combine(root.FullName, "release.json.pid");
+        const int fixturePid = 12345;
+        const ulong startTimeTicks = 987654321UL;
+        await WriteFixturePidFileAsync(pidFile, fixturePid, startTimeTicks);
+
+        var events = new List<string>();
+        var statReadCount = 0;
+        var operations = new FifoFixtureCleanupOperations(
+            ReadProcessStat: pid =>
+            {
+                events.Add("read-stat");
+                statReadCount++;
+                if (statReadCount <= 2)
+                {
+                    return new LinuxProcessStatReadResult.Present(new LinuxProcessStat(fixturePid, 'S', startTimeTicks));
+                }
+
+                return ReadLinuxProcessStat(
+                    pid,
+                    _ => throw (useFileNotFound
+                        ? new FileNotFoundException("process exited")
+                        : new DirectoryNotFoundException("proc dir gone")));
+            },
+            ReadProcessCmdline: _ =>
+            {
+                events.Add("read-cmdline");
+                return refuseByCmdline ? "/usr/bin/dotnet\0test\0" : "sleep\030\0";
+            },
+            OpenPidFd: pid =>
+            {
+                events.Add($"open-pidfd:{pid}");
+                return PidFdOpenResult.Success(42);
+            },
+            SendPidFdSignal: (pidfd, signal) =>
+            {
+                events.Add($"send-signal:{pidfd}:{signal}");
+                return PidFdSignalResult.Failure(PosixOperationNotPermitted);
+            },
+            ClosePidFd: pidfd => events.Add($"close-pidfd:{pidfd}"),
+            TerminationTimeout: TimeSpan.Zero,
+            PollInterval: TimeSpan.Zero);
+
+        await CleanUpFifoFixtureAsync(root, pidFile, expectedScriptPath: null, allowZombieAsTerminated, operations);
+
+        CollectionAssert.AreEqual(
+            refuseByCmdline ? ExpectedRefusedSignalSequence : ExpectedSignalSequence,
+            events);
+        Assert.IsFalse(Directory.Exists(root.FullName));
+    }
+
+    private static LinuxProcessStatReadResult ReadSimulatedFaultyStat(int pid, string statFault)
+        => statFault switch
+        {
+            "unauthorized" => ReadLinuxProcessStat(pid, static _ => throw new UnauthorizedAccessException("hidepid")),
+            "io-error" => ReadLinuxProcessStat(pid, static _ => throw new IOException("simulated proc read error")),
+            "malformed" => ReadLinuxProcessStat(pid, static _ => "12345 (sleep) S truncated"),
+            _ => throw new ArgumentOutOfRangeException(nameof(statFault), statFault, null)
+        };
+
+    private static string ExpectedStatFaultDiagnosticToken(string statFault)
+        => statFault switch
+        {
+            "unauthorized" => "UnauthorizedAccessException",
+            "io-error" => "IOException",
+            "malformed" => "malformed",
+            _ => throw new ArgumentOutOfRangeException(nameof(statFault), statFault, null)
+        };
 
     [TestMethod]
     [DataRow(1, true)]
@@ -1222,6 +1602,22 @@ public sealed class ReleaseAcquirerTests
 
     private readonly record struct LinuxProcessStat(int Pid, char State, ulong StartTimeTicks);
 
+    private abstract record LinuxProcessStatReadResult
+    {
+        private LinuxProcessStatReadResult()
+        {
+        }
+
+        public sealed record Present(LinuxProcessStat Stat) : LinuxProcessStatReadResult;
+
+        public sealed record NotFound : LinuxProcessStatReadResult
+        {
+            public static NotFound Instance { get; } = new();
+        }
+
+        public sealed record UnreadableOrMalformed(string Diagnostic) : LinuxProcessStatReadResult;
+    }
+
     private readonly record struct FixtureProcessIdentity(int Pid, ulong StartTimeTicks);
 
     private readonly record struct PidFdOpenResult(int FileDescriptor, int ErrorCode)
@@ -1242,7 +1638,7 @@ public sealed class ReleaseAcquirerTests
     }
 
     private sealed record FifoFixtureCleanupOperations(
-        Func<int, LinuxProcessStat?> ReadProcessStat,
+        Func<int, LinuxProcessStatReadResult> ReadProcessStat,
         Func<int, string?> ReadProcessCmdline,
         Func<int, PidFdOpenResult> OpenPidFd,
         Func<int, int, PidFdSignalResult> SendPidFdSignal,
@@ -1251,7 +1647,7 @@ public sealed class ReleaseAcquirerTests
         TimeSpan PollInterval)
     {
         public static FifoFixtureCleanupOperations DefaultLinux { get; } = new(
-            TryReadLinuxProcessStat,
+            ReadLinuxProcessStat,
             TryReadLinuxProcessCmdline,
             TryOpenLinuxPidFd,
             TrySendLinuxPidFdSignal,
@@ -1452,11 +1848,13 @@ public sealed class ReleaseAcquirerTests
 
     private static bool ShouldKillFixtureProcess(
         FixtureProcessIdentity expected,
-        LinuxProcessStat? currentStat,
+        LinuxProcessStatReadResult currentStat,
         string? currentCmdline,
         string? expectedScriptPath)
     {
-        if (currentStat is null || !IsSameFixtureProcess(expected, currentStat.Value) || currentStat.Value.State == 'Z')
+        if (currentStat is not LinuxProcessStatReadResult.Present(var stat)
+            || !IsSameFixtureProcess(expected, stat)
+            || stat.State == 'Z')
         {
             return false;
         }
@@ -1466,39 +1864,57 @@ public sealed class ReleaseAcquirerTests
 
     private static bool IsFixtureProcessTerminated(
         FixtureProcessIdentity expected,
-        LinuxProcessStat? currentStat,
+        LinuxProcessStatReadResult currentStat,
         bool allowZombieAsTerminated)
-    {
-        if (currentStat is null || !IsSameFixtureProcess(expected, currentStat.Value))
+        => currentStat switch
         {
-            return true;
-        }
+            LinuxProcessStatReadResult.NotFound => true,
+            LinuxProcessStatReadResult.Present(var stat) when !IsSameFixtureProcess(expected, stat) => true,
+            LinuxProcessStatReadResult.Present(var stat) => allowZombieAsTerminated && stat.State == 'Z',
+            LinuxProcessStatReadResult.UnreadableOrMalformed => false,
+            _ => false
+        };
 
-        return allowZombieAsTerminated && currentStat.Value.State == 'Z';
-    }
+    private static LinuxProcessStatReadResult ReadLinuxProcessStat(int pid)
+        => ReadLinuxProcessStat(pid, File.ReadAllText);
 
-    private static LinuxProcessStat? TryReadLinuxProcessStat(int pid)
+    private static LinuxProcessStatReadResult ReadLinuxProcessStat(int pid, Func<string, string> readAllText)
     {
+        var statPath = $"/proc/{pid}/stat";
         try
         {
-            var content = File.ReadAllText($"/proc/{pid}/stat");
-            return TryParseLinuxProcessStat(content, out var stat) ? stat : null;
+            var content = readAllText(statPath);
+            if (!TryParseLinuxProcessStat(content, out var stat))
+            {
+                return new LinuxProcessStatReadResult.UnreadableOrMalformed(
+                    $"malformed stat content in '{statPath}'");
+            }
+
+            if (stat.Pid != pid)
+            {
+                return new LinuxProcessStatReadResult.UnreadableOrMalformed(
+                    $"mismatched PID {stat.Pid} in '{statPath}'");
+            }
+
+            return new LinuxProcessStatReadResult.Present(stat);
         }
         catch (FileNotFoundException)
         {
-            return null;
+            return LinuxProcessStatReadResult.NotFound.Instance;
         }
         catch (DirectoryNotFoundException)
         {
-            return null;
+            return LinuxProcessStatReadResult.NotFound.Instance;
         }
-        catch (IOException)
+        catch (UnauthorizedAccessException exception)
         {
-            return null;
+            return new LinuxProcessStatReadResult.UnreadableOrMalformed(
+                $"unable to read '{statPath}' ({exception.GetType().Name}: {exception.Message})");
         }
-        catch (UnauthorizedAccessException)
+        catch (IOException exception)
         {
-            return null;
+            return new LinuxProcessStatReadResult.UnreadableOrMalformed(
+                $"unable to read '{statPath}' ({exception.GetType().Name}: {exception.Message})");
         }
     }
 
@@ -1623,7 +2039,7 @@ public sealed class ReleaseAcquirerTests
             }
 
             string? signalFailureReason = null;
-            if (currentStat!.Value.State != 'Z')
+            if (currentStat is LinuxProcessStatReadResult.Present { Stat.State: not 'Z' })
             {
                 // Open the process-instance pidfd BEFORE verifying /proc/{pid}/stat and /proc/{pid}/cmdline so that
                 // signaling cannot race with PID reuse: if the verified (pid, starttime) process still exists while
@@ -1635,8 +2051,9 @@ public sealed class ReleaseAcquirerTests
                     try
                     {
                         var verifiedStat = operations.ReadProcessStat(identity.Value.Pid);
-                        var verifiedCmdline = verifiedStat is { State: not 'Z' }
-                            && IsSameFixtureProcess(identity.Value, verifiedStat.Value)
+                        var verifiedCmdline = verifiedStat is LinuxProcessStatReadResult.Present(var presentVerifiedStat)
+                            && presentVerifiedStat.State != 'Z'
+                            && IsSameFixtureProcess(identity.Value, presentVerifiedStat)
                             ? operations.ReadProcessCmdline(identity.Value.Pid)
                             : null;
                         if (ShouldKillFixtureProcess(identity.Value, verifiedStat, verifiedCmdline, expectedScriptPath))
@@ -1651,7 +2068,11 @@ public sealed class ReleaseAcquirerTests
                         {
                             return;
                         }
-                        else if (verifiedStat is { State: not 'Z' })
+                        else if (verifiedStat is LinuxProcessStatReadResult.UnreadableOrMalformed(var verifiedStatDiagnostic))
+                        {
+                            signalFailureReason = $"refused to signal because /proc stat was unreadable or malformed: {verifiedStatDiagnostic}";
+                        }
+                        else if (verifiedStat is LinuxProcessStatReadResult.Present { Stat.State: not 'Z' })
                         {
                             signalFailureReason = verifiedCmdline is null
                                 ? "refused to signal because /proc cmdline could not be read"
@@ -1668,11 +2089,15 @@ public sealed class ReleaseAcquirerTests
                     signalFailureReason = $"pidfd_open failed with errno {openResult.ErrorCode}";
                 }
             }
+            else if (currentStat is LinuxProcessStatReadResult.UnreadableOrMalformed(var initialStatDiagnostic))
+            {
+                signalFailureReason = $"refused to signal because /proc stat was unreadable or malformed: {initialStatDiagnostic}";
+            }
 
             // A zombie still has a /proc entry until its parent reaps it; reparented pipe-holders may remain 'Z'
             // on minimal containers whose PID 1 does not reap adopted orphans.
             // Even when signaling was refused or failed, require positive evidence that the fixture process
-            // terminated (disappeared, PID reused by a different start time, or 'Z' when allowed) before returning.
+            // terminated (NotFound, PID reused by a different start time, or 'Z' when allowed) before returning.
             var stopwatch = Stopwatch.StartNew();
             var finalStat = operations.ReadProcessStat(identity.Value.Pid);
             while (!IsFixtureProcessTerminated(identity.Value, finalStat, allowZombieAsTerminated)
@@ -1688,13 +2113,26 @@ public sealed class ReleaseAcquirerTests
 
             if (!IsFixtureProcessTerminated(identity.Value, finalStat, allowZombieAsTerminated))
             {
-                var detail = signalFailureReason is null
+                var detailParts = new List<string>(2);
+                if (signalFailureReason is not null)
+                {
+                    detailParts.Add(signalFailureReason);
+                }
+
+                if (finalStat is LinuxProcessStatReadResult.UnreadableOrMalformed(var finalStatDiagnostic))
+                {
+                    detailParts.Add($"termination could not be verified because /proc stat was unreadable or malformed: {finalStatDiagnostic}");
+                }
+
+                var detail = detailParts.Count == 0
                     ? string.Empty
-                    : $" ({signalFailureReason})";
-                Assert.Fail(
-                    allowZombieAsTerminated
-                        ? $"FIFO fixture PID {identity.Value.Pid} (start time {identity.Value.StartTimeTicks}) did not terminate during cleanup{detail}."
-                        : $"FIFO fixture PID {identity.Value.Pid} (start time {identity.Value.StartTimeTicks}) was not reaped during cleanup{detail}.");
+                    : $" ({string.Join("; ", detailParts)})";
+                var failureLead = finalStat is LinuxProcessStatReadResult.UnreadableOrMalformed
+                    ? $"FIFO fixture PID {identity.Value.Pid} (start time {identity.Value.StartTimeTicks}) termination could not be confirmed during cleanup"
+                    : allowZombieAsTerminated
+                        ? $"FIFO fixture PID {identity.Value.Pid} (start time {identity.Value.StartTimeTicks}) did not terminate during cleanup"
+                        : $"FIFO fixture PID {identity.Value.Pid} (start time {identity.Value.StartTimeTicks}) was not reaped during cleanup";
+                Assert.Fail($"{failureLead}{detail}.");
             }
         }
         finally
