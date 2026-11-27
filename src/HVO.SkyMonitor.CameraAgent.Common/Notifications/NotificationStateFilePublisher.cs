@@ -317,6 +317,8 @@ public static class NotificationStateFilePublisher
 
         var missingDirectories = CollectMissingDirectoriesAndValidateAncestors(fullDirectory);
         var newlyCreatedDirectories = new HashSet<string>(DirectoryPathComparer);
+        var chainBottomUp = GetSelfAndAncestorsBottomUp(fullDirectory);
+
         for (var i = 0; i < missingDirectories.Count; i++)
         {
             var missingDirectory = missingDirectories[i];
@@ -326,39 +328,101 @@ public static class NotificationStateFilePublisher
             // observing the newly created directory on disk still syncs its parent before acknowledging.
             VerifiedParentSyncedDirectories.TryRemove(missingDirectory, out _);
             PendingParentSyncDirectories[missingDirectory] = allowSymlinkedParent;
+        }
+
+        if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+        {
+            // Pin the accepted pre-existing parent directory once and walk/create/harden every protected descendant
+            // component strictly relative to its pinned parent descriptor (mkdirat + openat(O_NOFOLLOW|O_DIRECTORY)
+            // + fstat/statx + fchmod(0700)) so an ancestor replacement race can never direct fchmod outside the tree.
+            var topProtectedIndex = 0;
+            for (var i = chainBottomUp.Count - 1; i >= 0; i--)
+            {
+                if (i == 0 || PendingParentSyncDirectories.ContainsKey(chainBottomUp[i]))
+                {
+                    topProtectedIndex = i;
+                    break;
+                }
+            }
+
+            var topProtectedPath = chainBottomUp[topProtectedIndex];
+            var anchorParent = Path.GetDirectoryName(topProtectedPath);
             try
             {
-                if (OperatingSystem.IsWindows())
+                if (!string.IsNullOrEmpty(anchorParent))
                 {
-                    Directory.CreateDirectory(missingDirectory);
+                    var protectedComponents = new List<string>(topProtectedIndex + 1);
+                    for (var i = topProtectedIndex; i >= 0; i--)
+                    {
+                        var component = Path.GetFileName(chainBottomUp[i]);
+                        if (!string.IsNullOrEmpty(component))
+                        {
+                            protectedComponents.Add(component);
+                        }
+                    }
+
+                    var allowSymlinkedAnchor = TryDetectLinkTarget(anchorParent, out _);
+                    DurableSync.EnsureAndHardenDirectoryChain(
+                        anchorParent,
+                        protectedComponents,
+                        RestrictedDirectoryMode,
+                        createMissing: missingDirectories.Count > 0,
+                        allowSymlinkedAnchor: allowSymlinkedAnchor);
                 }
                 else
                 {
-                    Directory.CreateDirectory(missingDirectory, RestrictedDirectoryMode);
+                    RestrictDirectoryModeNoFollow(fullDirectory);
                 }
+            }
+            catch (FileSystemFaultException ex)
+            {
+                CleanupNonExistentPendingDirectories(missingDirectories);
+                throw TranslateFault(ex);
             }
             catch
             {
-                if (!Directory.Exists(missingDirectory) && !File.Exists(missingDirectory))
-                {
-                    PendingParentSyncDirectories.TryRemove(missingDirectory, out _);
-                }
+                CleanupNonExistentPendingDirectories(missingDirectories);
                 throw;
             }
 
-            newlyCreatedDirectories.Add(missingDirectory);
-            RestrictDirectoryModeNoFollow(missingDirectory);
-        }
-
-        var chainBottomUp = GetSelfAndAncestorsBottomUp(fullDirectory);
-        // Re-enforce 0700 + no-symlink via descriptor-based fchmod on any pending newly-created directory in the chain
-        // (for example if an earlier attempt was interrupted after mkdir before fchmod) as well as the leaf state directory.
-        for (var i = chainBottomUp.Count - 1; i >= 0; i--)
-        {
-            var candidate = chainBottomUp[i];
-            if (i == 0 || PendingParentSyncDirectories.ContainsKey(candidate))
+            foreach (var missingDirectory in missingDirectories)
             {
-                RestrictDirectoryModeNoFollow(candidate);
+                newlyCreatedDirectories.Add(missingDirectory);
+            }
+        }
+        else
+        {
+            for (var i = 0; i < missingDirectories.Count; i++)
+            {
+                var missingDirectory = missingDirectories[i];
+                try
+                {
+                    if (OperatingSystem.IsWindows())
+                    {
+                        Directory.CreateDirectory(missingDirectory);
+                    }
+                    else
+                    {
+                        Directory.CreateDirectory(missingDirectory, RestrictedDirectoryMode);
+                    }
+                }
+                catch
+                {
+                    CleanupNonExistentPendingDirectories(missingDirectories);
+                    throw;
+                }
+
+                newlyCreatedDirectories.Add(missingDirectory);
+                RestrictDirectoryModeNoFollow(missingDirectory);
+            }
+
+            for (var i = chainBottomUp.Count - 1; i >= 0; i--)
+            {
+                var candidate = chainBottomUp[i];
+                if (i == 0 || PendingParentSyncDirectories.ContainsKey(candidate))
+                {
+                    RestrictDirectoryModeNoFollow(candidate);
+                }
             }
         }
 
@@ -375,8 +439,9 @@ public static class NotificationStateFilePublisher
         // EVERY directory whose parent entry has not yet been durably verified/synced in this process. Walking the full
         // unverified ancestor chain on first publish per process guarantees cross-process crash recovery when a prior
         // process crashed after creating nested directories before syncing their parents; PermissionDenied (EACCES/EPERM)
-        // is treated as best-effort strictly on pre-existing ancestors above newly created directories.
-        SyncDirectory(
+        // is treated as best-effort strictly on pre-existing ancestors above newly created directories, and skipped
+        // ancestors are NEVER marked verified so a later publish retries once permissions are restored.
+        _ = SyncDirectory(
             fullDirectory,
             allowSymlinkedAncestor: false,
             allowBestEffortPermissionDenied: false,
@@ -393,6 +458,7 @@ public static class NotificationStateFilePublisher
             }
 
             var parent = Path.GetDirectoryName(current);
+            var parentSynced = true;
             if (!string.IsNullOrEmpty(parent))
             {
                 var parentIsNewlyCreatedOrPending =
@@ -400,16 +466,32 @@ public static class NotificationStateFilePublisher
                     PendingParentSyncDirectories.ContainsKey(parent);
                 var allowSymlinkedParent = isPending ? pendingAllowSymlinkedParent : !parentIsNewlyCreatedOrPending;
                 var allowBestEffortPermissionDenied = !parentIsNewlyCreatedOrPending;
-                SyncDirectory(
+                var outcome = SyncDirectory(
                     parent,
                     allowSymlinkedAncestor: allowSymlinkedParent,
                     allowBestEffortPermissionDenied: allowBestEffortPermissionDenied,
                     directorySyncAction,
                     onDirectorySynced);
+                parentSynced = outcome == DirectorySyncOutcome.Synced;
             }
 
-            MarkDirectoryParentVerifiedSynced(current);
-            PendingParentSyncDirectories.TryRemove(current, out _);
+            if (parentSynced)
+            {
+                MarkDirectoryParentVerifiedSynced(current);
+                PendingParentSyncDirectories.TryRemove(current, out _);
+            }
+        }
+    }
+
+    private static void CleanupNonExistentPendingDirectories(List<string> missingDirectories)
+    {
+        for (var i = 0; i < missingDirectories.Count; i++)
+        {
+            var candidate = missingDirectories[i];
+            if (!Directory.Exists(candidate) && !File.Exists(candidate))
+            {
+                PendingParentSyncDirectories.TryRemove(candidate, out _);
+            }
         }
     }
 
@@ -597,7 +679,13 @@ public static class NotificationStateFilePublisher
         return missingDirectories;
     }
 
-    private static void SyncDirectory(
+    private enum DirectorySyncOutcome
+    {
+        Synced = 0,
+        SkippedPermissionDenied = 1
+    }
+
+    private static DirectorySyncOutcome SyncDirectory(
         string directoryPath,
         bool allowSymlinkedAncestor,
         bool allowBestEffortPermissionDenied,
@@ -619,7 +707,7 @@ public static class NotificationStateFilePublisher
                 if (allowBestEffortPermissionDenied &&
                     string.Equals(linkError, nameof(UnauthorizedAccessException), StringComparison.Ordinal))
                 {
-                    return;
+                    return DirectorySyncOutcome.SkippedPermissionDenied;
                 }
                 ThrowAccessError(linkError, "Unable to verify ancestor directory before synchronization.");
             }
@@ -639,9 +727,9 @@ public static class NotificationStateFilePublisher
         catch (FileSystemFaultException ex) when (allowBestEffortPermissionDenied && ex.Kind == FileSystemFaultKind.PermissionDenied)
         {
             // Pre-existing non-readable ancestor directories (e.g. 0100/0300 traverse-only parents) cannot be opened
-            // O_RDONLY for fsync; treat strictly as best-effort without ignoring failures on newly created directories
-            // or the state directory itself.
-            return;
+            // O_RDONLY for fsync; treat strictly as best-effort without marking the ancestor verified so a later
+            // publish retries if permissions are restored.
+            return DirectorySyncOutcome.SkippedPermissionDenied;
         }
         catch (FileSystemFaultException ex)
         {
@@ -649,6 +737,7 @@ public static class NotificationStateFilePublisher
         }
 
         onDirectorySynced?.Invoke(directoryPath);
+        return DirectorySyncOutcome.Synced;
     }
 
     [DoesNotReturn]

@@ -301,4 +301,188 @@ public sealed class DurableSyncTests
 
         Assert.AreEqual(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(path));
     }
+
+    [TestMethod]
+    public void EnsureAndHardenDirectoryChain_WalksPinnedParentComponentsHardensEachAndRejectsSymlinks()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Inconclusive("Unix file modes and openat/fchmod are not applicable on Windows.");
+            return;
+        }
+
+        const UnixFileMode permissive =
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+            UnixFileMode.GroupRead | UnixFileMode.GroupExecute |
+            UnixFileMode.OtherRead | UnixFileMode.OtherExecute;
+        const UnixFileMode restricted =
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+
+        // 1. Create and harden multi-level hierarchy relative to a pinned parent descriptor without touching anchor mode.
+        var anchor = Path.Combine(_temp, "anchor-create");
+        Directory.CreateDirectory(anchor);
+        File.SetUnixFileMode(anchor, permissive);
+
+        DurableSync.EnsureAndHardenDirectoryChain(
+            anchor,
+            ["level1", "level2", "leaf"],
+            restricted,
+            createMissing: true,
+            allowSymlinkedAnchor: false);
+
+        Assert.AreEqual(permissive, File.GetUnixFileMode(anchor),
+            "Pinning the pre-existing anchor parent must not alter the anchor's own mode.");
+        Assert.AreEqual(restricted, File.GetUnixFileMode(Path.Combine(anchor, "level1")));
+        Assert.AreEqual(restricted, File.GetUnixFileMode(Path.Combine(anchor, "level1", "level2")));
+        Assert.AreEqual(restricted, File.GetUnixFileMode(Path.Combine(anchor, "level1", "level2", "leaf")));
+
+        // 2. Harden existing permissive hierarchy component-by-component with createMissing=false.
+        var existingAnchor = Path.Combine(_temp, "anchor-existing");
+        var existingLeaf = Path.Combine(existingAnchor, "a", "b", "c");
+        Directory.CreateDirectory(existingLeaf);
+        File.SetUnixFileMode(existingAnchor, permissive);
+        File.SetUnixFileMode(Path.Combine(existingAnchor, "a"), permissive);
+        File.SetUnixFileMode(Path.Combine(existingAnchor, "a", "b"), permissive);
+        File.SetUnixFileMode(existingLeaf, permissive);
+
+        DurableSync.EnsureAndHardenDirectoryChain(
+            existingAnchor,
+            ["a", "b", "c"],
+            restricted,
+            createMissing: false,
+            allowSymlinkedAnchor: false);
+
+        Assert.AreEqual(permissive, File.GetUnixFileMode(existingAnchor));
+        Assert.AreEqual(restricted, File.GetUnixFileMode(Path.Combine(existingAnchor, "a")));
+        Assert.AreEqual(restricted, File.GetUnixFileMode(Path.Combine(existingAnchor, "a", "b")));
+        Assert.AreEqual(restricted, File.GetUnixFileMode(existingLeaf));
+
+        // 3. Reject symlink at an intermediate component without touching the symlink target's mode.
+        var midTarget = Path.Combine(_temp, "mid-symlink-target");
+        Directory.CreateDirectory(midTarget);
+        Directory.CreateDirectory(Path.Combine(midTarget, "leaf"));
+        File.SetUnixFileMode(midTarget, permissive);
+        File.SetUnixFileMode(Path.Combine(midTarget, "leaf"), permissive);
+
+        var midParent = Path.Combine(_temp, "mid-parent");
+        Directory.CreateDirectory(midParent);
+        Directory.CreateSymbolicLink(Path.Combine(midParent, "mid-link"), midTarget);
+
+        var midFault = Assert.ThrowsExactly<FileSystemFaultException>(() =>
+            DurableSync.EnsureAndHardenDirectoryChain(
+                midParent,
+                ["mid-link", "leaf"],
+                restricted,
+                createMissing: true,
+                allowSymlinkedAnchor: false));
+        Assert.AreEqual(FileSystemFaultKind.Containment, midFault.Kind);
+        Assert.AreEqual(permissive, File.GetUnixFileMode(midTarget));
+        Assert.AreEqual(permissive, File.GetUnixFileMode(Path.Combine(midTarget, "leaf")));
+
+        // 4. Reject symlink at the leaf component without touching the symlink target's mode.
+        var leafTarget = Path.Combine(_temp, "leaf-symlink-target");
+        Directory.CreateDirectory(leafTarget);
+        File.SetUnixFileMode(leafTarget, permissive);
+
+        var leafParent = Path.Combine(_temp, "leaf-parent");
+        Directory.CreateDirectory(Path.Combine(leafParent, "sub"));
+        Directory.CreateSymbolicLink(Path.Combine(leafParent, "sub", "leaf-link"), leafTarget);
+
+        var leafFault = Assert.ThrowsExactly<FileSystemFaultException>(() =>
+            DurableSync.EnsureAndHardenDirectoryChain(
+                leafParent,
+                ["sub", "leaf-link"],
+                restricted,
+                createMissing: false,
+                allowSymlinkedAnchor: false));
+        Assert.AreEqual(FileSystemFaultKind.Containment, leafFault.Kind);
+        Assert.AreEqual(permissive, File.GetUnixFileMode(leafTarget));
+
+        // 5. Reject regular file at a component.
+        var fileBlocker = Path.Combine(leafParent, "sub", "regular-file");
+        File.WriteAllText(fileBlocker, "data");
+        var fileFault = Assert.ThrowsExactly<FileSystemFaultException>(() =>
+            DurableSync.EnsureAndHardenDirectoryChain(
+                leafParent,
+                ["sub", "regular-file"],
+                restricted,
+                createMissing: true,
+                allowSymlinkedAnchor: false));
+        Assert.AreEqual(FileSystemFaultKind.Containment, fileFault.Kind);
+
+        // 6. Reject symlinked anchor when allowSymlinkedAnchor=false, accept when allowSymlinkedAnchor=true
+        //    (while still rejecting symlink descendants beneath the symlinked anchor).
+        var realAnchorTarget = Path.Combine(_temp, "real-anchor-target");
+        Directory.CreateDirectory(realAnchorTarget);
+        var symlinkAnchor = Path.Combine(_temp, "symlink-anchor");
+        Directory.CreateSymbolicLink(symlinkAnchor, realAnchorTarget);
+
+        var anchorFault = Assert.ThrowsExactly<FileSystemFaultException>(() =>
+            DurableSync.EnsureAndHardenDirectoryChain(
+                symlinkAnchor,
+                ["child"],
+                restricted,
+                createMissing: true,
+                allowSymlinkedAnchor: false));
+        Assert.AreEqual(FileSystemFaultKind.Containment, anchorFault.Kind);
+
+        DurableSync.EnsureAndHardenDirectoryChain(
+            symlinkAnchor,
+            ["child"],
+            restricted,
+            createMissing: true,
+            allowSymlinkedAnchor: true);
+        Assert.AreEqual(restricted, File.GetUnixFileMode(Path.Combine(realAnchorTarget, "child")));
+
+        // 7. Reject path-traversal or multi-segment components.
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            DurableSync.EnsureAndHardenDirectoryChain(anchor, [".."], restricted));
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            DurableSync.EnsureAndHardenDirectoryChain(anchor, ["."], restricted));
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            DurableSync.EnsureAndHardenDirectoryChain(anchor, ["a/b"], restricted));
+
+        // 8. Traverse-only pre-existing parents (0300 and 0100) still pin via O_PATH on Linux and harden descendants.
+        if (OperatingSystem.IsLinux() && Environment.UserName != "root")
+        {
+            var mode0300 = Path.Combine(_temp, "anchor-0300");
+            Directory.CreateDirectory(mode0300);
+            File.SetUnixFileMode(mode0300, UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            try
+            {
+                DurableSync.EnsureAndHardenDirectoryChain(
+                    mode0300,
+                    ["nested", "state"],
+                    restricted,
+                    createMissing: true,
+                    allowSymlinkedAnchor: false);
+                Assert.AreEqual(restricted, File.GetUnixFileMode(Path.Combine(mode0300, "nested")));
+                Assert.AreEqual(restricted, File.GetUnixFileMode(Path.Combine(mode0300, "nested", "state")));
+            }
+            finally
+            {
+                File.SetUnixFileMode(mode0300, restricted);
+            }
+
+            var mode0100 = Path.Combine(_temp, "anchor-0100");
+            var mode0100State = Path.Combine(mode0100, "state");
+            Directory.CreateDirectory(mode0100State);
+            File.SetUnixFileMode(mode0100State, permissive);
+            File.SetUnixFileMode(mode0100, UnixFileMode.UserExecute);
+            try
+            {
+                DurableSync.EnsureAndHardenDirectoryChain(
+                    mode0100,
+                    ["state"],
+                    restricted,
+                    createMissing: false,
+                    allowSymlinkedAnchor: false);
+                Assert.AreEqual(restricted, File.GetUnixFileMode(mode0100State));
+            }
+            finally
+            {
+                File.SetUnixFileMode(mode0100, restricted);
+            }
+        }
+    }
 }

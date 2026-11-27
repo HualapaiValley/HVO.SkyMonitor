@@ -20,6 +20,9 @@ public static class LinuxOpenFlags
     /// <summary><c>O_CLOEXEC</c>; identical on every Linux architecture.</summary>
     public const int CloseOnExec = 0x80000;
 
+    /// <summary><c>O_PATH</c>; identical on every Linux architecture (<c>010000000</c> octal).</summary>
+    public const int Path = 0x200000;
+
     /// <summary><c>O_RDONLY</c>.</summary>
     public const int ReadOnly = 0;
 

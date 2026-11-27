@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Text.Json.Serialization;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Notifications;
 
@@ -40,6 +41,25 @@ public sealed record OperatorNotificationEvent(
 }
 
 /// <summary>
+/// Redacted destination and revision provenance captured when credentials are read from
+/// <see cref="IOperatorNotificationSecretStore.ReadAsync"/> so read-modify-write saves (including repeated
+/// retries after a destination rotation) can never re-bind unchanged credentials from an earlier destination
+/// onto a rotated relay or webhook origin.
+/// </summary>
+public sealed record OperatorNotificationSecretProvenance(
+    string? Revision = null,
+    string? BoundSmtpEndpoint = null,
+    string? BoundWebhookOrigin = null,
+    string? SmtpUsernameFingerprint = null,
+    string? SmtpPasswordFingerprint = null,
+    string? WebhookAuthTokenFingerprint = null,
+    string? WebhookUserKeyFingerprint = null,
+    string? WebhookNtfyTopicFingerprint = null)
+{
+    public override string ToString() => "[REDACTED]";
+}
+
+/// <summary>
 /// Server-side-only container for protected operator notification credentials. Never serialize into logs, diagnostics,
 /// UI readouts, or HTTP responses; <see cref="ToString"/> always returns <c>[REDACTED]</c>.
 /// </summary>
@@ -57,6 +77,13 @@ public sealed record OperatorNotificationSecrets(
 {
     public static OperatorNotificationSecrets Empty { get; } = new();
 
+    /// <summary>
+    /// Optional read provenance preserved across <c>with</c> mutations so direct store saves never carry
+    /// unchanged secrets across destination rotations. Excluded from value equality and JSON serialization.
+    /// </summary>
+    [JsonIgnore]
+    public OperatorNotificationSecretProvenance? Provenance { get; init; }
+
     public bool IsEmpty =>
         string.IsNullOrEmpty(SmtpUsername) &&
         string.IsNullOrEmpty(SmtpPassword) &&
@@ -64,6 +91,24 @@ public sealed record OperatorNotificationSecrets(
         string.IsNullOrEmpty(WebhookAuthToken) &&
         string.IsNullOrEmpty(WebhookUserKey) &&
         string.IsNullOrEmpty(WebhookNtfyTopic);
+
+    public bool Equals(OperatorNotificationSecrets? other) =>
+        other is not null &&
+        string.Equals(SmtpUsername, other.SmtpUsername, StringComparison.Ordinal) &&
+        string.Equals(SmtpPassword, other.SmtpPassword, StringComparison.Ordinal) &&
+        string.Equals(WebhookUrl, other.WebhookUrl, StringComparison.Ordinal) &&
+        string.Equals(WebhookAuthToken, other.WebhookAuthToken, StringComparison.Ordinal) &&
+        string.Equals(WebhookUserKey, other.WebhookUserKey, StringComparison.Ordinal) &&
+        string.Equals(WebhookNtfyTopic, other.WebhookNtfyTopic, StringComparison.Ordinal);
+
+    public override int GetHashCode() =>
+        HashCode.Combine(
+            SmtpUsername is null ? 0 : StringComparer.Ordinal.GetHashCode(SmtpUsername),
+            SmtpPassword is null ? 0 : StringComparer.Ordinal.GetHashCode(SmtpPassword),
+            WebhookUrl is null ? 0 : StringComparer.Ordinal.GetHashCode(WebhookUrl),
+            WebhookAuthToken is null ? 0 : StringComparer.Ordinal.GetHashCode(WebhookAuthToken),
+            WebhookUserKey is null ? 0 : StringComparer.Ordinal.GetHashCode(WebhookUserKey),
+            WebhookNtfyTopic is null ? 0 : StringComparer.Ordinal.GetHashCode(WebhookNtfyTopic));
 
     public override string ToString() => "[REDACTED]";
 }

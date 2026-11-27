@@ -902,7 +902,7 @@ public sealed class OperatorNotificationDispatcher(
             smtp.SecurityMode,
             smtp.FromAddress,
             smtp.FromDisplayName,
-            smtp.Recipients,
+            Array.AsReadOnly([.. smtp.Recipients]),
             secrets.SmtpUsername,
             secrets.SmtpPassword,
             subject,

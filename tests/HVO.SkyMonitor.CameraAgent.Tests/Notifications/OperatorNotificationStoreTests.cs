@@ -13,6 +13,7 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Primitives;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Notifications;
 
@@ -22,6 +23,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Notifications;
 public sealed class OperatorNotificationStoreTests
 {
     private static readonly JsonSerializerOptions WebJsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly string[] ExpectedOpsRecipients = ["ops@example.test"];
     [TestMethod]
     public async Task DefaultOff_CreatesZeroFilesOnDiskAsync()
     {
@@ -2378,7 +2380,8 @@ public sealed class OperatorNotificationStoreTests
             Assert.IsNull(effAfterPostRotateSave.Secrets.WebhookAuthToken);
 
             // 2b. Even if a caller cached pre-rotation ReadAsync (containing origin-a's token!) and saves an SMTP-only
-            //     mutation AFTER host rotated A -> B, SaveAsync MUST NOT rebind the stale token onto origin B!
+            //     mutation AFTER host rotated A -> B — AND RETRIES that exact same cached save multiple times —
+            //     SaveAsync MUST NEVER rebind the stale token onto origin B on attempt 1, attempt 2, or attempt N!
             configProvider.Rotate(new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
             {
                 [OperatorNotificationsOptions.SectionKey + ":Enabled"] = "true",
@@ -2393,6 +2396,7 @@ public sealed class OperatorNotificationStoreTests
                 CancellationToken.None).ConfigureAwait(false);
             var cachedPreRotateSecrets = await ((IOperatorNotificationSecretStore)store).ReadAsync(CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual("cached-origin-a-token", cachedPreRotateSecrets.WebhookAuthToken);
+            Assert.IsNotNull(cachedPreRotateSecrets.Provenance);
 
             configProvider.Rotate(new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
             {
@@ -2400,17 +2404,48 @@ public sealed class OperatorNotificationStoreTests
                 [OperatorNotificationsOptions.SectionKey + ":Webhook:Enabled"] = "true",
                 [ConfigurationOperatorNotificationConfigProvider.WebhookUrlConfigKey] = urlB
             });
+            var cachedSmtpOnlySave = cachedPreRotateSecrets with { SmtpUsername = "smtp-user-4" };
             await ((IOperatorNotificationSecretStore)store).SaveAsync(
-                cachedPreRotateSecrets with { SmtpUsername = "smtp-user-4" },
+                cachedSmtpOnlySave,
                 CancellationToken.None).ConfigureAwait(false);
 
-            var snapAfterCachedSave = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
-            Assert.IsFalse(snapAfterCachedSave.Secrets.HasWebhookAuthToken,
-                "SMTP-only SaveAsync carrying a pre-rotation cached webhook token MUST NOT rebind it to rotated origin B.");
-            var effAfterCachedSave = await store.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual("smtp-user-4", effAfterCachedSave.Secrets.SmtpUsername);
-            Assert.AreEqual(urlB, effAfterCachedSave.Secrets.WebhookUrl);
-            Assert.IsNull(effAfterCachedSave.Secrets.WebhookAuthToken);
+            var snapAfterCachedSave1 = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsFalse(snapAfterCachedSave1.Secrets.HasWebhookAuthToken,
+                "Attempt 1: SMTP-only SaveAsync carrying a pre-rotation cached webhook token MUST NOT rebind it to rotated origin B.");
+            var effAfterCachedSave1 = await store.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual("smtp-user-4", effAfterCachedSave1.Secrets.SmtpUsername);
+            Assert.AreEqual(urlB, effAfterCachedSave1.Secrets.WebhookUrl);
+            Assert.IsNull(effAfterCachedSave1.Secrets.WebhookAuthToken);
+
+            // Retry 2: saving the EXACT SAME cached pre-rotation SMTP-only snapshot again MUST STILL NOT rebind token A!
+            await ((IOperatorNotificationSecretStore)store).SaveAsync(
+                cachedSmtpOnlySave,
+                CancellationToken.None).ConfigureAwait(false);
+
+            var snapAfterCachedSave2 = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsFalse(snapAfterCachedSave2.Secrets.HasWebhookAuthToken,
+                "Attempt 2 (retry): retrying the same cached pre-rotation SMTP-only save MUST NEVER rebind origin A's token to origin B.");
+            var effAfterCachedSave2 = await store.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual("smtp-user-4", effAfterCachedSave2.Secrets.SmtpUsername);
+            Assert.AreEqual(urlB, effAfterCachedSave2.Secrets.WebhookUrl);
+            Assert.IsNull(effAfterCachedSave2.Secrets.WebhookAuthToken);
+
+            // Retry 3: even a manual field-by-field copy (stripped of Provenance) carrying origin A's stale token MUST NOT rebind!
+            var manualCopyWithoutProvenance = new OperatorNotificationSecrets(
+                SmtpUsername: "smtp-user-5",
+                SmtpPassword: cachedPreRotateSecrets.SmtpPassword,
+                WebhookUrl: cachedPreRotateSecrets.WebhookUrl,
+                WebhookAuthToken: cachedPreRotateSecrets.WebhookAuthToken,
+                WebhookUserKey: cachedPreRotateSecrets.WebhookUserKey,
+                WebhookNtfyTopic: cachedPreRotateSecrets.WebhookNtfyTopic);
+            Assert.IsNull(manualCopyWithoutProvenance.Provenance);
+            await ((IOperatorNotificationSecretStore)store).SaveAsync(
+                manualCopyWithoutProvenance,
+                CancellationToken.None).ConfigureAwait(false);
+            var effAfterManualRetry = await store.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual("smtp-user-5", effAfterManualRetry.Secrets.SmtpUsername);
+            Assert.IsNull(effAfterManualRetry.Secrets.WebhookAuthToken,
+                "Attempt 3 (manual copy without provenance): retrying origin A's stale token MUST STILL NOT bind to origin B.");
 
             // Verify both test-send and live dispatcher delivery to origin B send ZERO Authorization header.
             var testB = await dispatcher.SendTestAsync(NotificationTestTarget.Webhook, "owner-1", CancellationToken.None).ConfigureAwait(false);
@@ -2421,7 +2456,7 @@ public sealed class OperatorNotificationStoreTests
                 OperatorNotificationSeverity.Warning,
                 "disk-secret-store-b",
                 "Disk pressure",
-                "Live dispatch after direct secret store SMTP-only save.",
+                "Live dispatch after retried direct secret store SMTP-only save.",
                 DateTimeOffset.UtcNow,
                 "TestCam"));
             Assert.IsTrue(published);
@@ -2431,13 +2466,13 @@ public sealed class OperatorNotificationStoreTests
             foreach (var request in serverB.Captured)
             {
                 Assert.IsNull(request.Header("Authorization"),
-                    "Origin B MUST NEVER receive origin A's stale token after direct IOperatorNotificationSecretStore.SaveAsync.");
+                    "Origin B MUST NEVER receive origin A's stale token after direct IOperatorNotificationSecretStore.SaveAsync retries.");
             }
 
             // 3. Explicitly supplying a genuinely NEW token for origin B binds cleanly and authenticates against B.
             await ((IOperatorNotificationSecretStore)store).SaveAsync(
                 new OperatorNotificationSecrets(
-                    SmtpUsername: "smtp-user-4",
+                    SmtpUsername: "smtp-user-5",
                     SmtpPassword: "smtp-pass-3",
                     WebhookAuthToken: "fresh-origin-b-token"),
                 CancellationToken.None).ConfigureAwait(false);
@@ -2650,6 +2685,35 @@ public sealed class OperatorNotificationStoreTests
         CollectionAssert.Contains(bestEffortSynced, expectedPermState);
         CollectionAssert.Contains(bestEffortSynced, expectedPermChild);
         CollectionAssert.DoesNotContain(bestEffortSynced, expectedPermParent);
+
+        // Once permissions on permParent are restored, a subsequent publish MUST retry and complete syncing permParent
+        // (because the PermissionDenied skip MUST NOT have cached permParent as verified!).
+        var restoredSynced = new List<string>();
+        await NotificationStateFilePublisher.PublishRestrictedAtomicAsync(
+            permState,
+            OperatorNotificationStore.ConfigFileName,
+            Encoding.UTF8.GetBytes("{\"ok\":2}"),
+            beforeRename: null,
+            onDirectorySynced: restoredSynced.Add,
+            directorySyncAction: _ => { },
+            maxExistingTargetBytes: null,
+            CancellationToken.None).ConfigureAwait(false);
+        CollectionAssert.Contains(restoredSynced, expectedPermParent,
+            "After a PermissionDenied skip, restoring access MUST allow a subsequent publish to retry and sync the ancestor.");
+
+        // After permParent actually succeeded, a third publish skips re-syncing the now-verified ancestor.
+        var verifiedSynced = new List<string>();
+        await NotificationStateFilePublisher.PublishRestrictedAtomicAsync(
+            permState,
+            OperatorNotificationStore.ConfigFileName,
+            Encoding.UTF8.GetBytes("{\"ok\":3}"),
+            beforeRename: null,
+            onDirectorySynced: verifiedSynced.Add,
+            directorySyncAction: _ => { },
+            maxExistingTargetBytes: null,
+            CancellationToken.None).ConfigureAwait(false);
+        CollectionAssert.DoesNotContain(verifiedSynced, expectedPermParent,
+            "Once the ancestor directory fsync actually succeeded, subsequent publishes should use the verified cache.");
 
         // Newly created intermediate directory returning PermissionDenied MUST fail closed!
         var strictNewParent = Path.Combine(dir.Path, "strict-new");
@@ -2910,6 +2974,668 @@ public sealed class OperatorNotificationStoreTests
         }
     }
 
+    [TestMethod]
+    public async Task MultiProviderFileReload_CallingOnReloadInsideLoad_NeverPublishesOrDeliversMismatchedDestinationAndCredentialsAsync()
+    {
+        using var dir = TempStateDir.Create();
+        using var cert = WebhookNotificationTransportTests.CreateEphemeralLoopbackCertificate();
+        var serverA = WebhookNotificationTransportTests.InProcessHttpsWebhookServer.Start(
+            cert, _ => "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK");
+        var serverB = WebhookNotificationTransportTests.InProcessHttpsWebhookServer.Start(
+            cert, _ => "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK");
+        await using (serverA.ConfigureAwait(false))
+        await using (serverB.ConfigureAwait(false))
+        {
+            var loopbackPolicy = new OperatorNotificationNetworkPolicy(isDevelopment: false)
+            {
+                AllowLoopbackForTesting = true
+            };
+            var urlA = $"https://127.0.0.1:{serverA.Port}/hook-a";
+            var urlB = $"https://127.0.0.1:{serverB.Port}/hook-b";
+
+            // Part A: Two REAL JsonConfigurationProvider files (destinations.json + credentials.json).
+            // In .NET 10, JsonConfigurationProvider.Load() calls OnReload() inside Load(), so root.Reload()
+            // triggers root change callbacks after destinations.json loads B while credentials.json still holds A!
+            var destJsonPath = Path.Combine(dir.Path, "destinations.json");
+            var credsJsonPath = Path.Combine(dir.Path, "credentials.json");
+
+            static string BuildDestJson(string relayHost, string webhookUrl) => JsonSerializer.Serialize(new
+            {
+                CameraAgent = new
+                {
+                    Notifications = new
+                    {
+                        Enabled = true,
+                        TestSendMinimumIntervalSeconds = 0,
+                        Smtp = new
+                        {
+                            Enabled = true,
+                            Host = relayHost,
+                            Port = 587,
+                            SecurityMode = "StartTls",
+                            FromAddress = "camera@example.test",
+                            Recipients = ExpectedOpsRecipients
+                        },
+                        Webhook = new
+                        {
+                            Enabled = true,
+                            Format = "Generic",
+                            AuthHeaderName = "Authorization",
+                            Url = webhookUrl
+                        }
+                    }
+                }
+            });
+
+            static string BuildCredsJson(string user, string pass, string token) => JsonSerializer.Serialize(new
+            {
+                CameraAgent = new
+                {
+                    Notifications = new
+                    {
+                        Smtp = new
+                        {
+                            Username = user,
+                            Password = pass
+                        },
+                        Webhook = new
+                        {
+                            AuthToken = token
+                        }
+                    }
+                }
+            });
+
+            await File.WriteAllTextAsync(destJsonPath, BuildDestJson("relay-a.example.test", urlA)).ConfigureAwait(false);
+            await File.WriteAllTextAsync(credsJsonPath, BuildCredsJson("user-a", "pass-a", "token-a")).ConfigureAwait(false);
+
+            var jsonRoot = new ConfigurationBuilder()
+                .AddJsonFile(destJsonPath, optional: false, reloadOnChange: false)
+                .AddJsonFile(credsJsonPath, optional: false, reloadOnChange: false)
+                .Build();
+
+            using var jsonConfigProvider = new ConfigurationOperatorNotificationConfigProvider(jsonRoot, loopbackPolicy);
+            using var jsonStoreDir = TempStateDir.Create();
+            using var jsonStore = CreateStore(jsonStoreDir.Path, isDevelopment: false, configuration: jsonRoot);
+
+            var initialJson = await jsonConfigProvider.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual("relay-a.example.test", initialJson.Options.Smtp.Host);
+            Assert.AreEqual("user-a", initialJson.Secrets.SmtpUsername);
+            Assert.AreEqual(urlA, initialJson.Secrets.WebhookUrl);
+            Assert.AreEqual("token-a", initialJson.Secrets.WebhookAuthToken);
+
+            var observedIntermediateStates = new List<(string? SmtpHost, string? SmtpUser, string? SmtpPass, string? WebhookUrl, string? WebhookToken)>();
+            using var jsonTracker = new HostConfigurationSnapshotTracker(
+                jsonRoot,
+                snapshot => observedIntermediateStates.Add((
+                    snapshot.Options.Smtp.Host,
+                    snapshot.Secrets.SmtpUsername,
+                    snapshot.Secrets.SmtpPassword,
+                    snapshot.Secrets.WebhookUrl,
+                    snapshot.Secrets.WebhookAuthToken)));
+
+            await File.WriteAllTextAsync(destJsonPath, BuildDestJson("relay-b.example.test", urlB)).ConfigureAwait(false);
+            await File.WriteAllTextAsync(credsJsonPath, BuildCredsJson("user-b", "pass-b", "token-b")).ConfigureAwait(false);
+            jsonRoot.Reload();
+
+            Assert.IsTrue(observedIntermediateStates.Count >= 2,
+                "Real JsonConfigurationProvider.Load() fires OnReload() per provider during ConfigurationRoot.Reload().");
+            foreach (var observed in observedIntermediateStates)
+            {
+                if (string.Equals(observed.SmtpHost, "relay-b.example.test", StringComparison.Ordinal))
+                {
+                    Assert.AreNotEqual("user-a", observed.SmtpUser, "Rotated SMTP relay B MUST NEVER pair with relay A's username.");
+                    Assert.AreNotEqual("pass-a", observed.SmtpPass, "Rotated SMTP relay B MUST NEVER pair with relay A's password.");
+                }
+                if (string.Equals(observed.WebhookUrl, urlB, StringComparison.Ordinal))
+                {
+                    Assert.AreNotEqual("token-a", observed.WebhookToken, "Rotated webhook origin B MUST NEVER pair with origin A's auth token.");
+                }
+            }
+
+            var finalJson = await jsonConfigProvider.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual("relay-b.example.test", finalJson.Options.Smtp.Host);
+            Assert.AreEqual("user-b", finalJson.Secrets.SmtpUsername);
+            Assert.AreEqual("pass-b", finalJson.Secrets.SmtpPassword);
+            Assert.AreEqual(urlB, finalJson.Secrets.WebhookUrl);
+            Assert.AreEqual("token-b", finalJson.Secrets.WebhookAuthToken);
+
+            // Part B: Deterministic mid-Reload() pause using providers that invoke OnReload() inside Load()
+            // (matching FileConfigurationProvider): Provider 1 rotates destination A -> B and signals OnReload()
+            // BEFORE Provider 2 rotates credentials A -> B. Verify zero (destination B, credential A) publication
+            // AND zero delivery of token A to server B mid-reload!
+            static Dictionary<string, string?> DestDict(string relayHost, string webhookUrl) => new(StringComparer.OrdinalIgnoreCase)
+            {
+                [OperatorNotificationsOptions.SectionKey + ":Enabled"] = "true",
+                [OperatorNotificationsOptions.SectionKey + ":TestSendMinimumIntervalSeconds"] = "0",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Enabled"] = "true",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Host"] = relayHost,
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Port"] = "587",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:SecurityMode"] = "StartTls",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:FromAddress"] = "camera@example.test",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Recipients:0"] = "ops@example.test",
+                [OperatorNotificationsOptions.SectionKey + ":Webhook:Enabled"] = "true",
+                [OperatorNotificationsOptions.SectionKey + ":Webhook:Format"] = "Generic",
+                [OperatorNotificationsOptions.SectionKey + ":Webhook:AuthHeaderName"] = "Authorization",
+                [ConfigurationOperatorNotificationConfigProvider.WebhookUrlConfigKey] = webhookUrl
+            };
+
+            static Dictionary<string, string?> CredDict(string tag, string? boundEndpoint = null, string? boundOrigin = null)
+            {
+                var dict = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    [ConfigurationOperatorNotificationConfigProvider.SmtpUsernameConfigKey] = $"user-{tag}",
+                    [ConfigurationOperatorNotificationConfigProvider.SmtpPasswordConfigKey] = $"pass-{tag}",
+                    [ConfigurationOperatorNotificationConfigProvider.WebhookAuthTokenConfigKey] = $"token-{tag}"
+                };
+                if (boundEndpoint is not null)
+                {
+                    dict[ConfigurationOperatorNotificationConfigProvider.SmtpBoundEndpointConfigKey] = boundEndpoint;
+                }
+                if (boundOrigin is not null)
+                {
+                    dict[ConfigurationOperatorNotificationConfigProvider.WebhookBoundOriginConfigKey] = boundOrigin;
+                }
+                return dict;
+            }
+
+            using var enteredCredsLoad = new ManualResetEventSlim(false);
+            using var releaseCredsLoad = new ManualResetEventSlim(false);
+
+            var destFileLike = new BarrierReloadConfigurationProvider(DestDict("relay-a.example.test", urlA), fireOnReloadInsideLoad: true);
+            var credsFileLike = new BarrierReloadConfigurationProvider(
+                CredDict("a"),
+                onLoadStarted: enteredCredsLoad,
+                waitBeforeApplyingLoad: releaseCredsLoad,
+                fireOnReloadInsideLoad: true);
+            var splitRoot = new ConfigurationRoot([destFileLike, credsFileLike]);
+
+            using var splitStoreDir = TempStateDir.Create();
+            using var splitConfigProvider = new ConfigurationOperatorNotificationConfigProvider(splitRoot, loopbackPolicy);
+            var dpProvider = DataProtectionProvider.Create(new DirectoryInfo(Path.Combine(dir.Path, "dp-keys")));
+            using var splitStore = new OperatorNotificationStore(
+                dpProvider,
+                Options.Create(new DeviceProvisioningOptions { StateDirectory = splitStoreDir.Path }),
+                splitRoot,
+                loopbackPolicy,
+                NullLogger<OperatorNotificationStore>.Instance);
+            using var webhookTransport = new WebhookNotificationTransport(loopbackPolicy, TimeProvider.System)
+            {
+                CertificateValidationCallback = (_, presented, _, _) =>
+                    presented is X509Certificate2 x509 && string.Equals(x509.Thumbprint, cert.Thumbprint, StringComparison.Ordinal)
+            };
+            using var telemetry = new OperatorNotificationTelemetry();
+            using var dispatcher = new OperatorNotificationDispatcher(
+                splitStore,
+                new SmtpNotificationTransport(loopbackPolicy, TimeProvider.System),
+                webhookTransport,
+                telemetry,
+                TimeProvider.System);
+
+            destFileLike.StageNext(DestDict("relay-b.example.test", urlB));
+            credsFileLike.StageNext(CredDict("b"), armBarrier: true);
+
+            var reloadTask = Task.Run(() => splitRoot.Reload());
+            try
+            {
+                Assert.IsTrue(enteredCredsLoad.Wait(TimeSpan.FromSeconds(10)), "Credentials provider did not enter Load().");
+
+                // Raw root is in torn (dest B, cred A) state right after provider 1 fired OnReload()!
+                Assert.AreEqual(urlB, splitRoot[ConfigurationOperatorNotificationConfigProvider.WebhookUrlConfigKey]);
+                Assert.AreEqual("token-a", splitRoot[ConfigurationOperatorNotificationConfigProvider.WebhookAuthTokenConfigKey]);
+
+                // Neither provider nor store may publish (destination B, credential A)!
+                var midConfig = await splitConfigProvider.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual("relay-b.example.test", midConfig.Options.Smtp.Host);
+                Assert.IsNull(midConfig.Secrets.SmtpUsername, "Mid-reload snapshot must drop relay A's username after destination rotated to B.");
+                Assert.IsNull(midConfig.Secrets.SmtpPassword, "Mid-reload snapshot must drop relay A's password after destination rotated to B.");
+                Assert.AreEqual(urlB, midConfig.Secrets.WebhookUrl);
+                Assert.IsNull(midConfig.Secrets.WebhookAuthToken, "Mid-reload snapshot must drop origin A's token after destination rotated to B.");
+
+                var midStore = await splitStore.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.IsNull(midStore.Secrets.SmtpUsername);
+                Assert.IsNull(midStore.Secrets.SmtpPassword);
+                Assert.IsNull(midStore.Secrets.WebhookAuthToken);
+
+                // Even an actual delivery executing mid-reload MUST NEVER send token-a to server B!
+                var midDelivery = await dispatcher.SendTestAsync(NotificationTestTarget.Webhook, "owner-1", CancellationToken.None).ConfigureAwait(false);
+                Assert.IsTrue(midDelivery.Channels[0].Succeeded, midDelivery.Channels[0].ReasonCode);
+                Assert.HasCount(1, serverB.Captured);
+                Assert.IsNull(serverB.Captured[0].Header("Authorization"),
+                    "Origin B MUST NEVER receive origin A's token during a mid-Reload() torn state.");
+            }
+            finally
+            {
+                releaseCredsLoad.Set();
+            }
+
+            await reloadTask.ConfigureAwait(false);
+
+            // Once provider 2 finishes loading cred B, (dest B, cred B) publishes and delivers cleanly!
+            var postReloadDelivery = await dispatcher.SendTestAsync(NotificationTestTarget.Webhook, "owner-1", CancellationToken.None).ConfigureAwait(false);
+            Assert.IsTrue(postReloadDelivery.Channels[0].Succeeded, postReloadDelivery.Channels[0].ReasonCode);
+            Assert.HasCount(2, serverB.Captured);
+            Assert.AreEqual("Bearer token-b", serverB.Captured[1].Header("Authorization"));
+
+            // Part C: Reverse order (credentials provider 1 loads B + explicit BoundEndpoint/BoundOrigin and fires
+            // OnReload() BEFORE destinations provider 2 rotates A -> B): zero (destination A, credential B) leakage!
+            using var enteredDestLoad = new ManualResetEventSlim(false);
+            using var releaseDestLoad = new ManualResetEventSlim(false);
+
+            var boundCredsProvider = new BarrierReloadConfigurationProvider(
+                CredDict("a", "relay-a.example.test:587:StartTls", urlA),
+                fireOnReloadInsideLoad: true);
+            var boundDestProvider = new BarrierReloadConfigurationProvider(
+                DestDict("relay-a.example.test", urlA),
+                onLoadStarted: enteredDestLoad,
+                waitBeforeApplyingLoad: releaseDestLoad,
+                fireOnReloadInsideLoad: true);
+            var reverseRoot = new ConfigurationRoot([boundCredsProvider, boundDestProvider]);
+            using var reverseProvider = new ConfigurationOperatorNotificationConfigProvider(reverseRoot, loopbackPolicy);
+
+            var revInit = await reverseProvider.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual("token-a", revInit.Secrets.WebhookAuthToken);
+            Assert.AreEqual("pass-a", revInit.Secrets.SmtpPassword);
+
+            boundCredsProvider.StageNext(CredDict("b", "relay-b.example.test:587:StartTls", urlB));
+            boundDestProvider.StageNext(DestDict("relay-b.example.test", urlB), armBarrier: true);
+
+            var reverseReload = Task.Run(() => reverseRoot.Reload());
+            try
+            {
+                Assert.IsTrue(enteredDestLoad.Wait(TimeSpan.FromSeconds(10)));
+                var revMid = await reverseProvider.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual("relay-a.example.test", revMid.Options.Smtp.Host);
+                Assert.IsNull(revMid.Secrets.SmtpUsername, "Explicit BoundEndpoint must prevent cred B from pairing with destination A.");
+                Assert.IsNull(revMid.Secrets.SmtpPassword, "Explicit BoundEndpoint must prevent cred B from pairing with destination A.");
+                Assert.AreEqual(urlA, revMid.Secrets.WebhookUrl);
+                Assert.IsNull(revMid.Secrets.WebhookAuthToken, "Explicit BoundOrigin must prevent token B from pairing with origin A.");
+            }
+            finally
+            {
+                releaseDestLoad.Set();
+            }
+
+            await reverseReload.ConfigureAwait(false);
+
+            var revFinal = await reverseProvider.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual("relay-b.example.test", revFinal.Options.Smtp.Host);
+            Assert.AreEqual("user-b", revFinal.Secrets.SmtpUsername);
+            Assert.AreEqual("pass-b", revFinal.Secrets.SmtpPassword);
+            Assert.AreEqual(urlB, revFinal.Secrets.WebhookUrl);
+            Assert.AreEqual("token-b", revFinal.Secrets.WebhookAuthToken);
+        }
+    }
+
+    [TestMethod]
+    public async Task Constructor_WhenReloadTokenSignalsSynchronouslyDuringSubscription_DoesNotThrowNullReferenceExceptionAsync()
+    {
+        using var dir = TempStateDir.Create();
+        var dpProvider = DataProtectionProvider.Create(new DirectoryInfo(Path.Combine(dir.Path, "dp-keys")));
+        var config = new SynchronouslySignalingConfiguration(
+            initialValues: new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+            {
+                [OperatorNotificationsOptions.SectionKey + ":Enabled"] = "false"
+            },
+            reloadedValues: new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+            {
+                [OperatorNotificationsOptions.SectionKey + ":Enabled"] = "true",
+                [OperatorNotificationsOptions.SectionKey + ":Webhook:Enabled"] = "true",
+                [ConfigurationOperatorNotificationConfigProvider.WebhookUrlConfigKey] = "https://hooks.example.test/alerts"
+            });
+
+        using var store = new OperatorNotificationStore(
+            dpProvider,
+            Options.Create(new DeviceProvisioningOptions { StateDirectory = dir.Path }),
+            config,
+            new OperatorNotificationNetworkPolicy(isDevelopment: false),
+            NullLogger<OperatorNotificationStore>.Instance);
+
+        Assert.IsTrue(config.SynchronousCallbackFired,
+            "Test harness must synchronously fire the reload callback during subscription inside construction.");
+        Assert.IsTrue(store.CurrentOptions.Enabled,
+            "Store must observe the reloaded host configuration without throwing NullReferenceException.");
+        Assert.IsNull(store.ConfigurationErrorReasonCode);
+
+        // Subsequent runtime reload after construction continues updating CurrentOptions cleanly.
+        config.TriggerReload(new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+        {
+            [OperatorNotificationsOptions.SectionKey + ":Enabled"] = "false"
+        });
+        Assert.IsFalse(store.CurrentOptions.Enabled);
+        var snap = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.IsFalse(snap.Options.Enabled);
+    }
+
+    [TestMethod]
+    public async Task CurrentOptionsAndSnapshots_ReturnIsolatedDefensiveCopies_MutatingRecipientsCannotAffectCachedStateOrDeliveriesAsync()
+    {
+        using var dir = TempStateDir.Create();
+        var hostConfig = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                [OperatorNotificationsOptions.SectionKey + ":Enabled"] = "true",
+                [OperatorNotificationsOptions.SectionKey + ":TestSendMinimumIntervalSeconds"] = "0",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Enabled"] = "true",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Host"] = "smtp.example.test",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Port"] = "587",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:SecurityMode"] = "StartTls",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:FromAddress"] = "camera@example.test",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Recipients:0"] = "ops@example.test",
+                [ConfigurationOperatorNotificationConfigProvider.SmtpUsernameConfigKey] = "smtp-user",
+                [ConfigurationOperatorNotificationConfigProvider.SmtpPasswordConfigKey] = "smtp-pass"
+            })
+            .Build();
+
+        // 1. ConfigurationOperatorNotificationConfigProvider: mutating CurrentOptions / Snapshot / Effective does not leak.
+        using var configProvider = new ConfigurationOperatorNotificationConfigProvider(hostConfig);
+        configProvider.CurrentOptions.Smtp.Recipients.Add("evil@example.com");
+        CollectionAssert.AreEqual(ExpectedOpsRecipients, configProvider.CurrentOptions.Smtp.Recipients);
+
+        var configSnap = await configProvider.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+        configSnap.Options.Smtp.Recipients.Add("evil-snap@example.com");
+        CollectionAssert.AreEqual(ExpectedOpsRecipients, configProvider.CurrentOptions.Smtp.Recipients);
+
+        var configEff = await configProvider.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+        configEff.Options.Smtp.Recipients.Add("evil-eff@example.com");
+        CollectionAssert.AreEqual(ExpectedOpsRecipients, configProvider.CurrentOptions.Smtp.Recipients);
+
+        // Verify actual SMTP delivery through OperatorNotificationDispatcher never observes mutated recipients.
+        var capturingSmtp = new CapturingSmtpTransport();
+        using var telemetry = new OperatorNotificationTelemetry();
+        using var configDispatcher = new OperatorNotificationDispatcher(
+            configProvider,
+            capturingSmtp,
+            new WebhookNotificationTransport(new OperatorNotificationNetworkPolicy(isDevelopment: false), TimeProvider.System),
+            telemetry,
+            TimeProvider.System);
+
+        var configTestResult = await configDispatcher.SendTestAsync(NotificationTestTarget.Smtp, "owner-1", CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(configTestResult.Channels[0].Succeeded, configTestResult.Channels[0].ReasonCode);
+        Assert.HasCount(1, capturingSmtp.Captured);
+        CollectionAssert.AreEqual(ExpectedOpsRecipients, capturingSmtp.Captured[0].Recipients.ToArray());
+
+        // 2. OperatorNotificationStore (both host-absent and saved-override paths): mutating returned Recipients does not leak.
+        using var store = CreateStore(dir.Path, isDevelopment: false, configuration: hostConfig);
+        store.CurrentOptions.Smtp.Recipients.Add("evil@example.com");
+        CollectionAssert.AreEqual(ExpectedOpsRecipients, store.CurrentOptions.Smtp.Recipients);
+
+        var initialSnap = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+        var saved = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+            initialSnap.Version,
+            CreateSmtpOptions("smtp.example.test", 587, SmtpSecurityMode.StartTls),
+            SmtpUsername: "saved-user",
+            SmtpPassword: "saved-pass"), "owner-1", CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(OperatorNotificationsSaveOutcome.Applied, saved.Outcome, saved.Message);
+
+        saved.Snapshot!.Options.Smtp.Recipients.Add("evil-saved@example.com");
+        store.CurrentOptions.Smtp.Recipients.Add("evil-current@example.com");
+        CollectionAssert.AreEqual(ExpectedOpsRecipients, store.CurrentOptions.Smtp.Recipients);
+
+        using var storeDispatcher = new OperatorNotificationDispatcher(
+            store,
+            capturingSmtp,
+            new WebhookNotificationTransport(new OperatorNotificationNetworkPolicy(isDevelopment: false), TimeProvider.System),
+            telemetry,
+            TimeProvider.System);
+        var storeTestResult = await storeDispatcher.SendTestAsync(NotificationTestTarget.Smtp, "owner-1", CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(storeTestResult.Channels[0].Succeeded, storeTestResult.Channels[0].ReasonCode);
+        Assert.HasCount(2, capturingSmtp.Captured);
+        CollectionAssert.AreEqual(ExpectedOpsRecipients, capturingSmtp.Captured[1].Recipients.ToArray());
+    }
+
+    [TestMethod]
+    public async Task CorruptStoreFile_IgnoresSubsequentHostConfigurationReloadsAsync()
+    {
+        using var dir = TempStateDir.Create();
+        await File.WriteAllTextAsync(
+            Path.Combine(dir.Path, OperatorNotificationStore.ConfigFileName),
+            "{corrupt-not-valid-json").ConfigureAwait(false);
+
+        var configProvider = new RotatingHostConfigurationProvider(new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+        {
+            [OperatorNotificationsOptions.SectionKey + ":Enabled"] = "false"
+        });
+        var hostConfig = new ConfigurationRoot([configProvider]);
+
+        using var store = CreateStore(dir.Path, isDevelopment: false, configuration: hostConfig);
+        Assert.IsFalse(store.CurrentOptions.Enabled);
+        Assert.AreEqual(NotificationReasonCodes.StoreCorrupt, store.ConfigurationErrorReasonCode);
+
+        // Reloading host configuration to valid enabled settings MUST be ignored while the persisted store is corrupt.
+        configProvider.Rotate(new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+        {
+            [OperatorNotificationsOptions.SectionKey + ":Enabled"] = "true",
+            [OperatorNotificationsOptions.SectionKey + ":Webhook:Enabled"] = "true",
+            [ConfigurationOperatorNotificationConfigProvider.WebhookUrlConfigKey] = "https://hooks.example.test/alerts",
+            [ConfigurationOperatorNotificationConfigProvider.WebhookAuthTokenConfigKey] = "host-secret-token"
+        });
+
+        Assert.IsFalse(store.CurrentOptions.Enabled, "Corrupt store MUST ignore host reload to Enabled=true.");
+        Assert.AreEqual(NotificationReasonCodes.StoreCorrupt, store.ConfigurationErrorReasonCode,
+            "Corrupt store MUST keep StoreCorrupt reason code across host reloads.");
+
+        // Reloading host configuration to invalid or disabled settings MUST STILL preserve StoreCorrupt.
+        configProvider.Rotate(new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+        {
+            [OperatorNotificationsOptions.SectionKey + ":Enabled"] = "true",
+            [OperatorNotificationsOptions.SectionKey + ":Webhook:Enabled"] = "true"
+        });
+        Assert.IsFalse(store.CurrentOptions.Enabled);
+        Assert.AreEqual(NotificationReasonCodes.StoreCorrupt, store.ConfigurationErrorReasonCode);
+
+        configProvider.Rotate(new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+        {
+            [OperatorNotificationsOptions.SectionKey + ":Enabled"] = "false"
+        });
+        Assert.IsFalse(store.CurrentOptions.Enabled);
+        Assert.AreEqual(NotificationReasonCodes.StoreCorrupt, store.ConfigurationErrorReasonCode);
+
+        var snap = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(snap.StoreCorrupt);
+        Assert.AreEqual(NotificationReasonCodes.StoreCorrupt, snap.StoreStatusReasonCode);
+        Assert.IsFalse(snap.Secrets.HasWebhookUrl);
+        Assert.IsFalse(snap.Secrets.HasWebhookAuthToken);
+
+        var effective = await store.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(effective.StoreCorrupt);
+        Assert.AreEqual(NotificationReasonCodes.StoreCorrupt, effective.ConfigurationErrorReasonCode);
+        Assert.IsFalse(effective.Options.Enabled);
+        Assert.IsTrue(effective.Secrets.IsEmpty);
+    }
+
+    [TestMethod]
+    public void EnsureRestrictedDirectory_PinnedParentDescriptorFchmod_HardensMultiLevelAndRejectsNestedSymlinks()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Inconclusive("Unix file modes are not applicable on Windows.");
+            return;
+        }
+
+        RequireModesEnforced();
+        using var dir = TempStateDir.Create();
+
+        const UnixFileMode permissive =
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+            UnixFileMode.GroupRead | UnixFileMode.GroupExecute |
+            UnixFileMode.OtherRead | UnixFileMode.OtherExecute;
+        const UnixFileMode restricted =
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+
+        // 1. Multi-level newly created directories are created and hardened component-by-component to 0700
+        //    without altering the pre-existing anchor parent's permissions.
+        var preExistingAnchor = Path.Combine(dir.Path, "anchor");
+        Directory.CreateDirectory(preExistingAnchor);
+        File.SetUnixFileMode(preExistingAnchor, permissive);
+
+        var nestedLeaf = Path.Combine(preExistingAnchor, "sub1", "sub2", "state");
+        NotificationStateFilePublisher.EnsureRestrictedDirectory(nestedLeaf);
+
+        Assert.AreEqual(permissive, File.GetUnixFileMode(preExistingAnchor));
+        Assert.AreEqual(restricted, File.GetUnixFileMode(Path.Combine(preExistingAnchor, "sub1")));
+        Assert.AreEqual(restricted, File.GetUnixFileMode(Path.Combine(preExistingAnchor, "sub1", "sub2")));
+        Assert.AreEqual(restricted, File.GetUnixFileMode(nestedLeaf));
+
+        // 2. Pre-existing permissive 0755 leaf directory is tightened to 0700 via descriptor-based fchmod.
+        var existingPermissive = Path.Combine(dir.Path, "existing-loose");
+        Directory.CreateDirectory(existingPermissive);
+        File.SetUnixFileMode(existingPermissive, permissive);
+        NotificationStateFilePublisher.EnsureRestrictedDirectory(existingPermissive);
+        Assert.AreEqual(restricted, File.GetUnixFileMode(existingPermissive));
+
+        // 3. Nested symlink leaf is rejected via O_NOFOLLOW without altering target permissions.
+        var target = Path.Combine(dir.Path, "nested-symlink-target");
+        Directory.CreateDirectory(target);
+        File.SetUnixFileMode(target, permissive);
+        var holder = Path.Combine(dir.Path, "holder");
+        Directory.CreateDirectory(holder);
+        var linkLeaf = Path.Combine(holder, "state");
+        Directory.CreateSymbolicLink(linkLeaf, target);
+
+        Assert.ThrowsExactly<IOException>(() => NotificationStateFilePublisher.EnsureRestrictedDirectory(linkLeaf));
+        Assert.AreEqual(permissive, File.GetUnixFileMode(target));
+    }
+
+    private sealed class CapturingSmtpTransport : ISmtpNotificationTransport
+    {
+        public List<SmtpDeliveryRequest> Captured { get; } = [];
+
+        public Task<OperatorNotificationDeliveryResult> SendAsync(SmtpDeliveryRequest request, CancellationToken cancellationToken)
+        {
+            Captured.Add(request);
+            return Task.FromResult(OperatorNotificationDeliveryResult.Success(SmtpNotificationTransport.ChannelName, TimeSpan.FromMilliseconds(1)));
+        }
+    }
+
+    private sealed class SynchronouslySignalingConfiguration : IConfiguration
+    {
+        private readonly object _gate = new();
+        private Dictionary<string, string?> _values;
+        private readonly Dictionary<string, string?> _reloadedValues;
+        private int _signalOnFirstRegister = 1;
+        private ConfigurationReloadToken _currentToken = new();
+
+        public bool SynchronousCallbackFired { get; private set; }
+
+        public SynchronouslySignalingConfiguration(
+            IDictionary<string, string?> initialValues,
+            IDictionary<string, string?> reloadedValues)
+        {
+            _values = new Dictionary<string, string?>(initialValues, StringComparer.OrdinalIgnoreCase);
+            _reloadedValues = new Dictionary<string, string?>(reloadedValues, StringComparer.OrdinalIgnoreCase);
+        }
+
+        public string? this[string key]
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _values.TryGetValue(key, out var value) ? value : null;
+                }
+            }
+            set
+            {
+                lock (_gate)
+                {
+                    _values[key] = value;
+                }
+            }
+        }
+
+        public IEnumerable<IConfigurationSection> GetChildren() => [];
+
+        public IConfigurationSection GetSection(string key) => new ConfigurationSectionProxy(this, key);
+
+        public IChangeToken GetReloadToken()
+        {
+            if (Volatile.Read(ref _signalOnFirstRegister) != 0)
+            {
+                return new ImmediateFirstCallbackToken(this);
+            }
+            return Volatile.Read(ref _currentToken);
+        }
+
+        public void TriggerReload(IDictionary<string, string?> nextValues)
+        {
+            ConfigurationReloadToken previous;
+            lock (_gate)
+            {
+                _values = new Dictionary<string, string?>(nextValues, StringComparer.OrdinalIgnoreCase);
+                previous = Interlocked.Exchange(ref _currentToken, new ConfigurationReloadToken());
+            }
+            previous.OnReload();
+        }
+
+        private IDisposable RegisterFirstToken(Action<object?> callback, object? state)
+        {
+            if (Interlocked.Exchange(ref _signalOnFirstRegister, 0) == 1)
+            {
+                lock (_gate)
+                {
+                    _values = new Dictionary<string, string?>(_reloadedValues, StringComparer.OrdinalIgnoreCase);
+                }
+                SynchronousCallbackFired = true;
+                callback(state);
+                return NoOpDisposable.Instance;
+            }
+            return Volatile.Read(ref _currentToken).RegisterChangeCallback(callback, state);
+        }
+
+        private sealed class ImmediateFirstCallbackToken(SynchronouslySignalingConfiguration owner) : IChangeToken
+        {
+            public bool HasChanged => false;
+            public bool ActiveChangeCallbacks => true;
+            public IDisposable RegisterChangeCallback(Action<object?> callback, object? state)
+                => owner.RegisterFirstToken(callback, state);
+        }
+
+        private sealed class NoOpDisposable : IDisposable
+        {
+            public static NoOpDisposable Instance { get; } = new();
+            public void Dispose() { }
+        }
+
+        private sealed class ConfigurationSectionProxy(SynchronouslySignalingConfiguration root, string path) : IConfigurationSection
+        {
+            public string Key => ConfigurationPath.GetSectionKey(path);
+            public string Path => path;
+            public string? Value
+            {
+                get => root[path];
+                set => root[path] = value;
+            }
+            public string? this[string key]
+            {
+                get => root[ConfigurationPath.Combine(path, key)];
+                set => root[ConfigurationPath.Combine(path, key)] = value;
+            }
+            public IConfigurationSection GetSection(string key) => new ConfigurationSectionProxy(root, ConfigurationPath.Combine(path, key));
+            public IChangeToken GetReloadToken() => root.GetReloadToken();
+            public IEnumerable<IConfigurationSection> GetChildren()
+            {
+                var prefix = path + ConfigurationPath.KeyDelimiter;
+                var childKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                lock (root._gate)
+                {
+                    foreach (var fullKey in root._values.Keys)
+                    {
+                        if (!fullKey.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                        {
+                            continue;
+                        }
+                        var remainder = fullKey[prefix.Length..];
+                        var sepIndex = remainder.IndexOf(ConfigurationPath.KeyDelimiter, StringComparison.Ordinal);
+                        var segment = sepIndex >= 0 ? remainder[..sepIndex] : remainder;
+                        childKeys.Add(segment);
+                    }
+                }
+                return childKeys.Select(segment => new ConfigurationSectionProxy(root, ConfigurationPath.Combine(path, segment)));
+            }
+        }
+    }
+
     private sealed class RotatingHostConfigurationProvider : ConfigurationProvider
     {
         public RotatingHostConfigurationProvider(IDictionary<string, string?> initial)
@@ -2928,16 +3654,19 @@ public sealed class OperatorNotificationStoreTests
     {
         private readonly ManualResetEventSlim? _onLoadStarted;
         private readonly ManualResetEventSlim? _waitBeforeApplyingLoad;
+        private readonly bool _fireOnReloadInsideLoad;
         private Dictionary<string, string?> _staged;
         private bool _armBarrier;
 
         public BarrierReloadConfigurationProvider(
             IDictionary<string, string?> initial,
             ManualResetEventSlim? onLoadStarted = null,
-            ManualResetEventSlim? waitBeforeApplyingLoad = null)
+            ManualResetEventSlim? waitBeforeApplyingLoad = null,
+            bool fireOnReloadInsideLoad = false)
         {
             _onLoadStarted = onLoadStarted;
             _waitBeforeApplyingLoad = waitBeforeApplyingLoad;
+            _fireOnReloadInsideLoad = fireOnReloadInsideLoad;
             _staged = new Dictionary<string, string?>(initial, StringComparer.OrdinalIgnoreCase);
             Data = new Dictionary<string, string?>(initial, StringComparer.OrdinalIgnoreCase);
         }
@@ -2957,6 +3686,10 @@ public sealed class OperatorNotificationStoreTests
                 _waitBeforeApplyingLoad?.Wait(TimeSpan.FromSeconds(10));
             }
             Data = new Dictionary<string, string?>(_staged, StringComparer.OrdinalIgnoreCase);
+            if (_fireOnReloadInsideLoad)
+            {
+                OnReload();
+            }
         }
     }
 
