@@ -645,6 +645,10 @@ public static class PresentationLayerProducers
     // Hard upper cap on allowed epoch difference even for tiny-focal-length all-sky optics while cleanly accepting
     // real request-to-shutter latency (hundreds of milliseconds) and sub-millisecond timing truncation.
     private const double MaximumCompatibleEpochSkewSeconds = 30.0;
+    private const double DegreesToRadians = Math.PI / 180.0;
+    // Bennett's refraction formula is smooth and strictly compressive (0 < d(apparent)/d(geometric) < 1) only on
+    // [-1 deg, 90 deg]; below -1 deg it becomes non-monotonic and singular.
+    private const double BennettMonotoneFloorDegrees = -1.0;
 
     internal static bool AreEpochsCompatibleForScene(
         DateTimeOffset associationEpoch, DateTimeOffset sceneEpoch, ProjectedSceneV1 scene)
@@ -654,10 +658,31 @@ public static class PresentationLayerProducers
             return false;
         if (deltaSeconds == 0)
             return true;
+        var maxAngularShiftRadians = MaximumApparentAngularShiftRadians(deltaSeconds, scene.Refraction);
+        if (!double.IsFinite(maxAngularShiftRadians))
+            return false;
         var maxScalePixelsPerRadian = MaximumDeliveredPixelScalePerRadian(scene);
         return double.IsFinite(maxScalePixelsPerRadian) &&
-            EarthSiderealAngularRateRadiansPerSecond * deltaSeconds * maxScalePixelsPerRadian
-                <= CompatibleSceneCoordinateTolerancePixels;
+            maxAngularShiftRadians * maxScalePixelsPerRadian <= CompatibleSceneCoordinateTolerancePixels;
+    }
+
+    private static double MaximumApparentAngularShiftRadians(double deltaSeconds, RefractionOptions refraction)
+    {
+        var siderealRadians = EarthSiderealAngularRateRadiansPerSecond * deltaSeconds;
+        if (!refraction.Enabled)
+            return siderealRadians;
+        if (refraction.MinimumAltitudeDegrees < BennettMonotoneFloorDegrees)
+            return double.PositiveInfinity;
+        // Crossing MinimumAltitudeDegrees introduces a step jump of |Apply(m) - m|, and Bennett's slight negative
+        // residual at 90 deg adds up to 2*|Apply(90) - 90| across zenith. Over [-1 deg, 0 deg), cos(apparent)/cos(geom)
+        // is bounded above by 1/cos(1 deg).
+        var cutoffJumpDegrees = Math.Abs(
+            AtmosphericRefraction.Apply(refraction.MinimumAltitudeDegrees, refraction) - refraction.MinimumAltitudeDegrees);
+        var zenithOffsetDegrees = 2.0 * Math.Abs(AtmosphericRefraction.Apply(90.0, refraction) - 90.0);
+        if (!double.IsFinite(cutoffJumpDegrees) || !double.IsFinite(zenithOffsetDegrees))
+            return double.PositiveInfinity;
+        var azimuthalScale = 1.0 / Math.Cos(DegreesToRadians);
+        return siderealRadians * azimuthalScale + (cutoffJumpDegrees + zenithOffsetDegrees) * DegreesToRadians;
     }
 
     private static double MaximumDeliveredPixelScalePerRadian(ProjectedSceneV1 scene)

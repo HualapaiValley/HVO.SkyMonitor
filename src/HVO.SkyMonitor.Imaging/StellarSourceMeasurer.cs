@@ -90,6 +90,11 @@ public sealed record StellarMeasurementExclusion(PixelPoint Peak, double PeakAbo
     /// <summary>Inclusive sample bounds of the segmented component. An extended or blended component, such as a transient
     /// streak crossing a star, can cover a location far from its peak; null only for exclusions created outside the measurer.</summary>
     public StellarFootprintBounds? Footprint { get; init; }
+
+    /// <summary>Bounded occupied-cell bitmap over <see cref="Footprint"/> for non-solid excluded components; null when
+    /// every sample in <see cref="Footprint"/> is occupied or for legacy/external exclusions without occupancy data.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public StellarFootprintOccupancy? Occupancy { get; init; }
 }
 
 /// <summary>Inclusive integer sample bounds of a segmented component.</summary>
@@ -99,6 +104,160 @@ public readonly record struct StellarFootprintBounds(int MinX, int MinY, int Max
     public bool Contains(PixelPoint point, double marginPixels) =>
         point.X >= MinX - marginPixels && point.X <= MaxX + 1 + marginPixels &&
         point.Y >= MinY - marginPixels && point.Y <= MaxY + 1 + marginPixels;
+}
+
+/// <summary>
+/// Bounded row-major LSB-first bitmask recording which cells of a <see cref="StellarFootprintBounds"/> contain at
+/// least one segmented sample of the excluded component. Each cell covers <see cref="CellWidth"/> by
+/// <see cref="CellHeight"/> integer samples starting at <c>(Footprint.MinX, Footprint.MinY)</c>.
+/// </summary>
+public sealed record StellarFootprintOccupancy(
+    int Columns,
+    int Rows,
+    int CellWidth,
+    int CellHeight,
+    string BitsBase64)
+{
+    public const int MaximumCells = 2048;
+    public const int MaximumBytes = (MaximumCells + 7) / 8;
+
+    /// <summary>Creates a bounded occupancy bitmap over <paramref name="footprint"/> from an exact pixel predicate.</summary>
+    public static StellarFootprintOccupancy Create(StellarFootprintBounds footprint, Func<int, int, bool> isOccupied)
+    {
+        ArgumentNullException.ThrowIfNull(isOccupied);
+        var width = footprint.MaxX - footprint.MinX + 1;
+        var height = footprint.MaxY - footprint.MinY + 1;
+        if (width <= 0 || height <= 0)
+            throw new ArgumentOutOfRangeException(nameof(footprint));
+        var (columns, rows, cellWidth, cellHeight) = ChooseGrid(width, height);
+        var bits = new byte[(columns * rows + 7) / 8];
+        for (var y = footprint.MinY; y <= footprint.MaxY; y++)
+        {
+            var rowOffset = ((y - footprint.MinY) / cellHeight) * columns;
+            for (var x = footprint.MinX; x <= footprint.MaxX; x++)
+            {
+                if (!isOccupied(x, y)) continue;
+                var bit = rowOffset + (x - footprint.MinX) / cellWidth;
+                bits[bit >> 3] |= (byte)(1 << (bit & 7));
+            }
+        }
+        return new(columns, rows, cellWidth, cellHeight, Convert.ToBase64String(bits));
+    }
+
+    internal static (int Columns, int Rows, int CellWidth, int CellHeight) ChooseGrid(int width, int height)
+    {
+        if ((long)width * height <= MaximumCells)
+            return (width, height, 1, 1);
+        long w = width;
+        long h = height;
+        var step = Math.Max(2L, (long)Math.Ceiling(Math.Sqrt((double)w * h / MaximumCells)));
+        var minSingleAxis = (long)Math.Ceiling((double)Math.Max(w, h) / MaximumCells);
+        if (step < minSingleAxis)
+            step = minSingleAxis;
+        while (true)
+        {
+            var columns = (w + step - 1) / step;
+            var rows = (h + step - 1) / step;
+            if (columns * rows <= MaximumCells)
+                return ((int)columns, (int)rows, (int)Math.Min(step, w), (int)Math.Min(step, h));
+            step++;
+        }
+    }
+
+    /// <summary>Validates dimensions, grid partition, canonical Base64 encoding, zero trailing padding bits, and non-emptiness.</summary>
+    public bool IsValid(StellarFootprintBounds footprint)
+    {
+        var fpWidth = (long)footprint.MaxX - footprint.MinX + 1;
+        var fpHeight = (long)footprint.MaxY - footprint.MinY + 1;
+        if (fpWidth <= 0 || fpHeight <= 0 || Columns <= 0 || Rows <= 0 || CellWidth <= 0 || CellHeight <= 0 ||
+            CellWidth > fpWidth || CellHeight > fpHeight)
+            return false;
+        var cellCount = (long)Columns * Rows;
+        if (cellCount > MaximumCells ||
+            Columns != (fpWidth + CellWidth - 1) / CellWidth ||
+            Rows != (fpHeight + CellHeight - 1) / CellHeight ||
+            string.IsNullOrEmpty(BitsBase64))
+            return false;
+        var expectedBytes = (int)((cellCount + 7) / 8);
+        Span<byte> decoded = stackalloc byte[MaximumBytes];
+        if (!Convert.TryFromBase64String(BitsBase64, decoded, out var written) || written != expectedBytes)
+            return false;
+        var payload = decoded[..written];
+        if (!string.Equals(Convert.ToBase64String(payload), BitsBase64, StringComparison.Ordinal))
+            return false;
+        var remainderBits = (int)(cellCount & 7);
+        if (remainderBits != 0 && (payload[^1] >> remainderBits) != 0)
+            return false;
+        var anySet = false;
+        for (var i = 0; i < payload.Length; i++)
+        {
+            if (payload[i] != 0)
+            {
+                anySet = true;
+                break;
+            }
+        }
+        return anySet;
+    }
+
+    /// <summary>
+    /// Returns the minimum squared Euclidean distance from continuous pixel-edge <paramref name="point"/> to any
+    /// occupied cell within <paramref name="maxRadiusPixels"/>, or <see cref="double.PositiveInfinity"/> if none lies
+    /// within that radius.
+    /// </summary>
+    public double DistanceSquaredToOccupied(StellarFootprintBounds footprint, PixelPoint point, double maxRadiusPixels)
+    {
+        if (!double.IsFinite(point.X) || !double.IsFinite(point.Y) ||
+            !double.IsFinite(maxRadiusPixels) || maxRadiusPixels < 0 ||
+            Columns <= 0 || Rows <= 0 || CellWidth <= 0 || CellHeight <= 0 ||
+            !footprint.Contains(point, maxRadiusPixels))
+            return double.PositiveInfinity;
+        var cellCount = (long)Columns * Rows;
+        if (cellCount > MaximumCells || string.IsNullOrEmpty(BitsBase64))
+            return double.PositiveInfinity;
+        var expectedBytes = (int)((cellCount + 7) / 8);
+        Span<byte> bits = stackalloc byte[MaximumBytes];
+        if (!Convert.TryFromBase64String(BitsBase64, bits, out var written) || written != expectedBytes)
+            return double.PositiveInfinity;
+
+        var startCol = (int)Math.Max(0, Math.Ceiling((point.X - maxRadiusPixels - footprint.MinX) / CellWidth) - 1);
+        var endCol = (int)Math.Min(Columns - 1, Math.Floor((point.X + maxRadiusPixels - footprint.MinX) / CellWidth));
+        var startRow = (int)Math.Max(0, Math.Ceiling((point.Y - maxRadiusPixels - footprint.MinY) / CellHeight) - 1);
+        var endRow = (int)Math.Min(Rows - 1, Math.Floor((point.Y + maxRadiusPixels - footprint.MinY) / CellHeight));
+        if (endCol < startCol || endRow < startRow)
+            return double.PositiveInfinity;
+
+        var maxFootprintX = (long)footprint.MaxX + 1;
+        var maxFootprintY = (long)footprint.MaxY + 1;
+        var maxRadiusSquared = maxRadiusPixels * maxRadiusPixels;
+        var best = double.PositiveInfinity;
+        for (var row = startRow; row <= endRow; row++)
+        {
+            var minY = (long)footprint.MinY + (long)row * CellHeight;
+            var maxY = Math.Min(maxFootprintY, minY + CellHeight);
+            var dy = point.Y < minY ? minY - point.Y : point.Y > maxY ? point.Y - maxY : 0.0;
+            var dy2 = dy * dy;
+            if (dy2 >= best || dy2 > maxRadiusSquared) continue;
+            var rowBase = row * Columns;
+            for (var col = startCol; col <= endCol; col++)
+            {
+                var bit = rowBase + col;
+                if ((bits[bit >> 3] & (1 << (bit & 7))) == 0)
+                    continue;
+                var minX = (long)footprint.MinX + (long)col * CellWidth;
+                var maxX = Math.Min(maxFootprintX, minX + CellWidth);
+                var dx = point.X < minX ? minX - point.X : point.X > maxX ? point.X - maxX : 0.0;
+                var d2 = dx * dx + dy2;
+                if (d2 < best)
+                {
+                    best = d2;
+                    if (best == 0.0)
+                        return 0.0;
+                }
+            }
+        }
+        return best <= maxRadiusSquared ? best : double.PositiveInfinity;
+    }
 }
 
 /// <summary>Owned, immutable measurement output. A budget failure carries no partial detections or exclusions.</summary>
@@ -220,7 +379,7 @@ public static class StellarSourceMeasurer
         // Crowding is resolved after every candidate is classified: a neighbor that is itself a noise artifact cannot
         // contaminate the window, because its samples are already withheld from the measurement.
         var accepted = new List<(StellarDetection Detection, int PeakIndex)>();
-        var exclusions = new List<StellarMeasurementExclusion>();
+        var excludedComponents = new List<(Component Component, string Reason)>();
         foreach (var component in candidates)
         {
             var outcome = outcomes[component.Label];
@@ -235,13 +394,10 @@ public static class StellarSourceMeasurer
             }
             else
             {
-                exclusions.Add(new(new(component.PeakIndex % width + 0.5, component.PeakIndex / width + 0.5),
-                    component.PeakExcess, component.Count, outcome.Reason!)
-                {
-                    Footprint = new(component.MinX, component.MinY, component.MaxX, component.MaxY)
-                });
+                excludedComponents.Add((component, outcome.Reason!));
             }
         }
+        var exclusions = BuildExclusions(excludedComponents, components.Count, labels, width, height, cancellationToken);
         var ordered = accepted
             .OrderByDescending(entry => entry.Detection.Flux)
             .ThenBy(entry => entry.PeakIndex)
@@ -250,6 +406,102 @@ public static class StellarSourceMeasurer
         cancellationToken.ThrowIfCancellationRequested();
         return new(StellarMeasurementStatus.Completed, ordered, exclusions, candidates.Count,
             mesh.TileCount, mesh.AvailableCount, mesh.FilledCount, mesh.MedianBackground, mesh.MedianNoise, identity);
+    }
+
+    private static List<StellarMeasurementExclusion> BuildExclusions(
+        List<(Component Component, string Reason)> excludedComponents,
+        int componentCount,
+        int[] labels,
+        int width,
+        int height,
+        CancellationToken cancellationToken)
+    {
+        var pending = new List<(int ExclusionIndex, Component Component, int Columns, int Rows, int CellWidth, int CellHeight, byte[] Bits)>();
+        var pendingIndexByExclusion = new int[excludedComponents.Count];
+        Array.Fill(pendingIndexByExclusion, -1);
+        long totalBoxArea = 0;
+
+        for (var i = 0; i < excludedComponents.Count; i++)
+        {
+            var component = excludedComponents[i].Component;
+            var fpWidth = component.MaxX - component.MinX + 1;
+            var fpHeight = component.MaxY - component.MinY + 1;
+            var boxArea = (long)fpWidth * fpHeight;
+            if (fpWidth <= 0 || fpHeight <= 0 || component.Count >= boxArea)
+                continue;
+            var (columns, rows, cellWidth, cellHeight) = StellarFootprintOccupancy.ChooseGrid(fpWidth, fpHeight);
+            var bits = new byte[(columns * rows + 7) / 8];
+            pendingIndexByExclusion[i] = pending.Count;
+            pending.Add((i, component, columns, rows, cellWidth, cellHeight, bits));
+            totalBoxArea += boxArea;
+        }
+
+        if (pending.Count > 0)
+        {
+            if (totalBoxArea <= labels.Length)
+            {
+                foreach (var (_, component, columns, _, cellWidth, cellHeight, bits) in pending)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var label = component.Label;
+                    for (var y = component.MinY; y <= component.MaxY; y++)
+                    {
+                        var rowOffset = ((y - component.MinY) / cellHeight) * columns;
+                        var pixelRow = y * width;
+                        for (var x = component.MinX; x <= component.MaxX; x++)
+                        {
+                            if (labels[pixelRow + x] != label) continue;
+                            var bit = rowOffset + (x - component.MinX) / cellWidth;
+                            bits[bit >> 3] |= (byte)(1 << (bit & 7));
+                        }
+                    }
+                }
+            }
+            else
+            {
+                // Bounded worst-case O(width * height) single pass when many large exclusion boxes overlap.
+                var labelToPending = new int[componentCount];
+                Array.Fill(labelToPending, -1);
+                for (var p = 0; p < pending.Count; p++)
+                    labelToPending[pending[p].Component.Label] = p;
+                for (var y = 0; y < height; y++)
+                {
+                    if ((y & 63) == 0)
+                        cancellationToken.ThrowIfCancellationRequested();
+                    var pixelRow = y * width;
+                    for (var x = 0; x < width; x++)
+                    {
+                        var label = labels[pixelRow + x];
+                        if (label <= 0) continue;
+                        var p = labelToPending[label];
+                        if (p < 0) continue;
+                        var item = pending[p];
+                        var bit = ((y - item.Component.MinY) / item.CellHeight) * item.Columns +
+                                  (x - item.Component.MinX) / item.CellWidth;
+                        item.Bits[bit >> 3] |= (byte)(1 << (bit & 7));
+                    }
+                }
+            }
+        }
+
+        var exclusions = new List<StellarMeasurementExclusion>(excludedComponents.Count);
+        for (var i = 0; i < excludedComponents.Count; i++)
+        {
+            var (component, reason) = excludedComponents[i];
+            StellarFootprintOccupancy? occupancy = null;
+            if (pendingIndexByExclusion[i] is var p and >= 0)
+            {
+                var item = pending[p];
+                occupancy = new(item.Columns, item.Rows, item.CellWidth, item.CellHeight, Convert.ToBase64String(item.Bits));
+            }
+            exclusions.Add(new(new(component.PeakIndex % width + 0.5, component.PeakIndex / width + 0.5),
+                component.PeakExcess, component.Count, reason)
+            {
+                Footprint = new(component.MinX, component.MinY, component.MaxX, component.MaxY),
+                Occupancy = occupancy
+            });
+        }
+        return exclusions;
     }
 
     /// <summary>Content identity of the algorithm version and every declared threshold.</summary>

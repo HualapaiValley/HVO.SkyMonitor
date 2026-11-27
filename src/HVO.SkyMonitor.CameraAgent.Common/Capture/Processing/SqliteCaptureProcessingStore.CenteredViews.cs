@@ -72,46 +72,18 @@ internal sealed partial class SqliteCaptureProcessingStore
                product.artifact_id, product.payload_sha256, product.content_identity_sha256,
                output.availability_state, output.availability_reason,
                raw.raw_artifact_id, raw.descriptor_sha256, raw.payload_sha256,
-               output.descriptor_json, node.outputs_json
+               output.descriptor_json, node.outputs_json, exec_output.output_ordinal
         FROM centered_exposure_products product
         JOIN centered_exposure_attempts attempt ON attempt.capture_id = product.capture_id
         JOIN centered_exposure_runs run ON run.run_id = attempt.run_id
         JOIN raw_captures raw ON raw.capture_id = product.capture_id
         LEFT JOIN processing_outputs output ON output.output_identity_sha256 = product.output_identity
         LEFT JOIN processing_execution_nodes node ON node.execution_id = product.execution_id AND node.node_id = product.producer
+        LEFT JOIN processing_execution_outputs exec_output
+            ON exec_output.execution_id = product.execution_id
+            AND exec_output.node_id = product.producer
+            AND exec_output.output_identity_sha256 = product.output_identity
         """;
-
-    internal async ValueTask<IReadOnlyList<(ExposureProductLookup Lookup, CenteredProductSemanticProvenanceV1? Semantics)>>
-        ReadCenteredViewSourcesWithSemanticsAsync(
-            ExposureKey key, Guid executionId, long after, int limit, CancellationToken token)
-    {
-        using var connection = await OpenCenteredViewsAsync(token).ConfigureAwait(false);
-        using var command = connection.CreateCommand();
-        command.CommandText = CenteredProductWithSemanticsProjection + "\n" + """
-            WHERE product.capture_id = $capture AND run.run_id = $run AND run.agent_id = $agent AND run.camera_id = $camera
-                AND product.execution_id = $execution AND product.revision > $after
-            ORDER BY product.revision LIMIT $limit;
-            """;
-        SqliteRawCaptureJournal.AddExposureParameters(command, key);
-        command.Parameters.AddWithValue("$execution", executionId.ToString("N"));
-        command.Parameters.AddWithValue("$after", after);
-        command.Parameters.AddWithValue("$limit", limit);
-        using var reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false);
-        var items = new List<(ExposureProductLookup, CenteredProductSemanticProvenanceV1?)>(limit);
-        while (await reader.ReadAsync(token).ConfigureAwait(false))
-        {
-            var lookup = ReadCenteredLookup(reader, out _);
-            var provenanceJson = await reader.IsDBNullAsync(12, token).ConfigureAwait(false)
-                ? null : await reader.GetFieldValueAsync<byte[]>(12, token).ConfigureAwait(false);
-            var descriptorJson = await reader.IsDBNullAsync(21, token).ConfigureAwait(false)
-                ? null : await reader.GetFieldValueAsync<byte[]>(21, token).ConfigureAwait(false);
-            var outputsJson = await reader.IsDBNullAsync(22, token).ConfigureAwait(false)
-                ? null : reader.GetString(22);
-            var semantics = ResolveProductSemantics(provenanceJson, descriptorJson, outputsJson, lookup.Slot.Variant);
-            items.Add((lookup, semantics));
-        }
-        return items;
-    }
 
     internal async ValueTask<CenteredProductSemanticProvenanceV1?> ReadCenteredProductSemanticsAsync(
         ExposureKey key, ExposureProductSlot slot, CancellationToken token)
@@ -119,12 +91,16 @@ internal sealed partial class SqliteCaptureProcessingStore
         using var connection = await OpenCenteredViewsAsync(token).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT product.provenance_json, output.descriptor_json, node.outputs_json
+            SELECT product.provenance_json, output.descriptor_json, node.outputs_json, exec_output.output_ordinal
             FROM centered_exposure_products product
             JOIN centered_exposure_attempts attempt ON attempt.capture_id = product.capture_id
             JOIN centered_exposure_runs run ON run.run_id = attempt.run_id
             LEFT JOIN processing_outputs output ON output.output_identity_sha256 = product.output_identity
             LEFT JOIN processing_execution_nodes node ON node.execution_id = product.execution_id AND node.node_id = product.producer
+            LEFT JOIN processing_execution_outputs exec_output
+                ON exec_output.execution_id = product.execution_id
+                AND exec_output.node_id = product.producer
+                AND exec_output.output_identity_sha256 = product.output_identity
             WHERE product.capture_id = $capture AND run.run_id = $run AND run.agent_id = $agent AND run.camera_id = $camera
                 AND product.execution_id = $execution AND product.producer = $producer
                 AND product.schema_version = $schema AND product.variant = $variant
@@ -144,14 +120,27 @@ internal sealed partial class SqliteCaptureProcessingStore
             ? null : await reader.GetFieldValueAsync<byte[]>(1, token).ConfigureAwait(false);
         var outputsJson = await reader.IsDBNullAsync(2, token).ConfigureAwait(false)
             ? null : reader.GetString(2);
-        return ResolveProductSemantics(provenanceJson, descriptorJson, outputsJson, slot.Variant);
+        var outputOrdinal = await reader.IsDBNullAsync(3, token).ConfigureAwait(false)
+            ? (int?)null : reader.GetInt32(3);
+        return ResolveProductSemantics(provenanceJson, descriptorJson, outputsJson, slot.Variant, outputOrdinal);
     }
 
     private static CenteredProductSemanticProvenanceV1? ResolveProductSemantics(
-        byte[]? provenanceJson, byte[]? descriptorJson, string? outputsJson, string variant) =>
-        CenteredProductSemanticProvenanceV1.TryParse(provenanceJson)
-            ?? CenteredProductSemanticProvenanceV1.TryParseFromDescriptorJson(descriptorJson)
-            ?? CenteredProductSemanticProvenanceV1.TryParseFromNodeOutputsJson(outputsJson, variant);
+        byte[]? provenanceJson, byte[]? descriptorJson, string? outputsJson, string variant, int? outputOrdinal)
+    {
+        if (CenteredProductSemanticProvenanceV1.TryParse(provenanceJson) is { } stored)
+            return stored;
+        var fromDescriptor = CenteredProductSemanticProvenanceV1.TryParseFromDescriptorJson(descriptorJson);
+        var fromNodeOutputs = CenteredProductSemanticProvenanceV1.TryParseFromNodeOutputsJson(
+            outputsJson, variant, out var nodePortIndex);
+        var recipeName = fromDescriptor?.RecipeName ?? fromNodeOutputs?.RecipeName;
+        var implementationVersion = fromDescriptor?.RecipeImplementationVersion ?? fromNodeOutputs?.RecipeImplementationVersion;
+        if (recipeName is null && implementationVersion is null)
+            return null;
+        var layerKinds = CenteredViewLayerBindings.InferPresentationLayerKinds(
+            recipeName, implementationVersion, nodePortIndex ?? outputOrdinal);
+        return new(CenteredProductSemanticProvenanceV1.CurrentSchemaVersion, null, recipeName, implementationVersion, layerKinds);
+    }
 
     private static async ValueTask PreserveCenteredProductSemanticsBeforeDeleteAsync(
         SqliteTransaction transaction, string outputIdentity, CancellationToken cancellationToken)
@@ -162,9 +151,15 @@ internal sealed partial class SqliteCaptureProcessingStore
         {
             select.Transaction = transaction;
             select.CommandText = """
-                SELECT product.revision, output.descriptor_json
+                SELECT product.revision, product.variant, output.descriptor_json, node.outputs_json, exec_output.output_ordinal
                 FROM centered_exposure_products product
                 JOIN processing_outputs output ON output.output_identity_sha256 = product.output_identity
+                LEFT JOIN processing_execution_nodes node
+                    ON node.execution_id = product.execution_id AND node.node_id = product.producer
+                LEFT JOIN processing_execution_outputs exec_output
+                    ON exec_output.execution_id = product.execution_id
+                    AND exec_output.node_id = product.producer
+                    AND exec_output.output_identity_sha256 = product.output_identity
                 WHERE product.output_identity = $output
                     AND product.provenance_json IS NULL
                     AND product.schema_version <> $linear
@@ -176,9 +171,14 @@ internal sealed partial class SqliteCaptureProcessingStore
             using var reader = await select.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                var descriptorJson = await reader.IsDBNullAsync(1, cancellationToken).ConfigureAwait(false)
-                    ? null : await reader.GetFieldValueAsync<byte[]>(1, cancellationToken).ConfigureAwait(false);
-                if (CenteredProductSemanticProvenanceV1.TryParseFromDescriptorJson(descriptorJson) is { } semantics)
+                var variant = reader.GetString(1);
+                var descriptorJson = await reader.IsDBNullAsync(2, cancellationToken).ConfigureAwait(false)
+                    ? null : await reader.GetFieldValueAsync<byte[]>(2, cancellationToken).ConfigureAwait(false);
+                var outputsJson = await reader.IsDBNullAsync(3, cancellationToken).ConfigureAwait(false)
+                    ? null : reader.GetString(3);
+                var outputOrdinal = await reader.IsDBNullAsync(4, cancellationToken).ConfigureAwait(false)
+                    ? (int?)null : reader.GetInt32(4);
+                if (ResolveProductSemantics(null, descriptorJson, outputsJson, variant, outputOrdinal) is { } semantics)
                     toPreserve.Add((reader.GetInt64(0), semantics.Serialize()));
             }
         }
@@ -221,7 +221,9 @@ internal sealed partial class SqliteCaptureProcessingStore
                 ? null : await reader.GetFieldValueAsync<byte[]>(21, token).ConfigureAwait(false);
             var outputsJson = await reader.IsDBNullAsync(22, token).ConfigureAwait(false)
                 ? null : reader.GetString(22);
-            var semantics = ResolveProductSemantics(provenanceJson, descriptorJson, outputsJson, lookup.Slot.Variant);
+            var outputOrdinal = await reader.IsDBNullAsync(23, token).ConfigureAwait(false)
+                ? (int?)null : reader.GetInt32(23);
+            var semantics = ResolveProductSemantics(provenanceJson, descriptorJson, outputsJson, lookup.Slot.Variant, outputOrdinal);
             entries.Add((lookup, semantics));
         }
         return CenteredViewLayerBindings.BuildRecoveredBindings(entries, authoritativeResolution);
@@ -257,7 +259,7 @@ internal sealed partial class SqliteCaptureProcessingStore
                             )
                         )
                     )
-                ORDER BY node.rowid
+                ORDER BY node.node_id COLLATE BINARY, CAST(output.key AS INTEGER)
                 LIMIT 1;
                 """;
             nodeCommand.Parameters.AddWithValue("$execution", executionId.ToString("N"));
@@ -284,8 +286,12 @@ internal sealed partial class SqliteCaptureProcessingStore
                                 OR json_extract(CAST(product.provenance_json AS TEXT), '$.stepAlias') IS NOT NULL
                             )
                         THEN CASE
-                            WHEN json_extract(CAST(product.provenance_json AS TEXT), '$.recipeName') = $recipe
-                                OR json_extract(CAST(product.provenance_json AS TEXT), '$.stepAlias') = $producer
+                            WHEN (json_extract(CAST(product.provenance_json AS TEXT), '$.recipeName') = $recipe
+                                  OR json_extract(CAST(product.provenance_json AS TEXT), '$.stepAlias') = $producer)
+                                AND NOT (
+                                    json_type(CAST(product.provenance_json AS TEXT), '$.layerKinds') = 'array'
+                                    AND json_array_length(CAST(product.provenance_json AS TEXT), '$.layerKinds') = 0
+                                )
                             THEN 0
                             ELSE -1
                         END
@@ -302,7 +308,7 @@ internal sealed partial class SqliteCaptureProcessingStore
                                 json_extract(CAST(output.descriptor_json AS TEXT), '$.descriptor.artifact.recipe.name'),
                                 json_extract(CAST(output.descriptor_json AS TEXT), '$.Artifact.Recipe.Name')
                             ) = $recipe
-                            THEN 1
+                            THEN 0
                             ELSE -1
                         END
                         WHEN node.outputs_json IS NOT NULL
@@ -318,15 +324,15 @@ internal sealed partial class SqliteCaptureProcessingStore
                                 WHERE COALESCE(json_extract(nout.value, '$.variant'), json_extract(nout.value, '$.Variant')) = product.variant
                                   AND COALESCE(json_extract(nout.value, '$.recipe.name'), json_extract(nout.value, '$.Recipe.Name')) = $recipe
                             )
-                            THEN 1
+                            THEN 0
                             ELSE -1
                         END
-                        WHEN product.schema_version IN ($dispV1, $dispV2) THEN 2
-                        WHEN product.producer = $producer OR product.variant = $variant THEN 3
+                        WHEN product.schema_version IN ($dispV1, $dispV2) THEN 0
+                        WHEN product.producer = $producer OR product.variant = $variant THEN 1
                         WHEN output.output_identity_sha256 IS NULL
                             OR product.disposition <> 'Available'
                             OR output.availability_state <> 'Available'
-                        THEN 4
+                        THEN 2
                         ELSE -1
                     END AS match_rank
                 FROM centered_exposure_products product
@@ -342,7 +348,7 @@ internal sealed partial class SqliteCaptureProcessingStore
             SELECT producer, variant, match_rank
             FROM candidates
             WHERE match_rank >= 0
-            ORDER BY match_rank, revision
+            ORDER BY match_rank, producer COLLATE BINARY, revision, variant COLLATE BINARY
             LIMIT 1;
             """;
         SqliteRawCaptureJournal.AddExposureParameters(productCommand, key);
@@ -359,7 +365,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         if (!await productReader.ReadAsync(token).ConfigureAwait(false))
             return CenteredAuthoritativeAssociationResolution.None;
         var writer = new CenteredAuthoritativeAssociationWriter(productReader.GetString(0), productReader.GetString(1));
-        return productReader.GetInt32(2) == 4
+        return productReader.GetInt32(2) == 2
             ? CenteredAuthoritativeAssociationResolution.UnidentifiableExpired(writer)
             : CenteredAuthoritativeAssociationResolution.Resolved(writer);
     }

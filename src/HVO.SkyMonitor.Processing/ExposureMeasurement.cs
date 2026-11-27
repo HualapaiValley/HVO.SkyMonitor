@@ -420,7 +420,10 @@ public static class ExposureMeasurementProducts
                 throw Invalid("detection");
         }
         if (sources.Exclusions.Any(item => item is null || measuredLayout is null || !Inside(item.Peak, measuredLayout) ||
-                !StellarExclusionReasons.All.Contains(item.ReasonCode) || item.SampleCount <= 0))
+                !StellarExclusionReasons.All.Contains(item.ReasonCode) || item.SampleCount <= 0 ||
+                item.Footprint is { } fp && (fp.MinX < 0 || fp.MinY < 0 || fp.MaxX < fp.MinX || fp.MaxY < fp.MinY ||
+                    fp.MaxX >= measuredLayout.Width || fp.MaxY >= measuredLayout.Height) ||
+                item.Occupancy is { } occ && (item.Footprint is not { } occFp || !occ.IsValid(occFp))))
             throw Invalid("exclusion");
 
         ValidateFocus(sources, hfd, measuredLayout, policy);

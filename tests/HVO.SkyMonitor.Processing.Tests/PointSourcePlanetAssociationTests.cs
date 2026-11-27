@@ -2566,13 +2566,17 @@ public sealed class PointSourcePlanetAssociationTests
         };
         var cx = (int)Math.Floor(jupiter.Pixel.X);
         var cy = (int)Math.Floor(jupiter.Pixel.Y);
+        var discBounds = new StellarFootprintBounds(cx - 5, cy - 5, cx + 5, cy + 5);
         var compactDisc = new StellarMeasurementExclusion(new(cx + 0.5, cy - 5 + 0.5), 64_000, 81, StellarExclusionReasons.SaturatedExcessive)
         {
-            Footprint = new(cx - 5, cy - 5, cx + 5, cy + 5) // 81 / 121 = 66.9% >= 50% (compact)
+            Footprint = discBounds,
+            Occupancy = StellarFootprintOccupancy.Create(discBounds, (x, y) => (x - cx) * (x - cx) + (y - cy) * (y - cy) <= 25)
         };
+        var trailBounds = new StellarFootprintBounds(cx - 20, cy - 2, cx + 20, cy + 2);
         var compactTrail = new StellarMeasurementExclusion(new(cx - 20 + 0.5, cy + 0.5), 12_000, 185, StellarExclusionReasons.TrailTooLong)
         {
-            Footprint = new(cx - 20, cy - 2, cx + 20, cy + 2) // 185 / 205 = 90.2% >= 50% (compact)
+            Footprint = trailBounds,
+            Occupancy = StellarFootprintOccupancy.Create(trailBounds, static (_, _) => true)
         };
         foreach (var compact in new[] { compactDisc, compactTrail })
         {
@@ -2583,13 +2587,405 @@ public sealed class PointSourcePlanetAssociationTests
                 Assert.ContainsSingle(withheld.PointSourcePlanets.UnmatchedPredictions).ReasonCode);
         }
 
+        var ringBounds = new StellarFootprintBounds(cx - 22, cy - 22, cx + 22, cy + 22);
         var hollowRing = new StellarMeasurementExclusion(new(cx + 22 + 0.5, cy + 0.5), 12_000, 500, StellarExclusionReasons.ExtendedRegion)
         {
-            Footprint = new(cx - 22, cy - 22, cx + 22, cy + 22) // 500 / 2025 = 24.7% < 50% (hollow)
+            Footprint = ringBounds,
+            Occupancy = StellarFootprintOccupancy.Create(ringBounds, (x, y) =>
+            {
+                var r2 = (x - cx) * (x - cx) + (y - cy) * (y - cy);
+                return r2 >= 18 * 18 && r2 <= 22 * 22;
+            })
         };
         var preserved = MeasuredStellarAssociator.Associate(
             scene, [nearbyDet with { Pixel = jupiter.Pixel }], [hollowRing], true, settings, new(), CancellationToken.None);
         Assert.AreEqual("solar-system:Jupiter", Assert.ContainsSingle(preserved.PointSourcePlanets!.Associations).ObjectId);
+    }
+
+    [TestMethod]
+    [DataRow(ProjectionModel.EquidistantFisheye)]
+    [DataRow(ProjectionModel.Perspective)]
+    public async Task CrossSceneCompatibilityRejectsRefractionCutoffCrossingOnEpochSkew(ProjectionModel model)
+    {
+        // Astra D6-M1: a 1-second epoch skew crossing an enabled 10 deg atmospheric-refraction cutoff
+        // (AtmosphericRefraction.cs:34) causes a > 0.5 px step jump in apparent altitude (~0.79-1.10 px at f=500 px).
+        // AreEpochsCompatibleForScene / IsCompatibleWithScene must reject non-zero skew whenever enabled refraction's
+        // cutoff discontinuity can exceed 0.5 px, while still accepting exact deltaSeconds == 0 and safe controls.
+        const int frameSize = 1600;
+        const double focal = 500.0;
+        var refraction10 = new RefractionOptions(Enabled: true, MinimumAltitudeDegrees: 10.0);
+        var proj = model == ProjectionModel.EquidistantFisheye
+            ? new ProjectionContext(ProjectionModel.EquidistantFisheye, frameSize / 2d, frameSize / 2d, focal, focal,
+                frameSize, frameSize, ProjectionAperture.Circular, ImageCircleRadiusPixels: focal * (Math.PI / 2.0),
+                BoresightAltitudeDegrees: Site.LatitudeDegrees, BoresightAzimuthDegrees: 0.0)
+            : new ProjectionContext(ProjectionModel.Perspective, frameSize / 2d, frameSize / 2d, focal, focal,
+                frameSize, frameSize, ProjectionAperture.Rectangular,
+                BoresightAltitudeDegrees: 25.0, BoresightAzimuthDegrees: 90.0);
+
+        // Place one shared star away from the 10 deg cutoff and one prediction-only rising star at az=90 deg,
+        // geometric alt just below 10 deg at t0 so it crosses 10 deg within +1 s and jumps > 0.78 px.
+        var sharedAltAz = new AltAzPoint(proj.BoresightAltitudeDegrees, proj.BoresightAzimuthDegrees);
+        var sharedEq = EquatorialPrecession.PrecessToJ2000(
+            CoordinateTransforms.HorizontalToEquatorial(sharedAltAz, ExposureMidpointUtc, Site.LatitudeDegrees, Site.LongitudeDegrees),
+            ExposureMidpointUtc);
+        var sharedStar = new CelestialCatalogObject("star:refraction-shared", "Refraction Shared",
+            sharedEq.RightAscensionHours, sharedEq.DeclinationDegrees, 1.5);
+
+        // At east azimuth (90 deg), altitude rises at omega * cos(lat) ~ 12.3 arcsec/s ~ 0.0034 deg/s;
+        // starting at 9.9985 deg crosses 10.0 deg cleanly inside +1.0 s.
+        var cutoffStart = new AltAzPoint(9.9985, 90.0);
+        var cutoffEq = EquatorialPrecession.PrecessToJ2000(
+            CoordinateTransforms.HorizontalToEquatorial(cutoffStart, ExposureMidpointUtc, Site.LatitudeDegrees, Site.LongitudeDegrees),
+            ExposureMidpointUtc);
+        var cutoffStar = new CelestialCatalogObject("star:refraction-cutoff", "Refraction Cutoff",
+            cutoffEq.RightAscensionHours, cutoffEq.DeclinationDegrees, 1.8);
+        var meta = new CatalogMetadata("fixture", "1", new Uri("https://example.test/catalog"), new string('C', 64), "test", "v1");
+
+        var predVisible = await new VisibleSceneBuilder(new InMemoryCelestialCatalog([sharedStar, cutoffStar]))
+            .BuildAsync(new VisibleSceneRequest(ExposureMidpointUtc, Site, proj, new CatalogQuery(6.5, 100), meta,
+                refraction: refraction10, projectionVersion: "calibration-v1")).ConfigureAwait(false);
+        var t1Visible = await new VisibleSceneBuilder(new InMemoryCelestialCatalog([sharedStar, cutoffStar]))
+            .BuildAsync(new VisibleSceneRequest(ExposureMidpointUtc.AddSeconds(1), Site, proj, new CatalogQuery(6.5, 100), meta,
+                refraction: refraction10, projectionVersion: "rig-projection-v1")).ConfigureAwait(false);
+        var sharedT0 = predVisible.Objects.Single(static o => o.Id == "star:refraction-shared");
+        var sharedT1 = t1Visible.Objects.Single(static o => o.Id == "star:refraction-shared");
+        var cutoffT0 = predVisible.Objects.Single(static o => o.Id == "star:refraction-cutoff");
+        var cutoffT1 = t1Visible.Objects.Single(static o => o.Id == "star:refraction-cutoff");
+        Assert.IsLessThan(10.0, cutoffT0.GeometricHorizontal.AltitudeDegrees);
+        Assert.IsGreaterThanOrEqualTo(10.0, cutoffT1.GeometricHorizontal.AltitudeDegrees);
+        var sharedDelta = double.Hypot(sharedT1.Pixel.X - sharedT0.Pixel.X, sharedT1.Pixel.Y - sharedT0.Pixel.Y);
+        var cutoffDelta = double.Hypot(cutoffT1.Pixel.X - cutoffT0.Pixel.X, cutoffT1.Pixel.Y - cutoffT0.Pixel.Y);
+        Assert.IsLessThan(0.1, sharedDelta, $"{model}: shared star should move < 0.1 px over 1 s (got {sharedDelta:F5}).");
+        Assert.IsGreaterThan(0.75, cutoffDelta, $"{model}: 10 deg refraction-cutoff crossing must jump > 0.75 px (got {cutoffDelta:F5}).");
+
+        // Build retained exposure association at t0 with only sharedStar present (cutoffStar absent -> diagnostic marker).
+        var rawSamples = Field(frameSize, frameSize);
+        AddNoise(rawSamples, 52677, 2.0);
+        AddGaussian(rawSamples, sharedT0.Pixel, 1.25, 18_000, frameSize);
+        var rawBase = RawArtifact(rawSamples, CameraPixelFormat.Mono16, frameSize, frameSize);
+        var raw = rawBase with
+        {
+            Layout = rawBase.Layout! with
+            {
+                BlackLevel = 0,
+                StoredCodeTransform = FrameStoredCodeTransform.IdentityV1,
+                LevelCodeSpace = FrameLevelCodeSpace.StoredContainer
+            },
+            CreatedUtc = ExposureMidpointUtc,
+            ObservationStartedUtc = ExposureMidpointUtc.AddMilliseconds(-500),
+            ObservationEndedUtc = ExposureMidpointUtc.AddMilliseconds(500)
+        };
+        var executor = new ProcessingRecipeExecutor();
+        var linearOutcome = await executor.ExecuteAsync(new ProcessingExecutionRequest(
+            BuiltInProcessingRecipes.LinearNormalization,
+            JsonSerializer.SerializeToElement(new LinearNormalizationOptions()),
+            ProcessingInputSelector.Raw(raw.Variant), [raw], "qualified-linear-v1")).ConfigureAwait(false);
+        var linear = ToArtifact(linearOutcome.Products.Single(), raw);
+        var expectedInput = new ExposureMeasurementInputV1(
+            new(CaptureId, raw.ArtifactId, DescriptorIdentity, ProcessingIdentity.ComputePayloadSha256(raw.Payload), raw.RecipeIdentitySha256, null, raw.Layout!),
+            new(CaptureId, linear.ArtifactId, DescriptorIdentity, ProcessingIdentity.ComputePayloadSha256(linear.Payload), linear.RecipeIdentitySha256, linear.ContentIdentitySha256, linear.Layout!),
+            ExposureCalibrationDisposition.NormalizationOnly, null, "orientation-v1",
+            RigOrientation: new(proj.BoresightAltitudeDegrees, proj.BoresightAzimuthDegrees, proj.RollDegrees),
+            ApertureProjection: proj, Exposure: new(new("agent", "cam"), Guid.NewGuid(), CaptureId),
+            OpticalCalibrationVersion: "calibration-v1", Step3Disposition: LinearExposureDisposition.QualifiedNormalizationOnly, Step3Revision: 1);
+        var step4 = await executor.ExecuteAsync(ExposureMeasurementProducts.Request(expectedInput, raw, linear)).ConfigureAwait(false);
+        var step4Artifact = ToArtifact(step4.Products.Single(), raw);
+
+        var source = new ProjectedSceneSource(CaptureId, raw.ArtifactId, DescriptorIdentity);
+        var predScene = ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, predVisible,
+            ProjectedSceneImageTransformV1.Identity(frameSize, frameSize), source, "calibration-v1", "calibration-v1");
+        var sceneOutcome = await executor.ExecuteAsync(ExposureCatalogPredictionProducts.Request(raw, predScene)).ConfigureAwait(false);
+        var sceneArtifact = ToArtifact(sceneOutcome.Products.Single(), raw);
+        var associated = ExposureAssociationProducts.Associate(raw, step4Artifact, expectedInput, sceneArtifact, ExposureAssociationProducts.Variant);
+        var assocArtifact = ToArtifact(associated.Products.Single(), raw);
+        var evidence = MeasuredStellarAssociationJson.Parse(assocArtifact.Payload).Associations!;
+        Assert.AreEqual("star:refraction-shared", Assert.ContainsSingle(evidence.Associations).CatalogId);
+        Assert.AreEqual("star:refraction-cutoff", Assert.ContainsSingle(evidence.UnmatchedPredictions).CatalogId);
+
+        async Task<ProjectedSceneV1> BuildRenderAsync(DateTimeOffset epoch, RefractionOptions refraction)
+        {
+            var visible = await new VisibleSceneBuilder(new InMemoryCelestialCatalog([sharedStar]))
+                .BuildAsync(new VisibleSceneRequest(epoch, Site, proj, new CatalogQuery(6.5, 100), meta,
+                    refraction: refraction, projectionVersion: "rig-projection-v1")).ConfigureAwait(false);
+            return ProjectedSceneJson.Create(ProjectedSceneKind.VirtualRenderAuthoritative, visible,
+                ProjectedSceneImageTransformV1.Identity(frameSize, frameSize), source, "calibration-v1", "rig-projection-v1");
+        }
+
+        // 1 s skew crossing the 10 deg refraction cutoff MUST fail closed!
+        var render1s = await BuildRenderAsync(ExposureMidpointUtc.AddSeconds(1), refraction10).ConfigureAwait(false);
+        Assert.IsFalse(PresentationLayerProducers.AreEpochsCompatibleForScene(ExposureMidpointUtc, ExposureMidpointUtc.AddSeconds(1), render1s),
+            $"{model}: 1 s skew with enabled 10 deg refraction cutoff must be rejected.");
+        Assert.IsFalse(ExposureAssociationProducts.IsCompatibleWithScene(assocArtifact, evidence, render1s),
+            $"{model}: IsCompatibleWithScene must reject 1 s skew crossing enabled 10 deg refraction cutoff.");
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            MeasuredAssociationPresentation.CreateExpectedNotDetectedPayload(render1s, evidence, allowCompatibleExposureAssociations: true));
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            PresentationLayerProducers.FromProjectedSceneGroupsV2(render1s, associations: evidence,
+                expectedPositionDiagnostics: false, allowCompatibleExposureAssociations: true));
+
+        // Exact epoch (deltaSeconds == 0) with enabled 10 deg refraction MUST still pass!
+        var renderExact = await BuildRenderAsync(ExposureMidpointUtc, refraction10).ConfigureAwait(false);
+        Assert.IsTrue(PresentationLayerProducers.AreEpochsCompatibleForScene(ExposureMidpointUtc, ExposureMidpointUtc, renderExact));
+        Assert.IsTrue(ExposureAssociationProducts.IsCompatibleWithScene(assocArtifact, evidence, renderExact),
+            $"{model}: exact zero epoch skew with enabled refraction must remain compatible.");
+        Assert.ContainsSingle(MeasuredAssociationPresentation.CreateExpectedNotDetectedPayload(
+            renderExact, evidence, allowCompatibleExposureAssociations: true).Markers);
+
+        // Disabled refraction control: +1 s skew stays compatible when refraction is disabled.
+        var renderDisabled = await BuildRenderAsync(ExposureMidpointUtc.AddSeconds(1), new RefractionOptions(Enabled: false, MinimumAltitudeDegrees: 10.0)).ConfigureAwait(false);
+        Assert.IsTrue(PresentationLayerProducers.AreEpochsCompatibleForScene(ExposureMidpointUtc, ExposureMidpointUtc.AddSeconds(1), renderDisabled),
+            $"{model}: refraction-disabled +1 s skew must remain compatible.");
+
+        // Below Bennett's -1 deg monotone floor: exact epoch passes, non-zero skew fails closed.
+        var renderBelowFloor = await BuildRenderAsync(ExposureMidpointUtc, new RefractionOptions(Enabled: true, MinimumAltitudeDegrees: -5.0)).ConfigureAwait(false);
+        Assert.IsTrue(PresentationLayerProducers.AreEpochsCompatibleForScene(ExposureMidpointUtc, ExposureMidpointUtc, renderBelowFloor));
+        Assert.IsFalse(PresentationLayerProducers.AreEpochsCompatibleForScene(ExposureMidpointUtc, ExposureMidpointUtc.AddMilliseconds(1), renderBelowFloor));
+
+        // Safe high cutoff on short focal length where cutoff jump + sidereal <= 0.5 px remains compatible.
+        var lowFocalProj = new ProjectionContext(ProjectionModel.OrthographicFisheye, 256, 256, 200, 200, 512, 512,
+            ProjectionAperture.Circular, ImageCircleRadiusPixels: 200.0);
+        var safeHighCutoffVisible = await new VisibleSceneBuilder(new InMemoryCelestialCatalog([]))
+            .BuildAsync(new VisibleSceneRequest(ExposureMidpointUtc, Site, lowFocalProj, new CatalogQuery(6.5, 100), meta,
+                refraction: new RefractionOptions(Enabled: true, MinimumAltitudeDegrees: 45.0), projectionVersion: "rig-projection-v1")).ConfigureAwait(false);
+        var safeHighCutoffScene = ProjectedSceneJson.Create(ProjectedSceneKind.VirtualRenderAuthoritative, safeHighCutoffVisible,
+            ProjectedSceneImageTransformV1.Identity(512, 512), source, "calibration-v1", "rig-projection-v1");
+        Assert.IsTrue(PresentationLayerProducers.AreEpochsCompatibleForScene(
+            ExposureMidpointUtc, ExposureMidpointUtc.AddSeconds(1), safeHighCutoffScene),
+            "High refraction cutoff whose worst-case step + sidereal shift stays under 0.5 px should stay compatible.");
+    }
+
+    [TestMethod]
+    public async Task OccupiedPixelProximityPreservesPlanetInFilledHollowRingAndExcludesDiagonalStreak()
+    {
+        // Astra D6-M3 + Opus D6-L4: exact occupied-pixel proximity must replace the 50% bounding-box fill-ratio
+        // heuristic so:
+        // 1. A hollow ring (r_in=14 px, r_out=30 px, bounding-box fill > 50%) around an isolated bright Jupiter
+        //    never suppresses Jupiter (and reports no-measured-source when Jupiter is absent).
+        // 2. A filled 45-degree diagonal streak crossing right over Jupiter's prediction (bounding-box fill < 50%)
+        //    always withholds/excludes Jupiter as measurement-excluded:* (never no-measured-source), both via direct
+        //    Mono16 association and after ExposureMeasurementV1 JSON round-trip.
+        var ephemeris = new AstronomyEnginePlanetEphemeris();
+        const int frameSize = 256;
+        var position = ephemeris.GetPosition(SolarSystemBody.Jupiter, ExposureMidpointUtc);
+        var jupiterAltAz = CoordinateTransforms.EquatorialToHorizontal(
+            EquatorialPrecession.PrecessJ2000(position.EquatorialJ2000, ExposureMidpointUtc),
+            ExposureMidpointUtc, Site.LatitudeDegrees, Site.LongitudeDegrees);
+        var proj = new ProjectionContext(ProjectionModel.Perspective, frameSize / 2d, frameSize / 2d, 500, 500,
+            frameSize, frameSize, ProjectionAperture.Rectangular,
+            BoresightAltitudeDegrees: jupiterAltAz.AltitudeDegrees,
+            BoresightAzimuthDegrees: jupiterAltAz.AzimuthDegrees);
+        var visible = await new VisibleSceneBuilder(new InMemoryCelestialCatalog([]), null, ephemeris)
+            .BuildAsync(new VisibleSceneRequest(ExposureMidpointUtc, Site, proj, new CatalogQuery(6.5, 100),
+                new CatalogMetadata("fixture", "1", new Uri("https://example.test/catalog"), new string('C', 64), "test", "v1"),
+                projectionVersion: "perspective-v1", solarSystemBodies: [SolarSystemBody.Jupiter])).ConfigureAwait(false);
+        var scene = ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, visible,
+            ProjectedSceneImageTransformV1.Identity(frameSize, frameSize),
+            new ProjectedSceneSource(CaptureId, ArtifactId, DescriptorIdentity), "calibration-v1", "perspective-v1");
+        var jupiter = scene.Objects.Single(static o => o.Id == "solar-system:Jupiter");
+        var validMask = new bool[frameSize * frameSize];
+        Array.Fill(validMask, true);
+
+        async Task<(MeasuredStellarAssociationsV1 Evidence, ProjectedSceneV1 Scene)> RunViaExposureMeasurementRoundTripAsync(double[] samples)
+        {
+            var rawBase = RawArtifact(samples, CameraPixelFormat.Mono16, frameSize, frameSize);
+            var raw = rawBase with
+            {
+                Layout = rawBase.Layout! with
+                {
+                    BlackLevel = 0,
+                    StoredCodeTransform = FrameStoredCodeTransform.IdentityV1,
+                    LevelCodeSpace = FrameLevelCodeSpace.StoredContainer
+                },
+                CreatedUtc = ExposureMidpointUtc,
+                ObservationStartedUtc = ExposureMidpointUtc.AddMilliseconds(-500),
+                ObservationEndedUtc = ExposureMidpointUtc.AddMilliseconds(500)
+            };
+            var executor = new ProcessingRecipeExecutor();
+            var linearOutcome = await executor.ExecuteAsync(new ProcessingExecutionRequest(
+                BuiltInProcessingRecipes.LinearNormalization,
+                JsonSerializer.SerializeToElement(new LinearNormalizationOptions()),
+                ProcessingInputSelector.Raw(raw.Variant), [raw], "qualified-linear-v1")).ConfigureAwait(false);
+            var linear = ToArtifact(linearOutcome.Products.Single(), raw);
+            var expectedInput = new ExposureMeasurementInputV1(
+                new(CaptureId, raw.ArtifactId, DescriptorIdentity, ProcessingIdentity.ComputePayloadSha256(raw.Payload), raw.RecipeIdentitySha256, null, raw.Layout!),
+                new(CaptureId, linear.ArtifactId, DescriptorIdentity, ProcessingIdentity.ComputePayloadSha256(linear.Payload), linear.RecipeIdentitySha256, linear.ContentIdentitySha256, linear.Layout!),
+                ExposureCalibrationDisposition.NormalizationOnly, null, "orientation-v1",
+                RigOrientation: new(proj.BoresightAltitudeDegrees, proj.BoresightAzimuthDegrees, proj.RollDegrees),
+                ApertureProjection: proj, Exposure: new(new("agent", "cam"), Guid.NewGuid(), CaptureId),
+                OpticalCalibrationVersion: "calibration-v1", Step3Disposition: LinearExposureDisposition.QualifiedNormalizationOnly, Step3Revision: 1);
+            var step4 = await executor.ExecuteAsync(ExposureMeasurementProducts.Request(expectedInput, raw, linear)).ConfigureAwait(false);
+            var step4Artifact = ToArtifact(step4.Products.Single(), raw);
+            var roundTripped = ExposureMeasurementProducts.Read(step4Artifact, expectedInput);
+            Assert.IsTrue(roundTripped.Sources.Exclusions.Any(static e => e.Occupancy is not null),
+                "ExposureMeasurementV1 JSON round-trip must preserve non-solid exclusion Occupancy.");
+            var predScene = scene with
+            {
+                Projection = scene.Projection with { AlgorithmVersion = "calibration-v1" },
+                Objects = scene.Objects.Select(static o => o with { ProjectionVersion = "calibration-v1" }).ToArray(),
+                Source = new(CaptureId, raw.ArtifactId, DescriptorIdentity)
+            };
+            predScene = predScene with { SceneIdentitySha256 = ProjectedSceneJson.ComputeIdentity(predScene) };
+            var sceneOutcome = await executor.ExecuteAsync(ExposureCatalogPredictionProducts.Request(raw, predScene)).ConfigureAwait(false);
+            var sceneArtifact = ToArtifact(sceneOutcome.Products.Single(), raw);
+            var associated = ExposureAssociationProducts.Associate(raw, step4Artifact, expectedInput, sceneArtifact, ExposureAssociationProducts.Variant);
+            Assert.AreEqual(ProcessingOutcomeStatus.Produced, associated.Status, associated.ReasonCode);
+            return (MeasuredStellarAssociationJson.Parse(associated.Products.Single().Payload).Associations!, predScene);
+        }
+
+        // 1. Hollow ring with r_in = 14 px, r_out = 30 px (bounding-box fill > 50%!) around isolated Jupiter:
+        void StampHollowRing(double[] buffer)
+        {
+            for (var y = 0; y < frameSize; y++)
+            {
+                for (var x = 0; x < frameSize; x++)
+                {
+                    var r = double.Hypot(x + 0.5 - jupiter.Pixel.X, y + 0.5 - jupiter.Pixel.Y);
+                    if (r is >= 14.0 and <= 30.0)
+                        buffer[y * frameSize + x] += 1800.0;
+                }
+            }
+        }
+
+        var ringPresent = RenderSources(frameSize, frameSize, [(jupiter.Pixel, 35_000d)], sigma: 1.25);
+        StampHollowRing(ringPresent);
+        var ringMeas = StellarSourceMeasurer.Measure(ringPresent, validMask, [], frameSize, frameSize,
+            MeasuredStellarAssociationRecipe.MeasurementOptions(CameraPixelFormat.Mono16));
+        var ringExclusion = ringMeas.Exclusions.Single(e =>
+            e.ReasonCode == StellarExclusionReasons.ExtendedRegion &&
+            e.Footprint is { } fp && fp.Contains(jupiter.Pixel, 1.0));
+        var ringFp = ringExclusion.Footprint!.Value;
+        var ringFill = ringExclusion.SampleCount / (double)((ringFp.MaxX - ringFp.MinX + 1) * (ringFp.MaxY - ringFp.MinY + 1));
+        Assert.IsGreaterThan(0.50, ringFill, $"Hollow ring (r_in=14, r_out=30) must exceed 50% fill ratio (got {ringFill:P1}).");
+        Assert.IsNotNull(ringExclusion.Occupancy);
+
+        var ringDirectOutcome = await new ProcessingRecipeExecutor().ExecuteAsync(
+            Request(RawArtifact(ringPresent, CameraPixelFormat.Mono16, frameSize, frameSize), scene)).ConfigureAwait(false);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, ringDirectOutcome.Status, ringDirectOutcome.ReasonCode);
+        var ringDirectEvidence = MeasuredStellarAssociationJson.Parse(ringDirectOutcome.Products.Single().Payload).Associations!;
+        var (ringRoundTripEvidence, ringRoundTripScene) = await RunViaExposureMeasurementRoundTripAsync(ringPresent).ConfigureAwait(false);
+        foreach (var (ev, evScene) in new[] { (ringDirectEvidence, scene), (ringRoundTripEvidence, ringRoundTripScene) })
+        {
+            var matched = Assert.ContainsSingle(ev.PointSourcePlanets!.Associations,
+                $"Isolated Jupiter inside filled hollow ring (>50% bbox fill) must associate. unmatched=[{string.Join(", ", ev.PointSourcePlanets.UnmatchedPredictions.Select(u => u.ReasonCode))}]");
+            Assert.AreEqual("solar-system:Jupiter", matched.ObjectId);
+            Assert.IsTrue(matched.LabelEligible, matched.LabelRejectionReason);
+            Assert.IsTrue(MeasuredAssociationPresentation.CreateMeasuredPayload(ev, evScene).TextBlocks
+                .Any(static b => b.Lines[0] == "Jupiter"));
+        }
+
+        // Same hollow ring with Jupiter ABSENT must report no-measured-source (not measurement-excluded):
+        var ringAbsent = RenderSources(frameSize, frameSize, [], sigma: 1.25);
+        StampHollowRing(ringAbsent);
+        var ringAbsentOutcome = await new ProcessingRecipeExecutor().ExecuteAsync(
+            Request(RawArtifact(ringAbsent, CameraPixelFormat.Mono16, frameSize, frameSize), scene)).ConfigureAwait(false);
+        var ringAbsentEvidence = MeasuredStellarAssociationJson.Parse(ringAbsentOutcome.Products.Single().Payload).Associations!;
+        Assert.IsEmpty(ringAbsentEvidence.PointSourcePlanets!.Associations);
+        Assert.AreEqual(MeasuredStellarAssociationReasonCodes.NoMeasuredSource,
+            Assert.ContainsSingle(ringAbsentEvidence.PointSourcePlanets.UnmatchedPredictions).ReasonCode);
+
+        // 2. Filled 45-degree diagonal streaks crossing RIGHT OVER Jupiter's prediction (bbox fill < 50%):
+        //    Test both a 40x5 px streak (trail-too-long) and an 80x5 px streak (extended-region), with peak offset > 12 px!
+        void StampDiagonalStreak(double[] buffer, double halfLength, double halfWidth, double peakOffsetAlong)
+        {
+            var invSqrt2 = Math.Sqrt(0.5);
+            for (var y = 0; y < frameSize; y++)
+            {
+                for (var x = 0; x < frameSize; x++)
+                {
+                    var dx = x + 0.5 - jupiter.Pixel.X;
+                    var dy = y + 0.5 - jupiter.Pixel.Y;
+                    var along = (dx + dy) * invSqrt2;
+                    var across = (dx - dy) * invSqrt2;
+                    if (Math.Abs(along) <= halfLength && Math.Abs(across) <= halfWidth)
+                    {
+                        // Place peak far from Jupiter along the diagonal so peak-only proximity cannot fire.
+                        var boost = Math.Abs(along - peakOffsetAlong) <= 1.5 && Math.Abs(across) <= 1.5 ? 2500.0 : 0.0;
+                        buffer[y * frameSize + x] += 1800.0 + boost;
+                    }
+                }
+            }
+        }
+
+        foreach (var (label, halfLen, peakOff, expectedReason) in new[]
+        {
+            ("diagonal-80x5-extended", 40.0, 30.0, StellarExclusionReasons.ExtendedRegion),
+            ("diagonal-40x5-trail", 20.0, 16.0, StellarExclusionReasons.TrailTooLong)
+        })
+        {
+            var streakOnly = RenderSources(frameSize, frameSize, [], sigma: 1.25);
+            StampDiagonalStreak(streakOnly, halfLen, 2.5, peakOff);
+            var streakMeas = StellarSourceMeasurer.Measure(streakOnly, validMask, [], frameSize, frameSize,
+                MeasuredStellarAssociationRecipe.MeasurementOptions(CameraPixelFormat.Mono16));
+            var streakExclusion = streakMeas.Exclusions.Single(e =>
+                e.ReasonCode == expectedReason &&
+                e.Footprint is { } fp && fp.Contains(jupiter.Pixel, 1.0));
+            var sfp = streakExclusion.Footprint!.Value;
+            var streakFill = streakExclusion.SampleCount / (double)((sfp.MaxX - sfp.MinX + 1) * (sfp.MaxY - sfp.MinY + 1));
+            Assert.IsLessThan(0.50, streakFill, $"{label}: diagonal streak must have < 50% bbox fill (got {streakFill:P1}).");
+            Assert.IsGreaterThan(12.0, double.Hypot(streakExclusion.Peak.X - jupiter.Pixel.X, streakExclusion.Peak.Y - jupiter.Pixel.Y),
+                $"{label}: diagonal streak peak must sit outside Jupiter's search window.");
+            Assert.IsNotNull(streakExclusion.Occupancy);
+
+            var streakDirectOutcome = await new ProcessingRecipeExecutor().ExecuteAsync(
+                Request(RawArtifact(streakOnly, CameraPixelFormat.Mono16, frameSize, frameSize), scene)).ConfigureAwait(false);
+            Assert.AreEqual(ProcessingOutcomeStatus.Produced, streakDirectOutcome.Status, streakDirectOutcome.ReasonCode);
+            var streakDirectEvidence = MeasuredStellarAssociationJson.Parse(streakDirectOutcome.Products.Single().Payload).Associations!;
+            var (streakRoundTripEvidence, _) = await RunViaExposureMeasurementRoundTripAsync(streakOnly).ConfigureAwait(false);
+            foreach (var ev in new[] { streakDirectEvidence, streakRoundTripEvidence })
+            {
+                Assert.IsEmpty(ev.PointSourcePlanets!.Associations, label);
+                Assert.AreEqual(
+                    MeasuredStellarAssociationReasonCodes.MeasurementExcludedPrefix + expectedReason,
+                    Assert.ContainsSingle(ev.PointSourcePlanets.UnmatchedPredictions).ReasonCode,
+                    $"{label}: filled 45-deg diagonal streak crossing prediction must report measurement-excluded:{expectedReason}, not no-measured-source.");
+            }
+
+            // Even if a nearby detection lies 1.2 px from Jupiter (inside its window), pre-match withholding MUST
+            // reject stealing it because the diagonal streak occupies Jupiter's predicted pixel!
+            var nearbyMoon = new StellarDetection(0, new(jupiter.Pixel.X + 1.2, jupiter.Pixel.Y), 4000, 350, 1.1, 1.1, 1000, 5)
+            {
+                SignalToNoise = 45,
+                CentroidCovariance = new(0.01, 0, 0.01)
+            };
+            var withheld = MeasuredStellarAssociator.Associate(scene, [nearbyMoon], streakMeas.Exclusions, true,
+                new MeasuredStellarAssociationSettingsV1(PredictionSigmaPixels: 0.5, WindowSigmas: 3.0, MaximumWindowPixels: 2.0),
+                new(), CancellationToken.None);
+            Assert.IsEmpty(withheld.PointSourcePlanets!.Associations, $"{label}: diagonal streak must withhold nearby detection.");
+            Assert.AreEqual(MeasuredStellarAssociationReasonCodes.MeasurementExcludedPrefix + expectedReason,
+                Assert.ContainsSingle(withheld.PointSourcePlanets.UnmatchedPredictions).ReasonCode, label);
+        }
+
+        // 3. Real Mono16 compact saturated disc centered on Jupiter (with offset peak) + horizontal trail controls:
+        var satDisc = RenderSources(frameSize, frameSize, [], sigma: 1.25);
+        var satMask = new bool[frameSize * frameSize];
+        for (var y = (int)jupiter.Pixel.Y - 5; y <= (int)jupiter.Pixel.Y + 5; y++)
+        {
+            for (var x = (int)jupiter.Pixel.X - 5; x <= (int)jupiter.Pixel.X + 5; x++)
+            {
+                if (double.Hypot(x + 0.5 - jupiter.Pixel.X, y + 0.5 - jupiter.Pixel.Y) <= 5.0)
+                {
+                    satDisc[y * frameSize + x] = 65_535.0;
+                    satMask[y * frameSize + x] = true;
+                }
+            }
+        }
+        var satMeas = StellarSourceMeasurer.Measure(satDisc, validMask, satMask, frameSize, frameSize,
+            MeasuredStellarAssociationRecipe.MeasurementOptions(CameraPixelFormat.Mono16));
+        var satExcl = satMeas.Exclusions.Single(e => e.ReasonCode == StellarExclusionReasons.SaturatedExcessive);
+        var satWithheld = MeasuredStellarAssociator.Associate(scene,
+            [new StellarDetection(0, new(jupiter.Pixel.X + 1.2, jupiter.Pixel.Y), 4000, 350, 1.1, 1.1, 1000, 5) { SignalToNoise = 45, CentroidCovariance = new(0.01, 0, 0.01) }],
+            [satExcl], true, new MeasuredStellarAssociationSettingsV1(PredictionSigmaPixels: 0.5, WindowSigmas: 3.0, MaximumWindowPixels: 2.0),
+            new(), CancellationToken.None);
+        Assert.IsEmpty(satWithheld.PointSourcePlanets!.Associations);
+        Assert.AreEqual(MeasuredStellarAssociationReasonCodes.MeasurementExcludedPrefix + StellarExclusionReasons.SaturatedExcessive,
+            Assert.ContainsSingle(satWithheld.PointSourcePlanets.UnmatchedPredictions).ReasonCode);
+
+        // 4. Occupancy validation rejects tampered bitmaps on ExposureMeasurementV1:
+        var validFp = new StellarFootprintBounds(10, 10, 13, 13);
+        Assert.IsTrue(StellarFootprintOccupancy.Create(validFp, static (x, y) => x == 10 && y == 10).IsValid(validFp));
+        Assert.IsFalse(new StellarFootprintOccupancy(4, 4, 1, 1, Convert.ToBase64String(new byte[2])).IsValid(validFp)); // all-zero
+        Assert.IsFalse(new StellarFootprintOccupancy(3, 3, 1, 1, Convert.ToBase64String(new byte[] { 1, 0x80 })).IsValid(new(10, 10, 12, 12))); // trailing padding bit set
+        Assert.IsFalse(new StellarFootprintOccupancy(4, 4, 1, 1, "not-valid-base64!!!").IsValid(validFp));
     }
 
     private static ProcessingArtifact ToArtifact(ProcessingProduct product, ProcessingArtifact raw) => new(

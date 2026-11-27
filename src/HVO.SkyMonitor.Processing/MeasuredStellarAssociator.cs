@@ -480,30 +480,27 @@ public static class MeasuredStellarAssociator
         }
     }
 
-    // Only compact footprints (solid/saturated blobs or filled axis-aligned trails filling at least half their
-    // axis-aligned bounding box) use the bounding-box center as a local exclusion anchor; hollow arcs or rings
-    // surrounding an interior star/planet must not falsely withhold the isolated target.
-    private const double CompactFootprintMinimumFillRatio = 0.5;
-
-    private static PixelPoint FootprintCenter(StellarFootprintBounds footprint) =>
-        new((footprint.MinX + footprint.MaxX + 1) * 0.5, (footprint.MinY + footprint.MaxY + 1) * 0.5);
-
-    private static bool IsCompactFootprint(StellarMeasurementExclusion exclusion, StellarFootprintBounds footprint)
+    private static double BoundsDistanceSquared(StellarFootprintBounds footprint, PixelPoint point)
     {
-        var width = (long)footprint.MaxX - footprint.MinX + 1;
-        var height = (long)footprint.MaxY - footprint.MinY + 1;
-        if (width <= 0 || height <= 0 || exclusion.SampleCount <= 0)
-            return false;
-        return exclusion.SampleCount >= CompactFootprintMinimumFillRatio * ((double)width * height);
+        var dx = point.X < footprint.MinX ? footprint.MinX - point.X
+            : point.X > footprint.MaxX + 1 ? point.X - (footprint.MaxX + 1) : 0.0;
+        var dy = point.Y < footprint.MinY ? footprint.MinY - point.Y
+            : point.Y > footprint.MaxY + 1 ? point.Y - (footprint.MaxY + 1) : 0.0;
+        return dx * dx + dy * dy;
     }
 
-    private static double LocalExclusionDistanceSquared(
-        StellarMeasurementExclusion exclusion, PixelPoint point, StellarFootprintBounds? footprint)
+    private static double OccupiedFootprintDistanceSquared(
+        StellarMeasurementExclusion exclusion, PixelPoint point, double maxRadiusPixels)
     {
-        var peakDistance = DistanceSquared(exclusion.Peak, point);
-        return footprint is { } bounds && IsCompactFootprint(exclusion, bounds)
-            ? Math.Min(peakDistance, DistanceSquared(FootprintCenter(bounds), point))
-            : peakDistance;
+        if (exclusion.Footprint is not { } footprint || !footprint.Contains(point, maxRadiusPixels))
+            return double.PositiveInfinity;
+        if (exclusion.Occupancy is { } occupancy)
+            return occupancy.DistanceSquaredToOccupied(footprint, point, maxRadiusPixels);
+        var width = (long)footprint.MaxX - footprint.MinX + 1;
+        var height = (long)footprint.MaxY - footprint.MinY + 1;
+        return width > 0 && height > 0 && exclusion.SampleCount >= width * height
+            ? BoundsDistanceSquared(footprint, point)
+            : double.PositiveInfinity;
     }
 
     private static StellarMeasurementExclusion? ExclusionContaining(
@@ -511,14 +508,36 @@ public static class MeasuredStellarAssociator
     {
         StellarMeasurementExclusion? best = null;
         var bestDistance = double.MaxValue;
-        var maxDistanceSquared = maximumWindowPixels * maximumWindowPixels;
+        var maxMarginSquared = exclusionMarginPixels * exclusionMarginPixels;
+        var maxWindowSquared = maximumWindowPixels * maximumWindowPixels;
         foreach (var exclusion in exclusions)
         {
             if (exclusion.Footprint is not { } footprint || !footprint.Contains(point, exclusionMarginPixels))
                 continue;
-            var distance = LocalExclusionDistanceSquared(exclusion, point, footprint);
-            if (distance > maxDistanceSquared)
-                continue;
+            double distance;
+            if (exclusion.Occupancy is { } occupancy)
+            {
+                distance = occupancy.DistanceSquaredToOccupied(footprint, point, exclusionMarginPixels);
+                if (distance > maxMarginSquared)
+                    continue;
+            }
+            else
+            {
+                // Legacy/external exclusion without occupancy bitmap: a 100%-filled box occupies every interior pixel;
+                // otherwise require the exclusion peak itself to lie within the planet's search window.
+                var width = (long)footprint.MaxX - footprint.MinX + 1;
+                var height = (long)footprint.MaxY - footprint.MinY + 1;
+                if (width > 0 && height > 0 && exclusion.SampleCount >= width * height)
+                {
+                    distance = BoundsDistanceSquared(footprint, point);
+                }
+                else
+                {
+                    distance = DistanceSquared(exclusion.Peak, point);
+                    if (distance > maxWindowSquared)
+                        continue;
+                }
+            }
             if (best is null || distance < bestDistance)
             {
                 best = exclusion;
@@ -534,11 +553,15 @@ public static class MeasuredStellarAssociator
         StellarMeasurementExclusion? best = null;
         var bestRank = (Contained: false, Distance: double.MaxValue);
         var limit = maximumWindowPixels * maximumWindowPixels;
+        var marginSquared = exclusionMarginPixels * exclusionMarginPixels;
+        var searchRadius = Math.Max(maximumWindowPixels, exclusionMarginPixels);
         foreach (var exclusion in exclusions)
         {
-            var contained = exclusion.Footprint is { } footprint && footprint.Contains(point, exclusionMarginPixels);
-            var distance = LocalExclusionDistanceSquared(exclusion, point, contained ? exclusion.Footprint : null);
-            if (distance > limit) continue;
+            var occupiedDistance = OccupiedFootprintDistanceSquared(exclusion, point, searchRadius);
+            var peakDistance = DistanceSquared(exclusion.Peak, point);
+            var contained = occupiedDistance <= marginSquared;
+            var distance = Math.Min(peakDistance, occupiedDistance);
+            if (!contained && distance > limit) continue;
             if (best is null || contained && !bestRank.Contained ||
                 contained == bestRank.Contained && distance < bestRank.Distance)
             {
@@ -555,10 +578,23 @@ public static class MeasuredStellarAssociator
         StellarMeasurementExclusion? best = null;
         var bestRank = (Contained: false, Distance: double.MaxValue);
         var limit = maximumWindowPixels * maximumWindowPixels;
+        var marginSquared = exclusionMarginPixels * exclusionMarginPixels;
+        var searchRadius = Math.Max(maximumWindowPixels, exclusionMarginPixels);
         foreach (var exclusion in exclusions)
         {
-            var contained = exclusion.Footprint is { } footprint && footprint.Contains(point, exclusionMarginPixels);
-            var distance = DistanceSquared(exclusion.Peak, point);
+            bool contained;
+            double distance;
+            if (exclusion.Footprint is { } footprint && exclusion.Occupancy is { } occupancy)
+            {
+                var occupiedDistance = occupancy.DistanceSquaredToOccupied(footprint, point, searchRadius);
+                contained = occupiedDistance <= marginSquared;
+                distance = Math.Min(DistanceSquared(exclusion.Peak, point), occupiedDistance);
+            }
+            else
+            {
+                contained = exclusion.Footprint is { } fp && fp.Contains(point, exclusionMarginPixels);
+                distance = DistanceSquared(exclusion.Peak, point);
+            }
             if (!contained && distance > limit) continue;
             if (best is null || contained && !bestRank.Contained ||
                 contained == bestRank.Contained && distance < bestRank.Distance)

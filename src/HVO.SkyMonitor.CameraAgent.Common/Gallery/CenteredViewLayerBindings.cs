@@ -47,9 +47,6 @@ internal readonly record struct CenteredAuthoritativeAssociationResolution(
 
     internal static CenteredAuthoritativeAssociationResolution UnidentifiableExpired(CenteredAuthoritativeAssociationWriter writer) =>
         new(CenteredAuthoritativeAssociationResolutionState.UnidentifiableExpired, writer);
-
-    internal static CenteredAuthoritativeAssociationResolution FromLookup(CenteredAuthoritativeAssociationWriter? writer) =>
-        writer is { } found ? Resolved(found) : None;
 }
 
 /// <summary>
@@ -107,8 +104,10 @@ internal sealed record CenteredProductSemanticProvenanceV1(
         }
     }
 
-    internal static CenteredProductSemanticProvenanceV1? TryParseFromNodeOutputsJson(string? outputsJson, string variant)
+    internal static CenteredProductSemanticProvenanceV1? TryParseFromNodeOutputsJson(
+        string? outputsJson, string variant, out int? portIndex)
     {
+        portIndex = null;
         if (string.IsNullOrWhiteSpace(outputsJson))
             return null;
         try
@@ -116,20 +115,26 @@ internal sealed record CenteredProductSemanticProvenanceV1(
             using var doc = JsonDocument.Parse(outputsJson);
             if (doc.RootElement.ValueKind != JsonValueKind.Array)
                 return null;
+            var index = 0;
             foreach (var item in doc.RootElement.EnumerateArray())
             {
-                if (item.ValueKind != JsonValueKind.Object)
-                    continue;
-                var itemVariant = GetStringIgnoreCase(item, "variant");
-                if (!string.Equals(itemVariant, variant, StringComparison.Ordinal))
-                    continue;
-                if (TryGetObjectIgnoreCase(item, "recipe", out var recipe))
+                if (item.ValueKind == JsonValueKind.Object)
                 {
-                    var name = GetStringIgnoreCase(recipe, "name");
-                    var impl = GetStringIgnoreCase(recipe, "implementationVersion");
-                    if (name is not null || impl is not null)
-                        return new(CurrentSchemaVersion, null, name, impl, null);
+                    var itemVariant = GetStringIgnoreCase(item, "variant");
+                    if (string.Equals(itemVariant, variant, StringComparison.Ordinal))
+                    {
+                        portIndex = index;
+                        if (TryGetObjectIgnoreCase(item, "recipe", out var recipe))
+                        {
+                            var name = GetStringIgnoreCase(recipe, "name");
+                            var impl = GetStringIgnoreCase(recipe, "implementationVersion");
+                            if (name is not null || impl is not null)
+                                return new(CurrentSchemaVersion, null, name, impl, null);
+                        }
+                        return null;
+                    }
                 }
+                index++;
             }
             return null;
         }
@@ -298,6 +303,48 @@ internal static class CenteredViewLayerBindings
         return -1;
     }
 
+    internal static bool IsScenePresentationBaseVersion(string? implementationVersion) =>
+        implementationVersion is not null &&
+        implementationVersion.StartsWith("projected-scene-presentation-", StringComparison.Ordinal);
+
+    internal static bool IsCloudPresentationVersion(string? implementationVersion) =>
+        implementationVersion is not null &&
+        implementationVersion.StartsWith("cloud-presentation-", StringComparison.Ordinal);
+
+    internal static IReadOnlyList<string>? InferPresentationLayerKinds(
+        string? recipeName, string? implementationVersion, int? portIndex)
+    {
+        if (recipeName is not null &&
+            !string.Equals(recipeName, PresentationProcessingProducts.LayerRecipeName, StringComparison.Ordinal))
+            return null;
+        if (string.Equals(implementationVersion, MeasuredAssociationPresentation.ExpectedNotDetectedVersion, StringComparison.Ordinal))
+            return [ExpectedNotDetected.Style.Kind];
+        if (string.Equals(implementationVersion, PresentationDeepSkyLayerProducer.ProducerVersion, StringComparison.Ordinal))
+            return [DeepSky.Style.Kind];
+        if (string.Equals(implementationVersion, PresentationLayerProducers.MetadataProducerVersion, StringComparison.Ordinal) ||
+            string.Equals(implementationVersion, FrameFactsPresentation.ProducerVersion, StringComparison.Ordinal))
+            return [Environment.Style.Kind];
+        if (string.Equals(implementationVersion, OrbitalTrackPresentation.ProducerVersion, StringComparison.Ordinal))
+            return [Satellites.Style.Kind];
+        if (IsScenePresentationBaseVersion(implementationVersion) && portIndex is >= 0 and <= 3)
+            return portIndex.Value switch
+            {
+                0 => [Annotation.Style.Kind],
+                1 => [Cardinals.Style.Kind],
+                2 => [ImageCircle.Style.Kind],
+                3 => [Constellations.Style.Kind],
+                _ => null
+            };
+        if (IsCloudPresentationVersion(implementationVersion) && portIndex is >= 0 and <= 1)
+            return portIndex.Value switch
+            {
+                0 => [CloudMask.Style.Kind],
+                1 => [CloudLabel.Style.Kind],
+                _ => null
+            };
+        return null;
+    }
+
     internal static bool IsAuthoritativeAssociationSlot(
         ExposureProductSlot slot, CenteredAuthoritativeAssociationWriter? authoritativeWriter = null) =>
         IsAuthoritativeAssociationSlot(
@@ -317,6 +364,8 @@ internal static class CenteredViewLayerBindings
             return false;
         if (semantics is not null)
         {
+            if (semantics.LayerKinds is { Count: 0 })
+                return false;
             var isExposureAssociation =
                 string.Equals(semantics.RecipeName, ExposureAssociationProducts.RecipeName, StringComparison.Ordinal) ||
                 string.Equals(semantics.StepAlias, ExposureAssociationProducts.StepAlias, StringComparison.Ordinal);
@@ -344,21 +393,6 @@ internal static class CenteredViewLayerBindings
             _ => slot.Variant == ExposureAssociationProducts.Variant ||
                 slot.Producer == ExposureAssociationProducts.StepAlias
         };
-    }
-
-    internal static bool IsSceneExpectedNotDetectedSlot(
-        ExposureProductSlot slot, CenteredProductSemanticProvenanceV1? semantics = null)
-    {
-        if (!PresentationLayerPayloadV1.SupportsSchema(SourceSchema(slot.SchemaVersion)))
-            return false;
-        if (semantics is not null)
-        {
-            if (string.Equals(semantics.RecipeImplementationVersion, MeasuredAssociationPresentation.ExpectedNotDetectedVersion, StringComparison.Ordinal))
-                return true;
-            if (semantics.LayerKinds is not null)
-                return semantics.LayerKinds.Contains(MeasuredAssociationPresentation.ExpectedNotDetectedLayerKind, StringComparer.Ordinal);
-        }
-        return slot.Variant == "expected-not-detected-layer-v1";
     }
 
     internal static IReadOnlyList<CenteredViewLayerBinding> ReadLegacySlot(
@@ -441,6 +475,8 @@ internal static class CenteredViewLayerBindings
     {
         var result = new Dictionary<(string Producer, string Schema, string Variant), IReadOnlyList<CenteredViewLayerBinding>>();
         var boundLayers = new HashSet<(CenteredViewLayerScope Scope, string Kind)>();
+        var scenePortCounters = new Dictionary<string, int>(StringComparer.Ordinal);
+        var cloudPortCounters = new Dictionary<string, int>(StringComparer.Ordinal);
         var ordered = entries
             .OrderBy(static entry => entry.Lookup.Slot.Producer, StringComparer.Ordinal)
             .ThenBy(static entry => entry.Lookup.Revision ?? long.MaxValue)
@@ -451,7 +487,28 @@ internal static class CenteredViewLayerBindings
             var key = (slot.Producer, SourceSchema(slot.SchemaVersion), slot.Variant);
             if (result.ContainsKey(key))
                 continue;
-            var candidates = ReadLegacySlot(slot, authoritativeWriter, semantics, lookup.Availability);
+            var effectiveSemantics = semantics;
+            if (effectiveSemantics is { LayerKinds: null } &&
+                PresentationLayerPayloadV1.SupportsSchema(key.Item2))
+            {
+                if (IsScenePresentationBaseVersion(effectiveSemantics.RecipeImplementationVersion))
+                {
+                    var rank = scenePortCounters.TryGetValue(slot.Producer, out var existing) ? existing : 0;
+                    scenePortCounters[slot.Producer] = rank + 1;
+                    if (InferPresentationLayerKinds(
+                        effectiveSemantics.RecipeName, effectiveSemantics.RecipeImplementationVersion, rank) is { } inferred)
+                        effectiveSemantics = effectiveSemantics with { LayerKinds = inferred };
+                }
+                else if (IsCloudPresentationVersion(effectiveSemantics.RecipeImplementationVersion))
+                {
+                    var rank = cloudPortCounters.TryGetValue(slot.Producer, out var existing) ? existing : 0;
+                    cloudPortCounters[slot.Producer] = rank + 1;
+                    if (InferPresentationLayerKinds(
+                        effectiveSemantics.RecipeName, effectiveSemantics.RecipeImplementationVersion, rank) is { } inferred)
+                        effectiveSemantics = effectiveSemantics with { LayerKinds = inferred };
+                }
+            }
+            var candidates = ReadLegacySlot(slot, authoritativeWriter, effectiveSemantics, lookup.Availability);
             if (candidates.Count == 0)
                 continue;
             var claimed = candidates.Where(binding => boundLayers.Add((binding.Scope, binding.Style.Kind))).ToArray();
