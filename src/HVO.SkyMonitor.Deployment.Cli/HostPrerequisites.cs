@@ -239,7 +239,7 @@ internal static class HostPrerequisites
     }
 
     /// <summary>
-    /// The loud warning a recovery <paramref name="operation"/> (a rollback or a restore-only recovery) gives before it
+    /// The loud warning a recovery <paramref name="operation"/> (a rollback or backup) gives before it
     /// changes anything, on standard error and in the operation's install log, when Docker cannot enforce some of the
     /// CameraAgent limits: each one, what it means for CameraAgent, the host's details and the remedy.
     /// <see langword="null"/> when Docker enforces them all. An operation that is not a recovery but starts CameraAgent

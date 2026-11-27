@@ -542,14 +542,13 @@ internal sealed partial class CameraAgentInstaller
                 paths,
                 instanceId,
                 image,
-                manifest.Image.UpgradeCompatibility ?? manifest.UpgradeCompatibility,
+                manifest.Image.StateContract ?? manifest.StateContract,
                 uid,
                 gid,
                 (ContractReplayProfile)request.ReplayProfile,
                 persist: false,
                 renderToStandardError: !request.Json,
                 cancellationToken,
-                CameraAgentStateContractPolicy.AllowLegacy,
                 release?.Release.Tag)
             .ConfigureAwait(false);
 

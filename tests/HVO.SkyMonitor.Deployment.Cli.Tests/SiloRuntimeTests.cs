@@ -29,7 +29,6 @@ public sealed partial class SiloRuntimeTests
         Assert.IsNull(SiloRuntimeProfile.PlatformDigestFor("riscv64"));
         // The distinct component schema and state contract are what every earlier reader refuses.
         Assert.IsFalse(new[] { "cameraagent-install-v1" }.Contains(SiloRuntimeProfile.ComponentSchemaVersion));
-        Assert.IsFalse(new[] { CameraAgentStateContract.Current }.Contains(SiloRuntimeProfile.StateContract));
     }
 
     [TestMethod]
@@ -182,17 +181,15 @@ public sealed partial class SiloRuntimeTests
     public void InstallRequest_AdmitsTheSiloLayoutOnlyWithInProcessReplayAndBindsItsIdentity()
     {
         var request = new InstallRequest { FriendlyName = "Silo camera", AllowTestProductRoot = true, ProductRoot = "/tmp/hvo-silo-request" };
-        var silo = request with { StorageLayout = CameraAgentStorageLayout.Silo };
+        var filesystem = request with { StorageLayout = CameraAgentStorageLayout.Filesystem };
         var localRunner = Assert.ThrowsExactly<InstallUsageException>(() =>
-            (silo with { ReplayProfile = CameraAgentReplayProfile.LocalRunner }).Validate());
+            (request with { ReplayProfile = CameraAgentReplayProfile.LocalRunner }).Validate());
         StringAssert.Contains(localRunner.Message, "--storage-layout silo supports only", StringComparison.Ordinal);
         var instance = Guid.NewGuid();
         Assert.AreNotEqual(CameraAgentInstaller.ComputeRequestSha256(request, instance),
-            CameraAgentInstaller.ComputeRequestSha256(silo, instance));
-        Assert.IsFalse(CameraAgentInstaller.RequestIdentityMatches(
-            CameraAgentInstaller.ComputeLegacyRequestSha256(request, instance), silo, instance));
+            CameraAgentInstaller.ComputeRequestSha256(filesystem, instance));
         Assert.AreEqual(CameraAgentStorageLayout.Silo, CommandLine.ParseStorageLayout("silo"));
-        Assert.AreEqual(CameraAgentStorageLayout.Filesystem, CommandLine.ParseStorageLayout(null));
+        Assert.AreEqual(CameraAgentStorageLayout.Silo, CommandLine.ParseStorageLayout(null));
         Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.ParseStorageLayout("s3"));
     }
 
@@ -200,13 +197,13 @@ public sealed partial class SiloRuntimeTests
     [DataRow(null, true)]
     [DataRow(LifecycleOperationKind.Uninstall, true)]
     [DataRow(LifecycleOperationKind.Purge, true)]
-    [DataRow(LifecycleOperationKind.Upgrade, false)]
-    [DataRow(LifecycleOperationKind.Rollback, false)]
-    [DataRow(LifecycleOperationKind.Reinstall, false)]
+    [DataRow(LifecycleOperationKind.Upgrade, true)]
+    [DataRow(LifecycleOperationKind.Rollback, true)]
+    [DataRow(LifecycleOperationKind.Reinstall, true)]
     [DataRow(LifecycleOperationKind.Backup, false)]
     [DataRow(LifecycleOperationKind.Restore, false)]
-    [DataRow(LifecycleOperationKind.CatalogSelect, false)]
-    [DataRow(LifecycleOperationKind.CatalogRollback, false)]
+    [DataRow(LifecycleOperationKind.CatalogSelect, true)]
+    [DataRow(LifecycleOperationKind.CatalogRollback, true)]
     public void LifecycleOperations_AdmitTheSiloLayoutOnlyWhereTheFirstReleaseSupportsIt(LifecycleOperationKind? operation, bool admitted)
         => Assert.AreEqual(admitted, CameraAgentLifecycleManager.AdmitsSiloLayout(operation));
 }

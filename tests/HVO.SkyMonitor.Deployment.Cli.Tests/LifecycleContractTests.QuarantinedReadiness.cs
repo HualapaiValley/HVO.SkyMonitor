@@ -291,7 +291,6 @@ public sealed partial class LifecycleContractTests
             fixture.Request(LifecycleOperationKind.Upgrade) with
             {
                 Release = release.Folder,
-                MigrationBackwardCompatible = true,
                 AllowQuarantinedReadiness = true
             },
             fixture.Runner, _ => new FakeLifecycleClient(), _ => owner, fixture.Uid, fixture.Gid, CancellationToken.None);

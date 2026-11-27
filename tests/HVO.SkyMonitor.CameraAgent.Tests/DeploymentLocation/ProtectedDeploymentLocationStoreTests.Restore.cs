@@ -61,7 +61,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         if (fault is "pending-target" or "pending-both")
             await AddInterruptedIntentAsync("J|1", captureJson).ConfigureAwait(false);
         var image = new ImageInstallationIdentity("registry", "synthetic@sha256:" + new string('a', 64),
-            "sha256:" + new string('b', 64), "amd64", null);
+            "sha256:" + new string('b', 64), "amd64", null, StateContract: CameraAgentSiloBinding.StateContract);
         var snapshot = await SnapshotApi.CreateAsync(paths, id, Guid.NewGuid(), image,
             InstallerLayout.SqliteStores, CancellationToken.None).ConfigureAwait(false);
         using var current = CreateStore();
@@ -199,7 +199,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         _ = await original.FullVerifyAsync(seed, CancellationToken.None).ConfigureAwait(false);
         original.Dispose();
         var image = new ImageInstallationIdentity("registry", "synthetic@sha256:" + new string('a', 64),
-            "sha256:" + new string('b', 64), "amd64", null);
+            "sha256:" + new string('b', 64), "amd64", null, StateContract: CameraAgentSiloBinding.StateContract);
         var snapshot = await SnapshotApi.CreateAsync(paths, id, Guid.NewGuid(), image,
             InstallerLayout.SqliteStores, CancellationToken.None).ConfigureAwait(false);
         var staged = Path.Combine(paths.ProductRoot, "verified-archive-staging");
@@ -304,7 +304,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         DeleteFixtureLedger();
         var history = await File.ReadAllBytesAsync(HistoryPath()).ConfigureAwait(false);
         var image = new ImageInstallationIdentity("registry", "synthetic@sha256:" + new string('a', 64),
-            "sha256:" + new string('b', 64), "amd64", null);
+            "sha256:" + new string('b', 64), "amd64", null, StateContract: CameraAgentSiloBinding.StateContract);
         var snapshot = await SnapshotApi.CreateAsync(paths, id, Guid.NewGuid(), image,
             InstallerLayout.SqliteStores, CancellationToken.None).ConfigureAwait(false);
         using var candidate = CreateStore();

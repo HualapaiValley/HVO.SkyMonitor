@@ -21,7 +21,7 @@ namespace HVO.SkyMonitor.Deployment;
 /// </remarks>
 internal static partial class CameraAgentStateSnapshot
 {
-    public const int SchemaVersion = 1;
+    public const int SchemaVersion = 2;
     private const string ManifestFileName = "manifest.json";
 
     /// <summary>
@@ -197,7 +197,8 @@ internal static partial class CameraAgentStateSnapshot
                 .ConfigureAwait(false);
         }
         var locations = manifest.Databases.Select(static database => database.RelativePath).ToArray();
-        if (manifest.SchemaVersion != SchemaVersion || manifest.SnapshotId != snapshot.SnapshotId ||
+        if (manifest.SchemaVersion != SchemaVersion ||
+            !CameraAgentStateContract.IsCurrent(manifest.Image?.StateContract) || manifest.SnapshotId != snapshot.SnapshotId ||
             manifest.OperationId != snapshot.OperationId || manifest.InstanceId != instanceId ||
             !locations.All(CameraAgentStateInventory.IsValidStoreLocation) ||
             locations.Distinct(StringComparer.Ordinal).Count() != locations.Length ||
@@ -214,7 +215,7 @@ internal static partial class CameraAgentStateSnapshot
             if (VerifyFile(file, database.RelativePath) != new StoreFacts(database.UserVersion, database.SchemaSha256!, database.Tables))
                 throw InstallerException.Formatted($"The snapshot of '{CameraAgentStateDiagnostics.Reason(database.RelativePath)}' does not match its recorded schema and row counts.");
         }
-        await VerifyProtectedFilesAsync(paths, root, manifest.ProtectedFiles, cancellationToken).ConfigureAwait(false);
+        await VerifyProtectedFilesAsync(root, manifest.ProtectedFiles, cancellationToken).ConfigureAwait(false);
         return manifest;
     }
 
@@ -627,69 +628,6 @@ internal static partial class CameraAgentStateSnapshot
             }
         }
         return (userVersion, schema, tables);
-    }
-
-    /// <summary>Proves the running predecessor still has the checkpoint's schema while allowing its own writes.</summary>
-    internal static void VerifyRestoredSchemas(
-        InstallationPaths paths, LifecycleStateSnapshot reference, StateSnapshotManifest snapshot, CancellationToken cancellationToken)
-    {
-        var snapshotRoot = SnapshotRoot(paths, reference.OperationId, reference.SnapshotId);
-        foreach (var store in snapshot.Databases.Where(static store => store.Present))
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var path = StorePath(paths.StateRoot, store.RelativePath);
-            SafeFileSystem.EnsureSafeExistingAncestors(path);
-            try
-            {
-                EnsureRegularStore(path, store.RelativePath);
-                List<string> retainedObjects;
-                long? retainedProcessingVersion = null;
-                long? retainedFleetVersion = null;
-                using (var checkpoint = CameraAgentStatePreflight.ReadOnlyDatabase.Open(SnapshotFile(snapshotRoot, store)))
-                {
-                    var (_, objects, tables) = ReadSchema(checkpoint.Connection);
-                    retainedObjects = objects;
-                    if (tables.Contains("capture_processing_schema", StringComparer.Ordinal))
-                        retainedProcessingVersion = ReadCaptureProcessingSchema(checkpoint.Connection);
-                    if (tables.Contains("fleet_status_metadata", StringComparer.Ordinal))
-                        retainedFleetVersion = ReadFleetSchema(checkpoint.Connection);
-                }
-                using (var database = CameraAgentStatePreflight.ReadOnlyDatabase.Open(path))
-                {
-                    var (userVersion, currentObjects, _) = ReadSchema(database.Connection);
-                    // Some components create their tables and indexes on first use after startup. Preserve those additions
-                    // while requiring the original schema objects and version markers to agree with the checkpoint.
-                    if (userVersion == store.UserVersion &&
-                        currentObjects.ToHashSet(StringComparer.Ordinal).IsSupersetOf(retainedObjects) &&
-                        (retainedProcessingVersion is null || retainedProcessingVersion == ReadCaptureProcessingSchema(database.Connection)) &&
-                        (retainedFleetVersion is null || retainedFleetVersion == ReadFleetSchema(database.Connection)))
-                        continue;
-                }
-            }
-            catch (SqliteException exception)
-            {
-                throw new InstallerException("Signed restore-only could not read the restored checkpoint schema.", exception);
-            }
-            throw new InstallerException($"Signed restore-only live schema differs from the checkpoint for '{CameraAgentStateDiagnostics.Reason(store.RelativePath)}'.");
-        }
-    }
-
-    private static long ReadCaptureProcessingSchema(SqliteConnection connection)
-    {
-        using var command = connection.CreateCommand();
-        command.CommandText = "SELECT version FROM capture_processing_schema WHERE schema_key = 1;";
-        return command.ExecuteScalar() is long version && version > 0
-            ? version
-            : throw new InstallerException("Signed restore-only could not prove the capture-processing schema version.");
-    }
-
-    private static long ReadFleetSchema(SqliteConnection connection)
-    {
-        using var command = connection.CreateCommand();
-        command.CommandText = "SELECT schema_version FROM fleet_status_metadata WHERE metadata_key = 1;";
-        return command.ExecuteScalar() is long version && version > 0
-            ? version
-            : throw new InstallerException("Signed restore-only could not prove the Fleet schema version.");
     }
 
     private static async Task<string> CopySyncedAsync(string source, string destination, CancellationToken cancellationToken)

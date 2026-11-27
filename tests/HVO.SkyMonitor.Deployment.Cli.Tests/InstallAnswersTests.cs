@@ -8,7 +8,7 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 /// The answers file (install contract section 5, #1315): strict JSON with a schema version, the same members
 /// <c>--config</c> reads without the run flags, every problem a usage error, and beside it only <c>--cpus</c> and
 /// <c>--memory</c>, so a re-run changes the limits, and the release and catalog <c>install.sh</c> hands over. Also <c>--config</c> as its deprecated predecessor,
-/// <c>--plan</c> as the name of <c>--dry-run</c>, and the deprecated <c>--migration-backward-compatible</c>.
+/// <c>--plan</c> as the name of <c>--dry-run</c>.
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
@@ -297,22 +297,6 @@ public sealed class InstallAnswersTests
         Assert.IsTrue(upgrade.DryRun);
         Assert.IsTrue(reset.DryRun);
         Assert.IsTrue(install.DryRun);
-    }
-
-    [TestMethod]
-    public void ParseCommand_MigrationAssertion_IsAcceptedKeptInTheRequestIdentityAndWarnedAsDeprecated()
-    {
-        var id = Guid.NewGuid().ToString("D");
-        string[] arguments = ["cameraagent", "upgrade", "--instance-id", id, "--image-ref", $"sha256:{new string('b', 64)}"];
-
-        var asserted = (LifecycleRequest)CommandLine.ParseCommand([.. arguments, "--migration-backward-compatible"], false);
-        var plain = (LifecycleRequest)CommandLine.ParseCommand(arguments, false);
-
-        Assert.IsTrue(asserted.MigrationBackwardCompatible);
-        Assert.AreEqual(CommandLine.MigrationAssertionDeprecation, asserted.ParseWarnings.Single());
-        Assert.IsEmpty(plain.ParseWarnings);
-        // A journal written by an upgrade begun with the option still matches a --resume that repeats it.
-        Assert.AreNotEqual(plain.ComputeRequestSha256(), asserted.ComputeRequestSha256());
     }
 
     /// <summary>A file holding <c>content</c>, deleted when disposed.</summary>

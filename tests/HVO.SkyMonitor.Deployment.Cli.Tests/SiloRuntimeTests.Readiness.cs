@@ -97,7 +97,8 @@ public sealed partial class SiloRuntimeTests
             "--silo-archive-ca-file", "/etc/hvo/archive-ca.pem", "--silo-archive-credential-file", "/etc/hvo/archive-credential"
         ];
 
-        var plain = CommandLine.Parse(silo, allowTestProductRoot: false, "/var/lib/hvo-sky");
+        var plain = CommandLine.Parse(InstallArguments, allowTestProductRoot: false, "/var/lib/hvo-sky");
+        Assert.AreEqual(CameraAgentStorageLayout.Silo, plain.StorageLayout);
         var staged = CommandLine.Parse([.. silo, "--silo-image-archive", "/srv/hvo/silo-amd64.tar"], allowTestProductRoot: false, "/var/lib/hvo-sky");
         var archived = CommandLine.Parse([.. silo, .. archive], allowTestProductRoot: false, "/var/lib/hvo-sky");
 
@@ -122,8 +123,8 @@ public sealed partial class SiloRuntimeTests
     {
         string[] arguments = change switch
         {
-            "filesystem-image" => [.. InstallArguments, "--silo-image-archive", "/srv/hvo/silo.tar"],
-            "filesystem-archive" => [.. InstallArguments, .. Archive("https://archive.example", "hvo-archive")],
+            "filesystem-image" => [.. InstallArguments, "--storage-layout", "filesystem", "--silo-image-archive", "/srv/hvo/silo.tar"],
+            "filesystem-archive" => [.. InstallArguments, "--storage-layout", "filesystem", .. Archive("https://archive.example", "hvo-archive")],
             "partial-archive" => [.. InstallArguments, "--storage-layout", "silo", "--silo-archive-endpoint", "https://archive.example"],
             "plain-http" => [.. InstallArguments, "--storage-layout", "silo", .. Archive("http://archive.example:9000", "hvo-archive")],
             "path-endpoint" => [.. InstallArguments, "--storage-layout", "silo", .. Archive("https://archive.example/hvo-archive", "hvo-archive")],

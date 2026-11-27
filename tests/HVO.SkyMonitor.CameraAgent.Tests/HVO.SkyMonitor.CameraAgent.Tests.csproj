@@ -55,7 +55,6 @@
     <None Update="Fixtures/scripts/*.c" CopyToOutputDirectory="PreserveNewest" />
     <None Update="Fixtures/legacy-local-archive/**/*" CopyToOutputDirectory="PreserveNewest" />
     <None Update="Fixtures/retained-astrometry/*.json" CopyToOutputDirectory="PreserveNewest" />
-    <None Include="../fixtures/state-compatibility/automation-schema3-processing9-image-labels.json" Link="Fixtures/automation-schema3-processing9-image-labels.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../fixtures/virtual-sky/installer-controlled-night.json" Link="Fixtures/installer-controlled-night.json" CopyToOutputDirectory="PreserveNewest" />
     <Compile Include="../HVO.SkyMonitor.Processing.Tests/CaptureSatelliteFixture.cs" Link="Capture/Processing/CaptureSatelliteFixture.cs" />
     <Compile Include="../HVO.SkyMonitor.Processing.Tests/CaptureOrbitalPredictionFixtures.cs" Link="Capture/Processing/CaptureOrbitalPredictionFixtures.cs" />

@@ -101,7 +101,7 @@ public sealed partial class LifecycleContractTests
 
         Assert.AreEqual(
             "1.3.0 is installed, which is newer than the upgrade target 1.2.0. " +
-            CameraAgentLifecycleManager.ManualRollbackGuidance,
+            "Use cameraagent rollback to select the retained previous image.",
             exception.Message);
         // Nothing was journaled, shown, paused or changed, so no refused operation is left to settle or resume.
         Assert.IsFalse(File.Exists(fixture.Paths.LifecycleStatePath));
@@ -282,53 +282,12 @@ public sealed partial class LifecycleContractTests
         {
             ImageReference = NotesCandidateReference,
             NoDownload = true,
-            MigrationBackwardCompatible = true
         };
 
     /// <summary>
     /// After the upgrade to 1.3.0 commits, refusing a manual rollback plan or execution preserves the installed
     /// version and image. A subsequent upgrade request for 1.1.0 still receives the older-target refusal.
     /// </summary>
-    [TestMethod]
-    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    [DataRow(false)]
-    [DataRow(true)]
-    public async Task UpgradeAsync_OlderTargetAfterManualRollbackRefusal_IsStillRefused(bool plan)
-    {
-        using var fixture = await LifecycleFixture.CreateAsync(
-            InstanceLifecycleCondition.Installed,
-            HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner);
-        await RecordInstalledReleaseAsync(fixture, "1.2.0");
-        using var newer = CandidateRelease(fixture, out var newerImageId, version: "1.3.0");
-        fixture.Runner.CandidateRawIngressSchema = "13";
-        var owner = new FakeOwnerClient(fixture.ApplicationIdentity);
-
-        var upgraded = await CameraAgentLifecycleManager.ExecuteAsync(
-            fixture.Request(LifecycleOperationKind.Upgrade) with { Release = newer.Folder, MigrationBackwardCompatible = true },
-            fixture.Runner, _ => new FakeLifecycleClient(), _ => owner, fixture.Uid, fixture.Gid, CancellationToken.None);
-        Assert.AreEqual("completed", upgraded.Outcome);
-        Assert.AreEqual("1.3.0", await InstalledVersionAsync(fixture));
-        var refusal = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            fixture.Request(LifecycleOperationKind.Rollback) with { DryRun = plan }, fixture.Runner,
-            null, null, fixture.Uid, fixture.Gid, CancellationToken.None));
-        Assert.IsTrue(refusal.IsRefusal);
-        Assert.AreEqual("1.3.0", await InstalledVersionAsync(fixture));
-
-        var platform = $"linux/{fixture.Manifest.DockerDaemon.Architecture}";
-        using var older = ReleaseFixture.Create(fixture.Root, version: "1.1.0", platforms: [platform]);
-        var journalBefore = await File.ReadAllTextAsync(fixture.Paths.LifecycleStatePath);
-        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            fixture.Request(LifecycleOperationKind.Upgrade) with { Release = older.Folder, MigrationBackwardCompatible = true },
-            fixture.Runner, _ => new FakeLifecycleClient(), _ => owner, fixture.Uid, fixture.Gid, CancellationToken.None));
-
-        Assert.AreEqual(
-            "1.3.0 is installed, which is newer than the upgrade target 1.1.0. " +
-            CameraAgentLifecycleManager.ManualRollbackGuidance,
-            exception.Message);
-        Assert.AreEqual(journalBefore, await File.ReadAllTextAsync(fixture.Paths.LifecycleStatePath));
-        Assert.AreEqual(newerImageId, fixture.Runner.ActiveImageId);
-    }
-
     /// <summary>The installed version an upgrade would read now: the current record's, for the image the manifest runs.</summary>
     private static async Task<string?> InstalledVersionAsync(LifecycleFixture fixture)
     {

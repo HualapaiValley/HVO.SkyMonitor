@@ -161,8 +161,10 @@ internal static partial class CameraAgentContainerResources
     {
         ArgumentNullException.ThrowIfNull(compose);
         ArgumentNullException.ThrowIfNull(target);
-        var runner = compose.IndexOf(ReplayRunnerService, StringComparison.Ordinal);
-        var matches = LimitsPattern().Matches(runner < 0 ? compose : compose[..runner]);
+        var nextService = compose.IndexOf(ReplayRunnerService, StringComparison.Ordinal);
+        if (nextService < 0)
+            nextService = compose.IndexOf("\n  silo:\n", StringComparison.Ordinal);
+        var matches = LimitsPattern().Matches(nextService < 0 ? compose : compose[..nextService]);
         if (matches.Count != 1)
         {
             throw new InstallerException("The retained Compose file does not carry exactly one CameraAgent resource limit block.");
@@ -192,8 +194,10 @@ internal static partial class CameraAgentContainerResources
     public static ContainerResourceLimits? TryReadLimits(string compose)
     {
         ArgumentNullException.ThrowIfNull(compose);
-        var runner = compose.IndexOf(ReplayRunnerService, StringComparison.Ordinal);
-        var matches = LimitsPattern().Matches(runner < 0 ? compose : compose[..runner]);
+        var nextService = compose.IndexOf(ReplayRunnerService, StringComparison.Ordinal);
+        if (nextService < 0)
+            nextService = compose.IndexOf("\n  silo:\n", StringComparison.Ordinal);
+        var matches = LimitsPattern().Matches(nextService < 0 ? compose : compose[..nextService]);
         if (matches.Count != 1)
         {
             return null;

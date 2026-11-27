@@ -27,41 +27,6 @@ public sealed class RequestIdentityStabilityTests
     };
 
     [TestMethod]
-    public void OperatorImageUpgrade_KeepsTheIdentityAnEarlierBuildJournaled()
-    {
-        var request = new LifecycleRequest(LifecycleOperationKind.Upgrade, InstanceId, "/var/lib/hvo-sky", false, false, false)
-        {
-            ImageReference = $"sha256:{new string('a', 64)}",
-            NoDownload = true,
-            MigrationBackwardCompatible = true
-        };
-
-        Assert.AreEqual("b2bfe1908f2f261e8d7e5c902b3227508390fd9e69c1341649a10a601f86ac5a", request.ComputeRequestSha256());
-    }
-
-    [TestMethod]
-    public void CatalogBundleInstall_KeepsTheIdentityAnEarlierBuildJournaled()
-    {
-        var request = new LifecycleRequest(LifecycleOperationKind.CatalogInstall, null, "/var/lib/hvo-sky", false, false, false)
-        {
-            CatalogBundle = "/srv/hvo/hyg-v4.2-p3-s2-r1.bundle"
-        };
-
-        Assert.AreEqual("39df4426a9187b68603f1e76ab65fec927555c37fede3e8c74f17dd5f761e14f", request.ComputeRequestSha256());
-    }
-
-    [TestMethod]
-    public void OperatorImageInstall_KeepsTheIdentitiesAnEarlierBuildRecorded()
-    {
-        Assert.AreEqual(
-            "97e65646ef5d42bd409f77057977b00e321c4193bdb0e4bd9ba5b210a1afe1d4",
-            CameraAgentInstaller.ComputeRequestSha256(Install, InstanceId));
-        Assert.AreEqual(
-            "a5526fafe466076e6ca2a6028b473782914138faeab75df66e43adebd88cf578",
-            CameraAgentInstaller.ComputeLegacyRequestSha256(Install, InstanceId));
-    }
-
-    [TestMethod]
     public void ReleaseUpgrade_BindsTheReleaseFolderAndImageSource()
     {
         var request = new LifecycleRequest(LifecycleOperationKind.Upgrade, InstanceId, "/var/lib/hvo-sky", false, false, false)
@@ -95,7 +60,5 @@ public sealed class RequestIdentityStabilityTests
             identity,
             CameraAgentInstaller.ComputeRequestSha256(request with { ImageSource = ReleaseImageSource.Registry }, InstanceId, verified));
         // The legacy identity predates releases, so a release install never matches it.
-        Assert.IsFalse(CameraAgentInstaller.RequestIdentityMatches(
-            CameraAgentInstaller.ComputeLegacyRequestSha256(request, InstanceId), request, InstanceId, verified));
     }
 }

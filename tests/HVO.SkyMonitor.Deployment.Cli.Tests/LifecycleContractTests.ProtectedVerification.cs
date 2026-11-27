@@ -30,7 +30,6 @@ public sealed partial class LifecycleContractTests
         {
             ImageReference = reference,
             NoDownload = true,
-            MigrationBackwardCompatible = true
         };
         var manifest = await CameraAgentLifecycleManager.ReadManifestAsync(fixture.Paths.ManifestPath, CancellationToken.None);
         var request = (kind == LifecycleOperationKind.Upgrade ? upgrade : fixture.Request(kind)) with { DryRun = fault == "plan" };

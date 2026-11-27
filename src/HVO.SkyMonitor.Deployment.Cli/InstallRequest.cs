@@ -63,10 +63,9 @@ internal sealed record InstallRequest
     public CameraAgentReplayProfile ReplayProfile { get; init; } = CameraAgentReplayProfile.InProcess;
 
     /// <summary>
-    /// The storage layout of a new instance (#1966). <see cref="CameraAgentStorageLayout.Filesystem"/> is the default and
-    /// every installation before it; <see cref="CameraAgentStorageLayout.Silo"/> is admitted only for a new instance.
+    /// The storage layout of a new instance. Silo is the clean-install default.
     /// </summary>
-    public CameraAgentStorageLayout StorageLayout { get; init; } = CameraAgentStorageLayout.Filesystem;
+    public CameraAgentStorageLayout StorageLayout { get; init; } = CameraAgentStorageLayout.Silo;
 
     /// <summary>An operator-staged <c>docker save</c> archive of the pinned stock Silo image, verified before it is loaded.</summary>
     public string? SiloImageArchive { get; init; }

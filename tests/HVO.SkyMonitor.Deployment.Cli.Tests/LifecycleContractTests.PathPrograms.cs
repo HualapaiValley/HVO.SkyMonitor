@@ -21,7 +21,7 @@ public sealed partial class LifecycleContractTests
         fixture.Runner.CandidateRawIngressSchema = "13";
         var owner = new FakeOwnerClient(fixture.ApplicationIdentity);
         var upgrade = fixture.Request(LifecycleOperationKind.Upgrade) with
-        { Release = newer.Folder, MigrationBackwardCompatible = true, DryRun = plan };
+        { Release = newer.Folder, DryRun = plan };
 
         var result = await CameraAgentLifecycleManager.ExecuteAsync(upgrade, fixture.Runner, _ => new FakeLifecycleClient(),
             _ => owner, fixture.Uid, fixture.Gid, CancellationToken.None);
@@ -76,7 +76,7 @@ public sealed partial class LifecycleContractTests
         fixture.Runner.CandidateRawIngressSchema = "13";
         var owner = new FakeOwnerClient(fixture.ApplicationIdentity);
         var request = fixture.Request(LifecycleOperationKind.Upgrade) with
-        { Release = newer.Folder, MigrationBackwardCompatible = true };
+        { Release = newer.Folder };
         var previousHook = NativeLinux.DirectoryFlushed;
         var interrupted = false;
         try
@@ -158,7 +158,7 @@ public sealed partial class LifecycleContractTests
         await File.WriteAllBytesAsync(source, bytes);
         var manifest = await File.ReadAllTextAsync(fixture.Paths.ManifestPath);
         var failure = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            fixture.Request(LifecycleOperationKind.Upgrade) with { Release = release.Folder, MigrationBackwardCompatible = true },
+            fixture.Request(LifecycleOperationKind.Upgrade) with { Release = release.Folder },
             fixture.Runner, null, null, fixture.Uid, fixture.Gid, CancellationToken.None));
         Assert.IsTrue(failure.IsRefusal);
         Assert.AreEqual(0, fixture.Runner.LoadCount);

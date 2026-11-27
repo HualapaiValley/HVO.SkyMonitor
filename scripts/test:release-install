@@ -77,8 +77,8 @@ hvo_installer_snapshot_image_ids startup_images
 cleanup() {
     set +e
     set -u
-    docker rm --force "$container" "$container-replay" "$standin_container" >/dev/null 2>&1
-    docker network rm "${container}_default" >/dev/null 2>&1
+    docker rm --force "$container" "$container-silo" "$standin_container" >/dev/null 2>&1
+    docker network rm "${container}_default" "${container}_silo" >/dev/null 2>&1
     docker image rm --force "$baseline_tag" >/dev/null 2>&1
     [[ -z "$baseline_image" ]] || docker image rm --force "$baseline_image" >/dev/null 2>&1
     for image in "${!owned_images[@]}"; do
@@ -154,6 +154,7 @@ is_release_image "$release_image" || fail "the install runs $release_image, whic
 [[ "$(jq -er '.healthy' "$root/install.json")" == true ]] || fail "the installed instance is not healthy."
 [[ "$(jq -er '.releaseVersion + " " + .source' "$record")" == "$version $install_source" ]] || fail "the install did not record the release."
 assert_running "$release_image" install-status
+"$installer" cameraagent first-resume --instance-id "$instance_id" --product-root "$root/product" --json >"$root/first-resume.json"
 
 step "Moving the instance to a stand-in image"
 # Committed from a container that never runs, so it needs no build and leaves no build cache behind.
