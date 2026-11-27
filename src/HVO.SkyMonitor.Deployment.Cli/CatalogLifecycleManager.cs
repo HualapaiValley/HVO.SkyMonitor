@@ -302,9 +302,8 @@ internal static class CatalogLifecycleManager
         {
             var continuity = await lifecycle.PauseAndDrainAsync(operation.OperationId, lifecycleControlToken, cancellationToken).ConfigureAwait(false);
             // A capture-processing node that has not committed regenerates its annotated derivative from whichever
-            // catalog is mounted when it retries. Under another package that derivative gets a different scene
-            // identity, so central would refuse it as a second derivative of the capture. Refuse the switch until
-            // processing drains, including work awaiting retry; raw captures and queued uploads are untouched.
+            // catalog is mounted when it retries. A different catalog would change the retained scene identity.
+            // Refuse the switch until processing drains, including work awaiting retry.
             if (continuity.ProcessingPending > 0)
             {
                 var verb = request.Operation == LifecycleOperationKind.CatalogRollback ? "rollback" : "selection";

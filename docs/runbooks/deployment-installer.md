@@ -2451,6 +2451,8 @@ A snapshot whose manifest cannot be read, or that belongs to another instance, i
 
 ### Swap upgrade and database snapshots
 
+The store layout below describes checkpoints of the previous release.
+
 An upgrade and its automatic recovery leave bulk capture data in place. Frames, `state/raw`, `state/archive` and derived products
 stay where they are (install contract section 6):
 
@@ -2908,8 +2910,8 @@ installer supports `upgrade --resume --leave-paused --operation-id` with the
 original release directory and operation ID. It requires the healthy verified
 predecessor on its already-restored checkpoint and the original changed pause.
 An accepted same-version owner pause before retry admission takes precedence.
-The original restore plan must match the sealed checkpoint. Fleet heartbeat
-must be disabled, with its database and SQLite sidecars absent.
+The original restore plan must match the sealed checkpoint. The historical
+Fleet database and its SQLite sidecars must be absent.
 
 The retry reuses the pause through both candidate checks and the deliberate
 restart. It settles the original RC2 release and publishes that release's

@@ -632,7 +632,6 @@ jobs:
           path: |
             TestResults/unit/
             TestResults/integration/
-            TestResults/publish/component/
             coverage-report/shared/
           if-no-files-found: error
           retention-days: 30

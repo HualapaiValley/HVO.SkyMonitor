@@ -3616,6 +3616,7 @@ run_workflow_shape() {
       exit 1
     }
   done
+  expect_invalid_component ./scripts/ci:component-publish shared
   expect_invalid_component ./scripts/ci:canonical-migration logichost
 
   local catalog_reproducibility_job catalog_contracts_job previous_step_line catalog_step step_match

@@ -145,7 +145,7 @@ def check(root, rid, created=None):
     deps = json.loads((root / 'HVO.SkyMonitor.CameraAgent.deps.json').read_text())
     if not deps['runtimeTarget']['name'].endswith('/' + rid):
         raise ValueError('CameraAgent dependency manifest has the wrong RID')
-    forbidden = (
+    forbidden = ('HVO.SkyMonitor.LogicHost', 'HVO.SkyMonitor.ProcessingRunner',
                  'HVO.SkyMonitor.CameraAgent.ReplayRunner', 'HVO.SkyMonitor.TestSupport',
                  'testhost', 'Microsoft.TestPlatform', 'MSTest', 'Microsoft.VisualStudio.TestPlatform')
     records = inventory(root)
