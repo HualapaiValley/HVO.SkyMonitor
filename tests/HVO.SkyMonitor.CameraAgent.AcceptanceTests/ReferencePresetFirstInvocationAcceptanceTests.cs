@@ -10,6 +10,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.Catalog.Sqlite;
+using HVO.SkyMonitor.TestSupport;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -64,8 +65,7 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
                 config["module"]!["options"]!["illuminationMode"] = mode;
             var steps = config["pipeline"]!["steps"]!.AsArray();
             JsonNode Find(string id) => steps.Single(step => step!["id"]!.GetValue<string>() == id)!;
-            Find("LocalStorage")["options"]!["storageRoot"] = root;
-            Find("ArchiveStorage")["options"]!["storageRoot"] = Path.Combine(root, "archive");
+            InstallerCameraModuleFixture.ConfigureSiloStorage(config);
             if (legacy || declared)
             {
                 var scene = new JsonObject

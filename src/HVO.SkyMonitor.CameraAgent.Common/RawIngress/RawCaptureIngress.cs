@@ -18,7 +18,6 @@ namespace HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 internal sealed partial class RawCaptureIngress :
     IRawCaptureIngress,
     IRawEvidenceOperations,
-    IRawIngressRetentionHolds,
     IRawIngressRecoveryControl,
     IRawIngressPressureReporter,
     IRawIngressWakeupReporter,
@@ -266,16 +265,14 @@ internal sealed partial class RawCaptureIngress :
                 RevalidateCapacityAfterFailure();
                 var baseAvailability = health.FailureCount > 0
                     ? RawIngressAvailability.Unhealthy
-                    : health.QuarantineCount > 0 || reconciliation.IndexProjectionFailures > 0 || reconciliation.MaintenanceDeferred > 0
+                    : health.QuarantineCount > 0 || reconciliation.MaintenanceDeferred > 0
                         ? RawIngressAvailability.Degraded
                         : RawIngressAvailability.Accepting;
                 var baseReason = baseAvailability == RawIngressAvailability.Accepting
                     ? "accepting"
-                    : reconciliation.IndexProjectionFailures > 0
-                        ? "index-projection-failed"
-                        : reconciliation.MaintenanceDeferred > 0 && health.QuarantineCount == 0
-                            ? "reconciliation-held"
-                            : "reconciliation-findings";
+                    : reconciliation.MaintenanceDeferred > 0 && health.QuarantineCount == 0
+                        ? "reconciliation-held"
+                        : "reconciliation-findings";
                 _state.Set(
                     baseAvailability,
                     baseReason,
@@ -304,17 +301,13 @@ internal sealed partial class RawCaptureIngress :
                 {
                     _logger.RawIngressQuarantined(reconciliation.Quarantined, reconciliation.QuarantineBytes);
                 }
-                if (reconciliation.IndexProjectionFailures > 0)
-                {
-                    _logger.RawIngressIndexProjectionFailed();
-                }
                 _logger.RawIngressInitialized(SqliteRawCaptureJournal.CurrentSchemaVersion, held.Count);
                 if (wasUnhealthy)
                 {
                     _logger.RawIngressRecovered();
                 }
-                // A held quarantine or an unrepaired index is found again by the next pass.
-                if (reconcileRaw && reconciliation.MaintenanceDeferred == 0 && reconciliation.IndexProjectionFailures == 0)
+                // A held quarantine is found again by the next pass.
+                if (reconcileRaw && reconciliation.MaintenanceDeferred == 0)
                     Volatile.Write(ref _reconciledRequests, requests);
                 Interlocked.Increment(ref _completedInitializations);
                 Volatile.Write(ref _initialized, true);
@@ -1014,28 +1007,15 @@ internal sealed partial class RawCaptureIngress :
         }
     }
 
-    public async ValueTask<IReadOnlyList<RawIngressRetentionHold>> GetRetentionHoldsAsync(
-        string storageRoot,
-        CancellationToken cancellationToken)
+    internal async ValueTask<IReadOnlyList<Guid>> GetRetentionHoldsAsync(CancellationToken cancellationToken)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(storageRoot);
-        if (!PathsEqual(storageRoot, _options.RawIngressRoot))
-        {
-            return Array.Empty<RawIngressRetentionHold>();
-        }
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
         return await ReadRetentionHoldsAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    internal async ValueTask<IReadOnlyList<RawIngressRetentionHold>> GetRetentionHoldsUnderLifecycleLockAsync(
-        string storageRoot,
+    internal async ValueTask<IReadOnlyList<Guid>> GetRetentionHoldsUnderLifecycleLockAsync(
         CancellationToken cancellationToken)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(storageRoot);
-        if (!PathsEqual(storageRoot, _options.RawIngressRoot))
-        {
-            return Array.Empty<RawIngressRetentionHold>();
-        }
         if (!Volatile.Read(ref _journalValidated))
         {
             throw new InvalidOperationException(
@@ -1068,7 +1048,7 @@ internal sealed partial class RawCaptureIngress :
         }
         var stagingPressure = SiloPressureRelease is not null;
         var degraded = underPressure || stagingPressure || baseline.QuarantineCount > 0 ||
-                       baseline.Reason is "index-projection-failed" or "reconciliation-held";
+                       baseline.Reason == "reconciliation-held";
         _state.UpdateBaseStatus(
             degraded ? RawIngressAvailability.Degraded : RawIngressAvailability.Accepting,
             underPressure ? "disk-pressure" : stagingPressure ? "silo-staging-pressure" : degraded ? baseline.Reason : "accepting");
@@ -1184,9 +1164,6 @@ internal sealed partial class RawCaptureIngress :
         OperationCanceledException => "canceled",
         _ => "unexpected"
     };
-
-    private static bool PathsEqual(string left, string right)
-        => StorageRootIdentity.AreEqual(left, right);
 
     private FileStream AcquireProcessLock()
     {

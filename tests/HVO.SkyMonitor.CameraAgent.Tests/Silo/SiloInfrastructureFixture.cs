@@ -125,6 +125,14 @@ internal static class SiloInfrastructureFixture
         return receipt;
     }
 
+    internal static async ValueTask SettleViewChangesAsync(IServiceProvider services, CancellationToken token)
+    {
+        var views = services.GetRequiredService<SqliteCenteredViews>();
+        while ((await views.PublishSiloChangesAsync(16, token).ConfigureAwait(false)).More)
+        {
+        }
+    }
+
     internal static async Task<byte[]> ReadArtifactBytesAsync(IServiceProvider services, Guid artifactId, CancellationToken token)
     {
         var result = await services.GetRequiredService<ICameraAgentArtifactService>()

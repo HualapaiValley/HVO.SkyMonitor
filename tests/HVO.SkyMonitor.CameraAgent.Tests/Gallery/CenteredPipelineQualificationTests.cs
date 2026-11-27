@@ -116,7 +116,7 @@ public sealed class CenteredPipelineQualificationTests
             var clock = new QualificationClock { UtcNow = BaseUtc };
             using var provider = CreateProvider(root, clock);
             var options = provider.GetRequiredService<IOptions<CameraAgentHostOptions>>();
-            var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 15);
+            var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 15, usesSilo: true);
             await journal.InitializeAsync(token).ConfigureAwait(false);
             var processingStore = provider.GetRequiredService<SqliteCaptureProcessingStore>();
             await processingStore.InitializeAsync(token).ConfigureAwait(false);
@@ -141,6 +141,7 @@ public sealed class CenteredPipelineQualificationTests
                 var phaseRaw = await CommitRawArtifactAsync(
                     root, journal, phaseLayout, phaseBytes, BaseUtc.AddSeconds(i * 2), token).ConfigureAwait(false);
 
+                await SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, token).ConfigureAwait(false);
                 var preview = await artifactService.GetPreviewAsync(phaseRaw.Artifact.ArtifactId, token)
                     .ConfigureAwait(false);
                 Assert.AreEqual(CameraAgentArtifactReadStatus.Found, preview.Status);
@@ -171,6 +172,7 @@ public sealed class CenteredPipelineQualificationTests
                     root, journal, aliasLayout, bggrBytes, BaseUtc.AddSeconds(20 + i * 2), token).ConfigureAwait(false);
                 Assert.AreEqual(samePayloadSha, aliasRaw.Artifact.ChecksumSha256);
 
+                await SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, token).ConfigureAwait(false);
                 var aliasPreview = await artifactService.GetPreviewAsync(aliasRaw.Artifact.ArtifactId, token)
                     .ConfigureAwait(false);
                 Assert.AreEqual(CameraAgentArtifactReadStatus.Found, aliasPreview.Status);
@@ -270,8 +272,7 @@ public sealed class CenteredPipelineQualificationTests
                 var exposureKey = new ExposureKey(stream.Camera, stream.RunId, descriptor.Capture.CaptureId);
                 admitted.Add((descriptor.Capture.CaptureId, exposureKey, descriptor, expectedSha));
 
-                // Reopen BOTH the durable journal record AND the actual raw payload bytes from disk,
-                // hashing the reopened payload stream directly and verifying bit-for-bit equality!
+                // Reopen the durable journal record and verify the exact payload version byte for byte.
                 var reopenedRaw = await ingress.ReadCenteredRawAsync(exposureKey, token).ConfigureAwait(false);
                 Assert.IsNotNull(reopenedRaw);
                 Assert.IsTrue(reopenedRaw.IsCommitted);
@@ -281,6 +282,7 @@ public sealed class CenteredPipelineQualificationTests
                 Assert.AreEqual(descriptor.Controls, reopenedRaw.Manifest.Descriptor.Controls);
                 Assert.AreEqual(expectedSha, reopenedRaw.Manifest.Descriptor.Artifact.ChecksumSha256);
 
+                await SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, token).ConfigureAwait(false);
                 var openedRaw = await artifactService.OpenContentAsync(descriptor.Artifact.ArtifactId, token)
                     .ConfigureAwait(false);
                 Assert.AreEqual(CameraAgentArtifactReadStatus.Found, openedRaw.Status);
@@ -365,6 +367,7 @@ public sealed class CenteredPipelineQualificationTests
                 await coordinator.CloseReadyAsync(token).ConfigureAwait(false);
                 await registration.RegisterPendingAsync(token).ConfigureAwait(false);
                 await windowPublisher.PublishReadyAsync(token).ConfigureAwait(false);
+                await SiloInfrastructureFixture.SettleViewChangesAsync(provider, token).ConfigureAwait(false);
             }
 
             Assert.IsNotNull(stream);
@@ -605,6 +608,7 @@ public sealed class CenteredPipelineQualificationTests
             await coordinator.CloseReadyAsync(token).ConfigureAwait(false);
             await registration.RegisterPendingAsync(token).ConfigureAwait(false);
             await windowPublisher.PublishReadyAsync(token).ConfigureAwait(false);
+            await SiloInfrastructureFixture.SettleViewChangesAsync(provider, token).ConfigureAwait(false);
 
             var refId = ref103.Manifest.Descriptor.Capture.CaptureId;
             var disposition = await processing.ReadCenteredWindowByReferenceAsync(refId, token).ConfigureAwait(false);
@@ -718,6 +722,7 @@ public sealed class CenteredPipelineQualificationTests
                 await coordinator.CloseReadyAsync(token).ConfigureAwait(false);
                 await registration.RegisterPendingAsync(token).ConfigureAwait(false);
                 await windowPublisher.PublishReadyAsync(token).ConfigureAwait(false);
+                await SiloInfrastructureFixture.SettleViewChangesAsync(provider, token).ConfigureAwait(false);
             }
 
             Assert.IsNotNull(stream);
@@ -1490,21 +1495,18 @@ public sealed class CenteredPipelineQualificationTests
                 ChecksumSha256 = PayloadChecksum.ComputeSha256(payload)
             }
         };
-        var relativePath = $"frames/{artifactId:N}.bin";
-        var sidecarRelativePath = $"frames/{artifactId:N}.json";
-        var manifest = new ArtifactManifestV2(ArtifactManifestV2.CurrentSchemaVersion, descriptor, relativePath);
+        var paths = RawIngressFileStore.GetPaths(root, startedUtc, artifactId);
+        var manifest = new ArtifactManifestV2(ArtifactManifestV2.CurrentSchemaVersion, descriptor, paths.PayloadRelativePath);
         var sidecar = CaptureContractJson.Serialize(manifest);
-        var payloadPath = Path.Combine(root, relativePath);
-        var sidecarPath = Path.Combine(root, sidecarRelativePath);
-        Directory.CreateDirectory(Path.GetDirectoryName(payloadPath)!);
-        await File.WriteAllBytesAsync(payloadPath, payload, token).ConfigureAwait(false);
-        await File.WriteAllBytesAsync(sidecarPath, sidecar, token).ConfigureAwait(false);
+        Directory.CreateDirectory(Path.GetDirectoryName(paths.PayloadAbsolutePath)!);
+        await File.WriteAllBytesAsync(paths.PayloadAbsolutePath, payload, token).ConfigureAwait(false);
+        await File.WriteAllBytesAsync(paths.SidecarAbsolutePath, sidecar, token).ConfigureAwait(false);
         await journal.CommitAsync(new RawIngressJournalEntry(
             identity.AgentId, identity.CaptureSequence, identity.CaptureId, identity.ArtifactId,
             CaptureContractJson.ComputeDescriptorSha256(descriptor),
             CaptureContractJson.ComputeManifestSha256(sidecar),
             descriptor.Artifact.ChecksumSha256, descriptor.Layout.ByteLength,
-            relativePath, sidecarRelativePath, sidecar,
+            paths.PayloadRelativePath, paths.SidecarRelativePath, sidecar,
             descriptor.Timing.ExposureStartedUtc, descriptor.Timing.DurableIngressUtc), token)
             .ConfigureAwait(false);
         return descriptor;
@@ -1759,6 +1761,7 @@ public sealed class CenteredPipelineQualificationTests
                     reopenedRaw.Manifest.Descriptor.Timing.ExposureEndedUtc - reopenedRaw.Manifest.Descriptor.Timing.ExposureStartedUtc);
                 Assert.AreEqual(monoLayout, reopenedRaw.Manifest.Descriptor.Layout);
 
+                await SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, token).ConfigureAwait(false);
                 var reopenedBytes = await ReadReopenedArtifactBytesAsync(artifactService, descriptor.Artifact.ArtifactId, payload.Length, token)
                     .ConfigureAwait(false);
                 Assert.AreEqual(expectedSha, PayloadChecksum.ComputeSha256(reopenedBytes));
@@ -1930,6 +1933,7 @@ public sealed class CenteredPipelineQualificationTests
                 var descriptor = receipt.Manifest.Descriptor;
                 Assert.AreEqual(expectedSha, descriptor.Artifact.ChecksumSha256);
 
+                await SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, token).ConfigureAwait(false);
                 var reopenedBytes = await ReadReopenedArtifactBytesAsync(artifactService, descriptor.Artifact.ArtifactId, bytes.Length, token)
                     .ConfigureAwait(false);
                 Assert.AreEqual(expectedSha, PayloadChecksum.ComputeSha256(reopenedBytes));
@@ -1962,6 +1966,7 @@ public sealed class CenteredPipelineQualificationTests
                 await coordinator.CloseReadyAsync(token).ConfigureAwait(false);
                 await registration.RegisterPendingAsync(token).ConfigureAwait(false);
                 await windowPublisher.PublishReadyAsync(token).ConfigureAwait(false);
+                await SiloInfrastructureFixture.SettleViewChangesAsync(provider, token).ConfigureAwait(false);
 
                 var single = (await views.ReadArchiveAsync(stream, descriptor.Capture.CaptureId, token)
                     .ConfigureAwait(false)).Single(item => item.Base.Definition.Kind == CenteredViewKind.Single);

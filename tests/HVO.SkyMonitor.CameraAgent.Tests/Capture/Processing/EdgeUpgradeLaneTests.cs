@@ -352,8 +352,7 @@ public sealed class EdgeUpgradeLaneTests
         internal async Task<bool> IsHeldAsync(Guid captureId)
         {
             var artifactId = Receipts[captureId].Manifest.Descriptor.Artifact.ArtifactId;
-            return (await Ingress.GetRetentionHoldsAsync(Root, CancellationToken.None).ConfigureAwait(false))
-                .Any(hold => hold.ArtifactId == artifactId);
+            return (await Ingress.GetRetentionHoldsAsync(CancellationToken.None).ConfigureAwait(false)).Contains(artifactId);
         }
     }
 

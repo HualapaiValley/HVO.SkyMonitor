@@ -558,8 +558,8 @@ public sealed partial class VirtualSkyCameraModuleTests
                         var stored = await provider.GetRequiredService<SqliteCaptureProcessingStore>().ReadOutputByArtifactIdAsync(
                             solutionOutput.ArtifactId, CancellationToken.None).ConfigureAwait(false);
                         Assert.IsNotNull(stored);
-                        var solution = MeasuredAstrometryJson.Parse(await File.ReadAllBytesAsync(Path.Combine(root, stored.PayloadRelativePath))
-                            .ConfigureAwait(false));
+                        var solution = MeasuredAstrometryJson.Parse(await SiloInfrastructureFixture.ReadArtifactBytesAsync(
+                            provider, stored.ArtifactId, CancellationToken.None).ConfigureAwait(false));
                         Assert.AreEqual(AstrometricAssessmentStatus.Rejected, solution.Assessment.Status, solution.Assessment.Reason);
                         Assert.AreEqual(associationOutput.ArtifactId, solution.MeasuredArtifactId);
                         if (publicationFailures == 0)

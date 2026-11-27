@@ -8,6 +8,7 @@ using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.HealthChecks;
 using Microsoft.Data.Sqlite;
@@ -642,14 +643,15 @@ public sealed partial class ProcessingGraphOperationsTests
             {
                 await provider.GetRequiredService<IRawCaptureIngress>()
                     .InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-                var rawHash = Sha256OfFile(receipt.StoredFrame.AbsolutePath);
+                var rawId = receipt.Manifest.Descriptor.Artifact.ArtifactId;
+                var rawHash = await ReadArtifactShaAsync(provider, rawId).ConfigureAwait(false);
                 var detail = await RunReplayToCompletionAsync(provider, executionId).ConfigureAwait(false);
 
                 Assert.AreEqual(ProcessingGraphExecutionStatus.Expired, detail.Execution.Status, detail.Execution.FailureReason);
                 Assert.AreEqual(ProcessingReplayReasons.PlanSuperseded, detail.Execution.FailureReason);
                 Assert.AreEqual(1, detail.Execution.AttemptCount, "A superseded plan spends no further attempt.");
                 Assert.IsTrue(detail.Nodes.All(static node => node.Reason == ProcessingReplayReasons.PlanSuperseded));
-                Assert.AreEqual(rawHash, Sha256OfFile(receipt.StoredFrame.AbsolutePath), "Raw evidence is untouched.");
+                Assert.AreEqual(rawHash, await ReadArtifactShaAsync(provider, rawId).ConfigureAwait(false), "Raw evidence is untouched.");
                 Assert.AreEqual(("Expired", 0L), ReadReplayWorkStateAndHeldPins(root, executionId));
 
                 var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
@@ -779,12 +781,14 @@ public sealed partial class ProcessingGraphOperationsTests
                     .InitializeAsync(CancellationToken.None).ConfigureAwait(false);
                 // Damage only the oldest frozen window input after acceptance; the replay's own raw capture is intact,
                 // so only a check of every frozen input can tell this replay from one that is safe to abandon.
-                var damaged = receipts[0].StoredFrame.AbsolutePath;
-                var payload = await File.ReadAllBytesAsync(damaged).ConfigureAwait(false);
-                payload[^1] ^= 0xFF;
-                await File.WriteAllBytesAsync(damaged, payload).ConfigureAwait(false);
-                var damagedHash = Sha256OfFile(damaged);
-                var primaryHash = Sha256OfFile(receipts[^1].StoredFrame.AbsolutePath);
+                var damagedDescriptor = receipts[0].Manifest.Descriptor;
+                var damaged = await SiloInfrastructureFixture.ReadLocalLocatorAsync(provider, damagedDescriptor.Artifact.ArtifactId,
+                    CaptureContractJson.ComputeDescriptorSha256(damagedDescriptor), CancellationToken.None).ConfigureAwait(false);
+                var objects = provider.GetRequiredService<SiloTestStore>();
+                objects.Damage(damaged);
+                var damagedHash = SiloHash.Sha256(objects.Read(damaged.Key, damaged.VersionId));
+                var primaryId = receipts[^1].Manifest.Descriptor.Artifact.ArtifactId;
+                var primaryHash = await ReadArtifactShaAsync(provider, primaryId).ConfigureAwait(false);
 
                 var detail = await RunReplayToCompletionAsync(provider, executionId).ConfigureAwait(false);
 
@@ -795,8 +799,8 @@ public sealed partial class ProcessingGraphOperationsTests
                 Assert.AreEqual(
                     frozenRecord == "current" ? "processing.step-exception" : "processing.replay-exception",
                     detail.Execution.FailureReason);
-                Assert.AreEqual(damagedHash, Sha256OfFile(damaged), "Damaged evidence is kept as found.");
-                Assert.AreEqual(primaryHash, Sha256OfFile(receipts[^1].StoredFrame.AbsolutePath));
+                Assert.AreEqual(damagedHash, SiloHash.Sha256(objects.Read(damaged.Key, damaged.VersionId)), "Damaged evidence is kept as found.");
+                Assert.AreEqual(primaryHash, await ReadArtifactShaAsync(provider, primaryId).ConfigureAwait(false));
                 Assert.AreEqual(("Failed", 0L), ReadReplayWorkStateAndHeldPins(root, executionId));
                 var durable = await provider.GetRequiredService<SqliteCaptureProcessingStore>()
                     .ReadOperationalStateAsync(CancellationToken.None).ConfigureAwait(false);
@@ -1256,7 +1260,8 @@ public sealed partial class ProcessingGraphOperationsTests
                 var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
                 var before = await operations.EnsureConfiguredBasicAsync(configuration, CancellationToken.None).ConfigureAwait(false);
                 var revisionBefore = await operations.ReadRevisionSnapshotAsync(revisionId, CancellationToken.None).ConfigureAwait(false);
-                var rawHash = Sha256OfFile(receipt.StoredFrame.AbsolutePath);
+                var rawId = receipt.Manifest.Descriptor.Artifact.ArtifactId;
+                var rawHash = await ReadArtifactShaAsync(provider, rawId).ConfigureAwait(false);
                 var tables = new[] { "processing_graph_commands", "replay_executions", "processing_replay_work", "processing_execution_input_pins" };
                 var counts = tables.Select(table => CountRows(root, table)).ToArray();
                 if (acknowledged)
@@ -1277,7 +1282,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 var revisionAfter = await operations.ReadRevisionSnapshotAsync(revisionId, CancellationToken.None).ConfigureAwait(false);
                 Assert.AreEqual(JsonSerializer.Serialize(revisionBefore), JsonSerializer.Serialize(revisionAfter));
                 CollectionAssert.AreEqual(counts, tables.Select(table => CountRows(root, table)).ToArray());
-                Assert.AreEqual(rawHash, Sha256OfFile(receipt.StoredFrame.AbsolutePath));
+                Assert.AreEqual(rawHash, await ReadArtifactShaAsync(provider, rawId).ConfigureAwait(false));
             }
 
             async Task<string> SelectAsync(ProcessingGraphOperationsCoordinator operations, string? reason)
@@ -3302,7 +3307,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 var liveOutputs = ReadProjectedSceneOutputs(root, captureId);
                 Assert.HasCount(1, liveOutputs, "the live commit must retain exactly one projected-scene product");
                 liveOutputIdentity = liveOutputs[0].OutputIdentity;
-                livePayloadSha256 = Sha256OfFile(Path.Combine(root, liveOutputs[0].PayloadRelativePath));
+                livePayloadSha256 = await ReadArtifactShaAsync(provider, ProcessingIdentity.CreateArtifactId(liveOutputIdentity)).ConfigureAwait(false);
             }
 
             using (var provider = CreateProvider(root))
@@ -3332,7 +3337,8 @@ public sealed partial class ProcessingGraphOperationsTests
                 Assert.AreEqual(liveOutputIdentity, node.Outputs.Single().OutputIdentitySha256);
                 var replayOutputs = ReadProjectedSceneOutputs(root, captureId);
                 Assert.HasCount(1, replayOutputs);
-                Assert.AreEqual(livePayloadSha256, Sha256OfFile(Path.Combine(root, replayOutputs[0].PayloadRelativePath)));
+                Assert.AreEqual(livePayloadSha256, await ReadArtifactShaAsync(provider,
+                    ProcessingIdentity.CreateArtifactId(replayOutputs[0].OutputIdentity)).ConfigureAwait(false));
                 Assert.IsEmpty(ReadOutputPins(root, executionId, "projected-scene"), "pins are released once the replay completes");
                 Assert.IsNull(
                     await provider.GetRequiredService<IProjectedSceneStagingReader>()
@@ -3529,6 +3535,7 @@ public sealed partial class ProcessingGraphOperationsTests
     [DataRow("sidecar-tampered", "processing.invalid-projected-scene")]
     public async Task ReplayFailsClosedWhenPinnedProjectedSceneBytesAreMissingOrAltered(string fault, string expectedReason)
     {
+        ArgumentNullException.ThrowIfNull(fault);
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory($"hvo-processing-replay-projected-scene-{fault}");
         try
         {
@@ -3548,23 +3555,15 @@ public sealed partial class ProcessingGraphOperationsTests
             await provider.GetRequiredService<IProjectedSceneStagingStore>().StageAsync(
                 stageKey, sceneId, await CreateProjectedSceneAsync().ConfigureAwait(false), CancellationToken.None)
                 .ConfigureAwait(false);
-            var payloadPath = Path.Combine(root, live.PayloadRelativePath);
-            var sidecarPath = Path.Combine(root, live.SidecarRelativePath);
-            switch (fault)
-            {
-                case "missing":
-                    File.Delete(payloadPath);
-                    break;
-                case "tampered":
-                    await File.WriteAllBytesAsync(payloadPath, Encoding.UTF8.GetBytes("{\"tampered\":true}")).ConfigureAwait(false);
-                    break;
-                case "sidecar-missing":
-                    File.Delete(sidecarPath);
-                    break;
-                default:
-                    await File.WriteAllBytesAsync(sidecarPath, Encoding.UTF8.GetBytes("{\"tampered\":true}")).ConfigureAwait(false);
-                    break;
-            }
+            var revision = fault.StartsWith("sidecar-", StringComparison.Ordinal)
+                ? SiloArtifactStorage.ProductEvidenceRevision : live.OutputIdentity;
+            var locator = await SiloInfrastructureFixture.ReadLocalLocatorAsync(provider,
+                ProcessingIdentity.CreateArtifactId(live.OutputIdentity), revision, CancellationToken.None).ConfigureAwait(false);
+            var objects = provider.GetRequiredService<SiloTestStore>();
+            if (fault.EndsWith("missing", StringComparison.Ordinal))
+                objects.Delete(locator);
+            else
+                objects.Damage(locator);
 
             var detail = await RunReplayToCompletionAsync(provider, submitted.Execution.ExecutionId).ConfigureAwait(false);
 
@@ -3605,7 +3604,8 @@ public sealed partial class ProcessingGraphOperationsTests
                 executionId = submitted.Execution.ExecutionId;
                 Assert.HasCount(1, ReadOutputPins(root, executionId, "projected-scene"));
                 // Capacity accounting includes both frozen classes: the raw payload and the pinned scene payload.
-                var scenePayloadBytes = new FileInfo(Path.Combine(root, live.PayloadRelativePath)).Length;
+                var scenePayloadBytes = (await SiloInfrastructureFixture.ReadArtifactBytesAsync(provider,
+                    ProcessingIdentity.CreateArtifactId(live.OutputIdentity), CancellationToken.None).ConfigureAwait(false)).LongLength;
                 var operational = await provider.GetRequiredService<SqliteCaptureProcessingStore>()
                     .ReadOperationalStateAsync(CancellationToken.None).ConfigureAwait(false);
                 Assert.AreEqual(8L + scenePayloadBytes, operational.ReplayPendingBytes, "pending bytes must count the raw payload and the pinned projected-scene payload");
@@ -3984,6 +3984,9 @@ public sealed partial class ProcessingGraphOperationsTests
         while (reader.Read()) pins.Add((reader.GetInt32(0), reader.GetInt32(1), reader.GetString(2)));
         return pins;
     }
+
+    private static async ValueTask<string> ReadArtifactShaAsync(IServiceProvider provider, Guid artifactId) =>
+        SiloHash.Sha256(await SiloInfrastructureFixture.ReadArtifactBytesAsync(provider, artifactId, CancellationToken.None).ConfigureAwait(false));
 
     private static string Sha256OfFile(string path) => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path)));
 

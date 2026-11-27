@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
@@ -14,6 +15,7 @@ using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 using HVO.SkyMonitor.Catalog.Sqlite;
 using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.TestSupport;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
@@ -861,14 +863,34 @@ public sealed partial class ProcessingGraphOperationsTests
         }
     }
 
-    private static Task<CameraModuleConfig> LoadAstrometryProfileAsync(string path)
-        => new FileCameraAgentConfigurationLoader(Options.Create(new CameraAgentHostOptions
+    private static async Task<CameraModuleConfig> LoadAstrometryProfileAsync(string path)
+    {
+        var sourcePath = Path.Combine(AppContext.BaseDirectory, path);
+        if (Path.GetFileName(path) != "installer-controlled-night.json")
+            return await LoadAsync(sourcePath).ConfigureAwait(false);
+
+        var module = JsonNode.Parse(await File.ReadAllTextAsync(sourcePath).ConfigureAwait(false))!;
+        InstallerCameraModuleFixture.ConfigureSiloStorage(module);
+        var runtimePath = Path.GetTempFileName();
+        try
         {
-            ConfigFilePath = Path.Combine(AppContext.BaseDirectory, path),
-            AgentId = "reference-astrometry-test",
-            CentralIntegration = new() { Mode = CentralIntegrationMode.Disabled },
-            Observatory = new ObservatoryLocation(35.347, -113.878, 0, "America/Phoenix")
-        }), NullLogger<FileCameraAgentConfigurationLoader>.Instance).LoadAsync(CancellationToken.None);
+            await File.WriteAllTextAsync(runtimePath, module.ToJsonString()).ConfigureAwait(false);
+            return await LoadAsync(runtimePath).ConfigureAwait(false);
+        }
+        finally
+        {
+            File.Delete(runtimePath);
+        }
+
+        static Task<CameraModuleConfig> LoadAsync(string configurationPath) =>
+            new FileCameraAgentConfigurationLoader(Options.Create(new CameraAgentHostOptions
+            {
+                ConfigFilePath = configurationPath,
+                AgentId = "reference-astrometry-test",
+                CentralIntegration = new() { Mode = CentralIntegrationMode.Disabled },
+                Observatory = new ObservatoryLocation(35.347, -113.878, 0, "America/Phoenix")
+            }), NullLogger<FileCameraAgentConfigurationLoader>.Instance).LoadAsync(CancellationToken.None);
+    }
 
     private static IAstrometricCatalogSource CreateReferenceCatalog(string version = "1", bool complete = true,
         IReadOnlyList<CelestialCatalogObject>? stars = null)

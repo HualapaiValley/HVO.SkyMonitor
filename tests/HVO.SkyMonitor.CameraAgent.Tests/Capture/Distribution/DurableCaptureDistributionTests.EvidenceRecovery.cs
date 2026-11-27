@@ -166,8 +166,8 @@ public sealed partial class DurableCaptureDistributionTests
             recompute.CommandText = "UPDATE raw_captures SET retention_hold=0 WHERE capture_sequence=1;";
             await recompute.ExecuteNonQueryAsync().ConfigureAwait(false);
         }
-        var holds = await fixture.Ingress.GetRetentionHoldsAsync(fixture.Root, CancellationToken.None).ConfigureAwait(false);
-        Assert.IsTrue(holds.Any(hold => hold.ArtifactId == receipt.Manifest.Descriptor.Artifact.ArtifactId));
+        var holds = await fixture.Ingress.GetRetentionHoldsAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.Contains(receipt.Manifest.Descriptor.Artifact.ArtifactId, holds);
         CollectionAssert.AreEqual(new byte[] { 1, 2, 0, 4 }, await File.ReadAllBytesAsync(receipt.StoredFrame.AbsolutePath).ConfigureAwait(false));
     }
 

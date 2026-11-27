@@ -625,11 +625,11 @@ public sealed partial class CameraAgentOperatorUiServiceTests
         var service = CreateReadService(rawIngressState: rawIngress);
 
         var before = await service.GetStorageReconciliationAsync(CancellationToken.None).ConfigureAwait(false);
-        rawIngress.RecordReconciliation(new RawIngressReconciliationSummary(40, 2, 1, 1, 0, 4096, IndexProjectionFailures: 3));
+        rawIngress.RecordReconciliation(new RawIngressReconciliationSummary(40, 2, 1, 1, 0, 4096));
         var after = await service.GetStorageReconciliationAsync(CancellationToken.None).ConfigureAwait(false);
 
         Assert.AreEqual(new CameraAgentStorageReconciliation(null), before.Value);
-        Assert.AreEqual(new RawIngressReconciliationReport(time.GetUtcNow(), 40, 2, 1, 1, 0, 3), after.Value!.RawIngress);
+        Assert.AreEqual(new RawIngressReconciliationReport(time.GetUtcNow(), 40, 2, 1, 1, 0), after.Value!.RawIngress);
     }
 
     [TestMethod]

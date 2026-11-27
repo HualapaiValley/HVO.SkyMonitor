@@ -675,6 +675,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                 sources.Clear();
             }
 
+            await SettleSiloRawAdmissionsAsync(provider, token).ConfigureAwait(false);
             var requested = await operations.SubmitReplayAsync(
                 new(liveDetail.Execution.CaptureId, liveDetail.Execution.GraphRevisionId, liveDetail.Execution.PrimaryArtifactId),
                 "regional-visibility-recent-replay", "regional-vis-test", token).ConfigureAwait(false);
@@ -690,16 +691,16 @@ public sealed partial class VirtualSkyCameraModuleTests
             {
                 var original = await store.ReadOutputByArtifactIdAsync(liveOutput.ArtifactId, token).ConfigureAwait(false);
                 Assert.IsNotNull(original);
-                var payloadPath = Path.Combine(root, original.PayloadRelativePath);
+                var locator = await SiloInfrastructureFixture.ReadLocalLocatorAsync(provider, original.ArtifactId,
+                    original.OutputIdentitySha256, token).ConfigureAwait(false);
+                var objects = provider.GetRequiredService<SiloTestStore>();
                 if (scenario == "missing")
                 {
-                    File.Move(payloadPath, payloadPath + ".moved");
+                    objects.Delete(locator);
                 }
                 else
                 {
-                    var payload = await File.ReadAllBytesAsync(payloadPath, token).ConfigureAwait(false);
-                    payload[0] ^= 1;
-                    await File.WriteAllBytesAsync(payloadPath, payload, token).ConfigureAwait(false);
+                    objects.Damage(locator);
                 }
             }
 

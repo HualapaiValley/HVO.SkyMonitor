@@ -121,9 +121,6 @@ internal static partial class CameraAgentLog
     [LoggerMessage(EventId = 2048, EventName = "RawIngressSqliteResult", Level = LogLevel.Warning, Message = "Raw ingress SQLite operation {Operation} completed with result {Result}")]
     private static partial void RawIngressSqliteFailure(ILogger logger, string operation, string result);
 
-    [LoggerMessage(EventId = 2049, Level = LogLevel.Warning, Message = "Raw ingress compatibility index projection failed and will be repaired at restart")]
-    public static partial void RawIngressIndexProjectionFailed(this ILogger logger);
-
     [LoggerMessage(EventId = 2050, Level = LogLevel.Information, Message = "Capture lanes initialized at schema {SchemaVersion} with {LaneCount} configured lanes")]
     public static partial void CaptureLanesInitialized(this ILogger logger, int schemaVersion, int laneCount);
 

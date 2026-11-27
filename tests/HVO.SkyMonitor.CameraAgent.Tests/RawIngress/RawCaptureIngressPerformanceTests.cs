@@ -442,7 +442,6 @@ public sealed partial class RawCaptureIngressPerformanceTests
             Assert.AreEqual(W3PayloadCount, reconciliation.Inspected);
             Assert.AreEqual(0, reconciliation.MissingEvidence);
             Assert.AreEqual(0, reconciliation.Quarantined);
-            Assert.AreEqual(0, reconciliation.IndexProjectionFailures);
             recoveryFileFlushes += restarted.Telemetry.FileFlushCount;
             recoveryDirectorySyncs += restarted.Telemetry.DirectorySyncCount;
         }

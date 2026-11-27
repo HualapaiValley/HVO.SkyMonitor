@@ -43,13 +43,8 @@ public sealed partial class VirtualSkyCameraModuleTests
     private static ValueTask SettleSiloRawAdmissionsAsync(ServiceProvider provider, CancellationToken token)
         => SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, token);
 
-    private static async ValueTask SettleSiloViewChangesAsync(ServiceProvider provider, CancellationToken token)
-    {
-        var views = provider.GetRequiredService<SqliteCenteredViews>();
-        while ((await views.PublishSiloChangesAsync(16, token).ConfigureAwait(false)).More)
-        {
-        }
-    }
+    private static ValueTask SettleSiloViewChangesAsync(ServiceProvider provider, CancellationToken token)
+        => SiloInfrastructureFixture.SettleViewChangesAsync(provider, token);
 
     [TestMethod]
     public async Task CenteredViewPublishesRawFallbackWhenThePinnedProfileHasNoCalibrationStep()

@@ -847,7 +847,7 @@ public sealed partial class RawCaptureIngressTests
             var state = new RawIngressState(TimeProvider.System);
             using var ingress = CreateIngress(root, state);
             await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-            state.Set(RawIngressAvailability.Degraded, "index-projection-failed");
+            state.Set(RawIngressAvailability.Degraded, "reconciliation-held");
             state.SetProjectedSceneBacklog(3);
             var configuration = CreateConfiguration();
             var receipt = await ingress.AcceptAsync(
@@ -863,7 +863,7 @@ public sealed partial class RawCaptureIngressTests
             state.SetProjectedSceneBacklog(0);
 
             Assert.AreEqual(RawIngressAvailability.Degraded, state.Snapshot.Availability);
-            Assert.AreEqual("index-projection-failed", state.Snapshot.Reason);
+            Assert.AreEqual("reconciliation-held", state.Snapshot.Reason);
             Assert.AreEqual(1, state.Snapshot.PendingCount);
         }
         finally

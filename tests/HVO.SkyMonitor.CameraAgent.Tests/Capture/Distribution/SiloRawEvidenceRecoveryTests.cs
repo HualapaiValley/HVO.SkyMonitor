@@ -346,7 +346,7 @@ public sealed partial class SiloRawEvidenceRecoveryTests
             """).ConfigureAwait(false));
         var journal = new SqliteRawCaptureJournal(Path.Combine(fixture.Root, "journal", "raw-ingress.db"), 5, usesSilo: true);
         var holds = await journal.ReadRetentionHoldsAsync(token).ConfigureAwait(false);
-        Assert.IsFalse(holds.Any(hold => hold.ArtifactId == capture.Manifest.Descriptor.Artifact.ArtifactId),
+        Assert.DoesNotContain(capture.Manifest.Descriptor.Artifact.ArtifactId, holds,
             $"Capture {captureId} should not remain retention-held after evidence restoration with no remaining holds.");
     }
 

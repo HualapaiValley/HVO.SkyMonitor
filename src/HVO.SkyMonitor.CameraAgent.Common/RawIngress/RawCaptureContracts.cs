@@ -77,15 +77,6 @@ internal interface IProjectedSceneStageOwnerProvider
     ValueTask<IReadOnlySet<string>> GetOwnedStageKeysAsync(CancellationToken cancellationToken);
 }
 
-public sealed record RawIngressRetentionHold(Guid ArtifactId);
-
-public interface IRawIngressRetentionHolds
-{
-    ValueTask<IReadOnlyList<RawIngressRetentionHold>> GetRetentionHoldsAsync(
-        string storageRoot,
-        CancellationToken cancellationToken);
-}
-
 internal sealed record RawCaptureIdentity(
     string AgentId,
     long CaptureSequence,
@@ -129,7 +120,6 @@ internal sealed record RawIngressReconciliationSummary(
     int Quarantined,
     int MissingEvidence,
     long QuarantineBytes,
-    int IndexProjectionFailures = 0,
     int ProjectedSceneStageBacklog = 0,
     int MaintenanceDeferred = 0);
 

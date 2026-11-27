@@ -138,7 +138,7 @@ internal sealed partial class RawCaptureIngress
             _state.UpdateBaseStatus(RawIngressAvailability.Degraded, "silo-staging-pressure");
     }
 
-    private async ValueTask<IReadOnlyList<RawIngressRetentionHold>> ReadRetentionHoldsAsync(CancellationToken cancellationToken)
+    private async ValueTask<IReadOnlyList<Guid>> ReadRetentionHoldsAsync(CancellationToken cancellationToken)
     {
         var holds = await _journal.ReadRetentionHoldsAsync(cancellationToken).ConfigureAwait(false);
         return _silo is null ? holds : [.. holds, .. await _journal.ReadSiloAdmissionHoldsAsync(cancellationToken).ConfigureAwait(false)];

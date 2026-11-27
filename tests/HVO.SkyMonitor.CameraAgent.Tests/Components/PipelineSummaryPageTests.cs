@@ -54,11 +54,7 @@ public sealed class PipelineSummaryPageTests
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-measurement-operations");
         try
         {
-            using var provider = ProcessingGraphOperationsTests.CreateProvider(root, new Dictionary<string, string?>
-            {
-                ["CameraAgent:CentralIntegration:Mode"] = "Enabled",
-                ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false"
-            }, configureServices: centered ? static services =>
+            using var provider = ProcessingGraphOperationsTests.CreateProvider(root, configureServices: centered ? static services =>
             {
                 services.AddSingleton<ICelestialCatalog>(new InMemoryCelestialCatalog([]));
                 services.AddCameraModule<VirtualSkyCameraModule>("VirtualSky");

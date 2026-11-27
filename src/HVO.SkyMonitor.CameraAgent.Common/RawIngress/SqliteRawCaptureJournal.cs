@@ -875,7 +875,7 @@ internal sealed partial class SqliteRawCaptureJournal(
         )
         """;
 
-    internal async Task<IReadOnlyList<RawIngressRetentionHold>> ReadRetentionHoldsAsync(CancellationToken cancellationToken)
+    internal async Task<IReadOnlyList<Guid>> ReadRetentionHoldsAsync(CancellationToken cancellationToken)
     {
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
@@ -886,11 +886,11 @@ internal sealed partial class SqliteRawCaptureJournal(
             ORDER BY agent_id, capture_sequence;
             """;
         command.Parameters.AddWithValue("$centered_now", _utcNow().ToUnixTimeMilliseconds());
-        var holds = new List<RawIngressRetentionHold>();
+        var holds = new List<Guid>();
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-            holds.Add(new RawIngressRetentionHold(Guid.ParseExact(reader.GetString(0), "N")));
+            holds.Add(Guid.ParseExact(reader.GetString(0), "N"));
         }
         return holds;
     }

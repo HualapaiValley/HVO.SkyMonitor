@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
@@ -8,6 +9,7 @@ using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
+using HVO.SkyMonitor.TestSupport;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -22,15 +24,20 @@ public sealed partial class VirtualSkyCameraModuleTests
         var path = Path.Combine(AppContext.BaseDirectory, "Fixtures", "installer-controlled-night.json");
         using var before = JsonDocument.Parse(await File.ReadAllTextAsync(path).ConfigureAwait(false));
         var root = Path.Combine(Path.GetTempPath(), $"hvo-installer-lighting-{Guid.NewGuid():N}");
+        var runtimePath = Path.Combine(root, "cameraagent.json");
         var options = Options.Create(new CameraAgentHostOptions
         {
-            ConfigFilePath = path,
+            ConfigFilePath = runtimePath,
             RawIngressRoot = root,
             CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled },
             Observatory = new ObservatoryLocation(35.347, -113.878, 0, "America/Phoenix")
         });
         try
         {
+            Directory.CreateDirectory(root);
+            var runtimeModule = JsonNode.Parse(before.RootElement.GetRawText())!;
+            InstallerCameraModuleFixture.ConfigureSiloStorage(runtimeModule);
+            await File.WriteAllTextAsync(runtimePath, runtimeModule.ToJsonString()).ConfigureAwait(false);
             var loader = new FileCameraAgentConfigurationLoader(options, NullLogger<FileCameraAgentConfigurationLoader>.Instance);
             var baseline = await loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);
             var ingress = new InstallerLightingJournal(root);

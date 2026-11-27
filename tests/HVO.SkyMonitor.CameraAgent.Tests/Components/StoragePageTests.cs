@@ -164,7 +164,7 @@ public sealed class StoragePageTests
     {
         using var context = CreateContext(out var service);
         service.ReconciliationHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentStorageReconciliation>.Success(new(
-            new RawIngressReconciliationReport(Now.AddHours(-2), 40, 2, 1, 1, 0, 0))));
+            new RawIngressReconciliationReport(Now.AddHours(-2), 40, 2, 1, 1, 0))));
 
         var cut = context.Render<StoragePage>();
 

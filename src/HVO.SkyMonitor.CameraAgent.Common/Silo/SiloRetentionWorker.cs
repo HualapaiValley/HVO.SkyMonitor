@@ -153,7 +153,7 @@ internal sealed partial class SiloRetentionWorker(SiloInstalledStorage storage, 
     private async ValueTask<IReadOnlyList<SiloRetentionHold>> ReadHoldsAsync(CancellationToken cancellationToken)
     {
         var root = options.Value.RawIngressRoot;
-        var rawHolds = await raw.GetRetentionHoldsUnderLifecycleLockAsync(root, cancellationToken).ConfigureAwait(false);
+        var rawHolds = await raw.GetRetentionHoldsUnderLifecycleLockAsync(cancellationToken).ConfigureAwait(false);
         var processing = (IRawIngressLifecycleProcessingRetentionHolds)services.GetRequiredService<IProcessingRetentionHolds>();
         var processingHolds = await processing.GetRetentionHoldsUnderLifecycleLockAsync(root, cancellationToken).ConfigureAwait(false);
         var masterIds = await services.GetRequiredService<SqliteCalibrationFamilyStore>().GetActiveMasterArtifactIdsAsync(cancellationToken)
@@ -169,7 +169,7 @@ internal sealed partial class SiloRetentionWorker(SiloInstalledStorage storage, 
         var nightlyHolds = await ReadNightlyHoldsAsync(cancellationToken).ConfigureAwait(false);
         var satelliteHolds = await services.GetRequiredService<CaptureSatelliteWorkStore>().ReadSiloArchiveHoldsAsync(cancellationToken)
             .ConfigureAwait(false);
-        return rawHolds.Select(static hold => new SiloRetentionHold(SiloHoldKind.ProcessingInput, hold.ArtifactId.ToString("D")))
+        return rawHolds.Select(static id => new SiloRetentionHold(SiloHoldKind.ProcessingInput, id.ToString("D")))
             .Concat(processingHolds.Select(static hold => new SiloRetentionHold(SiloHoldKind.ProcessingInput, hold.ArtifactId.ToString("D"))))
             .Concat(masterIds.Select(static id => new SiloRetentionHold(SiloHoldKind.CalibrationMaster, id.ToString("D"))))
             .Concat(videoHolds)

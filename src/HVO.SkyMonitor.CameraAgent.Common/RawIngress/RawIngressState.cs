@@ -37,8 +37,7 @@ public sealed record RawIngressReconciliationReport(
     int Recovered,
     int Cleaned,
     int Quarantined,
-    int MissingEvidence,
-    int IndexProjectionFailures);
+    int MissingEvidence);
 
 public sealed class RawIngressState(TimeProvider timeProvider)
 {
@@ -77,7 +76,7 @@ public sealed class RawIngressState(TimeProvider timeProvider)
         ref _lastReconciliation,
         new RawIngressReconciliationReport(
             _timeProvider.GetUtcNow(), summary.Inspected, summary.Recovered, summary.Cleaned,
-            summary.Quarantined, summary.MissingEvidence, summary.IndexProjectionFailures));
+            summary.Quarantined, summary.MissingEvidence));
 
     internal void Set(
         RawIngressAvailability availability,
