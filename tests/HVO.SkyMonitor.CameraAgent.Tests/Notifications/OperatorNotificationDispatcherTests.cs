@@ -916,9 +916,15 @@ public sealed class OperatorNotificationDispatcherTests
 
         public void UpdateOptions(OperatorNotificationsOptions next) => _options = next;
 
+        private ProtectedSecretBindings BuildBindings() => new(
+            WebhookOrigin: ConfigurationOperatorNotificationConfigProvider.FormatWebhookOriginKey(_secrets.WebhookUrl),
+            SmtpEndpoint: ConfigurationOperatorNotificationConfigProvider.FormatSmtpEndpointKey(_options.Smtp),
+            WebhookDestination: ConfigurationOperatorNotificationConfigProvider.FormatWebhookDestinationKey(_secrets.WebhookUrl));
+
         public ValueTask<OperatorNotificationsConfigurationSnapshot> GetSnapshotAsync(CancellationToken cancellationToken)
         {
-            var presence = ConfigurationOperatorNotificationConfigProvider.BuildSecretPresence(_secrets, OperatorNotificationSecrets.Empty);
+            var presence = ConfigurationOperatorNotificationConfigProvider.BuildSecretPresence(
+                _secrets, OperatorNotificationSecrets.Empty, _options, null, BuildBindings(), _options);
             return ValueTask.FromResult(new OperatorNotificationsConfigurationSnapshot(_options, presence, "v1", true, true));
         }
 
@@ -928,7 +934,8 @@ public sealed class OperatorNotificationDispatcherTests
         public ValueTask<OperatorNotificationsSaveResult> SaveAsync(OperatorNotificationsUpdateRequest request, string actor, CancellationToken cancellationToken)
         {
             _options = request.Options;
-            var presence = ConfigurationOperatorNotificationConfigProvider.BuildSecretPresence(_secrets, OperatorNotificationSecrets.Empty);
+            var presence = ConfigurationOperatorNotificationConfigProvider.BuildSecretPresence(
+                _secrets, OperatorNotificationSecrets.Empty, _options, null, BuildBindings(), _options);
             var snapshot = new OperatorNotificationsConfigurationSnapshot(_options, presence, "v2", true, true);
             return ValueTask.FromResult(new OperatorNotificationsSaveResult(OperatorNotificationsSaveOutcome.Applied, snapshot, "Saved"));
         }

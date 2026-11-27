@@ -445,6 +445,16 @@ public sealed class OperatorNotificationValidationTests
             WebhookNtfyTopic: "synthetic-ntfy-topic-echo");
         Assert.AreEqual("[REDACTED]", secrets.ToString());
 
+        var bindings = new ProtectedSecretBindings(
+            WebhookOrigin: "HTTPS://HOOKS.EXAMPLE.TEST:8443",
+            SmtpEndpoint: "SMTP.EXAMPLE.TEST:587:StartTls",
+            WebhookDestination: secretUrl);
+        var bindingsStr = bindings.ToString();
+        Assert.AreEqual("[REDACTED]", bindingsStr);
+        Assert.DoesNotContain("synthetic-secret-segment", bindingsStr, StringComparison.Ordinal);
+        Assert.DoesNotContain("synthetic-query-token", bindingsStr, StringComparison.Ordinal);
+        Assert.DoesNotContain("hooks.example.test", bindingsStr, StringComparison.OrdinalIgnoreCase);
+
         var smtpRequest = new SmtpDeliveryRequest(
             "smtp.example.test", 587, SmtpSecurityMode.StartTls,
             "from@example.test", "Camera", ["ops@example.test"],

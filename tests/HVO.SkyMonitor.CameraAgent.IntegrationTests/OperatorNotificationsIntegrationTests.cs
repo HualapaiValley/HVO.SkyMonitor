@@ -10,6 +10,8 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.Authentication;
+using HVO.SkyMonitor.CameraAgent.Common.Configuration;
+using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Notifications;
 using HVO.SkyMonitor.CameraAgent.Configuration;
 using HVO.SkyMonitor.CameraAgent.Data;
@@ -37,6 +39,7 @@ public sealed class OperatorNotificationsIntegrationTests
     [TestMethod]
     public async Task DefaultHostNotificationsAreOffHealthIsDisabledAndNoSecretFilesAreCreatedAsync()
     {
+        await WaitForDeploymentLocationReadyAsync(AssemblyHooks.Fixture).ConfigureAwait(false);
         using var anonymous = AssemblyHooks.Fixture.CreateCameraAgentClient();
         using var healthResponse = await anonymous.GetAsync(new Uri("/health", UriKind.Relative)).ConfigureAwait(false);
         healthResponse.EnsureSuccessStatusCode();
@@ -169,6 +172,7 @@ public sealed class OperatorNotificationsIntegrationTests
                 ["CameraAgent:Notifications:Enabled"] = "false",
                 ["CameraAgent:Notifications:RequestTimeoutSeconds"] = "999"
             }).ConfigureAwait(false);
+            await WaitForDeploymentLocationReadyAsync(disabledFixture).ConfigureAwait(false);
 
             using var anon = disabledFixture.CreateCameraAgentClient();
             var healthJson = await anon.GetStringAsync(new Uri("/health", UriKind.Relative)).ConfigureAwait(false);
@@ -193,6 +197,7 @@ public sealed class OperatorNotificationsIntegrationTests
                 ["CameraAgent:Notifications:RequestTimeoutSeconds"] = "999",
                 ["CameraAgent:Notifications:Smtp:Enabled"] = "true"
             }).ConfigureAwait(false);
+            await WaitForDeploymentLocationReadyAsync(enabledInvalidFixture).ConfigureAwait(false);
 
             using var anon = enabledInvalidFixture.CreateCameraAgentClient();
             var healthJson = await anon.GetStringAsync(new Uri("/health", UriKind.Relative)).ConfigureAwait(false);
@@ -231,6 +236,7 @@ public sealed class OperatorNotificationsIntegrationTests
             ["CameraAgent:Notifications:Enabled"] = "false",
             [key] = malformedValue
         }).ConfigureAwait(false);
+        await WaitForDeploymentLocationReadyAsync(fixture).ConfigureAwait(false);
 
         // /health MUST return HTTP 200 with operator-notifications Degraded (invalid-configuration, NOT store-corrupt).
         using var anon = fixture.CreateCameraAgentClient();
@@ -379,6 +385,7 @@ public sealed class OperatorNotificationsIntegrationTests
             [ConfigurationOperatorNotificationConfigProvider.SmtpUsernameConfigKey] = "host-fallback-user",
             [ConfigurationOperatorNotificationConfigProvider.SmtpPasswordConfigKey] = "host-fallback-pass"
         }).ConfigureAwait(false);
+        await WaitForDeploymentLocationReadyAsync(fixture).ConfigureAwait(false);
 
         string readWriteKey;
         string provisioningDir;
@@ -547,6 +554,7 @@ public sealed class OperatorNotificationsIntegrationTests
                 [ConfigurationOperatorNotificationConfigProvider.SmtpPasswordConfigKey] = "host-fallback-pass",
                 [ConfigurationOperatorNotificationConfigProvider.WebhookUrlConfigKey] = "https://host-fallback.example.test/secret"
             }).ConfigureAwait(false);
+            await WaitForDeploymentLocationReadyAsync(fixture).ConfigureAwait(false);
 
             string readWriteKey;
             using (var scope = fixture.CreateCameraAgentScope())
@@ -658,6 +666,7 @@ public sealed class OperatorNotificationsIntegrationTests
                     }));
                 services.AddLogging(logging => logging.AddProvider(logCollector));
             }).ConfigureAwait(false);
+            await WaitForDeploymentLocationReadyAsync(fixture).ConfigureAwait(false);
 
             string readWriteKey;
             string provisioningDir;
@@ -938,6 +947,26 @@ public sealed class OperatorNotificationsIntegrationTests
         {
             Assert.Inconclusive("Needs a non-root user, for whom modes 0000 and 0200 are enforced.");
         }
+    }
+
+    private static async Task WaitForDeploymentLocationReadyAsync(CameraAgentIntegrationFixture fixture)
+    {
+        // CameraAgentIntegrationFixture writes device-identity.json and cameraagent.integration.json inside
+        // RawIngressRoot before TestServer starts, so startup deployment-location admission defers to the
+        // host-owned full scrub background task. Join that scrub deterministically before asserting /health 200 OK.
+        using var scope = fixture.CreateCameraAgentScope();
+        var loader = scope.ServiceProvider.GetRequiredService<ICameraAgentConfigurationLoader>();
+        var locations = scope.ServiceProvider.GetRequiredService<IDeploymentLocationStore>();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        await loader.RequestRetainedIntegrityScrubAsync(force: false, cts.Token).ConfigureAwait(false);
+        while ((!locations.RecentRetainedEvidenceReady || locations.Active is null) && !cts.IsCancellationRequested)
+        {
+            await Task.Delay(25, cts.Token).ConfigureAwait(false);
+        }
+        Assert.IsTrue(locations.RecentRetainedEvidenceReady,
+            "Expected deployment-location startup scrub to complete before inspecting /health.");
+        Assert.IsNotNull(locations.Active,
+            "Expected deployment-location active snapshot to initialize before inspecting /health.");
     }
 
     private static HttpClient CreateOwnerSessionClient(CameraAgentIntegrationFixture fixture)
