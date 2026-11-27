@@ -411,6 +411,55 @@ public sealed class SqliteCalibrationFamilyStoreTests
     }
 
     [TestMethod]
+    public async Task SiloBundleOpenRunAndConfiguredClearReferenceHoldAndReleaseExactMaster()
+    {
+        var token = CancellationToken.None;
+        using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
+        var root = silo.RootPath;
+        var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root, RawIngressSqliteBusyTimeoutSeconds = 1 });
+        var master = (await CreateLibraryMastersAsync(root, options).ConfigureAwait(false))[0];
+        var (settings, installed) = await Distribution.SiloRawEvidenceRecoveryTests.CreateRecoverySiloAsync().ConfigureAwait(false);
+        using var storage = new SiloInstalledStorage(settings, options, silo.Clock, null, null, installed, null);
+        var artifacts = new SiloArtifactStorage(storage, silo.Clock);
+        using var library = new SqliteCalibrationLibraryStore(new InitializedIngress(), options, silo.Clock) { Silo = artifacts };
+        var loader = new CameraAgentClearReferenceLoader(options, artifacts, library);
+        var draft = SiloDrafts.Capture(silo.Payloads, 1, rawRequired: false);
+        var id = master.ArtifactId.ToString("D");
+        draft = draft with { Members = [draft.Members[0] with { ArtifactId = id, Role = "calibration-frame" }, draft.Members[1]] };
+        await silo.PublishAsync(draft).ConfigureAwait(false);
+        var locator = silo.MemberLocator(draft.GroupId, id);
+        silo.Clock.Advance(TimeSpan.FromDays(2));
+        var retention = SiloRetentionTests.OpenForFixture(silo);
+        await retention.SetPolicyAsync(new(false, [new("calibration-frame", TimeSpan.Zero, false, true)]), token).ConfigureAwait(false);
+        var database = Path.Combine(root, "journal", "raw-ingress.db");
+
+        async ValueTask<string> DecisionAsync(CameraAgentClearReferenceLoader configured)
+        {
+            var held = (await library.GetRetentionHoldsUnderLifecycleLockAsync(root, token).ConfigureAwait(false))
+                .Concat(await configured.GetRetentionHoldsAsync(root, token).ConfigureAwait(false));
+            var candidates = await retention.DryRunAsync(silo.Clock.GetUtcNow(), false,
+                held.Select(static hold => new SiloRetentionHold(SiloHoldKind.CalibrationMaster, hold.ArtifactId.ToString("D"))).ToArray(),
+                token).ConfigureAwait(false);
+            return candidates.Single(candidate => candidate.Locator == locator).Decision;
+        }
+
+        Assert.AreEqual("held-reference", await DecisionAsync(loader).ConfigureAwait(false));
+        ExecuteDatabase(database, """
+            UPDATE calibration_library_bundles SET retention_hold = 0;
+            INSERT INTO centered_exposure_runs(run_id, agent_id, camera_id, snapshot_json, snapshot_sha256, calibration_bundle_id)
+            SELECT 'fixture-run', 'agent', 'camera', x'7b7d', 'fixture', bundle_id FROM calibration_library_bundles;
+            """);
+        Assert.AreEqual("held-reference", await DecisionAsync(loader).ConfigureAwait(false));
+        ExecuteDatabase(database, "UPDATE centered_exposure_runs SET closed_reason = 'complete' WHERE run_id = 'fixture-run';");
+        Assert.AreEqual("expire-role", await DecisionAsync(loader).ConfigureAwait(false));
+
+        loader.RegisterRetentionHold(master.ManifestPath);
+        Assert.AreEqual("held-reference", await DecisionAsync(loader).ConfigureAwait(false));
+        var replacement = new CameraAgentClearReferenceLoader(options, artifacts, library);
+        Assert.AreEqual("expire-role", await DecisionAsync(replacement).ConfigureAwait(false));
+    }
+
+    [TestMethod]
     public async Task ActiveFamilySelector_SelectsTheOneActiveFamilyWhateverTheGainAndRefusesWithStableReasons()
     {
         var root = CreateRoot();

@@ -1,3 +1,5 @@
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using System.Text.Json;
 using static HVO.SkyMonitor.CameraAgent.Common.Silo.SiloSqlite;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Silo;
@@ -30,22 +32,24 @@ internal sealed partial class SiloCatalogIndex
     }
 
     internal async ValueTask<IReadOnlyDictionary<SiloExactLocator, IReadOnlyList<SiloRetentionReference>>> ReadRetentionReferencesAsync(
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, SiloExactLocator? only = null)
     {
         using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         using var command = CreateCommand(connection, null, """
             WITH physical AS (
                 SELECT DISTINCT key, version_id FROM locators
                 WHERE store_id = $store AND bucket = $bucket AND eligible = 1 AND copy_state = 'active'
-                    AND (key GLOB 'p/*' OR key GLOB 'm/*')
+                    AND (key GLOB 'p/*' OR key GLOB 'm/*') AND ($key IS NULL OR (key = $key AND version_id = $version))
             ), member_facts AS (
-                SELECT m.artifact_id, m.artifact_revision, MIN(m.role) AS role, MAX(p.published_utc_ticks) AS published_utc_ticks
+                SELECT m.artifact_id, m.artifact_revision,
+                    CASE WHEN COUNT(m.role) = COUNT(*) THEN MIN(m.role) END AS role,
+                    CASE WHEN COUNT(p.published_utc_ticks) = COUNT(*) THEN MAX(p.published_utc_ticks) END AS published_utc_ticks
                 FROM publication_members m JOIN publications p USING(group_id, revision_id)
                 GROUP BY m.artifact_id, m.artifact_revision
             )
             SELECT source.key, source.version_id, r.kind, r.id, r.revision, r.sha256, r.length,
-                CASE WHEN r.kind = 'manifest' THEN 'manifest' ELSE COALESCE(m.role, '') END,
-                COALESCE(m.published_utc_ticks, p.published_utc_ticks, 0),
+                CASE WHEN r.kind = 'manifest' THEN 'manifest' ELSE m.role END,
+                COALESCE(m.published_utc_ticks, p.published_utc_ticks),
                 target.store_id, target.bucket, target.key, target.version_id
             FROM physical picked JOIN locators source USING(key, version_id)
                 JOIN roles r USING(kind, id, revision)
@@ -56,7 +60,7 @@ internal sealed partial class SiloCatalogIndex
                 AND target.eligible = 1 AND target.copy_state <> 'evicted'
             ORDER BY source.key, source.version_id, r.kind, r.id, r.revision,
                 target.store_id, target.bucket, target.key, target.version_id;
-            """, ("$store", Binding.StoreId), ("$bucket", Binding.Bucket));
+            """, ("$store", Binding.StoreId), ("$bucket", Binding.Bucket), ("$key", only?.Key), ("$version", only?.VersionId));
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         var physical = new Dictionary<SiloExactLocator, Dictionary<SiloRoleKey, (SiloRetentionReference Reference, List<SiloExactLocator> Copies)>>();
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -72,7 +76,7 @@ internal sealed partial class SiloCatalogIndex
             {
                 var identity = new SiloObjectIdentity(role.Kind, role.Id, role.Revision, reader.GetString(5), reader.GetInt64(6));
                 var copies = new List<SiloExactLocator>();
-                found = (new(identity, reader.GetString(7), new(reader.GetInt64(8), TimeSpan.Zero), copies), copies);
+                found = (new(identity, NullableString(reader, 7), NullableLong(reader, 8) is { } ticks ? new(ticks, TimeSpan.Zero) : null, copies), copies);
                 roles.Add(role, found);
             }
             found.Copies.Add(new(reader.GetString(9), reader.GetString(10), reader.GetString(11), reader.GetString(12)));
@@ -93,6 +97,96 @@ internal sealed partial class SiloCatalogIndex
         var result = new List<SiloRetentionHold>();
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             result.Add(new(SiloHoldKind.Recovery, reader.GetString(0), reader.GetString(1)));
+        return result;
+    }
+
+    internal async ValueTask<bool> CanPinViewAsync(string groupId, string revisionId, SiloExactLocator? fenced,
+        CancellationToken cancellationToken)
+    {
+        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        return await ScalarLongAsync(connection, null, """
+            WITH required_roles(kind, id, revision) AS (
+                SELECT 'manifest', $group, $revision
+                UNION SELECT 'member', artifact_id, artifact_revision FROM publication_members
+                    WHERE group_id = $group AND revision_id = $revision AND required = 1
+                UNION SELECT 'member', artifact_id, artifact_revision FROM dependencies
+                    WHERE group_id = $group AND revision_id = $revision AND kind = 'reopen' AND required = 1
+            )
+            SELECT NOT EXISTS (
+                SELECT 1 FROM required_roles needed WHERE NOT EXISTS (
+                    SELECT 1 FROM roles r JOIN locators l USING(kind, id, revision)
+                    WHERE (r.kind, r.id, r.revision) = (needed.kind, needed.id, needed.revision)
+                      AND COALESCE(r.journaled, '') <> 'policy-expired' AND l.eligible = 1 AND l.copy_state = 'active'
+                ) OR EXISTS (
+                    SELECT 1 FROM locators l WHERE (l.kind, l.id, l.revision) = (needed.kind, needed.id, needed.revision)
+                      AND (l.store_id, l.bucket, l.key, l.version_id) = ($store, $bucket, $key, $version)
+                )
+            );
+            """, cancellationToken, ("$group", groupId), ("$revision", revisionId), ("$store", fenced?.StoreId),
+            ("$bucket", fenced?.Bucket), ("$key", fenced?.Key), ("$version", fenced?.VersionId)).ConfigureAwait(false) != 0;
+    }
+
+    internal async ValueTask<IReadOnlyList<SiloRetentionHold>> ReadViewRetentionHoldsAsync(
+        IEnumerable<SiloRetentionHold> savedViews, CancellationToken cancellationToken)
+    {
+        var selections = JsonSerializer.Serialize(savedViews.Select(static hold => new[] { hold.ArtifactId, hold.Revision }));
+        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        using var command = CreateCommand(connection, null, """
+            WITH retained_views(group_id, revision_id) AS (
+                SELECT group_id, revision_id FROM live_intervals WHERE ended_change_order IS NULL
+                UNION SELECT json_extract(value, '$[0]'), json_extract(value, '$[1]') FROM json_each($saved)
+            )
+            SELECT group_id, revision_id, 'manifest' FROM retained_views
+            UNION
+            SELECT m.artifact_id, m.artifact_revision, 'member'
+            FROM retained_views JOIN publication_members m USING(group_id, revision_id) WHERE m.required = 1
+            UNION
+            SELECT d.artifact_id, d.artifact_revision, 'member'
+            FROM retained_views JOIN dependencies d USING(group_id, revision_id) WHERE d.kind = 'reopen';
+            """, ("$saved", selections));
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        var result = new List<SiloRetentionHold>();
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            result.Add(new(SiloHoldKind.ViewManifest, reader.GetString(0), reader.GetString(1), IdentityKind: ParseKind(reader.GetString(2))));
+        return result;
+    }
+
+    internal async ValueTask<IReadOnlyList<SiloRetentionHold>> ReadSceneRetentionHoldsAsync(
+        IReadOnlyList<SiloSceneLineage> scenes, bool archiveHistoryUnknown, CancellationToken cancellationToken)
+    {
+        if (scenes.Count == 0) return [];
+        var lineage = JsonSerializer.Serialize(scenes.Select(static scene => new
+        {
+            id = scene.ArtifactId,
+            raw = scene.RawArtifactId,
+            known = scene.HasRecordedHistory,
+            consumers = scene.ConsumerIds
+        }));
+        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        using var command = CreateCommand(connection, null, """
+            WITH scenes(id, raw, history_known, consumers) AS (
+                SELECT json_extract(value, '$.id'), json_extract(value, '$.raw'), json_extract(value, '$.known'),
+                    json_extract(value, '$.consumers') FROM json_each($scenes)
+            )
+            SELECT DISTINCT scene.id FROM scenes scene
+            WHERE $unknown OR NOT scene.history_known OR scene.raw IS NULL OR EXISTS (
+                SELECT 1 FROM roles r JOIN locators l USING(kind, id, revision)
+                WHERE r.kind = 'member' AND l.eligible = 1 AND l.copy_state <> 'evicted'
+                    AND COALESCE(r.journaled, '') <> 'policy-expired' AND
+                    (r.id = scene.raw OR r.id IN (SELECT value FROM json_each(scene.consumers)))
+            ) OR EXISTS (
+                SELECT 1 FROM dependencies d JOIN publication_members m USING(group_id, revision_id)
+                JOIN roles r ON r.kind = 'member' AND r.id = m.artifact_id AND r.revision = m.artifact_revision
+                JOIN locators l ON l.kind = r.kind AND l.id = r.id AND l.revision = r.revision
+                WHERE d.kind = 'compute' AND d.artifact_id = scene.raw AND m.artifact_id <> scene.id
+                    AND NOT EXISTS (SELECT 1 FROM scenes sibling WHERE sibling.id = m.artifact_id)
+                    AND l.eligible = 1 AND l.copy_state <> 'evicted' AND COALESCE(r.journaled, '') <> 'policy-expired'
+            );
+            """, ("$scenes", lineage), ("$unknown", archiveHistoryUnknown));
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        var result = new List<SiloRetentionHold>();
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            result.Add(new(SiloHoldKind.ProjectedScene, reader.GetString(0), IdentityKind: SiloIdentityKind.Member));
         return result;
     }
 
@@ -119,6 +213,15 @@ internal sealed partial class SiloCatalogIndex
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             ids.Add(reader.GetString(0));
         return ids;
+    }
+
+    internal async ValueTask<bool> HasRetentionKeyAsync(SiloExactLocator locator, CancellationToken cancellationToken)
+    {
+        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        return await ScalarLongAsync(connection, null, """
+            SELECT EXISTS (SELECT 1 FROM locators WHERE store_id = $store AND bucket = $bucket AND key = $key);
+            """, cancellationToken, ("$store", locator.StoreId), ("$bucket", locator.Bucket), ("$key", locator.Key))
+            .ConfigureAwait(false) != 0;
     }
 
     internal ValueTask<bool> HasRetentionLocatorAsync(SiloExactLocator locator, CancellationToken cancellationToken) =>

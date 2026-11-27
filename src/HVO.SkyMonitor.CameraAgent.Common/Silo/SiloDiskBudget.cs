@@ -5,7 +5,7 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Silo;
 internal enum SiloSpacePurpose { Capture, Restore, Catalog, Cleanup }
 
 /// <summary>Physical block accounting. Available bytes already include versions, staging, and trash on the mount.</summary>
-internal readonly record struct SiloPhysicalHeadroom(long TotalBytes, long AvailableBytes, long? TrashBytes = null);
+internal readonly record struct SiloPhysicalHeadroom(long TotalBytes, long AvailableBytes, long? TrashBytes = null, StorageCapacity? StateCapacity = null);
 
 internal sealed record SiloPhysicalAllocation(string Id, long Bytes);
 
@@ -13,7 +13,11 @@ internal interface ISiloDiskBudget
 {
     Task? AdmissionRelease { get; }
 
+    long ReclaimCaptureHourBytes { get; }
+
     SiloPhysicalHeadroom? Observe();
+
+    SiloPhysicalHeadroom? ObserveReclamation() => Observe();
 
     IDisposable? TryReserve(SiloSpacePurpose purpose, long bytes);
 
@@ -27,23 +31,13 @@ internal sealed class SiloDiskBudget(
     long catalogReserve,
     long cleanupReserve,
     long recoveryMargin,
-    Func<SiloExactLocator, long?>? measureAllocation = null) : ISiloDiskBudget
+    Func<SiloExactLocator, long?>? measureAllocation = null, long reclaimCaptureHourBytes = long.MaxValue, Func<long?>? measureTrash = null) : ISiloDiskBudget
 {
     internal const long GiB = 1024L * 1024 * 1024;
     private readonly object _gate = new();
     private long _reserved;
     private long _nextCapture;
     private TaskCompletionSource? _release;
-
-    internal static SiloDiskBudget ForState(string path, long maximumStagedBytes)
-    {
-        var capacity = new FileSystemStorageCapacityProvider();
-        return new(() =>
-        {
-            var observed = capacity.GetCapacity(path);
-            return new(observed.TotalBytes, observed.AvailableBytes);
-        }, maximumStagedBytes, GiB / 4, GiB / 4, GiB);
-    }
 
     internal static long InstallerReserve(long total) => Math.Max(10 * GiB, total / 20 + (total % 20 == 0 ? 0 : 1));
 
@@ -58,6 +52,16 @@ internal sealed class SiloDiskBudget(
     public SiloPhysicalHeadroom? Observe()
     {
         lock (_gate) return ObserveLocked();
+    }
+
+    public SiloPhysicalHeadroom? ObserveReclamation()
+    {
+        var trash = measureTrash?.Invoke();
+        lock (_gate)
+        {
+            var sample = ObserveLocked();
+            return sample is { } observed && measureTrash is not null ? observed with { TrashBytes = trash } : sample;
+        }
     }
 
     private SiloPhysicalHeadroom? ObserveLocked()
@@ -81,9 +85,13 @@ internal sealed class SiloDiskBudget(
 
         var available = (decimal)sample.AvailableBytes - _reserved;
         var floor = (decimal)InstallerReserve(sample.TotalBytes) + catalogReserve + cleanupReserve + _nextCapture;
-        if (available <= floor)
+        var stateMargin = sample.StateCapacity is { } state
+            ? (decimal)state.AvailableBytes - _reserved -
+              ((decimal)InstallerReserve(state.TotalBytes) + catalogReserve + cleanupReserve + _nextCapture)
+            : decimal.MaxValue;
+        if (available <= floor || stateMargin <= 0)
             Hold();
-        else if (_release is { } release && available >= floor + recoveryMargin)
+        else if (_release is { } release && available >= floor + recoveryMargin && stateMargin >= recoveryMargin)
         {
             _release = null;
             _nextCapture = 0;
@@ -107,7 +115,10 @@ internal sealed class SiloDiskBudget(
                 SiloSpacePurpose.Restore => (decimal)InstallerReserve(sample.Value.TotalBytes) + catalogReserve + cleanupReserve + captureReserve,
                 _ => throw new ArgumentOutOfRangeException(nameof(purpose))
             };
-            if ((decimal)sample.Value.AvailableBytes - _reserved - bytes < floor ||
+            var stateTooFull = sample.Value.StateCapacity is { } state &&
+                (decimal)state.AvailableBytes - _reserved - bytes < (purpose is SiloSpacePurpose.Capture or SiloSpacePurpose.Restore
+                    ? floor - InstallerReserve(sample.Value.TotalBytes) + InstallerReserve(state.TotalBytes) : floor);
+            if ((decimal)sample.Value.AvailableBytes - _reserved - bytes < floor || stateTooFull ||
                 (purpose is SiloSpacePurpose.Capture or SiloSpacePurpose.Restore && _release is not null))
             {
                 if (purpose == SiloSpacePurpose.Capture)
@@ -123,6 +134,8 @@ internal sealed class SiloDiskBudget(
     }
 
     public long? ReadExactAllocationBytes(SiloExactLocator locator) => measureAllocation?.Invoke(locator) is > 0 and var bytes ? bytes : null;
+
+    public long ReclaimCaptureHourBytes => reclaimCaptureHourBytes;
 
     private void Hold() => _release ??= new(TaskCreationOptions.RunContinuationsAsynchronously);
 

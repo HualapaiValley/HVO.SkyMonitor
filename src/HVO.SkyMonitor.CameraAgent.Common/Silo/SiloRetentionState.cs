@@ -14,14 +14,27 @@ internal sealed record SiloRetentionAttempt(
     DateTimeOffset? ObservedUtc = null,
     string? Evidence = null,
     SiloPhysicalAllocation? Allocation = null,
-    bool DispositionCommitted = false);
+    bool DispositionCommitted = false,
+    SiloPhysicalHeadroom? AfterDelete = null);
 
 internal sealed record SiloReclaimObservation(SiloPhysicalHeadroom BeforeDelete, DateTimeOffset ObservedUtc,
     SiloPhysicalAllocation? Allocation = null);
 
+internal sealed record SiloPendingSurvivorRelease(string AttemptId, IReadOnlyList<SiloReserveSurvivorRecord> Survivors,
+    bool RequiresVerification);
+
 internal sealed record SiloRetentionState(
-    IReadOnlyList<SiloObjectLease> Leases, SiloRetentionAttempt? Attempt = null, SiloReclaimObservation? ReclaimPending = null)
+    IReadOnlyList<SiloObjectLease> Leases, SiloRetentionAttempt? Attempt = null, SiloReclaimObservation? ReclaimPending = null,
+    SiloReclaimLedger? Reclaim = null, IReadOnlyList<SiloPendingSurvivorRelease>? PendingSurvivorReleases = null,
+    string? LastSettledAttemptId = null)
 {
+    [System.Text.Json.Serialization.JsonIgnore]
+    internal IReadOnlyList<SiloPendingSurvivorRelease> SurvivorReleases => PendingSurvivorReleases ?? [];
+
+    internal SiloReclaimLedger? ReclaimLedger => Reclaim ?? (ReclaimPending is { } legacy
+        ? new([new("legacy", legacy.Allocation)], legacy.BeforeDelete, legacy.ObservedUtc)
+        : null);
+
     private const string Name = "retention-v1.json";
     private const int MaxBytes = 4 * 1024 * 1024;
 

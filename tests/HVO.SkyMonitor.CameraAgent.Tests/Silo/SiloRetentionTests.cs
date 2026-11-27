@@ -11,7 +11,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Silo;
 [TestClass]
 [TestCategory("Unit")]
 [TestProperty("Area", "Silo")]
-public sealed class SiloRetentionTests
+public sealed partial class SiloRetentionTests
 {
     private static readonly SiloPhysicalHeadroom Healthy = new(100 * SiloDiskBudget.GiB, 20 * SiloDiskBudget.GiB, 0);
     private static readonly SiloRetentionPolicy Retention = new(false, [new("raw", TimeSpan.FromDays(1), true, true)]);
@@ -115,15 +115,16 @@ public sealed class SiloRetentionTests
         {
             Assert.AreEqual("not-deleted", await retention.SweepAsync(false, NoHolds, null, token, verifiedStoreExit: _ => true).ConfigureAwait(false));
             Assert.AreNotEqual("policy-expired", (await silo.Index.ReadRoleAsync(first.Identity.Role, token).ConfigureAwait(false))!.Disposition);
-            Assert.IsNull(SiloRetentionState.Read(silo.StateRoot.Root).ReclaimPending);
+            Assert.IsNull(SiloRetentionState.Read(silo.StateRoot.Root).ReclaimLedger);
         }
         else
         {
-            var charge = SiloRetentionState.Read(silo.StateRoot.Root).ReclaimPending?.Allocation;
+            var charge = SiloRetentionState.Read(silo.StateRoot.Root).ReclaimLedger?.Entries.Single().Allocation;
             Assert.AreEqual(8192L, charge?.Bytes);
             Assert.HasCount(1, silo.JournalRecords().OfType<SiloExpiryIntentRecord>().SelectMany(static intent => intent.Targets)
                 .Where(static target => target.AllocationId is not null).ToArray());
             physical = physical with { TrashBytes = 8192 };
+            silo.Clock.Advance(TimeSpan.FromMinutes(10));
             Assert.AreEqual("awaiting-physical-reclamation", await SweepAsync(retention, token).ConfigureAwait(false));
             await silo.RestartAsync().ConfigureAwait(false);
             retention = Open(silo, store, budget);
@@ -175,7 +176,7 @@ public sealed class SiloRetentionTests
         silo.Archive.Delete(survivor.Locator);
         physical = physical with { AvailableBytes = physical.AvailableBytes + 8192 };
         var custody = new ExpiredArchive(survivor.Locator);
-        Assert.AreEqual("no-eligible-versions", await retention.SweepAsync(true, NoHolds, custody, token).ConfigureAwait(false));
+        await retention.ReconcileArchiveAsync(custody, token).ConfigureAwait(false);
         Assert.AreEqual("policy-expired", (await silo.Index.ReadRoleAsync(raw.Role, token).ConfigureAwait(false))!.Journaled);
         Assert.HasCount(1, silo.JournalRecords().OfType<SiloAvailabilityRecord>().ToArray());
     }
@@ -207,12 +208,13 @@ public sealed class SiloRetentionTests
         var store = new TestRemoval(silo.Local);
         var retention = Open(silo, store);
         silo.Clock.Advance(TimeSpan.FromDays(2));
-        await retention.SetPolicyAsync(new(false, [new("raw", TimeSpan.Zero, true, false)]), token).ConfigureAwait(false);
+        await retention.SetPolicyAsync(new(false, [new("raw", TimeSpan.Zero, true, true)]), token).ConfigureAwait(false);
         var custody = new InterruptedSurvivorVerification(store);
-        Assert.AreEqual("survivor-reverification-pending",
+        Assert.AreEqual("deleted",
             await retention.SweepAsync(true, NoHolds, custody, token).ConfigureAwait(false));
         Assert.IsNull(retention.ReadUnsettledTarget());
-        Assert.IsNotNull(SiloRetentionState.Read(silo.StateRoot.Root).ReclaimPending);
+        Assert.IsNotNull(SiloRetentionState.Read(silo.StateRoot.Root).ReclaimLedger);
+        await retention.ReconcileArchiveAsync(custody, token).ConfigureAwait(false);
         Assert.IsEmpty(silo.JournalRecords().OfType<SiloReleaseSurvivorRecord>());
 
         await silo.RestartAsync().ConfigureAwait(false);
@@ -221,14 +223,16 @@ public sealed class SiloRetentionTests
         var next = SiloDrafts.Capture(silo.Payloads, 2, rawRequired: false);
         await silo.PublishAsync(next).ConfigureAwait(false);
         Assert.AreEqual(next.GroupId, silo.PublishRecord(next.GroupId).GroupId);
-        Assert.AreEqual("survivor-reverification-pending",
-            await retention.SweepAsync(true, NoHolds, null, token).ConfigureAwait(false));
+        Assert.HasCount(1, SiloRetentionState.Read(silo.StateRoot.Root).SurvivorReleases);
+        Assert.AreEqual("deleted", await retention.SweepAsync(true, NoHolds, null, token).ConfigureAwait(false));
+        Assert.HasCount(1, SiloRetentionState.Read(silo.StateRoot.Root).SurvivorReleases);
 
         custody.Reachable = true;
-        Assert.AreEqual("deleted", await retention.SweepAsync(true, NoHolds, custody, token).ConfigureAwait(false));
+        await retention.ReconcileArchiveAsync(custody, token).ConfigureAwait(false);
+        Assert.IsEmpty(SiloRetentionState.Read(silo.StateRoot.Root).SurvivorReleases);
         Assert.HasCount(1, silo.JournalRecords().OfType<SiloReleaseSurvivorRecord>());
-        Assert.HasCount(1, silo.JournalRecords().OfType<SiloExpiryDispositionRecord>());
-        Assert.AreEqual(1, store.Deletes);
+        Assert.HasCount(2, silo.JournalRecords().OfType<SiloExpiryDispositionRecord>());
+        Assert.AreEqual(2, store.Deletes);
     }
 
     private sealed class InterruptedSurvivorVerification(TestRemoval local) : ISiloRetentionArchive
@@ -380,16 +384,19 @@ public sealed class SiloRetentionTests
         return (first, second, await GetAsync(one.Members[1]).ConfigureAwait(false));
     }
 
-    private sealed class TestRemoval(SiloTestStore store) : ISiloObjectStore, ISiloVersionRemoval
+    internal sealed class TestRemoval(SiloTestStore store) : ISiloObjectStore, ISiloVersionRemoval
     {
         private readonly HashSet<SiloExactLocator> _removed = [];
         public bool LoseDeleteReply { get; init; }
         public bool Remove { get; init; } = true;
         public int Deletes { get; private set; }
+        public Func<CancellationToken, Task>? BeforeDelete { get; set; }
+        public Action? Deleted { get; init; }
         public SiloStoreDescriptor Descriptor => store.Descriptor;
 
-        public ValueTask<bool> DeleteVersionAsync(SiloExactLocator locator, CancellationToken cancellationToken)
+        public async ValueTask<bool> DeleteVersionAsync(SiloExactLocator locator, CancellationToken cancellationToken)
         {
+            if (BeforeDelete is not null) await BeforeDelete(cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
             Deletes++;
             if (Remove)
@@ -397,8 +404,9 @@ public sealed class SiloRetentionTests
                 store.Delete(locator);
                 _removed.Add(locator);
             }
+            Deleted?.Invoke();
             if (LoseDeleteReply) throw new SiloStoreUnavailableException(Descriptor.StoreId, "delete", writeMayHaveLanded: true);
-            return ValueTask.FromResult(true);
+            return true;
         }
 
         public ValueTask<SiloOpenResult> OpenVersionAsync(string key, string versionId, CancellationToken cancellationToken) =>

@@ -32,7 +32,7 @@ internal sealed partial class SqliteTimeLapseStore
         using (var command = Command(connection, null, """
             SELECT p.product_id, p.document_json, p.document_sha256
             FROM jobs parent JOIN jobs child ON child.parent_job_id = parent.job_id
-                JOIN products p ON p.job_id = child.job_id
+                JOIN products p ON p.product_id = child.product_id OR p.job_id = child.job_id
             WHERE parent.state IN ('Queued','Working');
             """))
         using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))

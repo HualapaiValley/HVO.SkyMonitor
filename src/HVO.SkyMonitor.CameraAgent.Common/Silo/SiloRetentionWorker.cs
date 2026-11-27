@@ -51,23 +51,27 @@ internal sealed partial class SiloRetentionWorker(SiloInstalledStorage storage, 
     public async ValueTask<IReadOnlyList<CameraAgentSiloRetentionCandidate>> DryRunAsync(
         DateTimeOffset asOfUtc, bool underPressure, CancellationToken cancellationToken)
     {
+        IReadOnlyList<SiloRetentionHold> holds;
         var lifecycle = RawIngressLifecycleLock.ForRoot(options.Value.RawIngressRoot);
         await lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var holds = await ReadHoldsAsync(cancellationToken).ConfigureAwait(false);
-            var candidates = await storage.Retention.DryRunAsync(asOfUtc, underPressure, holds, cancellationToken).ConfigureAwait(false);
-            return candidates.Select(static item => new CameraAgentSiloRetentionCandidate(item.Locator.Key, item.Locator.VersionId,
-                item.Decision, item.References.Select(static reference => reference.Role).Distinct(StringComparer.Ordinal).ToArray(),
-                item.References.Count > 0 ? item.References[0].Identity.Length : 0)).ToArray();
+            holds = await ReadHoldsAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
         {
             lifecycle.Release();
         }
+        var candidates = await storage.Retention.DryRunAsync(asOfUtc, underPressure, holds, cancellationToken).ConfigureAwait(false);
+        return candidates.Select(static item => new CameraAgentSiloRetentionCandidate(item.Locator.Key, item.Locator.VersionId,
+            item.Decision, item.References.Select(static reference => reference.Role).OfType<string>().Distinct(StringComparer.Ordinal).ToArray(),
+            item.References.Count > 0 ? item.References[0].Identity.Length : 0)).ToArray();
     }
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    protected override Task ExecuteAsync(CancellationToken stoppingToken) =>
+        Task.WhenAll(RunSweepsAsync(stoppingToken), RunArchiveReconciliationAsync(stoppingToken));
+
+    private async Task RunSweepsAsync(CancellationToken stoppingToken)
     {
         string? previous = null;
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(15), clock);
@@ -83,13 +87,35 @@ internal sealed partial class SiloRetentionWorker(SiloInstalledStorage storage, 
                 return;
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or
-                SiloConflictException or SiloDataException or Microsoft.Data.Sqlite.SqliteException)
+                SiloConflictException or SiloDataException or SiloCatalogDivergedException or Microsoft.Data.Sqlite.SqliteException)
             {
                 status = "reconciliation-blocked";
                 ReportFailure(logger, exception);
             }
             if (status != previous) ReportState(logger, status);
             previous = status;
+        } while (await NextTickAsync(timer, stoppingToken).ConfigureAwait(false));
+    }
+
+    private async Task RunArchiveReconciliationAsync(CancellationToken stoppingToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(15), clock);
+        do
+        {
+            try
+            {
+                if (storage.BindingVerified)
+                    await storage.Retention.ReconcileArchiveAsync(archive, stoppingToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or SiloConflictException or
+                SiloDataException or SiloCatalogDivergedException or Microsoft.Data.Sqlite.SqliteException)
+            {
+                ReportFailure(logger, exception);
+            }
         } while (await NextTickAsync(timer, stoppingToken).ConfigureAwait(false));
     }
 
@@ -105,28 +131,18 @@ internal sealed partial class SiloRetentionWorker(SiloInstalledStorage storage, 
         }
     }
 
-    private async ValueTask<string> RunAsync(CancellationToken cancellationToken)
+    internal ValueTask<string> RunAsync(CancellationToken cancellationToken)
     {
         storage.DiskBudget.Observe();
-        if (!storage.BindingVerified) return "awaiting-storage";
+        if (!storage.BindingVerified) return ValueTask.FromResult("awaiting-storage");
 
-        using var lease = maintenance.TryEnterIfInitialized();
-        var lifecycle = RawIngressLifecycleLock.ForRoot(options.Value.RawIngressRoot);
-        await lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            var controls = services.GetService<CameraAgentControlStore>();
-            var canStartDelete = raw.SiloAdmissionsReady && lease is not null && controls?.AdmissionHeld != true &&
-                !(await storage.Index.ReadRetentionPolicyAsync(cancellationToken).ConfigureAwait(false)).ExpiryHeld;
-            var holds = canStartDelete ? await ReadHoldsAsync(cancellationToken).ConfigureAwait(false) : [];
-            return await storage.Retention.SweepAsync(canStartDelete,
-                _ => ValueTask.FromResult(holds), archive, cancellationToken,
-                canIssue: () => controls?.AdmissionHeld != true).ConfigureAwait(false);
-        }
-        finally
-        {
-            lifecycle.Release();
-        }
+        var controls = services.GetService<CameraAgentControlStore>();
+        return storage.Retention.SweepAsync(raw.SiloAdmissionsReady && controls?.AdmissionHeld != true,
+            ReadHoldsAsync, archive, cancellationToken,
+            cleanExpiredCache: token => storage.CleanExpiredRestoreCacheAsync(maintenance.TryEnterIfInitialized, token),
+            canIssue: () => controls?.AdmissionHeld != true,
+            lifecycle: RawIngressLifecycleLock.ForRoot(options.Value.RawIngressRoot),
+            enterMaintenance: maintenance.TryEnterIfInitialized);
     }
 
     private async ValueTask<IReadOnlyList<SiloRetentionHold>> ReadHoldsAsync(CancellationToken cancellationToken)
@@ -139,6 +155,12 @@ internal sealed partial class SiloRetentionWorker(SiloInstalledStorage storage, 
             .ConfigureAwait(false);
         var videoHolds = await services.GetRequiredService<SqliteTimeLapseStore>().ReadSiloTimeLapseHoldsAsync(cancellationToken)
             .ConfigureAwait(false);
+        var persistence = services.GetRequiredService<CaptureProcessingPersistence>();
+        var viewHolds = await persistence.ReadSavedSiloViewHoldsAsync(cancellationToken).ConfigureAwait(false);
+        var sceneLineage = await persistence.ReadSiloSceneLineageAsync(cancellationToken).ConfigureAwait(false);
+        var authority = await storage.Index.ReadAuthorityAsync(cancellationToken).ConfigureAwait(false);
+        var sceneHolds = await storage.Index.ReadSceneRetentionHoldsAsync(sceneLineage, authority.UnknownInterval, cancellationToken)
+            .ConfigureAwait(false);
         var nightlyHolds = await ReadNightlyHoldsAsync(cancellationToken).ConfigureAwait(false);
         var satelliteHolds = await services.GetRequiredService<CaptureSatelliteWorkStore>().ReadSiloArchiveHoldsAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -146,6 +168,8 @@ internal sealed partial class SiloRetentionWorker(SiloInstalledStorage storage, 
             .Concat(processingHolds.Select(static hold => new SiloRetentionHold(SiloHoldKind.ProcessingInput, hold.ArtifactId.ToString("D"))))
             .Concat(masterIds.Select(static id => new SiloRetentionHold(SiloHoldKind.CalibrationMaster, id.ToString("D"))))
             .Concat(videoHolds)
+            .Concat(viewHolds)
+            .Concat(sceneHolds)
             .Concat(nightlyHolds)
             .Concat(satelliteHolds)
             .Distinct().ToArray();

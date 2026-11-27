@@ -44,19 +44,19 @@ internal sealed record SiloRetentionPolicy(bool ExpiryHeld, IReadOnlyList<SiloRo
 internal enum SiloHoldKind
 {
     ProcessingInput, CalibrationMaster, TimeLapseInput, ManualPin, RecentBuffer, StackContributor, Recovery, RestoreOrReplay, NightlyInput,
-    SatelliteArchiveReference
+    SatelliteArchiveReference, ViewManifest, ProjectedScene
 }
 
 /// <summary>Logical holds follow matching published versions. A null revision holds all revisions of the artifact.</summary>
 internal sealed record SiloRetentionHold(SiloHoldKind Kind, string ArtifactId, string? Revision = null,
-    DateTimeOffset? ExpiresUtc = null)
+    DateTimeOffset? ExpiresUtc = null, SiloIdentityKind? IdentityKind = null)
 {
     internal bool Matches(SiloObjectIdentity identity, DateTimeOffset now) =>
-        identity.Id == ArtifactId && (Revision is null || Revision == identity.Revision) &&
+        (IdentityKind is null || IdentityKind == identity.Kind) && identity.Id == ArtifactId && (Revision is null || Revision == identity.Revision) &&
         (ExpiresUtc is null || ExpiresUtc > now);
 }
 
-internal sealed record SiloRetentionReference(SiloObjectIdentity Identity, string Role, DateTimeOffset PublishedUtc,
+internal sealed record SiloRetentionReference(SiloObjectIdentity Identity, string? Role, DateTimeOffset? PublishedUtc,
     IReadOnlyList<SiloExactLocator> Copies);
 
 internal sealed record SiloRetentionCandidate(SiloExactLocator Locator, IReadOnlyList<SiloRetentionReference> References,

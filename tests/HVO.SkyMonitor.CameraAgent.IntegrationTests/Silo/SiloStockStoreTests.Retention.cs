@@ -86,6 +86,125 @@ public sealed partial class SiloStockStoreTests
         Assert.AreEqual(digest, first.Sha256);
     }
 
+    [TestMethod]
+    [TestCategory("Integration")]
+    public async Task StockSiloRetentionResumesFromTrashDrainDespiteNewCaptureGrowth()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromMinutes(3));
+        var token = deadline.Token;
+        var data = new VolumeBuilder().Build();
+        await using var dataLifetime = data.ConfigureAwait(false);
+        await data.CreateAsync(token).ConfigureAwait(false);
+        using var directory = new ArchiveTestDirectory();
+        var keys = ArchiveKeys();
+        var source = new ContainerBuilder(StockImage)
+            .WithVolumeMount(data, "/data")
+            .WithEnvironment("MINIO_ROOT_USER", keys.Access)
+            .WithEnvironment("MINIO_ROOT_PASSWORD", keys.Secret)
+            .WithCommand("server", "/data", "--address", ":9000")
+            .WithPortBinding(Port, assignRandomHostPort: true)
+            .WithCreateParameterModifier(parameters =>
+            {
+                var bindings = parameters.HostConfig?.PortBindings
+                    ?? throw new InvalidOperationException("The retention fixture requires a loopback binding.");
+                foreach (var binding in bindings.Values.SelectMany(static ports => ports))
+                    binding.HostIP = "127.0.0.1";
+            })
+            .WithWaitStrategy(Wait.ForUnixContainer().UntilHttpRequestIsSucceeded(
+                request => request.ForPort(Port).ForPath("/minio/health/ready")))
+            .Build();
+        await using var lifetime = source.ConfigureAwait(false);
+        await source.StartAsync(token).ConfigureAwait(false);
+        using var client = SiloS3ObjectStore.CreateClient(Endpoint(source), keys.Access, keys.Secret);
+        await CreateVersionedBucketAsync(client, Bucket, token).ConfigureAwait(false);
+        var binding = new SiloStorageBinding("fixture-instance", "fixture-local", Bucket);
+        var local = OpenStore(client);
+
+        const long charge = 1024 * 1024;
+        const long nextCharge = 4 * charge;
+        var nextBytes = RandomNumberGenerator.GetBytes((int)nextCharge);
+        var nextHash = SiloHash.Sha256(nextBytes);
+        var nextKey = SiloObjectNamespace.PayloadKey(SiloRetentionClass.Full, nextHash);
+        var clock = new ArchiveTestClock();
+        var sample = new SiloPhysicalHeadroom(100 * SiloDiskBudget.GiB, 20 * SiloDiskBudget.GiB, 0);
+        var budget = new SiloDiskBudget(() => sample, 1, 1, 1, 1024,
+            measureAllocation: locator => locator.Key == nextKey ? nextCharge : charge, reclaimCaptureHourBytes: nextCharge);
+        using var root = SiloStateRoot.Acquire(directory.Path);
+        var fixture = await PublishRetentionFixtureAsync(root, binding, local, clock, budget,
+            RandomNumberGenerator.GetBytes((int)charge), token).ConfigureAwait(false);
+        var state = new SiloPublicationState(root.PublicationDatabasePath, binding, clock);
+        using var index = new SiloCatalogIndex(root.IndexDatabasePath, binding, clock);
+        using var journal = new SiloJournalWriter(state, root.Spool, local, binding, clock);
+        var catalog = new SiloCatalog(index, new SiloStoreSet(local), SiloNoAuthorityEvidence.Instance);
+        using var publisher = new SiloPublisher(state, root.Spool, journal, catalog,
+            new SiloFilePayloadSpool(root, 8 * charge, 32), binding, clock);
+        var retention = new SiloRetention(state, index, publisher, catalog, journal, root.Root, local, budget, clock);
+        await retention.ReleaseAsync(SiloRetentionState.Read(root.Root).Leases.Single(), token).ConfigureAwait(false);
+        var before = await ReadPhysicalHeadroomAsync(source, token).ConfigureAwait(false);
+        var initiallyUsed = await UsedBytesAsync().ConfigureAwait(false);
+        var startAvailable = 10 * SiloDiskBudget.GiB - 64 * 1024;
+        sample = sample with { AvailableBytes = startAvailable };
+        Assert.IsNotNull(budget.Observe());
+        var pressure = budget.AdmissionRelease;
+        Assert.IsNotNull(pressure);
+        static ValueTask<IReadOnlyList<SiloRetentionHold>> NoHolds(CancellationToken _) =>
+            ValueTask.FromResult<IReadOnlyList<SiloRetentionHold>>([]);
+
+        Assert.AreEqual("deleted", await retention.SweepAsync(true, NoHolds, null, token).ConfigureAwait(false));
+        var afterDelete = await ReadPhysicalHeadroomAsync(source, token).ConfigureAwait(false);
+        Assert.IsGreaterThan(before.TrashBytes!.Value, afterDelete.TrashBytes!.Value);
+        sample = sample with { TrashBytes = afterDelete.TrashBytes - before.TrashBytes };
+        var nextMember = new SiloDraftMember("retention-next", "r1", "raw", SiloRetentionClass.Full,
+            "application/octet-stream", nextBytes.Length, nextHash, false, SiloFilePayloadSpool.TokenOf(nextHash));
+        var now = clock.GetUtcNow();
+        var next = new SiloGroupDraft("retention-fixture", nextMember.ArtifactId, "r1", now, now, now,
+            [nextMember], [], new([]));
+        await publisher.StageAsync(next, (_, ct) => SiloArtifactStorage.OpenMemoryAsync(nextBytes, ct), token).ConfigureAwait(false);
+        Assert.AreEqual(SiloStagedState.Visible,
+            (await publisher.PublishAsync(next.GroupId, next.RevisionId, token).ConfigureAwait(false)).State);
+        Assert.AreEqual("awaiting-physical-reclamation", await retention.SweepAsync(true, NoHolds, null, token).ConfigureAwait(false));
+        Assert.IsFalse(pressure.IsCompleted);
+
+        // Restarting stock Silo on the same test-only data directory drains its trash.
+        await source.StopAsync(token).ConfigureAwait(false);
+        await source.StartAsync(token).ConfigureAwait(false);
+        var drained = await ReadPhysicalHeadroomAsync(source, token).ConfigureAwait(false);
+        Assert.IsLessThan(afterDelete.TrashBytes.Value, drained.TrashBytes!.Value);
+        var stillUsed = await UsedBytesAsync().ConfigureAwait(false);
+        Assert.IsGreaterThan(initiallyUsed, stillUsed);
+        sample = sample with { AvailableBytes = startAvailable + initiallyUsed - stillUsed, TrashBytes = 0 };
+        using var restartedClient = SiloS3ObjectStore.CreateClient(Endpoint(source), keys.Access, keys.Secret);
+        var restarted = OpenStore(restartedClient);
+        var restartedCatalog = new SiloCatalog(index, new SiloStoreSet(restarted), SiloNoAuthorityEvidence.Instance);
+        using var restartedJournal = new SiloJournalWriter(state, root.Spool, restarted, binding, clock);
+        using var restartedPublisher = new SiloPublisher(state, root.Spool, restartedJournal, restartedCatalog,
+            new SiloFilePayloadSpool(root, 8 * charge, 32), binding, clock);
+        var resumed = new SiloRetention(state, index, restartedPublisher, restartedCatalog, restartedJournal, root.Root, restarted, budget, clock);
+        Assert.AreEqual("deleted", await resumed.SweepAsync(true, NoHolds, null, token).ConfigureAwait(false));
+        Assert.IsFalse(pressure.IsCompleted);
+        await source.StopAsync(token).ConfigureAwait(false);
+        await source.StartAsync(token).ConfigureAwait(false);
+        sample = sample with { AvailableBytes = startAvailable + initiallyUsed - await UsedBytesAsync().ConfigureAwait(false) };
+        Assert.IsNotNull(budget.Observe());
+        Assert.IsTrue(pressure.IsCompletedSuccessfully);
+        using var recoveredClient = SiloS3ObjectStore.CreateClient(Endpoint(source), keys.Access, keys.Secret);
+        using var first = await OpenStore(recoveredClient).OpenVersionAsync(fixture.Locator.Key, fixture.Locator.VersionId, token)
+            .ConfigureAwait(false);
+        Assert.AreEqual(SiloOpenStatus.NoSuchVersion, first.Status);
+
+        SiloS3ObjectStore OpenStore(AmazonS3Client connected) =>
+            new(connected, new(binding.StoreId, binding.Bucket, SiloStoreClass.Local,
+                SiloRetrieval.Online, PersistenceQualified: true), TimeSpan.FromSeconds(10));
+
+        async ValueTask<long> UsedBytesAsync()
+        {
+            var used = await source.ExecAsync(["du", "-sk", "/data"], token).ConfigureAwait(false);
+            Assert.AreEqual(0L, used.ExitCode);
+            return checked(long.Parse(used.Stdout.Split('\t')[0], CultureInfo.InvariantCulture) * 1024L);
+        }
+    }
+
     private sealed record RetentionFixture(SiloExactLocator Locator, SiloObjectIdentity First, SiloObjectIdentity Second);
 
     private static async ValueTask<SiloPhysicalHeadroom> ReadPhysicalHeadroomAsync(IContainer store, CancellationToken token)
@@ -152,8 +271,9 @@ public sealed partial class SiloStockStoreTests
         var catalog = new SiloCatalog(index, new SiloStoreSet(local), SiloNoAuthorityEvidence.Instance);
         using var publisher = new SiloPublisher(state, root.Spool, journal, catalog, new SiloFilePayloadSpool(root, 8 * 1024 * 1024, 32), binding, clock);
         var retention = new SiloRetention(state, index, publisher, catalog, journal, root.Root, local, budget, clock);
-        Assert.AreEqual("awaiting-physical-reclamation", await retention.SweepAsync(true,
+        Assert.AreEqual("no-eligible-versions", await retention.SweepAsync(true,
             _ => ValueTask.FromResult<IReadOnlyList<SiloRetentionHold>>([]), null, token).ConfigureAwait(false));
+        Assert.HasCount(1, SiloRetentionState.Read(root.Root).ReclaimLedger!.Entries);
     }
 
     private static async ValueTask<RetentionFixture> PublishRetentionFixtureAsync(SiloStateRoot root, SiloStorageBinding binding,
@@ -218,7 +338,8 @@ public sealed partial class SiloStockStoreTests
         if (survivor is not null)
             Assert.AreEqual("no-eligible-versions", await retention.SweepAsync(true, ReadHolds, null, token).ConfigureAwait(false));
         Assert.AreEqual("deleted", await retention.SweepAsync(true, ReadHolds, custody, token).ConfigureAwait(false));
-        Assert.AreEqual("awaiting-physical-reclamation", await retention.SweepAsync(true, ReadHolds, custody, token).ConfigureAwait(false));
+        Assert.AreEqual("no-eligible-versions", await retention.SweepAsync(true, ReadHolds, custody, token).ConfigureAwait(false));
+        Assert.HasCount(1, SiloRetentionState.Read(root.Root).ReclaimLedger!.Entries);
         if (survivor is not null) Assert.IsTrue(custody!.CompetingSweepWasRefused);
     }
 

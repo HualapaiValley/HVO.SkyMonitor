@@ -13,6 +13,8 @@ internal sealed class SiloRetention(
     private const string LocalCustody = "cameraagent";
     private const string Expire = "expire-role";
     private const string Evict = "verify-survivor";
+    private const int MaximumPendingSurvivors = 128;
+    private int _orphanOffset;
     private const string Abandoned = "confirmed-abandoned";
 
     // Called under the publication gate, including on process restart before any P1–P4 work resumes.
@@ -45,73 +47,181 @@ internal sealed class SiloRetention(
         }, cancellationToken);
 
     /// <summary>Age and pressure sweeps share this entry point with future schedule and sky-condition selectors.</summary>
-    internal ValueTask<string> SweepAsync(bool canStartDelete, Func<CancellationToken, ValueTask<IReadOnlyList<SiloRetentionHold>>> readHolds,
+    internal async ValueTask<string> SweepAsync(bool canStartDelete, Func<CancellationToken, ValueTask<IReadOnlyList<SiloRetentionHold>>> readHolds,
         ISiloRetentionArchive? archive, CancellationToken cancellationToken,
         Func<SiloExactLocator, bool>? select = null, Func<CancellationToken, ValueTask>? cleanExpiredCache = null,
-        Func<SiloExactLocator, bool>? verifiedStoreExit = null, Func<bool>? canIssue = null) =>
-        publisher.WithPublicationLockAsync(async () =>
+        Func<SiloExactLocator, bool>? verifiedStoreExit = null, Func<bool>? canIssue = null,
+        SemaphoreSlim? lifecycle = null, Func<IDisposable?>? enterMaintenance = null)
+    {
+        await publisher.RetentionSweepGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            var physical = budget.Observe();
-            var saved = SiloRetentionState.Read(root);
-            if (saved.Attempt is { } outstanding)
-                return await ReconcileAsync(saved, outstanding, archive, verifiedStoreExit, cancellationToken).ConfigureAwait(false);
+            return await SweepLocalAsync(canStartDelete, readHolds, archive, select, cleanExpiredCache,
+                verifiedStoreExit, canIssue, lifecycle, enterMaintenance, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            publisher.RetentionSweepGate.Release();
+        }
+    }
 
-            if (!canStartDelete || physical is null || local is not ISiloVersionRemoval)
-                return "held";
+    private async ValueTask<string> SweepLocalAsync(bool canStartDelete,
+        Func<CancellationToken, ValueTask<IReadOnlyList<SiloRetentionHold>>> readHolds, ISiloRetentionArchive? archive,
+        Func<SiloExactLocator, bool>? select, Func<CancellationToken, ValueTask>? cleanExpiredCache,
+        Func<SiloExactLocator, bool>? verifiedStoreExit, Func<bool>? canIssue, SemaphoreSlim? lifecycle,
+        Func<IDisposable?>? enterMaintenance, CancellationToken cancellationToken)
+    {
+        if (SiloRetentionState.Read(root).Attempt is { } outstanding)
+            return await ReconcileAsync(outstanding, verifiedStoreExit, cancellationToken).ConfigureAwait(false);
 
+        if (!canStartDelete || local is not ISiloVersionRemoval)
+            return "held";
+
+        if (cleanExpiredCache is not null)
+            await cleanExpiredCache(cancellationToken).ConfigureAwait(false);
+        await publisher.CleanupRetentionSpoolAsync(enterMaintenance, cancellationToken).ConfigureAwait(false);
+
+        var authorityReady = await publisher.WithPublicationLockAsync(async () =>
+        {
             await CatchUpAsync(cancellationToken).ConfigureAwait(false);
+            return (await index.ReadAuthorityAsync(cancellationToken).ConfigureAwait(false)).CompleteThroughPrefixEnd;
+        }, cancellationToken).ConfigureAwait(false);
+        if (!authorityReady) return "catalog-authority-incomplete";
+        if ((await index.ReadRetentionPolicyAsync(cancellationToken).ConfigureAwait(false)).ExpiryHeld) return "held";
+
+        await ResolveOrphansAsync(cancellationToken).ConfigureAwait(false);
+        IReadOnlyList<SiloRetentionHold> snapshot;
+        if (lifecycle is not null) await lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            snapshot = await readHolds(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            lifecycle?.Release();
+        }
+
+        if (budget.ObserveReclamation() is not { } physical) return "held";
+        var (status, candidates) = await publisher.WithPublicationLockAsync<(string, IReadOnlyList<SiloRetentionCandidate>)>(async () =>
+        {
+            var saved = SiloRetentionState.Read(root);
+            var reclaim = SiloReclaimLedger.Observe(saved.ReclaimLedger, physical, clock.GetUtcNow());
+            if (reclaim != saved.Reclaim || saved.ReclaimPending is not null)
+            {
+                saved = saved with { Reclaim = reclaim, ReclaimPending = null };
+                await saved.WriteAsync(root, cancellationToken).ConfigureAwait(false);
+            }
+            if (!SiloReclaimLedger.CanDelete(reclaim, physical, budget.ReclaimCaptureHourBytes, 0, clock.GetUtcNow()))
+                return ("awaiting-physical-reclamation", []);
+
             var policy = await index.ReadRetentionPolicyAsync(cancellationToken).ConfigureAwait(false);
-            if (policy.ExpiryHeld) return "held";
-            if (archive is not null)
-                await ReconcileArchiveTargetsAsync(archive, cancellationToken).ConfigureAwait(false);
+            if (policy.ExpiryHeld) return ("held", []);
+            if (!(await index.ReadAuthorityAsync(cancellationToken).ConfigureAwait(false)).CompleteThroughPrefixEnd)
+                return ("catalog-authority-incomplete", []);
+            return ("no-eligible-versions", await PlanAsync(policy, saved, clock.GetUtcNow(),
+                budget.AdmissionRelease is not null, snapshot, cancellationToken).ConfigureAwait(false));
+        }, cancellationToken).ConfigureAwait(false);
 
-            if (cleanExpiredCache is not null)
+        foreach (var candidate in candidates)
+        {
+            if (candidate.Decision is not (Expire or Evict or Abandoned) || select?.Invoke(candidate.Locator) == false)
+                continue;
+            var before = budget.ObserveReclamation();
+            if (before is null) return "held";
+            var allocation = budget.ReadExactAllocationBytes(candidate.Locator);
+            var pending = SiloRetentionState.Read(root);
+            if (!SiloReclaimLedger.CanDelete(pending.Reclaim, before.Value, budget.ReclaimCaptureHourBytes, allocation, clock.GetUtcNow()))
             {
-                await cleanExpiredCache(cancellationToken).ConfigureAwait(false);
-                physical = budget.Observe();
-                if (physical is null) return "held";
+                status = "awaiting-physical-reclamation";
+                continue;
             }
-            if (saved.ReclaimPending is { } reclaim)
+            var attempt = await PrepareAsync(candidate, before.Value, allocation,
+                pending.SurvivorReleases.Count < MaximumPendingSurvivors ? archive : null, cancellationToken).ConfigureAwait(false);
+            if (attempt is null) continue;
+            var fenced = await TryFenceAsync(candidate, attempt, readHolds, canIssue, lifecycle, enterMaintenance, cancellationToken)
+                .ConfigureAwait(false);
+            if (fenced is null)
             {
-                if (!Reclaimed(reclaim, physical.Value)) return "awaiting-physical-reclamation";
-                saved = saved with { ReclaimPending = null };
-                await saved.WriteAsync(root, cancellationToken).ConfigureAwait(false);
+                if (attempt.Survivors.Count > 0)
+                    await ReleaseUnfencedSurvivorsAsync(attempt, cancellationToken).ConfigureAwait(false);
+                continue;
             }
+            return await IssueAsync(fenced, archive, canIssue, enterMaintenance, cancellationToken).ConfigureAwait(false);
+        }
+        return status;
+    }
 
-            var candidates = await PlanAsync(policy, saved, clock.GetUtcNow(), budget.AdmissionRelease is not null,
-                await readHolds(cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
-            foreach (var candidate in candidates)
+    private async ValueTask<SiloRetentionAttempt?> TryFenceAsync(SiloRetentionCandidate planned, SiloRetentionAttempt attempt,
+        Func<CancellationToken, ValueTask<IReadOnlyList<SiloRetentionHold>>> readHolds, Func<bool>? canIssue,
+        SemaphoreSlim? lifecycle, Func<IDisposable?>? enterMaintenance, CancellationToken cancellationToken)
+    {
+        if (lifecycle is not null) await lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await publisher.TryWithPublicationLockAsync<SiloRetentionAttempt>(async () =>
             {
-                if (select is not null && !select(candidate.Locator)) continue;
-                var attempt = await PrepareAsync(candidate, physical.Value, archive, cancellationToken).ConfigureAwait(false);
-                if (attempt is null) continue;
-                saved = saved with { Attempt = attempt };
-                await saved.WriteAsync(root, cancellationToken).ConfigureAwait(false);
-                return await IssueAsync(saved, attempt, archive, canIssue, cancellationToken).ConfigureAwait(false);
-            }
-            return "no-eligible-versions";
-        }, cancellationToken);
+                using var maintenance = enterMaintenance?.Invoke();
+                if ((enterMaintenance is not null && maintenance is null) || canIssue?.Invoke() == false) return null;
+
+                // No object-store requests here. The latest hold snapshot and the durable fence share the lifecycle lock.
+                var saved = SiloRetentionState.Read(root);
+                var policy = await index.ReadRetentionPolicyAsync(cancellationToken).ConfigureAwait(false);
+                if (policy.ExpiryHeld) return null;
+                var holds = await readHolds(cancellationToken).ConfigureAwait(false);
+                var fresh = (await PlanAsync(policy, saved, clock.GetUtcNow(), budget.AdmissionRelease is not null, holds,
+                    cancellationToken, planned.Locator).ConfigureAwait(false)).SingleOrDefault();
+                if (fresh is null || !SameDecision(planned, fresh)) return null;
+                var (cutoff, sha) = await index.ReadCursorAsync(cancellationToken).ConfigureAwait(false);
+                var writer = await state.ReadHeadAsync(cancellationToken).ConfigureAwait(false);
+                if (writer.Position != cutoff || writer.Sha256 != sha ||
+                    await state.ReadPendingAsync(cancellationToken).ConfigureAwait(false) is not null) return null;
+                var fenced = attempt with { Intents = attempt.Intents.Select(intent => intent with { HoldEvaluationCutoff = cutoff }).ToArray() };
+                await (saved with { Attempt = fenced }).WriteAsync(root, cancellationToken).ConfigureAwait(false);
+                return fenced;
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            lifecycle?.Release();
+        }
+    }
+
+    private async ValueTask ReleaseUnfencedSurvivorsAsync(SiloRetentionAttempt attempt, CancellationToken cancellationToken) =>
+        await publisher.WithPublicationLockAsync(() => AppendAsync(
+            [
+                .. attempt.Survivors.Select(static survivor => survivor with { IntentId = null }),
+                .. attempt.Survivors.Select(static survivor => new SiloReleaseSurvivorRecord(survivor.ReservationId, "local-delete-not-fenced"))
+            ], "retention-unfenced:" + attempt.Id, cancellationToken), cancellationToken).ConfigureAwait(false);
+
+    private static bool SameDecision(SiloRetentionCandidate planned, SiloRetentionCandidate fresh) =>
+        planned.Decision == fresh.Decision && planned.AuthorizesRoleExpiry == fresh.AuthorizesRoleExpiry &&
+        planned.References.Select(static reference => reference.Identity)
+            .SequenceEqual(fresh.References.Select(static reference => reference.Identity)) &&
+        planned.References.Zip(fresh.References).All(static pair => pair.First.Copies.SequenceEqual(pair.Second.Copies));
 
     private async ValueTask<IReadOnlyList<SiloRetentionCandidate>> PlanAsync(SiloRetentionPolicy policy,
         SiloRetentionState saved, DateTimeOffset now, bool pressure, IReadOnlyList<SiloRetentionHold> externalHolds,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, SiloExactLocator? only = null)
     {
+        var authority = await index.ReadAuthorityAsync(cancellationToken).ConfigureAwait(false);
         var configured = policy.Roles.ToDictionary(static item => item.Role, StringComparer.Ordinal);
         var holds = externalHolds.Concat(await index.ReadRetentionPinsAsync(cancellationToken).ConfigureAwait(false))
-            .Concat(await index.ReadReopenRetentionHoldsAsync(cancellationToken).ConfigureAwait(false)).ToArray();
+            .Concat(await index.ReadReopenRetentionHoldsAsync(cancellationToken).ConfigureAwait(false))
+            .Concat(await index.ReadViewRetentionHoldsAsync(externalHolds.Where(static hold => hold.Kind == SiloHoldKind.ViewManifest),
+                cancellationToken).ConfigureAwait(false)).ToArray();
         var holdsByArtifact = holds.ToLookup(static hold => hold.ArtifactId, StringComparer.Ordinal);
         var archiveReferences = holds.Any(static hold => hold.Kind == SiloHoldKind.SatelliteArchiveReference)
             ? await index.ReadArchivedCaptureReferencesAsync(cancellationToken).ConfigureAwait(false) : null;
-        var archiveHistoryUnknown = archiveReferences is not null &&
-            (await index.ReadAuthorityAsync(cancellationToken).ConfigureAwait(false)).UnknownInterval;
+        var archiveHistoryUnknown = authority.UnknownInterval;
         var staged = await ReadStagedKeysAsync(cancellationToken).ConfigureAwait(false);
         var leased = saved.Leases.Where(lease => lease.ExpiresUtc > now).SelectMany(static lease => lease.Versions).ToHashSet();
         var result = new List<SiloRetentionCandidate>();
-        foreach (var (locator, references) in await index.ReadRetentionReferencesAsync(cancellationToken).ConfigureAwait(false))
+        foreach (var (locator, references) in await index.ReadRetentionReferencesAsync(cancellationToken, only).ConfigureAwait(false))
         {
             var decision = "within-policy";
             var allowRoleExpiry = references.All(reference => FindPolicy(reference, locator.Key, configured)?.AllowLastCopyExpiry == true);
-            if (references.Count is 0 or > MaximumSharedRoles || staged.Contains(locator.Key) ||
+            if (!authority.CompleteThroughPrefixEnd || references.Count is 0 or > MaximumSharedRoles ||
+                references.Any(static reference => reference.Role is null || reference.PublishedUtc is null) || staged.Contains(locator.Key) ||
                 leased.Contains(locator) || saved.Attempt?.Target == locator ||
                 references.Any(reference => holdsByArtifact[reference.Identity.Id].Any(hold => hold.Matches(reference.Identity, now) &&
                     (hold.Kind != SiloHoldKind.SatelliteArchiveReference || archiveHistoryUnknown ||
@@ -132,7 +242,8 @@ internal sealed class SiloRetention(
         foreach (var locator in (await state.ListOrphansAsync(cancellationToken).ConfigureAwait(false))
             .Select(static orphan => orphan.Locator).Distinct())
         {
-            if (locator.VersionId.Length == 0 || staged.Contains(locator.Key) ||
+            if (!authority.CompleteThroughPrefixEnd || (only is not null && locator != only) ||
+                locator.VersionId.Length == 0 || staged.Contains(locator.Key) ||
                 leased.Contains(locator) || saved.Attempt?.Target == locator ||
                 await index.HasRetentionLocatorAsync(locator, cancellationToken).ConfigureAwait(false))
                 continue;
@@ -148,7 +259,7 @@ internal sealed class SiloRetention(
 
     private static SiloRoleRetention? FindPolicy(SiloRetentionReference reference, string key,
         Dictionary<string, SiloRoleRetention> configured) =>
-        configured.GetValueOrDefault(reference.Role) ?? configured.GetValueOrDefault(RetentionOrder(key) switch
+        (reference.Role is { } role ? configured.GetValueOrDefault(role) : null) ?? configured.GetValueOrDefault(RetentionOrder(key) switch
         {
             0 => "full",
             1 => "display",
@@ -158,8 +269,8 @@ internal sealed class SiloRetention(
     private static int RetentionOrder(string key) => key.StartsWith("p/full/", StringComparison.Ordinal) ? 0 :
         key.StartsWith("p/display/", StringComparison.Ordinal) ? 1 : 2;
 
-    private static bool IsDue(SiloRoleRetention? policy, DateTimeOffset published, DateTimeOffset now, bool pressure) =>
-        policy is not null && published <= now && (pressure && policy.ExpireUnderPressure ||
+    private static bool IsDue(SiloRoleRetention? policy, DateTimeOffset? publishedUtc, DateTimeOffset now, bool pressure) =>
+        policy is not null && publishedUtc is { } published && published <= now && (pressure && policy.ExpireUnderPressure ||
             policy.MaximumAge is { } age && now - published >= age);
 
     private async ValueTask<HashSet<string>> ReadStagedKeysAsync(CancellationToken cancellationToken)
@@ -176,21 +287,53 @@ internal sealed class SiloRetention(
         return keys;
     }
 
+    private async ValueTask ResolveOrphansAsync(CancellationToken cancellationToken)
+    {
+        const int batchSize = 32;
+        var unresolved = (await state.ListOrphansAsync(cancellationToken).ConfigureAwait(false))
+            .Where(orphan => orphan.Locator.VersionId.Length == 0 && orphan.Locator.StoreId == local.Descriptor.StoreId &&
+                orphan.Locator.Bucket == local.Descriptor.Bucket).ToArray();
+        if (unresolved.Length == 0) return;
+        var offset = _orphanOffset % unresolved.Length;
+        _orphanOffset = (offset + batchSize) % unresolved.Length;
+        var staged = await ReadStagedKeysAsync(cancellationToken).ConfigureAwait(false);
+        foreach (var orphan in unresolved.Skip(offset).Concat(unresolved.Take(offset)).Take(batchSize))
+        {
+            if (staged.Contains(orphan.Locator.Key) ||
+                await index.HasRetentionKeyAsync(orphan.Locator, cancellationToken).ConfigureAwait(false)) continue;
+            string? version;
+            try
+            {
+                version = await local.LocateCurrentVersionAsync(orphan.Locator.Key, cancellationToken).ConfigureAwait(false);
+            }
+            catch (SiloStoreUnavailableException)
+            {
+                continue;
+            }
+            if (string.IsNullOrEmpty(version)) continue;
+            await publisher.WithPublicationLockAsync(async () =>
+            {
+                if (!(await index.ReadAuthorityAsync(cancellationToken).ConfigureAwait(false)).CompleteThroughPrefixEnd ||
+                    (await ReadStagedKeysAsync(cancellationToken).ConfigureAwait(false)).Contains(orphan.Locator.Key) ||
+                    await index.HasRetentionKeyAsync(orphan.Locator, cancellationToken).ConfigureAwait(false)) return false;
+                await state.ResolveRetentionOrphanAsync(orphan, version, cancellationToken).ConfigureAwait(false);
+                return true;
+            }, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
     private async ValueTask<SiloRetentionAttempt?> PrepareAsync(SiloRetentionCandidate candidate, SiloPhysicalHeadroom physical,
-        ISiloRetentionArchive? archive, CancellationToken cancellationToken)
+        long? measured, ISiloRetentionArchive? archive, CancellationToken cancellationToken)
     {
         if (candidate.Decision is not (Expire or Evict or Abandoned)) return null;
         using var open = await local.OpenVersionAsync(candidate.Locator.Key, candidate.Locator.VersionId, cancellationToken).ConfigureAwait(false);
         if (open.Status != SiloOpenStatus.Found) return null;
-        var measured = budget.ReadExactAllocationBytes(candidate.Locator);
-        if (measured > physical.TotalBytes / 20) return null;
         var allocation = measured is { } allocated
             ? new SiloPhysicalAllocation(SiloHash.Sha256(SiloJson.Serialize(candidate.Locator)), allocated) : null;
 
         var id = Guid.NewGuid().ToString("N");
         var intents = new List<SiloExpiryIntentRecord>();
         var reservations = new List<SiloReserveSurvivorRecord>();
-        var (cutoff, _) = await index.ReadCursorAsync(cancellationToken).ConfigureAwait(false);
         var roleExpiry = candidate.Decision == Expire;
         if (candidate.Decision == Evict)
         {
@@ -221,81 +364,98 @@ internal sealed class SiloRetention(
                 targets[exact] = targets[exact] with { AllocationId = allocation.Id, AllocatedBytes = allocation.Bytes };
             }
             intents.Add(new(intentId, roleExpiry ? SiloExpiryScope.Role : SiloExpiryScope.Copy, reference.Identity,
-                SiloRetentionPolicy.PolicyId, targets, roleExpiry ? Expire : candidate.Decision, roleExpiry, cutoff));
+                SiloRetentionPolicy.PolicyId, targets, roleExpiry ? Expire : candidate.Decision, roleExpiry, null));
         }
         return new(id, candidate.Locator, intents, reservations, physical, Allocation: allocation);
     }
 
-    private async ValueTask<string> IssueAsync(SiloRetentionState saved, SiloRetentionAttempt attempt, ISiloRetentionArchive? archive,
-        Func<bool>? canIssue, CancellationToken cancellationToken)
+    private async ValueTask<string> IssueAsync(SiloRetentionAttempt attempt, ISiloRetentionArchive? archive,
+        Func<bool>? canIssue, Func<IDisposable?>? enterMaintenance, CancellationToken cancellationToken)
     {
         await AppendIntentsAsync(attempt, cancellationToken).ConfigureAwait(false);
         foreach (var survivor in attempt.Survivors)
         {
             if (archive is null || !await archive.ConfirmProtectedAsync(survivor.Identity, survivor.Survivor, cancellationToken).ConfigureAwait(false))
-                return await RecordOutcomeAsync(saved, attempt, SiloExpiryOutcome.NotDeleted, "survivor-protection-unavailable",
-                    archive, cancellationToken).ConfigureAwait(false);
+                return await RecordOutcomeAsync(attempt, SiloExpiryOutcome.NotDeleted, "survivor-protection-unavailable",
+                    cancellationToken).ConfigureAwait(false);
         }
-        if (canIssue?.Invoke() == false)
-            return await RecordOutcomeAsync(saved, attempt, SiloExpiryOutcome.NotDeleted, "maintenance-held",
-                archive, cancellationToken).ConfigureAwait(false);
 
-        await AppendAsync([AttemptRecord(attempt, "issued")], "retention-issued:" + attempt.Id, cancellationToken).ConfigureAwait(false);
-        attempt = attempt with { Issued = true };
-        saved = saved with { Attempt = attempt };
-        await saved.WriteAsync(root, cancellationToken).ConfigureAwait(false);
-        var accepted = await ((ISiloVersionRemoval)local).DeleteVersionAsync(attempt.Target, cancellationToken).ConfigureAwait(false);
-        return await ObserveAttemptAsync(saved, attempt, archive, accepted ? null : SiloExpiryOutcome.Refused,
-            SiloExpiryOutcome.Deleted, cancellationToken)
-            .ConfigureAwait(false);
+        await publisher.WithPublicationLockAsync(async () =>
+        {
+            await AppendAsync([AttemptRecord(attempt, "issued")], "retention-issued:" + attempt.Id, cancellationToken).ConfigureAwait(false);
+            attempt = attempt with { Issued = true };
+            await (SiloRetentionState.Read(root) with { Attempt = attempt }).WriteAsync(root, cancellationToken).ConfigureAwait(false);
+            return true;
+        }, cancellationToken).ConfigureAwait(false);
+
+        // A pause can close the dispatch gate while protection or journal I/O is in flight.
+        // An accepted request is covered by the durable issued fence until exact absence is proven.
+        Task<bool>? request = null;
+        using (var maintenance = enterMaintenance?.Invoke())
+        {
+            if ((enterMaintenance is null || maintenance is not null) && canIssue?.Invoke() != false)
+                request = ((ISiloVersionRemoval)local).DeleteVersionAsync(attempt.Target, cancellationToken).AsTask();
+        }
+        if (request is null)
+            return await RecordOutcomeAsync(attempt, SiloExpiryOutcome.NotDeleted, "maintenance-held", cancellationToken).ConfigureAwait(false);
+
+        var accepted = await request.ConfigureAwait(false);
+        return await ObserveAttemptAsync(attempt, accepted ? null : SiloExpiryOutcome.Refused,
+            SiloExpiryOutcome.Deleted, cancellationToken).ConfigureAwait(false);
     }
 
-    private async ValueTask<string> ReconcileAsync(SiloRetentionState saved, SiloRetentionAttempt attempt, ISiloRetentionArchive? archive,
+    private async ValueTask<string> ReconcileAsync(SiloRetentionAttempt attempt,
         Func<SiloExactLocator, bool>? verifiedStoreExit, CancellationToken cancellationToken)
     {
         if (attempt.Outcome is not null)
-            return await FinishAsync(saved, attempt, archive, cancellationToken).ConfigureAwait(false);
+            return await FinishAsync(attempt, cancellationToken).ConfigureAwait(false);
         if (attempt.Issued)
-            return await ObserveAttemptAsync(saved, attempt, archive, verifiedStoreExit?.Invoke(attempt.Target) == true
+            return await ObserveAttemptAsync(attempt, verifiedStoreExit?.Invoke(attempt.Target) == true
                 ? SiloExpiryOutcome.NotDeleted : null, SiloExpiryOutcome.AlreadyAbsent, cancellationToken).ConfigureAwait(false);
 
         // Restart may have changed configured holds or fenced the installer. End the unsent attempt and replan.
         await AppendIntentsAsync(attempt, cancellationToken).ConfigureAwait(false);
-        return await RecordOutcomeAsync(saved, attempt, SiloExpiryOutcome.NotDeleted, "delete-not-issued", archive, cancellationToken)
-            .ConfigureAwait(false);
+        return await RecordOutcomeAsync(attempt, SiloExpiryOutcome.NotDeleted, "delete-not-issued", cancellationToken).ConfigureAwait(false);
     }
 
-    private async ValueTask<string> ObserveAttemptAsync(SiloRetentionState saved, SiloRetentionAttempt attempt,
-        ISiloRetentionArchive? archive, SiloExpiryOutcome? presentOutcome, SiloExpiryOutcome absentOutcome, CancellationToken cancellationToken)
+    private async ValueTask<string> ObserveAttemptAsync(SiloRetentionAttempt attempt,
+        SiloExpiryOutcome? presentOutcome, SiloExpiryOutcome absentOutcome, CancellationToken cancellationToken)
     {
         using var observed = await local.OpenVersionAsync(attempt.Target.Key, attempt.Target.VersionId, cancellationToken).ConfigureAwait(false);
         return observed.Status switch
         {
-            SiloOpenStatus.NoSuchVersion => await RecordOutcomeAsync(saved, attempt, absentOutcome, "exact-get-no-such-version",
-                archive, cancellationToken).ConfigureAwait(false),
+            SiloOpenStatus.NoSuchVersion => await RecordOutcomeAsync(attempt, absentOutcome, "exact-get-no-such-version",
+                cancellationToken).ConfigureAwait(false),
             SiloOpenStatus.Found when presentOutcome is { } outcome =>
-                await RecordOutcomeAsync(saved, attempt, outcome, outcome == SiloExpiryOutcome.Refused ? "delete-refused" : "verified-store-exit",
-                    archive, cancellationToken).ConfigureAwait(false),
+                await RecordOutcomeAsync(attempt, outcome, outcome == SiloExpiryOutcome.Refused ? "delete-refused" : "verified-store-exit",
+                    cancellationToken).ConfigureAwait(false),
             _ => "unsettled-delete"
         };
     }
 
-    private async ValueTask<string> RecordOutcomeAsync(SiloRetentionState saved, SiloRetentionAttempt attempt, SiloExpiryOutcome outcome,
-        string evidence, ISiloRetentionArchive? archive, CancellationToken cancellationToken)
-    {
-        attempt = attempt with { Outcome = outcome, ObservedUtc = clock.GetUtcNow(), Evidence = evidence };
-        saved = saved with { Attempt = attempt };
-        await saved.WriteAsync(root, cancellationToken).ConfigureAwait(false);
-        return await FinishAsync(saved, attempt, archive, cancellationToken).ConfigureAwait(false);
-    }
+    private ValueTask<string> RecordOutcomeAsync(SiloRetentionAttempt attempt, SiloExpiryOutcome outcome,
+        string evidence, CancellationToken cancellationToken) =>
+        FinishAsync(attempt with
+        {
+            Outcome = outcome,
+            ObservedUtc = clock.GetUtcNow(),
+            Evidence = evidence,
+            AfterDelete = outcome is SiloExpiryOutcome.Deleted or SiloExpiryOutcome.AlreadyAbsent
+                ? budget.ObserveReclamation() : null
+        }, cancellationToken, persistObservation: true);
 
-    private async ValueTask<string> FinishAsync(SiloRetentionState saved, SiloRetentionAttempt attempt,
-        ISiloRetentionArchive? archive, CancellationToken cancellationToken)
+    private ValueTask<string> FinishAsync(SiloRetentionAttempt attempt, CancellationToken cancellationToken,
+        bool persistObservation = false) => publisher.WithPublicationLockAsync(async () =>
     {
+        var saved = SiloRetentionState.Read(root);
         var outcome = attempt.Outcome!.Value;
         var absent = outcome is SiloExpiryOutcome.Deleted or SiloExpiryOutcome.AlreadyAbsent;
         var observed = attempt.ObservedUtc!.Value;
         var evidence = attempt.Evidence!;
+        if (persistObservation)
+            await (saved with { Attempt = attempt }).WriteAsync(root, cancellationToken).ConfigureAwait(false);
+
+        var reclaim = saved.ReclaimLedger;
         if (!attempt.DispositionCommitted)
         {
             var records = new List<SiloJournalRecord> { AttemptRecord(attempt, "observed") };
@@ -307,41 +467,30 @@ internal sealed class SiloRetention(
                         observed, evidence, IntentId: intent.IntentId));
             }
             await AppendAsync(records, "retention-outcome:" + attempt.Id, cancellationToken).ConfigureAwait(false);
-
-            // An archive outage can delay release of the legal hold after the local delete has settled.
-            // Persist that boundary before contacting the optional archive so local publication can proceed.
-            attempt = attempt with { DispositionCommitted = true };
-            saved = saved with
-            {
-                Attempt = attempt,
-                ReclaimPending = absent ? new(attempt.Before, observed, attempt.Allocation) : saved.ReclaimPending
-            };
-            await saved.WriteAsync(root, cancellationToken).ConfigureAwait(false);
-        }
-
-        if (attempt.Survivors.Count > 0)
-        {
-            foreach (var survivor in attempt.Survivors)
-            {
-                if (absent && (archive is null ||
-                    !await archive.ConfirmProtectedAsync(survivor.Identity, survivor.Survivor, cancellationToken).ConfigureAwait(false)))
-                    return "survivor-reverification-pending";
-            }
-            await AppendAsync(attempt.Survivors.Select(static item =>
-                (SiloJournalRecord)new SiloReleaseSurvivorRecord(item.ReservationId, "local-delete-settled")).ToArray(),
-                "retention-release:" + attempt.Id, cancellationToken).ConfigureAwait(false);
+            if (absent)
+                reclaim = SiloReclaimLedger.Add(reclaim, attempt, budget.Observe() ?? attempt.AfterDelete ?? attempt.Before);
         }
 
         if (absent && attempt.Intents.Count == 0)
             await state.RemoveRetentionOrphanAsync(attempt.Target, cancellationToken).ConfigureAwait(false);
-        await (saved with { Attempt = null }).WriteAsync(root, cancellationToken).ConfigureAwait(false);
+
+        await (saved with
+        {
+            Attempt = null,
+            LastSettledAttemptId = attempt.Id,
+            Reclaim = reclaim,
+            ReclaimPending = null,
+            PendingSurvivorReleases = attempt.Survivors.Count == 0 ? saved.SurvivorReleases :
+                [.. saved.SurvivorReleases, new(attempt.Id, attempt.Survivors, absent)]
+        }).WriteAsync(root, cancellationToken).ConfigureAwait(false);
         return SiloJson.EnumName(outcome);
-    }
+    }, cancellationToken);
 
     private async ValueTask AppendIntentsAsync(SiloRetentionAttempt attempt, CancellationToken cancellationToken)
     {
-        await AppendAsync([.. attempt.Survivors, .. attempt.Intents, AttemptRecord(attempt, "prepared")],
-            "retention-intent:" + attempt.Id, cancellationToken).ConfigureAwait(false);
+        await publisher.WithPublicationLockAsync(() => AppendAsync(
+            [.. attempt.Survivors, .. attempt.Intents, AttemptRecord(attempt, "prepared")],
+            "retention-intent:" + attempt.Id, cancellationToken), cancellationToken).ConfigureAwait(false);
     }
 
     private static SiloExpiryAttemptRecord AttemptRecord(SiloRetentionAttempt attempt, string phase) =>
@@ -365,26 +514,51 @@ internal sealed class SiloRetention(
             throw new SiloConflictException("silo-retention-authority-unavailable", "Retention requires the verified writer journal prefix.");
     }
 
-    private async ValueTask ReconcileArchiveTargetsAsync(ISiloRetentionArchive archive, CancellationToken cancellationToken)
+    internal async ValueTask ReconcileArchiveAsync(ISiloRetentionArchive archive, CancellationToken cancellationToken)
     {
+        foreach (var pending in SiloRetentionState.Read(root).SurvivorReleases)
+        {
+            var verified = true;
+            foreach (var survivor in pending.Survivors)
+            {
+                if (!pending.RequiresVerification) continue;
+                if (await archive.ConfirmProtectedAsync(survivor.Identity, survivor.Survivor, cancellationToken).ConfigureAwait(false))
+                    continue;
+                verified = false;
+                break;
+            }
+            if (!verified) continue;
+
+            await publisher.WithPublicationLockAsync(async () =>
+            {
+                var saved = SiloRetentionState.Read(root);
+                if (!saved.SurvivorReleases.Any(item => item.AttemptId == pending.AttemptId)) return false;
+                await AppendAsync(pending.Survivors.Select(static item =>
+                    (SiloJournalRecord)new SiloReleaseSurvivorRecord(item.ReservationId, "local-delete-settled")).ToArray(),
+                    "retention-release:" + pending.AttemptId, cancellationToken).ConfigureAwait(false);
+                await (saved with { PendingSurvivorReleases = saved.SurvivorReleases.Where(item => item.AttemptId != pending.AttemptId).ToArray() })
+                    .WriteAsync(root, cancellationToken).ConfigureAwait(false);
+                return true;
+            }, cancellationToken).ConfigureAwait(false);
+        }
+
         foreach (var (intent, identity, target) in await index.ReadArchiveExpiryTargetsAsync(cancellationToken).ConfigureAwait(false))
         {
             if (!await archive.IsAuthorityExpiredAsync(target, cancellationToken).ConfigureAwait(false)) continue;
-            var suffix = SiloHash.Sha256(SiloJson.Serialize(target));
-            var now = clock.GetUtcNow();
-            const string evidence = "archive-custody-and-exact-absence";
-            var records = new List<SiloJournalRecord> { new SiloExpiryDispositionRecord(intent, target, SiloExpiryOutcome.AlreadyAbsent, now, evidence) };
-            if (await index.IsFinalExpiryTargetAsync(intent, target, cancellationToken).ConfigureAwait(false))
-                records.Add(new SiloAvailabilityRecord(SiloAvailabilityScope.Role, identity, SiloAvailabilityState.PolicyExpired,
-                    now, evidence, IntentId: intent));
-            await AppendAsync(records,
-                $"retention-archive-absence:{intent}:{suffix}", cancellationToken).ConfigureAwait(false);
+            await publisher.WithPublicationLockAsync(async () =>
+            {
+                var suffix = SiloHash.Sha256(SiloJson.Serialize(target));
+                var now = clock.GetUtcNow();
+                const string evidence = "archive-custody-and-exact-absence";
+                var records = new List<SiloJournalRecord> { new SiloExpiryDispositionRecord(intent, target, SiloExpiryOutcome.AlreadyAbsent, now, evidence) };
+                if (await index.IsFinalExpiryTargetAsync(intent, target, cancellationToken).ConfigureAwait(false))
+                    records.Add(new SiloAvailabilityRecord(SiloAvailabilityScope.Role, identity, SiloAvailabilityState.PolicyExpired,
+                        now, evidence, IntentId: intent));
+                await AppendAsync(records, $"retention-archive-absence:{intent}:{suffix}", cancellationToken).ConfigureAwait(false);
+                return true;
+            }, cancellationToken).ConfigureAwait(false);
         }
     }
-
-    internal static bool Reclaimed(SiloReclaimObservation pending, SiloPhysicalHeadroom current) =>
-        current.TotalBytes == pending.BeforeDelete.TotalBytes && current.AvailableBytes > pending.BeforeDelete.AvailableBytes &&
-        (pending.BeforeDelete.TrashBytes is not { } previous || current.TrashBytes is { } trash && trash <= previous);
 
     public ValueTask<SiloObjectLease?> TryAcquireAsync(IReadOnlyList<SiloExactLocator> versions, TimeSpan duration,
         CancellationToken cancellationToken)

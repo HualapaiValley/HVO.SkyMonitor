@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Silo.S3;
@@ -16,6 +17,7 @@ internal sealed class SiloInstalledStorage : ICameraAgentSiloVerification, IDisp
     private readonly SiloStateRoot _root;
     private readonly PhysicalRoot _rawRoot;
     private readonly SiloJournalWriter _journal;
+    private readonly TimeProvider _clock;
     private readonly SemaphoreSlim _initialization = new(1, 1);
     private readonly bool _publicationStateExisted;
     private bool _localInitialized;
@@ -32,6 +34,7 @@ internal sealed class SiloInstalledStorage : ICameraAgentSiloVerification, IDisp
         ISiloFaults? faults, Func<ISiloObjectStore, ISiloObjectStore>? decorateReadStore, SiloInstalledStore? installedStore,
         ISiloPayloadSpool? payloadSpool)
     {
+        _clock = clock;
         var rawRoot = Path.GetFullPath(options.Value.RawIngressRoot);
         Directory.CreateDirectory(rawRoot);
         _rawRoot = PhysicalRoot.Open(rawRoot);
@@ -48,7 +51,8 @@ internal sealed class SiloInstalledStorage : ICameraAgentSiloVerification, IDisp
             Catalog = new(Index, new SiloStoreSet(decorateReadStore?.Invoke(_installed.Store) ?? _installed.Store), SiloNoAuthorityEvidence.Instance, faults);
             _journal = new(State, _root.Spool, _installed.Store, Binding, clock, faults);
             Publisher = new(State, _root.Spool, _journal, Catalog, Spool, Binding, clock, faults);
-            DiskBudget = SiloDiskBudget.ForState(_root.Root.Path, settings.MaximumStagedBytes);
+            DiskBudget = SiloFilesystemObservation.CreateBudget(_root.Root.Path, settings.DataRoot,
+                settings.MaximumStagedBytes, settings.ReclaimCaptureHourBytes, _installed.ReadExactAllocationBytes);
             Retention = new(State, Index, Publisher, Catalog, _journal, _root.Root, _installed.Store, DiskBudget, clock);
             Publisher.RetentionFence = Retention.ReadUnsettledTarget;
         }
@@ -78,9 +82,34 @@ internal sealed class SiloInstalledStorage : ICameraAgentSiloVerification, IDisp
 
     public ISiloPayloadSpool Spool { get; }
 
+    internal SemaphoreSlim RawLifecycle => RawIngressLifecycleLock.ForRoot(_rawRoot.Path);
+
     internal PhysicalRoot PhysicalState => _root.Root;
 
     public bool BindingVerified => Volatile.Read(ref _bindingVerified);
+
+    internal async ValueTask CleanExpiredRestoreCacheAsync(Func<IDisposable?> enterMaintenance, CancellationToken cancellationToken) =>
+        await Publisher.WithPublicationLockAsync(() =>
+        {
+            using var lease = enterMaintenance();
+            if (lease is null || SiloRetentionState.Read(PhysicalState).Leases.Any(item => item.ExpiresUtc > _clock.GetUtcNow()))
+                return ValueTask.FromResult(false);
+            var directory = PhysicalState.Resolve("restore-cache");
+            if (!Directory.Exists(directory)) return ValueTask.FromResult(false);
+            var cutoff = _clock.GetUtcNow().AddHours(-1).UtcDateTime;
+            var removed = false;
+            foreach (var path in Directory.EnumerateFiles(directory).Take(256))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var file = new FileInfo(path);
+                if (file.LinkTarget is not null || file.LastWriteTimeUtc > cutoff) continue;
+                PhysicalState.Verify(path, "silo-restore-cache-cleanup");
+                File.Delete(path);
+                removed = true;
+            }
+            if (removed) DurableSync.Directory(directory);
+            return ValueTask.FromResult(removed);
+        }, cancellationToken).ConfigureAwait(false);
 
     internal FileStream OpenReadScratch()
     {
@@ -173,6 +202,8 @@ internal sealed class SiloInstalledStorage : ICameraAgentSiloVerification, IDisp
     public async ValueTask<CameraAgentSiloVerificationResult> VerifyAsync(CancellationToken cancellationToken)
     {
         await VerifyReadinessAsync(cancellationToken).ConfigureAwait(false);
+        if (Retention.ReadUnsettledTarget() is not null)
+            throw new SiloConflictException("silo.retention-delete-unsettled", "Silo must settle its exact-version delete before storage verification.");
         await VerifyAdmissionJournalAsync(cancellationToken).ConfigureAwait(false);
         var (cursor, cursorSha) = await Index.ReadCursorAsync(cancellationToken).ConfigureAwait(false);
         if (cursor is null)

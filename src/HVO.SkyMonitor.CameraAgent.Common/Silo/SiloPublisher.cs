@@ -28,6 +28,8 @@ internal sealed class SiloPublisher(
 
     private ISiloObjectStore Local => journal.Store;
 
+    internal SemaphoreSlim RetentionSweepGate { get; } = new(1, 1);
+
     internal Func<SiloExactLocator?>? RetentionFence { get; set; }
 
     /// <summary>
@@ -289,9 +291,7 @@ internal sealed class SiloPublisher(
 
     private async ValueTask<SiloPublicationOutcome> AdvanceLockedAsync(string groupId, string revisionId, CancellationToken cancellationToken)
     {
-        if (RetentionFence?.Invoke() is not null)
-            return await OutcomeAsync(groupId, revisionId, "silo-retention-delete-unsettled", cancellationToken).ConfigureAwait(false);
-
+        var fenced = RetentionFence?.Invoke();
         // Proof never crosses the commit boundary or outlives its phase. P1 and P2 share the readbacks they just made; P3
         // reads every version it names again, after the manifest was written; the first P4 reads everything again after
         // the commit. After an interruption the bytes are read again.
@@ -300,6 +300,8 @@ internal sealed class SiloPublisher(
         {
             var group = await state.ReadGroupAsync(groupId, revisionId, cancellationToken).ConfigureAwait(false)
                 ?? throw new KeyNotFoundException($"Group revision {groupId}/{revisionId} is not staged.");
+            if (fenced is not null && !CanAdvanceRawAdmission(group, fenced))
+                return await OutcomeAsync(groupId, revisionId, "silo-retention-delete-unsettled", cancellationToken).ConfigureAwait(false);
             try
             {
                 switch (group.State)
@@ -659,19 +661,51 @@ internal sealed class SiloPublisher(
         }
     }
 
+    internal ValueTask<bool> CleanupRetentionSpoolAsync(Func<IDisposable?>? enterMaintenance, CancellationToken cancellationToken) =>
+        WithPublicationLockAsync(async () =>
+        {
+            using var maintenance = enterMaintenance?.Invoke();
+            if (enterMaintenance is not null && maintenance is null) return false;
+            await payloads.ReconcileAsync(await state.ListClaimedPayloadTokensAsync(cancellationToken).ConfigureAwait(false), cancellationToken)
+                .ConfigureAwait(false);
+            await CleanupSpoolLockedAsync(cancellationToken, SweepBatch).ConfigureAwait(false);
+            return true;
+        }, cancellationToken);
+
     /// <summary>Remove spool files no pending segment or open publication still needs, without racing an append.</summary>
-    private async ValueTask<int> CleanupSpoolLockedAsync(CancellationToken cancellationToken) =>
+    private async ValueTask<int> CleanupSpoolLockedAsync(CancellationToken cancellationToken, int limit = int.MaxValue) =>
         await journal.ExclusiveAsync(async () =>
         {
             var referenced = await state.ReferencedSpoolNamesAsync(cancellationToken).ConfigureAwait(false);
-            var removed = 0;
-            foreach (var name in spool.Names().Where(name => !referenced.Contains(name)))
+            var removed = spool.CleanupTemporaries(SweepBatch);
+            foreach (var name in spool.Names().Where(name => !referenced.Contains(name)).Take(limit))
             {
                 spool.Delete(name);
                 removed++;
             }
             return removed;
         }, cancellationToken).ConfigureAwait(false);
+
+    private static bool CanAdvanceRawAdmission(SiloStagedGroup group, SiloExactLocator target) =>
+        group.Draft.GroupKind == "raw-capture" && group.Draft.Dependencies.Count == 0 &&
+        group.Draft.Members.All(member => SiloObjectNamespace.PayloadKey(member.RetentionClass, member.Sha256) != target.Key) &&
+        (group.ManifestSha256 is not { } sha ||
+            SiloObjectNamespace.ManifestKey(group.Draft.FromUtc, group.Draft.GroupId, group.Draft.RevisionId, sha) != target.Key);
+
+    internal async ValueTask<T?> TryWithPublicationLockAsync<T>(Func<ValueTask<T?>> action, CancellationToken cancellationToken)
+        where T : class
+    {
+        // A caller holding the raw-ingress lifecycle lock must not queue behind a publisher doing I/O.
+        if (!await _gate.WaitAsync(0, cancellationToken).ConfigureAwait(false)) return null;
+        try
+        {
+            return await action().ConfigureAwait(false);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
 
     // Retention takes the same gate as staging and P1–P4 so a version cannot gain a new
     // local reference between the ownership check and the exact-version delete.
@@ -688,5 +722,9 @@ internal sealed class SiloPublisher(
         }
     }
 
-    public void Dispose() => _gate.Dispose();
+    public void Dispose()
+    {
+        RetentionSweepGate.Dispose();
+        _gate.Dispose();
+    }
 }

@@ -271,8 +271,9 @@ internal sealed partial class SqliteCaptureProcessingStore
         {
             command.Transaction = transaction;
             command.CommandText = """
-                SELECT DISTINCT association.execution_id, association.node_id
+                SELECT DISTINCT association.execution_id, association.node_id, output.artifact_id
                 FROM processing_execution_outputs association
+                JOIN processing_outputs output ON output.output_identity_sha256 = association.output_identity_sha256
                 JOIN processing_executions execution ON execution.execution_id = association.execution_id
                 WHERE execution.status NOT IN ('Pending', 'Running') AND instr(execution.frozen_plan_json, $member) > 0;
                 """;
@@ -280,6 +281,8 @@ internal sealed partial class SqliteCaptureProcessingStore
             using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
+                if (_silo is not null && !await _silo.IsArtifactRetainedAsync(
+                    Guid.ParseExact(reader.GetString(2), "N"), cancellationToken).ConfigureAwait(false)) continue;
                 var executionId = reader.GetString(0);
                 if (!heldNodes.TryGetValue(executionId, out var nodes))
                 {
