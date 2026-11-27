@@ -489,6 +489,7 @@ public sealed class CenteredPipelineQualificationTests
             await PublishMovingTrailOnSourceAsync(
                 persistence, layerProducer, admitted[4].Key, admitted[4].Descriptor, layout,
                 trailStart105, trailEnd105, token).ConfigureAwait(false);
+            await SiloInfrastructureFixture.SettleViewChangesAsync(provider, token).ConfigureAwait(false);
 
             var enriched103 = (await views.ReadArchiveAsync(stream, admitted[2].CaptureId, token).ConfigureAwait(false))
                 .Single(item => item.Base.BaseId == stack103Archive.Base.BaseId);
@@ -1803,6 +1804,7 @@ public sealed class CenteredPipelineQualificationTests
 
                 await singlePublisher.DrainCameraAsync(stream.Camera, stream, CancellationToken.None, token)
                     .ConfigureAwait(false);
+                await SiloInfrastructureFixture.SettleViewChangesAsync(provider, token).ConfigureAwait(false);
                 var single = (await views.ReadArchiveAsync(stream, descriptor.Capture.CaptureId, token)
                     .ConfigureAwait(false)).Single(item => item.Base.Definition.Kind == CenteredViewKind.Single);
                 var decoded = await DecodePublishedPreviewAsync(reader, single, token).ConfigureAwait(false);
