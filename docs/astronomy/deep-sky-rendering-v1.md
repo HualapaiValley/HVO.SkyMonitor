@@ -215,10 +215,17 @@ deterministic profiles (`HVO.SkyMonitor.Imaging/DeepSkySourceProfile.cs`):
    frame so rotated thin contours never absorb more light than physically reaches their projected
    footprint (`bg * projectedArea * (1 - exp(-tau_max))`). Resolved clouds share per-pixel cached
    unprojected subpixel directions, while fine clouds merge coincident geometries in place with zero
-   extra cross-cloud evaluations, order non-coincident groups broad-before-narrow, strictly enforce
+   extra cross-cloud evaluations, compute minimum-area oriented bounding boxes via `O(H)` rotating
+   calipers only after pre-checking remaining `MaximumOutlineEdgeVisits` and `CancellationToken`,
+   project each clipped fine-outline trapezoid locally to sensor pixel coordinates (never
+   extrapolating catalog-center area scale across off-axis outlines), screen S/N-rejected neighbors
+   without mutating admitted clouds' quotas, compose admitted clouds in a strict canonical order
+   independent of admission priority (prioritizing sky-overlapping cross-cloud pairs by optical-depth
+   strength and combining partially budgeted overlaps via conditional-independence transmission while
+   treating sky-disjoint clouds as zero-overlap), cache co-located temporal optical-depth evaluations
+   and allocate bounded temporal work fairly across overlapping unresolved emitters, strictly enforce
    `MaximumSamplePointsPerSource` across own, cross-cloud, and temporal dark-cloud evaluations on
-   both caller and target profiles (falling back to multiplicative pixel transmission when a pair
-   cannot fit within `MaximumSamplePointsPerSource`), pre-charge every non-reused evaluation against
+   both caller and target profiles, pre-charge every non-reused evaluation against
    `MaximumTotalSamplePoints` (`actual <= reported <= MaximumTotalSamplePoints`), and enforce strict
    per-pixel transmission monotonicity (`T_after <= T_before` everywhere) with exact reconciliation
    between published diagnostics and delivered pixel deficits. Before committing transmission or
