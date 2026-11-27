@@ -153,10 +153,12 @@ public static class SiloFixtureImportCommand
                     {
                         using var index = new SiloCatalogIndex(copy, settings.Binding, clock);
                         var catalog = new SiloCatalog(index, new SiloStoreSet(installed.Store), SiloNoAuthorityEvidence.Instance);
-                        report = await importer.RunForecastAsync(target, catalog, ReadCapacity, InspectSpool, token).ConfigureAwait(false);
+                        report = await importer.RunForecastAsync(target, catalog, installed.Store, clock, ReadCapacity, InspectSpool, token)
+                            .ConfigureAwait(false);
                     }).ConfigureAwait(false);
             }
-            return report ?? await importer.RunForecastAsync(target, null, ReadCapacity, InspectSpool, cancellationToken).ConfigureAwait(false);
+            return report ?? await importer.RunForecastAsync(target, null, installed.Store, clock, ReadCapacity, InspectSpool, cancellationToken)
+                .ConfigureAwait(false);
         }
 
         async ValueTask<SiloFixtureReport> PublishSelectionAsync(bool hasWriterState)

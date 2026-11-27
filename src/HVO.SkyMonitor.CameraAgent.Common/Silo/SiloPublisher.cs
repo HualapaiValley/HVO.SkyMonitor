@@ -22,7 +22,8 @@ internal sealed class SiloPublisher(
     ISiloFaults? faults = null) : IDisposable
 {
     internal const string StagedEvidenceMissing = "silo-staged-evidence-missing";
-    internal const string PayloadChecksumRejected = "silo.payload-checksum-rejected";
+    internal const string StoreUnavailable = "silo.store-unavailable";
+    private const string PayloadChecksumRejected = "silo.payload-checksum-rejected";
     private const int MaximumSteps = 12;
     private const int SweepBatch = 256;
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -59,6 +60,8 @@ internal sealed class SiloPublisher(
             if (await state.ReadGroupAsync(draft.GroupId, draft.RevisionId, cancellationToken).ConfigureAwait(false) is { } existing)
             {
                 RequireMatchingDraft(draft, existing.DraftSha256, sha);
+                if (existing.State == SiloStagedState.Staged)
+                    payloads.RequireWithinCapacity();
                 return false;
             }
             if (await catalog.Index.ReadPublicationAsync(draft.GroupId, draft.RevisionId, cancellationToken).ConfigureAwait(false) is not null)
@@ -306,14 +309,15 @@ internal sealed class SiloPublisher(
                         return await OutcomeAsync(groupId, revisionId, null, cancellationToken).ConfigureAwait(false);
                 }
             }
-            catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
+            catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException
+                or SiloConflictException { Code: StagedEvidenceMissing })
             {
                 return await OutcomeAsync(groupId, revisionId, StagedEvidenceMissing, cancellationToken).ConfigureAwait(false);
             }
             catch (SiloStoreUnavailableException)
             {
                 // Nothing is concluded: an uncertain write is retried later with the same exact bytes.
-                return await OutcomeAsync(groupId, revisionId, "silo.store-unavailable", cancellationToken).ConfigureAwait(false);
+                return await OutcomeAsync(groupId, revisionId, StoreUnavailable, cancellationToken).ConfigureAwait(false);
             }
             catch (Exception exception) when (exception is SiloConflictException or SiloStoreNotQualifiedException or SiloChecksumRejectedException)
             {
@@ -338,8 +342,22 @@ internal sealed class SiloPublisher(
         return new(groupId, revisionId, group!.State, transientCode ?? group.BlockedCode, indexed?.State, indexed?.Outcome);
     }
 
-    private SiloExactLocator PayloadLocator(SiloDraftMember member, string versionId) =>
-        new(Local.Descriptor.StoreId, Local.Descriptor.Bucket, SiloObjectNamespace.PayloadKey(member.RetentionClass, member.Sha256), versionId);
+    internal static SiloExactLocator PayloadLocator(ISiloObjectStore store, SiloDraftMember member, string versionId) =>
+        new(store.Descriptor.StoreId, store.Descriptor.Bucket, SiloObjectNamespace.PayloadKey(member.RetentionClass, member.Sha256), versionId);
+
+    internal static async ValueTask<SiloProbe> ProbeQualifiedPayloadAsync(ISiloObjectStore store, SiloExactLocator locator,
+        SiloDraftMember member, TimeProvider clock, CancellationToken cancellationToken)
+    {
+        var probe = await SiloVerifier.ProbeAsync(store, locator, member.Length, member.Sha256, clock, captureBytes: false,
+            cancellationToken).ConfigureAwait(false);
+        return probe.Status switch
+        {
+            SiloProbeStatus.Verified or SiloProbeStatus.Absent => probe,
+            SiloProbeStatus.Damaged => throw new SiloConflictException("silo.qualified-version-damaged",
+                $"The qualified version {locator} no longer reads back with its exact bytes ({probe.Detail}); it is never replaced."),
+            _ => throw new SiloStoreUnavailableException(store.Descriptor.StoreId, "exact readback of " + locator.Key, writeMayHaveLanded: false)
+        };
+    }
 
     private SiloExactLocator ManifestLocator(SiloGroupDraft draft, string manifestSha256, string versionId) =>
         new(Local.Descriptor.StoreId, Local.Descriptor.Bucket,
@@ -352,10 +370,31 @@ internal sealed class SiloPublisher(
         var draft = member.Draft;
         await state.MarkMemberPutUnresolvedAsync(group.Draft.GroupId, group.Draft.RevisionId, member.Ordinal, cancellationToken).ConfigureAwait(false);
         var created = await SiloCreateOnly.PutVerifiedAsync(Local, SiloObjectNamespace.PayloadKey(draft.RetentionClass, draft.Sha256), draft.Length,
-            draft.Sha256, token => payloads.OpenAsync(draft.SourceToken, token), null, binding.BindingId, clock,
+            draft.Sha256, token => OpenPayloadAsync(group.Draft.GroupKind, draft, token), null, binding.BindingId, clock,
             () => faults?.Hit(SiloFaultPoint.AfterPayloadPut), cancellationToken).ConfigureAwait(false);
-        fresh.Verified(PayloadLocator(draft, created.VersionId), draft.Length, draft.Sha256, created.VerifiedUtc);
+        fresh.Verified(PayloadLocator(Local, draft, created.VersionId), draft.Length, draft.Sha256, created.VerifiedUtc);
         return created;
+    }
+
+    private async ValueTask<Stream> OpenPayloadAsync(string groupKind, SiloDraftMember member, CancellationToken cancellationToken)
+    {
+        var input = await payloads.OpenAsync(member.SourceToken, cancellationToken).ConfigureAwait(false);
+        if (groupKind != SiloFixtureInventory.GroupKind)
+            return input;
+
+        // A fixture retry must prove local evidence even if the store already has a current object at the key.
+        try
+        {
+            if (!await SiloFilePayloadSpool.MatchesAsync(input, member.Sha256, member.Length, cancellationToken).ConfigureAwait(false))
+                throw new SiloConflictException(StagedEvidenceMissing, "A required staged payload differs from its identity.");
+            input.Position = 0;
+            return input;
+        }
+        catch
+        {
+            await input.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
     }
 
     /// <summary>P1: create, read back and qualify each payload's content-addressed locator from its exact spooled bytes.</summary>
@@ -385,12 +424,12 @@ internal sealed class SiloPublisher(
             {
                 throw new InvalidOperationException("Every payload is qualified before its manifest is written.");
             }
-            var locator = PayloadLocator(member.Draft, version);
+            var locator = PayloadLocator(Local, member.Draft, version);
             if (fresh.TryGet(locator, member.Draft.Length, member.Draft.Sha256, out _, out _))
             {
                 continue;
             }
-            var probe = await SiloVerifier.ProbeAsync(Local, locator, member.Draft.Length, member.Draft.Sha256, clock, captureBytes: false,
+            var probe = await ProbeQualifiedPayloadAsync(Local, locator, member.Draft, clock,
                 cancellationToken).ConfigureAwait(false);
             switch (probe.Status)
             {
@@ -415,11 +454,6 @@ internal sealed class SiloPublisher(
                     faults?.Hit(SiloFaultPoint.AfterPayloadReplaced);
                     group = (await state.ReadGroupAsync(group.Draft.GroupId, group.Draft.RevisionId, cancellationToken).ConfigureAwait(false))!;
                     break;
-                case SiloProbeStatus.Damaged:
-                    throw new SiloConflictException("silo.qualified-version-damaged",
-                        $"The qualified version {locator} no longer reads back with its exact bytes ({probe.Detail}); it is never replaced.");
-                default:
-                    throw new SiloStoreUnavailableException(Local.Descriptor.StoreId, "exact readback of " + locator.Key, writeMayHaveLanded: false);
             }
         }
     }
@@ -537,7 +571,7 @@ internal sealed class SiloPublisher(
     }
 
     private SiloExactLocator[] Locators(SiloStagedGroup group) =>
-        group.Members.Select(member => PayloadLocator(member.Draft,
+        group.Members.Select(member => PayloadLocator(Local, member.Draft,
             member.VersionId ?? throw new InvalidOperationException("A manifest names only qualified locators."))).ToArray();
 
     /// <summary>

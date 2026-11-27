@@ -82,6 +82,8 @@ internal sealed class SiloFilePayloadSpool : ISiloPayloadSpool
                 : await spool.MatchesAsync(member.SourceToken, member.Sha256, member.Length, cancellationToken).ConfigureAwait(false);
         }
 
+        internal void RequireWithinCapacity() => spool.RequireWithinCapacity();
+
         internal void Release(string token)
         {
             _projected.Remove(token);
@@ -138,8 +140,7 @@ internal sealed class SiloFilePayloadSpool : ISiloPayloadSpool
         if (token != member.SourceToken)
             throw new ArgumentException("The staged source token must name the member's SHA-256.", nameof(member));
 
-        if (_bytes > _maximumBytes || _files.Count > _maximumFiles)
-            throw new SiloSpoolFullException();
+        RequireWithinCapacity();
 
         if (_files.TryGetValue(token, out var length))
         {
@@ -152,13 +153,22 @@ internal sealed class SiloFilePayloadSpool : ISiloPayloadSpool
         return true;
     }
 
+    public void RequireWithinCapacity()
+    {
+        if (_bytes > _maximumBytes || _files.Count > _maximumFiles)
+            throw new SiloSpoolFullException();
+    }
+
     private async ValueTask<bool> MatchesAsync(string token, string sha256, long length, CancellationToken cancellationToken)
     {
         using var existing = Open(token);
-        return existing.Length == length &&
-            string.Equals(Convert.ToHexStringLower(await SHA256.HashDataAsync(existing, cancellationToken).ConfigureAwait(false)),
-                sha256, StringComparison.Ordinal);
+        return await MatchesAsync(existing, sha256, length, cancellationToken).ConfigureAwait(false);
     }
+
+    internal static async ValueTask<bool> MatchesAsync(Stream existing, string sha256, long length, CancellationToken cancellationToken) =>
+        existing.Length == length &&
+        string.Equals(Convert.ToHexStringLower(await SHA256.HashDataAsync(existing, cancellationToken).ConfigureAwait(false)),
+            sha256, StringComparison.Ordinal);
 
     private static async Task CopyVerifiedAsync(Stream input, Stream output, SiloDraftMember member, CancellationToken cancellationToken)
     {

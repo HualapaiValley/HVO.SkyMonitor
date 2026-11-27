@@ -44,6 +44,8 @@ internal sealed record SiloDraftMember(
 /// </summary>
 internal interface ISiloPayloadSpool
 {
+    void RequireWithinCapacity();
+
     ValueTask StageAsync(SiloDraftMember member, Func<SiloDraftMember, CancellationToken, ValueTask<Stream>> open,
         CancellationToken cancellationToken);
 
@@ -82,7 +84,7 @@ internal sealed record SiloCommittedOperation(
 internal sealed record SiloFixtureReceipt(string DraftSha256, SiloStagedState State, string? BlockedCode)
 {
     internal HashSet<string> UnreleasedPayloads { get; } = new(StringComparer.Ordinal);
-    internal HashSet<string> UnqualifiedPayloads { get; } = new(StringComparer.Ordinal);
+    internal Dictionary<int, string> QualifiedPayloadVersions { get; } = [];
 }
 
 internal sealed record SiloFixtureTarget(SiloJournalHead? Head, SiloPendingSegment? Pending,
@@ -386,7 +388,7 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
         }
 
         using (var command = CreateCommand(connection, transaction, """
-                   SELECT DISTINCT group_id, source_token, version_id IS NULL FROM staged_members WHERE released = 0;
+                   SELECT group_id, ordinal, source_token, version_id FROM staged_members WHERE released = 0;
                    """))
         using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
@@ -394,10 +396,9 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
             {
                 if (!receipts.TryGetValue(reader.GetString(0), out var receipt))
                     throw new SiloConflictException(otherHistory, "The target contains payload claims outside the selected fixtures.");
-                var payload = reader.GetString(1);
-                receipt.UnreleasedPayloads.Add(payload);
-                if (receipt.State == SiloStagedState.Staged && reader.GetBoolean(2))
-                    receipt.UnqualifiedPayloads.Add(payload);
+                receipt.UnreleasedPayloads.Add(reader.GetString(2));
+                if (receipt.State == SiloStagedState.Staged && NullableString(reader, 3) is { } version)
+                    receipt.QualifiedPayloadVersions.Add(reader.GetInt32(1), version);
             }
         }
 

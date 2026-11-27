@@ -841,7 +841,7 @@ key-safe names and source IDs using ASCII letters, digits, dots, underscores or 
 character. The importer opens only allowlisted filenames and refuses symbolic links and hard-linked input files.
 On Linux, the selection, PNGs, and sidecars must all be on the snapshot directory's mount.
 Limits are eight pairs per selection, 8 MiB and 16 megapixels per static decodable PNG, 16 KiB per sidecar
-and 32 MiB total selected payload.
+and 32 MiB total selected payload. Animated PNGs are skipped with `unsupported-image`.
 Use a lower budget for the fixture you need. Selection and sidecar JSON use the exact schemas below.
 
 A sidecar describes one PNG. Retain sanitized source IDs and the original UTC exposure interval.

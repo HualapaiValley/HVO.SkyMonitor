@@ -25,6 +25,9 @@ public sealed class SiloFixtureHistoryTests
     private static readonly DateTimeOffset Now = new(2026, 11, 26, 0, 0, 0, TimeSpan.Zero);
     private static readonly byte[] Png = Convert.FromBase64String(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNoAAAAggCBd81ytgAAAABJRU5ErkJggg==");
+    // Two 1x1 grayscale frames, black and white, with the first frame stored in IDAT.
+    private static readonly byte[] AnimatedPng = Convert.FromBase64String(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACGFjVEwAAAACAAAAAPONk3AAAAAaZmNUTAAAAAAAAAABAAAAAQAAAAAAAAAAAAEACgAAWn8w0AAAAApJREFUeJxjYAAAAAIAAUivpHEAAAAaZmNUTAAAAAEAAAABAAAAAQAAAAAAAAAAAAEACgAAwQzaBAAAAA5mZEFUAAAAAnicY/gPAAEBAQDDJ73EAAAAAElFTkSuQmCC");
     private static CancellationToken Token => CancellationToken.None;
 
     [TestMethod]
@@ -83,9 +86,53 @@ public sealed class SiloFixtureHistoryTests
     }
 
     [TestMethod]
+    [DataRow(0, false, true, DisplayName = "Staged pair at exact byte and file limits")]
+    [DataRow(-1, false, false, DisplayName = "Staged pair one byte over quota")]
+    [DataRow(1, true, false, DisplayName = "Staged pair with three files under a two-file limit")]
+    public async Task CommandDryRunMatchesPublishAtExistingStagedReceiptLimits(int byteMargin, bool addExtraFile, bool succeeds)
+    {
+        using var source = new Fixture();
+        var entry = source.WritePair("frame", "art-1");
+        var digest = source.Select([entry]);
+        using var target = new CommandTarget(source, digest);
+        await target.InitializeAsync().ConfigureAwait(false);
+        var imageKey = SiloObjectNamespace.PayloadKey(SiloRetentionClass.Display, entry.ImageSha256);
+        target.Remote.FailBeforeLanding = key => key == imageKey;
+        (await target.RunAsync("publish", 2).ConfigureAwait(false)).Should().Equal(("failed", "silo.store-unavailable"));
+        target.Remote.FailBeforeLanding = null;
+
+        var spool = Path.Combine(target.SiloState, "payloads-v1");
+        var pairBytes = new DirectoryInfo(spool).GetFiles("*.payload").Sum(static file => file.Length);
+        if (addExtraFile)
+        {
+            byte[] extra = [0];
+            await File.WriteAllBytesAsync(Path.Combine(spool, SiloFilePayloadSpool.TokenOf(SiloHash.Sha256(extra))), extra, Token)
+                .ConfigureAwait(false);
+        }
+        target.Configuration["CameraAgent:Silo:MaximumStagedBytes"] = (pairBytes + byteMargin).ToString(CultureInfo.InvariantCulture);
+        target.Configuration["CameraAgent:Silo:MaximumStagedFiles"] = "2";
+
+        var beforePuts = target.Remote.Puts;
+        var forecast = await target.RunAsync("dry-run", succeeds ? 0 : 2).ConfigureAwait(false);
+        var published = await target.RunAsync("publish", succeeds ? 0 : 2).ConfigureAwait(false);
+        if (succeeds)
+        {
+            forecast.Should().Equal(("would-import", null));
+            published.Should().Equal(("imported", null));
+        }
+        else
+        {
+            forecast.Should().Equal(("failed", "publication-unavailable"));
+            published.Should().Equal(forecast);
+            target.Remote.Puts.Should().Be(beforePuts);
+        }
+    }
+
+    [TestMethod]
     [DataRow(false, "frame.png", false, "silo-staged-evidence-missing")]
-    [DataRow(false, "frame.png", true, "silo.payload-checksum-rejected")]
+    [DataRow(false, "frame.png", true, "silo-staged-evidence-missing")]
     [DataRow(true, "frame.json", false, "silo-staged-evidence-missing")]
+    [DataRow(true, "frame.json", true, "silo-staged-evidence-missing")]
     [DataRow(true, "frame.png", false, null)]
     public async Task CommandDryRunChecksPayloadsStillNeededByStagedPublication(
         bool imageQualified, string changedFile, bool corrupt, string? reason)
@@ -123,6 +170,63 @@ public sealed class SiloFixtureHistoryTests
         var published = await target.RunAsync("publish", expectedExit).ConfigureAwait(false);
         forecast.Should().Equal((reason is null ? "would-import" : "failed", reason));
         published.Should().Equal((reason is null ? "imported" : "failed", reason));
+    }
+
+    [TestMethod]
+    [DataRow("damaged", "silo.qualified-version-damaged")]
+    [DataRow("absent-without-spool", "silo-staged-evidence-missing")]
+    [DataRow("absent-with-spool", null)]
+    public async Task CommandDryRunRevalidatesQualifiedVersionOnStagedRetry(string versionState, string? reason)
+    {
+        using var source = new Fixture();
+        var entry = source.WritePair("frame", "art-1");
+        var digest = source.Select([entry]);
+        using var target = new CommandTarget(source, digest);
+        await target.InitializeAsync().ConfigureAwait(false);
+        var imageKey = SiloObjectNamespace.PayloadKey(SiloRetentionClass.Display, entry.ImageSha256);
+        var sidecarKey = SiloObjectNamespace.PayloadKey(SiloRetentionClass.Metadata, entry.SidecarSha256);
+        target.Remote.FailBeforeLanding = key => key == sidecarKey;
+        (await target.RunAsync("publish", 2).ConfigureAwait(false)).Should().Equal(("failed", "silo.store-unavailable"));
+        target.Remote.FailBeforeLanding = null;
+        var exactVersion = target.Remote.Current(imageKey);
+        exactVersion.Should().NotBeNull();
+        target.Remote.Current(sidecarKey).Should().BeNull();
+
+        if (versionState == "damaged")
+        {
+            target.Remote.Damage(imageKey, exactVersion!);
+            // The current version is healthy, but it cannot prove the recorded version.
+            target.Remote.Plant(imageKey, Png);
+        }
+        else
+        {
+            target.Remote.Delete(imageKey, exactVersion!);
+            if (versionState == "absent-without-spool")
+                File.Delete(Path.Combine(target.SiloState, "payloads-v1", SiloFilePayloadSpool.TokenOf(entry.ImageSha256)));
+        }
+
+        var expectedExit = reason is null ? 0 : 2;
+        var forecast = await target.RunAsync("dry-run", expectedExit).ConfigureAwait(false);
+        var published = await target.RunAsync("publish", expectedExit).ConfigureAwait(false);
+        forecast.Should().Equal((reason is null ? "would-import" : "failed", reason));
+        published.Should().Equal((reason is null ? "imported" : "failed", reason));
+    }
+
+    [TestMethod]
+    public async Task CommandRejectsAnimatedPngInEveryMode()
+    {
+        using var source = new Fixture();
+        var entry = source.WritePair("frame", "art-1");
+        await File.WriteAllBytesAsync(source.PathFor("frame.png"), AnimatedPng, Token).ConfigureAwait(false);
+        var digest = source.Select([entry with { ImageSha256 = SiloHash.Sha256(AnimatedPng) }]);
+        await AssertInventoryRecordAsync(source, "skipped", "unsupported-image").ConfigureAwait(false);
+
+        using var target = new CommandTarget(source, digest);
+        await target.InitializeAsync().ConfigureAwait(false);
+        var beforePuts = target.Remote.Puts;
+        (await target.RunAsync("dry-run", 2).ConfigureAwait(false)).Should().Equal(("skipped", "unsupported-image"));
+        (await target.RunAsync("publish", 2).ConfigureAwait(false)).Should().Equal(("skipped", "unsupported-image"));
+        target.Remote.Puts.Should().Be(beforePuts);
     }
 
     [TestMethod]
@@ -441,7 +545,7 @@ public sealed class SiloFixtureHistoryTests
         var beforeStore = silo.Local.Fingerprint();
 
         var import = new SiloFixtureImport(source, inventory);
-        var forecast = await import.RunForecastAsync(target, null, () => new(Reserve * 2, Reserve * 2),
+        var forecast = await import.RunForecastAsync(target, null, silo.Local, silo.Clock, () => new(Reserve * 2, Reserve * 2),
             () => SiloFilePayloadSpool.Inspect(PhysicalRoot.Open(silo.RootPath), ".", 1024 * 1024, 8), Token).ConfigureAwait(false);
         var result = await PublishAsync(import, silo).ConfigureAwait(false);
 

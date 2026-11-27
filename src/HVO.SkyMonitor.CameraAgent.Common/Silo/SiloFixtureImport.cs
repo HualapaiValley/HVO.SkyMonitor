@@ -32,7 +32,7 @@ internal sealed class SiloFixtureImport(ConfinedReadDirectory source, SiloFixtur
     // Charge both copies even when the two roots are on separate disks. Include filesystem, object and journal overhead.
     private const long PublicationOverheadBytes = 1024 * 1024;
 
-    internal ValueTask<SiloFixtureReport> RunForecastAsync(SiloFixtureTarget target, SiloCatalog? catalog,
+    internal ValueTask<SiloFixtureReport> RunForecastAsync(SiloFixtureTarget target, SiloCatalog? catalog, ISiloObjectStore store, TimeProvider clock,
         Func<SiloFixtureCapacity> readCapacity, Func<SiloFilePayloadSpool.Inspection> inspectSpool, CancellationToken cancellationToken)
     {
         var pending = target.Pending;
@@ -51,7 +51,7 @@ internal sealed class SiloFixtureImport(ConfinedReadDirectory source, SiloFixtur
                 requireHeadroom();
             }
             spool ??= inspectSpool();
-            await ForecastPairAsync(receipt, catalog, spool, draft, token).ConfigureAwait(false);
+            await ForecastPairAsync(receipt, catalog, spool, draft, store, clock, token).ConfigureAwait(false);
             if (!visible && pending?.GroupId == draft.GroupId)
                 pending = null;
 
@@ -260,7 +260,8 @@ internal sealed class SiloFixtureImport(ConfinedReadDirectory source, SiloFixtur
     }
 
     private static async ValueTask ForecastPairAsync(SiloFixtureReceipt? receipt,
-        SiloCatalog? catalog, SiloFilePayloadSpool.Inspection spool, SiloGroupDraft draft, CancellationToken cancellationToken)
+        SiloCatalog? catalog, SiloFilePayloadSpool.Inspection spool, SiloGroupDraft draft,
+        ISiloObjectStore store, TimeProvider clock, CancellationToken cancellationToken)
     {
         SiloPublisher.ValidateDraft(draft);
         if (receipt is null)
@@ -275,16 +276,44 @@ internal sealed class SiloFixtureImport(ConfinedReadDirectory source, SiloFixtur
             throw new SiloConflictException("fixture-reopen-failed", "The fixture publication was abandoned.");
         if (receipt.State == SiloStagedState.Visible)
             await RequireReopenAsync(catalog, draft, cancellationToken).ConfigureAwait(false);
-        if (receipt.State == SiloStagedState.Staged)
+        if (receipt.State != SiloStagedState.Staged)
+            return;
+
+        spool.RequireWithinCapacity();
+        // Follow publication order: P1 needs staged bytes for unqualified members. P2 reads each prior exact version.
+        for (var ordinal = 0; ordinal < draft.Members.Count; ordinal++)
         {
-            // P1 opens staged bytes only for members that have no verified locator yet.
+            if (!receipt.QualifiedPayloadVersions.ContainsKey(ordinal))
+                await RequireStagedEvidenceAsync(draft.Members[ordinal]).ConfigureAwait(false);
+        }
+
+        try
+        {
+            for (var ordinal = 0; ordinal < draft.Members.Count; ordinal++)
+            {
+                if (!receipt.QualifiedPayloadVersions.TryGetValue(ordinal, out var version))
+                    continue;
+                var member = draft.Members[ordinal];
+                var locator = SiloPublisher.PayloadLocator(store, member, version);
+                var probe = await SiloPublisher.ProbeQualifiedPayloadAsync(store, locator, member, clock, cancellationToken)
+                    .ConfigureAwait(false);
+                if (probe.Status == SiloProbeStatus.Absent)
+                    await RequireStagedEvidenceAsync(member).ConfigureAwait(false);
+            }
+        }
+        catch (SiloStoreUnavailableException exception)
+        {
+            throw new SiloConflictException(SiloPublisher.StoreUnavailable, exception.Message);
+        }
+
+        async ValueTask RequireStagedEvidenceAsync(SiloDraftMember member)
+        {
             try
             {
-                foreach (var member in draft.Members.Where(member => receipt.UnqualifiedPayloads.Contains(member.SourceToken)))
-                    if (!await spool.MatchesAsync(member, cancellationToken).ConfigureAwait(false))
-                        throw new SiloConflictException(SiloPublisher.PayloadChecksumRejected, "A required staged payload differs from its identity.");
+                if (!await spool.MatchesAsync(member, cancellationToken).ConfigureAwait(false))
+                    throw new SiloConflictException(SiloPublisher.StagedEvidenceMissing, "A required staged payload differs from its identity.");
             }
-            catch (IOException exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
+            catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
             {
                 throw new SiloConflictException(SiloPublisher.StagedEvidenceMissing, "A required staged payload is missing.");
             }

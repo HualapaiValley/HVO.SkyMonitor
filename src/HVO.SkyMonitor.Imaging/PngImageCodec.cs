@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Diagnostics.CodeAnalysis;
 using HVO.SkyMonitor.AgentCore;
 using SkiaSharp;
@@ -14,6 +15,9 @@ public static class PngImageCodec
     [SuppressMessage("Maintainability", "CA1508:Avoid dead conditional code", Justification = "The native codec factory can return null for malformed input despite its managed nullability annotation.")]
     public static bool IsDecodablePng(ReadOnlySpan<byte> encodedData, int maximumPixels)
     {
+        if (HasAnimationControl(encodedData))
+            return false;
+
         using var data = SKData.CreateCopy(encodedData);
         using var codec = SKCodec.Create(data);
         if (codec is null || codec.EncodedFormat != SKEncodedImageFormat.Png || codec.FrameCount > 1)
@@ -32,6 +36,9 @@ public static class PngImageCodec
         {
             throw new ArgumentException("PNG data must not be empty.", nameof(encodedData));
         }
+        if (HasAnimationControl(encodedData.Span))
+            throw new ArgumentException("Animated PNG images are unsupported.", nameof(encodedData));
+
         using var data = SKData.CreateCopy(encodedData.Span);
         using var codec = SKCodec.Create(data);
         if (codec is null || codec.EncodedFormat != SKEncodedImageFormat.Png || codec.FrameCount > 1 ||
@@ -55,6 +62,8 @@ public static class PngImageCodec
         {
             throw new ArgumentException("PNG data must not be empty.", nameof(encodedData));
         }
+        if (HasAnimationControl(encodedData.Span))
+            throw new ArgumentException("Animated PNG images are unsupported.", nameof(encodedData));
 
         using var data = SKData.CreateCopy(encodedData.Span);
         using var codec = SKCodec.Create(data);
@@ -107,5 +116,30 @@ public static class PngImageCodec
             pixels,
             MediaType,
             AlgorithmVersion);
+    }
+
+    private static bool HasAnimationControl(ReadOnlySpan<byte> encodedData)
+    {
+        ReadOnlySpan<byte> signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+        if (!encodedData.StartsWith(signature))
+            return false;
+
+        // Some PNG decoders expose only the default image. APNG requires acTL before the first IDAT.
+        const int chunkOverhead = 12; // Length, type and CRC, excluding the chunk data.
+        var chunks = encodedData[signature.Length..];
+        while (chunks.Length >= chunkOverhead)
+        {
+            var type = chunks.Slice(4, 4);
+            if (type.SequenceEqual("acTL"u8))
+                return true;
+            if (type.SequenceEqual("IDAT"u8) || type.SequenceEqual("IEND"u8))
+                break;
+
+            var length = BinaryPrimitives.ReadUInt32BigEndian(chunks);
+            if (length > chunks.Length - chunkOverhead)
+                break;
+            chunks = chunks[(chunkOverhead + (int)length)..];
+        }
+        return false;
     }
 }
