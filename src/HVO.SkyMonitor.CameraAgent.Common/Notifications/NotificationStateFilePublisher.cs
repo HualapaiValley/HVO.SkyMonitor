@@ -46,6 +46,30 @@ public readonly record struct BoundedFileReadResult(
     bool ExceededLimit,
     ReadOnlyMemory<byte> Content);
 
+/// <summary>Outcome of a descriptor-verified protected state-file read.</summary>
+public enum ProtectedStateFileReadStatus
+{
+    Valid = 0,
+    ConfirmedAbsent = 1,
+    ExceededLimit = 2,
+    Unreadable = 3
+}
+
+/// <summary>
+/// Result of walking ancestors and reading a protected state file directly from a pinned parent directory
+/// descriptor via <c>openat(O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)</c> + <c>fstat(fd)</c> without
+/// a second pathname open.
+/// </summary>
+public readonly record struct ProtectedStateFileReadResult(
+    ProtectedStateFileReadStatus Status,
+    ReadOnlyMemory<byte> Content,
+    string? TargetPath,
+    string? ReasonTag,
+    string? ExceptionTypeName,
+    bool CanReplace,
+    bool IsSymlink,
+    long SizeBytes = 0);
+
 /// <summary>
 /// Restricted (0700/0600 on Unix), symlink-refusing, fsync'd atomic file publication helper backed by
 /// <see cref="HVO.SkyMonitor.Storage.FileSystem"/> primitives for operator notification state and checkpoints.
@@ -64,8 +88,9 @@ public static class NotificationStateFilePublisher
         OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
 
     // Tracks newly created directories whose parent directory entry has not yet completed DurableSync.Directory.
-    // Value is true when the directory's parent pre-existed and may be a validated symlinked ancestor.
-    private static readonly ConcurrentDictionary<string, bool> PendingParentSyncDirectories = new(DirectoryPathComparer);
+    // Never caches allowSymlinkedParent across retries; each attempt classifies ancestors fresh via a single
+    // non-following observation.
+    private static readonly ConcurrentDictionary<string, byte> PendingParentSyncDirectories = new(DirectoryPathComparer);
 
     // Tracks directories whose parent directory entry has been durably verified/synced in this process.
     private static readonly ConcurrentDictionary<string, byte> VerifiedParentSyncedDirectories = new(DirectoryPathComparer);
@@ -93,65 +118,9 @@ public static class NotificationStateFilePublisher
 
         // 1. Walk proper ancestors top-down using a SINGLE non-following metadata observation per segment
         //    so a normal directory is never reclassified as a symlink by a second pathname probe.
-        foreach (var ancestor in GetAncestorsTopDown(fullDirectory))
+        if (TryInspectAncestorsTopDownFailure(fullDirectory, out var ancestorFailure))
         {
-            var entry = DurableSync.InspectPathNoFollow(ancestor);
-            switch (entry)
-            {
-                case PathEntryKind.NotFound:
-                    // Every existing ancestor above this segment is a verified traversable directory;
-                    // ENOENT from non-following inspection is genuine absence (dangling symlinks report SymbolicLink).
-                    return new NotificationPathInspection(
-                        NotificationPathStatus.ConfirmedAbsent, null, null, null, IsSymlink: false);
-                case PathEntryKind.Directory:
-                    continue;
-                case PathEntryKind.SymbolicLink:
-                    {
-                        var resolved = DurableSync.InspectPathFollow(ancestor);
-                        if (resolved == PathEntryKind.Directory)
-                        {
-                            continue;
-                        }
-                        if (resolved == PathEntryKind.PermissionDenied)
-                        {
-                            return new NotificationPathInspection(
-                                NotificationPathStatus.Unreadable,
-                                null,
-                                $"state-dir-ancestor:{nameof(UnauthorizedAccessException)}",
-                                nameof(UnauthorizedAccessException),
-                                IsSymlink: true);
-                        }
-                        return new NotificationPathInspection(
-                            NotificationPathStatus.Unreadable,
-                            null,
-                            "state-dir-ancestor-symlink-not-dir",
-                            nameof(IOException),
-                            IsSymlink: true);
-                    }
-                case PathEntryKind.PermissionDenied:
-                    return new NotificationPathInspection(
-                        NotificationPathStatus.Unreadable,
-                        null,
-                        $"state-dir-ancestor:{nameof(UnauthorizedAccessException)}",
-                        nameof(UnauthorizedAccessException),
-                        IsSymlink: false);
-                case PathEntryKind.NotDirectory:
-                case PathEntryKind.RegularFile:
-                case PathEntryKind.Other:
-                    return new NotificationPathInspection(
-                        NotificationPathStatus.Unreadable,
-                        null,
-                        "state-dir-ancestor-not-directory",
-                        nameof(IOException),
-                        IsSymlink: false);
-                default:
-                    return new NotificationPathInspection(
-                        NotificationPathStatus.Unreadable,
-                        null,
-                        $"state-dir-ancestor:{nameof(IOException)}",
-                        nameof(IOException),
-                        IsSymlink: false);
-            }
+            return ancestorFailure;
         }
 
         // 2. Inspect StateDirectory itself using a single non-following observation (symlinks are never permitted).
@@ -229,6 +198,79 @@ public static class NotificationStateFilePublisher
             NotificationPathStatus.ExistsRegularFile, targetPath, null, null, IsSymlink: false);
     }
 
+    private static bool TryInspectAncestorsTopDownFailure(string fullDirectory, out NotificationPathInspection failure)
+    {
+        foreach (var ancestor in GetAncestorsTopDown(fullDirectory))
+        {
+            var entry = DurableSync.InspectPathNoFollow(ancestor);
+            switch (entry)
+            {
+                case PathEntryKind.NotFound:
+                    // Every existing ancestor above this segment is a verified traversable directory;
+                    // ENOENT from non-following inspection is genuine absence (dangling symlinks report SymbolicLink).
+                    failure = new NotificationPathInspection(
+                        NotificationPathStatus.ConfirmedAbsent, null, null, null, IsSymlink: false);
+                    return true;
+                case PathEntryKind.Directory:
+                    continue;
+                case PathEntryKind.SymbolicLink:
+                    {
+                        var resolved = DurableSync.InspectPathFollow(ancestor);
+                        if (resolved == PathEntryKind.Directory)
+                        {
+                            continue;
+                        }
+                        if (resolved == PathEntryKind.PermissionDenied)
+                        {
+                            failure = new NotificationPathInspection(
+                                NotificationPathStatus.Unreadable,
+                                null,
+                                $"state-dir-ancestor:{nameof(UnauthorizedAccessException)}",
+                                nameof(UnauthorizedAccessException),
+                                IsSymlink: true);
+                            return true;
+                        }
+                        failure = new NotificationPathInspection(
+                            NotificationPathStatus.Unreadable,
+                            null,
+                            "state-dir-ancestor-symlink-not-dir",
+                            nameof(IOException),
+                            IsSymlink: true);
+                        return true;
+                    }
+                case PathEntryKind.PermissionDenied:
+                    failure = new NotificationPathInspection(
+                        NotificationPathStatus.Unreadable,
+                        null,
+                        $"state-dir-ancestor:{nameof(UnauthorizedAccessException)}",
+                        nameof(UnauthorizedAccessException),
+                        IsSymlink: false);
+                    return true;
+                case PathEntryKind.NotDirectory:
+                case PathEntryKind.RegularFile:
+                case PathEntryKind.Other:
+                    failure = new NotificationPathInspection(
+                        NotificationPathStatus.Unreadable,
+                        null,
+                        "state-dir-ancestor-not-directory",
+                        nameof(IOException),
+                        IsSymlink: false);
+                    return true;
+                default:
+                    failure = new NotificationPathInspection(
+                        NotificationPathStatus.Unreadable,
+                        null,
+                        $"state-dir-ancestor:{nameof(IOException)}",
+                        nameof(IOException),
+                        IsSymlink: false);
+                    return true;
+            }
+        }
+
+        failure = default;
+        return false;
+    }
+
     private static List<string> GetAncestorsTopDown(string fullPath)
     {
         var ancestors = new List<string>();
@@ -248,17 +290,18 @@ public static class NotificationStateFilePublisher
     }
 
     public static void EnsureRestrictedDirectory(string directoryPath)
-        => EnsureRestrictedDirectory(directoryPath, onDirectorySynced: null, directorySyncAction: null, beforeAnchorOpen: null, afterAncestorClassified: null);
+        => EnsureRestrictedDirectory(directoryPath, onDirectorySynced: null, directorySyncAction: null, beforeAnchorOpen: null, afterAncestorClassified: null, beforeDirectorySync: null);
 
     internal static void EnsureRestrictedDirectory(string directoryPath, Action<string>? onDirectorySynced)
-        => EnsureRestrictedDirectory(directoryPath, onDirectorySynced, directorySyncAction: null, beforeAnchorOpen: null, afterAncestorClassified: null);
+        => EnsureRestrictedDirectory(directoryPath, onDirectorySynced, directorySyncAction: null, beforeAnchorOpen: null, afterAncestorClassified: null, beforeDirectorySync: null);
 
     internal static void EnsureRestrictedDirectory(
         string directoryPath,
         Action<string>? onDirectorySynced,
         Action<string>? directorySyncAction,
         Action<string>? beforeAnchorOpen = null,
-        Action<string>? afterAncestorClassified = null)
+        Action<string>? afterAncestorClassified = null,
+        Action<string, bool>? beforeDirectorySync = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(directoryPath);
         var fullDirectory = Path.TrimEndingDirectorySeparator(Path.GetFullPath(directoryPath));
@@ -276,14 +319,11 @@ public static class NotificationStateFilePublisher
         for (var i = 0; i < missingDirectories.Count; i++)
         {
             var missingDirectory = missingDirectories[i];
-            var allowSymlinkedParent = i == 0 &&
-                Path.GetDirectoryName(missingDirectory) is { } parentDirectory &&
-                validatedSymlinkAncestors.Contains(parentDirectory);
             VerifyPathIsNotSymlink(missingDirectory);
             // Record pending parent sync BEFORE creating the directory so any retry or concurrent publisher
             // observing the newly created directory on disk still syncs its parent before acknowledging.
             VerifiedParentSyncedDirectories.TryRemove(missingDirectory, out _);
-            PendingParentSyncDirectories[missingDirectory] = allowSymlinkedParent;
+            PendingParentSyncDirectories[missingDirectory] = 0;
         }
 
         if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
@@ -414,7 +454,7 @@ public static class NotificationStateFilePublisher
         for (var i = 0; i < chainBottomUp.Count; i++)
         {
             var current = chainBottomUp[i];
-            var isPending = PendingParentSyncDirectories.TryGetValue(current, out var pendingAllowSymlinkedParent);
+            var isPending = PendingParentSyncDirectories.ContainsKey(current);
             var isUnverified = !VerifiedParentSyncedDirectories.ContainsKey(current);
             if (!isPending && !isUnverified)
             {
@@ -428,9 +468,12 @@ public static class NotificationStateFilePublisher
                 var parentIsNewlyCreatedOrPending =
                     newlyCreatedDirectories.Contains(parent) ||
                     PendingParentSyncDirectories.ContainsKey(parent);
+                // Always derive allowSymlinkedParent strictly from the CURRENT operation's single-observation
+                // ancestor walk (never a stale cached boolean from an earlier failed attempt).
                 var allowSymlinkedParent = !parentIsNewlyCreatedOrPending &&
-                    (isPending ? pendingAllowSymlinkedParent : validatedSymlinkAncestors.Contains(parent));
+                    validatedSymlinkAncestors.Contains(parent);
                 var allowBestEffortPermissionDenied = !parentIsNewlyCreatedOrPending;
+                beforeDirectorySync?.Invoke(parent, allowSymlinkedParent);
                 var outcome = SyncDirectory(
                     parent,
                     allowSymlinkedAncestor: allowSymlinkedParent,
@@ -667,6 +710,10 @@ public static class NotificationStateFilePublisher
             }
             else
             {
+                if (!allowSymlinkedAncestor && OperatingSystem.IsMacOS())
+                {
+                    DurableSync.VerifyDirectoryNoFollow(directoryPath);
+                }
                 DurableSync.Directory(syncPath);
             }
         }
@@ -686,6 +733,168 @@ public static class NotificationStateFilePublisher
         return DirectorySyncOutcome.Synced;
     }
 
+    /// <summary>
+    /// Walks ancestors top-down via a single non-following observation per segment, pins
+    /// <paramref name="directoryPath"/> with <c>O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC</c> on POSIX, opens
+    /// <paramref name="fileName"/> relative to that directory descriptor via
+    /// <c>openat(O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)</c>, verifies <c>S_ISREG</c> and
+    /// <c>st_size &lt;= maxBytes</c> on the opened descriptor via <c>fstat</c>/<c>statx</c>, and reads at most
+    /// <paramref name="maxBytes"/> bytes directly from that verified descriptor.
+    /// </summary>
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "Protected state reads must classify filesystem errors deterministically so callers fail closed without falling back.")]
+    public static ProtectedStateFileReadResult ReadProtectedStateFile(
+        string directoryPath,
+        string fileName,
+        int maxBytes)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(directoryPath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(fileName);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxBytes);
+
+        var fullDirectory = NormalizeDirectoryPath(directoryPath);
+        if (TryInspectAncestorsTopDownFailure(fullDirectory, out var ancestorFailure))
+        {
+            return FromAncestorFailure(ancestorFailure);
+        }
+
+        var targetPath = Path.Combine(fullDirectory, fileName);
+        using var openResult = DurableSync.OpenRegularFileReadOnlyNoFollow(fullDirectory, fileName, maxBytes);
+        if (openResult.Status != RegularFileOpenStatus.Opened)
+        {
+            return MapFailedOpen(openResult, targetPath);
+        }
+
+        try
+        {
+            using var stream = CreateReadStreamFromVerifiedHandle(openResult, maxBytes);
+            var bounded = ReadBoundedStream(stream, maxBytes);
+            if (bounded.ExceededLimit)
+            {
+                return new ProtectedStateFileReadResult(
+                    ProtectedStateFileReadStatus.ExceededLimit,
+                    ReadOnlyMemory<byte>.Empty,
+                    targetPath,
+                    "oversized",
+                    nameof(InvalidDataException),
+                    CanReplace: false,
+                    IsSymlink: false,
+                    SizeBytes: openResult.SizeBytes);
+            }
+
+            return new ProtectedStateFileReadResult(
+                ProtectedStateFileReadStatus.Valid,
+                bounded.Content,
+                targetPath,
+                null,
+                null,
+                CanReplace: true,
+                IsSymlink: false,
+                SizeBytes: bounded.Content.Length);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            var exceptionName = ex.GetType().Name;
+            return new ProtectedStateFileReadResult(
+                ProtectedStateFileReadStatus.Unreadable,
+                ReadOnlyMemory<byte>.Empty,
+                targetPath,
+                $"read:{exceptionName}",
+                exceptionName,
+                CanReplace: true,
+                IsSymlink: false,
+                SizeBytes: openResult.SizeBytes);
+        }
+    }
+
+    /// <summary>
+    /// Asynchronous descriptor-verified protected state-file read using a single pinned parent directory descriptor,
+    /// <c>openat(O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)</c>, <c>fstat</c>/<c>statx</c> (<c>S_ISREG</c> and
+    /// <c>st_size &lt;= maxBytes</c>), and bounded streaming directly from the opened descriptor.
+    /// </summary>
+    public static ValueTask<ProtectedStateFileReadResult> ReadProtectedStateFileAsync(
+        string directoryPath,
+        string fileName,
+        int maxBytes,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(directoryPath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(fileName);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxBytes);
+        return ReadProtectedStateFileCoreAsync(directoryPath, fileName, maxBytes, cancellationToken);
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "Protected state reads must classify filesystem errors deterministically so callers fail closed without falling back.")]
+    private static async ValueTask<ProtectedStateFileReadResult> ReadProtectedStateFileCoreAsync(
+        string directoryPath,
+        string fileName,
+        int maxBytes,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var fullDirectory = NormalizeDirectoryPath(directoryPath);
+        if (TryInspectAncestorsTopDownFailure(fullDirectory, out var ancestorFailure))
+        {
+            return FromAncestorFailure(ancestorFailure);
+        }
+
+        var targetPath = Path.Combine(fullDirectory, fileName);
+        using var openResult = DurableSync.OpenRegularFileReadOnlyNoFollow(fullDirectory, fileName, maxBytes);
+        if (openResult.Status != RegularFileOpenStatus.Opened)
+        {
+            return MapFailedOpen(openResult, targetPath);
+        }
+
+        try
+        {
+            var stream = CreateReadStreamFromVerifiedHandle(openResult, maxBytes);
+            await using (stream.ConfigureAwait(false))
+            {
+                var bounded = await ReadBoundedStreamAsync(stream, maxBytes, cancellationToken).ConfigureAwait(false);
+                if (bounded.ExceededLimit)
+                {
+                    return new ProtectedStateFileReadResult(
+                        ProtectedStateFileReadStatus.ExceededLimit,
+                        ReadOnlyMemory<byte>.Empty,
+                        targetPath,
+                        "oversized",
+                        nameof(InvalidDataException),
+                        CanReplace: false,
+                        IsSymlink: false,
+                        SizeBytes: openResult.SizeBytes);
+                }
+
+                return new ProtectedStateFileReadResult(
+                    ProtectedStateFileReadStatus.Valid,
+                    bounded.Content,
+                    targetPath,
+                    null,
+                    null,
+                    CanReplace: true,
+                    IsSymlink: false,
+                    SizeBytes: bounded.Content.Length);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            var exceptionName = ex.GetType().Name;
+            return new ProtectedStateFileReadResult(
+                ProtectedStateFileReadStatus.Unreadable,
+                ReadOnlyMemory<byte>.Empty,
+                targetPath,
+                $"read:{exceptionName}",
+                exceptionName,
+                CanReplace: true,
+                IsSymlink: false,
+                SizeBytes: openResult.SizeBytes);
+        }
+    }
+
     public static ValueTask<BoundedFileReadResult> ReadBoundedBytesAsync(
         string filePath,
         int maxBytes,
@@ -701,16 +910,19 @@ public static class NotificationStateFilePublisher
         int maxBytes,
         CancellationToken cancellationToken)
     {
-        var options = new FileStreamOptions
+        cancellationToken.ThrowIfCancellationRequested();
+        var (directoryPath, fileName, fullPath) = SplitAbsoluteFilePath(filePath);
+        using var openResult = DurableSync.OpenRegularFileReadOnlyNoFollow(directoryPath, fileName, maxBytes);
+        if (openResult.Status == RegularFileOpenStatus.FileOversized)
         {
-            Mode = FileMode.Open,
-            Access = FileAccess.Read,
-            Share = FileShare.Read,
-            BufferSize = Math.Min(maxBytes + 1, 16 * 1024),
-            Options = FileOptions.Asynchronous | FileOptions.SequentialScan
-        };
+            return new BoundedFileReadResult(ExceededLimit: true, Content: ReadOnlyMemory<byte>.Empty);
+        }
+        if (openResult.Status != RegularFileOpenStatus.Opened)
+        {
+            throw CreateReadOpenException(openResult.Status, fullPath);
+        }
 
-        var stream = new FileStream(filePath, options);
+        var stream = CreateReadStreamFromVerifiedHandle(openResult, maxBytes);
         await using (stream.ConfigureAwait(false))
         {
             return await ReadBoundedStreamAsync(stream, maxBytes, cancellationToken).ConfigureAwait(false);
@@ -722,18 +934,188 @@ public static class NotificationStateFilePublisher
         ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxBytes);
 
-        var options = new FileStreamOptions
+        var (directoryPath, fileName, fullPath) = SplitAbsoluteFilePath(filePath);
+        using var openResult = DurableSync.OpenRegularFileReadOnlyNoFollow(directoryPath, fileName, maxBytes);
+        if (openResult.Status == RegularFileOpenStatus.FileOversized)
         {
-            Mode = FileMode.Open,
-            Access = FileAccess.Read,
-            Share = FileShare.Read,
-            BufferSize = Math.Min(maxBytes + 1, 16 * 1024),
-            Options = FileOptions.SequentialScan
-        };
+            return new BoundedFileReadResult(ExceededLimit: true, Content: ReadOnlyMemory<byte>.Empty);
+        }
+        if (openResult.Status != RegularFileOpenStatus.Opened)
+        {
+            throw CreateReadOpenException(openResult.Status, fullPath);
+        }
 
-        using var stream = new FileStream(filePath, options);
+        using var stream = CreateReadStreamFromVerifiedHandle(openResult, maxBytes);
         return ReadBoundedStream(stream, maxBytes);
     }
+
+    private static string NormalizeDirectoryPath(string directoryPath)
+    {
+        var fullDirectory = Path.TrimEndingDirectorySeparator(Path.GetFullPath(directoryPath));
+        if (string.IsNullOrEmpty(fullDirectory))
+        {
+            fullDirectory = Path.GetPathRoot(Path.GetFullPath(directoryPath)) ?? directoryPath;
+        }
+        return fullDirectory;
+    }
+
+    private static (string DirectoryPath, string FileName, string FullPath) SplitAbsoluteFilePath(string filePath)
+    {
+        var fullPath = Path.GetFullPath(filePath);
+        var directoryPath = Path.GetDirectoryName(fullPath);
+        var fileName = Path.GetFileName(fullPath);
+        if (string.IsNullOrWhiteSpace(directoryPath) || string.IsNullOrWhiteSpace(fileName))
+        {
+            throw new IOException("Protected operator notification state file path is invalid.");
+        }
+        return (directoryPath, fileName, fullPath);
+    }
+
+    private static FileStream CreateReadStreamFromVerifiedHandle(RegularFileOpenResult openResult, int maxBytes)
+    {
+        var handle = openResult.DetachHandle();
+        try
+        {
+            return new FileStream(
+                handle,
+                FileAccess.Read,
+                bufferSize: Math.Min(maxBytes + 1, 16 * 1024),
+                isAsync: false);
+        }
+        catch
+        {
+            handle.Dispose();
+            throw;
+        }
+    }
+
+    private static ProtectedStateFileReadResult FromAncestorFailure(NotificationPathInspection ancestorFailure)
+    {
+        if (ancestorFailure.Status == NotificationPathStatus.ConfirmedAbsent)
+        {
+            return new ProtectedStateFileReadResult(
+                ProtectedStateFileReadStatus.ConfirmedAbsent,
+                ReadOnlyMemory<byte>.Empty,
+                null,
+                null,
+                null,
+                CanReplace: true,
+                IsSymlink: false);
+        }
+
+        return new ProtectedStateFileReadResult(
+            ProtectedStateFileReadStatus.Unreadable,
+            ReadOnlyMemory<byte>.Empty,
+            null,
+            ancestorFailure.ReasonTag ?? "state-dir-ancestor-unreadable",
+            ancestorFailure.ExceptionTypeName ?? nameof(IOException),
+            CanReplace: false,
+            IsSymlink: ancestorFailure.IsSymlink);
+    }
+
+    private static ProtectedStateFileReadResult MapFailedOpen(RegularFileOpenResult openResult, string targetPath) =>
+        openResult.Status switch
+        {
+            RegularFileOpenStatus.NotFound => new ProtectedStateFileReadResult(
+                ProtectedStateFileReadStatus.ConfirmedAbsent,
+                ReadOnlyMemory<byte>.Empty,
+                null,
+                null,
+                null,
+                CanReplace: true,
+                IsSymlink: false),
+            RegularFileOpenStatus.FileOversized => new ProtectedStateFileReadResult(
+                ProtectedStateFileReadStatus.ExceededLimit,
+                ReadOnlyMemory<byte>.Empty,
+                targetPath,
+                "oversized",
+                nameof(InvalidDataException),
+                CanReplace: false,
+                IsSymlink: false,
+                SizeBytes: openResult.SizeBytes),
+            RegularFileOpenStatus.DirectorySymbolicLink => new ProtectedStateFileReadResult(
+                ProtectedStateFileReadStatus.Unreadable,
+                ReadOnlyMemory<byte>.Empty,
+                null,
+                "state-dir-symlink",
+                nameof(IOException),
+                CanReplace: false,
+                IsSymlink: true),
+            RegularFileOpenStatus.DirectoryNotDirectory => new ProtectedStateFileReadResult(
+                ProtectedStateFileReadStatus.Unreadable,
+                ReadOnlyMemory<byte>.Empty,
+                null,
+                "state-dir-not-directory",
+                nameof(IOException),
+                CanReplace: false,
+                IsSymlink: false),
+            RegularFileOpenStatus.DirectoryPermissionDenied => new ProtectedStateFileReadResult(
+                ProtectedStateFileReadStatus.Unreadable,
+                ReadOnlyMemory<byte>.Empty,
+                null,
+                $"state-dir:{nameof(UnauthorizedAccessException)}",
+                nameof(UnauthorizedAccessException),
+                CanReplace: false,
+                IsSymlink: false),
+            RegularFileOpenStatus.FileSymbolicLink => new ProtectedStateFileReadResult(
+                ProtectedStateFileReadStatus.Unreadable,
+                ReadOnlyMemory<byte>.Empty,
+                null,
+                "target-symlink",
+                nameof(IOException),
+                CanReplace: false,
+                IsSymlink: true),
+            RegularFileOpenStatus.FileIsDirectory => new ProtectedStateFileReadResult(
+                ProtectedStateFileReadStatus.Unreadable,
+                ReadOnlyMemory<byte>.Empty,
+                null,
+                "target-directory",
+                nameof(IOException),
+                CanReplace: false,
+                IsSymlink: false),
+            RegularFileOpenStatus.FileNonRegular => new ProtectedStateFileReadResult(
+                ProtectedStateFileReadStatus.Unreadable,
+                ReadOnlyMemory<byte>.Empty,
+                null,
+                "target-device",
+                nameof(IOException),
+                CanReplace: false,
+                IsSymlink: false),
+            RegularFileOpenStatus.FilePermissionDenied => new ProtectedStateFileReadResult(
+                ProtectedStateFileReadStatus.Unreadable,
+                ReadOnlyMemory<byte>.Empty,
+                targetPath,
+                $"read:{nameof(UnauthorizedAccessException)}",
+                nameof(UnauthorizedAccessException),
+                CanReplace: true,
+                IsSymlink: false,
+                SizeBytes: openResult.SizeBytes),
+            _ => new ProtectedStateFileReadResult(
+                ProtectedStateFileReadStatus.Unreadable,
+                ReadOnlyMemory<byte>.Empty,
+                targetPath,
+                $"target-open:{nameof(IOException)}",
+                nameof(IOException),
+                CanReplace: false,
+                IsSymlink: false)
+        };
+
+    private static Exception CreateReadOpenException(RegularFileOpenStatus status, string fullPath) =>
+        status switch
+        {
+            RegularFileOpenStatus.NotFound => new FileNotFoundException(
+                "Protected operator notification state file was not found.", fullPath),
+            RegularFileOpenStatus.DirectoryPermissionDenied or RegularFileOpenStatus.FilePermissionDenied =>
+                new UnauthorizedAccessException(
+                    "Refusing to access an unreadable directory or file in the protected operator notification store."),
+            RegularFileOpenStatus.DirectorySymbolicLink or RegularFileOpenStatus.FileSymbolicLink =>
+                new IOException(
+                    "Refusing to access a symbolic link in the protected operator notification store."),
+            RegularFileOpenStatus.DirectoryNotDirectory or RegularFileOpenStatus.FileIsDirectory or RegularFileOpenStatus.FileNonRegular =>
+                new IOException(
+                    "Refusing to access a non-regular file or directory in the protected operator notification store."),
+            _ => new IOException("Protected operator notification state file could not be opened.")
+        };
 
     internal static async ValueTask<BoundedFileReadResult> ReadBoundedStreamAsync(
         Stream stream,
@@ -1077,29 +1459,28 @@ public sealed class FileOperatorNotificationHeartbeatStore(string stateDirectory
 
     public async ValueTask<DateOnly?> ReadLastHeartbeatSiteDateAsync(CancellationToken cancellationToken)
     {
-        var inspection = NotificationStateFilePublisher.InspectStateFilePath(_stateDirectory, HeartbeatFileName);
-        if (inspection.Status == NotificationPathStatus.ConfirmedAbsent)
+        var readResult = await NotificationStateFilePublisher.ReadProtectedStateFileAsync(
+            _stateDirectory,
+            HeartbeatFileName,
+            MaximumCheckpointBytes,
+            cancellationToken).ConfigureAwait(false);
+        if (readResult.Status == ProtectedStateFileReadStatus.ConfirmedAbsent)
         {
             return null;
         }
-        if (inspection.Status == NotificationPathStatus.Unreadable || inspection.TargetPath is null)
+        if (readResult.Status == ProtectedStateFileReadStatus.ExceededLimit)
         {
-            if (string.Equals(inspection.ExceptionTypeName, nameof(UnauthorizedAccessException), StringComparison.Ordinal))
+            throw new InvalidDataException("Operator notification heartbeat checkpoint exceeds maximum allowed size.");
+        }
+        if (readResult.Status != ProtectedStateFileReadStatus.Valid)
+        {
+            if (string.Equals(readResult.ExceptionTypeName, nameof(UnauthorizedAccessException), StringComparison.Ordinal))
             {
                 throw new UnauthorizedAccessException("Operator notification heartbeat checkpoint path cannot be accessed.");
             }
-            throw new IOException(inspection.IsSymlink
+            throw new IOException(readResult.IsSymlink
                 ? "Refusing to access a symbolic link in the operator notification heartbeat checkpoint."
                 : "Operator notification heartbeat checkpoint path is unreadable or not a regular file.");
-        }
-
-        var readResult = await NotificationStateFilePublisher.ReadBoundedBytesAsync(
-            inspection.TargetPath,
-            MaximumCheckpointBytes,
-            cancellationToken).ConfigureAwait(false);
-        if (readResult.ExceededLimit)
-        {
-            throw new InvalidDataException("Operator notification heartbeat checkpoint exceeds maximum allowed size.");
         }
 
         var span = readResult.Content.Span;

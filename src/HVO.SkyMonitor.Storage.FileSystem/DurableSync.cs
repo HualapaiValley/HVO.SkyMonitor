@@ -17,6 +17,61 @@ public enum PathEntryKind
     IoError = 7
 }
 
+/// <summary>Classification of attempting to open an existing regular file relative to a pinned directory descriptor.</summary>
+public enum RegularFileOpenStatus
+{
+    Opened = 0,
+    NotFound = 1,
+    DirectorySymbolicLink = 2,
+    DirectoryNotDirectory = 3,
+    DirectoryPermissionDenied = 4,
+    FileSymbolicLink = 5,
+    FileIsDirectory = 6,
+    FileNonRegular = 7,
+    FilePermissionDenied = 8,
+    FileOversized = 9,
+    IoError = 10
+}
+
+/// <summary>
+/// Result of opening an existing regular file relative to its pinned parent directory descriptor via
+/// <see cref="DurableSync.OpenRegularFileReadOnlyNoFollow(string, string, int)"/>.
+/// </summary>
+public sealed class RegularFileOpenResult : IDisposable
+{
+    private SafeFileHandle? _handle;
+
+    internal RegularFileOpenResult(RegularFileOpenStatus status, SafeFileHandle? handle, long sizeBytes, int errorCode)
+    {
+        Status = status;
+        _handle = handle;
+        SizeBytes = sizeBytes;
+        ErrorCode = errorCode;
+    }
+
+    public RegularFileOpenStatus Status { get; }
+
+    public long SizeBytes { get; }
+
+    public int ErrorCode { get; }
+
+    /// <summary>Transfers ownership of the verified regular-file handle to the caller.</summary>
+    public SafeFileHandle DetachHandle()
+    {
+        var handle = Interlocked.Exchange(ref _handle, null);
+        if (handle is null)
+        {
+            throw new InvalidOperationException("No open regular-file handle is available to detach.");
+        }
+        return handle;
+    }
+
+    public void Dispose()
+    {
+        Interlocked.Exchange(ref _handle, null)?.Dispose();
+    }
+}
+
 /// <summary>
 /// The two durability boundaries a filesystem offers: flushing a file's data to its medium, and
 /// flushing a directory's entries so that a rename or create is itself durable. Neither is a
@@ -31,13 +86,16 @@ public static class DurableSync
 {
     private const int AtFileDescriptorCurrentWorkingDirectory = -100;
     private const int AtSymbolicLinkNoFollow = 0x100;
+    private const int MacOsAtSymbolicLinkNoFollow = 0x20;
     private const int AtEmptyPath = 0x1000;
     private const uint StatxType = 0x00000001;
+    private const uint StatxSize = 0x00000200;
     private const ushort UnixFileTypeMask = 0xF000;
     private const ushort UnixDirectoryType = 0x4000;
     private const ushort UnixRegularFileType = 0x8000;
     private const ushort UnixSymbolicLinkType = 0xA000;
     private const int MacOsOpenReadOnly = 0;
+    private const int MacOsOpenNonBlock = 0x0004;
     private const int MacOsOpenNoFollow = 0x0100;
     private const int MacOsOpenDirectory = 0x100000;
     private const int MacOsOpenCloseOnExec = 0x01000000;
@@ -45,9 +103,11 @@ public static class DurableSync
     private const int ErrnoPerm = 1;
     private const int ErrnoNoEnt = 2;
     private const int ErrnoIntr = 4;
+    private const int ErrnoNxio = 6;
     private const int ErrnoAccess = 13;
     private const int ErrnoExist = 17;
     private const int ErrnoNotDir = 20;
+    private const int ErrnoIsDir = 21;
     private const int LinuxErrnoLoop = 40;
     private const int MacOsErrnoLoop = 62;
     /// <summary>True where <see cref="Directory(string)"/> performs a real flush.</summary>
@@ -657,6 +717,453 @@ public static class DurableSync
         }
     }
 
+    /// <summary>
+    /// Opens <paramref name="absolutePath"/> with <c>O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC</c> (falling back to
+    /// <c>O_PATH</c>/<c>O_SEARCH</c> for traverse-only directories on Unix) and verifies via descriptor metadata that
+    /// the opened target is a real directory, failing closed with <see cref="FileSystemFaultKind.Containment"/> on
+    /// symbolic links or non-directories.
+    /// </summary>
+    public static void VerifyDirectoryNoFollow(string absolutePath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(absolutePath);
+        if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+        {
+            var isMacOs = OperatingSystem.IsMacOS();
+            using var handle = OpenDirectoryAnchorUnix(absolutePath, allowSymlinkedAnchor: false, isMacOs);
+            VerifyDirectoryDescriptorUnix(handle, absolutePath, isMacOs);
+            return;
+        }
+
+        var kind = InspectPathNoFollow(absolutePath);
+        switch (kind)
+        {
+            case PathEntryKind.Directory:
+                return;
+            case PathEntryKind.NotFound:
+                throw new FileSystemFaultException(FileSystemFaultKind.NotFound, "verify-directory", absolutePath);
+            case PathEntryKind.PermissionDenied:
+                throw new FileSystemFaultException(FileSystemFaultKind.PermissionDenied, "verify-directory", absolutePath);
+            case PathEntryKind.SymbolicLink:
+            case PathEntryKind.NotDirectory:
+            case PathEntryKind.RegularFile:
+            case PathEntryKind.Other:
+                throw new FileSystemFaultException(FileSystemFaultKind.Containment, "verify-directory", absolutePath);
+            default:
+                throw new FileSystemFaultException(FileSystemFaultKind.Io, "verify-directory", absolutePath);
+        }
+    }
+
+    /// <summary>
+    /// Pins <paramref name="directoryPath"/> with <c>O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC</c> on POSIX, opens
+    /// <paramref name="fileName"/> strictly relative to that directory descriptor via
+    /// <c>openat(dirFd, fileName, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)</c>, verifies <c>S_ISREG</c> and
+    /// <c>st_size &lt;= maxBytes</c> via <c>fstat</c>/<c>statx</c> on the opened descriptor before returning the handle
+    /// (preventing symlink TOCTOU, FIFO open hangs, and unbounded reads), and enforces equivalent non-following checks
+    /// on Windows.
+    /// </summary>
+    public static RegularFileOpenResult OpenRegularFileReadOnlyNoFollow(
+        string directoryPath,
+        string fileName,
+        int maxBytes)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(directoryPath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(fileName);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxBytes);
+        if (!System.IO.Path.IsPathRooted(directoryPath))
+        {
+            throw new ArgumentException("Directory path must be an absolute path.", nameof(directoryPath));
+        }
+        if (fileName is "." or ".." || fileName.IndexOfAny(['/', '\\', '\0']) >= 0)
+        {
+            throw new ArgumentException("File name must be a single path segment.", nameof(fileName));
+        }
+
+        var normalizedDir = System.IO.Path.TrimEndingDirectorySeparator(System.IO.Path.GetFullPath(directoryPath));
+        if (string.IsNullOrEmpty(normalizedDir))
+        {
+            normalizedDir = System.IO.Path.GetPathRoot(System.IO.Path.GetFullPath(directoryPath)) ?? directoryPath;
+        }
+
+        if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+        {
+            return OpenRegularFileReadOnlyNoFollowUnix(normalizedDir, fileName, maxBytes, OperatingSystem.IsMacOS());
+        }
+
+        return OpenRegularFileReadOnlyNoFollowManaged(normalizedDir, fileName, maxBytes);
+    }
+
+    private static RegularFileOpenResult OpenRegularFileReadOnlyNoFollowUnix(
+        string normalizedDir,
+        string fileName,
+        int maxBytes,
+        bool isMacOs)
+    {
+        var loopErrno = isMacOs ? MacOsErrnoLoop : LinuxErrnoLoop;
+        var dirBaseFlags = GetOpenDirectoryNoFollowFlags(isMacOs);
+        var dirDescriptor = InvokeOpenUnix(normalizedDir, dirBaseFlags, isMacOs, out var dirErrno);
+        if (dirDescriptor < 0 && dirErrno is ErrnoAccess or ErrnoPerm)
+        {
+            var traverseFlags = isMacOs
+                ? MacOsOpenSearch | MacOsOpenDirectory | MacOsOpenNoFollow | MacOsOpenCloseOnExec
+                : LinuxOpenFlags.Path | LinuxOpenFlags.Directory | LinuxOpenFlags.NoFollow | LinuxOpenFlags.CloseOnExec;
+            dirDescriptor = InvokeOpenUnix(normalizedDir, traverseFlags, isMacOs, out var traverseErrno);
+            if (dirDescriptor < 0)
+            {
+                dirErrno = traverseErrno;
+            }
+        }
+
+        if (dirDescriptor < 0)
+        {
+            var status = dirErrno switch
+            {
+                ErrnoNoEnt => RegularFileOpenStatus.NotFound,
+                ErrnoAccess or ErrnoPerm => RegularFileOpenStatus.DirectoryPermissionDenied,
+                ErrnoNotDir => InspectPathNoFollow(normalizedDir) == PathEntryKind.SymbolicLink
+                    ? RegularFileOpenStatus.DirectorySymbolicLink
+                    : RegularFileOpenStatus.DirectoryNotDirectory,
+                _ when dirErrno == loopErrno => RegularFileOpenStatus.DirectorySymbolicLink,
+                _ => RegularFileOpenStatus.IoError
+            };
+            return new RegularFileOpenResult(status, null, 0, dirErrno);
+        }
+
+        using var dirHandle = new SafeFileHandle((nint)dirDescriptor, ownsHandle: true);
+        if (!TryGetDescriptorTypeAndSizeUnix(dirHandle, isMacOs, out var dirType, out _, out var dirStatErrno))
+        {
+            return new RegularFileOpenResult(RegularFileOpenStatus.IoError, null, 0, dirStatErrno);
+        }
+        if (dirType != UnixDirectoryType)
+        {
+            return new RegularFileOpenResult(RegularFileOpenStatus.DirectoryNotDirectory, null, 0, ErrnoNotDir);
+        }
+
+        var openFileFlags = isMacOs
+            ? MacOsOpenReadOnly | MacOsOpenNoFollow | MacOsOpenNonBlock | MacOsOpenCloseOnExec
+            : LinuxOpenFlags.ReadOnly | LinuxOpenFlags.NoFollow | LinuxOpenFlags.NonBlock | LinuxOpenFlags.CloseOnExec;
+
+        int fileDescriptor;
+        int fileErrno;
+        do
+        {
+            fileDescriptor = isMacOs
+                ? NativeMacOsOpenAt(dirHandle, fileName, openFileFlags)
+                : NativeLinuxOpenAt(dirHandle, fileName, openFileFlags);
+            fileErrno = Marshal.GetLastPInvokeError();
+        }
+        while (fileDescriptor < 0 && fileErrno == ErrnoIntr);
+
+        if (fileDescriptor >= 0)
+        {
+            var fileHandle = new SafeFileHandle((nint)fileDescriptor, ownsHandle: true);
+            if (!TryGetDescriptorTypeAndSizeUnix(fileHandle, isMacOs, out var fileType, out var fileSize, out var fstatErrno))
+            {
+                fileHandle.Dispose();
+                return new RegularFileOpenResult(RegularFileOpenStatus.IoError, null, 0, fstatErrno);
+            }
+
+            if (fileType == UnixDirectoryType)
+            {
+                fileHandle.Dispose();
+                return new RegularFileOpenResult(RegularFileOpenStatus.FileIsDirectory, null, 0, ErrnoIsDir);
+            }
+
+            if (fileType == UnixSymbolicLinkType)
+            {
+                fileHandle.Dispose();
+                return new RegularFileOpenResult(RegularFileOpenStatus.FileSymbolicLink, null, 0, loopErrno);
+            }
+
+            if (fileType != UnixRegularFileType)
+            {
+                fileHandle.Dispose();
+                return new RegularFileOpenResult(RegularFileOpenStatus.FileNonRegular, null, 0, 0);
+            }
+
+            if (fileSize < 0 || fileSize > maxBytes)
+            {
+                fileHandle.Dispose();
+                return new RegularFileOpenResult(RegularFileOpenStatus.FileOversized, null, fileSize, 0);
+            }
+
+            return new RegularFileOpenResult(RegularFileOpenStatus.Opened, fileHandle, fileSize, 0);
+        }
+
+        if (fileErrno == ErrnoNoEnt)
+        {
+            return new RegularFileOpenResult(RegularFileOpenStatus.NotFound, null, 0, fileErrno);
+        }
+        if (fileErrno == loopErrno)
+        {
+            return new RegularFileOpenResult(RegularFileOpenStatus.FileSymbolicLink, null, 0, fileErrno);
+        }
+        if (fileErrno == ErrnoIsDir)
+        {
+            return new RegularFileOpenResult(RegularFileOpenStatus.FileIsDirectory, null, 0, fileErrno);
+        }
+        if (fileErrno is ErrnoNotDir or ErrnoNxio)
+        {
+            return new RegularFileOpenResult(RegularFileOpenStatus.FileNonRegular, null, 0, fileErrno);
+        }
+        if (fileErrno is ErrnoAccess or ErrnoPerm)
+        {
+            // Inspect entry metadata relative to the SAME pinned directory descriptor so unreadable
+            // write-only (0200) oversized files, symlinks, directories, and FIFOs still classify
+            // fail-closed without re-resolving pathnames.
+            if (TryGetRelativeEntryTypeAndSizeNoFollowUnix(dirHandle, fileName, isMacOs, out var entryType, out var entrySize))
+            {
+                if (entryType == UnixSymbolicLinkType)
+                {
+                    return new RegularFileOpenResult(RegularFileOpenStatus.FileSymbolicLink, null, 0, loopErrno);
+                }
+                if (entryType == UnixDirectoryType)
+                {
+                    return new RegularFileOpenResult(RegularFileOpenStatus.FileIsDirectory, null, 0, ErrnoIsDir);
+                }
+                if (entryType != UnixRegularFileType)
+                {
+                    return new RegularFileOpenResult(RegularFileOpenStatus.FileNonRegular, null, 0, 0);
+                }
+                if (entrySize < 0 || entrySize > maxBytes)
+                {
+                    return new RegularFileOpenResult(RegularFileOpenStatus.FileOversized, null, entrySize, fileErrno);
+                }
+                return new RegularFileOpenResult(RegularFileOpenStatus.FilePermissionDenied, null, entrySize, fileErrno);
+            }
+            // If fstatat/statx relative to the pinned directory also failed with EACCES/EPERM (e.g. mode 0000
+            // directory opened via O_PATH on Linux), classify as DirectoryPermissionDenied (CanReplace=false).
+            return new RegularFileOpenResult(RegularFileOpenStatus.DirectoryPermissionDenied, null, 0, fileErrno);
+        }
+
+        return new RegularFileOpenResult(RegularFileOpenStatus.IoError, null, 0, fileErrno);
+    }
+
+    private static RegularFileOpenResult OpenRegularFileReadOnlyNoFollowManaged(
+        string normalizedDir,
+        string fileName,
+        int maxBytes)
+    {
+        switch (InspectPathManaged(normalizedDir, followSymlinks: false))
+        {
+            case PathEntryKind.NotFound:
+                return new RegularFileOpenResult(RegularFileOpenStatus.NotFound, null, 0, 0);
+            case PathEntryKind.Directory:
+                break;
+            case PathEntryKind.SymbolicLink:
+                return new RegularFileOpenResult(RegularFileOpenStatus.DirectorySymbolicLink, null, 0, 0);
+            case PathEntryKind.PermissionDenied:
+                return new RegularFileOpenResult(RegularFileOpenStatus.DirectoryPermissionDenied, null, 0, 0);
+            case PathEntryKind.NotDirectory:
+            case PathEntryKind.RegularFile:
+            case PathEntryKind.Other:
+                return new RegularFileOpenResult(RegularFileOpenStatus.DirectoryNotDirectory, null, 0, 0);
+            default:
+                return new RegularFileOpenResult(RegularFileOpenStatus.IoError, null, 0, 0);
+        }
+
+        var fullPath = System.IO.Path.Combine(normalizedDir, fileName);
+        switch (InspectPathManaged(fullPath, followSymlinks: false))
+        {
+            case PathEntryKind.NotFound:
+                return new RegularFileOpenResult(RegularFileOpenStatus.NotFound, null, 0, 0);
+            case PathEntryKind.RegularFile:
+                break;
+            case PathEntryKind.SymbolicLink:
+                return new RegularFileOpenResult(RegularFileOpenStatus.FileSymbolicLink, null, 0, 0);
+            case PathEntryKind.Directory:
+                return new RegularFileOpenResult(RegularFileOpenStatus.FileIsDirectory, null, 0, 0);
+            case PathEntryKind.PermissionDenied:
+                return new RegularFileOpenResult(RegularFileOpenStatus.FilePermissionDenied, null, 0, 0);
+            case PathEntryKind.NotDirectory:
+            case PathEntryKind.Other:
+                return new RegularFileOpenResult(RegularFileOpenStatus.FileNonRegular, null, 0, 0);
+            default:
+                return new RegularFileOpenResult(RegularFileOpenStatus.IoError, null, 0, 0);
+        }
+
+        try
+        {
+            var info = new FileInfo(fullPath);
+            if (!info.Exists)
+            {
+                return new RegularFileOpenResult(RegularFileOpenStatus.NotFound, null, 0, 0);
+            }
+            if (info.LinkTarget is not null || (info.Attributes & FileAttributes.ReparsePoint) != 0)
+            {
+                return new RegularFileOpenResult(RegularFileOpenStatus.FileSymbolicLink, null, 0, 0);
+            }
+            if ((info.Attributes & FileAttributes.Directory) != 0)
+            {
+                return new RegularFileOpenResult(RegularFileOpenStatus.FileIsDirectory, null, 0, 0);
+            }
+            if ((info.Attributes & FileAttributes.Device) != 0)
+            {
+                return new RegularFileOpenResult(RegularFileOpenStatus.FileNonRegular, null, 0, 0);
+            }
+            if (info.Length > maxBytes)
+            {
+                return new RegularFileOpenResult(RegularFileOpenStatus.FileOversized, null, info.Length, 0);
+            }
+
+            var handle = System.IO.File.OpenHandle(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            try
+            {
+                var length = RandomAccess.GetLength(handle);
+                if (length < 0 || length > maxBytes)
+                {
+                    handle.Dispose();
+                    return new RegularFileOpenResult(RegularFileOpenStatus.FileOversized, null, length, 0);
+                }
+                return new RegularFileOpenResult(RegularFileOpenStatus.Opened, handle, length, 0);
+            }
+            catch
+            {
+                handle.Dispose();
+                throw;
+            }
+        }
+        catch (FileNotFoundException)
+        {
+            return new RegularFileOpenResult(RegularFileOpenStatus.NotFound, null, 0, 0);
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return new RegularFileOpenResult(RegularFileOpenStatus.NotFound, null, 0, 0);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return new RegularFileOpenResult(RegularFileOpenStatus.FilePermissionDenied, null, 0, 0);
+        }
+        catch (IOException)
+        {
+            return new RegularFileOpenResult(RegularFileOpenStatus.IoError, null, 0, 0);
+        }
+    }
+
+    private static bool TryGetDescriptorTypeAndSizeUnix(
+        SafeFileHandle handle,
+        bool isMacOs,
+        out ushort fileType,
+        out long sizeBytes,
+        out int errno)
+    {
+        fileType = 0;
+        sizeBytes = 0;
+        errno = 0;
+        if (handle.IsInvalid)
+        {
+            return false;
+        }
+
+        int result;
+        if (isMacOs)
+        {
+            MacOsFileStatus macStatus;
+            var isX64 = RuntimeInformation.ProcessArchitecture == Architecture.X64;
+            do
+            {
+                result = isX64
+                    ? NativeMacOsFstat64(handle, out macStatus)
+                    : NativeMacOsFstat(handle, out macStatus);
+                errno = Marshal.GetLastPInvokeError();
+            }
+            while (result < 0 && errno == ErrnoIntr);
+
+            if (result < 0)
+            {
+                return false;
+            }
+
+            fileType = (ushort)(macStatus.Mode & UnixFileTypeMask);
+            sizeBytes = macStatus.Size;
+            return true;
+        }
+
+        LinuxFileStatus linuxStatus;
+        do
+        {
+            result = StatXHandle(handle, string.Empty, AtEmptyPath, StatxType | StatxSize, out linuxStatus);
+            errno = Marshal.GetLastPInvokeError();
+        }
+        while (result < 0 && errno == ErrnoIntr);
+
+        if (result < 0 || (linuxStatus.Mask & StatxType) != StatxType)
+        {
+            return false;
+        }
+
+        fileType = (ushort)(linuxStatus.Mode & UnixFileTypeMask);
+        if (fileType == UnixRegularFileType && (linuxStatus.Mask & StatxSize) != StatxSize)
+        {
+            return false;
+        }
+
+        sizeBytes = linuxStatus.Size > long.MaxValue ? long.MaxValue : (long)linuxStatus.Size;
+        return true;
+    }
+
+    private static bool TryGetRelativeEntryTypeAndSizeNoFollowUnix(
+        SafeFileHandle dirHandle,
+        string fileName,
+        bool isMacOs,
+        out ushort fileType,
+        out long sizeBytes)
+    {
+        fileType = 0;
+        sizeBytes = 0;
+        if (dirHandle.IsInvalid)
+        {
+            return false;
+        }
+
+        int result;
+        int errno;
+        if (isMacOs)
+        {
+            MacOsFileStatus macStatus;
+            var isX64 = RuntimeInformation.ProcessArchitecture == Architecture.X64;
+            do
+            {
+                result = isX64
+                    ? NativeMacOsFstatAt64(dirHandle, fileName, out macStatus, MacOsAtSymbolicLinkNoFollow)
+                    : NativeMacOsFstatAt(dirHandle, fileName, out macStatus, MacOsAtSymbolicLinkNoFollow);
+                errno = Marshal.GetLastPInvokeError();
+            }
+            while (result < 0 && errno == ErrnoIntr);
+
+            if (result < 0)
+            {
+                return false;
+            }
+
+            fileType = (ushort)(macStatus.Mode & UnixFileTypeMask);
+            sizeBytes = macStatus.Size;
+            return true;
+        }
+
+        LinuxFileStatus linuxStatus;
+        do
+        {
+            result = StatXHandle(dirHandle, fileName, AtSymbolicLinkNoFollow, StatxType | StatxSize, out linuxStatus);
+            errno = Marshal.GetLastPInvokeError();
+        }
+        while (result < 0 && errno == ErrnoIntr);
+
+        if (result < 0 || (linuxStatus.Mask & StatxType) != StatxType)
+        {
+            return false;
+        }
+
+        fileType = (ushort)(linuxStatus.Mode & UnixFileTypeMask);
+        if (fileType == UnixRegularFileType && (linuxStatus.Mask & StatxSize) != StatxSize)
+        {
+            return false;
+        }
+
+        sizeBytes = linuxStatus.Size > long.MaxValue ? long.MaxValue : (long)linuxStatus.Size;
+        return true;
+    }
+
     // The pinned .NET 10 native FSync helper returns a positive boolean on failure.
     // Check libc directly so EIO/ENOSPC cannot become acknowledged durability. Keep the
     // SafeFileHandle pinned by the interop marshaller, including during EINTR retries.
@@ -951,6 +1458,14 @@ public static class DurableSync
     private static extern int NativeMacOsFstat64(SafeFileHandle handle, out MacOsFileStatus status);
 
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [DllImport("libSystem", EntryPoint = "fstatat", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
+    private static extern int NativeMacOsFstatAt(SafeFileHandle directoryFileDescriptor, string path, out MacOsFileStatus status, int flags);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [DllImport("libSystem", EntryPoint = "fstatat$INODE64", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
+    private static extern int NativeMacOsFstatAt64(SafeFileHandle directoryFileDescriptor, string path, out MacOsFileStatus status, int flags);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [DllImport("libSystem", EntryPoint = "lstat", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
     private static extern int NativeMacOsLstat(string path, out MacOsFileStatus status);
 
@@ -972,13 +1487,16 @@ public static class DurableSync
     {
         [FieldOffset(0)] internal uint Mask;
         [FieldOffset(28)] internal ushort Mode;
+        [FieldOffset(40)] internal ulong Size;
     }
 
     // 64-bit inode Darwin struct stat layout (144 bytes; padded to 256 for margin):
-    // st_dev (4 bytes @ offset 0), st_mode (uint16 @ offset 4) on both macOS arm64 (fstat) and x64 (fstat$INODE64).
+    // st_dev (4 bytes @ offset 0), st_mode (uint16 @ offset 4), st_size (int64 @ offset 96)
+    // on both macOS arm64 (fstat/fstatat) and x64 (fstat$INODE64/fstatat$INODE64).
     [StructLayout(LayoutKind.Explicit, Size = 256)]
     private struct MacOsFileStatus
     {
         [FieldOffset(4)] internal ushort Mode;
+        [FieldOffset(96)] internal long Size;
     }
 }

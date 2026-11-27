@@ -535,4 +535,143 @@ public sealed class DurableSyncTests
             }
         }
     }
+
+    [TestMethod]
+    public void VerifyDirectoryNoFollow_AcceptsRealDirectoryAndRejectsSymlinksAndFiles()
+    {
+        var realDir = Path.Combine(_temp, "verify-real-dir");
+        Directory.CreateDirectory(realDir);
+        DurableSync.VerifyDirectoryNoFollow(realDir);
+
+        var regularFile = Path.Combine(_temp, "verify-file.txt");
+        File.WriteAllText(regularFile, "data");
+        var fileFault = Assert.ThrowsExactly<FileSystemFaultException>(() => DurableSync.VerifyDirectoryNoFollow(regularFile));
+        Assert.AreEqual(FileSystemFaultKind.Containment, fileFault.Kind);
+
+        var missing = Path.Combine(_temp, "verify-missing");
+        var missingFault = Assert.ThrowsExactly<FileSystemFaultException>(() => DurableSync.VerifyDirectoryNoFollow(missing));
+        Assert.AreEqual(FileSystemFaultKind.NotFound, missingFault.Kind);
+
+        if (!OperatingSystem.IsWindows())
+        {
+            var linkDir = Path.Combine(_temp, "verify-link-dir");
+            Directory.CreateSymbolicLink(linkDir, realDir);
+            var linkFault = Assert.ThrowsExactly<FileSystemFaultException>(() => DurableSync.VerifyDirectoryNoFollow(linkDir));
+            Assert.AreEqual(FileSystemFaultKind.Containment, linkFault.Kind);
+        }
+    }
+
+    [TestMethod]
+    public void OpenRegularFileReadOnlyNoFollow_VerifiesDescriptorRejectsSymlinksAndFifosWithoutBlockingAndEnforcesSizeBeforeRead()
+    {
+        var dir = Path.Combine(_temp, "openat-dir");
+        Directory.CreateDirectory(dir);
+
+        // 1. Valid regular file within bound opens and reads directly from verified descriptor.
+        var validName = "state.json";
+        var validPayload = "{\"ok\":true}"u8.ToArray();
+        File.WriteAllBytes(Path.Combine(dir, validName), validPayload);
+        using (var opened = DurableSync.OpenRegularFileReadOnlyNoFollow(dir, validName, maxBytes: 1024))
+        {
+            Assert.AreEqual(RegularFileOpenStatus.Opened, opened.Status);
+            Assert.AreEqual(validPayload.Length, opened.SizeBytes);
+            using var stream = new FileStream(opened.DetachHandle(), FileAccess.Read, 1024, isAsync: false);
+            var buffer = new byte[validPayload.Length];
+            var read = stream.Read(buffer, 0, buffer.Length);
+            Assert.AreEqual(validPayload.Length, read);
+            CollectionAssert.AreEqual(validPayload, buffer);
+        }
+
+        // 2. Missing file returns NotFound.
+        using (var missing = DurableSync.OpenRegularFileReadOnlyNoFollow(dir, "absent.json", maxBytes: 1024))
+        {
+            Assert.AreEqual(RegularFileOpenStatus.NotFound, missing.Status);
+        }
+
+        // 3. Oversized regular file is rejected by fstat(fd) BEFORE returning an open handle or reading payload bytes.
+        var oversizedName = "oversized.json";
+        File.WriteAllBytes(Path.Combine(dir, oversizedName), new byte[2049]);
+        using (var oversized = DurableSync.OpenRegularFileReadOnlyNoFollow(dir, oversizedName, maxBytes: 2048))
+        {
+            Assert.AreEqual(RegularFileOpenStatus.FileOversized, oversized.Status);
+            Assert.AreEqual(2049, oversized.SizeBytes);
+            Assert.ThrowsExactly<InvalidOperationException>(() => oversized.DetachHandle());
+        }
+
+        // 4. Directory at file name is rejected as FileIsDirectory.
+        var subDirName = "subdir";
+        Directory.CreateDirectory(Path.Combine(dir, subDirName));
+        using (var subDir = DurableSync.OpenRegularFileReadOnlyNoFollow(dir, subDirName, maxBytes: 1024))
+        {
+            Assert.AreEqual(RegularFileOpenStatus.FileIsDirectory, subDir.Status);
+        }
+
+        if (!OperatingSystem.IsWindows())
+        {
+            // 5. Symbolic link file is rejected via O_NOFOLLOW (ELOOP).
+            var linkFileName = "link.json";
+            File.CreateSymbolicLink(Path.Combine(dir, linkFileName), Path.Combine(dir, validName));
+            using (var symlink = DurableSync.OpenRegularFileReadOnlyNoFollow(dir, linkFileName, maxBytes: 1024))
+            {
+                Assert.AreEqual(RegularFileOpenStatus.FileSymbolicLink, symlink.Status);
+            }
+
+            // 6. Symbolic link directory is rejected via O_DIRECTORY | O_NOFOLLOW.
+            var symlinkDir = Path.Combine(_temp, "openat-dir-link");
+            Directory.CreateSymbolicLink(symlinkDir, dir);
+            using (var dirLink = DurableSync.OpenRegularFileReadOnlyNoFollow(symlinkDir, validName, maxBytes: 1024))
+            {
+                Assert.AreEqual(RegularFileOpenStatus.DirectorySymbolicLink, dirLink.Status);
+            }
+
+            // 7. FIFO (named pipe) with no writer MUST NOT block (O_NONBLOCK) and MUST be rejected via fstat (!S_ISREG).
+            var fifoName = "state.fifo";
+            var fifoPath = Path.Combine(dir, fifoName);
+            using (var mkfifo = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("mkfifo")
+            {
+                ArgumentList = { fifoPath },
+                UseShellExecute = false
+            }))
+            {
+                Assert.IsNotNull(mkfifo);
+                Assert.IsTrue(mkfifo.WaitForExit(5000));
+                Assert.AreEqual(0, mkfifo.ExitCode);
+            }
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            using (var fifo = DurableSync.OpenRegularFileReadOnlyNoFollow(dir, fifoName, maxBytes: 1024))
+            {
+                sw.Stop();
+                Assert.AreEqual(RegularFileOpenStatus.FileNonRegular, fifo.Status);
+                Assert.IsLessThan(TimeSpan.FromSeconds(5), sw.Elapsed, "Opening a FIFO with O_NONBLOCK must never block.");
+            }
+
+            // 8. Unreadable write-only (0200) oversized vs normal-sized regular files classify via pinned fstatat/statx.
+            if (Environment.UserName != "root")
+            {
+                var writeOnlyOversizedPath = Path.Combine(dir, "write-only-big.json");
+                File.WriteAllBytes(writeOnlyOversizedPath, new byte[2049]);
+                File.SetUnixFileMode(writeOnlyOversizedPath, UnixFileMode.UserWrite);
+
+                var unreadableSmallPath = Path.Combine(dir, "unreadable-small.json");
+                File.WriteAllBytes(unreadableSmallPath, [1, 2, 3]);
+                File.SetUnixFileMode(unreadableSmallPath, UnixFileMode.None);
+
+                try
+                {
+                    using var bigRes = DurableSync.OpenRegularFileReadOnlyNoFollow(dir, "write-only-big.json", maxBytes: 2048);
+                    Assert.AreEqual(RegularFileOpenStatus.FileOversized, bigRes.Status);
+                    Assert.AreEqual(2049, bigRes.SizeBytes);
+
+                    using var smallRes = DurableSync.OpenRegularFileReadOnlyNoFollow(dir, "unreadable-small.json", maxBytes: 2048);
+                    Assert.AreEqual(RegularFileOpenStatus.FilePermissionDenied, smallRes.Status);
+                }
+                finally
+                {
+                    File.SetUnixFileMode(writeOnlyOversizedPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                    File.SetUnixFileMode(unreadableSmallPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                }
+            }
+        }
+    }
 }

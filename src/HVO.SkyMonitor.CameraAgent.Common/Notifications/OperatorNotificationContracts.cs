@@ -55,7 +55,8 @@ public sealed record OperatorNotificationSecretProvenance(
     string? WebhookAuthTokenFingerprint = null,
     string? WebhookUserKeyFingerprint = null,
     string? WebhookNtfyTopicFingerprint = null,
-    string? WebhookEndpointFingerprint = null)
+    string? WebhookEndpointFingerprint = null,
+    string? BoundWebhookDestinationFingerprint = null)
 {
     public override string ToString() => "[REDACTED]";
 }
