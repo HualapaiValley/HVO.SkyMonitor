@@ -3,6 +3,7 @@ using System.Diagnostics.CodeAnalysis;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.SiteProfile;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.Imaging;
@@ -48,7 +49,7 @@ public sealed class CameraAgentScientificDownload : IAsyncDisposable
 internal sealed partial class CameraAgentScientificExports(
     ICameraAgentArtifactService artifacts, ICameraAgentRetainedAstrometryService astrometry,
     IDeploymentLocationStore deployment, ISiteProfileStore siteProfile,
-    IOptions<CameraAgentHostOptions> options, IStorageCapacityProvider capacityProvider,
+    IOptions<CameraAgentHostOptions> options, IStorageCapacityProvider capacityProvider, RawIngressState ingress,
     ILogger<CameraAgentScientificExports> logger) : ICameraAgentScientificExports, IDisposable
 {
     private const long MinimumIngressReserveBytes = 64L * 1024 * 1024;
@@ -115,6 +116,8 @@ internal sealed partial class CameraAgentScientificExports(
                 }
                 if (retained.Reason == "read-capacity")
                     return Busy();
+                if (retained.HasMissingEvidence)
+                    return new(CameraAgentArtifactReadStatus.Conflict, "scientific-export.astrometry-missing");
                 if (retained.Reason == CameraAgentRetainedAstrometryService.TemporaryEvidenceUnavailable)
                     return new(CameraAgentArtifactReadStatus.Unavailable, AstrometryUnavailable);
 
@@ -146,7 +149,7 @@ internal sealed partial class CameraAgentScientificExports(
                 {
                     var estimate = ScientificCaptureExport.MaximumOutputBytes(descriptor, format, observation);
                     operation = "capacity-probe";
-                    if (!TryReserveSpool(estimate))
+                    if (!TryReserveSpool(estimate, source.ByteLength))
                         return Busy();
                     reservedBytes = estimate;
 
@@ -214,14 +217,18 @@ internal sealed partial class CameraAgentScientificExports(
         }
     }
 
-    private bool TryReserveSpool(long estimate)
+    private bool TryReserveSpool(long estimate, long sourceBytes)
     {
         lock (_capacityGate)
         {
             var available = capacityProvider.GetCapacity(options.Value.RawIngressRoot).AvailableBytes;
             var reserve = Math.Max(MinimumIngressReserveBytes, options.Value.RawIngressReserveBytes);
+            // The latest live ingress attempt can be larger than the archived source being exported.
+            // Use the source as a floor, including before the first capture after startup.
+            var nextCaptureHeadroom = Math.Max(sourceBytes, ingress.LastCapturePayloadBytes);
             // The filesystem may not yet account for concurrent writers that passed the capacity check.
-            if (available < reserve || available - reserve - _pendingSpoolBytes < estimate)
+            if (available < reserve || available - reserve < nextCaptureHeadroom ||
+                available - reserve - nextCaptureHeadroom - _pendingSpoolBytes < estimate)
                 return false;
             _pendingSpoolBytes += estimate;
             return true;

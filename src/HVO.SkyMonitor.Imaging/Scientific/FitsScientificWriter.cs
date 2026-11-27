@@ -10,12 +10,14 @@ internal static class FitsScientificWriter
     private const int BlockSize = 2880;
     private const int CardSize = 80;
     private const int DescriptorSize = 8;
-    private const int TileSamples = 16384;
+    private const int TileSampleBudget = 16384;
     private const int GzipLevel = 6;
+    // The .NET 10 bundled zlib-ng level-6 medium encoder ignores Filtered. Keep specifying it for
+    // backends that honor it, and record the requested strategy in the encoder metadata.
     private const ZLibCompressionStrategy GzipStrategy = ZLibCompressionStrategy.Filtered;
 
     internal static string CompressionOptions => FormattableString.Invariant(
-        $"compression=GZIP_1;zlib={GzipLevel}/{GzipStrategy};tile={TileSamples}");
+        $"compression=GZIP_1;zlib={GzipLevel}/{GzipStrategy};tileSamples={TileSampleBudget}");
 
     internal static long MaximumOutputBytes(ScientificExportFormat format, ScientificExportMetadata metadata)
     {
@@ -134,7 +136,8 @@ internal static class FitsScientificWriter
 
         var tileWidth = Math.Min(layout.Width, ScientificCaptureExport.ChunkSamples);
         // When splitting wide rows, use one-row tiles to preserve sequential reads of the original samples.
-        var tileHeight = tileWidth < layout.Width ? 1 : Math.Min(layout.Height, TileSamples / tileWidth);
+        // ZTILE1 and ZTILE2 record the resulting shape within the sample budget.
+        var tileHeight = tileWidth < layout.Width ? 1 : Math.Min(layout.Height, TileSampleBudget / tileWidth);
         var tilesAcross = ((long)layout.Width + tileWidth - 1) / tileWidth;
         var tileCount = tilesAcross * (((long)layout.Height + tileHeight - 1) / tileHeight);
         var extensionCards = new List<string>

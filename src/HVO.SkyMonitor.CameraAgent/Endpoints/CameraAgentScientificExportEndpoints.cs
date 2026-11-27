@@ -62,7 +62,9 @@ internal static class CameraAgentScientificExportEndpoints
                 _ => StatusCodes.Status503ServiceUnavailable
             };
             var reason = result.ReasonCode ?? "scientific-export.source-unavailable";
-            if (reason is "scientific-export.capacity" or "scientific-export.astrometry-unavailable")
+            // Confirmed missing evidence is a conflict until repaired. Only transient failures request a retry.
+            if (status == StatusCodes.Status503ServiceUnavailable &&
+                reason is "scientific-export.capacity" or "scientific-export.astrometry-unavailable")
                 context.Response.Headers.RetryAfter = "1";
             telemetry.RecordScientificExportFailure(format, reason, status);
             await WriteProblemAsync(context, status, reason).ConfigureAwait(false);

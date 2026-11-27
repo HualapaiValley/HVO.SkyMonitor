@@ -68,7 +68,7 @@ public sealed class ScientificCaptureExportTests
         Assert.AreEqual("'BINTABLE'", header["XTENSION"]);
         Assert.AreEqual("T", header["ZIMAGE"]);
         Assert.AreEqual("'GZIP_1'", header["ZCMPTYPE"]);
-        Assert.AreEqual("compression=GZIP_1;zlib=6/Filtered;tile=16384", receipt.Encoding.Options);
+        Assert.AreEqual("compression=GZIP_1;zlib=6/Filtered;tileSamples=16384", receipt.Encoding.Options);
         Assert.AreEqual($"'{receipt.Encoding.Options}'", header["HVOOPT"]);
         Assert.AreEqual("'COMPRESSED_DATA'", header["TTYPE1"]);
         Assert.AreEqual("'1PB'", header["TFORM1"]);
@@ -81,6 +81,7 @@ public sealed class ScientificCaptureExportTests
 
         var tileWidth = int.Parse(header["ZTILE1"], CultureInfo.InvariantCulture);
         var tileHeight = int.Parse(header["ZTILE2"], CultureInfo.InvariantCulture);
+        Assert.IsLessThan(16384, tileWidth * tileHeight);
         Assert.AreEqual("8", header["NAXIS1"]);
         var tileCount = int.Parse(header["NAXIS2"], CultureInfo.InvariantCulture);
         var heap = tableStart + tileCount * 8;
@@ -152,6 +153,10 @@ public sealed class ScientificCaptureExportTests
         var fitsSamples = (byte[])payload.Clone();
         for (var index = 0; index < fitsSamples.Length; index += 2)
             fitsSamples[index] ^= 0x80;
+        long sameTileLevelOneBytes = 0;
+        using var reference = new MemoryStream();
+        var levelOne = new ZLibCompressionOptions { CompressionLevel = 1, CompressionStrategy = ZLibCompressionStrategy.Filtered };
+        var levelSix = new ZLibCompressionOptions { CompressionLevel = 6, CompressionStrategy = ZLibCompressionStrategy.Filtered };
         for (var tile = 0; tile < tiles; tile++)
         {
             var entry = table + tile * 8;
@@ -162,6 +167,18 @@ public sealed class ScientificCaptureExportTests
             await gzip.ReadExactlyAsync(decoded).ConfigureAwait(false);
             Assert.AreEqual(-1, gzip.ReadByte());
             Assert.IsTrue(fitsSamples.AsSpan(tile * decoded.Length, decoded.Length).SequenceEqual(decoded));
+
+            reference.SetLength(0);
+            using (var levelSixGzip = new GZipStream(reference, levelSix, leaveOpen: true))
+                levelSixGzip.Write(decoded);
+            Assert.IsTrue(bytes.AsSpan(heap + offset, length).SequenceEqual(reference.ToArray()),
+                "The writer must use zlib level 6 for the exact same tile samples.");
+            reference.SetLength(0);
+            using (var levelOneGzip = new GZipStream(reference, levelOne, leaveOpen: true))
+                levelOneGzip.Write(decoded);
+            Assert.IsFalse(bytes.AsSpan(heap + offset, length).SequenceEqual(reference.ToArray()),
+                "Level 1 must produce a distinguishable gzip member for the same tile.");
+            sameTileLevelOneBytes += reference.Length;
         }
 
         long baseline = 0;
@@ -174,12 +191,34 @@ public sealed class ScientificCaptureExportTests
             baseline += originalMember.Length + 8;
         }
         var tuned = int.Parse(header["PCOUNT"], CultureInfo.InvariantCulture) + tiles * 8;
-        Console.WriteLine($"Full entropy={fullEntropy}, raw={payload.Length}, Fastest tiles={baseline}, tuned tiles={tuned} bytes");
+        Console.WriteLine($"Full entropy={fullEntropy}, raw={payload.Length}, old tiles at level 1={baseline}, current tiles at level 1={sameTileLevelOneBytes + tiles * 8}, level 6={tuned} bytes");
         Assert.IsGreaterThan(payload.Length, baseline);
         Assert.IsLessThan(baseline, tuned);
         if (!fullEntropy)
             Assert.IsLessThan(payload.Length, tuned);
         Assert.IsLessThanOrEqualTo(ScientificCaptureExport.MaximumOutputBytes(descriptor, ScientificExportFormat.FitsTileGzip), receipt.ByteLength);
+    }
+
+    [TestMethod]
+    [SuppressMessage("Security", "CA5394:Do not use insecure randomness", Justification = "Seeded synthetic sensor noise must be reproducible.")]
+    public async Task TiledFitsStagingBoundIncludesGzipOverheadAcrossHundredsOfTiles()
+    {
+        // Each wide row includes a one-sample edge tile. Its gzip member costs more than the sample itself.
+        var (descriptor, payload, _) = Frame(CameraPixelFormat.Mono16, 8193, 201, bigEndian: true);
+        new Random(2153).NextBytes(payload);
+        descriptor = descriptor with { Artifact = descriptor.Artifact with { ChecksumSha256 = PayloadChecksum.ComputeSha256(payload) } };
+
+        var (bytes, receipt) = await EncodeAsync(descriptor, payload, ScientificExportFormat.FitsTileGzip).ConfigureAwait(false);
+        var (_, extension) = ReadHdu(bytes, 0);
+        var (header, tableStart) = ReadHdu(bytes, extension);
+        var tiles = int.Parse(header["NAXIS2"], CultureInfo.InvariantCulture);
+        Assert.AreEqual(402, tiles);
+        var sampleBytes = (long)descriptor.Layout.Width * descriptor.Layout.Height * 2;
+        var dataWithoutMemberOverhead = sampleBytes + sampleBytes / 1024 + tiles * 8;
+        var boundWithoutMemberOverhead = tableStart + (dataWithoutMemberOverhead + Block - 1) / Block * Block;
+        Assert.IsGreaterThan(boundWithoutMemberOverhead, receipt.ByteLength);
+        Assert.IsLessThanOrEqualTo(ScientificCaptureExport.MaximumOutputBytes(descriptor, ScientificExportFormat.FitsTileGzip),
+            receipt.ByteLength);
     }
 
     [TestMethod]

@@ -602,4 +602,157 @@ public sealed partial class CurrentSkyPageTests
             StringAssert.Contains(cut.Find(".latest-measured-solution").TextContent, headlineSummary.ArtifactId.ToString(), StringComparison.Ordinal);
         }), timeout).ConfigureAwait(false);
     }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task HeadlineLandingDuringCaptureSwitchPrefetchRechecksOnlyWithoutInvalidation(bool invalidate)
+    {
+        var evidence = await AstrometryEvidenceAsync().ConfigureAwait(false);
+        var exact = CameraAgentLatestAstrometry.FromVerified(evidence)!;
+        var previous = exact with { CaptureId = Guid.NewGuid(), ArtifactId = Guid.NewGuid() };
+        var other = previous with { ArtifactId = Guid.NewGuid() };
+        var structured = WithStructuredBase();
+        var first = Next(View(structured), SecondCaptureId, structured.DisplayCapture!.CaptureSequence);
+        var capture = AstrometryImage(evidence).DisplayCapture! with { CaptureSequence = structured.DisplayCapture.CaptureSequence + 1 };
+        var incoming = View(structured with { DisplayCapture = capture, LatestCapture = capture });
+        var baseId = structured.Stages.Single(slot => slot.Stage == CameraAgentPresentationStage.Combined).DisplayArtifactId;
+        var layer = Layered(evidence.CaptureId, new string('E', 64), baseId) with
+        {
+            Astrometry = evidence with { CompatibleBaseArtifactId = baseId }
+        };
+        var heldCheck = new DeferredAstrometryRead<CameraAgentAstrometryPublicationState>();
+        var heldHeadline = new DeferredAstrometryRead<CameraAgentLatestAstrometryRead>();
+        var publicationChecks = 0;
+        var headlineReads = 0;
+
+        using var context = new BunitContext();
+        var (service, clock) = ConfigurePolling(context);
+        var current = first;
+        service.CurrentSkyHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(current));
+        service.PresentationHandler = (id, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(
+            id == evidence.CaptureId ? layer : Layered(id, new string('D', 64), baseId)));
+        service.LatestAstrometryHandler = (_, _) => Interlocked.Increment(ref headlineReads) switch
+        {
+            1 => ValueTask.FromResult(OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(new(true, previous))),
+            2 => heldHeadline.Read(),
+            _ => ValueTask.FromResult(OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(new(true, invalidate ? exact : other)))
+        };
+        var available = OperatorUiResult<CameraAgentAstrometryPublicationState>.Success(CameraAgentAstrometryPublicationState.Available);
+        service.AstrometryPublicationHandler = (identity, _) => identity.ArtifactId == exact.ArtifactId &&
+            Interlocked.Increment(ref publicationChecks) == 1 ? heldCheck.Read() : ValueTask.FromResult(available);
+
+        var cut = context.Render<CurrentSkyPage>();
+        WaitForFirst(cut, clock, first);
+        var timeout = TimeSpan.FromSeconds(5);
+        await cut.WaitForAssertionAsync(() => AssertHeadline(previous), timeout).ConfigureAwait(false);
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        await heldHeadline.Awaiting.Task.WaitAsync(timeout).ConfigureAwait(false);
+        if (invalidate)
+        {
+            // Queue a fresh matching headline after the eviction of the unrelated prior headline.
+            // No incoming-capture generation changes. The invalidation revision alone fences its stale fit.
+            await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        }
+        current = incoming;
+        var refresh = cut.Find("button.refresh-link").ClickAsync();
+        await heldCheck.Awaiting.Task.WaitAsync(timeout).ConfigureAwait(false);
+        var headline = invalidate ? new CameraAgentLatestAstrometryRead(true) { PreviousSummaryEvicted = true } : new(true, other);
+        await cut.InvokeAsync(() =>
+        {
+            var queuedApply = Task.Run(() => heldCheck.Complete(available));
+            Assert.IsTrue(queuedApply.Wait(timeout));
+            heldHeadline.Complete(OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(headline));
+        }).ConfigureAwait(false);
+        await refresh.WaitAsync(timeout).ConfigureAwait(false);
+
+        await cut.WaitForAssertionAsync(() => cut.InvokeAsync(() =>
+        {
+            AssertHeadline(invalidate ? exact : other);
+            Assert.AreEqual(invalidate ? 1 : 2, Volatile.Read(ref publicationChecks));
+            Assert.AreEqual(CaptureLink(invalidate ? first : incoming), cut.Find(".layers-link").GetAttribute("href"));
+            Assert.AreEqual(invalidate, cut.Find(".pixel-sky-calculator button").HasAttribute("disabled"));
+            Assert.IsNotNull(cut.Find(".sky-layer-canvas--verified"));
+        }), timeout).ConfigureAwait(false);
+
+        void AssertHeadline(CameraAgentLatestAstrometry summary) =>
+            StringAssert.Contains(cut.Find(".latest-measured-solution").TextContent, summary.ArtifactId.ToString(), StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task NonInvalidatingHeadlineLandingDuringFullScreenRevalidatesDeferredLayersOnClose()
+    {
+        var evidence = await AstrometryEvidenceAsync().ConfigureAwait(false);
+        var exact = CameraAgentLatestAstrometry.FromVerified(evidence)!;
+        var other = exact with { CaptureId = Guid.NewGuid(), ArtifactId = Guid.NewGuid() };
+        var updated = other with { ArtifactId = Guid.NewGuid() };
+        var structured = WithStructuredBase();
+        var capture = AstrometryImage(evidence).DisplayCapture!;
+        var image = View(structured with { DisplayCapture = capture, LatestCapture = capture });
+        var baseId = structured.Stages.Single(slot => slot.Stage == CameraAgentPresentationStage.Combined).DisplayArtifactId;
+        var layer = Layered(evidence.CaptureId, new string('E', 64), baseId) with
+        {
+            Astrometry = evidence with { CompatibleBaseArtifactId = baseId }
+        };
+        var heldInitialCheck = new DeferredAstrometryRead<CameraAgentAstrometryPublicationState>();
+        var heldCloseCheck = new DeferredAstrometryRead<CameraAgentAstrometryPublicationState>();
+        var heldOpenHeadline = new DeferredAstrometryRead<CameraAgentLatestAstrometryRead>();
+        var heldCloseHeadline = new DeferredAstrometryRead<CameraAgentLatestAstrometryRead>();
+        var publicationChecks = 0;
+        var headlineReads = 0;
+
+        using var context = new BunitContext();
+        var (service, clock) = ConfigurePolling(context, module => module.Setup<bool>("requestFullScreen", _ => true).SetResult(true));
+        service.CurrentSkyHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(image));
+        service.PresentationHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(layer));
+        service.LatestAstrometryHandler = (_, _) => Interlocked.Increment(ref headlineReads) == 1 ? heldOpenHeadline.Read() : heldCloseHeadline.Read();
+        var available = OperatorUiResult<CameraAgentAstrometryPublicationState>.Success(CameraAgentAstrometryPublicationState.Available);
+        service.AstrometryPublicationHandler = (_, _) => Interlocked.Increment(ref publicationChecks) switch
+        {
+            1 => heldInitialCheck.Read(),
+            2 => heldCloseCheck.Read(),
+            _ => ValueTask.FromResult(available)
+        };
+
+        var cut = context.Render<CurrentSkyPage>();
+        WaitForFirst(cut, clock, image);
+        var timeout = TimeSpan.FromSeconds(5);
+        await heldInitialCheck.Awaiting.Task.WaitAsync(timeout).ConfigureAwait(false);
+        await heldOpenHeadline.Awaiting.Task.WaitAsync(timeout).ConfigureAwait(false);
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        await cut.Find("#current-sky-view-large").ClickAsync().ConfigureAwait(false);
+        var renders = cut.RenderCount;
+        await Task.Run(() => heldInitialCheck.Complete(available)).ConfigureAwait(false);
+        await cut.WaitForAssertionAsync(() => Assert.IsGreaterThan(renders, cut.RenderCount), timeout).ConfigureAwait(false);
+        await cut.InvokeAsync(() => heldOpenHeadline.Complete(
+            OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(new(true, other)))).ConfigureAwait(false);
+        await heldCloseHeadline.Awaiting.Task.WaitAsync(timeout).ConfigureAwait(false);
+        await cut.WaitForAssertionAsync(() => cut.InvokeAsync(() =>
+        {
+            AssertHeadline(other);
+            Assert.AreEqual(1, Volatile.Read(ref publicationChecks));
+            Assert.IsTrue(cut.Find(".pixel-sky-calculator button").HasAttribute("disabled"));
+            Assert.IsEmpty(cut.FindAll(".sky-layer-canvas--verified"));
+        }), timeout).ConfigureAwait(false);
+
+        var close = cut.Instance.ViewerClosedAsync();
+        await heldCloseCheck.Awaiting.Task.WaitAsync(timeout).ConfigureAwait(false);
+        await cut.InvokeAsync(() =>
+        {
+            var queuedApply = Task.Run(() => heldCloseCheck.Complete(available));
+            Assert.IsTrue(queuedApply.Wait(timeout));
+            heldCloseHeadline.Complete(OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(new(true, updated)));
+        }).ConfigureAwait(false);
+        await close.WaitAsync(timeout).ConfigureAwait(false);
+        await cut.WaitForAssertionAsync(() => cut.InvokeAsync(() =>
+        {
+            AssertHeadline(updated);
+            Assert.AreEqual(3, Volatile.Read(ref publicationChecks));
+            Assert.IsFalse(cut.Find(".pixel-sky-calculator button").HasAttribute("disabled"));
+            Assert.IsNotNull(cut.Find(".sky-layer-canvas--verified"));
+        }), timeout).ConfigureAwait(false);
+
+        void AssertHeadline(CameraAgentLatestAstrometry summary) =>
+            StringAssert.Contains(cut.Find(".latest-measured-solution").TextContent, summary.ArtifactId.ToString(), StringComparison.Ordinal);
+    }
 }

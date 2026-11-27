@@ -1237,6 +1237,7 @@ internal sealed partial class RawCaptureIngress :
 
     private void EnsureCapacity(long payloadLength)
     {
+        _state.RecordCapturePayloadBytes(payloadLength);
         StorageCapacity capacity;
         try
         {
