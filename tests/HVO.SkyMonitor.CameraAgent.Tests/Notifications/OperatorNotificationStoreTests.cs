@@ -11844,8 +11844,10 @@ public sealed class OperatorNotificationStoreTests
                 Assert.AreEqual(NotificationSecretSource.ProtectedStore, migrateSameDest.Snapshot.Secrets.WebhookNtfyTopicSource);
             }
 
-            // Reload with empty host config: migrated credentials persist cleanly in protected store!
-            using (var reloaded = CreateStore(dir.Path, isDevelopment: false, dpProvider: dpProvider))
+            // Restart without host credentials or their explicit authorization at B.
+            hostProv = new RotatingHostConfigurationProvider(new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase));
+            root = new ConfigurationRoot([hostProv]);
+            using (var reloaded = CreateStore(dir.Path, isDevelopment: false, dpProvider: dpProvider, configuration: root))
             {
                 var effReloaded = await reloaded.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
                 Assert.AreEqual("d17-m2-user", effReloaded.Secrets.SmtpUsername);
@@ -11853,6 +11855,45 @@ public sealed class OperatorNotificationStoreTests
                 Assert.AreEqual("d17-m2-tok", effReloaded.Secrets.WebhookAuthToken);
                 Assert.AreEqual("d17-m2-ukey", effReloaded.Secrets.WebhookUserKey);
                 Assert.AreEqual("d17-m2-topic", effReloaded.Secrets.WebhookNtfyTopic);
+
+                var directRead = await reloaded.ReadAsync(CancellationToken.None).ConfigureAwait(false);
+                await reloaded.SaveAsync(directRead with
+                {
+                    SmtpPassword = "direct-rotated-password",
+                    WebhookUserKey = "direct-rotated-user-key",
+                    WebhookNtfyTopic = "  d17-m2-topic  "
+                }, CancellationToken.None).ConfigureAwait(false);
+                var afterDirect = await reloaded.ReadAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual("d17-m2-user", afterDirect.SmtpUsername);
+                Assert.AreEqual("direct-rotated-password", afterDirect.SmtpPassword);
+                Assert.AreEqual("d17-m2-tok", afterDirect.WebhookAuthToken);
+                Assert.AreEqual("direct-rotated-user-key", afterDirect.WebhookUserKey);
+                Assert.AreEqual("d17-m2-topic", afterDirect.WebhookNtfyTopic);
+
+                await AssertVersionedRotationAsync("empty-host").ConfigureAwait(false);
+
+                // A host reload at C must not override the protected credentials still bound to B.
+                hostProv.Rotate(HostDict(hostC, urlC, smtpBound: $"{hostC}:587:StartTls", webhookBound: urlC));
+                await AssertVersionedRotationAsync("other-host").ConfigureAwait(false);
+
+                async Task AssertVersionedRotationAsync(string suffix)
+                {
+                    var snapshot = await reloaded.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+                    var rotated = await reloaded.SaveAsync(new OperatorNotificationsUpdateRequest(
+                        snapshot.Version, snapshot.Options,
+                        SmtpUsername: "d17-m2-user", SmtpPassword: $"rotated-password-{suffix}",
+                        WebhookAuthToken: "d17-m2-tok", WebhookUserKey: $"rotated-user-key-{suffix}",
+                        WebhookNtfyTopic: "  d17-m2-topic  "), "owner-1", CancellationToken.None).ConfigureAwait(false);
+                    Assert.AreEqual(OperatorNotificationsSaveOutcome.Applied, rotated.Outcome,
+                        $"{suffix}: {rotated.Message} ({string.Join(", ", rotated.Problems?.Keys ?? [])})");
+                    var (_, delivery) = await reloaded.GetEffectiveForDeliveryAsync(CancellationToken.None).ConfigureAwait(false);
+                    Assert.AreEqual("d17-m2-user", delivery.SmtpUsername);
+                    Assert.AreEqual($"rotated-password-{suffix}", delivery.SmtpPassword);
+                    Assert.AreEqual(urlB, delivery.WebhookUrl);
+                    Assert.AreEqual("d17-m2-tok", delivery.WebhookAuthToken);
+                    Assert.AreEqual($"rotated-user-key-{suffix}", delivery.WebhookUserKey);
+                    Assert.AreEqual("d17-m2-topic", delivery.WebhookNtfyTopic);
+                }
             }
         }
 

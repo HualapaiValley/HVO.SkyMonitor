@@ -397,7 +397,11 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
             // Bind retained stored credentials to their full persisted destination identity (SMTP host+port+securityMode
             // and full canonical webhook scheme+host+port+path+query) so destination changes, path/query changes, host
             // drift, or clearing the URL never carry old credentials over to a different endpoint.
+            var smtpDestinationChanged = !ConfigurationOperatorNotificationConfigProvider.HasMatchingSmtpEndpoint(
+                currentState.Options.Smtp,
+                normalizedOptions.Smtp);
             var preserveStoredSmtpSecrets = currentState.Kind == StoreStateKind.Valid &&
+                !smtpDestinationChanged &&
                 ConfigurationOperatorNotificationConfigProvider.CanApplyProtectedSmtpCredentials(
                     currentState.Options.Smtp,
                     currentState.ProtectedBindings.SmtpEndpoint,
@@ -413,8 +417,12 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                 ? nextWebhookUrl
                 : configSecrets.WebhookUrl;
 
+            var webhookDestinationChanged = request.ClearWebhookUrl ||
+                !ConfigurationOperatorNotificationConfigProvider.HasMatchingWebhookDestination(
+                    previousEffectiveWebhookUrl,
+                    nextEffectiveWebhookUrl);
             var preserveStoredWebhookSecrets = currentState.Kind == StoreStateKind.Valid &&
-                !request.ClearWebhookUrl &&
+                !webhookDestinationChanged &&
                 ConfigurationOperatorNotificationConfigProvider.CanApplyProtectedWebhookCredentials(
                     existingProtected,
                     currentState.ProtectedBindings.WebhookDestination,
@@ -430,9 +438,10 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                 previousEffectiveSecrets,
                 configSecrets,
                 hostOptions,
-                previousEffectiveWebhookUrl,
                 nextEffectiveWebhookUrl,
                 normalizedOptions,
+                smtpDestinationChanged,
+                webhookDestinationChanged,
                 preserveStoredSmtpSecrets,
                 preserveStoredWebhookSecrets,
                 _hostSnapshots);
@@ -1021,18 +1030,16 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
         OperatorNotificationSecrets previousEffectiveSecrets,
         OperatorNotificationSecrets configSecrets,
         OperatorNotificationsOptions? hostOptions,
-        string? previousEffectiveWebhookUrl,
         string? nextEffectiveWebhookUrl,
         OperatorNotificationsOptions normalizedOptions,
+        bool smtpDestinationChanged,
+        bool webhookDestinationChanged,
         bool preserveStoredSmtpSecrets,
         bool preserveStoredWebhookSecrets,
         HostConfigurationSnapshotTracker hostSnapshots)
     {
         var problems = new Dictionary<string, string>(StringComparer.Ordinal);
 
-        var smtpDestinationChanged = !ConfigurationOperatorNotificationConfigProvider.HasMatchingSmtpEndpoint(
-            currentState.Options.Smtp,
-            normalizedOptions.Smtp);
         var hostSmtpMatchesTarget = ConfigurationOperatorNotificationConfigProvider.HasMatchingSmtpEndpoint(
             hostOptions?.Smtp,
             normalizedOptions.Smtp);
@@ -1042,10 +1049,6 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
         // non-withheld host credential into protected storage at the SAME canonical destination succeeds cleanly.
         var blockUnboundProtectedSmtp = currentState.Kind == StoreStateKind.Valid && !preserveStoredSmtpSecrets;
 
-        var webhookDestinationChanged = request.ClearWebhookUrl ||
-            !ConfigurationOperatorNotificationConfigProvider.HasMatchingWebhookDestination(
-                previousEffectiveWebhookUrl,
-                nextEffectiveWebhookUrl);
         var hostWebhookMatchesTarget = ConfigurationOperatorNotificationConfigProvider.HasMatchingWebhookDestination(
             configSecrets.WebhookUrl,
             nextEffectiveWebhookUrl);
@@ -1061,6 +1064,13 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
         bool IsBlockedSmtpCredential(string candidate, bool isPassword)
         {
             var hostField = isPassword ? HostCredentialField.SmtpPassword : HostCredentialField.SmtpUsername;
+            var protectedCredential = isPassword ? existingProtected.SmtpPassword : existingProtected.SmtpUsername;
+
+            // An identical credential already bound to this unchanged destination stays active during sibling rotation.
+            if (preserveStoredSmtpSecrets && string.Equals(candidate, protectedCredential, StringComparison.Ordinal))
+            {
+                return false;
+            }
 
             // M2 (delta17): When the live host tracker confirms the candidate is currently active, non-withheld,
             // and explicitly bound (same-provider Smtp:BoundEndpoint) to the exact target canonical SMTP endpoint,
@@ -1071,15 +1081,16 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                 return false;
             }
 
-            // Delivery withholds unbound host credentials when durable history is truncated while still
-            // using identical protected credentials bound to the current destination.
             var hostCredential = isPassword ? configSecrets.SmtpPassword : configSecrets.SmtpUsername;
-            var protectedCredential = isPassword ? existingProtected.SmtpPassword : existingProtected.SmtpUsername;
-            var preservesProtectedCredential = preserveStoredSmtpSecrets &&
+            var previousCredential = isPassword ? previousEffectiveSecrets.SmtpPassword : previousEffectiveSecrets.SmtpUsername;
+            var reusedProtected = (smtpDestinationChanged || blockUnboundProtectedSmtp) &&
                 string.Equals(candidate, protectedCredential, StringComparison.Ordinal);
-            if (smtpHistoryTruncated &&
-                (smtpDestinationChanged ||
-                 (!preservesProtectedCredential && string.Equals(candidate, hostCredential, StringComparison.Ordinal))))
+            var reusedPreviousEffective = smtpDestinationChanged &&
+                string.Equals(candidate, previousCredential, StringComparison.Ordinal);
+            var reusedBlockedHost = (!hostSmtpMatchesTarget || smtpHistoryTruncated) &&
+                string.Equals(candidate, hostCredential, StringComparison.Ordinal);
+            if (reusedProtected || reusedPreviousEffective || reusedBlockedHost ||
+                (smtpHistoryTruncated && smtpDestinationChanged))
             {
                 return true;
             }
@@ -1116,21 +1127,27 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
 
         bool IsBlockedWebhookCredential(string candidate, int fieldKind, string? rawCandidate = null)
         {
-            var (hostField, hostCredential, protectedCredential) = fieldKind switch
-            {
-                0 => (HostCredentialField.WebhookAuthToken, configSecrets.WebhookAuthToken, existingProtected.WebhookAuthToken),
-                1 => (HostCredentialField.WebhookUserKey, configSecrets.WebhookUserKey, existingProtected.WebhookUserKey),
-                _ => (HostCredentialField.WebhookNtfyTopic,
-                    OperatorNotificationValidation.NormalizeNtfyTopic(configSecrets.WebhookNtfyTopic),
-                    OperatorNotificationValidation.NormalizeNtfyTopic(existingProtected.WebhookNtfyTopic))
-            };
-
-            // M-ntfy-b / M2 (delta18): Enforce the unresolved-legacy ntfy topic history guard FIRST — BEFORE the
-            // exact-target host-binding exception — so an explicitly-bound host topic can NEVER bypass unresolved
-            // pre-v3 or unmarked v3 legacy unnormalized ntfy topic history (even on unchanged-destination saves).
+            // Unresolved legacy ntfy topic history blocks writes even with an exact destination binding.
             if (fieldKind == 2 && retired.HasLegacyUnnormalizedNtfyTopicHistory)
             {
                 return true;
+            }
+
+            var (hostField, hostCredential, protectedCredential, previousCredential) = fieldKind switch
+            {
+                0 => (HostCredentialField.WebhookAuthToken, configSecrets.WebhookAuthToken,
+                    existingProtected.WebhookAuthToken, previousEffectiveSecrets.WebhookAuthToken),
+                1 => (HostCredentialField.WebhookUserKey, configSecrets.WebhookUserKey,
+                    existingProtected.WebhookUserKey, previousEffectiveSecrets.WebhookUserKey),
+                _ => (HostCredentialField.WebhookNtfyTopic,
+                    OperatorNotificationValidation.NormalizeNtfyTopic(configSecrets.WebhookNtfyTopic),
+                    OperatorNotificationValidation.NormalizeNtfyTopic(existingProtected.WebhookNtfyTopic),
+                    OperatorNotificationValidation.NormalizeNtfyTopic(previousEffectiveSecrets.WebhookNtfyTopic))
+            };
+
+            if (preserveStoredWebhookSecrets && string.Equals(candidate, protectedCredential, StringComparison.Ordinal))
+            {
+                return false;
             }
 
             // M2 (delta17/delta18): When the live host tracker confirms the candidate is currently active,
@@ -1142,11 +1159,14 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                 return false;
             }
 
-            var preservesProtectedCredential = preserveStoredWebhookSecrets &&
+            var reusedProtected = (webhookDestinationChanged || blockUnboundProtectedWebhook) &&
                 string.Equals(candidate, protectedCredential, StringComparison.Ordinal);
-            if (webhookHistoryTruncated &&
-                (webhookDestinationChanged ||
-                 (!preservesProtectedCredential && string.Equals(candidate, hostCredential, StringComparison.Ordinal))))
+            var reusedPreviousEffective = webhookDestinationChanged &&
+                string.Equals(candidate, previousCredential, StringComparison.Ordinal);
+            var reusedBlockedHost = (!hostWebhookMatchesTarget || webhookHistoryTruncated) &&
+                string.Equals(candidate, hostCredential, StringComparison.Ordinal);
+            if (reusedProtected || reusedPreviousEffective || reusedBlockedHost ||
+                (webhookHistoryTruncated && webhookDestinationChanged))
             {
                 return true;
             }
@@ -1192,19 +1212,7 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
 
         if (!request.ClearSmtpUsername && !string.IsNullOrEmpty(request.SmtpUsername))
         {
-            var explicitlyAuthorizedForTarget = hostSnapshots.IsCurrentlyExplicitlyAuthorizedForDestination(
-                HostCredentialField.SmtpUsername, request.SmtpUsername, nextSmtpEndpoint);
-            var reusedProtected = !explicitlyAuthorizedForTarget &&
-                (smtpDestinationChanged || blockUnboundProtectedSmtp) &&
-                string.Equals(request.SmtpUsername, existingProtected.SmtpUsername, StringComparison.Ordinal);
-            var reusedPreviousEffective = !explicitlyAuthorizedForTarget &&
-                smtpDestinationChanged &&
-                string.Equals(request.SmtpUsername, previousEffectiveSecrets.SmtpUsername, StringComparison.Ordinal);
-            var reusedOtherHost = !explicitlyAuthorizedForTarget &&
-                !hostSmtpMatchesTarget &&
-                string.Equals(request.SmtpUsername, configSecrets.SmtpUsername, StringComparison.Ordinal);
-            if (reusedProtected || reusedPreviousEffective || reusedOtherHost ||
-                IsBlockedSmtpCredential(request.SmtpUsername, isPassword: false))
+            if (IsBlockedSmtpCredential(request.SmtpUsername, isPassword: false))
             {
                 problems["smtp.username"] =
                     "Enter a fresh SMTP username for this endpoint.";
@@ -1213,19 +1221,7 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
 
         if (!request.ClearSmtpPassword && !string.IsNullOrEmpty(request.SmtpPassword))
         {
-            var explicitlyAuthorizedForTarget = hostSnapshots.IsCurrentlyExplicitlyAuthorizedForDestination(
-                HostCredentialField.SmtpPassword, request.SmtpPassword, nextSmtpEndpoint);
-            var reusedProtected = !explicitlyAuthorizedForTarget &&
-                (smtpDestinationChanged || blockUnboundProtectedSmtp) &&
-                string.Equals(request.SmtpPassword, existingProtected.SmtpPassword, StringComparison.Ordinal);
-            var reusedPreviousEffective = !explicitlyAuthorizedForTarget &&
-                smtpDestinationChanged &&
-                string.Equals(request.SmtpPassword, previousEffectiveSecrets.SmtpPassword, StringComparison.Ordinal);
-            var reusedOtherHost = !explicitlyAuthorizedForTarget &&
-                !hostSmtpMatchesTarget &&
-                string.Equals(request.SmtpPassword, configSecrets.SmtpPassword, StringComparison.Ordinal);
-            if (reusedProtected || reusedPreviousEffective || reusedOtherHost ||
-                IsBlockedSmtpCredential(request.SmtpPassword, isPassword: true))
+            if (IsBlockedSmtpCredential(request.SmtpPassword, isPassword: true))
             {
                 problems["smtp.password"] =
                     "Enter a fresh SMTP password for this endpoint.";
@@ -1234,19 +1230,7 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
 
         if (!request.ClearWebhookAuthToken && !string.IsNullOrEmpty(request.WebhookAuthToken))
         {
-            var explicitlyAuthorizedForTarget = hostSnapshots.IsCurrentlyExplicitlyAuthorizedForDestination(
-                HostCredentialField.WebhookAuthToken, request.WebhookAuthToken, nextWebhookDestination);
-            var reusedProtected = !explicitlyAuthorizedForTarget &&
-                (webhookDestinationChanged || blockUnboundProtectedWebhook) &&
-                string.Equals(request.WebhookAuthToken, existingProtected.WebhookAuthToken, StringComparison.Ordinal);
-            var reusedPreviousEffective = !explicitlyAuthorizedForTarget &&
-                webhookDestinationChanged &&
-                string.Equals(request.WebhookAuthToken, previousEffectiveSecrets.WebhookAuthToken, StringComparison.Ordinal);
-            var reusedOtherHost = !explicitlyAuthorizedForTarget &&
-                !hostWebhookMatchesTarget &&
-                string.Equals(request.WebhookAuthToken, configSecrets.WebhookAuthToken, StringComparison.Ordinal);
-            if (reusedProtected || reusedPreviousEffective || reusedOtherHost ||
-                IsBlockedWebhookCredential(request.WebhookAuthToken, fieldKind: 0))
+            if (IsBlockedWebhookCredential(request.WebhookAuthToken, fieldKind: 0))
             {
                 problems["webhook.authToken"] =
                     "Enter a fresh webhook auth token for this destination.";
@@ -1255,19 +1239,7 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
 
         if (!request.ClearWebhookUserKey && !string.IsNullOrEmpty(request.WebhookUserKey))
         {
-            var explicitlyAuthorizedForTarget = hostSnapshots.IsCurrentlyExplicitlyAuthorizedForDestination(
-                HostCredentialField.WebhookUserKey, request.WebhookUserKey, nextWebhookDestination);
-            var reusedProtected = !explicitlyAuthorizedForTarget &&
-                (webhookDestinationChanged || blockUnboundProtectedWebhook) &&
-                string.Equals(request.WebhookUserKey, existingProtected.WebhookUserKey, StringComparison.Ordinal);
-            var reusedPreviousEffective = !explicitlyAuthorizedForTarget &&
-                webhookDestinationChanged &&
-                string.Equals(request.WebhookUserKey, previousEffectiveSecrets.WebhookUserKey, StringComparison.Ordinal);
-            var reusedOtherHost = !explicitlyAuthorizedForTarget &&
-                !hostWebhookMatchesTarget &&
-                string.Equals(request.WebhookUserKey, configSecrets.WebhookUserKey, StringComparison.Ordinal);
-            if (reusedProtected || reusedPreviousEffective || reusedOtherHost ||
-                IsBlockedWebhookCredential(request.WebhookUserKey, fieldKind: 1))
+            if (IsBlockedWebhookCredential(request.WebhookUserKey, fieldKind: 1))
             {
                 problems["webhook.userKey"] =
                     "Enter a fresh webhook user key for this destination.";
@@ -1277,20 +1249,7 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
         var trimmedNtfyTopic = OperatorNotificationValidation.NormalizeNtfyTopic(request.WebhookNtfyTopic);
         if (!request.ClearWebhookNtfyTopic && !string.IsNullOrEmpty(trimmedNtfyTopic))
         {
-            var explicitlyAuthorizedForTarget = !retired.HasLegacyUnnormalizedNtfyTopicHistory &&
-                hostSnapshots.IsCurrentlyExplicitlyAuthorizedForDestination(
-                    HostCredentialField.WebhookNtfyTopic, trimmedNtfyTopic, nextWebhookDestination);
-            var reusedProtected = !explicitlyAuthorizedForTarget &&
-                (webhookDestinationChanged || blockUnboundProtectedWebhook) &&
-                string.Equals(trimmedNtfyTopic, OperatorNotificationValidation.NormalizeNtfyTopic(existingProtected.WebhookNtfyTopic), StringComparison.Ordinal);
-            var reusedPreviousEffective = !explicitlyAuthorizedForTarget &&
-                webhookDestinationChanged &&
-                string.Equals(trimmedNtfyTopic, OperatorNotificationValidation.NormalizeNtfyTopic(previousEffectiveSecrets.WebhookNtfyTopic), StringComparison.Ordinal);
-            var reusedOtherHost = !explicitlyAuthorizedForTarget &&
-                !hostWebhookMatchesTarget &&
-                string.Equals(trimmedNtfyTopic, OperatorNotificationValidation.NormalizeNtfyTopic(configSecrets.WebhookNtfyTopic), StringComparison.Ordinal);
-            if (reusedProtected || reusedPreviousEffective || reusedOtherHost ||
-                IsBlockedWebhookCredential(trimmedNtfyTopic, fieldKind: 2, request.WebhookNtfyTopic))
+            if (IsBlockedWebhookCredential(trimmedNtfyTopic, fieldKind: 2, request.WebhookNtfyTopic))
             {
                 problems["webhook.ntfyTopic"] = retired.HasLegacyUnnormalizedNtfyTopicHistory
                     ? "The ntfy topic cannot be verified because stored credential history is incomplete."
