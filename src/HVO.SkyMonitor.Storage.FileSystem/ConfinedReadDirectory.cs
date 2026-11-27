@@ -14,12 +14,15 @@ public readonly record struct LinuxDirectoryLocation(uint DeviceMajor, uint Devi
          candidate.FileSystemPath.StartsWith(FileSystemPath == "/" ? "/" : FileSystemPath + "/", StringComparison.Ordinal));
 }
 
-/// <summary>Opens single-link regular files relative to a pinned, physical Unix directory.</summary>
+/// <summary>Opens single-link regular files relative to a pinned, physical Unix directory, within its mount on Linux.</summary>
 public sealed class ConfinedReadDirectory : IDisposable
 {
     private const ushort FileTypeMask = 0xf000;
     private const ushort RegularFile = 0x8000;
+    private const uint MountIdMask = 0x1000; // STATX_MNT_ID
+    private const int EmptyPath = 0x1000; // AT_EMPTY_PATH
     private readonly SafeFileHandle _directory;
+    private readonly (uint Major, uint Minor, ulong Id) _linuxMount;
     private readonly int _fileFlags;
     private readonly string _path;
 
@@ -49,6 +52,8 @@ public sealed class ConfinedReadDirectory : IDisposable
                 current.Dispose();
                 current = next;
             }
+            if (OperatingSystem.IsLinux())
+                _linuxMount = MountOf(ReadLinuxStat(current, MountIdMask));
             _directory = current;
         }
         catch
@@ -68,7 +73,7 @@ public sealed class ConfinedReadDirectory : IDisposable
         var handle = CheckedHandle(OpenAt(_directory, name, _fileFlags), name);
         try
         {
-            if (!IsSingleLinkRegularFile(handle))
+            if (!IsSingleLinkRegularFile(handle, name))
                 throw new IOException($"'{name}' must be a regular file with one hard link.");
             return new FileStream(handle, FileAccess.Read);
         }
@@ -83,20 +88,35 @@ public sealed class ConfinedReadDirectory : IDisposable
         ? new SafeFileHandle((nint)descriptor, ownsHandle: true)
         : throw new IOException($"Cannot open '{name}' without following links (errno {Marshal.GetLastPInvokeError()}).");
 
-    private static bool IsSingleLinkRegularFile(SafeFileHandle handle)
+    private bool IsSingleLinkRegularFile(SafeFileHandle handle, string name)
     {
         if (OperatingSystem.IsLinux())
-        {
-            const uint typeAndLinkCount = 0x5; // STATX_TYPE | STATX_NLINK
-            return Statx(handle, "", 0x1000, typeAndLinkCount, out var value) == 0 &&
-                (value.Mask & typeAndLinkCount) == typeAndLinkCount &&
-                (value.Mode & FileTypeMask) == RegularFile && value.LinkCount == 1;
-        }
+            return IsSingleLinkRegularLinuxFile(handle, _linuxMount, name);
 
         var result = UsesDarwinInode64Symbol(RuntimeInformation.ProcessArchitecture)
             ? FstatMacInode64(handle, out var mac)
             : FstatMac(handle, out mac);
         return result == 0 && (mac.Mode & FileTypeMask) == RegularFile && mac.LinkCount == 1;
+    }
+
+    private static LinuxStatx ReadLinuxStat(SafeFileHandle handle, uint mask)
+    {
+        if (Statx(handle, "", EmptyPath, mask, out var status) != 0 || (status.Mask & mask) != mask)
+            throw new IOException("Cannot identify the pinned filesystem entry.");
+        return status;
+    }
+
+    private static (uint Major, uint Minor, ulong Id) MountOf(LinuxStatx status) =>
+        (status.DeviceMajor, status.DeviceMinor, status.MountId);
+
+    internal static bool IsSingleLinkRegularLinuxFile(SafeFileHandle handle, (uint Major, uint Minor, ulong Id) directoryMount, string name)
+    {
+        const uint typeAndLinkCount = 0x5; // STATX_TYPE | STATX_NLINK
+        var value = ReadLinuxStat(handle, typeAndLinkCount | MountIdMask);
+        // Device numbers alone match across a bind mount of a file from the same filesystem.
+        if (directoryMount != MountOf(value))
+            throw new IOException($"'{name}' is on a different mount from the pinned directory.");
+        return (value.Mode & FileTypeMask) == RegularFile && value.LinkCount == 1;
     }
 
     internal static bool UsesDarwinInode64Symbol(Architecture architecture) => architecture switch
@@ -112,10 +132,8 @@ public sealed class ConfinedReadDirectory : IDisposable
         if (!OperatingSystem.IsLinux())
             throw new PlatformNotSupportedException("Mount identity requires Linux.");
 
-        const uint inodeAndMountId = 0x1100; // STATX_INO | STATX_MNT_ID
-        if (Statx(_directory, "", 0x1000, inodeAndMountId, out var status) != 0 ||
-            (status.Mask & inodeAndMountId) != inodeAndMountId)
-            throw new IOException("Cannot identify the pinned directory's inode and mount.");
+        const uint inodeMask = 0x100; // STATX_INO
+        var status = ReadLinuxStat(_directory, inodeMask | MountIdMask);
 
         var mountId = status.MountId.ToString(CultureInfo.InvariantCulture);
         foreach (var line in File.ReadLines("/proc/self/mountinfo"))

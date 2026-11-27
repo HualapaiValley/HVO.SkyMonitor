@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
 
 namespace HVO.SkyMonitor.Storage.FileSystem.Tests;
 
@@ -17,14 +18,48 @@ public sealed class ConfinedReadDirectoryTests
     public void Cleanup() => _root.Delete(recursive: true);
 
     [TestMethod]
+    [SupportedOSPlatform("linux")]
     public void OpenRead_ReturnsTheContentsOfASingleLinkRegularFile()
     {
-        File.WriteAllText(Path.Combine(_root.FullName, "regular"), "confined contents");
+        var snapshot = _root.CreateSubdirectory("read-only-snapshot");
+        var path = Path.Combine(snapshot.FullName, "regular");
+        File.WriteAllText(path, "confined contents");
+        File.SetUnixFileMode(path, UnixFileMode.UserRead);
+        File.SetUnixFileMode(snapshot.FullName, UnixFileMode.UserRead | UnixFileMode.UserExecute);
 
-        using var root = new ConfinedReadDirectory(_root.FullName);
-        using var reader = new StreamReader(root.OpenRead("regular"));
+        try
+        {
+            using var root = new ConfinedReadDirectory(snapshot.FullName);
+            using var reader = new StreamReader(root.OpenRead("regular"));
 
-        Assert.AreEqual("confined contents", reader.ReadToEnd());
+            Assert.AreEqual("confined contents", reader.ReadToEnd());
+        }
+        finally
+        {
+            File.SetUnixFileMode(snapshot.FullName, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+    }
+
+    [TestMethod]
+    [DataRow(true, DisplayName = "same-device bind mount has a different mount ID")]
+    [DataRow(false, DisplayName = "entry device differs from the pinned device")]
+    public void OpenedRegularFileMustMatchBothPinnedDeviceAndMount(bool differentMount)
+    {
+        const string name = "regular";
+        var path = Path.Combine(_root.FullName, name);
+        File.WriteAllText(path, "confined contents");
+        using var directory = new ConfinedReadDirectory(_root.FullName);
+        using var file = File.OpenHandle(path);
+        var location = directory.ReadLinuxLocation();
+
+        Assert.IsTrue(ConfinedReadDirectory.IsSingleLinkRegularLinuxFile(file,
+            (location.DeviceMajor, location.DeviceMinor, location.MountId), name));
+
+        var otherMount = differentMount
+            ? (location.DeviceMajor, location.DeviceMinor, location.MountId ^ 1UL)
+            : (location.DeviceMajor, location.DeviceMinor ^ 1U, location.MountId);
+        StringAssert.Contains(Assert.ThrowsExactly<IOException>(() =>
+            ConfinedReadDirectory.IsSingleLinkRegularLinuxFile(file, otherMount, name)).Message, "different mount");
     }
 
     [TestMethod]

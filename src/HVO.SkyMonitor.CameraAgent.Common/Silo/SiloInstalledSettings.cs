@@ -1,3 +1,4 @@
+using System.Globalization;
 using HVO.SkyMonitor.Deployment.Contracts;
 using Microsoft.Extensions.Configuration;
 
@@ -42,6 +43,9 @@ internal sealed class SiloInstalledSettings
         MaximumStagedFiles = section.GetValue("MaximumStagedFiles", 4096);
         if (MaximumStagedBytes <= 0 || MaximumStagedFiles is < 2 or int.MaxValue)
             throw new InvalidOperationException("The installed Silo spool requires a positive byte limit and room for an admission pair.");
+
+        DisplayRetentionDays = ReadRetentionDays(section["Retention:DisplayDays"]);
+        MetadataRetentionDays = ReadRetentionDays(section["Retention:MetadataDays"]);
     }
 
     public SiloStorageBinding Binding { get; }
@@ -55,6 +59,15 @@ internal sealed class SiloInstalledSettings
     public long MaximumStagedBytes { get; }
 
     public int MaximumStagedFiles { get; }
+
+    public int? DisplayRetentionDays { get; }
+
+    public int? MetadataRetentionDays { get; }
+
+    // Bound the value to the span of DateTimeOffset and treat unusable policy as unavailable.
+    private static int? ReadRetentionDays(string? value) =>
+        int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var days) &&
+        days > 0 && days <= (DateTimeOffset.MaxValue - DateTimeOffset.MinValue).Days ? days : null;
 
     public static SiloInstalledSettings Read(IConfigurationSection configuration) => new(configuration);
 }

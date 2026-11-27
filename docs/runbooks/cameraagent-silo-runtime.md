@@ -839,6 +839,7 @@ journals, and in-flight work outside that directory.
 Use a flat directory. Each stem in the selection names one `<stem>.png` and one `<stem>.json`. Choose
 key-safe names and source IDs using ASCII letters, digits, dots, underscores or hyphens, with a non-dot first
 character. The importer opens only allowlisted filenames and refuses symbolic links and hard-linked input files.
+On Linux, the selection, PNGs, and sidecars must all be on the snapshot directory's mount.
 Limits are eight pairs per selection, 8 MiB and 16 megapixels per static decodable PNG, 16 KiB per sidecar
 and 32 MiB total selected payload.
 Use a lower budget for the fixture you need. Selection and sidecar JSON use the exact schemas below.
@@ -915,7 +916,9 @@ SELECTION_SHA=$(jq -er '.selectionSha256' "$REPORTS/dry-run.json")
   > "$REPORTS/import.json"
 ```
 
-The inventory reads the snapshot only. The dry run also reads free space on the State and Silo volumes.
+The inventory reads the snapshot only. The dry run checks the same paused target, writer receipts, and Silo
+journal as publication. It uses scratch copies of SQLite databases outside the fixture roots and reads free
+space on the State and Silo volumes. It leaves State, the writer lock and spool, and the bucket untouched.
 `maximumBytes` charges the logical image and sidecar lengths in selection order, including already published
 pairs on a retry. `minimumFreeBytes` is the reserve on both volumes. Exact already-imported pairs are verified
 without a free-space charge. Before each pending pair, publication checks both
@@ -929,13 +932,17 @@ It includes the mode, selection digest, source ID, evaluation time, capture rang
 planned bytes and, when measured, initial free space. Each record reports its stem, status and any reason.
 Supported rows add source facts, Silo identities, roles, measured lengths and digests, and any usable dependency.
 The object rows report the target retention class (`display` for the PNG and `metadata` for its sidecar).
-The target's immediate age-expiry verdict is unavailable to this command, so each object reports
-`immediatelyAgeEligible: null` and `ageEligibilityReason: target-retention-policy-unavailable`.
+The target can set positive integer age limits in days at `CameraAgent:Silo:Retention:DisplayDays` and
+`CameraAgent:Silo:Retention:MetadataDays`. The dry run and publication compare each source capture's end
+time with the report's evaluation time. An age at or beyond its class limit reports
+`immediatelyAgeEligible: true` with `target-retention-age-reached`. A younger input reports
+`false` with `within-target-retention-age`. Inventory and any class with a missing or invalid target limit
+report `null` with `target-retention-policy-unavailable`. The verdict covers age eligibility only.
 The legacy export field `displayRetentionDays` is accepted for compatibility and has no effect on the verdict.
 
-Inventory rows are `selected`, dry-run rows are `would-import`, and successful publications are `imported`.
-A `skipped` row states why, including `already-imported` for an exact retry. A `failed` row identifies a refused
-source or publication. Invalid requests can return a top-level `refused` with a reason. Exit code 0 means all
+Inventory rows are `selected`, new dry-run rows are `would-import`, and successful publications are `imported`.
+A `skipped` row states why, including `already-imported` for a verified exact retry in either target mode.
+A `failed` row identifies a refused source or publication. Invalid requests can return a top-level `refused` with a reason. Exit code 0 means all
 rows completed as requested or were already imported. Exit code 2 means at least one record needs attention
 or the command refused the request.
 

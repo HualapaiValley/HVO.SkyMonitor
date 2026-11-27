@@ -56,10 +56,8 @@ internal sealed class SiloPublisher(
         {
             if (await state.ReadGroupAsync(draft.GroupId, draft.RevisionId, cancellationToken).ConfigureAwait(false) is { } existing)
             {
-                return string.Equals(existing.DraftSha256, sha, StringComparison.Ordinal)
-                    ? false
-                    : throw new SiloConflictException("silo.revision-conflict",
-                        $"Group revision {draft.GroupId}/{draft.RevisionId} is already staged with different content.");
+                RequireMatchingDraft(draft, existing.DraftSha256, sha);
+                return false;
             }
             if (await catalog.Index.ReadPublicationAsync(draft.GroupId, draft.RevisionId, cancellationToken).ConfigureAwait(false) is not null)
             {
@@ -107,6 +105,13 @@ internal sealed class SiloPublisher(
         {
             _gate.Release();
         }
+    }
+
+    internal static void RequireMatchingDraft(SiloGroupDraft draft, string existingSha256, string sha256)
+    {
+        if (!string.Equals(existingSha256, sha256, StringComparison.Ordinal))
+            throw new SiloConflictException("silo.revision-conflict",
+                $"Group revision {draft.GroupId}/{draft.RevisionId} is already staged with different content.");
     }
 
     internal static void ValidateDraft(SiloGroupDraft draft)

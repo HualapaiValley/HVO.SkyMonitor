@@ -21,8 +21,13 @@ internal sealed record SiloFixtureObject(string File, string Role, long Length, 
     SiloRetentionClass RetentionClass)
 {
     [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
-    public bool? ImmediatelyAgeEligible { get; }
-    public string AgeEligibilityReason { get; } = "target-retention-policy-unavailable";
+    public bool? ImmediatelyAgeEligible { get; init; }
+    public string AgeEligibilityReason => ImmediatelyAgeEligible switch
+    {
+        true => "target-retention-age-reached",
+        false => "within-target-retention-age",
+        null => "target-retention-policy-unavailable"
+    };
 }
 
 internal sealed record SiloFixtureRecord(string? Stem, string Status, string? Reason = null,
@@ -53,6 +58,29 @@ internal sealed record SiloFixtureInventory(SiloFixtureSelection Selection, stri
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
         AllowDuplicateProperties = false
     };
+
+    internal SiloFixtureInventory WithTargetRetention(SiloInstalledSettings settings) =>
+        this with { Records = Records.Select(record => EvaluateRecord(record, settings)).ToArray() };
+
+    private SiloFixtureRecord EvaluateRecord(SiloFixtureRecord record, SiloInstalledSettings settings)
+    {
+        if (record.Source is not { } source || record.Objects is not { } objects)
+            return record;
+
+        var age = AsOfUtc - source.CapturedToUtc;
+        return record with { Objects = objects.Select(item => EvaluateObject(item, age, settings)).ToArray() };
+    }
+
+    private static SiloFixtureObject EvaluateObject(SiloFixtureObject item, TimeSpan age, SiloInstalledSettings settings)
+    {
+        var days = item.RetentionClass switch
+        {
+            SiloRetentionClass.Display => settings.DisplayRetentionDays,
+            SiloRetentionClass.Metadata => settings.MetadataRetentionDays,
+            _ => null
+        };
+        return item with { ImmediatelyAgeEligible = days is { } limit ? age >= TimeSpan.FromDays(limit) : null };
+    }
 
     public static async ValueTask<SiloFixtureInventory> ReadAsync(ConfinedReadDirectory source, string selectionFile,
         DateTimeOffset asOfUtc, CancellationToken cancellationToken)

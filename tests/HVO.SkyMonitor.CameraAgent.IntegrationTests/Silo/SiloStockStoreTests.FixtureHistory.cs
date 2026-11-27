@@ -56,6 +56,8 @@ public sealed partial class SiloStockStoreTests
         var pause = Guid.NewGuid();
         var settings = InstalledSettings(binding, Endpoint(container), writer, pause, RandomHex(24));
         settings["CameraAgent:RawIngressRoot"] = rawRoot;
+        settings["CameraAgent:Silo:Retention:DisplayDays"] = "30";
+        settings["CameraAgent:Silo:Retention:MetadataDays"] = "10000";
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(settings).Build();
         await FirstBootStateInitializer.InitializeAsync(rawRoot, 1, new(pause), token).ConfigureAwait(false);
 
@@ -85,9 +87,16 @@ public sealed partial class SiloStockStoreTests
         Assert.IsTrue(Directory.EnumerateFiles(copyRoot, "*", SearchOption.AllDirectories).Any());
         using var copiedBucket = await RunFixtureCommandAsync(wrongVolume, configuration, token, expectedExitCode: 2).ConfigureAwait(false);
         Assert.AreEqual("fixture-silo-volume-mismatch", copiedBucket.RootElement.GetProperty("reason").GetString());
-        using var dryRun = await RunFixtureCommandAsync(arguments, configuration, token).ConfigureAwait(false);
+        var bucketPath = Path.Combine(dataRoot, binding.Bucket);
+        using var dryRun = await RunUnchangedDryRunAsync(arguments, configuration, rawRoot).ConfigureAwait(false);
         var sha = dryRun.RootElement.GetProperty("selectionSha256").GetString()!;
-        Assert.AreEqual("would-import", dryRun.RootElement.GetProperty("records")[0].GetProperty("status").GetString());
+        var forecast = dryRun.RootElement.GetProperty("records")[0];
+        Assert.AreEqual("would-import", forecast.GetProperty("status").GetString());
+        var objects = forecast.GetProperty("objects");
+        Assert.IsTrue(objects[0].GetProperty("immediatelyAgeEligible").GetBoolean());
+        Assert.AreEqual("target-retention-age-reached", objects[0].GetProperty("ageEligibilityReason").GetString());
+        Assert.IsFalse(objects[1].GetProperty("immediatelyAgeEligible").GetBoolean());
+        Assert.AreEqual("within-target-retention-age", objects[1].GetProperty("ageEligibilityReason").GetString());
         Assert.IsFalse(Directory.Exists(Path.Combine(rawRoot, ".silo")), "Dry run must leave the writer State unopened.");
         var command = new[] { SiloFixtureImportCommand.Argument, "publish", source, selectionFile, dataRoot, sha };
         using var publication = await RunFixtureCommandAsync(command, configuration, token).ConfigureAwait(false);
@@ -101,13 +110,26 @@ public sealed partial class SiloStockStoreTests
         await File.WriteAllBytesAsync(Path.Combine(source, "other.selection.json"), alternateSelection, token).ConfigureAwait(false);
         var leftover = Path.Combine(rawRoot, ".silo", SiloStateRoot.SpoolDirectoryName, "unclaimed.tmp");
         await File.WriteAllTextAsync(leftover, "still present after refusal", token).ConfigureAwait(false);
+        configuration["CameraAgent:Silo:Retention:DisplayDays"] = null;
+        using var forecastRetry = await RunUnchangedDryRunAsync(arguments, configuration, rawRoot).ConfigureAwait(false);
+        var retryRow = forecastRetry.RootElement.GetProperty("records")[0];
+        Assert.AreEqual("skipped", retryRow.GetProperty("status").GetString());
+        Assert.AreEqual(retry.RootElement.GetProperty("records")[0].GetProperty("reason").GetString(),
+            retryRow.GetProperty("reason").GetString());
+        var unconfigured = retryRow.GetProperty("objects")[0];
+        Assert.AreEqual(JsonValueKind.Null, unconfigured.GetProperty("immediatelyAgeEligible").ValueKind);
+        Assert.AreEqual("target-retention-policy-unavailable", unconfigured.GetProperty("ageEligibilityReason").GetString());
+
         var before = SnapshotFixtureState(rawRoot);
+        var unrelatedDryRun = new[] { SiloFixtureImportCommand.Argument, "dry-run", source, "other.selection.json", dataRoot };
         var unrelatedCommand = new[]
         {
             SiloFixtureImportCommand.Argument, "publish", source, "other.selection.json", dataRoot, SiloHash.Sha256(alternateSelection)
         };
         using var unrelated = await RunFixtureCommandAsync(unrelatedCommand, configuration, token, expectedExitCode: 2).ConfigureAwait(false);
         Assert.AreEqual("fixture-target-has-other-history", unrelated.RootElement.GetProperty("reason").GetString());
+        using var forecastUnrelated = await RunUnchangedDryRunAsync(unrelatedDryRun, configuration, rawRoot, 2).ConfigureAwait(false);
+        Assert.AreEqual(unrelated.RootElement.GetProperty("reason").GetString(), forecastUnrelated.RootElement.GetProperty("reason").GetString());
         CollectionAssert.AreEqual(before, SnapshotFixtureState(rawRoot));
 
         // A reset State has no writer history, while the same authenticated endpoint still holds the first import's journal.
@@ -118,13 +140,14 @@ public sealed partial class SiloStockStoreTests
         var resetSiloState = Path.Combine(resetRoot, ".silo");
         Assert.IsFalse(Directory.Exists(resetSiloState));
         var resetBefore = SnapshotFixtureState(resetRoot);
-        var bucketPath = Path.Combine(dataRoot, binding.Bucket);
         var bucketBefore = SnapshotFixtureState(bucketPath);
         var sourceBefore = SnapshotFixtureState(source);
         using var remoteHistory = await RunFixtureCommandAsync(unrelatedCommand, resetConfiguration, token, expectedExitCode: 2)
             .ConfigureAwait(false);
         Assert.AreEqual("refused", remoteHistory.RootElement.GetProperty("status").GetString());
         Assert.AreEqual("fixture-target-has-other-history", remoteHistory.RootElement.GetProperty("reason").GetString());
+        using var forecastRemote = await RunUnchangedDryRunAsync(arguments, resetConfiguration, resetRoot, 2).ConfigureAwait(false);
+        Assert.AreEqual(remoteHistory.RootElement.GetProperty("reason").GetString(), forecastRemote.RootElement.GetProperty("reason").GetString());
         Assert.IsFalse(Directory.Exists(resetSiloState), "Remote history must be refused before creating writer State, lock, or spool.");
         CollectionAssert.AreEqual(resetBefore, SnapshotFixtureState(resetRoot), "The reset State must remain unchanged.");
         CollectionAssert.AreEqual(bucketBefore, SnapshotFixtureState(bucketPath), "The Silo bucket must remain unchanged.");
@@ -151,6 +174,18 @@ public sealed partial class SiloStockStoreTests
         CollectionAssert.AreEqual(image, await File.ReadAllBytesAsync(Path.Combine(source, "frame.png"), token).ConfigureAwait(false));
         CollectionAssert.AreEqual(sidecar, await File.ReadAllBytesAsync(Path.Combine(source, "frame.json"), token).ConfigureAwait(false));
         CollectionAssert.AreEqual(selection, await File.ReadAllBytesAsync(Path.Combine(source, selectionFile), token).ConfigureAwait(false));
+
+        async Task<JsonDocument> RunUnchangedDryRunAsync(string[] args, IConfiguration target, string state, int expectedExitCode = 0)
+        {
+            var initialState = SnapshotFixtureState(state);
+            var initialBucket = SnapshotFixtureState(bucketPath);
+            var initialSource = SnapshotFixtureState(source);
+            var result = await RunFixtureCommandAsync(args, target, token, expectedExitCode).ConfigureAwait(false);
+            CollectionAssert.AreEqual(initialState, SnapshotFixtureState(state), "Dry run must leave State, lock, and spool unchanged.");
+            CollectionAssert.AreEqual(initialBucket, SnapshotFixtureState(bucketPath), "Dry run must leave the bucket unchanged.");
+            CollectionAssert.AreEqual(initialSource, SnapshotFixtureState(source), "Dry run must leave the source unchanged.");
+            return result;
+        }
     }
 
     private static string[] SnapshotFixtureState(string stateRoot) =>

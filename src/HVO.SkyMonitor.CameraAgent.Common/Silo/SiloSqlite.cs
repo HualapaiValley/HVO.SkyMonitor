@@ -181,12 +181,14 @@ internal static class SiloSqlite
     /// when there is no database or it is empty; refuses any other format or binding. The original is never opened. The
     /// copy is named for the file it inspects (<c>&lt;file&gt;.inspect-&lt;id&gt;</c>), so scratch a crash leaves is
     /// attributable and recovery removes it. A WAL still beside another name, as an interrupted retirement leaves it, is
-    /// named explicitly.
+    /// named explicitly. An optional copy callback runs after the validation connection closes, so it can reopen the
+    /// scratch database with the normal catalog APIs.
     /// </summary>
     public static async ValueTask<bool> InspectAsync(
         string path, SiloSqliteFormat format, IReadOnlyDictionary<string, string> metadata, string scratchDirectory,
         CancellationToken cancellationToken, string? walPath = null,
-        Func<SqliteConnection, SqliteTransaction, CancellationToken, ValueTask>? inspect = null)
+        Func<SqliteConnection, SqliteTransaction, CancellationToken, ValueTask>? inspect = null,
+        Func<string, CancellationToken, ValueTask>? inspectCopy = null)
     {
         if (!File.Exists(path))
         {
@@ -211,8 +213,10 @@ internal static class SiloSqlite
                     return false;
                 if (inspect is not null)
                     await inspect(connection, transaction, cancellationToken).ConfigureAwait(false);
-                return true;
             }
+            if (inspectCopy is not null)
+                await inspectCopy(copy, cancellationToken).ConfigureAwait(false);
+            return true;
         }
         finally
         {

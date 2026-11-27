@@ -32,6 +32,22 @@ internal sealed class SiloFixtureImport(ConfinedReadDirectory source, SiloFixtur
     // Charge both copies even when the two roots are on separate disks. Include filesystem, object and journal overhead.
     private const long PublicationOverheadBytes = 1024 * 1024;
 
+    internal ValueTask<SiloFixtureReport> RunForecastAsync(SiloFixtureTarget target, SiloCatalog? catalog,
+        Func<SiloFixtureCapacity> readCapacity, CancellationToken cancellationToken)
+    {
+        var pending = target.Pending;
+        return RunAsync(SiloFixtureMode.DryRun, readCapacity, ForecastAsync, cancellationToken);
+
+        async ValueTask<bool> ForecastAsync(SiloGroupDraft draft,
+            Func<SiloDraftMember, CancellationToken, ValueTask<Stream>> _, Action requireHeadroom, CancellationToken token)
+        {
+            var wouldImport = await ForecastPairAsync(target, pending, catalog, draft, requireHeadroom, token).ConfigureAwait(false);
+            if (wouldImport && pending?.GroupId == draft.GroupId)
+                pending = null;
+            return wouldImport;
+        }
+    }
+
     public async ValueTask<SiloFixtureReport> RunAsync(SiloFixtureMode mode, Func<SiloFixtureCapacity>? readCapacity,
         SiloFixturePublish? publish,
         CancellationToken cancellationToken)
@@ -62,9 +78,6 @@ internal sealed class SiloFixtureImport(ConfinedReadDirectory source, SiloFixtur
             var charge = 2 * length + PublicationOverheadBytes;
             if (length > selection.MaximumBytes - plannedBytes)
                 stop = "byte-limit";
-            else if (mode == SiloFixtureMode.DryRun &&
-                !initialCapacity!.Allows(selection.MinimumFreeBytes, charge + projectedCharge))
-                stop = ReserveFailure;
 
             if (stop is not null)
             {
@@ -78,11 +91,10 @@ internal sealed class SiloFixtureImport(ConfinedReadDirectory source, SiloFixtur
             }
 
             plannedBytes += length;
-            if (mode == SiloFixtureMode.DryRun)
-                projectedCharge += charge;
-
             var result = await ProcessAsync(mode, record, publish, RequireHeadroom, cancellationToken).ConfigureAwait(false);
             output.Add(result);
+            if (result.Status == "would-import")
+                projectedCharge += charge;
             if (result.Reason is ReserveFailure or ProbeFailure)
                 plannedBytes -= length;
             if (result.Reason == ReserveFailure)
@@ -100,6 +112,13 @@ internal sealed class SiloFixtureImport(ConfinedReadDirectory source, SiloFixtur
 
             void RequireHeadroom()
             {
+                if (mode == SiloFixtureMode.DryRun)
+                {
+                    if (!initialCapacity!.Allows(selection.MinimumFreeBytes, charge + projectedCharge))
+                        throw new SiloConflictException(ReserveFailure, "Publication would cross the free-space reserve.");
+                    return;
+                }
+
                 SiloFixtureCapacity capacity;
                 try
                 {
@@ -129,9 +148,6 @@ internal sealed class SiloFixtureImport(ConfinedReadDirectory source, SiloFixtur
     {
         if (mode == SiloFixtureMode.Inventory)
             return record;
-        if (mode == SiloFixtureMode.DryRun)
-            return record with { Status = "would-import" };
-
         var image = record.Objects![0];
         var sidecar = record.Objects[1];
         byte[] imageBytes;
@@ -158,7 +174,8 @@ internal sealed class SiloFixtureImport(ConfinedReadDirectory source, SiloFixtur
             var added = await publish!(draft, (member, token) => SiloArtifactStorage.OpenMemoryAsync(
                 member.ArtifactRevision == SiloFixtureInventory.ImageRevision ? imageBytes : sidecarBytes, token),
                 requireHeadroom, cancellationToken).ConfigureAwait(false);
-            return record with { Status = added ? "imported" : "skipped", Reason = added ? null : "already-imported" };
+            var status = added ? (mode == SiloFixtureMode.DryRun ? "would-import" : "imported") : "skipped";
+            return record with { Status = status, Reason = added ? null : "already-imported" };
         }
         catch (SiloConflictException exception)
         {
@@ -207,9 +224,7 @@ internal sealed class SiloFixtureImport(ConfinedReadDirectory source, SiloFixtur
         var wasVisible = await state.ReachedFirstP4Async(draft.GroupId, draft.RevisionId, cancellationToken).ConfigureAwait(false);
         if (!wasVisible)
         {
-            var pending = await state.ReadPendingAsync(cancellationToken).ConfigureAwait(false);
-            if (pending is not null && (pending.GroupId != draft.GroupId || pending.RevisionId != draft.RevisionId))
-                throw new SiloConflictException("fixture-other-publication-pending", "Another publication is still pending.");
+            RequireCompatiblePending(draft, await state.ReadPendingAsync(cancellationToken).ConfigureAwait(false));
             requireHeadroom();
         }
 
@@ -217,9 +232,46 @@ internal sealed class SiloFixtureImport(ConfinedReadDirectory source, SiloFixtur
         var outcome = await publisher.PublishAsync(draft.GroupId, draft.RevisionId, cancellationToken).ConfigureAwait(false);
         if (outcome.BlockedCode is { } conflict)
             throw new SiloConflictException(conflict, "Silo could not settle the fixture publication.");
-        if (outcome.State != SiloStagedState.Visible ||
+        if (outcome.State != SiloStagedState.Visible)
+            throw new SiloConflictException("fixture-reopen-failed", "The fixture did not pass exact Silo reopen verification.");
+        await RequireReopenAsync(catalog, draft, cancellationToken).ConfigureAwait(false);
+        return !wasVisible;
+    }
+
+    private static async ValueTask<bool> ForecastPairAsync(SiloFixtureTarget target, SiloPendingSegment? pending,
+        SiloCatalog? catalog, SiloGroupDraft draft, Action requireHeadroom, CancellationToken cancellationToken)
+    {
+        target.Receipts.TryGetValue(draft.GroupId, out var receipt);
+        var visible = receipt?.State == SiloStagedState.Visible;
+        if (!visible)
+        {
+            RequireCompatiblePending(draft, pending);
+            requireHeadroom();
+        }
+        SiloPublisher.ValidateDraft(draft);
+        if (receipt is not null)
+        {
+            SiloPublisher.RequireMatchingDraft(draft, receipt.DraftSha256, SiloHash.Sha256(SiloJson.Serialize(draft)));
+            if (receipt.State is SiloStagedState.Visible or SiloStagedState.Abandoned && receipt.BlockedCode is { } conflict)
+                throw new SiloConflictException(conflict, "Silo could not settle the fixture publication.");
+            if (receipt.State == SiloStagedState.Abandoned)
+                throw new SiloConflictException("fixture-reopen-failed", "The fixture publication was abandoned.");
+        }
+        if (visible)
+            await RequireReopenAsync(catalog, draft, cancellationToken).ConfigureAwait(false);
+        return !visible;
+    }
+
+    private static void RequireCompatiblePending(SiloGroupDraft draft, SiloPendingSegment? pending)
+    {
+        if (pending is not null && (pending.GroupId != draft.GroupId || pending.RevisionId != draft.RevisionId))
+            throw new SiloConflictException("fixture-other-publication-pending", "Another publication is still pending.");
+    }
+
+    private static async ValueTask RequireReopenAsync(SiloCatalog? catalog, SiloGroupDraft draft, CancellationToken cancellationToken)
+    {
+        if (catalog is null ||
             !(await catalog.ReopenAsync(draft.GroupId, draft.RevisionId, cancellationToken).ConfigureAwait(false)).Reopenable)
             throw new SiloConflictException("fixture-reopen-failed", "The fixture did not pass exact Silo reopen verification.");
-        return !wasVisible;
     }
 }

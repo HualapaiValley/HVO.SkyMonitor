@@ -14,15 +14,19 @@ public static class SiloFixtureImportCommand
 {
     public const string Argument = "--silo-fixture-history";
 
-    public static async Task<int> RunAsync(string[] args, Func<IConfiguration> readTargetConfiguration, TextWriter output,
-        CancellationToken cancellationToken)
+    public static Task<int> RunAsync(string[] args, Func<IConfiguration> readTargetConfiguration, TextWriter output,
+        CancellationToken cancellationToken) =>
+        RunAsync(args, readTargetConfiguration, output, static settings => new SiloInstalledStore(settings), cancellationToken);
+
+    internal static async Task<int> RunAsync(string[] args, Func<IConfiguration> readTargetConfiguration, TextWriter output,
+        Func<SiloInstalledSettings, SiloInstalledStore> createInstalledStore, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(args);
         ArgumentNullException.ThrowIfNull(readTargetConfiguration);
         ArgumentNullException.ThrowIfNull(output);
         try
         {
-            var report = await RunCoreAsync(args, readTargetConfiguration, cancellationToken).ConfigureAwait(false);
+            var report = await RunCoreAsync(args, readTargetConfiguration, createInstalledStore, cancellationToken).ConfigureAwait(false);
             await WriteAsync(output, report).ConfigureAwait(false);
             return report.ExitCode;
         }
@@ -40,7 +44,7 @@ public static class SiloFixtureImportCommand
     }
 
     private static async Task<SiloFixtureReport> RunCoreAsync(string[] args, Func<IConfiguration> readTargetConfiguration,
-        CancellationToken cancellationToken)
+        Func<SiloInstalledSettings, SiloInstalledStore> createInstalledStore, CancellationToken cancellationToken)
     {
         var mode = args switch
         {
@@ -52,9 +56,8 @@ public static class SiloFixtureImportCommand
         using var source = new ConfinedReadDirectory(args[2]);
         var clock = TimeProvider.System;
         var inventory = await SiloFixtureInventory.ReadAsync(source, args[3], clock.GetUtcNow(), cancellationToken).ConfigureAwait(false);
-        var importer = new SiloFixtureImport(source, inventory);
         if (mode == SiloFixtureMode.Inventory)
-            return await importer.RunAsync(mode, null, null, cancellationToken).ConfigureAwait(false);
+            return await new SiloFixtureImport(source, inventory).RunAsync(mode, null, null, cancellationToken).ConfigureAwait(false);
         if (mode == SiloFixtureMode.Publish && inventory.SelectionSha256 != args[5])
             throw new SiloConflictException("fixture-selection-changed", "The selection differs from the reviewed dry run.");
         if (!DurableSync.SupportsDirectorySync)
@@ -64,6 +67,7 @@ public static class SiloFixtureImportCommand
         var options = configuration.GetSection("CameraAgent").Get<CameraAgentHostOptions>()
             ?? throw new InvalidOperationException("CameraAgent target configuration is required.");
         var settings = SiloInstalledSettings.Read(configuration.GetSection("CameraAgent:Silo"));
+        var importer = new SiloFixtureImport(source, inventory.WithTargetRetention(settings));
         var sourceRoot = PhysicalRoot.Open(args[2]);
         var stateRoot = PhysicalRoot.Open(Path.GetFullPath(options.RawIngressRoot));
         var storeRoot = PhysicalRoot.Open(args[4]);
@@ -83,15 +87,9 @@ public static class SiloFixtureImportCommand
 
         var dataRootIdentity = CameraAgentSiloBinding.LinuxDataRootIdentity(
             storeLocation.DeviceMajor, storeLocation.DeviceMinor, storeLocation.Inode);
-        using var installed = new SiloInstalledStore(settings);
+        using var installed = createInstalledStore(settings);
         SiloFixtureCapacity ReadCapacity() =>
             new(stateDirectory.ReadLinuxAvailableBytes(), storeDirectory.ReadLinuxAvailableBytes());
-
-        if (mode == SiloFixtureMode.DryRun)
-        {
-            await installed.VerifyAsync(cancellationToken, dataRootIdentity).ConfigureAwait(false);
-            return await importer.RunAsync(mode, ReadCapacity, null, cancellationToken).ConfigureAwait(false);
-        }
 
         var statePath = stateRoot.Resolve(".silo");
         var selectedGroups = inventory.Records.Where(static row => row.Status == "selected")
@@ -106,25 +104,51 @@ public static class SiloFixtureImportCommand
         var scratch = Directory.CreateTempSubdirectory("silo-fixture-inspect-");
         try
         {
-            var writer = await InspectTargetAsync(cancellationToken).ConfigureAwait(false);
-            await installed.VerifyAsync(cancellationToken, dataRootIdentity).ConfigureAwait(false);
-            await RequireStoreHistoryAsync(installed.Store, settings.Binding, writer.Head, writer.Pending, cancellationToken)
-                .ConfigureAwait(false);
-            return await PublishSelectionAsync(writer.Head is not null).ConfigureAwait(false);
+            var target = await InspectTargetAsync(cancellationToken).ConfigureAwait(false);
+            return mode == SiloFixtureMode.DryRun
+                ? await ForecastSelectionAsync(target).ConfigureAwait(false)
+                : await PublishSelectionAsync(target.Head is not null).ConfigureAwait(false);
         }
         finally
         {
             scratch.Delete(recursive: true);
         }
 
-        async ValueTask<(SiloJournalHead? Head, SiloPendingSegment? Pending)> InspectTargetAsync(CancellationToken token)
+        string StateDatabasePath(string file)
         {
-            await RequireFirstBootPauseAsync(options, stateRoot, scratch.FullName, clock, token).ConfigureAwait(false);
-            var path = stateRoot.Resolve(Path.Combine(".silo", SiloStateRoot.PublicationDatabaseFileName));
+            var path = stateRoot.Resolve(Path.Combine(".silo", file));
             foreach (var suffix in new[] { "-wal", "-shm", "-journal" })
                 stateRoot.Verify(path + suffix, "read-fixture-target-history");
-            return await new SiloPublicationState(path, settings.Binding, clock)
+            return path;
+        }
+
+        async ValueTask<SiloFixtureTarget> InspectTargetAsync(CancellationToken token)
+        {
+            await RequireFirstBootPauseAsync(options, stateRoot, scratch.FullName, clock, token).ConfigureAwait(false);
+            var path = StateDatabasePath(SiloStateRoot.PublicationDatabaseFileName);
+            var target = await new SiloPublicationState(path, settings.Binding, clock)
                 .InspectFixtureTargetAsync(scratch.FullName, selectedGroups, token).ConfigureAwait(false);
+            await installed.VerifyAsync(token, dataRootIdentity).ConfigureAwait(false);
+            await RequireStoreHistoryAsync(installed.Store, settings.Binding, target.Head, target.Pending, token).ConfigureAwait(false);
+            return target;
+        }
+
+        async ValueTask<SiloFixtureReport> ForecastSelectionAsync(SiloFixtureTarget target)
+        {
+            SiloFixtureReport? report = null;
+            if (target.Receipts.Values.Any(static receipt => receipt.State == SiloStagedState.Visible))
+            {
+                // The standard reopen verifier records probe outcomes. Run it on a scratch copy only.
+                await SiloSqlite.InspectAsync(StateDatabasePath(SiloStateRoot.IndexDatabaseFileName), SiloCatalogIndex.Format,
+                    SiloPublicationState.BindingMetadata(settings.Binding), scratch.FullName, cancellationToken,
+                    inspectCopy: async (copy, token) =>
+                    {
+                        using var index = new SiloCatalogIndex(copy, settings.Binding, clock);
+                        var catalog = new SiloCatalog(index, new SiloStoreSet(installed.Store), SiloNoAuthorityEvidence.Instance);
+                        report = await importer.RunForecastAsync(target, catalog, ReadCapacity, token).ConfigureAwait(false);
+                    }).ConfigureAwait(false);
+            }
+            return report ?? await importer.RunForecastAsync(target, null, ReadCapacity, cancellationToken).ConfigureAwait(false);
         }
 
         async ValueTask<SiloFixtureReport> PublishSelectionAsync(bool hasWriterState)
@@ -154,12 +178,9 @@ public static class SiloFixtureImportCommand
                     try
                     {
                         // A writer could have finished between the initial inspection and acquisition of the lease.
-                        var writer = await InspectTargetAsync(token).ConfigureAwait(false);
-                        await installed.VerifyAsync(token, dataRootIdentity).ConfigureAwait(false);
-                        await RequireStoreHistoryAsync(installed.Store, settings.Binding, writer.Head, writer.Pending, token)
-                            .ConfigureAwait(false);
+                        await InspectTargetAsync(token).ConfigureAwait(false);
                         storage = new(settings, OptionsFactory.Create(options), clock, faults: null, decorateReadStore: null,
-                            installedStore: null, payloadSpool: null, fixtureLease: lease);
+                            installedStore: createInstalledStore(settings), payloadSpool: null, fixtureLease: lease);
                     }
                     catch
                     {

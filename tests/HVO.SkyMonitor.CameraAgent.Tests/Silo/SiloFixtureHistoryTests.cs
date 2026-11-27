@@ -6,6 +6,7 @@ using FluentAssertions;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Silo;
+using HVO.SkyMonitor.CameraAgent.Common.Silo.S3;
 using HVO.SkyMonitor.Deployment.Contracts;
 using HVO.SkyMonitor.Storage.FileSystem;
 using Microsoft.Extensions.Configuration;
@@ -41,7 +42,8 @@ public sealed class SiloFixtureHistoryTests
         using var source = fixture.Open();
         var inventory = await InventoryAsync(source).ConfigureAwait(false);
         var import = new SiloFixtureImport(source, inventory);
-        var report = await import.RunAsync(SiloFixtureMode.DryRun, () => new(Reserve * 2, Reserve * 2), null, Token).ConfigureAwait(false);
+        var report = await import.RunAsync(SiloFixtureMode.DryRun, () => new(Reserve * 2, Reserve * 2),
+            ForecastNewPair, Token).ConfigureAwait(false);
 
         report.Mode.Should().Be(SiloFixtureMode.DryRun);
         report.SourceId.Should().Be("sanitized-export");
@@ -124,14 +126,90 @@ public sealed class SiloFixtureHistoryTests
 
         var before = SnapshotTree(target.Root);
         var source = fixture.Snapshot();
+        IConfiguration ReadConfiguration() => new ConfigurationBuilder().AddInMemoryCollection(settings).Build();
         await AssertCommandRefusalAsync(
             [SiloFixtureImportCommand.Argument, "publish", fixture.Root, SelectionFile, storeRoot, digest],
-            () => new ConfigurationBuilder().AddInMemoryCollection(settings).Build(),
-            "fixture-first-boot-pause-required").ConfigureAwait(false);
+            ReadConfiguration, "fixture-first-boot-pause-required").ConfigureAwait(false);
+        await AssertCommandRefusalAsync(
+            [SiloFixtureImportCommand.Argument, "dry-run", fixture.Root, SelectionFile, storeRoot],
+            ReadConfiguration, "fixture-first-boot-pause-required").ConfigureAwait(false);
 
         Directory.Exists(Path.Combine(stateRoot, ".silo")).Should().BeFalse();
         SnapshotTree(target.Root).Should().BeEquivalentTo(before);
         fixture.Snapshot().Should().BeEquivalentTo(source);
+    }
+
+    [TestMethod]
+    public async Task DryRunForecastsFreshRetryAndUnrelatedTargetsWithoutAnyWrites()
+    {
+        using var source = new Fixture();
+        var entry = source.WritePair("frame", "art-1");
+        var digest = source.Select([entry]);
+        using var target = new Fixture();
+        var stateRoot = Directory.CreateDirectory(target.PathFor("state")).FullName;
+        var resetRoot = Directory.CreateDirectory(target.PathFor("reset")).FullName;
+        var storeRoot = Directory.CreateDirectory(target.PathFor("store")).FullName;
+        var seed = new FirstBootPauseIdentity(Guid.NewGuid());
+        var settings = TargetSettings(stateRoot, out var bucket, seed.Id);
+        Directory.CreateDirectory(Path.Combine(storeRoot, bucket));
+        await FirstBootStateInitializer.InitializeAsync(stateRoot, 1, seed, Token).ConfigureAwait(false);
+        await FirstBootStateInitializer.InitializeAsync(resetRoot, 1, seed, Token).ConfigureAwait(false);
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(settings).Build();
+        var remote = CreateFixtureStore(configuration, storeRoot);
+        var arguments = new[] { SiloFixtureImportCommand.Argument, "dry-run", source.Root, SelectionFile, storeRoot };
+
+        await ForecastAsync(0, "would-import", null).ConfigureAwait(false);
+        Directory.Exists(Path.Combine(stateRoot, ".silo")).Should().BeFalse();
+        using (var output = new StringWriter(CultureInfo.InvariantCulture))
+        {
+            var publish = arguments.ToArray();
+            publish[1] = "publish";
+            var exit = await SiloFixtureImportCommand.RunAsync([.. publish, digest], () => configuration, output,
+                CreateInstalled, Token).ConfigureAwait(false);
+            exit.Should().Be(0, output.ToString());
+        }
+
+        var siloState = Path.Combine(stateRoot, ".silo");
+        await File.WriteAllTextAsync(Path.Combine(siloState, SiloStateRoot.SpoolDirectoryName, "unclaimed.tmp"),
+            "must survive a dry run", Token).ConfigureAwait(false);
+        source.Select([entry], minimumFreeBytes: long.MaxValue);
+        await ForecastAsync(0, "skipped", "already-imported").ConfigureAwait(false);
+        source.Select([source.WritePair("frame", "art-1", daysOld: 2)]);
+        await ForecastAsync(2, "failed", "silo.revision-conflict").ConfigureAwait(false);
+        source.Select([source.WritePair("other", "art-2")]);
+        await ForecastAsync(2, "refused", "fixture-target-has-other-history").ConfigureAwait(false);
+        configuration["CameraAgent:RawIngressRoot"] = resetRoot;
+        source.Select([source.WritePair("frame", "art-1")]);
+        await ForecastAsync(2, "refused", "fixture-target-has-other-history").ConfigureAwait(false);
+        Directory.Exists(Path.Combine(resetRoot, ".silo")).Should().BeFalse();
+
+        configuration["CameraAgent:RawIngressRoot"] = stateRoot;
+        var payload = SiloObjectNamespace.PayloadKey(SiloRetentionClass.Display, entry.ImageSha256);
+        remote.Damage(payload, remote.Current(payload)!);
+        await ForecastAsync(2, "failed", "fixture-reopen-failed").ConfigureAwait(false);
+
+        SiloInstalledStore CreateInstalled(SiloInstalledSettings installed) =>
+            new(installed, remote, static _ => ValueTask.FromResult(true));
+
+        async Task ForecastAsync(int expectedExit, string status, string? reason)
+        {
+            var beforeState = SnapshotTree(target.Root, includeTransientFiles: true);
+            var beforeStore = remote.Fingerprint();
+            var beforeSource = source.Snapshot();
+            var beforePuts = remote.Puts;
+            using var output = new StringWriter(CultureInfo.InvariantCulture);
+            var exit = await SiloFixtureImportCommand.RunAsync(arguments, () => configuration, output,
+                CreateInstalled, Token).ConfigureAwait(false);
+            exit.Should().Be(expectedExit, output.ToString());
+            using var report = JsonDocument.Parse(output.ToString());
+            var row = status == "refused" ? report.RootElement : report.RootElement.GetProperty("records")[0];
+            row.GetProperty("status").GetString().Should().Be(status);
+            (row.TryGetProperty("reason", out var actual) ? actual.GetString() : null).Should().Be(reason);
+            SnapshotTree(target.Root, includeTransientFiles: true).Should().BeEquivalentTo(beforeState);
+            source.Snapshot().Should().BeEquivalentTo(beforeSource);
+            remote.Fingerprint().Should().Be(beforeStore);
+            remote.Puts.Should().Be(beforePuts);
+        }
     }
 
     [TestMethod]
@@ -223,15 +301,18 @@ public sealed class SiloFixtureHistoryTests
         fixture.Select([nextEntry, pendingEntry]);
         var inventory = await InventoryAsync(source).ConfigureAwait(false);
         using var scratch = new Fixture();
-        await silo.State.InspectFixtureTargetAsync(scratch.Root,
+        var target = await silo.State.InspectFixtureTargetAsync(scratch.Root,
             inventory.Records.Select(static row => row.GroupId!).ToHashSet(StringComparer.Ordinal), Token).ConfigureAwait(false);
         var beforeState = SnapshotTree(silo.RootPath);
         var beforeStore = silo.Local.Fingerprint();
 
-        var result = await PublishAsync(new(source, inventory), silo).ConfigureAwait(false);
+        var import = new SiloFixtureImport(source, inventory);
+        var forecast = await import.RunForecastAsync(target, null, () => new(Reserve * 2, Reserve * 2), Token).ConfigureAwait(false);
+        var result = await PublishAsync(import, silo).ConfigureAwait(false);
 
         result.Records.Select(static row => row.Status).Should().Equal("failed", "skipped");
         result.Records.Select(static row => row.Reason).Should().Equal("fixture-other-publication-pending", "deferred-after-failure");
+        forecast.Records.Should().Equal(result.Records);
         (await silo.State.ReadPendingAsync(Token).ConfigureAwait(false)).Should().Be(pending);
         (await silo.State.ReadGroupAsync(result.Records[0].GroupId!, "1", Token).ConfigureAwait(false)).Should().BeNull();
         silo.Local.Fingerprint().Should().Be(beforeStore);
@@ -630,7 +711,13 @@ public sealed class SiloFixtureHistoryTests
     }
 
     [TestMethod]
-    public async Task DryRunReportsTargetAgeVerdictUnavailableForEachActualRetentionClass()
+    [DataRow("45", "46", true, false)]
+    [DataRow("46", "45", false, true)]
+    [DataRow(null, null, null, null)]
+    [DataRow("invalid", "0", null, null)]
+    [DataRow("2147483647", "45", null, true)]
+    public async Task DryRunReportsAgeVerdictsUsingOnlyTheInstalledTargetLimits(string? displayDays, string? metadataDays,
+        bool? expectedDisplay, bool? expectedMetadata)
     {
         using var fixture = new Fixture();
         var entry = fixture.WritePair("frame", "art-1", daysOld: 45);
@@ -639,16 +726,28 @@ public sealed class SiloFixtureHistoryTests
         var first = await InventoryAsync(source).ConfigureAwait(false);
         fixture.Select([entry], displayRetentionDays: 730);
         var second = await InventoryAsync(source).ConfigureAwait(false);
-        var firstReport = await new SiloFixtureImport(source, first).RunAsync(SiloFixtureMode.DryRun,
-            () => new(Reserve * 2, Reserve * 2), null, Token).ConfigureAwait(false);
-        var secondReport = await new SiloFixtureImport(source, second).RunAsync(SiloFixtureMode.DryRun,
-            () => new(Reserve * 2, Reserve * 2), null, Token).ConfigureAwait(false);
+        var settings = TargetSettings(fixture.Root, out _);
+        settings["CameraAgent:Silo:Retention:DisplayDays"] = displayDays;
+        settings["CameraAgent:Silo:Retention:MetadataDays"] = metadataDays;
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(settings).Build();
+        var installed = SiloInstalledSettings.Read(configuration.GetSection("CameraAgent:Silo"));
+        var firstReport = await new SiloFixtureImport(source, first.WithTargetRetention(installed)).RunAsync(SiloFixtureMode.DryRun,
+            () => new(Reserve * 2, Reserve * 2), ForecastNewPair, Token).ConfigureAwait(false);
+        var secondReport = await new SiloFixtureImport(source, second.WithTargetRetention(installed)).RunAsync(SiloFixtureMode.DryRun,
+            () => new(Reserve * 2, Reserve * 2), ForecastNewPair, Token).ConfigureAwait(false);
 
         var objects = firstReport.Records.Single().Objects!;
         objects.Should().BeEquivalentTo(secondReport.Records.Single().Objects);
         objects.Select(static item => item.RetentionClass).Should().Equal(SiloRetentionClass.Display, SiloRetentionClass.Metadata);
-        objects.Should().OnlyContain(static item => item.ImmediatelyAgeEligible == null &&
-            item.AgeEligibilityReason == "target-retention-policy-unavailable");
+        objects.Select(static item => item.ImmediatelyAgeEligible).Should().Equal(expectedDisplay, expectedMetadata);
+        objects.Select(static item => item.AgeEligibilityReason).Should().Equal(Reason(expectedDisplay), Reason(expectedMetadata));
+
+        static string Reason(bool? eligible) => eligible switch
+        {
+            true => "target-retention-age-reached",
+            false => "within-target-retention-age",
+            null => "target-retention-policy-unavailable"
+        };
     }
 
     [TestMethod]
@@ -710,6 +809,13 @@ public sealed class SiloFixtureHistoryTests
     private static ValueTask<SiloFixtureInventory> InventoryAsync(ConfinedReadDirectory source) =>
         SiloFixtureInventory.ReadAsync(source, SelectionFile, Now, Token);
 
+    private static ValueTask<bool> ForecastNewPair(SiloGroupDraft draft,
+        Func<SiloDraftMember, CancellationToken, ValueTask<Stream>> open, Action requireHeadroom, CancellationToken cancellationToken)
+    {
+        requireHeadroom();
+        return ValueTask.FromResult(true);
+    }
+
     private static Task<SiloFixtureReport> PublishAsync(SiloFixtureImport import, SiloHarness silo,
         Func<SiloFixtureCapacity>? readCapacity = null) =>
         import.RunAsync(SiloFixtureMode.Publish, readCapacity ?? (() => new(Reserve * 2, Reserve * 2)),
@@ -759,20 +865,48 @@ public sealed class SiloFixtureHistoryTests
         };
     }
 
-    private static Dictionary<string, string> SnapshotTree(string root) =>
-        new DirectoryInfo(root).EnumerateFileSystemInfos("*", SearchOption.AllDirectories).ToDictionary(
-            entry => Path.GetRelativePath(root, entry.FullName), DescribeEntry, StringComparer.Ordinal);
+    private static SiloTestStore CreateFixtureStore(IConfiguration configuration, string storeRoot)
+    {
+        var settings = SiloInstalledSettings.Read(configuration.GetSection("CameraAgent:Silo"));
+        var binding = settings.Binding;
+        var store = new SiloTestStore(binding.StoreId, binding.Bucket);
+        using var directory = new ConfinedReadDirectory(storeRoot);
+        var location = directory.ReadLinuxLocation();
+        store.Plant(CameraAgentSiloBinding.MarkerKey, SiloJson.Serialize(new
+        {
+            format = CameraAgentSiloBinding.MarkerFormat,
+            instanceId = binding.InstanceId,
+            storeId = binding.StoreId,
+            bucket = binding.Bucket,
+            storageBindingId = binding.BindingId,
+            stateContract = CameraAgentSiloBinding.StateContract,
+            linuxDataRootIdentity = CameraAgentSiloBinding.LinuxDataRootIdentity(location.DeviceMajor, location.DeviceMinor, location.Inode)
+        }));
+        store.Plant(CameraAgentSiloBinding.FenceKey, SiloJson.Serialize(new
+        {
+            format = CameraAgentSiloBinding.FenceFormat,
+            instanceId = binding.InstanceId,
+            storageBindingId = binding.BindingId,
+            writerGeneration = 1,
+            writerAccessKeyId = settings.AccessKey
+        }));
+        return store;
+    }
 
-    private static string DescribeEntry(FileSystemInfo entry)
+    private static Dictionary<string, string> SnapshotTree(string root, bool includeTransientFiles = false) =>
+        new DirectoryInfo(root).EnumerateFileSystemInfos("*", SearchOption.AllDirectories).ToDictionary(
+            entry => Path.GetRelativePath(root, entry.FullName), entry => DescribeEntry(entry, includeTransientFiles), StringComparer.Ordinal);
+
+    private static string DescribeEntry(FileSystemInfo entry, bool includeTransientFiles)
     {
         if (entry.LinkTarget is { } target)
             return $"link:{target}";
         if (entry is not FileInfo file)
             return "directory";
-        if (file.Name == SiloStateRoot.LockFileName)
+        if (!includeTransientFiles && file.Name == SiloStateRoot.LockFileName)
             return $"lock:{file.Length}:{file.LastWriteTimeUtc.Ticks}";
         // Read transactions can update transient SQLite read marks. Compare the database and WAL bytes below.
-        if (file.Name.EndsWith("-shm", StringComparison.Ordinal))
+        if (!includeTransientFiles && file.Name.EndsWith("-shm", StringComparison.Ordinal))
             return "sqlite-shared-memory";
         return $"file:{file.LastWriteTimeUtc.Ticks}:{SiloHash.Sha256(File.ReadAllBytes(file.FullName))}";
     }
