@@ -224,7 +224,7 @@ else
                                 URL: @WebhookUrlStatusText(secrets) · Token: @SecretSourceText(secrets.HasWebhookAuthToken, secrets.WebhookAuthTokenSource)@if (_webhookFormat == WebhookPayloadFormat.Ntfy || secrets.HasWebhookNtfyTopic) { <text> · Topic: @SecretSourceText(secrets.HasWebhookNtfyTopic, secrets.WebhookNtfyTopicSource)</text> }
                             </span>
                         </div>
-                        <p class="notifications-hint">Webhook URLs, auth tokens, and ntfy topics are stored encrypted and never returned to the browser. Only the URL scheme and host are shown after saving. Changing the webhook origin (scheme, host, or port) drops inherited and prior-origin tokens, user keys, and topics unless re-entered; clearing a custom stored URL drops its stored credentials and restores any host-configured webhook URL and host token.</p>
+                        <p class="notifications-hint">Webhook URLs, auth tokens, and ntfy topics are stored encrypted and never returned to the browser. Only the URL scheme, host, and any non-default port are shown after saving. Changing the webhook origin (scheme, host, or port) drops inherited and prior-origin tokens, user keys, and topics unless re-entered; clearing a custom stored URL drops its stored credentials and restores any host-configured webhook URL and host token.</p>
                         <label class="ops-field">HTTPS webhook URL (write-only)
                             <input id="webhook-url" type="password" autocomplete="new-password"
                                    placeholder="@(secrets.HasWebhookUrl ? "Stored — enter new HTTPS URL to replace" : "https://hooks.example.org/...")"

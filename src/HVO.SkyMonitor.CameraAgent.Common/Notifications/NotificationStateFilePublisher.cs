@@ -298,9 +298,15 @@ public static class NotificationStateFilePublisher
     }
 
     public static void EnsureRestrictedDirectory(string directoryPath)
-        => EnsureRestrictedDirectory(directoryPath, onDirectorySynced: null);
+        => EnsureRestrictedDirectory(directoryPath, onDirectorySynced: null, directorySyncAction: null);
 
     internal static void EnsureRestrictedDirectory(string directoryPath, Action<string>? onDirectorySynced)
+        => EnsureRestrictedDirectory(directoryPath, onDirectorySynced, directorySyncAction: null);
+
+    internal static void EnsureRestrictedDirectory(
+        string directoryPath,
+        Action<string>? onDirectorySynced,
+        Action<string>? directorySyncAction)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(directoryPath);
         var fullDirectory = Path.TrimEndingDirectorySeparator(Path.GetFullPath(directoryPath));
@@ -310,6 +316,7 @@ public static class NotificationStateFilePublisher
         }
 
         var missingDirectories = CollectMissingDirectoriesAndValidateAncestors(fullDirectory);
+        var newlyCreatedDirectories = new HashSet<string>(DirectoryPathComparer);
         for (var i = 0; i < missingDirectories.Count; i++)
         {
             var missingDirectory = missingDirectories[i];
@@ -339,26 +346,19 @@ public static class NotificationStateFilePublisher
                 throw;
             }
 
-            VerifyPathIsNotSymlink(missingDirectory);
-            if (!OperatingSystem.IsWindows())
-            {
-                File.SetUnixFileMode(missingDirectory, RestrictedDirectoryMode);
-            }
+            newlyCreatedDirectories.Add(missingDirectory);
+            RestrictDirectoryModeNoFollow(missingDirectory);
         }
 
         var chainBottomUp = GetSelfAndAncestorsBottomUp(fullDirectory);
-        // Re-enforce 0700 + no-symlink on any pending newly-created directory in the chain (for example if an earlier
-        // attempt was interrupted after mkdir before chmod) as well as the leaf state directory itself.
+        // Re-enforce 0700 + no-symlink via descriptor-based fchmod on any pending newly-created directory in the chain
+        // (for example if an earlier attempt was interrupted after mkdir before fchmod) as well as the leaf state directory.
         for (var i = chainBottomUp.Count - 1; i >= 0; i--)
         {
             var candidate = chainBottomUp[i];
             if (i == 0 || PendingParentSyncDirectories.ContainsKey(candidate))
             {
-                VerifyPathIsNotSymlink(candidate);
-                if (!OperatingSystem.IsWindows())
-                {
-                    File.SetUnixFileMode(candidate, RestrictedDirectoryMode);
-                }
+                RestrictDirectoryModeNoFollow(candidate);
             }
         }
 
@@ -371,16 +371,23 @@ public static class NotificationStateFilePublisher
             throw TranslateFault(ex);
         }
 
-        // Fsync the target directory itself, then walk bottom-up and fsync the parent of EVERY directory whose
-        // parent entry has not yet been durably verified/synced in this process (covering interrupted retries and
-        // concurrent publishers targeting newly created directory chains).
-        SyncDirectory(fullDirectory, allowSymlinkedAncestor: false, onDirectorySynced);
+        // Fsync the target directory itself (strict; never best-effort), then walk bottom-up and fsync the parent of
+        // EVERY directory whose parent entry has not yet been durably verified/synced in this process. Walking the full
+        // unverified ancestor chain on first publish per process guarantees cross-process crash recovery when a prior
+        // process crashed after creating nested directories before syncing their parents; PermissionDenied (EACCES/EPERM)
+        // is treated as best-effort strictly on pre-existing ancestors above newly created directories.
+        SyncDirectory(
+            fullDirectory,
+            allowSymlinkedAncestor: false,
+            allowBestEffortPermissionDenied: false,
+            directorySyncAction,
+            onDirectorySynced);
         for (var i = 0; i < chainBottomUp.Count; i++)
         {
             var current = chainBottomUp[i];
-            var isPending = PendingParentSyncDirectories.TryGetValue(current, out var allowSymlinkedParent);
-            var isUnverifiedTarget = i == 0 && !VerifiedParentSyncedDirectories.ContainsKey(current);
-            if (!isPending && !isUnverifiedTarget)
+            var isPending = PendingParentSyncDirectories.TryGetValue(current, out var pendingAllowSymlinkedParent);
+            var isUnverified = !VerifiedParentSyncedDirectories.ContainsKey(current);
+            if (!isPending && !isUnverified)
             {
                 continue;
             }
@@ -388,11 +395,67 @@ public static class NotificationStateFilePublisher
             var parent = Path.GetDirectoryName(current);
             if (!string.IsNullOrEmpty(parent))
             {
-                SyncDirectory(parent, allowSymlinkedAncestor: isPending ? allowSymlinkedParent : true, onDirectorySynced);
+                var parentIsNewlyCreatedOrPending =
+                    newlyCreatedDirectories.Contains(parent) ||
+                    PendingParentSyncDirectories.ContainsKey(parent);
+                var allowSymlinkedParent = isPending ? pendingAllowSymlinkedParent : !parentIsNewlyCreatedOrPending;
+                var allowBestEffortPermissionDenied = !parentIsNewlyCreatedOrPending;
+                SyncDirectory(
+                    parent,
+                    allowSymlinkedAncestor: allowSymlinkedParent,
+                    allowBestEffortPermissionDenied: allowBestEffortPermissionDenied,
+                    directorySyncAction,
+                    onDirectorySynced);
             }
 
             MarkDirectoryParentVerifiedSynced(current);
             PendingParentSyncDirectories.TryRemove(current, out _);
+        }
+    }
+
+    internal static void ResetVerifiedDirectorySyncCacheForPathPrefixForTesting(string pathPrefix)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(pathPrefix);
+        var normalized = Path.TrimEndingDirectorySeparator(Path.GetFullPath(pathPrefix));
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        var prefixWithSeparator = normalized + Path.DirectorySeparatorChar;
+
+        foreach (var key in PendingParentSyncDirectories.Keys)
+        {
+            if (string.Equals(key, normalized, comparison) || key.StartsWith(prefixWithSeparator, comparison))
+            {
+                PendingParentSyncDirectories.TryRemove(key, out _);
+            }
+        }
+
+        foreach (var key in VerifiedParentSyncedDirectories.Keys)
+        {
+            if (string.Equals(key, normalized, comparison) || key.StartsWith(prefixWithSeparator, comparison))
+            {
+                VerifiedParentSyncedDirectories.TryRemove(key, out _);
+            }
+        }
+    }
+
+    private static void RestrictDirectoryModeNoFollow(string directoryPath)
+    {
+        if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+        {
+            try
+            {
+                DurableSync.SetDirectoryModeNoFollow(directoryPath, RestrictedDirectoryMode);
+            }
+            catch (FileSystemFaultException ex)
+            {
+                throw TranslateFault(ex);
+            }
+            return;
+        }
+
+        VerifyPathIsNotSymlink(directoryPath);
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(directoryPath, RestrictedDirectoryMode);
         }
     }
 
@@ -534,27 +597,51 @@ public static class NotificationStateFilePublisher
         return missingDirectories;
     }
 
-    private static void SyncDirectory(string directoryPath, bool allowSymlinkedAncestor, Action<string>? onDirectorySynced)
+    private static void SyncDirectory(
+        string directoryPath,
+        bool allowSymlinkedAncestor,
+        bool allowBestEffortPermissionDenied,
+        Action<string>? directorySyncAction,
+        Action<string>? onDirectorySynced)
     {
         var syncPath = directoryPath;
         if (allowSymlinkedAncestor && OperatingSystem.IsLinux())
         {
-            // When the pre-existing parent of the highest newly created directory is itself a validated symlink to a
-            // directory (for example /var/run -> /run or a relative '..' symlink chain), append "/." so O_NOFOLLOW
-            // applies to '.' while still failing closed if the resolved target is not a directory.
+            // When a pre-existing ancestor directory is itself a validated symlink to a directory (for example
+            // /var/run -> /run or a relative '..' symlink chain), append "/." so O_NOFOLLOW applies to '.' while
+            // still failing closed if the resolved target is not a directory.
             if (TryDetectLinkTarget(directoryPath, out var linkError))
             {
                 syncPath = Path.Combine(directoryPath, ".");
             }
             else if (linkError is not null)
             {
+                if (allowBestEffortPermissionDenied &&
+                    string.Equals(linkError, nameof(UnauthorizedAccessException), StringComparison.Ordinal))
+                {
+                    return;
+                }
                 ThrowAccessError(linkError, "Unable to verify ancestor directory before synchronization.");
             }
         }
 
         try
         {
-            DurableSync.Directory(syncPath);
+            if (directorySyncAction is not null)
+            {
+                directorySyncAction(syncPath);
+            }
+            else
+            {
+                DurableSync.Directory(syncPath);
+            }
+        }
+        catch (FileSystemFaultException ex) when (allowBestEffortPermissionDenied && ex.Kind == FileSystemFaultKind.PermissionDenied)
+        {
+            // Pre-existing non-readable ancestor directories (e.g. 0100/0300 traverse-only parents) cannot be opened
+            // O_RDONLY for fsync; treat strictly as best-effort without ignoring failures on newly created directories
+            // or the state directory itself.
+            return;
         }
         catch (FileSystemFaultException ex)
         {
@@ -756,7 +843,7 @@ public static class NotificationStateFilePublisher
             maxExistingTargetBytes: null,
             cancellationToken);
 
-    public static async ValueTask PublishRestrictedAtomicAsync(
+    public static ValueTask PublishRestrictedAtomicAsync(
         string directoryPath,
         string fileName,
         ReadOnlyMemory<byte> content,
@@ -764,12 +851,31 @@ public static class NotificationStateFilePublisher
         Action<string>? onDirectorySynced,
         int? maxExistingTargetBytes,
         CancellationToken cancellationToken)
+        => PublishRestrictedAtomicAsync(
+            directoryPath,
+            fileName,
+            content,
+            beforeRename,
+            onDirectorySynced,
+            directorySyncAction: null,
+            maxExistingTargetBytes,
+            cancellationToken);
+
+    internal static async ValueTask PublishRestrictedAtomicAsync(
+        string directoryPath,
+        string fileName,
+        ReadOnlyMemory<byte> content,
+        Action<string>? beforeRename,
+        Action<string>? onDirectorySynced,
+        Action<string>? directorySyncAction,
+        int? maxExistingTargetBytes,
+        CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(directoryPath);
         ArgumentException.ThrowIfNullOrWhiteSpace(fileName);
 
         var fullDirectory = Path.TrimEndingDirectorySeparator(Path.GetFullPath(directoryPath));
-        EnsureRestrictedDirectory(fullDirectory, onDirectorySynced);
+        EnsureRestrictedDirectory(fullDirectory, onDirectorySynced, directorySyncAction);
 
         PhysicalRoot root;
         string finalPath;
@@ -809,6 +915,10 @@ public static class NotificationStateFilePublisher
                 await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
                 try
                 {
+                    if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+                    {
+                        DurableSync.SetFileMode(stream.SafeFileHandle, RestrictedFileMode, tempPath);
+                    }
                     DurableSync.File(stream.SafeFileHandle, tempPath);
                 }
                 catch (FileSystemFaultException ex)
@@ -817,7 +927,7 @@ public static class NotificationStateFilePublisher
                 }
             }
 
-            if (!OperatingSystem.IsWindows())
+            if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
             {
                 File.SetUnixFileMode(tempPath, RestrictedFileMode);
             }
@@ -830,7 +940,7 @@ public static class NotificationStateFilePublisher
                 VerifyExistingTargetForReplace(finalPath, maxExistingTargetBytes);
                 AtomicPublisher.PublishPrepared(root, tempPath, finalPath, PublishMode.Replace);
                 root.Verify(finalPath, "publish-notification-state");
-                if (!OperatingSystem.IsWindows())
+                if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
                 {
                     File.SetUnixFileMode(finalPath, RestrictedFileMode);
                 }
@@ -840,7 +950,12 @@ public static class NotificationStateFilePublisher
                 throw TranslateFault(ex);
             }
 
-            SyncDirectory(fullDirectory, allowSymlinkedAncestor: false, onDirectorySynced);
+            SyncDirectory(
+                fullDirectory,
+                allowSymlinkedAncestor: false,
+                allowBestEffortPermissionDenied: false,
+                directorySyncAction,
+                onDirectorySynced);
         }
         finally
         {
@@ -916,10 +1031,17 @@ public static class NotificationStateFilePublisher
         }
     }
 
-    private static IOException TranslateFault(FileSystemFaultException exception) =>
-        exception.Kind == FileSystemFaultKind.Containment
-            ? new IOException("Refusing to access a symbolic link or non-regular file in the protected operator notification store.", exception)
-            : new IOException("Durable operator notification store file operation failed.", exception);
+    private static Exception TranslateFault(FileSystemFaultException exception) =>
+        exception.Kind switch
+        {
+            FileSystemFaultKind.Containment => new IOException(
+                "Refusing to access a symbolic link or non-regular file in the protected operator notification store.",
+                exception),
+            FileSystemFaultKind.PermissionDenied => new UnauthorizedAccessException(
+                "Refusing to access an unreadable directory or file in the protected operator notification store.",
+                exception),
+            _ => new IOException("Durable operator notification store file operation failed.", exception)
+        };
 }
 
 /// <summary>

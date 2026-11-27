@@ -56,7 +56,7 @@ public sealed class OperatorNotificationValidationTests
         Assert.IsFalse(options.Enabled);
         Assert.AreEqual(NotificationReasonCodes.InvalidConfiguration, bindingError);
 
-        var provider = new ConfigurationOperatorNotificationConfigProvider(config, ProductionPolicy);
+        using var provider = new ConfigurationOperatorNotificationConfigProvider(config, ProductionPolicy);
         Assert.IsFalse(provider.CurrentOptions.Enabled);
         Assert.AreEqual(NotificationReasonCodes.InvalidConfiguration, provider.ConfigurationErrorReasonCode);
     }

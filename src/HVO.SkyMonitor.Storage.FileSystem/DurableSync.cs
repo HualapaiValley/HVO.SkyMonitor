@@ -21,6 +21,12 @@ public static class DurableSync
     private const uint StatxType = 0x00000001;
     private const ushort UnixFileTypeMask = 0xF000;
     private const ushort UnixRegularFileType = 0x8000;
+    private const int MacOsOpenReadOnly = 0;
+    private const int MacOsOpenNoFollow = 0x0100;
+    private const int MacOsOpenDirectory = 0x100000;
+    private const int MacOsOpenCloseOnExec = 0x01000000;
+    private const int LinuxErrnoLoop = 40;
+    private const int MacOsErrnoLoop = 62;
     /// <summary>True where <see cref="Directory(string)"/> performs a real flush.</summary>
     public static bool SupportsDirectorySync => OperatingSystem.IsLinux();
 
@@ -214,6 +220,85 @@ public static class DurableSync
         throw new FileSystemFaultException(FileSystemFaultKind.Containment, "sync-directory-chain", absolutePath);
     }
 
+    /// <summary>
+    /// Restricts a directory's Unix permissions without following symbolic links by opening the directory
+    /// with <c>O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC</c> and applying <c>fchmod(2)</c> on the
+    /// authenticated file descriptor (closing the pathname <c>chmod(2)</c> symlink TOCTOU window).
+    /// No-op on Windows.
+    /// </summary>
+    public static void SetDirectoryModeNoFollow(string absolutePath, UnixFileMode mode)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(absolutePath);
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+        {
+            var isMacOs = OperatingSystem.IsMacOS();
+            var flags = isMacOs
+                ? MacOsOpenReadOnly | MacOsOpenDirectory | MacOsOpenNoFollow | MacOsOpenCloseOnExec
+                : LinuxOpenFlags.ReadOnly | LinuxOpenFlags.Directory | LinuxOpenFlags.NoFollow | LinuxOpenFlags.CloseOnExec;
+            using var handle = OpenUnix(absolutePath, flags, "chmod-directory", isMacOs);
+            FchmodUnix(handle, (uint)mode, "chmod-directory", absolutePath);
+            return;
+        }
+
+        try
+        {
+            var dirInfo = new DirectoryInfo(absolutePath);
+            if (dirInfo.LinkTarget is not null || (dirInfo.Attributes & FileAttributes.ReparsePoint) != 0)
+            {
+                throw new FileSystemFaultException(FileSystemFaultKind.Containment, "chmod-directory", absolutePath);
+            }
+            if ((dirInfo.Attributes & FileAttributes.Directory) == 0)
+            {
+                throw new FileSystemFaultException(FileSystemFaultKind.Containment, "chmod-directory", absolutePath);
+            }
+            System.IO.File.SetUnixFileMode(absolutePath, mode);
+        }
+        catch (FileSystemFaultException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw FileSystemFaultException.From("chmod-directory", absolutePath, exception);
+        }
+    }
+
+    /// <summary>
+    /// Applies Unix permissions directly to an already-open file descriptor via <c>fchmod(2)</c> on Linux
+    /// and macOS (avoiding pathname <c>chmod(2)</c> symlink TOCTOU). No-op on Windows.
+    /// </summary>
+    public static void SetFileMode(SafeFileHandle handle, UnixFileMode mode, string pathForDiagnostics)
+    {
+        ArgumentNullException.ThrowIfNull(handle);
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+        {
+            FchmodUnix(handle, (uint)mode, "chmod-file", pathForDiagnostics);
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(pathForDiagnostics))
+        {
+            try
+            {
+                System.IO.File.SetUnixFileMode(pathForDiagnostics, mode);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                throw FileSystemFaultException.From("chmod-file", pathForDiagnostics, exception);
+            }
+        }
+    }
+
     // The pinned .NET 10 native FSync helper returns a positive boolean on failure.
     // Check libc directly so EIO/ENOSPC cannot become acknowledged durability. Keep the
     // SafeFileHandle pinned by the interop marshaller, including during EINTR retries.
@@ -234,17 +319,45 @@ public static class DurableSync
         }
     }
 
+    private static void FchmodUnix(SafeFileHandle handle, uint mode, string operation, string pathForDiagnostics)
+    {
+        if (handle.IsInvalid) throw new ArgumentException("Invalid file handle.", nameof(handle));
+        int result;
+        int errno;
+        do
+        {
+            result = NativeFchmod(handle, mode);
+            errno = Marshal.GetLastPInvokeError();
+        }
+        while (result < 0 && errno == 4); // EINTR
+        if (result < 0)
+        {
+            var kind = errno switch
+            {
+                2 => FileSystemFaultKind.NotFound,
+                13 or 1 => FileSystemFaultKind.PermissionDenied,
+                _ => FileSystemFaultKind.Io
+            };
+            throw new FileSystemFaultException(kind, operation, pathForDiagnostics, new Win32Exception(errno));
+        }
+    }
+
     private static SafeFileHandle OpenLinux(string path, int flags, string operation)
+        => OpenUnix(path, flags, operation, isMacOs: false);
+
+    private static SafeFileHandle OpenUnix(string path, int flags, string operation, bool isMacOs)
     {
         var descriptor = NativeOpen(path, flags);
         if (descriptor < 0)
         {
             var errno = Marshal.GetLastPInvokeError();
+            var loopErrno = isMacOs ? MacOsErrnoLoop : LinuxErrnoLoop;
             var kind = errno switch
             {
                 2 => FileSystemFaultKind.NotFound,
                 13 or 1 => FileSystemFaultKind.PermissionDenied,
-                40 or 20 => FileSystemFaultKind.Containment, // ELOOP (symlink under O_NOFOLLOW), ENOTDIR
+                20 => FileSystemFaultKind.Containment, // ENOTDIR
+                _ when errno == loopErrno => FileSystemFaultKind.Containment, // ELOOP (symlink under O_NOFOLLOW)
                 _ => FileSystemFaultKind.Io
             };
             throw new FileSystemFaultException(kind, operation, path, new Win32Exception(errno));
@@ -260,6 +373,10 @@ public static class DurableSync
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [DllImport("libc", EntryPoint = "fsync", SetLastError = true)]
     private static extern int NativeFsync(SafeFileHandle handle);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [DllImport("libc", EntryPoint = "fchmod", SetLastError = true)]
+    private static extern int NativeFchmod(SafeFileHandle handle, uint mode);
 
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [DllImport("libc", EntryPoint = "statx", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]

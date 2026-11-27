@@ -234,4 +234,71 @@ public sealed class DurableSyncTests
             Directory.Delete(outside, recursive: true);
         }
     }
+
+    [TestMethod]
+    public void SetDirectoryModeNoFollow_AppliesModeViaDescriptorAndRefusesSymlinksAndFiles()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Inconclusive("Unix file modes are not applicable on Windows.");
+            return;
+        }
+
+        const UnixFileMode permissive =
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+            UnixFileMode.GroupRead | UnixFileMode.GroupExecute |
+            UnixFileMode.OtherRead | UnixFileMode.OtherExecute;
+        const UnixFileMode restricted =
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+
+        var realDir = Path.Combine(_temp, "real-dir");
+        Directory.CreateDirectory(realDir);
+        File.SetUnixFileMode(realDir, permissive);
+
+        DurableSync.SetDirectoryModeNoFollow(realDir, restricted);
+        Assert.AreEqual(restricted, File.GetUnixFileMode(realDir));
+
+        var symlinkTarget = Path.Combine(_temp, "symlink-target-dir");
+        Directory.CreateDirectory(symlinkTarget);
+        File.SetUnixFileMode(symlinkTarget, permissive);
+        var symlinkDir = Path.Combine(_temp, "symlink-dir");
+        Directory.CreateSymbolicLink(symlinkDir, symlinkTarget);
+
+        var symlinkFault = Assert.ThrowsExactly<FileSystemFaultException>(
+            () => DurableSync.SetDirectoryModeNoFollow(symlinkDir, restricted));
+        Assert.AreEqual(FileSystemFaultKind.Containment, symlinkFault.Kind);
+        Assert.AreEqual(permissive, File.GetUnixFileMode(symlinkTarget),
+            "Descriptor-based fchmod with O_NOFOLLOW must never modify the symlink target's permissions.");
+
+        var regularFile = Path.Combine(_temp, "regular.txt");
+        File.WriteAllText(regularFile, "data");
+        File.SetUnixFileMode(regularFile, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead);
+
+        var fileFault = Assert.ThrowsExactly<FileSystemFaultException>(
+            () => DurableSync.SetDirectoryModeNoFollow(regularFile, restricted));
+        Assert.AreEqual(FileSystemFaultKind.Containment, fileFault.Kind);
+        Assert.AreEqual(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead,
+            File.GetUnixFileMode(regularFile));
+    }
+
+    [TestMethod]
+    public void SetFileMode_AppliesModeViaOpenHandle()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Inconclusive("Unix file modes are not applicable on Windows.");
+            return;
+        }
+
+        var path = Path.Combine(_temp, "mode-file.bin");
+        File.WriteAllBytes(path, [1, 2, 3]);
+        File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+
+        using (var handle = File.OpenHandle(path, FileMode.Open, FileAccess.ReadWrite))
+        {
+            DurableSync.SetFileMode(handle, UnixFileMode.UserRead | UnixFileMode.UserWrite, path);
+        }
+
+        Assert.AreEqual(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(path));
+    }
 }

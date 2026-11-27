@@ -6,6 +6,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Primitives;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Notifications;
 
@@ -21,12 +22,103 @@ public sealed record HostConfigurationSnapshot(
     string? BindingErrorReasonCode);
 
 /// <summary>
+/// Maintains an immutable, revision-consistent <see cref="HostConfigurationSnapshot"/> updated atomically via
+/// <see cref="Interlocked.Exchange{T}(ref T, T)"/> ONLY inside <see cref="IChangeToken"/> reload callbacks after
+/// <see cref="IConfigurationRoot.Reload"/> finishes reloading every provider, preventing readers from observing
+/// multi-provider intermediate states mid-reload. Falls back to consistent double-read validation when the
+/// underlying configuration does not support active change callbacks.
+/// </summary>
+public sealed class HostConfigurationSnapshotTracker : IDisposable
+{
+    private readonly IConfiguration _configuration;
+    private readonly object _refreshLock = new();
+    private readonly Action<HostConfigurationSnapshot>? _onUpdated;
+    private readonly IDisposable? _changeTokenRegistration;
+    private readonly bool _supportsActiveChangeCallbacks;
+    private HostConfigurationSnapshot _current;
+    private long _version;
+    private int _disposed;
+
+    public HostConfigurationSnapshotTracker(
+        IConfiguration configuration,
+        Action<HostConfigurationSnapshot>? onUpdated = null)
+    {
+        _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
+        _onUpdated = onUpdated;
+
+        var initialToken = _configuration.GetReloadToken();
+        _supportsActiveChangeCallbacks = initialToken.ActiveChangeCallbacks;
+        _current = ConfigurationOperatorNotificationConfigProvider.ReadHostSnapshot(_configuration);
+        _version = 1;
+
+        if (_supportsActiveChangeCallbacks)
+        {
+            _changeTokenRegistration = ChangeToken.OnChange(
+                _configuration.GetReloadToken,
+                HandleReloadCallback);
+
+            // Close any narrow startup window if a reload fired between initialToken capture and callback registration.
+            if (initialToken.HasChanged)
+            {
+                RefreshFromConfiguration(notifySubscriber: false);
+            }
+        }
+    }
+
+    public bool SupportsActiveChangeCallbacks => _supportsActiveChangeCallbacks;
+
+    public long Version => Volatile.Read(ref _version);
+
+    public HostConfigurationSnapshot Current =>
+        _supportsActiveChangeCallbacks
+            ? Volatile.Read(ref _current)
+            : ConfigurationOperatorNotificationConfigProvider.ReadHostSnapshot(_configuration);
+
+    private void HandleReloadCallback()
+        => RefreshFromConfiguration(notifySubscriber: true);
+
+    private void RefreshFromConfiguration(bool notifySubscriber)
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            return;
+        }
+
+        HostConfigurationSnapshot updated;
+        lock (_refreshLock)
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+            {
+                return;
+            }
+
+            updated = ConfigurationOperatorNotificationConfigProvider.ReadHostSnapshot(_configuration);
+            Interlocked.Exchange(ref _current, updated);
+            Interlocked.Increment(ref _version);
+        }
+
+        if (notifySubscriber && Volatile.Read(ref _disposed) == 0)
+        {
+            _onUpdated?.Invoke(updated);
+        }
+    }
+
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
+        _changeTokenRegistration?.Dispose();
+    }
+}
+
+/// <summary>
 /// Read-only <see cref="IConfiguration"/>-backed provider for operator notifications. Used as the default fallback
 /// in hostless or Common-only test graphs; the CameraAgent host replaces this with the DataProtection-backed store.
 /// </summary>
-public sealed class ConfigurationOperatorNotificationConfigProvider(
-    IConfiguration configuration,
-    OperatorNotificationNetworkPolicy? networkPolicy = null) : IOperatorNotificationConfigProvider
+public sealed class ConfigurationOperatorNotificationConfigProvider : IOperatorNotificationConfigProvider, IDisposable
 {
     public const string SmtpUsernameConfigKey = OperatorNotificationsOptions.SectionKey + ":Smtp:Username";
     public const string SmtpPasswordConfigKey = OperatorNotificationsOptions.SectionKey + ":Smtp:Password";
@@ -37,16 +129,25 @@ public sealed class ConfigurationOperatorNotificationConfigProvider(
 
     private const int MaxConsistentHostReadAttempts = 8;
     private static readonly JsonSerializerOptions VersionJsonOptions = new(JsonSerializerDefaults.Web);
-    private readonly IConfiguration _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
-    private readonly OperatorNotificationNetworkPolicy _networkPolicy = networkPolicy ?? new OperatorNotificationNetworkPolicy(isDevelopment: false);
+    private readonly HostConfigurationSnapshotTracker _hostSnapshots;
+    private readonly OperatorNotificationNetworkPolicy _networkPolicy;
 
-    public OperatorNotificationsOptions CurrentOptions => ReadHostSnapshot(_configuration).Options;
+    public ConfigurationOperatorNotificationConfigProvider(
+        IConfiguration configuration,
+        OperatorNotificationNetworkPolicy? networkPolicy = null)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        _hostSnapshots = new HostConfigurationSnapshotTracker(configuration);
+        _networkPolicy = networkPolicy ?? new OperatorNotificationNetworkPolicy(isDevelopment: false);
+    }
+
+    public OperatorNotificationsOptions CurrentOptions => _hostSnapshots.Current.Options;
 
     public string? ConfigurationErrorReasonCode
     {
         get
         {
-            var snapshot = ReadHostSnapshot(_configuration);
+            var snapshot = _hostSnapshots.Current;
             if (snapshot.BindingErrorReasonCode is not null)
             {
                 return snapshot.BindingErrorReasonCode;
@@ -63,7 +164,7 @@ public sealed class ConfigurationOperatorNotificationConfigProvider(
     public ValueTask<OperatorNotificationsConfigurationSnapshot> GetSnapshotAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var snapshot = ReadHostSnapshot(_configuration);
+        var snapshot = _hostSnapshots.Current;
         var configSecrets = snapshot.BindingErrorReasonCode is not null
             ? OperatorNotificationSecrets.Empty
             : snapshot.Secrets;
@@ -87,7 +188,7 @@ public sealed class ConfigurationOperatorNotificationConfigProvider(
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var snapshot = ReadHostSnapshot(_configuration);
+        var snapshot = _hostSnapshots.Current;
         var secrets = snapshot.BindingErrorReasonCode is not null
             ? OperatorNotificationSecrets.Empty
             : MergeSecrets(
@@ -102,7 +203,7 @@ public sealed class ConfigurationOperatorNotificationConfigProvider(
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var snapshot = ReadHostSnapshot(_configuration);
+        var snapshot = _hostSnapshots.Current;
         if (snapshot.BindingErrorReasonCode is not null)
         {
             return ValueTask.FromResult(new OperatorNotificationEffectiveConfiguration(
@@ -135,6 +236,11 @@ public sealed class ConfigurationOperatorNotificationConfigProvider(
             OperatorNotificationsSaveOutcome.Unavailable,
             Snapshot: null,
             Message: "This host does not provide persistent operator notification storage."));
+    }
+
+    public void Dispose()
+    {
+        _hostSnapshots.Dispose();
     }
 
     /// <summary>
@@ -459,27 +565,20 @@ public sealed class ConfigurationOperatorNotificationConfigProvider(
     }
 
     /// <summary>
-    /// Returns true ONLY when protected SMTP credentials are explicitly bound to the effective SMTP relay endpoint
-    /// (normalized host + port + security mode), or for legacy envelopes without an explicit binding when the
-    /// envelope itself supplies the matching SMTP endpoint.
+    /// Returns true ONLY when protected SMTP credentials carry an explicit encrypted <paramref name="boundSmtpEndpoint"/>
+    /// binding matching the effective SMTP relay endpoint (normalized host + port + security mode). Legacy envelopes
+    /// lacking an encrypted <paramref name="boundSmtpEndpoint"/> fail closed and require operator re-entry so plaintext
+    /// envelope mutations can never redirect protected SMTP credentials to another relay.
     /// </summary>
     public static bool CanApplyProtectedSmtpCredentials(
         SmtpNotificationOptions? persistedSmtp,
         string? boundSmtpEndpoint,
         SmtpNotificationOptions? effectiveSmtp)
     {
-        if (!TryFormatSmtpEndpointKey(effectiveSmtp, out var effectiveEndpoint))
-        {
-            return false;
-        }
-
-        if (!string.IsNullOrWhiteSpace(boundSmtpEndpoint))
-        {
-            return string.Equals(boundSmtpEndpoint.Trim(), effectiveEndpoint, StringComparison.OrdinalIgnoreCase);
-        }
-
-        return TryFormatSmtpEndpointKey(persistedSmtp, out var persistedEndpoint) &&
-               string.Equals(persistedEndpoint, effectiveEndpoint, StringComparison.OrdinalIgnoreCase);
+        _ = persistedSmtp;
+        return !string.IsNullOrWhiteSpace(boundSmtpEndpoint) &&
+               TryFormatSmtpEndpointKey(effectiveSmtp, out var effectiveEndpoint) &&
+               string.Equals(boundSmtpEndpoint.Trim(), effectiveEndpoint, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
