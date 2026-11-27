@@ -1,0 +1,351 @@
+#!/usr/bin/env python3
+"""Configure or verify HVO's independent, archive-owner-retained stock Silo pairing."""
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tempfile
+from datetime import datetime, timezone
+from urllib.parse import unquote, urlsplit
+
+RELEASE = "2026-11-12T00:00:00Z"
+CLIENT_RELEASE = RELEASE.replace(":", "-")
+RULE = "hvo-independent-archive-v1"
+MARKER = "meta/archive.v1.json"
+RETENTION = "archive-owner-exact-version-v1"
+DENIED = [
+    "s3:DeleteObject", "s3:DeleteObjectVersion", "s3:ReplicateDelete",
+    "s3:PutLifecycleConfiguration", "s3:PutObjectRetention", "s3:PutObjectLegalHold",
+    "s3:BypassGovernanceRetention",
+]
+
+
+class Refused(Exception):
+    pass
+
+
+def mc_environment():
+    return {key: value for key, value in os.environ.items()
+            if key.lower() not in {"http_proxy", "https_proxy", "all_proxy", "no_proxy"}}
+
+
+def mc(*args, data=None, allowed_error=None, raw=False):
+    result = subprocess.run(["mc", "--json", *args], input=data, capture_output=True, timeout=30, check=False, env=mc_environment())
+    if raw and result.returncode == 0:
+        return result.stdout
+    try:
+        rows = [json.loads(line) for line in result.stdout.splitlines()]
+    except (ValueError, UnicodeError):
+        raise Refused(f"Unexpected stock mc response for {' '.join(args[:2])}.") from None
+    if result.returncode or any(row.get("status") == "error" for row in rows):
+        if len(rows) == 1 and allowed_error and allowed_error(rows[0].get("error", {})):
+            return None
+        raise Refused(f"Stock mc refused {' '.join(args[:2])}. Inspect that operation on the maintenance host.")
+    return rows
+
+
+def one(*args, **kwargs):
+    rows = mc(*args, **kwargs)
+    if len(rows) != 1:
+        raise Refused(f"Expected one stock mc response for {' '.join(args[:2])}.")
+    return rows[0]
+
+
+def error_code(error, code):
+    return error.get("cause", {}).get("error", {}).get("Code") == code
+
+
+def missing(error):
+    cause = error.get("cause", {})
+    return cause.get("error", {}).get("Code") in ("NoSuchKey", "NoSuchVersion") or cause.get("message") == "Object does not exist"
+
+
+def alias(name, required=True):
+    value = os.environ.get(f"MC_HOST_{name}")
+    if not value and not required:
+        return None
+    endpoint = urlsplit(value or "")
+    if endpoint.scheme not in ("http", "https") or not endpoint.hostname or not endpoint.username or not endpoint.password or (
+        endpoint.path not in ("", "/") or endpoint.query or endpoint.fragment
+    ):
+        raise Refused(f"Set MC_HOST_{name} to the credentialed stock Silo origin.")
+    return endpoint
+
+
+def origin(endpoint):
+    return endpoint.scheme, endpoint.hostname, endpoint.port or (443 if endpoint.scheme == "https" else 80)
+
+
+def marker_for(args):
+    return {
+        "format": "hvo.cameraagent.silo.archive/1",
+        "storeId": args.store_id,
+        "bucket": args.archive_bucket,
+        "sourceBindingId": args.binding,
+        "retentionPolicy": RETENTION,
+    }
+
+
+def verify_marker(args, install):
+    target = f"archive/{args.archive_bucket}"
+    expected = marker_for(args)
+    location = f"{target}/{MARKER}"
+    if mc("stat", location, allowed_error=missing) is None:
+        if not install:
+            raise Refused("The archive binding marker is missing.")
+        if mc("ls", "--recursive", "--versions", target):
+            raise Refused("Only an empty archive bucket may receive a new binding marker.")
+        mc("--custom-header", "If-None-Match:*", "pipe", location, data=json.dumps(expected).encode())
+    if json.loads(mc("cat", location, raw=True)) != expected:
+        raise Refused("The archive bucket is bound to a different store, source or retention policy.")
+
+
+def verify_client():
+    version = subprocess.run(["mc", "--version"], capture_output=True, text=True, timeout=10, check=True,
+                             env=mc_environment()).stdout
+    if not version.startswith(f"mc version RELEASE.{CLIENT_RELEASE} ") or "Silo object storage client" not in version:
+        raise Refused("Use mc from the qualified stock Silo image.")
+
+
+def deployment_id(endpoint):
+    info = one("admin", "info", endpoint)["info"]
+    if len(info["servers"]) != 1 or info["servers"][0]["version"] != RELEASE or info["mode"] != "online":
+        raise Refused(f"The {endpoint} server must run the qualified stock Silo release.")
+    if not info["deploymentID"]:
+        raise Refused(f"The {endpoint} server did not report a Silo deployment identity.")
+    return info["deploymentID"]
+
+
+def verify_servers():
+    verify_client()
+    if deployment_id("source") == deployment_id("archive"):
+        raise Refused("Source and archive must have different Silo deployment identities.")
+
+
+def bucket_profile(args):
+    source = f"source/{args.source_bucket}"
+    archive = f"archive/{args.archive_bucket}"
+    binding = json.loads(mc("cat", f"{source}/meta/instance.v1.json", raw=True))
+    if binding.get("format") != "hvo.cameraagent.silo.instance/1" or (
+        binding.get("storageBindingId") != args.binding or binding.get("bucket") != args.source_bucket
+    ):
+        raise Refused("The source bucket does not have the requested installed binding.")
+    for bucket in (source, archive):
+        if one("version", "info", bucket)["versioning"]["status"] != "Enabled":
+            raise Refused("Source and archive buckets must both have versioning enabled.")
+    retention = one("retention", "info", archive)
+    if retention["enabled"] != "Enabled" or retention["mode"]:
+        raise Refused("The archive must have object lock enabled with no bucket default hold period.")
+    if mc("ilm", "rule", "export", archive, allowed_error=lambda error: error_code(error, "NoSuchLifecycleConfiguration")) is not None:
+        raise Refused("Remove archive lifecycle rules before using exact-version archive-owner retention.")
+    if one("replicate", "export", archive)["config"]["Rules"]:
+        raise Refused("The independent archive bucket already has outbound replication rules.")
+
+
+def policy(bucket, replication):
+    resource = f"arn:aws:s3:::{bucket}"
+    protected = [f"{resource}/{MARKER}", f"{resource}/meta/archive-expiry/*"]
+    bucket_actions = ["s3:GetBucketVersioning", "s3:GetBucketLocation", "s3:ListBucket", "s3:GetBucketObjectLockConfiguration"]
+    object_actions = ["s3:GetObject", "s3:GetObjectVersion"]
+    if replication:
+        bucket_actions += ["s3:GetReplicationConfiguration", "s3:ListBucketMultipartUploads"]
+        object_actions += ["s3:PutObject", "s3:ReplicateObject", "s3:ReplicateTags", "s3:AbortMultipartUpload", "s3:GetObjectVersionTagging"]
+    else:
+        bucket_actions += ["s3:GetLifecycleConfiguration"]
+        object_actions += ["s3:GetObjectLegalHold", "s3:GetObjectRetention"]
+    statements = [
+        {"Effect": "Allow", "Action": bucket_actions, "Resource": [resource]},
+        {"Effect": "Allow", "Action": object_actions, "Resource": [f"{resource}/*"]},
+        {"Effect": "Deny", "Action": DENIED, "Resource": [resource, f"{resource}/*"]},
+    ]
+    if replication:
+        statements.append({"Effect": "Deny", "Action": ["s3:PutObject", "s3:ReplicateObject", "s3:ReplicateTags"], "Resource": protected})
+    return {"Version": "2012-10-17", "Statement": statements}
+
+
+def normalized(document):
+    return document["Version"], sorted(
+        (row["Effect"], sorted(row["Action"]), sorted(row["Resource"])) for row in document["Statement"]
+    )
+
+
+def verify_policy(args, endpoint, profile, apply):
+    key = unquote(endpoint.username)
+    name = f"hvo-{args.store_id}-{profile}"
+    user = one("admin", "user", "info", "archive", key)
+    if user.get("userStatus") != "enabled" or user.get("memberOf") or user.get("policyName", "") not in ("", name):
+        raise Refused("Use a dedicated enabled archive user with no other policies or groups.")
+    expected = policy(args.archive_bucket, profile == "replication")
+    if apply:
+        with tempfile.NamedTemporaryFile() as file:
+            file.write(json.dumps(expected).encode())
+            file.flush()
+            one("admin", "policy", "create", "archive", name, file.name)
+        if user.get("policyName") != name:
+            one("admin", "policy", "attach", "archive", name, "--user", key)
+    actual = one("admin", "policy", "info", "archive", name)["policyInfo"]["Policy"]
+    if normalized(actual) != normalized(expected) or any(set(row) != {"Effect", "Action", "Resource"} for row in actual["Statement"]) or (
+        one("admin", "user", "info", "archive", key).get("policyName") != name
+    ):
+        raise Refused("Archive user policy does not match the qualified grant and explicit denies.")
+    if one("version", "info", f"{'replica' if profile == 'replication' else 'reader'}/{args.archive_bucket}")["versioning"]["status"] != "Enabled":
+        raise Refused("The scoped archive credential did not confirm versioning.")
+
+
+def existing_rule(source):
+    rules = one("replicate", "export", source)["config"]["Rules"] or []
+    if len(rules) > 1 or rules and rules[0].get("ID") != RULE:
+        raise Refused("This source bucket has an unmanaged replication rule.")
+    return rules[0] if rules else None
+
+
+def target_matches(rule, source, endpoint, args):
+    targets = one("replicate", "status", source).get("remoteTargets") or []
+    if len(targets) != 1:
+        return False
+    remote = targets[0]
+    return (
+        remote["arn"] == rule["Destination"]["Bucket"]
+        and remote["sourcebucket"] == args.source_bucket
+        and remote["targetbucket"] == args.archive_bucket
+        and remote["credentials"]["accessKey"] == unquote(endpoint.username)
+        and remote["endpoint"].lower() == endpoint.netloc.rsplit("@", 1)[-1].lower()
+        and remote["secure"] == (endpoint.scheme == "https")
+        and remote.get("path") == "on"
+        and remote.get("disableProxy") is True
+        and remote.get("replicationSync") is False
+    )
+
+
+def rule_matches(rule, enabled):
+    expected = "Enabled" if enabled else "Disabled"
+    return (
+        rule.get("Status") == expected and rule.get("Priority") == 1
+        and rule.get("DeleteMarkerReplication") == {"Status": "Disabled"}
+        and rule.get("DeleteReplication") == {"Status": "Disabled"}
+        and rule.get("ExistingObjectReplication") == {"Status": "Enabled"}
+        and rule.get("SourceSelectionCriteria") == {"ReplicaModifications": {"Status": "Disabled"}}
+        and rule.get("Filter") == {"And": {}, "Tag": {}}
+        and set(rule.get("Destination", {})) == {"Bucket"}
+    )
+
+
+def configure(args):
+    source_endpoint, archive_endpoint, replica_endpoint, reader_endpoint = map(alias, ("source", "archive", "replica", "reader"))
+    if archive_endpoint.scheme != "https":
+        raise Refused("The independent archive origin requires HTTPS.")
+    if origin(source_endpoint) == origin(archive_endpoint) or origin(replica_endpoint) != origin(archive_endpoint) or (
+        origin(reader_endpoint) != origin(archive_endpoint)
+    ):
+        raise Refused("Use independent source and archive origins and one archive origin for all archive credentials.")
+    keys = {unquote(endpoint.username) for endpoint in (archive_endpoint, replica_endpoint, reader_endpoint)}
+    if len(keys) != 3 or not all(re.fullmatch(r"[A-Za-z0-9]{3,80}", key) for key in keys):
+        raise Refused("Use three distinct archive administrator, replication and reader keys.")
+    verify_servers()
+    bucket_profile(args)
+    source = f"source/{args.source_bucket}"
+    target = f"replica/{args.archive_bucket}"
+    rule = existing_rule(source)
+    if rule and not target_matches(rule, source, replica_endpoint, args):
+        raise Refused("The installed replication target has a different identity, route or transport profile.")
+    apply = args.operation in ("enable", "disable")
+    enable = args.operation == "enable" or args.operation == "verify-enabled"
+    verify_marker(args, args.operation == "enable")
+    verify_policy(args, replica_endpoint, "replication", apply)
+    verify_policy(args, reader_endpoint, "reader", apply)
+    if apply and rule is None and enable:
+        one("replicate", "add", source, "--id", RULE, "--priority", "1", "--remote-bucket", target,
+            "--replicate", "existing-objects", "--disable-proxy", "--path", "on", "--disable")
+        rule = existing_rule(source)
+    if apply and rule:
+        one("replicate", "update", source, "--id", RULE, "--priority", "1", "--remote-bucket", target,
+            "--replicate", "existing-objects", "--proxy", "disable", "--sync", "disable", "--path", "on",
+            "--state", "enable" if enable else "disable")
+    rule = existing_rule(source)
+    if rule is None or not rule_matches(rule, enable) or not target_matches(rule, source, replica_endpoint, args):
+        raise Refused("The readback did not prove the desired one-way, asynchronous, non-delete rule.")
+    print(json.dumps({"state": "enabled" if enable else "disabled", **marker_for(args)}))
+
+
+def expire(args):
+    if alias("archive").scheme != "https":
+        raise Refused("The independent archive origin requires HTTPS.")
+    verify_client()
+    deployment_id("archive")
+    verify_marker(args, False)
+    location = f"archive/{args.archive_bucket}/{args.key}"
+    identity = "\n".join((args.store_id, args.archive_bucket, args.key, args.version_id)).encode()
+    marker_key = f"archive/{args.archive_bucket}/meta/archive-expiry/{hashlib.sha256(identity).hexdigest()}.json"
+    expected = {
+        "format": "hvo.cameraagent.silo.archive-expiry/1", "storeId": args.store_id, "bucket": args.archive_bucket,
+        "key": args.key, "versionId": args.version_id, "disposition": "policy-expired",
+    }
+    def write_once(key, disposition):
+        expected_record = {**expected, "disposition": disposition}
+        if mc("stat", key, allowed_error=missing) is None:
+            # A conflicting concurrent writer is safe. A rerun verifies the exact stored record.
+            record = {**expected_record, "observedUtc": datetime.now(timezone.utc).isoformat()}
+            one("--custom-header", "If-None-Match:*", "pipe", key, data=json.dumps(record).encode())
+        stored = json.loads(mc("cat", key, raw=True))
+        if any(stored.get(field) != value for field, value in expected_record.items()):
+            raise Refused("The expiry entry belongs to another version or disposition.")
+        return stored
+
+    intent_key = marker_key.removesuffix(".json") + ".intent.json"
+    if mc("stat", intent_key, allowed_error=missing) is None and (
+        mc("stat", "--version-id", args.version_id, location, allowed_error=missing) is None
+    ):
+        raise Refused("The named archive version is already missing and has no expiry intent.")
+    write_once(intent_key, "authorized")
+    if mc("stat", "--version-id", args.version_id, location, allowed_error=missing) is not None:
+        one("rm", "--version-id", args.version_id, location)
+    if mc("stat", "--version-id", args.version_id, location, allowed_error=missing) is not None:
+        raise Refused("The exact archive version still exists. Check its legal hold.")
+    print(json.dumps(write_once(marker_key, "policy-expired")))
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("operation", choices=("enable", "disable", "verify-enabled", "verify-disabled", "expire"))
+    parser.add_argument("--source-bucket")
+    parser.add_argument("--archive-bucket", required=True)
+    parser.add_argument("--store-id", required=True)
+    parser.add_argument("--binding", required=True)
+    parser.add_argument("--key")
+    parser.add_argument("--version-id")
+    args = parser.parse_args()
+    bucket = re.compile(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]")
+    if not re.fullmatch(r"silo-archive-(?!0{32}$)[0-9a-f]{32}", args.store_id) or not re.fullmatch(r"[0-9a-f]{64}", args.binding) or (
+        not bucket.fullmatch(args.archive_bucket) or ".." in args.archive_bucket
+    ):
+        parser.error("Use an archive store ID, bucket and source binding with their qualified formats.")
+    with tempfile.TemporaryDirectory(prefix="hvo-archive-mc-") as config:
+        os.environ["MC_CONFIG_DIR"] = config
+        for name in ("MC_DEBUG", "MC_INSECURE", "MC_RESOLVE"):
+            os.environ.pop(name, None)
+        if args.operation == "expire":
+            if not re.fullmatch(r"p/(full|display|meta)/[0-9a-f]{2}/[0-9a-f]{64}", args.key or "") or not (
+                re.fullmatch(r"[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}", args.version_id or "")
+            ):
+                parser.error("Expiry requires an exact version of an archive payload key.")
+            prefix, digest = args.key.split("/")[-2:]
+            if prefix != digest[:2]:
+                parser.error("The archive payload key does not match its digest prefix.")
+            expire(args)
+        else:
+            if not bucket.fullmatch(args.source_bucket or "") or ".." in args.source_bucket or args.source_bucket == args.archive_bucket:
+                parser.error("Use distinct source and archive bucket names.")
+            configure(args)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (Refused, KeyError, ValueError, TypeError, OSError, subprocess.SubprocessError) as error:
+        print(str(error) if isinstance(error, Refused) else "Unable to verify the stock Silo operation.", file=sys.stderr)
+        sys.exit(1)

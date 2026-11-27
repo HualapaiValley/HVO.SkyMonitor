@@ -469,6 +469,18 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
             cancellationToken, ("$g", position.Generation), ("$s", position.Sequence)).ConfigureAwait(false);
     }
 
+    internal async ValueTask<SiloCommittedSegment?> ReadCommittedSegmentAsync(
+        SiloJournalPosition position, CancellationToken cancellationToken)
+    {
+        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        using var command = CreateCommand(connection, null,
+            "SELECT sha256, version_id FROM journal_operations WHERE generation = $g AND sequence = $s;",
+            ("$g", position.Generation), ("$s", position.Sequence));
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? new(position, reader.GetString(0), reader.GetString(1)) : null;
+    }
+
     /// <summary>Whether this writer made the publication visible: its own proof that the first P4 happened.</summary>
     public async ValueTask<bool> ReachedFirstP4Async(string groupId, string revisionId, CancellationToken cancellationToken)
     {

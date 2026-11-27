@@ -4,7 +4,9 @@ using System.Security.Cryptography;
 using Amazon.S3;
 using Amazon.S3.Model;
 using DotNet.Testcontainers.Builders;
+using DotNet.Testcontainers.Configurations;
 using DotNet.Testcontainers.Containers;
+using DotNet.Testcontainers.Networks;
 using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Silo.S3;
 
@@ -44,7 +46,7 @@ public sealed partial class SiloStockStoreTests
     }
 
     private static IContainer BuildStockContainer(string accessKey, string secretKey, string sync,
-        string? dataRoot = null, string? user = null)
+        INetwork? network = null, string? certificateDirectory = null, string? dataRoot = null, string? user = null)
     {
         var builder = new ContainerBuilder(StockImage)
             .WithEnvironment("MINIO_ROOT_USER", accessKey)
@@ -65,7 +67,22 @@ public sealed partial class SiloStockStoreTests
             })
             .WithWaitStrategy(Wait.ForUnixContainer().UntilHttpRequestIsSucceeded(
                 request => request.ForPort(Port).ForPath("/minio/health/ready")));
-        return (dataRoot is null ? builder : builder.WithBindMount(dataRoot, "/data").WithEnvironment("MC_CONFIG_DIR", "/tmp/mcli")).Build();
+        if (network is not null)
+        {
+            builder = builder.WithNetwork(network)
+                .WithEnvironment("MINIO_SCANNER_CYCLE", "1s")
+                .WithEnvironment("MINIO_SCANNER_SPEED", "fastest");
+        }
+        if (certificateDirectory is not null)
+        {
+            builder = builder.WithBindMount(certificateDirectory, "/tmp/.minio/certs", AccessMode.ReadOnly)
+                .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(Port));
+        }
+        if (dataRoot is not null)
+        {
+            builder = builder.WithBindMount(dataRoot, "/data").WithEnvironment("MC_CONFIG_DIR", "/tmp/mcli");
+        }
+        return builder.Build();
     }
 
     private static Uri Endpoint(IContainer container) => new UriBuilder("http", container.Hostname, container.GetMappedPublicPort(Port)).Uri;

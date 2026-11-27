@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.Diagnostics;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
@@ -148,7 +149,15 @@ internal sealed partial class CaptureProcessingPersistence(
         }
 
         var lifecycleGate = StorageLifecycleLock.ForRoot(_storageRoot);
-        await StorageLifecycleLock.WaitAsync(lifecycleGate, "capture-storage", _logger, cancellationToken).ConfigureAwait(false);
+        CameraAgentWorkloadTelemetry.RecordMaterializationPending(1);
+        try
+        {
+            await StorageLifecycleLock.WaitAsync(lifecycleGate, "capture-storage", _logger, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            CameraAgentWorkloadTelemetry.RecordMaterializationPending(-1);
+        }
         try
         {
             var manifestOutput = await RequireOutputAsync(manifestArtifactId, captureId, cancellationToken).ConfigureAwait(false);
@@ -177,7 +186,7 @@ internal sealed partial class CaptureProcessingPersistence(
             }
 
             var started = _timeProvider.GetUtcNow();
-            var product = PresentationMaterializationExecutor.MaterializePacked(
+            var product = CameraAgentWorkloadTelemetry.MaterializePacked(
                 baseArtifact,
                 manifestArtifact,
                 manifest,
@@ -349,12 +358,13 @@ internal sealed partial class CaptureProcessingPersistence(
         ProcessingOutcomeStatus? outcome,
         ProcessingNodeExecutionRoute executionRoute,
         CancellationToken cancellationToken,
-        ArtifactManifestV2? rawManifest = null)
+        ArtifactManifestV2? rawManifest = null,
+        CaptureProcessingGraph? graph = null)
         => _store.CompleteOutputlessExecutionNodeAsync(
             execution, node, status, reason, attempt, completedUtc, duration, outcome,
             executionRoute, cancellationToken,
             rawManifest is not null && execution is { ExecutionClass: ProcessingGraphExecutionClass.Live, AllowAutomaticPublication: true }
-                ? CenteredExposureProductReader.CreateOutputlessViewSettlements(rawManifest, node, status, reason) : null);
+                ? CenteredExposureProductReader.CreateOutputlessViewSettlements(rawManifest, node, status, reason, graph) : null);
 
     public ValueTask<IReadOnlyList<ProcessingRetentionHold>> GetRetentionHoldsAsync(
         string storageRoot,
@@ -736,7 +746,8 @@ internal sealed partial class CaptureProcessingPersistence(
         IReadOnlyList<ProcessingProduct> products,
         CaptureProcessingContext context,
         ProcessingExecutionContext? execution,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        CaptureProcessingGraph? graph = null)
     {
         foreach (var product in products)
         {
@@ -809,7 +820,7 @@ internal sealed partial class CaptureProcessingPersistence(
             var inputEvidence = context.GetCurrentInputEvidence();
             var centeredProducts = rawCapture.Manifest.CenteredExposure is not null &&
                 execution is { ExecutionClass: ProcessingGraphExecutionClass.Live, AllowAutomaticPublication: true }
-                ? CenteredExposureProductReader.CreateSettlements(rawCapture.Manifest, node, status, reason, outputs, inputEvidence)
+                ? CenteredExposureProductReader.CreateSettlements(rawCapture.Manifest, node, status, reason, outputs, inputEvidence, graph)
                 : null;
             await _store.WriteNodeAsync(
                 rawCapture.Manifest.Descriptor.Capture.CaptureId,

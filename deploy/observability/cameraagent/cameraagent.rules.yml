@@ -1,0 +1,24 @@
+groups:
+  - name: standalone-cameraagent
+    rules:
+      - record: cameraagent:workload_seconds:p95_5m
+        expr: histogram_quantile(0.95, sum by (instance, operation, outcome, le) (rate(camera_agent_workload_duration_seconds_bucket{job="cameraagent"}[5m])))
+      - record: cameraagent:throttled_periods:ratio_5m
+        expr: sum by (instance) (rate(container_cpu_cfs_throttled_periods_total{job="cameraagent-host"}[5m])) / (sum by (instance) (rate(container_cpu_cfs_periods_total{job="cameraagent-host"}[5m])) > 0)
+      - alert: CameraAgentMetricsUnavailable
+        expr: up{job="cameraagent"} == 0
+        for: 2m
+        annotations:
+          summary: Four or more scheduled CameraAgent scrapes have failed.
+          description: Check collector reachability, trust and the read key. Verify process and capture readiness independently.
+      - alert: CameraAgentIngressNotAccepting
+        expr: camera_agent_ingress_accepting{job="cameraagent"} == 0
+        for: 2m
+        annotations:
+          summary: CameraAgent reports that durable ingress is not accepting work.
+          description: Check local ingress health, disk headroom and journal state.
+      - alert: CameraAgentContainerOom
+        expr: increase(container_oom_events_total{job="cameraagent-host"}[5m]) > 0
+        annotations:
+          summary: The selected CameraAgent container recorded an OOM event.
+          description: Compare cgroup memory use to its limit and check process restart and capture continuity.

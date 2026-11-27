@@ -357,6 +357,11 @@ internal sealed class SiloJournalWriter(
             throw new InvalidOperationException("The journal segment would violate its format.", exception);
         }
         var bytes = SiloJson.Serialize(segment);
+        if (bytes.Length > SiloJson.MaximumMetadataObjectBytes)
+        {
+            throw new SiloInvalidObjectException(SiloObjectNamespace.SegmentKey(position),
+                "the journal segment exceeds the metadata read bound");
+        }
         var sha = SiloHash.Sha256(bytes);
         await spool.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
         faults?.Hit(SiloFaultPoint.AfterSegmentSpooled);

@@ -159,7 +159,7 @@ def is_valid_folder_name(folder_name):
 
 def check_xml_encoding(text):
     # Match ci:classify's source audit before ElementTree receives decoded text.
-    require("\0" not in text, "build input is not UTF-8")
+    require("\0" not in text and not text.startswith("\ufeff"), "build input is not UTF-8")
     declaration = re.match(r"^<\?xml\s+([^?]*?)\?>", text)
     if declaration:
         declared_encoding = re.search(r"(?:^|\s)encoding\s*=\s*([\"'])([^\"']+)\1", declaration.group(1))

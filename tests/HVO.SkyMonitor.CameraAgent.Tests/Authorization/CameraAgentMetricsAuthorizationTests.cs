@@ -2,9 +2,14 @@ using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using HVO.Enterprise.Telemetry.OpenTelemetry;
 using HVO.SkyMonitor.CameraAgent.Authentication;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Configuration;
+using HVO.SkyMonitor.CameraAgent.Common.Diagnostics;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Data;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.Common.Observability;
@@ -30,7 +35,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Authorization;
 [TestClass]
 [TestCategory("Unit")]
 [TestProperty("Area", "Hosting")]
-public sealed class CameraAgentMetricsAuthorizationTests
+public sealed partial class CameraAgentMetricsAuthorizationTests
 {
     private const string MetricName = "hvo_cameraagent_metrics_auth_probe";
 
@@ -117,6 +122,139 @@ public sealed class CameraAgentMetricsAuthorizationTests
         Assert.IsFalse(fixture.Logs.Any(entry => entry.Contains(readSecret, StringComparison.Ordinal) || entry.Contains(readKey, StringComparison.Ordinal)), environment);
     }
 
+    [TestMethod]
+    public async Task ProductionProfilingScrapeHasBoundedBucketsRuntimeAndNoRequestIdentifiers()
+    {
+        var fixture = await MetricsFixture.CreateAsync("Production", profiling: true).ConfigureAwait(false);
+        await using var fixtureLease = fixture.ConfigureAwait(false);
+        var readKey = await fixture.CreateKeyAsync(ApiKeyAccessLevel.Read).ConfigureAwait(false);
+        using var client = fixture.Client(readKey);
+        const string privatePath = "profiling-test-private-path";
+        using var health = await client.GetAsync(new Uri("/health", UriKind.Relative)).ConfigureAwait(false);
+        using var parameterized = await client.GetAsync(new Uri($"/test/route/{privatePath}", UriKind.Relative)).ConfigureAwait(false);
+        using var missing = await client.GetAsync(new Uri($"/{privatePath}", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, health.StatusCode);
+        Assert.AreEqual(HttpStatusCode.OK, parameterized.StatusCode);
+        Assert.AreEqual(HttpStatusCode.NotFound, missing.StatusCode);
+
+        CameraAgentWorkloadTelemetry.Record(CameraAgentWorkloadTelemetry.Start(),
+            CameraAgentWorkloadTelemetry.Operation.SqliteCheckpoint, CameraAgentWorkloadTelemetry.Outcome.Incomplete);
+        CameraAgentWorkloadTelemetry.RecordSceneBytes(12345);
+        CameraAgentWorkloadTelemetry.RecordMaterializationPending(1);
+        CameraAgentWorkloadTelemetry.RecordMaterializationPending(-1);
+        for (var index = 0; index < 100; index++)
+        {
+            Probe.Add(1, new KeyValuePair<string, object?>("sample", index));
+        }
+
+        using var response = await client.GetAsync(new Uri("/metrics", UriKind.Relative)).ConfigureAwait(false);
+        await AssertScrapedAsync("Production", response, SecretOf(readKey)).ConfigureAwait(false);
+        var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+        foreach (var expected in new[]
+        {
+            "camera_agent_workload_duration_seconds_bucket", "operation=\"sqlite_checkpoint\"",
+            "outcome=\"incomplete\"", "le=\"0.001", "camera_agent_workload_scene_metadata_bytes_bucket",
+            "dotnet_process_cpu_time_seconds_total", "dotnet_process_memory_working_set_bytes",
+            "dotnet_gc_heap_total_allocated_bytes_total", "dotnet_gc_last_collection_heap_size_bytes",
+            "dotnet_gc_pause_time_seconds_total", "# TYPE dotnet_thread_pool_queue_length_total counter",
+            "# TYPE dotnet_thread_pool_thread_count_total counter",
+            "camera_agent_ingress_accepting", "http_server_request_duration_seconds_bucket"
+        })
+        {
+            StringAssert.Contains(body, expected, StringComparison.Ordinal);
+        }
+        Assert.IsFalse(body.Contains(privatePath, StringComparison.Ordinal));
+        Assert.IsFalse(body.Contains("url_path=", StringComparison.Ordinal));
+        var samples = body.Split('\n');
+        Assert.IsTrue(samples.Any(line => line.StartsWith("aspnetcore_routing_match_attempts_total{", StringComparison.Ordinal) &&
+            HasSampleLabel(line, "aspnetcore_routing_match_status")), "The scrape must exercise the standard routing meter.");
+        var routeSample = samples.FirstOrDefault(line => line.Contains("http_route=", StringComparison.Ordinal));
+        Assert.IsNull(routeSample, $"The scrape exposed an HTTP route in {routeSample}");
+        Assert.IsTrue(samples.Any(line => line.StartsWith("dotnet_gc_last_collection_heap_size_bytes{", StringComparison.Ordinal) &&
+            HasSampleLabel(line, "gc_heap_generation")));
+        var probeSamples = samples.Where(line => line.StartsWith(MetricName, StringComparison.Ordinal)).ToArray();
+        Assert.AreEqual(64, probeSamples.Count(line => line.Contains("sample=", StringComparison.Ordinal)),
+            string.Join('\n', probeSamples));
+        Assert.IsTrue(probeSamples.Any(line => line.Contains("otel_metric_overflow", StringComparison.Ordinal)));
+        AssertDashboardMatchesProfilingScrape(samples);
+    }
+
+    [TestMethod]
+    public void ProductionProfilingScrapeConfigQuotesTargetsAndLoadsRecordingRules()
+    {
+        var directory = ObservabilityDirectory();
+        var configuration = File.ReadAllText(Path.Combine(directory, "prometheus.yml"));
+        StringAssert.Contains(configuration, "- targets: ['cameraagent.example.invalid:443']", StringComparison.Ordinal);
+        StringAssert.Contains(configuration, "#     - targets: ['127.0.0.1:8080']", StringComparison.Ordinal);
+        StringAssert.Contains(configuration, "- cameraagent.rules.yml", StringComparison.Ordinal);
+        Assert.IsTrue(File.Exists(Path.Combine(directory, "cameraagent.rules.yml")));
+    }
+
+    private static void AssertDashboardMatchesProfilingScrape(string[] samples)
+    {
+        var directory = ObservabilityDirectory();
+        using var dashboard = JsonDocument.Parse(File.ReadAllText(Path.Combine(directory, "dashboard.json")));
+        var rules = File.ReadAllText(Path.Combine(directory, "cameraagent.rules.yml"));
+
+        foreach (var panel in dashboard.RootElement.GetProperty("panels").EnumerateArray())
+        {
+            foreach (var target in panel.GetProperty("targets").EnumerateArray())
+            {
+                var expression = target.GetProperty("expr").GetString()!;
+                // Resolve the workload recording rule to the histogram that Prometheus scrapes.
+                if (expression.StartsWith("cameraagent:workload_", StringComparison.Ordinal))
+                {
+                    var rule = Regex.Match(rules,
+                        $@"(?m)^\s*- record: {Regex.Escape(expression)}[ \t]*\r?\n[ \t]*expr: (.+)$",
+                        RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+                    Assert.IsTrue(rule.Success, $"Missing recording rule for {expression}");
+                    expression = rule.Groups[1].Value;
+                }
+
+                foreach (Match match in ProfilingMetricSelector().Matches(expression))
+                {
+                    var metric = match.Groups[1].Value;
+                    var metricSamples = samples.Where(line => line.StartsWith(metric + "{", StringComparison.Ordinal) ||
+                        line.StartsWith(metric + " ", StringComparison.Ordinal)).ToArray();
+                    Assert.IsNotEmpty(metricSamples, $"Dashboard metric {metric} is absent from the scrape.");
+                    foreach (Match label in LegendLabel().Matches(target.GetProperty("legendFormat").GetString()!))
+                    {
+                        var name = label.Groups[1].Value;
+                        // Prometheus adds instance after the scrape.
+                        if (name != "instance")
+                        {
+                            Assert.IsTrue(metricSamples.Any(line => HasSampleLabel(line, name)),
+                                $"Dashboard label {name} is absent from {metric}.");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private static bool HasSampleLabel(string sample, string label)
+        => sample.Contains("{" + label + "=", StringComparison.Ordinal) ||
+           sample.Contains("," + label + "=", StringComparison.Ordinal);
+
+    [GeneratedRegex(@"\b((?:dotnet_|camera_agent_workload_|http_server_)[a-z0-9_]+)\b", RegexOptions.CultureInvariant)]
+    private static partial Regex ProfilingMetricSelector();
+
+    [GeneratedRegex(@"\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}", RegexOptions.CultureInvariant)]
+    private static partial Regex LegendLabel();
+
+    private static string ObservabilityDirectory()
+    {
+        for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "HVO.SkyMonitor.v9.slnx")))
+            {
+                return Path.Combine(directory.FullName, "deploy", "observability", "cameraagent");
+            }
+        }
+
+        throw new DirectoryNotFoundException($"Could not locate the SkyMonitor repository from {AppContext.BaseDirectory}.");
+    }
+
     private static void AssertOpen(string environment, HttpResponseMessage response)
     {
         Assert.AreEqual(HttpStatusCode.OK, response.StatusCode, environment);
@@ -167,7 +305,7 @@ public sealed class CameraAgentMetricsAuthorizationTests
 
         internal IReadOnlyCollection<string> Logs { get; }
 
-        internal static async Task<MetricsFixture> CreateAsync(string environmentName)
+        internal static async Task<MetricsFixture> CreateAsync(string environmentName, bool profiling = false)
         {
             var root = Path.Combine(Path.GetTempPath(), "hvo-metrics-auth", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(root);
@@ -203,11 +341,30 @@ public sealed class CameraAgentMetricsAuthorizationTests
             builder.Services.AddSingleton<CameraAgentOperatorTelemetry>();
             builder.Services.AddAntiforgery();
             builder.Services.AddSkyMonitorHealthChecks();
+            if (profiling)
+            {
+                // Register the same standard meters as AddSkyMonitorObservability without exporting off-host.
+                builder.Services.AddOpenTelemetryExport(options =>
+                {
+                    options.EnableTraceExport = false;
+                    options.EnableMetricsExport = false;
+                    options.EnableLogExport = false;
+                    options.EnableStandardMeters = true;
+                });
+            }
             builder.Services.AddOpenTelemetry().WithMetrics(metrics =>
             {
                 metrics.AddPrometheusExporter();
                 metrics.AddMeter(ProbeMeter.Name);
+                if (profiling)
+                {
+                    ProductionProfiling.ConfigureMetrics(metrics);
+                    metrics.AddRuntimeInstrumentation();
+                    metrics.AddMeter(RawIngressTelemetry.MeterName);
+                }
             });
+            builder.Services.AddSingleton(new RawIngressState(TimeProvider.System));
+            builder.Services.AddSingleton<RawIngressTelemetry>();
             var app = builder.Build();
             try
             {
@@ -220,6 +377,7 @@ public sealed class CameraAgentMetricsAuthorizationTests
                 app.UseAntiforgery();
                 CameraAgentMetricsEndpoint.Map(app);
                 app.MapSkyMonitorHealthEndpoints();
+                app.MapGet("/test/route/{value}", () => Results.Ok()).AllowAnonymous();
                 app.MapGet("/operations", () => Results.Text("operations-page"))
                     .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsReadV1);
                 app.MapGet("/account/probe", () => Results.Text("account-page"))
@@ -273,6 +431,8 @@ public sealed class CameraAgentMetricsAuthorizationTests
 
                 await app.StartAsync().ConfigureAwait(false);
                 Probe.Add(1);
+                if (profiling)
+                    _ = app.Services.GetRequiredService<RawIngressTelemetry>();
                 return new MetricsFixture(app, root, ownerId, logs);
             }
             catch

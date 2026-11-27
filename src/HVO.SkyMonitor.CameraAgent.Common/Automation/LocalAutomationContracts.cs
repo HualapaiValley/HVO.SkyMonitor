@@ -379,6 +379,9 @@ public sealed record LocalAutomationOperatorState(
     /// <summary>Bounded queued and running occurrences, including those older than the recent history page.</summary>
     public IReadOnlyList<LocalAutomationRun> ActiveRuns { get; init; } = [];
 
+    /// <summary>Recent source-window attempts eligible for retry at the time of this read.</summary>
+    public IReadOnlyList<string> RetryableSourceWindowRunKeys { get; init; } = [];
+
     /// <summary>Exact journal totals, independent of the bounded recent-run projection.</summary>
     public int? RunningRunCount { get; init; }
     public int? QueuedRunCount { get; init; }

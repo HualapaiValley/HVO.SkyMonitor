@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.Diagnostics;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text.Json;
@@ -254,17 +255,19 @@ internal sealed class RawIngressFileStore(
         RawIngressFaultPoint directorySynced,
         CancellationToken cancellationToken)
     {
-        using var integrity = DeploymentLocation.RetainedIntegrityLedger.BeginWrite(finalPath, content);
-        var directory = Path.GetDirectoryName(finalPath)!;
-        var directoryExisted = Directory.Exists(directory);
-        Directory.CreateDirectory(directory);
-        EnsureNoSymbolicLinks(_root, directory);
-        if (!directoryExisted)
-        {
-            FlushDirectoryHierarchy(directory);
-        }
+        var started = CameraAgentWorkloadTelemetry.Start();
+        var outcome = CameraAgentWorkloadTelemetry.Outcome.Failure;
         try
         {
+            using var integrity = DeploymentLocation.RetainedIntegrityLedger.BeginWrite(finalPath, content);
+            var directory = Path.GetDirectoryName(finalPath)!;
+            var directoryExisted = Directory.Exists(directory);
+            Directory.CreateDirectory(directory);
+            EnsureNoSymbolicLinks(_root, directory);
+            if (!directoryExisted)
+            {
+                FlushDirectoryHierarchy(directory);
+            }
             await AtomicPublisher.PublishAsync(
                 PhysicalRoot.Open(_root),
                 NormalizeRelative(_root, finalPath),
@@ -305,10 +308,20 @@ internal sealed class RawIngressFileStore(
                     }
                 },
                 cancellationToken).ConfigureAwait(false);
+            outcome = CameraAgentWorkloadTelemetry.Outcome.Success;
+        }
+        catch (OperationCanceledException)
+        {
+            outcome = CameraAgentWorkloadTelemetry.Outcome.Cancelled;
+            throw;
         }
         catch (FileSystemFaultException exception)
         {
             FileSystemFaultCompatibility.Rethrow(exception);
+        }
+        finally
+        {
+            CameraAgentWorkloadTelemetry.Record(started, CameraAgentWorkloadTelemetry.Operation.IngressFilePublication, outcome);
         }
     }
 

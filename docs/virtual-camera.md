@@ -584,20 +584,27 @@ display pixels together with the point objects. Inputs without footprints,
 including every `projected-scene-v1` scene and the standalone CameraAgent path,
 render the released bytes. Golden hashes pin this.
 
-The presentation layers have since changed three times: #1383 restored the
+The presentation layers have since changed four times: #1383 restored the
 original overlay colours in `projected-scene-presentation-v11-original-colours`,
 so footprint outlines and point markers are drawn in the marker grey, and #1415
 drew the point marker as the original plain circle outline, without the
 crosshair, in `projected-scene-presentation-v12-plain-circle-markers`. #526
-then gated star labels on measured associations, in
-`projected-scene-presentation-v13-plain-circle-bounded-expected-labels`: a star
-label is drawn only for a policy-eligible measured association, or marked as
-expected when expected-position diagnostics are requested, and the markers stay.
-The layers' golden hash pins the v13 bytes, and pins the v12 bytes for a scene
-in which every star is measured. #1383 and #1415 left the Annotation raster
-unchanged; #526 applies the same label policy to it under Annotation Definition
-`projected-annotation-v4`, and only expected-position diagnostics select the
-`projected-annotation-raster-v5-bounded-expected-labels` renderer.
+initially gated star labels on measured associations in
+`projected-scene-presentation-v13-plain-circle-bounded-expected-labels`, and now
+gates both star and point-source planet (Mercury–Neptune) labels on measured
+pixel evidence by default in
+`projected-scene-presentation-v15-plain-circle-bounded-point-source-labels`
+(and `projected-scene-presentation-v15-explicit-style` for explicit scene style):
+a star or point-source planet label is drawn only for a policy-eligible measured
+association, or marked as expected when expected-position diagnostics are
+requested, while markers stay and resolved Sun/Moon discs remain outside
+point-source gating. The layers' golden hash pins the expected-star payload
+bytes, and pins the v12 bytes for a star/Sun/Moon scene in which every star is
+measured. #1383 and #1415 left the Annotation raster unchanged; #526 applies the
+same point-source star and Mercury–Neptune label policy to it under Annotation
+Definition `projected-annotation-v5` (moving from `projected-annotation-v4` so
+retained outputs never collide), and only expected-position diagnostics select
+the `projected-annotation-raster-v5-bounded-expected-labels` renderer.
 
 Reference values come from offline JPL Horizons responses in
 `tests/fixtures/horizons/issue-518/`:

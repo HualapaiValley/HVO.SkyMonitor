@@ -466,7 +466,9 @@ internal sealed partial class SiloCatalogIndex
         {
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                locators.Add(new(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3)));
+                var locator = new SiloExactLocator(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3));
+                if (stores.TryResolve(locator.StoreId, locator.Bucket, out _))
+                    locators.Add(locator);
             }
         }
         byte[]? bytes = null;
@@ -504,7 +506,7 @@ internal sealed partial class SiloCatalogIndex
             }
         }
         var unknown = await UnknownIntervalAsync(connection, null, cancellationToken).ConfigureAwait(false);
-        var disposition = await RecomputeRoleAsync(connection, null, role, unknown, cancellationToken).ConfigureAwait(false);
+        var disposition = await RecomputeRoleAsync(connection, null, role, unknown, cancellationToken, stores).ConfigureAwait(false);
         return (disposition, bytes, servedFrom, damaged && disposition == SiloDisposition.Missing);
     }
 

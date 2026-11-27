@@ -4,6 +4,7 @@ using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Xml;
+using HVO.SkyMonitor.AgentCore;
 
 namespace HVO.SkyMonitor.Imaging;
 
@@ -16,14 +17,18 @@ internal static class XisfScientificWriter
         typeof(XisfScientificWriter).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()!
             .InformationalVersion.Split('+', 2)[0];
 
+    internal static long MaximumOutputBytes(ScientificExportMetadata metadata)
+    {
+        var dataSize = ImageDataSize(metadata.Layout);
+        return AttachmentOffset(metadata, dataSize) + dataSize;
+    }
+
     public static async Task WriteAsync(Stream output, ScientificCaptureExport.PixelReader pixels,
         ScientificExportMetadata metadata, CancellationToken token)
     {
         var layout = metadata.Layout;
-        var dataSize = (long)layout.Width * layout.Height * (layout.ContainerDepthBits / 8);
-        var placeholder = new string('0', 64);
-        var estimate = XmlHeader(metadata, long.MaxValue, dataSize, placeholder);
-        var offset = (estimate.Length + PreambleSize + AttachmentAlignment - 1) / AttachmentAlignment * AttachmentAlignment;
+        var dataSize = ImageDataSize(layout);
+        var offset = AttachmentOffset(metadata, dataSize);
         output.Position = offset;
 
         using var dataHash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
@@ -48,6 +53,15 @@ internal static class XisfScientificWriter
         await output.WriteAsync(preamble, token).ConfigureAwait(false);
         await output.WriteAsync(xml, token).ConfigureAwait(false);
         await output.WriteAsync(new byte[offset - PreambleSize - xml.Length], token).ConfigureAwait(false);
+    }
+
+    private static long ImageDataSize(FrameLayoutDescriptor layout)
+        => (long)layout.Width * layout.Height * (layout.ContainerDepthBits / 8);
+
+    private static int AttachmentOffset(ScientificExportMetadata metadata, long dataSize)
+    {
+        var estimate = XmlHeader(metadata, long.MaxValue, dataSize, new string('0', 64));
+        return (estimate.Length + PreambleSize + AttachmentAlignment - 1) / AttachmentAlignment * AttachmentAlignment;
     }
 
     private static byte[] XmlHeader(ScientificExportMetadata metadata, long offset, long size, string sha256)

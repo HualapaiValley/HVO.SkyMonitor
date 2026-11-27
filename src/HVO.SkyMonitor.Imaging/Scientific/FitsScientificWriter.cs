@@ -10,18 +10,34 @@ internal static class FitsScientificWriter
     private const int BlockSize = 2880;
     private const int CardSize = 80;
     private const int DescriptorSize = 8;
+    private const int TileSampleBudget = 16384;
+    private const int GzipLevel = 6;
+    // The .NET 10 bundled zlib-ng level-6 medium encoder ignores Filtered. Keep specifying it for
+    // backends that honor it, and record the requested strategy in the encoder metadata.
+    private const ZLibCompressionStrategy GzipStrategy = ZLibCompressionStrategy.Filtered;
+
+    internal static string CompressionOptions => FormattableString.Invariant(
+        $"compression=GZIP_1;zlib={GzipLevel}/{GzipStrategy};tileSamples={TileSampleBudget}");
+
+    internal static long MaximumOutputBytes(ScientificExportFormat format, ScientificExportMetadata metadata)
+    {
+        var layout = metadata.Layout;
+        var (header, _, _, tileCount) = ImageHeader(format, metadata);
+        var dataBytes = (long)layout.Width * layout.Height * (layout.ContainerDepthBits / 8);
+        if (format == ScientificExportFormat.FitsTileGzip)
+        {
+            // Include the descriptor table and a conservative zlib bound for each gzip member.
+            dataBytes += dataBytes / 1024 + tileCount * (DescriptorSize + 32);
+        }
+        return header.Length + dataBytes + Padding(dataBytes);
+    }
 
     public static async Task WritePrimaryAsync(Stream output, ScientificCaptureExport.PixelReader pixels,
         ScientificExportMetadata metadata, CancellationToken token)
     {
         var layout = metadata.Layout;
-        var cards = new List<string>
-        {
-            Card("SIMPLE", "T"), Integer("BITPIX", layout.ContainerDepthBits), Integer("NAXIS", 2),
-            Integer("NAXIS1", layout.Width), Integer("NAXIS2", layout.Height)
-        };
-        AddImageCards(cards, metadata);
-        await output.WriteAsync(Header(cards), token).ConfigureAwait(false);
+        var (header, _, _, _) = ImageHeader(ScientificExportFormat.Fits, metadata);
+        await output.WriteAsync(header, token).ConfigureAwait(false);
         var dataStart = output.Position;
         for (var row = 0; row < layout.Height; row++)
         {
@@ -41,25 +57,8 @@ internal static class FitsScientificWriter
         ScientificExportMetadata metadata, CancellationToken token)
     {
         var layout = metadata.Layout;
-        var tileWidth = Math.Min(layout.Width, ScientificCaptureExport.ChunkSamples);
-        var tileHeight = Math.Min(layout.Height, ScientificCaptureExport.ChunkSamples / tileWidth);
-        var tilesAcross = ((long)layout.Width + tileWidth - 1) / tileWidth;
-        var tileCount = tilesAcross * (((long)layout.Height + tileHeight - 1) / tileHeight);
-        var primary = Header([Card("SIMPLE", "T"), Integer("BITPIX", 8), Integer("NAXIS", 0), Card("EXTEND", "T")]);
-        await output.WriteAsync(primary, token).ConfigureAwait(false);
-        var cards = new List<string>
-        {
-            Card("XTENSION", Quote("BINTABLE")), Integer("BITPIX", 8), Integer("NAXIS", 2),
-            Integer("NAXIS1", DescriptorSize), Integer("NAXIS2", tileCount),
-            Integer("PCOUNT", 0), Integer("GCOUNT", 1), Integer("TFIELDS", 1),
-            Card("TTYPE1", Quote("COMPRESSED_DATA")), Card("TFORM1", Quote("1PB")),
-            Card("ZIMAGE", "T"), Card("ZSIMPLE", "T"), Card("ZCMPTYPE", Quote("GZIP_1")),
-            Integer("ZBITPIX", layout.ContainerDepthBits), Integer("ZNAXIS", 2),
-            Integer("ZNAXIS1", layout.Width), Integer("ZNAXIS2", layout.Height),
-            Integer("ZTILE1", tileWidth), Integer("ZTILE2", tileHeight)
-        };
-        AddImageCards(cards, metadata);
-        await output.WriteAsync(Header(cards), token).ConfigureAwait(false);
+        var (header, tileWidth, tileHeight, tileCount) = ImageHeader(ScientificExportFormat.FitsTileGzip, metadata);
+        await output.WriteAsync(header, token).ConfigureAwait(false);
         var tablePosition = output.Position;
         var heapStart = tablePosition + tileCount * DescriptorSize;
         output.Position = heapStart;
@@ -67,7 +66,8 @@ internal static class FitsScientificWriter
         // Keep the heap sequential and write the fixed-width descriptor table in batches.
         var descriptors = new byte[64 * 1024];
         var descriptorBytes = 0;
-        var tile = new byte[ScientificCaptureExport.ChunkSamples * 2];
+        var tile = new byte[tileWidth * tileHeight * (layout.ContainerDepthBits / 8)];
+        var compression = new ZLibCompressionOptions { CompressionLevel = GzipLevel, CompressionStrategy = GzipStrategy };
         using var compressed = new MemoryStream(tile.Length + 128);
         for (var y = 0; y < layout.Height;)
         {
@@ -85,7 +85,7 @@ internal static class FitsScientificWriter
                         await pixels.EndRowAsync(token).ConfigureAwait(false);
                 }
                 compressed.SetLength(0);
-                using (var gzip = new GZipStream(compressed, CompressionLevel.Fastest, leaveOpen: true))
+                using (var gzip = new GZipStream(compressed, compression, leaveOpen: true))
                     gzip.Write(tile.AsSpan(0, length));
 
                 var size = checked((int)compressed.Length);
@@ -105,7 +105,7 @@ internal static class FitsScientificWriter
         var heapLength = output.Position - heapStart;
         await PadDataAsync(output, tileCount * DescriptorSize + heapLength, token).ConfigureAwait(false);
         // PCOUNT is the sixth mandatory BINTABLE card and is the actual heap length.
-        output.Position = primary.Length + 5 * CardSize;
+        output.Position = BlockSize + 5 * CardSize;
         await output.WriteAsync(Encoding.ASCII.GetBytes(Integer("PCOUNT", heapLength)), token).ConfigureAwait(false);
 
         async ValueTask FlushDescriptorsAsync()
@@ -117,6 +117,43 @@ internal static class FitsScientificWriter
             descriptorBytes = 0;
             output.Position = heapPosition;
         }
+    }
+
+    private static (byte[] Header, int TileWidth, int TileHeight, long TileCount) ImageHeader(
+        ScientificExportFormat format, ScientificExportMetadata metadata)
+    {
+        var layout = metadata.Layout;
+        if (format == ScientificExportFormat.Fits)
+        {
+            var primaryCards = new List<string>
+            {
+                Card("SIMPLE", "T"), Integer("BITPIX", layout.ContainerDepthBits), Integer("NAXIS", 2),
+                Integer("NAXIS1", layout.Width), Integer("NAXIS2", layout.Height)
+            };
+            AddImageCards(primaryCards, metadata);
+            return (Header(primaryCards), 0, 0, 0);
+        }
+
+        var tileWidth = Math.Min(layout.Width, ScientificCaptureExport.ChunkSamples);
+        // When splitting wide rows, use one-row tiles to preserve sequential reads of the original samples.
+        // ZTILE1 and ZTILE2 record the resulting shape within the sample budget.
+        var tileHeight = tileWidth < layout.Width ? 1 : Math.Min(layout.Height, TileSampleBudget / tileWidth);
+        var tilesAcross = ((long)layout.Width + tileWidth - 1) / tileWidth;
+        var tileCount = tilesAcross * (((long)layout.Height + tileHeight - 1) / tileHeight);
+        var extensionCards = new List<string>
+        {
+            Card("XTENSION", Quote("BINTABLE")), Integer("BITPIX", 8), Integer("NAXIS", 2),
+            Integer("NAXIS1", DescriptorSize), Integer("NAXIS2", tileCount),
+            Integer("PCOUNT", 0), Integer("GCOUNT", 1), Integer("TFIELDS", 1),
+            Card("TTYPE1", Quote("COMPRESSED_DATA")), Card("TFORM1", Quote("1PB")),
+            Card("ZIMAGE", "T"), Card("ZSIMPLE", "T"), Card("ZCMPTYPE", Quote("GZIP_1")),
+            Integer("ZBITPIX", layout.ContainerDepthBits), Integer("ZNAXIS", 2),
+            Integer("ZNAXIS1", layout.Width), Integer("ZNAXIS2", layout.Height),
+            Integer("ZTILE1", tileWidth), Integer("ZTILE2", tileHeight)
+        };
+        AddImageCards(extensionCards, metadata);
+        var primary = Header([Card("SIMPLE", "T"), Integer("BITPIX", 8), Integer("NAXIS", 0), Card("EXTEND", "T")]);
+        return ([.. primary, .. Header(extensionCards)], tileWidth, tileHeight, tileCount);
     }
 
     private static void AddImageCards(List<string> cards, ScientificExportMetadata metadata)

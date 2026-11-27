@@ -1237,6 +1237,7 @@ internal sealed partial class RawCaptureIngress :
 
     private void EnsureCapacity(long payloadLength)
     {
+        _state.RecordCapturePayloadBytes(payloadLength);
         StorageCapacity capacity;
         try
         {
@@ -1343,6 +1344,7 @@ internal sealed partial class RawCaptureIngress :
         }
         try
         {
+            _faultInjector.BeforeLaneStateRefresh();
             var prior = _laneState.Snapshot;
             _laneState.Update(await _laneStore.ReadBacklogsAsync(cancellationToken).ConfigureAwait(false));
             _laneState.ClearUnhealthy("lane-state-unavailable");

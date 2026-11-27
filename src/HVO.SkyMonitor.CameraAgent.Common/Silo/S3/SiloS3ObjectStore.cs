@@ -1,5 +1,6 @@
 using System.Net;
 using System.Runtime.CompilerServices;
+using System.Security.Authentication;
 using Amazon.Runtime;
 using Amazon.S3;
 using Amazon.S3.Model;
@@ -19,7 +20,7 @@ internal sealed class SiloS3ObjectStore(
 
     public SiloStoreDescriptor Descriptor { get; } = descriptor;
 
-    public static AmazonS3Client CreateClient(Uri endpoint, string accessKey, string secretKey)
+    public static AmazonS3Client CreateClient(Uri endpoint, string accessKey, string secretKey, HttpClientFactory? transport = null)
     {
         ArgumentNullException.ThrowIfNull(endpoint);
         if (!endpoint.IsAbsoluteUri || endpoint.Scheme is not ("http" or "https") ||
@@ -34,6 +35,7 @@ internal sealed class SiloS3ObjectStore(
             ForcePathStyle = true,
             AuthenticationRegion = "us-east-1",
             MaxErrorRetry = 0,
+            HttpClientFactory = transport,
             RequestChecksumCalculation = RequestChecksumCalculation.WHEN_REQUIRED,
             ResponseChecksumValidation = ResponseChecksumValidation.WHEN_REQUIRED
         });
@@ -122,7 +124,7 @@ internal sealed class SiloS3ObjectStore(
                     response.Dispose();
                     throw Unavailable("open exact version", writeMayHaveLanded: false);
                 }
-                return new SiloOpenResult(SiloOpenStatus.Found, new SiloS3ResponseStream(response, Descriptor.StoreId, requestTimeout));
+                return new SiloOpenResult(SiloOpenStatus.Found, new SiloS3ResponseStream(response, Descriptor, requestTimeout));
             }
             catch (AmazonS3Exception exception) when (exception.StatusCode == HttpStatusCode.NotFound &&
                 exception.ErrorCode is "NoSuchKey" or "NoSuchVersion")
@@ -215,6 +217,11 @@ internal sealed class SiloS3ObjectStore(
             deadline.Token.ThrowIfCancellationRequested();
             return await send(deadline.Token).ConfigureAwait(false);
         }
+        catch (Exception exception) when (Descriptor.StoreClass == SiloStoreClass.Archive && IsTlsFailure(exception))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            throw SiloArchiveStore.TlsFailure();
+        }
         catch (Exception exception) when (exception is AmazonServiceException or AmazonClientException or HttpRequestException or
             OperationCanceledException or IOException and not (SiloChecksumRejectedException or SiloStoreUnavailableException))
         {
@@ -226,4 +233,14 @@ internal sealed class SiloS3ObjectStore(
 
     private SiloStoreUnavailableException Unavailable(string operation, bool writeMayHaveLanded) =>
         new(Descriptor.StoreId, operation, writeMayHaveLanded);
+
+    internal static bool IsTlsFailure(Exception? exception)
+    {
+        for (; exception is not null; exception = exception.InnerException)
+        {
+            if (exception is AuthenticationException or HttpRequestException { HttpRequestError: HttpRequestError.SecureConnectionError })
+                return true;
+        }
+        return false;
+    }
 }

@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
@@ -113,7 +114,8 @@ internal enum ExposureFocusSamplingPolicy
 {
     Brightest,
     BrightestWithBayerCoreCheck,
-    EligibleFirst
+    EligibleFirst,
+    EligibleFirstWithOccupancy
 }
 
 /// <summary>Constructs and reads the single versioned, source-bound exposure measurement product.</summary>
@@ -145,27 +147,55 @@ public static class ExposureMeasurementProducts
         ProcessingArtifact? linear, string? retainedOutputIdentitySha256)
     {
         ArgumentNullException.ThrowIfNull(raw);
-        if (input is null) throw Invalid("input");
+        if (input is null || !IsValidUtf16(raw.Variant) || !IsValidUtf16(linear?.Variant))
+            throw Invalid("input");
         ValidateInput(input);
+        var normalizedRetained = retainedOutputIdentitySha256 is { } retainedCandidate && IsSha256(retainedCandidate)
+            ? retainedCandidate.ToUpperInvariant()
+            : null;
+        if (normalizedRetained is null)
+        {
+            ValidateFreshAdmissionEnvelopeBudget(input);
+        }
+        else if (RawMetadataCharCount(input) > StructuredProcessingProductDescriptorV1.MaximumPayloadBytes)
+        {
+            throw Invalid("input envelope budget");
+        }
         var request = new ProcessingExecutionRequest(BuiltInProcessingRecipes.ExposureMeasurement, SerializeInput(input),
             ProcessingInputSelector.Raw(raw.Variant), linear is null ? [raw] : [raw, linear], Variant,
             InputArtifactId: raw.ArtifactId);
         var format = input.Linear?.Layout.PixelFormat;
         if (format is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16))
-            return request;
-
-        if (retainedOutputIdentitySha256 is not null)
         {
-            if (MatchesRetainedOutput(request, input, retainedOutputIdentitySha256))
-                return request;
+            if (normalizedRetained is not null)
+            {
+                if (MatchesRetainedOutput(request, input, normalizedRetained))
+                    return request with { RetainedOutputIdentitySha256 = normalizedRetained };
+                ValidateFreshAdmissionEnvelopeBudget(input);
+            }
+            return request;
+        }
+
+        if (normalizedRetained is not null)
+        {
+            if (MatchesRetainedOutput(request, input, normalizedRetained))
+                return request with { RetainedOutputIdentitySha256 = normalizedRetained };
             if (format == CameraPixelFormat.BayerRggb16)
             {
                 var priorBayer = request with { Options = SerializeParameters(input, ExposureFocusSamplingPolicy.BrightestWithBayerCoreCheck) };
-                if (MatchesRetainedOutput(priorBayer, input, retainedOutputIdentitySha256))
-                    return priorBayer;
+                if (MatchesRetainedOutput(priorBayer, input, normalizedRetained))
+                    return priorBayer with { RetainedOutputIdentitySha256 = normalizedRetained };
             }
+            var priorEligibleFirst = request with { Options = SerializeParameters(input, ExposureFocusSamplingPolicy.EligibleFirst) };
+            if (MatchesRetainedOutput(priorEligibleFirst, input, normalizedRetained))
+                return priorEligibleFirst with { RetainedOutputIdentitySha256 = normalizedRetained };
+            var current = request with { Options = SerializeParameters(input, ExposureFocusSamplingPolicy.EligibleFirstWithOccupancy) };
+            if (MatchesRetainedOutput(current, input, normalizedRetained))
+                return current with { RetainedOutputIdentitySha256 = normalizedRetained };
+            ValidateFreshAdmissionEnvelopeBudget(input);
+            return current;
         }
-        return request with { Options = SerializeParameters(input, ExposureFocusSamplingPolicy.EligibleFirst) };
+        return request with { Options = SerializeParameters(input, ExposureFocusSamplingPolicy.EligibleFirstWithOccupancy) };
     }
 
     private static bool MatchesRetainedOutput(ProcessingExecutionRequest request, ExposureMeasurementInputV1 input, string retainedOutput)
@@ -214,7 +244,8 @@ public static class ExposureMeasurementProducts
             throw Invalid("output identity");
         var measurement = Read(product.Role, product.Variant, product.Kind, product.MediaType, product.SchemaVersion,
             product.Payload, product.ContentIdentitySha256, product.Recipe, product.SourceArtifactIds);
-        if (!product.Algorithms.SequenceEqual(ExposureMeasurementRecipe.Algorithms(measurement.Input)))
+        var (_, policy) = ReadParameters(product.Recipe.Descriptor.Options.GetProperty("parameters"));
+        if (!product.Algorithms.SequenceEqual(ExposureMeasurementRecipe.Algorithms(measurement.Input, policy)))
             throw Invalid("algorithms");
         return measurement;
     }
@@ -243,6 +274,9 @@ public static class ExposureMeasurementProducts
     internal static JsonElement SerializeParameters(ExposureMeasurementInputV1 input, ExposureFocusSamplingPolicy policy)
         => policy switch
         {
+            ExposureFocusSamplingPolicy.EligibleFirstWithOccupancy =>
+                CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(
+                    new MeasurementV3Parameters(EligibleFirstPolicy, StellarSourceMeasurer.AlgorithmVersion, input), Json)),
             ExposureFocusSamplingPolicy.EligibleFirst =>
                 CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(new FocusAllocationParameters(EligibleFirstPolicy, input), Json)),
             ExposureFocusSamplingPolicy.BrightestWithBayerCoreCheck =>
@@ -252,6 +286,19 @@ public static class ExposureMeasurementProducts
 
     internal static (ExposureMeasurementInputV1 Input, ExposureFocusSamplingPolicy Policy) ReadParameters(JsonElement options)
     {
+        if (options.ValueKind == JsonValueKind.Object && options.TryGetProperty("stellarMeasurement", out _))
+        {
+            var parameters = options.Deserialize<MeasurementV3Parameters>(Json);
+            if (parameters is not
+                {
+                    HfdAllocation: EligibleFirstPolicy,
+                    StellarMeasurement: StellarSourceMeasurer.AlgorithmVersion,
+                    Input.Linear.Layout.PixelFormat: CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16
+                })
+                throw Invalid("measurement policy");
+            ValidateInput(parameters.Input);
+            return (parameters.Input, ExposureFocusSamplingPolicy.EligibleFirstWithOccupancy);
+        }
         if (options.ValueKind == JsonValueKind.Object && options.TryGetProperty("hfdAllocation", out _))
         {
             var parameters = options.Deserialize<FocusAllocationParameters>(Json);
@@ -273,6 +320,7 @@ public static class ExposureMeasurementProducts
 
     private sealed record BayerFocusParameters(string BayerFocus, ExposureMeasurementInputV1 Input);
     private sealed record FocusAllocationParameters(string HfdAllocation, ExposureMeasurementInputV1 Input);
+    private sealed record MeasurementV3Parameters(string HfdAllocation, string StellarMeasurement, ExposureMeasurementInputV1 Input);
 
     internal static JsonElement SerializeInput(ExposureMeasurementInputV1 input)
         => CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(input, Json));
@@ -282,6 +330,56 @@ public static class ExposureMeasurementProducts
         var input = options.Deserialize<ExposureMeasurementInputV1>(Json) ?? throw Invalid("input");
         ValidateInput(input);
         return input;
+    }
+
+    /// <summary>
+    /// Maximum permitted worst-case non-source UTF-8 envelope bytes (serialized input/envelope shell including JSON
+    /// escaping plus worst-case Sources header and HFD section) for an admitted Step 4 measurement request. Matches
+    /// <see cref="StellarFootprintOccupancy.DefaultReservedEnvelopeBytes"/> (128 KiB), guaranteeing that every admitted
+    /// exposure fits strictly within <see cref="StructuredProcessingProductDescriptorV1.MaximumPayloadBytes"/> (4 MiB)
+    /// for up to <see cref="StellarDetector.MaximumSupportedCandidates"/> detections/exclusions with positive coarse
+    /// occupancy masks even under worst-case JSON escaping.
+    /// </summary>
+    public const int MaximumAdmittedEnvelopeBytes = StellarFootprintOccupancy.DefaultReservedEnvelopeBytes;
+
+    private const int MaximumSourcesHeaderAndHfdBytes = 8_192;
+
+    private static readonly ExposureSourcesV1 EmptySourcesShell = new(
+        ExposureMeasurementStatus.Empty, "shell", 0, 0, null, null, [], []);
+
+    private static readonly ExposureHfdV1 EmptyHfdShell = new(
+        ExposureMeasurementStatus.Unavailable, "shell", null, null, null, 0, null, []);
+
+    // Worst-case brightness and clipping shells dominate every real runtime measurement (19-digit SampleCount,
+    // 20-digit Sum, non-terminating 18-char Mean, and simultaneous numeric + max-length reason fields on Clipping),
+    // so Serialize(realShell).Length is strictly bounded above by Serialize(worstCaseShell).Length.
+    private static readonly ExposureClippingV1 WorstCaseClippingShell = new(
+        ushort.MaxValue, long.MaxValue, FrameWhiteThreshold.UnavailableReason);
+
+    private static readonly ExposureBrightnessV1 WorstCaseRawBrightnessShell = new(
+        9_000_000_000_000_000_007L, ushort.MaxValue, ushort.MaxValue, 10_000_000_000_000_000_009UL,
+        long.MaxValue, WorstCaseClippingShell);
+
+    internal static int WorstCaseEnvelopeBytes(ExposureMeasurementInputV1 input)
+    {
+        var shell = new ExposureMeasurementV1(
+            SchemaVersion, input, WorstCaseRawBrightnessShell, null,
+            input.Linear is null ? null : WorstCaseClippingShell,
+            EmptySourcesShell, EmptyHfdShell);
+        return Serialize(shell).Length + MaximumSourcesHeaderAndHfdBytes;
+    }
+
+    internal static int ReservedEnvelopeBytes(
+        ExposureMeasurementInputV1 input,
+        ExposureBrightnessV1? rawBrightness,
+        string? rawBrightnessUnavailableReason,
+        ExposureClippingV1? linearOutputClipping)
+    {
+        var shell = new ExposureMeasurementV1(
+            SchemaVersion, input, rawBrightness, rawBrightnessUnavailableReason, linearOutputClipping,
+            EmptySourcesShell, EmptyHfdShell);
+        var measured = Serialize(shell).Length + MaximumSourcesHeaderAndHfdBytes;
+        return Math.Max(StellarFootprintOccupancy.DefaultReservedEnvelopeBytes, measured);
     }
 
     internal static byte[] Serialize(ExposureMeasurementV1 value)
@@ -323,19 +421,24 @@ public static class ExposureMeasurementProducts
     internal static Guid[] SourceIds(ExposureMeasurementInputV1 input)
         => input.Linear is { } linear ? [input.Raw.ArtifactId, linear.ArtifactId] : [input.Raw.ArtifactId];
 
-    private static void ValidateInput(ExposureMeasurementInputV1 input)
+    internal static void ValidateInput(ExposureMeasurementInputV1 input)
     {
         if (input is null || !ValidSource(input.Raw) || input.Raw.OutputIdentitySha256 is not null ||
             string.IsNullOrWhiteSpace(input.OrientationIdentity) || input.OrientationIdentity.Length > 256 ||
+            !IsValidUtf16(input.OrientationIdentity) ||
             input.NativePixelPitchMicrometers is { } pitch && (!double.IsFinite(pitch) || pitch <= 0) ||
             input.PixelScaleArcseconds is { } scale && (!double.IsFinite(scale) || scale <= 0) ||
+            input.RigOrientation is { } orient && (!double.IsFinite(orient.BoresightAltitudeDegrees) ||
+                !double.IsFinite(orient.BoresightAzimuthDegrees) || !double.IsFinite(orient.RollAdjustmentDegrees)) ||
             !Enum.IsDefined(input.Calibration) ||
-            input.CalibrationReason is { } reason && (string.IsNullOrWhiteSpace(reason) || reason.Length > 128))
+            input.CalibrationReason is { } reason && (string.IsNullOrWhiteSpace(reason) || reason.Length > 128 || !IsValidUtf16(reason)) ||
+            !IsValidUtf16(input.OpticalCalibrationVersion))
             throw Invalid("input");
 
         if (input.Exposure is { } exposure && (exposure.CaptureId != input.Raw.CaptureId ||
                 exposure.RunId == Guid.Empty || exposure.Camera is not { } camera ||
-                string.IsNullOrWhiteSpace(camera.CameraId) || string.IsNullOrWhiteSpace(camera.AgentId) ||
+                string.IsNullOrWhiteSpace(camera.CameraId) || !IsValidUtf16(camera.CameraId) ||
+                string.IsNullOrWhiteSpace(camera.AgentId) || !IsValidUtf16(camera.AgentId) ||
                 input.RigOrientation is null || string.IsNullOrWhiteSpace(input.OpticalCalibrationVersion) ||
                 input.Step3Disposition is not { } step3 || !Enum.IsDefined(step3) || step3 == LinearExposureDisposition.Pending ||
                 input.Step3Revision is <= 0 || input.Step3Revision is null &&
@@ -357,6 +460,45 @@ public static class ExposureMeasurementProducts
             throw Invalid("linear disposition");
     }
 
+    internal static long RawMetadataCharCount(ExposureMeasurementInputV1 input)
+        => (long)(input.OpticalCalibrationVersion?.Length ?? 0) +
+           (input.Exposure?.Camera?.AgentId?.Length ?? 0) +
+           (input.Exposure?.Camera?.CameraId?.Length ?? 0);
+
+    internal static bool FitsFreshAdmissionEnvelopeBudget(ExposureMeasurementInputV1 input)
+        => RawMetadataCharCount(input) <= MaximumAdmittedEnvelopeBytes &&
+           WorstCaseEnvelopeBytes(input) <= MaximumAdmittedEnvelopeBytes;
+
+    internal static void ValidateFreshAdmissionEnvelopeBudget(ExposureMeasurementInputV1 input)
+    {
+        // O(1) lower-bound rejection before canonical JSON measurement so arbitrarily large metadata cannot allocate
+        // huge buffers, followed by exact canonical UTF-8 byte accounting (including 6-byte \uXXXX JSON escaping).
+        if (!FitsFreshAdmissionEnvelopeBudget(input))
+            throw Invalid("input envelope budget");
+    }
+
+    internal static bool HasRetainedReplayCandidate(ProcessingExecutionRequest request, ExposureMeasurementInputV1 input)
+        => IsSha256(request.RetainedOutputIdentitySha256) &&
+           request.OutputVariant == Variant &&
+           request.Annotation is null &&
+           request.AuxiliaryInputs is not { Count: > 0 } &&
+           request.Inputs is not null &&
+           request.Inputs.Select(static source => source.ArtifactId).SequenceEqual(SourceIds(input));
+
+    internal static bool IsVerifiedRetainedReplay(
+        ProcessingExecutionRequest request,
+        ProcessingRecipeIdentity identity,
+        ExposureMeasurementInputV1 input)
+        => HasRetainedReplayCandidate(request, input) &&
+           RawMetadataCharCount(input) <= StructuredProcessingProductDescriptorV1.MaximumPayloadBytes &&
+           Same(ProcessingIdentity.CreateOutputIdentity(
+               FrameArtifactRole.Metadata,
+               request.OutputVariant,
+               identity.IdentitySha256,
+               SourceIds(input)), request.RetainedOutputIdentitySha256);
+
+    private static bool IsValidUtf16(string? value) => ProcessingIdentity.IsValidUtf16(value);
+
     private static bool ValidSource(ExposureMeasurementSourceV1? source)
         => source is { CaptureId: var captureId, ArtifactId: var artifactId, Layout: { } layout } &&
            captureId != Guid.Empty && artifactId != Guid.Empty && captureId != artifactId &&
@@ -376,12 +518,13 @@ public static class ExposureMeasurementProducts
             (long)sources.Detections.Count + sources.Exclusions.Count > StellarDetector.MaximumSupportedCandidates ||
             hfd.Samples is null || hfd.Samples.Count > MaximumHfdSamples ||
             (value.RawBrightness is null) != !string.IsNullOrWhiteSpace(value.RawBrightnessUnavailableReason) ||
+            value.RawBrightnessUnavailableReason is { Length: > 128 } ||
             (value.LinearOutputClipping is null) != (value.Input.Linear is null))
             throw Invalid("section");
         if (value.RawBrightness is { } brightness)
         {
             var layout = value.Input.Raw.Layout;
-            var count = (long)layout.Width * layout.Height * (layout.PixelFormat == CameraPixelFormat.Rgb24 ? 3 : 1);
+            var count = SampleCount(layout);
             if (brightness.SampleCount != count || brightness.Minimum > brightness.Maximum ||
                 brightness.Sum < (ulong)count * brightness.Minimum || brightness.Sum > (ulong)count * brightness.Maximum ||
                 brightness.ZeroCount < 0 || brightness.ZeroCount > count ||
@@ -392,8 +535,8 @@ public static class ExposureMeasurementProducts
                     brightness.Minimum >= white && brightness.SensorClipping.Count != count))
                 throw Invalid("brightness");
         }
-        if (value.Input.Linear is { Layout: var linearLayout } && !ValidClipping(value.LinearOutputClipping,
-                linearLayout, (long)linearLayout.Width * linearLayout.Height))
+        if (value.Input.Linear is { Layout: var linearLayout } &&
+            !ValidClipping(value.LinearOutputClipping, linearLayout, SampleCount(linearLayout)))
             throw Invalid("linear clipping");
 
         var measuredLayout = value.Input.Linear?.Layout;
@@ -419,11 +562,74 @@ public static class ExposureMeasurementProducts
                 item.SignalToNoise is { } snr && (!double.IsFinite(snr) || snr < 0))
                 throw Invalid("detection");
         }
-        if (sources.Exclusions.Any(item => item is null || measuredLayout is null || !Inside(item.Peak, measuredLayout) ||
-                !StellarExclusionReasons.All.Contains(item.ReasonCode) || item.SampleCount <= 0))
+        var allowOccupancy = policy == ExposureFocusSamplingPolicy.EligibleFirstWithOccupancy;
+        var occupancyBudget = default(StellarFootprintOccupancyBudget);
+        if (allowOccupancy && measuredLayout is not null)
+        {
+            var nonSolidFootprints = new List<StellarFootprintBounds>();
+            foreach (var item in sources.Exclusions)
+            {
+                if (item?.Footprint is { } fp &&
+                    fp.MinX >= 0 && fp.MinY >= 0 && fp.MaxX >= fp.MinX && fp.MaxY >= fp.MinY &&
+                    fp.MaxX < measuredLayout.Width && fp.MaxY < measuredLayout.Height)
+                {
+                    var fpWidth = fp.MaxX - fp.MinX + 1;
+                    var fpHeight = fp.MaxY - fp.MinY + 1;
+                    var fpArea = (long)fpWidth * fpHeight;
+                    if (item.SampleCount > 0 && item.SampleCount < fpArea)
+                        nonSolidFootprints.Add(fp);
+                }
+            }
+            var measuredReservedEnvelopeBytes = ReservedEnvelopeBytes(
+                value.Input, value.RawBrightness, value.RawBrightnessUnavailableReason, value.LinearOutputClipping);
+            occupancyBudget = StellarFootprintOccupancy.ComputeProductBudgets(
+                sources.Detections.Count,
+                sources.Exclusions.Count,
+                CollectionsMarshal.AsSpan(nonSolidFootprints),
+                measuredReservedEnvelopeBytes);
+        }
+        if (sources.Exclusions.Any(item => !IsValidExclusion(item, measuredLayout, allowOccupancy, occupancyBudget)))
             throw Invalid("exclusion");
 
         ValidateFocus(sources, hfd, measuredLayout, policy);
+    }
+
+    private static bool IsValidExclusion(
+        StellarMeasurementExclusion? item,
+        FrameLayoutDescriptor? measuredLayout,
+        bool allowOccupancy,
+        StellarFootprintOccupancyBudget occupancyBudget)
+    {
+        if (item is null || measuredLayout is null || !Inside(item.Peak, measuredLayout) ||
+            !StellarExclusionReasons.All.Contains(item.ReasonCode) || item.SampleCount <= 0)
+            return false;
+        if (item.Footprint is { } fp)
+        {
+            if (fp.MinX < 0 || fp.MinY < 0 || fp.MaxX < fp.MinX || fp.MaxY < fp.MinY ||
+                fp.MaxX >= measuredLayout.Width || fp.MaxY >= measuredLayout.Height)
+                return false;
+            var fpArea = ((long)fp.MaxX - fp.MinX + 1) * ((long)fp.MaxY - fp.MinY + 1);
+            if (item.SampleCount > fpArea)
+                return false;
+            var peakX = Math.Floor(item.Peak.X);
+            var peakY = Math.Floor(item.Peak.Y);
+            if (peakX < fp.MinX || peakX > fp.MaxX || peakY < fp.MinY || peakY > fp.MaxY)
+                return false;
+            if (allowOccupancy)
+            {
+                if (item.SampleCount == fpArea || occupancyBudget.CoarseCellBudget <= 0)
+                    return item.Occupancy is null;
+                return item.Occupancy is not null &&
+                    item.Occupancy.IsValid(
+                        fp, item.Peak, item.SampleCount,
+                        occupancyBudget.CoarseCellBudget, occupancyBudget.SubgridBitBudget);
+            }
+        }
+        else if (allowOccupancy)
+        {
+            return false;
+        }
+        return item.Occupancy is null;
     }
 
     private static void ValidateFocus(ExposureSourcesV1 sources, ExposureHfdV1 hfd, FrameLayoutDescriptor? layout,
@@ -444,7 +650,7 @@ public static class ExposureMeasurementProducts
             (sampleCount == 0 ? hfd.SettingsSha256 is not null : !IsSha256(hfd.SettingsSha256)))
             throw Invalid("HFD accounting");
 
-        var eligibleFirst = policy == ExposureFocusSamplingPolicy.EligibleFirst;
+        var eligibleFirst = policy is ExposureFocusSamplingPolicy.EligibleFirst or ExposureFocusSamplingPolicy.EligibleFirstWithOccupancy;
         var bayerCoreTrail = policy != ExposureFocusSamplingPolicy.Brightest && layout?.PixelFormat == CameraPixelFormat.BayerRggb16;
         var valid = new List<double>(sampleCount);
         var lastIndex = -1;
@@ -520,6 +726,16 @@ public static class ExposureMeasurementProducts
 
     private static bool ValidStatus(ExposureMeasurementStatus status, string? reason)
         => Enum.IsDefined(status) && (status == ExposureMeasurementStatus.Usable || !string.IsNullOrWhiteSpace(reason));
+
+    private static long SampleCount(FrameLayoutDescriptor layout)
+        => (long)layout.Width * layout.Height * ChannelCount(layout.PixelFormat);
+
+    private static int ChannelCount(CameraPixelFormat pixelFormat) => pixelFormat switch
+    {
+        CameraPixelFormat.Rgb24 => 3,
+        CameraPixelFormat.Mono8 or CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16 => 1,
+        _ => throw Invalid("pixel format")
+    };
 
     private static bool ValidClipping(ExposureClippingV1? clipping, FrameLayoutDescriptor layout, long count)
     {

@@ -98,7 +98,7 @@ internal static class ProcessingNodeSectionRegistry
             "This graph has no supported ExposureMeasuredAstrometry node. Select a centered-profile graph containing ExposureMeasuredAstrometry to configure its capture stride and output routing. Saving, validation and activation remain separate."),
         new("capture-satellite-tracks", "Capture satellite predictions",
             ["CaptureSatelliteTracks"],
-            "This graph has no supported CaptureSatelliteTracks node. Add CaptureSatelliteTracks with an explicit raw dependency to configure satellite prediction routing and stale diagnostics. Saving, validation and activation remain separate."),
+            "This graph has no supported CaptureSatelliteTracks node. Add CaptureSatelliteTracks with an explicit raw dependency to configure satellite track prediction routing, satellite object-label visibility, and stale diagnostics. Saving, validation and activation remain separate."),
         new("artifact-storage", "Artifact storage",
             ["Storage"],
             "This graph has no supported Storage node. Select a graph with Storage to inspect or align its storage settings with the active capture profile. Saving, validation and activation remain separate."),

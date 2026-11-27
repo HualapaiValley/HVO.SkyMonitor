@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
+using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.Imaging;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Net.Http.Headers;
@@ -20,6 +21,7 @@ internal static class CameraAgentScientificExportEndpoints
             .ProducesProblem(StatusCodes.Status404NotFound)
             .ProducesProblem(StatusCodes.Status409Conflict)
             .ProducesProblem(StatusCodes.Status410Gone)
+            .Produces(StatusCodes.Status412PreconditionFailed)
             .ProducesProblem(StatusCodes.Status413PayloadTooLarge)
             .ProducesProblem(StatusCodes.Status415UnsupportedMediaType)
             .Produces(StatusCodes.Status416RangeNotSatisfiable)
@@ -27,7 +29,8 @@ internal static class CameraAgentScientificExportEndpoints
     }
 
     private static async Task DownloadAsync(Guid captureId, Guid artifactId, string format, HttpContext context,
-        [FromServices] ICameraAgentScientificExports exports, CancellationToken cancellationToken)
+        [FromServices] ICameraAgentScientificExports exports, [FromServices] CameraAgentOperatorTelemetry telemetry,
+        CancellationToken cancellationToken)
     {
         ScientificExportFormat? encoding = format switch
         {
@@ -36,16 +39,17 @@ internal static class CameraAgentScientificExportEndpoints
             "xisf" => ScientificExportFormat.Xisf,
             _ => null
         };
-        context.Response.Headers.CacheControl = "private, no-store";
-        context.Response.Headers.Vary = "Cookie";
-        context.Response.Headers.XContentTypeOptions = "nosniff";
+        ApplyPrivateHeaders(context.Response.Headers);
         if (encoding is null)
         {
+            telemetry.RecordScientificExportFailure("unknown", "scientific-export.unknown-format", StatusCodes.Status400BadRequest);
             await WriteProblemAsync(context, StatusCodes.Status400BadRequest, "scientific-export.unknown-format").ConfigureAwait(false);
             return;
         }
 
-        var result = await exports.PrepareAsync(captureId, artifactId, encoding.Value, cancellationToken).ConfigureAwait(false);
+        var reuseRecent = HttpMethods.IsHead(context.Request.Method) || context.Request.Headers.ContainsKey(HeaderNames.Range) ||
+            context.Request.Headers.ContainsKey(HeaderNames.IfNoneMatch);
+        var result = await exports.PrepareAsync(captureId, artifactId, encoding.Value, cancellationToken, reuseRecent).ConfigureAwait(false);
         if (result.Download is not { } download)
         {
             var status = result.Status switch
@@ -57,19 +61,55 @@ internal static class CameraAgentScientificExportEndpoints
                 CameraAgentArtifactReadStatus.UnsupportedMediaType => StatusCodes.Status415UnsupportedMediaType,
                 _ => StatusCodes.Status503ServiceUnavailable
             };
-            if (result.ReasonCode == "scientific-export.capacity") context.Response.Headers.RetryAfter = "1";
-            await WriteProblemAsync(context, status, result.ReasonCode).ConfigureAwait(false);
+            var reason = result.ReasonCode ?? "scientific-export.source-unavailable";
+            // Confirmed missing evidence is a conflict until repaired. Only transient failures request a retry.
+            if (status == StatusCodes.Status503ServiceUnavailable &&
+                reason is "scientific-export.capacity" or "scientific-export.astrometry-unavailable")
+                context.Response.Headers.RetryAfter = "1";
+            telemetry.RecordScientificExportFailure(format, reason, status);
+            await WriteProblemAsync(context, status, reason).ConfigureAwait(false);
             return;
         }
 
-        await using var lease = download.ConfigureAwait(false);
-        var receipt = download.Receipt;
-        var source = receipt.Source;
-        var filename = FormattableString.Invariant($"capture-{source.CaptureSequence}-{source.ArtifactId:N}{receipt.Encoding.Extension}");
-        context.Response.Headers["X-Artifact-SHA256"] = receipt.Sha256;
-        await Results.File(download.Content, receipt.Encoding.MediaType, filename,
-            enableRangeProcessing: true, entityTag: new EntityTagHeaderValue($"\"{receipt.Sha256}\""))
-            .ExecuteAsync(context).ConfigureAwait(false);
+        try
+        {
+            await using var lease = download.ConfigureAwait(false);
+            var receipt = download.Receipt;
+            var source = receipt.Source;
+            var filename = FormattableString.Invariant($"capture-{source.CaptureSequence}-{source.ArtifactId:N}{receipt.Encoding.Extension}");
+            context.Response.Headers["X-Artifact-SHA256"] = receipt.Sha256;
+            await Results.File(download.Content, receipt.Encoding.MediaType, filename,
+                enableRangeProcessing: true, entityTag: new EntityTagHeaderValue($"\"{receipt.Sha256}\""))
+                .ExecuteAsync(context).ConfigureAwait(false);
+        }
+        catch (IOException exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            if (context.Response.HasStarted)
+            {
+                telemetry.RecordScientificExportTransferFailure(format, context.Response.StatusCode, exception);
+                context.Abort();
+                return;
+            }
+
+            const string reason = "scientific-export.io-unavailable";
+            telemetry.RecordScientificExportTransferFailure(format, StatusCodes.Status503ServiceUnavailable, exception);
+            context.Response.Clear();
+            ApplyPrivateHeaders(context.Response.Headers);
+            await WriteProblemAsync(context, StatusCodes.Status503ServiceUnavailable, reason).ConfigureAwait(false);
+            return;
+        }
+
+        if (context.Response.StatusCode == StatusCodes.Status416RangeNotSatisfiable)
+            telemetry.RecordScientificExportFailure(format, "scientific-export.range-unsatisfiable", context.Response.StatusCode);
+        if (context.Response.StatusCode == StatusCodes.Status412PreconditionFailed)
+            telemetry.RecordScientificExportFailure(format, "scientific-export.precondition-failed", context.Response.StatusCode);
+    }
+
+    private static void ApplyPrivateHeaders(IHeaderDictionary headers)
+    {
+        headers.CacheControl = "private, no-store";
+        headers.Vary = "Cookie";
+        headers.XContentTypeOptions = "nosniff";
     }
 
     private static Task WriteProblemAsync(HttpContext context, int status, string? reason)

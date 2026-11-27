@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
@@ -493,8 +494,12 @@ public sealed class ExposureMeasurementTests
         Assert.AreEqual(ExposureMeasurementStatus.Empty, read.Sources.Status);
         Assert.AreEqual(0, read.Hfd.ValidCount);
         await AssertRetainedReplay(lookup, raw, borrowed, current);
+        var legacyEligibleFirst = await Produce(request with { Options = HistoricalEligibleFirstOptions(read.Input) });
+        Assert.AreNotEqual(current.OutputIdentitySha256, legacyEligibleFirst.OutputIdentitySha256);
+        await AssertRetainedReplay(lookup, raw, borrowed, legacyEligibleFirst);
         var legacy = await Produce(request with { Options = HistoricalFocusOptions(read.Input, bayerCoreCheck: false) });
         Assert.AreNotEqual(current.OutputIdentitySha256, legacy.OutputIdentitySha256);
+        Assert.AreNotEqual(legacyEligibleFirst.OutputIdentitySha256, legacy.OutputIdentitySha256);
         await AssertRetainedReplay(lookup, raw, borrowed, legacy);
         if (bayer)
         {
@@ -529,7 +534,7 @@ public sealed class ExposureMeasurementTests
     }
 
     private static async Task<(LinearExposureLookup Lookup, ProcessingArtifact Raw, LinearExposureInputV1 Borrowed)>
-        BindToAdmission(ProcessingArtifact light)
+        BindToAdmission(ProcessingArtifact light, Guid? runId = null, Guid? linearExecutionId = null)
     {
         var layout = light.Layout!;
         var checksum = Convert.ToHexString(SHA256.HashData(light.Payload.Span));
@@ -540,15 +545,17 @@ public sealed class ExposureMeasurementTests
             new(identity, identity, identity, identity, identity), layout,
             new(light.ArtifactId, light.Role, "raw", light.Variant, ExposureTime, [], RawRecipe, light.MediaType, checksum));
         var raw = light with { DescriptorIdentitySha256 = CaptureContractJson.ComputeDescriptorSha256(descriptor) };
-        var key = new ExposureKey(new("agent", "virtual"), Guid.NewGuid(), descriptor.Capture.CaptureId);
+        var key = new ExposureKey(new("agent", "virtual"), runId ?? Guid.NewGuid(), descriptor.Capture.CaptureId);
         var exposure = new ExposureInputV1(key, descriptor, new(layout, new(90, 0, 0), identity.Sha256, "optics-1", 1320));
         var linear = await Normalize(raw);
-        var linearRef = new ExposureProductRef(key, new(Guid.NewGuid(), "linear", "linear-v1", linear.Variant),
+        var linearRef = new ExposureProductRef(key, new(linearExecutionId ?? Guid.NewGuid(), "linear", "linear-v1", linear.Variant),
             linear.ArtifactId, linear.ContentIdentitySha256!, Convert.ToHexString(SHA256.HashData(linear.Payload.Span)), null);
+        var whiteLevel = FrameWhiteThreshold.TryResolveStored(layout, out var rawWhite, out _) ? rawWhite : (ushort)4095;
+        var linearWhiteLevel = FrameWhiteThreshold.TryResolveStored(linear.Layout, out var linearWhite, out _) ? linearWhite : whiteLevel;
         var provenance = new LinearInputProvenanceV1(LinearExposureDisposition.QualifiedNormalizationOnly,
             raw.ArtifactId, raw.DescriptorIdentitySha256, checksum, linear.ArtifactId, linear.DescriptorIdentitySha256!,
             linearRef.PayloadSha256, linearRef.OutputIdentitySha256, ProcessingIdentity.CreateRecipeIdentity(linear.RecipeDescriptor!),
-            [], new(raw.ArtifactId, 4095), new(linear.ArtifactId, 4095));
+            [], new(raw.ArtifactId, whiteLevel), new(linear.ArtifactId, linearWhiteLevel));
         return (new(exposure, provenance.Disposition, 1, linearRef, provenance, null), raw, new(exposure, linear, provenance));
     }
 
@@ -700,6 +707,1073 @@ public sealed class ExposureMeasurementTests
         var reread = ExposureMeasurementProducts.Read(retained, expected);
         Assert.HasCount(1, reread.Sources.Detections);
         Assert.AreEqual(1, reread.Hfd.ValidCount);
+    }
+
+    [TestMethod]
+    public async Task OccupancyUpgradeHasDistinctIdentityReplaysLegacyV2BitForBitAndRejectsImpossibleOccupancy()
+    {
+        // H1 + M7 + D8-M4: verify that (a) new runs emit linear-stellar-local-v3 with occupancy and a distinct output
+        // identity, (b) replaying the frozen delta6 (commit 6a631e5e9) legacy linear-stellar-local-v2 EligibleFirst
+        // identity reproduces the exact independently anchored delta6 golden bytes, SHA-256, and algorithms bit-for-bit,
+        // and (c) ExposureMeasurementProducts.Read rejects internally impossible or stripped occupancy/subgrids.
+        var frozenCaptureId = Guid.Parse("52600001-0000-4000-8000-000000000001");
+        var frozenRawArtifactId = Guid.Parse("52600002-0000-4000-8000-000000000002");
+        var frozenRunId = Guid.Parse("52600003-0000-4000-8000-000000000003");
+        var frozenLinearExecutionId = Guid.Parse("52600004-0000-4000-8000-000000000004");
+        // Golden legacy v2 constants independently produced from delta6 commit 6a631e5e9b20be79abc57c581bce053c5e642904:
+        const string frozenDelta6OutputIdentitySha256 = "DB85B1889BE4E40D96C543EEBCA500CE7ACDC39FC8279F6C38B08630C102894A";
+        const string frozenDelta6PayloadSha256 = "8D3F47589477D7CB3143A5365404A8C55770008DCCCC0EA7AF0E45A3B7514A61";
+        const int frozenDelta6PayloadByteLength = 3577;
+        const string frozenDelta6SettingsSha256 = "CF2E401B3525B134C66F5BB170D3053675156E9864D0F76A53E024220F5ECBB7";
+
+        const int size = 160;
+        var layout = Layout(size, size);
+        var center = new PixelPoint(80.5, 80.5);
+        var light = CreateRaw(layout, Generate(layout, (x, y) =>
+        {
+            var r = double.Hypot(x + 0.5 - center.X, y + 0.5 - center.Y);
+            double value = 180 + Gaussian(x, y, center, 1.25, 2200);
+            if (r is >= 14.0 and <= 30.0)
+                value += 1400.0;
+            return (ushort)Math.Clamp(Math.Round(value), 0, 4095);
+        }), frozenCaptureId) with
+        {
+            ArtifactId = frozenRawArtifactId
+        };
+        var (lookup, raw, borrowed) = await BindToAdmission(light, frozenRunId, frozenLinearExecutionId);
+        var currentRequest = ExposureMeasurementBindings.Request(lookup, raw, borrowed);
+        var currentProduct = await Produce(currentRequest);
+        var currentMeasurement = ExposureMeasurementProducts.Read(currentProduct);
+        var input = currentMeasurement.Input;
+
+        // Produce the exact frozen legacy v2 (EligibleFirst) product for the same exposure & inputs.
+        var legacyV2Request = currentRequest with { Options = HistoricalEligibleFirstOptions(input) };
+        var legacyV2Product = await Produce(legacyV2Request);
+        var legacyV2Measurement = ExposureMeasurementProducts.Read(legacyV2Product);
+
+        // (a) Distinct output identity, algorithm identity, settings identity, and occupancy presence:
+        Assert.AreNotEqual(frozenDelta6OutputIdentitySha256, currentProduct.OutputIdentitySha256);
+        Assert.AreNotEqual(frozenDelta6PayloadSha256, currentProduct.ChecksumSha256);
+        Assert.AreEqual(frozenDelta6OutputIdentitySha256, legacyV2Product.OutputIdentitySha256);
+        Assert.AreEqual(frozenDelta6PayloadSha256, legacyV2Product.ChecksumSha256);
+        Assert.AreEqual(frozenDelta6PayloadByteLength, legacyV2Product.Payload.Length);
+        Assert.IsTrue(currentProduct.Algorithms.Contains(
+            new ProcessingAlgorithmIdentity("stellar-source-measurer", StellarSourceMeasurer.AlgorithmVersion)));
+        Assert.IsTrue(legacyV2Product.Algorithms.Contains(
+            new ProcessingAlgorithmIdentity("stellar-source-measurer", StellarSourceMeasurer.V2AlgorithmVersion)));
+        Assert.AreEqual(
+            StellarSourceMeasurer.SettingsIdentity(MeasuredStellarAssociationRecipe.MeasurementOptions(CameraPixelFormat.Mono16),
+                StellarSourceMeasurer.AlgorithmVersion).ToUpperInvariant(),
+            currentMeasurement.Sources.SettingsSha256);
+        Assert.AreEqual(frozenDelta6SettingsSha256, legacyV2Measurement.Sources.SettingsSha256);
+        var v3Ring = currentMeasurement.Sources.Exclusions.Single(e => e.ReasonCode == StellarExclusionReasons.ExtendedRegion);
+        var v2Ring = legacyV2Measurement.Sources.Exclusions.Single(e => e.ReasonCode == StellarExclusionReasons.ExtendedRegion);
+        Assert.IsNotNull(v3Ring.Occupancy);
+        Assert.IsNotNull(v3Ring.Occupancy.Subgrid);
+        Assert.IsNull(v2Ring.Occupancy);
+        ProcessingRecipeTests.AssertProductMatchesContract(currentRequest, currentProduct);
+        ProcessingRecipeTests.AssertProductMatchesContract(legacyV2Request, legacyV2Product);
+
+        // (b) Replaying using the checked-in frozen delta6 output identity reproduces exact delta6 bytes bit-for-bit:
+        var replayRequest = ExposureMeasurementBindings.Request(
+            lookup, raw, borrowed, null, null, frozenDelta6OutputIdentitySha256);
+        var replayed = await Produce(replayRequest);
+        Assert.AreEqual(frozenDelta6OutputIdentitySha256, replayed.OutputIdentitySha256);
+        Assert.AreEqual(frozenDelta6PayloadSha256, replayed.ChecksumSha256);
+        Assert.AreEqual(frozenDelta6PayloadByteLength, replayed.Payload.Length);
+        CollectionAssert.AreEqual(legacyV2Product.Payload.ToArray(), replayed.Payload.ToArray());
+        CollectionAssert.AreEqual(legacyV2Product.Algorithms.ToArray(), replayed.Algorithms.ToArray());
+
+        // (c) M7 + D8-M3 negative tests on canonical, rehashed ExposureMeasurementV1 products:
+        // 1. SampleCount = 1 with multiple occupied cells (coarse 1x1 grid):
+        var smallFp = new StellarFootprintBounds(10, 10, 13, 13);
+        var multiCellOcc = StellarFootprintOccupancy.Create(smallFp, static (x, y) => (x == 10 && y == 10) || (x == 13 && y == 13));
+        var oneSampleManyCells = new StellarMeasurementExclusion(new PixelPoint(10.5, 10.5), 500, 1, StellarExclusionReasons.HotPixelOrCosmicRay)
+        {
+            Footprint = smallFp,
+            Occupancy = multiCellOcc
+        };
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(
+            WithMeasurement(currentProduct, currentMeasurement with
+            {
+                Sources = currentMeasurement.Sources with { Exclusions = [oneSampleManyCells] }
+            })));
+
+        // 2. SampleCount = 1 with multi-cell two-level subgrid (ring occupancy):
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(
+            WithMeasurement(currentProduct, currentMeasurement with
+            {
+                Sources = currentMeasurement.Sources with { Exclusions = [v3Ring with { SampleCount = 1 }] }
+            })));
+
+        // 3. Recorded peak outside the occupied mask (coarse cell = 0, inside footprint):
+        var peakOutsideMask = new StellarMeasurementExclusion(new PixelPoint(11.5, 11.5), 500, 2, StellarExclusionReasons.TooBroad)
+        {
+            Footprint = smallFp,
+            Occupancy = multiCellOcc
+        };
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(
+            WithMeasurement(currentProduct, currentMeasurement with
+            {
+                Sources = currentMeasurement.Sources with { Exclusions = [peakOutsideMask] }
+            })));
+
+        // 4. Recorded peak in hollow interior of the ring (subgrid cell = 0, inside ring footprint):
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(
+            WithMeasurement(currentProduct, currentMeasurement with
+            {
+                Sources = currentMeasurement.Sources with { Exclusions = [v3Ring with { Peak = center }] }
+            })));
+
+        // 5. Recorded peak outside footprint bounds:
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(
+            WithMeasurement(currentProduct, currentMeasurement with
+            {
+                Sources = currentMeasurement.Sources with
+                {
+                    Exclusions = [new StellarMeasurementExclusion(new PixelPoint(5.5, 5.5), 500, 2, StellarExclusionReasons.TooBroad)
+                    {
+                        Footprint = smallFp,
+                        Occupancy = multiCellOcc
+                    }]
+                }
+            })));
+
+        // 6. SampleCount exceeding total capacity of occupied 1x1 cells:
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(
+            WithMeasurement(currentProduct, currentMeasurement with
+            {
+                Sources = currentMeasurement.Sources with { Exclusions = [oneSampleManyCells with { SampleCount = 3 }] }
+            })));
+
+        // 7. Legacy v2 product tampered to include Occupancy:
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(
+            WithMeasurement(legacyV2Product, legacyV2Measurement with
+            {
+                Sources = legacyV2Measurement.Sources with { Exclusions = [v2Ring with { Occupancy = v3Ring.Occupancy }] }
+            })));
+
+        // 8. v3 product tampered to strip Subgrid or Occupancy from the non-solid ring:
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(
+            WithMeasurement(currentProduct, currentMeasurement with
+            {
+                Sources = currentMeasurement.Sources with
+                {
+                    Exclusions = [v3Ring with { Occupancy = v3Ring.Occupancy! with { Subgrid = null } }]
+                }
+            })));
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(
+            WithMeasurement(currentProduct, currentMeasurement with
+            {
+                Sources = currentMeasurement.Sources with { Exclusions = [v3Ring with { Occupancy = null }] }
+            })));
+    }
+
+    [TestMethod]
+    public async Task ParallelDiagonalBandsOnThreeThousandPixelFrameStayWithinEnvelopeAndRoundTrip()
+    {
+        // D8-H1: A supported 3072x3072 Mono16 frame with >= 1,000 parallel diagonal-band exclusions must enforce the
+        // whole-product subgrid budget so Step 4 never emits an unreadable > 4 MiB product, and ExposureMeasurementProducts.Read
+        // round-trips it cleanly while still rejecting tampered stripped subgrids.
+        const int size = 3072;
+        var layout = Layout(size, size);
+        var rawBytes = new byte[checked((int)layout.ByteLength)];
+        for (var y = 0; y < size; y++)
+        {
+            var rowSpan = rawBytes.AsSpan(y * layout.StrideBytes, size * 2);
+            var inY = y is >= 16 and < size - 16;
+            for (var x = 0; x < size; x++)
+            {
+                ushort code = 180;
+                if (inY && x is >= 16 and < size - 16 && ((x + y) % 6) <= 1)
+                    code = 2200;
+                BinaryPrimitives.WriteUInt16LittleEndian(rowSpan[(x * 2)..], code);
+            }
+        }
+
+        var raw = CreateRaw(layout, rawBytes);
+        var linear = await Normalize(raw);
+        var input = Bind(raw, linear);
+        var request = ExposureMeasurementProducts.Request(input, raw, linear);
+        var product = await Produce(request);
+
+        Assert.IsLessThanOrEqualTo(StructuredProcessingProductDescriptorV1.MaximumPayloadBytes, product.Payload.Length,
+            $"3072x3072 parallel diagonal bands must stay within the 4 MiB envelope (got {product.Payload.Length} bytes).");
+
+        var read = ExposureMeasurementProducts.Read(product);
+        var artifact = ProductArtifact(product, raw);
+        var verified = ExposureMeasurementProducts.Read(artifact, input);
+        Assert.AreEqual(read.Sources.Exclusions.Count, verified.Sources.Exclusions.Count);
+        Assert.IsGreaterThanOrEqualTo(1000, read.Sources.Exclusions.Count,
+            $"Expected >= 1,000 parallel diagonal-band exclusions (got {read.Sources.Exclusions.Count}).");
+
+        // Verify whole-product subgrid raw byte budget is respected and refined exclusions still reject subgrid stripping.
+        long totalSubgridBytes = 0;
+        var firstRefinedIndex = -1;
+        for (var i = 0; i < read.Sources.Exclusions.Count; i++)
+        {
+            if (read.Sources.Exclusions[i].Occupancy?.Subgrid is { } sub)
+            {
+                totalSubgridBytes += Convert.FromBase64String(sub.BitsBase64).Length;
+                if (firstRefinedIndex < 0)
+                    firstRefinedIndex = i;
+            }
+        }
+        Assert.IsGreaterThanOrEqualTo(0, firstRefinedIndex, "Expected refined subgrids under the shared whole-product budget.");
+        Assert.IsLessThanOrEqualTo(
+            StellarFootprintOccupancy.MaximumTotalSubgridBytes + read.Sources.Exclusions.Count,
+            totalSubgridBytes);
+
+        var stripped = read.Sources.Exclusions.ToArray();
+        stripped[firstRefinedIndex] = stripped[firstRefinedIndex] with
+        {
+            Occupancy = stripped[firstRefinedIndex].Occupancy! with { Subgrid = null }
+        };
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(
+            WithMeasurement(product, read with { Sources = read.Sources with { Exclusions = stripped } })));
+    }
+
+    [TestMethod]
+    public async Task FourThousandNinetySixPlusHeavyCoarseMasksOn3968FrameStayWithinEnvelopeAndRoundTrip()
+    {
+        // D8-H1 / Delta10 exact regression probe: a supported 3968x3968 Mono16 frame with 4,096 separate exclusions
+        // (64x64 grid of 62x62 tiles, each containing a 48x42 bright patch at offset (8, 8) with bright perimeter and
+        // every tenth interior column dark x % 10 == 6; background=180, bright=2,200). Previously generated 655,360
+        // Base64 '+' chars escaped as 6-byte \u002B (5,689,059 bytes > 4,194,304) and failed Step 4 with
+        // TerminalFailure (measurement.payload-budget-exceeded).
+        const int tileCountPerAxis = 64;
+        const int tileSize = 62;
+        const int size = tileCountPerAxis * tileSize; // 3968
+        const int patchOffset = 8;
+        const int patchWidth = 48;
+        const int patchHeight = 42;
+        var layout = Layout(size, size);
+        var rawBytes = new byte[checked((int)layout.ByteLength)];
+        for (var y = 0; y < size; y++)
+        {
+            var rowSpan = rawBytes.AsSpan(y * layout.StrideBytes, size * 2);
+            var ly = y % tileSize;
+            var inPatchY = ly >= patchOffset && ly < patchOffset + patchHeight;
+            var onBorderY = ly == patchOffset || ly == patchOffset + patchHeight - 1;
+            for (var x = 0; x < size; x++)
+            {
+                ushort code = 180;
+                if (inPatchY)
+                {
+                    var lx = x % tileSize;
+                    if (lx >= patchOffset && lx < patchOffset + patchWidth)
+                    {
+                        var onBorderX = lx == patchOffset || lx == patchOffset + patchWidth - 1;
+                        var localPatchX = lx - patchOffset;
+                        if (onBorderY || onBorderX || localPatchX % 10 != 6)
+                            code = 2200;
+                    }
+                }
+                BinaryPrimitives.WriteUInt16LittleEndian(rowSpan[(x * 2)..], code);
+            }
+        }
+
+        var raw = CreateRaw(layout, rawBytes);
+        var linear = await Normalize(raw);
+        var input = Bind(raw, linear);
+        var request = ExposureMeasurementProducts.Request(input, raw, linear);
+        var outcome = await new ProcessingRecipeExecutor().ExecuteAsync(request);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status, outcome.ReasonCode);
+        var product = outcome.Products.Single();
+
+        Assert.IsLessThanOrEqualTo(StructuredProcessingProductDescriptorV1.MaximumPayloadBytes, product.Payload.Length,
+            $"3968x3968 4,096-exclusion frame must stay within 4 MiB envelope (got {product.Payload.Length} bytes).");
+
+        var readFromProduct = ExposureMeasurementProducts.Read(product);
+        var artifact = ProductArtifact(product, raw);
+        var readFromArtifact = ExposureMeasurementProducts.Read(artifact, input);
+        Assert.HasCount(4096, readFromProduct.Sources.Exclusions);
+        Assert.HasCount(4096, readFromArtifact.Sources.Exclusions);
+        Assert.IsTrue(readFromProduct.Sources.Exclusions.All(static e => e.Occupancy is not null),
+            "All 4,096 non-solid exclusions should retain deterministic budgeted coarse occupancy.");
+        // D10-M2: Producer-generated 16x14 (3x3) budgeted coarse masks must also pass public 1-arg and 3-arg IsValid.
+        var firstExcl = readFromProduct.Sources.Exclusions[0];
+        Assert.AreEqual(16, firstExcl.Occupancy!.Columns);
+        Assert.AreEqual(14, firstExcl.Occupancy.Rows);
+        Assert.AreEqual(3, firstExcl.Occupancy.CellWidth);
+        Assert.AreEqual(3, firstExcl.Occupancy.CellHeight);
+        Assert.IsTrue(firstExcl.Occupancy.IsValid(firstExcl.Footprint!.Value),
+            "Public 1-arg IsValid(footprint) must accept producer-generated 16x14 budgeted coarse mask.");
+        Assert.IsTrue(firstExcl.Occupancy.IsValid(firstExcl.Footprint.Value, firstExcl.Peak, firstExcl.SampleCount),
+            "Public 3-arg IsValid(footprint, peak, sampleCount) must accept producer-generated 16x14 budgeted coarse mask.");
+
+        // Stripping Occupancy from any exclusion on the 4,096-exclusion product must still be rejected by both readers.
+        var tamperedExclusions = readFromProduct.Sources.Exclusions.ToArray();
+        tamperedExclusions[0] = tamperedExclusions[0] with { Occupancy = null };
+        var tamperedProduct = WithMeasurement(product, readFromProduct with
+        {
+            Sources = readFromProduct.Sources with { Exclusions = tamperedExclusions }
+        });
+        var tamperedArtifact = ProductArtifact(tamperedProduct, raw);
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(tamperedProduct));
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(tamperedArtifact, input));
+    }
+
+    [TestMethod]
+    public async Task WorstCasePostBudgetPlusEscapingAndEnvelopeOmissionStayWithinBudget()
+    {
+        // 1. Real 3968x3968 Mono16 frame with 4,096 non-solid 48x42 tiles specifically patterned so that every
+        //    post-budget 16x14 (3x3) coarse mask repeats bytes [0xFB, 0xEF, 0xBE] -> 37 '+' chars out of 40 Base64
+        //    chars (each JSON-escaped as 6-byte \u002B!). Step 4 must still emit Produced <= 4 MiB and round-trip.
+        const int tileCountPerAxis = 64;
+        const int tileSize = 62;
+        const int size = tileCountPerAxis * tileSize; // 3968
+        const int patchOffset = 8;
+        const int patchWidth = 48;
+        const int patchHeight = 42;
+        byte[] allPlusPattern = [0xFB, 0xEF, 0xBE];
+
+        var sampleTile = new StellarFootprintBounds(patchOffset, patchOffset, patchOffset + patchWidth - 1, patchOffset + patchHeight - 1);
+        var expectedBudget = StellarFootprintOccupancy.ComputeProductBudgets(
+            0, 4096, Enumerable.Repeat(sampleTile, 4096).ToArray());
+        var probeOccupancy = StellarFootprintOccupancy.Create(
+            sampleTile, static (x, y) => x == patchOffset && y == patchOffset,
+            expectedBudget.CoarseCellBudget, expectedBudget.SubgridBitBudget);
+        var coarseCols = probeOccupancy.Columns;
+        var cellW = probeOccupancy.CellWidth;
+        var cellH = probeOccupancy.CellHeight;
+        Assert.AreEqual(16, coarseCols);
+        Assert.AreEqual(14, probeOccupancy.Rows);
+        Assert.AreEqual(3, cellW);
+        Assert.AreEqual(3, cellH);
+
+        var layout = Layout(size, size);
+        var rawBytes = new byte[checked((int)layout.ByteLength)];
+        for (var y = 0; y < size; y++)
+        {
+            var rowSpan = rawBytes.AsSpan(y * layout.StrideBytes, size * 2);
+            var ly = y % tileSize;
+            var inPatchY = ly >= patchOffset && ly < patchOffset + patchHeight;
+            var coarseRow = inPatchY ? (ly - patchOffset) / cellH : -1;
+            for (var x = 0; x < size; x++)
+            {
+                ushort code = 180;
+                if (inPatchY)
+                {
+                    var lx = x % tileSize;
+                    if (lx >= patchOffset && lx < patchOffset + patchWidth)
+                    {
+                        var coarseCol = (lx - patchOffset) / cellW;
+                        var bit = coarseRow * coarseCols + coarseCol;
+                        var patternByte = allPlusPattern[(bit >> 3) % 3];
+                        if ((patternByte & (1 << (bit & 7))) != 0)
+                            code = 2200;
+                    }
+                }
+                BinaryPrimitives.WriteUInt16LittleEndian(rowSpan[(x * 2)..], code);
+            }
+        }
+
+        var raw = CreateRaw(layout, rawBytes);
+        var linear = await Normalize(raw);
+        var baseInput = Bind(raw, linear);
+        var input = PadToExactMaxAdmittedEnvelope(baseInput, plusEscaped: true);
+        Assert.AreEqual(ExposureMeasurementProducts.MaximumAdmittedEnvelopeBytes,
+            ExposureMeasurementProducts.WorstCaseEnvelopeBytes(input));
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Request(
+            input with { OpticalCalibrationVersion = input.OpticalCalibrationVersion + "v" }, raw, linear),
+            "Exceeding MaximumAdmittedEnvelopeBytes by even 1 byte must be rejected at admission.");
+
+        var outcome = await new ProcessingRecipeExecutor().ExecuteAsync(ExposureMeasurementProducts.Request(input, raw, linear));
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status, outcome.ReasonCode);
+        var product = outcome.Products.Single();
+        Assert.IsLessThanOrEqualTo(StructuredProcessingProductDescriptorV1.MaximumPayloadBytes, product.Payload.Length,
+            $"Worst-case max-envelope + post-budget '+' escaping payload must stay <= 4 MiB (got {product.Payload.Length} bytes).");
+
+        var escapedPlusCount = 0;
+        var jsonText = Encoding.UTF8.GetString(product.Payload.Span);
+        for (var idx = 0; (idx = jsonText.IndexOf("\\u002B", idx, StringComparison.Ordinal)) >= 0; idx += 6)
+            escapedPlusCount++;
+        Assert.IsGreaterThanOrEqualTo(4096 * 35, escapedPlusCount,
+            $"Expected heavy post-budget \\u002B escaping across all 4,096 coarse masks (got {escapedPlusCount}).");
+
+        var readProduct = ExposureMeasurementProducts.Read(product);
+        var readArtifact = ExposureMeasurementProducts.Read(ProductArtifact(product, raw), input);
+        Assert.HasCount(4096, readProduct.Sources.Exclusions);
+        Assert.HasCount(4096, readArtifact.Sources.Exclusions);
+        Assert.IsTrue(readProduct.Sources.Exclusions.All(static e =>
+            e.Occupancy is { Columns: 16, Rows: 14, CellWidth: 3, CellHeight: 3 } occ &&
+            occ.BitsBase64.Count(static ch => ch == '+') >= 35));
+        var sampleMaxExcl = readProduct.Sources.Exclusions[0];
+        Assert.IsTrue(sampleMaxExcl.Occupancy!.IsValid(sampleMaxExcl.Footprint!.Value));
+        Assert.IsTrue(sampleMaxExcl.Occupancy.IsValid(sampleMaxExcl.Footprint.Value, sampleMaxExcl.Peak, sampleMaxExcl.SampleCount));
+
+        // 2. D8-H1 admission bound: oversized metadata requests (including Astra's exact 4,190,736-char ASCII and
+        //    493,752 '+'-char reproductions, plus exact boundary + 1 byte) MUST be cleanly rejected at admission
+        //    (never producing a post-admission measurement.payload-budget-exceeded TerminalFailure), while requests
+        //    AT the exact maximum admitted envelope retain positive coarse occupancy and round-trip cleanly; and
+        //    D8-M3 artificial coarsening still throws InvalidDataException in BOTH Step 4 readers.
+        const int smallSize = 160;
+        var smallLayout = Layout(smallSize, smallSize);
+        var smallCenter = new PixelPoint(80.5, 80.5);
+        var smallRaw = CreateRaw(smallLayout, Generate(smallLayout, (x, y) =>
+        {
+            var r = double.Hypot(x + 0.5 - smallCenter.X, y + 0.5 - smallCenter.Y);
+            double value = 180 + Gaussian(x, y, smallCenter, 1.25, 2200);
+            if (r is >= 14.0 and <= 30.0)
+                value += 1400.0;
+            return (ushort)Math.Clamp(Math.Round(value), 0, 4095);
+        }));
+        var smallLinear = await Normalize(smallRaw);
+        var smallBaseInput = Bind(smallRaw, smallLinear);
+        var (smallLookup, smallBoundRaw, smallBorrowed) = await BindToAdmission(smallRaw);
+
+        // Exact Astra reproductions: (a) 4,190,736-char ASCII OpticalCalibrationVersion; (b) 493,752 '+' chars in metadata:
+        var astraAsciiInput = smallBaseInput with { OpticalCalibrationVersion = new string('v', 4_190_736) };
+        var astraPlusInput = smallBaseInput with { OpticalCalibrationVersion = new string('+', 493_752) };
+        var asciiEx = Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Request(astraAsciiInput, smallRaw, smallLinear),
+            "4,190,736-char ASCII calibration version must be rejected at fresh admission.");
+        StringAssert.Contains(asciiEx.Message, "envelope budget", StringComparison.Ordinal);
+        var plusEx = Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Request(astraPlusInput, smallRaw, smallLinear),
+            "493,752 '+'-char calibration version must be rejected at fresh admission.");
+        StringAssert.Contains(plusEx.Message, "envelope budget", StringComparison.Ordinal);
+
+        var astraAsciiLookup = smallLookup with
+        {
+            Exposure = smallLookup.Exposure with
+            {
+                Geometry = smallLookup.Exposure.Geometry with { OpticalCalibrationVersion = new string('v', 4_190_736) }
+            }
+        };
+        var astraPlusLookup = smallLookup with
+        {
+            Exposure = smallLookup.Exposure with
+            {
+                Geometry = smallLookup.Exposure.Geometry with { OpticalCalibrationVersion = new string('+', 493_752) }
+            }
+        };
+        var astraCameraKey = smallLookup.Exposure.Key with
+        {
+            Camera = smallLookup.Exposure.Key.Camera with { CameraId = new string('+', 493_752) }
+        };
+        var astraCameraLookup = smallLookup with
+        {
+            Exposure = smallLookup.Exposure with { Key = astraCameraKey },
+            Product = smallLookup.Product! with { Exposure = astraCameraKey }
+        };
+        var astraCameraBorrowed = smallBorrowed with { Exposure = astraCameraLookup.Exposure };
+        StringAssert.Contains(Assert.ThrowsExactly<InvalidDataException>(() =>
+            ExposureMeasurementBindings.Request(astraAsciiLookup, smallBoundRaw, smallBorrowed)).Message,
+            "envelope budget", StringComparison.Ordinal);
+        StringAssert.Contains(Assert.ThrowsExactly<InvalidDataException>(() =>
+            ExposureMeasurementBindings.Request(astraPlusLookup, smallBoundRaw, smallBorrowed)).Message,
+            "envelope budget", StringComparison.Ordinal);
+        StringAssert.Contains(Assert.ThrowsExactly<InvalidDataException>(() =>
+            ExposureMeasurementBindings.Request(astraCameraLookup, smallBoundRaw, astraCameraBorrowed)).Message,
+            "envelope budget", StringComparison.Ordinal);
+        // A non-matching retainedOutputIdentitySha256 must NOT bypass the fresh admission envelope cap:
+        StringAssert.Contains(Assert.ThrowsExactly<InvalidDataException>(() =>
+            ExposureMeasurementBindings.Request(astraPlusLookup, smallBoundRaw, smallBorrowed, null, null, new string('0', 64))).Message,
+            "envelope budget", StringComparison.Ordinal);
+
+        // Exact boundary (ASCII and '+'-escaped) passes admission, keeps positive occupancy + subgrid, and rejects +1 byte:
+        foreach (var plusEscaped in new[] { false, true })
+        {
+            var maxSmallInput = PadToExactMaxAdmittedEnvelope(smallBaseInput, plusEscaped);
+            Assert.AreEqual(ExposureMeasurementProducts.MaximumAdmittedEnvelopeBytes,
+                ExposureMeasurementProducts.WorstCaseEnvelopeBytes(maxSmallInput));
+            Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Request(
+                maxSmallInput with { OpticalCalibrationVersion = maxSmallInput.OpticalCalibrationVersion + "v" },
+                smallRaw, smallLinear));
+
+            var maxSmallOutcome = await new ProcessingRecipeExecutor().ExecuteAsync(
+                ExposureMeasurementProducts.Request(maxSmallInput, smallRaw, smallLinear));
+            Assert.AreEqual(ProcessingOutcomeStatus.Produced, maxSmallOutcome.Status, maxSmallOutcome.ReasonCode);
+            var maxSmallProduct = maxSmallOutcome.Products.Single();
+            Assert.IsLessThanOrEqualTo(StructuredProcessingProductDescriptorV1.MaximumPayloadBytes, maxSmallProduct.Payload.Length);
+
+            var maxSmallRead = ExposureMeasurementProducts.Read(maxSmallProduct);
+            var maxSmallArtifact = ProductArtifact(maxSmallProduct, smallRaw);
+            var maxSmallVerified = ExposureMeasurementProducts.Read(maxSmallArtifact, maxSmallInput);
+            Assert.HasCount(1, maxSmallRead.Sources.Detections);
+            var ringExcl = maxSmallRead.Sources.Exclusions.Single(e => e.ReasonCode == StellarExclusionReasons.ExtendedRegion);
+            Assert.IsNotNull(ringExcl.Occupancy, "Admitted exposure at max envelope must retain positive coarse occupancy.");
+            Assert.IsNotNull(ringExcl.Occupancy.Subgrid, "Single-exclusion admitted exposure at max envelope must retain full subgrid.");
+            Assert.AreEqual(ringExcl, maxSmallVerified.Sources.Exclusions.Single(e => e.ReasonCode == StellarExclusionReasons.ExtendedRegion));
+
+            if (!plusEscaped)
+            {
+                // D8-M3: Replacing the ring's full-budget occupancy with an artificially coarsened mask (which passes
+                // standalone 1-arg and 3-arg IsValid) MUST still throw InvalidDataException in BOTH Step 4 readers.
+                var artificialCoarse = StellarFootprintOccupancy.Create(
+                    ringExcl.Footprint!.Value,
+                    (x, y) =>
+                    {
+                        var r = double.Hypot(x + 0.5 - smallCenter.X, y + 0.5 - smallCenter.Y);
+                        return r is >= 14.0 and <= 30.0;
+                    },
+                    coarseCellBudget: 16,
+                    subgridBitBudget: 0);
+                Assert.IsTrue(artificialCoarse.IsValid(ringExcl.Footprint.Value));
+                Assert.IsTrue(artificialCoarse.IsValid(ringExcl.Footprint.Value, ringExcl.Peak, ringExcl.SampleCount));
+                var coarsenedProduct = WithMeasurement(maxSmallProduct, maxSmallRead with
+                {
+                    Sources = maxSmallRead.Sources with { Exclusions = [ringExcl with { Occupancy = artificialCoarse }] }
+                });
+                Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(coarsenedProduct),
+                    "Product reader must reject artificially coarsened occupancy when full resolution fits in budget.");
+                Assert.ThrowsExactly<InvalidDataException>(() =>
+                    ExposureMeasurementProducts.Read(ProductArtifact(coarsenedProduct, smallRaw), maxSmallInput),
+                    "Artifact reader must reject artificially coarsened occupancy when full resolution fits in budget.");
+            }
+        }
+
+        // 3. Real mixed 2,048 detections + 2,048 non-solid exclusions Mono16 frame AT exact maximum admitted '+'-escaped
+        //    envelope (Astra repro (b) mixed regime): fits strictly inside 4 MiB, keeps positive coarse occupancy on all
+        //    2,048 exclusions, and round-trips cleanly through BOTH ExposureMeasurementProducts.Read overloads.
+        const int mixedTileSize = 32;
+        const int mixedSize = 64 * mixedTileSize; // 2048
+        var mixedLayout = Layout(mixedSize, mixedSize);
+        var mixedBytes = new byte[checked((int)mixedLayout.ByteLength)];
+        for (var y = 0; y < mixedSize; y++)
+        {
+            var rowSpan = mixedBytes.AsSpan(y * mixedLayout.StrideBytes, mixedSize * 2);
+            var ty = y / mixedTileSize;
+            var ly = y % mixedTileSize;
+            for (var x = 0; x < mixedSize; x++)
+            {
+                var tx = x / mixedTileSize;
+                var lx = x % mixedTileSize;
+                ushort code = 180;
+                if (((tx + ty) & 1) == 0)
+                {
+                    // Compact unsaturated Gaussian star -> accepted detection (2,048 total).
+                    var dx = lx + 0.5 - 16.5;
+                    var dy = ly + 0.5 - 16.5;
+                    var r2 = dx * dx + dy * dy;
+                    if (r2 < 25)
+                        code = (ushort)Math.Round(180 + 2000 * Math.Exp(-0.5 * r2 / (1.1 * 1.1)));
+                }
+                else
+                {
+                    // Non-solid 10x10 hollow saturated frame (36 saturated samples in 100-px box) -> SaturatedExcessive exclusion (2,048 total).
+                    if (lx is >= 11 and <= 20 && ly is >= 11 and <= 20 &&
+                        (lx is 11 or 20 || ly is 11 or 20))
+                        code = 4095;
+                }
+                BinaryPrimitives.WriteUInt16LittleEndian(rowSpan[(x * 2)..], code);
+            }
+        }
+        var mixedRaw = CreateRaw(mixedLayout, mixedBytes);
+        var mixedLinear = await Normalize(mixedRaw);
+        var mixedMaxInput = PadToExactMaxAdmittedEnvelope(Bind(mixedRaw, mixedLinear), plusEscaped: true);
+        Assert.AreEqual(ExposureMeasurementProducts.MaximumAdmittedEnvelopeBytes,
+            ExposureMeasurementProducts.WorstCaseEnvelopeBytes(mixedMaxInput));
+        var mixedOutcome = await new ProcessingRecipeExecutor().ExecuteAsync(
+            ExposureMeasurementProducts.Request(mixedMaxInput, mixedRaw, mixedLinear));
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, mixedOutcome.Status, mixedOutcome.ReasonCode);
+        var mixedProduct = mixedOutcome.Products.Single();
+        Assert.IsLessThanOrEqualTo(StructuredProcessingProductDescriptorV1.MaximumPayloadBytes, mixedProduct.Payload.Length,
+            $"Mixed 2,048 detections + 2,048 exclusions at max admitted envelope must stay <= 4 MiB (got {mixedProduct.Payload.Length} bytes).");
+        var mixedRead = ExposureMeasurementProducts.Read(mixedProduct);
+        var mixedVerified = ExposureMeasurementProducts.Read(ProductArtifact(mixedProduct, mixedRaw), mixedMaxInput);
+        Assert.HasCount(2048, mixedRead.Sources.Detections);
+        Assert.HasCount(2048, mixedRead.Sources.Exclusions);
+        Assert.HasCount(2048, mixedVerified.Sources.Detections);
+        Assert.HasCount(2048, mixedVerified.Sources.Exclusions);
+        Assert.IsTrue(mixedRead.Sources.Exclusions.All(static e =>
+            e.Occupancy is not null && e.Occupancy.IsValid(e.Footprint!.Value, e.Peak, e.SampleCount)),
+            "All 2,048 non-solid exclusions in the mixed max-envelope product must retain valid positive coarse occupancy.");
+    }
+
+    private static ExposureMeasurementInputV1 PadToExactMaxAdmittedEnvelope(
+        ExposureMeasurementInputV1 baseInput, bool plusEscaped)
+    {
+        var probe = baseInput with { OpticalCalibrationVersion = "v" };
+        var baseline = ExposureMeasurementProducts.WorstCaseEnvelopeBytes(probe);
+        var remaining = ExposureMeasurementProducts.MaximumAdmittedEnvelopeBytes - baseline;
+        Assert.IsGreaterThan(0, remaining);
+        string version;
+        if (plusEscaped)
+        {
+            var plusCount = remaining / 6;
+            var trailingAscii = remaining % 6;
+            version = new string('+', plusCount) + new string('v', 1 + trailingAscii);
+        }
+        else
+        {
+            version = new string('v', 1 + remaining);
+        }
+        var padded = baseInput with { OpticalCalibrationVersion = version };
+        Assert.AreEqual(ExposureMeasurementProducts.MaximumAdmittedEnvelopeBytes,
+            ExposureMeasurementProducts.WorstCaseEnvelopeBytes(padded));
+        return padded;
+    }
+
+    [TestMethod]
+    public async Task RetainedOversizedV2MeasurementReadsAndReplaysWhileFreshAdmissionRejects()
+    {
+        // D11-H1: The merge-base implementation produced a 133,950-byte linear-stellar-local-v2 product with a
+        // 131,072-character ASCII OpticalCalibrationVersion. The new 131,072-byte envelope cap applies strictly to
+        // fresh Step 4 admission requests; BOTH ExposureMeasurementProducts.Read overloads, ReadCommittedAsync, and
+        // retained-output-identity replay MUST continue to accept and bit-for-bit reproduce that retained v2 product.
+        const int size = 160;
+        var layout = Layout(size, size);
+        var center = new PixelPoint(80.5, 80.5);
+        var light = CreateRaw(layout, Generate(layout, (x, y) =>
+        {
+            var r = double.Hypot(x + 0.5 - center.X, y + 0.5 - center.Y);
+            double value = 180 + Gaussian(x, y, center, 1.25, 2200);
+            if (r is >= 14.0 and <= 30.0)
+                value += 1400.0;
+            return (ushort)Math.Clamp(Math.Round(value), 0, 4095);
+        }));
+        var (baseLookup, boundRaw, baseBorrowed) = await BindToAdmission(light);
+        var longCalibrationVersion = new string('v', 131_072);
+        var oversizedExposure = baseLookup.Exposure with
+        {
+            Geometry = baseLookup.Exposure.Geometry with { OpticalCalibrationVersion = longCalibrationVersion }
+        };
+        var oversizedLookup = baseLookup with { Exposure = oversizedExposure };
+        var oversizedBorrowed = baseBorrowed with { Exposure = oversizedExposure };
+        var retainedInput = ExposureMeasurementBindings.FromAdmitted(oversizedLookup);
+        Assert.IsGreaterThan(ExposureMeasurementProducts.MaximumAdmittedEnvelopeBytes,
+            ExposureMeasurementProducts.WorstCaseEnvelopeBytes(retainedInput));
+
+        // Construct the exact historical linear-stellar-local-v2 (EligibleFirst) product that merge-base emitted
+        // from the same pixels without bypassing the fresh public ProcessingRecipeExecutor envelope cap.
+        var baselineInput = ExposureMeasurementBindings.FromAdmitted(baseLookup);
+        var baselineV2Request = ExposureMeasurementBindings.Request(baseLookup, boundRaw, baseBorrowed) with
+        {
+            Options = HistoricalEligibleFirstOptions(baselineInput)
+        };
+        var baselineV2Read = ExposureMeasurementProducts.Read(await Produce(baselineV2Request));
+        var historicalV2Request = new ProcessingExecutionRequest(
+            BuiltInProcessingRecipes.ExposureMeasurement,
+            HistoricalEligibleFirstOptions(retainedInput),
+            ProcessingInputSelector.Raw(boundRaw.Variant),
+            [boundRaw, oversizedBorrowed.Linear],
+            ExposureMeasurementProducts.Variant,
+            InputArtifactId: boundRaw.ArtifactId);
+        var historicalV2Recipe = BuiltInProcessingRecipes.CreateExecutionIdentity(historicalV2Request);
+        var retainedV2Payload = ExposureMeasurementProducts.Serialize(baselineV2Read with { Input = retainedInput });
+        var retainedV2Product = ProcessingRecipeSupport.CreateProduct(
+            FrameArtifactRole.Metadata,
+            ExposureMeasurementProducts.Variant,
+            ExposureMeasurementProducts.MediaType,
+            null,
+            retainedV2Payload,
+            historicalV2Recipe,
+            ExposureMeasurementRecipe.Algorithms(retainedInput, ExposureFocusSamplingPolicy.EligibleFirst),
+            [boundRaw, oversizedBorrowed.Linear],
+            boundRaw.Integration,
+            boundRaw.Compatibility,
+            ProcessingProductKind.Metadata,
+            ExposureMeasurementProducts.SchemaVersion,
+            ProcessingIdentity.ComputePayloadSha256(retainedV2Payload));
+        Assert.IsGreaterThan(ExposureMeasurementProducts.MaximumAdmittedEnvelopeBytes, retainedV2Product.Payload.Length);
+        Assert.IsTrue(retainedV2Product.Algorithms.Contains(
+            new ProcessingAlgorithmIdentity("stellar-source-measurer", StellarSourceMeasurer.V2AlgorithmVersion)));
+
+        // Both Step 4 readers and ReadCommittedAsync MUST accept the retained v2 product.
+        var readFromProduct = ExposureMeasurementProducts.Read(retainedV2Product);
+        var retainedV2Artifact = ProductArtifact(retainedV2Product, boundRaw);
+        var readFromArtifact = ExposureMeasurementProducts.Read(retainedV2Artifact, retainedInput);
+        Assert.AreEqual(longCalibrationVersion, readFromProduct.Input.OpticalCalibrationVersion);
+        Assert.AreEqual(readFromProduct.Input, readFromArtifact.Input);
+        Assert.IsTrue(readFromProduct.Sources.Exclusions.All(static e => e.Occupancy is null));
+        ProcessingRecipeTests.AssertProductMatchesContract(historicalV2Request, retainedV2Product);
+
+        var slot = new ExposureProductSlot(oversizedLookup.Product!.Slot.ExecutionId,
+            ExposureMeasurementProducts.StepAlias, ExposureMeasurementProducts.SchemaVersion, ExposureMeasurementProducts.Variant);
+        var exact = new ExposureProductRef(oversizedLookup.Exposure.Key, slot, retainedV2Artifact.ArtifactId,
+            retainedV2Product.OutputIdentitySha256, retainedV2Artifact.ContentIdentitySha256!, retainedV2Artifact.ContentIdentitySha256);
+        var reader = new RetainedReader(oversizedLookup, new(oversizedLookup.Exposure.Key, slot, ExposureProductAvailability.Available, 2, exact, null));
+        var committedRead = await ExposureMeasurementBindings.ReadCommittedAsync(reader, exact, retainedV2Artifact, CancellationToken.None);
+        Assert.AreEqual(longCalibrationVersion, committedRead.Input.OpticalCalibrationVersion);
+
+        // Retained-output-identity replay MUST succeed and reproduce the exact bytes bit-for-bit.
+        await AssertRetainedReplay(oversizedLookup, boundRaw, oversizedBorrowed, retainedV2Product);
+
+        // Direct submission to ProcessingRecipeExecutor.ExecuteAsync without verified retained-replay context
+        // (and any replay request whose Options were mutated after verification) MUST be rejected before measurement.
+        var executor = new ProcessingRecipeExecutor();
+        var directHistorical = await executor.ExecuteAsync(historicalV2Request);
+        Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, directHistorical.Status);
+        Assert.AreEqual(ProcessingReasonCodes.InvalidOptions, directHistorical.ReasonCode);
+        Assert.IsEmpty(directHistorical.Products);
+
+        var validReplayRequest = ExposureMeasurementBindings.Request(
+            oversizedLookup, boundRaw, oversizedBorrowed, null, null, retainedV2Product.OutputIdentitySha256);
+        var mutatedReplayInput = retainedInput with { OpticalCalibrationVersion = "x" + longCalibrationVersion[1..] };
+        var mutatedReplayOutcome = await executor.ExecuteAsync(validReplayRequest with
+        {
+            Options = HistoricalEligibleFirstOptions(mutatedReplayInput)
+        });
+        Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, mutatedReplayOutcome.Status);
+        Assert.AreEqual(ProcessingReasonCodes.InvalidOptions, mutatedReplayOutcome.ReasonCode);
+        Assert.IsEmpty(mutatedReplayOutcome.Products);
+
+        // Fresh admission requests (and non-matching retained identities) MUST still reject the oversized envelope.
+        StringAssert.Contains(Assert.ThrowsExactly<InvalidDataException>(() =>
+            ExposureMeasurementProducts.Request(retainedInput, boundRaw, oversizedBorrowed.Linear)).Message,
+            "envelope budget", StringComparison.Ordinal);
+        StringAssert.Contains(Assert.ThrowsExactly<InvalidDataException>(() =>
+            ExposureMeasurementBindings.Request(oversizedLookup, boundRaw, oversizedBorrowed)).Message,
+            "envelope budget", StringComparison.Ordinal);
+        StringAssert.Contains(Assert.ThrowsExactly<InvalidDataException>(() =>
+            ExposureMeasurementBindings.Request(oversizedLookup, boundRaw, oversizedBorrowed, null, null, new string('A', 64))).Message,
+            "envelope budget", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task DirectExecutorEnforcesFreshEnvelopeCapBeforeMeasurement()
+    {
+        // D11-H1: Submitting fresh oversized ProcessingExecutionRequest instances directly to
+        // ProcessingRecipeExecutor.ExecuteAsync (without verified retained-output-identity replay context) MUST be
+        // rejected BEFORE measurement (never reaching measurement.payload-budget-exceeded or producing a product).
+        const int size = 160;
+        var layout = Layout(size, size);
+        var center = new PixelPoint(80.5, 80.5);
+        var raw = CreateRaw(layout, Generate(layout, (x, y) =>
+        {
+            var r = double.Hypot(x + 0.5 - center.X, y + 0.5 - center.Y);
+            double value = 180 + Gaussian(x, y, center, 1.25, 2200);
+            if (r is >= 14.0 and <= 30.0)
+                value += 1400.0;
+            return (ushort)Math.Clamp(Math.Round(value), 0, 4095);
+        }));
+        var linear = await Normalize(raw);
+        var baseInput = Bind(raw, linear);
+        var executor = new ProcessingRecipeExecutor();
+
+        // Exact 3 repros: (1) 4,190,736 ASCII chars, (2) 493,752 '+' chars, (3) 131,073-byte worst-case envelope.
+        var maxAscii = PadToExactMaxAdmittedEnvelope(baseInput, plusEscaped: false);
+        var maxPlus = PadToExactMaxAdmittedEnvelope(baseInput, plusEscaped: true);
+        (string Label, ExposureMeasurementInputV1 Input)[] oversizedCases =
+        [
+            ("4,190,736 ASCII", baseInput with { OpticalCalibrationVersion = new string('v', 4_190_736) }),
+            ("493,752 '+'", baseInput with { OpticalCalibrationVersion = new string('+', 493_752) }),
+            ("131,073-byte ASCII envelope", maxAscii with { OpticalCalibrationVersion = maxAscii.OpticalCalibrationVersion + "v" }),
+            ("131,073-byte '+' envelope", maxPlus with { OpticalCalibrationVersion = maxPlus.OpticalCalibrationVersion + "v" })
+        ];
+        var tamperedRaw = raw with { Payload = new byte[raw.Payload.Length] };
+
+        foreach (var (label, oversizedInput) in oversizedCases)
+        {
+            Assert.IsGreaterThan(ExposureMeasurementProducts.MaximumAdmittedEnvelopeBytes,
+                ExposureMeasurementProducts.WorstCaseEnvelopeBytes(oversizedInput), label);
+            foreach (var policy in new[] { ExposureFocusSamplingPolicy.EligibleFirstWithOccupancy, ExposureFocusSamplingPolicy.EligibleFirst })
+            {
+                var directRequest = new ProcessingExecutionRequest(
+                    BuiltInProcessingRecipes.ExposureMeasurement,
+                    ExposureMeasurementProducts.SerializeParameters(oversizedInput, policy),
+                    ProcessingInputSelector.Raw(raw.Variant),
+                    [raw, linear],
+                    ExposureMeasurementProducts.Variant,
+                    InputArtifactId: raw.ArtifactId);
+                var outcome = await executor.ExecuteAsync(directRequest);
+                Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, outcome.Status, $"{label} ({policy})");
+                Assert.AreEqual(ProcessingReasonCodes.InvalidOptions, outcome.ReasonCode, $"{label} ({policy})");
+                Assert.AreNotEqual("measurement.payload-budget-exceeded", outcome.ReasonCode, $"{label} ({policy})");
+                Assert.IsEmpty(outcome.Products, $"{label} ({policy})");
+
+                // Submitting with a mismatched raw payload proves rejection happens BEFORE ExposureMeasurementRecipe.ExecuteAsync
+                // (never even reaching measurement.raw-binding-mismatch or reading pixels).
+                var preMeasurementOutcome = await executor.ExecuteAsync(directRequest with { Inputs = [tamperedRaw, linear] });
+                Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, preMeasurementOutcome.Status, $"{label} pre-measurement ({policy})");
+                Assert.AreEqual(ProcessingReasonCodes.InvalidOptions, preMeasurementOutcome.ReasonCode, $"{label} pre-measurement ({policy})");
+                Assert.IsEmpty(preMeasurementOutcome.Products, $"{label} pre-measurement ({policy})");
+            }
+        }
+
+        // Control: an exact 131,072-byte worst-case envelope submitted directly still succeeds and round-trips cleanly.
+        var boundaryRequest = new ProcessingExecutionRequest(
+            BuiltInProcessingRecipes.ExposureMeasurement,
+            ExposureMeasurementProducts.SerializeParameters(maxPlus, ExposureFocusSamplingPolicy.EligibleFirstWithOccupancy),
+            ProcessingInputSelector.Raw(raw.Variant),
+            [raw, linear],
+            ExposureMeasurementProducts.Variant,
+            InputArtifactId: raw.ArtifactId);
+        var boundaryOutcome = await executor.ExecuteAsync(boundaryRequest);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, boundaryOutcome.Status, boundaryOutcome.ReasonCode);
+        var boundaryProduct = boundaryOutcome.Products.Single();
+        Assert.AreEqual(maxPlus, ExposureMeasurementProducts.Read(boundaryProduct).Input);
+        Assert.AreEqual(maxPlus, ExposureMeasurementProducts.Read(ProductArtifact(boundaryProduct, raw), maxPlus).Input);
+    }
+
+    [TestMethod]
+    public async Task DirectExecutorRejectsUnpairedUtf16SelectorVariantsWhilePreservingAstralPairs()
+    {
+        // D11-M1: Submitting raw selector variants ending in unpaired U+D800 or U+DC00 directly to
+        // ProcessingRecipeExecutor.ExecuteAsync MUST be rejected BEFORE recipe-identity serialization (never colliding
+        // with literal U+FFFD), while valid astral Unicode surrogate pairs remain accepted and distinct from U+FFFD.
+        const int size = 96;
+        var layout = Layout(size, size);
+        var raw = CreateRaw(layout, Generate(layout, static (_, _) => 180));
+        var linear = await Normalize(raw);
+        var input = Bind(raw, linear);
+        var options = ExposureMeasurementProducts.SerializeParameters(input, ExposureFocusSamplingPolicy.EligibleFirstWithOccupancy);
+        var executor = new ProcessingRecipeExecutor();
+
+        foreach (var badVariant in new[] { "source-\uD800", "source-\uDC00", "\uDC00-source", "source-\uD800\uD800\uDC00" })
+        {
+            var badRaw = raw with { Variant = badVariant };
+            var badSelectorRequest = new ProcessingExecutionRequest(
+                BuiltInProcessingRecipes.ExposureMeasurement,
+                options,
+                ProcessingInputSelector.Raw(badVariant),
+                [badRaw, linear],
+                ExposureMeasurementProducts.Variant,
+                InputArtifactId: badRaw.ArtifactId);
+            var badSelectorOutcome = await executor.ExecuteAsync(badSelectorRequest);
+            Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, badSelectorOutcome.Status, badVariant);
+            Assert.AreEqual(ProcessingReasonCodes.InvalidSelector, badSelectorOutcome.ReasonCode, badVariant);
+            Assert.IsEmpty(badSelectorOutcome.Products, badVariant);
+
+            // Unpaired surrogate on the selector alone (with a valid raw artifact variant) MUST also be rejected.
+            var selectorOnlyOutcome = await executor.ExecuteAsync(badSelectorRequest with { Inputs = [raw, linear] });
+            Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, selectorOnlyOutcome.Status, badVariant);
+            Assert.AreEqual(ProcessingReasonCodes.InvalidSelector, selectorOnlyOutcome.ReasonCode, badVariant);
+            Assert.IsEmpty(selectorOnlyOutcome.Products, badVariant);
+
+            // Unpaired surrogate on the raw artifact variant with a wildcard selector MUST be rejected before identity binding.
+            var inputVariantOnlyOutcome = await executor.ExecuteAsync(badSelectorRequest with { Input = ProcessingInputSelector.Raw() });
+            Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, inputVariantOnlyOutcome.Status, badVariant);
+            Assert.AreEqual(ProcessingReasonCodes.InvalidInput, inputVariantOnlyOutcome.ReasonCode, badVariant);
+            Assert.IsEmpty(inputVariantOnlyOutcome.Products, badVariant);
+
+            // Unpaired surrogate on OutputVariant MUST also be rejected.
+            var badOutputVariantOutcome = await executor.ExecuteAsync(new ProcessingExecutionRequest(
+                BuiltInProcessingRecipes.ExposureMeasurement,
+                options,
+                ProcessingInputSelector.Raw(raw.Variant),
+                [raw, linear],
+                badVariant,
+                InputArtifactId: raw.ArtifactId));
+            Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, badOutputVariantOutcome.Status, badVariant);
+            Assert.AreEqual(ProcessingReasonCodes.InvalidOptions, badOutputVariantOutcome.ReasonCode, badVariant);
+            Assert.IsEmpty(badOutputVariantOutcome.Products, badVariant);
+
+            // Unpaired surrogate on an auxiliary selector variant or annotation MUST also be rejected before identity binding.
+            var badAuxOutcome = await executor.ExecuteAsync(new ProcessingExecutionRequest(
+                BuiltInProcessingRecipes.NoOpAnalyzer,
+                JsonSerializer.SerializeToElement(new { }),
+                ProcessingInputSelector.Raw(raw.Variant),
+                [raw],
+                "noop-v1",
+                AuxiliaryInputs:
+                [
+                    new ProcessingAuxiliaryInput(
+                        "aux",
+                        ProcessingAuxiliaryInputKind.Artifact,
+                        ProcessingInputSelector.Raw(badVariant),
+                        ArtifactId: raw.ArtifactId)
+                ],
+                InputArtifactId: raw.ArtifactId));
+            Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, badAuxOutcome.Status, badVariant);
+            Assert.AreEqual(ProcessingReasonCodes.InvalidInput, badAuxOutcome.ReasonCode, badVariant);
+            Assert.IsEmpty(badAuxOutcome.Products, badVariant);
+
+            var badAnnotationOutcome = await executor.ExecuteAsync(new ProcessingExecutionRequest(
+                BuiltInProcessingRecipes.NoOpAnalyzer,
+                JsonSerializer.SerializeToElement(new { }),
+                ProcessingInputSelector.Raw(raw.Variant),
+                [raw],
+                "noop-v1",
+                Annotation: new ProcessingAnnotationInput(
+                    [new ProjectedAnnotationObject("star:1", badVariant, new PixelPoint(1, 1))],
+                    [],
+                    new PreviewTransform(1, 1),
+                    null,
+                    new string('A', 64)),
+                InputArtifactId: raw.ArtifactId));
+            Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, badAnnotationOutcome.Status, badVariant);
+            Assert.AreEqual(ProcessingReasonCodes.InvalidAnnotation, badAnnotationOutcome.ReasonCode, badVariant);
+            Assert.IsEmpty(badAnnotationOutcome.Products, badVariant);
+
+            // Identity builders themselves MUST reject malformed UTF-16 directly.
+            Assert.ThrowsExactly<ArgumentException>(() => BuiltInProcessingRecipes.CreateExecutionIdentity(
+                BuiltInProcessingRecipes.ExposureMeasurement, options, ProcessingInputSelector.Raw(badVariant)));
+            Assert.ThrowsExactly<ArgumentException>(() => ProcessingIdentity.CreateOutputIdentity(
+                FrameArtifactRole.Metadata, badVariant, new string('A', 64), [raw.ArtifactId]));
+        }
+
+        // Valid astral Unicode surrogate pair (U+1F52D) and literal U+FFFD are both valid UTF-16, accepted, and
+        // produce strictly distinct recipe and output identities.
+        const string astralVariant = "source-\U0001F52D";
+        const string replacementVariant = "source-\uFFFD";
+        var astralRaw = raw with { Variant = astralVariant };
+        var replacementRaw = raw with { Variant = replacementVariant };
+
+        var astralOutcome = await executor.ExecuteAsync(new ProcessingExecutionRequest(
+            BuiltInProcessingRecipes.ExposureMeasurement,
+            options,
+            ProcessingInputSelector.Raw(astralVariant),
+            [astralRaw, linear],
+            ExposureMeasurementProducts.Variant,
+            InputArtifactId: astralRaw.ArtifactId));
+        var replacementOutcome = await executor.ExecuteAsync(new ProcessingExecutionRequest(
+            BuiltInProcessingRecipes.ExposureMeasurement,
+            options,
+            ProcessingInputSelector.Raw(replacementVariant),
+            [replacementRaw, linear],
+            ExposureMeasurementProducts.Variant,
+            InputArtifactId: replacementRaw.ArtifactId));
+
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, astralOutcome.Status, astralOutcome.ReasonCode);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, replacementOutcome.Status, replacementOutcome.ReasonCode);
+        var astralProduct = astralOutcome.Products.Single();
+        var replacementProduct = replacementOutcome.Products.Single();
+        Assert.AreNotEqual(astralProduct.Recipe.IdentitySha256, replacementProduct.Recipe.IdentitySha256);
+        Assert.AreNotEqual(astralProduct.OutputIdentitySha256, replacementProduct.OutputIdentitySha256);
+        Assert.AreEqual(astralVariant, astralProduct.Recipe.Descriptor.Options.GetProperty("input").GetProperty("variant").GetString());
+        Assert.AreEqual(replacementVariant, replacementProduct.Recipe.Descriptor.Options.GetProperty("input").GetProperty("variant").GetString());
+        Assert.AreEqual(input, ExposureMeasurementProducts.Read(astralProduct).Input);
+        Assert.AreEqual(input, ExposureMeasurementProducts.Read(ProductArtifact(astralProduct, astralRaw), input).Input);
+        Assert.AreEqual(input, ExposureMeasurementProducts.Read(replacementProduct).Input);
+        Assert.AreEqual(input, ExposureMeasurementProducts.Read(ProductArtifact(replacementProduct, replacementRaw), input).Input);
+    }
+
+    [TestMethod]
+    public async Task UnpairedUtf16SurrogatesAreRejectedAtAdmissionWhileValidSurrogatePairsRoundTrip()
+    {
+        // D11-M1: Unpaired UTF-16 surrogates (high 0xD800 or low 0xDC00) silently mutate to U+FFFD during JSON
+        // serialization, breaking identity binding on ExposureMeasurementProducts.Read(artifact, input).
+        // Admission MUST reject malformed UTF-16 on ALL identity-bearing strings while preserving valid surrogate pairs.
+        const int size = 96;
+        var layout = Layout(size, size);
+        var light = CreateRaw(layout, Generate(layout, static (_, _) => 180));
+        var (lookup, boundRaw, borrowed) = await BindToAdmission(light);
+        var baseInput = ExposureMeasurementBindings.FromAdmitted(lookup);
+
+        // Exact D11-M1 repro: calibration version padded to exact 131,072 envelope bytes ending in unpaired 0xD800.
+        var maxValidInput = PadToExactMaxAdmittedEnvelope(baseInput, plusEscaped: false);
+        var trailingUnpairedHigh = maxValidInput.OpticalCalibrationVersion![..^6] + "\uD800";
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Request(
+            maxValidInput with { OpticalCalibrationVersion = trailingUnpairedHigh }, boundRaw, borrowed.Linear));
+        var trailingHighLookup = lookup with
+        {
+            Exposure = lookup.Exposure with
+            {
+                Geometry = lookup.Exposure.Geometry with { OpticalCalibrationVersion = trailingUnpairedHigh }
+            }
+        };
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementBindings.FromAdmitted(trailingHighLookup));
+        Assert.ThrowsExactly<InvalidDataException>(() =>
+            ExposureMeasurementBindings.Request(trailingHighLookup, boundRaw, borrowed with { Exposure = trailingHighLookup.Exposure }));
+
+        string[] malformedSamples =
+        [
+            "bad-\uD800",
+            "\uDC00-bad",
+            "rev-\uDC00\uD800-bad",
+            "dbl-\uD800\uD800\uDC00-bad",
+            "tail-\uD800\uDC00\uDC00"
+        ];
+        foreach (var bad in malformedSamples)
+        {
+            // OpticalCalibrationVersion (with Exposure != null and Exposure == null):
+            Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Request(
+                baseInput with { OpticalCalibrationVersion = bad }, boundRaw, borrowed.Linear));
+            Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Request(
+                Bind(boundRaw, borrowed.Linear) with { OpticalCalibrationVersion = bad }, boundRaw, borrowed.Linear));
+            // CameraId and AgentId:
+            Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Request(
+                baseInput with
+                {
+                    Exposure = baseInput.Exposure! with { Camera = baseInput.Exposure.Camera with { CameraId = bad } }
+                }, boundRaw, borrowed.Linear));
+            Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Request(
+                baseInput with
+                {
+                    Exposure = baseInput.Exposure! with { Camera = baseInput.Exposure.Camera with { AgentId = bad } }
+                }, boundRaw, borrowed.Linear));
+            // OrientationIdentity:
+            Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Request(
+                baseInput with { OrientationIdentity = bad }, boundRaw, borrowed.Linear));
+            // CalibrationReason:
+            Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Request(
+                Bind(boundRaw, null, ExposureCalibrationDisposition.Missing, bad), boundRaw, null));
+            // Raw artifact Variant selector:
+            Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Request(
+                baseInput, boundRaw with { Variant = bad }, borrowed.Linear));
+        }
+
+        // Valid UTF-16 surrogate pair (astral Unicode scalar value U+1F52D = 0xD83D 0xDD2D) MUST be accepted and
+        // round-trip identically through BOTH ExposureMeasurementProducts.Read overloads with zero U+FFFD replacement.
+        const string astralToken = "\U0001F52D";
+        var astralProbe = baseInput with
+        {
+            OpticalCalibrationVersion = "cal-" + astralToken + "-v1",
+            Exposure = baseInput.Exposure! with
+            {
+                Camera = baseInput.Exposure.Camera with { CameraId = "cam-" + astralToken }
+            }
+        };
+        var remaining = ExposureMeasurementProducts.MaximumAdmittedEnvelopeBytes -
+            ExposureMeasurementProducts.WorstCaseEnvelopeBytes(astralProbe);
+        Assert.IsGreaterThan(0, remaining);
+        var astralMaxInput = astralProbe with
+        {
+            OpticalCalibrationVersion = astralProbe.OpticalCalibrationVersion + new string('v', remaining)
+        };
+        Assert.AreEqual(ExposureMeasurementProducts.MaximumAdmittedEnvelopeBytes,
+            ExposureMeasurementProducts.WorstCaseEnvelopeBytes(astralMaxInput));
+
+        var astralProduct = await Produce(ExposureMeasurementProducts.Request(astralMaxInput, boundRaw, borrowed.Linear));
+        var readProduct = ExposureMeasurementProducts.Read(astralProduct);
+        var readArtifact = ExposureMeasurementProducts.Read(ProductArtifact(astralProduct, boundRaw), astralMaxInput);
+        Assert.AreEqual(astralMaxInput, readProduct.Input);
+        Assert.AreEqual(astralMaxInput, readArtifact.Input);
+        Assert.IsFalse(readProduct.Input.OpticalCalibrationVersion!.Contains('\uFFFD', StringComparison.Ordinal));
+        Assert.IsFalse(readProduct.Input.Exposure!.Camera.CameraId.Contains('\uFFFD', StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public async Task FullyClippedRgb24ExposureProducesAndRoundTripsThroughBothReaders()
+    {
+        // D11-M2: A fully clipped 32x32 RGB24 exposure records 32 * 32 * 3 = 3,072 clipped channel samples in both
+        // RawBrightness.SensorClipping and LinearOutputClipping. Both ExposureMeasurementProducts.Read overloads must
+        // validate linear clipping against channel-aware sample count (3,072), not pixel count (1,024), while still
+        // rejecting counts above 3,072.
+        const int width = 32;
+        const int height = 32;
+        const long expectedSamples = width * height * 3L; // 3,072
+        var rgbLayout = new FrameLayoutDescriptor(
+            width, height, width * 3, CameraPixelFormat.Rgb24, FrameByteOrder.NotApplicable,
+            8, 8, FrameSamplePacking.ByteAligned, ColorFilterArrayPattern.None, 0, 255, expectedSamples)
+        {
+            StoredCodeTransform = FrameStoredCodeTransform.IdentityV1,
+            LevelCodeSpace = FrameLevelCodeSpace.StoredContainer
+        };
+        var clippedBytes = new byte[expectedSamples];
+        Array.Fill(clippedBytes, byte.MaxValue);
+        var light = CreateRaw(rgbLayout, clippedBytes);
+        var (lookup, boundRaw, borrowed) = await BindToAdmission(light);
+        var expectedInput = ExposureMeasurementBindings.FromAdmitted(lookup);
+        var request = ExposureMeasurementBindings.Request(lookup, boundRaw, borrowed);
+        var product = await Produce(request);
+
+        var readFromProduct = ExposureMeasurementProducts.Read(product);
+        var retainedArtifact = ProductArtifact(product, boundRaw);
+        var readFromArtifact = ExposureMeasurementProducts.Read(retainedArtifact, expectedInput);
+        ProcessingRecipeTests.AssertProductMatchesContract(request, product);
+
+        Assert.AreEqual(expectedSamples, readFromProduct.RawBrightness!.SampleCount);
+        Assert.AreEqual((ushort)255, readFromProduct.RawBrightness.SensorClipping.StoredWhite);
+        Assert.AreEqual(expectedSamples, readFromProduct.RawBrightness.SensorClipping.Count);
+        Assert.AreEqual((ushort)255, readFromProduct.LinearOutputClipping!.StoredWhite);
+        Assert.AreEqual(expectedSamples, readFromProduct.LinearOutputClipping.Count);
+        Assert.AreEqual(ExposureMeasurementStatus.Unavailable, readFromProduct.Sources.Status);
+        Assert.AreEqual(ExposureMeasurementSourceReasonCodes.UnsupportedLinearLayout, readFromProduct.Sources.Reason);
+        Assert.AreEqual(readFromProduct.LinearOutputClipping, readFromArtifact.LinearOutputClipping);
+
+        // Tampering LinearOutputClipping.Count above width * height * 3 (3,073) MUST still be rejected by both readers.
+        var tamperedProduct = WithMeasurement(product, readFromProduct with
+        {
+            LinearOutputClipping = readFromProduct.LinearOutputClipping with { Count = expectedSamples + 1 }
+        });
+        StringAssert.Contains(Assert.ThrowsExactly<InvalidDataException>(() =>
+            ExposureMeasurementProducts.Read(tamperedProduct)).Message, "linear clipping", StringComparison.Ordinal);
+        StringAssert.Contains(Assert.ThrowsExactly<InvalidDataException>(() =>
+            ExposureMeasurementProducts.Read(ProductArtifact(tamperedProduct, boundRaw), expectedInput)).Message,
+            "linear clipping", StringComparison.Ordinal);
     }
 
     private static ProjectedSceneV1 WithProjection(ProjectedSceneV1 scene, ProjectedSceneProjection projection)
@@ -911,7 +1985,13 @@ public sealed class ExposureMeasurementTests
         CollectionAssert.AreEqual(original.Sources.Detections.ToArray(), result.Sources.Detections.ToArray());
         Assert.AreEqual("trailed-source", original.Hfd.Samples[focus.DetectionIndex].Reason);
         var previous = await Produce(request with { Options = HistoricalFocusOptions(result.Input, bayerCoreCheck: true) });
-        CollectionAssert.AreEqual(previous.Payload.ToArray(), currentProduct.Payload.ToArray());
+        var previousResult = ExposureMeasurementProducts.Read(previous);
+        Assert.AreNotEqual(previous.OutputIdentitySha256, currentProduct.OutputIdentitySha256);
+        CollectionAssert.AreEqual(previousResult.Sources.Detections.ToArray(), result.Sources.Detections.ToArray());
+        CollectionAssert.AreEqual(previousResult.Hfd.Samples.ToArray(), result.Hfd.Samples.ToArray());
+        var previousEligibleFirst = await Produce(request with { Options = HistoricalEligibleFirstOptions(result.Input) });
+        Assert.AreNotEqual(previousEligibleFirst.OutputIdentitySha256, currentProduct.OutputIdentitySha256);
+        CollectionAssert.AreEqual(previous.Payload.ToArray(), previousEligibleFirst.Payload.ToArray());
 
         Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(ReplaceSample(
             currentProduct, focus with { BayerCoreTrailUpperPixels = 3 })));
@@ -931,6 +2011,9 @@ public sealed class ExposureMeasurementTests
         => bayerCoreCheck
             ? JsonSerializer.SerializeToElement(new { BayerFocus = "noise-corrected-bayer-core-v1", Input = input }, MeasurementJson)
             : JsonSerializer.SerializeToElement(input, MeasurementJson);
+
+    private static JsonElement HistoricalEligibleFirstOptions(ExposureMeasurementInputV1 input)
+        => JsonSerializer.SerializeToElement(new { HfdAllocation = "eligible-first-v1", Input = input }, MeasurementJson);
 
     private static ProcessingProduct WithMeasurement(ProcessingProduct product, ExposureMeasurementV1 measurement)
     {

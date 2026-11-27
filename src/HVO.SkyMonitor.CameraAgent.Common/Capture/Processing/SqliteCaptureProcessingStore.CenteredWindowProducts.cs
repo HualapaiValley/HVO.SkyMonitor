@@ -131,7 +131,7 @@ internal sealed partial class SqliteCaptureProcessingStore
             if (parents.Count == 4 && parents[0] == rawPin.ArtifactId)
             {
                 var associations = artifacts.Find(item => item.Pin.ArtifactId == parents[1] &&
-                    item.Evidence.Lookup.Slot.SchemaVersion == MeasuredStellarAssociationsV1.CurrentSchemaVersion).Pin;
+                    MeasuredStellarAssociationsV1.IsSupportedSchemaVersion(item.Evidence.Lookup.Slot.SchemaVersion)).Pin;
                 var scene = artifacts.Find(item => item.Pin.ArtifactId == parents[2] &&
                     ProjectedSceneV1.IsSupportedSchemaVersion(item.Evidence.Lookup.Slot.SchemaVersion)).Pin;
                 var context = artifacts.Find(item => item.Pin.ArtifactId == parents[3] &&
@@ -174,7 +174,8 @@ internal sealed partial class SqliteCaptureProcessingStore
                AND clock.settled_ticks <= $cutoff
                AND ((product.schema_version = $linear AND product.producer = COALESCE(node.node_id, run.linear_node_id)
                       AND product.variant = run.linear_variant)
-                    OR product.schema_version IN ($measurement, $solution, $context, $associations)
+                    OR product.schema_version IN ($measurement, $solution, $context)
+                    OR product.schema_version IN (SELECT value FROM json_each($associations))
                     OR product.schema_version IN (SELECT value FROM json_each($scenes)))
              ORDER BY product.revision;
             """;
@@ -207,7 +208,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         command.Parameters.AddWithValue("$measurement", ExposureMeasurementProducts.SchemaVersion);
         command.Parameters.AddWithValue("$solution", MeasuredAstrometrySolutionV1.CurrentSchemaVersion);
         command.Parameters.AddWithValue("$context", MeasuredAstrometryContextV1.CurrentSchemaVersion);
-        command.Parameters.AddWithValue("$associations", MeasuredStellarAssociationsV1.CurrentSchemaVersion);
+        command.Parameters.AddWithValue("$associations", JsonSerializer.Serialize(MeasuredStellarAssociationsV1.SupportedSchemaVersions));
         command.Parameters.AddWithValue("$scenes", JsonSerializer.Serialize(ProjectedSceneV1.SupportedSchemaVersions));
     }
 

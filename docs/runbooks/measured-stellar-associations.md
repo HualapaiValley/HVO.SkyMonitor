@@ -27,25 +27,30 @@ Catalog predictions never assert detections. Solar-system and curated catalog
 presentation retain their own semantics.
 
 Products bind raw capture/artifact/descriptor/recipe/layout, scene identity,
-catalog version/checksum, calibration/projection/astronomy algorithms,
-measurement settings/reconstruction and association/label-policy settings.
-CameraAgent publication and replay preserve these facts. Scene payload checksum
-and scene content identity are distinct. Replay rejects a mismatched checksum or
-identity.
+projection geometry identity hash (covering observer, refraction, coordinate
+convention, optical projection, and image transform) and scene effective UTC
+epoch (so cross-scene reuse enforces matching static projection geometry plus a
+physically grounded 0.5 px worst-case sidereal sky-motion epoch tolerance),
+catalog version/checksum, calibration/projection/astronomy
+algorithms, measurement settings/reconstruction and association/label-policy
+settings. CameraAgent publication and replay preserve these facts. Scene payload
+checksum and scene content identity are distinct. Replay rejects a mismatched
+checksum or identity.
 
 ## Saved scene-overlay drafts
 
-The saved `ScenePresentationLayer` v12 descriptor preserves its declared version
-and option bytes for inspection/editing. It does **not install a historical
+The saved `ScenePresentationLayer` v12 and v13 descriptors preserve their declared
+versions and option bytes for inspection/editing. They do **not install a historical
 producer**. The current implementation is
-`projected-scene-presentation-v13-plain-circle-bounded-expected-labels`;
-its label policy suppresses unmeasured stellar labels. Retained artifact recipes
+`projected-scene-presentation-v15-plain-circle-bounded-point-source-labels`;
+its label policy suppresses unmeasured star and point-source planet (Mercury–Neptune)
+labels while leaving resolved Sun/Moon discs untouched. Retained artifact recipes
 and algorithm stamps identify the actual implementation.
 
-A portable v12 draft compiles to its declared v12 plan identity; that is not
+A portable v12 or v13 draft compiles to its declared plan identity; that is not
 execution compatibility. CameraAgent delivery reconstructs the installed plan
 and rejects a definition it cannot represent exactly. Explicitly rebuild its
-options as a **new** local draft, validate and activate the v13 revision to
+options as a **new** local draft, validate and activate the v15 revision to
 execute them with the current producer. The old draft/identity stays unchanged;
 no automatic descriptor upgrade ships. Superseded frozen named revisions also
 need operator selection of a compatible revision; configured-basic recompiles
@@ -53,9 +58,9 @@ at startup.
 
 `SavedV12Draft_RejectsVersionSubstitutionAndExecutesExplicitlyRecompiledV13Revision`
 pins actual delivery rejection followed by durable execution of the rebuilt
-draft: option effect, new identity, actual v13 output stamps and fail-closed
-labels. `BothSceneVersionsRoundTripWithoutChangingSavedDrafts` separately pins
-byte preservation. This migration treatment addresses
+draft: option effect, new identity, actual current-producer (v15) output stamps
+and fail-closed labels. `BothSceneVersionsRoundTripWithoutChangingSavedDrafts`
+separately pins byte preservation. This migration treatment addresses
 [PR1549 F1](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1541#issuecomment-6352713879).
 
 ## Acceptance source map

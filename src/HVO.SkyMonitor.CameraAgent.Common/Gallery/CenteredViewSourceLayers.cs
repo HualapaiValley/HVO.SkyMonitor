@@ -13,8 +13,11 @@ internal sealed class CenteredViewSourceLayers(
     internal async ValueTask RebuildForProductAsync(ExposureProductLookup source, string generation,
         DateTimeOffset observedUtc, CancellationToken token)
     {
-        var bindings = await store.ReadCenteredLayerBindingsAsync(generation, token).ConfigureAwait(false);
-        if (ResolveBinding(bindings, source.Slot) is not { } binding)
+        var bindings = await store.ReadCenteredLayerBindingsAsync(generation, token).ConfigureAwait(false)
+            ?? await store.ReadRecoveredCenteredLayerBindingsAsync(source.Exposure, source.Slot.ExecutionId, token)
+                .ConfigureAwait(false);
+        var resolved = ResolveBindings(bindings, source.Slot);
+        if (resolved.Count == 0)
             return;
 
         long after = 0;
@@ -24,13 +27,16 @@ internal sealed class CenteredViewSourceLayers(
             var bases = await views.ReadContributorBasesAsync(source.Exposure, after, PageSize, token, includePending: true).ConfigureAwait(false);
             foreach (var (viewBase, order) in bases)
             {
-                try
+                foreach (var binding in resolved)
                 {
-                    await PublishAsync(viewBase, binding, source, observedUtc, token).ConfigureAwait(false);
-                }
-                catch (IOException exception)
-                {
-                    retryableFailure ??= exception;
+                    try
+                    {
+                        await PublishAsync(viewBase, binding, source, observedUtc, token).ConfigureAwait(false);
+                    }
+                    catch (IOException exception)
+                    {
+                        retryableFailure ??= exception;
+                    }
                 }
                 after = order;
             }
@@ -43,11 +49,14 @@ internal sealed class CenteredViewSourceLayers(
 
     internal async ValueTask RebuildForBaseAsync(CenteredViewBase viewBase, CancellationToken token)
     {
-        var bindings = await store.ReadCenteredLayerBindingsAsync(viewBase.Definition.Stream.GenerationId, token).ConfigureAwait(false);
+        var configuredBindings = await store.ReadCenteredLayerBindingsAsync(viewBase.Definition.Stream.GenerationId, token).ConfigureAwait(false);
         foreach (var contributor in viewBase.Definition.Contributors)
         {
             var exposure = contributor.Exposure;
-            if (bindings is not { Count: 0 })
+            var bindings = configuredBindings
+                ?? await store.ReadRecoveredCenteredLayerBindingsAsync(exposure.Input.Key, exposure.ExecutionId, token)
+                    .ConfigureAwait(false);
+            if (bindings.Count > 0)
             {
                 long after = 0;
                 while (true)
@@ -56,7 +65,7 @@ internal sealed class CenteredViewSourceLayers(
                         .ConfigureAwait(false);
                     foreach (var source in sources)
                     {
-                        if (ResolveBinding(bindings, source.Slot) is { } binding)
+                        foreach (var binding in ResolveBindings(bindings, source.Slot))
                             await PublishAsync(viewBase, binding, source, exposure.ExposureEndedUtc, token).ConfigureAwait(false);
                         after = source.Revision!.Value;
                     }
@@ -85,8 +94,8 @@ internal sealed class CenteredViewSourceLayers(
                 source, observedUtc, token).ConfigureAwait(false);
     }
 
-    private static CenteredViewLayerBinding? ResolveBinding(
-        IReadOnlyDictionary<(string Producer, string Schema, string Variant), CenteredViewLayerBinding>? bindings, ExposureProductSlot slot) =>
-        bindings is null ? CenteredViewLayerBindings.ReadLegacySlot(slot) :
-            bindings.GetValueOrDefault((slot.Producer, CenteredViewLayerBindings.SourceSchema(slot.SchemaVersion), slot.Variant));
+    private static IReadOnlyList<CenteredViewLayerBinding> ResolveBindings(
+        IReadOnlyDictionary<(string Producer, string Schema, string Variant), IReadOnlyList<CenteredViewLayerBinding>> bindings,
+        ExposureProductSlot slot) =>
+        bindings.GetValueOrDefault((slot.Producer, CenteredViewLayerBindings.SourceSchema(slot.SchemaVersion), slot.Variant)) ?? [];
 }

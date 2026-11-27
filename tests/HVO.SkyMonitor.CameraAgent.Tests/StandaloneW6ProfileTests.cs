@@ -75,7 +75,7 @@ public sealed class StandaloneW6ProfileTests
             preview.DesiredSha256,
             preview.DesiredSha256);
         Assert.AreEqual(
-            "9F0027BCF1BE3A8818578139D6665B74C9B0692DACC87CB7CE970879B8C7EEA1",
+            "6B361F278A9642C88647C2A6EA7E388BA31EBC5D4EECB2FE60A1480175171BF5",
             preview.EffectiveSha256,
             preview.EffectiveSha256);
         Assert.HasCount(14, preview.EffectiveNodes);
@@ -174,7 +174,7 @@ public sealed class StandaloneW6ProfileTests
             "75717D0AF614FCABA0E482BB968DFE1B2DC9CED9FF85843D1CE1275CB65A6F90",
             preview.DesiredSha256);
         Assert.AreEqual(
-            "FF5FA1CD6A6351AF64346027DDA9D630A102F273C7DE20C9050539B6406CA262",
+            "52281764A916B8CD0AA35B59E60F1FF97DEE0AFBC27411D0BA5951BD9F4CD2D8",
             preview.EffectiveSha256,
             preview.EffectiveSha256);
         Assert.HasCount(5, preview.EffectiveNodes);
@@ -217,7 +217,7 @@ public sealed class StandaloneW6ProfileTests
             requirement.RecipeNames?.Contains(BuiltInProcessingRecipes.MeasuredStellarAssociations) == true);
         Assert.IsFalse(associations.Required);
         CollectionAssert.AreEquivalent(new[] { FrameArtifactRole.Metadata }, associations.Roles.ToArray());
-        CollectionAssert.AreEqual(new[] { MeasuredStellarAssociationsV1.CurrentSchemaVersion }, associations.SchemaVersions!.ToArray());
+        CollectionAssert.AreEquivalent(MeasuredStellarAssociationsV1.SupportedSchemaVersions.ToArray(), associations.SchemaVersions!.ToArray());
         Assert.IsFalse(preview.EffectiveNodes.Any(static node => node.Alias == "MeasuredStellarAssociations"));
     }
 
@@ -458,7 +458,7 @@ public sealed class StandaloneW6ProfileTests
                 ? ReconstructSceneConsumerHash(node, removeV3: true) : node.PlanSha256).ToArray()
         }));
         Assert.AreEqual(preview.EffectiveSha256, Aggregate(removeV3: false));
-        Assert.AreEqual("6B4D0E1159E394C5FF974AEE02A45CE6D046024B0D724C0A5BE91C39D2E3F1C0", Aggregate(removeV3: true),
+        Assert.AreEqual("15534530C9CEBF4DADDA1414CD47A6BDE6E1FE9B2C628928748FF1086BAAD1AB", Aggregate(removeV3: true),
             "The versioned effective graph without v3 requirements is pinned independently of the current graph.");
     }
 

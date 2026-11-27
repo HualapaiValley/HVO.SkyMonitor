@@ -135,7 +135,7 @@ public sealed class AutomationWizardIntegrationTests
         Assert.AreEqual(original.Definition, live.History.Single(item => item.Version == 1).Definition);
         Assert.AreEqual("wizard-owner", live.Actor);
         await cut.FindAll(".automation-tabs button")[2].ClickAsync(new()).ConfigureAwait(false);
-        Assert.AreEqual("Retry", cut.Find(".automation-run-control summary").TextContent);
+        Assert.IsEmpty(cut.FindAll(".automation-run-control"));
     }
 
     [TestMethod]

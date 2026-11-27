@@ -286,6 +286,17 @@ internal sealed partial class SiloCatalogIndex
         return result;
     }
 
+    internal async ValueTask<byte[]?> ReadProjectedManifestAsync(SiloPublicationRef publication, CancellationToken cancellationToken)
+    {
+        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        var json = await ScalarStringAsync(connection, null, """
+            SELECT manifest_json FROM publications WHERE generation = $generation AND sequence = $sequence
+                AND record_index = $index AND group_id = $group AND revision_id = $revision;
+            """, cancellationToken, ("$generation", publication.Position.Generation), ("$sequence", publication.Position.Sequence),
+            ("$index", publication.Index), ("$group", publication.GroupId), ("$revision", publication.RevisionId)).ConfigureAwait(false);
+        return json is null ? null : System.Text.Encoding.UTF8.GetBytes(json);
+    }
+
     public async ValueTask<SiloRoleStatus?> ReadRoleAsync(SiloRoleKey role, CancellationToken cancellationToken)
     {
         using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -339,6 +350,28 @@ internal sealed partial class SiloCatalogIndex
             ("$product", SiloArtifactStorage.ProductEvidenceRevision));
         // No indexed role can mean the catalog has not caught up yet. Require explicit expiry to release a hold.
         return (long)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))! == 1;
+    }
+
+    internal async ValueTask<SiloJournalPosition?> ReadRoleExpiryAsync(SiloObjectIdentity identity, CancellationToken cancellationToken)
+    {
+        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        using var command = CreateCommand(connection, null, """
+            SELECT j.generation, j.sequence
+            FROM roles r JOIN journal_records j
+                ON (j.generation, j.sequence, j.record_index) > (r.generation, r.sequence, r.record_index)
+            WHERE r.kind = $kind AND r.id = $id AND r.revision = $revision AND r.sha256 = $sha AND r.length = $length
+                AND r.journaled = 'policy-expired' AND r.disposition = 'policy-expired'
+                AND j.record_type = 'availability' AND j.rejection IS NULL
+                AND json_extract(j.record_json, '$.scope') = 'role' AND json_extract(j.record_json, '$.state') = 'policy-expired'
+                AND json_extract(j.record_json, '$.identity.kind') = r.kind
+                AND json_extract(j.record_json, '$.identity.id') = r.id
+                AND json_extract(j.record_json, '$.identity.revision') = r.revision
+            ORDER BY j.generation DESC, j.sequence DESC, j.record_index DESC LIMIT 1;
+            """, ("$kind", KindName(identity.Kind)), ("$id", identity.Id), ("$revision", identity.Revision),
+            ("$sha", identity.Sha256), ("$length", identity.Length));
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? new(reader.GetInt64(0), reader.GetInt64(1)) : null;
     }
 
     internal async ValueTask<bool> HasVisibleMemberAsync(string artifactId, string revision, CancellationToken cancellationToken)

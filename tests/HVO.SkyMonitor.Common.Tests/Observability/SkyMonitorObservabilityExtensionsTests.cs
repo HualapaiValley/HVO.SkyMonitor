@@ -111,6 +111,31 @@ public sealed class SkyMonitorObservabilityExtensionsTests
 
     [TestMethod]
     [TestCategory("Unit")]
+    public void AddSkyMonitorObservability_DisabledLeavesProvidersUnregisteredAndDoesNotExportLogs()
+    {
+        using var collector = new OtlpLogCollector();
+        var builder = Host.CreateApplicationBuilder();
+        builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["OTEL_EXPORTER_OTLP_ENDPOINT"] = collector.Endpoint
+        });
+        SkyMonitorObservabilityExtensions.AddSkyMonitorObservability(
+            builder, BuildVersion, static _ => null, enableCollection: false);
+
+        using (var host = builder.Build())
+        {
+            Assert.IsNull(host.Services.GetService<MeterProvider>());
+            Assert.IsNull(host.Services.GetService<TracerProvider>());
+            host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("HVO.SkyMonitor.Tests")
+                .Log(LogLevel.Information, default, "Local only", null, static (state, _) => state);
+        }
+
+        // Host disposal would flush a registered Serilog OTLP sink before returning.
+        Assert.IsFalse(collector.Export.IsCompleted);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
     [DataRow(null, BuildVersion, BuildVersion, DisplayName = "The build version replaces the environment's")]
     [DataRow("2.0.0-site", BuildVersion, "2.0.0-site", DisplayName = "A configured version replaces the environment's")]
     [DataRow(null, null, "stale", DisplayName = "Without a version the environment's is kept")]

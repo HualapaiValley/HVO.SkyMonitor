@@ -149,6 +149,9 @@ public sealed partial class DurableCaptureProcessingTests
             using var publicationReader = new CameraAgentRetainedAstrometryService(store, artifacts);
             var pending = await publicationReader.ReadLatestAcceptedAsync(token).ConfigureAwait(false);
             Assert.IsFalse(pending.Completed, "A staged live assessment can still become public.");
+            var selectedPending = await publicationReader.GetAsync(staged.Capture.CaptureId, token).ConfigureAwait(false);
+            Assert.AreEqual(CameraAgentRetainedAstrometryService.TemporaryEvidenceUnavailable, selectedPending.Reason);
+            Assert.IsFalse(selectedPending.HasMissingEvidence);
             Assert.AreEqual(CameraAgentAstrometryPublicationState.Indeterminate,
                 await publicationReader.ReadPublicationStateAsync(Identity(staged), token).ConfigureAwait(false));
             await lanes.CompleteAsync(stagedLease, token).ConfigureAwait(false);

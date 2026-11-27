@@ -84,8 +84,7 @@ internal sealed class ExposureMeasurementCaptureProcessingStep(
             descriptor.Artifact.Variant, context.AcquisitionTiming, descriptor);
         var (aperture, pitch) = CaptureExposureMeasurementReader.Geometry(evidence, settled.Exposure.Geometry.Layout);
         string? retainedOutputIdentity = null;
-        if (context.IsReplayExecution &&
-            linear?.Linear.Layout?.PixelFormat is CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16)
+        if (context.IsReplayExecution)
         {
             var key = settled.Exposure.Key;
             var slot = new ExposureProductSlot(CaptureExposureMeasurementReader.LiveExecution(key, evidence),

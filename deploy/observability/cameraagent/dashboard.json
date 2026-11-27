@@ -1,0 +1,460 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_PROMETHEUS",
+      "label": "Prometheus",
+      "type": "datasource",
+      "pluginId": "prometheus",
+      "pluginName": "Prometheus"
+    }
+  ],
+  "title": "Standalone CameraAgent profiling",
+  "uid": "hvo-cameraagent-profiling",
+  "schemaVersion": 39,
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "refresh": "30s",
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Process CPU and throttled periods",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (instance) (rate(dotnet_process_cpu_time_seconds_total{job=\"cameraagent\"}[5m]))",
+          "legendFormat": "CPU usage (100% = 1 core) {{instance}}"
+        },
+        {
+          "refId": "B",
+          "expr": "cameraagent:throttled_periods:ratio_5m",
+          "legendFormat": "Throttled fraction {{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Working set, GC heap and container limit",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "dotnet_process_memory_working_set_bytes{job=\"cameraagent\"}",
+          "legendFormat": "Working set {{instance}}"
+        },
+        {
+          "refId": "B",
+          "expr": "dotnet_gc_last_collection_heap_size_bytes{job=\"cameraagent\"}",
+          "legendFormat": "{{gc_heap_generation}} {{instance}}"
+        },
+        {
+          "refId": "C",
+          "expr": "container_spec_memory_limit_bytes{job=\"cameraagent-host\"} > 0",
+          "legendFormat": "Limit {{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Managed allocation rate",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 7
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(dotnet_gc_heap_total_allocated_bytes_total{job=\"cameraagent\"}[5m])",
+          "legendFormat": "{{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "GC pause and monitor contention",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 7
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(dotnet_gc_pause_time_seconds_total{job=\"cameraagent\"}[5m])",
+          "legendFormat": "GC pause s/s {{instance}}"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(dotnet_monitor_lock_contentions_total{job=\"cameraagent\"}[5m])",
+          "legendFormat": "Contentions/s {{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "ThreadPool, retained circuits and connected browsers",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 14
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "dotnet_thread_pool_queue_length_total{job=\"cameraagent\"}",
+          "legendFormat": "Queued {{instance}}"
+        },
+        {
+          "refId": "B",
+          "expr": "dotnet_thread_pool_thread_count_total{job=\"cameraagent\"}",
+          "legendFormat": "Workers {{instance}}"
+        },
+        {
+          "refId": "C",
+          "expr": "aspnetcore_components_circuit_active{job=\"cameraagent\"}",
+          "legendFormat": "Circuits {{instance}}"
+        },
+        {
+          "refId": "D",
+          "expr": "aspnetcore_components_circuit_connected{job=\"cameraagent\"}",
+          "legendFormat": "Connected {{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Durable backlog age",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 14
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "camera_agent_ingress_oldest_age_seconds{job=\"cameraagent\"}",
+          "legendFormat": "Ingress {{instance}}"
+        },
+        {
+          "refId": "B",
+          "expr": "camera_agent_lanes_oldest_age_seconds{job=\"cameraagent\"}",
+          "legendFormat": "Lane {{lane}} {{instance}}"
+        },
+        {
+          "refId": "C",
+          "expr": "camera_agent_processing_oldest_age_seconds{job=\"cameraagent\"}",
+          "legendFormat": "Processing {{instance}}"
+        },
+        {
+          "refId": "D",
+          "expr": "hvo_cameraagent_outbox_oldest_age_seconds{job=\"cameraagent\"}",
+          "legendFormat": "Outbox {{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Dependency and rendering p95",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 21
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "cameraagent:workload_seconds:p95_5m",
+          "legendFormat": "{{operation}} {{outcome}} {{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "SQLite and Silo operation outcomes",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 21
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (instance, operation, outcome) (rate(camera_agent_workload_duration_seconds_count{job=\"cameraagent\",operation=~\"sqlite_.*|silo_.*\"}[5m]))",
+          "legendFormat": "{{operation}} {{outcome}} {{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Host I/O, network and pressure",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 28
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (instance) (rate(container_fs_reads_bytes_total{job=\"cameraagent-host\"}[5m]))",
+          "legendFormat": "Disk read {{instance}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (instance) (rate(container_fs_writes_bytes_total{job=\"cameraagent-host\"}[5m]))",
+          "legendFormat": "Disk write {{instance}}"
+        },
+        {
+          "refId": "C",
+          "expr": "sum by (instance) (rate(container_network_receive_bytes_total{job=\"cameraagent-host\"}[5m]))",
+          "legendFormat": "Network received {{instance}}"
+        },
+        {
+          "refId": "D",
+          "expr": "sum by (instance) (rate(container_network_transmit_bytes_total{job=\"cameraagent-host\"}[5m]))",
+          "legendFormat": "Network sent {{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Pressure stall time",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 28
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(container_pressure_io_waiting_seconds_total{job=\"cameraagent-host\"}[5m])",
+          "legendFormat": "I/O waiting {{instance}}"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(container_pressure_memory_stalled_seconds_total{job=\"cameraagent-host\"}[5m])",
+          "legendFormat": "Memory stalled {{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Capture and processing throughput",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 35
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (instance) (rate(camera_agent_ingress_committed_total{job=\"cameraagent\"}[5m]))",
+          "legendFormat": "Committed {{instance}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (instance, lane) (rate(camera_agent_lanes_completed_total{job=\"cameraagent\"}[5m]))",
+          "legendFormat": "{{lane}} completed {{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "HTTP requests by response status",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 35
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (instance, http_response_status_code) (rate(http_server_request_duration_seconds_count{job=\"cameraagent\"}[5m]))",
+          "legendFormat": "{{http_response_status_code}} {{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Materialization requests waiting for storage",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 42
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "camera_agent_workload_materialization_pending{job=\"cameraagent\"}",
+          "legendFormat": "{{instance}}"
+        }
+      ]
+    }
+  ]
+}

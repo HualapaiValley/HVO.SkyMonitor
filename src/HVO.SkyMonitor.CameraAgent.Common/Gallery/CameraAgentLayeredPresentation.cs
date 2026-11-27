@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Security.Cryptography;
@@ -291,16 +292,23 @@ internal sealed class CameraAgentLayeredPresentationService(
 
             cancellationToken.ThrowIfCancellationRequested();
             var identity = ComputePresentationIdentity(manifest, baseChecksum);
+            CameraAgentLayeredPresentation? cachedPresentation = null;
             lock (_cacheGate)
             {
                 if (_cache.TryGetValue(identity, out var cached))
                 {
                     cached.Sequence = ++_sequence;
-                    return new(CameraAgentLayeredPresentationStatus.Found,
-                        cached.Presentation with { ManifestArtifactId = manifestArtifactId, TrailEvidence = trailEvidence, Astrometry = astrometricEvidence });
+                    cachedPresentation = cached.Presentation;
                 }
             }
+            if (cachedPresentation is not null)
+            {
+                CameraAgentWorkloadTelemetry.RecordCache(CameraAgentWorkloadTelemetry.CacheEvent.Hit);
+                return new(CameraAgentLayeredPresentationStatus.Found,
+                    cachedPresentation with { ManifestArtifactId = manifestArtifactId, TrailEvidence = trailEvidence, Astrometry = astrometricEvidence });
+            }
 
+            CameraAgentWorkloadTelemetry.RecordCache(CameraAgentWorkloadTelemetry.CacheEvent.Miss);
             var rendered = Render(captureId, manifest, payloads, baseChecksum);
             cancellationToken.ThrowIfCancellationRequested();
             if (rendered.Status == CameraAgentLayeredPresentationStatus.Found && rendered.Presentation is { } presentation)
@@ -366,10 +374,13 @@ internal sealed class CameraAgentLayeredPresentationService(
         List<PresentationLayerPayloadV1> payloads,
         string baseChecksumSha256)
     {
+        var started = CameraAgentWorkloadTelemetry.Start();
+        var allocated = CameraAgentWorkloadTelemetry.StartAllocation();
+        var outcome = CameraAgentWorkloadTelemetry.Outcome.Failure;
         try
         {
             var rendered = GroupedSvgPresentationRenderer.Render(manifest, payloads, baseChecksumSha256);
-            return new(CameraAgentLayeredPresentationStatus.Found, new CameraAgentLayeredPresentation(
+            var result = new CameraAgentLayeredPresentationResult(CameraAgentLayeredPresentationStatus.Found, new CameraAgentLayeredPresentation(
                 captureId,
                 manifest.BaseProduct.ArtifactId,
                 manifest.ManifestIdentitySha256,
@@ -392,6 +403,8 @@ internal sealed class CameraAgentLayeredPresentationService(
                         ? CaptureSatelliteProducts.ParseStatus(HVO.SkyMonitor.Astronomy.OrbitalContract.SerializeCanonical(status)) : null
                 }).ToArray(),
                 rendered.Svg));
+            outcome = CameraAgentWorkloadTelemetry.Outcome.Success;
+            return result;
         }
         catch (InvalidDataException)
         {
@@ -400,6 +413,11 @@ internal sealed class CameraAgentLayeredPresentationService(
         catch (ArgumentException)
         {
             return new(CameraAgentLayeredPresentationStatus.Malformed, Reason: "The retained presentation evidence is malformed.");
+        }
+        finally
+        {
+            CameraAgentWorkloadTelemetry.RecordAllocation(allocated, CameraAgentWorkloadTelemetry.Operation.SvgRender);
+            CameraAgentWorkloadTelemetry.Record(started, CameraAgentWorkloadTelemetry.Operation.SvgRender, outcome);
         }
     }
 
@@ -529,6 +547,7 @@ internal sealed class CameraAgentLayeredPresentationService(
 
     private void AddCache(string identity, CameraAgentLayeredPresentation presentation)
     {
+        var evictions = 0;
         lock (_cacheGate)
         {
             if (_cache.ContainsKey(identity)) return;
@@ -540,10 +559,13 @@ internal sealed class CameraAgentLayeredPresentationService(
                 if (oldest.Key is null) break;
                 _cache.Remove(oldest.Key);
                 _cacheBytes -= oldest.Value.Presentation.Svg.Length;
+                evictions++;
             }
             _cache.Add(identity, new(presentation, ++_sequence));
             _cacheBytes += bytes;
         }
+        if (evictions > 0)
+            CameraAgentWorkloadTelemetry.RecordCache(CameraAgentWorkloadTelemetry.CacheEvent.Eviction, evictions);
     }
 
     private static void Coordinate(XmlWriter writer, string name, double value) =>

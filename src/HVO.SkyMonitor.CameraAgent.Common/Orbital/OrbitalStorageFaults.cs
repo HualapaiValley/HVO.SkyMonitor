@@ -10,7 +10,10 @@ internal enum OrbitalStorageFaultPoint
     AfterTombstone,
 
     /// <summary>A manifest read holds its pin and has found a published row, but has not yet opened the file.</summary>
-    BeforeManifestRead
+    BeforeManifestRead,
+
+    /// <summary>A legacy quarantine migration renamed or deleted its source file, before syncing the quarantine directory.</summary>
+    BeforeQuarantineDirectorySync
 }
 
 /// <summary>

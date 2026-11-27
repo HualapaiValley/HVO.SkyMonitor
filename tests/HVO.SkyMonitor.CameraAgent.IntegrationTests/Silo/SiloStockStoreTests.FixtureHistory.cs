@@ -43,7 +43,7 @@ public sealed partial class SiloStockStoreTests
         var access = RandomHex(12);
         var secret = RandomHex(24);
         var user = FormattableString.Invariant($"{EffectiveUserId()}:{EffectiveGroupId()}");
-        var container = BuildStockContainer(access, secret, "on", dataRoot, user);
+        var container = BuildStockContainer(access, secret, "on", dataRoot: dataRoot, user: user);
         await using var lease = container.ConfigureAwait(false);
         await container.StartAsync(token).ConfigureAwait(false);
         using var admin = SiloS3ObjectStore.CreateClient(Endpoint(container), access, secret);

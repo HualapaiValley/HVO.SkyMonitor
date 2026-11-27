@@ -44,9 +44,12 @@ public static class ExposureMeasurementBindings
         var reason = settled.Reason ?? settled.Provenance?.Reason;
         if (!usable && string.IsNullOrWhiteSpace(reason))
             throw Invalid("missing terminal reason");
-        return new(raw, linear, disposition, reason, exposure.Geometry.RigIdentitySha256, nativePixelPitchMicrometers,
-            exposure.Geometry.Orientation, aperture, exposure.Key, exposure.Geometry.OpticalCalibrationVersion,
-            exposure.Geometry.PixelScaleArcseconds, settled.Disposition, settled.Revision);
+        var input = new ExposureMeasurementInputV1(raw, linear, disposition, reason, exposure.Geometry.RigIdentitySha256,
+            nativePixelPitchMicrometers, exposure.Geometry.Orientation, aperture, exposure.Key,
+            exposure.Geometry.OpticalCalibrationVersion, exposure.Geometry.PixelScaleArcseconds,
+            settled.Disposition, settled.Revision);
+        ExposureMeasurementProducts.ValidateInput(input);
+        return input;
     }
 
     /// <summary>Creates a processing request from an exact step-three lookup and its borrowed payload, when qualified.</summary>
