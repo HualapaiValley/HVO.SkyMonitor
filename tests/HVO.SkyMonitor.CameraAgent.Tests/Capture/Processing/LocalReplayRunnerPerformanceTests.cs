@@ -1051,7 +1051,7 @@ public sealed class LocalReplayRunnerPerformanceTests
         }
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCameraAgentInfrastructure(
+        services.AddSiloTestInfrastructure(
             new ConfigurationBuilder().AddInMemoryCollection(values).Build());
         return services.BuildServiceProvider();
     }

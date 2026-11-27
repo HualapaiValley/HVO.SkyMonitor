@@ -360,7 +360,7 @@ public sealed class FullDayStillProductQualificationTests
     private static ServiceProvider Provider(string root, TimeProvider clock)
     {
         var services = new ServiceCollection(); services.AddLogging();
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["CameraAgent:RawIngressRoot"] = root,
             ["CameraAgent:RawIngressReserveBytes"] = "0",

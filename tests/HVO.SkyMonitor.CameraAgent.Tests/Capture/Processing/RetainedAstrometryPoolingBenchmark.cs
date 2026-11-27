@@ -41,9 +41,8 @@ public sealed partial class DurableCaptureProcessingTests
             var seedOptions = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root, RawIngressReserveBytes = 0 });
             using var telemetry = new CaptureProcessingTelemetry();
             using var writer = new SqliteCaptureProcessingStore(seedOptions);
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
             using var gate = new CaptureAstrometryExecutionGate();
-            var persistence = CreatePersistence(seedOptions, writer, storage, telemetry);
+            var persistence = CreatePersistence(seedOptions, writer, telemetry);
             var accepted = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true,
                 reference: reference, benchmarkJournal: journal).ConfigureAwait(false);
             var output = await ProduceLatestReadFixtureAsync(accepted, writer, persistence, telemetry, gate).ConfigureAwait(false);

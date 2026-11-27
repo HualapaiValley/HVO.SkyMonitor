@@ -381,9 +381,8 @@ public sealed class SqliteCalibrationFamilyStoreTests
             using var processingStore = new SqliteCaptureProcessingStore(options);
             await processingStore.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             using var processingTelemetry = new CaptureProcessingTelemetry();
-            using var frameStorage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
             var persistence = new CaptureProcessingPersistence(
-                options, processingStore, frameStorage, processingTelemetry, NullLogger<CaptureProcessingPersistence>.Instance);
+                options, processingStore, processingTelemetry, NullLogger<CaptureProcessingPersistence>.Instance);
             using var families = new SqliteCalibrationFamilyStore(options, TimeProvider.System, NullLogger<SqliteCalibrationFamilyStore>.Instance);
             var holds = new CompositeProcessingRetentionHolds(
                 persistence, new CameraAgentClearReferenceLoader(options), library, calibrationFamilies: families);
@@ -391,7 +390,7 @@ public sealed class SqliteCalibrationFamilyStoreTests
             var family = await families.StoreAsync(
                 Family("family-a", Member(10) with { Masters = [.. masters.Select(static master => new CalibrationFamilyMasterV1(master.Kind, master.ArtifactId, master.PayloadSha256))] }),
                 CancellationToken.None).ConfigureAwait(false);
-            var expected = masters.Select(static master => new ProcessingRetentionHold(master.ArtifactId, master.PayloadPath, master.ManifestPath)).ToArray();
+            var expected = masters.Select(static master => new ProcessingRetentionHold(master.ArtifactId)).ToArray();
 
             Assert.IsFalse((await HeldAsync(holds, root).ConfigureAwait(false)).Intersect(expected).Any(), "a stored family that is not active holds nothing");
 

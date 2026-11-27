@@ -75,7 +75,7 @@ internal sealed class CameraAgentStateStoreHarness : IDisposable
         services.AddLogging();
         // The host registers Data Protection for the deployment location; the stores only need it to exist.
         services.AddSingleton<HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation.IDeploymentLocationProtector>(new PassThroughProtector());
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["CameraAgent:RawIngressRoot"] = RawRoot
         }).Build());

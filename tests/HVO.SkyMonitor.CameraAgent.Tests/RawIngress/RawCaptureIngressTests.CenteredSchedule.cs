@@ -86,8 +86,7 @@ public sealed partial class RawCaptureIngressTests
                     .ConfigureAwait(false)).AcquisitionHead!.Exposure;
                 original = (await setup.Ingress.ReadCenteredRawAsync(raw, token).ConfigureAwait(false))!;
                 Assert.IsNotNull(work);
-                using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
-                var persistence = new CaptureProcessingPersistence(setup.Options, setup.Store, storage, setup.Telemetry,
+                var persistence = new CaptureProcessingPersistence(setup.Options, setup.Store, setup.Telemetry,
                     NullLogger<CaptureProcessingPersistence>.Instance);
                 using var handler = new StandardCaptureLaneHandler(setup.Factory, persistence, setup.Telemetry,
                     NullLogger<StandardCaptureLaneHandler>.Instance, setup.Ingress, setup.Options, timeProvider: clock);
@@ -152,9 +151,7 @@ public sealed partial class RawCaptureIngressTests
             var replayed = replay.RawCapture.Manifest.Descriptor.CenteredAcquisition!.ScheduleAdmission!;
             Assert.AreEqual(historical.CenteredAcquisition!.ScheduleAdmission, replayed);
             Assert.AreEqual(first.AdmissionPolicy.ExpansionSha256, replayed.ExpansionSha256);
-            using var replayStorage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
-            var replayPersistence = new CaptureProcessingPersistence(reopened.Options, reopened.Store, replayStorage,
-                reopened.Telemetry, NullLogger<CaptureProcessingPersistence>.Instance);
+            var replayPersistence = new CaptureProcessingPersistence(reopened.Options, reopened.Store, reopened.Telemetry, NullLogger<CaptureProcessingPersistence>.Instance);
             var execution = new ProcessingExecutionContext(replay.Execution.ExecutionId, ProcessingGraphExecutionClass.Replay,
                 replay.Execution.GraphRevisionId, replay.Execution.LocalPlanIdentitySha256, false, replay.WorkId,
                 replay.LeaseToken, replay.LeaseOwner, replay.Execution.DeadlineUtc);

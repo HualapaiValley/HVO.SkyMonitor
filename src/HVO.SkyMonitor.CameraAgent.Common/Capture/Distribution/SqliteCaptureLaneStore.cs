@@ -219,12 +219,14 @@ internal sealed class SqliteCaptureLaneStore(
                 {
                     throw new InvalidDataException("Capture lane rig differs from the committed manifest.");
                 }
-                var absolutePath = Resolve(candidate.PayloadRelativePath);
                 // P4 can advance while the publisher has released the raw lifecycle gate. Take the
                 // lease's visibility sample from the local WAL index, without opening any S3 objects.
                 siloEvidenceVisible = silo is not null &&
                     await silo.HasRawEvidenceAsync(manifest.Descriptor, cancellationToken).ConfigureAwait(false);
-                if (!File.Exists(absolutePath) || !File.Exists(Path.ChangeExtension(absolutePath, ".json")))
+                if (!siloEvidenceVisible && !(silo is not null
+                    ? silo.HasStagedRawPair(manifest.Descriptor.Artifact.ArtifactId)
+                    : File.Exists(Resolve(candidate.PayloadRelativePath)) &&
+                        File.Exists(Resolve(Path.ChangeExtension(candidate.PayloadRelativePath, ".json")))))
                 {
                     if (silo is { BindingVerified: false })
                     {
@@ -236,7 +238,8 @@ internal sealed class SqliteCaptureLaneStore(
                 }
                 var stored = new StoredFrameReference(
                     candidate.PayloadRelativePath,
-                    absolutePath,
+                    silo is null ? Resolve(candidate.PayloadRelativePath) : RawIngressFileStore.GetPaths(
+                        _root, manifest.Descriptor.Timing.ExposureStartedUtc, manifest.Descriptor.Artifact.ArtifactId).PayloadAbsolutePath,
                     manifest.Descriptor.Timing.ExposureStartedUtc,
                     FrameArtifactRole.Raw);
                 var receipt = new RawCaptureReceipt(

@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.LocalFiles;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Silo;
 
@@ -137,26 +138,40 @@ internal sealed class SiloArtifactStorage(SiloInstalledStorage storage, TimeProv
         await ReadMemberAsync(descriptor.Artifact.ArtifactId, CaptureContractJson.ComputeDescriptorSha256(descriptor),
             descriptor.Layout.ByteLength, descriptor.Artifact.ChecksumSha256, cancellationToken).ConfigureAwait(false);
 
-    internal ValueTask<byte[]?> ReadLiveRawAsync(ReconstructionDescriptor descriptor, string stagingPath,
+    internal ValueTask<byte[]?> ReadLiveRawAsync(ReconstructionDescriptor descriptor,
         CancellationToken cancellationToken) =>
-        ReadWithStagingAsync(token => ReadRawAsync(descriptor, token), stagingPath, cancellationToken);
+        ReadWithStagingAsync(token => ReadRawAsync(descriptor, token),
+            descriptor.Artifact.ArtifactId, ".bin", descriptor.Layout.ByteLength, cancellationToken);
 
-    internal ValueTask<byte[]?> ReadRawEvidenceAsync(Guid artifactId, string sha256, string? stagingPath,
+    internal ValueTask<byte[]?> ReadRawEvidenceAsync(Guid artifactId, string sha256, bool allowStaged,
         CancellationToken cancellationToken) =>
         ReadWithStagingAsync(token => ReadMetadataAsync(artifactId, RawEvidenceRevision, SiloJson.MaximumMetadataObjectBytes,
-            sha256, token), stagingPath, cancellationToken);
+            sha256, token), artifactId, allowStaged ? ".json" : null, SiloJson.MaximumMetadataObjectBytes, cancellationToken);
 
-    private static async ValueTask<byte[]?> ReadWithStagingAsync(Func<CancellationToken, ValueTask<byte[]?>> read,
-        string? stagingPath, CancellationToken cancellationToken)
+    internal bool HasStagedRawPair(Guid artifactId) =>
+        File.Exists(StagedAdmissionPath(artifactId, ".bin")) && File.Exists(StagedAdmissionPath(artifactId, ".json"));
+
+    private string StagedAdmissionPath(Guid artifactId, string extension)
+        => storage.PhysicalState.Resolve(RawIngress.RawIngressFileStore.AdmissionStagePath(artifactId, extension));
+
+    private async ValueTask<byte[]?> ReadWithStagingAsync(Func<CancellationToken, ValueTask<byte[]?>> read,
+        Guid artifactId, string? stageExtension, long maximumBytes, CancellationToken cancellationToken)
     {
         var published = await read(cancellationToken).ConfigureAwait(false);
-        if (published is not null || stagingPath is null) return published;
+        if (published is not null || stageExtension is null) return published;
 
+        var stagingPath = StagedAdmissionPath(artifactId, stageExtension);
         try
         {
-            return await File.ReadAllBytesAsync(stagingPath, cancellationToken).ConfigureAwait(false);
+            using var directory = new ConfinedReadDirectory(Path.GetDirectoryName(stagingPath)!);
+            using var stream = directory.OpenRead(Path.GetFileName(stagingPath));
+            if (stream.Length < 1 || stream.Length > maximumBytes || stream.Length > Array.MaxLength)
+                throw new InvalidDataException("Staged Silo admission has an invalid length.");
+            var bytes = new byte[(int)stream.Length];
+            await stream.ReadExactlyAsync(bytes, cancellationToken).ConfigureAwait(false);
+            return bytes;
         }
-        catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
+        catch (IOException) when (!File.Exists(stagingPath))
         {
             // P4 may have committed and reclaimed the pair since the first catalog lookup.
             return await read(cancellationToken).ConfigureAwait(false);

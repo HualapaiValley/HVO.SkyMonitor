@@ -65,8 +65,8 @@ public sealed partial class StoragePolicyRawIngressIntegrationTests
                 var frozen = JsonSerializer.Deserialize<CameraModuleConfig>(bytes, ReplayProfileJsonOptions)!;
                 Assert.AreEqual(CaptureContractJson.ComputeCanonicalJsonSha256(requestedPipeline),
                     CaptureContractJson.ComputeCanonicalJsonSha256(frozen.Pipeline));
-                Assert.AreEqual(StorageOptions(file).StorageRoot, StorageOptions(frozen).StorageRoot);
-                Assert.AreNotEqual(StorageOptions(current).StorageRoot, StorageOptions(frozen).StorageRoot);
+                Assert.AreEqual(StorageOptions(file).PublishArchive, StorageOptions(frozen).PublishArchive);
+                Assert.AreNotEqual(StorageOptions(current).PublishArchive, StorageOptions(frozen).PublishArchive);
             }
 
             var result = await ProcessingGraphOperationsTests.RunReplayToCompletionAsync(provider, replay.Execution.ExecutionId).ConfigureAwait(false);

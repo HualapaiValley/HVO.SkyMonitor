@@ -30,7 +30,6 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     internal Action? BeforeHeaderPublicationForTest { get; set; }
     internal int WorkEntryLimit { get; set; } = MaximumWorkEntries;
-    internal Func<ProjectedSceneRetentionGuard>? RetentionGuardFactory { get; set; }
     private sealed record Header(string Key, string NodeId, string Variant, string RawPayloadPath, string RawSidecarPath,
         Guid CaptureId, Guid RawArtifactId, string InputSha256, string? ManifestSha256);
 
@@ -143,7 +142,7 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
             if (!File.Exists(path)) continue; // Interrupted pre-intent preparation acquired no reference.
             var header = await ReadHeaderAsync(path, cancellationToken).ConfigureAwait(false);
             var inventory = await processing.ReadSatelliteConsumersAsync(header.CaptureId, header.NodeId, cancellationToken).ConfigureAwait(false);
-            var archiveHeld = await discovery.HasArchivedCaptureAsync(header.CaptureId, header.RawArtifactId, cancellationToken).ConfigureAwait(false);
+            var archiveHeld = await discovery.HasArchivedCaptureAsync(header.RawArtifactId, cancellationToken).ConfigureAwait(false);
             var support = new List<SqliteCaptureProcessingStore.SatelliteConsumer>();
             var hasSupport = false;
             var external = false;
@@ -162,12 +161,10 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
                 }
             }
             if (hasSupport || archiveHeld)
-                holds.Add(silo is null ? new(header.RawArtifactId, header.RawPayloadPath, header.RawSidecarPath)
-                    : new(header.RawArtifactId, SiloArtifactStorage.RawReference(header.RawArtifactId, ".bin"),
-                        SiloArtifactStorage.RawReference(header.RawArtifactId, ".json")));
+                holds.Add(new(header.RawArtifactId));
             if (external || archiveHeld)
                 holds.AddRange(support.Select(static p =>
-                    new ProcessingRetentionHold(p.ArtifactId, p.PayloadRelativePath, p.SidecarRelativePath)));
+                    new ProcessingRetentionHold(p.ArtifactId)));
         }
         return holds;
     }
@@ -236,7 +233,7 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
                 .ConfigureAwait(false);
             if (headerConsumers.Any(static product => product.Unavailable) ||
                 await AnyRetainedAsync(headerConsumers.Select(static product => product.PayloadRelativePath), cancellationToken).ConfigureAwait(false) ||
-                await discovery.HasArchivedCaptureAsync(header.CaptureId, header.RawArtifactId, cancellationToken).ConfigureAwait(false)) continue;
+                await discovery.HasArchivedCaptureAsync(header.RawArtifactId, cancellationToken).ConfigureAwait(false)) continue;
             if (header.ManifestSha256 is { } manifest)
                 await orbital.RemoveReferenceAsync(manifest, Holder(header.Key), cancellationToken).ConfigureAwait(false);
             // Removal is idempotent. A crash before directory removal repeats it; no referenced product remains.
@@ -276,7 +273,7 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
                 var inventory = await processing.ReadSceneConsumersAsync(orphan.Descriptor.Capture.CaptureId, Guid.Empty,
                     AccountOrphanBytes, cancellationToken).ConfigureAwait(false);
                 if (inventory is null || await AnyRetainedAsync(inventory.CanonicalPayloadPaths, cancellationToken).ConfigureAwait(false) ||
-                    await discovery.HasArchivedCaptureAsync(orphan.Descriptor.Capture.CaptureId, orphan.Descriptor.Artifact.ArtifactId,
+                    await discovery.HasArchivedCaptureAsync(orphan.Descriptor.Artifact.ArtifactId,
                         cancellationToken).ConfigureAwait(false)) reclaim = false;
                 var consumers = await processing.ReadSatelliteConsumersAsync(orphan.Descriptor.Capture.CaptureId,
                     string.Empty, cancellationToken).ConfigureAwait(false);
@@ -327,11 +324,10 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
 
     private sealed class ArchiveDiscovery(CaptureSatelliteWorkStore owner)
     {
-        private ProjectedSceneRetentionGuard guard = owner.CreateRetentionGuard();
         private bool readSilo;
         private IReadOnlySet<string>? siloReferences;
 
-        internal async ValueTask<bool> HasArchivedCaptureAsync(Guid captureId, Guid rawArtifactId, CancellationToken cancellationToken)
+        internal async ValueTask<bool> HasArchivedCaptureAsync(Guid rawArtifactId, CancellationToken cancellationToken)
         {
             if (owner.Silo is { } silo)
             {
@@ -342,19 +338,9 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
                 }
                 return siloReferences is null || siloReferences.Contains(rawArtifactId.ToString("D"));
             }
-            try { return await guard.HasArchivedCaptureAsync(captureId, cancellationToken).ConfigureAwait(false); }
-            catch (InvalidDataException) when (guard.DiscoveryBudgetExhausted)
-            {
-                // No absence decision from the exhausted scan is reused. A single capture must still fit
-                // a fresh complete budget; an uncertain/oversized archive continues to fail closed.
-                guard = owner.CreateRetentionGuard();
-                return await guard.HasArchivedCaptureAsync(captureId, cancellationToken).ConfigureAwait(false);
-            }
+            return false;
         }
     }
-
-    private ProjectedSceneRetentionGuard CreateRetentionGuard()
-        => RetentionGuardFactory?.Invoke() ?? new(root, processing);
 
     private async ValueTask<CaptureSatelliteWork> ReadAsync(string path, CancellationToken cancellationToken)
     {

@@ -561,7 +561,7 @@ public sealed class AnnotationEnvironmentSourceTests
                         Required: required),
                     new CaptureProcessingStepConfig(
                         "Storage", "storage", Order: 30,
-                        Options: JsonSerializer.SerializeToElement(new { storageRoot = root, queueForUpload = false }),
+                        Options: JsonSerializer.SerializeToElement(new { updateLatestFrame = true }),
                         DependsOn: ["$raw"]),
                     new CaptureProcessingStepConfig("Telemetry", "telemetry", Order: 40, DependsOn: ["storage"])
                 ],
@@ -595,7 +595,7 @@ public sealed class AnnotationEnvironmentSourceTests
                         DependsOn: ["preview"]),
                     new CaptureProcessingStepConfig(
                         "Storage", "storage", Order: 30,
-                        Options: JsonSerializer.SerializeToElement(new { storageRoot = root, queueForUpload = false }),
+                        Options: JsonSerializer.SerializeToElement(new { updateLatestFrame = true }),
                         DependsOn: ["$raw"]),
                     new CaptureProcessingStepConfig("Telemetry", "telemetry", Order: 40, DependsOn: ["storage"])
                 ],
@@ -712,7 +712,7 @@ public sealed class AnnotationEnvironmentSourceTests
             var services = new ServiceCollection();
             services.AddLogging();
             services.AddSingleton<IConfiguration>(configuration);
-            services.AddCameraAgentInfrastructure(configuration);
+            services.AddSiloTestInfrastructure(configuration);
             services.AddCameraModule<RawCaptureIngressTests.CenteredRunnerModule>(nameof(RawCaptureIngressTests.CenteredRunnerModule));
             if (executor is not null)
                 services.AddSingleton(executor);

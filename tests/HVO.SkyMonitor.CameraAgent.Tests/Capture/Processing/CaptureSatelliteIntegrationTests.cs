@@ -272,7 +272,7 @@ public sealed partial class CaptureSatelliteIntegrationTests
         var services = new ServiceCollection();
         services.AddLogging(logging => logging.AddConsole().SetMinimumLevel(LogLevel.Warning));
         services.AddSingleton<TimeProvider>(clock);
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["CameraAgent:RawIngressRoot"] = root,
             ["CameraAgent:RawIngressReserveBytes"] = "0",
@@ -310,8 +310,8 @@ public sealed partial class CaptureSatelliteIntegrationTests
                 Publication: new(CaptureProcessingPersistenceMode.DurableLocal)),
             new("SatelliteFixtureManifest", "manifest", DependsOn: ["preview", "satellite", "satellite-layer"], Publication: new(CaptureProcessingPersistenceMode.DurableLocal)),
             new("Storage", "storage", DependsOn: ["$raw", "preview", "satellite", "satellite-layer", "manifest"],
-                Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
-                { StorageRoot = root, QueueForUpload = false, UpdateLatestFrame = false }))
+                Options: JsonSerializer.SerializeToElement(new SiloCaptureProcessingStepOptions
+                { UpdateLatestFrame = false }))
         ])
         };
 

@@ -8,7 +8,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Notifications;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Configuration;
 using HVO.SkyMonitor.CameraAgent.Services;
-using HVO.SkyMonitor.Storage.FileSystem;
+using HVO.SkyMonitor.LocalFiles;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;

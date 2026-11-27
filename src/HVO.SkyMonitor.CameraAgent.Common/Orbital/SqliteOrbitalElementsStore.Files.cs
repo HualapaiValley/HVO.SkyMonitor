@@ -3,7 +3,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using HVO.SkyMonitor.Astronomy;
-using HVO.SkyMonitor.Storage.FileSystem;
+using HVO.SkyMonitor.LocalFiles;
 using Microsoft.Data.Sqlite;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Orbital;

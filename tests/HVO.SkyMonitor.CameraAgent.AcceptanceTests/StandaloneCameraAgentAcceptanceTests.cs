@@ -883,7 +883,6 @@ public sealed partial class StandaloneCameraAgentAcceptanceTests
         Assert.AreEqual(0L, artifact.AcknowledgedCount);
         Assert.AreEqual(0L, artifact.QuarantinedCount);
         Assert.AreEqual(0L, artifact.AbandonedCount);
-        Assert.IsEmpty(await artifactOutbox.GetRetentionHoldsAsync(root, CancellationToken.None).ConfigureAwait(false));
 
         var fleet = await services.GetRequiredService<IFleetStatusOutbox>()
             .GetSnapshotAsync(root, CancellationToken.None).ConfigureAwait(false);

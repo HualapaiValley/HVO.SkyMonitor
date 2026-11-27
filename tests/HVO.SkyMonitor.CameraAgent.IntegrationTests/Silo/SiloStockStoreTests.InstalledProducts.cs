@@ -2,7 +2,6 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
-using HVO.SkyMonitor.CameraAgent.Common.Background;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -122,12 +121,10 @@ public sealed partial class SiloStockStoreTests
         var restored = await sourceReader.RestoreAsync(retained.Sources.Single(), token).ConfigureAwait(false);
         CollectionAssert.AreEqual(pixels, restored.Payload.ToArray());
 
-        var activeConfig = await services.GetRequiredService<ICameraAgentConfigurationLoader>().LoadAsync(token).ConfigureAwait(false);
         Assert.AreEqual(CaptureAdmissionState.Running, services.GetRequiredService<CaptureAdmissionCoordinator>().Snapshot.State);
-        var retention = services.GetServices<IHostedService>().OfType<RetentionBackgroundService>().Single();
-        await retention.ApplyRetentionAsync(activeConfig, token).ConfigureAwait(false);
-        Assert.AreEqual(new ProcessingRetentionHold(raw.ArtifactId, SiloArtifactStorage.RawReference(raw.ArtifactId, ".bin"),
-            SiloArtifactStorage.RawReference(raw.ArtifactId, ".json")),
+        var retention = services.GetRequiredService<SiloRetentionWorker>();
+        await retention.RunAsync(token).ConfigureAwait(false);
+        Assert.AreEqual(new ProcessingRetentionHold(raw.ArtifactId),
             (await videos.GetRetentionHoldsAsync(root, token).ConfigureAwait(false)).Single());
         CollectionAssert.AreEqual(pixels, (await sourceReader.RestoreAsync(retained.Sources.Single(), token).ConfigureAwait(false)).Payload.ToArray());
 

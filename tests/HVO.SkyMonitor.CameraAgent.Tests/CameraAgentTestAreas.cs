@@ -44,7 +44,6 @@ internal static class CameraAgentTestAreas
 
     // CameraAgent.Common folders
     internal const string Automation = "Automation";
-    internal const string Background = "Background";
     internal const string Capture = "Capture";
     internal const string CaptureCalibration = "Capture.Calibration";
     internal const string CaptureDistribution = "Capture.Distribution";
@@ -92,7 +91,6 @@ internal static class CameraAgentTestAreas
     internal static readonly FrozenSet<string> All = new[]
     {
         Automation,
-        Background,
         Capture,
         CaptureCalibration,
         CaptureDistribution,

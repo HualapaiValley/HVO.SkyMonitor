@@ -1,5 +1,5 @@
 using System.Text.Json;
-using HVO.SkyMonitor.Storage.FileSystem;
+using HVO.SkyMonitor.LocalFiles;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Silo;
 

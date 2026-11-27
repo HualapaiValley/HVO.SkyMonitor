@@ -388,7 +388,7 @@ public sealed class OrbitalElementsCompositionTests : OrbitalStoreTestBase
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
             new Dictionary<string, string?>(StringComparer.Ordinal)
             {
                 ["CameraAgent:RawIngressRoot"] = rawIngressRoot,

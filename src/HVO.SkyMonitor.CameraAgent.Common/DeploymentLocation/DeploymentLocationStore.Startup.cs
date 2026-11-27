@@ -46,6 +46,9 @@ public sealed partial class ProtectedDeploymentLocationStore
         var rawCaptures = new HashSet<string>(StringComparer.Ordinal);
         try
         {
+            if (silo is not null)
+                return ValidateRecentJournal(root, history, ledger, cutoff, rawCaptures, ref bytesRead, cancellationToken);
+
             foreach (var area in new[] { "frames", "derived" })
             {
                 for (var day = cutoff.Date; day <= now.Date; day = day.AddDays(1))

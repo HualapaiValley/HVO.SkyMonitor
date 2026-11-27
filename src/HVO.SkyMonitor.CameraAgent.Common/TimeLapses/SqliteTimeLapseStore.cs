@@ -11,7 +11,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.Processing;
-using HVO.SkyMonitor.Storage.FileSystem;
+using HVO.SkyMonitor.LocalFiles;
 using HVO.SkyMonitor.Video.FFmpeg;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
@@ -43,7 +43,7 @@ internal sealed partial class SqliteTimeLapseStore(IOptions<CameraAgentHostOptio
             "SELECT COALESCE(SUM(payload_bytes),0) FROM products;", token).ConfigureAwait(false), CultureInfo.InvariantCulture);
         var policy = options.Value.TimeLapses;
         var capacity = new FileSystemStorageCapacityProvider().GetCapacity(options.Value.RawIngressRoot);
-        var reserve = Math.Max(policy.MinimumFreeBytes, checked((long)(capacity.TotalBytes * options.Value.DiskPressureThresholdPercent / 100)));
+        var reserve = Math.Max(policy.MinimumFreeBytes, options.Value.RawIngressReserveBytes);
         if (publicationBytes < 0 || scratchBytes < 0 || published > policy.MaximumPublishedBytes - publicationBytes)
             throw new TimeLapseEncodingException("timelapse.publication-byte-budget", "The local video publication budget is exhausted.");
         if (capacity.AvailableBytes < scratchBytes + publicationBytes + reserve)
@@ -425,9 +425,7 @@ internal sealed partial class SqliteTimeLapseStore(IOptions<CameraAgentHostOptio
             var plan = DeserializeVerified<CameraAgentTimeLapseSourcePlan>(reader.GetString(0), reader.GetString(1));
             foreach (var source in plan.Sources)
             {
-                var id = source.Descriptor.Artifact.ArtifactId;
-                holds.Add(silo is null ? new(id, source.PayloadRelativePath, source.SidecarRelativePath)
-                    : new(id, SiloArtifactStorage.RawReference(id, ".bin"), SiloArtifactStorage.RawReference(id, ".json")));
+                holds.Add(new(source.Descriptor.Artifact.ArtifactId));
             }
         }
         return holds.Distinct().ToArray();

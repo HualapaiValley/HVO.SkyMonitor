@@ -29,7 +29,7 @@ public sealed partial class VirtualSkyCloudScenarioTests
         var publisher = new RecordingPublisher();
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
             new Dictionary<string, string?>
             {
                 ["CameraAgent:RawIngressRoot"] = Path.Combine(Path.GetTempPath(), "hvo-cloud-graph", Guid.NewGuid().ToString("N"))

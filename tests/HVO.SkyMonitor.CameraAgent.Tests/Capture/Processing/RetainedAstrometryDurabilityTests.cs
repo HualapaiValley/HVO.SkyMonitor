@@ -86,10 +86,9 @@ public sealed partial class DurableCaptureProcessingTests
             string identity;
             using (var telemetry = new CaptureProcessingTelemetry())
             using (var store = new SqliteCaptureProcessingStore(f.Fixture.Options))
-            using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
             using (var gate = new CaptureAstrometryExecutionGate())
             {
-                var persistence = new CaptureProcessingPersistence(f.Fixture.Options, store, storage, telemetry,
+                var persistence = new CaptureProcessingPersistence(f.Fixture.Options, store, telemetry,
                     NullLogger<CaptureProcessingPersistence>.Instance, interrupted ? new AstrometryCommitInterruption() : null);
                 var graph = AstrometryGraph(f, new(new ProcessingRecipeExecutor()), gate, persistence: persistence);
                 using var currentArtifacts = new CameraAgentArtifactService(f.Fixture.Options, store, new CameraAgentPreviewEncoder());
@@ -154,9 +153,8 @@ public sealed partial class DurableCaptureProcessingTests
                 : (Guid?)null;
             using var restartedTelemetry = new CaptureProcessingTelemetry();
             using var restartedStore = new SqliteCaptureProcessingStore(f.Fixture.Options);
-            using var restartedStorage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
             using var restartedGate = new CaptureAstrometryExecutionGate();
-            var restartedPersistence = CreatePersistence(f.Fixture.Options, restartedStore, restartedStorage, restartedTelemetry);
+            var restartedPersistence = CreatePersistence(f.Fixture.Options, restartedStore, restartedTelemetry);
             var noExecution = new CameraAgentRecipeExecutionAdapter(new FixedOutcomeExecutor(ProcessingOutcome.TerminalFailure("unexpected-refit")));
             var resumed = await FrameProcessingWorker.ProcessGraphItemAsync(f.Fixture.Item, AstrometryGraph(f, noExecution, restartedGate, persistence: restartedPersistence),
                 restartedPersistence, restartedTelemetry, 2, NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
@@ -283,9 +281,8 @@ public sealed partial class DurableCaptureProcessingTests
             var f = await CreateAstrometryDurabilityFixtureAsync(root, "unavailable").ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
             using var store = new SqliteCaptureProcessingStore(f.Fixture.Options);
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
             using var gate = new CaptureAstrometryExecutionGate();
-            var persistence = CreatePersistence(f.Fixture.Options, store, storage, telemetry);
+            var persistence = CreatePersistence(f.Fixture.Options, store, telemetry);
             var processed = await FrameProcessingWorker.ProcessGraphItemAsync(f.Fixture.Item,
                 AstrometryGraph(f, new(new ProcessingRecipeExecutor()), gate, persistence: persistence), persistence,
                 telemetry, 1, NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
@@ -360,9 +357,8 @@ public sealed partial class DurableCaptureProcessingTests
             var first = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
             using var store = new SqliteCaptureProcessingStore(first.Fixture.Options);
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
             using var gate = new CaptureAstrometryExecutionGate();
-            var persistence = CreatePersistence(first.Fixture.Options, store, storage, telemetry);
+            var persistence = CreatePersistence(first.Fixture.Options, store, telemetry);
             using var artifacts = new CameraAgentArtifactService(first.Fixture.Options, store, new CameraAgentPreviewEncoder());
             using var reader = new CameraAgentRetainedAstrometryService(store, artifacts);
             var centered = await ProduceAcceptedAsync(first).ConfigureAwait(false);
@@ -650,8 +646,6 @@ public sealed partial class DurableCaptureProcessingTests
             Directory.CreateDirectory(Path.GetDirectoryName(paths.PayloadAbsolutePath)!);
             await File.WriteAllBytesAsync(paths.PayloadAbsolutePath, bytes).ConfigureAwait(false);
             await File.WriteAllBytesAsync(paths.SidecarAbsolutePath, manifestBytes).ConfigureAwait(false);
-            if (benchmarkJournal is null)
-                await RawIngressFileStore.EnsureCompatibilityIndexAsync(root, manifestBytes, CancellationToken.None).ConfigureAwait(false);
         }
         var journal = benchmarkJournal ?? new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1);
         await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);

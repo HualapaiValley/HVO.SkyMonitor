@@ -41,10 +41,9 @@ public sealed partial class DurableCaptureProcessingTests
             string idempotencyKey;
             using (var telemetry = new CaptureProcessingTelemetry())
             using (var store = new SqliteCaptureProcessingStore(fixture.Options))
-            using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
             using (var outbox = new SqliteArtifactOutbox())
             {
-                var persistence = CreatePersistence(fixture.Options, store, storage, telemetry);
+                var persistence = CreatePersistence(fixture.Options, store, telemetry);
                 var adapter = new CameraAgentRecipeExecutionAdapter(new ProcessingRecipeExecutor());
                 var observer = new MeasuredDurabilityObservationStep();
                 var producerGraph = CreateMeasuredDurabilityGraph(sceneInput, adapter, persistence, outbox, fixture.Options, root);
@@ -108,9 +107,8 @@ public sealed partial class DurableCaptureProcessingTests
             }
             using var restartedTelemetry = new CaptureProcessingTelemetry();
             using var restartedStore = new SqliteCaptureProcessingStore(fixture.Options);
-            using var restartedStorage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
             using var restartedOutbox = new SqliteArtifactOutbox();
-            var restartedPersistence = CreatePersistence(fixture.Options, restartedStore, restartedStorage, restartedTelemetry);
+            var restartedPersistence = CreatePersistence(fixture.Options, restartedStore, restartedTelemetry);
             var noReexecution = new CameraAgentRecipeExecutionAdapter(new FixedOutcomeExecutor(
                 ProcessingOutcome.TerminalFailure("fixture.unexpected-reexecution")));
             var inspector = new RestoredMetadataInspectingStep(product);
@@ -179,10 +177,9 @@ public sealed partial class DurableCaptureProcessingTests
         var sceneStep = new DurabilitySceneRecipeStep(scene, adapter);
         var measured = new MeasuredStellarAssociationCaptureProcessingStep(new("measured", "MeasuredStellarAssociations", 1),
             new MeasuredStellarAssociationProcessingStepOptions(), adapter);
-        var storage = new FileStorageCaptureProcessingStep(new("storage", "Storage", 2),
-            new FileStorageCaptureProcessingStepOptions { StorageRoot = root, QueueForUpload = true, UpdateLatestFrame = false },
-            Mock.Of<ILatestFrameAccessor>(), Mock.Of<IFrameStorageService>(), outbox, options,
-            NullLogger<FileStorageCaptureProcessingStep>.Instance, persistence);
+        var storage = new SiloCaptureProcessingStep(new("storage", "Storage", 2),
+            new SiloCaptureProcessingStepOptions { UpdateLatestFrame = false },
+            Mock.Of<ILatestFrameAccessor>(), persistence);
         return new CaptureProcessingGraph([
             new CaptureProcessingGraphNode("scene", sceneStep, [], true, sceneStep.RecipeName,
                 sceneStep.OutputRole, sceneStep.OutputVariant, new string('A', 64)),

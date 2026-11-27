@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
@@ -121,15 +122,15 @@ public sealed partial class VirtualSkyCameraModuleTests
             var journal = provider.GetRequiredService<ICenteredWindowJournal>();
             var retained = provider.GetRequiredService<ICenteredWindowRegistrationSource>();
             ICenteredWindowRegistrationSource unavailable = retained;
-            string? movedPayload = null;
+            var bucket = provider.GetRequiredService<SiloTestStore>();
             if (scenario == "qualification")
                 unavailable = new CenteredQualificationUnavailable(retained, pin.Linear.ArtifactId);
             else
             {
                 var linear = await store.ReadOutputByArtifactIdAsync(pin.Linear.ArtifactId, token).ConfigureAwait(false);
                 Assert.IsNotNull(linear);
-                movedPayload = Path.Combine(root, linear.PayloadRelativePath);
-                File.Move(movedPayload, movedPayload + ".unavailable");
+                var objectKey = SiloObjectNamespace.PayloadKey(SiloRetentionClass.Full, SiloCenteredViews.LowerHex(linear.Artifact.ChecksumSha256));
+                bucket.MissOnRead = candidate => candidate == objectKey;
             }
             using (var worker = new CenteredWindowRegistrationWorker(store, persistence, journal, unavailable, clock,
                 NullLogger<CenteredWindowRegistrationWorker>.Instance))
@@ -150,7 +151,7 @@ public sealed partial class VirtualSkyCameraModuleTests
 
             if (scenario == "recovery")
             {
-                File.Move(movedPayload + ".unavailable", movedPayload!);
+                bucket.MissOnRead = null;
                 using var worker = new CenteredWindowRegistrationWorker(restarted, persistence, journal, retained, clock,
                     NullLogger<CenteredWindowRegistrationWorker>.Instance);
                 await worker.RegisterPendingAsync(token).ConfigureAwait(false);

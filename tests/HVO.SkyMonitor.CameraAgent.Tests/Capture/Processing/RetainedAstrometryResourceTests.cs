@@ -34,10 +34,9 @@ public sealed partial class DurableCaptureProcessingTests
                 recipe: MeasuredAstrometryFixture.PerformanceOptions).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
             using var store = new SqliteCaptureProcessingStore(fixture.Fixture.Options);
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
             using var gate = new CaptureAstrometryExecutionGate();
             using var process = Process.GetCurrentProcess();
-            var persistence = CreatePersistence(fixture.Fixture.Options, store, storage, telemetry);
+            var persistence = CreatePersistence(fixture.Fixture.Options, store, telemetry);
             var initialBytes = RetainedBytes();
             var before = Sample();
             var result = await FrameProcessingWorker.ProcessGraphItemAsync(fixture.Fixture.Item,
@@ -179,9 +178,8 @@ public sealed partial class DurableCaptureProcessingTests
                     .ConfigureAwait(false);
                 using var telemetry = new CaptureProcessingTelemetry();
                 using var store = new SqliteCaptureProcessingStore(f.Fixture.Options);
-                using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
                 using var gate = new CaptureAstrometryExecutionGate();
-                var persistence = CreatePersistence(f.Fixture.Options, store, storage, telemetry);
+                var persistence = CreatePersistence(f.Fixture.Options, store, telemetry);
                 var before = Sample();
                 var started = Stopwatch.GetTimestamp();
                 var result = await FrameProcessingWorker.ProcessGraphItemAsync(f.Fixture.Item,

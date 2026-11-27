@@ -29,7 +29,6 @@ public sealed partial class CenteredRegistrationVirtualPixelsTests
         {
             var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1);
             await journal.InitializeAsync(token).ConfigureAwait(false);
-            using var files = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
             using var telemetry = new CaptureProcessingTelemetry();
             CenteredView initial;
             ExposureProductLookup plateTrail;
@@ -42,7 +41,7 @@ public sealed partial class CenteredRegistrationVirtualPixelsTests
             using (var store = new SqliteCaptureProcessingStore(options))
             {
                 await store.InitializeAsync(token).ConfigureAwait(false);
-                var persistence = new CaptureProcessingPersistence(options, store, files, telemetry,
+                var persistence = new CaptureProcessingPersistence(options, store, telemetry,
                     NullLogger<CaptureProcessingPersistence>.Instance);
                 var plate = await RetainPlateAsync(acquired[0], store, persistence, token).ConfigureAwait(false);
                 var center = await RetainPlateAsync(reference, store, persistence, token).ConfigureAwait(false);
@@ -102,7 +101,7 @@ public sealed partial class CenteredRegistrationVirtualPixelsTests
             }
 
             using var reopenedStore = new SqliteCaptureProcessingStore(options);
-            var reopenedPersistence = new CaptureProcessingPersistence(options, reopenedStore, files, telemetry,
+            var reopenedPersistence = new CaptureProcessingPersistence(options, reopenedStore, telemetry,
                 NullLogger<CaptureProcessingPersistence>.Instance);
             var reopenedViews = new SqliteCenteredViews(reopenedStore, TimeProvider.System, NullLogger<SqliteCenteredViews>.Instance);
             var input = new PlatePublicationInputs(acquired, reopenedPersistence);

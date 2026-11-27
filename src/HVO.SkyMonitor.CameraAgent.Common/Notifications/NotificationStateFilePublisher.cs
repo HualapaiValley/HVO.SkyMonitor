@@ -3,7 +3,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
-using HVO.SkyMonitor.Storage.FileSystem;
+using HVO.SkyMonitor.LocalFiles;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Notifications;
 
@@ -72,7 +72,7 @@ public readonly record struct ProtectedStateFileReadResult(
 
 /// <summary>
 /// Restricted (0700/0600 on Unix), symlink-refusing, fsync'd atomic file publication helper backed by
-/// <see cref="HVO.SkyMonitor.Storage.FileSystem"/> primitives for operator notification state and checkpoints.
+/// <see cref="HVO.SkyMonitor.LocalFiles"/> primitives for operator notification state and checkpoints.
 /// </summary>
 public static class NotificationStateFilePublisher
 {

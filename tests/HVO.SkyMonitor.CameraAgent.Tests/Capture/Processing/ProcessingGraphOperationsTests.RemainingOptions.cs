@@ -32,7 +32,7 @@ public sealed partial class ProcessingGraphOperationsTests
             "MeasuredAstrometry" or ExposureAstrometryCaptureProcessingStep.CenteredAlias => new MeasuredAstrometryCaptureOptions(),
             "CaptureSatelliteTracks" => new CaptureSatelliteTracksOptions(),
             "CaptureSatelliteLayer" => new CaptureSatelliteLayerOptions(),
-            _ => new FileStorageCaptureProcessingStepOptions()
+            _ => new SiloCaptureProcessingStepOptions()
         };
         var descriptor = ProcessingNodeOptionsForm.DescriptorFor(alias);
         Assert.IsNotNull(descriptor);
@@ -151,7 +151,7 @@ public sealed partial class ProcessingGraphOperationsTests
             Options: JsonSerializer.SerializeToElement(new CaptureSatelliteTracksOptions { CatalogNumbers = ["25544"] }), Publication: durable),
         new("CaptureSatelliteLayer", "satellite-layer", DependsOn: ["satellites"], Required: false, Publication: durable),
         new("Storage", "storage", DependsOn: ["$raw"],
-            Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions { StorageRoot = root }))
+            Options: JsonSerializer.SerializeToElement(new SiloCaptureProcessingStepOptions {  }))
         ]);
         return pipeline;
     }

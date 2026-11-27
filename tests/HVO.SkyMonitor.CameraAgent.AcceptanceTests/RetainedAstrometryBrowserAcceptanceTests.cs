@@ -5,7 +5,6 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
-using HVO.SkyMonitor.CameraAgent.Common.Background;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -69,8 +68,8 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
             // artifact verification, retained reconstruction, composition and Razor/JS remain real.
             var paused = new HashSet<Type>
             {
-                typeof(CameraCaptureService), typeof(RetentionBackgroundService), typeof(CaptureDistributionService),
-                typeof(DerivedProductReconciliationService), typeof(ProjectedSceneStageReconciliationService),
+                typeof(CameraCaptureService), typeof(CaptureDistributionService),
+                typeof(ProjectedSceneStageReconciliationService),
                 typeof(ProcessingReplayWorker), typeof(TransientWorkerService)
             };
             foreach (var descriptor in services.Where(value => value.ServiceType == typeof(IHostedService) &&

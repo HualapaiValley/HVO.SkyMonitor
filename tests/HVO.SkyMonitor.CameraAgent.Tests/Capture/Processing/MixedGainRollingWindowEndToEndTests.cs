@@ -51,49 +51,6 @@ public sealed partial class MixedGainRollingWindowEndToEndTests
     [TestCategory("Integration")]
     [DataRow(false)]
     [DataRow(true)]
-    public Task HeldCombinedKeepsOnlyItsExactCompanionsUntilTheHoldIsReleased(bool holdSidecar)
-        => RunAsync([LowGain, HighGain], [LowGain, HighGain],
-            [MixedGainStep(), new CaptureProcessingStepConfig("ImageQuality", "unrelated", DependsOn: ["$raw"])], async run =>
-        {
-            var before = await run.ReadNodeAsync(1, NodeId).ConfigureAwait(false);
-            Assert.HasCount(4, before.Outputs);
-            var combined = before.Outputs.Single(static output => output.Artifact.Role == FrameArtifactRole.Combined);
-            var originals = new Dictionary<Guid, byte[]>();
-            foreach (var output in before.Outputs)
-                originals.Add(output.ArtifactId, await File.ReadAllBytesAsync(Path.Combine(run.Root, output.PayloadRelativePath)).ConfigureAwait(false));
-            var holds = run.Provider.GetRequiredService<IProcessingRetentionHolds>();
-            var expiration = (IProcessingOutputExpiration)holds;
-            var heldPath = Path.Combine(run.Root, holdSidecar ? combined.SidecarRelativePath : combined.PayloadRelativePath);
-            _ = await expiration.ExpireOutputsAsync(run.Root, DateTimeOffset.UtcNow.AddDays(1),
-                new HashSet<string>([heldPath], StringComparer.Ordinal), CancellationToken.None).ConfigureAwait(false);
-
-            var retained = await run.ReadNodeAsync(1, NodeId).ConfigureAwait(false);
-            Assert.HasCount(4, retained.Outputs, "a held combined image requires its diagnostic JSON, valid counts and no-coverage map");
-            foreach (var output in retained.Outputs)
-            {
-                Assert.IsTrue(File.Exists(Path.Combine(run.Root, output.SidecarRelativePath)));
-                CollectionAssert.AreEqual(originals[output.ArtifactId],
-                    await File.ReadAllBytesAsync(Path.Combine(run.Root, output.PayloadRelativePath)).ConfigureAwait(false));
-            }
-            Assert.IsNull(await run.Store.ReadNodeAsync(run.CaptureId(0), NodeId, CancellationToken.None).ConfigureAwait(false),
-                "another window must not inherit the hold");
-            Assert.IsNull(await run.Store.ReadNodeAsync(run.CaptureId(1), "unrelated", CancellationToken.None).ConfigureAwait(false),
-                "unrelated metadata must not inherit the hold");
-
-            _ = await expiration.ExpireOutputsAsync(run.Root, DateTimeOffset.UtcNow.AddDays(1),
-                new HashSet<string>(StringComparer.Ordinal), CancellationToken.None).ConfigureAwait(false);
-            foreach (var output in before.Outputs)
-            {
-                Assert.IsNull(await run.Store.ReadOutputByArtifactIdAsync(output.ArtifactId, CancellationToken.None).ConfigureAwait(false));
-                Assert.IsFalse(File.Exists(Path.Combine(run.Root, output.PayloadRelativePath)));
-                Assert.IsFalse(File.Exists(Path.Combine(run.Root, output.SidecarRelativePath)));
-            }
-        });
-
-    [TestMethod]
-    [TestCategory("Integration")]
-    [DataRow(false)]
-    [DataRow(true)]
     public Task MissingOrCorruptDiagnosticEvidenceNeverAppearsAsZeroCounts(bool corrupt)
         => RunAsync([LowGain, HighGain], [LowGain, HighGain], [MixedGainStep()], async run =>
         {
@@ -198,13 +155,6 @@ public sealed partial class MixedGainRollingWindowEndToEndTests
             CollectionAssert.AreEqual(masters, await HeldMastersAsync().ConfigureAwait(false),
                 "a completed execution's stored product still references its plan's masters");
 
-            // Once the products that reference them are removed, the masters are released.
-            _ = await ((IProcessingOutputExpiration)holds).ExpireOutputsAsync(
-                run.Root, DateTimeOffset.UtcNow.AddDays(1), new HashSet<string>(StringComparer.Ordinal),
-                CancellationToken.None).ConfigureAwait(false);
-            Assert.IsNull(await run.Store.ReadNodeAsync(run.CaptureId(1), NodeId, CancellationToken.None).ConfigureAwait(false),
-                "expiry removes the products");
-            Assert.IsEmpty(await HeldMastersAsync().ConfigureAwait(false));
         });
 
     [TestMethod]
@@ -642,7 +592,7 @@ public sealed partial class MixedGainRollingWindowEndToEndTests
         services.AddLogging();
         services.AddSingleton<ICelestialCatalog>(new InMemoryCelestialCatalog(
             [new CelestialCatalogObject("star", "Star", 2.5, 20, 1)]));
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
             new Dictionary<string, string?>
             {
                 ["CameraAgent:RawIngressRoot"] = root,
@@ -708,7 +658,7 @@ public sealed partial class MixedGainRollingWindowEndToEndTests
                     Publication: new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal)),
                 new CaptureProcessingStepConfig(
                     "Storage", "storage", Order: 100, DependsOn: ["scene"],
-                    Options: JsonSerializer.SerializeToElement(new { storageRoot = root, queueForUpload = false }))
+                    Options: JsonSerializer.SerializeToElement(new { updateLatestFrame = true }))
             ],
             CapturePipelineSchemaVersions.ExplicitV2,
             CapturePipelineDependencyPolicy.RejectEnabledDependent);

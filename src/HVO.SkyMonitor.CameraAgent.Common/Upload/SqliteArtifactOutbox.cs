@@ -674,38 +674,6 @@ public sealed class SqliteArtifactOutbox(
         return OutboxOperationDisposition.Applied;
     }
 
-    public async ValueTask<IReadOnlyList<ArtifactOutboxRetentionHold>> GetRetentionHoldsAsync(
-        string root,
-        CancellationToken cancellationToken)
-    {
-        root = NormalizeRoot(root);
-        await InitializeAsync(root, cancellationToken).ConfigureAwait(false);
-        using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
-        using var command = connection.CreateCommand();
-        command.CommandText = """
-            SELECT artifact_id, relative_artifact_path, status, manifest_bytes, media_type
-            FROM artifact_outbox_records
-            WHERE status IN ('pending', 'leased', 'retry', 'quarantined')
-              AND artifact_id IS NOT NULL AND relative_artifact_path IS NOT NULL
-            ORDER BY created_unix_ms, idempotency_key;
-            """;
-        var holds = new List<ArtifactOutboxRetentionHold>();
-        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-        {
-            var relativeArtifactPath = reader.GetString(1);
-            var manifestBytes = await reader.GetFieldValueAsync<byte[]>(3, cancellationToken).ConfigureAwait(false);
-            var structured = !reader.IsDBNull(4) && StructuredProcessingProductContracts.IsSupportedMediaType(reader.GetString(4)) ||
-                StructuredProcessingProductManifestJson.Parse(manifestBytes).IsValid;
-            holds.Add(new ArtifactOutboxRetentionHold(
-                Guid.ParseExact(reader.GetString(0), "N"),
-                relativeArtifactPath,
-                Path.ChangeExtension(relativeArtifactPath, structured ? ".manifest.json" : ".json"),
-                ParseStatus(reader.GetString(2))));
-        }
-        return holds;
-    }
-
     public async ValueTask<IReadOnlyList<Guid>> GetAcknowledgedArtifactIdsAsync(
         string root,
         IReadOnlySet<Guid> artifactIds,

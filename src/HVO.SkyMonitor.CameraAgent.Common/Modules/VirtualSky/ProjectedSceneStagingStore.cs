@@ -880,10 +880,10 @@ internal sealed class ProjectedSceneStagingStore :
             LinuxNoFollowFlag() | StagingOpenFlags.CloseOnExec, directory: true)!;
 
     private static StagingOpenFlags LinuxDirectoryFlag()
-        => (StagingOpenFlags)HVO.SkyMonitor.Storage.FileSystem.LinuxOpenFlags.Directory;
+        => (StagingOpenFlags)HVO.SkyMonitor.LocalFiles.LinuxOpenFlags.Directory;
 
     private static StagingOpenFlags LinuxNoFollowFlag()
-        => (StagingOpenFlags)HVO.SkyMonitor.Storage.FileSystem.LinuxOpenFlags.NoFollow;
+        => (StagingOpenFlags)HVO.SkyMonitor.LocalFiles.LinuxOpenFlags.NoFollow;
 
     private static SafeFileHandle? LinuxOpenAtFile(SafeFileHandle parent, string name)
         => LinuxOpenAt(parent, name, StagingOpenFlags.ReadOnly | LinuxNoFollowFlag() |

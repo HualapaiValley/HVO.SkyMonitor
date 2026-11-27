@@ -24,8 +24,7 @@ public sealed partial class DurableCaptureProcessingTests
             var fixture = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
             using var store = new SqliteCaptureProcessingStore(fixture.Fixture.Options);
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
-            var persistence = CreatePersistence(fixture.Fixture.Options, store, storage, telemetry);
+            var persistence = CreatePersistence(fixture.Fixture.Options, store, telemetry);
             var capture = fixture.Fixture.Manifest.Descriptor.Capture.CaptureId;
             var preview = await ProduceRetainedDisplayBaseAsync(fixture, persistence, telemetry).ConfigureAwait(false);
             var manifest = (await store.ReadCaptureProductsAsync(capture, OverlayManifestV1.CurrentSchemaVersion, 2, CancellationToken.None)
@@ -126,9 +125,8 @@ public sealed partial class DurableCaptureProcessingTests
             var fixture = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
             using var store = new SqliteCaptureProcessingStore(fixture.Fixture.Options);
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
             using var numericalGate = new CaptureAstrometryExecutionGate();
-            var persistence = CreatePersistence(fixture.Fixture.Options, store, storage, telemetry);
+            var persistence = CreatePersistence(fixture.Fixture.Options, store, telemetry);
             var fit = await ProduceLatestReadFixtureAsync(fixture, store, persistence, telemetry, numericalGate).ConfigureAwait(false);
             var preview = await ProduceRetainedDisplayBaseAsync(fixture, persistence, telemetry).ConfigureAwait(false);
             using var artifacts = new CameraAgentArtifactService(fixture.Fixture.Options, store, new CameraAgentPreviewEncoder());

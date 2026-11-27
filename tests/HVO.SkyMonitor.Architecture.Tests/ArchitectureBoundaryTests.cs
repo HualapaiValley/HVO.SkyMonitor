@@ -43,8 +43,8 @@ public sealed partial class ArchitectureBoundaryTests
 
     // Host-neutral filesystem primitives (#592): mechanisms only, references nothing, consumed
     // by CameraAgent.Common and Video.FFmpeg. Its
-    // dependency rule is asserted by StorageFileSystemBoundaryIsNarrowWhenPresent.
-    private const string StorageFileSystem = "HVO.SkyMonitor.Storage.FileSystem";
+    // dependency rule is asserted by LocalFilesBoundaryIsNarrowWhenPresent.
+    private const string LocalFiles = "HVO.SkyMonitor.LocalFiles";
     private const string TestSupport = "HVO.SkyMonitor.TestSupport";
     private const string FixtureCatalogSha256 = "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840";
 
@@ -74,11 +74,11 @@ public sealed partial class ArchitectureBoundaryTests
             [Imaging] = Set(AgentCore, Astronomy),
             [FleetContracts] = Set(),
             [Processing] = Set(AgentCore, Astronomy, Imaging),
-            [VideoFFmpeg] = Set(Processing, StorageFileSystem),
+            [VideoFFmpeg] = Set(Processing, LocalFiles),
             [Catalog] = Set(Astronomy),
             [Common] = Set(),
-            [StorageFileSystem] = Set(),
-            [CameraAgentCommon] = Set(DeploymentContracts, AgentCore, Astronomy, Imaging, Processing, VideoFFmpeg, FleetContracts, CameraAgentReplay, StorageFileSystem),
+            [LocalFiles] = Set(),
+            [CameraAgentCommon] = Set(DeploymentContracts, AgentCore, Astronomy, Imaging, Processing, VideoFFmpeg, FleetContracts, CameraAgentReplay, LocalFiles),
             [CameraAgentZwo] = Set(AgentCore),
             [CameraAgentReplay] = Set(AgentCore, Processing),
             [CameraAgentReplayRunner] = Set(Processing, CameraAgentReplay),
@@ -106,7 +106,6 @@ public sealed partial class ArchitectureBoundaryTests
         "HVO.SkyMonitor.Imaging.Tests",
         "HVO.SkyMonitor.Processing.Tests",
         "HVO.SkyMonitor.ProcessingRunner.Tests",
-        "HVO.SkyMonitor.Storage.FileSystem.Tests",
         "HVO.SkyMonitor.TestSupport.Tests");
 
     private static readonly IReadOnlySet<string> CameraAgentTestProjects = Set(
@@ -382,24 +381,39 @@ public sealed partial class ArchitectureBoundaryTests
 
     [TestMethod]
     [TestCategory("Unit")]
-    public void StorageFileSystemBoundaryIsNarrowWhenPresent()
+    public void CameraAgentCannotReintroduceFilesystemCaptureStorage()
+    {
+        const string retiredProject = "HVO.SkyMonitor.Storage.FileSystem";
+        var graph = snapshot.Graph;
+        Assert.IsFalse(graph.Projects.Keys.Any(name => name == retiredProject || name == retiredProject + ".Tests"));
+        Assert.IsFalse(graph.Projects.Values.Any(project => project.References.Contains(retiredProject)));
+        var retiredTypes = new System.Text.RegularExpressions.Regex(
+            @"\b(class|interface)\s+(FileSystemFrameStorageService|IFrameStorageService|LocalArchiveReader|RetentionBackgroundService)\b");
+        var violations = snapshot.CSharpFiles.Where(file => retiredTypes.IsMatch(file.Text))
+            .Select(file => file.RelativePath).ToArray();
+        Assert.IsEmpty(violations, string.Join(Environment.NewLine, violations));
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void LocalFilesBoundaryIsNarrowWhenPresent()
     {
         // The filesystem primitives have no project dependencies. CameraAgent.Common and Video.FFmpeg
         // are the only production consumers.
         var repository = snapshot.Graph;
-        if (!repository.Projects.TryGetValue(StorageFileSystem, out var project))
+        if (!repository.Projects.TryGetValue(LocalFiles, out var project))
         {
-            Assert.IsFalse(AllowedProductionReferences.ContainsKey(StorageFileSystem),
-                $"{StorageFileSystem} is documented in the graph before it exists.");
+            Assert.IsFalse(AllowedProductionReferences.ContainsKey(LocalFiles),
+                $"{LocalFiles} is documented in the graph before it exists.");
             return;
         }
 
         Assert.AreEqual(ProjectKind.Production, project.Kind);
-        Assert.IsTrue(AllowedProductionReferences.TryGetValue(StorageFileSystem, out var allowed)
+        Assert.IsTrue(AllowedProductionReferences.TryGetValue(LocalFiles, out var allowed)
             && allowed.Count == 0,
-            $"{StorageFileSystem} must be documented with an empty reference set.");
+            $"{LocalFiles} must be documented with an empty reference set.");
         Assert.IsEmpty(project.References,
-            $"{StorageFileSystem} must reference no project: {string.Join(", ", project.References)}");
+            $"{LocalFiles} must reference no project: {string.Join(", ", project.References)}");
 
         var forbiddenPackages = project.PackageReferences
             .Where(package => package.StartsWith("Microsoft.AspNetCore", StringComparison.Ordinal)
@@ -411,16 +425,16 @@ public sealed partial class ArchitectureBoundaryTests
                 || package.StartsWith("SkiaSharp", StringComparison.Ordinal))
             .ToArray();
         Assert.IsEmpty(forbiddenPackages,
-            $"{StorageFileSystem} must not take host, persistence, or provider packages: {string.Join(", ", forbiddenPackages)}");
+            $"{LocalFiles} must not take host, persistence, or provider packages: {string.Join(", ", forbiddenPackages)}");
 
         var consumers = repository.Projects.Values
-            .Where(candidate => candidate.Kind == ProjectKind.Production && candidate.References.Contains(StorageFileSystem))
+            .Where(candidate => candidate.Kind == ProjectKind.Production && candidate.References.Contains(LocalFiles))
             .Select(candidate => candidate.Name)
             .Order(StringComparer.Ordinal)
             .ToArray();
         var permittedConsumers = new[] { CameraAgentCommon, VideoFFmpeg };
         Assert.IsEmpty(consumers.Except(permittedConsumers, StringComparer.Ordinal).ToArray(),
-            $"Only {string.Join(" and ", permittedConsumers)} may reference {StorageFileSystem}: {string.Join(", ", consumers)}");
+            $"Only {string.Join(" and ", permittedConsumers)} may reference {LocalFiles}: {string.Join(", ", consumers)}");
     }
 
     [TestMethod]
@@ -466,13 +480,13 @@ public sealed partial class ArchitectureBoundaryTests
         // RuntimeInformation.ProcessArchitecture, either through a per-architecture table it declares itself or by
         // delegating to LinuxOpenFlags, and no importer outside the three declared tables may spell the values on a
         // line that talks about open flags. The sweep covers src/; tests and tools do not import libc open.
-        // CameraAgent (#587) delegates to Storage.FileSystem; its public compatibility facade owns no table.
+        // CameraAgent (#587) delegates to LocalFiles; its public compatibility facade owns no table.
         var root = snapshot.Root;
         string[] tableFiles =
         [
             Path.Combine("src", "HVO.SkyMonitor.Deployment.Cli", "NativeLinux.cs"),
             Path.Combine("src", "HVO.SkyMonitor.Catalog.Sqlite", "CatalogSnapshotResolver.cs"),
-            Path.Combine("src", "HVO.SkyMonitor.Storage.FileSystem", "LinuxOpenFlags.cs"),
+            Path.Combine("src", "HVO.SkyMonitor.LocalFiles", "LinuxOpenFlags.cs"),
         ];
         var importPattern = new System.Text.RegularExpressions.Regex(
             """"libc"[^;]*(EntryPoint\s*=\s*"open(at)?"|\bopen(at)?\s*\()"""",
@@ -489,7 +503,7 @@ public sealed partial class ArchitectureBoundaryTests
         var callers = 0;
 
         var cameraAgentFacade = snapshot.Source(Path.Combine(root, "src", "HVO.SkyMonitor.CameraAgent.Common", "Storage", "LinuxOpenFlags.cs")).Text;
-        Assert.IsTrue(cameraAgentFacade.Contains("HVO.SkyMonitor.Storage.FileSystem.LinuxOpenFlags", StringComparison.Ordinal));
+        Assert.IsTrue(cameraAgentFacade.Contains("HVO.SkyMonitor.LocalFiles.LinuxOpenFlags", StringComparison.Ordinal));
         Assert.IsFalse(cameraAgentFacade.Contains("Architecture.Arm64", StringComparison.Ordinal),
             "CameraAgent's public compatibility facade must not regain a private ABI table.");
 
@@ -528,8 +542,8 @@ public sealed partial class ArchitectureBoundaryTests
             }
         }
 
-        // Seven importers: the authenticated CameraAgent callers, deployment CLI, SQLite catalog resolver,
-        // and Storage.FileSystem's DurableSync, HardLinkPublisher and ConfinedReadDirectory.
+        // The authenticated CameraAgent callers, deployment CLI, SQLite catalog resolver,
+        // and the LocalFiles sync, hard-link, and confined directory mechanisms.
         Assert.AreEqual(7, callers, "the set of libc open importers changed; update this guard deliberately");
         Assert.IsEmpty(violations, string.Join(Environment.NewLine, violations));
     }

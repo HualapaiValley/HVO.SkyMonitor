@@ -19,6 +19,8 @@ public sealed class ProcessingRecipeTests
     [TestMethod]
     [TestCategory("Unit")]
     [DataRow(BuiltInProcessingRecipes.JpegEncoding, """{"maximumDimension":0}""")]
+    [DataRow(BuiltInProcessingRecipes.JpegEncoding, """{"maximumDimension":16385}""")]
+    [DataRow(BuiltInProcessingRecipes.JpegEncoding, """{"jpegQuality":101}""")]
     [DataRow(BuiltInProcessingRecipes.FixedPreview, """{"blackLevel":100,"whiteLevel":90}""")]
     [DataRow(BuiltInProcessingRecipes.Keogram, """{"maximumColumnCount":0}""")]
     [DataRow(BuiltInProcessingRecipes.StarTrail, """{"maximumFrameCount":0}""")]

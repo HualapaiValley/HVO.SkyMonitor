@@ -18,7 +18,14 @@ jq --exit-status '
   (.retiredSourcePaths | sort) == ([
     "HVO.SkyMonitor.AgentCore/ArtifactUploadManifest.cs",
     "HVO.SkyMonitor.Deployment.Cli/DistributionCatalogAcquirer.cs",
-    "HVO.SkyMonitor.Deployment.Distribution/DistributionVerifier.cs"
+    "HVO.SkyMonitor.Deployment.Distribution/DistributionVerifier.cs",
+    "HVO.SkyMonitor.Storage.FileSystem/AtomicPublisher.cs",
+    "HVO.SkyMonitor.Storage.FileSystem/DurableSync.cs",
+    "HVO.SkyMonitor.Storage.FileSystem/FileSystemFault.cs",
+    "HVO.SkyMonitor.Storage.FileSystem/HardLinkPublisher.cs",
+    "HVO.SkyMonitor.Storage.FileSystem/LinuxOpenFlags.cs",
+    "HVO.SkyMonitor.Storage.FileSystem/PhysicalRoot.cs",
+    "HVO.SkyMonitor.CameraAgent.Common/Upload/ArtifactOutboxDrainService.cs"
   ] | sort)
 ' "$policy" > /dev/null || {
   printf 'Malformed retired-source coverage policy: %s\n' "$policy" >&2
@@ -72,7 +79,7 @@ for baseline in "${baselines[@]}"; do
 done
 
 for retired in "${retired_source_paths[@]}"; do
-  jq --exit-status --arg path "$retired" '.files[$path] != null' scripts/coverage/baseline.json > /dev/null || {
+  jq --exit-status --slurp --arg path "$retired" 'any(.[]; .files[$path] != null)' "${baselines[@]}" > /dev/null || {
     printf 'Pinned retired source %s has no canonical coverage floor.\n' "$retired" >&2
     exit 1
   }
@@ -189,6 +196,18 @@ for baseline in "${baselines[@]}"; do
       $candidate.files[.key].branch >= .value.branch)
   ' "$baseline" > /dev/null || {
     printf 'Coverage baseline %s is weaker than origin/%s.\n' "$baseline" "$base_ref" >&2
+    exit 1
+  }
+  jq --exit-status --slurpfile base "$comparison_dir/base.json" '
+    . as $candidate |
+    all($base[0].files | to_entries[] |
+      select(.key | startswith("HVO.SkyMonitor.Storage.FileSystem/"));
+      (.key | sub("^HVO[.]SkyMonitor[.]Storage[.]FileSystem/"; "HVO.SkyMonitor.LocalFiles/")) as $moved |
+      $candidate.files[$moved] != null and
+      $candidate.files[$moved].line >= .value.line and
+      $candidate.files[$moved].branch >= .value.branch)
+  ' "$baseline" > /dev/null || {
+    printf 'Coverage baseline %s weakened the floor of a moved local file primitive.\n' "$baseline" >&2
     exit 1
   }
   printf 'Coverage baseline %s is at or above origin/%s.\n' "$baseline" "$base_ref"

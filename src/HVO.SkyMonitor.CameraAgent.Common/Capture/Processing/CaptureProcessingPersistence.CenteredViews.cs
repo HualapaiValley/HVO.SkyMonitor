@@ -16,7 +16,7 @@ internal sealed partial class CaptureProcessingPersistence
         CancellationToken cancellationToken)
     {
         var copies = await _store.ReadCommittedArchivePublicationsAsync(executionId, nodeId, cancellationToken,
-            FileStorageCaptureProcessingStep.SiloArchiveEvidenceVersion).ConfigureAwait(false);
+            SiloCaptureProcessingStep.SiloArchiveEvidenceVersion).ConfigureAwait(false);
         if (copies.Count == 0) return;
 
         var dependencies = new List<SiloManifestDependency>(copies.Count * 2);

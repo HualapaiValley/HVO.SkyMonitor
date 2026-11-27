@@ -69,8 +69,7 @@ public sealed partial class StoragePolicyRawIngressIntegrationTests
             }
             using var reopened = Provider(root);
             var restored = await InitializeAsync(reopened, file).ConfigureAwait(false);
-            Assert.AreEqual(90, StorageOptions(restored).RetentionDays);
-            Assert.IsTrue(StorageOptions(restored).QueueForUpload);
+            Assert.IsTrue(StorageOptions(restored).PublishArchive);
             var next = (await Ingress(reopened).AcceptAsync(restored, Submission(5), CancellationToken.None).ConfigureAwait(false))!;
             Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, (await ProcessNextAsync(reopened, restored).ConfigureAwait(false)).Outcome);
             AssertRawRetained(next);
@@ -174,7 +173,7 @@ public sealed partial class StoragePolicyRawIngressIntegrationTests
                     Assert.AreEqual(2, executions.Count(execution => execution.FailureReason == "processing." + LaneReason));
                     Assert.AreEqual(1, executions.Count(execution => execution.Status == ProcessingGraphExecutionStatus.Completed));
                     Assert.AreNotEqual(RawIngressAvailability.Unhealthy, restarted.GetRequiredService<RawIngressState>().Snapshot.Availability);
-                    Assert.AreEqual(90, StorageOptions(current).RetentionDays);
+                    Assert.IsTrue(StorageOptions(current).PublishArchive);
                 }
                 finally { await service.StopAsync(CancellationToken.None).ConfigureAwait(false); }
             }
@@ -193,7 +192,7 @@ public sealed partial class StoragePolicyRawIngressIntegrationTests
 
     internal static ServiceProvider Provider(string root) => ProcessingGraphOperationsTests.CreateProvider(root, new Dictionary<string, string?>
     {
-        ["CameraAgent:CentralIntegration:Mode"] = "Enabled",
+        ["CameraAgent:CentralIntegration:Mode"] = "Disabled",
         ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false"
     });
 
@@ -211,8 +210,8 @@ public sealed partial class StoragePolicyRawIngressIntegrationTests
                     new(CaptureScheduleBoundaryKind.FixedLocalTime, TimeOnly.MinValue, DayOffset: 1), "always")).ToArray()),
             Pipeline = new([
                 new("Preview", "preview", DependsOn: ["$raw"], Publication: new(CaptureProcessingPersistenceMode.DurableLocal)),
-                new("Storage", "storage", DependsOn: ["preview"], Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
-                { StorageRoot = Path.Combine(root, "storage-a"), UpdateLatestFrame = false }))
+                new("Storage", "storage", DependsOn: ["preview"], Options: JsonSerializer.SerializeToElement(new SiloCaptureProcessingStepOptions
+                { UpdateLatestFrame = false }))
             ], CapturePipelineSchemaVersions.ExplicitV2, CapturePipelineDependencyPolicy.RejectEnabledDependent)
         };
     }
@@ -247,8 +246,8 @@ public sealed partial class StoragePolicyRawIngressIntegrationTests
         => profile.Pipeline with
         {
             Steps = [.. profile.Pipeline.Steps.Select(step => step.Type == "Storage" ? step with
-        { Options = JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
-        { StorageRoot = Path.Combine(Path.GetDirectoryName(StorageOptions(profile).StorageRoot)!, "storage-b"), RetentionDays = 90, QueueForUpload = true, UpdateLatestFrame = false }) } : step)]
+        { Options = JsonSerializer.SerializeToElement(new SiloCaptureProcessingStepOptions
+        { UpdateLatestFrame = false, PublishArchive = true }) } : step)]
         };
 
     internal static async Task<CameraModuleConfig> ChangeProfileAsync(ServiceProvider provider, CameraModuleConfig profile)
@@ -281,7 +280,6 @@ public sealed partial class StoragePolicyRawIngressIntegrationTests
         Assert.AreEqual(LaneReason, result.Reason);
         AssertRawRetained(receipt);
         Assert.AreNotEqual(RawIngressAvailability.Unhealthy, provider.GetRequiredService<RawIngressState>().Snapshot.Availability);
-        Assert.IsFalse(Directory.Exists(StorageOptions(current).StorageRoot), "Mismatched work cannot publish under another policy.");
     }
 
     private static async Task<CaptureLaneHandlerResult> ProcessNextAsync(ServiceProvider provider, CameraModuleConfig current)
@@ -297,8 +295,8 @@ public sealed partial class StoragePolicyRawIngressIntegrationTests
         return result;
     }
 
-    private static FileStorageCaptureProcessingStepOptions StorageOptions(CameraModuleConfig config)
-        => JsonSerializer.Deserialize<FileStorageCaptureProcessingStepOptions>(config.Pipeline.Steps.Single(step => step.Type == "Storage").Options!.Value)!;
+    private static SiloCaptureProcessingStepOptions StorageOptions(CameraModuleConfig config)
+        => JsonSerializer.Deserialize<SiloCaptureProcessingStepOptions>(config.Pipeline.Steps.Single(step => step.Type == "Storage").Options!.Value)!;
 
     private static void AssertRawRetained(RawCaptureReceipt receipt)
     {

@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.LocalFiles;
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -354,11 +355,11 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
 
         // Opening the dangling link would raise a SQLite error. Call the opener directly to verify its pre-open guard.
         using var store = new SqliteCaptureProcessingStore(fixture.Options);
-        var failure = await Assert.ThrowsExactlyAsync<IOException>(async () =>
+        var failure = await Assert.ThrowsAsync<IOException>(async () =>
         {
             using var connection = await store.OpenReadOnlyInspectionConnectionForTestsAsync(TestContext.CancellationToken).ConfigureAwait(false);
         }).ConfigureAwait(false);
-        Assert.IsTrue(FileSystemFaultCompatibility.IsContainmentFailure(failure));
+        Assert.IsTrue(failure is FileSystemFaultException { Kind: FileSystemFaultKind.Containment });
         Assert.IsFalse(File.Exists(missingTarget));
     }
 

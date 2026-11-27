@@ -1,7 +1,5 @@
 using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
-using HVO.SkyMonitor.CameraAgent.Common.Silo;
-using HVO.SkyMonitor.CameraAgent.Tests.Silo;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests;
 
@@ -67,38 +65,6 @@ public sealed class ProgramFirstBootOneShotTests
         {
             root.Delete(recursive: true);
         }
-    }
-
-    [TestMethod]
-    [DataRow(true, DisplayName = "fixture inventory returns a selected row and exit 0")]
-    [DataRow(false, DisplayName = "fixture inventory refusal reaches the process exit code")]
-    [OSCondition(OperatingSystems.Linux, IgnoreMessage = "The installer runs CameraAgent's one-shot mode on Linux hosts only.")]
-    public async Task SiloFixtureHistoryArgument_RunsInventoryAndReturnsItsExitCode(bool validSelection)
-    {
-        using var fixture = new SiloFixtureHistoryTests.Fixture();
-        var digest = fixture.Select([fixture.WritePair("frame", "art-1", daysOld: 365)]);
-        var before = fixture.Snapshot();
-        var selection = validSelection ? SiloFixtureHistoryTests.SelectionFile : "invalid.json";
-
-        var (exit, output) = await RunMainAsync([SiloFixtureImportCommand.Argument, "inventory", fixture.Root, selection]).ConfigureAwait(false);
-
-        Assert.AreEqual(validSelection ? 0 : 2, exit, output);
-        using var report = JsonDocument.Parse(output);
-        var json = report.RootElement;
-        Assert.AreEqual(SiloFixtureImport.ReportFormat, json.GetProperty("format").GetString());
-        if (validSelection)
-        {
-            Assert.AreEqual("inventory", json.GetProperty("mode").GetString());
-            Assert.AreEqual(digest, json.GetProperty("selectionSha256").GetString());
-            Assert.AreEqual("selected", json.GetProperty("records")[0].GetProperty("status").GetString());
-        }
-        else
-        {
-            Assert.AreEqual("refused", json.GetProperty("status").GetString());
-            Assert.AreEqual("fixture-invalid-input", json.GetProperty("reason").GetString());
-        }
-
-        CollectionAssert.AreEquivalent(before.ToArray(), fixture.Snapshot().ToArray());
     }
 
     private static async Task<(int ExitCode, string Output)> RunMainAsync(string[] args)

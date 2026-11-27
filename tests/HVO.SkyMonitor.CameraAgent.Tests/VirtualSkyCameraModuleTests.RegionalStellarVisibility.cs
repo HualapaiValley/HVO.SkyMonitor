@@ -1043,12 +1043,8 @@ public sealed partial class VirtualSkyCameraModuleTests
             new(RegionalStellarVisibilityProducts.StepAlias, "regional-visibility", DependsOn: ["$raw"], Required: false, Publication: durable,
                 Options: JsonSerializer.SerializeToElement(regionalOptions)),
             new("Storage", "storage", DependsOn: ["$raw"], Options: JsonSerializer.SerializeToElement(
-                new FileStorageCaptureProcessingStepOptions
-                {
-                    StorageRoot = Path.Combine(root, "storage"),
-                    QueueForUpload = false,
-                    UpdateLatestFrame = false
-                }))
+                new SiloCaptureProcessingStepOptions
+                { UpdateLatestFrame = false }))
         };
         if (includeClearReferenceCloudAssessment)
         {

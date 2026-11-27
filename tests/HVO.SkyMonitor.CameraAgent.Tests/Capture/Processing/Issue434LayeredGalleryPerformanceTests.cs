@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
 using System.Xml.Linq;
-using HVO.SkyMonitor.CameraAgent.Common.Background;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -32,8 +31,7 @@ public sealed partial class DurableCaptureProcessingTests
             await rawJournal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
             using var store = new SqliteCaptureProcessingStore(fixture.Options);
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
-            var persistence = CreatePersistence(fixture.Options, store, storage, telemetry);
+            var persistence = CreatePersistence(fixture.Options, store, telemetry);
             var graph = await CreateProductionLayeredGraphAsync(fixture, root).ConfigureAwait(false);
             var processed = await FrameProcessingWorker.ProcessGraphItemAsync(
                 fixture.Item, graph, persistence, telemetry, 1, NullLogger.Instance, CancellationToken.None)

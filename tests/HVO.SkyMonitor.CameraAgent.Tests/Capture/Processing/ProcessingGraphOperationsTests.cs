@@ -959,7 +959,7 @@ public sealed partial class ProcessingGraphOperationsTests
             };
             var services = new ServiceCollection();
             services.AddLogging();
-            services.AddCameraAgentInfrastructure(
+            services.AddSiloTestInfrastructure(
                 new ConfigurationBuilder().AddInMemoryCollection(values).Build());
             using var provider = services.BuildServiceProvider();
             var rawIngress = provider.GetRequiredService<IRawCaptureIngress>();
@@ -977,7 +977,7 @@ public sealed partial class ProcessingGraphOperationsTests
             using var replayPreemption = new CancellationTokenSource();
             using var replayPreemptionRegistration = provider.GetRequiredService<ProcessingReplayWakeup>()
                 .RegisterLivePreemption(replayPreemption);
-            var receipt = await rawIngress.AcceptAsync(
+            var receipt = await rawIngress.AcceptAndSettleAsync(
                 configuration, submission, CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(receipt);
             Assert.AreEqual(RawIngressOutcome.Committed, receipt.Outcome);
@@ -1099,7 +1099,7 @@ public sealed partial class ProcessingGraphOperationsTests
             var configuration = CreateConfiguration();
             var registry = await operations.EnsureConfiguredBasicAsync(
                 configuration, CancellationToken.None).ConfigureAwait(false);
-            var receipt = await rawIngress.AcceptAsync(
+            var receipt = await rawIngress.AcceptAndSettleAsync(
                 configuration, CreateSubmission(), CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(receipt);
             Assert.AreEqual(RawIngressOutcome.Committed, receipt.Outcome);
@@ -1200,7 +1200,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
                 var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
                 var basic = await operations.EnsureConfiguredBasicAsync(configuration, CancellationToken.None).ConfigureAwait(false);
-                receipt = await ingress.AcceptAsync(configuration, CreateSubmission(), CancellationToken.None).ConfigureAwait(false)
+                receipt = await ingress.AcceptAndSettleAsync(configuration, CreateSubmission(), CancellationToken.None).ConfigureAwait(false)
                     ?? throw new AssertFailedException("The fixture must retain its raw capture.");
                 var named = await operations.CreateRevisionAsync("nightly", "old", configuration.Pipeline,
                     "create-old", "owner-test", null, CancellationToken.None).ConfigureAwait(false);
@@ -1311,7 +1311,7 @@ public sealed partial class ProcessingGraphOperationsTests
         {
             var services = new ServiceCollection();
             services.AddLogging();
-            services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
+            services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
                 new Dictionary<string, string?>
                 {
                     ["CameraAgent:RawIngressRoot"] = root,
@@ -2018,7 +2018,7 @@ public sealed partial class ProcessingGraphOperationsTests
         {
             var services = new ServiceCollection();
             services.AddLogging();
-            services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
+            services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
                 new Dictionary<string, string?>
                 {
                     ["CameraAgent:RawIngressRoot"] = root,
@@ -2049,7 +2049,7 @@ public sealed partial class ProcessingGraphOperationsTests
             var receipts = new List<RawCaptureReceipt>();
             for (var index = 0; index < 3; index++)
             {
-                var receipt = await ingress.AcceptAsync(
+                var receipt = await ingress.AcceptAndSettleAsync(
                     configuration, CreateSubmission(index, CameraPixelFormat.Mono16), CancellationToken.None).ConfigureAwait(false);
                 Assert.IsNotNull(receipt);
                 receipts.Add(receipt);
@@ -2064,7 +2064,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 "owner-test",
                 CancellationToken.None).ConfigureAwait(false);
 
-            _ = await ingress.AcceptAsync(
+            _ = await ingress.AcceptAndSettleAsync(
                 configuration, CreateSubmission(3, CameraPixelFormat.Mono16), CancellationToken.None).ConfigureAwait(false);
             var processingStore = provider.GetRequiredService<SqliteCaptureProcessingStore>();
             var frozen = await processingStore
@@ -2550,7 +2550,7 @@ public sealed partial class ProcessingGraphOperationsTests
             var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
             var registry = await operations.EnsureConfiguredBasicAsync(configuration, CancellationToken.None)
                 .ConfigureAwait(false);
-            var original = await ingress.AcceptAsync(
+            var original = await ingress.AcceptAndSettleAsync(
                 configuration, CreateSubmission(), CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(original);
             var laneStore = provider.GetRequiredService<ICaptureLaneStore>();
@@ -2579,7 +2579,7 @@ public sealed partial class ProcessingGraphOperationsTests
             {
                 using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
                 await barrier.WaitUntilBlockedAsync(timeout.Token).ConfigureAwait(false);
-                var liveReceipt = await ingress.AcceptAsync(
+                var liveReceipt = await ingress.AcceptAndSettleAsync(
                     configuration, CreateSubmission(sequenceOffset: 1), timeout.Token).ConfigureAwait(false);
                 Assert.IsNotNull(liveReceipt);
 
@@ -2675,7 +2675,7 @@ public sealed partial class ProcessingGraphOperationsTests
             var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
             var registry = await operations.EnsureConfiguredBasicAsync(configuration, CancellationToken.None)
                 .ConfigureAwait(false);
-            var original = await ingress.AcceptAsync(
+            var original = await ingress.AcceptAndSettleAsync(
                 configuration, CreateSubmission(), CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(original);
             var laneStore = provider.GetRequiredService<ICaptureLaneStore>();
@@ -2775,7 +2775,7 @@ public sealed partial class ProcessingGraphOperationsTests
             var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
             var registry = await operations.EnsureConfiguredBasicAsync(configuration, CancellationToken.None)
                 .ConfigureAwait(false);
-            var receipt = await ingress.AcceptAsync(
+            var receipt = await ingress.AcceptAndSettleAsync(
                 configuration, CreateSubmission(capturedUtc: clock.GetUtcNow().AddMinutes(-1)), CancellationToken.None)
                 .ConfigureAwait(false);
             Assert.IsNotNull(receipt);
@@ -2949,12 +2949,11 @@ public sealed partial class ProcessingGraphOperationsTests
     public async Task ReplayWorkerExecutesNonEmptyGraphWithoutPublishingOrOverwritingLiveProjection()
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-replay-worker");
-        var staleRoot = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-raw-only");
         try
         {
             var services = new ServiceCollection();
             services.AddLogging();
-            services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
+            services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
                 new Dictionary<string, string?>
                 {
                     ["CameraAgent:RawIngressRoot"] = root,
@@ -2976,7 +2975,7 @@ public sealed partial class ProcessingGraphOperationsTests
             var registry = await operations.EnsureConfiguredBasicAsync(configuration, CancellationToken.None)
                 .ConfigureAwait(false);
             var submission = CreateSubmission();
-            var receipt = await ingress.AcceptAsync(
+            var receipt = await ingress.AcceptAndSettleAsync(
                 configuration, submission, CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(receipt);
 
@@ -2996,33 +2995,11 @@ public sealed partial class ProcessingGraphOperationsTests
                 liveLease.Context.Execution!.ExecutionId, CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(stagedLive);
             var liveOutputArtifactId = stagedLive.Nodes.Single().Outputs.Single().ArtifactId;
-            var day = DateOnly.FromDateTime(receipt.Manifest.Descriptor.Timing.ExposureStartedUtc.UtcDateTime);
-            var storage = provider.GetRequiredService<IFrameStorageService>();
-            Assert.HasCount(0, storage.List(root, day, FrameArtifactRole.Preview, 10));
-            using (var stale = CreateProvider(staleRoot))
-            {
-                var staleIngress = stale.GetRequiredService<IRawCaptureIngress>();
-                await staleIngress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-                var identical = await staleIngress.AcceptAsync(configuration, submission, CancellationToken.None)
-                    .ConfigureAwait(false);
-                Assert.AreEqual(receipt.Manifest.Descriptor.Capture.CaptureId, identical!.Manifest.Descriptor.Capture.CaptureId);
-                var stagedOutput = Directory.GetFiles(root, $"*{liveOutputArtifactId:N}*", SearchOption.AllDirectories);
-                Assert.IsTrue(stagedOutput.Length >= 2);
-                foreach (var file in stagedOutput.Concat(Directory.GetFiles(Path.Combine(root, "index"), "*.jsonl")))
-                {
-                    var copy = Path.Combine(staleRoot, Path.GetRelativePath(root, file));
-                    Directory.CreateDirectory(Path.GetDirectoryName(copy)!);
-                    File.Copy(file, copy, overwrite: true);
-                }
-                Assert.HasCount(0, storage.List(staleRoot, day, FrameArtifactRole.Preview, 10));
-            }
             Assert.AreEqual(
                 CameraAgentArtifactReadStatus.NotFound,
                 (await artifactService.OpenContentAsync(liveOutputArtifactId, CancellationToken.None)
                     .ConfigureAwait(false)).Status);
             await laneStore.CompleteAsync(liveLease, CancellationToken.None).ConfigureAwait(false);
-            StringAssert.Contains(storage.List(root, day, FrameArtifactRole.Preview, 10).Single().RelativePath,
-                liveOutputArtifactId.ToString("N"), StringComparison.Ordinal);
             var publishedLive = await artifactService.OpenContentAsync(
                 liveOutputArtifactId, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(CameraAgentArtifactReadStatus.Found, publishedLive.Status);
@@ -3173,7 +3150,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 deferredReplay.Execution.ExecutionId, CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(cancelledDetail);
             Assert.AreEqual("TerminalFailure", cancelledDetail.Nodes.Single().Status);
-            var futureReceipt = await ingress.AcceptAsync(
+            var futureReceipt = await ingress.AcceptAndSettleAsync(
                 configuration, CreateSubmission(sequenceOffset: 1), CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(futureReceipt);
 
@@ -3282,7 +3259,6 @@ public sealed partial class ProcessingGraphOperationsTests
         {
             SqliteConnection.ClearAllPools();
             if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
-            if (Directory.Exists(staleRoot)) Directory.Delete(staleRoot, recursive: true);
         }
     }
 
@@ -3388,7 +3364,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 stageKey, new string('E', 64), await CreateProjectedSceneAsync().ConfigureAwait(false), CancellationToken.None)
                 .ConfigureAwait(false);
             // Accepted but never processed live: no committed projected-scene product exists for the capture.
-            var receipt = await ingress.AcceptAsync(
+            var receipt = await ingress.AcceptAndSettleAsync(
                 configuration,
                 WithSceneProvenance(CreateSubmission(0, CameraPixelFormat.Mono16), new string('E', 64), stageKey),
                 CancellationToken.None).ConfigureAwait(false);
@@ -4034,6 +4010,7 @@ public sealed partial class ProcessingGraphOperationsTests
 
     private static async Task CompleteLiveAsync(ServiceProvider provider, CameraModuleConfig configuration)
     {
+        await SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, CancellationToken.None).ConfigureAwait(false);
         var laneStore = provider.GetRequiredService<ICaptureLaneStore>();
         await laneStore.InitializeLanesAsync(CancellationToken.None).ConfigureAwait(false);
         var standard = provider.GetRequiredService<CaptureLanePolicy>().Definitions.Single(
@@ -4142,7 +4119,7 @@ public sealed partial class ProcessingGraphOperationsTests
         var services = new ServiceCollection();
         services.AddLogging();
         if (timeProvider is not null) services.AddSingleton(timeProvider);
-        services.AddCameraAgentInfrastructure(
+        services.AddSiloTestInfrastructure(
             new ConfigurationBuilder().AddInMemoryCollection(values).Build());
         configureServices?.Invoke(services);
         return services.BuildServiceProvider();

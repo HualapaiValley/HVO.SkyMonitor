@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.LocalFiles;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Storage;
@@ -30,9 +31,9 @@ public sealed class CameraAgentFileSystemTests
         {
             File.SetUnixFileMode(temporary, UnixFileMode.UserRead | UnixFileMode.UserWrite);
         }
-        var conflict = Assert.ThrowsExactly<IOException>(() =>
+        var conflict = Assert.ThrowsExactly<FileSystemFaultException>(() =>
             CameraAgentFileSystem.PublishPrepared(_root, temporary, final, overwrite: false));
-        Assert.IsFalse(FileSystemFaultCompatibility.IsContainmentFailure(conflict));
+        Assert.IsFalse(conflict is FileSystemFaultException { Kind: FileSystemFaultKind.Containment });
         CollectionAssert.AreEqual(new byte[] { 1, 2, 3 }, File.ReadAllBytes(temporary));
         CollectionAssert.AreEqual(new byte[] { 4, 5, 6 }, File.ReadAllBytes(final));
 
@@ -55,9 +56,9 @@ public sealed class CameraAgentFileSystemTests
         File.WriteAllBytes(real, [1, 2, 3]);
         File.CreateSymbolicLink(link, real);
 
-        var failure = Assert.ThrowsExactly<IOException>(() =>
+        var failure = Assert.ThrowsExactly<FileSystemFaultException>(() =>
             CameraAgentFileSystem.PublishPrepared(_root, temporary, link, overwrite: false));
-        Assert.IsTrue(FileSystemFaultCompatibility.IsContainmentFailure(failure),
+        Assert.IsTrue(failure is FileSystemFaultException { Kind: FileSystemFaultKind.Containment },
             "An immutable duplicate handler must not consume a containment failure as successful idempotency.");
         Assert.IsNotNull(new FileInfo(link).LinkTarget);
         CollectionAssert.AreEqual(new byte[] { 1, 2, 3 }, File.ReadAllBytes(real));
@@ -87,8 +88,8 @@ public sealed class CameraAgentFileSystemTests
         Assert.IsTrue(Directory.Exists(Path.Combine(target, "new", "storage")));
         var linkedRoot = Path.Combine(_root, "linked-root");
         Directory.CreateSymbolicLink(linkedRoot, root);
-        var failure = Assert.ThrowsExactly<IOException>(() => CameraAgentFileSystem.EnsureStorageRootDurable(linkedRoot));
-        Assert.IsTrue(FileSystemFaultCompatibility.IsContainmentFailure(failure));
+        var failure = Assert.ThrowsExactly<FileSystemFaultException>(() => CameraAgentFileSystem.EnsureStorageRootDurable(linkedRoot));
+        Assert.IsTrue(failure is FileSystemFaultException { Kind: FileSystemFaultKind.Containment });
         Assert.IsNotNull(new DirectoryInfo(alias).LinkTarget);
     }
 }

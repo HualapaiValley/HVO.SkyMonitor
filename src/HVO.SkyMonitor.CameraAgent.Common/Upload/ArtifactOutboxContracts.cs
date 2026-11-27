@@ -73,12 +73,6 @@ public sealed record ArtifactOutboxLease(
     string Token,
     DateTimeOffset ExpiresUtc);
 
-public sealed record ArtifactOutboxRetentionHold(
-    Guid ArtifactId,
-    string RelativeArtifactPath,
-    string RelativeSidecarPath,
-    ArtifactOutboxStatus Status);
-
 public sealed record ArtifactOutboxSnapshot(
     long HeldCount,
     long HeldBytes,

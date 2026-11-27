@@ -111,9 +111,8 @@ public sealed class Issue435ProjectedScenePerformanceTests
                 {
                     using var faultTelemetry = new CaptureProcessingTelemetry();
                     using var faultStore = new SqliteCaptureProcessingStore(options);
-                    using var faultStorage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
                     var faultPersistence = new CaptureProcessingPersistence(
-                        options, faultStore, faultStorage, faultTelemetry,
+                        options, faultStore, faultTelemetry,
                         NullLogger<CaptureProcessingPersistence>.Instance, new AfterPublicationFaultInjector());
                     await Assert.ThrowsExactlyAsync<InjectedPublicationFaultException>(async () =>
                         await faultPersistence.WriteNodeAsync(
@@ -130,9 +129,8 @@ public sealed class Issue435ProjectedScenePerformanceTests
                 {
                     using var telemetry = new CaptureProcessingTelemetry();
                     using var store = new SqliteCaptureProcessingStore(options);
-                    using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
                     var persistence = new CaptureProcessingPersistence(
-                        options, store, storage, telemetry, NullLogger<CaptureProcessingPersistence>.Instance);
+                        options, store, telemetry, NullLogger<CaptureProcessingPersistence>.Instance);
                     await persistence.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
                     await persistence.WriteNodeAsync(
                         fixture.Receipt, fixture.Node, DurableProcessingNodeStatus.Completed, null, 1,
@@ -152,9 +150,8 @@ public sealed class Issue435ProjectedScenePerformanceTests
                 {
                     using var duplicateTelemetry = new CaptureProcessingTelemetry();
                     using var duplicateStore = new SqliteCaptureProcessingStore(options);
-                    using var duplicateStorage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
                     var duplicatePersistence = new CaptureProcessingPersistence(
-                        options, duplicateStore, duplicateStorage, duplicateTelemetry,
+                        options, duplicateStore, duplicateTelemetry,
                         NullLogger<CaptureProcessingPersistence>.Instance);
                     await duplicatePersistence.WriteNodeAsync(
                         fixture.Receipt, fixture.Node, DurableProcessingNodeStatus.Completed, null, 2,
@@ -499,9 +496,8 @@ public sealed class Issue435ProjectedScenePerformanceTests
     {
         using var telemetry = new CaptureProcessingTelemetry();
         using var store = new SqliteCaptureProcessingStore(options);
-        using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
         var persistence = new CaptureProcessingPersistence(
-            options, store, storage, telemetry, NullLogger<CaptureProcessingPersistence>.Instance);
+            options, store, telemetry, NullLogger<CaptureProcessingPersistence>.Instance);
         var durable = await persistence.ReadNodeAsync(
             fixture.Descriptor.Capture.CaptureId, fixture.Node.Id, CancellationToken.None).ConfigureAwait(false);
         Assert.IsNotNull(durable);

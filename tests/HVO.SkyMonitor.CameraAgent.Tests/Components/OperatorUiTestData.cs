@@ -172,7 +172,7 @@ internal static class OperatorUiTestData
         new CameraAgentOpticsStatus("Fisheye", "Equidistant", 3, 180, 140, "cal-v1", false, "Full sensor"),
         new CameraAgentCapturePolicyStatus("MinimumStartInterval", 5, 10, 1000, 1, 2, 1, 2000, 0, 10, "ExposureFirst"),
         [new CameraAgentPipelineNodeStatus("preview", "Preview", true, ["calibrate"])],
-        new CameraAgentRetentionStatus(30, 10, 15, 1, 1024, true, 31, 100_000, 256L * 1024 * 1024),
+        new CameraAgentRetentionStatus(1024, true, 31, 100_000, 256L * 1024 * 1024),
         new CameraAgentUploadStatus(true, 10, 10, 10, 300, 0, 100, 1000, 50, 500),
         new CameraAgentEnvironmentalPolicyStatus(true, 100, 10, 10, 1000, 4096),
         new CameraAgentTransientPolicyStatus("Edge", true, 10, 1000, 5, 30, 2000));
@@ -214,7 +214,7 @@ internal sealed class TestOperatorUiService : ICameraAgentOperatorUiService, ICa
     internal Func<CancellationToken, ValueTask<OperatorUiResult<CameraAgentSystemStatus>>> SystemHandler { get; set; } =
         _ => ValueTask.FromResult(OperatorUiResult<CameraAgentSystemStatus>.Success(OperatorUiTestData.SystemStatus()));
     internal Func<CancellationToken, ValueTask<OperatorUiResult<CameraAgentStorageReconciliation>>> ReconciliationHandler { get; set; } =
-        _ => ValueTask.FromResult(OperatorUiResult<CameraAgentStorageReconciliation>.Success(new CameraAgentStorageReconciliation(null, null)));
+        _ => ValueTask.FromResult(OperatorUiResult<CameraAgentStorageReconciliation>.Success(new CameraAgentStorageReconciliation(null)));
     internal Func<CancellationToken, ValueTask<OperatorUiResult<IReadOnlyList<CameraAgentDeliveryRecord>>>> DeliveryHandler { get; set; } =
         _ => ValueTask.FromResult(OperatorUiResult<IReadOnlyList<CameraAgentDeliveryRecord>>.Success([]));
     internal Func<bool, long, string, CancellationToken, Task<OperatorUiResult<OperatorCommandReceipt>>> CaptureHandler { get; set; } =

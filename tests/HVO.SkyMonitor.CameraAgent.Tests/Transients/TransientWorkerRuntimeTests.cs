@@ -388,7 +388,7 @@ public sealed partial class TransientWorkerRuntimeTests
             var services = new ServiceCollection();
             services.AddLogging();
             services.AddSingleton<ICelestialCatalog>(new InMemoryCelestialCatalog([]));
-            services.AddCameraAgentInfrastructure(configuration);
+            services.AddSiloTestInfrastructure(configuration);
             using var provider = services.BuildServiceProvider();
             var epoch = new DateTimeOffset(2025, 1, 15, 8, 0, 0, TimeSpan.Zero);
             var cameraConfiguration = CreateConfiguration(CreateOneFrameScenario(epoch));
@@ -465,7 +465,7 @@ public sealed partial class TransientWorkerRuntimeTests
             var services = new ServiceCollection();
             services.AddLogging();
             services.AddSingleton<ICelestialCatalog>(new InMemoryCelestialCatalog([]));
-            services.AddCameraAgentInfrastructure(configuration);
+            services.AddSiloTestInfrastructure(configuration);
             using var provider = services.BuildServiceProvider();
             var cameraConfiguration = CreateConfiguration();
             provider.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(cameraConfiguration);
@@ -1938,7 +1938,7 @@ public sealed partial class TransientWorkerRuntimeTests
             var services = new ServiceCollection();
             services.AddLogging();
             services.AddSingleton<ICelestialCatalog>(new InMemoryCelestialCatalog([]));
-            services.AddCameraAgentInfrastructure(configuration);
+            services.AddSiloTestInfrastructure(configuration);
             using var provider = services.BuildServiceProvider();
             var epoch = new DateTimeOffset(2025, 1, 15, 8, 0, 0, TimeSpan.Zero);
             var cameraConfiguration = CreateConfiguration(CreateAdjacentFrameScenario(epoch));
@@ -2015,7 +2015,7 @@ public sealed partial class TransientWorkerRuntimeTests
             var services = new ServiceCollection();
             services.AddLogging();
             services.AddSingleton<ICelestialCatalog>(new InMemoryCelestialCatalog([]));
-            services.AddCameraAgentInfrastructure(configuration);
+            services.AddSiloTestInfrastructure(configuration);
             using var provider = services.BuildServiceProvider();
             var epoch = new DateTimeOffset(2025, 1, 15, 8, 0, 0, TimeSpan.Zero);
             var cameraConfiguration = CreateConfiguration(CreateAdjacentFrameScenario(epoch));
@@ -2452,7 +2452,7 @@ public sealed partial class TransientWorkerRuntimeTests
             services.AddSingleton(timeProvider);
         }
         services.AddSingleton<ICelestialCatalog>(new InMemoryCelestialCatalog([]));
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(values).Build());
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(values).Build());
         if (faultInjector is not null)
         {
             services.AddSingleton(faultInjector);

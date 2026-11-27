@@ -1,4 +1,3 @@
-using HVO.SkyMonitor.CameraAgent.Common.Background;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -28,8 +27,7 @@ public sealed partial class DurableCaptureProcessingTests
             var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
             using var store = new SqliteCaptureProcessingStore(fixture.Options);
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
-            var persistence = CreatePersistence(fixture.Options, store, storage, telemetry);
+            var persistence = CreatePersistence(fixture.Options, store, telemetry);
             var step = new MetadataProducingStep();
             var graph = new CaptureProcessingGraph([CreateMetadataNode(step)]);
             var failures = 0;

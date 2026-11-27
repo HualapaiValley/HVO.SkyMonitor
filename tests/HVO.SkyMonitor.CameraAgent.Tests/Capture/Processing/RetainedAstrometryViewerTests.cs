@@ -38,9 +38,8 @@ public sealed partial class DurableCaptureProcessingTests
             var id = descriptor.Capture.CaptureId;
             using var telemetry = new CaptureProcessingTelemetry();
             using var store = new SqliteCaptureProcessingStore(f.Fixture.Options);
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
             using var numericalGate = new CaptureAstrometryExecutionGate();
-            var persistence = CreatePersistence(f.Fixture.Options, store, storage, telemetry);
+            var persistence = CreatePersistence(f.Fixture.Options, store, telemetry);
             var astrometryGraph = AstrometryGraph(f, new(new ProcessingRecipeExecutor()), numericalGate,
                 enabled: scenario != "no-data", persistence: persistence);
             var raw = new ProcessingArtifact(descriptor.Artifact.ArtifactId, FrameArtifactRole.Raw, descriptor.Artifact.Variant,

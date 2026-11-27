@@ -63,7 +63,7 @@ internal sealed partial class SqliteCaptureProcessingStore
 
     private static SqliteCommand CreateCommittedArchivePublicationsQuery(
         SqliteConnection connection, Guid executionId, string nodeId,
-        string schema = Storage.FileSystemFrameStorageService.ArchiveEvidenceVersion)
+        string schema = SiloCaptureProcessingStep.SiloArchiveEvidenceVersion)
     {
         var command = connection.CreateCommand();
         command.Parameters.AddWithValue("$execution", executionId.ToString("N"));
@@ -72,26 +72,9 @@ internal sealed partial class SqliteCaptureProcessingStore
         return command;
     }
 
-    internal static bool IsCommittedArchivePublication(
-        SqliteConnection connection, Guid executionId, Guid captureId, string nodeId, string path, string identity)
-    {
-        using var command = CreateCommittedArchivePublicationsQuery(connection, executionId, nodeId);
-        // The exact copy input was written by Storage after saving, then committed under the live lease.
-        // Merely selecting a derivative can result in a successful Storage node with no exported copy.
-        command.CommandText = CommittedArchivePublicationsSql + """
-
-             AND raw.capture_id = $capture AND input.variant = $path AND input.identity_sha256 = $identity
-            LIMIT 1;
-            """;
-        command.Parameters.AddWithValue("$capture", captureId.ToString("N"));
-        command.Parameters.AddWithValue("$path", path);
-        command.Parameters.AddWithValue("$identity", identity);
-        return command.ExecuteScalar() is string;
-    }
-
     internal async ValueTask<IReadOnlyList<(string RelativePath, string Identity)>> ReadCommittedArchivePublicationsAsync(
         Guid executionId, string nodeId, CancellationToken cancellationToken,
-        string schema = Storage.FileSystemFrameStorageService.ArchiveEvidenceVersion)
+        string schema = SiloCaptureProcessingStep.SiloArchiveEvidenceVersion)
     {
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);

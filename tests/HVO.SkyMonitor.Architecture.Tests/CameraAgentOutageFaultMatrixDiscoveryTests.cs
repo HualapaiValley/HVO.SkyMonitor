@@ -21,7 +21,7 @@ public sealed class CameraAgentOutageFaultMatrixDiscoveryTests
         using var document = JsonDocument.Parse(
             await File.ReadAllTextAsync(matrixPath).ConfigureAwait(false));
         var row = Assert.ContainsSingle(document.RootElement.GetProperty("rows").EnumerateArray().Where(
-            static row => row.GetProperty("id").GetString() == "cameraagent-central-outage-isolation"));
+            static row => row.GetProperty("id").GetString() == "cameraagent-silo-raw-recovery"));
         var test = row.GetProperty("test").GetString();
         Assert.IsNotNull(test);
         var discovered = await ListTestsAsync(FindRepositoryRoot(), CameraAgentProject).ConfigureAwait(false);

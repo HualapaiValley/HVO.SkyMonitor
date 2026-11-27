@@ -107,10 +107,6 @@ public sealed class SqliteArtifactOutboxTests
         Assert.AreEqual(manifest.Descriptor.Artifact.ArtifactId, delivery.ArtifactId);
         Assert.AreEqual(manifest.Descriptor.ByteLength, delivery.ByteLength);
         Assert.AreEqual(manifest.IdempotencyKey, delivery.IdempotencyKey);
-        var holds = await restarted.GetRetentionHoldsAsync(
-            root.Path, CancellationToken.None).ConfigureAwait(false);
-        Assert.HasCount(1, holds);
-        Assert.AreEqual("derived/scene.manifest.json", holds[0].RelativeSidecarPath.Replace('\\', '/'));
     }
 
     [TestMethod]
@@ -128,10 +124,6 @@ public sealed class SqliteArtifactOutboxTests
             await command.ExecuteNonQueryAsync(CancellationToken.None).ConfigureAwait(false);
         }
 
-        var holds = await outbox.GetRetentionHoldsAsync(root.Path, CancellationToken.None).ConfigureAwait(false);
-
-        Assert.HasCount(1, holds);
-        Assert.AreEqual("derived/corrupt-scene.manifest.json", holds[0].RelativeSidecarPath.Replace('\\', '/'));
         var record = await outbox.ReadAsync(root.Path, manifest.IdempotencyKey, CancellationToken.None).ConfigureAwait(false);
         Assert.IsNotNull(record);
         Assert.IsNull(record.ProductManifest);
@@ -243,7 +235,6 @@ public sealed class SqliteArtifactOutboxTests
         var snapshot = await restarted.GetSnapshotAsync(root.Path, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(1, snapshot.AcknowledgedCount);
         Assert.AreEqual(0, snapshot.HeldCount);
-        Assert.IsEmpty(await restarted.GetRetentionHoldsAsync(root.Path, CancellationToken.None).ConfigureAwait(false));
         await Phase14ScenarioEvidence.RecordAsync(
             "outbox-retry-commit",
             "retry-deadline-and-reopen",
@@ -304,9 +295,6 @@ public sealed class SqliteArtifactOutboxTests
         await outbox.QuarantineAsync(
             root.Path, first, "invalid-acknowledgement", CancellationToken.None).ConfigureAwait(false);
 
-        var held = await outbox.GetRetentionHoldsAsync(root.Path, CancellationToken.None).ConfigureAwait(false);
-        Assert.HasCount(1, held);
-        Assert.AreEqual(ArtifactOutboxStatus.Quarantined, held[0].Status);
         await outbox.ReplayAsync(
             root.Path, manifest.IdempotencyKey, "operator-a", "central-fixed", CancellationToken.None).ConfigureAwait(false);
         var replayed = await outbox.ClaimAsync(
@@ -320,7 +308,6 @@ public sealed class SqliteArtifactOutboxTests
         var record = await outbox.ReadAsync(root.Path, manifest.IdempotencyKey, CancellationToken.None).ConfigureAwait(false);
         Assert.IsNotNull(record);
         Assert.AreEqual(ArtifactOutboxStatus.Abandoned, record.Status);
-        Assert.IsEmpty(await outbox.GetRetentionHoldsAsync(root.Path, CancellationToken.None).ConfigureAwait(false));
         var audit = await outbox.ReadAuditAsync(root.Path, manifest.IdempotencyKey, CancellationToken.None).ConfigureAwait(false);
         CollectionAssert.AreEqual(
             ResolutionActions,
@@ -417,7 +404,6 @@ public sealed class SqliteArtifactOutboxTests
         var lease = await outbox.ClaimAsync(root.Path, "worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
         Assert.IsNotNull(lease);
         await outbox.RetryAsync(root.Path, lease, StartUtc.AddDays(3), "upstream-unavailable", CancellationToken.None).ConfigureAwait(false);
-        Assert.HasCount(1, await outbox.GetRetentionHoldsAsync(root.Path, CancellationToken.None).ConfigureAwait(false));
         var before = Directory.EnumerateFiles(Path.Combine(root.Path, "frames"))
             .Order(StringComparer.Ordinal)
             .ToDictionary(static path => path, static path => File.ReadAllBytes(path), StringComparer.Ordinal);
@@ -437,7 +423,6 @@ public sealed class SqliteArtifactOutboxTests
         await Assert.ThrowsExactlyAsync<OutboxOperationCollisionException>(async () =>
             await restarted.ResolveOperationsAsync(root.Path, manifest.IdempotencyKey, OutboxOperationAction.Abandon,
                 "retry-abandon-operation", "owner", "retention-policy", CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
-        Assert.IsEmpty(await restarted.GetRetentionHoldsAsync(root.Path, CancellationToken.None).ConfigureAwait(false));
         Assert.AreEqual(ArtifactOutboxStatus.Abandoned,
             (await restarted.ReadAsync(root.Path, manifest.IdempotencyKey, CancellationToken.None).ConfigureAwait(false))!.Status);
         var audit = await restarted.ReadOperationsAuditAsync(root.Path, manifest.IdempotencyKey, 10, null, CancellationToken.None).ConfigureAwait(false);

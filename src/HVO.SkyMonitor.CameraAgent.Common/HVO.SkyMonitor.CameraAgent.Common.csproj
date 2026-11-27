@@ -15,7 +15,7 @@
     <ProjectReference Include="..\HVO.SkyMonitor.Processing\HVO.SkyMonitor.Processing.csproj" />
     <ProjectReference Include="..\HVO.SkyMonitor.Video.FFmpeg\HVO.SkyMonitor.Video.FFmpeg.csproj" />
     <ProjectReference Include="..\HVO.SkyMonitor.CameraAgent.Replay\HVO.SkyMonitor.CameraAgent.Replay.csproj" />
-    <ProjectReference Include="..\HVO.SkyMonitor.Storage.FileSystem\HVO.SkyMonitor.Storage.FileSystem.csproj" />
+    <ProjectReference Include="..\HVO.SkyMonitor.LocalFiles\HVO.SkyMonitor.LocalFiles.csproj" />
     <PackageReference Include="HVO.Core" />
   </ItemGroup>
 

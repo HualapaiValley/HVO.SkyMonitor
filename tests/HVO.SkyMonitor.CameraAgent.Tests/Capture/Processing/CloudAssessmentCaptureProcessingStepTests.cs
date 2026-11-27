@@ -204,8 +204,6 @@ public sealed partial class CloudAssessmentCaptureProcessingStepTests
             Assert.HasCount(1, holds);
             var hold = holds[0];
             Assert.AreEqual(manifest.Descriptor.Artifact.ArtifactId, hold.ArtifactId);
-            Assert.AreEqual("reference.bin", hold.PayloadRelativePath);
-            Assert.AreEqual("reference.manifest.json", hold.SidecarRelativePath);
             Assert.IsEmpty(await loader.GetRetentionHoldsAsync(
                 Path.Combine(root, "other-storage"), CancellationToken.None).ConfigureAwait(false));
             await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>

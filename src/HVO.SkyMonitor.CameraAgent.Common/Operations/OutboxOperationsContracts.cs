@@ -137,7 +137,7 @@ public sealed class CameraAgentStorageResolver(
     {
         var configuration = await configurationAccessor.WaitForConfigurationAsync(cancellationToken).ConfigureAwait(false);
         return ResolveLocations(
-            ArtifactOutboxDrainService.ResolveStorageRoots(configuration, hostOptions.Value),
+            [hostOptions.Value.RawIngressRoot],
             hostOptions.Value.RawIngressRoot);
     }
 
@@ -155,7 +155,7 @@ public sealed class CameraAgentStorageResolver(
         ArgumentNullException.ThrowIfNull(options);
 
         return ResolveLocations(
-            ArtifactOutboxDrainService.ResolveLocalStorageRoots(configuration, options),
+            [options.RawIngressRoot],
             options.RawIngressRoot);
     }
 

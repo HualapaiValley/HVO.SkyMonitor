@@ -8,6 +8,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Silo.S3;
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.TimeLapses;
 using HVO.SkyMonitor.CameraAgent.Tests.NightlyProducts;
 using HVO.SkyMonitor.CameraAgent.Tests.Silo;
@@ -348,7 +349,7 @@ public sealed partial class SiloRawEvidenceRecoveryTests
         await File.WriteAllTextAsync(fresh, "fresh", token).ConfigureAwait(false);
         File.SetLastWriteTimeUtc(expired, fixture.Time.GetUtcNow().AddHours(-2).UtcDateTime);
         File.SetLastWriteTimeUtc(fresh, fixture.Time.GetUtcNow().UtcDateTime);
-        using var services = new ServiceCollection().BuildServiceProvider();
+        using var services = new ServiceCollection().AddSingleton<StoragePressureState>().BuildServiceProvider();
         using var archive = new SiloArchiveWorker(new ConfigurationManager(), services, fixture.Time, NullLogger<SiloArchiveWorker>.Instance);
         using var worker = new SiloRetentionWorker(storage, ingress, fixture.Options, new CaptureMaintenanceGate(),
             services, archive, fixture.Time, NullLogger<SiloRetentionWorker>.Instance);

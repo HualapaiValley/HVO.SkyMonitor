@@ -866,7 +866,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         {
             using var store = new ProtectedDeploymentLocationStore(
                 options, _protector, _timeProvider, NullLogger<ProtectedDeploymentLocationStore>.Instance);
-            await Assert.ThrowsExactlyAsync<IOException>(async () =>
+            await Assert.ThrowsAsync<IOException>(async () =>
                 await store.InitializeAsync(
                     CreateSeed(35.347, -113.878, 0, "America/Phoenix"),
                     CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
@@ -889,7 +889,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
             var productionProtector = new DataProtectionDeploymentLocationProtector(_options);
             using var store = new ProtectedDeploymentLocationStore(
                 _options, productionProtector, _timeProvider, NullLogger<ProtectedDeploymentLocationStore>.Instance);
-            await Assert.ThrowsExactlyAsync<IOException>(async () =>
+            await Assert.ThrowsAsync<IOException>(async () =>
                 await store.InitializeAsync(
                     CreateSeed(35.347, -113.878, 0, "America/Phoenix"),
                     CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);

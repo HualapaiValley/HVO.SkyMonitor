@@ -40,13 +40,13 @@ public sealed partial class ProcessingGraphOperationsTests
                 await operations.ActivateRevisionAsync(draft.RevisionId, initial.StateVersion, "activate", "test", null, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
             var captures = new List<RawCaptureReceipt>();
             for (var index = 0; index < size - 1; index++)
-                captures.Add((await ingress.AcceptAsync(config, CreateSubmission(index, CameraPixelFormat.Mono16), CancellationToken.None).ConfigureAwait(false))!);
+                captures.Add((await ingress.AcceptAndSettleAsync(config, CreateSubmission(index, CameraPixelFormat.Mono16), CancellationToken.None).ConfigureAwait(false))!);
             var center = captures[size / 2];
             var submission = new ProcessingReplaySubmission(center.Manifest.Descriptor.Capture.CaptureId,
                 draft.RevisionId, center.Manifest.Descriptor.Artifact.ArtifactId);
             await Assert.ThrowsExactlyAsync<ProcessingGraphStoreConflictException>(async () =>
                 await operations.SubmitReplayAsync(submission, "incomplete", "test", CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
-            captures.Add((await ingress.AcceptAsync(config, CreateSubmission(size - 1, CameraPixelFormat.Mono16), CancellationToken.None).ConfigureAwait(false))!);
+            captures.Add((await ingress.AcceptAndSettleAsync(config, CreateSubmission(size - 1, CameraPixelFormat.Mono16), CancellationToken.None).ConfigureAwait(false))!);
             var replay = await operations.SubmitReplayAsync(submission, "complete", "test", CancellationToken.None).ConfigureAwait(false);
             var frozen = await provider.GetRequiredService<SqliteCaptureProcessingStore>()
                 .ReadFrozenReplayRawInputsAsync(replay.Execution.ExecutionId, "rolling", CancellationToken.None).ConfigureAwait(false);

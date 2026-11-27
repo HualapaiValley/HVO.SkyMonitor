@@ -35,9 +35,8 @@ public sealed partial class CameraAgentOperatorUiServiceTests
         using var fixture = await CameraAgentArtifactServiceTests.ArtifactFixture.CreateAsync().ConfigureAwait(false);
         var token = CancellationToken.None;
         var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = fixture.Root });
-        using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
         using var telemetry = new CaptureProcessingTelemetry();
-        var persistence = new CaptureProcessingPersistence(options, fixture.ProcessingStore, storage, telemetry,
+        var persistence = new CaptureProcessingPersistence(options, fixture.ProcessingStore, telemetry,
             NullLogger<CaptureProcessingPersistence>.Instance);
         var views = new SqliteCenteredViews(fixture.ProcessingStore, TimeProvider.System, NullLogger<SqliteCenteredViews>.Instance);
         var producer = new CenteredViewProducer(persistence, fixture.Service, views, options, fixture.ProcessingStore);
@@ -313,9 +312,8 @@ public sealed partial class CameraAgentOperatorUiServiceTests
         using var fixture = await CameraAgentArtifactServiceTests.ArtifactFixture.CreateAsync().ConfigureAwait(false);
         var token = CancellationToken.None;
         var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = fixture.Root });
-        using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
         using var telemetry = new CaptureProcessingTelemetry();
-        var persistence = new CaptureProcessingPersistence(options, fixture.ProcessingStore, storage, telemetry,
+        var persistence = new CaptureProcessingPersistence(options, fixture.ProcessingStore, telemetry,
             NullLogger<CaptureProcessingPersistence>.Instance);
         var views = new SqliteCenteredViews(fixture.ProcessingStore, TimeProvider.System, NullLogger<SqliteCenteredViews>.Instance);
         var producer = new CenteredViewProducer(persistence, fixture.Service, views, options, fixture.ProcessingStore);

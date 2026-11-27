@@ -310,11 +310,11 @@ internal sealed partial class RawCaptureIngress : ICenteredExposureRuntimeReader
         RawIngressFileStore.EnsureNoSymbolicLinks(_options.RawIngressRoot, paths.PayloadAbsolutePath);
         var sidecar = _siloArtifacts is null
             ? await File.ReadAllBytesAsync(paths.SidecarAbsolutePath, cancellationToken).ConfigureAwait(false)
-            : await _siloArtifacts.ReadRawEvidenceAsync(descriptor.Artifact.ArtifactId, evidence.ManifestSha256, paths.SidecarAbsolutePath,
+            : await _siloArtifacts.ReadRawEvidenceAsync(descriptor.Artifact.ArtifactId, evidence.ManifestSha256, allowStaged: true,
                 cancellationToken).ConfigureAwait(false) ?? throw new InvalidDataException("The centered raw source has no retained evidence.");
         var bytes = _siloArtifacts is null
             ? await File.ReadAllBytesAsync(paths.PayloadAbsolutePath, cancellationToken).ConfigureAwait(false)
-            : await _siloArtifacts.ReadLiveRawAsync(descriptor, paths.PayloadAbsolutePath, cancellationToken).ConfigureAwait(false)
+            : await _siloArtifacts.ReadLiveRawAsync(descriptor, cancellationToken).ConfigureAwait(false)
                 ?? throw new InvalidDataException("The centered raw source has no retained payload.");
         if (PayloadChecksum.ComputeSha256(sidecar) != evidence.ManifestSha256 || bytes.LongLength != descriptor.Layout.ByteLength)
             throw new InvalidDataException("Centered raw frame evidence differs from its committed identity.");

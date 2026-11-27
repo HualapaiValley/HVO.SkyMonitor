@@ -147,10 +147,8 @@ public sealed partial class ProcessingGraphOperationsTests
                             Options = JsonSerializer.SerializeToElement(new { maximumMagnitude = 6.5 })
                         },
                         new("Storage", "archive", DependsOn: [canonicalId], Options: JsonSerializer.SerializeToElement(
-                            new FileStorageCaptureProcessingStepOptions
-                            {
-                                StorageRoot = Path.Combine(root, "archive"), QueueForUpload = false, UpdateLatestFrame = false
-                            }))
+                            new SiloCaptureProcessingStepOptions
+                            { UpdateLatestFrame = false }))
                     ]
                 }
             };
@@ -514,7 +512,7 @@ public sealed partial class ProcessingGraphOperationsTests
                     Readout = fullFrame
                 },
                 Pipeline = new([new("Storage", "storage", DependsOn: ["$raw"], Options: JsonSerializer.SerializeToElement(
-                    new FileStorageCaptureProcessingStepOptions { StorageRoot = root, QueueForUpload = false }))],
+                    new SiloCaptureProcessingStepOptions {  }))],
                     CapturePipelineSchemaVersions.ExplicitV2)
             };
             var compatible = full with
@@ -593,7 +591,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 config = config with
                 {
                     Pipeline = new([new("Storage", "LocalStorage", Options: JsonSerializer.SerializeToElement(
-                        new FileStorageCaptureProcessingStepOptions { StorageRoot = root, QueueForUpload = false }),
+                        new SiloCaptureProcessingStepOptions {  }),
                         DependsOn: ["$raw"])], CapturePipelineSchemaVersions.ExplicitV2)
                 };
             }

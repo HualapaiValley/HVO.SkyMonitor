@@ -618,26 +618,18 @@ public sealed partial class CameraAgentOperatorUiServiceTests
     }
 
     [TestMethod]
-    public async Task StorageReconciliation_ReturnsTheLatestRecordedPassesAsync()
+    public async Task StorageReconciliation_ReturnsTheLatestRawAdmissionCheckAsync()
     {
         var time = new FixedTimeProvider(new DateTimeOffset(2026, 9, 30, 12, 0, 0, TimeSpan.Zero));
         var rawIngress = new RawIngressState(time);
-        var processing = new CaptureProcessingState();
-        var service = CreateReadService(rawIngressState: rawIngress, captureProcessingState: processing);
+        var service = CreateReadService(rawIngressState: rawIngress);
 
         var before = await service.GetStorageReconciliationAsync(CancellationToken.None).ConfigureAwait(false);
         rawIngress.RecordReconciliation(new RawIngressReconciliationSummary(40, 2, 1, 1, 0, 4096, IndexProjectionFailures: 3));
-        processing.RecordReconciliation(time.GetUtcNow(), new DerivedProductReconciliationSummary(120, 110, 5, 3, 1, 1, 2048));
         var after = await service.GetStorageReconciliationAsync(CancellationToken.None).ConfigureAwait(false);
-        processing.RecordReconciliation(time.GetUtcNow().AddMinutes(5), null);
-        var failed = await service.GetStorageReconciliationAsync(CancellationToken.None).ConfigureAwait(false);
 
-        Assert.AreEqual(new CameraAgentStorageReconciliation(null, null), before.Value);
+        Assert.AreEqual(new CameraAgentStorageReconciliation(null), before.Value);
         Assert.AreEqual(new RawIngressReconciliationReport(time.GetUtcNow(), 40, 2, 1, 1, 0, 3), after.Value!.RawIngress);
-        Assert.AreEqual(new DerivedProductReconciliationReport(time.GetUtcNow(), true, 120, 5, 3, 1, 1), after.Value.DerivedProducts);
-        // A failed pass replaces the last success, so the page never shows old counts as current.
-        Assert.AreEqual(new DerivedProductReconciliationReport(time.GetUtcNow().AddMinutes(5), false, 0, 0, 0, 0, 0), failed.Value!.DerivedProducts);
-        Assert.AreEqual(after.Value.RawIngress, failed.Value.RawIngress);
     }
 
     [TestMethod]
@@ -847,8 +839,7 @@ public sealed partial class CameraAgentOperatorUiServiceTests
         ICameraAgentStorageResolver? storageResolver = null,
         IArtifactOutbox? artifactOutbox = null,
         CameraAgentHostOptions? hostOptions = null,
-        RawIngressState? rawIngressState = null,
-        CaptureProcessingState? captureProcessingState = null)
+        RawIngressState? rawIngressState = null)
     {
         var principal = new ClaimsPrincipal(new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, "owner")], "test"));
         var authorization = new Mock<IAuthorizationService>(MockBehavior.Strict);
@@ -856,7 +847,7 @@ public sealed partial class CameraAgentOperatorUiServiceTests
             .ReturnsAsync(AuthorizationResult.Success());
         return CreateService(new CountingAuthenticationStateProvider(principal), authorization.Object,
             storageResolver: storageResolver, artifactOutbox: artifactOutbox, hostOptions: hostOptions,
-            rawIngressState: rawIngressState, captureProcessingState: captureProcessingState);
+            rawIngressState: rawIngressState);
     }
 
     private static ArtifactOutboxDeliveryRecord DeliveryRecord(
@@ -901,7 +892,6 @@ public sealed partial class CameraAgentOperatorUiServiceTests
         IArtifactOutbox? artifactOutbox = null,
         CameraAgentHostOptions? hostOptions = null,
         RawIngressState? rawIngressState = null,
-        CaptureProcessingState? captureProcessingState = null,
         ITransientRuntimeManagement? transientRuntime = null,
         ICameraAgentProcessingCompletion? processingCompletion = null,
         CurrentSkyRefreshSetting? currentSkyRefresh = null,
@@ -934,7 +924,6 @@ public sealed partial class CameraAgentOperatorUiServiceTests
             TimeProvider.System,
             NullLogger<CameraAgentOperatorUiService>.Instance,
             rawIngressState: rawIngressState,
-            captureProcessingState: captureProcessingState,
             processingCompletion: processingCompletion,
             currentSkyRefresh: currentSkyRefresh, retainedAstrometry: retainedAstrometry,
             centeredViewLookup: centeredViewLookup,

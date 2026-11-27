@@ -106,7 +106,6 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
     private const int AbsoluteMaximumPreviewEncodedBytes = 16 * 1024 * 1024;
     private readonly Microsoft.Extensions.Logging.ILogger? _logger;
     private readonly string _root;
-    private readonly LocalArchiveReader? _localArchive;
     private readonly SiloArtifactStorage? _silo;
     private readonly string _databasePath;
     private readonly string _walPath;
@@ -135,11 +134,9 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         SqliteCaptureProcessingStore processingStore,
         ICameraAgentPreviewEncoder previewEncoder,
         Microsoft.Extensions.Logging.ILogger<CameraAgentArtifactService>? logger = null,
-        LocalArchiveReader? localArchive = null,
         SiloArtifactStorage? silo = null)
     {
         _logger = logger;
-        _localArchive = localArchive;
         _silo = silo;
         ArgumentNullException.ThrowIfNull(options);
         _processingStore = processingStore ?? throw new ArgumentNullException(nameof(processingStore));
@@ -202,99 +199,63 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
                     ? await OpenSiloContentAsync(_silo, siloRow, forPreview, cancellationToken).ConfigureAwait(false)
                     : new(evidence.Status);
             }
-            IndexedArchiveFrame? archive = null;
-            if (evidence.Status != CameraAgentArtifactReadStatus.Found)
+            if (evidence.Status != CameraAgentArtifactReadStatus.Found || evidence.Row is not { } row)
             {
-                if (evidence.Status != CameraAgentArtifactReadStatus.NotFound ||
-                    replayExecutionId is not null ||
-                    forPreview ||
-                    _localArchive is null)
-                {
-                    return new(evidence.Status);
-                }
-
-                // Release the root lifecycle gate before scanning separate legacy archive indexes so
-                // slow archive disk I/O on a lookup miss never stalls concurrent committed preview reads.
-                lifecycleGateHeld = false;
-                lifecycleGate.Release();
-                archive = await FindLocalArchiveAsync(lifecycleGate, artifactId, history, cancellationToken)
-                    .ConfigureAwait(false);
-                if (archive is null)
-                {
-                    return new(CameraAgentArtifactReadStatus.NotFound);
-                }
+                return new(evidence.Status);
             }
-
-            var row = evidence.Row;
-            var payloadPath = archive?.PayloadPath ?? ResolveSafePath(row!.PayloadRelativePath);
-            var sidecarPath = archive is null ? ResolveSafePath(row!.SidecarRelativePath) : null;
+            var payloadPath = ResolveSafePath(row.PayloadRelativePath);
+            var sidecarPath = ResolveSafePath(row.SidecarRelativePath);
             ValidatedArtifact? validated = null;
             var cachedValidation = false;
             FileIdentity? payloadIdentity = null;
             FileIdentity? sidecarIdentity = null;
-            if (archive is not null)
+            cachedValidation = TryGetValidatedArtifact(row!, payloadPath, sidecarPath!, out var cached);
+            if (cachedValidation)
             {
-                validated = CreateValidated(archive.Manifest.Descriptor, archive.Manifest.RelativeArtifactPath);
-                if (forPreview && PreviewStatus(validated) is { } archivePreviewStatus)
+                validated = cached;
+                if (forPreview && PreviewStatus(validated) is { } cachedPreviewStatus)
                 {
-                    return new(archivePreviewStatus);
+                    return new(cachedPreviewStatus);
                 }
                 if (!File.Exists(payloadPath))
                 {
                     return new(CameraAgentArtifactReadStatus.Gone);
                 }
-                RawIngressFileStore.EnsureNoSymbolicLinks(archive.StorageRoot, payloadPath);
+                EnsurePhysicalPath(payloadPath);
             }
             else
             {
-                cachedValidation = TryGetValidatedArtifact(row!, payloadPath, sidecarPath!, out var cached);
-                if (cachedValidation)
+                if (row!.Kind == ArtifactEvidenceKind.Raw && row.RawState == "missing_evidence")
                 {
-                    validated = cached;
-                    if (forPreview && PreviewStatus(validated) is { } cachedPreviewStatus)
-                    {
-                        return new(cachedPreviewStatus);
-                    }
-                    if (!File.Exists(payloadPath))
-                    {
-                        return new(CameraAgentArtifactReadStatus.Gone);
-                    }
-                    EnsurePhysicalPath(payloadPath);
+                    return new(CameraAgentArtifactReadStatus.Gone);
                 }
-                else
+                if (row.Kind == ArtifactEvidenceKind.Raw && row.RawState != "committed")
                 {
-                    if (row!.Kind == ArtifactEvidenceKind.Raw && row.RawState == "missing_evidence")
-                    {
-                        return new(CameraAgentArtifactReadStatus.Gone);
-                    }
-                    if (row.Kind == ArtifactEvidenceKind.Raw && row.RawState != "committed")
-                    {
-                        return new(CameraAgentArtifactReadStatus.Conflict);
-                    }
-                    if (string.Equals(payloadPath, sidecarPath, PathComparison))
-                    {
-                        return new(CameraAgentArtifactReadStatus.Conflict);
-                    }
-                    EnsurePhysicalPath(payloadPath);
-                    EnsurePhysicalPath(sidecarPath!);
-                    if (!File.Exists(payloadPath) || !File.Exists(sidecarPath))
-                    {
-                        return new(CameraAgentArtifactReadStatus.Gone);
-                    }
-                    sidecarStream = new FileStream(
-                        sidecarPath!,
-                        FileMode.Open,
-                        FileAccess.Read,
-                        FileShare.Read | FileShare.Delete,
-                        bufferSize: 16 * 1024,
-                        FileOptions.Asynchronous | FileOptions.SequentialScan);
-                    if (sidecarStream.Length is < 1 or > MaximumEvidenceBytes)
-                    {
-                        return new(CameraAgentArtifactReadStatus.Conflict);
-                    }
-                    payloadIdentity = ReadFileIdentity(payloadPath);
-                    sidecarIdentity = ReadFileIdentity(sidecarPath!);
+                    return new(CameraAgentArtifactReadStatus.Conflict);
                 }
+                if (string.Equals(payloadPath, sidecarPath, PathComparison))
+                {
+                    return new(CameraAgentArtifactReadStatus.Conflict);
+                }
+                EnsurePhysicalPath(payloadPath);
+                EnsurePhysicalPath(sidecarPath!);
+                if (!File.Exists(payloadPath) || !File.Exists(sidecarPath))
+                {
+                    return new(CameraAgentArtifactReadStatus.Gone);
+                }
+                sidecarStream = new FileStream(
+                    sidecarPath!,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.Read | FileShare.Delete,
+                    bufferSize: 16 * 1024,
+                    FileOptions.Asynchronous | FileOptions.SequentialScan);
+                if (sidecarStream.Length is < 1 or > MaximumEvidenceBytes)
+                {
+                    return new(CameraAgentArtifactReadStatus.Conflict);
+                }
+                payloadIdentity = ReadFileIdentity(payloadPath);
+                sidecarIdentity = ReadFileIdentity(sidecarPath!);
             }
 
             payload = new FileStream(
@@ -1139,37 +1100,6 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
                 ? FindReplayOutputEvidenceAsync(connection, executionId, artifactId, token)
                 : FindEvidenceAsync(connection, artifactId, token),
             cancellationToken);
-
-    private async ValueTask<IndexedArchiveFrame?> FindLocalArchiveAsync(
-        SemaphoreSlim lifecycleGate,
-        Guid artifactId,
-        RetainedHistoryRead? history,
-        CancellationToken cancellationToken)
-    {
-        await foreach (var candidate in _localArchive!.FindCandidatesAsync(artifactId, cancellationToken).ConfigureAwait(false))
-        {
-            await StorageLifecycleLock.WaitAsync(lifecycleGate, "artifact-archive-authority", _logger, cancellationToken)
-                .ConfigureAwait(false);
-            bool shadowed;
-            try
-            {
-                shadowed = await ExecuteWithJournalConnectionAsync(
-                    history,
-                    (connection, token) => LocalArchiveReader.IsShadowedByJournalAsync(connection, candidate, token),
-                    cancellationToken).ConfigureAwait(false);
-            }
-            finally
-            {
-                lifecycleGate.Release();
-            }
-
-            if (!shadowed)
-            {
-                return candidate;
-            }
-        }
-        return null;
-    }
 
     private async ValueTask<TResult> ExecuteWithJournalConnectionAsync<TResult>(
         RetainedHistoryRead? history,

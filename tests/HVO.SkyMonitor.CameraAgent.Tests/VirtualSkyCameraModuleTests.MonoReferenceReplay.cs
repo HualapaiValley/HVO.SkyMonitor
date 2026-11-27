@@ -10,13 +10,8 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 public sealed partial class VirtualSkyCameraModuleTests
 {
-    private static async Task<byte[]> ReadReferenceReplayPayloadAsync(ServiceProvider provider, string root, Guid artifactId)
-    {
-        var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
-        var row = await store.ReadOutputByArtifactIdAsync(artifactId, CancellationToken.None).ConfigureAwait(false);
-        Assert.IsNotNull(row);
-        return await File.ReadAllBytesAsync(Path.Combine(root, row.PayloadRelativePath)).ConfigureAwait(false);
-    }
+    private static Task<byte[]> ReadReferenceReplayPayloadAsync(ServiceProvider provider, Guid artifactId)
+        => SiloInfrastructureFixture.ReadArtifactBytesAsync(provider, artifactId, CancellationToken.None);
 
     private sealed record MonoReferenceReplayWitness(ReconstructionDescriptor Raw, SyntheticCalibrationModelV1 Replacement,
         ProcessingGraphExecutionDetail Execution, byte[] CalibratedBytes);
@@ -43,6 +38,7 @@ public sealed partial class VirtualSkyCameraModuleTests
     {
         var (raw, replacement, original, calibratedBytes) = witness;
         var token = CancellationToken.None;
+        await SettleSiloRawAdmissionsAsync(restarted, token).ConfigureAwait(false);
         var replacementLight = raw with
         {
             Profiles = raw.Profiles with
@@ -97,7 +93,7 @@ public sealed partial class VirtualSkyCameraModuleTests
             outputIds.Add(actual.ArtifactId);
         }
 
-        var replayedLinear = await ReadReferenceReplayPayloadAsync(restarted, root, outputIds[0]).ConfigureAwait(false);
+        var replayedLinear = await ReadReferenceReplayPayloadAsync(restarted, outputIds[0]).ConfigureAwait(false);
         CollectionAssert.AreEqual(calibratedBytes, replayedLinear);
         var ui = MeasurementOperations(restarted, graphs);
         var result = await ui.GetExecutionDetailAsync(replay.Execution.ExecutionId, token).ConfigureAwait(false);

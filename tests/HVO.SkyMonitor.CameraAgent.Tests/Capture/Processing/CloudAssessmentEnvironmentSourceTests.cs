@@ -423,7 +423,7 @@ public sealed partial class CloudAssessmentEnvironmentSourceTests
                     // Durable-local outputs require a Storage node to own retention, as in the sample.
                     new CaptureProcessingStepConfig(
                         "Storage", "LocalStorage", Order: 100,
-                        Options: JsonSerializer.SerializeToElement(new { storageRoot = root, queueForUpload = false }),
+                        Options: JsonSerializer.SerializeToElement(new { updateLatestFrame = true }),
                         DependsOn: ["$raw"]),
                     new CaptureProcessingStepConfig(
                         "Telemetry", "Telemetry", Order: 1000, DependsOn: ["Calibration", "LocalStorage"])
@@ -545,7 +545,7 @@ public sealed partial class CloudAssessmentEnvironmentSourceTests
             services.AddLogging();
             // The host registers its configuration; the environmental source factory reads source options from it.
             services.AddSingleton<IConfiguration>(configuration);
-            services.AddCameraAgentInfrastructure(configuration);
+            services.AddSiloTestInfrastructure(configuration);
             services.AddSingleton<ILoggerProvider>(logs);
             services.Configure<LoggerFilterOptions>(static options => options.MinLevel = LogLevel.Debug);
             // The host (Program.cs) supplies the Data Protection implementation; it is not exercised here.

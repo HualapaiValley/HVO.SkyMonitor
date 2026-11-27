@@ -251,12 +251,12 @@ public sealed partial class CurrentSkyPageTests
         using var context = new BunitContext();
         var service = Configure(context);
         service.CurrentSkyHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(
-            new(OperatorUiTestData.CurrentImage(), null, null, new(centralEnabled, uploadEnabled, null, null))));
+            new(OperatorUiTestData.CurrentImage(), null, null, new(centralEnabled, uploadEnabled, null))));
         var cut = context.Render<CurrentSkyPage>();
         cut.WaitForAssertion(() =>
         {
             Assert.AreEqual(label, cut.Find(".dashboard-status a[href='/operations/delivery']").TextContent);
-            Assert.AreEqual("Not verified yet", cut.Find(".dashboard-status a[href='/operations/storage']").TextContent);
+            Assert.AreEqual("Awaiting recovery check", cut.Find(".dashboard-status a[href='/operations/storage']").TextContent);
             Assert.IsFalse(cut.Find(".dashboard-status").TextContent.Contains("Acknowledged", StringComparison.Ordinal));
         });
     }

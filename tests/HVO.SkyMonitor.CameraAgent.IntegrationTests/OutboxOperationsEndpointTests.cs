@@ -606,10 +606,6 @@ public sealed partial class OutboxOperationsEndpointTests
             string root, string idempotencyKey, CancellationToken cancellationToken)
             => throw new NotSupportedException();
 
-        public ValueTask<IReadOnlyList<ArtifactOutboxRetentionHold>> GetRetentionHoldsAsync(
-            string root, CancellationToken cancellationToken)
-            => ValueTask.FromResult<IReadOnlyList<ArtifactOutboxRetentionHold>>([]);
-
         public ValueTask<IReadOnlyList<Guid>> GetAcknowledgedArtifactIdsAsync(
             string root, IReadOnlySet<Guid> artifactIds, CancellationToken cancellationToken)
             => ValueTask.FromResult<IReadOnlyList<Guid>>([]);

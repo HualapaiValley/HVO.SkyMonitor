@@ -163,10 +163,6 @@ internal sealed record CameraAgentPipelineNodeStatus(
     IReadOnlyList<string> Dependencies);
 
 internal sealed record CameraAgentRetentionStatus(
-    int SweepIntervalMinutes,
-    double PressureThresholdPercent,
-    double PressureRecoveryPercent,
-    int PressureRetentionDays,
     long RawIngressReserveBytes,
     bool EnvironmentalHistoryEnabled,
     int EnvironmentalRetentionDays,
@@ -177,9 +173,7 @@ internal sealed record CameraAgentRetentionStatus(
 /// The latest recorded reconciliation of local evidence with its durable records. Either member is null until its
 /// pass has completed in this process.
 /// </summary>
-internal sealed record CameraAgentStorageReconciliation(
-    RawIngressReconciliationReport? RawIngress,
-    DerivedProductReconciliationReport? DerivedProducts);
+internal sealed record CameraAgentStorageReconciliation(RawIngressReconciliationReport? RawIngress);
 
 /// <summary>One artifact outbox record on the Delivery page, with the storage alias that holds it.</summary>
 internal sealed record CameraAgentDeliveryRecord(string StorageAlias, ArtifactOutboxDeliveryRecord Record);
@@ -246,8 +240,7 @@ internal sealed record CameraAgentCurrentSkyView(
 internal sealed record CameraAgentCurrentSkyOperations(
     bool CentralIntegrationEnabled,
     bool ArtifactUploadEnabled,
-    RawIngressReconciliationReport? RawReconciliation,
-    DerivedProductReconciliationReport? ProductReconciliation);
+    RawIngressReconciliationReport? RawReconciliation);
 
 // The current mode describes configuration now; only Run describes the requested capture's retained outcome.
 internal sealed record CameraAgentCaptureTransientView(
@@ -431,7 +424,6 @@ internal sealed partial class CameraAgentOperatorUiService(
     ILogger<CameraAgentOperatorUiService> logger,
     ISiteProfileStore? siteProfileStore = null,
     RawIngressState? rawIngressState = null,
-    CaptureProcessingState? captureProcessingState = null,
     IRawEvidenceOperations? rawEvidenceOperations = null,
     IProcessingLaneQuarantineOperations? processingLaneQuarantine = null,
     ICameraAgentProcessingCompletion? processingCompletion = null,
@@ -1023,8 +1015,7 @@ internal sealed partial class CameraAgentOperatorUiService(
     private CameraAgentCurrentSkyOperations CreateCurrentSkyOperations() => new(
         _hostOptions.CentralIntegration.Mode == CentralIntegrationMode.Enabled,
         _hostOptions.CentralIntegration.Mode == CentralIntegrationMode.Enabled && _hostOptions.CaptureDistribution.UploadEnabled,
-        rawIngressState?.LastReconciliation,
-        captureProcessingState?.LastReconciliation);
+        rawIngressState?.LastReconciliation);
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
     private async ValueTask<(CameraAgentCurrentSkyFacts? Facts, string? UnavailableReason)> ReadCachedFactsAsync(
@@ -1515,10 +1506,6 @@ internal sealed partial class CameraAgentOperatorUiService(
                     envelope?.Preference.ToString() ?? "Fixed day/night defaults"),
                 pipeline,
                 new CameraAgentRetentionStatus(
-                    _hostOptions.RetentionSweepIntervalMinutes,
-                    _hostOptions.DiskPressureThresholdPercent,
-                    _hostOptions.DiskPressureRecoveryPercent,
-                    _hostOptions.DiskPressureRetentionDays,
                     _hostOptions.RawIngressReserveBytes,
                     _hostOptions.EnvironmentalAcquisition.Enabled,
                     _hostOptions.EnvironmentalAcquisition.RetentionDays,
@@ -1835,7 +1822,7 @@ internal sealed partial class CameraAgentOperatorUiService(
             return Denied<CameraAgentStorageReconciliation>();
         }
         return OperatorUiResult<CameraAgentStorageReconciliation>.Success(new CameraAgentStorageReconciliation(
-            rawIngressState?.LastReconciliation, captureProcessingState?.LastReconciliation));
+            rawIngressState?.LastReconciliation));
     }
 
     private async ValueTask<IReadOnlyList<OperatorOutboxItem>> ReadArtifactQuarantineAsync(

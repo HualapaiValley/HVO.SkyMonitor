@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
-using HVO.SkyMonitor.CameraAgent.Common.Background;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -62,8 +61,7 @@ public sealed partial class DurableCaptureProcessingTests
                 CancellationToken.None).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
             using var store = new SqliteCaptureProcessingStore(template.Options);
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
-            var persistence = CreatePersistence(template.Options, store, storage, telemetry);
+            var persistence = CreatePersistence(template.Options, store, telemetry);
             var raw = new ProcessingArtifact(descriptor.Artifact.ArtifactId, FrameArtifactRole.Raw,
                 descriptor.Artifact.Variant, ProcessingIdentity.CreateRecipeIdentity(descriptor.Artifact.Recipe).IdentitySha256,
                 descriptor.Artifact.MediaType, descriptor.Layout, pixels, descriptor.Artifact.CreatedUtc,

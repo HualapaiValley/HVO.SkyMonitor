@@ -2,6 +2,13 @@
   "retiredSourcePaths": [
     "HVO.SkyMonitor.AgentCore/ArtifactUploadManifest.cs",
     "HVO.SkyMonitor.Deployment.Cli/DistributionCatalogAcquirer.cs",
-    "HVO.SkyMonitor.Deployment.Distribution/DistributionVerifier.cs"
+    "HVO.SkyMonitor.Deployment.Distribution/DistributionVerifier.cs",
+    "HVO.SkyMonitor.Storage.FileSystem/AtomicPublisher.cs",
+    "HVO.SkyMonitor.Storage.FileSystem/DurableSync.cs",
+    "HVO.SkyMonitor.Storage.FileSystem/FileSystemFault.cs",
+    "HVO.SkyMonitor.Storage.FileSystem/HardLinkPublisher.cs",
+    "HVO.SkyMonitor.Storage.FileSystem/LinuxOpenFlags.cs",
+    "HVO.SkyMonitor.Storage.FileSystem/PhysicalRoot.cs",
+    "HVO.SkyMonitor.CameraAgent.Common/Upload/ArtifactOutboxDrainService.cs"
   ]
 }

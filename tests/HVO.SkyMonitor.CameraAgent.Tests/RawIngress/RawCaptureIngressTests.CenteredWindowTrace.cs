@@ -163,9 +163,7 @@ public sealed partial class RawCaptureIngressTests
                 using var coordinator = new CenteredWindowCoordinator(afterCloseRestart.Store, journal, clock,
                     NullLogger<CenteredWindowCoordinator>.Instance);
                 await coordinator.CloseDueAsync(token).ConfigureAwait(false);
-                using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
-                var persistence = new CaptureProcessingPersistence(afterCloseRestart.Options, afterCloseRestart.Store, storage,
-                    afterCloseRestart.Telemetry, NullLogger<CaptureProcessingPersistence>.Instance);
+                var persistence = new CaptureProcessingPersistence(afterCloseRestart.Options, afterCloseRestart.Store, afterCloseRestart.Telemetry, NullLogger<CaptureProcessingPersistence>.Instance);
                 var source = new CenteredWindowRetainedRegistrationSource(
                     new CenteredExposureProductReader(afterCloseRestart.Ingress, afterCloseRestart.Store), afterCloseRestart.Ingress, persistence);
                 using var registration = new CenteredWindowRegistrationWorker(afterCloseRestart.Store, persistence, journal, source, clock,
@@ -229,8 +227,7 @@ public sealed partial class RawCaptureIngressTests
     private static async Task SettleTraceLinearAsync(CenteredFixture fixture, CameraModuleConfig config,
         TimeProvider clock, int count, CancellationToken token)
     {
-        using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
-        var persistence = new CaptureProcessingPersistence(fixture.Options, fixture.Store, storage, fixture.Telemetry,
+        var persistence = new CaptureProcessingPersistence(fixture.Options, fixture.Store, fixture.Telemetry,
             NullLogger<CaptureProcessingPersistence>.Instance);
         using var handler = new StandardCaptureLaneHandler(fixture.Factory, persistence, fixture.Telemetry,
             NullLogger<StandardCaptureLaneHandler>.Instance, fixture.Ingress, fixture.Options, timeProvider: clock);

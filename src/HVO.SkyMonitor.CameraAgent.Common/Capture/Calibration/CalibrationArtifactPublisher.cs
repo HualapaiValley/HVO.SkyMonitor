@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.LocalFiles;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Silo;
@@ -290,7 +291,7 @@ public sealed class CalibrationArtifactPublisher(
             {
                 CameraAgentFileSystem.PublishPrepared(_root, temporaryPath, path, overwrite: false);
             }
-            catch (IOException exception) when (!FileSystemFaultCompatibility.IsContainmentFailure(exception) && File.Exists(path))
+            catch (IOException exception) when (exception is not FileSystemFaultException { Kind: FileSystemFaultKind.Containment } && File.Exists(path))
             {
                 if (!await FileMatchesAsync(path, bytes, cancellationToken).ConfigureAwait(false))
                 {

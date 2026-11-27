@@ -133,7 +133,12 @@ internal sealed partial class SiloRetentionWorker(SiloInstalledStorage storage, 
 
     internal ValueTask<string> RunAsync(CancellationToken cancellationToken)
     {
-        storage.DiskBudget.Observe();
+        var headroom = storage.DiskBudget.Observe();
+        var capacity = headroom is { } observed ? new StorageCapacity(observed.TotalBytes, observed.AvailableBytes) : default;
+        var root = options.Value.RawIngressRoot;
+        services.GetRequiredService<StoragePressureState>().Set(new(
+            root, capacity, storage.DiskBudget.AdmissionRelease is not null, EffectiveRetentionDays: 0,
+            clock.GetUtcNow(), headroom is null ? "silo-capacity-unavailable" : null));
         if (!storage.BindingVerified) return ValueTask.FromResult("awaiting-storage");
 
         var controls = services.GetService<CameraAgentControlStore>();

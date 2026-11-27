@@ -44,9 +44,8 @@ public sealed partial class DurableCaptureProcessingTests
             var fixture = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true, reference: reference).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
             using var store = new SqliteCaptureProcessingStore(fixture.Fixture.Options);
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
             using var gate = new CaptureAstrometryExecutionGate();
-            var persistence = CreatePersistence(fixture.Fixture.Options, store, storage, telemetry);
+            var persistence = CreatePersistence(fixture.Fixture.Options, store, telemetry);
             using var artifacts = new CameraAgentArtifactService(fixture.Fixture.Options, store, new CameraAgentPreviewEncoder());
             using var astrometry = new CameraAgentRetainedAstrometryService(store, artifacts);
             using var site = new SettingsFileSiteProfileStore(fixture.Fixture.Options,

@@ -1,4 +1,3 @@
-using System.Globalization;
 using HVO.SkyMonitor.Deployment.Contracts;
 using Microsoft.Extensions.Configuration;
 
@@ -8,6 +7,14 @@ internal sealed class SiloInstalledSettings
 {
     private SiloInstalledSettings(IConfigurationSection section)
     {
+        foreach (var setting in section.GetChildren())
+        {
+            if (setting.Key.ToUpperInvariant() is not ("STATECONTRACT" or "STOREID" or "BUCKET" or "STORAGEBINDINGID" or
+                "WRITERGENERATION" or "ENDPOINT" or "ACCESSKEY" or "SECRETKEY" or "DATAROOT" or
+                "MAXIMUMSTAGEDBYTES" or "MAXIMUMSTAGEDFILES" or "RECLAIMCAPTUREHOURBYTES"))
+                throw new InvalidOperationException("CameraAgent:Silo contains an unsupported storage setting. Use the settings from a fresh Silo installation.");
+        }
+
         string Required(string key) => section[key] is { Length: > 0 } value ? value :
             throw new InvalidOperationException($"The installed Silo layout requires CameraAgent:Silo:{key}.");
 
@@ -46,8 +53,6 @@ internal sealed class SiloInstalledSettings
         if (ReclaimCaptureHourBytes <= 0 || MaximumStagedBytes <= 0 || MaximumStagedFiles is < 2 or int.MaxValue)
             throw new InvalidOperationException("The installed Silo spool requires a positive byte limit and room for an admission pair.");
 
-        DisplayRetentionDays = ReadRetentionDays(section["Retention:DisplayDays"]);
-        MetadataRetentionDays = ReadRetentionDays(section["Retention:MetadataDays"]);
     }
 
     public SiloStorageBinding Binding { get; }
@@ -66,14 +71,23 @@ internal sealed class SiloInstalledSettings
 
     public int MaximumStagedFiles { get; }
 
-    public int? DisplayRetentionDays { get; }
+    internal static SiloInstalledSettings ReadHostConfiguration(IConfiguration configuration)
+    {
+        var agent = configuration.GetSection("CameraAgent");
+        string[] retired = ["Storage", "StorageRoot", "DerivedProductLifecycle", "RetentionSweepIntervalMinutes",
+            "DiskPressureThresholdPercent", "DiskPressureRecoveryPercent", "DiskPressureRetentionDays"];
+        foreach (var key in retired)
+        {
+            if (agent.GetChildren().Any(setting => setting.Key.Equals(key, StringComparison.OrdinalIgnoreCase)))
+                throw new InvalidOperationException($"CameraAgent:{key} is a retired filesystem storage setting. Configure CameraAgent:Silo for a fresh installation.");
+        }
 
-    public int? MetadataRetentionDays { get; }
+        var section = agent.GetSection("Silo");
+        if (!section.Exists())
+            throw new InvalidOperationException("CameraAgent requires CameraAgent:Silo settings for a fresh installation.");
 
-    // Bound the value to the span of DateTimeOffset and treat unusable policy as unavailable.
-    private static int? ReadRetentionDays(string? value) =>
-        int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var days) &&
-        days > 0 && days <= (DateTimeOffset.MaxValue - DateTimeOffset.MinValue).Days ? days : null;
+        return Read(section);
+    }
 
     public static SiloInstalledSettings Read(IConfigurationSection configuration) => new(configuration);
 }

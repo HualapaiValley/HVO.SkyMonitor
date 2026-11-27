@@ -33,7 +33,6 @@ public sealed partial class CaptureScalarOptionsEditorTests
     [DataRow("MeasuredAstrometry", "captureStride", "120", "59")]
     [DataRow("CaptureSatelliteTracks", "outputVariant", "tracks-custom", " ")]
     [DataRow("CaptureSatelliteLayer", "inputVariant", "tracks-custom", " ")]
-    [DataRow("Storage", "retentionDays", "60", "0")]
     public void RemainingNodePanelRendersRejectsInvalidEditsSavesAndReloads(
         string alias, string key, string edited, string invalid)
     {

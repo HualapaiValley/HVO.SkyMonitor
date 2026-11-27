@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.LocalFiles;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
@@ -17,7 +18,7 @@ public sealed class CameraAgentFileSystemKernelFaultTests
         try
         {
             stream.WriteByte(42);
-            var failure = Assert.ThrowsExactly<IOException>(() => CameraAgentFileSystem.FlushFile(stream));
+            var failure = Assert.ThrowsExactly<FileSystemFaultException>(() => CameraAgentFileSystem.FlushFile(stream));
             Assert.AreEqual(28, failure.HResult & 0xffff, "The original ENOSPC must survive the shared adapter.");
         }
         finally
@@ -121,11 +122,11 @@ public sealed class CameraAgentFileSystemKernelFaultTests
             var root = Path.Combine(parent, "new-ancestor", "raw");
             var store = new RawIngressFileStore(root, new NullRawIngressFaultInjector());
             DurableCaptureProcessingTests.ArmKernelRetryFault(control, parent);
-            var probe = Assert.ThrowsExactly<IOException>(() => RawIngressFileStore.SyncDirectory(parent));
+            var probe = Assert.ThrowsExactly<FileSystemFaultException>(() => RawIngressFileStore.SyncDirectory(parent));
             Assert.AreEqual(5, probe.HResult & 0xffff);
             for (var attempt = 0; attempt < 2; attempt++)
             {
-                var failure = Assert.ThrowsExactly<IOException>(store.EnsureRootIsPhysical);
+                var failure = Assert.ThrowsExactly<FileSystemFaultException>(store.EnsureRootIsPhysical);
                 Assert.AreEqual(5, failure.HResult & 0xffff);
             }
             DurableCaptureProcessingTests.WaitForKernelController(control + ".released");

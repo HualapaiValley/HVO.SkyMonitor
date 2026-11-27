@@ -43,7 +43,7 @@ internal sealed class CameraAgentClearReferenceLoader(IOptions<CameraAgentHostOp
                 if (calibration is not null &&
                     await calibration.FindArtifactByManifestPathUnderLifecycleLockAsync(relativeManifestPath, cancellationToken)
                         .ConfigureAwait(false) is { } id)
-                    holds.Add(new(id, relativeManifestPath, relativeManifestPath));
+                    holds.Add(new(id));
                 continue;
             }
             byte[] manifestBytes;
@@ -61,10 +61,7 @@ internal sealed class CameraAgentClearReferenceLoader(IOptions<CameraAgentHostOp
                 throw new InvalidDataException("Configured clear-reference manifest is invalid.");
             }
             _ = ResolveSafePath(manifest.RelativeArtifactPath);
-            holds.Add(new ProcessingRetentionHold(
-                manifest.Descriptor.Artifact.ArtifactId,
-                manifest.RelativeArtifactPath,
-                relativeManifestPath));
+            holds.Add(new(manifest.Descriptor.Artifact.ArtifactId));
         }
         return holds;
     }

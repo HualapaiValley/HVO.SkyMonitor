@@ -451,7 +451,7 @@ public sealed class EdgeUpgradeLaneTests
         services.AddLogging();
         services.AddSingleton(clock);
         services.AddSingleton<ICelestialCatalog>(new InMemoryCelestialCatalog([]));
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(values).Build());
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(values).Build());
         configure?.Invoke(services);
         return services.BuildServiceProvider();
     }

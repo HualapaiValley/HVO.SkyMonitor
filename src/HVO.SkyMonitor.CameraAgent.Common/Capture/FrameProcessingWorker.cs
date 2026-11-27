@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.LocalFiles;
 using System;
 using System.ComponentModel.DataAnnotations;
 using System.Collections.Generic;
@@ -533,7 +534,7 @@ internal sealed class FrameProcessingWorker
                             products is [{ SchemaVersion: ExposureMeasurementProducts.SchemaVersion }] &&
                             rawCapture.Manifest.CenteredExposure is not null &&
                             item.Execution is { ExecutionClass: ProcessingGraphExecutionClass.Live, AllowAutomaticPublication: true } &&
-                            !FileSystemFaultCompatibility.IsContainmentFailure(caught))
+                            caught is not FileSystemFaultException { Kind: FileSystemFaultKind.Containment })
                         {
                             cancellationToken.ThrowIfCancellationRequested();
                             // Only a successful fixed product's publication is retried here, not source reads,
@@ -739,14 +740,13 @@ internal sealed class FrameProcessingWorker
         if (rawCapture is { } receipt)
         {
             var descriptor = receipt.Manifest.Descriptor;
-            var sidecarPath = Path.ChangeExtension(receipt.StoredFrame.AbsolutePath, ".json");
             var replay = item.Execution?.ExecutionClass == ProcessingGraphExecutionClass.Replay;
             var sidecar = silo is null
-                ? await File.ReadAllBytesAsync(sidecarPath, cancellationToken).ConfigureAwait(false)
+                ? await File.ReadAllBytesAsync(Path.ChangeExtension(receipt.StoredFrame.AbsolutePath, ".json"), cancellationToken).ConfigureAwait(false)
                 : (replay ? await silo.ReadRawEvidenceAsync(descriptor.Artifact.ArtifactId, receipt.CommittedManifestSha256,
-                        null, cancellationToken).ConfigureAwait(false)
+                        allowStaged: false, cancellationToken).ConfigureAwait(false)
                     : await ReadSiloLiveEvidenceAsync(silo.ReadRawEvidenceAsync(descriptor.Artifact.ArtifactId,
-                        receipt.CommittedManifestSha256, sidecarPath, cancellationToken)).ConfigureAwait(false))
+                        receipt.CommittedManifestSha256, allowStaged: true, cancellationToken)).ConfigureAwait(false))
                     ?? throw new FileNotFoundException("The raw evidence has no settled Silo publication or staging file.");
             var parsed = CaptureContractJson.ParseManifest(sidecar);
             if (!parsed.IsValid || parsed.Document?.Manifest is not { } persistedManifest)
@@ -767,8 +767,7 @@ internal sealed class FrameProcessingWorker
                 var payload = silo is null
                     ? await File.ReadAllBytesAsync(receipt.StoredFrame.AbsolutePath, token).ConfigureAwait(false)
                     : (replay ? await silo.ReadRawAsync(receipt.Manifest.Descriptor, token).ConfigureAwait(false)
-                        : await ReadSiloLiveEvidenceAsync(silo.ReadLiveRawAsync(receipt.Manifest.Descriptor,
-                            receipt.StoredFrame.AbsolutePath, token)).ConfigureAwait(false))
+                        : await ReadSiloLiveEvidenceAsync(silo.ReadLiveRawAsync(receipt.Manifest.Descriptor, token)).ConfigureAwait(false))
                         ?? throw new FileNotFoundException("The raw frame has no settled Silo publication or staging file.");
                 var reconstruction = FrameReconstructor.TryReconstruct(receipt.Manifest.Descriptor, payload, out var frame);
                 if (!reconstruction.IsValid || frame is null)

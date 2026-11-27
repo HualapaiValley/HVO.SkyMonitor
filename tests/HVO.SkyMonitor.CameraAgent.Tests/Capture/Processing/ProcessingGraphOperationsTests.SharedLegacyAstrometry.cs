@@ -96,12 +96,8 @@ public sealed partial class ProcessingGraphOperationsTests
             Publication = durable
         };
         var storage = new CaptureProcessingStepConfig("Storage", "archive", DependsOn: ["projected-scene"],
-            Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
-            {
-                StorageRoot = archiveRoot,
-                QueueForUpload = false,
-                UpdateLatestFrame = false
-            }));
+            Options: JsonSerializer.SerializeToElement(new SiloCaptureProcessingStepOptions
+            { UpdateLatestFrame = false }));
         var configuration = baseline with
         {
             Observatory = new(location.LatitudeDegrees, location.LongitudeDegrees, location.ElevationMeters, "UTC"),

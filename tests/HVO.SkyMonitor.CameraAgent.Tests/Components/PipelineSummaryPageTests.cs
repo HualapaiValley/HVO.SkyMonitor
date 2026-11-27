@@ -486,7 +486,7 @@ public sealed class PipelineSummaryPageTests
         var model = ProcessingGraphDraftModel.FromPipeline(pipeline, null, "centered-structure", "1");
         model.AddNode("Telemetry");
         var telemetry = model.Nodes.Single(static node => node.Type == "Telemetry");
-        var storage = model.Nodes.Single(static node => node.Type == FileStorageCaptureProcessingStep.StableAlias);
+        var storage = model.Nodes.Single(static node => node.Type == SiloCaptureProcessingStep.StableAlias);
         telemetry.Required = false;
         telemetry.ToggleDependency(ProcessingGraphDraftModel.RawInput, selected: false);
         telemetry.ToggleDependency(storage.Id, selected: true);

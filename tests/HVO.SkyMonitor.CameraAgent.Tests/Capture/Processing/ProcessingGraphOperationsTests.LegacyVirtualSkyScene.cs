@@ -64,12 +64,8 @@ public sealed partial class ProcessingGraphOperationsTests
         if (retentionOwner)
         {
             var storage = new CaptureProcessingStepConfig("Storage", "archive",
-                Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
-                {
-                    StorageRoot = Path.Combine(root, "archive"),
-                    QueueForUpload = false,
-                    UpdateLatestFrame = false
-                }),
+                Options: JsonSerializer.SerializeToElement(new SiloCaptureProcessingStepOptions
+                { UpdateLatestFrame = false }),
                 DependsOn: ["projected-scene"]);
             baseline = baseline with { Pipeline = baseline.Pipeline with { Steps = [.. baseline.Pipeline.Steps, storage] } };
         }
@@ -161,7 +157,6 @@ public sealed partial class ProcessingGraphOperationsTests
                 Assert.IsNull(await provider.GetRequiredService<IProjectedSceneStagingReader>()
                     .ReadAsync(stageKey, token).ConfigureAwait(false));
 
-                var guard = new ProjectedSceneRetentionGuard(root, store);
                 var expectedOutputs = new List<(string Node, string Recipe, ProjectedSceneKind Kind)>
                 {
                     ("projected-scene", BuiltInProcessingRecipes.ProjectedScene, ProjectedSceneKind.VirtualRenderAuthoritative)
@@ -203,10 +198,6 @@ public sealed partial class ProcessingGraphOperationsTests
                         Assert.IsTrue(scene.Objects.Any(static value => value.Id == "solar-system:Moon"));
                         Assert.IsTrue(scene.Segments.Any(static value => value.ConstellationId == "CAS"));
                     }
-                    Assert.AreEqual(node != predictionId, await guard.HasRetainedConsumerAsync(new DurableProcessingEvidence(
-                        output.OutputIdentitySha256, output.Artifact.ArtifactId, captureId, FrameArtifactRole.Metadata,
-                        output.PayloadRelativePath, output.SidecarRelativePath, output.EvidenceJson, 0, "Available", null), token)
-                        .ConfigureAwait(false));
                     outputs.Add(node, (output.OutputIdentitySha256, payloadPath, Sha256OfFile(payloadPath)));
                 }
 

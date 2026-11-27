@@ -184,7 +184,7 @@ public sealed class CameraAgentSatellitePlanningRuntimeTests
             var services = new ServiceCollection();
             services.AddLogging();
             services.AddSingleton<TimeProvider>(host.Clock);
-            services.AddCameraAgentInfrastructure(configuration);
+            services.AddSiloTestInfrastructure(configuration);
             services.AddCameraAgentSatellitePlanning(configuration);
             services.AddSingleton<IDeploymentLocationProtector>(new OrbitalPassThroughLocationProtector());
             services.AddSingleton<ICameraAgentConfigurationAccessor>(new PlanningTestInputs.Config());

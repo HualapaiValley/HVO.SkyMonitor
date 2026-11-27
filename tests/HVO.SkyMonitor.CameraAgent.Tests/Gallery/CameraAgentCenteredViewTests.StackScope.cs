@@ -19,9 +19,8 @@ public sealed partial class CameraAgentArtifactServiceTests
         using var fixture = await ArtifactFixture.CreateAsync().ConfigureAwait(false);
         var token = CancellationToken.None;
         var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = fixture.Root });
-        using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
         using var telemetry = new CaptureProcessingTelemetry();
-        var persistence = new CaptureProcessingPersistence(options, fixture.ProcessingStore, storage, telemetry,
+        var persistence = new CaptureProcessingPersistence(options, fixture.ProcessingStore, telemetry,
             NullLogger<CaptureProcessingPersistence>.Instance);
         var views = new SqliteCenteredViews(fixture.ProcessingStore, TimeProvider.System, NullLogger<SqliteCenteredViews>.Instance);
         var layerProducer = new CenteredViewLayerProducer(views, persistence);

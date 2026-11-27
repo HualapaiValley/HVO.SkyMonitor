@@ -234,14 +234,14 @@ internal sealed partial class SqliteRawCaptureJournal
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT raw.raw_artifact_id, raw.payload_relative_path, raw.sidecar_relative_path
+            SELECT raw.raw_artifact_id
             FROM silo_raw_admissions pending JOIN raw_captures raw ON raw.raw_capture_row_id = pending.raw_capture_row_id
             ORDER BY pending.raw_capture_row_id;
             """;
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         var holds = new List<RawIngressRetentionHold>();
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-            holds.Add(new(Guid.ParseExact(reader.GetString(0), "N"), reader.GetString(1), reader.GetString(2)));
+            holds.Add(new(Guid.ParseExact(reader.GetString(0), "N")));
         return holds;
     }
 }

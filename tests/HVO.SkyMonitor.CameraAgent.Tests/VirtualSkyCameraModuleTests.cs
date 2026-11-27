@@ -309,7 +309,7 @@ public sealed partial class VirtualSkyCameraModuleTests
     public void AddCameraAgentInfrastructure_RegistersConstellationTopologyByInterface()
     {
         var services = new ServiceCollection();
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().Build());
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().Build());
         using var provider = services.BuildServiceProvider();
 
         var topology = provider.GetRequiredService<IConstellationTopology>();
@@ -398,8 +398,7 @@ public sealed partial class VirtualSkyCameraModuleTests
         Assert.IsFalse(steps.Any(static step =>
             step.Id is "Upload" or "ArchiveStorage" || step.Type.Contains("Upload", StringComparison.Ordinal)));
         var storage = steps.Single(static step => step.Id == "LocalStorage");
-        Assert.AreEqual(false, storage.Options!.Value.GetProperty("queueForUpload").GetBoolean());
-        Assert.AreEqual(7, storage.Options.Value.GetProperty("retentionDays").GetInt32());
+        Assert.IsTrue(storage.Options!.Value.GetProperty("updateLatestFrame").GetBoolean());
 
         var deployment = new ConfigurationBuilder()
             .SetBasePath(AppContext.BaseDirectory)
@@ -413,13 +412,10 @@ public sealed partial class VirtualSkyCameraModuleTests
         Assert.AreEqual("Production", deployment["Catalog:RequiredPackageKind"]);
         Assert.AreEqual("hyg-v42-production", deployment["Catalog:RequiredCatalogId"]);
         Assert.AreEqual("/var/lib/hvo/data/catalog", deployment["Catalog:Root"]);
-        Assert.AreEqual(
-            deployment["CameraAgent:RawIngressRoot"],
-            storage.Options.Value.GetProperty("storageRoot").GetString());
 
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder()
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["CameraAgent:RawIngressRoot"] = Path.GetTempPath()
@@ -614,7 +610,7 @@ public sealed partial class VirtualSkyCameraModuleTests
         var config = await LoadProfileAsync("virtual-asi174-mono8-roi-bin4.json").ConfigureAwait(false);
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder()
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["CameraAgent:RawIngressRoot"] = Path.GetTempPath()
@@ -887,7 +883,7 @@ public sealed partial class VirtualSkyCameraModuleTests
         var config = await LoadProfileAsync("virtual-asi174mc-telescope.full.json").ConfigureAwait(false);
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
             new Dictionary<string, string?> { ["CameraAgent:RawIngressRoot"] = Path.GetTempPath() }).Build());
         using var provider = services.BuildServiceProvider();
 
@@ -916,7 +912,7 @@ public sealed partial class VirtualSkyCameraModuleTests
             var catalog = CreateCanonicalStarCatalog();
             services.AddLogging();
             services.AddSingleton<ICelestialCatalog>(catalog);
-            services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
+            services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
                 new Dictionary<string, string?> { ["CameraAgent:RawIngressRoot"] = root }).Build());
             using var provider = services.BuildServiceProvider();
             var sceneStore = provider.GetRequiredService<IProjectedSceneStore>();

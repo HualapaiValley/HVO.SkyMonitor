@@ -23,9 +23,8 @@ public sealed partial class DurableCaptureProcessingTests
             var old = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
             using var writer = new SqliteCaptureProcessingStore(old.Fixture.Options);
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
             using var gate = new CaptureAstrometryExecutionGate();
-            var persistence = CreatePersistence(old.Fixture.Options, writer, storage, telemetry);
+            var persistence = CreatePersistence(old.Fixture.Options, writer, telemetry);
             var acceptedOutput = await ProduceLatestReadFixtureAsync(old, writer, persistence, telemetry, gate).ConfigureAwait(false);
             var rejectedOutputs = new Stack<DurableProcessingOutput>();
             for (var index = 1; index <= 3; index++)
@@ -117,9 +116,8 @@ public sealed partial class DurableCaptureProcessingTests
             var old = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
             using var store = new SqliteCaptureProcessingStore(old.Fixture.Options);
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
             using var gate = new CaptureAstrometryExecutionGate();
-            var persistence = CreatePersistence(old.Fixture.Options, store, storage, telemetry);
+            var persistence = CreatePersistence(old.Fixture.Options, store, telemetry);
             var olderOutput = await ProduceLatestReadFixtureAsync(old, store, persistence, telemetry, gate).ConfigureAwait(false);
             var reference = await MeasuredAstrometryFixture.CreateAtAsync(20).ConfigureAwait(false);
             var newer = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true, captureSequence: 61,

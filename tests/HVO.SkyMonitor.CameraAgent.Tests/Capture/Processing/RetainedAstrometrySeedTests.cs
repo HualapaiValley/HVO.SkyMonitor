@@ -25,13 +25,12 @@ public sealed partial class DurableCaptureProcessingTests
         {
             var old = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
             using var gate = new CaptureAstrometryExecutionGate();
             using var pause = new AstrometrySeedPause(pauseAtPublication
                 ? CaptureProcessingFaultPoint.BeforeAstrometrySeedPublished
                 : CaptureProcessingFaultPoint.AfterAstrometrySeedRowMaterialized);
             using var store = new SqliteCaptureProcessingStore(old.Fixture.Options, faultInjector: pause);
-            var persistence = CreatePersistence(old.Fixture.Options, store, storage, telemetry);
+            var persistence = CreatePersistence(old.Fixture.Options, store, telemetry);
             var accepted = await ProduceLatestReadFixtureAsync(old, store, persistence, telemetry, gate).ConfigureAwait(false);
             var reference = await MeasuredAstrometryFixture.CreateAtAsync(20).ConfigureAwait(false);
             var newer = await CreateAstrometryDurabilityFixtureAsync(root, "rejected", hostCompatible: true,
@@ -101,11 +100,10 @@ public sealed partial class DurableCaptureProcessingTests
         {
             var first = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
             using var gate = new CaptureAstrometryExecutionGate();
             using var pause = new AstrometrySeedPause(CaptureProcessingFaultPoint.AfterAstrometrySeedRowMaterialized);
             using var store = new SqliteCaptureProcessingStore(first.Fixture.Options, faultInjector: pause);
-            var persistence = CreatePersistence(first.Fixture.Options, store, storage, telemetry);
+            var persistence = CreatePersistence(first.Fixture.Options, store, telemetry);
             var original = await ProduceLatestReadFixtureAsync(first, store, persistence, telemetry, gate).ConfigureAwait(false);
             var reference = await MeasuredAstrometryFixture.CreateAtAsync(20).ConfigureAwait(false);
             var newer = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true,

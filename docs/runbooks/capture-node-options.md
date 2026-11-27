@@ -10,7 +10,7 @@ and storage nodes now join the existing filter and overlay panels.
 | Measured astrometry | Output variant, capture stride | Variant: 1–96 characters; stride: 60–1,000,000 captures |
 | Capture satellite predictions | Output variant, allow stale-element diagnostics | Variant: 1–96 characters; stale diagnostics retain their qualification |
 | Predicted satellite layer | Input variant | 1–96 characters; must match the upstream prediction output variant |
-| Artifact storage | Inspect and reconcile storage directory, retention, latest-frame publication and upload queue with the active capture profile | Nonblank directory; retention: 1–3650 days; all enabled Storage options must match the active profile |
+| Silo publication | Select latest-frame updates and archive publication for a Storage node | Enabled Storage nodes match the active capture profile |
 
 The graph editor shows field names, help and ranges. Invalid values disable the
 current plan preview and save, including when an earlier preview was valid.
@@ -22,14 +22,10 @@ then explicitly activate it. Saving does not run a node, move artifacts, change
 retention, enable a provider or start upload. The prior revision remains available
 for explicit rollback. Reloading a saved draft restores its settings.
 
-Storage policy belongs to the **active local capture profile**. Retention sweeps
-and upload draining follow that profile. A graph draft cannot independently
-override its Storage directory, retention, latest-frame/upload flags or artifact
-policies. Preview and save reject an enabled Storage node that differs from its
-corresponding enabled profile node; validation, activation and rollback recheck
-retained revisions. These four HTTP commands return 409 ProblemDetails with the
-profile-policy guidance when they reject a mismatch. Disabled Storage nodes do
-not publish and can retain their options.
+Storage nodes use `updateLatestFrame` to select the current display and
+`publishArchive` to record a centered Silo archive group from selected durable
+products. Silo retention is an instance policy. Preview, save, validation,
+activation and rollback compare enabled Storage nodes with the active profile.
 
 Raw acquisition and startup recovery retain the original immutable graph binding
 even if that graph's Storage no longer matches the active profile. Before
@@ -48,7 +44,7 @@ The capture is not reported as an intact, scene-recoverable skip before its scen
 evidence commits. Once that evidence is committed, the mismatch abandons
 the remaining standard processing with lane reason `storage-policy-mismatch` and
 execution reason `processing.storage-policy-mismatch`. Raw bytes and sidecars
-remain retained under the existing raw retention/upload rules. Storage-policy
+remain subject to Silo retention and durable holds. Storage-policy
 skips, including exhausted optional scenes, do not turn raw ingress unhealthy or
 stop recovery at the first incompatible capture. Genuine raw corruption or a
 required-node failure retains the normal evidence/required-lane failure rules.
@@ -72,42 +68,10 @@ work as a Storage skip. The installer option `--allow-quarantined-readiness` doe
 not waive this independent Storage-skip health reason, including when a quarantine
 also exists; that exception remains unavailable until the 24-hour count expires.
 
-Mismatch guidance names differing fields without showing directory paths or
-policy values. The fence, lifecycle/raw-ingress/index locks, retention root
-comparisons (including time-lapse and satellite holds), and pressure/outbox state
-keys share one lexical full-path identity: trailing separators, dot segments and
-equivalent relative spellings map to the same root. I/O and retention-hold readers
-receive a separator-trimmed canonical path that preserves directory casing;
-platform case folding applies only to comparison/in-memory keys. This does not
-rewrite configured paths or change the storage layout.
-Artifact-policy StepId selectors compare ignoring case. On Linux,
-backslash is a filename character, not a directory separator. Policy order is
-preserved: equally specific overlapping policies use the first match. Storage-policy
-comparison is order-sensitive: a reordered policy array is a real policy conflict,
-including when its individual rules are unchanged. Reconcile it with the active
-profile before preview, save or selection; no order-insensitive normalization applies.
-
-For a planned Storage change:
-
-1. Pause acquisition and let in-flight standard processing finish before changing
-   the profile. Drain pending standard work too if those captures must complete
-   under the old policy, even for a retention-only edit in the same directory.
-   Already running processing is not transactionally migrated: switching before
-   it finishes can still publish to an old root that the new profile will not drain.
-2. Change Storage through the local capture-profile configuration owner. Reconcile
-   a graph draft with that policy, then save, validate and activate it. If retained
-   artifact-policy collections differ, refresh **Operations → Pipeline → Graphs**
-   and start from the current configured-basic revision. Reading the registry
-   refreshes that source from the active profile while acquisition stays stopped;
-   it preserves the active Named graph. No capture or restart is needed. This
-   scalar panel does not edit those collections.
-   In configured-basic mode, the profile refresh supplies and selects the matching
-   revision automatically; manual graph reconciliation/activation is only needed
-   when a Named graph remains active.
-3. Resume acquisition after the matching graph is active. Pending work bound to
-   an incompatible old graph is skipped; activation resumes compatible/new work
-   and does not silently replay or rewrite old captures. Only matching-policy
-   graphs can be selected by an explicit activation or rollback command.
+For a planned publication change, pause acquisition and finish in-flight
+standard processing. Update the capture profile, then reconcile, validate and
+activate its graph before resuming. Configured-basic refreshes from the active
+profile. Named graphs require explicit activation.
 
 Find skipped captures in **Operations → Pipeline → Executions**
 (`/operations/pipeline/executions`). Open an expired live execution and check
@@ -128,14 +92,12 @@ revision even after a profile change or restart. Reusing that key for a differen
 request conflicts; a new key does not bypass current Storage-policy validation.
 
 Other graph settings can still be edited and activated while preserving Storage.
-This panel does not update the profile or teach retention/upload workers to read
-graph revisions. Explicit archived replay uses the capture's retained camera/rig
+The active profile and the installed Silo retention policy are configured independently of graph drafts. Explicit archived replay uses the capture's retained camera/rig
 configuration with the validated/active graph revision named in the replay request,
 including that revision's Storage options. It can differ from the live current
 profile; replay does not change the active capture profile or graph selection.
 The replay execution records the selected graph revision and frozen plan identities
-for audit. This does not migrate Storage roots, bypass retained-input/plan eligibility
-checks, or enable automatic publication/upload. No new current-profile fence applies.
+for audit. Replay uses verified retained inputs and leaves live publication selection unchanged.
 
 Defaults match the existing runtime option classes. Unchanged saves preserve
 absent defaults, source member casing, unknown fields and nested scientific

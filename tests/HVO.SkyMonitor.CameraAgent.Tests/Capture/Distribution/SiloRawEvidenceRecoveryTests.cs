@@ -383,10 +383,8 @@ public sealed partial class SiloRawEvidenceRecoveryTests
         Assert.IsNotNull(lease);
 
         using var processingStore = new SqliteCaptureProcessingStore(fixture.Options);
-        using var frameStorage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
         using var processingTelemetry = new CaptureProcessingTelemetry();
-        var persistence = new CaptureProcessingPersistence(fixture.Options, processingStore, frameStorage,
-            processingTelemetry, NullLogger<CaptureProcessingPersistence>.Instance, silo: artifacts);
+        var persistence = new CaptureProcessingPersistence(fixture.Options, processingStore, processingTelemetry, NullLogger<CaptureProcessingPersistence>.Instance, silo: artifacts);
 
         var step = new DescriptorOnlyEnsureRawFrameStep();
         var graph = new CaptureProcessingGraph([
@@ -517,7 +515,7 @@ public sealed partial class SiloRawEvidenceRecoveryTests
         {
             var capture = context.RawCapture;
             var evidence = await artifacts.ReadRawEvidenceAsync(capture.Manifest.Descriptor.Artifact.ArtifactId,
-                capture.CommittedManifestSha256, Path.ChangeExtension(capture.StoredFrame.AbsolutePath, ".json"), cancellationToken)
+                capture.CommittedManifestSha256, allowStaged: true, cancellationToken)
                 .ConfigureAwait(false);
             return evidence is null ? CaptureLaneHandlerResult.Terminal("evidence-invalid") : CaptureLaneHandlerResult.Success;
         }

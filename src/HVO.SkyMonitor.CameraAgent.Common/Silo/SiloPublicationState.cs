@@ -81,18 +81,6 @@ internal sealed record SiloPendingSegment(
 internal sealed record SiloCommittedOperation(
     string OperationId, SiloJournalPosition Position, string Sha256, string VersionId, string OperationSha256);
 
-internal sealed record SiloFixtureManifestVersion(string Sha256, long Length, string VersionId);
-
-internal sealed record SiloFixtureReceipt(string DraftSha256, SiloStagedState State, string? BlockedCode,
-    SiloFixtureManifestVersion? Manifest)
-{
-    internal HashSet<string> UnreleasedPayloads { get; } = new(StringComparer.Ordinal);
-    internal Dictionary<int, string> QualifiedPayloadVersions { get; } = [];
-}
-
-internal sealed record SiloFixtureTarget(SiloJournalHead? Head, SiloPendingSegment? Pending,
-    IReadOnlyDictionary<string, SiloFixtureReceipt> Receipts);
-
 /// <summary>
 /// What the writer's surviving State proves (#1965 4.5, 5.3): the committed head that authenticates the journal tail,
 /// and the committed publications whose first P4 has not happened yet, which recovery treats as P3 recovery rather than
@@ -354,77 +342,6 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
     private const string Unfinished = "('staged', 'payloads-qualified', 'manifest-qualified')";
 
     // ----- Journal writer head, pending segment and committed operations ---------------------------------------
-
-    internal async ValueTask<SiloFixtureTarget> InspectFixtureTargetAsync(
-        string scratchDirectory, IReadOnlySet<string> selectedGroups, CancellationToken cancellationToken)
-    {
-        SiloJournalHead? head = null;
-        SiloPendingSegment? pending = null;
-        var receipts = new Dictionary<string, SiloFixtureReceipt>(StringComparer.Ordinal);
-        await InspectAsync(Path, Format, BindingMetadata(binding), scratchDirectory, cancellationToken,
-            inspect: async (connection, transaction, token) =>
-            {
-                await RequireFixtureTargetAsync(connection, transaction, selectedGroups, receipts, token).ConfigureAwait(false);
-                head = await ReadHeadAsync(connection, transaction, token).ConfigureAwait(false);
-                pending = await ReadPendingAsync(connection, transaction, token).ConfigureAwait(false);
-            }).ConfigureAwait(false);
-        return new(head, pending, receipts);
-    }
-
-    private static async ValueTask RequireFixtureTargetAsync(SqliteConnection connection, SqliteTransaction transaction,
-        IReadOnlySet<string> selectedGroups, Dictionary<string, SiloFixtureReceipt> receipts, CancellationToken cancellationToken)
-    {
-        const string otherHistory = "fixture-target-has-other-history";
-        using (var command = CreateCommand(connection, transaction, """
-                   SELECT group_id, revision_id, group_kind, draft_sha256, state, blocked_code,
-                       manifest_sha256, manifest_length, manifest_version_id
-                   FROM staged_groups LIMIT $limit;
-                   """,
-                   ("$limit", SiloFixtureInventory.MaximumRecords + 1)))
-        using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
-        {
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-            {
-                if (reader.GetString(2) != SiloFixtureInventory.GroupKind ||
-                    reader.GetString(1) != SiloFixtureInventory.GroupRevision || !selectedGroups.Contains(reader.GetString(0)))
-                    throw new SiloConflictException(otherHistory, "The target contains work outside the selected fixtures.");
-                var state = ParseState(reader.GetString(4));
-                var manifest = state is SiloStagedState.ManifestQualified or SiloStagedState.Recorded
-                    ? new SiloFixtureManifestVersion(reader.GetString(6), reader.GetInt64(7), reader.GetString(8))
-                    : null;
-                receipts.Add(reader.GetString(0), new(reader.GetString(3), state, NullableString(reader, 5), manifest));
-            }
-        }
-
-        using (var command = CreateCommand(connection, transaction, """
-                   SELECT group_id, ordinal, source_token, version_id FROM staged_members WHERE released = 0;
-                   """))
-        using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
-        {
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-            {
-                if (!receipts.TryGetValue(reader.GetString(0), out var receipt))
-                    throw new SiloConflictException(otherHistory, "The target contains payload claims outside the selected fixtures.");
-                receipt.UnreleasedPayloads.Add(reader.GetString(2));
-                if (receipt.State is not (SiloStagedState.Visible or SiloStagedState.Abandoned) &&
-                    NullableString(reader, 3) is { } version)
-                    receipt.QualifiedPayloadVersions.Add(reader.GetInt32(1), version);
-            }
-        }
-
-        var allowed = selectedGroups.Select(static id => SiloPublisher.PublishOperation(id, SiloFixtureInventory.GroupRevision))
-            .ToHashSet(StringComparer.Ordinal);
-        allowed.Add(SiloJournalWriter.FirstGenerationOpenOperation);
-        using var operations = CreateCommand(connection, transaction, """
-            SELECT operation_id FROM journal_operations
-            UNION ALL SELECT operation_id FROM journal_pending
-            LIMIT $limit;
-            """, ("$limit", allowed.Count + 1));
-        using var operation = await operations.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        while (await operation.ReadAsync(cancellationToken).ConfigureAwait(false))
-            if (!allowed.Remove(operation.GetString(0)))
-                throw new SiloConflictException(otherHistory, "The target journal contains an operation outside the selected fixtures.");
-    }
 
     public async ValueTask<SiloJournalHead> ReadHeadAsync(CancellationToken cancellationToken)
     {

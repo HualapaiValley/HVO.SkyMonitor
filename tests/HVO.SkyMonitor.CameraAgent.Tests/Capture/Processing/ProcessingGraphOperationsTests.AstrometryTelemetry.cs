@@ -105,10 +105,8 @@ public sealed partial class ProcessingGraphOperationsTests
                             Options: JsonSerializer.SerializeToElement(new { requireProjectedSceneDependency = true })),
                         new("JpegEncoding", "jpeg", DependsOn: ["annotation"]),
                         new("Storage", "archive", DependsOn: ["jpeg", "annotation", "projected-scene"],
-                            Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
-                            {
-                                StorageRoot = archiveRoot, QueueForUpload = false, UpdateLatestFrame = false
-                            }))
+                            Options: JsonSerializer.SerializeToElement(new SiloCaptureProcessingStepOptions
+                            { UpdateLatestFrame = false }))
                     ]
                 }
             };

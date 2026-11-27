@@ -1,7 +1,6 @@
 using System.Reflection;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
-using HVO.SkyMonitor.CameraAgent.Common.Background;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
@@ -38,8 +37,6 @@ public sealed class StorageRootIdentityTests
         CaptureStoragePolicy.EnsureMatchesProfile(Pipeline(alias), Pipeline(root));
         Assert.AreSame(StorageLifecycleLock.ForRoot(root), StorageLifecycleLock.ForRoot(alias));
         Assert.AreSame(RawIngressLifecycleLock.ForRoot(root), RawIngressLifecycleLock.ForRoot(alias));
-        Assert.AreSame(FrameIndexLock.ForRoot(root), FrameIndexLock.ForRoot(alias));
-
         var pressure = new StoragePressureState();
         var first = new StoragePressureSnapshot(alias, new(100, 20), false, 30, DateTimeOffset.UnixEpoch);
         pressure.Set(first);
@@ -68,7 +65,7 @@ public sealed class StorageRootIdentityTests
     {
         var root = Path.Combine(Path.GetTempPath(), "root-comparison", Guid.NewGuid().ToString("N"));
         var alias = Alias(root, spelling);
-        foreach (var owner in new[] { typeof(RetentionBackgroundService), typeof(RawCaptureIngress) })
+        foreach (var owner in new[] { typeof(RawCaptureIngress) })
         {
             var comparison = owner.GetMethod("PathsEqual", BindingFlags.Static | BindingFlags.NonPublic)!;
             Assert.IsTrue((bool)comparison.Invoke(null, [root, alias])!, owner.Name);
@@ -84,7 +81,6 @@ public sealed class StorageRootIdentityTests
         var other = Path.Combine(root, "other");
         Assert.AreNotSame(StorageLifecycleLock.ForRoot(root), StorageLifecycleLock.ForRoot(other));
         Assert.AreNotSame(RawIngressLifecycleLock.ForRoot(root), RawIngressLifecycleLock.ForRoot(other));
-        Assert.AreNotSame(FrameIndexLock.ForRoot(root), FrameIndexLock.ForRoot(other));
         var state = new StoragePressureState();
         state.Set(new(root, new(100, 20), false, 30, DateTimeOffset.UnixEpoch));
         Assert.IsNull(state.Get(other));
@@ -94,7 +90,7 @@ public sealed class StorageRootIdentityTests
 
     private static CapturePipelineConfig Pipeline(string root)
         => new([new("Storage", "storage", Options: JsonSerializer.SerializeToElement(
-            new FileStorageCaptureProcessingStepOptions { StorageRoot = root }))]);
+            new SiloCaptureProcessingStepOptions {  }))]);
 
     private static string Alias(string root, string spelling) => spelling switch
     {

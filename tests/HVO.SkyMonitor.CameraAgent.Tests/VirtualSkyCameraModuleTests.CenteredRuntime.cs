@@ -1,8 +1,8 @@
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using System.Buffers.Binary;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
-using HVO.SkyMonitor.CameraAgent.Common.Background;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
@@ -171,19 +171,8 @@ public sealed partial class VirtualSkyCameraModuleTests
             var pin105 = slot105.Products!.RegistrationPin!;
             var admitted105 = await source.ReadExposureAsync(pin105.Key, token).ConfigureAwait(false);
             Assert.IsNotNull(admitted105);
-            var rawPaths = RawIngressFileStore.GetPaths(root, admitted105.Raw.Timing.ExposureStartedUtc, pin105.Raw.ArtifactId);
-            var unheldPayload = rawPaths.PayloadAbsolutePath + ".retention-control";
-            var unheldSidecar = rawPaths.SidecarAbsolutePath + ".retention-control";
-            File.Copy(rawPaths.PayloadAbsolutePath, unheldPayload);
-            File.Copy(rawPaths.SidecarAbsolutePath, unheldSidecar);
-            var retentionConfiguration = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(reopened, profile)
+            var reopenedProfile = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(reopened, profile)
                 .ConfigureAwait(false);
-            // Exercise an age-eligible sweep without expiring the independent active owner leases.
-            var retentionClock = new CenteredClock { UtcNow = clock.UtcNow.AddDays(45) };
-            using var retention = ActivatorUtilities.CreateInstance<RetentionBackgroundService>(reopened, retentionClock);
-            await retention.ApplyRetentionAsync(retentionConfiguration, token).ConfigureAwait(false);
-            Assert.IsFalse(File.Exists(unheldPayload));
-            Assert.IsFalse(File.Exists(unheldSidecar));
             var raw105 = await source.ReadArtifactAsync(pin105.Key, pin105.Raw, token).ConfigureAwait(false);
             var linear105 = await source.ReadArtifactAsync(pin105.Key, pin105.Linear, token).ConfigureAwait(false);
             Assert.IsNotNull(raw105);
@@ -248,13 +237,13 @@ public sealed partial class VirtualSkyCameraModuleTests
             var nextModule = new VirtualSkyCameraModule(deviceClock, catalog, new ProjectedSceneStore(),
                 stagingStore: reopened.GetRequiredService<IProjectedSceneStagingStore>());
             await using var nextCamera = nextModule.ConfigureAwait(false);
-            await nextModule.InitializeAsync(retentionConfiguration, token).ConfigureAwait(false);
-            var next = await CaptureCenteredRuntimeAttemptAsync(reopenedIngress, nextModule, deviceClock, clock, retentionConfiguration,
+            await nextModule.InitializeAsync(reopenedProfile, token).ConfigureAwait(false);
+            var next = await CaptureCenteredRuntimeAttemptAsync(reopenedIngress, nextModule, deviceClock, clock, reopenedProfile,
                 start.AddSeconds(10).AddMilliseconds(115), 1, token).ConfigureAwait(false);
-            var receipt106 = await reopenedIngress.AcceptCenteredAsync(retentionConfiguration, next.Submission, next.Reservation, token)
+            var receipt106 = await reopenedIngress.AcceptCenteredAsync(reopenedProfile, next.Submission, next.Reservation, token)
                 .ConfigureAwait(false);
             ids.Add(receipt106.Manifest.Descriptor.Capture.CaptureId);
-            await ProcessCenteredRuntimeExposureAsync(reopened, retentionConfiguration, token).ConfigureAwait(false);
+            await ProcessCenteredRuntimeExposureAsync(reopened, reopenedProfile, token).ConfigureAwait(false);
             await reopened.GetRequiredService<CenteredWindowCoordinator>().CloseReadyAsync(token).ConfigureAwait(false);
             await reopened.GetRequiredService<CenteredWindowRegistrationWorker>().RegisterPendingAsync(token).ConfigureAwait(false);
             var nextDisposition = await reopenedStore.ReadCenteredWindowByReferenceAsync(ids[3], token).ConfigureAwait(false);
@@ -321,8 +310,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                             await laneStore.FailAsync(first, retry, token).ConfigureAwait(false));
                         var stream = CenteredViewLookup.ResolveStream(await ingress.ReadCurrentAsync(attempt.Camera, token).ConfigureAwait(false));
                         Assert.IsNotNull(stream);
-                        await provider.GetRequiredService<CenteredViewPublicationWorker>()
-                            .DrainCameraAsync(attempt.Camera, stream, CancellationToken.None, token).ConfigureAwait(false);
+                        await DrainCenteredCameraAsync(provider, attempt.Camera, stream, token).ConfigureAwait(false);
                         var views = provider.GetRequiredService<SqliteCenteredViews>();
                         var pending = Assert.ContainsSingle(await views.ReadArchiveAsync(ids[4].CaptureId, token).ConfigureAwait(false));
                         var view = await views.ReadRevisionAsync(pending.Base.BaseId, pending.LatestRevisionId, token).ConfigureAwait(false);
@@ -371,16 +359,16 @@ public sealed partial class VirtualSkyCameraModuleTests
                 {
                     var linear = await store.ReadOutputByArtifactIdAsync(end.Product.ArtifactId, token).ConfigureAwait(false);
                     Assert.IsNotNull(linear);
-                    var payload = Path.Combine(root, linear.PayloadRelativePath);
-                    var temporarilyUnavailable = payload + ".closure-probe";
-                    File.Move(payload, temporarilyUnavailable);
+                    var bucket = provider.GetRequiredService<SiloTestStore>();
+                    var key = SiloObjectNamespace.PayloadKey(SiloRetentionClass.Full, SiloCenteredViews.LowerHex(linear.Artifact.ChecksumSha256));
+                    bucket.ReadUnavailable = candidate => candidate == key;
                     try
                     {
                         await provider.GetRequiredService<CenteredWindowCoordinator>().CloseReadyAsync(token).ConfigureAwait(false);
                     }
                     finally
                     {
-                        File.Move(temporarilyUnavailable, payload);
+                        bucket.ReadUnavailable = null;
                     }
                 }
             }
@@ -392,8 +380,7 @@ public sealed partial class VirtualSkyCameraModuleTests
             if (closeAfterDeadline)
                 await reopened.GetRequiredService<CenteredWindowCoordinator>().CloseDueAsync(token).ConfigureAwait(false);
             var reopenedStore = reopened.GetRequiredService<SqliteCaptureProcessingStore>();
-            var publisher = reopened.GetRequiredService<CenteredViewPublicationWorker>();
-            await publisher.DrainCameraAsync(ids[4].Camera, null, CancellationToken.None, token).ConfigureAwait(false);
+            await DrainCenteredCameraAsync(reopened, ids[4].Camera, null, token).ConfigureAwait(false);
             var reopenedViews = reopened.GetRequiredService<SqliteCenteredViews>();
             var archive = Assert.ContainsSingle(await reopenedViews.ReadArchiveAsync(ids[4].CaptureId, token).ConfigureAwait(false));
             var latestView = await reopenedViews.ReadRevisionAsync(archive.Base.BaseId, archive.LatestRevisionId, token).ConfigureAwait(false);
@@ -402,7 +389,7 @@ public sealed partial class VirtualSkyCameraModuleTests
             Assert.AreEqual(CenteredViewReadiness.Incompatible, settledLayer.Readiness);
             Assert.AreEqual("centered.product-failed/measurement-publication-io", settledLayer.Reason);
             Assert.IsNull(settledLayer.Drawable);
-            await publisher.DrainCameraAsync(ids[4].Camera, null, CancellationToken.None, token).ConfigureAwait(false);
+            await DrainCenteredCameraAsync(reopened, ids[4].Camera, null, token).ConfigureAwait(false);
             Assert.AreEqual(archive.LatestRevisionId, Assert.ContainsSingle(await reopenedViews
                 .ReadArchiveAsync(ids[4].CaptureId, token).ConfigureAwait(false)).LatestRevisionId);
             var recovered = await reopenedStore.ReadCenteredWindowByReferenceAsync(ids[2].CaptureId, token).ConfigureAwait(false);
@@ -804,20 +791,10 @@ public sealed partial class VirtualSkyCameraModuleTests
                 var store = initial.GetRequiredService<SqliteCaptureProcessingStore>();
                 var output = await store.ReadOutputByArtifactIdAsync(linear.Product.ArtifactId, token).ConfigureAwait(false);
                 Assert.IsNotNull(output);
-                var payload = Path.Combine(root, output.PayloadRelativePath);
-                var displaced = payload + ".availability-probe";
                 clock.UtcNow = window.DeadlineUtc.AddMilliseconds(lossOffset);
-                File.Move(payload, displaced);
-                try
-                {
-                    await store.TransitionOutputUnavailableAsync(output.OutputIdentitySha256, "Missing", "test.payload-unavailable", null, token)
-                        .ConfigureAwait(false);
-                    Assert.AreEqual("Missing", (await store.ReadOutputByArtifactIdAsync(linear.Product.ArtifactId, token).ConfigureAwait(false))!.AvailabilityState);
-                }
-                finally
-                {
-                    File.Move(displaced, payload);
-                }
+                await store.TransitionOutputUnavailableAsync(output.OutputIdentitySha256, "Missing", "test.payload-unavailable", null, token)
+                    .ConfigureAwait(false);
+                Assert.AreEqual("Missing", (await store.ReadOutputByArtifactIdAsync(linear.Product.ArtifactId, token).ConfigureAwait(false))!.AvailabilityState);
                 clock.UtcNow = window.DeadlineUtc.AddMilliseconds(restoreOffset);
                 await store.RestoreMissingOutputAvailableAsync(output.OutputIdentitySha256, token).ConfigureAwait(false);
                 Assert.AreEqual("Available", (await store.ReadOutputByArtifactIdAsync(linear.Product.ArtifactId, token).ConfigureAwait(false))!.AvailabilityState);

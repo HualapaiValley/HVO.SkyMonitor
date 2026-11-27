@@ -81,15 +81,9 @@ internal sealed class CameraAgentAcceptanceFaultController(string controlRoot) :
         var holds = new List<ProcessingRetentionHold>(configured.Length);
         foreach (var hold in configured)
         {
-            if (Path.IsPathRooted(hold.PayloadRelativePath) || Path.IsPathRooted(hold.SidecarRelativePath) ||
-                string.IsNullOrWhiteSpace(hold.PayloadRelativePath) || string.IsNullOrWhiteSpace(hold.SidecarRelativePath))
-            {
-                throw new InvalidDataException("Acceptance retention hold paths must be relative.");
-            }
-            holds.Add(new ProcessingRetentionHold(
-                hold.ArtifactId,
-                hold.PayloadRelativePath,
-                hold.SidecarRelativePath));
+            if (hold.ArtifactId == Guid.Empty)
+                throw new InvalidDataException("Acceptance retention holds require an artifact ID.");
+            holds.Add(new(hold.ArtifactId));
         }
         return holds;
     }
@@ -169,8 +163,5 @@ internal sealed class CameraAgentAcceptanceFaultController(string controlRoot) :
         int? BlockTimeoutSeconds);
     private sealed record FaultHit(string OperationId, string Boundary, string? NodeId, DateTimeOffset HitUtc);
     private sealed record CapacityOverride(long TotalBytes, long AvailableBytes);
-    private sealed record RetentionHoldOverride(
-        Guid ArtifactId,
-        string PayloadRelativePath,
-        string SidecarRelativePath);
+    private sealed record RetentionHoldOverride(Guid ArtifactId);
 }

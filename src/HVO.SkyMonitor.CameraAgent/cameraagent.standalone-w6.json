@@ -387,11 +387,7 @@
         "order": 90,
         "dependsOn": [ "$raw", "projected-scene", "calibration", "calibrated-preview", "rolling", "combined-preview", "quality", "scene-presentation", "environment-presentation", "overlay-manifest", "presentation-materializer" ],
         "options": {
-          "storageRoot": "/var/lib/hvo/data/agent",
-          "retentionDays": 1,
-          "updateLatestFrame": true,
-          "queueForUpload": false,
-          "policies": []
+          "updateLatestFrame": true
         }
       },
       {

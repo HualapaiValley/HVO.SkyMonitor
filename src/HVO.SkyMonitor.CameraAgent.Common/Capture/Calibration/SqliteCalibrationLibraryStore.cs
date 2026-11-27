@@ -1389,7 +1389,7 @@ public sealed partial class SqliteCalibrationLibraryStore(
             using (var command = connection.CreateCommand())
             {
                 command.CommandText = """
-                    SELECT a.artifact_id, a.payload_relative_path, a.manifest_relative_path
+                    SELECT a.artifact_id
                     FROM calibration_library_artifacts a
                     JOIN calibration_library_bundles b ON b.bundle_id = a.bundle_id
                     WHERE b.retention_hold = 1 OR EXISTS (
@@ -1407,18 +1407,13 @@ public sealed partial class SqliteCalibrationLibraryStore(
                 using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
                 while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
-                    _ = ResolveSafePath(reader.GetString(1));
-                    _ = ResolveSafePath(reader.GetString(2));
-                    holds.Add(new ProcessingRetentionHold(
-                        Guid.ParseExact(reader.GetString(0), "N"),
-                        reader.GetString(1),
-                        reader.GetString(2)));
+                    holds.Add(new(Guid.ParseExact(reader.GetString(0), "N")));
                 }
             }
             using (var command = connection.CreateCommand())
             {
                 command.CommandText = """
-                    SELECT bundle_identity_sha256, profile_relative_path, source, bundle_json
+                    SELECT bundle_identity_sha256, source, bundle_json
                     FROM calibration_library_bundles b WHERE retention_hold = 1 OR EXISTS (
                         SELECT 1 FROM centered_exposure_runs run WHERE run.calibration_bundle_id = b.bundle_id
                           AND (run.closed_reason IS NULL OR EXISTS (
@@ -1434,36 +1429,23 @@ public sealed partial class SqliteCalibrationLibraryStore(
                 using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
                 while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
-                    var profilePath = reader.GetString(1);
-                    _ = ResolveSafePath(profilePath);
                     if (Silo is not null)
                     {
-                        var parsed = CalibrationLibraryContractJson.Parse((byte[])reader[3]);
+                        var parsed = CalibrationLibraryContractJson.Parse((byte[])reader[2]);
                         if (!parsed.Validation.IsValid || parsed.Value is not { } bundle ||
                             !string.Equals(CalibrationLibraryContractJson.ComputeIdentitySha256(bundle), reader.GetString(0),
                                 StringComparison.OrdinalIgnoreCase))
                             throw new InvalidDataException("The retained calibration bundle is invalid.");
-                        holds.Add(new(CalibrationArtifactPublisher.BundleArtifactId(bundle), profilePath, profilePath));
+                        holds.Add(new(CalibrationArtifactPublisher.BundleArtifactId(bundle)));
                         continue;
                     }
-                    holds.Add(new ProcessingRetentionHold(
-                        Guid.ParseExact(reader.GetString(0)[..32], "N"),
-                        profilePath,
-                        profilePath));
+                    holds.Add(new(Guid.ParseExact(reader.GetString(0)[..32], "N")));
                     if (string.Equals(
-                            reader.GetString(2),
+                            reader.GetString(1),
                             CalibrationLibraryBundleSources.SyntheticReferencesV1,
                             StringComparison.Ordinal))
                     {
-                        var separator = profilePath.LastIndexOf('/');
-                        var bundlePath = string.Concat(
-                            profilePath.AsSpan(0, separator + 1),
-                            CalibrationLibraryEvidenceNames.BundleEnvelope);
-                        _ = ResolveSafePath(bundlePath);
-                        holds.Add(new ProcessingRetentionHold(
-                            Guid.ParseExact(reader.GetString(0)[32..], "N"),
-                            bundlePath,
-                            bundlePath));
+                        holds.Add(new(Guid.ParseExact(reader.GetString(0)[32..], "N")));
                     }
                 }
             }
@@ -1500,7 +1482,7 @@ public sealed partial class SqliteCalibrationLibraryStore(
             using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
             using var command = connection.CreateCommand();
             command.CommandText = """
-                SELECT artifact_id, payload_relative_path, manifest_relative_path
+                SELECT artifact_id
                 FROM calibration_library_artifacts
                 WHERE role = 'master' AND artifact_id IN (SELECT value FROM json_each($ids))
                 ORDER BY artifact_id;
@@ -1510,12 +1492,7 @@ public sealed partial class SqliteCalibrationLibraryStore(
             using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                _ = ResolveSafePath(reader.GetString(1));
-                _ = ResolveSafePath(reader.GetString(2));
-                holds.Add(new ProcessingRetentionHold(
-                    Guid.ParseExact(reader.GetString(0), "N"),
-                    reader.GetString(1),
-                    reader.GetString(2)));
+                holds.Add(new(Guid.ParseExact(reader.GetString(0), "N")));
             }
             return holds;
         }

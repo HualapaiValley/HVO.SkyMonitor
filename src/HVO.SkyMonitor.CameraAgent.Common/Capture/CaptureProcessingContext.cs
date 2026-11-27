@@ -405,7 +405,7 @@ public sealed class CaptureProcessingContext
         ]);
 
     internal void RecordArchivePublication(string relativePath, string identitySha256,
-        string schema = FileSystemFrameStorageService.ArchiveEvidenceVersion)
+        string schema = SiloCaptureProcessingStep.SiloArchiveEvidenceVersion)
         => AppendInputEvidence([
             new DurableProcessingNodeInput(
                 _currentInputs.Count, "CanonicalContext", "centered-archive", null, null, relativePath, null,

@@ -194,9 +194,9 @@ public sealed partial class RawCaptureIngressTests
             Assert.IsFalse(await ingress.InitializeForOperationsAsync(CancellationToken.None).ConfigureAwait(false));
             Directory.Move(root, retained);
             Directory.CreateSymbolicLink(root, retained);
-            await Assert.ThrowsExactlyAsync<IOException>(() => ingress.InitializeAsync(CancellationToken.None).AsTask()).ConfigureAwait(false);
-            await Assert.ThrowsExactlyAsync<IOException>(() => ingress.InitializeForOperationsAsync(CancellationToken.None).AsTask()).ConfigureAwait(false);
-            await Assert.ThrowsExactlyAsync<IOException>(() => restarted.ReadEvidencePageAsync(10, null, CancellationToken.None).AsTask()).ConfigureAwait(false);
+            await Assert.ThrowsAsync<IOException>(() => ingress.InitializeAsync(CancellationToken.None).AsTask()).ConfigureAwait(false);
+            await Assert.ThrowsAsync<IOException>(() => ingress.InitializeForOperationsAsync(CancellationToken.None).AsTask()).ConfigureAwait(false);
+            await Assert.ThrowsAsync<IOException>(() => restarted.ReadEvidencePageAsync(10, null, CancellationToken.None).AsTask()).ConfigureAwait(false);
             Directory.Delete(root);
             Directory.Move(retained, root);
             Assert.IsFalse(await ingress.InitializeForOperationsAsync(CancellationToken.None).ConfigureAwait(false));

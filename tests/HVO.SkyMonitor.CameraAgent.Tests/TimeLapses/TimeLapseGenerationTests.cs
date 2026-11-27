@@ -212,7 +212,7 @@ public sealed class TimeLapseGenerationTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton<TimeProvider>(new NightlyClock(NightlyProductFixture.DayEndUtc.AddMinutes(10)));
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["CameraAgent:RawIngressRoot"] = root,
             ["CameraAgent:RawIngressReserveBytes"] = "0",
@@ -264,6 +264,7 @@ public sealed class TimeLapseGenerationTests
                 { AcquisitionTiming = new(utc, utc.Add(exposure), utc.Add(exposure)) }, utc, exposure, exposure), CancellationToken.None))!;
             Assert.IsNotNull(receipts[index]);
         }
+        await SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, CancellationToken.None);
         return (occurrence, receipts);
     }
 

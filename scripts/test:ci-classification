@@ -2405,8 +2405,7 @@ run_work_components_pre_csproj() {
     "src/HVO.SkyMonitor.ProcessingRunner/Program.cs|full|false|false|true|true|true"
     "src/HVO.SkyMonitor.ProcessingRunner.Contracts/Contract.cs|full|false|false|true|true|true"
     "src/HVO.SkyMonitor.Catalog.Sqlite/Catalog.cs|full|false|false|true|true|true|M"
-    "src/HVO.SkyMonitor.Storage.FileSystem/PhysicalRoot.cs|full|false|false|true|true|true"
-    "tests/HVO.SkyMonitor.Storage.FileSystem.Tests/RootTests.cs|full|false|false|true|true|true"
+    "src/HVO.SkyMonitor.LocalFiles/PhysicalRoot.cs|full|false|false|true|true|true"
     "src/HVO.SkyMonitor.Common/Security/ApiKey.cs|full|false|false|true|true|true"
     "src/HVO.SkyMonitor.Fleet.Contracts/Registration.cs|full|false|false|true|true|true"
     "src/HVO.SkyMonitor.TestSupport/Fixture.cs|full|false|false|true|true|true"
@@ -3587,8 +3586,8 @@ run_workflow_shape() {
       fi
     done < <("$repo_root/scripts/coverage:component" --list-slots "$component")
   done < <("$repo_root/scripts/coverage:component" --list-components)
-  if (( slot_count != 17 )); then
-    printf 'Expected 17 component coverage slots across the three active lanes, found %s.\n' "$slot_count" >&2
+  if (( slot_count != 16 )); then
+    printf 'Expected 16 component coverage slots across the three active lanes, found %s.\n' "$slot_count" >&2
     exit 1
   fi
 

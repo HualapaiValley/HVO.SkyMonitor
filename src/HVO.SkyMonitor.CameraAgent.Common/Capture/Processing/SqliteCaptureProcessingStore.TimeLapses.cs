@@ -15,7 +15,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT manifest_json, manifest_sha256, payload_relative_path, sidecar_relative_path
+            SELECT manifest_json, manifest_sha256, payload_relative_path
             FROM raw_captures INDEXED BY ix_raw_captures_gallery_time
             WHERE state = 'committed' AND agent_id = $agent_id
               AND exposure_started_unix_ms >= $start AND exposure_started_unix_ms < $end
@@ -37,7 +37,7 @@ internal sealed partial class SqliteCaptureProcessingStore
             if (!parsed.IsValid || parsed.Document?.Manifest?.Descriptor is not { } descriptor ||
                 descriptor.Capture.AgentId != agentId || parsed.Document.Manifest.RelativeArtifactPath != reader.GetString(2))
                 throw new InvalidDataException("A time-lapse source has invalid durable capture facts.");
-            result.Add(new(descriptor, reader.GetString(2), reader.GetString(3)));
+            result.Add(new(descriptor));
         }
         return result;
     }

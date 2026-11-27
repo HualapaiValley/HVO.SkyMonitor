@@ -44,9 +44,8 @@ public sealed partial class CameraAgentArtifactServiceTests
         var reference = DeepSkyExposure(scope, descriptor);
         var later = DeepSkyExposure(scope, neighbor.Manifest.Descriptor);
         var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = fixture.Root });
-        using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
         using var telemetry = new CaptureProcessingTelemetry();
-        var persistence = new CaptureProcessingPersistence(options, fixture.ProcessingStore, storage, telemetry,
+        var persistence = new CaptureProcessingPersistence(options, fixture.ProcessingStore, telemetry,
             NullLogger<CaptureProcessingPersistence>.Instance);
         var publisher = new SqliteCenteredViews(fixture.ProcessingStore, TimeProvider.System, NullLogger<SqliteCenteredViews>.Instance);
         var rawArtifact = new ProcessingArtifact(raw.ArtifactId, FrameArtifactRole.Raw, descriptor.Artifact.Variant,

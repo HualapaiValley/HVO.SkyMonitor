@@ -2656,14 +2656,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
     {
         var path = Path.Combine(runtimeRoot, "acceptance-faults", "retention-holds.json");
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        var holds = enabled
-            ? artifacts.Select(static artifact => new
-            {
-                artifact.ArtifactId,
-                artifact.PayloadRelativePath,
-                artifact.SidecarRelativePath
-            }).ToArray()
-            : [];
+        var holds = enabled ? artifacts.Select(static artifact => new { artifact.ArtifactId }).ToArray() : [];
         await File.WriteAllBytesAsync(path, JsonSerializer.SerializeToUtf8Bytes(holds, EvidenceJson)).ConfigureAwait(false);
     }
 

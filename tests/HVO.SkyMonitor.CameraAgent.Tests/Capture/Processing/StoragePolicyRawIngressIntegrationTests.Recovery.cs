@@ -145,8 +145,8 @@ public sealed partial class StoragePolicyRawIngressIntegrationTests
                 Pipeline = file.Pipeline with
                 {
                     Steps = [.. file.Pipeline.Steps.Select(step => step.Type == "Storage"
-                ? step with { Options = JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
-                { StorageRoot = StorageOptions(file).StorageRoot, UpdateLatestFrame = false, Policies = [new() { Role = FrameArtifactRole.Preview, RetentionDays = 90 }] }) } : step)]
+                ? step with { Options = JsonSerializer.SerializeToElement(new SiloCaptureProcessingStepOptions
+                { UpdateLatestFrame = false, PublishArchive = true }) } : step)]
                 }
             };
             var runtime = provider.GetRequiredService<CaptureScheduleRuntimeCoordinator>();

@@ -285,7 +285,7 @@ public sealed class MeasuredStellarAssociationAcceptanceTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton<ICelestialCatalog>(snapshot.Catalog);
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["CameraAgent:RawIngressRoot"] = ingressRoot,
             ["CameraAgent:RawIngressReserveBytes"] = "0",

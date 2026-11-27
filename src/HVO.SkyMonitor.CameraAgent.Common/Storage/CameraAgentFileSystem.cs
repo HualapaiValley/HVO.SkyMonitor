@@ -1,93 +1,47 @@
-using HVO.SkyMonitor.Storage.FileSystem;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
+using HVO.SkyMonitor.LocalFiles;
 using Microsoft.Win32.SafeHandles;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Storage;
 
-/// <summary>Adapts shared mechanisms to CameraAgent's existing exception contract.</summary>
 internal static class CameraAgentFileSystem
 {
-    internal static void FlushFile(FileStream stream)
-    {
-        try
-        {
-            DurableSync.File(stream);
-        }
-        catch (FileSystemFaultException exception)
-        {
-            FileSystemFaultCompatibility.Rethrow(exception);
-        }
-    }
+    internal static void FlushFile(FileStream stream) => DurableSync.File(stream);
 
     internal static void FlushFile(SafeFileHandle handle, string pathForDiagnostics)
-    {
-        try
-        {
-            DurableSync.File(handle, pathForDiagnostics);
-        }
-        catch (FileSystemFaultException exception)
-        {
-            FileSystemFaultCompatibility.Rethrow(exception);
-        }
-    }
+        => DurableSync.File(handle, pathForDiagnostics);
 
     internal static void SyncDirectory(SafeFileHandle handle, string pathForDiagnostics)
-    {
-        try
-        {
-            DurableSync.Directory(handle, pathForDiagnostics);
-        }
-        catch (FileSystemFaultException exception)
-        {
-            FileSystemFaultCompatibility.Rethrow(exception);
-        }
-    }
+        => DurableSync.Directory(handle, pathForDiagnostics);
 
     internal static void PublishPrepared(string root, string temporaryPath, string finalPath, bool overwrite)
     {
         using var mutation = RetainedIntegrityLedger.BeginPublication(temporaryPath, finalPath);
-        try
-        {
-            AtomicPublisher.PublishPrepared(
-                PhysicalRoot.Open(Path.GetFullPath(root)), temporaryPath, finalPath,
-                overwrite ? PublishMode.Replace : PublishMode.CreateNew);
-        }
-        catch (FileSystemFaultException exception)
-        {
-            FileSystemFaultCompatibility.Rethrow(exception);
-        }
+        AtomicPublisher.PublishPrepared(PhysicalRoot.Open(Path.GetFullPath(root)), temporaryPath, finalPath,
+            overwrite ? PublishMode.Replace : PublishMode.CreateNew);
     }
-    /// <summary>
-    /// Establish a configured storage root and its parent entries before publication. Existence
-    /// cannot distinguish a durable root from directories left by a failed earlier attempt.
-    /// Outside-root ancestor links retain PhysicalRoot's trusted-ancestor contract.
-    /// </summary>
+
+    /// <summary>Make the state root and the directory entries leading to it durable even after a failed prior attempt.</summary>
     internal static void EnsureStorageRootDurable(string root, Action? directorySyncRecorder = null)
     {
         root = Path.GetFullPath(root);
         Directory.CreateDirectory(root);
-        try
+        var physicalRoot = PhysicalRoot.Open(root);
+        if (!DurableSync.SupportsDirectorySync) return;
+
+        DirectoryInfo? current = new(physicalRoot.Path);
+        var atRoot = true;
+        while (current is not null)
         {
-            var physicalRoot = PhysicalRoot.Open(root);
-            if (!DurableSync.SupportsDirectorySync) return;
-            DirectoryInfo? current = new(physicalRoot.Path);
-            var atRoot = true;
-            while (current is not null)
+            if (!atRoot && current.LinkTarget is not null)
             {
-                if (!atRoot && current.LinkTarget is not null)
-                {
-                    current = current.ResolveLinkTarget(returnFinalTarget: true) as DirectoryInfo
-                        ?? throw new IOException("Storage root ancestor does not resolve to a directory.");
-                }
-                DurableSync.Directory(current.FullName);
-                directorySyncRecorder?.Invoke();
-                current = current.Parent;
-                atRoot = false;
+                current = current.ResolveLinkTarget(returnFinalTarget: true) as DirectoryInfo
+                    ?? throw new IOException("Storage root ancestor does not resolve to a directory.");
             }
-        }
-        catch (FileSystemFaultException exception)
-        {
-            FileSystemFaultCompatibility.Rethrow(exception);
+            DurableSync.Directory(current.FullName);
+            directorySyncRecorder?.Invoke();
+            current = current.Parent;
+            atRoot = false;
         }
     }
 }

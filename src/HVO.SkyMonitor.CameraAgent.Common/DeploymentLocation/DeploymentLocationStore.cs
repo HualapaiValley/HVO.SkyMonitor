@@ -1405,6 +1405,12 @@ public sealed partial class ProtectedDeploymentLocationStore(
         {
             return;
         }
+        if (silo is not null)
+        {
+            ValidateJournalEvidence(root, history, summary, strict, cancellationToken, scrub);
+            cancellationToken.ThrowIfCancellationRequested();
+            return;
+        }
         scrub?.LoadFileMetadata(summary, cancellationToken);
         var enumeration = new EnumerationOptions
         {
@@ -1659,6 +1665,13 @@ public sealed partial class ProtectedDeploymentLocationStore(
         if (!Directory.Exists(root))
         {
             return false;
+        }
+        if (silo is not null)
+        {
+            var admissions = Path.Combine(root, ".silo", "raw-admission-intents");
+            RawIngressFileStore.EnsureNoSymbolicLinks(root, admissions);
+            return JournalContainsLocationEvidence(root) ||
+                Directory.Exists(admissions) && Directory.EnumerateFiles(admissions, "*.json").Any();
         }
         var enumeration = new EnumerationOptions
         {

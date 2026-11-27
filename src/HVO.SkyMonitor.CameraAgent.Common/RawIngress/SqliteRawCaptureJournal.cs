@@ -880,7 +880,7 @@ internal sealed partial class SqliteRawCaptureJournal(
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.CommandText = $$"""
-            SELECT raw_artifact_id, payload_relative_path, sidecar_relative_path
+            SELECT raw_artifact_id
             FROM raw_captures raw
             WHERE {{RawRetentionHoldPredicate}}
             ORDER BY agent_id, capture_sequence;
@@ -890,10 +890,7 @@ internal sealed partial class SqliteRawCaptureJournal(
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-            holds.Add(new RawIngressRetentionHold(
-                Guid.ParseExact(reader.GetString(0), "N"),
-                reader.GetString(1),
-                reader.GetString(2)));
+            holds.Add(new RawIngressRetentionHold(Guid.ParseExact(reader.GetString(0), "N")));
         }
         return holds;
     }

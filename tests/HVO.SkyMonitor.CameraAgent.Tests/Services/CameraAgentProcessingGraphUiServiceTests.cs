@@ -28,7 +28,7 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
 {
     [TestMethod]
     [DataRow("MeasuredAstrometry", "\"captureStride\":\"120\"", "Use a JSON number without quotes")]
-    [DataRow("Storage", "\"retentionDays\":\"30\"", "Use a JSON number without quotes")]
+    [DataRow("Storage", "\"publishArchive\":\"true\"", "must be true or false")]
     [DataRow("RollingCombination", "\"recipe\":\"mixed-gain-normalized-mean\",\"windowSize\":\"7\"", "Use a JSON number without quotes")]
     [DataRow("RollingCombination", "\"recipe\":\"mixed-gain-normalized-mean\",\"windowSize\":5,\"WINDOWSIZE\":7", "Remove duplicate members")]
     [DataRow("Calibration", "\"strategy\":\"None\",\"STRATEGY\":\"SyntheticReferences\"",

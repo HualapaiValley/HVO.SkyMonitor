@@ -70,7 +70,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 Pipeline = source.Pipeline with
                 {
                     Steps = source.Pipeline.Steps.Select(step => step.Type == "Storage"
-                        ? step with { Options = JsonSerializer.SerializeToElement(new { storageRoot = root, queueForUpload = false }) }
+                        ? step with { Options = JsonSerializer.SerializeToElement(new { updateLatestFrame = true }) }
                         : step).ToArray()
                 }
             };

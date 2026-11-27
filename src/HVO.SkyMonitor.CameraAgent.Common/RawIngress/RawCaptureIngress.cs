@@ -782,7 +782,6 @@ internal sealed partial class RawCaptureIngress :
             _state.UpdateBaseHeldData(held.Count, held.Bytes, held.Oldest);
             CheckSiloPressure(held.Count, held.Bytes,
                 outcome == RawIngressOutcome.Committed ? checked(entry.PayloadLength + entry.ManifestJson.LongLength + 64) : 0);
-            var prior = _state.GetBaseSnapshot();
             var receipt = new RawCaptureReceipt(
                 outcome,
                 manifest with { Scene = null },
@@ -792,35 +791,6 @@ internal sealed partial class RawCaptureIngress :
                     committedDescriptor.Timing.ExposureStartedUtc,
                     FrameArtifactRole.Raw),
                 manifestSha256);
-            if (_silo is null && (outcome == RawIngressOutcome.Committed || prior.Availability == RawIngressAvailability.Degraded))
-            {
-                try
-                {
-                    _faultInjector.Inject(RawIngressFaultPoint.BeforeIndexProjection);
-                    if (outcome == RawIngressOutcome.Committed)
-                    {
-                        await RawIngressFileStore.AppendCompatibilityIndexAsync(
-                            _options.RawIngressRoot,
-                            receipt,
-                            CancellationToken.None,
-                            _telemetry.RecordFileFlush).ConfigureAwait(false);
-                    }
-                    else
-                    {
-                        await RawIngressFileStore.EnsureCompatibilityIndexAsync(
-                            _options.RawIngressRoot,
-                            manifestJson,
-                            CancellationToken.None,
-                            _telemetry.RecordFileFlush).ConfigureAwait(false);
-                    }
-                    _faultInjector.Inject(RawIngressFaultPoint.AfterIndexProjection);
-                }
-                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-                {
-                    _state.UpdateBaseStatus(RawIngressAvailability.Degraded, "index-projection-failed");
-                    _logger.RawIngressIndexProjectionFailed();
-                }
-            }
             _faultInjector.Inject(RawIngressFaultPoint.BeforeWakeUpNotification);
             var duration = System.Diagnostics.Stopwatch.GetElapsedTime(started);
             _telemetry.RecordCommit(outcome, frame.PixelData.Length, duration);

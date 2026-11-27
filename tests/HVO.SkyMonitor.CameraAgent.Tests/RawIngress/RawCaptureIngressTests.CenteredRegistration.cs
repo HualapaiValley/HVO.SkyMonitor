@@ -21,13 +21,12 @@ public sealed partial class RawCaptureIngressTests
             ExposureKey key;
             ExposureProductRef product;
             using (var original = new CenteredFixture(root))
-            using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
             {
                 var receipt = await original.AdmitAsync(config, rawTime).ConfigureAwait(false);
                 var descriptor = receipt.Manifest.Descriptor;
                 var attempt = receipt.Manifest.CenteredExposure!.Source;
                 key = new(attempt.Camera, attempt.RunId, descriptor.Capture.CaptureId);
-                var persistence = new CaptureProcessingPersistence(original.Options, original.Store, storage, original.Telemetry,
+                var persistence = new CaptureProcessingPersistence(original.Options, original.Store, original.Telemetry,
                     NullLogger<CaptureProcessingPersistence>.Instance);
                 using var standard = new StandardCaptureLaneHandler(original.Factory, persistence, original.Telemetry,
                     NullLogger<StandardCaptureLaneHandler>.Instance, original.Ingress, original.Options);
@@ -44,8 +43,7 @@ public sealed partial class RawCaptureIngressTests
             }
 
             using var restarted = new CenteredFixture(root);
-            using var reopenedStorage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
-            var reopenedPersistence = new CaptureProcessingPersistence(restarted.Options, restarted.Store, reopenedStorage, restarted.Telemetry,
+            var reopenedPersistence = new CaptureProcessingPersistence(restarted.Options, restarted.Store, restarted.Telemetry,
                 NullLogger<CaptureProcessingPersistence>.Instance);
             var products = new CenteredExposureProductReader(restarted.Ingress, restarted.Store);
             var custody = new CenteredExposureInputCustody(restarted.Ingress, products, restarted.Store, reopenedPersistence, TimeProvider.System);

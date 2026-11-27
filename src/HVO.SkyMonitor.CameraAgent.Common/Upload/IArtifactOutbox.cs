@@ -87,9 +87,6 @@ public interface IArtifactOutbox
         string actorKind,
         string reasonCode,
         CancellationToken cancellationToken);
-    ValueTask<IReadOnlyList<ArtifactOutboxRetentionHold>> GetRetentionHoldsAsync(
-        string root,
-        CancellationToken cancellationToken);
     ValueTask<IReadOnlyList<Guid>> GetAcknowledgedArtifactIdsAsync(
         string root,
         IReadOnlySet<Guid> artifactIds,

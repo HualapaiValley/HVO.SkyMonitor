@@ -80,7 +80,7 @@ internal sealed class OrbitalCompositionHost : IAsyncDisposable
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton<TimeProvider>(clock);
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(settings).Build());
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(settings).Build());
         services.AddSingleton<IDeploymentLocationProtector>(new OrbitalPassThroughLocationProtector());
         services.AddHttpClient(CelesTrakGpSource.HttpClientName).ConfigurePrimaryHttpMessageHandler(() => handler);
         if (meter is not null)

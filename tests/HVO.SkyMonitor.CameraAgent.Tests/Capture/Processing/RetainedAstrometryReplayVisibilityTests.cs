@@ -37,9 +37,8 @@ public sealed partial class DurableCaptureProcessingTests
             var revision = await operations.ReadRevisionSnapshotAsync(registry.ActiveRevisionId, token).ConfigureAwait(false);
             var standard = provider.GetRequiredService<CaptureLanePolicy>().Definitions.Single(definition => definition.Name == "standard");
             using var telemetry = new CaptureProcessingTelemetry();
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
             using var gate = new CaptureAstrometryExecutionGate();
-            var persistence = CreatePersistence(first.Fixture.Options, store, storage, telemetry);
+            var persistence = CreatePersistence(first.Fixture.Options, store, telemetry);
             var oldest = await ProduceLatestReadFixtureAsync(first, store, persistence, telemetry, gate).ConfigureAwait(false);
             var next = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true, captureSequence: 61,
                 reference: await MeasuredAstrometryFixture.CreateAtAsync(20).ConfigureAwait(false), prior: (1, 1),
