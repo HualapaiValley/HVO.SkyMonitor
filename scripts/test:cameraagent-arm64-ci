@@ -500,7 +500,7 @@ fi
 printf 'publish,%s\n' "$((SECONDS - phase_started))" >> "$RESULTS/phase-durations.csv"
 
 phase_started=$SECONDS
-dotnet run --project "$REPO_ROOT/src/HVO.SkyMonitor.Deployment.Cli" \
+HVO_INSTALLER_ALLOW_TEST_ROOT=1 dotnet run --project "$REPO_ROOT/src/HVO.SkyMonitor.Deployment.Cli" \
     --no-build --configuration Release --runtime linux-arm64 -- \
     catalog install --catalog-bundle "$BUNDLE" --product-root "$STATE_ROOT" \
     > "$RESULTS/catalog-install.log"

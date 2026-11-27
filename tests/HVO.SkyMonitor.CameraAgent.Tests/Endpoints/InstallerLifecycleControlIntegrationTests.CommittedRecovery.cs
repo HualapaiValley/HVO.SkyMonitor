@@ -12,6 +12,7 @@ using RuntimeClient = InstallerRuntime::HVO.SkyMonitor.Deployment.InstallerContr
 using NativeClient = InstallerRuntime::HVO.SkyMonitor.Deployment.CameraAgentLifecycleClient;
 using RuntimeCatalog = InstallerRuntime::HVO.SkyMonitor.Deployment.ProductionCatalog;
 using RuntimeException = InstallerRuntime::HVO.SkyMonitor.Deployment.InstallerException;
+using RuntimeImageContract = InstallerRuntime::HVO.SkyMonitor.Deployment.CameraAgentImageContract;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 
@@ -66,7 +67,7 @@ public sealed partial class InstallerLifecycleRecoveryIntegrationTests
             await native.PauseAndDrainAsync(deployment, "test-installation-token", watchdog.Token).ConfigureAwait(false);
         var image = new ImageInstallationIdentity("registry", "test@sha256:" + new string('a', 64),
             "sha256:" + new string('b', 64), "amd64", null, SourceRevision: new string('8', 40),
-            Component: "CameraAgent", ConfigurationContract: "cameraagent-install-v1", CatalogContract: "hvo-approved-catalogs-v1");
+            Component: "CameraAgent", ConfigurationContract: "cameraagent-install-v1", CatalogContract: RuntimeImageContract.CatalogContract);
         var specification = RuntimeCatalog.Get(RuntimeCatalog.DefaultCatalogId);
         var catalog = new CatalogInstallationIdentity(RuntimeCatalog.DefaultCatalogId, specification.PackageVersionPrefix + "1",
             specification.SchemaVersion, specification.PreprocessingVersion, specification.DatabaseSha256,
