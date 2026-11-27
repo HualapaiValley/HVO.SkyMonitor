@@ -365,4 +365,4 @@ identity. Unchanged retries verify the immutable publication; changed captures,
 exclusions or linked products publish a new identity while preserving prior
 outputs. A link is a snapshot of a published product, not a mutable latest pointer.
 
-The installer lifecycle starts with the [0.10-beta-1 state contract](../hvo-install-contract.md#cameraagent-state-contract-baseline).
+The installer lifecycle starts with the [0.10.0-beta.1 state contract](../hvo-install-contract.md#cameraagent-state-contract-baseline).

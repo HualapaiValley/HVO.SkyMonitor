@@ -1,7 +1,7 @@
 # CameraAgent Silo Storage and Cutover Contract
 
 > The Nov 27 release decision in [#1964](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1964)
-> supersedes earlier cutover planning. Sites move to 0.10-beta-1 with a fresh
+> supersedes earlier cutover planning. Sites move to 0.10.0-beta.1 with a fresh
 > install and empty storage. The [install contract baseline](../hvo-install-contract.md#cameraagent-state-contract-baseline)
 > governs supported image transitions and recovery from this release onward.
 

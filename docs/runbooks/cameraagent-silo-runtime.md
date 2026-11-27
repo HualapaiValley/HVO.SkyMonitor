@@ -591,19 +591,21 @@ I/O sustained enough throughput to exceed committed ingest. The higher sync-on c
 inconclusive given the host-wide effects of `sync(2)`, the nonmatching topology and the separate #1964 import path.
 The 312 Mb/s comparison remains open for installed workload qualification. [#1964 baseline](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1964)
 
-## Uninstall, purge and unsupported operations
+## Silo lifecycle operations
 
+- Use `status` to inspect a Silo instance, `cameraagent silo-verify` to verify it, and
+  `cameraagent first-resume` to lift the first-boot pause after verification.
+- `cameraagent upgrade` changes the CameraAgent image within the
+  [baseline state contract](../hvo-install-contract.md#cameraagent-state-contract-baseline).
+  `cameraagent rollback` starts the retained compatible image on the live state.
 - `cameraagent uninstall` pauses capture, then `compose down` removes both containers and both networks. It keeps the
-  state root and the Silo data root. The Silo image stays in Docker.
-- `cameraagent purge` deletes the whole instance root, including the Silo data root.
-- `backup`, `restore`, `reset-state` and the catalog commands refuse a Silo-layout
-  instance before changing anything. Installers released before #1966 refuse it as well, because its manifest declares
-  `cameraagent-silo-install-v1`.
-- `cameraagent owner-recovery` and the lifecycle control worker refuse a Silo-layout instance as well. Only status,
-  `first-resume`, `silo-verify`, `uninstall` and `purge` act on one.
-- **An uninstalled Silo-layout instance cannot be started again in this release.** No command starts it, and an install
-  re-run refuses it because it is no longer installed. Keep its state and data root for #1972's recovery, or purge it.
-- New-layout backup and recovery are #1972.
+  state root, the Silo data root and the Docker image. Use `cameraagent reinstall` to start the preserved instance.
+- `cameraagent purge` deletes the whole instance root, including the Silo data root, after exact instance confirmation.
+- `catalog select` and `catalog rollback` manage the instance's catalog selection.
+- Run `cameraagent lifecycle-worker` for Drain and scheduled Restart. Use `cameraagent recover-owner`
+  as the recorded runtime account to recover the local owner on an installed instance.
+- `cameraagent backup`, `cameraagent restore` and `cameraagent reset-state` refuse the Silo layout.
+  Silo backup and restore are tracked in [#1972](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1972).
 
 ## Stock image replacement on the retained data root
 

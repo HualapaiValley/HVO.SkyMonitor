@@ -10,7 +10,7 @@ namespace HVO.SkyMonitor.Deployment;
 internal static class CameraAgentStateContract
 {
     public const string Current = CameraAgentSiloBinding.StateContract;
-    public const string BaselineRelease = "0.10-beta-1";
+    public const string BaselineRelease = "0.10.0-beta.1";
     public const string FreshInstallRequired =
         $"This installation does not carry the supported CameraAgent state contract. Use a fresh install of {BaselineRelease} or later with a new instance and empty storage.";
 

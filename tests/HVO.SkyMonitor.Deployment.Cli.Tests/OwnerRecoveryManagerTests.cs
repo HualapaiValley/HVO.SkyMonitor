@@ -12,9 +12,11 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 public sealed class OwnerRecoveryManagerTests
 {
     [TestMethod]
-    public async Task Execute_GeneratesPrivateCredentialAndUsesAuthenticatedSocketPath()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task Execute_GeneratesPrivateCredentialAndUsesAuthenticatedSocketPath(bool silo)
     {
-        using var fixture = await RecoveryFixture.CreateAsync().ConfigureAwait(false);
+        using var fixture = await RecoveryFixture.CreateAsync(silo).ConfigureAwait(false);
         var recoveryClient = new FakeRecoveryClient();
 
         var result = await OwnerRecoveryManager.ExecuteAsync(
@@ -348,7 +350,7 @@ public sealed class OwnerRecoveryManagerTests
                 InstallationPaths.Create(Root, InstanceId, HygV42.CatalogId)));
         }
 
-        internal static async Task<RecoveryFixture> CreateAsync()
+        internal static async Task<RecoveryFixture> CreateAsync(bool silo = false)
         {
             var root = Path.Combine(Path.GetTempPath(), $"hvo-or-{Guid.NewGuid():N}"[..15]);
             var instanceId = Guid.NewGuid();
@@ -475,6 +477,19 @@ public sealed class OwnerRecoveryManagerTests
                 true,
                 "owner-password-change-required",
                 DateTimeOffset.UtcNow);
+            if (silo)
+            {
+                using var harness = new SiloHarness(paths, instanceId, seed: false);
+                image = image with { FirstBootContract = SiloInstallation.FirstBootContract };
+                manifest = manifest with
+                {
+                    ComponentSchemaVersion = SiloRuntimeProfile.ComponentSchemaVersion,
+                    ComposeTemplateVersion = SiloRuntimeProfile.ComposeTemplateVersion,
+                    Image = image,
+                    Silo = harness.Identity with { DataRootFileSystem = SiloRuntimeProfile.RequiredFileSystem }
+                };
+                result = result with { ComposeTemplateVersion = SiloRuntimeProfile.ComposeTemplateVersion, Image = image };
+            }
             await SafeFileSystem.WriteJsonAtomicAsync(
                 paths.ManifestPath,
                 manifest,

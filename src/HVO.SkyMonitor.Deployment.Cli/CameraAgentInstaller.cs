@@ -834,7 +834,7 @@ internal sealed partial class CameraAgentInstaller
             finalPaths.StateRoot,
             NativeLinux.getuid(),
             NativeLinux.getgid(),
-            ComposeDeployment.TemplateVersionFor(request.ReplayProfile),
+            silo is null ? ComposeDeployment.TemplateVersionFor(request.ReplayProfile) : SiloRuntimeProfile.ComposeTemplateVersion,
             request.LatitudeDegrees,
             request.LongitudeDegrees,
             request.ElevationMeters,

@@ -265,7 +265,8 @@ internal sealed class SoftwarePage : WizardPage
         }
         else
         {
-            _release = Field("Release folder", Answers.Release, 48, "The folder holding the release's files, such as /home/you/hvo-sky-0.9.0.");
+            _release = Field("Release folder", Answers.Release, 48,
+                $"The folder holding the release's files, such as /home/you/hvo-sky-{CameraAgentStateContract.BaselineRelease}.");
             if (Session.GivenValue("--image-source") is { } source)
             {
                 Given("Image from", source, "--image-source");

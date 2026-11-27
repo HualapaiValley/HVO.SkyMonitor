@@ -86,7 +86,7 @@ public sealed partial class LifecycleContractTests
         {
             var refusal = await Assert.ThrowsExactlyAsync<InstallerException>(execute);
             Assert.IsTrue(refusal.IsRefusal);
-            StringAssert.Contains(refusal.Message, "fresh install of 0.10-beta-1 or later", StringComparison.Ordinal);
+            StringAssert.Contains(refusal.Message, "fresh install of 0.10.0-beta.1 or later", StringComparison.Ordinal);
         }
     }
 

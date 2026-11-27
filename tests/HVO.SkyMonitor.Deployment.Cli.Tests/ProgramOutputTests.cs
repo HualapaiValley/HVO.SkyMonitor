@@ -378,28 +378,13 @@ public sealed class ProgramOutputTests
     [TestMethod]
     [DataRow("planned", "Plan:")]
     [DataRow("completed", "Changes:")]
-    public async Task RunAsync_LifecycleHumanOutput_FormatsPreservedAdmissionAndOptionalSections(
+    public async Task RunAsync_LifecycleHumanOutput_FormatsOptionalSections(
         string outcome,
         string expectedPlanHeading)
     {
         var operationId = Guid.Parse("11111111-2222-3333-4444-555555555555");
         var instanceId = Guid.Parse("5a3f7c1e-2b4d-4e6f-8a9b-0c1d2e3f4a5b");
-        var observedUtc = new DateTimeOffset(2026, 11, 25, 12, 34, 56, 789, TimeSpan.Zero);
-        var completedUtc = new DateTimeOffset(2026, 11, 25, 12, 30, 01, 250, TimeSpan.Zero);
         var imageId = $"sha256:{new string('a', 64)}";
-        var keySha256 = new string('c', 64);
-        var admission = new LifecycleAdmissionObservation(
-            State: "Paused",
-            Version: 7,
-            CaptureSequence: 42,
-            ObservedUtc: observedUtc,
-            LatestCommandOrder: 9,
-            LatestCommandKeySha256: keySha256,
-            LatestTarget: "Running",
-            LatestActor: "installer:upgrade",
-            LatestChanged: true,
-            LatestResultVersion: 6,
-            LatestCompletedUtc: completedUtc);
         var plan = DeploymentPlan.Of([new DeploymentPlanItem(DeploymentPlanAction.Change, "container", "cameraagent", "upgrade")]);
         var catalog = new CatalogInstallationIdentity(
             "hyg-v42", "hyg-v4.2-p3-s2-r1", "1", "1", new string('b', 64), 1, 1, "/var/lib/hvo-sky/catalogs/hyg",
@@ -420,7 +405,6 @@ public sealed class ProgramOutputTests
             alive: true,
             healthy: false,
             healthStatusCode: 503,
-            preservedAdmission: admission,
             preservedPaths: ["/var/lib/hvo-sky/cameraagents/a/state", "/var/lib/hvo-sky/cameraagents/a/captures"],
             resumeCommand: $"hvo-sky-install cameraagent upgrade --instance-id {instanceId:D} --resume",
             plan: plan);
@@ -438,8 +422,6 @@ public sealed class ProgramOutputTests
             "Catalog: hyg-v42 / hyg-v4.2-p3-s2-r1",
             "Deep-sky catalog: openngc / openngc-v1.0-r1",
             "Runtime running=True, alive=True, healthy=False (/health HTTP 503)",
-            $"Capture admission preserved: Paused at version 7, sequence 42, observed {observedUtc:O}.",
-            $"Latest capture command #9 (key SHA-256 {keySha256}, Running, changed=True) by installer:upgrade at {completedUtc:O}, version 6.",
             "Preserved: /var/lib/hvo-sky/cameraagents/a/state",
             "Preserved: /var/lib/hvo-sky/cameraagents/a/captures",
             $"Resume: hvo-sky-install cameraagent upgrade --instance-id {instanceId:D} --resume",
@@ -447,25 +429,6 @@ public sealed class ProgramOutputTests
             .. DeploymentPlanText.Lines(plan)
         ];
         Assert.AreEqual(string.Join(Environment.NewLine, expectedLines) + Environment.NewLine, output);
-    }
-
-    [TestMethod]
-    public async Task RunAsync_LifecycleHumanOutput_OmitsPreservedAdmissionWhenAbsent()
-    {
-        var result = CreateLifecycleResult(
-            outcome: "status",
-            running: true,
-            alive: true,
-            healthy: true,
-            healthStatusCode: 200,
-            preservedAdmission: null);
-
-        var (exitCode, output, error) = await RunWithServicesAsync(StatusArguments, LifecycleServices(result));
-
-        Assert.AreEqual(0, exitCode);
-        Assert.AreEqual(string.Empty, error);
-        Assert.IsFalse(output.Contains("Capture admission preserved:", StringComparison.Ordinal), output);
-        Assert.IsFalse(output.Contains("Latest capture command #", StringComparison.Ordinal), output);
     }
 
     private static readonly string[] StatusArguments = ["status"];
@@ -483,7 +446,6 @@ public sealed class ProgramOutputTests
         bool? alive = null,
         bool? healthy = null,
         int? healthStatusCode = null,
-        LifecycleAdmissionObservation? preservedAdmission = null,
         IReadOnlyList<string>? preservedPaths = null,
         string? resumeCommand = null,
         DeploymentPlan? plan = null)
@@ -510,7 +472,6 @@ public sealed class ProgramOutputTests
             Alive = alive,
             HealthStatusCode = healthStatusCode,
             DeepSkyCatalog = deepSkyCatalog,
-            PreservedAdmission = preservedAdmission,
             Plan = plan
         };
 

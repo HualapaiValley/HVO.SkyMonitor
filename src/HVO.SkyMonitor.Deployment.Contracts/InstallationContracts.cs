@@ -95,6 +95,8 @@ public enum LifecycleOperationKind
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter<LifecycleOperationPhase>))]
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1027:Mark enums with FlagsAttribute",
+    Justification = "Lifecycle phases are exclusive. The retired numeric value stays reserved for persisted journals.")]
 public enum LifecycleOperationPhase
 {
     Planned,
@@ -108,13 +110,8 @@ public enum LifecycleOperationPhase
     Committed,
     Restoring,
     Completed,
-    Restored,
     /// <summary>The operation's verified snapshot of the instance's small SQLite databases is recorded.</summary>
-    StateSnapshotRecorded,
-    /// <summary>A rollback has put back the database snapshot retained by the upgrade it undoes.</summary>
-    RetainedStateApplied,
-    /// <summary>The verified predecessor is running and the installer left capture admission to the owner.</summary>
-    RecoveryAdmissionPreserved
+    StateSnapshotRecorded = 12
 }
 
 public sealed record ApplicationIdentityBinding(
@@ -293,18 +290,12 @@ public sealed record LifecycleOperationState(
     bool StateSnapshotRequired = false,
     LifecycleStateSnapshot? StateSnapshot = null,
     DateTimeOffset? StateSnapshotRestoredUtc = null,
-    LifecycleStateSnapshot? RetainedStateSnapshot = null,
     IReadOnlyList<StateCounterFloor>? StateCounterFloors = null,
     StateRestorePlan? StateRestorePlan = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] CatalogInstallationIdentity? OriginalDeepSkyCatalog = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] CatalogInstallationIdentity? CandidateDeepSkyCatalog = null,
     bool DeepSkyTransition = false,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SignedReleaseChecksumsSha256 = null);
-
-public sealed record LifecycleAdmissionObservation(
-    string State, long Version, long CaptureSequence, DateTimeOffset ObservedUtc,
-    long LatestCommandOrder, string LatestCommandKeySha256, string LatestTarget, string LatestActor, bool LatestChanged,
-    long LatestResultVersion, DateTimeOffset LatestCompletedUtc);
 
 /// <summary>
 /// What a snapshot restore covers, journaled before it replaces any store so that an interrupted retry still knows it:
@@ -470,9 +461,6 @@ public sealed record LifecycleResult(
     /// <summary>What a completed <c>cameraagent restore</c> put back. Omitted by every other command.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public LifecycleRestore? Restore { get; init; }
-
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public LifecycleAdmissionObservation? PreservedAdmission { get; init; }
 }
 
 /// <summary>

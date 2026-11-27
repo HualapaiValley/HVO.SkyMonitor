@@ -318,7 +318,7 @@ HVO.RoofController#127):
 
 ### CameraAgent state contract baseline
 
-**0.10-beta-1** is the first release of the clean-install state contract `cameraagent-silo-state-v1`.
+**0.10.0-beta.1** is the first release of the clean-install state contract `cameraagent-silo-state-v1`.
 The CameraAgent image declares the contract in
 `io.hvo.skymonitor.state-contract`. The installer records it in the instance manifest and in the
 installed image identity. The manifest, installation journal, installation result and machine
@@ -329,7 +329,7 @@ A pre-baseline Silo instance may already have the same identifier in its storage
 admission requires the baseline record schemas and the new OCI label in the retained image identity.
 The binding and individual SQLite schema numbers do not establish installer admission on their own.
 
-A site moving from a release before 0.10-beta-1 provisions a fresh instance on empty storage. Install and
+A site moving from a release before 0.10.0-beta.1 provisions a fresh instance on empty storage. Install and
 lifecycle preflight refuse records or images outside this contract and direct the operator to a
 fresh install. They do not adopt earlier state, resume its journals, or apply its checkpoints.
 The [cutover plan](planning/cameraagent-silo-cutover.md) governs site rollout.
@@ -337,8 +337,8 @@ The [cutover plan](planning/cameraagent-silo-cutover.md) governs site rollout.
 The baseline keeps clean install, installation verification, data-preserving uninstall, reinstall,
 and purge with exact instance confirmation. Later builds that declare the same contract can use
 `cameraagent upgrade` and `cameraagent rollback` through the retained Compose and image identities.
-Until 0.10-beta-1 ships, fold schema changes into the initial EF Core migration and baselined SQLite
-stores owned by [#2179](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/2179). From 0.10-beta-1
+Until 0.10.0-beta.1 ships, fold schema changes into the initial EF Core migration and baselined SQLite
+stores owned by [#2179](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/2179). From 0.10.0-beta.1
 onward, later releases must maintain upgrade, reinstall, migration and rollback support from this
 baseline. A schema or state-contract change after shipment requires an explicit, verified transition.
 
@@ -553,5 +553,5 @@ Owner decision of 2026-10-18, on #1353:
 
 Owner decision of 2026-11-27, on #1964:
 
-9. **0.10-beta-1 starts fresh.** The CameraAgent lifecycle uses the
+9. **0.10.0-beta.1 starts fresh.** The CameraAgent lifecycle uses the
    [baseline contract](#cameraagent-state-contract-baseline) for install, image transitions and checkpoint recovery.

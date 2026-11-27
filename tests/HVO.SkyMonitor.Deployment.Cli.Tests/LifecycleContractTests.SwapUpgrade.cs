@@ -383,7 +383,6 @@ public sealed partial class LifecycleContractTests
     {
         var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed, installedImage: CurrentStateContract);
         // One boundary label differs, so the candidate declares a migration without changing what the preflight reads.
-        fixture.Runner.CandidateLabels["io.hvo.skymonitor.minimum-compatible-revision"] = new string('6', 40);
         fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
             CandidateReference, CandidateImageId, fixture.Uid, fixture.Gid);
         return fixture;

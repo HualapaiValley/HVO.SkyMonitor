@@ -34,7 +34,7 @@ public sealed partial class LifecycleContractTests
                 new string('5', 64), LifecycleOperationPhase.StateSnapshotRecorded, InstallationStatus.Running,
                 DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, manifest.Image, CandidateImage: manifest.Image, OriginalCatalog: manifest.Catalog,
                 MutationStarted: true,
-                RetainedStateSnapshot: namedByUnfinished.Reference),
+                StateSnapshot: namedByUnfinished.Reference),
             DeploymentJsonContext.Default.LifecycleOperationState, CancellationToken.None);
 
         var planned = await CameraAgentStateSnapshotRetention.PlanAsync(fixture.Paths, manifest, CancellationToken.None);

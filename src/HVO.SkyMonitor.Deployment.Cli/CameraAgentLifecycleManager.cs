@@ -1717,8 +1717,8 @@ internal sealed partial class CameraAgentLifecycleManager
         CancellationToken cancellationToken)
     {
         state = state with { UpdatedUtc = DateTimeOffset.UtcNow };
-        // Never replace resumable intent with a terminal record the reader would reject.
-        if (state.Phase == LifecycleOperationPhase.Restored || state.SchemaVersion != DeploymentSchemaVersions.LifecycleOperation)
+        // Refuse unsupported journal schemas before replacing resumable intent.
+        if (state.SchemaVersion != DeploymentSchemaVersions.LifecycleOperation)
             ValidateOperationState(state);
         await SafeFileSystem.WriteJsonAtomicAsync(
             paths.LifecycleStatePath, state, DeploymentJsonContext.Default.LifecycleOperationState, cancellationToken)
@@ -1766,8 +1766,7 @@ internal sealed partial class CameraAgentLifecycleManager
             value.OriginalDeepSkyCatalog is not null && !IsValidCatalog(value.OriginalDeepSkyCatalog) ||
             value.CandidateDeepSkyCatalog is not null && !IsValidCatalog(value.CandidateDeepSkyCatalog) ||
             value.DeepSkyTransition && value.Kind is not (LifecycleOperationKind.CatalogSelect or LifecycleOperationKind.CatalogRollback) ||
-            value.Phase is LifecycleOperationPhase.Planned or LifecycleOperationPhase.Restored or
-                LifecycleOperationPhase.RecoveryAdmissionPreserved or LifecycleOperationPhase.RetainedStateApplied ||
+            value.Phase == LifecycleOperationPhase.Planned ||
             value.Status == InstallationStatus.Completed && value.Phase != LifecycleOperationPhase.Completed ||
             value.Phase == LifecycleOperationPhase.Completed && value.Status != InstallationStatus.Completed ||
             value.Status == InstallationStatus.Completed && value.MutationStarted ||

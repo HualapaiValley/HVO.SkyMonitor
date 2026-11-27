@@ -89,10 +89,10 @@ internal static class OwnerRecoveryManager
 
         var instanceId = request.InstanceId!.Value;
         var paths = InstallationPaths.Create(request.ProductRoot, instanceId, ProductionCatalog.DefaultCatalogId);
-        var manifest = await CameraAgentLifecycleManager.ReadManifestAsync(paths.ManifestPath, cancellationToken)
+        var manifest = await CameraAgentLifecycleManager.ReadManifestAsync(paths.ManifestPath, cancellationToken, allowSiloLayout: true)
             .ConfigureAwait(false);
         paths = paths.WithCatalog(manifest.Catalog.CatalogId);
-        var installation = await CameraAgentLifecycleManager.ReadResultAsync(paths.ResultPath, cancellationToken)
+        var installation = await CameraAgentLifecycleManager.ReadResultAsync(paths.ResultPath, cancellationToken, allowSiloLayout: true)
             .ConfigureAwait(false);
         ValidateInstance(paths, instanceId, manifest, installation, uid, gid);
 
@@ -104,9 +104,9 @@ internal static class OwnerRecoveryManager
             Path.Combine(paths.InstanceRoot, ".deployment.lock"),
             cancellationToken: cancellationToken);
 
-        manifest = await CameraAgentLifecycleManager.ReadManifestAsync(paths.ManifestPath, cancellationToken)
+        manifest = await CameraAgentLifecycleManager.ReadManifestAsync(paths.ManifestPath, cancellationToken, allowSiloLayout: true)
             .ConfigureAwait(false);
-        installation = await CameraAgentLifecycleManager.ReadResultAsync(paths.ResultPath, cancellationToken)
+        installation = await CameraAgentLifecycleManager.ReadResultAsync(paths.ResultPath, cancellationToken, allowSiloLayout: true)
             .ConfigureAwait(false);
         ValidateInstance(paths, instanceId, manifest, installation, uid, gid);
         var lifecycleControlToken = await CameraAgentLifecycleManager.ReadLifecycleControlTokenAsync(paths, cancellationToken)

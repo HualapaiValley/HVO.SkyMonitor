@@ -37,6 +37,7 @@ public sealed partial class InstallerFlowTests
             // A fresh plan names what the run creates beside CameraAgent, and changes nothing anywhere.
             var plan = await Install(request with { DryRun = true });
             Assert.AreEqual(InstallationOutcome.Planned, plan.Outcome);
+            Assert.AreEqual(SiloRuntimeProfile.ComposeTemplateVersion, plan.ComposeTemplateVersion);
             var paths = runner.Paths;
             AssertPlanned(plan.Plan!, "folder", SiloRuntimeProfile.DataRoot(paths), DeploymentPlanAction.Create);
             AssertPlanned(plan.Plan!, "network", SiloRuntimeProfile.NetworkNameFor(instanceId), DeploymentPlanAction.Create);

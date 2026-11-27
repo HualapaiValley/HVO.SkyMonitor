@@ -126,7 +126,7 @@ layers still drew while measured residuals were unavailable.
 
 Use the installer and site handoff in the
 [CameraAgent cutover plan](../planning/cameraagent-silo-cutover.md) to reach a verified
-0.10-beta-1 instance. Validate measured astrometry against captures from that instance.
+0.10.0-beta.1 instance. Validate measured astrometry against captures from that instance.
 
 1. Validate or apply a new local profile revision with the explicit optional graph
    above and the pinned complete catalog. Keep the previous profile revision for

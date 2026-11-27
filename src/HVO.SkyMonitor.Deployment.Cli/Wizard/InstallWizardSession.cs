@@ -136,6 +136,8 @@ internal sealed partial class InstallWizardSession
     {
         var a = Answers;
         var handedRelease = Given("--release") || Given("--image-ref");
+        var storageLayout = StorageLayout;
+        var savedSilo = storageLayout == CameraAgentStorageLayout.Silo ? Saved : null;
         return new InstallAnswers
         {
             SchemaVersion = InstallAnswers.CurrentSchemaVersion,
@@ -159,12 +161,12 @@ internal sealed partial class InstallWizardSession
             AcknowledgePlaintextHttp = Given("--acknowledge-plaintext-http") ? true : IsLoopback(a.BindAddress) ? null : a.AcknowledgePlaintextHttp,
             GeneratePassword = a.Password == OwnerPasswordChoice.Generate ? true : null,
             ReplayProfile = a.ReplayProfile,
-            StorageLayout = StorageLayout,
-            SiloImageArchive = GivenValue("--silo-image-archive") ?? Saved?.SiloImageArchive,
-            SiloArchiveEndpoint = GivenValue("--silo-archive-endpoint") ?? Saved?.SiloArchiveEndpoint,
-            SiloArchiveBucket = GivenValue("--silo-archive-bucket") ?? Saved?.SiloArchiveBucket,
-            SiloArchiveCaFile = GivenValue("--silo-archive-ca-file") ?? Saved?.SiloArchiveCaFile,
-            SiloArchiveCredentialFile = GivenValue("--silo-archive-credential-file") ?? Saved?.SiloArchiveCredentialFile,
+            StorageLayout = storageLayout,
+            SiloImageArchive = GivenValue("--silo-image-archive") ?? savedSilo?.SiloImageArchive,
+            SiloArchiveEndpoint = GivenValue("--silo-archive-endpoint") ?? savedSilo?.SiloArchiveEndpoint,
+            SiloArchiveBucket = GivenValue("--silo-archive-bucket") ?? savedSilo?.SiloArchiveBucket,
+            SiloArchiveCaFile = GivenValue("--silo-archive-ca-file") ?? savedSilo?.SiloArchiveCaFile,
+            SiloArchiveCredentialFile = GivenValue("--silo-archive-credential-file") ?? savedSilo?.SiloArchiveCredentialFile,
             IlluminationMode = a.IlluminationMode,
             Cpus = Blank(a.Cpus) is { } cpus ? decimal.Parse(cpus, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture) : null,
             Memory = Given("--memory") ? GivenValue("--memory") : Blank(a.Memory)

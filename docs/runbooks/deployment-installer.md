@@ -101,7 +101,7 @@ runbook describes the installer as it behaves today.
 | `install.sh` entry point with `--check`, `--from DIR`, and `--install-docker` and the like | [`install.sh`](#installsh) checks the host, then verifies the release's installer and small files and starts it, online or with `--from DIR`; it gives `cameraagent install` and `upgrade` the release and the catalog. With no arguments it runs `cameraagent install`. It installs no Docker and changes no boot setting; it names the remedy. The installer itself still needs a command | [#1311](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1311) |
 | Command words `install`, `upgrade`, `rollback`, `uninstall`, `status` | Instance commands are grouped under `cameraagent` (`cameraagent install`, `cameraagent upgrade`, ...), because one host holds several instances and the catalogs beside them; `status` is top level | Recorded for contract draft 4 |
 | Settings catalogue served by the API | CameraAgent serves the [operator settings catalogue and group writes](../contracts/cameraagent-operator-settings-v1.md) through its operations API; the owner creates API keys for non-browser clients | [#1316](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1316) |
-| Upgrade-time checkpoint recovery only, complete DB/file/config/identity/key coverage and durable CameraAgent protected/unprotected disposition (contract section 6) | The installer checkpoints selected SQLite stores at declared boundaries and refuses new manual rollbacks. Full instance protection and writer fencing remain separate qualification work. [CameraAgent Lifecycle](#cameraagent-lifecycle) | [#1606](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1606) contract; [#1607](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1607) CameraAgent qualification; #1318 is prior delivery history |
+| Baseline image rollback on live state, checkpoint recovery, and durable CameraAgent protected/unprotected disposition (contract section 6) | The installer checkpoints selected SQLite stores at declared boundaries. Manual rollback starts the retained compatible image on the live state. Full instance protection and writer fencing remain separate qualification work. [CameraAgent Lifecycle](#cameraagent-lifecycle) | [#1606](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1606) contract; [#1607](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1607) CameraAgent qualification; #1318 is prior delivery history |
 
 ## install.sh
 
@@ -231,7 +231,7 @@ Every command ends with one of these codes:
 | `0` | Done. With `--plan`, the plan can be carried out | An install, a re-run with nothing to change, `status`, `--help` |
 | `1` | A step failed. Re-running the same command continues, with `--resume` where the message says so | Docker or CameraAgent did not respond, a verification failed, an install record that could not be written |
 | `2` | The command line or the answers file is invalid, or a question had no one to answer it | An unknown option, an answers file with an unknown member, a missing `--friendly-name` without a terminal |
-| `3` | Refused, and nothing was changed | Unmet [host prerequisites](#host-prerequisites), including an upgrade on a host that cannot enforce the container limits, a host policy that cannot be trusted, running as root, a re-run that describes a different instance, an incompatible preflight, a [release](#release-install) the installer will not use or whose image is not the release's, an upgrade to the image already active or to an older release, a fresh manual rollback |
+| `3` | Refused, and nothing was changed | Unmet [host prerequisites](#host-prerequisites), including an upgrade on a host that cannot enforce the container limits, a host policy that cannot be trusted, running as root, a re-run that describes a different instance, an incompatible preflight, a [release](#release-install) the installer will not use or whose image is not the release's, an upgrade to the image already active or to an older release, a rollback with no retained previous image |
 | `130` | Interrupted by Ctrl+C or SIGTERM | |
 
 With `--json`, a failure or refusal writes one JSON object to standard error:
@@ -1886,9 +1886,9 @@ to healthy without regenerating identity or credentials.
 
 ## State Contract Preflight
 
-The installer admits `cameraagent-silo-state-v1`, introduced in 0.10-beta-1 and declared by both the
-image and instance manifest. An instance from before 0.10-beta-1, an unknown contract, or an
-instance directory with unowned state is refused. Use a fresh install of 0.10-beta-1 or later with a
+The installer admits `cameraagent-silo-state-v1`, introduced in 0.10.0-beta.1 and declared by both the
+image and instance manifest. An instance from before 0.10.0-beta.1, an unknown contract, or an
+instance directory with unowned state is refused. Use a fresh install of 0.10.0-beta.1 or later with a
 new instance ID and empty storage.
 Run `cameraagent preflight --instance-id <uuid>` to inspect the installed state, or add
 `--image-ref <immutable-local-image-reference>` to check a candidate already on the daemon.
@@ -2022,8 +2022,9 @@ while capture is paused. If final settlement is interrupted, rerun the exact com
 
 ### Backup and restore
 
-`backup` copies the entire instance, including bulk captures. Upgrades and pending-upgrade
-recovery keep bulk capture files in place.
+`backup` copies the entire instance, including bulk captures. Upgrades and their checkpoint
+recovery keep bulk capture files in place. Silo backup and restore are tracked in
+[#1972](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1972).
 
 ```bash
 hvo-sky-install cameraagent backup --instance-id <uuid> [--plan] [--json] [--resume] [--abort] [--allow-quarantined-readiness]
@@ -2278,7 +2279,7 @@ anything, including before the lifecycle journal, it does two things:
 
 - It prints the upgrade notes of every release after the installed version, up to the release the target belongs to.
   A release candidate shows its release's notes. `--dry-run` shows them too.
-- It refuses a target older than the installed version and points to the pending-upgrade and post-commit recovery procedures.
+- It refuses a target older than the installed version and points to `cameraagent rollback` for the retained compatible image.
 
 Upgrade-note text follows one terminal-safety rule. CRLF becomes LF; LF and TAB are retained, so tabs keep their
 existing terminal spacing behavior. All other Unicode controls (Cc), all format characters (Cf), line and paragraph
@@ -2436,16 +2437,15 @@ use the matching updated installer: carried file proofs are authenticated and
 re-signed under the target snapshot's secret, or as legacy protected proofs for
 a legacy target. Older installers are unsupported for this private-state
 migration/restore boundary, even though qualified HTTP verification remains wire
-compatible with an older client. Pending-upgrade recovery pairs the predecessor
+compatible with an older client. Checkpoint recovery pairs the original image
 with its saved ledger and associated state.
 
 Protected history seals the original integrity-ledger nonce. Removing both ledger
 files does not turn an established installation into a legacy installation.
 Initial adoption syncs nonce metadata before publishing the seal; incomplete
 adoption requires full verification. The sealed-history reader boundary is
-declared by the image. Migrating snapshots pair the integrity database with
-protected history, manual state, identity marker and integrity checkpoint, so
-pending-upgrade recovery restores the old reader's pre-upgrade files. All parts are verified
+declared by the image. Checkpoints pair the integrity database with protected
+history, manual state, identity marker and integrity checkpoint. All parts are verified
 before restore; capture/product files are preserved. Interrupted restores remain
 pending and can resume. Old database-only snapshots cannot reconstruct sealed
 state and are refused before mutation when integrity state is present; restore a

@@ -108,7 +108,7 @@ migrates the supported schema-3 predecessor by adding the retained script-stop a
 other older schemas are refused. Startup verifies the version, the exact schema object
 count, and `PRAGMA integrity_check`, and refuses a newer, drifted, or corrupt database.
 The image declares writes 4 and reads 3 to 4. The installer lifecycle starts with the
-[0.10-beta-1 state contract](../hvo-install-contract.md#cameraagent-state-contract-baseline).
+[0.10.0-beta.1 state contract](../hvo-install-contract.md#cameraagent-state-contract-baseline).
 
 Every open re-asserts that write-ahead logging is actually in force and that neither the database nor its `-wal`, `-shm`, or `-journal`
 sidecars is a symbolic link.

@@ -285,6 +285,33 @@ public sealed class InstallWizardTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("silo")]
+    [DataRow("filesystem")]
+    public void SavedSiloInputsApplyOnlyToSilo(string layout)
+    {
+        using var host = new WizardHost();
+        Directory.CreateDirectory(Path.GetDirectoryName(host.AnswersPath)!);
+        File.WriteAllText(host.AnswersPath, $$"""
+            {"schemaVersion":1,"instanceId":"{{WizardHost.InstanceId:D}}","friendlyName":"Saved Camera",
+             "storageLayout":"Silo","siloImageArchive":"/srv/silo.tar",
+             "siloArchiveEndpoint":"https://archive.example","siloArchiveBucket":"hvo-archive",
+             "siloArchiveCaFile":"/srv/ca.pem","siloArchiveCredentialFile":"/srv/archive-credential"}
+            """);
+        var session = new InstallWizardSession(
+            ["cameraagent", "install", "--storage-layout", layout], host.Services, host.Terminal, WizardHost.Version);
+        Assert.IsNotNull(session.Saved, session.SavedProblem);
+
+        var answers = session.ToAnswers();
+        string?[] inputs = [answers.SiloImageArchive, answers.SiloArchiveEndpoint, answers.SiloArchiveBucket,
+            answers.SiloArchiveCaFile, answers.SiloArchiveCredentialFile];
+        string?[] expected = layout == "silo"
+            ? ["/srv/silo.tar", "https://archive.example", "hvo-archive", "/srv/ca.pem", "/srv/archive-credential"]
+            : [null, null, null, null, null];
+        CollectionAssert.AreEqual(expected, inputs);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public void SavedAnswersThatCannotBeRead_AreSaidAndTheQuestionsStartFromTheDefaults()
     {
         using var host = new WizardHost();
