@@ -218,20 +218,23 @@ deterministic profiles (`HVO.SkyMonitor.Imaging/DeepSkySourceProfile.cs`):
    extra cross-cloud evaluations, compute minimum-area oriented bounding boxes via `O(H)` rotating
    calipers only after pre-checking remaining `MaximumOutlineEdgeVisits` and `CancellationToken`,
    project each clipped fine-outline trapezoid locally to sensor pixel coordinates (never
-   extrapolating catalog-center area scale across off-axis outlines), screen S/N-rejected neighbors
-   without mutating admitted clouds' quotas, compose admitted clouds in a strict canonical order
+   extrapolating catalog-center area scale across off-axis outlines), screen trial layouts with
+   geometric optical-depth bounds and zero target-direction evaluations, compose admitted clouds
+   in a strict canonical order
    independent of admission priority (prioritizing sky-overlapping cross-cloud pairs by optical-depth
    strength and combining partially budgeted overlaps via conditional-independence transmission while
    treating sky-disjoint clouds as zero-overlap), cache co-located temporal optical-depth evaluations
    and allocate bounded temporal work fairly across overlapping unresolved emitters, strictly enforce
    `MaximumSamplePointsPerSource` across own, cross-cloud, and temporal dark-cloud evaluations on
-   both caller and target profiles, pre-charge every non-reused evaluation against
+   both caller and target profiles across backfill retries, reuse exact cross-cloud batches for
+   surviving pairs, pre-charge every non-reused evaluation against
    `MaximumTotalSamplePoints` (`actual <= reported <= MaximumTotalSamplePoints`), and enforce strict
    per-pixel transmission monotonicity (`T_after <= T_before` everywhere) with exact reconciliation
    between published diagnostics and delivered pixel deficits. Before committing transmission or
    consuming a `MaximumRenderedSources` slot, each dark nebula computes
    diffuse-only absorption deficit electrons, null-hypothesis pre-attenuation local variance
-   (`CompleteBinSupport`, including co-located foreground non-diffuse DSO and exposure-integrated
+   (`CompleteBinSupport`, including prior attenuation anywhere in the output bin,
+   co-located foreground non-diffuse DSO and exposure-integrated
    HYG star shot noise strictly charged against `MaximumTotalSamplePoints`,
    `MaximumKernelCellVisits`, and `MaximumSparsePixels` with zero unbounded helpers), and S/N via
    `EvaluateDarkSignalPrediction`, enforcing `MinimumSignalToNoise` and publishing real

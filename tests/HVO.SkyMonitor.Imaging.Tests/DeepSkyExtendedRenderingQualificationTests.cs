@@ -2972,6 +2972,7 @@ public sealed class DeepSkyExtendedRenderingQualificationTests
         Assert.IsTrue(deficitBehindTwo > 0.1);
         var deficitBehindThree = three.ElectronRate(pixelX, pixelY) - mixed.ElectronRate(pixelX, pixelY);
         Assert.AreEqual(t3 / t2, deficitBehindThree / deficitBehindTwo, 1e-10);
+        Assert.AreEqual(0.856897502d, deficitBehindThree / deficitBehindTwo, 5e-10);
 
         // The old shrunken cap excluded positive overlaps this close to tangency.
         var near = Circle("LDN-MIX-CAP-A", 80d, 80d, 0.6);
@@ -3138,6 +3139,75 @@ public sealed class DeepSkyExtendedRenderingQualificationTests
     }
 
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public void InconclusiveDarkCloudBelowExactCutoffBackfillsWithoutChangingPixels(bool weakFirst)
+    {
+        var (projection, request, options, settings, strong, weak, _, backfill) = CreateBorderlineDarkFixture();
+        var unfiltered = settings with { MinimumSignalToNoise = 0d, MaximumRenderedSources = 2 };
+        var marginal = DeepSkyRenderPlan.Prepare(request, null, [strong, weak], null, options, unfiltered)
+            .Diagnostics.Single(d => d.ObjectId == weak.Id).PredictedSignal;
+        var solo = DeepSkyRenderPlan.Prepare(request, null, [weak], null, options, unfiltered)
+            .Diagnostics.Single().PredictedSignal;
+        var cutoff = Math.BitIncrement(marginal.SignalToNoise);
+        Assert.IsTrue(solo.SignalToNoise > cutoff);
+        var gated = unfiltered with { MinimumSignalToNoise = cutoff };
+        var first = (weakFirst ? weak : strong) with { MessierNumber = 1 };
+        var second = (weakFirst ? strong : weak) with { MessierNumber = 2 };
+
+        var plan = DeepSkyRenderPlan.Prepare(request, null, [first, second, backfill], null, options, gated);
+        var direct = DeepSkyRenderPlan.Prepare(request, null, [strong, backfill], null, options, gated);
+
+        var rejected = plan.Diagnostics.Single(d => d.ObjectId == weak.Id);
+        Assert.IsFalse(rejected.Admitted);
+        Assert.AreEqual("annotation-only-below-snr", rejected.Reason);
+        Assert.AreEqual(marginal, rejected.PredictedSignal);
+        Assert.AreEqual(0d, rejected.AttenuatedDiffuseElectronRate);
+        const int ownDirections = 316;
+        Assert.AreEqual(2 * ownDirections, rejected.SampledPoints);
+        Assert.IsLessThanOrEqualTo(settings.MaximumSamplePointsPerSource, rejected.SampledPoints);
+        Assert.AreEqual(direct.Statistics.TotalSampledPoints + rejected.SampledPoints, plan.Statistics.TotalSampledPoints);
+        var admitted = plan.Diagnostics.Where(d => d.Admitted).ToArray();
+        CollectionAssert.AreEquivalent(direct.Diagnostics.ToArray(), admitted);
+        Assert.IsTrue(admitted.All(d => d.PredictedSignal.SignalToNoise >= cutoff));
+        for (var y = 0; y < projection.HeightPixels; y++)
+        {
+            for (var x = 0; x < projection.WidthPixels; x++)
+            {
+                Assert.AreEqual(BitConverter.DoubleToInt64Bits(direct.ElectronRate(x, y)),
+                    BitConverter.DoubleToInt64Bits(plan.ElectronRate(x, y)), $"Pixel ({x}, {y})");
+            }
+        }
+    }
+
+    [TestMethod]
+    public void ExactBackfillReusesSurvivingPairWithoutRechargingItsTarget()
+    {
+        var (request, options, settings, strong, weak, limb, _) = CreateDarkCrossBudgetFixture();
+        var backfill = DarkCloudAtOffset("LDN-D10-E", 4, new AltAzPoint(60d, 180d), 0d, 0.001d, 0.6);
+        var exact = DeepSkyRenderPlan.Prepare(request, null, [strong, weak], null, options, settings);
+        var weakMarginal = exact.Diagnostics.Single(d => d.ObjectId == weak.Id).PredictedSignal;
+        settings = settings with { MinimumSignalToNoise = Math.BitIncrement(weakMarginal.SignalToNoise) };
+
+        var direct = DeepSkyRenderPlan.Prepare(request, null, [strong, limb, backfill], null, options, settings);
+        var plan = DeepSkyRenderPlan.Prepare(request, null, [strong, weak, limb, backfill], null, options, settings);
+        var rejected = plan.Diagnostics.Single(d => d.ObjectId == weak.Id);
+        Assert.IsFalse(rejected.Admitted);
+        Assert.AreEqual(weakMarginal, rejected.PredictedSignal);
+        Assert.AreEqual(4 * 316L, direct.Statistics.TotalSampledPoints);
+        Assert.AreEqual(6 * 316L, plan.Statistics.TotalSampledPoints);
+        CollectionAssert.AreEquivalent(direct.Diagnostics.ToArray(), plan.Diagnostics.Where(d => d.Admitted).ToArray());
+        for (var y = 0; y < request.Projection.HeightPixels; y++)
+        {
+            for (var x = 0; x < request.Projection.WidthPixels; x++)
+            {
+                Assert.AreEqual(BitConverter.DoubleToInt64Bits(direct.ElectronRate(x, y)),
+                    BitConverter.DoubleToInt64Bits(plan.ElectronRate(x, y)), $"Pixel ({x}, {y})");
+            }
+        }
+    }
+
+    [TestMethod]
     public void RejectedCloudLeavesBothLimbPairsExactAfterBackfill()
     {
         var (request, options, settings, strong, weak, limb, oppositeLimb) = CreateDarkCrossBudgetFixture();
@@ -3162,7 +3232,7 @@ public sealed class DeepSkyExtendedRenderingQualificationTests
     }
 
     [TestMethod]
-    public void LimbCloudPassesExactSnrDespiteCoarseLookupAtCap700()
+    public void LimbCloudPassesExactSnrAfterGeometricScreeningAtCap700()
     {
         var (request, options, settings, strong, _, _, limb) = CreateDarkCrossBudgetFixture();
         settings = settings with { MaximumSamplePointsPerSource = 700 };
@@ -3202,14 +3272,50 @@ public sealed class DeepSkyExtendedRenderingQualificationTests
         {
             Assert.AreEqual("annotation-only-below-snr", plan.Diagnostics.Single(d => d.ObjectId == rejected.Id).Reason);
         }
-        // Every possible batch uses 316 points. Once all four small clouds fail behind A,
-        // none of their tentative cross-pairs may have made a fresh evaluation.
-        Assert.AreEqual(5 * 316L, plan.Statistics.TotalSampledPoints);
+        // Charge every target-direction query, including any trial query, to the scene counter.
+        // With 316 own directions for each cloud, the remainder is all cross-cloud work.
+        const int ownDirections = 316;
+        var crossDirectionEvaluations = plan.Statistics.TotalSampledPoints - 5L * ownDirections;
+        Assert.AreEqual(0L, crossDirectionEvaluations, "Screening and backfill must perform zero cross-cloud direction queries.");
+        var totalDirectionEvaluations = ownDirections + crossDirectionEvaluations;
+        Assert.IsLessThanOrEqualTo((long)settings.MaximumSamplePointsPerSource, totalDirectionEvaluations);
         Assert.AreEqual(strong.Id, plan.Diagnostics.Single(d => d.Admitted).ObjectId);
     }
 
     [TestMethod]
     public void DisjointCloudsInOneSummedBinUseMarginalNoiseVariance()
+    {
+        var (request, options, settings, a, b) = CreateSharedDarkBinFixture();
+        var exact = DeepSkyRenderPlan.Prepare(request, null, [a, b], null, options, settings);
+        var screened = DeepSkyRenderPlan.Prepare(request, null, [a, b], null, options, settings with { MinimumSignalToNoise = 1e-6 });
+        var first = exact.Diagnostics.Single(d => d.ObjectId == a.Id);
+        var second = exact.Diagnostics.Single(d => d.ObjectId == b.Id);
+        Assert.AreEqual(200d, first.PredictedSignal.NoiseVariance);
+        Assert.AreEqual(200d - first.AttenuatedDiffuseElectronRate, second.PredictedSignal.NoiseVariance, 1e-12);
+        Assert.AreEqual(second.PredictedSignal, screened.Diagnostics.Single(d => d.ObjectId == b.Id).PredictedSignal);
+    }
+
+    [TestMethod]
+    public void DarkCloudBelowSoloCutoffPassesWhenEarlierCloudDimsSharedBin()
+    {
+        var (request, options, settings, a, b) = CreateSharedDarkBinFixture();
+        var solo = DeepSkyRenderPlan.Prepare(request, null, [b], null, options, settings).Diagnostics.Single();
+        var exact = DeepSkyRenderPlan.Prepare(request, null, [a, b], null, options, settings)
+            .Diagnostics.Single(d => d.ObjectId == b.Id);
+        var cutoff = (solo.PredictedSignal.SignalToNoise + exact.PredictedSignal.SignalToNoise) / 2d;
+        Assert.AreEqual(solo.PredictedSignal.SourceElectrons, exact.PredictedSignal.SourceElectrons);
+        Assert.IsTrue(solo.PredictedSignal.SignalToNoise < cutoff);
+        Assert.IsTrue(exact.PredictedSignal.SignalToNoise > cutoff);
+
+        var screened = DeepSkyRenderPlan.Prepare(request, null, [a, b], null, options, settings with { MinimumSignalToNoise = cutoff });
+        var delivered = screened.Diagnostics.Single(d => d.ObjectId == b.Id);
+        Assert.IsTrue(delivered.Admitted);
+        Assert.AreEqual(exact.PredictedSignal, delivered.PredictedSignal);
+        Assert.IsTrue(delivered.PredictedSignal.SignalToNoise >= cutoff);
+    }
+
+    private static (VisibleSceneRequest Request, Mono16SceneRenderOptions Options, DeepSkyRenderSettings Settings,
+        DeepSkyObject First, DeepSkyObject Second) CreateSharedDarkBinFixture()
     {
         var center = new AltAzPoint(60d, 180d);
         var projection = new ProjectionContext(ProjectionModel.Perspective, 80.5, 80.5, 1400, 1400, 160, 160,
@@ -3226,13 +3332,7 @@ public sealed class DeepSkyExtendedRenderingQualificationTests
             DigitalAverage = false
         };
 
-        var exact = DeepSkyRenderPlan.Prepare(request, null, [a, b], null, options, settings);
-        var screened = DeepSkyRenderPlan.Prepare(request, null, [a, b], null, options, settings with { MinimumSignalToNoise = 1e-6 });
-        var first = exact.Diagnostics.Single(d => d.ObjectId == a.Id);
-        var second = exact.Diagnostics.Single(d => d.ObjectId == b.Id);
-        Assert.AreEqual(200d, first.PredictedSignal.NoiseVariance);
-        Assert.AreEqual(200d - first.AttenuatedDiffuseElectronRate, second.PredictedSignal.NoiseVariance, 1e-12);
-        Assert.AreEqual(second.PredictedSignal, screened.Diagnostics.Single(d => d.ObjectId == b.Id).PredictedSignal);
+        return (request, options, settings, a, b);
     }
 
     private static (VisibleSceneRequest Request, Mono16SceneRenderOptions Options, DeepSkyRenderSettings Settings,

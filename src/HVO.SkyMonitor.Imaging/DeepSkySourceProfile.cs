@@ -604,33 +604,6 @@ public static class DeepSkySourceProfileResolver
 
     private static double DarkRadialDensity(double squaredRadius) => Math.Max(0d, 1d - squaredRadius);
 
-    // Shape lookup shared by all clouds. A trial samples these normalized buckets
-    // without taking new samples of an individual cloud's optical-depth profile.
-    internal static class DarkDepthTable
-    {
-        public const int BucketCount = 4096;
-        private static readonly double[] Radial = CreateDensityTable(outline: false);
-        private static readonly double[] Outline = CreateDensityTable(outline: true);
-
-        public static double GetRadialDensity(double squaredRadius) => Radial[Bucket(squaredRadius)];
-        public static double GetOutlineDensity(double normalizedClearance) => Outline[Bucket(normalizedClearance)];
-
-        private static int Bucket(double coordinate) => (int)(Math.Clamp(coordinate, 0d, 1d) * BucketCount);
-
-        private static double[] CreateDensityTable(bool outline)
-        {
-            var density = new double[BucketCount + 1];
-            for (var i = 0; i <= BucketCount; i++)
-            {
-                var x = (double)i / BucketCount;
-                // These are the normalized dark profile curves: radial in squared radius,
-                // and outline smoothstep in clearance divided by the soft-edge width.
-                density[i] = outline ? Smoothstep(x) : DarkRadialDensity(x);
-            }
-            return density;
-        }
-    }
-
     private static double Smoothstep(double x)
     {
         var t = Math.Clamp(x, 0d, 1d);
