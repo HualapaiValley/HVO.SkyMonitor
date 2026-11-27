@@ -33,18 +33,39 @@ internal sealed class SiloFixtureImport(ConfinedReadDirectory source, SiloFixtur
     private const long PublicationOverheadBytes = 1024 * 1024;
 
     internal ValueTask<SiloFixtureReport> RunForecastAsync(SiloFixtureTarget target, SiloCatalog? catalog,
-        Func<SiloFixtureCapacity> readCapacity, CancellationToken cancellationToken)
+        Func<SiloFixtureCapacity> readCapacity, Func<SiloFilePayloadSpool.Inspection> inspectSpool, CancellationToken cancellationToken)
     {
         var pending = target.Pending;
+        SiloFilePayloadSpool.Inspection? spool = null;
+        var settled = new HashSet<string>(StringComparer.Ordinal);
         return RunAsync(SiloFixtureMode.DryRun, readCapacity, ForecastAsync, cancellationToken);
 
         async ValueTask<bool> ForecastAsync(SiloGroupDraft draft,
             Func<SiloDraftMember, CancellationToken, ValueTask<Stream>> _, Action requireHeadroom, CancellationToken token)
         {
-            var wouldImport = await ForecastPairAsync(target, pending, catalog, draft, requireHeadroom, token).ConfigureAwait(false);
-            if (wouldImport && pending?.GroupId == draft.GroupId)
+            target.Receipts.TryGetValue(draft.GroupId, out var receipt);
+            var visible = receipt?.State == SiloStagedState.Visible;
+            if (!visible)
+            {
+                RequireCompatiblePending(draft, pending);
+                requireHeadroom();
+            }
+            spool ??= inspectSpool();
+            await ForecastPairAsync(receipt, catalog, spool, draft, token).ConfigureAwait(false);
+            if (!visible && pending?.GroupId == draft.GroupId)
                 pending = null;
-            return wouldImport;
+
+            // A settled pair releases its payloads before the next pair stages, except where another receipt owns them.
+            settled.Add(draft.GroupId);
+            IEnumerable<string> released = receipt is not null
+                ? receipt.UnreleasedPayloads
+                : draft.Members.Select(static member => member.SourceToken);
+            foreach (var payload in released)
+            {
+                if (!target.Receipts.Any(entry => !settled.Contains(entry.Key) && entry.Value.UnreleasedPayloads.Contains(payload)))
+                    spool.Release(payload);
+            }
+            return !visible;
         }
     }
 
@@ -238,28 +259,22 @@ internal sealed class SiloFixtureImport(ConfinedReadDirectory source, SiloFixtur
         return !wasVisible;
     }
 
-    private static async ValueTask<bool> ForecastPairAsync(SiloFixtureTarget target, SiloPendingSegment? pending,
-        SiloCatalog? catalog, SiloGroupDraft draft, Action requireHeadroom, CancellationToken cancellationToken)
+    private static async ValueTask ForecastPairAsync(SiloFixtureReceipt? receipt,
+        SiloCatalog? catalog, SiloFilePayloadSpool.Inspection spool, SiloGroupDraft draft, CancellationToken cancellationToken)
     {
-        target.Receipts.TryGetValue(draft.GroupId, out var receipt);
-        var visible = receipt?.State == SiloStagedState.Visible;
-        if (!visible)
-        {
-            RequireCompatiblePending(draft, pending);
-            requireHeadroom();
-        }
         SiloPublisher.ValidateDraft(draft);
-        if (receipt is not null)
+        if (receipt is null)
         {
-            SiloPublisher.RequireMatchingDraft(draft, receipt.DraftSha256, SiloHash.Sha256(SiloJson.Serialize(draft)));
-            if (receipt.State is SiloStagedState.Visible or SiloStagedState.Abandoned && receipt.BlockedCode is { } conflict)
-                throw new SiloConflictException(conflict, "Silo could not settle the fixture publication.");
-            if (receipt.State == SiloStagedState.Abandoned)
-                throw new SiloConflictException("fixture-reopen-failed", "The fixture publication was abandoned.");
+            await spool.StageAsync(draft.Members, cancellationToken).ConfigureAwait(false);
+            return;
         }
-        if (visible)
+        SiloPublisher.RequireMatchingDraft(draft, receipt.DraftSha256, SiloHash.Sha256(SiloJson.Serialize(draft)));
+        if (receipt.State is SiloStagedState.Visible or SiloStagedState.Abandoned && receipt.BlockedCode is { } conflict)
+            throw new SiloConflictException(conflict, "Silo could not settle the fixture publication.");
+        if (receipt.State == SiloStagedState.Abandoned)
+            throw new SiloConflictException("fixture-reopen-failed", "The fixture publication was abandoned.");
+        if (receipt.State == SiloStagedState.Visible)
             await RequireReopenAsync(catalog, draft, cancellationToken).ConfigureAwait(false);
-        return !visible;
     }
 
     private static void RequireCompatiblePending(SiloGroupDraft draft, SiloPendingSegment? pending)

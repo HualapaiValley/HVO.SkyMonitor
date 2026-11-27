@@ -111,16 +111,19 @@ internal sealed class SiloObjectSpool(PhysicalRoot root, string directoryName)
     }
 
     /// <summary>The intact bytes, or null when absent or damaged.</summary>
-    public async ValueTask<byte[]?> ReadAsync(string name, string expectedSha256, CancellationToken cancellationToken)
+    public async ValueTask<byte[]?> ReadAsync(string name, string expectedSha256, CancellationToken cancellationToken,
+        long? expectedLength = null)
     {
         var path = root.Resolve(Relative(name));
-        if (!File.Exists(path))
+        var file = new FileInfo(path);
+        if (!file.Exists || expectedLength is { } length && file.Length != length)
         {
             return null;
         }
         root.Verify(path, "silo-spool-read");
         var bytes = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
-        return string.Equals(SiloHash.Sha256(bytes), expectedSha256, StringComparison.Ordinal) ? bytes : null;
+        return (expectedLength is null || bytes.LongLength == expectedLength) &&
+            string.Equals(SiloHash.Sha256(bytes), expectedSha256, StringComparison.Ordinal) ? bytes : null;
     }
 
     public void Delete(string name)

@@ -91,7 +91,8 @@ public static class SiloFixtureImportCommand
         SiloFixtureCapacity ReadCapacity() =>
             new(stateDirectory.ReadLinuxAvailableBytes(), storeDirectory.ReadLinuxAvailableBytes());
 
-        var statePath = stateRoot.Resolve(".silo");
+        const string relativeSiloState = ".silo";
+        var statePath = stateRoot.Resolve(relativeSiloState);
         var selectedGroups = inventory.Records.Where(static row => row.Status == "selected")
             .Select(static row => row.GroupId!).ToHashSet(StringComparer.Ordinal);
         var tempRoot = Path.TrimEndingDirectorySeparator(Path.GetTempPath());
@@ -116,7 +117,7 @@ public static class SiloFixtureImportCommand
 
         string StateDatabasePath(string file)
         {
-            var path = stateRoot.Resolve(Path.Combine(".silo", file));
+            var path = stateRoot.Resolve(Path.Combine(relativeSiloState, file));
             foreach (var suffix in new[] { "-wal", "-shm", "-journal" })
                 stateRoot.Verify(path + suffix, "read-fixture-target-history");
             return path;
@@ -135,6 +136,13 @@ public static class SiloFixtureImportCommand
 
         async ValueTask<SiloFixtureReport> ForecastSelectionAsync(SiloFixtureTarget target)
         {
+            var metadata = new SiloObjectSpool(stateRoot, Path.Combine(relativeSiloState, SiloStateRoot.SpoolDirectoryName));
+            if (await SiloJournalWriter.CanRecoverFirstGenerationAsync(target.Head, target.Pending, metadata, settings.Binding,
+                    SiloInstalledStorage.InitialIdentityFloors, cancellationToken).ConfigureAwait(false))
+                target = target with { Pending = null };
+
+            SiloFilePayloadSpool.Inspection InspectSpool() => SiloFilePayloadSpool.Inspect(stateRoot, relativeSiloState,
+                settings.MaximumStagedBytes, settings.MaximumStagedFiles);
             SiloFixtureReport? report = null;
             if (target.Receipts.Values.Any(static receipt => receipt.State == SiloStagedState.Visible))
             {
@@ -145,10 +153,10 @@ public static class SiloFixtureImportCommand
                     {
                         using var index = new SiloCatalogIndex(copy, settings.Binding, clock);
                         var catalog = new SiloCatalog(index, new SiloStoreSet(installed.Store), SiloNoAuthorityEvidence.Instance);
-                        report = await importer.RunForecastAsync(target, catalog, ReadCapacity, token).ConfigureAwait(false);
+                        report = await importer.RunForecastAsync(target, catalog, ReadCapacity, InspectSpool, token).ConfigureAwait(false);
                     }).ConfigureAwait(false);
             }
-            return report ?? await importer.RunForecastAsync(target, null, ReadCapacity, cancellationToken).ConfigureAwait(false);
+            return report ?? await importer.RunForecastAsync(target, null, ReadCapacity, InspectSpool, cancellationToken).ConfigureAwait(false);
         }
 
         async ValueTask<SiloFixtureReport> PublishSelectionAsync(bool hasWriterState)

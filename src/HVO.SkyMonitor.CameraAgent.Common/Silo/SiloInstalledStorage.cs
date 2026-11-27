@@ -12,6 +12,9 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Silo;
 /// <summary>The process owner of the installed writer, local publication State, and catalog.</summary>
 internal sealed class SiloInstalledStorage : ICameraAgentSiloVerification, IDisposable
 {
+    internal static IReadOnlyDictionary<string, long> InitialIdentityFloors { get; } =
+        new Dictionary<string, long> { ["capture-sequence"] = 0 };
+
     private readonly SiloInstalledStore _installed;
     private readonly SiloStateRoot _root;
     private readonly PhysicalRoot _rawRoot;
@@ -147,7 +150,7 @@ internal sealed class SiloInstalledStorage : ICameraAgentSiloVerification, IDisp
             }
             else
             {
-                await _journal.OpenFirstGenerationAsync(new Dictionary<string, long> { ["capture-sequence"] = 0 }, cancellationToken)
+                await _journal.OpenFirstGenerationAsync(InitialIdentityFloors, cancellationToken)
                     .ConfigureAwait(false);
             }
             Volatile.Write(ref _bindingVerified, true);

@@ -17,6 +17,7 @@ internal sealed class SiloFilePayloadSpool : ISiloPayloadSpool
     private const string DirectoryName = "payloads-v1";
     private const string Suffix = ".payload";
     private readonly PhysicalRoot _root;
+    private readonly string _relativeDirectory;
     private readonly string _directory;
     private readonly long _maximumBytes;
     private readonly int _maximumFiles;
@@ -24,20 +25,60 @@ internal sealed class SiloFilePayloadSpool : ISiloPayloadSpool
     private long _bytes;
 
     public SiloFilePayloadSpool(SiloStateRoot state, long maximumBytes, int maximumFiles)
+        : this(state?.Root ?? throw new ArgumentNullException(nameof(state)), DirectoryName, maximumBytes, maximumFiles)
     {
-        ArgumentNullException.ThrowIfNull(state);
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumBytes);
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumFiles);
         if (!DurableSync.SupportsDirectorySync)
         {
             throw new PlatformNotSupportedException("Durable Silo payload staging requires directory fsync.");
         }
-        _root = state.Root;
-        _directory = _root.Resolve(DirectoryName);
+        AtomicPublisher.EnsureDirectory(_root, _directory);
+        LoadFiles(removePartials: true);
+    }
+
+    private SiloFilePayloadSpool(PhysicalRoot root, string relativeDirectory, long maximumBytes, int maximumFiles)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumBytes);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumFiles);
+        _root = root;
+        _relativeDirectory = relativeDirectory;
+        _directory = root.Resolve(relativeDirectory);
         _maximumBytes = maximumBytes;
         _maximumFiles = maximumFiles;
-        AtomicPublisher.EnsureDirectory(_root, _directory);
-        RemovePartialsAndLoadFiles();
+    }
+
+    internal static Inspection Inspect(PhysicalRoot root, string relativeState, long maximumBytes, int maximumFiles)
+    {
+        var spool = new SiloFilePayloadSpool(root, Path.Combine(relativeState, DirectoryName), maximumBytes, maximumFiles);
+        if (Directory.Exists(spool._directory))
+            spool.LoadFiles(removePartials: false);
+        else if (File.Exists(spool._directory))
+            throw new IOException("The Silo payload spool path is not a directory.");
+        return new(spool);
+    }
+
+    // Forecast staging and release in memory. Only files present at inspection are opened for verification.
+    internal sealed class Inspection(SiloFilePayloadSpool spool)
+    {
+        private readonly HashSet<string> _projected = new(StringComparer.Ordinal);
+
+        internal async ValueTask StageAsync(IReadOnlyList<SiloDraftMember> members, CancellationToken cancellationToken)
+        {
+            foreach (var member in members)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (await spool.RequiresStagingAsync(member, _projected.Contains(member.SourceToken), cancellationToken).ConfigureAwait(false))
+                {
+                    spool.Track(member.SourceToken, member.Length);
+                    _projected.Add(member.SourceToken);
+                }
+            }
+        }
+
+        internal void Release(string token)
+        {
+            _projected.Remove(token);
+            spool.Forget(token);
+        }
     }
 
     public static string TokenOf(string sha256)
@@ -50,33 +91,17 @@ internal sealed class SiloFilePayloadSpool : ISiloPayloadSpool
         Func<SiloDraftMember, CancellationToken, ValueTask<Stream>> open,
         CancellationToken cancellationToken)
     {
-        ArgumentOutOfRangeException.ThrowIfNegative(member.Length);
-        var token = TokenOf(member.Sha256);
-        if (token != member.SourceToken)
+        if (!await RequiresStagingAsync(member, projected: false, cancellationToken).ConfigureAwait(false))
         {
-            throw new ArgumentException("The staged source token must name the member's SHA-256.", nameof(member));
-        }
-        var path = _root.Resolve(WithinSpool(token));
-        if (_files.TryGetValue(token, out var length))
-        {
-            using var existing = Open(token);
-            if (length != member.Length || existing.Length != length ||
-                !string.Equals(Convert.ToHexStringLower(await SHA256.HashDataAsync(existing, cancellationToken).ConfigureAwait(false)),
-                    member.Sha256, StringComparison.Ordinal))
-            {
-                throw new SiloConflictException("silo.staged-payload-damaged", "An existing staged payload differs from its identity.");
-            }
             DurableSync.Directory(_directory);
             return;
         }
-        if (_files.Count >= _maximumFiles || member.Length > _maximumBytes - _bytes)
-        {
-            throw new SiloSpoolFullException();
-        }
 
+        var relative = WithinSpool(member.SourceToken);
+        var path = _root.Resolve(relative);
         try
         {
-            await AtomicPublisher.PublishAsync(_root, WithinSpool(token), PublishMode.CreateNew, async (output, ct) =>
+            await AtomicPublisher.PublishAsync(_root, relative, PublishMode.CreateNew, async (output, ct) =>
             {
                 var input = await open(member, ct).ConfigureAwait(false);
                 await using var lease = input.ConfigureAwait(false);
@@ -96,6 +121,32 @@ internal sealed class SiloFilePayloadSpool : ISiloPayloadSpool
                 Track(new FileInfo(path));
             }
         }
+    }
+
+    private async ValueTask<bool> RequiresStagingAsync(SiloDraftMember member, bool projected, CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(member.Length);
+        var token = TokenOf(member.Sha256);
+        if (token != member.SourceToken)
+            throw new ArgumentException("The staged source token must name the member's SHA-256.", nameof(member));
+
+        if (_files.TryGetValue(token, out var length))
+        {
+            if (length != member.Length || !projected && !await MatchesAsync(token, member.Sha256, length, cancellationToken).ConfigureAwait(false))
+                throw new SiloConflictException("silo.staged-payload-damaged", "An existing staged payload differs from its identity.");
+            return false;
+        }
+        if (_files.Count >= _maximumFiles || member.Length > _maximumBytes - _bytes)
+            throw new SiloSpoolFullException();
+        return true;
+    }
+
+    private async ValueTask<bool> MatchesAsync(string token, string sha256, long length, CancellationToken cancellationToken)
+    {
+        using var existing = Open(token);
+        return existing.Length == length &&
+            string.Equals(Convert.ToHexStringLower(await SHA256.HashDataAsync(existing, cancellationToken).ConfigureAwait(false)),
+                sha256, StringComparison.Ordinal);
     }
 
     private static async Task CopyVerifiedAsync(Stream input, Stream output, SiloDraftMember member, CancellationToken cancellationToken)
@@ -155,6 +206,11 @@ internal sealed class SiloFilePayloadSpool : ISiloPayloadSpool
         var path = _root.Resolve(WithinSpool(sourceToken));
         File.Delete(path);
         DurableSync.Directory(_directory);
+        Forget(sourceToken);
+    }
+
+    private void Forget(string sourceToken)
+    {
         if (_files.Remove(sourceToken, out var length))
         {
             _bytes -= length;
@@ -174,7 +230,7 @@ internal sealed class SiloFilePayloadSpool : ISiloPayloadSpool
         return ValueTask.CompletedTask;
     }
 
-    private void RemovePartialsAndLoadFiles()
+    private void LoadFiles(bool removePartials)
     {
         // Adoption only inspects this instance's bounded payload directory. A partial never carries a journal claim.
         long examined = 0;
@@ -185,8 +241,11 @@ internal sealed class SiloFilePayloadSpool : ISiloPayloadSpool
             var info = new FileInfo(path);
             if (IsPartialName(info.Name))
             {
-                File.Delete(path);
-                removed = true;
+                if (removePartials)
+                {
+                    File.Delete(path);
+                    removed = true;
+                }
             }
             else
             {
@@ -205,17 +264,22 @@ internal sealed class SiloFilePayloadSpool : ISiloPayloadSpool
     private void Track(FileInfo info)
     {
         _root.Verify(info.FullName, "silo-payload-spool-account");
-        _files.Add(info.Name, info.Length);
-        _bytes = checked(_bytes + info.Length);
+        Track(info.Name, info.Length);
     }
 
-    private static string WithinSpool(string token)
+    private void Track(string token, long length)
+    {
+        _files.Add(token, length);
+        _bytes = checked(_bytes + length);
+    }
+
+    private string WithinSpool(string token)
     {
         if (!token.EndsWith(Suffix, StringComparison.Ordinal) || !SiloHash.IsValid(token[..^Suffix.Length]))
         {
             throw new ArgumentException("A staged payload token is a SHA-256 and payload suffix.", nameof(token));
         }
-        return Path.Combine(DirectoryName, token);
+        return Path.Combine(_relativeDirectory, token);
     }
 
     private static bool IsPartialName(string name)

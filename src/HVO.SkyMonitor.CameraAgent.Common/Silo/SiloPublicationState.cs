@@ -79,7 +79,10 @@ internal sealed record SiloPendingSegment(
 internal sealed record SiloCommittedOperation(
     string OperationId, SiloJournalPosition Position, string Sha256, string VersionId, string OperationSha256);
 
-internal sealed record SiloFixtureReceipt(string DraftSha256, SiloStagedState State, string? BlockedCode);
+internal sealed record SiloFixtureReceipt(string DraftSha256, SiloStagedState State, string? BlockedCode)
+{
+    internal HashSet<string> UnreleasedPayloads { get; } = new(StringComparer.Ordinal);
+}
 
 internal sealed record SiloFixtureTarget(SiloJournalHead? Head, SiloPendingSegment? Pending,
     IReadOnlyDictionary<string, SiloFixtureReceipt> Receipts);
@@ -381,9 +384,22 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
             }
         }
 
+        using (var command = CreateCommand(connection, transaction, """
+                   SELECT DISTINCT group_id, source_token FROM staged_members WHERE released = 0;
+                   """))
+        using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+        {
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                if (!receipts.TryGetValue(reader.GetString(0), out var receipt))
+                    throw new SiloConflictException(otherHistory, "The target contains payload claims outside the selected fixtures.");
+                receipt.UnreleasedPayloads.Add(reader.GetString(1));
+            }
+        }
+
         var allowed = selectedGroups.Select(static id => SiloPublisher.PublishOperation(id, SiloFixtureInventory.GroupRevision))
             .ToHashSet(StringComparer.Ordinal);
-        allowed.Add("generation-open:1");
+        allowed.Add(SiloJournalWriter.FirstGenerationOpenOperation);
         using var operations = CreateCommand(connection, transaction, """
             SELECT operation_id FROM journal_operations
             UNION ALL SELECT operation_id FROM journal_pending

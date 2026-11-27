@@ -28,6 +28,82 @@ public sealed class SiloFixtureHistoryTests
     private static CancellationToken Token => CancellationToken.None;
 
     [TestMethod]
+    [DataRow(0, 2, "none", true)]
+    [DataRow(-1, 2, "none", false)]
+    [DataRow(1, 3, "unrelated", true)]
+    [DataRow(1, 2, "unrelated", false)]
+    [DataRow(0, 3, "unrelated", false)]
+    [DataRow(0, 2, "matching", true)]
+    public async Task CommandDryRunMatchesPublishAtPayloadSpoolLimits(int byteMargin, int fileLimit, string existing, bool succeeds)
+    {
+        using var source = new Fixture();
+        var digest = source.Select([source.WritePair("frame", "art-1"), source.WritePair("later", "art-2")]);
+        var pairBytes = new FileInfo(source.PathFor("frame.png")).Length + new FileInfo(source.PathFor("frame.json")).Length;
+        using var target = new CommandTarget(source, digest);
+        target.Configuration["CameraAgent:Silo:MaximumStagedBytes"] = (pairBytes + byteMargin).ToString(CultureInfo.InvariantCulture);
+        target.Configuration["CameraAgent:Silo:MaximumStagedFiles"] = fileLimit.ToString(CultureInfo.InvariantCulture);
+        await target.InitializeAsync().ConfigureAwait(false);
+
+        if (existing != "none")
+        {
+            byte[] bytes = existing == "matching" ? Png : [0];
+            var spool = Directory.CreateDirectory(Path.Combine(target.SiloState, "payloads-v1")).FullName;
+            var token = SiloFilePayloadSpool.TokenOf(SiloHash.Sha256(bytes));
+            await File.WriteAllBytesAsync(Path.Combine(spool, token), bytes, Token).ConfigureAwait(false);
+            await File.WriteAllBytesAsync(Path.Combine(spool, $"{token}.{Guid.NewGuid():N}.tmp"), new byte[128], Token).ConfigureAwait(false);
+        }
+
+        var forecast = await target.RunAsync("dry-run", succeeds ? 0 : 2).ConfigureAwait(false);
+        var published = await target.RunAsync("publish", succeeds ? 0 : 2).ConfigureAwait(false);
+        if (succeeds)
+        {
+            forecast.Should().Equal(("would-import", null), ("would-import", null));
+            published.Should().Equal(("imported", null), ("imported", null));
+        }
+        else
+        {
+            forecast.Should().Equal(("failed", "publication-unavailable"), ("skipped", "deferred-after-failure"));
+            published.Should().Equal(forecast);
+        }
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task CommandDryRunPredictsRecoveryAfterInterruptedFirstJournalWrite(bool landed)
+    {
+        using var source = new Fixture();
+        var digest = source.Select([source.WritePair("frame", "art-1")]);
+        using var target = new CommandTarget(source, digest);
+        await target.InitializeAsync().ConfigureAwait(false);
+        var firstKey = SiloObjectNamespace.SegmentKey(new(1, 1));
+        if (landed)
+            target.Remote.FailAfterLanding = key => key == firstKey;
+        else
+            target.Remote.FailBeforeLanding = key => key == firstKey;
+
+        var interrupted = await target.RunAsync("publish", 2).ConfigureAwait(false);
+        interrupted.Should().Equal(("failed", "publication-unavailable"));
+        (target.Remote.Current(firstKey) is not null).Should().Be(landed);
+        target.Remote.FailBeforeLanding = null;
+        target.Remote.FailAfterLanding = null;
+
+        var pending = Directory.GetFiles(Path.Combine(target.SiloState, SiloStateRoot.SpoolDirectoryName), "*.obj").Single();
+        File.Move(pending, pending + ".saved");
+        var unrecoverable = await target.RunAsync("dry-run", 2).ConfigureAwait(false);
+        unrecoverable.Should().Equal(("failed", "fixture-other-publication-pending"));
+        File.Move(pending + ".saved", pending);
+
+        var forecast = await target.RunAsync("dry-run", 0).ConfigureAwait(false);
+        forecast.Should().Equal(("would-import", null));
+        var published = await target.RunAsync("publish", 0).ConfigureAwait(false);
+        published.Should().Equal(("imported", null));
+        File.Exists(pending).Should().BeFalse();
+        var retried = await target.RunAsync("dry-run", 0).ConfigureAwait(false);
+        retried.Should().Equal(("skipped", "already-imported"));
+    }
+
+    [TestMethod]
     public async Task InventoryAndDryRunReportExactRolesDatesBudgetAndUsableLineageWithoutWrites()
     {
         using var fixture = new Fixture();
@@ -307,7 +383,8 @@ public sealed class SiloFixtureHistoryTests
         var beforeStore = silo.Local.Fingerprint();
 
         var import = new SiloFixtureImport(source, inventory);
-        var forecast = await import.RunForecastAsync(target, null, () => new(Reserve * 2, Reserve * 2), Token).ConfigureAwait(false);
+        var forecast = await import.RunForecastAsync(target, null, () => new(Reserve * 2, Reserve * 2),
+            () => SiloFilePayloadSpool.Inspect(PhysicalRoot.Open(silo.RootPath), ".", 1024 * 1024, 8), Token).ConfigureAwait(false);
         var result = await PublishAsync(import, silo).ConfigureAwait(false);
 
         result.Records.Select(static row => row.Status).Should().Equal("failed", "skipped");
@@ -915,6 +992,62 @@ public sealed class SiloFixtureHistoryTests
     {
         using var file = File.OpenWrite(path);
         file.SetLength(length);
+    }
+
+    private sealed class CommandTarget : IDisposable
+    {
+        private readonly Fixture _target = new();
+        private readonly Fixture _source;
+        private readonly string _digest;
+        private readonly string _stateRoot;
+        private readonly string _storeRoot;
+        private readonly FirstBootPauseIdentity _seed = new(Guid.NewGuid());
+
+        internal CommandTarget(Fixture source, string digest)
+        {
+            _source = source;
+            _digest = digest;
+            _stateRoot = Directory.CreateDirectory(_target.PathFor("state")).FullName;
+            _storeRoot = Directory.CreateDirectory(_target.PathFor("store")).FullName;
+            Configuration = new ConfigurationBuilder().AddInMemoryCollection(TargetSettings(_stateRoot, out var bucket, _seed.Id)).Build();
+            Directory.CreateDirectory(Path.Combine(_storeRoot, bucket));
+            Remote = CreateFixtureStore(Configuration, _storeRoot);
+        }
+
+        internal IConfiguration Configuration { get; }
+        internal SiloTestStore Remote { get; }
+        internal string SiloState => Path.Combine(_stateRoot, ".silo");
+
+        internal async Task InitializeAsync() =>
+            await FirstBootStateInitializer.InitializeAsync(_stateRoot, 1, _seed, Token).ConfigureAwait(false);
+
+        internal async Task<(string? Status, string? Reason)[]> RunAsync(string mode, int expectedExit)
+        {
+            var dryRun = mode == "dry-run";
+            var beforeTarget = dryRun ? SnapshotTree(_target.Root, includeTransientFiles: true) : null;
+            var beforeStore = dryRun ? Remote.Fingerprint() : null;
+            var beforePuts = Remote.Puts;
+            var beforeSource = _source.Snapshot();
+            string[] arguments = [SiloFixtureImportCommand.Argument, mode, _source.Root, SelectionFile, _storeRoot];
+            using var output = new StringWriter(CultureInfo.InvariantCulture);
+            var exit = await SiloFixtureImportCommand.RunAsync(dryRun ? arguments : [.. arguments, _digest], () => Configuration,
+                output, settings => new(settings, Remote, static _ => ValueTask.FromResult(true)), Token).ConfigureAwait(false);
+            exit.Should().Be(expectedExit, output.ToString());
+            _source.Snapshot().Should().BeEquivalentTo(beforeSource);
+            if (dryRun)
+            {
+                SnapshotTree(_target.Root, includeTransientFiles: true).Should().BeEquivalentTo(beforeTarget);
+                Remote.Fingerprint().Should().Be(beforeStore);
+                Remote.Puts.Should().Be(beforePuts);
+            }
+
+            using var report = JsonDocument.Parse(output.ToString());
+            return report.RootElement.GetProperty("records").EnumerateArray()
+                .Select(static row => (row.GetProperty("status").GetString(),
+                    row.TryGetProperty("reason", out var reason) ? reason.GetString() : null)).ToArray();
+        }
+
+        public void Dispose() => _target.Dispose();
     }
 
     internal sealed class Fixture : IDisposable
