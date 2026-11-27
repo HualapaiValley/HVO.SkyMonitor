@@ -209,6 +209,90 @@ public sealed class SiloArchiveWorkTests
     }
 
     [TestMethod]
+    [DataRow(true, "failed")]
+    [DataRow(false, "missing")]
+    public async Task RecheckDropsAnUnverifiedOptionalArchiveCopy(bool corrupt, string expectedAvailability)
+    {
+        var token = TestContext.CancellationToken;
+        using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
+        var (settings, store) = LocalStore();
+        InstallBinding(settings, store);
+        using var source = OpenLocal(settings, store, Path.Combine(silo.RootPath, "installed"), silo.Clock, silo.Payloads);
+        await source.VerifyReadinessAsync(token).ConfigureAwait(false);
+        var fixture = await SiloArchiveFixture.StartAsync(source.Binding.BindingId, token).ConfigureAwait(false);
+        await using var lease = fixture.ConfigureAwait(false);
+        fixture.Settings["ReadScratchRoot"] = silo.RootPath;
+        var publication = await PublishInstalledAsync(source, store, fixture, SiloDrafts.Capture(silo.Payloads, 1, rawRequired: false), token)
+            .ConfigureAwait(false);
+        var raw = publication.Members.Single(member => !member.Required);
+        var preview = publication.Members.Single(member => member.Required);
+        using var services = new ServiceCollection().AddSingleton(source).BuildServiceProvider();
+        using var worker = new SiloArchiveWorker(fixture.Configuration, services, silo.Clock, NullLogger<SiloArchiveWorker>.Instance);
+        await worker.RunCycleAsync(token).ConfigureAwait(false);
+        await ReplicateJournalAsync(source, store, fixture, token).ConfigureAwait(false);
+        silo.Clock.Advance(TimeSpan.FromSeconds(2));
+        var initial = await worker.RunCycleAsync(token).ConfigureAwait(false);
+        var original = initial.VerifiedCutoff;
+        Assert.IsNotNull(original);
+        Assert.IsTrue(ReadReceipt(original).Records.OfType<SiloCopyRecord>().Any(copy => copy.Identity.Id == raw.ArtifactId));
+
+        if (corrupt)
+        {
+            var bytes = store.Read(raw.Locator.Key, raw.Locator.VersionId);
+            bytes[0] ^= 0x80;
+            fixture.Put(raw.Locator.Key, raw.Locator.VersionId, bytes);
+        }
+        else
+        {
+            fixture.Delete(raw.Locator);
+        }
+
+        var gets = fixture.Gets(raw.Locator.Key);
+        silo.Clock.Advance(TimeSpan.FromDays(1));
+        var rechecking = await worker.RunCycleAsync(token).ConfigureAwait(false);
+        Assert.IsGreaterThan(gets, fixture.Gets(raw.Locator.Key));
+        Assert.IsNull(rechecking.VerifiedCutoff);
+        Assert.IsNull(rechecking.LatestVerifiedReceipt);
+        Assert.AreEqual("pending", (await worker.FindAsync(publication.GroupId, publication.RevisionId, token).ConfigureAwait(false))?.State);
+
+        await ReplicateJournalAsync(source, store, fixture, token).ConfigureAwait(false);
+        using var restarted = new SiloArchiveWorker(fixture.Configuration, services, silo.Clock, NullLogger<SiloArchiveWorker>.Instance);
+        silo.Clock.Advance(TimeSpan.FromSeconds(2));
+        await restarted.RunCycleAsync(token).ConfigureAwait(false);
+        silo.Clock.Advance(TimeSpan.FromSeconds(4));
+        var settled = await restarted.RunCycleAsync(token).ConfigureAwait(false);
+        var lookup = await restarted.FindAsync(publication.GroupId, publication.RevisionId, token).ConfigureAwait(false);
+        var refreshed = lookup?.Receipt;
+        Assert.IsNotNull(refreshed);
+        Assert.AreEqual("reachable", lookup?.State);
+        Assert.AreEqual("reachable", settled.State);
+        Assert.AreEqual(0L, settled.BacklogCount);
+        Assert.AreEqual(refreshed, settled.VerifiedCutoff);
+        Assert.AreNotEqual(original.ReceiptSha256, refreshed.ReceiptSha256);
+        var segment = ReadReceipt(refreshed);
+        CollectionAssert.AreEquivalent(new[] { publication.Manifest.Sha256, preview.Sha256 },
+            segment.Records.OfType<SiloCopyRecord>().Select(copy => copy.Identity.Sha256).ToArray());
+        var unverified = ((SiloArchiveReceiptRecord)segment.Records[0]).UnverifiedMembers;
+        if (corrupt)
+            Assert.AreEqual(new SiloArchiveMemberAvailability(raw.ArtifactId, raw.ArtifactRevision, "failed"), unverified?.Single());
+        else
+            Assert.IsNull(unverified);
+        using (var optional = await restarted.ReadAsync(new(refreshed, raw.ArtifactId, raw.ArtifactRevision), token).ConfigureAwait(false))
+            Assert.AreEqual(expectedAvailability, optional.State);
+        using (var required = await restarted.ReadAsync(new(refreshed, preview.ArtifactId, preview.ArtifactRevision), token).ConfigureAwait(false))
+            Assert.AreEqual(preview.Sha256, required.Sha256);
+
+        var head = await source.State.ReadHeadAsync(token).ConfigureAwait(false);
+        silo.Clock.Advance(TimeSpan.FromDays(1));
+        var unchanged = await restarted.RunCycleAsync(token).ConfigureAwait(false);
+        Assert.AreEqual(refreshed.ReceiptSha256, unchanged.VerifiedCutoff?.ReceiptSha256);
+        Assert.AreEqual(head, await source.State.ReadHeadAsync(token).ConfigureAwait(false));
+
+        SiloJournalSegment ReadReceipt(CameraAgentSiloArchiveReceipt receipt) => SiloJson.ReadSegment(
+            store.Read(SiloObjectNamespace.SegmentKey(new(receipt.ReceiptGeneration, receipt.ReceiptSequence)), receipt.ReceiptVersionId), "archive receipt");
+    }
+
+    [TestMethod]
     public async Task JournaledLocalLastCopyExpiryWaitsForTheAuthorizingSegment()
     {
         var token = TestContext.CancellationToken;

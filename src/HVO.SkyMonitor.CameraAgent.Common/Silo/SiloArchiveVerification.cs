@@ -4,9 +4,8 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Silo;
 
 internal sealed record SiloArchiveReceiptEvidence(IReadOnlyList<SiloCopyRecord> Copies, IReadOnlyDictionary<SiloRoleKey, string> Unverified);
 
-internal sealed record SiloArchivePublicationEvidence(SiloCommittedSegment Publication, SiloGroupManifest Manifest, IReadOnlySet<SiloRoleKey> Expired,
-    IReadOnlyList<SiloJournalRecord> Records, long LocalExpirySequence,
-    Dictionary<(SiloExactLocator Locator, long Length, string Sha256), SiloProbe> Verified);
+internal sealed record SiloArchivePublicationEvidence(SiloCommittedSegment Publication, SiloGroupManifest Manifest,
+    IReadOnlyList<SiloJournalRecord> Records, long LocalExpirySequence, IReadOnlyDictionary<SiloRoleKey, SiloCopyRecord> Copies);
 
 internal sealed class SiloArchiveVerification(SiloArchiveStore archive, TimeProvider clock)
 {
@@ -25,7 +24,6 @@ internal sealed class SiloArchiveVerification(SiloArchiveStore archive, TimeProv
         var copies = new Dictionary<SiloRoleKey, SiloCopyRecord>();
         var unverified = new Dictionary<SiloRoleKey, SiloArchiveMemberAvailability>();
         var verified = new Dictionary<(SiloExactLocator, long, string), SiloProbe>();
-        var expired = new HashSet<SiloRoleKey>();
         var localExpirySequence = 0L;
         var manifestLocator = archive.ReplicaOf(publish.Manifest.Locator);
         byte[] manifestBytes;
@@ -42,7 +40,6 @@ internal sealed class SiloArchiveVerification(SiloArchiveStore archive, TimeProv
                 bytes.LongLength != manifestIdentity.Length || SiloHash.Sha256(bytes) != manifestIdentity.Sha256)
                 throw;
             manifestBytes = bytes;
-            expired.Add(manifestIdentity.Role);
         }
         var manifest = ReadManifest(manifestBytes, journal, publish);
         var required = RequiredRoles(publish, manifest);
@@ -84,8 +81,6 @@ internal sealed class SiloArchiveVerification(SiloArchiveStore archive, TimeProv
                 ((unresolved is null || unresolved.Reason == "archive-exact-version-pending") &&
                     await IsLocallyExpiredAsync(identity).ConfigureAwait(false)))
             {
-                if (required.Contains(identity.Role))
-                    expired.Add(identity.Role);
                 RecordUnavailable(identity.Role, "policy-expired");
                 return;
             }
@@ -136,13 +131,14 @@ internal sealed class SiloArchiveVerification(SiloArchiveStore archive, TimeProv
             await CheckRoleAsync(identity, candidates).ConfigureAwait(false);
         }
 
-        if (!copies.ContainsKey(manifestIdentity.Role) && !required.Overlaps(copies.Keys))
-            return new(commit, manifest, expired, [], localExpirySequence, verified);
+        var hasManifest = copies.ContainsKey(manifestIdentity.Role);
+        if (!hasManifest && !required.Overlaps(copies.Keys))
+            return new(commit, manifest, [], localExpirySequence, copies);
 
         var receipt = new SiloArchiveReceiptRecord(archive.Marker.StoreId, archive.Marker.Bucket, publish.GroupId, publish.RevisionId,
             commit.Position, reference.Index, commit.VersionId, commit.Sha256, clock.GetUtcNow(),
-            unverified.Count == 0 ? null : unverified.Values.ToArray(), expired.Contains(manifestIdentity.Role) ? "policy-expired" : null);
-        return new(commit, manifest, expired, [receipt, .. copies.Values], localExpirySequence, verified);
+            unverified.Count == 0 ? null : unverified.Values.ToArray(), hasManifest ? null : "policy-expired");
+        return new(commit, manifest, [receipt, .. copies.Values], localExpirySequence, copies);
     }
 
     internal async ValueTask<SiloArchiveReceiptEvidence> ReadReceiptAsync(SiloCommittedSegment commit, SiloPublicationRef reference,
@@ -177,11 +173,11 @@ internal sealed class SiloArchiveVerification(SiloArchiveStore archive, TimeProv
         {
             if (copies[0].Identity != manifestIdentity || copies[0].Locator != archive.ReplicaOf(publish.Manifest.Locator))
                 throw new SiloArchiveException("failed", "archive-receipt-manifest-mismatch");
-            if (current?.Expired.Contains(manifestIdentity.Role) != true)
+            if (manifest is null)
             {
-                var proof = await RequireCopyAsync(manifestIdentity, copies[0].Locator, captureBytes: true, cancellationToken, current?.Verified)
+                var proof = await RequireCopyAsync(manifestIdentity, copies[0].Locator, captureBytes: true, cancellationToken)
                     .ConfigureAwait(false);
-                manifest ??= ReadManifest(proof.Bytes!, journal, publish);
+                manifest = ReadManifest(proof.Bytes!, journal, publish);
             }
         }
         var roles = new Dictionary<SiloRoleKey, SiloCopyRecord>();
@@ -222,18 +218,17 @@ internal sealed class SiloArchiveVerification(SiloArchiveStore archive, TimeProv
 
         if (verifyCopies)
         {
-            foreach (var group in roles.Values.Where(copy => current?.Expired.Contains(copy.Identity.Role) != true)
-                .GroupBy(static copy => (copy.Locator, copy.Identity.Length, copy.Identity.Sha256)))
+            foreach (var group in roles.Values.GroupBy(static copy => (copy.Locator, copy.Identity.Length, copy.Identity.Sha256)))
             {
                 var copy = group.First();
                 try
                 {
-                    await RequireCopyAsync(copy.Identity, copy.Locator, captureBytes: false, cancellationToken, current?.Verified).ConfigureAwait(false);
+                    await RequireCopyAsync(copy.Identity, copy.Locator, captureBytes: false, cancellationToken).ConfigureAwait(false);
                 }
                 catch (SiloArchiveException exception) when (!group.Any(copy => required.Contains(copy.Identity.Role)) &&
                     IsCopyFailure(exception))
                 {
-                    // The receipt preserves its historical evidence for optional and compute inputs.
+                    // A historical receipt retains its recorded evidence. The worker compares it with current proof before publishing it.
                 }
             }
         }
