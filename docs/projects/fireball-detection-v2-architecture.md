@@ -93,11 +93,11 @@ proposed decision, rationale, and verification gate.
 | ID | Question | Proposed Decision | Rationale & Guardrails |
 | --- | --- | --- | --- |
 | **AD-1** | Raw camera frames vs. RTSP/H.264/H.265 vs. proprietary streams | **Support two first-class built-in ingestion tiers plus a certified third-party seam:**<br>1. `RawLinearStream`: continuous uncompressed Mono16/Mono8/BayerRggb16/BayerRggb8 frames from direct camera adapters (starting with an opt-in `IStreamCameraModule` extension on `ZwoAsiCameraModule` using `ASIStartVideoCapture`/`ASIGetVideoData` and deterministic `VirtualSky` stream mode).<br>2. `EncodedNetworkStream`: RTSP/H.264/H.265 ingested via a hardened FFmpeg demux/decode subprocess (`HVO.SkyMonitor.Video.FFmpeg`) supplying both untouched compressed GOP packets and decoded 8-bit luma frames for screening.<br>3. `ProprietaryStream`: deferred behind `#140`/`#141`. | Preserves scientific linear fidelity on astronomy cameras while supporting low-cost IMX291/RTSP all-sky deployments (GMN/AllSky7 pattern). `EncodedNetworkStream` artifacts are explicitly typed as lossy native bitstreams (`FrameArtifactRole.Raw` and V1 linear-ADU `TransientFeaturesV1` are never overloaded with lossy video or decoded 8-bit luma; V2 introduces explicit native-stream role/media and encoded-domain feature semantics). |
-| **AD-2** | Stream session identity, time base, exposure timing, PTS/DTS, keyframes, reconnects, gaps, clock quality, and synchronization | **Explicit `stream-session-v1` + explicit multi-domain clock contract.** Every start or reconnect allocates a new `SessionEpoch` under one stable `StreamSessionId`, records stream time base (`TimeBaseNumerator/Denominator`), codec/format, keyframe cadence, per-frame PTS/DTS (nullable for raw USB), host monotonic clock metadata (`ClockDomain`, `TicksPerSecond`, `BootOrProcessEpochId`), separated **host arrival UTC** vs. **sensor exposure UTC** (each classified `Measured` / `Estimated` / `Unknown` with explicit nullable uncertainty), and latest `ClockSyncSnapshot` / `AstrometricClockFacts` (`kernel-adjtimex` max error, GPS/PPS lock when present). Discontinuities, PTS wraps, and dropped frames append immutable gap records distinguishing observed monotonic bounds from `Measured`/`Estimated`/`Unknown` dropped counts and exposure spans. | Prevents GMN/CAMS-style nominal-FPS drift from silently corrupting timing when USB or RTSP drops frames. Honors the existing `TimeSync` contract (`AstrometricClockFactsMapper.cs`): SNTP offset is never presented as an error bound, leap-second-crossing intervals are explicitly flagged/withheld rather than miscalculated in `DateTimeOffset`, and arrival timestamps are never silently promoted to sensor exposure times without explicit calibration/hardware upgrade evidence. |
+| **AD-2** | Stream session identity, time base, exposure timing, PTS/DTS, keyframes, reconnects, gaps, clock quality, and synchronization | **Explicit `stream-session-v1` + explicit multi-domain clock contract.** Every start or reconnect allocates a new `SessionEpoch` under one stable `StreamSessionId`, records stream time base (`TimeBaseNumerator/Denominator`), codec/format, keyframe cadence, per-frame PTS/DTS (nullable for raw USB), host monotonic clock metadata (`ClockDomain`, `TicksPerSecond`, `BootOrProcessEpochId`), separated **host arrival UTC** vs. **sensor exposure UTC** (each classified `Measured` / `Estimated` / `Unknown` with explicit nullable uncertainty), and latest `ClockSyncSnapshot` / `AstrometricClockFacts` (`kernel-adjtimex` max error, GPS/PPS lock when present). Discontinuities, PTS wraps, and dropped frames append immutable gap records carrying explicit start/end monotonic clock epoch IDs (marking monotonic gap duration unavailable across clock resets/epoch changes) alongside `Measured`/`Estimated`/`Unknown` dropped counts and exposure span values. | Prevents GMN/CAMS-style nominal-FPS drift from silently corrupting timing when USB or RTSP drops frames. Honors the existing `TimeSync` contract (`AstrometricClockFactsMapper.cs`): SNTP offset is never presented as an error bound, leap-second-crossing intervals are explicitly flagged/withheld rather than miscalculated in `DateTimeOffset`, and arrival timestamps are never silently promoted to sensor exposure times without explicit calibration/hardware upgrade evidence. |
 | **AD-3** | Volatile circular memory/disk buffering and exact promotion boundary | **Two-tier bounded volatile pre-trigger ring strictly outside Silo; trigger pinning + incremental draining into bounded Silo segment/event groups.**<br>- **Tier 1 (RAM ring):** fixed-capacity pre-allocated slab ring sized for the **pre-trigger lookback window plus screening/GOP margin** (compressed GOP-aware packet ring for RTSP that retains the preceding IDR keyframe across ring wrap; raw frame ring for low-rate raw streams) in `CameraAgent.Common`.<br>- **Tier 2 (optional NVMe spill ring):** bounded rotating segment files under `state/scratch/stream-ring/` (outside `spool/` and Silo `p/`) for high-rate raw streams whose pre-trigger/in-flight window exceeds RAM budget.<br>- **Trigger pinning & incremental staging:** Non-event samples are discarded silently in the volatile ring without touching SQLite `raw_captures` or Silo. Immediately on trigger, the coordinator reserves bytes under hard RAM/scratch ceilings (`MaximumPinnedRingBytes`, `MaximumScratchRingBytes`, `MaxConcurrentPromotions`), detaches/pins the pre-roll slice (walking back to the preceding IDR keyframe for encoded streams), and **incrementally drains** leading and live event frames into bounded immutable segments (`≤256 MiB`) across the durable promotion boundary (fsync to `spool/` -> SQLite promotion state -> `SiloPublisher` P1→P2→P3→P4) so events longer than the pre-trigger ring (e.g., 30 s `W9` or 120 s max duration) survive without overwrite. | Resolves the tension between `#65`'s no-silent-loss guarantee for accepted captures, bounded RAM/NVMe budgets, and stream-native storage economics (~96× reduction on ASI174 5 fps). Explicitly configured volatile stream mode may discard unpromoted ring samples, while **every accepted V1 still capture and every promoted V2 event** retains full durable Silo guarantees and becomes visible to operators and replay only at P4. |
 | **AD-4** | Configurable pre-trigger, event, post-trigger, maximum-duration, and coalescing behavior | **Deterministic state machine with bounded windows, reservation ceilings, and cooldown:**<br>- Configurable `PreTriggerSeconds` (default `5 s`, max `30 s`), `PostTriggerSeconds` (default `5 s`, max `30 s`), `MaximumEventDurationSeconds` (default `30 s`, max `120 s`), and `MergeGapSeconds` (default `2 s`) to coalesce fragmented/intermittent fireballs into one logical event.<br>- Overlapping triggers within `MergeGapSeconds` coalesce onto the same active pinned reservation; distinct concurrent promotions are capped by `MaxConcurrentPromotions` (default `2` per stream) and shared RAM/scratch ceilings.<br>- Events exceeding `MaximumEventDurationSeconds` close cleanly with completeness `MaxDurationCapped` and emit a new linked continuation or cooldown suppression (`FalseTriggerBurst` guard) so cloud/lightning storms cannot exhaust storage. | Matches FreeTure/MeteorDL/AllSky7 operational experience while adding explicit, machine-readable truncation/coalescing states (`Complete`, `TruncatedPreRoll`, `TruncatedPostRoll`, `GapAffected`, `MaxDurationCapped`, `SpoolExhaustedTruncated`) and deterministic reservation-failure recording. |
-| **AD-5** | Screening representations (individual-frame, frame-range, 1 s chunk, max-pixel, temporal-difference) | **Decoupled two-tier representation with strict linear vs. encoded feature separation:**<br>- **Continuous Stage 1 screening:** Rolling **1-second temporal summary chunk** (`maxpixel`, `maxframeIndex`, `runningMean`, `runningMad` or temporal-difference exceedance map) computed in a single zero-copy pass per incoming frame (1 s chunk = 5 frames @ 5 fps or 25–30 frames @ 25–30 fps).<br>- **Triggered Stage 1b refinement:** Full-rate frame-by-frame centroiding, track/profile extraction, and clipping tracking over the promoted slice: **`RawLinearStream`** extracts V1-compatible linear-ADU features (`LinearAdu` domain on Mono16/RGGB16); **`EncodedNetworkStream`** extracts spatial kinematics and non-photometric relative luma profiles (`EncodedLuma8` domain) with explicit `PhotometryStatus = UnavailableEncodedSource` and never maps 8-bit decoded luma into linear ADU fields. | Combines the low CPU cost of CAMS/GMN FTP and MeteorDL 1 s maxpixel screening with FreeTure's full-frame temporal fidelity on triggered events while preserving `docs/contracts/transient-contracts-v1.md`'s invariant that linear ADU photometry comes exclusively from `Raw`/`Calibrated` linear sources. |
-| **AD-6** | Preservation of native packets/frames, processed clips, scientific stills, calibration, source-span lineage, and `#436` layered products | **Immutable Silo Event Publication (`groupKind: "transient-event-v2"` + bounded `transient-event-segment-v1` groups when needed):**<br>1. `NativeClip` (`p/full/`): untouched bitstream-copied MP4/MKV starting on the preceding IDR keyframe (for RTSP) or lossless packed raw frame sequence + per-frame timing sidecar (for `RawLinearStream`), published either as member(s) of a single event group (when total staged size fits the verified `MaximumStagedBytes` admission reservation) or as independently durable `transient-event-segment-v1` Silo groups (`≤256 MiB` each) referenced by exact verified locators from the final `transient-event-v2` manifest group (Section 6.2).<br>2. `ProcessedClip` (`p/display/`): browser-playable H.264/VP9/AV1 display MP4 rendered by `HVO.SkyMonitor.Video.FFmpeg` with explicit encoder/options identity.<br>3. **Event Stills (strict domain separation):**<br>   - `RawLinearStream`: `ScientificStill` (`p/full/` + on-demand `fits`/`fits.fz`/`xisf` via `#2129`): linear Mono16/RGGB16 peak-residual frame, clean pre/post background frame, and event-only positive-residual composite explicitly tagged `DerivedComposite`.<br>   - `EncodedNetworkStream`: `DerivedEncodedStill` (`p/display/` or `p/meta/`): decoded non-linear inspection stills explicitly tagged `SourceDomain = EncodedLuma8`, `LinearPhotometryAvailable = false`, and decoder provenance (never classified as `ScientificStill` or linear raw FITS evidence).<br>4. `ScreeningSummary` & `TimingLedger` (`p/meta/`): 1 s chunk statistics & per-frame timing/gap ledger.<br>5. `CalibrationRefs`: immutable `compute`/`reopen` dependency references to active calibration masters, masks, and periodic long-exposure astrometry frames.<br>6. **Overlays (`#436`):** Transient trajectories, centroids, and labels remain structured JSON evidence + `OverlayManifestV1` views, never burned into `NativeClip` or stills. | Preserves `#436` layered-product invariants, `#141` native-evidence custody, `transient-contracts-v1.md` linear-ADU honesty, and `SiloFilePayloadSpool` cumulative byte ceilings (`SiloPublisher.cs:83`, `SiloFilePayloadSpool.cs:72`). Display clips and overlays remain independently expirable (`SiloRetentionClass.Display`) without losing primary native evidence (`SiloRetentionClass.Full` / `Metadata`), matching `SiloDependencyKind.Reopen` vs `Compute` (`SiloContracts.cs`). |
+| **AD-5** | Screening representations (individual-frame, frame-range, 1 s chunk, max-pixel, temporal-difference) | **Decoupled two-tier representation with strict linear vs. encoded feature separation:**<br>- **Continuous Stage 1 screening:** Rolling **1-second temporal summary chunk** (`maxpixel`, `maxframeIndex`, `runningMean`, `runningMad` or temporal-difference exceedance map) computed in a single zero-copy pass per incoming frame (1 s chunk = 5 frames @ 5 fps or 25–30 frames @ 25–30 fps).<br>- **Triggered Stage 1b refinement:** Full-rate frame-by-frame centroiding, track/profile extraction, and clipping tracking over the promoted slice: **`RawLinearStream`** extracts V1-compatible linear-ADU features (`LinearAdu` domain on `Mono16`/`BayerRggb16`, and on native `Mono8`/`BayerRggb8` via explicit raw 8-bit representations or lossless right-aligned 16-bit widening preserving native 8-bit ADU scale `[0..255]`, saturation ceiling `255`, and RGGB Bayer geometry per Section 4.5); **`EncodedNetworkStream`** extracts spatial kinematics and non-photometric relative luma profiles (`EncodedLuma8` domain) with explicit `PhotometryStatus = UnavailableEncodedSource` and never maps 8-bit decoded luma into linear ADU fields. | Combines the low CPU cost of CAMS/GMN FTP and MeteorDL 1 s maxpixel screening with FreeTure's full-frame temporal fidelity on triggered events while preserving `docs/contracts/transient-contracts-v1.md`'s invariant that linear ADU photometry comes exclusively from `Raw`/`Calibrated` linear sources. |
+| **AD-6** | Preservation of native packets/frames, processed clips, scientific stills, calibration, source-span lineage, and `#436` layered products | **Immutable Silo Event Publication (`groupKind: "transient-event-v2"` + bounded `transient-event-segment-v1` groups when needed, keeping `SiloGroupManifest` strictly additive on `groupKind` only):**<br>1. `NativeClip` (`p/full/`): untouched bitstream-copied MP4/MKV starting on the preceding IDR keyframe (for RTSP) or lossless packed raw frame sequence + per-frame timing sidecar (for `RawLinearStream`), published either as member(s) of a single event group (when total staged size fits the verified `MaximumStagedBytes` admission reservation) or as independently durable `transient-event-segment-v1` Silo groups (`≤256 MiB` each) whose exact payload/descriptor artifact revisions are pinned by `SiloGroupManifest.Dependencies` (`Reopen`) and ordered inside a required `transient-event-promotion-v1` JSON payload member (`p/meta/`) of the final `transient-event-v2` group (Sections 4.4 and 6.2).<br>2. `ProcessedClip` (`p/display/`): browser-playable H.264/VP9/AV1 display MP4 rendered by `HVO.SkyMonitor.Video.FFmpeg` with explicit encoder/options identity.<br>3. **Event Stills (strict domain separation):**<br>   - `RawLinearStream`: `ScientificStill` (`p/full/` + on-demand `fits`/`fits.fz`/`xisf` via `#2129`): linear Mono16/Mono8/RGGB16/RGGB8 peak-residual frame, clean pre/post background frame, and event-only positive-residual composite explicitly tagged `DerivedComposite`.<br>   - `EncodedNetworkStream`: `DerivedEncodedStill` (`p/display/` or `p/meta/`): decoded non-linear inspection stills explicitly tagged `SourceDomain = EncodedLuma8`, `LinearPhotometryAvailable = false`, and decoder provenance (never classified as `ScientificStill` or linear raw FITS evidence).<br>4. `EventPromotion` (`transient-event-promotion-v1`), `ScreeningSummary`, & `TimingLedger` (`p/meta/`): canonical event-assembly/truncation manifest payload, 1 s chunk statistics, and per-frame timing/gap ledger.<br>5. `CalibrationRefs`: immutable `Compute` `SiloManifestDependency` references to exact calibration master, mask, and periodic long-exposure astrometry artifact revisions.<br>6. **Overlays (`#436`):** Transient trajectories, centroids, and labels remain structured JSON evidence + `OverlayManifestV1` views, never burned into `NativeClip` or stills. | Preserves `#436` layered-product invariants, `#141` native-evidence custody, `transient-contracts-v1.md` linear-ADU honesty, `SiloRecords.cs` (`hvo.cameraagent.silo.group-manifest/1`) schema compatibility, and `SiloFilePayloadSpool` cumulative byte ceilings (`SiloPublisher.cs:83`, `SiloFilePayloadSpool.cs:72`). Display clips and overlays remain independently expirable (`SiloRetentionClass.Display`) without losing primary native evidence (`SiloRetentionClass.Full` / `Metadata`), matching `SiloDependencyKind.Reopen` vs `Compute` (`SiloContracts.cs`). |
 | **AD-7** | Two-stage classical + optional AI vs. end-to-end neural detection; CPU fallback & GPU/NPU/external execution | **Mandatory deterministic Stage 1 classical candidate generator + optional Stage 2 AI assessment.**<br>- Stage 1 runs deterministically on CPU in `HVO.SkyMonitor.Imaging`/`Processing` (no ML dependency required).<br>- Stage 2 AI assessment (`transient-assessment-producer-v2`) is opt-in, runs asynchronously after durable promotion (or as a non-blocking provisional scorer), supports built-in ONNX Runtime CPU EP fallback plus optional GPU/NPU EPs or `#140` OS-isolated external services.<br>- Stage 2 outputs **append** independent `TransientAssessment` records and **never** alter Stage 1 geometry, suppress durable promotion of high-signal events, or overwrite prior assessments. | **HVO V2 architectural design choice** informed by candidate-filtering literature (Peña-Asensio et al. 2023 evaluated transfer-learned CNN candidate-image precision and Grad-CAM localization on SPMN data) and classical embedded feasibility (FMDT CPU tracking on Pi 4), **not** an empirical claim that prior papers proved superiority over end-to-end detectors or saturated-fireball recall. Preserves identical deterministic Stage 1 event/geometry hashes across CPU-only Raspberry Pi 5 and GPU-equipped x64 hosts; CPU fallback latency and recall remain open target-hardware qualification questions (`W7–W12`). |
 | **AD-8** | CameraAgent trigger authority, local validation, archived replay, geometry, and operator review | **CameraAgent is sole trigger and local validation authority.**<br>- Promoted events become visible to `TransientPage` / `TransientDetail`, APIs, and `cameraagent-capture-trails-v1` / V2 trail projections only after reaching Silo P4 (`visible`) under the Silo layout.<br>- **Replay boundary (`REPLAY-LOCAL-001`):** Live stream capture and real-time Stage 1/2 triggers execute in CameraAgent's live workers (or `#140` live-qualified bridge), **never** through `HVO.SkyMonitor.CameraAgent.ReplayRunner`, which remains strictly reserved for explicitly requested archived replay of durable P4-visible promoted events. | Preserves standalone CameraAgent independence (`RM-017`), Silo P4 visibility consistency (`cameraagent-silo-cutover.md:349`), and `#140`'s recorded architecture boundary (`REPLAY-LOCAL-001`). Reprocessing promoted events replays exact immutable native clips/frames with pinned detector/model versions. |
 | **AD-9** | Failure, backpressure, and recovery behavior | **Explicit bounded degradation per failure mode (detailed matrix in Section 2.1).** Acquisition never stalls waiting on Stage 2 AI, FFmpeg display encoding, or Silo network publication. Volatile ring exhaustion drops oldest unpromoted ring entries first (preserving GOP IDR anchors while their packets remain live) and records explicit `RingOverflow` / `RingReservationExhausted` telemetry; disk/spool pressure engages the existing Silo pressure fence before exhausting host headroom. | Prevents optional stream processing from causing OOM, NVMe exhaustion, or silent corruption; guarantees crash recovery rolls P3 forward to P4 and leaves zero partial/unverified promoted events visible. |
@@ -106,13 +106,13 @@ proposed decision, rationale, and verification gate.
 
 | Failure Mode | Immediate Runtime Action | Durable State & Evidence Impact | Recovery & Operator Visibility |
 | --- | --- | --- | --- |
-| **Dropped frames** (USB timeout, RTSP packet loss, buffer overrun) | Increment session drop counter; append gap entry `(beforeMonotonicTicks, afterMonotonicTicks, observedMonotonicGapUs, utcBounds, beforePts, afterPts, ptsDiscontinuity, missingFrameCountKind, missingFrameCount, reasonCode)` to session ledger. | Promoted event overlapping gap is tagged `Completeness = GapAffected` with observed monotonic/UTC bounding interval and explicitly classified `Measured` / `Estimated` / `Unknown` dropped frame count and exposure span; missing sensor exposure times are never fabricated or silently interpolated. | Continues acquisition; exposes drop rate, PTS discontinuities, and gap counts via telemetry & health check. |
-| **Decoder failure / corrupt bitstream** (bad H.264/H.265 NALU, RTSP stall) | Subprocess exits or reports error; bounded exponential reconnect (`SessionEpoch + 1`); isolate fault inside subprocess. | Native packets already pinned/drained up to last valid IDR/frame remain promotable if triggered (`TruncatedPostRoll`); corrupt packet span quarantined with reason code; reconnect boundary recorded as `PtsDiscontinuity = true` with `MissingFrameCountKind = Unknown` if continuity is lost. | CameraAgent process stays healthy; degraded status reported until clean keyframe resumes. |
+| **Dropped frames** (USB timeout, RTSP packet loss, buffer overrun) | Increment session drop counter; append gap entry `(beforeBootOrProcessEpochId, afterBootOrProcessEpochId, beforeMonotonicTicks, afterMonotonicTicks, monotonicGapStatus, observedMonotonicGapMicroseconds, utcBounds, beforePts, afterPts, ptsDiscontinuity, missingFrameCountKind, missingFrameCount, exposureSpanKind, exposureSpanMicroseconds, reasonCode)` to session ledger. | Promoted event overlapping gap is tagged `Completeness = GapAffected` with explicit start/end monotonic clock epoch IDs (`observedMonotonicGapMicroseconds = null` whenever epochs differ), observed UTC bounding interval, and explicitly classified `Measured` / `Estimated` / `Unknown` dropped frame count and exposure span values; missing sensor exposure times are never fabricated or silently interpolated. | Continues acquisition; exposes drop rate, PTS discontinuities, and gap counts via telemetry & health check. |
+| **Decoder failure / corrupt bitstream** (bad H.264/H.265 NALU, RTSP stall) | Subprocess exits or reports error; bounded exponential reconnect (`SessionEpoch + 1`); isolate fault inside subprocess. | Native packets already pinned/drained up to last valid IDR/frame remain promotable if triggered (`TruncatedPostRoll`); corrupt packet span quarantined with reason code; reconnect boundary records `PtsDiscontinuity = true`, `MissingFrameCountKind = Unknown` (`MissingFrameCount = null`), and `ExposureSpanKind = Unknown` (`ExposureSpanMicroseconds = null`) unless hardware sequence/shutter evidence proves continuity; across process/boot epoch changes, `ObservedMonotonicGapMicroseconds = null` (`UnavailableClockEpochChanged`). | CameraAgent process stays healthy; degraded status reported until clean keyframe resumes. |
 | **Detector backlog** (Stage 1 screening slower than frame rate) | Screening drops oldest unscreened summary slot only after bounded queue limit; raw/packet ring continues independently; emits `ScreeningOverload` counter. | Active triggered promotions retain priority over new low-confidence triggers; no silent loss of already-pinned events. | Backpressure telemetry + health degradation; recommends lower resolution/binning or reduced FPS. |
 | **Ring reservation exhaustion / wrap during active event** (concurrent bursts or `pre + event + post` exceeding `MaximumPinnedRingBytes` / `MaximumScratchRingBytes`) | Refuse new low-priority trigger reservations first; if an active promotion exhausts its reserved RAM/scratch ceiling mid-event, close appending cleanly and flush already-captured segments. | If pre-roll was partially overwritten before trigger pin, tag `Completeness = TruncatedPreRoll`; if stopped mid-event, tag `Completeness = TruncatedPostRoll` with reason `stream-promotion.ring-reservation-exhausted`; refused triggers write lightweight SQLite/telemetry `PromotionSuppressedRingBudget` audit rows. | Never allocates unbounded RAM or disk; exposes `RingReservationExhausted` and `PromotionSuppressedRingBudget` counters in health/UI. |
 | **Accelerator loss / OOM** (CUDA/TensorRT/OpenVINO/NPU device reset or external bridge timeout) | Cancel in-flight Stage 2 inference; mark accelerator provider `Unavailable` with cooldown; fall back to CPU EP (if configured) or deterministic Stage 1 assessment only. | Promoted native evidence and Stage 1 deterministic assessment are already durable and completely unaffected. | Quarantine failed Stage 2 attempt with reason code; operator may re-run Stage 2 via archived replay once accelerator recovers. |
-| **Host / process restart** | Volatile RAM ring is lost (expected and explicitly documented for unpromoted samples). | Startup reconciler runs `SiloPublisher.ResumeAsync` and inspects SQLite promotion/segment state: uncommitted pre-P3 staged groups resume from P1 or are abandoned; durable P3 `publish` records roll forward to P4 only after authenticating the journal prefix and verifying manifest + required-member identity and exact bytes (`cameraagent-silo-cutover.md` Section 5.3); incomplete pre-stage temp files are deleted. | Rebuilds clean state bounded by unreleased staged groups + Silo journal cursor; no full-history scan and zero partial events surfaced. |
-| **Disk / spool pressure or mid-event spool exhaustion** (`CameraAgent:Silo:MaximumStagedBytes`, `MaximumStagedFiles`, or 10 GiB headroom reserve breached, including `SiloSpoolFullException` between multi-segment groups) | Pause optional NVMe ring spill and new stream promotions first; shed non-essential `ProcessedClip` rendering before shedding `NativeClip` segments; hold in-flight un-staged segments in bounded scratch only until drain or wait-budget expiry; engage Silo pressure pause when spool hits ceiling. | Existing committed Silo events and V1 captures are untouched. If spool capacity runs out between segments of a multi-segment event and drain does not recover within scratch/wait budget: already-P4 segments `0..k-1` stay immutable; finalize `transient-event-v2` manifest referencing verified segments `0..k-1` with `Completeness = SpoolExhaustedTruncated`, explicit `missingSegmentRange`, and `PromotionTruncatedSpoolExhausted` audit row (or if 0 segments reached P4, mark `FailedSpoolExhausted` / `PromotionSuppressedDiskPressure`). | Automatically resumes new promotions after Silo drain/reclamation restores spool below low-water mark; exposes truncated/suppressed event badges and operator alert telemetry. |
+| **Host / process restart** | Volatile RAM ring is lost (expected and explicitly documented for unpromoted samples). | Startup reconciler runs `SiloPublisher.ResumeAsync` and inspects SQLite promotion/segment state: uncommitted pre-P3 staged groups resume from P1 or are abandoned; durable P3 `publish` records roll forward to P4 only after authenticating the journal prefix and verifying manifest + required-member identity and exact bytes (`cameraagent-silo-cutover.md` Section 5.3); any `PendingFinalization` rows preserve protection on already-P4 segments and resume finalization once spool capacity drains; incomplete pre-stage temp files are deleted. | Rebuilds clean state bounded by unreleased staged groups + Silo journal cursor; no full-history scan and zero partial events surfaced. |
+| **Disk / spool pressure or mid-event spool exhaustion** (`CameraAgent:Silo:MaximumStagedBytes`, `MaximumStagedFiles`, or 10 GiB headroom reserve breached, including `SiloSpoolFullException` between multi-segment groups) | Pause optional NVMe ring spill and new stream promotions first; shed non-essential `ProcessedClip` rendering before shedding `NativeClip` segments; hold in-flight un-staged segments in bounded scratch only until drain or wait-budget expiry; engage Silo pressure pause when spool hits ceiling. | Existing committed Silo events and V1 captures are untouched. Because `SiloFilePayloadSpool.StageAsync` (`SiloFilePayloadSpool.cs:72`) enforces `_maximumBytes` and `_maximumFiles` across all writers, if spool capacity remains full when the wait budget expires and `k ≥ 1` segments reached P4: persist a **restartable `PendingFinalization` row** in SQLite (requiring **zero free spool bytes or file slots**), protect verified P4 segments `0..k-1` from orphan reclamation/expiry, write a `PromotionTruncatedSpoolExhausted` audit row, and complete final `transient-event-v2` P4 publication (`Completeness = SpoolExhaustedTruncated`, `missingSegmentRange`) with priority as soon as spool drains (Section 6.2). If zero segments reached P4, record `FailedSpoolExhausted` / `PromotionSuppressedDiskPressure` and release scratch. | Until final P4 completes, the truncated event stays hidden from the browsable P4 catalog and `ReplayRunner`, while operator health checks, telemetry (`PendingFinalizationCount`), and the `TransientPage` pending-promotions banner surface `(eventId, promotionId, verifiedSegmentCount, PendingFinalization)`. Automatically completes final P4 after drain (including across restarts) and resumes new promotions once spool falls below low-water mark. |
 | **Incomplete event promotion / crash between P3 and P4** (crash or Silo unavailability mid-copy or post-P3) | Stage group bytes into `SiloFilePayloadSpool` before SQLite claim; Silo publication advances asynchronously through P1 (`payloads-qualified`) -> P2 (`manifest-qualified`) -> P3 (`recorded`, commit point) -> P4 (`visible`). | **Single consistent visibility boundary (`cameraagent-silo-cutover.md:349`):** Under Silo layout, neither operator views (`TransientPage`/`TransientDetail`) nor `ReplayRunner` observe an event at local spool commit, P1, P2, or P3. An event revision becomes visible as `Validated`/`Provisional` **only after P4** indexes the P3 journal sequence in SQLite. If a crash occurs between P3 and P4, startup recovery authenticates the P3 record and rolls it forward idempotently to P4 after verifying exact bytes (or keeps readers closed with `temporarily-unavailable` / `missing` / `unverified` / `conflict` per Section 5.3). Pre-P3 incomplete copies are retried from spool or abandoned before visibility. | Exact-byte idempotent retry via `SiloPublisher`; never leaves half-written or unverified P3 manifests visible to UI or replay. |
 
 ---
@@ -231,7 +231,11 @@ Owned by `HVO.SkyMonitor.AgentCore` (transport-neutral descriptor):
   - **Sensor exposure domain (explicitly separated from host arrival):** `ExposureStartUtc`, `ExposureEndUtc`, `ExposureDurationMicroseconds` — each paired with `ExposureTimingKind` (`Measured` | `Estimated` | `Unknown`) and nullable `TimingUncertaintyMicroseconds` (never fabricated as `0`). For `EncodedNetworkStream` without calibrated encoder/network delay or hardware trigger, `ExposureStartUtc`/`ExposureEndUtc` remain `null` (`Unknown`) and observation timestamps are explicitly marked `ArrivalOnly` rather than mislabeled as sensor exposure UTC.
   - **Append-only upgrade rule:** `ArrivalOnly`, `Estimated`, or `Unknown` exposure timestamps may be upgraded only via an append-only timing provenance record citing explicit calibration or hardware evidence (e.g., calibrated encoder-latency measurement, GPS/PPS optical flash calibration, or hardware shutter trigger) — never by mutating original arrival timestamps or assuming nominal FPS.
 - `profileSet`: `CaptureProfileSet` (rig, calibration, mask, sensor, processing profile hashes) + optional coordinate-free `CaptureLocationProvenance`
-- `gapLedger[]`: ordered bounded list of gap records carrying `(BeforeMonotonicTicks, AfterMonotonicTicks, ObservedMonotonicGapMicroseconds, BeforeUtcBound, AfterUtcBound, UtcBoundQuality [Measured|Estimated|Unknown], BeforePts?, AfterPts?, PtsDiscontinuity, MissingFrameCountKind [Measured|Estimated|Unknown], MissingFrameCount?, ExposureSpanKind [Measured|Estimated|Unknown], ReasonCode)`. Across a PTS discontinuity or stream reconnect, `MissingFrameCount` and sensor exposure span are explicitly recorded as `Unknown` (`null`) unless a hardware frame sequence counter proves an exact count.
+- `gapLedger[]`: ordered bounded list of gap records carrying:
+  - **Endpoint monotonic clock epochs and ticks:** `BeforeBootOrProcessEpochId` (`Guid`), `AfterBootOrProcessEpochId` (`Guid`), `BeforeMonotonicTicks` (`long`), `AfterMonotonicTicks` (`long`), `MonotonicGapStatus` (`Measured` | `UnavailableClockEpochChanged`), and nullable `ObservedMonotonicGapMicroseconds` (`long?`). `ObservedMonotonicGapMicroseconds` is populated **only** when `BeforeBootOrProcessEpochId == AfterBootOrProcessEpochId` and `AfterMonotonicTicks >= BeforeMonotonicTicks`; across any process restart, host reboot, or monotonic clock reset (`BeforeBootOrProcessEpochId != AfterBootOrProcessEpochId`), `ObservedMonotonicGapMicroseconds` **MUST** be `null` and `MonotonicGapStatus = UnavailableClockEpochChanged`.
+  - **Wall-clock UTC bounds:** `BeforeUtcBound` (`DateTimeOffset?`), `AfterUtcBound` (`DateTimeOffset?`), and `UtcBoundQuality` (`Measured` | `Estimated` | `Unknown`), with `Unknown` whenever either endpoint lacks a synchronized `ClockAnchor` or crosses an unresolved leap-second interval.
+  - **Stream timestamps, dropped-frame counts, and exposure span:** `BeforePts?`, `AfterPts?`, `PtsDiscontinuity` (`bool`), `MissingFrameCountKind` (`Measured` | `Estimated` | `Unknown`), nullable `MissingFrameCount` (`long?`), `ExposureSpanKind` (`Measured` | `Estimated` | `Unknown`), nullable **`ExposureSpanMicroseconds`** (`long?`, required to be `null` whenever `ExposureSpanKind == Unknown` and non-null only when `Measured` or `Estimated` with explicit provenance), and `ReasonCode`.
+  - **Explicit unknown-field rule on reconnect across process or boot epochs:** Whenever a gap spans a stream reconnect across a process or boot clock epoch change (`BeforeBootOrProcessEpochId != AfterBootOrProcessEpochId`), `ObservedMonotonicGapMicroseconds` MUST be `null` (`MonotonicGapStatus = UnavailableClockEpochChanged`), `PtsDiscontinuity` MUST be `true` (unless an external hardware timecode proves unbroken PTS continuity), `MissingFrameCountKind` MUST be `Unknown` with `MissingFrameCount = null` (unless a hardware frame sequence counter proves an exact non-wrapped count), and `ExposureSpanKind` MUST be `Unknown` with `ExposureSpanMicroseconds = null` (unless hardware shutter/exposure timestamps exist on both bounding frames). Only the separately stamped endpoint `BeforeUtcBound`/`AfterUtcBound` (with their explicit `UtcBoundQuality`) and endpoint epoch/tick metadata are retained.
 
 ### 4.3 Temporal Source Locator and Domain-Separated Feature Contracts (`transient-source-locator-v2`, `transient-features-v2`)
 
@@ -262,29 +266,52 @@ overlapping UTC observation interval.
 
 ### 4.4 Event Promotion and Event Product Contracts (`transient-event-promotion-v1`, `transient-event-segment-v1`, `transient-event-product-v1`)
 
+**Strict `SiloGroupManifest` Schema Compatibility (`SiloRecords.cs:10-50`):**
+The existing Silo group manifest (`hvo.cameraagent.silo.group-manifest/1`,
+`SiloGroupManifest`) carries fixed envelope fields (`GroupKind`, `GroupId`,
+`RevisionId`, `PublishedUtc`, `FromUtc`, `ToUtc`, `Members`, `Dependencies`,
+`Provenance`, `PreviousRevisionId`, `CameraId`, `View`), and each
+`SiloManifestDependency` (`SiloRecords.cs:45-50`) identifies an exact **artifact
+revision** `(ArtifactId, ArtifactRevision, Sha256, Kind, Required)` rather than
+a group locator. V2 therefore keeps `SiloGroupManifest` **strictly additive on
+`GroupKind` only** (`"transient-event-segment-v1"` and `"transient-event-v2"`,
+both valid lowercase hyphenated tokens under `SiloJson.RequireGroupKind` at
+`SiloJson.cs:577`) and serializes all V2 event-assembly, segment-ordering, and
+truncation metadata inside **required, SHA-256-verified JSON payload members**
+(`SiloRetentionClass.Metadata`, `p/meta/`):
+
 1. **`transient-event-segment-v1`** (optional bounded segment Silo group used whenever a raw or long-duration event exceeds safe single-group spool reservation; see Section 6.2):
-   - Published with `groupKind: "transient-event-segment-v1"`, `eventId`, `promotionId`, `segmentOrdinal`, `frameRange` / `ptsRange`, and one bounded `NativeClipSegment` payload (`≤256 MiB`, `SiloRetentionClass.Full`) plus per-segment timing sidecar (`SiloRetentionClass.Metadata`).
+   - Published with `SiloGroupManifest.GroupKind = "transient-event-segment-v1"` and two required `SiloManifestMember` entries:
+     - `role: "transient-segment-payload"` (`SiloRetentionClass.Full`, `Required = true`): one bounded `≤256 MiB` `NativeClipSegment` binary payload with immutable `(ArtifactId, ArtifactRevision, Sha256, Length, Locator)`.
+     - `role: "transient-segment-descriptor"` (`SiloRetentionClass.Metadata`, `MediaType = "application/json"`, `Required = true`, schema `"transient-event-segment-v1"`): canonical JSON payload recording `eventId`, `promotionId`, `segmentOrdinal`, `streamSessionId`, `sessionEpoch`, `frameRange` / `ptsRange`, per-segment timing sidecar / gap ledger slice, and the exact `(payloadArtifactId, payloadArtifactRevision, payloadSha256, payloadLength)` of its sibling `transient-segment-payload` member.
    - Each segment group advances through P1→P2→P3→P4 independently and releases its `SiloFilePayloadSpool` bytes at P4 before subsequent segments require spool capacity.
-2. **`transient-event-promotion-v1`** (recorded in SQLite promotion journal and
-   Silo group manifest `m/` with `groupKind: "transient-event-v2"`):
-   - `promotionId`, `eventId`, `streamSessionId`, `sessionEpoch`, `publicationMode` (`SingleGroup` | `SegmentedGroups`)
-   - `triggerUtc`, `requestedPreRollSeconds`, `requestedPostRollSeconds`,
-     `actualStartUtc`, `actualEndUtc`, `firstPts`, `lastPts`
-   - `completeness`: `Complete` | `TruncatedPreRoll` | `TruncatedPostRoll` | `GapAffected` | `MaxDurationCapped` | `SpoolExhaustedTruncated`
-   - `missingSegmentRange`: nullable `(firstMissingOrdinal, reasonCode)` populated when `SpoolExhaustedTruncated` occurs
-   - `coalescedTriggerCount`: integer >= 1
-   - `segmentGroupRefs[]`: ordered list of verified exact-version P4 locators for `transient-event-segment-v1` groups (empty in `SingleGroup` mode)
-   - `members[]`: exact `SiloManifestMember` entries separating:
-     - `NativeClip` (`SiloRetentionClass.Full` — present inline in `SingleGroup` mode; represented via `segmentGroupRefs[]` in `SegmentedGroups` mode)
+2. **`transient-event-promotion-v1`** (serialized as a required JSON payload member inside the final `SiloGroupManifest` with `GroupKind = "transient-event-v2"`, and mirrored in SQLite promotion state for operational queries):
+   - **Event-assembly payload member (`role: "transient-event-promotion"`, `SiloRetentionClass.Metadata`, `MediaType = "application/json"`, `Required = true`, `p/meta/`):**
+     - `schemaVersion`: `"transient-event-promotion-v1"`
+     - `promotionId`, `eventId`, `streamSessionId`, `sessionEpoch`, `publicationMode` (`SingleGroup` | `SegmentedGroups`)
+     - `triggerUtc`, `requestedPreRollSeconds`, `requestedPostRollSeconds`,
+       `actualStartUtc`, `actualEndUtc`, `firstPts`, `lastPts`
+     - `completeness`: `Complete` | `TruncatedPreRoll` | `TruncatedPostRoll` | `GapAffected` | `MaxDurationCapped` | `SpoolExhaustedTruncated`
+     - `missingSegmentRange`: nullable `(firstMissingOrdinal, reasonCode)` populated when `SpoolExhaustedTruncated` occurs
+     - `coalescedTriggerCount`: integer >= 1
+     - `segments[]` (empty in `SingleGroup` mode; ordered by `segmentOrdinal` in `SegmentedGroups` mode): each entry binds one segment to its exact published Silo member identities:
+       `(segmentOrdinal, segmentGroupId, segmentRevisionId, payloadArtifactId, payloadArtifactRevision, payloadSha256, payloadLength, descriptorArtifactId, descriptorArtifactRevision, descriptorSha256, frameRange, ptsRange)`.
+   - **Sibling `SiloGroupManifest.Members` in `transient-event-v2`:**
+     - `EventPromotion` (`role: "transient-event-promotion"`, `SiloRetentionClass.Metadata`, `Required = true` — the `transient-event-promotion-v1` JSON document above)
+     - `NativeClip` (`SiloRetentionClass.Full` — present inline in `SingleGroup` mode; represented via `segments[]` + `Dependencies` in `SegmentedGroups` mode)
      - `ScientificStill` (`SiloRetentionClass.Full` — **only** for `RawLinearStream`: linear pre-event, peak, residual composite tagged `DerivedComposite`)
      - `DerivedEncodedStill` (`SiloRetentionClass.Display` or `Metadata` — **only** for `EncodedNetworkStream`: non-linear decoded inspection stills explicitly carrying `SourceDomain = EncodedLuma8`, `LinearPhotometryAvailable = false`, and decoder identity; never labeled `ScientificStill`)
      - `ProcessedClip` (`SiloRetentionClass.Display` — browser-playable MP4)
      - `ScreeningSummary` & `TimingLedger` (`SiloRetentionClass.Metadata`)
-   - `dependencies[]`: exact `SiloManifestDependency` entries (`Reopen` for
-     segment groups, display clip/stills/overlays; `Compute` for calibration
-     masters, masks, and astrometry references), enabling policy expiry of
-     display derivatives or compute inputs per `cameraagent-silo-cutover.md`
-     Section 6.1 without breaking auditability.
+   - **`SiloGroupManifest.Dependencies` (`SiloManifestDependency` on exact artifact revisions, `SiloRecords.cs:45-50`):**
+     - In `SegmentedGroups` mode, for every entry in `segments[]`, the final `transient-event-v2` `SiloGroupManifest.Dependencies` records two `SiloDependencyKind.Reopen` dependencies pinning exact artifact revisions: `(payloadArtifactId, payloadArtifactRevision, payloadSha256, Reopen, Required = true)` and `(descriptorArtifactId, descriptorArtifactRevision, descriptorSha256, Reopen, Required = true)` (note: `Required = true` binds segment availability for reopen; policy expiry of aged raw segments follows `cameraagent-silo-cutover.md` Section 6.1 role-expiry records without corrupting `EventPromotion` metadata).
+     - `SiloDependencyKind.Compute` dependencies pin exact calibration master, mask, and astrometry artifact revisions `(ArtifactId, ArtifactRevision, Sha256, Compute, Required = false)` so compute inputs or display derivatives may expire independently without breaking auditability.
+   - **Cold catalog rebuild solely from Silo (zero dependency on lost local SQLite promotion rows):**
+     1. Rebuild replays authenticated `SiloJournalSegment` / `SiloJournalCheckpoint` records (`j/`, `c/`) in `(generation, sequence)` order and verifies every `SiloGroupManifest` (`m/`) by exact locator and SHA-256.
+     2. Every P4-committed `transient-event-segment-v1` publication restores its `transient-segment-payload` and `transient-segment-descriptor` artifact revisions and exact locators in the Silo catalog `roles`/`locators` tables.
+     3. Every P4-committed `transient-event-v2` publication locates its required `role: "transient-event-promotion"` member (`p/meta/`), fetches and SHA-256-verifies that `transient-event-promotion-v1` JSON payload by exact version, and parses `completeness`, `missingSegmentRange`, `coalescedTriggerCount`, and ordered `segments[]`.
+     4. For each `segments[]` entry, rebuild verifies that `(payloadArtifactId, payloadArtifactRevision, payloadSha256)` and `(descriptorArtifactId, descriptorArtifactRevision, descriptorSha256)` match the `SiloGroupManifest.Dependencies` of the `transient-event-v2` manifest and resolve to the rebuilt `roles`/`locators` from the `transient-event-segment-v1` publications — deterministically recovering exact segment order, frame/PTS ranges, and truncation state (`SpoolExhaustedTruncated`, `missingSegmentRange`) solely from Silo objects after complete loss of local SQLite promotion rows.
+     5. Any P4 `transient-event-segment-v1` group whose member artifact revisions are not referenced by any P4 `transient-event-v2` manifest (and not held by an active local `PendingFinalization` claim) is cleanly identified as an unlinked/orphaned segment eligible for retention sweep.
    - **Visibility invariant:** Under the Silo layout, a `transient-event-v2`
      promotion is never browsable or replayable until its final manifest group
      reaches Silo **P4** (`visible` in SQLite catalog, matching
@@ -372,8 +399,13 @@ both producer records carry `(SchemaVersion, Kind, Name, Version)` and **omit**
     preserving exact auditability of which deterministic or AI verdict the
     operator confirmed or overrode.
 - **`transient-detector-provider-v1`** (runtime contract in `HVO.SkyMonitor.Processing`):
-  - Declares supported input representations (`Mono16`, `Rggb16CellAverage`,
-    `Luma8`), maximum batch/frame dimensions, memory ceiling, timeout budget,
+  - Declares supported input representations across the full closed set:
+    - **Linear 16-bit (`LinearAdu` domain):** `Mono16` (native `CameraPixelFormat.Mono16`), `Rggb16CellAverage` (half-resolution 2×2 Bayer cell average of `CameraPixelFormat.BayerRggb16`, matching `Linear16DetectorInputConverter`).
+    - **Linear raw 8-bit (`LinearAdu` domain — V2 additive seam; V1 `TransientDetectorInputFactory.Create` at `TransientDetectorInputs.cs:168` stays frozen and continues rejecting raw 8-bit formats with `transient-input.unsupported-format`):**
+      - Explicit native 8-bit representations for continuous Stage 1 screening and native 8-bit providers: `Mono8` (`CameraPixelFormat.Mono8`, `SampleDepthBits = 8`, `ContainerDepthBits = 8`, `CfaPattern = None`, `WhiteLevel <= 255`, `SaturationLevel <= 255`) and `Rggb8CellAverage` (even-dimension `CameraPixelFormat.BayerRggb8`, `CfaPattern = Rggb`, rounded 2×2 Bayer cell average `(R + G1 + G2 + B) / 4` with `ScaleX = 0.5, ScaleY = 0.5, OffsetX = 0, OffsetY = 0` and any-source-photosite saturation mask at `SaturationLevel <= 255`).
+      - **Exact lossless widening bridge for 16-bit linear Stage 1b/extraction providers (`linear8-to-linear16-right-aligned-v1` in `transient-detector-input-v2`):** When a raw `Mono8` or `BayerRggb8` frame enters a provider accepting only `Mono16`/`Rggb16CellAverage`, the V2 input adapter performs exact zero-extension `ushort(u8)` (never left-shifting or rescaling), preserving native 8-bit ADU scale (`[0..255]`), `SampleDepthBits = 8`, `ContainerDepthBits = 16`, `StoredCodeTransform = FrameStoredCodeTransform.RightAlignedV1`, `LevelCodeSpace = FrameLevelCodeSpace.NativeSample`, saturation ceiling `<= 255` (applied to source photosites prior to Bayer cell averaging), and exact CFA RGGB pattern geometry (`Mono8 -> Mono16` with `CfaPattern = None`, `BayerRggb8 -> BayerRggb16 -> Rggb16CellAverage` with `CfaPattern = Rggb` and `ScaleX = 0.5, ScaleY = 0.5`).
+    - **Non-linear encoded luma (`EncodedLuma8` domain):** `EncodedLuma8` (decoded 8-bit luma from `EncodedNetworkStream`, strictly segregated from linear `Mono8` and carrying `PhotometryStatus = UnavailableEncodedSource`).
+  - Declares maximum batch/frame dimensions, memory ceiling, timeout budget,
     and `SupportsCpuFallback`.
   - Returns bounded `Produced` / `Skipped` / `RetryableFailure` /
     `TerminalFailure` outcomes with stable reason codes
@@ -384,12 +416,12 @@ both producer records carry `(SchemaVersion, Kind, Name, Version)` and **omit**
 
 | Existing V1 Artifact / Component | V2 Impact | Compatibility Proof |
 | --- | --- | --- |
-| `TransientEventV1` (`transient-event-v1`), `TransientCandidateV1` (`transient-candidate-v1`), `TransientFeaturesV1`, `TransientDetectorInputDescriptorV1` (`transient-detector-input-v1`) | **Unchanged** | V1 schemas, linear-ADU `TransientFeaturesV1` semantics, canonical JSON hashes, and golden fixtures under `tests/fixtures/processing/` remain frozen. V2 events use `transient-event-v2` (with `transient-features-v2` separating `LinearAdu` from `EncodedLuma8`), and V1 parsers continue rejecting unknown schemas cleanly via `TransientContractReasonCodes.UnsupportedSchema`, `UnsupportedLocator`, and `UnsupportedProducer`. |
+| `TransientEventV1` (`transient-event-v1`), `TransientCandidateV1` (`transient-candidate-v1`), `TransientFeaturesV1`, `TransientDetectorInputDescriptorV1` (`transient-detector-input-v1`) | **Unchanged** | V1 schemas, linear-ADU `TransientFeaturesV1` semantics, V1 `TransientDetectorInputFactory` (`TransientDetectorInputs.cs:168`, 16-bit only), canonical JSON hashes, and golden fixtures under `tests/fixtures/processing/` remain frozen. V2 events use `transient-event-v2` (with `transient-features-v2` separating `LinearAdu` from `EncodedLuma8`) and `transient-detector-input-v2` for raw 8-bit admission, while V1 parsers continue rejecting unknown schemas cleanly via `TransientContractReasonCodes.UnsupportedSchema`, `UnsupportedLocator`, and `UnsupportedProducer`. |
 | `TransientWholeArtifactLocatorV1` (`transient-source-locator-v1`), `TransientExtractionProducerV1` (`transient-extraction-producer-v1`), & `TransientAssessmentProducerV1` (`transient-assessment-producer-v1`) | **Preserved verbatim** | Every V1 locator and V1 deterministic extraction/assessment producer up-projects in memory to V2 readers without rewriting stored V1 JSON bytes; because V1 producer records omit `optionsSha256` (`TransientEventContracts.cs:202-228`), up-projection sets `optionsSha256 = null` (unknown) while preserving enclosing `RecipeIdentitySha256`. |
 | `Linear16TransientExtraction` & `TransientTemporalBackgroundFactory` | **Preserved verbatim** | Still-frame `N-2..N+2` causal/centered processing remains the V1 mode; V2 stream mode lives behind an explicit opt-in configuration profile (`TransientDetectionOptions` / stream profile) and does not alter V1 default behavior. |
 | `SqliteTransientCandidateJournal` & `SqliteTransientRuntimeStore` | **Additive schema version only** | Existing V1 rows require zero backfill or rewriting. V2 stream session, promotion, and segment-publication tables are additive and remain empty when stream mode is `Off`. |
 | `cameraagent-capture-trails-v1` & `OverlayManifestV1` | **Unchanged for V1 captures** | Existing still-capture measured trail projections continue binding exclusively to V1 raw capture manifests; V2 event clip overlays use additive V2 composition profiles. |
-| Silo layout (`cameraagent-silo-cutover.md`) | **Additive `groupKind` only** | Uses existing `p/full/`, `p/display/`, `p/meta/`, `m/`, and `j/` prefixes and `SiloGroupManifest` (`hvo.cameraagent.silo.group-manifest/1`) with additive `groupKind: "transient-event-segment-v1"` and `groupKind: "transient-event-v2"`, preserving P4 visibility semantics. |
+| Silo layout (`cameraagent-silo-cutover.md`, `SiloRecords.cs:10-50`) | **Additive `groupKind` only** | Uses existing `p/full/`, `p/display/`, `p/meta/`, `m/`, and `j/` prefixes and unmodified `SiloGroupManifest` (`hvo.cameraagent.silo.group-manifest/1`) with additive `groupKind: "transient-event-segment-v1"` and `groupKind: "transient-event-v2"`. All V2 event-assembly fields (`segments[]`, `completeness`, `missingSegmentRange`) serialize inside a required `p/meta/` JSON payload member (`transient-event-promotion-v1`), while `SiloGroupManifest.Dependencies` pins exact segment member artifact revisions (`SiloManifestDependency`), preserving P4 visibility and full cold catalog rebuild solely from Silo. |
 
 ---
 
@@ -495,10 +527,13 @@ finish (AD-3).
        `256–512 MiB` peak spool occupancy, safely inside the default `2 GiB`
        spool).
      - After all segment groups reach P4, publish one compact final event
-       manifest group (`groupKind: "transient-event-v2"`) holding
-       `ScientificStills`, `ProcessedClip`, `ScreeningSummary`, `TimingLedger`,
-       and ordered exact-version P4 `segmentGroupRefs[]` / `Reopen`
-       dependencies.
+       manifest group (`groupKind: "transient-event-v2"`) holding the required
+       `transient-event-promotion-v1` JSON payload member (`p/meta/` with
+       ordered `segments[]` mapping each ordinal to exact payload/descriptor
+       artifact revisions), `ScientificStills`, `ProcessedClip`,
+       `ScreeningSummary`, `TimingLedger`, and `SiloGroupManifest.Dependencies`
+       (`Reopen` entries pinning each segment's exact member artifact
+       revisions).
   2. **Explicit admission reservation for `SingleGroup` mode:**
      - Single-group publication (`NativeClip` + stills + metadata in one
        `SiloGroupDraft`) is allowed **only** when startup validation and
@@ -508,41 +543,147 @@ finish (AD-3).
        with bounded concurrency; `P3` 30 s in `SingleGroup` mode is refused
        unless the operator explicitly raises `MaximumStagedBytes` to `≥8 GiB`
        on a Tier 3 host alongside the 10 GiB filesystem headroom reserve).
-- **Deterministic recovery and operator visibility on mid-event spool exhaustion:**
-  - Every multi-segment promotion persists its segment state machine in SQLite
-    (`Pending` / `Staged` / `PublishedP4` / `SpoolExhausted` / `Abandoned`).
+- **Deterministic recovery and operator visibility on mid-event spool exhaustion (zero free spool required at exhaustion):**
+  - `SiloFilePayloadSpool.StageAsync` (`SiloFilePayloadSpool.cs:72`) enforces
+    `_files.Count >= _maximumFiles || member.Length > _maximumBytes - _bytes`
+    uniformly across every staged member from every concurrent publisher
+    (including V1 raw admissions and other streams). Consequently, when
+    `SiloSpoolFullException` fires, **zero** spool bytes or file slots may
+    remain available to stage the final `transient-event-v2` manifest group
+    (including its event-promotion JSON, timing ledger, or stills). The
+    recovery path therefore **never requires free spool capacity at the moment
+    of exhaustion**:
+  - Every multi-segment promotion persists its durable state machine in SQLite
+    (`Pending` / `Staged` / `PublishedP4` / `PendingFinalization` /
+    `SpoolExhausted` / `Abandoned`).
   - If `SiloSpoolFullException` or the disk-pressure fence occurs between
     segment `k` and `k+1`:
     1. Already-P4 segments `0..k-1` remain immutable in Silo.
     2. Remaining un-staged frames wait in the bounded NVMe/RAM scratch
        reservation only until Silo drain frees spool space below low-water mark
        or the scratch/wait budget expires.
-    3. If the budget expires before spool drains, the coordinator closes the
-       event cleanly with `Completeness = SpoolExhaustedTruncated`, records
-       `missingSegmentRange`, publishes the final `transient-event-v2` manifest
-       referencing verified segments `0..k-1` (plus available stills/timing),
-       writes a `PromotionTruncatedSpoolExhausted` audit row, and surfaces an
-       operator alert/badge. If zero segments reached P4, it records
-       `FailedSpoolExhausted` (`PromotionSuppressedDiskPressure`) and releases
-       scratch bytes.
-    4. On crash/restart mid-promotion, startup reconciliation runs
-       `SiloPublisher.ResumeAsync`, recovers any P1–P3 segment groups, resumes
-       surviving durable scratch segments or finalizes truncated manifests, and
-       marks orphaned segment groups that never joined a P4 event manifest for
-       retention cleanup.
-- **Commit-rate & `MINIO_FS_OSYNC` sizing:** Under `#1968` loopback
-  qualification (`75.82 Mb/s` / `9.48 MB/s` serial committed ingest on a
-  reference Linux x64 loopback qualification host with `MINIO_FS_OSYNC=on`, vs.
-  `1,239–1,482 Mb/s` direct PUT), publishing one Silo group per individual
-  video frame would trigger 150 separate `sync(2)` commits for one 30 s @ 5 fps
-  event. Grouping frames into bounded `≤256 MiB` segments (~3 segment groups for
-  30 s `P1`, ~15 for 30 s `P3`, or 1 group for `P4`) keeps `MINIO_FS_OSYNC=on`
-  commit overhead proportional to bounded segment count rather than frame count.
-- **Retention separation:** Using Silo's `Full`, `Display`, and `Metadata`
-  classes allows operators to expire large raw `NativeClip` segments (e.g., 14–30
-  days unless pinned/confirmed meteor) while keeping `ProcessedClip` (months)
-  and compact `Metadata` + `ScientificStills` + structured `OverlayManifestV1`
-  evidence (years) at <1% of raw volume.
+    3. If the budget expires while the spool is still full and `k ≥ 1` segments
+       already reached P4, the coordinator **does not** require immediate
+       `SiloFilePayloadSpool` capacity: it atomically persists a restartable
+       **`PendingFinalization`** row in durable SQLite (recording `eventId`,
+       `promotionId`, `Completeness = SpoolExhaustedTruncated`,
+       `missingSegmentRange`, ordered verified P4 segment member identities for
+       `0..k-1`, durable local timing-ledger / still scratch references, and
+       `finalizationPriority = true`), writes a
+       `PromotionTruncatedSpoolExhausted` audit row, pauses new V2 stream
+       promotions (preventing livelock against new bursts), and releases
+       un-staged raw segment scratch bytes. If zero segments reached P4, it
+       records `FailedSpoolExhausted` (`PromotionSuppressedDiskPressure`) and
+       releases scratch bytes.
+    4. **Premature-eviction protection for verified P4 segments:** Every
+       `transient-event-segment-v1` group already at P4 whose member artifact
+       revisions are referenced by a non-terminal promotion row (`Pending`,
+       `Staged`, `PublishedP4`, or `PendingFinalization`) is **protected from
+       orphan reclamation and policy expiry** across retries and restarts until
+       either the final `transient-event-v2` manifest group reaches Silo P4
+       (transferring `Reopen` dependency ownership into Silo) or an operator
+       explicitly abandons the promotion.
+    5. **Exact operator visibility until final P4 completes:** Preserving the
+       single P4 visibility boundary (`cameraagent-silo-cutover.md:349`), the
+       truncated event remains **hidden** from the browsable P4 event catalog
+       and `ReplayRunner` while in `PendingFinalization`. Until final P4
+       completes, operator health checks (`silo-storage` / stream-promotion
+       health), telemetry (`PendingFinalizationCount`,
+       `PromotionTruncatedSpoolExhausted`), and a dedicated `TransientPage`
+       pending-promotions status banner surface `(eventId, promotionId,
+       verifiedSegmentCount = k, state = PendingFinalization, reason =
+       SpoolExhaustedTruncated)`.
+    6. **Priority finalization upon drain and crash/restart recovery:** On
+       process restart or as other concurrent publishers drain to P4 and
+       release `SiloFilePayloadSpool` bytes/file slots, startup reconciliation
+       runs `SiloPublisher.ResumeAsync` first, reloads `PendingFinalization`
+       rows (keeping their verified P4 segments protected), and schedules
+       `PendingFinalization` groups **ahead of all new V2 stream triggers**
+       (optionally bounded by a dedicated soft finalization reserve carved out
+       of `MaximumStagedBytes` / `MaximumStagedFiles` for non-finalization
+       stream writers without weakening `SiloFilePayloadSpool`'s hard ceiling).
+       If full stills still exceed freed spool capacity while minimal metadata
+       fits, the coordinator may shed non-essential scratch stills/display
+       renders and finalize the compact metadata-only `transient-event-v2`
+       manifest referencing segments `0..k-1`. Once the final
+       `transient-event-v2` group reaches **P4**, the `PendingFinalization`
+       alert clears and the event enters the browsable catalog with badge
+       `SpoolExhaustedTruncated` and `missingSegmentRange`. Only segment groups
+       not referenced by any P4 `transient-event-v2` manifest **and** not held
+       by any active `PendingFinalization` row become eligible for orphan
+       reclamation.
+  - **Required concrete verification scenario (executed in `V2-4` / `W9` / `W11`):**
+    1. Run a multi-segment promotion until segment `0` reaches Silo **P4**
+       (`PublishedP4`).
+    2. Fill `SiloFilePayloadSpool` to exhaustion (testing both byte ceiling
+       `_maximumBytes` and file-slot ceiling `_maximumFiles`) via another
+       concurrent publisher so staging segment `1` throws
+       `SiloSpoolFullException` and **zero** spool bytes/file slots remain for
+       finalization.
+    3. Expire the scratch/wait budget and assert: SQLite commits
+       `PendingFinalization` (`SpoolExhaustedTruncated`, `missingSegmentRange`,
+       segment `0` member identities) without requiring free spool capacity;
+       segment `0` remains protected; operator health/telemetry reports
+       `PendingFinalization` while P4 catalog/replay hides the event.
+    4. Trigger a **forced process restart** while the spool remains full and
+       assert: `SiloPublisher.ResumeAsync` and startup reconciliation do **not**
+       evict or mark segment `0` orphaned and keep `PendingFinalization` active.
+    5. Allow the blocking publisher to drain to P4, releasing spool bytes and
+       file slots, and assert: the coordinator automatically stages and
+       completes the final `transient-event-v2` manifest group to **P4**
+       (`visible`), exposing the truncated event with verified segment `0`
+       intact and clearing the pending-finalization alert.
+- **Commit-rate & `MINIO_FS_OSYNC` sizing (publication groups vs. synchronized PUTs):**
+  - Under the qualified profile (`MINIO_FS_OSYNC=on`), Silo issues `sync(2)`
+    before acknowledging **each individual PUT** — not once per publication
+    group (`docs/runbooks/cameraagent-silo-runtime.md:413-414`). In `#1968`'s
+    loopback qualification (`cameraagent-silo-runtime.md:448-460`: `75.82 Mb/s`
+    / `9.48 MB/s` serial committed ingest vs. `1,239–1,482 Mb/s` direct PUT),
+    `144` two-payload groups issued **`576` PUTs and `1,728` GETs** — i.e.,
+    **`4` synchronized PUTs per 2-payload group** (`M` payload PUTs + `1`
+    manifest PUT + `1` journal-segment PUT = `M + 2` synchronized PUTs per
+    group).
+  - Publishing one Silo group per individual video frame for a 30 s @ 5 fps
+    event (`150` frames) would therefore trigger **`150` publication groups**
+    and **`600` synchronized PUTs** (`150 × 4` for 2-payload frame + sidecar
+    groups, or `450` PUTs even at 1 payload/group).
+  - Grouping frames into bounded `≤256 MiB` segments (`M = 2` members per
+    segment group: `transient-segment-payload` + `transient-segment-descriptor`
+    = `4` PUTs/segment group, plus `1` final `transient-event-v2` group with
+    `M = 6–7` members = `8–9` PUTs) yields:
+    - **30 s `P1` (50 frames/segment):** `4` publication groups (`3` segment
+      groups + `1` final event group) = **`20–21` synchronized PUTs** (~29×
+      fewer `sync(2)` calls than 1-frame-per-group).
+    - **30 s `P3` (10 frames/segment):** `16` publication groups (`15` segment
+      groups + `1` final event group) = **`68–69` synchronized PUTs** (~9×
+      fewer `sync(2)` calls).
+    - **30 s `P4` (`SingleGroup`, `M = 6–8` members):** `1` publication group =
+      **`8–10` synchronized PUTs**.
+- **Retention separation and accurate still + metadata sizing:**
+  - Using Silo's `Full`, `Display`, and `Metadata` classes allows operators to
+    expire large raw `NativeClip` segments (e.g., 14–30 days unless
+    pinned/confirmed meteor) while retaining `ProcessedClip` (months) and
+    compact `Metadata` + `ScientificStills` + structured `OverlayManifestV1`
+    evidence (years). Exact retained still + metadata percentages relative to a
+    30-second native event payload depend explicitly on frame rate and still
+    compression:
+    - **`P1` (ASI174 5 fps, 150 raw frames = `706.3 MB`) & `P3` (ASI676MC 5 fps, 150 raw frames = `3.79 GB`):**
+      - **3 uncompressed full-frame linear `ScientificStills`** (pre-event,
+        peak, residual composite) = `3 / 150 = 2.00%` of raw payload (`14.13 MB`
+        for `P1`; `75.70 MB` for `P3`) before metadata, or **`~2.01–2.03%`**
+        including ~`50–200 KiB` JSON metadata/timing/overlays.
+      - **Losslessly compressed stills** (e.g., Rice/gzip `fits.fz` at ~2–3× on
+        16-bit sky frames, scene-dependent) or retaining **1 uncompressed peak
+        still** + metadata reduces long-term retention to **`~0.67–1.0%`** of
+        raw payload.
+    - **`P2` (ASI174 25 fps Mono8, 750 raw frames = `1.77 GB`):**
+      - **3 uncompressed full-frame linear `ScientificStills`** = `3 / 750 =
+        0.40%` (`7.06 MB`), or **`~0.41%`** including metadata/overlays.
+    - **`P4` (1080p RTSP H.264 25 fps @ 6 Mbps, ~`22.5 MB` compressed native clip):**
+      - **3 compressed `DerivedEncodedStills`** (JPEG/PNG, ~`0.3–1.0 MB` total)
+        + ~`50–200 KiB` metadata/overlays = **`~1.5–5.3%`** of the compressed
+        native clip (uncompressed 3× decoded Y8 stills = `6.22 MB` / `~27.6%`,
+        so `DerivedEncodedStills` are stored compressed).
 
 ### 6.3 Target Hardware Capacity Profiles (Initial Analytical Envelope)
 
@@ -566,9 +707,9 @@ workloads before moving out of prototype/qualification.
 | --- | --- | --- | --- |
 | **`W7-Raw5fps`** | Synthetic `VirtualSky` ASI174 1936×1216 Mono16 stream at 5 fps (`4,708,352 B/frame`, seeded, hidden oracle outside detector) | 5 min warm-up + 30 min measured; injected meteors, fireballs, satellites, aircraft, cosmic rays | Baseline raw linear ingestion, 1 s chunk screening, and 200 ms frame-budget headroom |
 | **`W8-Rtsp25fps`** | Reproducible local loopback RTSP/H.264 stream (1920×1080 @ 25 fps, 6 Mbps, 1 s GOP / 25 frames, known PTS/DTS) with scripted packet drops, 3 s reconnects, and PTS discontinuities | 30 min measured | Encoded stream demux/decode isolation, IDR-aligned native clip copy, gap ledger accuracy, reconnect recovery |
-| **`W9-EventLengths`** | Scripted 5 s, 10 s, and 20 s synthetic fireball/fragmentation events with 5 s pre-roll and 5 s post-roll (15 s, 20 s, and 30 s total promoted spans over a 20 s pre-trigger ring via trigger pinning + incremental segment draining) | 5 independent trials per duration (median/min/max) + 30-event latency run for p95 | Pre-trigger completeness, ring-pin/drain survival beyond ring length, IDR retention across ring wrap, coalescing, `MaxDurationCapped`, `SpoolExhaustedTruncated`, Silo segmented-group promotion & P3/P4 finalization latency |
+| **`W9-EventLengths`** | Scripted 5 s, 10 s, and 20 s synthetic fireball/fragmentation events with 5 s pre-roll and 5 s post-roll (15 s, 20 s, and 30 s total promoted spans over a 20 s pre-trigger ring via trigger pinning + incremental segment draining) | 5 independent trials per duration (median/min/max) + 30-event latency run for p95 | Pre-trigger completeness, ring-pin/drain survival beyond ring length, IDR retention across ring wrap, coalescing, `MaxDurationCapped`, `SpoolExhaustedTruncated`, Silo segmented-group promotion & P3/P4 finalization latency (including the Section 6.2 segment-at-P4 + full-spool + restart + drain scenario) |
 | **`W10-NoEventSoak`** | Continuous quiet-sky stream with slow star drift, twilight/cloud luminance changes, and zero injected meteors | 4-hour sustained run (accelerated + wall-clock trials) | Verify zero unbounded memory/RSS/LOH/disk growth, zero Silo writes during quiet sky, and steady CPU/thermal profile |
-| **`W11-FalseTriggerBurst`** | Synthetic lightning/headlight/broken-cloud burst injecting 60 triggers in 5 minutes while Silo spool approaches `MaximumStagedBytes` | 15 min burst + recovery drain | Cooldown/coalescing behavior, pressure-fence activation, zero OOM, zero acquisition halt, clean drain recovery |
+| **`W11-FalseTriggerBurst`** | Synthetic lightning/headlight/broken-cloud burst injecting 60 triggers in 5 minutes while Silo spool approaches `MaximumStagedBytes` / `MaximumStagedFiles` (including the Section 6.2 `PendingFinalization` full-spool + restart + drain scenario) | 15 min burst + recovery drain | Cooldown/coalescing behavior, pressure-fence activation, `PendingFinalization` survival without premature segment eviction, zero OOM, zero acquisition halt, clean drain recovery |
 | **`W12-AcceleratorParity`** | Frozen promoted event fixture set evaluated across Stage 1 deterministic CPU, Stage 2 ONNX CPU EP, and (when available) GPU/NPU EP and `#140` local executable bridge | 30 measured inferences per provider after warm-up | Verify append-only producer provenance, identical Stage 1 event/geometry hashes, accelerator-loss fallback, and provider latency/memory/power delta |
 
 ### 7.2 Mandatory Measurement Record
