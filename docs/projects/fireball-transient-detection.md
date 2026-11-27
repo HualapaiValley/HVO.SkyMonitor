@@ -16,6 +16,17 @@ The initial implementation is not a generic machine-learning platform. It starts
 with deterministic image algorithms, measured heuristics, retained source
 evidence, and reviewable reason-coded classifications.
 
+### Stream-native fireball V2 research (#143)
+
+Future stream-native fireball detection research (`RM-008`,
+[#143](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/143)) lives in
+[`fireball-detection-v2-research.md`](fireball-detection-v2-research.md)
+(literature survey, source-code audit, and license matrix) and
+[`fireball-detection-v2-architecture.md`](fireball-detection-v2-architecture.md)
+(standalone CameraAgent architecture, versioned temporal/producer contracts,
+threat model, capacity model, and qualification plan). It does not alter V1
+still-frame transient scope or activate V2 runtime implementation.
+
 ### Satellite software activation (2026-10-19)
 
 The operator-issued two-host assignment under #1391 activates a bounded satellite
