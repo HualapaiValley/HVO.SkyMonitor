@@ -307,6 +307,16 @@ public static class ExposureMeasurementProducts
         return input;
     }
 
+    /// <summary>
+    /// Maximum permitted worst-case non-source UTF-8 envelope bytes (serialized input/envelope shell including JSON
+    /// escaping plus worst-case Sources header and HFD section) for an admitted Step 4 measurement request. Matches
+    /// <see cref="StellarFootprintOccupancy.DefaultReservedEnvelopeBytes"/> (128 KiB), guaranteeing that every admitted
+    /// exposure fits strictly within <see cref="StructuredProcessingProductDescriptorV1.MaximumPayloadBytes"/> (4 MiB)
+    /// for up to <see cref="StellarDetector.MaximumSupportedCandidates"/> detections/exclusions with positive coarse
+    /// occupancy masks even under worst-case JSON escaping.
+    /// </summary>
+    public const int MaximumAdmittedEnvelopeBytes = StellarFootprintOccupancy.DefaultReservedEnvelopeBytes;
+
     private const int MaximumSourcesHeaderAndHfdBytes = 8_192;
 
     private static readonly ExposureSourcesV1 EmptySourcesShell = new(
@@ -314,6 +324,25 @@ public static class ExposureMeasurementProducts
 
     private static readonly ExposureHfdV1 EmptyHfdShell = new(
         ExposureMeasurementStatus.Unavailable, "shell", null, null, null, 0, null, []);
+
+    // Worst-case brightness and clipping shells dominate every real runtime measurement (19-digit SampleCount,
+    // 20-digit Sum, non-terminating 18-char Mean, and simultaneous numeric + max-length reason fields on Clipping),
+    // so Serialize(realShell).Length is strictly bounded above by Serialize(worstCaseShell).Length.
+    private static readonly ExposureClippingV1 WorstCaseClippingShell = new(
+        ushort.MaxValue, long.MaxValue, FrameWhiteThreshold.UnavailableReason);
+
+    private static readonly ExposureBrightnessV1 WorstCaseRawBrightnessShell = new(
+        9_000_000_000_000_000_007L, ushort.MaxValue, ushort.MaxValue, 10_000_000_000_000_000_009UL,
+        long.MaxValue, WorstCaseClippingShell);
+
+    internal static int WorstCaseEnvelopeBytes(ExposureMeasurementInputV1 input)
+    {
+        var shell = new ExposureMeasurementV1(
+            SchemaVersion, input, WorstCaseRawBrightnessShell, null,
+            input.Linear is null ? null : WorstCaseClippingShell,
+            EmptySourcesShell, EmptyHfdShell);
+        return Serialize(shell).Length + MaximumSourcesHeaderAndHfdBytes;
+    }
 
     internal static int ReservedEnvelopeBytes(
         ExposureMeasurementInputV1 input,
@@ -367,12 +396,14 @@ public static class ExposureMeasurementProducts
     internal static Guid[] SourceIds(ExposureMeasurementInputV1 input)
         => input.Linear is { } linear ? [input.Raw.ArtifactId, linear.ArtifactId] : [input.Raw.ArtifactId];
 
-    private static void ValidateInput(ExposureMeasurementInputV1 input)
+    internal static void ValidateInput(ExposureMeasurementInputV1 input)
     {
         if (input is null || !ValidSource(input.Raw) || input.Raw.OutputIdentitySha256 is not null ||
             string.IsNullOrWhiteSpace(input.OrientationIdentity) || input.OrientationIdentity.Length > 256 ||
             input.NativePixelPitchMicrometers is { } pitch && (!double.IsFinite(pitch) || pitch <= 0) ||
             input.PixelScaleArcseconds is { } scale && (!double.IsFinite(scale) || scale <= 0) ||
+            input.RigOrientation is { } orient && (!double.IsFinite(orient.BoresightAltitudeDegrees) ||
+                !double.IsFinite(orient.BoresightAzimuthDegrees) || !double.IsFinite(orient.RollAdjustmentDegrees)) ||
             !Enum.IsDefined(input.Calibration) ||
             input.CalibrationReason is { } reason && (string.IsNullOrWhiteSpace(reason) || reason.Length > 128))
             throw Invalid("input");
@@ -399,6 +430,15 @@ public static class ExposureMeasurementProducts
                 ProcessingIdentity.CreateArtifactId(linear.OutputIdentitySha256!) != linear.ArtifactId ||
                 linear.ArtifactId == input.Raw.ArtifactId || linear.CaptureId != input.Raw.CaptureId))
             throw Invalid("linear disposition");
+
+        // O(1) lower-bound rejection before canonical JSON measurement so arbitrarily large metadata cannot allocate
+        // huge buffers, followed by exact canonical UTF-8 byte accounting (including 6-byte \uXXXX JSON escaping).
+        var rawMetadataChars = (long)(input.OpticalCalibrationVersion?.Length ?? 0) +
+            (input.Exposure?.Camera?.AgentId?.Length ?? 0) +
+            (input.Exposure?.Camera?.CameraId?.Length ?? 0);
+        if (rawMetadataChars > MaximumAdmittedEnvelopeBytes ||
+            WorstCaseEnvelopeBytes(input) > MaximumAdmittedEnvelopeBytes)
+            throw Invalid("input envelope budget");
     }
 
     private static bool ValidSource(ExposureMeasurementSourceV1? source)
@@ -420,8 +460,13 @@ public static class ExposureMeasurementProducts
             (long)sources.Detections.Count + sources.Exclusions.Count > StellarDetector.MaximumSupportedCandidates ||
             hfd.Samples is null || hfd.Samples.Count > MaximumHfdSamples ||
             (value.RawBrightness is null) != !string.IsNullOrWhiteSpace(value.RawBrightnessUnavailableReason) ||
+            value.RawBrightnessUnavailableReason is { Length: > 128 } ||
             (value.LinearOutputClipping is null) != (value.Input.Linear is null))
             throw Invalid("section");
+        var measuredReservedEnvelopeBytes = ReservedEnvelopeBytes(
+            value.Input, value.RawBrightness, value.RawBrightnessUnavailableReason, value.LinearOutputClipping);
+        if (measuredReservedEnvelopeBytes > MaximumAdmittedEnvelopeBytes)
+            throw Invalid("envelope budget");
         if (value.RawBrightness is { } brightness)
         {
             var layout = value.Input.Raw.Layout;
@@ -481,13 +526,11 @@ public static class ExposureMeasurementProducts
                         nonSolidFootprints.Add(fp);
                 }
             }
-            var reservedEnvelopeBytes = ReservedEnvelopeBytes(
-                value.Input, value.RawBrightness, value.RawBrightnessUnavailableReason, value.LinearOutputClipping);
             occupancyBudget = StellarFootprintOccupancy.ComputeProductBudgets(
                 sources.Detections.Count,
                 sources.Exclusions.Count,
                 CollectionsMarshal.AsSpan(nonSolidFootprints),
-                reservedEnvelopeBytes);
+                measuredReservedEnvelopeBytes);
         }
         if (sources.Exclusions.Any(item => !IsValidExclusion(item, measuredLayout, allowOccupancy, occupancyBudget)))
             throw Invalid("exclusion");
@@ -518,9 +561,10 @@ public static class ExposureMeasurementProducts
                 return false;
             if (allowOccupancy)
             {
-                if (item.SampleCount == fpArea || occupancyBudget.CoarseCellBudget <= 0)
+                if (item.SampleCount == fpArea)
                     return item.Occupancy is null;
-                return item.Occupancy is not null &&
+                return occupancyBudget.CoarseCellBudget > 0 &&
+                    item.Occupancy is not null &&
                     item.Occupancy.IsValid(
                         fp, item.Peak, item.SampleCount,
                         occupancyBudget.CoarseCellBudget, occupancyBudget.SubgridBitBudget);

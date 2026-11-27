@@ -98,8 +98,11 @@ public static class MeasuredStellarAssociator
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(measurement);
+        var conservativeOmittedOccupancy = !string.Equals(
+            measurement.AlgorithmVersion, StellarSourceMeasurer.V2AlgorithmVersion, StringComparison.Ordinal);
         return Associate(scene, measurement.Detections, measurement.Exclusions,
-            measurement.Status == StellarMeasurementStatus.Completed, settings, labelPolicy, cancellationToken);
+            measurement.Status == StellarMeasurementStatus.Completed, settings, labelPolicy, cancellationToken,
+            conservativeOmittedOccupancy);
     }
 
     internal static MeasuredStellarAssociationEntries Associate(
@@ -109,7 +112,8 @@ public static class MeasuredStellarAssociator
         bool measurementCompleted,
         MeasuredStellarAssociationSettingsV1 settings,
         StellarLabelPolicySettingsV1 labelPolicy,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool conservativeOmittedOccupancy = false)
     {
         ArgumentNullException.ThrowIfNull(scene);
         ArgumentNullException.ThrowIfNull(settings);
@@ -236,11 +240,11 @@ public static class MeasuredStellarAssociator
                 preMatch[index] = MeasuredStellarAssociationReasonCodes.CrowdedPrediction;
                 continue;
             }
-            // If an exclusion footprint (e.g. saturated-excessive) covers the planet's predicted position AND its
-            // peak lies within the planet's own search window, withhold the planet before matching so it cannot claim
-            // a nearby moon or star inside its search window, without allowing a distant trail or extended region
-            // whose axis-aligned bounding box spans over the planet to suppress a cleanly detected planet.
-            if (isPlanet && ExclusionContaining(target.Pixel, exclusions, targetMaxWindows[index], settings.ExclusionMarginPixels) is { } containingExclusion)
+            // If an exclusion footprint (e.g. saturated-excessive) covers the planet's predicted position, withhold
+            // the planet before matching so it cannot claim a nearby moon or star inside its search window, without
+            // allowing a distant trail or extended region whose occupied mask avoids the planet to suppress it.
+            if (isPlanet && ExclusionContaining(target.Pixel, exclusions, targetMaxWindows[index],
+                    settings.ExclusionMarginPixels, conservativeOmittedOccupancy) is { } containingExclusion)
             {
                 preMatch[index] = MeasuredStellarAssociationReasonCodes.MeasurementExcludedPrefix + containingExclusion.ReasonCode;
                 continue;
@@ -400,7 +404,7 @@ public static class MeasuredStellarAssociator
                 return MeasuredStellarAssociationReasonCodes.ClaimedByOther;
             var isPlanetTarget = targetIndex >= stars.Length;
             var exclusion = isPlanetTarget
-                ? ExcludedByPlanet(expectedPixel, exclusions, targetMaxWindows[targetIndex], settings.ExclusionMarginPixels)
+                ? ExcludedByPlanet(expectedPixel, exclusions, targetMaxWindows[targetIndex], settings.ExclusionMarginPixels, conservativeOmittedOccupancy)
                 : ExcludedBy(expectedPixel, exclusions, targetMaxWindows[targetIndex], settings.ExclusionMarginPixels);
             if (exclusion is not null)
                 return MeasuredStellarAssociationReasonCodes.MeasurementExcludedPrefix + exclusion.ReasonCode;
@@ -494,6 +498,9 @@ public static class MeasuredStellarAssociator
     // and whose window is bounded below MaximumWindowSamples), or a compact (>= 50% filled) non-extended footprint
     // covers its bounding footprint; sparse or extended-region legacy footprints without occupancy fall back to peak
     // proximity so distant streaks or hollow arcs do not suppress isolated planets.
+    // By contrast, on a current (non-legacy v3) measurement where Occupancy is null (either 100%-solid or omitted for
+    // size), the matcher has no proof that the interior is unoccupied and therefore applies a conservative bounding-box
+    // disposition rather than silently dropping a crossing-streak exclusion to no-measured-source.
     private static bool LegacyFootprintCoversInterior(StellarMeasurementExclusion exclusion, long boxArea) =>
         exclusion.SampleCount >= boxArea ||
         exclusion.ReasonCode == StellarExclusionReasons.SaturatedExcessive ||
@@ -501,7 +508,7 @@ public static class MeasuredStellarAssociator
          exclusion.SampleCount * 2L >= boxArea);
 
     private static double OccupiedFootprintDistanceSquared(
-        StellarMeasurementExclusion exclusion, PixelPoint point, double maxRadiusPixels)
+        StellarMeasurementExclusion exclusion, PixelPoint point, double maxRadiusPixels, bool conservativeOmittedOccupancy)
     {
         if (exclusion.Footprint is not { } footprint || !footprint.Contains(point, maxRadiusPixels))
             return double.PositiveInfinity;
@@ -509,13 +516,14 @@ public static class MeasuredStellarAssociator
             return occupancy.DistanceSquaredToOccupied(footprint, point, maxRadiusPixels);
         var width = (long)footprint.MaxX - footprint.MinX + 1;
         var height = (long)footprint.MaxY - footprint.MinY + 1;
-        return width > 0 && height > 0 && LegacyFootprintCoversInterior(exclusion, width * height)
+        return width > 0 && height > 0 && (conservativeOmittedOccupancy || LegacyFootprintCoversInterior(exclusion, width * height))
             ? BoundsDistanceSquared(footprint, point)
             : double.PositiveInfinity;
     }
 
     private static StellarMeasurementExclusion? ExclusionContaining(
-        PixelPoint point, IReadOnlyList<StellarMeasurementExclusion> exclusions, double maximumWindowPixels, double exclusionMarginPixels)
+        PixelPoint point, IReadOnlyList<StellarMeasurementExclusion> exclusions, double maximumWindowPixels,
+        double exclusionMarginPixels, bool conservativeOmittedOccupancy)
     {
         StellarMeasurementExclusion? best = null;
         var bestDistance = double.MaxValue;
@@ -536,7 +544,7 @@ public static class MeasuredStellarAssociator
             {
                 var width = (long)footprint.MaxX - footprint.MinX + 1;
                 var height = (long)footprint.MaxY - footprint.MinY + 1;
-                if (width > 0 && height > 0 && LegacyFootprintCoversInterior(exclusion, width * height))
+                if (width > 0 && height > 0 && (conservativeOmittedOccupancy || LegacyFootprintCoversInterior(exclusion, width * height)))
                 {
                     distance = BoundsDistanceSquared(footprint, point);
                     if (distance > maxMarginSquared)
@@ -559,7 +567,8 @@ public static class MeasuredStellarAssociator
     }
 
     private static StellarMeasurementExclusion? ExcludedByPlanet(
-        PixelPoint point, IReadOnlyList<StellarMeasurementExclusion> exclusions, double maximumWindowPixels, double exclusionMarginPixels)
+        PixelPoint point, IReadOnlyList<StellarMeasurementExclusion> exclusions, double maximumWindowPixels,
+        double exclusionMarginPixels, bool conservativeOmittedOccupancy)
     {
         StellarMeasurementExclusion? best = null;
         var bestRank = (Contained: false, Distance: double.MaxValue);
@@ -568,7 +577,7 @@ public static class MeasuredStellarAssociator
         var searchRadius = Math.Max(maximumWindowPixels, exclusionMarginPixels);
         foreach (var exclusion in exclusions)
         {
-            var occupiedDistance = OccupiedFootprintDistanceSquared(exclusion, point, searchRadius);
+            var occupiedDistance = OccupiedFootprintDistanceSquared(exclusion, point, searchRadius, conservativeOmittedOccupancy);
             var peakDistance = DistanceSquared(exclusion.Peak, point);
             var contained = occupiedDistance <= marginSquared;
             var distance = Math.Min(peakDistance, occupiedDistance);

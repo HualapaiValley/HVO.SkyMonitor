@@ -3489,6 +3489,169 @@ public sealed class PointSourcePlanetAssociationTests
             Assert.ContainsSingle(withheldLegacy.PointSourcePlanets.UnmatchedPredictions).ReasonCode);
     }
 
+    [TestMethod]
+    public async Task CrossingDiagonalStreakWithOmittedOccupancyReportsMeasurementExcluded()
+    {
+        // D10-M1: On a 192x192 Mono16 frame where a 45-degree diagonal streak crosses right over Jupiter's prediction
+        // with its peak placed outside Jupiter's search window:
+        // 1. Short camera ID and max-admitted-envelope camera ID both retain positive Occupancy on Step 4 and report
+        //    measurement-excluded:extended-region (while oversized camera IDs are cleanly rejected at admission).
+        // 2. When a non-legacy v3 measurement omits Occupancy for size (Occupancy == null, bounding-box-only fallback),
+        //    MeasuredStellarAssociator MUST apply a conservative bounding-box disposition and report
+        //    measurement-excluded:extended-region (NOT no-measured-source) and withhold any nearby detection.
+        var ephemeris = new AstronomyEnginePlanetEphemeris();
+        const int frameSize = 192;
+        var position = ephemeris.GetPosition(SolarSystemBody.Jupiter, ExposureMidpointUtc);
+        var jupiterAltAz = CoordinateTransforms.EquatorialToHorizontal(
+            EquatorialPrecession.PrecessJ2000(position.EquatorialJ2000, ExposureMidpointUtc),
+            ExposureMidpointUtc, Site.LatitudeDegrees, Site.LongitudeDegrees);
+        var proj = new ProjectionContext(ProjectionModel.Perspective, frameSize / 2d, frameSize / 2d, 500, 500,
+            frameSize, frameSize, ProjectionAperture.Rectangular,
+            BoresightAltitudeDegrees: jupiterAltAz.AltitudeDegrees,
+            BoresightAzimuthDegrees: jupiterAltAz.AzimuthDegrees);
+        var visible = await new VisibleSceneBuilder(new InMemoryCelestialCatalog([]), null, ephemeris)
+            .BuildAsync(new VisibleSceneRequest(ExposureMidpointUtc, Site, proj, new CatalogQuery(6.5, 100),
+                new CatalogMetadata("fixture", "1", new Uri("https://example.test/catalog"), new string('C', 64), "test", "v1"),
+                projectionVersion: "perspective-v1", solarSystemBodies: [SolarSystemBody.Jupiter])).ConfigureAwait(false);
+        var scene = ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, visible,
+            ProjectedSceneImageTransformV1.Identity(frameSize, frameSize),
+            new ProjectedSceneSource(CaptureId, ArtifactId, DescriptorIdentity), "calibration-v1", "perspective-v1");
+        var jupiter = scene.Objects.Single(static o => o.Id == "solar-system:Jupiter");
+
+        var samples = RenderSources(frameSize, frameSize, [], sigma: 1.25);
+        var invSqrt2 = Math.Sqrt(0.5);
+        for (var y = 0; y < frameSize; y++)
+        {
+            for (var x = 0; x < frameSize; x++)
+            {
+                var dx = x + 0.5 - jupiter.Pixel.X;
+                var dy = y + 0.5 - jupiter.Pixel.Y;
+                var along = (dx + dy) * invSqrt2;
+                var across = (dx - dy) * invSqrt2;
+                if (Math.Abs(along) <= 40.0 && Math.Abs(across) <= 2.5)
+                {
+                    var boost = Math.Abs(along - 30.0) <= 1.5 && Math.Abs(across) <= 1.5 ? 2500.0 : 0.0;
+                    samples[y * frameSize + x] += 1800.0 + boost;
+                }
+            }
+        }
+        var validMask = new bool[frameSize * frameSize];
+        Array.Fill(validMask, true);
+        var measOpts = MeasuredStellarAssociationRecipe.MeasurementOptions(CameraPixelFormat.Mono16);
+
+        // 1. Non-legacy v3 measurement whose occupancy was omitted for size (CoarseCellBudget == 0 -> Occupancy == null):
+        var exhaustedMeas = StellarSourceMeasurer.Measure(
+            samples, validMask, [], frameSize, frameSize, measOpts,
+            reservedEnvelopeBytes: StellarFootprintOccupancy.MaximumProductPayloadBytes - 64);
+        Assert.AreEqual(StellarSourceMeasurer.AlgorithmVersion, exhaustedMeas.AlgorithmVersion);
+        var omittedStreak = exhaustedMeas.Exclusions.Single(e =>
+            e.ReasonCode == StellarExclusionReasons.ExtendedRegion &&
+            e.Footprint is { } fp && fp.Contains(jupiter.Pixel, 1.0));
+        Assert.IsNull(omittedStreak.Occupancy, "Exhausted envelope reserve must produce a non-legacy Occupancy == null fallback.");
+        Assert.IsGreaterThan(12.0, double.Hypot(omittedStreak.Peak.X - jupiter.Pixel.X, omittedStreak.Peak.Y - jupiter.Pixel.Y),
+            "Crossing streak peak must sit outside Jupiter's search window.");
+
+        var omittedAssoc = MeasuredStellarAssociator.Associate(scene, exhaustedMeas, new(), new());
+        Assert.IsEmpty(omittedAssoc.PointSourcePlanets!.Associations);
+        Assert.AreEqual(
+            MeasuredStellarAssociationReasonCodes.MeasurementExcludedPrefix + StellarExclusionReasons.ExtendedRegion,
+            Assert.ContainsSingle(omittedAssoc.PointSourcePlanets.UnmatchedPredictions).ReasonCode,
+            "Non-legacy crossing diagonal streak with Occupancy == null must report measurement-excluded:extended-region, not no-measured-source.");
+
+        // With a nearby detection 1.2 px from Jupiter, non-legacy Occupancy == null must also conservatively withhold Jupiter:
+        var nearbyMoon = new StellarDetection(0, new(jupiter.Pixel.X + 1.2, jupiter.Pixel.Y), 4000, 350, 1.1, 1.1, 1000, 5)
+        {
+            SignalToNoise = 45,
+            CentroidCovariance = new(0.01, 0, 0.01)
+        };
+        var withheldOmitted = MeasuredStellarAssociator.Associate(
+            scene, [nearbyMoon], exhaustedMeas.Exclusions, true,
+            new MeasuredStellarAssociationSettingsV1(PredictionSigmaPixels: 0.5, WindowSigmas: 3.0, MaximumWindowPixels: 2.0),
+            new(), CancellationToken.None, conservativeOmittedOccupancy: true);
+        Assert.IsEmpty(withheldOmitted.PointSourcePlanets!.Associations,
+            "Non-legacy crossing streak with Occupancy == null must conservatively withhold nearby detection.");
+        Assert.AreEqual(
+            MeasuredStellarAssociationReasonCodes.MeasurementExcludedPrefix + StellarExclusionReasons.ExtendedRegion,
+            Assert.ContainsSingle(withheldOmitted.PointSourcePlanets.UnmatchedPredictions).ReasonCode);
+
+        // 2. Step 4 admission + ExposureAssociationProducts round-trip on identical 192x192 pixels with short AND
+        //    max-admitted-envelope CameraId: both retain positive Occupancy and report measurement-excluded:extended-region,
+        //    while an oversized CameraId is rejected cleanly at admission.
+        var rawBase = RawArtifact(samples, CameraPixelFormat.Mono16, frameSize, frameSize);
+        var raw = rawBase with
+        {
+            Layout = rawBase.Layout! with
+            {
+                BlackLevel = 0,
+                StoredCodeTransform = FrameStoredCodeTransform.IdentityV1,
+                LevelCodeSpace = FrameLevelCodeSpace.StoredContainer
+            },
+            CreatedUtc = ExposureMidpointUtc,
+            ObservationStartedUtc = ExposureMidpointUtc.AddMilliseconds(-500),
+            ObservationEndedUtc = ExposureMidpointUtc.AddMilliseconds(500)
+        };
+        var executor = new ProcessingRecipeExecutor();
+        var linearOutcome = await executor.ExecuteAsync(new ProcessingExecutionRequest(
+            BuiltInProcessingRecipes.LinearNormalization,
+            JsonSerializer.SerializeToElement(new LinearNormalizationOptions()),
+            ProcessingInputSelector.Raw(raw.Variant), [raw], "qualified-linear-v1")).ConfigureAwait(false);
+        var linear = ToArtifact(linearOutcome.Products.Single(), raw);
+        var baseInput = new ExposureMeasurementInputV1(
+            new(CaptureId, raw.ArtifactId, DescriptorIdentity, ProcessingIdentity.ComputePayloadSha256(raw.Payload), raw.RecipeIdentitySha256, null, raw.Layout!),
+            new(CaptureId, linear.ArtifactId, DescriptorIdentity, ProcessingIdentity.ComputePayloadSha256(linear.Payload), linear.RecipeIdentitySha256, linear.ContentIdentitySha256, linear.Layout!),
+            ExposureCalibrationDisposition.NormalizationOnly, null, "orientation-v1",
+            RigOrientation: new(proj.BoresightAltitudeDegrees, proj.BoresightAzimuthDegrees, proj.RollDegrees),
+            ApertureProjection: proj, Exposure: new(new("agent", "cam"), Guid.NewGuid(), CaptureId),
+            OpticalCalibrationVersion: "calibration-v1", Step3Disposition: LinearExposureDisposition.QualifiedNormalizationOnly, Step3Revision: 1);
+
+        var predScene = scene with
+        {
+            Projection = scene.Projection with { AlgorithmVersion = "calibration-v1" },
+            Objects = scene.Objects.Select(static o => o with { ProjectionVersion = "calibration-v1" }).ToArray(),
+            Source = new(CaptureId, raw.ArtifactId, DescriptorIdentity)
+        };
+        predScene = predScene with { SceneIdentitySha256 = ProjectedSceneJson.ComputeIdentity(predScene) };
+        var sceneArtifact = ToArtifact(
+            (await executor.ExecuteAsync(ExposureCatalogPredictionProducts.Request(raw, predScene)).ConfigureAwait(false)).Products.Single(),
+            raw);
+
+        var remaining = ExposureMeasurementProducts.MaximumAdmittedEnvelopeBytes -
+            ExposureMeasurementProducts.WorstCaseEnvelopeBytes(baseInput);
+        var maxCameraId = "cam" + new string('+', remaining / 6) + new string('c', remaining % 6);
+        var maxCameraInput = baseInput with
+        {
+            Exposure = baseInput.Exposure! with { Camera = baseInput.Exposure.Camera with { CameraId = maxCameraId } }
+        };
+        Assert.AreEqual(ExposureMeasurementProducts.MaximumAdmittedEnvelopeBytes,
+            ExposureMeasurementProducts.WorstCaseEnvelopeBytes(maxCameraInput));
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Request(
+            maxCameraInput with
+            {
+                Exposure = maxCameraInput.Exposure! with
+                {
+                    Camera = maxCameraInput.Exposure.Camera with { CameraId = maxCameraId + "c" }
+                }
+            }, raw, linear));
+
+        foreach (var candidateInput in new[] { baseInput, maxCameraInput })
+        {
+            var step4 = await executor.ExecuteAsync(ExposureMeasurementProducts.Request(candidateInput, raw, linear)).ConfigureAwait(false);
+            Assert.AreEqual(ProcessingOutcomeStatus.Produced, step4.Status, step4.ReasonCode);
+            var step4Artifact = ToArtifact(step4.Products.Single(), raw);
+            var step4Read = ExposureMeasurementProducts.Read(step4Artifact, candidateInput);
+            Assert.IsTrue(step4Read.Sources.Exclusions.All(static e => e.Occupancy is not null),
+                "Admitted Step 4 exposure must retain positive coarse occupancy even at max admitted CameraId.");
+            var assocOutcome = ExposureAssociationProducts.Associate(
+                raw, step4Artifact, candidateInput, sceneArtifact, ExposureAssociationProducts.Variant);
+            Assert.AreEqual(ProcessingOutcomeStatus.Produced, assocOutcome.Status, assocOutcome.ReasonCode);
+            var evidence = MeasuredStellarAssociationJson.Parse(assocOutcome.Products.Single().Payload).Associations!;
+            Assert.IsEmpty(evidence.PointSourcePlanets!.Associations);
+            Assert.AreEqual(
+                MeasuredStellarAssociationReasonCodes.MeasurementExcludedPrefix + StellarExclusionReasons.ExtendedRegion,
+                Assert.ContainsSingle(evidence.PointSourcePlanets.UnmatchedPredictions).ReasonCode);
+        }
+    }
+
     private static ProcessingArtifact ToArtifact(ProcessingProduct product, ProcessingArtifact raw) => new(
         ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256), product.Role, product.Variant,
         product.Recipe.IdentitySha256, product.MediaType, product.Layout, product.Payload, raw.CreatedUtc,

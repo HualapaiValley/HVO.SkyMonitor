@@ -474,13 +474,17 @@ public sealed record StellarFootprintOccupancy(
         return map;
     }
 
-    /// <summary>Validates dimensions, grid partition, canonical Base64 encoding, zero trailing padding bits, subgrid integrity, and non-emptiness.</summary>
+    /// <summary>
+    /// Validates dimensions, valid budgeted grid partition covering <paramref name="footprint"/> within
+    /// <c>1..</c><see cref="MaximumCells"/>, canonical Base64 encoding, zero trailing padding bits, subgrid integrity
+    /// when present, and non-emptiness.
+    /// </summary>
     public bool IsValid(StellarFootprintBounds footprint) =>
         ValidateCore(footprint, peak: null, sampleCount: null, coarseCellBudget: null, subgridBitBudget: null);
 
     /// <summary>
-    /// Validates occupancy geometry and encoding together with physical consistency against the recorded exclusion
-    /// <paramref name="peak"/> and segmented <paramref name="sampleCount"/>.
+    /// Validates budgeted occupancy geometry, encoding, and subgrid integrity when present, together with physical
+    /// consistency against the recorded exclusion <paramref name="peak"/> and segmented <paramref name="sampleCount"/>.
     /// </summary>
     public bool IsValid(StellarFootprintBounds footprint, PixelPoint peak, int sampleCount) =>
         ValidateCore(footprint, peak, sampleCount, coarseCellBudget: null, subgridBitBudget: null);
@@ -510,16 +514,25 @@ public sealed record StellarFootprintOccupancy(
             Columns <= 0 || Rows <= 0 || CellWidth <= 0 || CellHeight <= 0 ||
             CellWidth > fpWidth || CellHeight > fpHeight)
             return false;
-        var effectiveCoarseBudget = coarseCellBudget ?? MaximumCells;
-        if (effectiveCoarseBudget is <= 0 or > MaximumCells)
-            return false;
-        var (expectedCols, expectedRows, expectedCellW, expectedCellH) = ChooseGrid((int)fpWidth, (int)fpHeight, effectiveCoarseBudget);
         var cellCount = (long)Columns * Rows;
-        if (cellCount > MaximumCells ||
-            Columns != expectedCols || Rows != expectedRows ||
-            CellWidth != expectedCellW || CellHeight != expectedCellH ||
-            string.IsNullOrEmpty(BitsBase64))
+        if (cellCount > MaximumCells || string.IsNullOrEmpty(BitsBase64))
             return false;
+        if (coarseCellBudget is { } coarseBudget)
+        {
+            if (coarseBudget is <= 0 or > MaximumCells)
+                return false;
+            var (expectedCols, expectedRows, expectedCellW, expectedCellH) = ChooseGrid((int)fpWidth, (int)fpHeight, coarseBudget);
+            if (Columns != expectedCols || Rows != expectedRows ||
+                CellWidth != expectedCellW || CellHeight != expectedCellH)
+                return false;
+        }
+        else
+        {
+            var expectedCols = (fpWidth + CellWidth - 1) / CellWidth;
+            var expectedRows = (fpHeight + CellHeight - 1) / CellHeight;
+            if (Columns != expectedCols || Rows != expectedRows)
+                return false;
+        }
         var expectedBytes = (int)((cellCount + 7) / 8);
         Span<byte> decoded = stackalloc byte[MaximumBytes];
         if (!Convert.TryFromBase64String(BitsBase64, decoded, out var written) || written != expectedBytes)
@@ -575,12 +588,6 @@ public sealed record StellarFootprintOccupancy(
             {
                 return false;
             }
-        }
-        else if (Subgrid is null &&
-                 ChooseSubgrid(CellWidth, CellHeight, occupiedCoarse,
-                     SubgridBitBudgetPerExclusion(StellarDetector.MaximumSupportedCandidates)) is not null)
-        {
-            return false;
         }
 
         if (Subgrid is null)

@@ -47,8 +47,11 @@ public static class ExposureMeasurementConsumers
 
         var completed = sources.Status is ExposureMeasurementStatus.Usable or ExposureMeasurementStatus.Empty ||
             sources.Reason == "all-candidates-rejected";
+        var (_, measurementPolicy) = ExposureMeasurementProducts.ReadParameters(
+            retained.RecipeDescriptor!.Options.GetProperty("parameters"));
+        var conservativeOmittedOccupancy = measurementPolicy == ExposureFocusSamplingPolicy.EligibleFirstWithOccupancy;
         var entries = MeasuredStellarAssociator.Associate(prediction, sources.Detections, sources.Exclusions,
-            completed, settings, labelPolicy, cancellationToken);
+            completed, settings, labelPolicy, cancellationToken, conservativeOmittedOccupancy);
         return new(ExposureAssociationEvidenceV1.CurrentSchemaVersion, raw.CaptureId, retained.ArtifactId,
             retained.ContentIdentitySha256!, prediction.SceneIdentitySha256, entries);
     }
