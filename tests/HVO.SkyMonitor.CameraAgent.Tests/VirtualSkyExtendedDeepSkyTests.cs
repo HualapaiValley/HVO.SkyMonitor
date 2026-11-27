@@ -276,6 +276,243 @@ public sealed class VirtualSkyExtendedDeepSkyTests
     }
 
     [TestMethod]
+    public async Task AliasOnlyCrossReferenceChangeUnderIcQueryChangesSceneIdAndCatalogHashWhilePreservingOptOut()
+    {
+        // Exact F2 regression: with an IC-only query and annotations disabled, adding ONLY the "IC 123"
+        // cross-reference alias to the same M31 row changes selection from 0 objects to 1 (distinct raw pixels)
+        // and MUST produce a distinct SceneId and distinct DeepSkyCatalog hash (for both DeepSkyCatalog and a
+        // snapshotless custom IDeepSkyCatalog wrapper), while preserving F1 opt-out byte-identity.
+        var nullSnapshotSemantics = OpenNgcSemantics with { SnapshotIdentity = null };
+        var midpoint = FixtureUtc.AddSeconds(1);
+        var m31Pos = AltAzToJ2000(new AltAzPoint(60.0, 180.0), midpoint);
+        var m31 = new DeepSkyObject("NGC0224", "NGC 224", "M31", "G",
+            m31Pos.RaHours, m31Pos.DecDegrees, "And", 60, 24, 35, 4.29, 3.44, 23.63, "Sb", 31, null, null, "Andromeda Galaxy");
+
+        var baseAliases = new DeepSkyAlias[]
+        {
+            new("NGC 224", m31.Id, DeepSkyAliasKinds.Designation),
+            new("M31", m31.Id, DeepSkyAliasKinds.Messier)
+        };
+        var withIcCrossRefAliases = new DeepSkyAlias[]
+        {
+            new("NGC 224", m31.Id, DeepSkyAliasKinds.Designation),
+            new("M31", m31.Id, DeepSkyAliasKinds.Messier),
+            new("IC 123", m31.Id, DeepSkyAliasKinds.CrossReference)
+        };
+
+        var withoutIcDso = new DeepSkyCatalog(nullSnapshotSemantics, [m31], baseAliases, [], []);
+        var withIcDso = new DeepSkyCatalog(nullSnapshotSemantics, [m31], withIcCrossRefAliases, [], []);
+
+        var icOnlyQuery = new OpenNgcDeepSkyOptions(Enabled: true, IncludeNgc: false, IncludeMessier: false, IncludeIc: true);
+        var baseConfig = CreateModuleConfig(
+            CameraPixelFormat.Mono16, 128, 128, renderDeepSky: false, enableDeepSkyAnnotations: false);
+        var icOptions = JsonSerializer.Deserialize<VirtualSkyCameraModuleOptions>(
+            baseConfig.Module.Options!.Value.GetRawText(), WebJsonOptions)!;
+        var icEnabledConfig = baseConfig with
+        {
+            Module = new CameraModuleDescriptor(
+                "VirtualSky",
+                JsonSerializer.SerializeToElement(
+                    new VirtualSkyCameraModuleOptions
+                    {
+                        Seed = icOptions.Seed,
+                        FixedSceneUtc = icOptions.FixedSceneUtc,
+                        FixedSequenceStartUtc = icOptions.FixedSequenceStartUtc,
+                        IlluminationMode = icOptions.IlluminationMode,
+                        BackgroundElectronsPerSecond = icOptions.BackgroundElectronsPerSecond,
+                        MagnitudeZeroElectronsPerSecond = icOptions.MagnitudeZeroElectronsPerSecond,
+                        PsfSigmaPixels = icOptions.PsfSigmaPixels,
+                        PsfRadiusPixels = icOptions.PsfRadiusPixels,
+                        VignettingStrength = icOptions.VignettingStrength,
+                        Bias = icOptions.Bias,
+                        ReadNoiseStandardDeviation = icOptions.ReadNoiseStandardDeviation,
+                        ShotNoiseEnabled = icOptions.ShotNoiseEnabled,
+                        DarkCurrentElectronsPerSecond = icOptions.DarkCurrentElectronsPerSecond,
+                        RenderDeepSkySources = new VirtualSkyDeepSkyRenderOptions(
+                            Enabled: true,
+                            MinimumSignalToNoise: 1.0,
+                            SamplesPerProjectedPixel: 2,
+                            PreferCatalogOutlines: true,
+                            Query: icOnlyQuery)
+                    },
+                    WebJsonOptions))
+        };
+        var request = new CaptureRequest(FixtureUtc, TimeSpan.FromSeconds(1), CaptureMode.Still,
+            new CaptureSetpoint(TimeSpan.FromSeconds(2), 1, null, null));
+
+        foreach (var wrapCustom in new[] { false, true })
+        {
+            IDeepSkyCatalog dsoWithout = wrapCustom ? new RecordingDeepSkyCatalog(withoutIcDso) : withoutIcDso;
+            IDeepSkyCatalog dsoWith = wrapCustom ? new RecordingDeepSkyCatalog(withIcDso) : withIcDso;
+
+            var modWithout = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(),
+                new CombinedVirtualCatalog([], dsoWithout), new ProjectedSceneStore());
+            await using var lifeWithout = modWithout.ConfigureAwait(false);
+            await modWithout.InitializeAsync(icEnabledConfig, CancellationToken.None).ConfigureAwait(false);
+            var frameWithout = (await modWithout.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false)).Frame!;
+
+            var modWith = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(),
+                new CombinedVirtualCatalog([], dsoWith), new ProjectedSceneStore());
+            await using var lifeWith = modWith.ConfigureAwait(false);
+            await modWith.InitializeAsync(icEnabledConfig, CancellationToken.None).ConfigureAwait(false);
+            var frameWith = (await modWith.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false)).Frame!;
+
+            Assert.AreEqual("0", frameWithout.Metadata.Extra!["deepSkyCandidateCount"],
+                $"Without IC 123 alias (wrapCustom={wrapCustom}), IC-only query must select 0 candidates.");
+            Assert.AreEqual("1", frameWith.Metadata.Extra!["deepSkyCandidateCount"],
+                $"With IC 123 cross-reference alias (wrapCustom={wrapCustom}), IC-only query must select 1 candidate.");
+            Assert.IsFalse(frameWithout.PixelData.Span.SequenceEqual(frameWith.PixelData.Span),
+                $"Adding IC 123 alias under IC-only query (wrapCustom={wrapCustom}) must change raw pixels.");
+            Assert.AreNotEqual(frameWithout.Metadata.Scene!.SceneId, frameWith.Metadata.Scene!.SceneId,
+                $"Alias-only change affecting selection (wrapCustom={wrapCustom}) must produce distinct SceneId.");
+            Assert.AreNotEqual(
+                frameWithout.Metadata.Scene!.DeepSkyCatalog!.DatabaseSha256,
+                frameWith.Metadata.Scene!.DeepSkyCatalog!.DatabaseSha256,
+                $"Alias-only change affecting selection (wrapCustom={wrapCustom}) must produce distinct catalog hash.");
+        }
+
+        // Preserve exact F1 opt-out identity when RenderDeepSkySources is omitted or disabled.
+        var optOutDisabledConfig = CreateModuleConfig(
+            CameraPixelFormat.Mono16, 128, 128, renderDeepSky: false, enableDeepSkyAnnotations: false,
+            explicitDisabledRenderOptions: new VirtualSkyDeepSkyRenderOptions(Enabled: false, Query: icOnlyQuery));
+        var optOutModA = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(),
+            new CombinedVirtualCatalog([], withoutIcDso), new ProjectedSceneStore());
+        await using var optOutLifeA = optOutModA.ConfigureAwait(false);
+        await optOutModA.InitializeAsync(baseConfig, CancellationToken.None).ConfigureAwait(false);
+        var optOutFrameA = (await optOutModA.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false)).Frame!;
+
+        var optOutModB = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(),
+            new CombinedVirtualCatalog([], withIcDso), new ProjectedSceneStore());
+        await using var optOutLifeB = optOutModB.ConfigureAwait(false);
+        await optOutModB.InitializeAsync(optOutDisabledConfig, CancellationToken.None).ConfigureAwait(false);
+        var optOutFrameB = (await optOutModB.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false)).Frame!;
+
+        Assert.AreEqual(optOutFrameA.Metadata.Scene!.SceneId, optOutFrameB.Metadata.Scene!.SceneId);
+        CollectionAssert.AreEqual(optOutFrameA.PixelData.ToArray(), optOutFrameB.PixelData.ToArray());
+    }
+
+    [TestMethod]
+    public async Task SnapshotlessCustomCatalogBoundsPerFrameOutlineLookupsToCandidateCap()
+    {
+        // Exact F22 regression: a snapshotless custom IDeepSkyCatalog with 2,048 objects and
+        // MaximumCandidates = 1, MaximumRenderedSources = 1 must NOT enumerate or look up outlines
+        // for all 2,048 rows on every capture — outline lookups must stay bounded by MaximumCandidates (<= 1 per capture).
+        var nullSnapshotSemantics = OpenNgcSemantics with { SnapshotIdentity = null };
+        var midpoint = FixtureUtc.AddSeconds(1);
+        var centerPos = AltAzToJ2000(new AltAzPoint(60.0, 180.0), midpoint);
+
+        const int totalObjects = 2_048;
+        var objects = new List<DeepSkyObject>(totalObjects);
+        var aliases = new List<DeepSkyAlias>(totalObjects + 1);
+        for (var i = 0; i < totalObjects; i++)
+        {
+            var id = $"NGC{i + 1:D4}";
+            var designation = $"NGC {i + 1}";
+            // Place object 0 at boresight as Messier 1 (wins candidate cap 1); place others nearby.
+            var raOffset = ((i % 32) - 16) * 0.002;
+            var decOffset = ((i / 32) - 32) * 0.02;
+            var ra = (((centerPos.RaHours + raOffset) % 24d) + 24d) % 24d;
+            var dec = Math.Clamp(centerPos.DecDegrees + decOffset, -89.0, 89.0);
+            var item = new DeepSkyObject(
+                id, designation, i == 0 ? "M1" : designation, "Neb",
+                ra, dec, "Tau", 6, 6, 0, 8.4, i == 0 ? 4.0 : 12.0 + (i % 5) * 0.1,
+                null, null, i == 0 ? 1 : null, null, null, null);
+            objects.Add(item);
+            aliases.Add(new DeepSkyAlias(designation, id, DeepSkyAliasKinds.Designation));
+            if (i == 0)
+            {
+                aliases.Add(new DeepSkyAlias("M1", id, DeepSkyAliasKinds.Messier));
+            }
+        }
+
+        var outlineA = CreateSquareOutline("NGC0001", centerPos.RaHours, centerPos.DecDegrees, 0.08);
+        var outlineB = CreateSquareOutline("NGC0001", centerPos.RaHours, centerPos.DecDegrees, 0.14);
+        var innerA = new DeepSkyCatalog(nullSnapshotSemantics, objects, aliases, [], [outlineA]);
+        var innerB = new DeepSkyCatalog(nullSnapshotSemantics, objects, aliases, [], [outlineB]);
+        var spyA = new RecordingDeepSkyCatalog(innerA);
+        var spyB = new RecordingDeepSkyCatalog(innerB);
+
+        var baseConfig = CreateModuleConfig(
+            CameraPixelFormat.Mono16, 128, 128, renderDeepSky: false, enableDeepSkyAnnotations: false);
+        var baseOpts = JsonSerializer.Deserialize<VirtualSkyCameraModuleOptions>(
+            baseConfig.Module.Options!.Value.GetRawText(), WebJsonOptions)!;
+        var capOneConfig = baseConfig with
+        {
+            Module = new CameraModuleDescriptor(
+                "VirtualSky",
+                JsonSerializer.SerializeToElement(
+                    new VirtualSkyCameraModuleOptions
+                    {
+                        Seed = baseOpts.Seed,
+                        FixedSceneUtc = baseOpts.FixedSceneUtc,
+                        FixedSequenceStartUtc = baseOpts.FixedSequenceStartUtc,
+                        IlluminationMode = baseOpts.IlluminationMode,
+                        BackgroundElectronsPerSecond = baseOpts.BackgroundElectronsPerSecond,
+                        MagnitudeZeroElectronsPerSecond = baseOpts.MagnitudeZeroElectronsPerSecond,
+                        PsfSigmaPixels = baseOpts.PsfSigmaPixels,
+                        PsfRadiusPixels = baseOpts.PsfRadiusPixels,
+                        VignettingStrength = baseOpts.VignettingStrength,
+                        Bias = baseOpts.Bias,
+                        ReadNoiseStandardDeviation = baseOpts.ReadNoiseStandardDeviation,
+                        ShotNoiseEnabled = baseOpts.ShotNoiseEnabled,
+                        DarkCurrentElectronsPerSecond = baseOpts.DarkCurrentElectronsPerSecond,
+                        RenderDeepSkySources = new VirtualSkyDeepSkyRenderOptions(
+                            Enabled: true,
+                            MinimumSignalToNoise: 1.0,
+                            MaximumCandidates: 1,
+                            MaximumRenderedSources: 1,
+                            SamplesPerProjectedPixel: 2,
+                            PreferCatalogOutlines: true)
+                    },
+                    WebJsonOptions))
+        };
+        var request = new CaptureRequest(FixtureUtc, TimeSpan.FromSeconds(1), CaptureMode.Still,
+            new CaptureSetpoint(TimeSpan.FromSeconds(2), 1, null, null));
+
+        var modA = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(),
+            new CombinedVirtualCatalog([], spyA), new ProjectedSceneStore());
+        await using var lifeA = modA.ConfigureAwait(false);
+        await modA.InitializeAsync(capOneConfig, CancellationToken.None).ConfigureAwait(false);
+        var frameA1 = (await modA.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false)).Frame!;
+        var lookupsAfterFirst = spyA.OutlineLookupCount;
+        var frameA2 = (await modA.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false)).Frame!;
+        var lookupsAfterSecond = spyA.OutlineLookupCount;
+
+        Assert.IsTrue(lookupsAfterFirst <= 1,
+            $"Snapshotless custom catalog with MaximumCandidates=1 must bound outline lookups per capture to <= 1; got {lookupsAfterFirst}.");
+        Assert.IsTrue(lookupsAfterSecond - lookupsAfterFirst <= 1,
+            $"Second capture must also stay bounded to <= 1 outline lookup; got {lookupsAfterSecond - lookupsAfterFirst}.");
+        Assert.AreEqual(frameA1.Metadata.Scene!.DeepSkyCatalog, frameA2.Metadata.Scene!.DeepSkyCatalog,
+            "Consecutive captures against the unchanged snapshotless catalog must keep identical catalog provenance.");
+
+        // Repeating the exact first capture on a fresh module produces identical SceneId and bounded lookups.
+        var spyARepeat = new RecordingDeepSkyCatalog(innerA);
+        var modARepeat = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(),
+            new CombinedVirtualCatalog([], spyARepeat), new ProjectedSceneStore());
+        await using var lifeARepeat = modARepeat.ConfigureAwait(false);
+        await modARepeat.InitializeAsync(capOneConfig, CancellationToken.None).ConfigureAwait(false);
+        var frameARepeat = (await modARepeat.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false)).Frame!;
+        Assert.IsTrue(spyARepeat.OutlineLookupCount <= 1);
+        Assert.AreEqual(frameA1.Metadata.Scene!.SceneId, frameARepeat.Metadata.Scene!.SceneId);
+        Assert.AreEqual(frameA1.Metadata.Scene!.DeepSkyCatalog, frameARepeat.Metadata.Scene!.DeepSkyCatalog);
+
+        // Changing the selected object's outline on the snapshotless custom catalog still updates SceneId & hash!
+        var modB = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(),
+            new CombinedVirtualCatalog([], spyB), new ProjectedSceneStore());
+        await using var lifeB = modB.ConfigureAwait(false);
+        await modB.InitializeAsync(capOneConfig, CancellationToken.None).ConfigureAwait(false);
+        var frameB = (await modB.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false)).Frame!;
+
+        Assert.IsTrue(spyB.OutlineLookupCount <= 1);
+        Assert.AreNotEqual(frameA1.Metadata.Scene!.SceneId, frameB.Metadata.Scene!.SceneId,
+            "Changing a selected candidate's outline on a snapshotless custom catalog must change SceneId.");
+        Assert.AreNotEqual(
+            frameA1.Metadata.Scene!.DeepSkyCatalog!.DatabaseSha256,
+            frameB.Metadata.Scene!.DeepSkyCatalog!.DatabaseSha256,
+            "Changing a selected candidate's outline on a snapshotless custom catalog must change catalog hash.");
+    }
+
+    [TestMethod]
     public async Task HostDeepSkyCandidateSelectionUsesBoundedCatalogQueryLimitAndBinnedHashMatchesDeliveredDiagnostics()
     {
         // F12 host query bound check: SelectDeepSkyRenderCandidates must never request int.MaxValue from IDeepSkyCatalog.Query.
@@ -1165,12 +1402,17 @@ public sealed class VirtualSkyExtendedDeepSkyTests
     private sealed class RecordingDeepSkyCatalog(IDeepSkyCatalog inner) : IDeepSkyCatalog
     {
         public List<DeepSkyQuery> Queries { get; } = [];
+        public int OutlineLookupCount { get; private set; }
         public DeepSkySemantics Semantics => inner.Semantics;
         public IReadOnlyList<DeepSkyObject> Objects => inner.Objects;
         public int AliasCount => inner.AliasCount;
         public IReadOnlyList<DeepSkyTombstone> Tombstones => inner.Tombstones;
         public bool TryGetObject(string objectId, out DeepSkyObject value) => inner.TryGetObject(objectId, out value);
-        public IReadOnlyList<DeepSkyOutline> GetOutlines(string objectId) => inner.GetOutlines(objectId);
+        public IReadOnlyList<DeepSkyOutline> GetOutlines(string objectId)
+        {
+            OutlineLookupCount++;
+            return inner.GetOutlines(objectId);
+        }
         public IReadOnlyList<DeepSkyAlias> FindByAlias(string designation) => inner.FindByAlias(designation);
         public bool TryGetTombstone(string id, out DeepSkyTombstone tombstone) => inner.TryGetTombstone(id, out tombstone);
         public DeepSkyQueryResult Query(DeepSkyQuery query)

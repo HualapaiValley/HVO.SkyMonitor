@@ -395,7 +395,6 @@ public sealed class DeepSkyRenderPlan
         var provisionalLuminous = new List<ProvisionalLuminousEntry>();
         var overlapDiffusePreCloud = new Dictionary<int, DeepSkyPixelRate>();
         var overlapDiffuseTemporal = new Dictionary<int, DeepSkyPixelRate>();
-        var anyDiffuseAddedAfterAnotherSource = false;
 
         var declaredDiffuseBg = settings.CelestialDiffuseBackgroundElectronsPerSecond +
             (settings.SyntheticScenario?.CelestialDiffuseBackgroundElectronsPerSecond ?? 0d);
@@ -547,32 +546,56 @@ public sealed class DeepSkyRenderPlan
                     continue;
                 }
 
-                var nebulaSampleCap = settings.MaximumSamplePointsPerSource;
-                if (nebulaRate > 0 && residualClusterRate > 0 && !isUnresolvedSize)
+                if (isUnresolvedSize)
                 {
-                    var clusterReserve = Math.Min(
-                        profile.MaximumUnresolvedClusterMembers,
-                        Math.Max(1, settings.MaximumSamplePointsPerSource / 4));
-                    nebulaSampleCap = Math.Max(1, settings.MaximumSamplePointsPerSource - clusterReserve);
-                }
-
-                if (nebulaRate > 0)
-                {
-                    if (isUnresolvedSize)
+                    usedUnresolvedPsf = true;
+                    unresolvedDiffuseFluxRate = nebulaRate;
+                    var unitPostRates = new Dictionary<int, double>();
+                    var unitPreRates = new Dictionary<int, double>();
+                    var unitVisibleFraction = RasterizeUnresolvedTemporal(
+                        item, 1d, sceneRequest, exposureStartUtc, exposure,
+                        geometryInfo, projector, projection, renderOptions, settings,
+                        unitPostRates, unitPreRates,
+                        nebulaRate > 0 ? unresolvedDiffuseSamples : null,
+                        ref totalSampledPoints, ref totalKernelVisits, out sampledPoints, out temporalReferencePixel,
+                        cancellationToken);
+                    if (nebulaRate > 0)
                     {
-                        usedUnresolvedPsf = true;
-                        unresolvedDiffuseFluxRate = nebulaRate;
-                        var nebVis = RasterizeUnresolvedTemporal(
-                            item, nebulaRate, sceneRequest, exposureStartUtc, exposure,
-                            geometryInfo, projector, projection, renderOptions, settings,
-                            diffuseTempPostRates, diffuseTempPreRates, unresolvedDiffuseSamples,
-                            ref totalSampledPoints, ref totalKernelVisits, out var nebSamples, out var nebRef,
-                            cancellationToken);
-                        visibleRate += nebVis;
-                        sampledPoints += nebSamples;
-                        temporalReferencePixel = nebRef;
+                        foreach (var (idx, val) in unitPostRates)
+                        {
+                            AddScalarRate(diffuseTempPostRates, idx, val * nebulaRate, settings.MaximumSparsePixels);
+                        }
+                        foreach (var (idx, val) in unitPreRates)
+                        {
+                            AddScalarRate(diffuseTempPreRates, idx, val * nebulaRate, settings.MaximumSparsePixels);
+                        }
+                        visibleRate += unitVisibleFraction * nebulaRate;
                     }
-                    else
+                    if (residualClusterRate > 0)
+                    {
+                        foreach (var (idx, val) in unitPostRates)
+                        {
+                            AddScalarRate(nonDiffuseTempPostRates, idx, val * residualClusterRate, settings.MaximumSparsePixels);
+                        }
+                        foreach (var (idx, val) in unitPreRates)
+                        {
+                            AddScalarRate(nonDiffuseTempPreRates, idx, val * residualClusterRate, settings.MaximumSparsePixels);
+                        }
+                        visibleRate += unitVisibleFraction * residualClusterRate;
+                    }
+                }
+                else
+                {
+                    var nebulaSampleCap = settings.MaximumSamplePointsPerSource;
+                    if (nebulaRate > 0 && residualClusterRate > 0)
+                    {
+                        var clusterReserve = Math.Min(
+                            profile.MaximumUnresolvedClusterMembers,
+                            Math.Max(1, settings.MaximumSamplePointsPerSource / 4));
+                        nebulaSampleCap = Math.Max(1, settings.MaximumSamplePointsPerSource - clusterReserve);
+                    }
+
+                    if (nebulaRate > 0)
                     {
                         var nebVis = RasterizeExtendedProfile(
                             item.Id, profile, nebulaRate, geometryInfo, projector, projection,
@@ -582,23 +605,7 @@ public sealed class DeepSkyRenderPlan
                         visibleRate += nebVis;
                         sampledPoints += nebSamples;
                     }
-                }
-                if (residualClusterRate > 0)
-                {
-                    if (isUnresolvedSize)
-                    {
-                        usedUnresolvedPsf = true;
-                        var clVis = RasterizeUnresolvedTemporal(
-                            item, residualClusterRate, sceneRequest, exposureStartUtc, exposure,
-                            geometryInfo, projector, projection, renderOptions, settings,
-                            nonDiffuseTempPostRates, nonDiffuseTempPreRates, unresolvedDiffuseSamples: null,
-                            ref totalSampledPoints, ref totalKernelVisits, out var clSamples, out var clRef,
-                            cancellationToken);
-                        visibleRate += clVis;
-                        sampledPoints += clSamples;
-                        temporalReferencePixel ??= clRef;
-                    }
-                    else
+                    if (residualClusterRate > 0)
                     {
                         var remainingSourceSamples = Math.Max(0, settings.MaximumSamplePointsPerSource - sampledPoints);
                         unresolvedMembers = DepositUnresolvedClusterMembers(
@@ -724,11 +731,6 @@ public sealed class DeepSkyRenderPlan
                     AddUnboundedSparseRate(overlapDiffuseTemporal, idx, scaled);
                 }
             }
-            if ((ownDiffusePreCloud is not null || ownDiffuseTemporal is not null) && provisionalLuminous.Count > 0)
-            {
-                anyDiffuseAddedAfterAnotherSource = true;
-            }
-
             admittedCount++;
             provisionalLuminous.Add(new ProvisionalLuminousEntry(
                 item,
@@ -761,47 +763,22 @@ public sealed class DeepSkyRenderPlan
                 prediction,
                 causesSaturation,
                 footprint));
-        }
 
-        // Re-evaluate S/N and variance across all provisionally admitted luminous sources whenever a later-priority
-        // diffuse source was admitted, so both admission and published diagnostics include ALL overlapping diffuse noise.
-        if (anyDiffuseAddedAfterAnotherSource && provisionalLuminous.Count > 1)
-        {
-            while (true)
+            // Immediately re-evaluate provisional luminous sources whenever newly added diffuse emission can
+            // increase local aperture noise on earlier sources, so any demotion frees its render slot for
+            // subsequent eligible candidates in deterministic priority order.
+            if ((ownDiffusePreCloud is not null || ownDiffuseTemporal is not null) && admittedCount > 1)
             {
-                var lowestPriorityFailingIndex = -1;
-                for (var i = 0; i < provisionalLuminous.Count; i++)
-                {
-                    var entry = provisionalLuminous[i];
-                    if (entry.Demoted) continue;
-                    var (updatedPrediction, updatedSat, _, _, _) = EvaluateSignalAndFootprint(
-                        entry.Item.Id, entry.Geometry, entry.TemporalReferencePixel, entry.Profile.Spectral,
-                        entry.PreCloudClippedRates, entry.CombinedTempPostRates, entry.CombinedTempPreRates,
-                        declaredDiffuseBg, overlapDiffusePreCloud, overlapDiffuseTemporal,
-                        entry.OwnDiffusePreCloud, entry.OwnDiffuseTemporal,
-                        entry.EffectiveSourceRate, projection, renderOptions, settings, cancellationToken);
-                    entry.Prediction = updatedPrediction;
-                    entry.CausesSaturation = updatedSat;
-                    if (settings.MinimumSignalToNoise > 0 &&
-                        updatedPrediction.SignalToNoise < settings.MinimumSignalToNoise &&
-                        !updatedSat)
-                    {
-                        lowestPriorityFailingIndex = i;
-                    }
-                }
-                if (lowestPriorityFailingIndex < 0) break;
-
-                var demoted = provisionalLuminous[lowestPriorityFailingIndex];
-                demoted.Demoted = true;
-                admittedCount--;
-                if (demoted.OwnDiffusePreCloud is not null)
-                {
-                    SubtractUnboundedSparseRates(overlapDiffusePreCloud, demoted.OwnDiffusePreCloud);
-                }
-                if (demoted.OwnDiffuseTemporal is not null)
-                {
-                    SubtractUnboundedSparseRates(overlapDiffuseTemporal, demoted.OwnDiffuseTemporal);
-                }
+                ReevaluateProvisionalLuminous(
+                    provisionalLuminous,
+                    declaredDiffuseBg,
+                    overlapDiffusePreCloud,
+                    overlapDiffuseTemporal,
+                    projection,
+                    renderOptions,
+                    settings,
+                    ref admittedCount,
+                    cancellationToken);
             }
         }
 
@@ -848,6 +825,8 @@ public sealed class DeepSkyRenderPlan
                 {
                     admittedUnresolvedDiffuse.Add(new AdmittedUnresolvedDiffuseSource(
                         entry.Item.Id,
+                        new EquatorialPoint(entry.Item.RightAscensionHours, entry.Item.DeclinationDegrees),
+                        entry.Geometry.Frame.Center,
                         entry.UnresolvedDiffuseFluxRate,
                         entry.Profile.Spectral,
                         entry.UnresolvedDiffuseSamples,
@@ -884,12 +863,14 @@ public sealed class DeepSkyRenderPlan
 
         // Pass 2: Dark nebulae attenuate ONLY compatible celestial diffuse background (overlapping diffuse nebulae,
         // overlapping unresolved diffuse emitters, or explicitly declared celestial diffuse background), never foreground
-        // terrestrial skyglow. Optical depths compose additively at common sky/subpixel positions before pixel averaging
-        // (T_total = mean_subpixel(exp(-sum_k tau_k))), and dark sources enforce MinimumSignalToNoise before admission.
+        // terrestrial skyglow or foreground non-diffuse sources. Optical depths compose additively at common subpixel
+        // positions before pixel averaging (T_total = mean_subpixel(exp(-sum_k tau_k))) across every overlapping dark
+        // cloud component, and dark-cloud S/N variance accounts for co-located foreground source shot noise.
         var admittedDarkClouds = new List<AdmittedDarkCloud>();
         var cumulativeAttenuatedConvolved = new Dictionary<int, DeepSkyPixelRate>();
         var cumulativeTemporalAttenuated = new Dictionary<int, DeepSkyPixelRate>();
         var unresolvedDarkCumulativeTau = new Dictionary<(int SourceIndex, int SampleIndex), double>();
+        Dictionary<int, double>? foregroundHygMonoRates = null;
 
         foreach (var dark in darkCandidates)
         {
@@ -921,38 +902,51 @@ public sealed class DeepSkyRenderPlan
                 continue;
             }
 
-            var cellDeposits = new Dictionary<long, (double AreaSum, double AbsorbAreaSum)>();
-            var darkSamples = RasterizeOpticalDepth(
-                profile, geometryInfo, projector, projection, settings, padding, paddedWidth, paddedHeight,
-                admittedDarkClouds, cellDeposits, ref totalSampledPoints, ref totalOutlineEdgeVisits,
-                out var maxOutlineDist, out var subpixelSamples, out var tinyOverlapUpdates, cancellationToken);
-
+            var maxOutlineDist = ComputeMaxOutlineDistance(
+                geometryInfo, settings.MaximumOutlineEdgeVisits, ref totalOutlineEdgeVisits, cancellationToken);
+            var paJ2000 = syntheticOverride?.PositionAngleDegrees ?? dark.PositionAngleDegrees;
+            var majorArcmin = syntheticOverride?.MajorAxisArcminutes ?? dark.MajorAxisArcminutes;
+            var minorArcmin = syntheticOverride?.MinorAxisArcminutes ?? dark.MinorAxisArcminutes;
+            var isCircle = majorArcmin is { } majA && minorArcmin is { } minA && Math.Abs(majA - minA) <= 1e-9;
+            var paddedBounds = ComputeDarkCloudPaddedBounds(
+                geometryInfo, projector, basis, projection, settings, padding,
+                profile, maxOutlineDist, ref totalOutlineEdgeVisits);
             var currentDarkCloud = new AdmittedDarkCloud(
+                dark,
+                paJ2000,
+                isCircle,
                 profile,
                 geometryInfo,
                 maxOutlineDist,
                 Math.Max(geometryInfo.MajorAxisPixels, geometryInfo.MinorAxisPixels),
-                subpixelSamples);
+                paddedBounds);
+
+            var overlapComponent = CollectOverlappingDarkComponent(admittedDarkClouds, currentDarkCloud);
+            var combinedTransmissionMap = ComputeCombinedDarkTransmissionMap(
+                overlapComponent,
+                currentDarkCloud,
+                projector,
+                basis,
+                projection,
+                settings,
+                padding,
+                paddedWidth,
+                paddedHeight,
+                ref totalSampledPoints,
+                ref totalOutlineEdgeVisits,
+                out var darkSamples,
+                cancellationToken);
 
             var provisionalNegPrePsf = new Dictionary<long, DeepSkyPixelRate>();
             var provisionalTransmission = new Dictionary<long, double>();
             var attenuatedPrePsf = 0d;
-            foreach (var (paddedKey, (areaSum, absorbAreaSum)) in cellDeposits)
+            foreach (var (paddedKey, compAfterT) in combinedTransmissionMap)
             {
-                if (areaSum <= 0 || absorbAreaSum <= 0) continue;
-                // Subpixel clouds (areaSum < 1) preserve uncovered subpixel area; resolved pixels (areaSum >= 1)
-                // normalize incremental absorbed area by covered area. Prior optical depth exp(-tau_prev) is already
-                // integrated at each sky sample so deltaAlpha = T_prev - T_next exactly.
-                var deltaAlpha = areaSum > 1d
-                    ? Math.Clamp(absorbAreaSum / areaSum, 0d, 1d)
-                    : Math.Clamp(absorbAreaSum, 0d, 1d);
-                if (deltaAlpha <= 0) continue;
-
                 var prevT = cumulativeTransmission.GetValueOrDefault(paddedKey, 1d);
                 if (prevT <= 0) continue;
-                var nextT = Math.Clamp(prevT - deltaAlpha, 0d, 1d);
+                var nextT = Math.Clamp(Math.Min(prevT, compAfterT), 0d, 1d);
                 var actualDrop = prevT - nextT;
-                if (actualDrop <= 0) continue;
+                if (actualDrop <= 1e-15) continue;
 
                 var existingDiffuse = diffusePrePsf.GetValueOrDefault(paddedKey);
                 var rawBgMono = existingDiffuse.Mono + declaredDiffuseBg;
@@ -971,19 +965,26 @@ public sealed class DeepSkyRenderPlan
                 attenuatedPrePsf += -delta.Mono;
             }
 
-            // Evaluate pre-PSF attenuation of admitted unresolved diffuse emitters at their exact sky sample directions.
+            // Evaluate pre-PSF attenuation of admitted unresolved diffuse emitters in the co-moving geometric sky
+            // frame at each temporal sample instant so Earth rotation never decouples co-located emitters & absorbers.
             var temporalDarkDeficitPostCloud = new Dictionary<int, DeepSkyPixelRate>();
             var temporalDarkDeficitPreCloud = new Dictionary<int, DeepSkyPixelRate>();
             var provisionalUnresolvedTauUpdates = new Dictionary<(int SourceIndex, int SampleIndex), double>();
             for (var srcIdx = 0; srcIdx < admittedUnresolvedDiffuse.Count; srcIdx++)
             {
                 var uSrc = admittedUnresolvedDiffuse[srcIdx];
+                if (AngularSeparationRadians(uSrc.MidpointGeometricDirection, currentDarkCloud.Geometry.Frame.Center) >
+                    currentDarkCloud.Geometry.SemiMajorRadians + 0.02)
+                {
+                    continue;
+                }
                 var samplePostDeficits = new List<WeightedPointSpreadSample>();
                 for (var sampIdx = 0; sampIdx < uSrc.Samples.Count; sampIdx++)
                 {
                     var sample = uSrc.Samples[sampIdx];
-                    var tau = EvaluateDarkCloudOpticalDepth(
-                        currentDarkCloud, sample.Direction, settings.MaximumOutlineEdgeVisits, ref totalOutlineEdgeVisits);
+                    var tau = EvaluateDarkCloudOpticalDepthAtTime(
+                        currentDarkCloud, uSrc.EmitterJ2000, uSrc.MidpointGeometricDirection,
+                        sample.SampleUtc, sceneRequest, settings.MaximumOutlineEdgeVisits, ref totalOutlineEdgeVisits);
                     if (tau <= 0) continue;
                     var key = (srcIdx, sampIdx);
                     var priorTau = unresolvedDarkCumulativeTau.GetValueOrDefault(key, 0d);
@@ -1103,6 +1104,11 @@ public sealed class DeepSkyRenderPlan
                 continue;
             }
 
+            if (hygStars.Count > 0 && foregroundHygMonoRates is null)
+            {
+                foregroundHygMonoRates = BuildForegroundHygPsfMap(hygStars, projector, projection, settings);
+            }
+
             var darkPrediction = EvaluateDarkSignalPrediction(
                 activeDarkPixels,
                 clippedDelta,
@@ -1112,6 +1118,9 @@ public sealed class DeepSkyRenderPlan
                 overlapDiffuseTemporal,
                 cumulativeAttenuatedConvolved,
                 cumulativeTemporalAttenuated,
+                rates,
+                temporalRates,
+                foregroundHygMonoRates,
                 projection,
                 renderOptions,
                 settings,
@@ -1158,13 +1167,6 @@ public sealed class DeepSkyRenderPlan
             foreach (var (idx, delta) in temporalDarkDeficitPostCloud)
             {
                 AddUnboundedSparseRate(cumulativeTemporalAttenuated, idx, delta);
-            }
-            if (tinyOverlapUpdates is not null)
-            {
-                foreach (var (sampleRef, addTau) in tinyOverlapUpdates)
-                {
-                    sampleRef.CumulativeTau += addTau;
-                }
             }
             admittedDarkClouds.Add(currentDarkCloud);
 
@@ -1728,7 +1730,8 @@ public sealed class DeepSkyRenderPlan
                     CameraBasis.FromHorizontal(sample.Horizontal),
                     sample.Pixel,
                     sample.ExposureFraction,
-                    transmission));
+                    transmission,
+                    sample.Utc));
             }
 
             RasterizeWeightedSamplesWithPsf(
@@ -1761,7 +1764,8 @@ public sealed class DeepSkyRenderPlan
             geometry.Frame.Center,
             centerPixel,
             1d,
-            cloudTransmission));
+            cloudTransmission,
+            sceneRequest.Utc));
         DepositDirectSubpixelPsf(
             temporalPostCloudRates, projection, centerPixel, fluxRate * cloudTransmission,
             settings.PsfSigmaPixels, settings.PsfRadiusPixels,
@@ -2087,29 +2091,475 @@ public sealed class DeepSkyRenderPlan
         return geometry.Frame.Direction(tangent);
     }
 
-    private static int RasterizeOpticalDepth(
-        DeepSkySimulationParameters profile,
+    private static void ReevaluateProvisionalLuminous(
+        List<ProvisionalLuminousEntry> provisionalLuminous,
+        double declaredDiffuseBg,
+        Dictionary<int, DeepSkyPixelRate> overlapDiffusePreCloud,
+        Dictionary<int, DeepSkyPixelRate> overlapDiffuseTemporal,
+        ProjectionContext projection,
+        LinearSceneRenderOptions renderOptions,
+        DeepSkyRenderSettings settings,
+        ref int admittedCount,
+        CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            var lowestPriorityFailingIndex = -1;
+            for (var i = 0; i < provisionalLuminous.Count; i++)
+            {
+                var entry = provisionalLuminous[i];
+                if (entry.Demoted) continue;
+                var (updatedPrediction, updatedSat, _, _, _) = EvaluateSignalAndFootprint(
+                    entry.Item.Id, entry.Geometry, entry.TemporalReferencePixel, entry.Profile.Spectral,
+                    entry.PreCloudClippedRates, entry.CombinedTempPostRates, entry.CombinedTempPreRates,
+                    declaredDiffuseBg, overlapDiffusePreCloud, overlapDiffuseTemporal,
+                    entry.OwnDiffusePreCloud, entry.OwnDiffuseTemporal,
+                    entry.EffectiveSourceRate, projection, renderOptions, settings, cancellationToken);
+                entry.Prediction = updatedPrediction;
+                entry.CausesSaturation = updatedSat;
+                if (settings.MinimumSignalToNoise > 0 &&
+                    updatedPrediction.SignalToNoise < settings.MinimumSignalToNoise &&
+                    !updatedSat)
+                {
+                    lowestPriorityFailingIndex = i;
+                }
+            }
+            if (lowestPriorityFailingIndex < 0) break;
+
+            var demoted = provisionalLuminous[lowestPriorityFailingIndex];
+            demoted.Demoted = true;
+            admittedCount--;
+            if (demoted.OwnDiffusePreCloud is not null)
+            {
+                SubtractUnboundedSparseRates(overlapDiffusePreCloud, demoted.OwnDiffusePreCloud);
+            }
+            if (demoted.OwnDiffuseTemporal is not null)
+            {
+                SubtractUnboundedSparseRates(overlapDiffuseTemporal, demoted.OwnDiffuseTemporal);
+            }
+        }
+    }
+
+    private static double ComputeMaxOutlineDistance(
+        ResolvedSourceGeometry geometry,
+        long maximumOutlineEdgeVisits,
+        ref long totalOutlineEdgeVisits,
+        CancellationToken cancellationToken)
+    {
+        if (geometry.TangentRings is not { Count: > 0 } rings)
+        {
+            return 0d;
+        }
+        var spanU = geometry.OutlineMaxU - geometry.OutlineMinU;
+        var spanV = geometry.OutlineMaxV - geometry.OutlineMinV;
+        if (spanU <= 0 || spanV <= 0) return 0d;
+
+        const int grid = 24;
+        var edgeCount = CountOutlineEdges(rings);
+        ChargeOutlineEdgeVisits((long)grid * grid * edgeCount, maximumOutlineEdgeVisits, ref totalOutlineEdgeVisits);
+        var du = spanU / grid;
+        var dv = spanV / grid;
+        var maxDist = 0d;
+        for (var iy = 0; iy < grid; iy++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var v = geometry.OutlineMinV + (iy + 0.5) * dv;
+            for (var ix = 0; ix < grid; ix++)
+            {
+                var u = geometry.OutlineMinU + (ix + 0.5) * du;
+                if (!DeepSkyOutlineSampler.ContainsTangentPoint(rings, u, v)) continue;
+                ChargeOutlineEdgeVisits(edgeCount, maximumOutlineEdgeVisits, ref totalOutlineEdgeVisits);
+                var dist = DeepSkyOutlineSampler.DistanceToTangentBoundary(rings, u, v);
+                if (dist > maxDist) maxDist = dist;
+            }
+        }
+        return maxDist;
+    }
+
+    private static PaddedPixelBounds? ComputeDarkCloudPaddedBounds(
         ResolvedSourceGeometry geometry,
         ResolvedSourceProjector projector,
+        CameraBasis basis,
+        ProjectionContext projection,
+        DeepSkyRenderSettings settings,
+        int padding,
+        DeepSkySimulationParameters profile,
+        double maxOutlineDist,
+        ref long totalOutlineEdgeVisits)
+    {
+        var minPx = double.PositiveInfinity;
+        var maxPx = double.NegativeInfinity;
+        var minPy = double.PositiveInfinity;
+        var maxPy = double.NegativeInfinity;
+        var anyProjected = false;
+
+        void Include(PixelPoint p)
+        {
+            if (!double.IsFinite(p.X) || !double.IsFinite(p.Y)) return;
+            if (p.X < minPx) minPx = p.X;
+            if (p.X > maxPx) maxPx = p.X;
+            if (p.Y < minPy) minPy = p.Y;
+            if (p.Y > maxPy) maxPy = p.Y;
+            anyProjected = true;
+        }
+
+        if (geometry.CenterPixel is { } cp)
+        {
+            Include(cp);
+        }
+
+        if (geometry.TangentRings is { Count: > 0 } rings)
+        {
+            foreach (var ring in rings)
+            {
+                for (var i = 0; i < ring.Length; i++)
+                {
+                    var p = ring[i];
+                    var dir = (geometry.Frame.Center + geometry.Frame.CelestialEast * p.X + geometry.Frame.CelestialNorth * p.Y).Normalize();
+                    if (projector.TryProject(dir, out var px)) Include(px);
+                    if (i + 1 < ring.Length)
+                    {
+                        var q = ring[i + 1];
+                        var midDir = (geometry.Frame.Center +
+                            geometry.Frame.CelestialEast * (0.5 * (p.X + q.X)) +
+                            geometry.Frame.CelestialNorth * (0.5 * (p.Y + q.Y))).Normalize();
+                        if (projector.TryProject(midDir, out var mpx)) Include(mpx);
+                    }
+                }
+            }
+            var spanU = geometry.OutlineMaxU - geometry.OutlineMinU;
+            var spanV = geometry.OutlineMaxV - geometry.OutlineMinV;
+            for (var iy = 0; iy < 8; iy++)
+            {
+                var v = geometry.OutlineMinV + (iy + 0.5) / 8d * spanV;
+                for (var ix = 0; ix < 8; ix++)
+                {
+                    var u = geometry.OutlineMinU + (ix + 0.5) / 8d * spanU;
+                    var dir = (geometry.Frame.Center + geometry.Frame.CelestialEast * u + geometry.Frame.CelestialNorth * v).Normalize();
+                    if (projector.TryProject(dir, out var px)) Include(px);
+                }
+            }
+        }
+        else if (geometry.SemiMajorRadians > 0 && geometry.SemiMinorRadians > 0)
+        {
+            const int perimeterSamples = 64;
+            for (var i = 0; i < perimeterSamples; i++)
+            {
+                var angle = 2d * Math.PI * i / perimeterSamples;
+                var tangent = geometry.MajorAxis * (Math.Cos(angle) * geometry.SemiMajorRadians) +
+                    geometry.MinorAxis * (Math.Sin(angle) * geometry.SemiMinorRadians);
+                if (projector.TryProject(geometry.Frame.Direction(tangent), out var px)) Include(px);
+            }
+            for (var iy = 0; iy < 8; iy++)
+            {
+                var v = -1d + (iy + 0.5) * 0.25;
+                for (var ix = 0; ix < 8; ix++)
+                {
+                    var u = -1d + (ix + 0.5) * 0.25;
+                    if (u * u + v * v >= 1d) continue;
+                    var tangent = geometry.MajorAxis * (u * geometry.SemiMajorRadians) +
+                        geometry.MinorAxis * (v * geometry.SemiMinorRadians);
+                    if (projector.TryProject(geometry.Frame.Direction(tangent), out var px)) Include(px);
+                }
+            }
+        }
+
+        // Check padded sensor corners and center so a huge dark cloud enclosing the entire sensor is never missed.
+        var probeCloud = new AdmittedDarkCloud(
+            null!, null, true, profile, geometry, maxOutlineDist,
+            Math.Max(geometry.MajorAxisPixels, geometry.MinorAxisPixels), null);
+        foreach (var probe in new[]
+        {
+            new PixelPoint(-padding, -padding),
+            new PixelPoint(projection.WidthPixels + padding, -padding),
+            new PixelPoint(-padding, projection.HeightPixels + padding),
+            new PixelPoint(projection.WidthPixels + padding, projection.HeightPixels + padding),
+            new PixelPoint(projection.WidthPixels * 0.5, projection.HeightPixels * 0.5)
+        })
+        {
+            if (TryUnprojectPadded(probe.X, probe.Y, projection, basis, settings.HorizonPolicy, settings.Refraction, out var dir) &&
+                EvaluateDarkCloudOpticalDepth(probeCloud, dir, settings.MaximumOutlineEdgeVisits, ref totalOutlineEdgeVisits) > 0)
+            {
+                Include(probe);
+            }
+        }
+
+        if (!anyProjected) return null;
+        var minBoundX = -padding;
+        var maxBoundX = projection.WidthPixels + padding - 1;
+        var minBoundY = -padding;
+        var maxBoundY = projection.HeightPixels + padding - 1;
+        var minX = (int)Math.Floor(minPx) - 2;
+        var maxX = (int)Math.Ceiling(maxPx) + 2;
+        var minY = (int)Math.Floor(minPy) - 2;
+        var maxY = (int)Math.Ceiling(maxPy) + 2;
+        if (maxX < minBoundX || minX > maxBoundX || maxY < minBoundY || minY > maxBoundY)
+        {
+            return null;
+        }
+        return new PaddedPixelBounds(
+            Math.Clamp(minX, minBoundX, maxBoundX),
+            Math.Clamp(minY, minBoundY, maxBoundY),
+            Math.Clamp(maxX, minBoundX, maxBoundX),
+            Math.Clamp(maxY, minBoundY, maxBoundY));
+    }
+
+    private static List<AdmittedDarkCloud> CollectOverlappingDarkComponent(
+        List<AdmittedDarkCloud> admittedDarkClouds,
+        AdmittedDarkCloud candidate)
+    {
+        if (admittedDarkClouds.Count == 0) return [];
+        var visited = new bool[admittedDarkClouds.Count];
+        var queue = new Queue<AdmittedDarkCloud>();
+        queue.Enqueue(candidate);
+        var component = new List<AdmittedDarkCloud>();
+
+        while (queue.Count > 0)
+        {
+            var current = queue.Dequeue();
+            for (var i = 0; i < admittedDarkClouds.Count; i++)
+            {
+                if (visited[i]) continue;
+                var other = admittedDarkClouds[i];
+                if (!DarkCloudsMayOverlap(current, other)) continue;
+                visited[i] = true;
+                component.Add(other);
+                queue.Enqueue(other);
+            }
+        }
+        return component;
+    }
+
+    private static bool DarkCloudsMayOverlap(AdmittedDarkCloud left, AdmittedDarkCloud right)
+    {
+        if (left.PaddedBounds is { } lb && right.PaddedBounds is { } rb &&
+            lb.MinX <= rb.MaxX && lb.MaxX >= rb.MinX &&
+            lb.MinY <= rb.MaxY && lb.MaxY >= rb.MinY)
+        {
+            return true;
+        }
+        var sep = AngularSeparationRadians(left.Geometry.Frame.Center, right.Geometry.Frame.Center);
+        return sep <= left.Geometry.SemiMajorRadians + right.Geometry.SemiMajorRadians + 1e-4;
+    }
+
+    private static Dictionary<long, double> ComputeCombinedDarkTransmissionMap(
+        List<AdmittedDarkCloud> priorOverlappingClouds,
+        AdmittedDarkCloud candidateCloud,
+        ResolvedSourceProjector projector,
+        CameraBasis basis,
         ProjectionContext projection,
         DeepSkyRenderSettings settings,
         int padding,
         long paddedWidth,
         long paddedHeight,
-        List<AdmittedDarkCloud> admittedDarkClouds,
-        Dictionary<long, (double AreaSum, double AbsorbAreaSum)> cellDeposits,
         ref long totalSampledPoints,
         ref long totalOutlineEdgeVisits,
-        out double maxOutlineDist,
-        out List<SubpixelDarkSample>? subpixelSamples,
-        out List<(SubpixelDarkSample Sample, double AddTau)>? tinyOverlapUpdates,
+        out int candidateSamples,
         CancellationToken cancellationToken)
     {
-        maxOutlineDist = 0d;
-        var currentMaxSpanPixels = Math.Max(geometry.MajorAxisPixels, geometry.MinorAxisPixels);
-        subpixelSamples = currentMaxSpanPixels < 0.25 ? new List<SubpixelDarkSample>() : null;
-        tinyOverlapUpdates = null;
+        _ = paddedHeight;
+        var allClouds = new List<AdmittedDarkCloud>(priorOverlappingClouds.Count + 1);
+        allClouds.AddRange(priorOverlappingClouds);
+        allClouds.Add(candidateCloud);
 
+        var resolvedClouds = new List<AdmittedDarkCloud>();
+        var fineClouds = new List<AdmittedDarkCloud>();
+        var defaultSub = Math.Clamp(settings.SamplesPerProjectedPixel * 2, 2, 8);
+        var commonSub = defaultSub;
+
+        foreach (var cloud in allClouds)
+        {
+            if (cloud.MaxSpanPixels >= 1.0 && cloud.PaddedBounds is { } bounds)
+            {
+                var boxArea = (long)(bounds.MaxX - bounds.MinX + 1) * (bounds.MaxY - bounds.MinY + 1);
+                if (boxArea <= settings.MaximumSamplePointsPerSource)
+                {
+                    resolvedClouds.Add(cloud);
+                    while (commonSub > 1 && boxArea * commonSub * commonSub > settings.MaximumSamplePointsPerSource)
+                    {
+                        commonSub--;
+                    }
+                    continue;
+                }
+            }
+            fineClouds.Add(cloud);
+        }
+
+        resolvedClouds.Sort(static (left, right) => StringComparer.Ordinal.Compare(left.Item.Id, right.Item.Id));
+        fineClouds.Sort(static (left, right) =>
+        {
+            var spanCmp = right.MaxSpanPixels.CompareTo(left.MaxSpanPixels);
+            return spanCmp != 0 ? spanCmp : StringComparer.Ordinal.Compare(left.Item.Id, right.Item.Id);
+        });
+
+        var transmission = new Dictionary<long, double>();
+        candidateSamples = 0;
+
+        // Stage 1: Evaluate ALL resolved dark clouds ONCE at the exact same pixel-aligned subpixel centers,
+        // composing tau_total = sum_r tau_r(dir) BEFORE taking exp(-tau_total) and averaging pixel coverage.
+        if (resolvedClouds.Count > 0)
+        {
+            var invSub = 1d / commonSub;
+            var invSubSq = invSub * invSub;
+            var candidateIsResolved = resolvedClouds.Contains(candidateCloud);
+            if (candidateIsResolved && candidateCloud.PaddedBounds is { } cb)
+            {
+                var cBoxArea = (long)(cb.MaxX - cb.MinX + 1) * (cb.MaxY - cb.MinY + 1);
+                candidateSamples = checked((int)Math.Min(settings.MaximumSamplePointsPerSource, cBoxArea * commonSub * commonSub));
+            }
+
+            if (resolvedClouds.Count == 1)
+            {
+                var single = resolvedClouds[0];
+                var b = single.PaddedBounds!.Value;
+                for (var sy = b.MinY; sy <= b.MaxY; sy++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    for (var sx = b.MinX; sx <= b.MaxX; sx++)
+                    {
+                        var absorbSum = 0d;
+                        for (var iy = 0; iy < commonSub; iy++)
+                        {
+                            var py = sy + (iy + 0.5) * invSub;
+                            for (var ix = 0; ix < commonSub; ix++)
+                            {
+                                var px = sx + (ix + 0.5) * invSub;
+                                if (!TryUnprojectPadded(px, py, projection, basis, settings.HorizonPolicy, settings.Refraction, out var dir))
+                                {
+                                    continue;
+                                }
+                                var tau = EvaluateDarkCloudOpticalDepth(single, dir, settings.MaximumOutlineEdgeVisits, ref totalOutlineEdgeVisits);
+                                if (tau > 0) absorbSum += 1d - Math.Exp(-tau);
+                            }
+                        }
+                        if (absorbSum <= 0) continue;
+                        var key = ((long)sy + padding) * paddedWidth + sx + padding;
+                        if (transmission.Count >= settings.MaximumSparsePixels)
+                        {
+                            throw new InvalidOperationException("Deep-sky sparse pixel budget exceeded.");
+                        }
+                        transmission[key] = Math.Clamp(1d - absorbSum * invSubSq, 0d, 1d);
+                    }
+                }
+            }
+            else
+            {
+                var activePaddedKeys = new HashSet<long>();
+                foreach (var cloud in resolvedClouds)
+                {
+                    var b = cloud.PaddedBounds!.Value;
+                    for (var sy = b.MinY; sy <= b.MaxY; sy++)
+                    {
+                        var rowBase = ((long)sy + padding) * paddedWidth + padding;
+                        for (var sx = b.MinX; sx <= b.MaxX; sx++)
+                        {
+                            activePaddedKeys.Add(rowBase + sx);
+                        }
+                    }
+                }
+                foreach (var paddedKey in activePaddedKeys.Order())
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var sx = (int)(paddedKey % paddedWidth) - padding;
+                    var sy = (int)(paddedKey / paddedWidth) - padding;
+                    var absorbSum = 0d;
+                    for (var iy = 0; iy < commonSub; iy++)
+                    {
+                        var py = sy + (iy + 0.5) * invSub;
+                        for (var ix = 0; ix < commonSub; ix++)
+                        {
+                            var px = sx + (ix + 0.5) * invSub;
+                            if (!TryUnprojectPadded(px, py, projection, basis, settings.HorizonPolicy, settings.Refraction, out var dir))
+                            {
+                                continue;
+                            }
+                            var tauTotal = 0d;
+                            for (var r = 0; r < resolvedClouds.Count; r++)
+                            {
+                                var rc = resolvedClouds[r];
+                                var rb = rc.PaddedBounds!.Value;
+                                if (sx < rb.MinX || sx > rb.MaxX || sy < rb.MinY || sy > rb.MaxY) continue;
+                                tauTotal += EvaluateDarkCloudOpticalDepth(rc, dir, settings.MaximumOutlineEdgeVisits, ref totalOutlineEdgeVisits);
+                            }
+                            if (tauTotal > 0) absorbSum += 1d - Math.Exp(-tauTotal);
+                        }
+                    }
+                    if (absorbSum <= 0) continue;
+                    if (transmission.Count >= settings.MaximumSparsePixels)
+                    {
+                        throw new InvalidOperationException("Deep-sky sparse pixel budget exceeded.");
+                    }
+                    transmission[paddedKey] = Math.Clamp(1d - absorbSum * invSubSq, 0d, 1d);
+                }
+            }
+        }
+
+        // Stage 2: Layer each subpixel/fine dark cloud on top of ALL resolved clouds and all earlier fine clouds,
+        // integrating exact incremental absorption pixelArea * exp(-priorTau) * (1 - exp(-tau_j)) at every sky
+        // sample into the exact pixel cell [cx, cx + 1) x [cy, cy + 1). By telescoping sum_j exp(-sum_{i<j} tau_i)(1 - exp(-tau_j)),
+        // this guarantees exact optical-depth additivity, strict monotonicity, and order invariance for arbitrary N >= 2.
+        for (var fIdx = 0; fIdx < fineClouds.Count; fIdx++)
+        {
+            var fCloud = fineClouds[fIdx];
+            var fCellDeposits = new Dictionary<long, (double AreaSum, double AbsorbAreaSum)>();
+            var sampled = EvaluateFineDarkCloud(
+                fCloud,
+                resolvedClouds,
+                fineClouds,
+                fIdx,
+                projector,
+                projection,
+                settings,
+                padding,
+                paddedWidth,
+                fCellDeposits,
+                ref totalOutlineEdgeVisits,
+                cancellationToken);
+            if (ReferenceEquals(fCloud, candidateCloud))
+            {
+                candidateSamples = sampled;
+            }
+            foreach (var (paddedKey, (areaSum, absorbAreaSum)) in fCellDeposits)
+            {
+                if (areaSum <= 0 || absorbAreaSum <= 0) continue;
+                var deltaAlpha = areaSum > 1d
+                    ? Math.Clamp(absorbAreaSum / areaSum, 0d, 1d)
+                    : Math.Clamp(absorbAreaSum, 0d, 1d);
+                if (deltaAlpha <= 0) continue;
+                var currentT = transmission.GetValueOrDefault(paddedKey, 1d);
+                var nextT = Math.Clamp(currentT - deltaAlpha, 0d, 1d);
+                if (!transmission.ContainsKey(paddedKey) && transmission.Count >= settings.MaximumSparsePixels)
+                {
+                    throw new InvalidOperationException("Deep-sky sparse pixel budget exceeded.");
+                }
+                transmission[paddedKey] = nextT;
+            }
+        }
+
+        totalSampledPoints += candidateSamples;
+        if (totalSampledPoints > settings.MaximumTotalSamplePoints)
+        {
+            throw new InvalidOperationException("Deep-sky sampling point budget exceeded.");
+        }
+        return transmission;
+    }
+
+    private static int EvaluateFineDarkCloud(
+        AdmittedDarkCloud cloud,
+        List<AdmittedDarkCloud> resolvedClouds,
+        List<AdmittedDarkCloud> fineClouds,
+        int fineIndex,
+        ResolvedSourceProjector projector,
+        ProjectionContext projection,
+        DeepSkyRenderSettings settings,
+        int padding,
+        long paddedWidth,
+        Dictionary<long, (double AreaSum, double AbsorbAreaSum)> cellDeposits,
+        ref long totalOutlineEdgeVisits,
+        CancellationToken cancellationToken)
+    {
+        var geometry = cloud.Geometry;
+        var profile = cloud.Profile;
         var angularScale = ProjectionSamplingBounds.MaximumPixelsPerRadian(
             projection, geometry.GeometricCenter, Math.Max(1e-6, geometry.SemiMajorRadians));
         var maxAxis = Math.Max(1, (int)Math.Floor(Math.Sqrt(settings.MaximumSamplePointsPerSource)));
@@ -2118,6 +2568,45 @@ public sealed class DeepSkyRenderPlan
             ? MeasureLocalAreaPixelsPerSteradian(projector, geometry.Frame.Center, geometry.Frame.CelestialNorth, geometry.Frame.CelestialEast)
             : null;
         var sampled = 0;
+
+        double EvaluatePriorTau(EnuVector direction, ref long edgeVisits)
+        {
+            var priorTau = 0d;
+            for (var r = 0; r < resolvedClouds.Count; r++)
+            {
+                priorTau += EvaluateDarkCloudOpticalDepth(resolvedClouds[r], direction, settings.MaximumOutlineEdgeVisits, ref edgeVisits);
+            }
+            for (var j = 0; j < fineIndex; j++)
+            {
+                priorTau += EvaluateDarkCloudOpticalDepth(fineClouds[j], direction, settings.MaximumOutlineEdgeVisits, ref edgeVisits);
+            }
+            return priorTau;
+        }
+
+        void DepositBoxCell(PixelPoint pixel, double pixelArea, double absorbArea)
+        {
+            if (pixelArea <= 0) return;
+            var cx = (long)Math.Floor(pixel.X);
+            var cy = (long)Math.Floor(pixel.Y);
+            if (cx < -padding || cx >= projection.WidthPixels + padding ||
+                cy < -padding || cy >= projection.HeightPixels + padding)
+            {
+                return;
+            }
+            var key = (cy + padding) * paddedWidth + cx + padding;
+            if (!cellDeposits.TryGetValue(key, out var prior))
+            {
+                if (cellDeposits.Count >= settings.MaximumSparsePixels)
+                {
+                    throw new InvalidOperationException("Deep-sky sparse pixel budget exceeded.");
+                }
+                cellDeposits[key] = (pixelArea, absorbArea);
+            }
+            else
+            {
+                cellDeposits[key] = (prior.AreaSum + pixelArea, prior.AbsorbAreaSum + absorbArea);
+            }
+        }
 
         if (geometry.TangentRings is { Count: > 0 } rings)
         {
@@ -2134,7 +2623,7 @@ public sealed class DeepSkyRenderPlan
             var dv = spanV / nv;
             var cellArea = du * dv;
             var interior = new List<(double U, double V, double Dist)>();
-            var maxDist = 0d;
+            var maxDist = cloud.MaxOutlineDist;
             for (var iy = 0; iy < nv; iy++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -2149,7 +2638,6 @@ public sealed class DeepSkyRenderPlan
                     interior.Add((u, v, dist));
                 }
             }
-            maxOutlineDist = maxDist;
             if (maxDist <= 0) return 0;
             foreach (var (u, v, dist) in interior)
             {
@@ -2162,14 +2650,9 @@ public sealed class DeepSkyRenderPlan
                 var rSq = u * u + v * v;
                 var solidAngle = cellArea * Math.Pow(1d + rSq, -1.5);
                 var pixelArea = solidAngle * areaScale;
-                var priorTau = EvaluatePriorDarkOpticalDepth(
-                    admittedDarkClouds, direction, currentMaxSpanPixels,
-                    settings.MaximumOutlineEdgeVisits, ref totalOutlineEdgeVisits);
+                var priorTau = EvaluatePriorTau(direction, ref totalOutlineEdgeVisits);
                 var absorbArea = pixelArea * Math.Exp(-priorTau) * (1d - Math.Exp(-tau));
-                AccumulateDarkAbsorption(
-                    cellDeposits, pixel, pixelArea, absorbArea,
-                    projection.WidthPixels, projection.HeightPixels, padding, paddedWidth, settings.MaximumSparsePixels);
-                subpixelSamples?.Add(new SubpixelDarkSample(direction, pixel, pixelArea, priorTau + tau));
+                DepositBoxCell(pixel, pixelArea, absorbArea);
             }
         }
         else
@@ -2200,71 +2683,216 @@ public sealed class DeepSkyRenderPlan
                     var r = tangent.Length;
                     var solidAngle = cellArea * (r < 1e-8 ? 1d : Math.Sin(r) / r);
                     var pixelArea = solidAngle * areaScale;
-                    var priorTau = EvaluatePriorDarkOpticalDepth(
-                        admittedDarkClouds, direction, currentMaxSpanPixels,
-                        settings.MaximumOutlineEdgeVisits, ref totalOutlineEdgeVisits);
+                    var priorTau = EvaluatePriorTau(direction, ref totalOutlineEdgeVisits);
                     var absorbArea = pixelArea * Math.Exp(-priorTau) * (1d - Math.Exp(-tau));
-                    AccumulateDarkAbsorption(
-                        cellDeposits, pixel, pixelArea, absorbArea,
-                        projection.WidthPixels, projection.HeightPixels, padding, paddedWidth, settings.MaximumSparsePixels);
-                    subpixelSamples?.Add(new SubpixelDarkSample(direction, pixel, pixelArea, priorTau + tau));
+                    DepositBoxCell(pixel, pixelArea, absorbArea);
                 }
             }
         }
 
-        // If a coarse resolved dark cloud overlaps an earlier-admitted strictly subpixel dark cloud, subtract
-        // the overlap over-count at the subpixel cloud's exact fine samples so optical-depth additivity is
-        // preserved regardless of admission order.
-        if (currentMaxSpanPixels >= 2.0 && admittedDarkClouds.Count > 0)
-        {
-            var probeCloud = new AdmittedDarkCloud(profile, geometry, maxOutlineDist, currentMaxSpanPixels, null);
-            foreach (var prior in admittedDarkClouds)
-            {
-                if (prior.SubpixelSamples is not { Count: > 0 } priorSamples) continue;
-                var sep = AngularSeparationRadians(geometry.Frame.Center, prior.Geometry.Frame.Center);
-                if (sep > geometry.SemiMajorRadians + prior.Geometry.SemiMajorRadians + 1e-6) continue;
-                foreach (var s in priorSamples)
-                {
-                    var tauCurrent = EvaluateDarkCloudOpticalDepth(
-                        probeCloud, s.Direction, settings.MaximumOutlineEdgeVisits, ref totalOutlineEdgeVisits);
-                    if (tauCurrent <= 0) continue;
-                    var overlapSubtract = s.PixelArea * (1d - Math.Exp(-s.CumulativeTau)) * (1d - Math.Exp(-tauCurrent));
-                    SubtractDarkAbsorption(
-                        cellDeposits, s.Pixel, overlapSubtract,
-                        projection.WidthPixels, projection.HeightPixels, padding, paddedWidth);
-                    (tinyOverlapUpdates ??= []).Add((s, tauCurrent));
-                }
-            }
-        }
-
-        totalSampledPoints += sampled;
-        if (totalSampledPoints > settings.MaximumTotalSamplePoints)
-        {
-            throw new InvalidOperationException("Deep-sky sampling point budget exceeded.");
-        }
         return sampled;
     }
 
-    private static double EvaluatePriorDarkOpticalDepth(
-        List<AdmittedDarkCloud> admittedDarkClouds,
-        EnuVector direction,
-        double currentMaxSpanPixels,
+    private static bool TryUnprojectPadded(
+        double px,
+        double py,
+        ProjectionContext projection,
+        CameraBasis basis,
+        HorizonPolicy horizonPolicy,
+        RefractionOptions refraction,
+        out EnuVector geometricDirection)
+    {
+        geometricDirection = default;
+        if (!double.IsFinite(px) || !double.IsFinite(py)) return false;
+        var nx = (px - projection.PrincipalPointX) / projection.FocalLengthXPixels;
+        var ny = (projection.PrincipalPointY - py) / projection.FocalLengthYPixels;
+        var rDist = Math.Sqrt(nx * nx + ny * ny);
+        if (projection.RadialDistortionK1 != 0 && rDist > 0)
+        {
+            var rIdeal = RadialDistortion.Undistort(rDist, projection.Model, projection.RadialDistortionK1);
+            if (!double.IsFinite(rIdeal)) return false;
+            var scale = rIdeal / rDist;
+            nx *= scale;
+            ny *= scale;
+            rDist = rIdeal;
+        }
+
+        EnuVector camera;
+        if (projection.Model == ProjectionModel.Perspective)
+        {
+            camera = new EnuVector(nx, ny, 1d).Normalize();
+        }
+        else
+        {
+            double theta;
+            switch (projection.Model)
+            {
+                case ProjectionModel.EquidistantFisheye:
+                    if (rDist > Math.PI + 1e-12) return false;
+                    theta = Math.Min(rDist, Math.PI);
+                    break;
+                case ProjectionModel.EquisolidFisheye:
+                    if (rDist > 2d + 1e-12) return false;
+                    theta = 2d * Math.Asin(Math.Clamp(rDist / 2d, 0d, 1d));
+                    break;
+                case ProjectionModel.OrthographicFisheye:
+                    if (rDist > 1d + 1e-12) return false;
+                    theta = Math.Asin(Math.Clamp(rDist, 0d, 1d));
+                    break;
+                case ProjectionModel.StereographicFisheye:
+                    theta = 2d * Math.Atan(rDist / 2d);
+                    if (theta >= Math.PI - 1e-12) return false;
+                    break;
+                default:
+                    return false;
+            }
+            var s = rDist <= 1e-15 ? 0d : Math.Sin(theta) / rDist;
+            camera = new EnuVector(nx * s, ny * s, Math.Cos(theta)).Normalize();
+        }
+
+        var apparentEnu = basis.ToEnu(camera);
+        if (!refraction.Enabled)
+        {
+            if (horizonPolicy == HorizonPolicy.GeometricHorizon && apparentEnu.Up < 0) return false;
+            geometricDirection = apparentEnu;
+            return true;
+        }
+
+        var apparentAltAz = CameraBasis.ToHorizontal(apparentEnu);
+        double? geomAlt;
+        if (horizonPolicy == HorizonPolicy.GeometricHorizon)
+        {
+            geomAlt = AtmosphericRefraction.RemoveAboveHorizon(apparentAltAz.AltitudeDegrees, refraction);
+        }
+        else
+        {
+            var appAlt = apparentAltAz.AltitudeDegrees;
+            if (appAlt < refraction.MinimumAltitudeDegrees)
+            {
+                geomAlt = appAlt;
+            }
+            else
+            {
+                var low = refraction.MinimumAltitudeDegrees;
+                var high = 90d;
+                if (appAlt < AtmosphericRefraction.Apply(low, refraction) ||
+                    appAlt > AtmosphericRefraction.Apply(high, refraction))
+                {
+                    geomAlt = null;
+                }
+                else
+                {
+                    for (var i = 0; i < 48; i++)
+                    {
+                        var mid = 0.5 * (low + high);
+                        if (AtmosphericRefraction.Apply(mid, refraction) < appAlt) low = mid;
+                        else high = mid;
+                    }
+                    geomAlt = 0.5 * (low + high);
+                }
+            }
+        }
+        if (geomAlt is null) return false;
+        geometricDirection = CameraBasis.FromHorizontal(apparentAltAz with { AltitudeDegrees = geomAlt.Value });
+        return true;
+    }
+
+    private static double EvaluateDarkCloudOpticalDepthAtTime(
+        AdmittedDarkCloud cloud,
+        EquatorialPoint emitterJ2000,
+        EnuVector emitterMidpointGeometricDirection,
+        DateTimeOffset sampleUtc,
+        VisibleSceneRequest sceneRequest,
         long maximumOutlineEdgeVisits,
         ref long totalOutlineEdgeVisits)
     {
-        if (admittedDarkClouds.Count == 0) return 0d;
-        var totalTau = 0d;
-        for (var i = 0; i < admittedDarkClouds.Count; i++)
+        if (sampleUtc == sceneRequest.Utc)
         {
-            var prior = admittedDarkClouds[i];
-            if (prior.MaxSpanPixels < 0.25 && currentMaxSpanPixels >= 2.0)
+            return EvaluateDarkCloudOpticalDepth(
+                cloud, emitterMidpointGeometricDirection, maximumOutlineEdgeVisits, ref totalOutlineEdgeVisits);
+        }
+
+        var emitterHoriz = CoordinateTransforms.EquatorialToHorizontal(
+            EquatorialPrecession.PrecessJ2000(emitterJ2000, sampleUtc),
+            sampleUtc,
+            sceneRequest.Observer.LatitudeDegrees,
+            sceneRequest.Observer.LongitudeDegrees);
+        var emitterDir = CameraBasis.FromHorizontal(emitterHoriz);
+
+        var cloudJ2000 = new EquatorialPoint(cloud.Item.RightAscensionHours, cloud.Item.DeclinationDegrees);
+        var cloudHoriz = CoordinateTransforms.EquatorialToHorizontal(
+            EquatorialPrecession.PrecessJ2000(cloudJ2000, sampleUtc),
+            sampleUtc,
+            sceneRequest.Observer.LatitudeDegrees,
+            sceneRequest.Observer.LongitudeDegrees);
+        var cloudFrame = ResolvedSourceFrame.Create(cloudHoriz, sceneRequest.Observer.LatitudeDegrees);
+
+        var geometry = cloud.Geometry;
+        var profile = cloud.Profile;
+        if (geometry.TangentRings is { Count: > 0 } rings)
+        {
+            if (cloud.MaxOutlineDist <= 0) return 0d;
+            var cosine = EnuVector.Dot(emitterDir, cloudFrame.Center);
+            if (cosine <= DeepSkyOutlineSampler.MinimumTangentCosine) return 0d;
+            var u = EnuVector.Dot(emitterDir, cloudFrame.CelestialEast) / cosine;
+            var v = EnuVector.Dot(emitterDir, cloudFrame.CelestialNorth) / cosine;
+            if (u < geometry.OutlineMinU || u > geometry.OutlineMaxU ||
+                v < geometry.OutlineMinV || v > geometry.OutlineMaxV)
             {
-                // Handled via exact fine-sample overlap subtraction above.
+                return 0d;
+            }
+            var edgeCount = CountOutlineEdges(rings);
+            ChargeOutlineEdgeVisits(edgeCount, maximumOutlineEdgeVisits, ref totalOutlineEdgeVisits);
+            if (!DeepSkyOutlineSampler.ContainsTangentPoint(rings, u, v)) return 0d;
+            ChargeOutlineEdgeVisits(edgeCount, maximumOutlineEdgeVisits, ref totalOutlineEdgeVisits);
+            var dist = DeepSkyOutlineSampler.DistanceToTangentBoundary(rings, u, v);
+            return profile.PeakOpticalDepth * DeepSkySourceProfileResolver.EvaluateOutlineDensity(profile, dist / cloud.MaxOutlineDist, 0d);
+        }
+
+        if (geometry.SemiMajorRadians <= 0 || geometry.SemiMinorRadians <= 0) return 0d;
+        var paOfDate = cloud.IsCircle || cloud.PaJ2000Degrees is null
+            ? 0d
+            : DeepSkyOutlineSampler.PositionAngleOfDate(
+                cloud.Item.RightAscensionHours, cloud.Item.DeclinationDegrees, cloud.PaJ2000Degrees.Value, sampleUtc);
+        var paRad = paOfDate * Math.PI / 180d;
+        var majorAxis = cloudFrame.CelestialNorth * Math.Cos(paRad) + cloudFrame.CelestialEast * Math.Sin(paRad);
+        var minorAxis = cloudFrame.CelestialEast * Math.Cos(paRad) - cloudFrame.CelestialNorth * Math.Sin(paRad);
+        var sinMajor = EnuVector.Dot(emitterDir, majorAxis);
+        var sinMinor = EnuVector.Dot(emitterDir, minorAxis);
+        var sinAngle = double.Hypot(sinMajor, sinMinor);
+        var cosAngle = EnuVector.Dot(emitterDir, cloudFrame.Center);
+        var angle = Math.Atan2(sinAngle, cosAngle);
+        if (angle > geometry.SemiMajorRadians * (1d + 1e-9)) return 0d;
+        var scale = sinAngle > 1e-15 ? angle / sinAngle : 1d;
+        var eu = (sinMajor * scale) / geometry.SemiMajorRadians;
+        var ev = (sinMinor * scale) / geometry.SemiMinorRadians;
+        var qSq = eu * eu + ev * ev;
+        if (qSq >= 1d) return 0d;
+        return profile.PeakOpticalDepth * DeepSkySourceProfileResolver.EvaluateRadialDensity(profile, Math.Sqrt(qSq), 0d, 0UL);
+    }
+
+    private static Dictionary<int, double> BuildForegroundHygPsfMap(
+        List<HygStarEntry> hygStars,
+        ResolvedSourceProjector projector,
+        ProjectionContext projection,
+        DeepSkyRenderSettings settings)
+    {
+        var map = new Dictionary<int, double>();
+        var visits = 0L;
+        foreach (var star in hygStars)
+        {
+            if (star.FluxRate <= 0 || !projector.TryProject(star.Direction, out var pixel)) continue;
+            if (pixel.X < -settings.PsfRadiusPixels || pixel.X > projection.WidthPixels + settings.PsfRadiusPixels ||
+                pixel.Y < -settings.PsfRadiusPixels || pixel.Y > projection.HeightPixels + settings.PsfRadiusPixels)
+            {
                 continue;
             }
-            totalTau += EvaluateDarkCloudOpticalDepth(prior, direction, maximumOutlineEdgeVisits, ref totalOutlineEdgeVisits);
+            DepositDirectSubpixelPsf(
+                map, projection, pixel, star.FluxRate,
+                settings.PsfSigmaPixels, settings.PsfRadiusPixels,
+                int.MaxValue, long.MaxValue, ref visits);
         }
-        return totalTau;
+        return map;
     }
 
     private static double EvaluateDarkCloudOpticalDepth(
@@ -2315,36 +2943,6 @@ public sealed class DeepSkyRenderPlan
         var cross = EnuVector.Cross(a, b).Length;
         var dot = EnuVector.Dot(a, b);
         return Math.Atan2(cross, dot);
-    }
-
-    private static void SubtractDarkAbsorption(
-        Dictionary<long, (double AreaSum, double AbsorbAreaSum)> deposits,
-        PixelPoint point,
-        double subtractAbsorbArea,
-        int width,
-        int height,
-        int padding,
-        long paddedWidth)
-    {
-        if (subtractAbsorbArea <= 0) return;
-        var x = (long)Math.Floor(point.X - 0.5);
-        var y = (long)Math.Floor(point.Y - 0.5);
-        var fx = point.X - 0.5 - x;
-        var fy = point.Y - 0.5 - y;
-        Sub(x, y, (1d - fx) * (1d - fy));
-        Sub(x + 1, y, fx * (1d - fy));
-        Sub(x, y + 1, (1d - fx) * fy);
-        Sub(x + 1, y + 1, fx * fy);
-
-        void Sub(long cx, long cy, double w)
-        {
-            if (w <= 0 || cx < -padding || cx >= width + padding || cy < -padding || cy >= height + padding) return;
-            var key = (cy + padding) * paddedWidth + cx + padding;
-            if (deposits.TryGetValue(key, out var prior))
-            {
-                deposits[key] = (prior.AreaSum, Math.Max(0d, prior.AbsorbAreaSum - w * subtractAbsorbArea));
-            }
-        }
     }
 
     private static (int Count, double TotalFluxRate) MatchHygStarsInFootprint(
@@ -2490,46 +3088,6 @@ public sealed class DeepSkyRenderPlan
             else
             {
                 deposits[key] = prior + amount;
-            }
-        }
-    }
-
-    private static void AccumulateDarkAbsorption(
-        Dictionary<long, (double AreaSum, double AbsorbAreaSum)> deposits,
-        PixelPoint point,
-        double pixelArea,
-        double absorbArea,
-        int width,
-        int height,
-        int padding,
-        long paddedWidth,
-        int maximumSparsePixels)
-    {
-        if (pixelArea <= 0) return;
-        var x = (long)Math.Floor(point.X - 0.5);
-        var y = (long)Math.Floor(point.Y - 0.5);
-        var fx = point.X - 0.5 - x;
-        var fy = point.Y - 0.5 - y;
-        Add(x, y, (1d - fx) * (1d - fy));
-        Add(x + 1, y, fx * (1d - fy));
-        Add(x, y + 1, (1d - fx) * fy);
-        Add(x + 1, y + 1, fx * fy);
-
-        void Add(long cx, long cy, double w)
-        {
-            if (w <= 0 || cx < -padding || cx >= width + padding || cy < -padding || cy >= height + padding) return;
-            var key = (cy + padding) * paddedWidth + cx + padding;
-            if (!deposits.TryGetValue(key, out var prior))
-            {
-                if (deposits.Count >= maximumSparsePixels)
-                {
-                    throw new InvalidOperationException("Deep-sky sparse pixel budget exceeded.");
-                }
-                deposits[key] = (w * pixelArea, w * absorbArea);
-            }
-            else
-            {
-                deposits[key] = (prior.AreaSum + w * pixelArea, prior.AbsorbAreaSum + w * absorbArea);
             }
         }
     }
@@ -2758,6 +3316,9 @@ public sealed class DeepSkyRenderPlan
         Dictionary<int, DeepSkyPixelRate> overlapDiffuseTemporal,
         Dictionary<int, DeepSkyPixelRate> priorDarkAttenuatedPreCloud,
         Dictionary<int, DeepSkyPixelRate> priorDarkAttenuatedTemporal,
+        Dictionary<int, DeepSkyPixelRate> nonDiffusePreCloudRates,
+        Dictionary<int, DeepSkyPixelRate> nonDiffuseTemporalRates,
+        Dictionary<int, double>? foregroundHygMonoRates,
         ProjectionContext projection,
         LinearSceneRenderOptions options,
         DeepSkyRenderSettings settings,
@@ -2814,6 +3375,9 @@ public sealed class DeepSkyRenderPlan
             var overlapTmpRate = overlapDiffuseTemporal.GetValueOrDefault(index);
             var priorPreAtten = priorDarkAttenuatedPreCloud.GetValueOrDefault(index);
             var priorTmpAtten = priorDarkAttenuatedTemporal.GetValueOrDefault(index);
+            var fgPreRate = nonDiffusePreCloudRates.GetValueOrDefault(index);
+            var fgTmpRate = nonDiffuseTemporalRates.GetValueOrDefault(index);
+            var fgHygMono = foregroundHygMonoRates?.GetValueOrDefault(index) ?? 0d;
 
             for (var channel = 0; channel < channelCount; channel++)
             {
@@ -2830,16 +3394,19 @@ public sealed class DeepSkyRenderPlan
                 var tmpDeficit = Math.Max(0d, -tmpDelta.Channel(skyChannel)) * cfaScale;
                 var deficitElectrons = (preDeficit * diskTransmission + tmpDeficit) * vignette * options.ExposureSeconds;
 
-                // Null-hypothesis local photon rate before this dark cloud attenuates the extraction footprint.
+                // Null-hypothesis local photon rate before this dark cloud attenuates the extraction footprint,
+                // including co-located foreground non-diffuse DSO and HYG star shot noise (never attenuated by dark clouds).
                 var preDiffuseBefore = Math.Max(
                     preDeficit,
                     Math.Max(0d, declaredDiffuseBg + overlapPreRate.Channel(skyChannel) + priorPreAtten.Channel(skyChannel)) * cfaScale);
                 var tmpDiffuseBefore = Math.Max(
                     tmpDeficit,
                     Math.Max(0d, overlapTmpRate.Channel(skyChannel) + priorTmpAtten.Channel(skyChannel)) * cfaScale);
+                var foregroundPreBefore = (Math.Max(0d, fgPreRate.Channel(skyChannel)) + Math.Max(0d, fgHygMono)) * cfaScale;
+                var foregroundTmpBefore = Math.Max(0d, fgTmpRate.Channel(skyChannel)) * cfaScale;
                 var bgBeforeElectrons = (options.BackgroundRate(x, y, skyChannel) * backgroundTransmission +
-                    (options.DiskRate(x, y, skyChannel) + preDiffuseBefore) * diskTransmission +
-                    tmpDiffuseBefore) * vignette * options.ExposureSeconds;
+                    (options.DiskRate(x, y, skyChannel) + preDiffuseBefore + foregroundPreBefore) * diskTransmission +
+                    tmpDiffuseBefore + foregroundTmpBefore) * vignette * options.ExposureSeconds;
 
                 var channelWeight = maximumDisplayWeight > 0 ? displayWeights[channel] / maximumDisplayWeight : 0d;
                 if (response is null && options.Gain == 0)
@@ -3201,33 +3768,29 @@ public sealed class DeepSkyRenderPlan
         EnuVector Direction,
         PixelPoint Pixel,
         double ExposureFraction,
-        double CloudTransmission);
+        double CloudTransmission,
+        DateTimeOffset SampleUtc);
 
     private sealed record AdmittedUnresolvedDiffuseSource(
         string ObjectId,
+        EquatorialPoint EmitterJ2000,
+        EnuVector MidpointGeometricDirection,
         double FluxRate,
         DeepSkySpectralFactors Spectral,
         List<UnresolvedDiffuseSample> Samples,
         Dictionary<int, double> UnattenuatedPostCloudRates);
 
-    private sealed class SubpixelDarkSample(
-        EnuVector direction,
-        PixelPoint pixel,
-        double pixelArea,
-        double cumulativeTau)
-    {
-        public EnuVector Direction { get; } = direction;
-        public PixelPoint Pixel { get; } = pixel;
-        public double PixelArea { get; } = pixelArea;
-        public double CumulativeTau { get; set; } = cumulativeTau;
-    }
+    private readonly record struct PaddedPixelBounds(int MinX, int MinY, int MaxX, int MaxY);
 
     private sealed record AdmittedDarkCloud(
+        DeepSkyObject Item,
+        double? PaJ2000Degrees,
+        bool IsCircle,
         DeepSkySimulationParameters Profile,
         ResolvedSourceGeometry Geometry,
         double MaxOutlineDist,
         double MaxSpanPixels,
-        List<SubpixelDarkSample>? SubpixelSamples);
+        PaddedPixelBounds? PaddedBounds);
 
     private sealed class ProvisionalLuminousEntry(
         DeepSkyObject item,

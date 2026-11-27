@@ -1206,6 +1206,246 @@ public sealed class DeepSkyExtendedRenderingQualificationTests
             $"Strong dark cloud S/N should be >= 5.0; got {admDiag.PredictedSignal.SignalToNoise:F2}.");
     }
 
+    [TestMethod]
+    public void ThreeOverlappingDarkCloudsAreStrictlyMonotonicAdditiveAndOrderInvariant()
+    {
+        // Exact F5 regression: at f = 1400, two concentric 0.6' tau=1.6 clouds + a 6' tau=1.6 cloud must:
+        // (1) absorb STRICTLY MORE than the 6' tau=1.6 cloud alone (monotonicity: adding dark clouds never brightens the field!),
+        // (2) match combining the two 0.6' clouds into one 0.6' tau=3.2 cloud + 6' tau=1.6 cloud (exact optical-depth additivity),
+        // (3) be invariant across candidate admission orders.
+        var projection = new ProjectionContext(
+            ProjectionModel.Perspective, 80, 80, 1400, 1400, 160, 160,
+            ProjectionAperture.Rectangular, BoresightAltitudeDegrees: 60, BoresightAzimuthDegrees: 180);
+        var req = CreateRequest(projection, HorizonPolicy.GeometricHorizon);
+        var opts = CreateDeterministicMonoOptions(background: 0, exposureSeconds: 1.0);
+        var centerJ2000 = AltAzToJ2000(new AltAzPoint(60, 180));
+
+        var smallA = CreateDso("LDN-S1", "Small 1", "DrkN", centerJ2000.RaHours, centerJ2000.DecDegrees,
+            0.6, 0.6, 0, null, null, null, null, 1);
+        var smallB = CreateDso("LDN-S2", "Small 2", "DrkN", centerJ2000.RaHours, centerJ2000.DecDegrees,
+            0.6, 0.6, 0, null, null, null, null, 2);
+        var large = CreateDso("LDN-L1", "Large", "DrkN", centerJ2000.RaHours, centerJ2000.DecDegrees,
+            6.0, 6.0, 0, null, null, null, null, 3);
+        var largeFirst = large with { Id = "LDN-L0", MessierNumber = 1 };
+        var smallA2 = smallA with { MessierNumber = 2 };
+        var smallB2 = smallB with { MessierNumber = 3 };
+        var smallCombined = CreateDso("LDN-S-DOUBLE", "Small Combined", "DrkN", centerJ2000.RaHours, centerJ2000.DecDegrees,
+            0.6, 0.6, 0, null, null, null, null, 1);
+
+        const double bg = 100.0;
+        var baseSettings = CreateSettings(opts, req, minSnr: 0, celestialDiffuseBg: bg);
+        var doubleTauScenario = new DeepSkySyntheticScenario(
+            "f5-double-tau-v1",
+            Overrides: [new DeepSkySyntheticSourceOverride(smallCombined.Id, PeakOpticalDepth: 3.2)]);
+
+        double TotalAbsorbed(DeepSkyRenderPlan plan)
+        {
+            var sum = 0d;
+            for (var y = 0; y < projection.HeightPixels; y++)
+            {
+                for (var x = 0; x < projection.WidthPixels; x++)
+                {
+                    sum += bg - plan.ElectronRate(x, y);
+                }
+            }
+            return sum;
+        }
+
+        var largeAlonePlan = DeepSkyRenderPlan.Prepare(req, null, [large], null, opts, baseSettings);
+        var threeSmallFirstPlan = DeepSkyRenderPlan.Prepare(req, null, [smallA, smallB, large], null, opts, baseSettings);
+        var threeLargeFirstPlan = DeepSkyRenderPlan.Prepare(req, null, [largeFirst, smallA2, smallB2], null, opts, baseSettings);
+        var combinedSmallAndLargePlan = DeepSkyRenderPlan.Prepare(
+            req, null, [smallCombined, large], null, opts,
+            CreateSettings(opts, req, minSnr: 0, celestialDiffuseBg: bg, syntheticScenario: doubleTauScenario));
+
+        var absorbedLargeAlone = TotalAbsorbed(largeAlonePlan);
+        var absorbedThreeSmallFirst = TotalAbsorbed(threeSmallFirstPlan);
+        var absorbedThreeLargeFirst = TotalAbsorbed(threeLargeFirstPlan);
+        var absorbedCombined = TotalAbsorbed(combinedSmallAndLargePlan);
+
+        Assert.IsTrue(absorbedThreeSmallFirst > absorbedLargeAlone,
+            $"Adding two 0.6' dark clouds on top of a 6' dark cloud must strictly increase absorption " +
+            $"(3-cloud={absorbedThreeSmallFirst:F6} e-/s vs large-alone={absorbedLargeAlone:F6} e-/s).");
+        Assert.AreEqual(absorbedCombined, absorbedThreeSmallFirst, 1e-6,
+            $"Two concentric 0.6' tau=1.6 clouds + 6' tau=1.6 cloud ({absorbedThreeSmallFirst:F6}) must match " +
+            $"one 0.6' tau=3.2 cloud + 6' tau=1.6 cloud ({absorbedCombined:F6}) by exact optical-depth additivity.");
+        Assert.AreEqual(absorbedCombined, absorbedThreeLargeFirst, 1e-6,
+            $"3-cloud overlap must be invariant under admission order (large-first={absorbedThreeLargeFirst:F6} vs combined={absorbedCombined:F6}).");
+    }
+
+    [TestMethod]
+    public void SnrDemotionFreesRenderSlotForSubsequentEligibleCandidate()
+    {
+        // Exact F21 regression: with MaximumRenderedSources = 2, a 100 e- Messier PN (slot 1) and an overlapping
+        // 12' bright diffuse emitter (slot 2) trigger demotion of the faint PN (S/N ~0.8 < 5).
+        // The freed slot MUST be backfilled by an isolated mag-4 PN 1 deg away instead of marking it budget-skipped!
+        var projection = new ProjectionContext(
+            ProjectionModel.Perspective, 80, 80, 1400, 1400, 160, 160,
+            ProjectionAperture.Rectangular, BoresightAltitudeDegrees: 60, BoresightAzimuthDegrees: 180);
+        var req = CreateRequest(projection, HorizonPolicy.GeometricHorizon);
+        var opts = CreateDeterministicMonoOptions(background: 0, exposureSeconds: 1.0, readNoise: 0);
+        var centerJ2000 = AltAzToJ2000(new AltAzPoint(60, 180));
+        var offsetJ2000 = AltAzToJ2000(new AltAzPoint(61, 180));
+
+        var faintPn = CreateDso("PN-DEMOTED", "Faint PN", "PN",
+            centerJ2000.RaHours, centerJ2000.DecDegrees, 0.001, 0.001, 0, null, 5.0, null, null, 1);
+        var brightDiffuse = CreateDso("EMN-SHEET", "Bright Diffuse", "EmN",
+            centerJ2000.RaHours, centerJ2000.DecDegrees, 12, 12, 0, null, -0.5, null, null, 2);
+        var isolatedPn = CreateDso("PN-BACKFILL", "Isolated Mag4 PN", "PN",
+            offsetJ2000.RaHours, offsetJ2000.DecDegrees, 0.001, 0.001, 0, null, 4.0, null, null, 3);
+
+        var capTwoSettings = CreateSettings(opts, req, minSnr: 5.0) with { MaximumRenderedSources = 2 };
+        var plan = DeepSkyRenderPlan.Prepare(req, null, [faintPn, brightDiffuse, isolatedPn], null, opts, capTwoSettings);
+
+        var faintDiag = plan.Diagnostics.Single(static d => d.ObjectId == "PN-DEMOTED");
+        var diffuseDiag = plan.Diagnostics.Single(static d => d.ObjectId == "EMN-SHEET");
+        var backfillDiag = plan.Diagnostics.Single(static d => d.ObjectId == "PN-BACKFILL");
+
+        Assert.IsFalse(faintDiag.Admitted, "Overlapped faint PN must be demoted below S/N 5.");
+        Assert.AreEqual("annotation-only-below-snr", faintDiag.Reason);
+        Assert.IsTrue(diffuseDiag.Admitted);
+        Assert.IsTrue(backfillDiag.Admitted,
+            $"Freed render slot after S/N demotion must admit isolated mag-4 PN instead of leaving slot unused; " +
+            $"reason={backfillDiag.Reason}, admittedCount={plan.Statistics.AdmittedCount}.");
+        Assert.AreEqual(2, plan.Statistics.AdmittedCount);
+        Assert.IsTrue(backfillDiag.PredictedSignal.SignalToNoise > 15.0,
+            $"Isolated mag-4 PN S/N should be ~15.85; got {backfillDiag.PredictedSignal.SignalToNoise:F3}.");
+    }
+
+    [TestMethod]
+    public void CoLocatedUnresolvedDiffuseEmitterAndDarkCloudMaintainAttenuationAcrossTemporalExposureSamples()
+    {
+        // Exact F9 regression: a co-located 0.001' diffuse emitter (EmN) and 0.001' tau=1.6 dark cloud (DrkN)
+        // must maintain exact exp(-1.6) ~= 0.201896518 transmission across single-sample 1s, 16-sample 1s,
+        // and default multi-sample 20s exposures without sidereal drift decoupling the pair!
+        var projection = new ProjectionContext(
+            ProjectionModel.Perspective, 80, 80, 1400, 1400, 160, 160,
+            ProjectionAperture.Rectangular, BoresightAltitudeDegrees: 60, BoresightAzimuthDegrees: 180);
+        var req = CreateRequest(projection, HorizonPolicy.GeometricHorizon);
+        var centerJ2000 = AltAzToJ2000(new AltAzPoint(60, 180));
+
+        var emitter = CreateDso("EMN-TINY-CO", "Tiny Emitter", "EmN",
+            centerJ2000.RaHours, centerJ2000.DecDegrees, 0.001, 0.001, 0, null, 3.0, null, null, 1);
+        var absorber = CreateDso("LDN-TINY-CO", "Tiny Absorber", "DrkN",
+            centerJ2000.RaHours, centerJ2000.DecDegrees, 0.001, 0.001, 0, null, null, null, null, 2);
+
+        var expectedTransmission = Math.Exp(-1.6);
+        foreach (var (exposureSeconds, minTemporalSamples) in new[] { (1.0, 1), (1.0, 16), (20.0, 1) })
+        {
+            var opts = CreateDeterministicMonoOptions(background: 0, exposureSeconds: exposureSeconds);
+            var settings = CreateSettings(opts, req, minSnr: 0) with { MinimumTemporalSamples = minTemporalSamples };
+
+            var unattenuated = DeepSkyRenderPlan.Prepare(req, null, [emitter], null, opts, settings);
+            var attenuated = DeepSkyRenderPlan.Prepare(req, null, [emitter, absorber], null, opts, settings);
+
+            double SumTemporal(DeepSkyRenderPlan p)
+            {
+                var total = 0d;
+                for (var y = 0; y < projection.HeightPixels; y++)
+                {
+                    for (var x = 0; x < projection.WidthPixels; x++)
+                    {
+                        total += p.ElectronRate(x, y);
+                    }
+                }
+                return total;
+            }
+
+            var fluxWithout = SumTemporal(unattenuated);
+            var fluxWith = SumTemporal(attenuated);
+            Assert.IsTrue(fluxWithout > 0);
+            var transmission = fluxWith / fluxWithout;
+            Assert.AreEqual(expectedTransmission, transmission, 1e-4,
+                $"Co-located 0.001' emitter+absorber at exposure={exposureSeconds}s, minSamples={minTemporalSamples} " +
+                $"must attenuate by exp(-1.6)={expectedTransmission:F6}; got {transmission:F6}.");
+        }
+    }
+
+    [TestMethod]
+    public void UnresolvedCompositeClusterNebulaRespectsPerSourceSampleBudget()
+    {
+        // Exact F12 regression: unresolved Cl+N with two nonzero components (nebula + residual cluster)
+        // under MaximumSamplePointsPerSource = 16 and MinimumTemporalSamples = 16 must share ONE temporal
+        // trajectory evaluation and charge <= 16 samples (never 32).
+        var projection = new ProjectionContext(
+            ProjectionModel.Perspective, 80, 80, 1400, 1400, 160, 160,
+            ProjectionAperture.Rectangular, BoresightAltitudeDegrees: 60, BoresightAzimuthDegrees: 180);
+        var req = CreateRequest(projection, HorizonPolicy.GeometricHorizon);
+        var opts = CreateDeterministicMonoOptions(background: 0, exposureSeconds: 1.0);
+        var centerJ2000 = AltAzToJ2000(new AltAzPoint(60, 180));
+
+        var unresolvedCln = CreateDso("CLN-TINY-CAP16", "Unresolved Cl+N", "Cl+N",
+            centerJ2000.RaHours, centerJ2000.DecDegrees, 0.001, 0.001, 0, null, 4.0, null, null, null);
+        var settings = CreateSettings(opts, req, minSnr: 0) with
+        {
+            MaximumSamplePointsPerSource = 16,
+            MinimumTemporalSamples = 16
+        };
+        var plan = DeepSkyRenderPlan.Prepare(req, null, [unresolvedCln], null, opts, settings);
+        var diag = plan.Diagnostics.Single();
+        Assert.IsTrue(diag.Admitted);
+        Assert.IsTrue(diag.UsedUnresolvedPsfPath);
+        Assert.IsTrue(diag.SampledPoints <= 16,
+            $"Unresolved two-component Cl+N must not exceed MaximumSamplePointsPerSource=16; got {diag.SampledPoints}.");
+        Assert.AreEqual(diag.SampledPoints, plan.Statistics.TotalSampledPoints);
+        Assert.AreEqual(diag.SourceElectronRate, diag.RetainedElectronRate, 1e-2,
+            "Shared unit-flux temporal scaling must conserve total Cl+N flux across both components.");
+    }
+
+    [TestMethod]
+    public void DarkNebulaApertureVarianceIncludesCoLocatedForegroundSourceShotNoise()
+    {
+        // Exact F19 regression: adding a co-located mag -4 PN (~398,107 e-) inside a 20' dark cloud's aperture
+        // (160x160 perspective, f = 1400 px, bg = 100 e-/px/s) must leave the dark cloud's diffuse-only absorption
+        // deficit unchanged (~2,611 e-), increase its aperture variance by ~398,107, and drop its S/N from ~16.8
+        // to ~4.01 < 5 (causing rejection at minSnr=5). A co-located bright foreground HYG star must behave identically.
+        var projection = new ProjectionContext(
+            ProjectionModel.Perspective, 80, 80, 1400, 1400, 160, 160,
+            ProjectionAperture.Rectangular, BoresightAltitudeDegrees: 60, BoresightAzimuthDegrees: 180);
+        var req = CreateRequest(projection, HorizonPolicy.GeometricHorizon);
+        var opts = CreateDeterministicMonoOptions(background: 0, exposureSeconds: 1.0, readNoise: 0);
+        var centerJ2000 = AltAzToJ2000(new AltAzPoint(60, 180));
+
+        var darkCloud = CreateDso("LDN-20-FG", "20-arcmin Dark Cloud", "DrkN",
+            centerJ2000.RaHours, centerJ2000.DecDegrees, 20, 20, 0, null, null, null, null, null);
+        var brightForegroundPn = CreateDso("PN-MAG-MINUS4", "Bright Foreground PN", "PN",
+            centerJ2000.RaHours, centerJ2000.DecDegrees, 0.001, 0.001, 0, null, -4.0, null, null, null);
+        var brightForegroundStar = new CelestialCatalogObject(
+            "HIP-FG-BRIGHT", "Foreground Star", centerJ2000.RaHours, centerJ2000.DecDegrees, -4.0, 0.0);
+
+        var settings = CreateSettings(opts, req, minSnr: 5.0, celestialDiffuseBg: 100.0);
+        var alonePlan = DeepSkyRenderPlan.Prepare(req, null, [darkCloud], null, opts, settings);
+        var withForegroundPnPlan = DeepSkyRenderPlan.Prepare(req, null, [brightForegroundPn, darkCloud], null, opts, settings);
+        var withForegroundStarPlan = DeepSkyRenderPlan.Prepare(req, null, [darkCloud], [brightForegroundStar], opts, settings);
+
+        var aloneDark = alonePlan.Diagnostics.Single();
+        var fgDark = withForegroundPnPlan.Diagnostics.Single(static d => d.ObjectId == "LDN-20-FG");
+        var fgPn = withForegroundPnPlan.Diagnostics.Single(static d => d.ObjectId == "PN-MAG-MINUS4");
+        var starDark = withForegroundStarPlan.Diagnostics.Single(static d => d.ObjectId == "LDN-20-FG");
+
+        Assert.IsTrue(aloneDark.Admitted);
+        Assert.IsTrue(aloneDark.PredictedSignal.SignalToNoise > 15.0);
+        Assert.IsTrue(fgPn.Admitted);
+
+        var expectedFgElectrons = 10_000d * Math.Pow(10d, -0.4 * (-4.0));
+        foreach (var (label, diag) in new[] { ("foreground PN", fgDark), ("foreground HYG star", starDark) })
+        {
+            // Diffuse-only absorption deficit must stay identical (foreground source is never attenuated by the dark cloud).
+            Assert.AreEqual(aloneDark.PredictedSignal.SourceElectrons, diag.PredictedSignal.SourceElectrons, 1e-6,
+                $"Co-located {label} must not change the dark cloud's diffuse-only absorption deficit.");
+
+            // Variance must include the ~398,107 e- foreground shot noise, collapsing S/N below 5.0!
+            var varianceDelta = diag.PredictedSignal.NoiseVariance - aloneDark.PredictedSignal.NoiseVariance;
+            Assert.IsTrue(varianceDelta > 0.95 * expectedFgElectrons,
+                $"Dark-cloud aperture variance must include co-located {label} shot noise (~{expectedFgElectrons:F0}); got delta={varianceDelta:F1}.");
+            Assert.IsFalse(diag.Admitted,
+                $"20' dark cloud behind mag -4 {label} must drop below S/N 5.0 and be rejected; got S/N={diag.PredictedSignal.SignalToNoise:F3}.");
+            Assert.AreEqual("annotation-only-below-snr", diag.Reason);
+            Assert.IsTrue(diag.PredictedSignal.SignalToNoise is > 3.5 and < 5.0,
+                $"Expected dark-cloud S/N ~4.01 behind mag -4 {label}; got {diag.PredictedSignal.SignalToNoise:F3}.");
+        }
+    }
+
     private static ImageLayout Mono16Layout(int width, int height) =>
         new(width, height, CameraPixelFormat.Mono16, width * 2);
 

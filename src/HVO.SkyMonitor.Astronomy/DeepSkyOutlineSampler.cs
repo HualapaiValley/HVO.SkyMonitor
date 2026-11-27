@@ -118,7 +118,14 @@ public static class DeepSkyOutlineSampler
     public static DeepSkyOutlineSampleResult Sample(
         VisibleSceneRequest request,
         DeepSkyOutline outline,
-        string? sceneObjectId = null)
+        string? sceneObjectId = null) =>
+        Sample(request, outline, sceneObjectId, MaximumSubdivisionDepth);
+
+    internal static DeepSkyOutlineSampleResult Sample(
+        VisibleSceneRequest request,
+        DeepSkyOutline outline,
+        string? sceneObjectId,
+        int maxSubdivisionDepth)
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(outline);
@@ -144,6 +151,10 @@ public static class DeepSkyOutlineSampler
         var totalPoints = 0;
         var anyClipped = false;
         var baseStepRadians = MaximumBaseArcStepDegrees * Math.PI / 180d;
+        var needsRefractionFloorSplit = ResolvedFootprintSampler.RequiresRefractionFloorSplit(request);
+        var sinRefractionFloor = needsRefractionFloorSplit
+            ? Math.Sin(request.Refraction.MinimumAltitudeDegrees * Math.PI / 180d)
+            : double.NaN;
 
         foreach (var ring in outline.Rings)
         {
@@ -160,8 +171,9 @@ public static class DeepSkyOutlineSampler
                 directions[index] = CameraBasis.FromHorizontal(horizontal);
             }
 
-            var ringChords = new List<(PixelPoint From, PixelPoint To)>();
+            var ringChords = new List<ResolvedFootprintSampler.BranchedChord>();
             var ringClipped = false;
+            var ringErrorBoundExceeded = false;
             var boresight = CameraBasis.FromHorizontal(new AltAzPoint(
                 request.Projection.BoresightAltitudeDegrees,
                 request.Projection.BoresightAzimuthDegrees));
@@ -184,13 +196,16 @@ public static class DeepSkyOutlineSampler
                 var horizonHints = request.HorizonPolicy == HorizonPolicy.GeometricHorizon
                     ? ResolvedFootprintSampler.SolveGreatCirclePlaneRoots(start, end, new EnuVector(0, 0, 1), 0d)
                     : null;
+                var refractionFloorHints = needsRefractionFloorSplit
+                    ? ResolvedFootprintSampler.SolveGreatCirclePlaneRoots(start, end, new EnuVector(0, 0, 1), sinRefractionFloor)
+                    : null;
                 var domainHints = !request.Refraction.Enabled && minDomainCosine > -1d + 1e-12
                     ? ResolvedFootprintSampler.SolveGreatCirclePlaneRoots(start, end, boresight, minDomainCosine)
                     : null;
                 ResolvedFootprintSampler.AppendBoundarySafeCurve(
-                    request, basis, Arc, 0d, 1d, steps, angle, horizonHints, domainHints,
-                    MaximumSubdivisionDepth, ringChords, ref ringClipped);
-                if (ringChords.Count > ProjectedDeepSkyOutline.MaximumPointCount * 2)
+                    request, basis, Arc, 0d, 1d, steps, angle, horizonHints, refractionFloorHints, domainHints,
+                    maxSubdivisionDepth, ringChords, ref ringClipped, ref ringErrorBoundExceeded);
+                if (ringErrorBoundExceeded || ringChords.Count > ProjectedDeepSkyOutline.MaximumPointCount * 2)
                 {
                     return new DeepSkyOutlineSampleResult(
                         DeepSkyOutlineSampleStatus.InvalidGeometry,

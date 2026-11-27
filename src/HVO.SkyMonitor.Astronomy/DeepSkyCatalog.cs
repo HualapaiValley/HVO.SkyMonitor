@@ -1,5 +1,8 @@
+using System.Buffers.Binary;
 using System.Collections.ObjectModel;
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using HVO.SkyMonitor.AgentCore;
 
 namespace HVO.SkyMonitor.Astronomy;
@@ -342,6 +345,7 @@ public sealed class DeepSkyCatalog : IDeepSkyCatalog
     private readonly Dictionary<string, DeepSkyDesignations> _designationsById;
     private readonly SpatialEntry[] _byDeclination;
     private readonly double _maximumReachDegrees;
+    private readonly Lazy<string> _contentSha256;
 
     /// <summary>Validates and freezes a deep-sky collection.</summary>
     /// <exception cref="InvalidDataException">The collection breaks an invariant.</exception>
@@ -402,10 +406,17 @@ public sealed class DeepSkyCatalog : IDeepSkyCatalog
                 _designationsById[alias.ObjectId] |= Family(alias.Alias);
         _outlinesById = BuildOutlineIndex(outlines, _objectsById);
         (_byDeclination, _maximumReachDegrees) = BuildSpatialIndex(_objects, _outlinesById);
+        _contentSha256 = new Lazy<string>(ComputeContentSha256, LazyThreadSafetyMode.ExecutionAndPublication);
     }
 
     /// <inheritdoc />
     public DeepSkySemantics Semantics { get; }
+
+    /// <summary>
+    /// Gets the deterministic canonical SHA-256 hex digest of this immutable catalog's semantics, live objects,
+    /// aliases (including cross-references and duplicates), tombstones, and outlines. Computed lazily once.
+    /// </summary>
+    public string ContentSha256 => _contentSha256.Value;
 
     /// <inheritdoc />
     public IReadOnlyList<DeepSkyObject> Objects => _objects;
@@ -743,6 +754,181 @@ public sealed class DeepSkyCatalog : IDeepSkyCatalog
 
     private static bool IsText(string? value)
         => !string.IsNullOrWhiteSpace(value) && string.Equals(value, value.Trim(), StringComparison.Ordinal);
+
+    private string ComputeContentSha256()
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        hash.AppendData("deep-sky-catalog-content-v2\n"u8);
+
+        AppendString(hash, Semantics.SourceName);
+        AppendString(hash, Semantics.SourceVersion);
+        AppendString(hash, Semantics.SourceCommit);
+        AppendString(hash, Semantics.SourceUrl.AbsoluteUri);
+        AppendString(hash, Semantics.License);
+        AppendString(hash, Semantics.CoordinateFrame);
+        AppendString(hash, Semantics.CoordinateEpoch);
+        AppendString(hash, Semantics.AxisUnit);
+        AppendString(hash, Semantics.PositionAngleConvention);
+        AppendString(hash, Semantics.OutlineLevelConvention);
+        AppendString(hash, Semantics.SurfaceBrightnessUnit);
+        if (Semantics.SnapshotIdentity is { } snap)
+        {
+            AppendByte(hash, 1);
+            AppendString(hash, snap.CatalogId);
+            AppendString(hash, snap.PackageVersion);
+            AppendString(hash, snap.SchemaVersion);
+            AppendString(hash, snap.PreprocessingVersion);
+            AppendString(hash, snap.DatabaseSha256);
+        }
+        else
+        {
+            AppendByte(hash, 0);
+        }
+
+        AppendInt32(hash, _objects.Count);
+        foreach (var item in _objects)
+        {
+            AppendString(hash, item.Id);
+            AppendString(hash, item.Designation);
+            AppendString(hash, item.DisplayName);
+            AppendString(hash, item.ObjectType);
+            AppendDouble(hash, item.RightAscensionHours);
+            AppendDouble(hash, item.DeclinationDegrees);
+            AppendString(hash, item.Constellation);
+            AppendNullableDouble(hash, item.MajorAxisArcminutes);
+            AppendNullableDouble(hash, item.MinorAxisArcminutes);
+            AppendNullableDouble(hash, item.PositionAngleDegrees);
+            AppendNullableDouble(hash, item.BMagnitude);
+            AppendNullableDouble(hash, item.VMagnitude);
+            AppendNullableDouble(hash, item.SurfaceBrightness);
+            AppendNullableString(hash, item.HubbleType);
+            AppendNullableInt32(hash, item.MessierNumber);
+            AppendNullableInt32(hash, item.CaldwellNumber);
+            AppendNullableString(hash, item.HipparcosId);
+            AppendNullableString(hash, item.CommonName);
+        }
+
+        var orderedAliases = _aliases.Values
+            .SelectMany(static values => values)
+            .OrderBy(static a => a.ObjectId, StringComparer.Ordinal)
+            .ThenBy(static a => a.Alias, StringComparer.Ordinal)
+            .ThenBy(static a => a.Kind, StringComparer.Ordinal)
+            .ToArray();
+        AppendInt32(hash, orderedAliases.Length);
+        foreach (var alias in orderedAliases)
+        {
+            AppendString(hash, alias.ObjectId);
+            AppendString(hash, alias.Alias);
+            AppendString(hash, alias.Kind);
+        }
+
+        AppendInt32(hash, _tombstones.Count);
+        foreach (var tombstone in _tombstones)
+        {
+            AppendString(hash, tombstone.Id);
+            AppendString(hash, tombstone.Designation);
+            AppendString(hash, tombstone.Reason);
+            AppendInt32(hash, tombstone.Candidates.Count);
+            foreach (var candidate in tombstone.Candidates)
+            {
+                AppendString(hash, candidate);
+            }
+        }
+
+        var outlineEntries = _outlinesById
+            .OrderBy(static pair => pair.Key, StringComparer.Ordinal)
+            .ToArray();
+        AppendInt32(hash, outlineEntries.Length);
+        foreach (var (objectId, outlines) in outlineEntries)
+        {
+            AppendString(hash, objectId);
+            AppendInt32(hash, outlines.Count);
+            foreach (var outline in outlines)
+            {
+                AppendInt32(hash, outline.Level);
+                AppendInt32(hash, outline.Rings.Count);
+                foreach (var ring in outline.Rings)
+                {
+                    AppendInt32(hash, ring.Points.Count);
+                    foreach (var point in ring.Points)
+                    {
+                        AppendDouble(hash, point.RightAscensionDegrees);
+                        AppendDouble(hash, point.DeclinationDegrees);
+                    }
+                }
+            }
+        }
+
+        return Convert.ToHexString(hash.GetHashAndReset());
+    }
+
+    private static void AppendByte(IncrementalHash hash, byte value)
+    {
+        Span<byte> buf = stackalloc byte[1];
+        buf[0] = value;
+        hash.AppendData(buf);
+    }
+
+    private static void AppendInt32(IncrementalHash hash, int value)
+    {
+        Span<byte> buf = stackalloc byte[4];
+        BinaryPrimitives.WriteInt32LittleEndian(buf, value);
+        hash.AppendData(buf);
+    }
+
+    private static void AppendDouble(IncrementalHash hash, double value)
+    {
+        Span<byte> buf = stackalloc byte[8];
+        var normalized = value == 0d ? 0d : value;
+        BinaryPrimitives.WriteInt64LittleEndian(buf, BitConverter.DoubleToInt64Bits(normalized));
+        hash.AppendData(buf);
+    }
+
+    private static void AppendNullableDouble(IncrementalHash hash, double? value)
+    {
+        if (value is { } v)
+        {
+            AppendByte(hash, 1);
+            AppendDouble(hash, v);
+        }
+        else
+        {
+            AppendByte(hash, 0);
+        }
+    }
+
+    private static void AppendNullableInt32(IncrementalHash hash, int? value)
+    {
+        if (value is { } v)
+        {
+            AppendByte(hash, 1);
+            AppendInt32(hash, v);
+        }
+        else
+        {
+            AppendByte(hash, 0);
+        }
+    }
+
+    private static void AppendString(IncrementalHash hash, string value)
+    {
+        var bytes = Encoding.UTF8.GetBytes(value);
+        AppendInt32(hash, bytes.Length);
+        hash.AppendData(bytes);
+    }
+
+    private static void AppendNullableString(IncrementalHash hash, string? value)
+    {
+        if (value is not null)
+        {
+            AppendByte(hash, 1);
+            AppendString(hash, value);
+        }
+        else
+        {
+            AppendByte(hash, 0);
+        }
+    }
 
     /// <summary>An object's place in the declination index: its J2000 direction and the reach of its extent.</summary>
     private readonly record struct SpatialEntry(int Index, double DeclinationDegrees, Direction Direction, double ReachDegrees);

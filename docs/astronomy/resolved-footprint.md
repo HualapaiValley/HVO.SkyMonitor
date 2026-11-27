@@ -65,11 +65,16 @@ when it does not.
   byte-frozen for `projected-scene-v2`.
 - Versioned boundary-safe sampling (`ResolvedFootprintSampler.SampleBoundarySafe`,
   `resolved-footprint-limb-adaptive-v2`) is used for `projected-scene-v3` deep-sky extents and shared with
-  `DeepSkyOutlineSampler`. It isolates geometric horizon (`Up >= 0`), optical projection domain
-  (`cz >= minDomainCosine`), and sensor/aperture boundaries sequentially via Lipschitz exclusion, 60-iteration
-  golden-section extremum search (including curved sensor/aperture boundary excursion splitting between adjacent
-  inside samples), and 52-bit inside-bracket bisection so arbitrarily narrow horizon/domain grazes remain
-  visible without fabricating exterior connecting chords.
+  `DeepSkyOutlineSampler`. It isolates geometric horizon (`Up >= 0`), the Bennett refraction altitude floor
+  (`MinimumAltitudeDegrees`, pinning above-floor and below-floor pieces to their smooth one-sided limits and
+  never stitching across branch breaks), optical projection domain (`cz >= minDomainCosine`), and
+  sensor/aperture boundaries sequentially via Lipschitz exclusion, 60-iteration golden-section extremum search
+  (including curved sensor/aperture boundary excursion splitting between adjacent inside samples), and 52-bit
+  inside-bracket bisection so arbitrarily narrow horizon/domain grazes remain visible without fabricating
+  exterior connecting chords or bridging refraction jumps. If a chord cannot satisfy `MaximumChordErrorPixels`
+  within the subdivision budget, `SampleBoundarySafe` fails explicitly via `InvalidOperationException` (degrading
+  only that single extent to `FootprintLimit` inside `DeepSkySceneProjector`), and `DeepSkyOutlineSampler.Sample`
+  returns `InvalidGeometry` without aborting sibling objects.
 - Great-circle catalog outlines share `AppendBoundarySafeCurve` through `DeepSkyOutlineSampler`, rejecting
   antipodal or near-antipodal edges (`>= π - 1e-5 rad`) honestly without inventing ambiguous great-circle
   routes or aborting sibling objects in a scene. See

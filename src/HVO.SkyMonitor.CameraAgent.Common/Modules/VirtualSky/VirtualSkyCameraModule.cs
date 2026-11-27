@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Globalization;
-using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -47,7 +46,6 @@ public sealed class VirtualSkyCameraModule(
         Converters = { new JsonStringEnumConverter() }
     };
     private static readonly JsonSerializerOptions SceneIdentitySerializerOptions = CreateSceneIdentitySerializerOptions();
-    private static readonly ConditionalWeakTable<IDeepSkyCatalog, Lazy<string>> InMemoryDeepSkyCatalogContentHashes = new();
     private static readonly VirtualSimulatedFocusOptions DefaultSimulatedFocus = new();
     private CameraModuleConfig? _config;
     private VirtualSkyCameraModuleOptions _options = new();
@@ -455,7 +453,9 @@ public sealed class VirtualSkyCameraModule(
         var predictionProcessCpuMilliseconds = (ReadProcessCpu() - predictionCpuStarted).TotalMilliseconds;
         DeepSkyRenderPlan? deepSkyPlan = null;
         IDeepSkyCatalog? activeRenderDeepSkyCatalog = null;
+        PerCaptureOutlineCachingDeepSkyCatalog? outlineCachingCatalog = null;
         DeepSkyObject[]? dsoCandidates = null;
+        var dsoQueryMatchCount = 0;
         var deepSkyCandidateSelectMilliseconds = 0d;
         var deepSkyPrepareMilliseconds = 0d;
         var deepSkyPrepareProcessCpuMilliseconds = 0d;
@@ -469,7 +469,19 @@ public sealed class VirtualSkyCameraModule(
                 throw new InvalidOperationException(
                     "Extended deep-sky rendering requires an installed deep-sky catalog or declared synthetic scenario.");
             }
-            dsoCandidates = SelectDeepSkyRenderCandidates(activeRenderDeepSkyCatalog, deepSkyRender, sceneRequest);
+            var captureDeepSkyCatalog = activeRenderDeepSkyCatalog;
+            if (activeRenderDeepSkyCatalog is not null &&
+                activeRenderDeepSkyCatalog is not DeepSkyCatalog &&
+                string.IsNullOrWhiteSpace(activeRenderDeepSkyCatalog.Semantics.SnapshotIdentity?.DatabaseSha256))
+            {
+                outlineCachingCatalog = new PerCaptureOutlineCachingDeepSkyCatalog(activeRenderDeepSkyCatalog);
+                captureDeepSkyCatalog = outlineCachingCatalog;
+            }
+            if (SelectDeepSkyRenderCandidates(captureDeepSkyCatalog, deepSkyRender, sceneRequest) is { } selectedCandidates)
+            {
+                dsoCandidates = selectedCandidates.Candidates;
+                dsoQueryMatchCount = selectedCandidates.QueryMatchCount;
+            }
             deepSkyCandidateSelectMilliseconds = Stopwatch.GetElapsedTime(dsoStarted).TotalMilliseconds;
             var dsoSettings = new DeepSkyRenderSettings(
                 MinimumSignalToNoise: deepSkyRender.MinimumSignalToNoise,
@@ -495,7 +507,7 @@ public sealed class VirtualSkyCameraModule(
                 MinimumTemporalSamples: _cloudField?.Definition.TemporalSampleCount ?? 1);
             deepSkyPlan = DeepSkyRenderPlan.Prepare(
                 sceneRequest,
-                activeRenderDeepSkyCatalog,
+                captureDeepSkyCatalog,
                 dsoCandidates,
                 stellarPlan.Sources.Select(static source => source.Source.Source),
                 initialRenderOptions,
@@ -557,7 +569,11 @@ public sealed class VirtualSkyCameraModule(
         CatalogSnapshotIdentity? resolvedRenderDeepSkyCatalogIdentity = null;
         if (_options.RenderDeepSkySources is { Enabled: true } deepSkyRenderIdentity)
         {
-            resolvedRenderDeepSkyCatalogIdentity = ResolveRenderDeepSkyCatalogIdentity(activeRenderDeepSkyCatalog, dsoCandidates);
+            resolvedRenderDeepSkyCatalogIdentity = ResolveRenderDeepSkyCatalogIdentity(
+                activeRenderDeepSkyCatalog,
+                outlineCachingCatalog,
+                dsoCandidates,
+                dsoQueryMatchCount);
             var renderCatalogIdentity = activeRenderDeepSkyCatalog is null
                 ? "none"
                 : CaptureContractJson.ComputeCanonicalJsonSha256(
@@ -1701,7 +1717,9 @@ public sealed class VirtualSkyCameraModule(
 
     private static CatalogSnapshotIdentity? ResolveRenderDeepSkyCatalogIdentity(
         IDeepSkyCatalog? catalog,
-        DeepSkyObject[]? selectedCandidates)
+        PerCaptureOutlineCachingDeepSkyCatalog? outlineCache,
+        DeepSkyObject[]? selectedCandidates,
+        int queryMatchCount)
     {
         if (catalog is null)
         {
@@ -1713,67 +1731,68 @@ public sealed class VirtualSkyCameraModule(
             return snapshot;
         }
 
-        // Bind immutable in-memory or snapshotless catalog content deterministically so distinct DSO catalogs
-        // never collide on SceneId or report null DSO provenance when raw deep-sky rendering is enabled.
-        string contentSha256;
-        if (catalog is DeepSkyCatalog)
+        var semantics = catalog.Semantics;
+        // For immutable in-memory DeepSkyCatalog instances, use its lazily-cached full content hash (covering
+        // semantics, objects, aliases including cross-references, tombstones, and outlines) in O(1) per capture.
+        if (catalog is DeepSkyCatalog concreteCatalog)
         {
-            contentSha256 = InMemoryDeepSkyCatalogContentHashes
-                .GetValue(catalog, static c => new Lazy<string>(
-                    () => ComputeDeepSkyCatalogContentSha256(c, null),
-                    LazyThreadSafetyMode.ExecutionAndPublication))
-                .Value;
-        }
-        else
-        {
-            contentSha256 = ComputeDeepSkyCatalogContentSha256(catalog, selectedCandidates);
+            return new CatalogSnapshotIdentity(
+                CatalogId: $"{semantics.SourceName}:content",
+                PackageVersion: semantics.SourceVersion,
+                SchemaVersion: "in-memory-content-v1",
+                PreprocessingVersion: "canonical-v2",
+                DatabaseSha256: concreteCatalog.ContentSha256);
         }
 
-        var semantics = catalog.Semantics;
+        // For custom snapshotless IDeepSkyCatalog implementations, bind semantics, summary counts, and ONLY the
+        // bounded per-frame selected candidates and their cached outlines so per-frame work stays strictly bounded
+        // by MaximumCandidates without enumerating or querying outlines for the entire catalog.
+        var selectionSha256 = ComputeBoundedSelectionContentSha256(
+            catalog, outlineCache, selectedCandidates, queryMatchCount);
         return new CatalogSnapshotIdentity(
-            CatalogId: $"{semantics.SourceName}:content",
+            CatalogId: $"{semantics.SourceName}:selection",
             PackageVersion: semantics.SourceVersion,
-            SchemaVersion: "in-memory-content-v1",
+            SchemaVersion: "selection-content-v1",
             PreprocessingVersion: "canonical-json-v1",
-            DatabaseSha256: contentSha256);
+            DatabaseSha256: selectionSha256);
     }
 
-    private static string ComputeDeepSkyCatalogContentSha256(
+    private static string ComputeBoundedSelectionContentSha256(
         IDeepSkyCatalog catalog,
-        DeepSkyObject[]? selectedCandidates)
+        PerCaptureOutlineCachingDeepSkyCatalog? outlineCache,
+        DeepSkyObject[]? selectedCandidates,
+        int queryMatchCount)
     {
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-        hash.AppendData("deep-sky-catalog-content-v1\n"u8);
+        hash.AppendData("deep-sky-selection-content-v1\n"u8);
         var canonicalSemantics = CaptureContractJson.Canonicalize(CaptureContractJson.SerializeToElement(catalog.Semantics));
         hash.AppendData(JsonSerializer.SerializeToUtf8Bytes(canonicalSemantics));
         hash.AppendData("\n"u8);
+        hash.AppendData(Encoding.UTF8.GetBytes(string.Create(
+            CultureInfo.InvariantCulture,
+            $"counts:{catalog.Objects.Count}:{catalog.AliasCount}:{catalog.Tombstones.Count}:{queryMatchCount}\n")));
 
-        var objectsById = new SortedDictionary<string, DeepSkyObject>(StringComparer.Ordinal);
-        foreach (var item in catalog.Objects)
+        if (selectedCandidates is { Length: > 0 })
         {
-            objectsById[item.Id] = item;
-        }
-        if (selectedCandidates is not null)
-        {
-            foreach (var item in selectedCandidates)
+            var sorted = new DeepSkyObject[selectedCandidates.Length];
+            Array.Copy(selectedCandidates, sorted, selectedCandidates.Length);
+            Array.Sort(sorted, static (left, right) => StringComparer.Ordinal.Compare(left.Id, right.Id));
+            foreach (var item in sorted)
             {
-                objectsById.TryAdd(item.Id, item);
-            }
-        }
-
-        foreach (var item in objectsById.Values)
-        {
-            var canonicalObj = CaptureContractJson.Canonicalize(CaptureContractJson.SerializeToElement(item));
-            hash.AppendData(JsonSerializer.SerializeToUtf8Bytes(canonicalObj));
-            hash.AppendData("\n"u8);
-            var outlines = catalog.GetOutlines(item.Id);
-            if (outlines.Count > 0)
-            {
-                foreach (var outline in outlines.OrderBy(static o => o.Level))
+                var canonicalObj = CaptureContractJson.Canonicalize(CaptureContractJson.SerializeToElement(item));
+                hash.AppendData(JsonSerializer.SerializeToUtf8Bytes(canonicalObj));
+                hash.AppendData("\n"u8);
+                var outlines = outlineCache is not null
+                    ? outlineCache.GetOutlines(item.Id)
+                    : catalog.GetOutlines(item.Id);
+                if (outlines.Count > 0)
                 {
-                    var canonicalOutline = CaptureContractJson.Canonicalize(CaptureContractJson.SerializeToElement(outline));
-                    hash.AppendData(JsonSerializer.SerializeToUtf8Bytes(canonicalOutline));
-                    hash.AppendData("\n"u8);
+                    foreach (var outline in outlines.OrderBy(static o => o.Level))
+                    {
+                        var canonicalOutline = CaptureContractJson.Canonicalize(CaptureContractJson.SerializeToElement(outline));
+                        hash.AppendData(JsonSerializer.SerializeToUtf8Bytes(canonicalOutline));
+                        hash.AppendData("\n"u8);
+                    }
                 }
             }
         }
@@ -1781,7 +1800,7 @@ public sealed class VirtualSkyCameraModule(
         return Convert.ToHexString(hash.GetHashAndReset());
     }
 
-    private static DeepSkyObject[]? SelectDeepSkyRenderCandidates(
+    private static (DeepSkyObject[] Candidates, int QueryMatchCount)? SelectDeepSkyRenderCandidates(
         IDeepSkyCatalog? catalog,
         VirtualSkyDeepSkyRenderOptions options,
         VisibleSceneRequest sceneRequest)
@@ -1806,11 +1825,41 @@ public sealed class VirtualSkyCameraModule(
         var baseQuery = options.Query is { } query
             ? query.ToQuery(queryLimit) with { Region = cap }
             : new DeepSkyQuery(queryLimit, Region: cap);
-        var matches = catalog.Query(baseQuery).Objects.ToArray();
+        var queryResult = catalog.Query(baseQuery);
+        var matches = queryResult.Objects.ToArray();
         Array.Sort(matches, DeepSkyRenderPlan.CompareCandidatePriority);
-        return matches.Length <= options.MaximumCandidates
+        var bounded = matches.Length <= options.MaximumCandidates
             ? matches
             : matches[..options.MaximumCandidates];
+        return (bounded, queryResult.MatchCount);
+    }
+
+    /// <summary>
+    /// Scoped to a single capture for snapshotless custom <see cref="IDeepSkyCatalog"/> instances so
+    /// <see cref="DeepSkyRenderPlan.Prepare"/> and capture identity hashing share the exact bounded outline lookups.
+    /// </summary>
+    private sealed class PerCaptureOutlineCachingDeepSkyCatalog(IDeepSkyCatalog inner) : IDeepSkyCatalog
+    {
+        private readonly Dictionary<string, IReadOnlyList<DeepSkyOutline>> _outlineCache = new(StringComparer.Ordinal);
+
+        public DeepSkySemantics Semantics => inner.Semantics;
+        public IReadOnlyList<DeepSkyObject> Objects => inner.Objects;
+        public int AliasCount => inner.AliasCount;
+        public IReadOnlyList<DeepSkyTombstone> Tombstones => inner.Tombstones;
+        public bool TryGetObject(string objectId, out DeepSkyObject value) => inner.TryGetObject(objectId, out value);
+        public IReadOnlyList<DeepSkyAlias> FindByAlias(string designation) => inner.FindByAlias(designation);
+        public bool TryGetTombstone(string id, out DeepSkyTombstone tombstone) => inner.TryGetTombstone(id, out tombstone);
+        public DeepSkyQueryResult Query(DeepSkyQuery query) => inner.Query(query);
+
+        public IReadOnlyList<DeepSkyOutline> GetOutlines(string objectId)
+        {
+            if (!_outlineCache.TryGetValue(objectId, out var outlines))
+            {
+                outlines = inner.GetOutlines(objectId);
+                _outlineCache[objectId] = outlines;
+            }
+            return outlines;
+        }
     }
 
     private static SolarSystemBody[] ParseSolarSystemBodies(IEnumerable<string> names)

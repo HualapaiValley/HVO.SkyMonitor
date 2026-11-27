@@ -200,10 +200,23 @@ public static class ResolvedFootprintSampler
         return BuildFootprint(request, id, displayName, sourceKind, AlgorithmVersion, extent, geometricCenter, appearance, chords, clipped);
     }
 
+    internal enum RefractionEvaluationBranch
+    {
+        Default,
+        ForceRefracted,
+        ForceUnrefracted
+    }
+
+    internal readonly record struct BranchedChord(
+        PixelPoint From,
+        PixelPoint To,
+        RefractionEvaluationBranch Branch);
+
     /// <summary>
-    /// Samples a source outline using constraint-isolated horizon, optical-domain, and sensor/aperture boundary
-    /// clipping (<see cref="BoundarySafeAlgorithmVersion"/>). Preserves visibility of arbitrarily narrow horizon
-    /// and domain grazes without fabricating chords across exterior gaps.
+    /// Samples a source outline using constraint-isolated horizon, refraction-floor, optical-domain, and
+    /// sensor/aperture boundary clipping (<see cref="BoundarySafeAlgorithmVersion"/>). Preserves visibility of
+    /// arbitrarily narrow horizon and domain grazes without fabricating chords across exterior gaps or refraction
+    /// discontinuities, and fails explicitly if its chord error bound cannot be met within the subdivision budget.
     /// </summary>
     public static ProjectedResolvedFootprint? SampleBoundarySafe(
         VisibleSceneRequest request,
@@ -212,12 +225,25 @@ public static class ResolvedFootprintSampler
         ResolvedFootprintSourceKind sourceKind,
         ResolvedFootprintExtent extent,
         AltAzPoint geometricCenter,
-        ResolvedBodyAppearance? appearance)
+        ResolvedBodyAppearance? appearance) =>
+        SampleBoundarySafe(
+            request, id, displayName, sourceKind, extent, geometricCenter, appearance, MaximumSubdivisionDepth);
+
+    internal static ProjectedResolvedFootprint? SampleBoundarySafe(
+        VisibleSceneRequest request,
+        string id,
+        string displayName,
+        ResolvedFootprintSourceKind sourceKind,
+        ResolvedFootprintExtent extent,
+        AltAzPoint geometricCenter,
+        ResolvedBodyAppearance? appearance,
+        int maxSubdivisionDepth)
     {
         var (_, basis, limb, semiMajorRadians) = PrepareEllipse(request, id, displayName, sourceKind, extent, geometricCenter);
 
-        var chords = new List<(PixelPoint From, PixelPoint To)>();
+        var chords = new List<BranchedChord>();
         var clipped = false;
+        var errorBoundExceeded = false;
         AppendBoundarySafeCurve(
             request,
             basis,
@@ -227,11 +253,18 @@ public static class ResolvedFootprintSampler
             BaseSampleCount,
             semiMajorRadians,
             analyticHorizonHints: null,
+            analyticRefractionFloorHints: null,
             analyticDomainHints: null,
-            MaximumSubdivisionDepth,
+            maxSubdivisionDepth,
             chords,
-            ref clipped);
-        return BuildFootprint(request, id, displayName, sourceKind, BoundarySafeAlgorithmVersion, extent, geometricCenter, appearance, chords, clipped);
+            ref clipped,
+            ref errorBoundExceeded);
+        if (errorBoundExceeded)
+        {
+            throw new InvalidOperationException(
+                "Resolved footprint sampler exceeded maximum subdivision depth without meeting its chord error bound.");
+        }
+        return BuildFootprint(request, id, displayName, sourceKind, BoundarySafeAlgorithmVersion, extent, geometricCenter, appearance, Stitch(chords, closedCandidate: !clipped));
     }
 
     private static (ResolvedSourceFrame Frame, CameraBasis Basis, Func<double, EnuVector> Limb, double SemiMajorRadians) PrepareEllipse(
@@ -276,9 +309,21 @@ public static class ResolvedFootprintSampler
         AltAzPoint geometricCenter,
         ResolvedBodyAppearance? appearance,
         List<(PixelPoint From, PixelPoint To)> chords,
-        bool clipped)
+        bool clipped) =>
+        BuildFootprint(request, id, displayName, sourceKind, samplingAlgorithmVersion, extent, geometricCenter, appearance,
+            Stitch(chords, closedCandidate: !clipped));
+
+    private static ProjectedResolvedFootprint? BuildFootprint(
+        VisibleSceneRequest request,
+        string id,
+        string displayName,
+        ResolvedFootprintSourceKind sourceKind,
+        string samplingAlgorithmVersion,
+        ResolvedFootprintExtent extent,
+        AltAzPoint geometricCenter,
+        ResolvedBodyAppearance? appearance,
+        List<ResolvedFootprintPart> parts)
     {
-        var parts = Stitch(chords, closedCandidate: !clipped);
         if (parts.Count == 0) return null;
         if (parts.Count > ProjectedResolvedFootprint.MaximumPartCount ||
             parts.Sum(static part => part.Points.Count) > ProjectedResolvedFootprint.MaximumPointCount)
@@ -346,6 +391,48 @@ public static class ResolvedFootprintSampler
         return runs
             .Where(static run => run.Count >= 2)
             .Select(static run => new ResolvedFootprintPart(false, new ReadOnlyCollection<PixelPoint>(run)))
+            .ToList();
+    }
+
+    /// <summary>
+    /// Joins ordered branch-tagged chords into polylines without ever merging runs across a refraction-floor
+    /// discontinuity branch break, while still stitching continuous same-branch runs across the periodic seam.
+    /// </summary>
+    internal static List<ResolvedFootprintPart> Stitch(
+        IReadOnlyList<BranchedChord> chords,
+        bool closedCandidate)
+    {
+        var runs = new List<(List<PixelPoint> Points, RefractionEvaluationBranch Branch)>();
+        foreach (var (from, to, branch) in chords)
+        {
+            if (Distance(from, to) <= JoinTolerancePixels) continue;
+            if (runs.Count == 0 ||
+                runs[^1].Branch != branch ||
+                Distance(runs[^1].Points[^1], from) > JoinTolerancePixels)
+            {
+                runs.Add(([from], branch));
+            }
+            runs[^1].Points.Add(to);
+        }
+        if (runs.Count == 0) return [];
+        var sameSeamBranch = runs[^1].Branch == runs[0].Branch;
+        var loops = sameSeamBranch && Distance(runs[^1].Points[^1], runs[0].Points[0]) <= JoinTolerancePixels;
+        if (runs.Count == 1 && closedCandidate && loops && runs[0].Points.Count >= 4)
+        {
+            runs[0].Points.RemoveAt(runs[0].Points.Count - 1);
+            return [new ResolvedFootprintPart(true, new ReadOnlyCollection<PixelPoint>(runs[0].Points))];
+        }
+        if (runs.Count > 1 && loops)
+        {
+            var last = runs[^1].Points;
+            last.RemoveAt(last.Count - 1);
+            last.AddRange(runs[0].Points);
+            runs[0] = (last, runs[0].Branch);
+            runs.RemoveAt(runs.Count - 1);
+        }
+        return runs
+            .Where(static run => run.Points.Count >= 2)
+            .Select(static run => new ResolvedFootprintPart(false, new ReadOnlyCollection<PixelPoint>(run.Points)))
             .ToList();
     }
 
@@ -496,6 +583,11 @@ public static class ResolvedFootprintSampler
         output.Add((clippedFrom, clippedTo));
     }
 
+    internal static bool RequiresRefractionFloorSplit(VisibleSceneRequest request) =>
+        request.Refraction.Enabled &&
+        request.Refraction.MinimumAltitudeDegrees > -90d &&
+        !(request.HorizonPolicy == HorizonPolicy.GeometricHorizon && request.Refraction.MinimumAltitudeDegrees <= 0d);
+
     internal static void AppendBoundarySafeCurve(
         VisibleSceneRequest request,
         CameraBasis basis,
@@ -505,22 +597,25 @@ public static class ResolvedFootprintSampler
         int baseSteps,
         double maxAngularSpeedRadiansPerParam,
         IReadOnlyList<double>? analyticHorizonHints,
+        IReadOnlyList<double>? analyticRefractionFloorHints,
         IReadOnlyList<double>? analyticDomainHints,
         int maxDepth,
-        List<(PixelPoint From, PixelPoint To)> output,
-        ref bool clipped)
+        List<BranchedChord> output,
+        ref bool clipped,
+        ref bool errorBoundExceeded)
     {
         if (tEnd <= tStart) return;
+        var fullSpan = tEnd - tStart;
         var intervals = new List<(double From, double To)> { (tStart, tEnd) };
 
-        // Stage 1: Isolate geometric horizon feasibility using smooth Up(t) >= 0 with Lipschitz exclusion + extremum search.
+        // Stage 1a: Isolate geometric horizon feasibility using smooth Up(t) >= 0 with Lipschitz exclusion + extremum search.
         if (request.HorizonPolicy == HorizonPolicy.GeometricHorizon)
         {
             var horizonIntervals = new List<(double From, double To)>();
             var allAbove = true;
             foreach (var (a, b) in intervals)
             {
-                var steps = Math.Max(1, (int)Math.Ceiling(baseSteps * (b - a) / (tEnd - tStart)));
+                var steps = Math.Max(1, (int)Math.Ceiling(baseSteps * (b - a) / fullSpan));
                 var sub = IsolatePositiveIntervals(
                     t => curve(t).Up,
                     a, b, steps,
@@ -535,35 +630,94 @@ public static class ResolvedFootprintSampler
             if (intervals.Count == 0) return;
         }
 
-        // Stage 2: Isolate optical projection domain feasibility (cz >= minDomainCosine) on apparent directions.
+        // Stage 1b: Split across the Bennett refraction altitude floor discontinuity (MinimumAltitudeDegrees)
+        // whenever both sides of the floor are reachable, pinning each piece to its smooth one-sided limit so
+        // no chord ever bridges across the altitude step jump.
+        var branchedIntervals = new List<(double From, double To, RefractionEvaluationBranch Branch)>();
+        if (RequiresRefractionFloorSplit(request))
+        {
+            var sinFloor = Math.Sin(request.Refraction.MinimumAltitudeDegrees * Math.PI / 180d);
+            var hasAbove = false;
+            var hasBelow = false;
+            foreach (var (a, b) in intervals)
+            {
+                var steps = Math.Max(1, (int)Math.Ceiling(baseSteps * (b - a) / fullSpan));
+                var above = IsolatePositiveIntervals(
+                    t => curve(t).Up - sinFloor,
+                    a, b, steps,
+                    Math.Max(1e-9, maxAngularSpeedRadiansPerParam),
+                    analyticRefractionFloorHints,
+                    out _);
+                foreach (var sub in above)
+                {
+                    if (sub.To - sub.From <= 1e-14 * Math.Max(1d, fullSpan)) continue;
+                    hasAbove = true;
+                    branchedIntervals.Add((sub.From, sub.To, RefractionEvaluationBranch.ForceRefracted));
+                }
+
+                var below = IsolatePositiveIntervals(
+                    t => sinFloor - curve(t).Up,
+                    a, b, steps,
+                    Math.Max(1e-9, maxAngularSpeedRadiansPerParam),
+                    analyticRefractionFloorHints,
+                    out _);
+                foreach (var sub in below)
+                {
+                    if (sub.To - sub.From <= 1e-14 * Math.Max(1d, fullSpan)) continue;
+                    var midBelow = sinFloor - curve(0.5 * (sub.From + sub.To)).Up;
+                    if (midBelow <= 1e-14)
+                    {
+                        var peakT = MaximizeGolden(t => sinFloor - curve(t).Up, sub.From, sub.To, ConstraintGoldenIterations);
+                        if (sinFloor - curve(peakT).Up <= 1e-14) continue;
+                    }
+                    hasBelow = true;
+                    branchedIntervals.Add((sub.From, sub.To, RefractionEvaluationBranch.ForceUnrefracted));
+                }
+            }
+            if (hasAbove && hasBelow) clipped = true;
+            branchedIntervals.Sort(static (left, right) => left.From.CompareTo(right.From));
+            if (branchedIntervals.Count == 0) return;
+        }
+        else
+        {
+            foreach (var (a, b) in intervals)
+            {
+                branchedIntervals.Add((a, b, RefractionEvaluationBranch.Default));
+            }
+        }
+
+        // Stage 2: Isolate optical projection domain feasibility (cz >= minDomainCosine) on each branch's apparent directions.
         var minDomainCosine = ComputeMinimumDomainCosine(request.Projection);
         if (minDomainCosine > -1d + 1e-12)
         {
-            var domainIntervals = new List<(double From, double To)>();
-            var domainSpeed = Math.Max(1e-9, maxAngularSpeedRadiansPerParam * (request.Refraction.Enabled ? 1.25 : 1d));
-            var refractionAllowance = request.Refraction.Enabled ? 0.015 : 0d;
+            var domainIntervals = new List<(double From, double To, RefractionEvaluationBranch Branch)>();
             var allInDomain = true;
-            foreach (var (a, b) in intervals)
+            foreach (var (a, b, branch) in branchedIntervals)
             {
-                var steps = Math.Max(1, (int)Math.Ceiling(baseSteps * (b - a) / (tEnd - tStart)));
+                var branchRefracted = request.Refraction.Enabled && branch != RefractionEvaluationBranch.ForceUnrefracted;
+                var domainSpeed = Math.Max(1e-9, maxAngularSpeedRadiansPerParam * (branchRefracted ? 1.25 : 1d));
+                var refractionAllowance = branchRefracted ? 0.015 : 0d;
+                var steps = Math.Max(1, (int)Math.Ceiling(baseSteps * (b - a) / fullSpan));
                 var sub = IsolatePositiveIntervals(
-                    t => DomainMargin(request, basis, curve(t), minDomainCosine),
+                    t => DomainMargin(request, basis, branch, curve(t), minDomainCosine),
                     a, b, steps,
                     domainSpeed,
                     analyticDomainHints,
                     out var fullyPositive,
                     extraExclusionAllowance: refractionAllowance);
                 if (!fullyPositive) allInDomain = false;
-                domainIntervals.AddRange(sub);
+                foreach (var piece in sub)
+                {
+                    domainIntervals.Add((piece.From, piece.To, branch));
+                }
             }
             if (!allInDomain) clipped = true;
-            intervals = domainIntervals;
-            if (intervals.Count == 0) return;
+            branchedIntervals = domainIntervals;
+            if (branchedIntervals.Count == 0) return;
         }
 
         // Stage 3: Adaptive chord subdivision and sensor/aperture boundary bisection on each domain-feasible arc.
-        var fullSpan = tEnd - tStart;
-        foreach (var (a, b) in intervals)
+        foreach (var (a, b, branch) in branchedIntervals)
         {
             if (b - a <= 1e-14 * Math.Max(1d, fullSpan)) continue;
             var steps = Math.Max(1, (int)Math.Ceiling(baseSteps * (b - a) / fullSpan));
@@ -572,7 +726,10 @@ public static class ResolvedFootprintSampler
             {
                 var segFrom = a + index * step;
                 var segTo = index == steps - 1 ? b : a + (index + 1) * step;
-                AppendFeasibleChord(request, basis, curve, segFrom, segTo, 0, maxDepth, output, ref clipped);
+                AppendFeasibleChord(
+                    request, basis, branch, curve, segFrom, segTo, 0, maxDepth,
+                    output, ref clipped, ref errorBoundExceeded);
+                if (errorBoundExceeded) return;
             }
         }
     }
@@ -634,17 +791,66 @@ public static class ResolvedFootprintSampler
         };
     }
 
+    private static bool TryProjectGeometryForBranch(
+        VisibleSceneRequest request,
+        CameraBasis basis,
+        RefractionEvaluationBranch branch,
+        EnuVector geometricDirection,
+        out PixelPoint pixel)
+    {
+        if (branch == RefractionEvaluationBranch.Default || !request.Refraction.Enabled)
+        {
+            return VisibleSceneBuilder.TryProjectGeometry(request, basis, geometricDirection, out pixel);
+        }
+        if (request.HorizonPolicy == HorizonPolicy.GeometricHorizon && geometricDirection.Up < 0)
+        {
+            pixel = default;
+            return false;
+        }
+        if (branch == RefractionEvaluationBranch.ForceUnrefracted)
+        {
+            return VisibleSceneBuilder.TryProjectGeometry(
+                request.Projection, HorizonPolicy.ProjectionOnly, new RefractionOptions(false), basis, geometricDirection, out pixel);
+        }
+        var geometric = CameraBasis.ToHorizontal(geometricDirection);
+        var evalAlt = Math.Max(geometric.AltitudeDegrees, request.Refraction.MinimumAltitudeDegrees);
+        var apparentAlt = AtmosphericRefraction.Apply(evalAlt, request.Refraction);
+        var apparent = CameraBasis.FromHorizontal(geometric with { AltitudeDegrees = apparentAlt });
+        return VisibleSceneBuilder.TryProjectGeometry(
+            request.Projection, HorizonPolicy.ProjectionOnly, new RefractionOptions(false), basis, apparent, out pixel);
+    }
+
+    private static bool TryProjectVisibleForBranch(
+        VisibleSceneRequest request,
+        CameraBasis basis,
+        RefractionEvaluationBranch branch,
+        EnuVector direction,
+        out PixelPoint pixel)
+    {
+        if (TryProjectGeometryForBranch(request, basis, branch, direction, out pixel) &&
+            IsInsideProjection(request.Projection, pixel))
+        {
+            pixel = ClampToProjection(request.Projection, pixel);
+            return true;
+        }
+        return false;
+    }
+
     private static double DomainMargin(
         VisibleSceneRequest request,
         CameraBasis basis,
+        RefractionEvaluationBranch branch,
         EnuVector geometricDirection,
         double minDomainCosine)
     {
         var apparent = geometricDirection;
-        if (request.Refraction.Enabled)
+        if (request.Refraction.Enabled && branch != RefractionEvaluationBranch.ForceUnrefracted)
         {
             var geom = CameraBasis.ToHorizontal(geometricDirection);
-            var appAlt = AtmosphericRefraction.Apply(geom.AltitudeDegrees, request.Refraction);
+            var evalAlt = branch == RefractionEvaluationBranch.ForceRefracted
+                ? Math.Max(geom.AltitudeDegrees, request.Refraction.MinimumAltitudeDegrees)
+                : geom.AltitudeDegrees;
+            var appAlt = AtmosphericRefraction.Apply(evalAlt, request.Refraction);
             apparent = CameraBasis.FromHorizontal(geom with { AltitudeDegrees = appAlt });
         }
         return basis.ToCamera(apparent).Up - minDomainCosine;
@@ -854,23 +1060,26 @@ public static class ResolvedFootprintSampler
     private static void AppendFeasibleChord(
         VisibleSceneRequest request,
         CameraBasis basis,
+        RefractionEvaluationBranch branch,
         Func<double, EnuVector> curve,
         double from,
         double to,
         int depth,
         int maxDepth,
-        List<(PixelPoint From, PixelPoint To)> output,
-        ref bool clipped)
+        List<BranchedChord> output,
+        ref bool clipped,
+        ref bool errorBoundExceeded)
     {
-        var fromValid = VisibleSceneBuilder.TryProjectGeometry(request, basis, curve(from), out var fromPixel);
-        var toValid = VisibleSceneBuilder.TryProjectGeometry(request, basis, curve(to), out var toPixel);
+        if (errorBoundExceeded) return;
+        var fromValid = TryProjectGeometryForBranch(request, basis, branch, curve(from), out var fromPixel);
+        var toValid = TryProjectGeometryForBranch(request, basis, branch, curve(to), out var toPixel);
         var fromIn = fromValid && IsInsideProjection(request.Projection, fromPixel);
         var toIn = toValid && IsInsideProjection(request.Projection, toPixel);
         var middle = 0.5 * (from + to);
 
         if (fromIn && toIn)
         {
-            var middleIn = TryProjectVisible(request, basis, curve(middle), out var middlePixel);
+            var middleIn = TryProjectVisibleForBranch(request, basis, branch, curve(middle), out var middlePixel);
             var clampedFrom = ClampToProjection(request.Projection, fromPixel);
             var clampedTo = ClampToProjection(request.Projection, toPixel);
             var sagitta = middleIn
@@ -880,16 +1089,19 @@ public static class ResolvedFootprintSampler
             {
                 if (depth < maxDepth)
                 {
-                    AppendFeasibleChord(request, basis, curve, from, middle, depth + 1, maxDepth, output, ref clipped);
-                    AppendFeasibleChord(request, basis, curve, middle, to, depth + 1, maxDepth, output, ref clipped);
+                    AppendFeasibleChord(request, basis, branch, curve, from, middle, depth + 1, maxDepth, output, ref clipped, ref errorBoundExceeded);
+                    AppendFeasibleChord(request, basis, branch, curve, middle, to, depth + 1, maxDepth, output, ref clipped, ref errorBoundExceeded);
                 }
                 else if (!middleIn)
                 {
-                    clipped = true;
+                    // Midpoint exited the projection at maximum depth: split cleanly across the exterior dip.
+                    AppendBoundaryExcursionSplit(request, basis, branch, curve, from, middle, to, depth, maxDepth, output, ref clipped, ref errorBoundExceeded);
                 }
                 else
                 {
-                    output.Add((clampedFrom, clampedTo));
+                    // Never silently bridge an out-of-tolerance chord when subdivision budget is exhausted.
+                    clipped = true;
+                    errorBoundExceeded = true;
                 }
                 return;
             }
@@ -904,47 +1116,49 @@ public static class ResolvedFootprintSampler
             if (double.IsFinite(minMargin) && minMargin <= excursionGuard)
             {
                 double EvalMargin(double t) =>
-                    VisibleSceneBuilder.TryProjectGeometry(request, basis, curve(t), out var p)
+                    TryProjectGeometryForBranch(request, basis, branch, curve(t), out var p)
                         ? PixelSignedMargin(request.Projection, p)
                         : double.NegativeInfinity;
 
                 var dipLeft = MinimizeGolden(EvalMargin, from, middle, ConstraintGoldenIterations);
-                var leftOut = !TryProjectVisible(request, basis, curve(dipLeft), out _);
+                var leftOut = !TryProjectVisibleForBranch(request, basis, branch, curve(dipLeft), out _);
                 var dipRight = MinimizeGolden(EvalMargin, middle, to, ConstraintGoldenIterations);
-                var rightOut = !TryProjectVisible(request, basis, curve(dipRight), out _);
+                var rightOut = !TryProjectVisibleForBranch(request, basis, branch, curve(dipRight), out _);
                 if (leftOut || rightOut)
                 {
                     clipped = true;
                     if (leftOut)
                     {
-                        AppendBoundaryExcursionSplit(request, basis, curve, from, dipLeft, middle, depth, maxDepth, output, ref clipped);
+                        AppendBoundaryExcursionSplit(request, basis, branch, curve, from, dipLeft, middle, depth, maxDepth, output, ref clipped, ref errorBoundExceeded);
                     }
                     else if (depth < maxDepth)
                     {
-                        AppendFeasibleChord(request, basis, curve, from, middle, depth + 1, maxDepth, output, ref clipped);
+                        AppendFeasibleChord(request, basis, branch, curve, from, middle, depth + 1, maxDepth, output, ref clipped, ref errorBoundExceeded);
                     }
                     else
                     {
-                        output.Add((clampedFrom, middlePixel));
+                        AppendVerifiedInsideArc(request, basis, branch, curve, from, clampedFrom, middle, middlePixel, 0, 0, output, ref clipped, ref errorBoundExceeded);
                     }
+
+                    if (errorBoundExceeded) return;
 
                     if (rightOut)
                     {
-                        AppendBoundaryExcursionSplit(request, basis, curve, middle, dipRight, to, depth, maxDepth, output, ref clipped);
+                        AppendBoundaryExcursionSplit(request, basis, branch, curve, middle, dipRight, to, depth, maxDepth, output, ref clipped, ref errorBoundExceeded);
                     }
                     else if (depth < maxDepth)
                     {
-                        AppendFeasibleChord(request, basis, curve, middle, to, depth + 1, maxDepth, output, ref clipped);
+                        AppendFeasibleChord(request, basis, branch, curve, middle, to, depth + 1, maxDepth, output, ref clipped, ref errorBoundExceeded);
                     }
                     else
                     {
-                        output.Add((middlePixel, clampedTo));
+                        AppendVerifiedInsideArc(request, basis, branch, curve, middle, middlePixel, to, clampedTo, 0, 0, output, ref clipped, ref errorBoundExceeded);
                     }
                     return;
                 }
             }
 
-            output.Add((clampedFrom, clampedTo));
+            output.Add(new BranchedChord(clampedFrom, clampedTo, branch));
             return;
         }
 
@@ -952,20 +1166,21 @@ public static class ResolvedFootprintSampler
         {
             if (depth < maxDepth)
             {
-                AppendFeasibleChord(request, basis, curve, from, middle, depth + 1, maxDepth, output, ref clipped);
-                AppendFeasibleChord(request, basis, curve, middle, to, depth + 1, maxDepth, output, ref clipped);
+                AppendFeasibleChord(request, basis, branch, curve, from, middle, depth + 1, maxDepth, output, ref clipped, ref errorBoundExceeded);
+                AppendFeasibleChord(request, basis, branch, curve, middle, to, depth + 1, maxDepth, output, ref clipped, ref errorBoundExceeded);
                 return;
             }
 
             clipped = true;
-            var insideParam = fromIn ? from : to;
+            var insideStart = fromIn ? from : to;
+            var insideParam = insideStart;
             var outsideParam = fromIn ? to : from;
             var insidePixel = ClampToProjection(request.Projection, fromIn ? fromPixel : toPixel);
             var boundaryPixel = insidePixel;
             for (var iteration = 0; iteration < ConstraintBisectionIterations; iteration++)
             {
                 var candidate = 0.5 * (insideParam + outsideParam);
-                if (TryProjectVisible(request, basis, curve(candidate), out var candidatePixel))
+                if (TryProjectVisibleForBranch(request, basis, branch, curve(candidate), out var candidatePixel))
                 {
                     insideParam = candidate;
                     boundaryPixel = candidatePixel;
@@ -975,42 +1190,28 @@ public static class ResolvedFootprintSampler
                     outsideParam = candidate;
                 }
             }
-            var boundaryMiddle = 0.5 * (insideParam + (fromIn ? from : to));
-            if (!TryProjectVisible(request, basis, curve(boundaryMiddle), out var boundaryMiddlePixel))
-            {
-                return;
-            }
-            if (Distance(boundaryMiddlePixel, new PixelPoint(0.5 * (insidePixel.X + boundaryPixel.X), 0.5 * (insidePixel.Y + boundaryPixel.Y))) > MaximumChordErrorPixels)
-            {
-                if (fromIn)
-                {
-                    output.Add((insidePixel, boundaryMiddlePixel));
-                    output.Add((boundaryMiddlePixel, boundaryPixel));
-                }
-                else
-                {
-                    output.Add((boundaryPixel, boundaryMiddlePixel));
-                    output.Add((boundaryMiddlePixel, insidePixel));
-                }
-                return;
-            }
+
             if (fromIn)
-                output.Add((insidePixel, boundaryPixel));
+            {
+                AppendVerifiedInsideArc(request, basis, branch, curve, insideStart, insidePixel, insideParam, boundaryPixel, 0, 4, output, ref clipped, ref errorBoundExceeded);
+            }
             else
-                output.Add((boundaryPixel, insidePixel));
+            {
+                AppendVerifiedInsideArc(request, basis, branch, curve, insideParam, boundaryPixel, insideStart, insidePixel, 0, 4, output, ref clipped, ref errorBoundExceeded);
+            }
             return;
         }
 
         // Both endpoints are outside the visible sensor/aperture (or residual domain corner).
         clipped = true;
-        var midValid = VisibleSceneBuilder.TryProjectGeometry(request, basis, curve(middle), out var midPixel);
+        var midValid = TryProjectGeometryForBranch(request, basis, branch, curve(middle), out var midPixel);
         var midIn = midValid && IsInsideProjection(request.Projection, midPixel);
         if (depth < maxDepth)
         {
             if (midIn || fromValid != toValid || fromValid != midValid)
             {
-                AppendFeasibleChord(request, basis, curve, from, middle, depth + 1, maxDepth, output, ref clipped);
-                AppendFeasibleChord(request, basis, curve, middle, to, depth + 1, maxDepth, output, ref clipped);
+                AppendFeasibleChord(request, basis, branch, curve, from, middle, depth + 1, maxDepth, output, ref clipped, ref errorBoundExceeded);
+                AppendFeasibleChord(request, basis, branch, curve, middle, to, depth + 1, maxDepth, output, ref clipped, ref errorBoundExceeded);
                 return;
             }
             if (!fromValid)
@@ -1024,55 +1225,97 @@ public static class ResolvedFootprintSampler
                 depth == 0 && Math.Max(PixelSignedMargin(request.Projection, fromPixel),
                     Math.Max(PixelSignedMargin(request.Projection, midPixel), PixelSignedMargin(request.Projection, toPixel))) > -50d)
             {
-                AppendFeasibleChord(request, basis, curve, from, middle, depth + 1, maxDepth, output, ref clipped);
-                AppendFeasibleChord(request, basis, curve, middle, to, depth + 1, maxDepth, output, ref clipped);
+                AppendFeasibleChord(request, basis, branch, curve, from, middle, depth + 1, maxDepth, output, ref clipped, ref errorBoundExceeded);
+                AppendFeasibleChord(request, basis, branch, curve, middle, to, depth + 1, maxDepth, output, ref clipped, ref errorBoundExceeded);
             }
             return;
         }
 
         // At leaf depth with both endpoints outside sensor/aperture: probe via golden-section for a tiny incursion
-        // if the chord approaches the boundary, emitting real interior chords only when a genuinely visible point exists.
+        // if the chord approaches the boundary, emitting verified interior chords only when a genuinely visible point exists.
         if (fromValid && toValid && midValid)
         {
             var sagitta = Distance(midPixel, new PixelPoint(0.5 * (fromPixel.X + toPixel.X), 0.5 * (fromPixel.Y + toPixel.Y)));
             if (CanApproachProjection(request.Projection, fromPixel, midPixel, toPixel, 2 * sagitta + 1d))
             {
                 double EvalMargin(double t) =>
-                    VisibleSceneBuilder.TryProjectGeometry(request, basis, curve(t), out var p)
+                    TryProjectGeometryForBranch(request, basis, branch, curve(t), out var p)
                         ? PixelSignedMargin(request.Projection, p)
                         : double.NegativeInfinity;
                 var peakT = MaximizeGolden(EvalMargin, from, to, 48);
-                if (TryProjectVisible(request, basis, curve(peakT), out var peakPixel))
+                if (TryProjectVisibleForBranch(request, basis, branch, curve(peakT), out var peakPixel))
                 {
                     var enterT = BisectInsideRoot(EvalMargin, from, peakT, aIsInside: false);
                     var exitT = BisectInsideRoot(EvalMargin, peakT, to, aIsInside: true);
-                    if (TryProjectVisible(request, basis, curve(enterT), out var enterPixel) &&
-                        TryProjectVisible(request, basis, curve(exitT), out var exitPixel))
+                    if (TryProjectVisibleForBranch(request, basis, branch, curve(enterT), out var enterPixel) &&
+                        TryProjectVisibleForBranch(request, basis, branch, curve(exitT), out var exitPixel))
                     {
-                        output.Add((enterPixel, peakPixel));
-                        output.Add((peakPixel, exitPixel));
+                        AppendVerifiedInsideArc(request, basis, branch, curve, enterT, enterPixel, peakT, peakPixel, 0, 4, output, ref clipped, ref errorBoundExceeded);
+                        AppendVerifiedInsideArc(request, basis, branch, curve, peakT, peakPixel, exitT, exitPixel, 0, 4, output, ref clipped, ref errorBoundExceeded);
                     }
                 }
             }
         }
     }
 
+    private static void AppendVerifiedInsideArc(
+        VisibleSceneRequest request,
+        CameraBasis basis,
+        RefractionEvaluationBranch branch,
+        Func<double, EnuVector> curve,
+        double paramA,
+        PixelPoint pixelA,
+        double paramB,
+        PixelPoint pixelB,
+        int leafDepth,
+        int maxLeafDepth,
+        List<BranchedChord> output,
+        ref bool clipped,
+        ref bool errorBoundExceeded)
+    {
+        if (errorBoundExceeded) return;
+        if (Distance(pixelA, pixelB) <= JoinTolerancePixels) return;
+        var midParam = 0.5 * (paramA + paramB);
+        if (!TryProjectVisibleForBranch(request, basis, branch, curve(midParam), out var midPixel))
+        {
+            clipped = true;
+            errorBoundExceeded = true;
+            return;
+        }
+        var sagitta = Distance(midPixel, new PixelPoint(0.5 * (pixelA.X + pixelB.X), 0.5 * (pixelA.Y + pixelB.Y)));
+        if (sagitta <= MaximumChordErrorPixels)
+        {
+            output.Add(new BranchedChord(pixelA, pixelB, branch));
+            return;
+        }
+        if (leafDepth < maxLeafDepth)
+        {
+            AppendVerifiedInsideArc(request, basis, branch, curve, paramA, pixelA, midParam, midPixel, leafDepth + 1, maxLeafDepth, output, ref clipped, ref errorBoundExceeded);
+            AppendVerifiedInsideArc(request, basis, branch, curve, midParam, midPixel, paramB, pixelB, leafDepth + 1, maxLeafDepth, output, ref clipped, ref errorBoundExceeded);
+            return;
+        }
+        clipped = true;
+        errorBoundExceeded = true;
+    }
+
     private static void AppendBoundaryExcursionSplit(
         VisibleSceneRequest request,
         CameraBasis basis,
+        RefractionEvaluationBranch branch,
         Func<double, EnuVector> curve,
         double a,
         double dipOut,
         double b,
         int depth,
         int maxDepth,
-        List<(PixelPoint From, PixelPoint To)> output,
-        ref bool clipped)
+        List<BranchedChord> output,
+        ref bool clipped,
+        ref bool errorBoundExceeded)
     {
         clipped = true;
         var nextDepth = Math.Min(depth + 1, maxDepth);
-        AppendFeasibleChord(request, basis, curve, a, dipOut, nextDepth, maxDepth, output, ref clipped);
-        AppendFeasibleChord(request, basis, curve, dipOut, b, nextDepth, maxDepth, output, ref clipped);
+        AppendFeasibleChord(request, basis, branch, curve, a, dipOut, nextDepth, maxDepth, output, ref clipped, ref errorBoundExceeded);
+        AppendFeasibleChord(request, basis, branch, curve, dipOut, b, nextDepth, maxDepth, output, ref clipped, ref errorBoundExceeded);
     }
 
     private static bool CanApproachProjection(

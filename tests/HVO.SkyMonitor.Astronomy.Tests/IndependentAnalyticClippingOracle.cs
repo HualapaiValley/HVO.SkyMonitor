@@ -180,12 +180,25 @@ internal static class IndependentAnalyticClippingOracle
             cosPhi * xMer + sinPhi * zPole).Normalized();
     }
 
-    /// <summary>Independent Bennett (1982) standard atmosphere refraction.</summary>
-    public static double ApplyBennettRefraction(double geomAltDeg, bool enabled, double minAltDeg)
+    internal enum OracleRefractionBranch
     {
-        if (!enabled || geomAltDeg < minAltDeg) return geomAltDeg;
-        var argRad = (geomAltDeg + 10.3d / (geomAltDeg + 5.11d)) * Math.PI / 180d;
-        return geomAltDeg + (1.02d / Math.Tan(argRad)) / 60d;
+        Default,
+        ForceRefracted,
+        ForceUnrefracted
+    }
+
+    /// <summary>Independent Bennett (1982) standard atmosphere refraction.</summary>
+    public static double ApplyBennettRefraction(
+        double geomAltDeg,
+        bool enabled,
+        double minAltDeg,
+        OracleRefractionBranch branch = OracleRefractionBranch.Default)
+    {
+        if (!enabled || branch == OracleRefractionBranch.ForceUnrefracted) return geomAltDeg;
+        if (branch == OracleRefractionBranch.Default && geomAltDeg < minAltDeg) return geomAltDeg;
+        var evalAlt = branch == OracleRefractionBranch.ForceRefracted ? Math.Max(geomAltDeg, minAltDeg) : geomAltDeg;
+        var argRad = (evalAlt + 10.3d / (evalAlt + 5.11d)) * Math.PI / 180d;
+        return evalAlt + (1.02d / Math.Tan(argRad)) / 60d;
     }
 
     public static (OracleVec3 Right, OracleVec3 Up, OracleVec3 Forward) BuildCameraBasis(OracleCamera cam)
@@ -213,7 +226,8 @@ internal static class IndependentAnalyticClippingOracle
         (OracleVec3 Right, OracleVec3 Up, OracleVec3 Forward) basis,
         OracleVec3 geomEnu,
         out OraclePoint pixel,
-        out double minConstraintMargin)
+        out double minConstraintMargin,
+        OracleRefractionBranch branch = OracleRefractionBranch.Default)
     {
         pixel = default;
         minConstraintMargin = double.NegativeInfinity;
@@ -227,7 +241,7 @@ internal static class IndependentAnalyticClippingOracle
 
         // 2. Bennett refraction (preserving azimuth, shifting altitude)
         var geomAltDeg = Math.Asin(Math.Clamp(geomEnu.Z, -1d, 1d)) * 180d / Math.PI;
-        var appAltDeg = ApplyBennettRefraction(geomAltDeg, cam.RefractionEnabled, cam.RefractionMinAltDeg);
+        var appAltDeg = ApplyBennettRefraction(geomAltDeg, cam.RefractionEnabled, cam.RefractionMinAltDeg, branch);
         var appAltRad = appAltDeg * Math.PI / 180d;
         var horizLen = Math.Sqrt(geomEnu.X * geomEnu.X + geomEnu.Y * geomEnu.Y);
         var appEnu = horizLen <= 1e-15
@@ -346,10 +360,11 @@ internal static class IndependentAnalyticClippingOracle
         (OracleVec3 Right, OracleVec3 Up, OracleVec3 Forward) basis,
         OracleTransform transform,
         OracleVec3 geomEnu,
-        out OraclePoint outputPixel)
+        out OraclePoint outputPixel,
+        OracleRefractionBranch branch = OracleRefractionBranch.Default)
     {
         outputPixel = default;
-        if (!TryEvaluateGeometry(cam, basis, geomEnu, out var sourcePixel, out var camMargin))
+        if (!TryEvaluateGeometry(cam, basis, geomEnu, out var sourcePixel, out var camMargin, branch))
         {
             return -1e3;
         }
@@ -429,7 +444,8 @@ internal static class IndependentAnalyticClippingOracle
         double paJ2000Deg,
         DateTimeOffset utc,
         double latDeg,
-        double lonDeg)
+        double lonDeg,
+        int maxAdaptiveDepth = ReferenceAdaptiveMaxDepth)
     {
         var basis = BuildCameraBasis(cam);
         var center = J2000ToGeometricEnu(centerRaHours, centerDecDeg, utc, latDeg, lonDeg);
@@ -482,7 +498,9 @@ internal static class IndependentAnalyticClippingOracle
             maxAngularSpeedRadPerParam: Math.Max(1e-9, a),
             periodic: true,
             analyticHorizonHints: null,
-            analyticDomainHints: null);
+            analyticRefractionFloorHints: null,
+            analyticDomainHints: null,
+            maxAdaptiveDepth: maxAdaptiveDepth);
     }
 
     /// <summary>
@@ -494,14 +512,17 @@ internal static class IndependentAnalyticClippingOracle
         IReadOnlyList<(double RaDeg, double DecDeg)> ringJ2000,
         DateTimeOffset utc,
         double latDeg,
-        double lonDeg)
+        double lonDeg,
+        int maxAdaptiveDepth = ReferenceAdaptiveMaxDepth)
     {
         var basis = BuildCameraBasis(cam);
         var verts = ringJ2000
             .Select(p => J2000ToGeometricEnu(p.RaDeg / 15d, p.DecDeg, utc, latDeg, lonDeg))
             .ToArray();
-        var rawArcs = new List<OracleVisibleArc>();
+        var rawArcs = new List<BranchedOracleArc>();
         var allEdgesFullyVisible = true;
+        var needsFloorSplit = RequiresRefractionFloorSplit(cam);
+        var sinFloor = needsFloorSplit ? Math.Sin(cam.RefractionMinAltDeg * Math.PI / 180d) : double.NaN;
 
         // Compute undistorted circular aperture angular radius for analytic cone root hints when applicable.
         double? analyticApertureCosine = null;
@@ -531,11 +552,16 @@ internal static class IndependentAnalyticClippingOracle
                 throw new InvalidOperationException("Antipodal edge cannot be clipped uniquely.");
             }
             var horizonHints = new List<double>();
+            var refractionFloorHints = new List<double>();
             var domainHints = new List<double>();
-            // Closed-form analytic roots for horizon (z=0), optical domain cone, and circular aperture cone.
+            // Closed-form analytic roots for horizon (z=0), refraction floor, optical domain cone, and circular aperture cone.
             if (cam.HorizonPolicy == OracleHorizonPolicy.GeometricHorizon)
             {
                 horizonHints.AddRange(SolveAnalyticGreatCirclePlaneRoots(start, end, new OracleVec3(0, 0, 1), 0d));
+            }
+            if (needsFloorSplit)
+            {
+                refractionFloorHints.AddRange(SolveAnalyticGreatCirclePlaneRoots(start, end, new OracleVec3(0, 0, 1), sinFloor));
             }
             if (!cam.RefractionEnabled && minDomainCosine > -1d + 1e-12)
             {
@@ -553,14 +579,18 @@ internal static class IndependentAnalyticClippingOracle
                 return (start * (Math.Sin((1d - t) * angle) / sinA) + end * (Math.Sin(t * angle) / sinA)).Normalized();
             }
 
-            var edgeArcs = ClipParameterizedCurve(
+            var edgeArcs = ClipParameterizedCurveBranched(
                 cam, basis, transform, Arc, 0d, 1d,
                 maxAngularSpeedRadPerParam: Math.Max(1e-9, angle),
                 periodic: false,
                 analyticHorizonHints: horizonHints,
-                analyticDomainHints: domainHints);
-            if (edgeArcs.Length != 1 || Distance(edgeArcs[0].Points[0], EvaluatePoint(cam, basis, transform, start)) > 1e-4 ||
-                Distance(edgeArcs[0].Points[^1], EvaluatePoint(cam, basis, transform, end)) > 1e-4)
+                analyticRefractionFloorHints: refractionFloorHints,
+                analyticDomainHints: domainHints,
+                maxAdaptiveDepth: maxAdaptiveDepth,
+                out var edgeAllVisible);
+            if (!edgeAllVisible || edgeArcs.Count != 1 ||
+                Distance(edgeArcs[0].Arc.Points[0], EvaluatePoint(cam, basis, transform, start, edgeArcs[0].Branch)) > 1e-4 ||
+                Distance(edgeArcs[0].Arc.Points[^1], EvaluatePoint(cam, basis, transform, end, edgeArcs[0].Branch)) > 1e-4)
             {
                 allEdgesFullyVisible = false;
             }
@@ -723,17 +753,25 @@ internal static class IndependentAnalyticClippingOracle
         };
     }
 
+    private readonly record struct BranchedOracleArc(OracleVisibleArc Arc, OracleRefractionBranch Branch);
+
+    private static bool RequiresRefractionFloorSplit(OracleCamera cam) =>
+        cam.RefractionEnabled &&
+        cam.RefractionMinAltDeg > -90d &&
+        !(cam.HorizonPolicy == OracleHorizonPolicy.GeometricHorizon && cam.RefractionMinAltDeg <= 0d);
+
     private static double OpticalDomainMargin(
         OracleCamera cam,
         (OracleVec3 Right, OracleVec3 Up, OracleVec3 Forward) basis,
         OracleVec3 geomEnu,
-        double minDomainCosine)
+        double minDomainCosine,
+        OracleRefractionBranch branch = OracleRefractionBranch.Default)
     {
         var appEnu = geomEnu;
-        if (cam.RefractionEnabled)
+        if (cam.RefractionEnabled && branch != OracleRefractionBranch.ForceUnrefracted)
         {
             var geomAltDeg = Math.Asin(Math.Clamp(geomEnu.Z, -1d, 1d)) * 180d / Math.PI;
-            var appAltRad = ApplyBennettRefraction(geomAltDeg, true, cam.RefractionMinAltDeg) * Math.PI / 180d;
+            var appAltRad = ApplyBennettRefraction(geomAltDeg, true, cam.RefractionMinAltDeg, branch) * Math.PI / 180d;
             var horizLen = Math.Sqrt(geomEnu.X * geomEnu.X + geomEnu.Y * geomEnu.Y);
             appEnu = horizLen <= 1e-15
                 ? new OracleVec3(0, 0, Math.Sin(appAltRad))
@@ -857,13 +895,42 @@ internal static class IndependentAnalyticClippingOracle
         double maxAngularSpeedRadPerParam,
         bool periodic,
         List<double>? analyticHorizonHints,
-        List<double>? analyticDomainHints)
+        List<double>? analyticRefractionFloorHints,
+        List<double>? analyticDomainHints,
+        int maxAdaptiveDepth = ReferenceAdaptiveMaxDepth)
+    {
+        var arcs = ClipParameterizedCurveBranched(
+            cam, basis, transform, curve, tMin, tMax,
+            maxAngularSpeedRadPerParam, periodic,
+            analyticHorizonHints, analyticRefractionFloorHints, analyticDomainHints,
+            maxAdaptiveDepth, out var allVisible);
+        if (periodic && allVisible && arcs.Count > 0)
+        {
+            return MergeContiguousArcs(arcs, closedCandidate: true);
+        }
+        return MergeContiguousArcs(arcs, closedCandidate: false);
+    }
+
+    private static List<BranchedOracleArc> ClipParameterizedCurveBranched(
+        OracleCamera cam,
+        (OracleVec3 Right, OracleVec3 Up, OracleVec3 Forward) basis,
+        OracleTransform transform,
+        Func<double, OracleVec3> curve,
+        double tMin,
+        double tMax,
+        double maxAngularSpeedRadPerParam,
+        bool periodic,
+        List<double>? analyticHorizonHints,
+        List<double>? analyticRefractionFloorHints,
+        List<double>? analyticDomainHints,
+        int maxAdaptiveDepth,
+        out bool allVisible)
     {
         var intervals = new List<(double From, double To)> { (tMin, tMax) };
-        var allVisible = true;
+        allVisible = true;
         var fullSpan = Math.Max(1e-15, tMax - tMin);
 
-        // Stage 1: Isolate geometric horizon (Up >= 0) independently so domain failures never mask narrow horizon grazes.
+        // Stage 1a: Isolate geometric horizon (Up >= 0) independently so domain failures never mask narrow horizon grazes.
         if (cam.HorizonPolicy == OracleHorizonPolicy.GeometricHorizon)
         {
             var horizonIntervals = new List<(double From, double To)>();
@@ -880,40 +947,99 @@ internal static class IndependentAnalyticClippingOracle
                 horizonIntervals.AddRange(sub);
             }
             intervals = horizonIntervals;
-            if (intervals.Count == 0) return Array.Empty<OracleVisibleArc>();
+            if (intervals.Count == 0) return [];
         }
 
-        // Stage 2: Isolate optical projection domain (cz >= minDomainCosine) independently.
-        var minDomainCosine = ComputeMinimumDomainCosine(cam);
-        if (minDomainCosine > -1d + 1e-12)
+        // Stage 1b: Split across the Bennett refraction altitude floor discontinuity (RefractionMinAltDeg)
+        // whenever both sides are reachable, pinning each piece to its smooth one-sided limit.
+        var branchedIntervals = new List<(double From, double To, OracleRefractionBranch Branch)>();
+        if (RequiresRefractionFloorSplit(cam))
         {
-            var domainIntervals = new List<(double From, double To)>();
-            var domainSpeed = Math.Max(1e-9, maxAngularSpeedRadPerParam * (cam.RefractionEnabled ? 1.25 : 1d));
-            var refractionAllowance = cam.RefractionEnabled ? 0.015 : 0d;
+            var sinFloor = Math.Sin(cam.RefractionMinAltDeg * Math.PI / 180d);
+            var hasAbove = false;
+            var hasBelow = false;
             foreach (var (a, b) in intervals)
             {
                 var steps = Math.Max(64, (int)Math.Ceiling(BracketSamplesPerCurve * (b - a) / fullSpan));
+                var above = IsolatePositiveIntervals(
+                    t => curve(t).Z - sinFloor,
+                    a, b, steps,
+                    Math.Max(1e-9, maxAngularSpeedRadPerParam),
+                    analyticRefractionFloorHints,
+                    out _);
+                foreach (var sub in above)
+                {
+                    if (sub.To - sub.From <= 1e-14 * fullSpan) continue;
+                    hasAbove = true;
+                    branchedIntervals.Add((sub.From, sub.To, OracleRefractionBranch.ForceRefracted));
+                }
+
+                var below = IsolatePositiveIntervals(
+                    t => sinFloor - curve(t).Z,
+                    a, b, steps,
+                    Math.Max(1e-9, maxAngularSpeedRadPerParam),
+                    analyticRefractionFloorHints,
+                    out _);
+                foreach (var sub in below)
+                {
+                    if (sub.To - sub.From <= 1e-14 * fullSpan) continue;
+                    var midBelow = sinFloor - curve(0.5 * (sub.From + sub.To)).Z;
+                    if (midBelow <= 1e-14)
+                    {
+                        var peakT = MaximizeGolden(t => sinFloor - curve(t).Z, sub.From, sub.To, GoldenIterations);
+                        if (sinFloor - curve(peakT).Z <= 1e-14) continue;
+                    }
+                    hasBelow = true;
+                    branchedIntervals.Add((sub.From, sub.To, OracleRefractionBranch.ForceUnrefracted));
+                }
+            }
+            if (hasAbove && hasBelow) allVisible = false;
+            branchedIntervals.Sort(static (left, right) => left.From.CompareTo(right.From));
+            if (branchedIntervals.Count == 0) return [];
+        }
+        else
+        {
+            foreach (var (a, b) in intervals)
+            {
+                branchedIntervals.Add((a, b, OracleRefractionBranch.Default));
+            }
+        }
+
+        // Stage 2: Isolate optical projection domain (cz >= minDomainCosine) independently per branch.
+        var minDomainCosine = ComputeMinimumDomainCosine(cam);
+        if (minDomainCosine > -1d + 1e-12)
+        {
+            var domainIntervals = new List<(double From, double To, OracleRefractionBranch Branch)>();
+            foreach (var (a, b, branch) in branchedIntervals)
+            {
+                var branchRefracted = cam.RefractionEnabled && branch != OracleRefractionBranch.ForceUnrefracted;
+                var domainSpeed = Math.Max(1e-9, maxAngularSpeedRadPerParam * (branchRefracted ? 1.25 : 1d));
+                var refractionAllowance = branchRefracted ? 0.015 : 0d;
+                var steps = Math.Max(64, (int)Math.Ceiling(BracketSamplesPerCurve * (b - a) / fullSpan));
                 var sub = IsolatePositiveIntervals(
-                    t => OpticalDomainMargin(cam, basis, curve(t), minDomainCosine),
+                    t => OpticalDomainMargin(cam, basis, curve(t), minDomainCosine, branch),
                     a, b, steps,
                     domainSpeed,
                     analyticDomainHints,
                     out var fullyInDomain,
                     extraExclusionAllowance: refractionAllowance);
                 if (!fullyInDomain) allVisible = false;
-                domainIntervals.AddRange(sub);
+                foreach (var piece in sub)
+                {
+                    domainIntervals.Add((piece.From, piece.To, branch));
+                }
             }
-            intervals = domainIntervals;
-            if (intervals.Count == 0) return Array.Empty<OracleVisibleArc>();
+            branchedIntervals = domainIntervals;
+            if (branchedIntervals.Count == 0) return [];
         }
 
-        // Stage 3: Isolate sensor, circular aperture, and crop boundaries on each domain-feasible interval.
-        double Margin(double t) => SignedVisibilityMargin(cam, basis, transform, curve(t), out _);
-
-        var arcs = new List<OracleVisibleArc>();
-        foreach (var (segStart, segEnd) in intervals)
+        // Stage 3: Isolate sensor, circular aperture, and crop boundaries on each domain-feasible branch interval.
+        var arcs = new List<BranchedOracleArc>();
+        foreach (var (segStart, segEnd, branch) in branchedIntervals)
         {
             if (segEnd - segStart <= 1e-14 * fullSpan) continue;
+            double Margin(double t) => SignedVisibilityMargin(cam, basis, transform, curve(t), out _, branch);
+
             var steps = Math.Max(64, (int)Math.Ceiling(BracketSamplesPerCurve * (segEnd - segStart) / fullSpan));
             var grid = new List<double>(steps + 1 + (analyticDomainHints?.Count ?? 0));
             for (var i = 0; i <= steps; i++)
@@ -989,51 +1115,52 @@ internal static class IndependentAnalyticClippingOracle
                     allVisible = false;
                     continue;
                 }
-                var pts = SampleVisibleArcAdaptively(cam, basis, transform, curve, a, b, fullSpan);
+                var pts = SampleVisibleArcAdaptively(cam, basis, branch, transform, curve, a, b, fullSpan, maxAdaptiveDepth);
                 if (pts.Count >= 2)
                 {
-                    arcs.Add(new OracleVisibleArc(false, pts.ToArray()));
+                    arcs.Add(new BranchedOracleArc(new OracleVisibleArc(false, pts.ToArray()), branch));
                 }
             }
         }
 
-        if (periodic && allVisible && arcs.Count > 0)
-        {
-            return MergeContiguousArcs(arcs, closedCandidate: true);
-        }
-        return MergeContiguousArcs(arcs, closedCandidate: false);
+        _ = periodic;
+        return arcs;
     }
 
-    private static OracleVisibleArc[] MergeContiguousArcs(List<OracleVisibleArc> arcs, bool closedCandidate)
+    private static OracleVisibleArc[] MergeContiguousArcs(List<BranchedOracleArc> arcs, bool closedCandidate)
     {
         if (arcs.Count == 0) return Array.Empty<OracleVisibleArc>();
-        var runs = new List<List<OraclePoint>>();
-        foreach (var arc in arcs)
+        var runs = new List<(List<OraclePoint> Points, OracleRefractionBranch Branch)>();
+        foreach (var (arc, branch) in arcs)
         {
             if (arc.Points.Length < 2) continue;
-            if (runs.Count > 0 && Distance(runs[^1][^1], arc.Points[0]) <= 1e-3)
+            if (runs.Count > 0 &&
+                runs[^1].Branch == branch &&
+                Distance(runs[^1].Points[^1], arc.Points[0]) <= 1e-3)
             {
-                for (var i = 1; i < arc.Points.Length; i++) runs[^1].Add(arc.Points[i]);
+                for (var i = 1; i < arc.Points.Length; i++) runs[^1].Points.Add(arc.Points[i]);
             }
             else
             {
-                runs.Add(new List<OraclePoint>(arc.Points));
+                runs.Add((new List<OraclePoint>(arc.Points), branch));
             }
         }
         if (runs.Count == 0) return Array.Empty<OracleVisibleArc>();
-        if (runs.Count > 1 && Distance(runs[^1][^1], runs[0][0]) <= 1e-3)
+        if (runs.Count > 1 &&
+            runs[^1].Branch == runs[0].Branch &&
+            Distance(runs[^1].Points[^1], runs[0].Points[0]) <= 1e-3)
         {
-            var last = runs[^1];
-            for (var i = 1; i < runs[0].Count; i++) last.Add(runs[0][i]);
-            runs[0] = last;
+            var last = runs[^1].Points;
+            for (var i = 1; i < runs[0].Points.Count; i++) last.Add(runs[0].Points[i]);
+            runs[0] = (last, runs[0].Branch);
             runs.RemoveAt(runs.Count - 1);
         }
-        if (runs.Count == 1 && closedCandidate && Distance(runs[0][0], runs[0][^1]) <= 1e-3 && runs[0].Count >= 4)
+        if (runs.Count == 1 && closedCandidate && Distance(runs[0].Points[0], runs[0].Points[^1]) <= 1e-3 && runs[0].Points.Count >= 4)
         {
-            runs[0].RemoveAt(runs[0].Count - 1);
-            return [new OracleVisibleArc(true, runs[0].ToArray())];
+            runs[0].Points.RemoveAt(runs[0].Points.Count - 1);
+            return [new OracleVisibleArc(true, runs[0].Points.ToArray())];
         }
-        return runs.Select(static r => new OracleVisibleArc(false, r.ToArray())).ToArray();
+        return runs.Select(static r => new OracleVisibleArc(false, r.Points.ToArray())).ToArray();
     }
 
     private static double BisectVisibilityRoot(Func<double, double> margin, double a, double b, bool aIsInside)
@@ -1086,9 +1213,10 @@ internal static class IndependentAnalyticClippingOracle
         OracleCamera cam,
         (OracleVec3 Right, OracleVec3 Up, OracleVec3 Forward) basis,
         OracleTransform transform,
-        OracleVec3 enu)
+        OracleVec3 enu,
+        OracleRefractionBranch branch = OracleRefractionBranch.Default)
     {
-        return SignedVisibilityMargin(cam, basis, transform, enu, out var p) >= -1e-6
+        return SignedVisibilityMargin(cam, basis, transform, enu, out var p, branch) >= -1e-6
             ? p
             : new OraclePoint(double.NaN, double.NaN);
     }
@@ -1113,11 +1241,13 @@ internal static class IndependentAnalyticClippingOracle
     private static List<OraclePoint> SampleVisibleArcAdaptively(
         OracleCamera cam,
         (OracleVec3 Right, OracleVec3 Up, OracleVec3 Forward) basis,
+        OracleRefractionBranch branch,
         OracleTransform transform,
         Func<double, OracleVec3> curve,
         double a,
         double b,
-        double fullSpan)
+        double fullSpan,
+        int maxAdaptiveDepth)
     {
         var baseSamples = Math.Max(32, (int)Math.Ceiling(128d * (b - a) / fullSpan));
         var pts = new List<OraclePoint>(baseSamples + 1);
@@ -1131,7 +1261,7 @@ internal static class IndependentAnalyticClippingOracle
             var t = s == 0 ? Math.Min(b, a + eps)
                 : s == baseSamples ? Math.Max(a, b - eps)
                 : a + (b - a) * s / baseSamples;
-            if (SignedVisibilityMargin(cam, basis, transform, curve(t), out var p) < -1e-6)
+            if (SignedVisibilityMargin(cam, basis, transform, curve(t), out var p, branch) < -1e-6)
             {
                 hasPrev = false;
                 continue;
@@ -1145,7 +1275,7 @@ internal static class IndependentAnalyticClippingOracle
             }
             else
             {
-                AppendAdaptiveReferenceChord(cam, basis, transform, curve, prevT, prevP, t, p, 0, pts);
+                AppendAdaptiveReferenceChord(cam, basis, branch, transform, curve, prevT, prevP, t, p, 0, maxAdaptiveDepth, pts);
                 prevT = t;
                 prevP = p;
             }
@@ -1156,6 +1286,7 @@ internal static class IndependentAnalyticClippingOracle
     private static void AppendAdaptiveReferenceChord(
         OracleCamera cam,
         (OracleVec3 Right, OracleVec3 Up, OracleVec3 Forward) basis,
+        OracleRefractionBranch branch,
         OracleTransform transform,
         Func<double, OracleVec3> curve,
         double t0,
@@ -1163,18 +1294,15 @@ internal static class IndependentAnalyticClippingOracle
         double t1,
         OraclePoint p1,
         int depth,
+        int maxAdaptiveDepth,
         List<OraclePoint> pts)
     {
-        if (depth >= ReferenceAdaptiveMaxDepth || t1 - t0 <= 1e-14)
-        {
-            pts.Add(p1);
-            return;
-        }
         var tMid = 0.5 * (t0 + t1);
-        if (SignedVisibilityMargin(cam, basis, transform, curve(tMid), out var pMid) < -1e-6)
+        var midVisible = SignedVisibilityMargin(cam, basis, transform, curve(tMid), out var pMid, branch) >= -1e-6;
+        if (!midVisible)
         {
-            pts.Add(p1);
-            return;
+            throw new InvalidOperationException(
+                $"Independent clipping oracle encountered an invisible midpoint at depth {depth} (t=[{t0:R}, {t1:R}]).");
         }
         var chordMid = new OraclePoint(0.5 * (p0.X + p1.X), 0.5 * (p0.Y + p1.Y));
         var sagitta = Distance(pMid, chordMid);
@@ -1184,12 +1312,12 @@ internal static class IndependentAnalyticClippingOracle
             // Guard against inflection-point coincidence where midpoint hits chord while quarter points bow.
             var tQ1 = 0.5 * (t0 + tMid);
             var tQ3 = 0.5 * (tMid + t1);
-            if (SignedVisibilityMargin(cam, basis, transform, curve(tQ1), out var pQ1) >= -1e-6 &&
+            if (SignedVisibilityMargin(cam, basis, transform, curve(tQ1), out var pQ1, branch) >= -1e-6 &&
                 Distance(pQ1, new OraclePoint(0.75 * p0.X + 0.25 * p1.X, 0.75 * p0.Y + 0.25 * p1.Y)) > ReferenceSagittaTolerancePixels)
             {
                 needsSplit = true;
             }
-            else if (SignedVisibilityMargin(cam, basis, transform, curve(tQ3), out var pQ3) >= -1e-6 &&
+            else if (SignedVisibilityMargin(cam, basis, transform, curve(tQ3), out var pQ3, branch) >= -1e-6 &&
                 Distance(pQ3, new OraclePoint(0.25 * p0.X + 0.75 * p1.X, 0.25 * p0.Y + 0.75 * p1.Y)) > ReferenceSagittaTolerancePixels)
             {
                 needsSplit = true;
@@ -1197,8 +1325,13 @@ internal static class IndependentAnalyticClippingOracle
         }
         if (needsSplit)
         {
-            AppendAdaptiveReferenceChord(cam, basis, transform, curve, t0, p0, tMid, pMid, depth + 1, pts);
-            AppendAdaptiveReferenceChord(cam, basis, transform, curve, tMid, pMid, t1, p1, depth + 1, pts);
+            if (depth >= maxAdaptiveDepth || t1 - t0 <= 1e-14)
+            {
+                throw new InvalidOperationException(
+                    $"Independent clipping oracle failed to satisfy sagitta error bound ({sagitta:E4} px > {ReferenceSagittaTolerancePixels:E4} px) at depth {depth}.");
+            }
+            AppendAdaptiveReferenceChord(cam, basis, branch, transform, curve, t0, p0, tMid, pMid, depth + 1, maxAdaptiveDepth, pts);
+            AppendAdaptiveReferenceChord(cam, basis, branch, transform, curve, tMid, pMid, t1, p1, depth + 1, maxAdaptiveDepth, pts);
         }
         else
         {

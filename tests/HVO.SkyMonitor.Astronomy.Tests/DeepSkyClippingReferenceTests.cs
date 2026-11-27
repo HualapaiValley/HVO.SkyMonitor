@@ -150,6 +150,144 @@ public sealed class DeepSkyClippingReferenceTests
             "860F12CB02870E141F0179D97C970F006F581C04A0405ACB83BAB8E60696C61F",
             Convert.ToHexString(SHA256.HashData(centeredV2Bytes)),
             "Legacy v2 centered Moon serialized payload must match exact frozen base 214e5ffa0 SHA-256 byte-for-byte.");
+
+        // Exact F3 5,177-byte / 39-vertex base 214e5ffa0 clipped-Moon fixture (plus 6,183-byte centered Moon and v1),
+        // built through VisibleSceneBuilder with AstronomyEnginePlanetEphemeris and exact base metadata/appearance fields.
+        var f3Utc = new DateTimeOffset(2026, 1, 15, 6, 0, 0, TimeSpan.Zero);
+        var f3Meta = new CatalogMetadata("fixture", "1", new Uri("https://example.test"), new string('A', 64), "CC0", "2");
+        var f3Req = new VisibleSceneRequest(f3Utc, Site, projection, new CatalogQuery(6, 10), f3Meta,
+            horizonPolicy: HorizonPolicy.GeometricHorizon, projectionVersion: "cal-v1", solarSystemBodies: [SolarSystemBody.Moon]);
+        var f3BaseScene = new VisibleSceneBuilder(new InMemoryCelestialCatalog([]), null, new AstronomyEnginePlanetEphemeris())
+            .BuildAsync(f3Req).AsTask().GetAwaiter().GetResult();
+
+        var f3ClippedScene = f3BaseScene.WithResolvedBodies([new SolarDiskAppearance(
+            SolarSystemBody.Moon, f3Utc, new AltAzPoint(63.22, 180), 0.25, -12, 0.5, 90, 384_400)]);
+        var f3ClippedV2 = ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, f3ClippedScene,
+            ProjectedSceneImageTransformV1.Identity(160, 160), source, "cal-v1", "cal-v1");
+        var f3ClippedBytes = ProjectedSceneJson.Serialize(f3ClippedV2);
+        Assert.AreEqual(39, f3ClippedV2.ResolvedFootprints!.Single().Parts.Sum(static p => p.Points.Count));
+        Assert.AreEqual(5_177, f3ClippedBytes.Length,
+            $"Exact F3 clipped-Moon frozen fixture must be 5,177 bytes; got {f3ClippedBytes.Length}.");
+        Assert.AreEqual(
+            "71074B38E3FE195B5DE153176DF270AA1B41A8A9B58C7EC01C4B2FC5C2E40763",
+            Convert.ToHexString(SHA256.HashData(f3ClippedBytes)),
+            "Exact F3 clipped-Moon frozen fixture must match base 214e5ffa0 SHA-256 byte-for-byte.");
+
+        var f3CenteredScene = f3BaseScene.WithResolvedBodies([new SolarDiskAppearance(
+            SolarSystemBody.Moon, f3Utc, new AltAzPoint(60, 180), 0.25, -12, 0.5, 90, 384_400)]);
+        var f3CenteredV2 = ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, f3CenteredScene,
+            ProjectedSceneImageTransformV1.Identity(160, 160), source, "cal-v1", "cal-v1");
+        var f3CenteredBytes = ProjectedSceneJson.Serialize(f3CenteredV2);
+        Assert.AreEqual(64, f3CenteredV2.ResolvedFootprints!.Single().Parts.Sum(static p => p.Points.Count));
+        Assert.AreEqual(6_183, f3CenteredBytes.Length);
+        Assert.AreEqual(
+            "76B42F650023D86567C1F7FF232FAF0C3BBF034FB7A3ED06A2EDC74B148943B7",
+            Convert.ToHexString(SHA256.HashData(f3CenteredBytes)));
+
+        var f3V1Req = new VisibleSceneRequest(f3Utc, Site, projection, new CatalogQuery(6, 10), f3Meta,
+            horizonPolicy: HorizonPolicy.GeometricHorizon, projectionVersion: "cal-v1");
+        var f3V1Scene = new VisibleSceneBuilder(new InMemoryCelestialCatalog([]), null, new AstronomyEnginePlanetEphemeris())
+            .BuildAsync(f3V1Req).AsTask().GetAwaiter().GetResult();
+        var f3V1Bytes = ProjectedSceneJson.Serialize(ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, f3V1Scene,
+            ProjectedSceneImageTransformV1.Identity(160, 160), source, "cal-v1", "cal-v1"));
+        Assert.AreEqual(
+            "6B9F8A15AA34750352939A6CA395D8C293C4C22D0E6A7534E35119E0F92392F4",
+            Convert.ToHexString(SHA256.HashData(f3V1Bytes)));
+    }
+
+    [TestMethod]
+    public void RefractionFloorDiscontinuitySplitsOpenPartsAndUnmetDepthErrorBoundFailsExplicitly()
+    {
+        // Exact F6 reproducer: 200x200 perspective (f = 1000 px), boresight alt = 1 deg, az = 180 deg,
+        // Bennett refraction enabled with MinimumAltitudeDegrees = 1 deg (creating a +6.325 px upward step jump
+        // at geomAlt = 1 deg), boresight-centered circle of angular radius 0.5 deg and PA = 12 deg.
+        // BOTH production SampleBoundarySafe AND IndependentAnalyticClippingOracle must split across the
+        // discontinuity into 2 open parts (Clipped == true) with ZERO bridging chord across the 6.325 px jump!
+        var projection = new ProjectionContext(
+            ProjectionModel.Perspective, 100, 100, 1000, 1000, 200, 200,
+            ProjectionAperture.Rectangular, null, BoresightAltitudeDegrees: 1, BoresightAzimuthDegrees: 180);
+        var request = new VisibleSceneRequest(
+            ReferenceUtc, Site, projection, new CatalogQuery(6, 10), Metadata,
+            new RefractionOptions(Enabled: true, MinimumAltitudeDegrees: 1.0),
+            HorizonPolicy.GeometricHorizon, projectionVersion: "cal-v1");
+        var centerGeom = new AltAzPoint(1.0, 180.0);
+        var extent = new ResolvedFootprintExtent(
+            ResolvedFootprintShape.Ellipse, 0.5, 0.5, 12.0, null, null, null, "fixture");
+
+        var actual = ResolvedFootprintSampler.SampleBoundarySafe(
+            request, "deep-sky:REFR_FLOOR", "RefractionFloor",
+            ResolvedFootprintSourceKind.DeepSkyObject, extent, centerGeom, null);
+        Assert.IsNotNull(actual);
+        Assert.IsTrue(actual.Clipped, "A limb crossing the Bennett refraction-floor jump must be marked Clipped=true.");
+        Assert.HasCount(2, actual.Parts,
+            $"Circle crossing refraction floor at alt=1 deg must split into 2 open parts (above & below floor); got {actual.Parts.Count}.");
+        Assert.IsTrue(actual.Parts.All(static p => !p.Closed),
+            "Both halves across a refraction-floor discontinuity must be open polylines.");
+
+        // Verify NO single chord in either part jumps across the ~6.325 px refraction discontinuity!
+        var maxProdChord = actual.Parts
+            .SelectMany(static part => part.Points.Zip(part.Points.Skip(1), ResolvedFootprintSampler.Distance))
+            .Max();
+        Assert.IsTrue(maxProdChord < 2.0,
+            $"No chord may bridge the 6.325 px refraction-floor jump; max chord length was {maxProdChord:F4} px.");
+
+        var (raHours, decDeg) = HorizontalToJ2000(centerGeom, ReferenceUtc, Site);
+        var oracleCam = ToOracleCamera(request);
+        var oracleArcs = IndependentAnalyticClippingOracle.ClipEllipse(
+            oracleCam, OracleTransform.Identity(200, 200),
+            raHours, decDeg, 0.5, 0.5, 12.0,
+            ReferenceUtc, Site.LatitudeDegrees, Site.LongitudeDegrees);
+        Assert.HasCount(2, oracleArcs, "Independent oracle must also split the refraction-floor crossing into 2 open arcs.");
+        Assert.IsTrue(oracleArcs.All(static a => !a.Closed));
+        AssertHasAgreedGeometry(actual.Parts, oracleArcs, oracleCam, OracleTransform.Identity(200, 200));
+
+        // Also verify great-circle outline crossing the same refraction floor splits cleanly without bridging.
+        var ringCorners = new[]
+        {
+            HorizontalToJ2000(new AltAzPoint(1.3, 179.7), ReferenceUtc, Site),
+            HorizontalToJ2000(new AltAzPoint(1.3, 180.3), ReferenceUtc, Site),
+            HorizontalToJ2000(new AltAzPoint(0.7, 180.3), ReferenceUtc, Site),
+            HorizontalToJ2000(new AltAzPoint(0.7, 179.7), ReferenceUtc, Site)
+        };
+        var ringPoints = ringCorners
+            .Concat([ringCorners[0]])
+            .Select(static p => new DeepSkyOutlinePoint(p.RaHours * 15d, p.DecDeg))
+            .ToArray();
+        var outline = new DeepSkyOutline("REFR_FLOOR_OUTLINE", 1, [new DeepSkyOutlineRing(ringPoints)]);
+        var outlineSampled = DeepSkyOutlineSampler.Sample(request, outline);
+        Assert.AreEqual(DeepSkyOutlineSampleStatus.Valid, outlineSampled.Status);
+        Assert.IsNotNull(outlineSampled.Outline);
+        Assert.IsTrue(outlineSampled.Outline.Clipped);
+        Assert.HasCount(2, outlineSampled.Outline.Parts);
+        var outlineOracle = IndependentAnalyticClippingOracle.ClipGreatCircleRing(
+            oracleCam, OracleTransform.Identity(200, 200),
+            ringPoints.Select(static p => (p.RightAscensionDegrees, p.DeclinationDegrees)).ToArray(),
+            ReferenceUtc, Site.LatitudeDegrees, Site.LongitudeDegrees);
+        AssertHasAgreedGeometry(outlineSampled.Outline.Parts, outlineOracle, oracleCam, OracleTransform.Identity(200, 200));
+
+        // Negative control for F6 part 2: unmet chord error bound at insufficient max subdivision depth MUST
+        // fail explicitly rather than silently emitting an out-of-tolerance bridging chord!
+        var bigProj = new ProjectionContext(
+            ProjectionModel.Perspective, 5_000, 5_000, 100_000, 100_000, 10_000, 10_000,
+            ProjectionAperture.Rectangular, null, BoresightAltitudeDegrees: 60, BoresightAzimuthDegrees: 180);
+        var bigReq = new VisibleSceneRequest(
+            ReferenceUtc, Site, bigProj, new CatalogQuery(6, 10), Metadata,
+            new RefractionOptions(false), HorizonPolicy.GeometricHorizon, projectionVersion: "cal-v1");
+        var bigRadiusDeg = Math.Atan(4_000d / 100_000d) * 180d / Math.PI;
+        var bigExtent = ResolvedFootprintExtent.Circle(bigRadiusDeg, "fixture");
+        Assert.ThrowsExactly<InvalidOperationException>(() =>
+            ResolvedFootprintSampler.SampleBoundarySafe(
+                bigReq, "deep-sky:UNMET_DEPTH", "UnmetDepth",
+                ResolvedFootprintSourceKind.DeepSkyObject, bigExtent, new AltAzPoint(60, 180), null,
+                maxSubdivisionDepth: 0));
+
+        var (bigRa, bigDec) = HorizontalToJ2000(new AltAzPoint(60, 180), ReferenceUtc, Site);
+        Assert.ThrowsExactly<InvalidOperationException>(() =>
+            IndependentAnalyticClippingOracle.ClipEllipse(
+                ToOracleCamera(bigReq), OracleTransform.Identity(10_000, 10_000),
+                bigRa, bigDec, bigRadiusDeg, bigRadiusDeg, 0,
+                ReferenceUtc, Site.LatitudeDegrees, Site.LongitudeDegrees,
+                maxAdaptiveDepth: 0));
     }
 
     [TestMethod]

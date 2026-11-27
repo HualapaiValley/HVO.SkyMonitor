@@ -26,10 +26,14 @@ an independent analytic clipping reference completing the carried-over #1191 ver
   and `VirtualSky` preserves exact prior `SceneId`, `stellarNoiseIdentity`, and raw pixel bytes
   even with stochastic sensor noise enabled. When enabled, `SceneId` and
   `SceneProvenance.DeepSkyCatalog` bind the active DSO catalog snapshot and render-model identity
-  independently of annotation selection; when an in-memory or custom `IDeepSkyCatalog` reports
-  `SnapshotIdentity == null`, `VirtualSky` derives a deterministic canonical content-hash fallback
-  `CatalogSnapshotIdentity` (`{SourceName}:content` / `in-memory-content-v1` / `canonical-json-v1`)
-  so distinct catalog contents never share a `SceneId` or publish null DSO provenance.
+  independently of annotation selection; when an in-memory `DeepSkyCatalog` reports
+  `SnapshotIdentity == null`, `VirtualSky` binds its lazily-cached full canonical content digest
+  (`DeepSkyCatalog.ContentSha256`, covering semantics, objects, aliases including cross-references,
+  tombstones, and outlines in `O(1)` per capture), and for custom snapshotless `IDeepSkyCatalog`
+  implementations `VirtualSky` derives a bounded selection-content digest over semantics, summary
+  counts, and only the bounded per-frame selected candidates and their cached outlines (`<= MaximumCandidates`
+  outline lookups per capture) so distinct selection-relevant catalog facts never collide on `SceneId`
+  while keeping per-frame work strictly bounded.
 
 ## Shared Geometry, Antipodal Safety, and Clipping (#1191)
 
@@ -48,16 +52,23 @@ an independent analytic clipping reference completing the carried-over #1191 ver
 - **Frozen v2 vs boundary-safe v3 sampling (`ResolvedFootprintSampler`):**
   - `ResolvedFootprintSampler.Sample` (`resolved-footprint-limb-adaptive-v1`) remains byte-frozen
     for legacy `projected-scene-v2` solar-system footprints (pinned by exact base `214e5ffa0`
-    payload lengths and SHA-256 digests for both clipped 39-vertex and centered 64-vertex Moon probes).
+    payload lengths and SHA-256 digests including the `5,177`-byte clipped Moon
+    `71074B38E3FE195B5DE153176DF270AA1B41A8A9B58C7EC01C4B2FC5C2E40763`, `6,183`-byte centered Moon,
+    and `5,262`-byte / `6,268`-byte controls).
   - `ResolvedFootprintSampler.SampleBoundarySafe` (`resolved-footprint-limb-adaptive-v2`) is the
     versioned clipping sampler used for `projected-scene-v3` deep-sky extents and shared by
-    `DeepSkyOutlineSampler`. It isolates geometric horizon (`Up >= 0`), optical projection domain
+    `DeepSkyOutlineSampler`. It isolates geometric horizon (`Up >= 0`), the Bennett refraction
+    altitude floor (`MinimumAltitudeDegrees`, pinning above-floor and below-floor branches to their
+    smooth one-sided limits and never stitching across branch breaks), optical projection domain
     (`cz >= minDomainCosine`), and sensor/aperture boundaries sequentially using Lipschitz exclusion,
     60-iteration golden-section extremum search (including between-sample sensor/aperture excursion
     splitting so curved limbs grazing past a rectangular or circular edge between adjacent inside
     samples are split into clipped open arcs rather than bridged inside), and 52-bit inside-bracket
     bisection — preserving arbitrarily narrow horizon/domain grazes while never fabricating exterior
-    connecting chords.
+    connecting chords or bridging refraction jumps. When the chord error bound cannot be met within
+    maximum subdivision depth, `SampleBoundarySafe` throws `InvalidOperationException` (which
+    `DeepSkySceneProjector` catches to degrade only that single extent to `FootprintLimit`), and
+    `DeepSkyOutlineSampler.Sample` returns `InvalidGeometry` without aborting sibling objects.
 - **Explicit sourced contour parity (`projected-scene-v3` & presentation):** OpenNGC query
   selections (`OpenNgcDeepSkyOptions`) support bounded opt-in sourced contours via
   `MaximumOutlines` (`0..32`, default `0` for legacy curated presets) and `PreferredOutlineLevel`
@@ -171,25 +182,32 @@ deterministic profiles (`HVO.SkyMonitor.Imaging/DeepSkySourceProfile.cs`):
    (`<= 0.5 * PsfSigmaPixels` or point-source geometry) reuse `StellarExposureGeometryBuilder` and
    `TemporalPointSpreadRaster` across the full exposure interval (`ExposureStartUtc` ..
    `ExposureStartUtc + ExposureSeconds`), matching sidereal motion, horizon crossings, and
-   instantaneous moving-cloud transmission identically to the stellar PSF path. Unresolved diffuse
-   emitters (`DiffuseNebula`, `SupernovaRemnant`, and `Cl+N` nebula portions) retain their exact
-   sky-direction exposure samples, evaluate overlapping dark-cloud optical depth `exp(-sum_k tau_k)`
-   at each sample direction before PSF deposition, and converge smoothly to the stellar PSF when
-   no dark cloud overlaps.
-5. **Admission bound to render options & overlapping diffuse noise:** `EvaluateSignalAndFootprint`
-   evaluates expected signal, complete output-bin noise variance (`CompleteBinSupport`), overlapping
-   rendered diffuse emission electrons (with fixed-point re-evaluation when a lower-priority diffuse
-   emitter overlaps an earlier source, excluding a source's own flux), declared celestial diffuse
+   instantaneous moving-cloud transmission identically to the stellar PSF path. Unresolved `Cl+N`
+   composites with both nebular and cluster flux evaluate the shared temporal trajectory once and
+   scale the unit raster linearly so per-source sample budgets are never double-charged. Unresolved
+   diffuse emitters (`DiffuseNebula`, `SupernovaRemnant`, and `Cl+N` nebula portions) evaluate
+   overlapping dark-cloud optical depth `exp(-sum_k tau_k)` in the co-moving geometric sky frame at
+   each temporal sample instant so Earth rotation never decouples co-located celestial emitters and
+   absorbers, while converging smoothly to the stellar PSF when no dark cloud overlaps.
+5. **Admission bound to render options, overlapping diffuse noise & slot backfill:**
+   `EvaluateSignalAndFootprint` evaluates expected signal, complete output-bin noise variance
+   (`CompleteBinSupport`), overlapping rendered diffuse emission electrons (with immediate
+   fixed-point re-evaluation whenever newly admitted diffuse emission overlaps an earlier source,
+   excluding a source's own flux, so any S/N demotion frees its `MaximumRenderedSources` slot for
+   subsequent eligible candidates in deterministic priority order), declared celestial diffuse
    background, RGB `ChannelResponse` & `WhiteBalance`, Bayer CFA response, cloud transmission/scatter,
    vignetting, and source-caused saturation bound to the exact normalized `LinearSceneRenderOptions`
    validated by `DeepSkyRenderPlan.ValidateFor`.
-6. **Dark-nebula additive sky-space optical depth, S/N gating & post-attenuation PSF:** Dark nebulae
-   evaluate total prior overlapping optical depth `priorTau = sum_{j < i} tau_j(dir)` at every sky
-   sample direction before averaging pixel coverage (`T_pixel = mean(exp(-sum_k tau_k))`), preserving
-   exact optical-depth additivity (`exp(-tau1) * exp(-tau2) = exp(-(tau1 + tau2))`) for coincident
-   subpixel and resolved clouds across all projections and focal lengths. Before committing
-   transmission or consuming a `MaximumRenderedSources` slot, each dark nebula computes real
-   absorption deficit electrons, null-hypothesis pre-attenuation local variance (`CompleteBinSupport`),
+6. **Dark-nebula common-subpixel optical depth composition, S/N gating & post-attenuation PSF:**
+   Overlapping dark nebulae compose total optical depth `tau_total(x,y) = sum_k tau_k(x,y)` and
+   transmission `T(x,y) = exp(-tau_total(x,y))` once across all overlapping absorbers in a component
+   at common subpixel positions before averaging pixel coverage (layering subpixel fine clouds on
+   top of resolved clouds with exact prior optical-depth integration), guaranteeing strict
+   monotonicity (`T_all <= T_subset`), exact optical-depth additivity (`tau1 + tau2 == tau_combined`),
+   and order invariance for arbitrary `N >= 2` overlapping resolved and unresolved clouds. Before
+   committing transmission or consuming a `MaximumRenderedSources` slot, each dark nebula computes
+   diffuse-only absorption deficit electrons, null-hypothesis pre-attenuation local variance
+   (`CompleteBinSupport`, including co-located foreground non-diffuse DSO and HYG star shot noise),
    and S/N via `EvaluateDarkSignalPrediction`, enforcing `MinimumSignalToNoise` and publishing real
    `PredictedSignal` in diagnostics; `E * T - Bg_diffuse * (1 - T)` is convolved once with the
    configured PSF kernel after Pass 2.
