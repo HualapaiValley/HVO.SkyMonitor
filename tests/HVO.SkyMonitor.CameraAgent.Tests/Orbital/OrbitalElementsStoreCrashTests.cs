@@ -150,7 +150,9 @@ public sealed class OrbitalElementsStoreCrashTests : OrbitalStoreTestBase
     }
 
     [TestMethod]
-    public async Task AStagedIntentFromAnotherCrashIsSettledWithoutTouchingPublishedFiles()
+    [DataRow("raw", ".json")]
+    [DataRow("raw-csv", ".csv")]
+    public async Task AStagedIntentFromAnotherCrashIsSettledWithoutTouchingPublishedFiles(string rawKind, string extension)
     {
         var root = CreateRoot();
         var clock = new OrbitalElementsStoreTestData.Clock(OrbitalElementsStoreTestData.Start);
@@ -158,14 +160,14 @@ public sealed class OrbitalElementsStoreCrashTests : OrbitalStoreTestBase
         {
             await OrbitalElementsStoreTestData.PublishAsync(store, clock, Good).ConfigureAwait(false);
         }
-        var orphanRaw = Path.Combine(root, "raw", OrbitalElementsStoreTestData.Sha('C') + ".json");
+        var orphanRaw = Path.Combine(root, "raw", OrbitalElementsStoreTestData.Sha('C') + extension);
         await File.WriteAllTextAsync(orphanRaw, "orphan").ConfigureAwait(false);
         var foreign = Path.Combine(root, "raw", OrbitalElementsStoreTestData.Sha('D') + ".json");
         await File.WriteAllTextAsync(foreign, "not named by any intent").ConfigureAwait(false);
         var staging = Path.Combine(root, "staging");
         // Names the published payload and manifest too: they are bound to a published snapshot, so they stay.
         await File.WriteAllTextAsync(Path.Combine(staging, new string('e', 32) + ".intent"),
-            $"hvo-orbital-intent-v1 {new string('e', 32)}\nraw {OrbitalElementsStoreTestData.Sha('C')}\npayload {Good.Payload}\nmanifest {Good.Manifest}\n")
+            $"hvo-orbital-intent-v1 {new string('e', 32)}\n{rawKind} {OrbitalElementsStoreTestData.Sha('C')}\npayload {Good.Payload}\nmanifest {Good.Manifest}\n")
             .ConfigureAwait(false);
         await File.WriteAllTextAsync(Path.Combine(staging, new string('f', 32) + ".intent"), "malformed").ConfigureAwait(false);
         await File.WriteAllTextAsync(Path.Combine(staging, "stray.tmp"), "stray").ConfigureAwait(false);

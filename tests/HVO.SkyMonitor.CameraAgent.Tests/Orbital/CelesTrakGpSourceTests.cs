@@ -16,11 +16,11 @@ public sealed class CelesTrakGpSourceTests
         Assert.AreEqual(TimeSpan.FromSeconds(30), CelesTrakGpSource.MaximumRequestTimeout);
 
         var request = CelesTrakGpSource.RequestUri;
-        Assert.AreEqual("https://celestrak.org/NORAD/elements/gp.php?GROUP=active&FORMAT=JSON", request.OriginalString);
+        Assert.AreEqual("https://celestrak.org/NORAD/elements/gp.php?GROUP=active&FORMAT=CSV", request.OriginalString);
         Assert.AreEqual(Uri.UriSchemeHttps, request.Scheme);
         Assert.AreEqual("celestrak.org", request.Host);
         Assert.AreEqual(443, request.Port);
-        Assert.AreEqual("?GROUP=active&FORMAT=JSON", request.Query);
+        Assert.AreEqual("?GROUP=active&FORMAT=CSV", request.Query);
         Assert.AreEqual(string.Empty, request.UserInfo);
         Assert.AreEqual(string.Empty, request.Fragment);
         Assert.AreEqual("https://celestrak.org/usage-policy.php", CelesTrakGpSource.TermsUri.OriginalString);

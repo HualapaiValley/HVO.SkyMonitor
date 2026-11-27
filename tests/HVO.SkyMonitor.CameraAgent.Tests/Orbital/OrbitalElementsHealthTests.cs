@@ -92,7 +92,7 @@ public sealed class OrbitalElementsHealthTests : OrbitalStoreTestBase
         await fixture.SaveDefinitionAsync().ConfigureAwait(false);
         // Element epochs 6 h and 30 h before the retrieval; freshness follows the newest one.
         fixture.Orbital.Client.Enqueue(fixture.Orbital.Retrieved(CelesTrakGpTestData.Payload(
-            CelesTrakGpTestData.RecordFor(60001), CelesTrakGpTestData.RecordFor(60002, ("EPOCH", "\"2026-10-18T06:00:00.000000\"")))));
+            CelesTrakGpTestData.RecordFor(60001), CelesTrakGpTestData.RecordFor(60002, ("EPOCH", "2026-10-18T06:00:00.000000")))));
         await fixture.Orbital.RunAsync().ConfigureAwait(false);
         var evaluator = Evaluator(fixture);
         var overdueAfter = TimeSpan.FromHours(fixture.Orbital.Options.Value.OrbitalElements.StaleAfterHours);

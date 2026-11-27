@@ -14,6 +14,37 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Orbital;
 public sealed class OrbitalElementsStoreRetentionTests : OrbitalStoreTestBase
 {
     [TestMethod]
+    public async Task SharedCsvRawBytesAreRemovedOnlyAfterTheLastDependingSnapshotRetires()
+    {
+        var root = CreateRoot();
+        var clock = new OrbitalElementsStoreTestData.Clock(OrbitalElementsStoreTestData.Start);
+        using var store = OrbitalElementsStoreTestData.Open(root, clock, OrbitalElementsStoreTestData.Settings(root, maximumRetained: 1));
+        var raw = OrbitalRefreshTestHarness.ValidPayload();
+        var first = await PublishCsvAsync().ConfigureAwait(false);
+        var second = await PublishCsvAsync().ConfigureAwait(false);
+        Assert.AreNotEqual(first.ManifestSha256, second.ManifestSha256);
+        Assert.AreEqual(first.PayloadSha256, second.PayloadSha256);
+
+        await OrbitalElementsStoreTestData.PublishAsync(store, clock, OrbitalElementsStoreTestData.Build("legacy-one"))
+            .ConfigureAwait(false);
+        await store.ApplyRetentionAsync(CancellationToken.None).ConfigureAwait(false);
+        var rawPath = Path.Combine(root, "raw", OrbitalElementsStoreTestData.Hash(raw) + ".csv");
+        CollectionAssert.AreEqual(raw, await File.ReadAllBytesAsync(rawPath).ConfigureAwait(false));
+
+        await OrbitalElementsStoreTestData.PublishAsync(store, clock, OrbitalElementsStoreTestData.Build("legacy-two", "1"))
+            .ConfigureAwait(false);
+        await store.ApplyRetentionAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.IsFalse(File.Exists(rawPath));
+
+        async Task<OrbitalPublication> PublishCsvAsync()
+        {
+            var result = CelesTrakGpNormalizer.CreateCandidate(CelesTrakGpTestData.Retrieved(raw, clock.GetUtcNow()));
+            Assert.IsNotNull(result.Snapshot, result.Detail);
+            return await OrbitalElementsStoreTestData.PublishAsync(store, clock, new(result.Snapshot, raw)).ConfigureAwait(false);
+        }
+    }
+
+    [TestMethod]
     public async Task SnapshotsOutsideThePolicyAreTombstonedThenDeletedAndTheActivePairIsProtected()
     {
         var root = CreateRoot();

@@ -203,8 +203,6 @@ internal sealed class ScriptedCelesTrakHandler : HttpMessageHandler
     public void EnqueueBody(byte[] body) => Enqueue((_, _) => Task.FromResult(
         CelesTrakGpTestData.Response(HttpStatusCode.OK, new TrackingContent(body))));
 
-    public void EnqueueFixture(string name) => EnqueueBody(CelesTrakGpTestData.ReadFixture(name));
-
     public void EnqueueStatus(int status) => Enqueue((_, _) => Task.FromResult(
         CelesTrakGpTestData.Response((HttpStatusCode)status, TrackingContent.Of("{\"provider\":\"body never read\"}"))));
 

@@ -18,8 +18,8 @@ the `orbital-elements` health entry and the metrics remain available.
 
 None are needed, and none are accepted. CelesTrak GP is a public HTTPS source.
 
-- The request carries only the fixed User-Agent, `Accept: application/json` and
-  `Accept-Encoding: gzip`. It never sends a cookie, an `Authorization` header or a
+- The request carries only the fixed User-Agent, `Accept: text/csv, text/plain; q=0.9`
+  and `Accept-Encoding: gzip`. It never sends a cookie, an `Authorization` header or a
   conditional header.
 - The named HttpClient disables cookies, pre-authentication and handler credentials.
   It refuses to start with any default request header configured.
@@ -44,7 +44,9 @@ an operator command can bypass it.
 - **Single flight.** At most one attempt is in flight.
 - **Halt on any non-200 HTTP response.** A status from 100 to 599 other than 200 records
   a provider-wide halt with its status and time. Nothing is requested again until an
-  operator resumes, and resuming does not move the floor.
+  operator resumes. After a 5xx response, the next attempt also waits at least
+  15 minutes from the recorded response, even after resume or restart. The later
+  of that backoff and the two-hour floor applies.
 - **Halt when no valid HTTP status is recorded.** Two cases also record a provider-wide
   halt, with no valid HTTP status recorded:
   - a status line outside 100–599 (`orbital.invalid-http-status`);
@@ -79,8 +81,10 @@ an operator command can bypass it.
 
 Request facts:
 
-- URI: `https://celestrak.org/NORAD/elements/gp.php?GROUP=active&FORMAT=JSON`.
+- URI: `https://celestrak.org/NORAD/elements/gp.php?GROUP=active&FORMAT=CSV`.
 - Dataset key: `celestrak:gp:active`.
+- Profile: `celestrak-gp-csv-v1`. The client accepts `text/csv` and `text/plain`
+  with no charset or with UTF-8. A validated CSV header identifies the OMM columns.
 - User-Agent: `HVO.SkyMonitor.CameraAgent/<version>`, with build metadata removed.
 - Bounds: a client deadline of at most 30 s, at most 32 MiB on the wire and 32 MiB
   decoded. The request asks for gzip, and a response must be either gzip or
@@ -363,7 +367,7 @@ detail. The detail never contains a path, header value or secret.
 | Succeeded | `Activated` / `UnchangedPayload` | `orbital.activated`, `orbital.unchanged-payload` |
 | Failed | `ProviderHalted` | `orbital.provider-http-<status>`; `orbital.invalid-http-status` (status line outside 100–599, halted with no valid HTTP status recorded) |
 | Failed | `TransportFailed` | `orbital.request-timeout`, `orbital.http-client-timeout`, `orbital.transport-*` |
-| Failed | `Quarantined` | response checks (`orbital.media-type`, `orbital.content-encoding`, `orbital.gzip-invalid`, `orbital.length-mismatch`, `orbital.wire-bound`, `orbital.raw-bound`, `orbital.empty-body`) and parser or normalizer reasons (`orbital.json-*`, `orbital.missing-member`, `orbital.record-contract`, `orbital.snapshot-contract`, …) |
+| Failed | `Quarantined` | response checks (`orbital.media-type`, `orbital.content-encoding`, `orbital.gzip-invalid`, `orbital.length-mismatch`, `orbital.wire-bound`, `orbital.raw-bound`, `orbital.empty-body`) and parser or normalizer reasons (`orbital.csv-*`, `orbital.missing-member`, `orbital.record-contract`, `orbital.snapshot-contract`, …) |
 | Failed | `StorageFailed` | `orbital.storage-no-space`, `-database`, `-permission`, `-containment`, `-integrity`, `-io` |
 | Failed | none (not admitted) | a storage fault code or `orbital.storage-integrity` at admission, `orbital.internal-error` |
 
@@ -620,10 +624,12 @@ redact them before sharing them outside the site.
 <RawIngressRoot>/.orbital-elements/
   orbital-elements.db      schema 1, STRICT tables, WAL; the ledger and provider state
   orbital-elements.lock    exclusive root lock (a second owner gets orbital.storage-locked)
-  raw/<RawSha256>.json            decoded provider response bytes
+  raw/<RawSha256>.csv            decoded CSV provider response bytes
+  raw/<RawSha256>.json           retained legacy JSON provider response bytes
   payloads/<PayloadSha256>.json   normalized orbital-elements-v1 payload
   manifests/<ManifestSha256>.json snapshot manifest
-  quarantine/<RawSha256>.json     rejected raw bodies kept as evidence
+  quarantine/<RawSha256>.raw      rejected response bodies kept as evidence
+  quarantine/<RawSha256>.json     retained legacy quarantine bodies
   staging/                        publication intents during a write
 ```
 
@@ -642,7 +648,10 @@ Triggers abort deletes from every table except `orbital_snapshot_references`. Th
 also abort any decrease of a provider-state counter.
 
 Files are content-addressed, so a payload or raw body shared by several manifests is
-stored once. In the synthetic active-group evidence (16,754 records), one changed
+stored once. Live CSV bytes are stored at `raw/<sha256>.csv`. Legacy
+`celestrak-gp-json-v1` snapshots keep their `raw/<sha256>.json` bytes, normalized
+payload, and manifest and remain readable by their original identity.
+In the original #528 synthetic JSON active-group evidence (16,754 records), one changed
 snapshot used about 28.6 MB: a 21.4 MB payload, 7.1 MB raw and a 1.7 KB manifest. The
 raw size matches the 7.06 MB measured for the real feed in the #527 decision.
 
@@ -665,16 +674,16 @@ at most 32 MiB each.
 
 1. Read its `reason`, the precise parser, normalizer or response code, and its
    `rawSha256`.
-2. If a raw SHA is present, `quarantine/<rawSha256>.json` holds the decoded response
-   bytes exactly as received.
+2. If the body was retained, `quarantine/<rawSha256>.raw` holds the exact decoded
+   response bytes. Older evidence may still be at `quarantine/<rawSha256>.json`.
 3. Inspect a copy. Do not edit, rename or delete files in the store.
 4. Keep the copy local, because the provider terms forbid redistribution.
 
 Response-level rejections have no raw body. A status line outside 100–599 is a halt,
 not a quarantine. The newest `MaximumQuarantinedPayloads` bodies are kept and older
-ones are pruned automatically. The quarantine state clears at the next successful
-activation. If the cause is a provider format change, it needs a parser change under
-the contract; no configuration setting accepts it.
+ones are pruned automatically for both extensions. The quarantine state clears at
+the next successful activation. If the cause is a provider format change, it needs a
+parser change under the contract; no configuration setting accepts it.
 
 ## Crash Recovery
 

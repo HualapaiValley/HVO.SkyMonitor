@@ -1,18 +1,25 @@
 # Orbital acquisition fixtures v1 (#528)
 
-HVO wrote these **synthetic, provider-shaped examples** of the CelesTrak GP JSON
-format (`GROUP=active&FORMAT=JSON`, profile `celestrak-gp-json-v1`). None of the
-bytes were downloaded from CelesTrak or any other provider, and the element
+HVO wrote these **synthetic, provider-shaped examples** of the CelesTrak GP CSV
+and legacy JSON formats. The original #528 JSON fixtures use the GP query
+`GROUP=active&FORMAT=JSON` and profile `celestrak-gp-json-v1`. None of the bytes were downloaded from CelesTrak or any other provider, and the element
 values are not real objects or predictions. The names are deliberately
 conspicuous (`HVO SYNTHETIC ...`). No provider feed is redistributed here.
 
-`fixture-manifest.json` pins every file's exact byte length and uppercase
-SHA256. Every fixture is a single line of compact UTF-8 JSON with no trailing
+`fixture-manifest.json` pins every JSON fixture's exact byte length and uppercase
+SHA256. Each of those fixtures is one line of compact UTF-8 JSON with no trailing
 newline, so line-ending conversion cannot change the pinned bytes.
 `CelesTrakGpFixtureTests` verifies the manifest, and the normalizer tests pin
-the valid fixture's normalized payload and manifest identities.
+the live CSV fixture's normalized payload and manifest identities.
 
-## Files
+`CelesTrakGpTestData.ValidCsv` contains the same eight synthetic element sets in
+the `celestrak-gp-csv-v1` live format, with UTF-8 and LF line endings. The
+`celestrak-gp-active-legacy-*.json` manifest and records are the canonical bytes the pre-#2138
+normalizer wrote for `celestrak-gp-active-valid.json` at `2026-10-19T17:28:18Z`.
+The replay test publishes those frozen bytes before it fetches the CSV fixture,
+then checks that exact reads still return the original manifest and records.
+
+## Original JSON inputs
 
 | File | Outcome when retrieved at `2026-10-19T17:28:18Z` |
 | --- | --- |
