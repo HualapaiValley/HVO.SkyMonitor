@@ -3181,9 +3181,65 @@ public sealed class DeepSkyExtendedRenderingQualificationTests
     }
 
     [TestMethod]
+    public void ScreenedDarkRejectionReportsOnlyActualSamples()
+    {
+        var (_, request, options, settings, strong, weak, _, _) = CreateBorderlineDarkFixture();
+        var plan = DeepSkyRenderPlan.Prepare(request, null, [strong, weak], null, options, settings);
+
+        var rejected = plan.Diagnostics.Single(d => d.ObjectId == weak.Id);
+        Assert.AreEqual("annotation-only-below-snr", rejected.Reason);
+        Assert.AreEqual(632L, plan.Statistics.TotalSampledPoints);
+        Assert.AreEqual(316, rejected.SampledPoints);
+    }
+
+    [TestMethod]
+    public void ExactRejectionLeavesBothLimbPairsExactAfterBackfill()
+    {
+        var (request, options, settings, strong, weak, limb, oppositeLimb) = CreateDarkCrossBudgetFixture();
+        var exact = DeepSkyRenderPlan.Prepare(request, null, [strong, weak], null, options, settings);
+        var weakMarginal = exact.Diagnostics.Single(d => d.ObjectId == weak.Id).PredictedSignal;
+        settings = settings with { MinimumSignalToNoise = Math.BitIncrement(weakMarginal.SignalToNoise) };
+
+        var direct = DeepSkyRenderPlan.Prepare(request, null, [strong, limb, oppositeLimb], null, options, settings);
+        var backfilled = DeepSkyRenderPlan.Prepare(request, null, [strong, weak, limb, oppositeLimb], null, options, settings);
+        var rejected = backfilled.Diagnostics.Single(d => d.ObjectId == weak.Id);
+        Assert.AreEqual("annotation-only-below-snr", rejected.Reason);
+        Assert.AreEqual(weakMarginal, rejected.PredictedSignal);
+        Assert.AreEqual(5 * 316L, direct.Statistics.TotalSampledPoints, "Both surviving pairs require exact batches.");
+        for (var y = 0; y < request.Projection.HeightPixels; y++)
+        {
+            for (var x = 0; x < request.Projection.WidthPixels; x++)
+            {
+                Assert.AreEqual(BitConverter.DoubleToInt64Bits(direct.ElectronRate(x, y)),
+                    BitConverter.DoubleToInt64Bits(backfilled.ElectronRate(x, y)), $"Pixel ({x}, {y})");
+            }
+        }
+        CollectionAssert.AreEquivalent(direct.Diagnostics.ToArray(), backfilled.Diagnostics.Where(d => d.Admitted).ToArray());
+
+        const int ownDirections = 316;
+        const int distinctTrialRadii = 36;
+        Assert.AreEqual(ownDirections + distinctTrialRadii, rejected.SampledPoints);
+        Assert.AreEqual(direct.Statistics.TotalSampledPoints + rejected.SampledPoints, backfilled.Statistics.TotalSampledPoints);
+        const int sceneSamples = 6 * ownDirections + distinctTrialRadii;
+        Assert.AreEqual((long)sceneSamples, backfilled.Statistics.TotalSampledPoints);
+        var exception = Assert.ThrowsExactly<InvalidOperationException>(() =>
+            DeepSkyRenderPlan.Prepare(request, null, [strong, weak, limb, oppositeLimb], null, options,
+                settings with { MaximumTotalSamplePoints = sceneSamples - 1 }));
+        StringAssert.Contains(exception.Message, "sampling point budget exceeded", StringComparison.Ordinal);
+
+        // A is the target of the rejected trial and both surviving pairs.
+        const int targetSamples = 3 * ownDirections + distinctTrialRadii;
+        var belowTargetCap = DeepSkyRenderPlan.Prepare(request, null, [strong, weak, limb, oppositeLimb], null, options,
+            settings with { MaximumSamplePointsPerSource = targetSamples - 1 });
+        Assert.AreEqual((long)(sceneSamples - ownDirections), belowTargetCap.Statistics.TotalSampledPoints);
+    }
+
+    [TestMethod]
     public void ExactBackfillReusesSurvivingPairWithoutRechargingItsTarget()
     {
         var (request, options, settings, strong, weak, limb, _) = CreateDarkCrossBudgetFixture();
+        // Offset the rejected cloud so both original cross batches need a full direction grid.
+        weak = DarkCloudAtOffset(weak.Id, 2, new AltAzPoint(60d, 180d), 1e-9, 0d, 0.00006);
         var backfill = DarkCloudAtOffset("LDN-D10-E", 4, new AltAzPoint(60d, 180d), 0d, 0.001d, 0.6);
         var exact = DeepSkyRenderPlan.Prepare(request, null, [strong, weak], null, options, settings);
         var weakMarginal = exact.Diagnostics.Single(d => d.ObjectId == weak.Id).PredictedSignal;

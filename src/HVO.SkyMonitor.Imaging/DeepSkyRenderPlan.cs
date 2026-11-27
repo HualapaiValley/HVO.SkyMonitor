@@ -3513,7 +3513,7 @@ public sealed class DeepSkyRenderPlan
         // Another cloud can remove background from the same extraction bin while
         // leaving this deficit intact. In a multi-cloud layout, test marginal S/N.
         var canRejectOnSoloSnr = remainingSlots == 1 || darkCandidates.Count == 1;
-        var exactCrossTaus = new Dictionary<(AdmittedDarkCloud Caller, AdmittedDarkCloud Target), double[]>();
+        var exactCrossTaus = new Dictionary<(AdmittedDarkCloud Caller, AdmittedDarkCloud Target), DarkCrossBatch>();
         var nextCandidate = 0;
 
         while (true)
@@ -3887,7 +3887,7 @@ public sealed class DeepSkyRenderPlan
         Dictionary<AdmittedDarkCloud, int> ReportedSamples) BuildCanonicalDarkLayout(
         List<PreSampledDarkCloud> admittedPreSampled,
         bool screenOnly,
-        Dictionary<(AdmittedDarkCloud Caller, AdmittedDarkCloud Target), double[]>? exactCrossTaus,
+        Dictionary<(AdmittedDarkCloud Caller, AdmittedDarkCloud Target), DarkCrossBatch>? exactCrossTaus,
         DeepSkyRenderSettings settings,
         ref long totalSampledPoints,
         ref long totalOutlineEdgeVisits,
@@ -4033,22 +4033,33 @@ public sealed class DeepSkyRenderPlan
                 : fineGroups[pair.TargetIndex].Members[0];
             var targetCloud = target.Cloud;
 
-            double[]? rawTaus = null;
-            exactCrossTaus?.TryGetValue((receiver, targetCloud), out rawTaus);
-            if (rawTaus is null)
+            DarkCrossBatch? batch = null;
+            exactCrossTaus?.TryGetValue((receiver, targetCloud), out batch);
+            double[]? circularRadii = null;
+            var evaluations = batch?.Evaluations ?? samples.Length;
+            if (batch is null)
             {
+                // Concentric circular profiles depend only on angular radius. Reuse
+                // each exact radial evaluation for every sample on that radius.
+                if (!pair.IsResolvedTarget &&
+                    IsCircularDarkProfile(receiver.Geometry) && IsCircularDarkProfile(targetCloud.Geometry) &&
+                    receiver.Geometry.Frame.Center == targetCloud.Geometry.Frame.Center)
+                {
+                    circularRadii = fineGroup.CircularRadii ??= samples.Select(s => s.CircularRadiusRadians).Distinct().ToArray();
+                    evaluations = circularRadii.Length;
+                }
+
                 var callerSamples = callerWork[receiver];
                 var targetEvaluations = targetWork[targetCloud];
                 if (!CanBudgetCrossCloudEvaluation(
-                    callerSamples, targetEvaluations, samples.Length, settings.MaximumSamplePointsPerSource))
+                    callerSamples, targetEvaluations, evaluations, settings.MaximumSamplePointsPerSource))
                 {
                     continue;
                 }
-                callerWork[receiver] = checked(callerSamples + samples.Length);
-                targetWork[targetCloud] = checked(targetEvaluations + samples.Length);
+                callerWork[receiver] = checked(callerSamples + evaluations);
+                targetWork[targetCloud] = checked(targetEvaluations + evaluations);
             }
 
-            localReported[receiver] = checked(localReported[receiver] + samples.Length);
             var priorGroup = pair.IsResolvedTarget ? null : fineGroups[pair.TargetIndex].Group;
             if (priorGroup is null)
             {
@@ -4070,20 +4081,40 @@ public sealed class DeepSkyRenderPlan
                 continue;
             }
 
-            if (rawTaus is null)
+            localReported[receiver] = checked(localReported[receiver] + evaluations);
+            if (batch is null)
             {
-                // Every cross-cloud target-direction query goes through this charge.
-                ChargeSamplePoints(samples.Length, settings.MaximumTotalSamplePoints, ref totalSampledPoints);
-                receiver.CrossCallerEvaluations = checked(receiver.CrossCallerEvaluations + samples.Length);
-                targetCloud.CrossTargetEvaluations = checked(targetCloud.CrossTargetEvaluations + samples.Length);
-                rawTaus = new double[samples.Length];
-                for (var m = 0; m < samples.Length; m++)
+                // Charge every fresh profile evaluation before querying the target.
+                ChargeSamplePoints(evaluations, settings.MaximumTotalSamplePoints, ref totalSampledPoints);
+                receiver.CrossCallerEvaluations = checked(receiver.CrossCallerEvaluations + evaluations);
+                targetCloud.CrossTargetEvaluations = checked(targetCloud.CrossTargetEvaluations + evaluations);
+                var rawTaus = new double[samples.Length];
+                if (circularRadii is not null)
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    rawTaus[m] = EvaluateDarkCloudOpticalDepth(targetCloud, samples[m].Direction,
-                        settings.MaximumOutlineEdgeVisits, ref totalOutlineEdgeVisits);
+                    var depthByRadius = new Dictionary<double, double>(circularRadii.Length);
+                    foreach (var radius in circularRadii)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var normalizedRadius = radius / targetCloud.Geometry.SemiMajorRadians;
+                        depthByRadius.Add(radius, targetCloud.Profile.PeakOpticalDepth *
+                            DeepSkySourceProfileResolver.EvaluateRadialDensity(targetCloud.Profile, normalizedRadius, 0d, 0UL));
+                    }
+                    for (var m = 0; m < samples.Length; m++)
+                    {
+                        rawTaus[m] = depthByRadius[samples[m].CircularRadiusRadians];
+                    }
                 }
-                exactCrossTaus?.Add((receiver, targetCloud), rawTaus);
+                else
+                {
+                    for (var m = 0; m < samples.Length; m++)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        rawTaus[m] = EvaluateDarkCloudOpticalDepth(targetCloud, samples[m].Direction,
+                            settings.MaximumOutlineEdgeVisits, ref totalOutlineEdgeVisits);
+                    }
+                }
+                batch = new DarkCrossBatch(rawTaus, evaluations);
+                exactCrossTaus?.Add((receiver, targetCloud), batch);
             }
 
             var scale = 1d;
@@ -4094,7 +4125,7 @@ public sealed class DeepSkyRenderPlan
             }
             for (var m = 0; m < samples.Length; m++)
             {
-                fineGroup.PriorTau[m] += rawTaus[m] * scale;
+                fineGroup.PriorTau[m] += batch.Taus[m] * scale;
             }
         }
 
@@ -4146,7 +4177,7 @@ public sealed class DeepSkyRenderPlan
         ref long totalOutlineEdgeVisits,
         CancellationToken cancellationToken,
         bool screenOnly = false,
-        Dictionary<(AdmittedDarkCloud Caller, AdmittedDarkCloud Target), double[]>? exactCrossTaus = null)
+        Dictionary<(AdmittedDarkCloud Caller, AdmittedDarkCloud Target), DarkCrossBatch>? exactCrossTaus = null)
     {
         // Phase 2B: Compose ALL admitted dark clouds in strict canonical order, completely independent
         // of admission priority order. Resolved clouds share exact subpixel directions; coincident fine clouds
@@ -4992,6 +5023,7 @@ public sealed class DeepSkyRenderPlan
             var du = 2d / nu;
             var dv = 2d / nv;
             var cellArea = du * dv * geometry.SemiMajorRadians * geometry.SemiMinorRadians;
+            var isCircular = IsCircularDarkProfile(geometry);
             for (var iy = 0; iy < nv; iy++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -5029,7 +5061,16 @@ public sealed class DeepSkyRenderPlan
                     var pixelArea = solidAngle * areaScale;
                     if (pixelArea <= 0d) continue;
                     var key = (cy + padding) * paddedWidth + cx + padding;
-                    samples.Add(new FineDarkCloudSample(direction, key, pixelArea, tau, DarkScreeningAnnulus(r, geometry)));
+                    var circularRadius = 0d;
+                    if (isCircular)
+                    {
+                        // Integer grid coordinates give symmetric samples identical radius keys.
+                        var x = (2L * ix + 1 - nu) * nv;
+                        var y = (2L * iy + 1 - nv) * nu;
+                        circularRadius = Math.Sqrt(x * x + y * y) / (nu * nv) * geometry.SemiMajorRadians;
+                    }
+                    samples.Add(new FineDarkCloudSample(direction, key, pixelArea, tau,
+                        DarkScreeningAnnulus(r, geometry), circularRadius));
                 }
             }
         }
@@ -5831,6 +5872,10 @@ public sealed class DeepSkyRenderPlan
 
     private static int DarkScreeningAnnulus(double radius, ResolvedSourceGeometry geometry) =>
         Math.Min(DarkScreeningAnnuli - 1, (int)(DarkScreeningAnnuli * radius / geometry.SemiMajorRadians));
+
+    private static bool IsCircularDarkProfile(ResolvedSourceGeometry geometry) =>
+        geometry.TangentRings is not { Count: > 0 } &&
+        geometry.SemiMajorRadians > 0d && geometry.SemiMajorRadians == geometry.SemiMinorRadians;
 
     private static double AccumulateCrossCloudDepthBounds(
         ResolvedSourceGeometry caller,
@@ -6814,7 +6859,8 @@ public sealed class DeepSkyRenderPlan
         long PaddedPixelKey,
         double PixelArea,
         double Tau,
-        int ScreeningAnnulus);
+        int ScreeningAnnulus,
+        double CircularRadiusRadians = 0d);
 
     private readonly record struct FineCellDeposit(
         double AreaSum,
@@ -6850,6 +6896,7 @@ public sealed class DeepSkyRenderPlan
         public double[] CombinedTau { get; set; } = combinedTau;
         public double CombinedPeakOpticalDepth { get; set; } = combinedPeakOpticalDepth;
         public double[] PriorTau { get; set; } = priorTau;
+        public double[]? CircularRadii { get; set; }
         public double[]? ScreeningPriorTau { get; set; }
         public double ScreeningTauError { get; set; }
         public Dictionary<long, FineCellDeposit> CellDeposits { get; set; } = cellDeposits;
@@ -6892,6 +6939,8 @@ public sealed class DeepSkyRenderPlan
         int TargetIndex,
         int FineIndex,
         double Strength);
+
+    private sealed record DarkCrossBatch(double[] Taus, int Evaluations);
 
     private sealed class TemporalUnresolvedPositionGroup(
         EquatorialPoint emitterJ2000,

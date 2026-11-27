@@ -215,7 +215,9 @@ deterministic profiles (`HVO.SkyMonitor.Imaging/DeepSkySourceProfile.cs`):
    frame so rotated thin contours never absorb more light than physically reaches their projected
    footprint (`bg * projectedArea * (1 - exp(-tau_max))`). Resolved clouds share per-pixel cached
    unprojected subpixel directions, while fine clouds merge coincident geometries in place with zero
-   extra cross-cloud evaluations, compute minimum-area oriented bounding boxes via `O(H)` rotating
+   extra cross-cloud evaluations. Concentric circular fine clouds reuse exact optical depths across
+   directions at the same angular radius and charge each distinct radius to the caller, target, and
+   scene. Fine clouds compute minimum-area oriented bounding boxes via `O(H)` rotating
    calipers only after pre-checking remaining `MaximumOutlineEdgeVisits` and `CancellationToken`,
    project each clipped fine-outline trapezoid locally to sensor pixel coordinates (never
    extrapolating catalog-center area scale across off-axis outlines), screen trial layouts with
@@ -227,8 +229,9 @@ deterministic profiles (`HVO.SkyMonitor.Imaging/DeepSkySourceProfile.cs`):
    and allocate bounded temporal work fairly across overlapping unresolved emitters, strictly enforce
    `MaximumSamplePointsPerSource` across own, cross-cloud, and temporal dark-cloud evaluations on
    both caller and target profiles across backfill retries, reuse exact cross-cloud batches for
-   surviving pairs, pre-charge every non-reused evaluation against
-   `MaximumTotalSamplePoints` (`actual <= reported <= MaximumTotalSamplePoints`), and enforce strict
+   surviving pairs, report only actual sample work for a screened rejection, pre-charge every
+   non-reused evaluation against `MaximumTotalSamplePoints`
+   (`actual <= reported <= MaximumTotalSamplePoints`), and enforce strict
    per-pixel transmission monotonicity (`T_after <= T_before` everywhere) with exact reconciliation
    between published diagnostics and delivered pixel deficits. Before committing transmission or
    consuming a `MaximumRenderedSources` slot, each dark nebula computes
