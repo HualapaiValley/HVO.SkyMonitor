@@ -26,18 +26,26 @@ internal static class CameraAgentLifecycleEndpoints
         group.MapGet("/first-boot", ReadFirstBootAsync);
         group.MapPost("/first-resume", FirstResumeAsync);
         group.MapPost("/silo/verify-history", VerifySiloHistoryAsync);
-        group.MapGet("/silo/archive", (HttpContext context, IConfiguration configuration, ICameraAgentSiloArchive archive) =>
-            IsAuthorized(context, configuration) ? Results.Ok(archive.Status) : Results.Unauthorized());
+        group.MapGet("/silo/archive", ReadArchiveStatus);
         group.MapGet("/silo/archive/publication", FindArchivePublicationAsync);
         group.MapPost("/silo/archive/read", ReadArchiveAsync);
         return endpoints;
     }
 
+    private static IResult ReadArchiveStatus(HttpContext context, IConfiguration configuration)
+    {
+        if (!IsAuthorized(context, configuration)) return Results.Unauthorized();
+        var archive = context.RequestServices.GetService<ICameraAgentSiloArchive>();
+        return Results.Ok(archive?.Status ?? new CameraAgentSiloArchiveStatus("disabled", null));
+    }
+
     private static async Task<IResult> FindArchivePublicationAsync(string groupId, string revisionId, HttpContext context,
-        IConfiguration configuration, ICameraAgentSiloArchive archive, CancellationToken cancellationToken)
+        IConfiguration configuration, CancellationToken cancellationToken)
     {
         if (!IsAuthorized(context, configuration)) return Results.Unauthorized();
         if (groupId.Length is < 1 or > 128 || revisionId.Length is < 1 or > 128) return Results.BadRequest();
+        var archive = context.RequestServices.GetService<ICameraAgentSiloArchive>();
+        if (archive is null) return Results.NotFound();
         try
         {
             var publication = await archive.FindAsync(groupId, revisionId, cancellationToken).ConfigureAwait(false);
@@ -50,9 +58,11 @@ internal static class CameraAgentLifecycleEndpoints
     }
 
     private static async Task<IResult> ReadArchiveAsync(CameraAgentSiloArchiveRead request, HttpContext context,
-        IConfiguration configuration, ICameraAgentSiloArchive archive, CancellationToken cancellationToken)
+        IConfiguration configuration, CancellationToken cancellationToken)
     {
         if (!IsAuthorized(context, configuration)) return Results.Unauthorized();
+        var archive = context.RequestServices.GetService<ICameraAgentSiloArchive>();
+        if (archive is null) return Results.NotFound();
         var downloaded = await archive.ReadAsync(request, cancellationToken).ConfigureAwait(false);
         context.Response.RegisterForDispose(downloaded);
         if (downloaded.Content is { } content)
