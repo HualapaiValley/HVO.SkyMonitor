@@ -54,8 +54,6 @@ public sealed class StandaloneW6DockerAcceptanceTests
     private const string ExpectedMonoScheduleSha256 = "99892B9195FDAF6800CB1B8D914B39A610A989B2775B2BD980E50EE8C15CCD80";
     private const string ExpectedMonoDesiredGraphSha256 = "E5F0E7EAEA0C834FF8A332F11A9725DC50C31A603D87A32EC8FB73BB80006680";
     private const string ExpectedMonoEffectiveGraphSha256 = "C8580B09979EE4C27D5FE6C43D4835C1D4CC482A2F83B3D1C19DF26B1D6E3418";
-    private const string CentralHandlerReadyRecord = "HVO211_HANDLER_READY";
-    private const string CentralHandlerAttemptRecord = "HVO211_HANDLER_ATTEMPT";
     private static readonly string[] ExpectedCatalogRows = ["11734", "24378", "24549", "27919", "32263", "37173"];
     private static readonly string[] QualityDependentNodeIds = ["storage", "telemetry"];
     // Issue #719 phase 2. Every value below is sourced from the W6 template's `pipeline.steps`
@@ -98,15 +96,11 @@ public sealed class StandaloneW6DockerAcceptanceTests
             ["transient-capture"] = RequiredLaneBound(),
             ["transient-frames"] = RequiredLaneBound(),
             ["transient-candidates"] = RequiredLaneBound(),
-            ["artifact-outbox"] = DisabledLaneBound(),
-            ["environmental-outbox"] = DisabledLaneBound(),
-            ["fleet-outbox"] = DisabledLaneBound()
         };
 
     private static DurableQueueBound RequiredLaneBound()
         => new(10_000, 128_793_600_000, TimeSpan.FromMinutes(10_080).TotalSeconds);
 
-    private static DurableQueueBound DisabledLaneBound() => new(0, 0, 0);
     private static readonly FrameArtifactRole[] ExpectedRoles =
     [
         FrameArtifactRole.Raw,
@@ -171,7 +165,6 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var evidenceRoot = RequiredPath("HVO_ISSUE_211_EVIDENCE_ROOT");
         var container = Required("HVO_ISSUE_211_CONTAINER");
         var denyContainer = Required("HVO_ISSUE_211_CENTRAL_DENY_CONTAINER");
-        var centralHandlerLog = RequiredPath("HVO_ISSUE_211_CENTRAL_HANDLER_LOG");
         var password = (await File.ReadAllTextAsync(RequiredPath("HVO_ISSUE_211_OWNER_PASSWORD_FILE")).ConfigureAwait(false)).Trim();
         Directory.CreateDirectory(evidenceRoot);
 
@@ -376,7 +369,6 @@ public sealed class StandaloneW6DockerAcceptanceTests
         Assert.IsEmpty(unexpectedErrors, string.Join(Environment.NewLine, unexpectedErrors));
         var centralTrafficAttempts = CountDenyHits(await DockerLogsAsync(denyContainer).ConfigureAwait(false));
         Assert.AreEqual(0, centralTrafficAttempts);
-        var centralHandlerAttempts = AssertCentralHandlerAttempts(centralHandlerLog);
         var resource = sampler.Summarize();
         var faultResource = faultSampler.Summarize(requireContinuousCoverage: false);
         var durableQueueMaxima = MergeDurableQueueMaxima(
@@ -538,7 +530,6 @@ public sealed class StandaloneW6DockerAcceptanceTests
             representative,
             comparisonPreview,
             centralTrafficAttempts,
-            centralHandlerAttempts,
             result = new { passed = true }
         };
         var evidencePath = Path.Combine(evidenceRoot, "issue-211-w6.json");
@@ -572,7 +563,6 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var evidenceRoot = RequiredPath("HVO_ISSUE_211_EVIDENCE_ROOT");
         var container = Required("HVO_ISSUE_211_CONTAINER");
         var denyContainer = Required("HVO_ISSUE_211_CENTRAL_DENY_CONTAINER");
-        var centralHandlerLog = RequiredPath("HVO_ISSUE_211_CENTRAL_HANDLER_LOG");
         var password = (await File.ReadAllTextAsync(RequiredPath("HVO_ISSUE_211_OWNER_PASSWORD_FILE")).ConfigureAwait(false)).Trim();
         Directory.CreateDirectory(evidenceRoot);
 
@@ -649,7 +639,6 @@ public sealed class StandaloneW6DockerAcceptanceTests
             TimeSpan.FromSeconds(30)).ConfigureAwait(false);
         var centralTrafficAttempts = CountDenyHits(await DockerLogsAsync(denyContainer).ConfigureAwait(false));
         Assert.AreEqual(0, centralTrafficAttempts);
-        var centralHandlerAttempts = AssertCentralHandlerAttempts(centralHandlerLog);
         var resource = sampler.Summarize();
         AssertDurableQueueBounds(resource.MaximumDurableQueues);
         var retainedFilesystemBytes = DirectoryBytes(runtimeRoot);
@@ -743,7 +732,6 @@ public sealed class StandaloneW6DockerAcceptanceTests
             },
             readout,
             centralTrafficAttempts,
-            centralHandlerAttempts,
             result = new { passed = true }
         };
         var evidencePath = Path.Combine(evidenceRoot, "issue-211-mono8.json");
@@ -5666,19 +5654,6 @@ public sealed class StandaloneW6DockerAcceptanceTests
     private static int CountDenyHits(string logs)
         => Regex.Count(logs, "HVO211_DENY_HIT", RegexOptions.CultureInvariant);
 
-    private static int AssertCentralHandlerAttempts(string path)
-    {
-        var records = File.ReadAllLines(path);
-        Assert.AreEqual(CentralHandlerReadyRecord, records.FirstOrDefault());
-        Assert.IsTrue(records.All(static record =>
-            record == CentralHandlerReadyRecord ||
-            record.StartsWith(CentralHandlerAttemptRecord, StringComparison.Ordinal)));
-        var attempts = records.Count(static record =>
-            record.StartsWith(CentralHandlerAttemptRecord, StringComparison.Ordinal));
-        Assert.AreEqual(0, attempts);
-        return attempts;
-    }
-
     private static async Task OpenDialogAsync(ILocator trigger, ILocator dialog)
     {
         for (var attempt = 0; attempt < 10; attempt++)
@@ -7388,35 +7363,6 @@ public sealed class StandaloneW6DockerAcceptanceTests
             {
                 queues.Add(new DurableQueueSample("transient-frames", 0, 0, 0));
                 queues.Add(new DurableQueueSample("transient-candidates", 0, 0, 0));
-            }
-            queues.Add(ReadQueue("artifact-outbox", Path.Combine(root, "outbox", "artifact-outbox.db"),
-                """
-                SELECT COUNT(*), COALESCE(SUM(COALESCE(payload_length, length(manifest_bytes))), 0),
-                       MIN(created_unix_ms)
-                FROM artifact_outbox_records
-                WHERE status IN ('pending', 'leased', 'retry');
-                """));
-            queues.Add(ReadQueue(
-                "environmental-outbox",
-                Path.Combine(root, ".environment", "environmental-observations.db"),
-                """
-                SELECT COUNT(*), COALESCE(SUM(payload_bytes), 0), MIN(created_unix_ms)
-                FROM environmental_observation_outbox
-                WHERE status IN ('pending', 'leased', 'retry');
-                """));
-            var fleetDatabase = Path.Combine(root, ".fleet", "fleet-status.db");
-            if (File.Exists(fleetDatabase))
-            {
-                queues.Add(ReadQueue("fleet-outbox", fleetDatabase,
-                """
-                SELECT COUNT(*), COALESCE(SUM(length(payload)), 0), MIN(created_unix_ms)
-                FROM fleet_status_records
-                WHERE status IN ('pending', 'leased', 'retry');
-                """));
-            }
-            else
-            {
-                queues.Add(new DurableQueueSample("fleet-outbox", 0, 0, 0));
             }
             return new BacklogSample(
                 queues.Sum(static queue => queue.Count),

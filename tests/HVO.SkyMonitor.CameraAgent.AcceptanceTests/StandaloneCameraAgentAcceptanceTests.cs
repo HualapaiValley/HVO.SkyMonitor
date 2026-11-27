@@ -694,8 +694,10 @@ public sealed partial class StandaloneCameraAgentAcceptanceTests
         var checkNames = document.RootElement.GetProperty("checks").EnumerateArray()
             .Select(static check => check.GetProperty("name").GetString())
             .ToArray();
-        CollectionAssert.IsSubsetOf(
-            new[] { "capture-admission", "calibration-library", "clock", "operator-notifications" }, checkNames);
+        foreach (var localCheck in new[] { "capture-admission", "calibration-library", "clock", "operator-notifications" })
+        {
+            Assert.Contains(localCheck, checkNames);
+        }
         foreach (var retiredCheck in new[] { "artifact-outbox", "fleet-heartbeat", "environmental-delivery" })
         {
             Assert.DoesNotContain(retiredCheck, checkNames);

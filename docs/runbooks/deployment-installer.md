@@ -1561,6 +1561,8 @@ dimensions. It is supplemental evidence, not the canonical W6 workload. Run
 environment prerequisites, rendered outputs, isolation, recovery, and canonical
 W6 performance disposition defined in
 [`performance-validation.md`](../planning/performance-validation.md).
+The current campaign checks the isolated test network with an external denial
+probe. Previous evidence includes the probe built into the retired delivery client.
 
 ## Persistent State
 
