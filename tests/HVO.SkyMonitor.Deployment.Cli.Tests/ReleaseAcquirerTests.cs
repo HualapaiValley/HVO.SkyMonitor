@@ -580,6 +580,88 @@ public sealed class ReleaseAcquirerTests
     }
 
     [TestMethod]
+    public void ReadLinuxProcessStat_WhenStatContainsNulBytes_ReturnsUnreadableOrMalformed()
+    {
+        const int fixturePid = 12345;
+        var validStat = BuildSyntheticLinuxProcessStat(fixturePid, "sleep", 'S', 987654321UL);
+        var differentStartTimeStat = BuildSyntheticLinuxProcessStat(fixturePid, "sleep", 'S', 987654322UL);
+
+        var cases = new[]
+        {
+            $"{validStat[..^1]}\0\n",
+            $"{differentStartTimeStat[..^1]}\0\n",
+            validStat.Replace("12345 (sleep)", "12345\0 (sleep)", StringComparison.Ordinal),
+            validStat.Replace(") S 1 ", ") S 1\0 ", StringComparison.Ordinal),
+            validStat.Replace("987654321", "987654321\0", StringComparison.Ordinal),
+            differentStartTimeStat.Replace("987654322", "987654322\0", StringComparison.Ordinal),
+            BuildSyntheticLinuxProcessStat(fixturePid, "sl\0eep", 'S', 987654321UL)
+        };
+
+        foreach (var malformedStat in cases)
+        {
+            Assert.IsFalse(TryParseLinuxProcessStat(malformedStat, out _));
+            var result = ReadLinuxProcessStat(fixturePid, _ => malformedStat);
+            var malformedResult = Assert.IsInstanceOfType<LinuxProcessStatReadResult.UnreadableOrMalformed>(result);
+            StringAssert.Contains(malformedResult.Diagnostic, "malformed", StringComparison.Ordinal);
+            StringAssert.Contains(malformedResult.Diagnostic, "/proc/12345/stat", StringComparison.Ordinal);
+        }
+
+        Assert.IsFalse(TryParseFixtureProcessIdentity($"12345\0\n{validStat}", out _));
+    }
+
+    [TestMethod]
+    public void LinuxStatNumericHelpers_EnforceStrictAsciiDigitsAndRejectTrailingNul()
+    {
+        Assert.IsTrue(TryParseStrictUnsignedInt32("0", out var zeroInt) && zeroInt == 0);
+        Assert.IsTrue(TryParseStrictUnsignedInt32("12345", out var pidInt) && pidInt == 12345);
+        Assert.IsTrue(TryParseStrictUnsignedInt32("2147483647", out var maxInt) && maxInt == int.MaxValue);
+        Assert.IsFalse(TryParseStrictUnsignedInt32(string.Empty, out _));
+        Assert.IsFalse(TryParseStrictUnsignedInt32("12345\0", out _));
+        Assert.IsFalse(TryParseStrictUnsignedInt32("\012345", out _));
+        Assert.IsFalse(TryParseStrictUnsignedInt32("12\0345", out _));
+        Assert.IsFalse(TryParseStrictUnsignedInt32("+12345", out _));
+        Assert.IsFalse(TryParseStrictUnsignedInt32("-1", out _));
+        Assert.IsFalse(TryParseStrictUnsignedInt32(" 12345", out _));
+        Assert.IsFalse(TryParseStrictUnsignedInt32("12345 ", out _));
+        Assert.IsFalse(TryParseStrictUnsignedInt32("\u0661\u0662", out _));
+        Assert.IsFalse(TryParseStrictUnsignedInt32("2147483648", out _));
+
+        Assert.IsTrue(TryParseStrictUnsignedInt64("0", out var zeroUlong) && zeroUlong == 0UL);
+        Assert.IsTrue(TryParseStrictUnsignedInt64("987654321", out var ticks) && ticks == 987654321UL);
+        Assert.IsTrue(TryParseStrictUnsignedInt64("18446744073709551615", out var maxUlong) && maxUlong == ulong.MaxValue);
+        Assert.IsFalse(TryParseStrictUnsignedInt64(string.Empty, out _));
+        Assert.IsFalse(TryParseStrictUnsignedInt64("987654321\0", out _));
+        Assert.IsFalse(TryParseStrictUnsignedInt64("0\0", out _));
+        Assert.IsFalse(TryParseStrictUnsignedInt64("+1", out _));
+        Assert.IsFalse(TryParseStrictUnsignedInt64("-1", out _));
+        Assert.IsFalse(TryParseStrictUnsignedInt64(" 1", out _));
+        Assert.IsFalse(TryParseStrictUnsignedInt64("1 ", out _));
+        Assert.IsFalse(TryParseStrictUnsignedInt64("\u0661\u0662", out _));
+        Assert.IsFalse(TryParseStrictUnsignedInt64("18446744073709551616", out _));
+
+        Assert.IsTrue(IsStrictUnsignedInteger("0"));
+        Assert.IsTrue(IsStrictUnsignedInteger("18446744073709551615"));
+        Assert.IsFalse(IsStrictUnsignedInteger("0\0"));
+        Assert.IsFalse(IsStrictUnsignedInteger("1\0"));
+        Assert.IsFalse(IsStrictUnsignedInteger("-1"));
+
+        Assert.IsTrue(IsStrictSignedInteger("0"));
+        Assert.IsTrue(IsStrictSignedInteger("-1"));
+        Assert.IsTrue(IsStrictSignedInteger("-9223372036854775808"));
+        Assert.IsTrue(IsStrictSignedInteger("9223372036854775807"));
+        Assert.IsFalse(IsStrictSignedInteger(string.Empty));
+        Assert.IsFalse(IsStrictSignedInteger("-"));
+        Assert.IsFalse(IsStrictSignedInteger("--1"));
+        Assert.IsFalse(IsStrictSignedInteger("+1"));
+        Assert.IsFalse(IsStrictSignedInteger("0\0"));
+        Assert.IsFalse(IsStrictSignedInteger("-1\0"));
+        Assert.IsFalse(IsStrictSignedInteger(" -1"));
+        Assert.IsFalse(IsStrictSignedInteger("-1 "));
+        Assert.IsFalse(IsStrictSignedInteger("-\u0661"));
+        Assert.IsFalse(IsStrictSignedInteger("9223372036854775808"));
+    }
+
+    [TestMethod]
     public void ShouldKillFixtureProcess_RejectsIdentityAndCommandLineMismatches()
     {
         var expected = new FixtureProcessIdentity(12345, 987654321UL);
@@ -1503,6 +1585,70 @@ public sealed class ReleaseAcquirerTests
         Assert.IsFalse(Directory.Exists(root.FullName));
     }
 
+    [TestMethod]
+    [DataRow(false, true)]
+    [DataRow(true, true)]
+    [DataRow(false, false)]
+    [DataRow(true, false)]
+    public async Task CleanUpFifoFixtureAsync_WhenStatHasTrailingNulBeforeNewlineWithDifferentStartTime_DoesNotTreatAsPidReuseAndFails(
+        bool allowZombieAsTerminated,
+        bool failOnInitialRead)
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-stat-trailing-nul-");
+        var pidFile = Path.Combine(root.FullName, "release.json.pid");
+        const int fixturePid = 12345;
+        const ulong startTimeTicks = 987654321UL;
+        await WriteFixturePidFileAsync(pidFile, fixturePid, startTimeTicks);
+
+        var nulBeforeNewlineStat = $"{BuildSyntheticLinuxProcessStat(fixturePid, "sleep", 'S', startTimeTicks + 1)[..^1]}\0\n";
+        var parsedMalformed = ReadLinuxProcessStat(fixturePid, _ => nulBeforeNewlineStat);
+        _ = Assert.IsInstanceOfType<LinuxProcessStatReadResult.UnreadableOrMalformed>(parsedMalformed);
+
+        var events = new List<string>();
+        var statReadCount = 0;
+        var operations = new FifoFixtureCleanupOperations(
+            ReadProcessStat: pid =>
+            {
+                events.Add("read-stat");
+                statReadCount++;
+                if (!failOnInitialRead && statReadCount <= 2)
+                {
+                    return ReadLinuxProcessStat(
+                        pid,
+                        static _ => BuildSyntheticLinuxProcessStat(fixturePid, "sleep", 'S', startTimeTicks));
+                }
+
+                return ReadLinuxProcessStat(pid, _ => nulBeforeNewlineStat);
+            },
+            ReadProcessCmdline: _ =>
+            {
+                events.Add("read-cmdline");
+                return "sleep\030\0";
+            },
+            OpenPidFd: pid =>
+            {
+                events.Add($"open-pidfd:{pid}");
+                return PidFdOpenResult.Success(42);
+            },
+            SendPidFdSignal: (pidfd, signal) =>
+            {
+                events.Add($"send-signal:{pidfd}:{signal}");
+                return PidFdSignalResult.Success();
+            },
+            ClosePidFd: pidfd => events.Add($"close-pidfd:{pidfd}"),
+            TerminationTimeout: TimeSpan.Zero,
+            PollInterval: TimeSpan.Zero);
+
+        var failure = await Assert.ThrowsExactlyAsync<AssertFailedException>(
+            () => CleanUpFifoFixtureAsync(root, pidFile, expectedScriptPath: null, allowZombieAsTerminated, operations));
+
+        StringAssert.Contains(failure.Message, "malformed", StringComparison.Ordinal);
+        CollectionAssert.AreEqual(
+            failOnInitialRead ? ExpectedUnreadableInitialStatSequence : ExpectedSignalSequence,
+            events);
+        Assert.IsFalse(Directory.Exists(root.FullName));
+    }
+
     private static LinuxProcessStatReadResult ReadSimulatedFaultyStat(int pid, string statFault)
         => statFault switch
         {
@@ -1875,7 +2021,7 @@ public sealed class ReleaseAcquirerTests
         }
 
         var pidLine = content.AsSpan(0, newlineIndex).Trim();
-        if (!int.TryParse(pidLine, NumberStyles.None, CultureInfo.InvariantCulture, out var pid) || pid <= 1)
+        if (!TryParseStrictUnsignedInt32(pidLine, out var pid) || pid <= 1)
         {
             return false;
         }
@@ -1893,7 +2039,9 @@ public sealed class ReleaseAcquirerTests
     private static bool TryParseLinuxProcessStat(string? statContent, out LinuxProcessStat stat)
     {
         stat = default;
-        if (string.IsNullOrEmpty(statContent) || statContent[^1] != '\n')
+        if (string.IsNullOrEmpty(statContent)
+            || statContent.Contains('\0', StringComparison.Ordinal)
+            || statContent[^1] != '\n')
         {
             return false;
         }
@@ -1916,7 +2064,7 @@ public sealed class ReleaseAcquirerTests
         }
 
         var pidSpan = line[..(openParen - 1)];
-        if (!int.TryParse(pidSpan, NumberStyles.None, CultureInfo.InvariantCulture, out var pid) || pid <= 0)
+        if (!TryParseStrictUnsignedInt32(pidSpan, out var pid) || pid <= 0)
         {
             return false;
         }
@@ -1946,7 +2094,7 @@ public sealed class ReleaseAcquirerTests
             var fieldNumber = index + 3;
             if (index == StartTimeFieldIndex)
             {
-                if (!ulong.TryParse(field, NumberStyles.None, CultureInfo.InvariantCulture, out startTimeTicks))
+                if (!TryParseStrictUnsignedInt64(field, out startTimeTicks))
                 {
                     return false;
                 }
@@ -1977,7 +2125,7 @@ public sealed class ReleaseAcquirerTests
         return fieldNumber switch
         {
             // Field 4 (ppid): non-negative PID (%d).
-            4 => int.TryParse(token, NumberStyles.None, CultureInfo.InvariantCulture, out _),
+            4 => TryParseStrictUnsignedInt32(token, out _),
             // Signed fields in Linux fs/proc/array.c do_task_stat (%d / %ld).
             5 or 6 or 7 or 8 or 16 or 17 or 18 or 19 or 20 or 21 or 24 or 38 or 39 or 44 or 52 =>
                 IsStrictSignedInteger(token),
@@ -1989,14 +2137,63 @@ public sealed class ReleaseAcquirerTests
         };
     }
 
+    private static bool IsStrictAsciiUnsignedDigits(ReadOnlySpan<char> token)
+    {
+        if (token.IsEmpty)
+        {
+            return false;
+        }
+
+        foreach (var character in token)
+        {
+            if (character is < '0' or > '9')
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool IsStrictAsciiSignedDigits(ReadOnlySpan<char> token)
+    {
+        if (token.IsEmpty)
+        {
+            return false;
+        }
+
+        var digits = token[0] == '-' ? token[1..] : token;
+        return IsStrictAsciiUnsignedDigits(digits);
+    }
+
+    private static bool TryParseStrictUnsignedInt32(ReadOnlySpan<char> token, out int value)
+    {
+        if (!IsStrictAsciiUnsignedDigits(token))
+        {
+            value = 0;
+            return false;
+        }
+
+        return int.TryParse(token, NumberStyles.None, CultureInfo.InvariantCulture, out value);
+    }
+
+    private static bool TryParseStrictUnsignedInt64(ReadOnlySpan<char> token, out ulong value)
+    {
+        if (!IsStrictAsciiUnsignedDigits(token))
+        {
+            value = 0;
+            return false;
+        }
+
+        return ulong.TryParse(token, NumberStyles.None, CultureInfo.InvariantCulture, out value);
+    }
+
     private static bool IsStrictSignedInteger(ReadOnlySpan<char> token)
-        => !token.IsEmpty
-            && token[0] != '+'
+        => IsStrictAsciiSignedDigits(token)
             && long.TryParse(token, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out _);
 
     private static bool IsStrictUnsignedInteger(ReadOnlySpan<char> token)
-        => !token.IsEmpty
-            && ulong.TryParse(token, NumberStyles.None, CultureInfo.InvariantCulture, out _);
+        => TryParseStrictUnsignedInt64(token, out _);
 
     private static bool IsSameFixtureProcess(FixtureProcessIdentity expected, LinuxProcessStat actual)
         => actual.Pid == expected.Pid && actual.StartTimeTicks == expected.StartTimeTicks;
