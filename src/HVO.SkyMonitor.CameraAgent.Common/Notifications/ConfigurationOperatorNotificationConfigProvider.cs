@@ -567,12 +567,12 @@ public sealed class HostConfigurationSnapshotTracker : IDisposable
         // H4a (delta17/delta18): Distinguish an uninterrupted active split-provider rotation from an abandoned/cleared
         // waiting credential OR a winning-provider ownership handoff. Whenever a previously suppressed waiting value is
         // cleared, replaced, reverted, stripped by a binding check, OR changes winning provider identity (even when a
-        // lower-priority provider supplies the identical string value), promote it to destination-unknown retired
-        // history immediately BEFORE evaluating the new revision so live admission refuses to publish it at any later
-        // destination without explicit binding.
+        // lower-priority provider supplies the identical string value), retire it before evaluating the new revision.
+        // Opaque chained and non-root configuration cannot establish continuity of the winning provider.
         if (state.PendingWaitingValueFingerprint is not null &&
             (rawValueFp is null ||
              !TrackedFieldBindingState.FixedTimeHexEquals(state.PendingWaitingValueFingerprint, rawValueFp) ||
+             currentProviderId is null ||
              state.PendingWaitingProviderId != currentProviderId))
         {
             state.PromotePendingWaitingToRetired();
@@ -663,6 +663,15 @@ public sealed class HostConfigurationSnapshotTracker : IDisposable
                 state.ClearPriorSplitOrOpaqueSmtp();
             }
             return rawValue;
+        }
+
+        // A transient binding error can retire the same value that is still bound at this destination.
+        // Apply that retirement before either reload path can republish the unchanged value.
+        if (state.IsRetiredForUnknownDestinationFingerprint(rawValueFp))
+        {
+            state.ClearPendingWaiting();
+            state.RecordWithheldValueFingerprint(rawValueFp);
+            return null;
         }
 
         // 2. Cold-start initial snapshot (constructor's first read only): establish initial binding,
@@ -775,8 +784,7 @@ public sealed class HostConfigurationSnapshotTracker : IDisposable
                 // clear, replacement, or winning-provider ownership change promotes it to destination-unknown retired
                 // history).
                 state.RecordWithheldValueFingerprint(rawValueFp);
-                if ((isSmtpField && state.HasPriorSplitOrOpaqueSmtp) ||
-                    state.IsRetiredForUnknownDestinationFingerprint(rawValueFp))
+                if (isSmtpField && state.HasPriorSplitOrOpaqueSmtp)
                 {
                     state.RecordRetiredFingerprints(destinationFingerprint: null, rawValueFp);
                     state.ClearPendingWaiting();
@@ -2133,11 +2141,11 @@ public sealed class ConfigurationOperatorNotificationConfigProvider : IOperatorN
             WebhookUserKeyHasExplicitBinding: webhookUserKeyAllowed && webhookUserKeyHasExplicitBinding,
             WebhookNtfyTopicHasExplicitBinding: webhookNtfyTopicAllowed && webhookNtfyTopicHasExplicitBinding,
             IsSmtpDestinationSplitOrOpaque: isSmtpDestinationSplitOrOpaque,
-            SmtpUsernameProvider: smtpUsernameProvider.Provider,
-            SmtpPasswordProvider: smtpPasswordProvider.Provider,
-            WebhookAuthTokenProvider: webhookAuthTokenProvider.Provider,
-            WebhookUserKeyProvider: webhookUserKeyProvider.Provider,
-            WebhookNtfyTopicProvider: webhookNtfyTopicProvider.Provider,
+            SmtpUsernameProvider: smtpUsernameProvider.VerifiableProvider,
+            SmtpPasswordProvider: smtpPasswordProvider.VerifiableProvider,
+            WebhookAuthTokenProvider: webhookAuthTokenProvider.VerifiableProvider,
+            WebhookUserKeyProvider: webhookUserKeyProvider.VerifiableProvider,
+            WebhookNtfyTopicProvider: webhookNtfyTopicProvider.VerifiableProvider,
             WithheldSmtpUsername: withheldSmtpUsername,
             WithheldSmtpPassword: withheldSmtpPassword,
             WithheldWebhookAuthToken: withheldWebhookAuthToken,
@@ -2171,7 +2179,9 @@ public sealed class ConfigurationOperatorNotificationConfigProvider : IOperatorN
         IConfigurationProvider? Provider,
         bool IsOpaqueChained)
     {
-        public bool HasVerifiableIdentity => Provider is not null && !IsOpaqueChained;
+        public bool HasVerifiableIdentity => VerifiableProvider is not null;
+
+        public IConfigurationProvider? VerifiableProvider => IsOpaqueChained ? null : Provider;
     }
 
     private static List<IConfigurationProvider> CollectProvidersForReloadObservation(IConfigurationRoot root)

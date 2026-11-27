@@ -41,7 +41,8 @@ public sealed class NotificationsPageTests
             Assert.IsNotNull(cut.Find("#notifications-history-empty"));
             Assert.IsNull(cut.Find("fieldset.notifications-fieldset").GetAttribute("disabled"));
             StringAssert.Contains(cut.Markup, "scheme, host, and any non-default port", StringComparison.Ordinal);
-            StringAssert.Contains(cut.Markup, "restores any host-configured webhook URL and host token", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "scheme, host, port, path, or query can invalidate credential bindings", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "Credential retirement can still withhold the host token", StringComparison.Ordinal);
             StringAssert.Contains(cut.Markup, "transport security mode", StringComparison.Ordinal);
         });
     }

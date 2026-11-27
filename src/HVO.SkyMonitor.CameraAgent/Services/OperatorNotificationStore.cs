@@ -837,9 +837,11 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                 var unprotectedJson = _protector.Unprotect(envelope.ProtectedSecrets.Trim());
                 var payload = JsonSerializer.Deserialize<PersistedProtectedSecrets>(unprotectedJson, SerializerOptions)
                     ?? throw new InvalidDataException("Unprotected operator notification secrets payload is null.");
-                secrets = payload.ToSecrets();
-                bindings = payload.ToBindings(envelope.SchemaVersion);
                 retiredBindings = payload.ToRetiredBindings(envelope.SchemaVersion);
+                // An unresolved legacy history cannot attest an active topic, even with a v3 destination binding.
+                // Withhold it from every read and prevent subsequent saves from carrying it forward.
+                secrets = payload.ToSecrets(allowNtfyTopic: !retiredBindings.HasLegacyUnnormalizedNtfyTopicHistory);
+                bindings = payload.ToBindings(envelope.SchemaVersion);
             }
 
             _lastLoggedReadFailureKey = null;
@@ -1058,11 +1060,7 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
             retired.TruncatedSmtpEndpoints is { Count: > 0 };
         var webhookHistoryTruncated = retired.AnyWebhookHistoryTruncated ||
             retired.TruncatedWebhookOrigins is { Count: > 0 };
-        var nextWebhookDestSaltedFp = !string.IsNullOrEmpty(retiredSalt) && nextWebhookDestination is not null
-            ? ComputeSaltedDestinationFingerprint(nextWebhookDestination, retiredSalt)
-            : null;
-
-        bool IsRetiredOrTruncatedSmtpForDifferentEndpoint(string candidate, bool isPassword)
+        bool IsBlockedSmtpCredential(string candidate, bool isPassword)
         {
             var hostField = isPassword ? HostCredentialField.SmtpPassword : HostCredentialField.SmtpUsername;
 
@@ -1102,16 +1100,6 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
             for (var i = 0; i < retiredSmtps.Count; i++)
             {
                 var entry = retiredSmtps[i];
-                // Fail closed: unbound or migrated pre-v3 entries (missing Endpoint) never prove they
-                // belonged to the exact same SMTP endpoint, so they count as different endpoints.
-                var sameEndpoint = nextSmtpEndpoint is not null &&
-                    !string.IsNullOrEmpty(entry.Endpoint) &&
-                    string.Equals(entry.Endpoint, nextSmtpEndpoint, StringComparison.OrdinalIgnoreCase);
-                if (sameEndpoint)
-                {
-                    continue;
-                }
-
                 var hash = isPassword ? entry.PasswordHash : entry.UsernameHash;
                 if (MatchesSecretFingerprint(candidate, hash, retiredSalt))
                 {
@@ -1122,7 +1110,7 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
             return false;
         }
 
-        bool IsRetiredOrTruncatedWebhookForDifferentDestination(string candidate, int fieldKind, string? rawCandidate = null)
+        bool IsBlockedWebhookCredential(string candidate, int fieldKind, string? rawCandidate = null)
         {
             var hostField = fieldKind switch
             {
@@ -1175,16 +1163,6 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
             for (var i = 0; i < retiredWebhooks.Count; i++)
             {
                 var entry = retiredWebhooks[i];
-                // Fail closed: legacy origin-only or unbound entries (missing DestinationFingerprint) never prove
-                // they belonged to the exact same full destination, so they count as different destinations.
-                var sameDestination = nextWebhookDestSaltedFp is not null &&
-                    !string.IsNullOrEmpty(entry.DestinationFingerprint) &&
-                    FixedTimeHexEquals(entry.DestinationFingerprint, nextWebhookDestSaltedFp);
-                if (sameDestination)
-                {
-                    continue;
-                }
-
                 var hash = fieldKind switch
                 {
                     0 => entry.AuthTokenHash,
@@ -1218,10 +1196,10 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                 !hostSmtpMatchesTarget &&
                 string.Equals(request.SmtpUsername, configSecrets.SmtpUsername, StringComparison.Ordinal);
             if (reusedProtected || reusedPreviousEffective || reusedOtherHost ||
-                IsRetiredOrTruncatedSmtpForDifferentEndpoint(request.SmtpUsername, isPassword: false))
+                IsBlockedSmtpCredential(request.SmtpUsername, isPassword: false))
             {
                 problems["smtp.username"] =
-                    "A fresh SMTP username is required when changing the SMTP endpoint; reusing a credential from another endpoint is not allowed.";
+                    "Enter a fresh SMTP username for this endpoint.";
             }
         }
 
@@ -1239,10 +1217,10 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                 !hostSmtpMatchesTarget &&
                 string.Equals(request.SmtpPassword, configSecrets.SmtpPassword, StringComparison.Ordinal);
             if (reusedProtected || reusedPreviousEffective || reusedOtherHost ||
-                IsRetiredOrTruncatedSmtpForDifferentEndpoint(request.SmtpPassword, isPassword: true))
+                IsBlockedSmtpCredential(request.SmtpPassword, isPassword: true))
             {
                 problems["smtp.password"] =
-                    "A fresh SMTP password is required when changing the SMTP endpoint; reusing a credential from another endpoint is not allowed.";
+                    "Enter a fresh SMTP password for this endpoint.";
             }
         }
 
@@ -1260,10 +1238,10 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                 !hostWebhookMatchesTarget &&
                 string.Equals(request.WebhookAuthToken, configSecrets.WebhookAuthToken, StringComparison.Ordinal);
             if (reusedProtected || reusedPreviousEffective || reusedOtherHost ||
-                IsRetiredOrTruncatedWebhookForDifferentDestination(request.WebhookAuthToken, fieldKind: 0))
+                IsBlockedWebhookCredential(request.WebhookAuthToken, fieldKind: 0))
             {
                 problems["webhook.authToken"] =
-                    "A fresh webhook auth token is required when changing the webhook destination; reusing a credential from another destination is not allowed.";
+                    "Enter a fresh webhook auth token for this destination.";
             }
         }
 
@@ -1281,10 +1259,10 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                 !hostWebhookMatchesTarget &&
                 string.Equals(request.WebhookUserKey, configSecrets.WebhookUserKey, StringComparison.Ordinal);
             if (reusedProtected || reusedPreviousEffective || reusedOtherHost ||
-                IsRetiredOrTruncatedWebhookForDifferentDestination(request.WebhookUserKey, fieldKind: 1))
+                IsBlockedWebhookCredential(request.WebhookUserKey, fieldKind: 1))
             {
                 problems["webhook.userKey"] =
-                    "A fresh webhook user key is required when changing the webhook destination; reusing a credential from another destination is not allowed.";
+                    "Enter a fresh webhook user key for this destination.";
             }
         }
 
@@ -1304,10 +1282,11 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                 !hostWebhookMatchesTarget &&
                 string.Equals(trimmedNtfyTopic, OperatorNotificationValidation.NormalizeNtfyTopic(configSecrets.WebhookNtfyTopic), StringComparison.Ordinal);
             if (reusedProtected || reusedPreviousEffective || reusedOtherHost ||
-                IsRetiredOrTruncatedWebhookForDifferentDestination(trimmedNtfyTopic, fieldKind: 2, request.WebhookNtfyTopic))
+                IsBlockedWebhookCredential(trimmedNtfyTopic, fieldKind: 2, request.WebhookNtfyTopic))
             {
-                problems["webhook.ntfyTopic"] =
-                    "A fresh ntfy topic is required when changing the webhook destination; reusing a credential from another destination is not allowed.";
+                problems["webhook.ntfyTopic"] = retired.HasLegacyUnnormalizedNtfyTopicHistory
+                    ? "The ntfy topic cannot be verified because stored credential history is incomplete."
+                    : "Enter a fresh ntfy topic for this destination.";
             }
         }
 
@@ -1988,11 +1967,6 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                 var sameEndpointEntry = currentSmtpEndpoint is not null &&
                     !string.IsNullOrEmpty(entry.Endpoint) &&
                     string.Equals(entry.Endpoint, currentSmtpEndpoint, StringComparison.OrdinalIgnoreCase);
-                if (sameEndpointEntry && hasCurrentSmtpWrittenDestinationProvenance)
-                {
-                    continue;
-                }
-
                 if (!smtpUsernameUntouchedByStaleRead &&
                     !smtpUserExplicitlyAuthorized &&
                     (!sameEndpointEntry || !canCarrySmtpCreds || !string.Equals(smtpUsername, existingSecrets.SmtpUsername, StringComparison.Ordinal)) &&
@@ -2134,8 +2108,7 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
             // pre-v3 or unmarked v3 legacy unnormalized ntfy topic history on direct/unversioned saves.
             if (!webhookNtfyTopicUntouchedByStaleRead &&
                 retired.HasLegacyUnnormalizedNtfyTopicHistory &&
-                !string.IsNullOrEmpty(webhookNtfyTopic) &&
-                (!canCarryWebhookCreds || !string.Equals(webhookNtfyTopic, existingWebhookNtfyTopic, StringComparison.Ordinal)))
+                !string.IsNullOrEmpty(webhookNtfyTopic))
             {
                 webhookNtfyTopic = null;
                 webhookTopicStripped = true;
@@ -2212,11 +2185,6 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                 var sameDestinationEntry = currentWebhookDestSaltedFp is not null &&
                     !string.IsNullOrEmpty(entry.DestinationFingerprint) &&
                     FixedTimeHexEquals(entry.DestinationFingerprint, currentWebhookDestSaltedFp);
-                if (sameDestinationEntry && hasCurrentWebhookWrittenDestinationProvenance)
-                {
-                    continue;
-                }
-
                 if (!webhookAuthTokenUntouchedByStaleRead &&
                     !webhookTokenExplicitlyAuthorized &&
                     (!sameDestinationEntry || !canCarryWebhookCreds || !string.Equals(webhookAuthToken, existingSecrets.WebhookAuthToken, StringComparison.Ordinal)) &&
@@ -2972,13 +2940,13 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
         bool? HasLegacyUnnormalizedNtfyTopicHistory = null,
         bool? NtfyTopicHashesNormalized = null)
     {
-        public OperatorNotificationSecrets ToSecrets() => new(
+        public OperatorNotificationSecrets ToSecrets(bool allowNtfyTopic) => new(
             SmtpUsername,
             SmtpPassword,
             WebhookUrl,
             WebhookAuthToken,
             WebhookUserKey,
-            OperatorNotificationValidation.NormalizeNtfyTopic(WebhookNtfyTopic));
+            allowNtfyTopic ? OperatorNotificationValidation.NormalizeNtfyTopic(WebhookNtfyTopic) : null);
 
         public ProtectedSecretBindings ToBindings(int envelopeSchemaVersion)
         {
@@ -3292,10 +3260,12 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                 hasLegacyUnnormalizedNtfyTopicHistory = true;
             }
 
-            // M-ntfy-b (delta18): An unmarked v3 envelope (missing NtfyTopicHashesNormalized == true) that has
-            // truncated webhook history cannot rule out evicted pre-v3 unnormalized ntfy topic hashes; fail closed.
-            if (hasTrustedHistoryVersion && !hasTrustedNtfyTopicNormalization &&
-                (anyWebhookTruncated || truncatedWebhooks.Count > 0))
+            // Recorded truncation can hide evicted unnormalized topic hashes in any unattested history.
+            // Pre-v3 migration also sets anyWebhookTruncated by default, independently of recorded eviction.
+            if (!hasTrustedNtfyTopicNormalization &&
+                (AnyWebhookHistoryTruncated == true ||
+                 truncatedWebhooks.Count > 0 ||
+                 (hasTrustedHistoryVersion && anyWebhookTruncated)))
             {
                 hasLegacyUnnormalizedNtfyTopicHistory = true;
             }
