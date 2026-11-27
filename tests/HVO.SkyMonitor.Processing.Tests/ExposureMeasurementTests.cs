@@ -550,10 +550,12 @@ public sealed class ExposureMeasurementTests
         var linear = await Normalize(raw);
         var linearRef = new ExposureProductRef(key, new(linearExecutionId ?? Guid.NewGuid(), "linear", "linear-v1", linear.Variant),
             linear.ArtifactId, linear.ContentIdentitySha256!, Convert.ToHexString(SHA256.HashData(linear.Payload.Span)), null);
+        var whiteLevel = FrameWhiteThreshold.TryResolveStored(layout, out var rawWhite, out _) ? rawWhite : (ushort)4095;
+        var linearWhiteLevel = FrameWhiteThreshold.TryResolveStored(linear.Layout, out var linearWhite, out _) ? linearWhite : whiteLevel;
         var provenance = new LinearInputProvenanceV1(LinearExposureDisposition.QualifiedNormalizationOnly,
             raw.ArtifactId, raw.DescriptorIdentitySha256, checksum, linear.ArtifactId, linear.DescriptorIdentitySha256!,
             linearRef.PayloadSha256, linearRef.OutputIdentitySha256, ProcessingIdentity.CreateRecipeIdentity(linear.RecipeDescriptor!),
-            [], new(raw.ArtifactId, 4095), new(linear.ArtifactId, 4095));
+            [], new(raw.ArtifactId, whiteLevel), new(linear.ArtifactId, linearWhiteLevel));
         return (new(exposure, provenance.Disposition, 1, linearRef, provenance, null), raw, new(exposure, linear, provenance));
     }
 
@@ -1119,42 +1121,55 @@ public sealed class ExposureMeasurementTests
         }));
         var smallLinear = await Normalize(smallRaw);
         var smallBaseInput = Bind(smallRaw, smallLinear);
-        var (smallLookup, _, _) = await BindToAdmission(smallRaw);
+        var (smallLookup, smallBoundRaw, smallBorrowed) = await BindToAdmission(smallRaw);
 
         // Exact Astra reproductions: (a) 4,190,736-char ASCII OpticalCalibrationVersion; (b) 493,752 '+' chars in metadata:
         var astraAsciiInput = smallBaseInput with { OpticalCalibrationVersion = new string('v', 4_190_736) };
         var astraPlusInput = smallBaseInput with { OpticalCalibrationVersion = new string('+', 493_752) };
-        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Request(astraAsciiInput, smallRaw, smallLinear),
-            "4,190,736-char ASCII calibration version must be rejected at admission.");
-        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Request(astraPlusInput, smallRaw, smallLinear),
-            "493,752 '+'-char calibration version must be rejected at admission.");
-        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementBindings.FromAdmitted(
-            smallLookup with
+        var asciiEx = Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Request(astraAsciiInput, smallRaw, smallLinear),
+            "4,190,736-char ASCII calibration version must be rejected at fresh admission.");
+        StringAssert.Contains(asciiEx.Message, "envelope budget", StringComparison.Ordinal);
+        var plusEx = Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Request(astraPlusInput, smallRaw, smallLinear),
+            "493,752 '+'-char calibration version must be rejected at fresh admission.");
+        StringAssert.Contains(plusEx.Message, "envelope budget", StringComparison.Ordinal);
+
+        var astraAsciiLookup = smallLookup with
+        {
+            Exposure = smallLookup.Exposure with
             {
-                Exposure = smallLookup.Exposure with
-                {
-                    Geometry = smallLookup.Exposure.Geometry with { OpticalCalibrationVersion = new string('v', 4_190_736) }
-                }
-            }));
-        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementBindings.FromAdmitted(
-            smallLookup with
+                Geometry = smallLookup.Exposure.Geometry with { OpticalCalibrationVersion = new string('v', 4_190_736) }
+            }
+        };
+        var astraPlusLookup = smallLookup with
+        {
+            Exposure = smallLookup.Exposure with
             {
-                Exposure = smallLookup.Exposure with
-                {
-                    Geometry = smallLookup.Exposure.Geometry with { OpticalCalibrationVersion = new string('+', 493_752) }
-                }
-            }));
-        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementBindings.FromAdmitted(
-            smallLookup with
-            {
-                Exposure = smallLookup.Exposure with
-                {
-                    Key = smallLookup.Exposure.Key with
-                    {
-                        Camera = smallLookup.Exposure.Key.Camera with { CameraId = new string('+', 493_752) }
-                    }
-                }
-            }));
+                Geometry = smallLookup.Exposure.Geometry with { OpticalCalibrationVersion = new string('+', 493_752) }
+            }
+        };
+        var astraCameraKey = smallLookup.Exposure.Key with
+        {
+            Camera = smallLookup.Exposure.Key.Camera with { CameraId = new string('+', 493_752) }
+        };
+        var astraCameraLookup = smallLookup with
+        {
+            Exposure = smallLookup.Exposure with { Key = astraCameraKey },
+            Product = smallLookup.Product! with { Exposure = astraCameraKey }
+        };
+        var astraCameraBorrowed = smallBorrowed with { Exposure = astraCameraLookup.Exposure };
+        StringAssert.Contains(Assert.ThrowsExactly<InvalidDataException>(() =>
+            ExposureMeasurementBindings.Request(astraAsciiLookup, smallBoundRaw, smallBorrowed)).Message,
+            "envelope budget", StringComparison.Ordinal);
+        StringAssert.Contains(Assert.ThrowsExactly<InvalidDataException>(() =>
+            ExposureMeasurementBindings.Request(astraPlusLookup, smallBoundRaw, smallBorrowed)).Message,
+            "envelope budget", StringComparison.Ordinal);
+        StringAssert.Contains(Assert.ThrowsExactly<InvalidDataException>(() =>
+            ExposureMeasurementBindings.Request(astraCameraLookup, smallBoundRaw, astraCameraBorrowed)).Message,
+            "envelope budget", StringComparison.Ordinal);
+        // A non-matching retainedOutputIdentitySha256 must NOT bypass the fresh admission envelope cap:
+        StringAssert.Contains(Assert.ThrowsExactly<InvalidDataException>(() =>
+            ExposureMeasurementBindings.Request(astraPlusLookup, smallBoundRaw, smallBorrowed, null, null, new string('0', 64))).Message,
+            "envelope budget", StringComparison.Ordinal);
 
         // Exact boundary (ASCII and '+'-escaped) passes admission, keeps positive occupancy + subgrid, and rejects +1 byte:
         foreach (var plusEscaped in new[] { false, true })
@@ -1288,6 +1303,227 @@ public sealed class ExposureMeasurementTests
         Assert.AreEqual(ExposureMeasurementProducts.MaximumAdmittedEnvelopeBytes,
             ExposureMeasurementProducts.WorstCaseEnvelopeBytes(padded));
         return padded;
+    }
+
+    [TestMethod]
+    public async Task RetainedOversizedV2MeasurementReadsAndReplaysWhileFreshAdmissionRejects()
+    {
+        // D11-H1: The merge-base implementation produced a 133,950-byte linear-stellar-local-v2 product with a
+        // 131,072-character ASCII OpticalCalibrationVersion. The new 131,072-byte envelope cap applies strictly to
+        // fresh Step 4 admission requests; BOTH ExposureMeasurementProducts.Read overloads, ReadCommittedAsync, and
+        // retained-output-identity replay MUST continue to accept and bit-for-bit reproduce that retained v2 product.
+        const int size = 160;
+        var layout = Layout(size, size);
+        var center = new PixelPoint(80.5, 80.5);
+        var light = CreateRaw(layout, Generate(layout, (x, y) =>
+        {
+            var r = double.Hypot(x + 0.5 - center.X, y + 0.5 - center.Y);
+            double value = 180 + Gaussian(x, y, center, 1.25, 2200);
+            if (r is >= 14.0 and <= 30.0)
+                value += 1400.0;
+            return (ushort)Math.Clamp(Math.Round(value), 0, 4095);
+        }));
+        var (baseLookup, boundRaw, baseBorrowed) = await BindToAdmission(light);
+        var longCalibrationVersion = new string('v', 131_072);
+        var oversizedExposure = baseLookup.Exposure with
+        {
+            Geometry = baseLookup.Exposure.Geometry with { OpticalCalibrationVersion = longCalibrationVersion }
+        };
+        var oversizedLookup = baseLookup with { Exposure = oversizedExposure };
+        var oversizedBorrowed = baseBorrowed with { Exposure = oversizedExposure };
+        var retainedInput = ExposureMeasurementBindings.FromAdmitted(oversizedLookup);
+        Assert.IsGreaterThan(ExposureMeasurementProducts.MaximumAdmittedEnvelopeBytes,
+            ExposureMeasurementProducts.WorstCaseEnvelopeBytes(retainedInput));
+
+        // Produce the exact historical linear-stellar-local-v2 (EligibleFirst) product that merge-base emitted.
+        var historicalV2Request = new ProcessingExecutionRequest(
+            BuiltInProcessingRecipes.ExposureMeasurement,
+            HistoricalEligibleFirstOptions(retainedInput),
+            ProcessingInputSelector.Raw(boundRaw.Variant),
+            [boundRaw, oversizedBorrowed.Linear],
+            ExposureMeasurementProducts.Variant,
+            InputArtifactId: boundRaw.ArtifactId);
+        var retainedV2Product = await Produce(historicalV2Request);
+        Assert.IsGreaterThan(ExposureMeasurementProducts.MaximumAdmittedEnvelopeBytes, retainedV2Product.Payload.Length);
+        Assert.IsTrue(retainedV2Product.Algorithms.Contains(
+            new ProcessingAlgorithmIdentity("stellar-source-measurer", StellarSourceMeasurer.V2AlgorithmVersion)));
+
+        // Both Step 4 readers and ReadCommittedAsync MUST accept the retained v2 product.
+        var readFromProduct = ExposureMeasurementProducts.Read(retainedV2Product);
+        var retainedV2Artifact = ProductArtifact(retainedV2Product, boundRaw);
+        var readFromArtifact = ExposureMeasurementProducts.Read(retainedV2Artifact, retainedInput);
+        Assert.AreEqual(longCalibrationVersion, readFromProduct.Input.OpticalCalibrationVersion);
+        Assert.AreEqual(readFromProduct.Input, readFromArtifact.Input);
+        Assert.IsTrue(readFromProduct.Sources.Exclusions.All(static e => e.Occupancy is null));
+        ProcessingRecipeTests.AssertProductMatchesContract(historicalV2Request, retainedV2Product);
+
+        var slot = new ExposureProductSlot(oversizedLookup.Product!.Slot.ExecutionId,
+            ExposureMeasurementProducts.StepAlias, ExposureMeasurementProducts.SchemaVersion, ExposureMeasurementProducts.Variant);
+        var exact = new ExposureProductRef(oversizedLookup.Exposure.Key, slot, retainedV2Artifact.ArtifactId,
+            retainedV2Product.OutputIdentitySha256, retainedV2Artifact.ContentIdentitySha256!, retainedV2Artifact.ContentIdentitySha256);
+        var reader = new RetainedReader(oversizedLookup, new(oversizedLookup.Exposure.Key, slot, ExposureProductAvailability.Available, 2, exact, null));
+        var committedRead = await ExposureMeasurementBindings.ReadCommittedAsync(reader, exact, retainedV2Artifact, CancellationToken.None);
+        Assert.AreEqual(longCalibrationVersion, committedRead.Input.OpticalCalibrationVersion);
+
+        // Retained-output-identity replay MUST succeed and reproduce the exact bytes bit-for-bit.
+        await AssertRetainedReplay(oversizedLookup, boundRaw, oversizedBorrowed, retainedV2Product);
+
+        // Fresh admission requests (and non-matching retained identities) MUST still reject the oversized envelope.
+        StringAssert.Contains(Assert.ThrowsExactly<InvalidDataException>(() =>
+            ExposureMeasurementProducts.Request(retainedInput, boundRaw, oversizedBorrowed.Linear)).Message,
+            "envelope budget", StringComparison.Ordinal);
+        StringAssert.Contains(Assert.ThrowsExactly<InvalidDataException>(() =>
+            ExposureMeasurementBindings.Request(oversizedLookup, boundRaw, oversizedBorrowed)).Message,
+            "envelope budget", StringComparison.Ordinal);
+        StringAssert.Contains(Assert.ThrowsExactly<InvalidDataException>(() =>
+            ExposureMeasurementBindings.Request(oversizedLookup, boundRaw, oversizedBorrowed, null, null, new string('A', 64))).Message,
+            "envelope budget", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task UnpairedUtf16SurrogatesAreRejectedAtAdmissionWhileValidSurrogatePairsRoundTrip()
+    {
+        // D11-M1: Unpaired UTF-16 surrogates (high 0xD800 or low 0xDC00) silently mutate to U+FFFD during JSON
+        // serialization, breaking identity binding on ExposureMeasurementProducts.Read(artifact, input).
+        // Admission MUST reject malformed UTF-16 on ALL identity-bearing strings while preserving valid surrogate pairs.
+        const int size = 96;
+        var layout = Layout(size, size);
+        var light = CreateRaw(layout, Generate(layout, static (_, _) => 180));
+        var (lookup, boundRaw, borrowed) = await BindToAdmission(light);
+        var baseInput = ExposureMeasurementBindings.FromAdmitted(lookup);
+
+        // Exact D11-M1 repro: calibration version padded to exact 131,072 envelope bytes ending in unpaired 0xD800.
+        var maxValidInput = PadToExactMaxAdmittedEnvelope(baseInput, plusEscaped: false);
+        var trailingUnpairedHigh = maxValidInput.OpticalCalibrationVersion![..^6] + "\uD800";
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Request(
+            maxValidInput with { OpticalCalibrationVersion = trailingUnpairedHigh }, boundRaw, borrowed.Linear));
+        var trailingHighLookup = lookup with
+        {
+            Exposure = lookup.Exposure with
+            {
+                Geometry = lookup.Exposure.Geometry with { OpticalCalibrationVersion = trailingUnpairedHigh }
+            }
+        };
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementBindings.FromAdmitted(trailingHighLookup));
+        Assert.ThrowsExactly<InvalidDataException>(() =>
+            ExposureMeasurementBindings.Request(trailingHighLookup, boundRaw, borrowed with { Exposure = trailingHighLookup.Exposure }));
+
+        string[] malformedSamples =
+        [
+            "bad-\uD800",
+            "\uDC00-bad",
+            "rev-\uDC00\uD800-bad",
+            "dbl-\uD800\uD800\uDC00-bad",
+            "tail-\uD800\uDC00\uDC00"
+        ];
+        foreach (var bad in malformedSamples)
+        {
+            // OpticalCalibrationVersion (with Exposure != null and Exposure == null):
+            Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Request(
+                baseInput with { OpticalCalibrationVersion = bad }, boundRaw, borrowed.Linear));
+            Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Request(
+                Bind(boundRaw, borrowed.Linear) with { OpticalCalibrationVersion = bad }, boundRaw, borrowed.Linear));
+            // CameraId and AgentId:
+            Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Request(
+                baseInput with
+                {
+                    Exposure = baseInput.Exposure! with { Camera = baseInput.Exposure.Camera with { CameraId = bad } }
+                }, boundRaw, borrowed.Linear));
+            Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Request(
+                baseInput with
+                {
+                    Exposure = baseInput.Exposure! with { Camera = baseInput.Exposure.Camera with { AgentId = bad } }
+                }, boundRaw, borrowed.Linear));
+            // OrientationIdentity:
+            Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Request(
+                baseInput with { OrientationIdentity = bad }, boundRaw, borrowed.Linear));
+            // CalibrationReason:
+            Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Request(
+                Bind(boundRaw, null, ExposureCalibrationDisposition.Missing, bad), boundRaw, null));
+            // Raw artifact Variant selector:
+            Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Request(
+                baseInput, boundRaw with { Variant = bad }, borrowed.Linear));
+        }
+
+        // Valid UTF-16 surrogate pair (astral Unicode scalar value U+1F52D = 0xD83D 0xDD2D) MUST be accepted and
+        // round-trip identically through BOTH ExposureMeasurementProducts.Read overloads with zero U+FFFD replacement.
+        const string astralToken = "\U0001F52D";
+        var astralProbe = baseInput with
+        {
+            OpticalCalibrationVersion = "cal-" + astralToken + "-v1",
+            Exposure = baseInput.Exposure! with
+            {
+                Camera = baseInput.Exposure.Camera with { CameraId = "cam-" + astralToken }
+            }
+        };
+        var remaining = ExposureMeasurementProducts.MaximumAdmittedEnvelopeBytes -
+            ExposureMeasurementProducts.WorstCaseEnvelopeBytes(astralProbe);
+        Assert.IsGreaterThan(0, remaining);
+        var astralMaxInput = astralProbe with
+        {
+            OpticalCalibrationVersion = astralProbe.OpticalCalibrationVersion + new string('v', remaining)
+        };
+        Assert.AreEqual(ExposureMeasurementProducts.MaximumAdmittedEnvelopeBytes,
+            ExposureMeasurementProducts.WorstCaseEnvelopeBytes(astralMaxInput));
+
+        var astralProduct = await Produce(ExposureMeasurementProducts.Request(astralMaxInput, boundRaw, borrowed.Linear));
+        var readProduct = ExposureMeasurementProducts.Read(astralProduct);
+        var readArtifact = ExposureMeasurementProducts.Read(ProductArtifact(astralProduct, boundRaw), astralMaxInput);
+        Assert.AreEqual(astralMaxInput, readProduct.Input);
+        Assert.AreEqual(astralMaxInput, readArtifact.Input);
+        Assert.IsFalse(readProduct.Input.OpticalCalibrationVersion!.Contains('\uFFFD', StringComparison.Ordinal));
+        Assert.IsFalse(readProduct.Input.Exposure!.Camera.CameraId.Contains('\uFFFD', StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public async Task FullyClippedRgb24ExposureProducesAndRoundTripsThroughBothReaders()
+    {
+        // D11-M2: A fully clipped 32x32 RGB24 exposure records 32 * 32 * 3 = 3,072 clipped channel samples in both
+        // RawBrightness.SensorClipping and LinearOutputClipping. Both ExposureMeasurementProducts.Read overloads must
+        // validate linear clipping against channel-aware sample count (3,072), not pixel count (1,024), while still
+        // rejecting counts above 3,072.
+        const int width = 32;
+        const int height = 32;
+        const long expectedSamples = width * height * 3L; // 3,072
+        var rgbLayout = new FrameLayoutDescriptor(
+            width, height, width * 3, CameraPixelFormat.Rgb24, FrameByteOrder.NotApplicable,
+            8, 8, FrameSamplePacking.ByteAligned, ColorFilterArrayPattern.None, 0, 255, expectedSamples)
+        {
+            StoredCodeTransform = FrameStoredCodeTransform.IdentityV1,
+            LevelCodeSpace = FrameLevelCodeSpace.StoredContainer
+        };
+        var clippedBytes = new byte[expectedSamples];
+        Array.Fill(clippedBytes, byte.MaxValue);
+        var light = CreateRaw(rgbLayout, clippedBytes);
+        var (lookup, boundRaw, borrowed) = await BindToAdmission(light);
+        var expectedInput = ExposureMeasurementBindings.FromAdmitted(lookup);
+        var request = ExposureMeasurementBindings.Request(lookup, boundRaw, borrowed);
+        var product = await Produce(request);
+
+        var readFromProduct = ExposureMeasurementProducts.Read(product);
+        var retainedArtifact = ProductArtifact(product, boundRaw);
+        var readFromArtifact = ExposureMeasurementProducts.Read(retainedArtifact, expectedInput);
+        ProcessingRecipeTests.AssertProductMatchesContract(request, product);
+
+        Assert.AreEqual(expectedSamples, readFromProduct.RawBrightness!.SampleCount);
+        Assert.AreEqual((ushort)255, readFromProduct.RawBrightness.SensorClipping.StoredWhite);
+        Assert.AreEqual(expectedSamples, readFromProduct.RawBrightness.SensorClipping.Count);
+        Assert.AreEqual((ushort)255, readFromProduct.LinearOutputClipping!.StoredWhite);
+        Assert.AreEqual(expectedSamples, readFromProduct.LinearOutputClipping.Count);
+        Assert.AreEqual(ExposureMeasurementStatus.Unavailable, readFromProduct.Sources.Status);
+        Assert.AreEqual(ExposureMeasurementSourceReasonCodes.UnsupportedLinearLayout, readFromProduct.Sources.Reason);
+        Assert.AreEqual(readFromProduct.LinearOutputClipping, readFromArtifact.LinearOutputClipping);
+
+        // Tampering LinearOutputClipping.Count above width * height * 3 (3,073) MUST still be rejected by both readers.
+        var tamperedProduct = WithMeasurement(product, readFromProduct with
+        {
+            LinearOutputClipping = readFromProduct.LinearOutputClipping with { Count = expectedSamples + 1 }
+        });
+        StringAssert.Contains(Assert.ThrowsExactly<InvalidDataException>(() =>
+            ExposureMeasurementProducts.Read(tamperedProduct)).Message, "linear clipping", StringComparison.Ordinal);
+        StringAssert.Contains(Assert.ThrowsExactly<InvalidDataException>(() =>
+            ExposureMeasurementProducts.Read(ProductArtifact(tamperedProduct, boundRaw), expectedInput)).Message,
+            "linear clipping", StringComparison.Ordinal);
     }
 
     private static ProjectedSceneV1 WithProjection(ProjectedSceneV1 scene, ProjectedSceneProjection projection)

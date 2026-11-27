@@ -3650,6 +3650,97 @@ public sealed class PointSourcePlanetAssociationTests
                 MeasuredStellarAssociationReasonCodes.MeasurementExcludedPrefix + StellarExclusionReasons.ExtendedRegion,
                 Assert.ContainsSingle(evidence.PointSourcePlanets.UnmatchedPredictions).ReasonCode);
         }
+
+        // 3. D11-H1 retained delta10 v3 oversized-envelope crossing-streak regression:
+        //    A genuine retained delta10 v3 product whose envelope exceeded 131,072 B (total payload ~4,187,748 B <= 4 MiB,
+        //    leaving zero occupancy budget so Occupancy == null was legitimately omitted under its original budget) MUST:
+        //    (a) be accepted by BOTH ExposureMeasurementProducts.Read overloads,
+        //    (b) flow cleanly into ExposureAssociationProducts.Associate and ExposureMeasurementConsumers.Associate and
+        //        return conservative measurement-excluded:extended-region (NOT no-measured-source),
+        //    (c) replay bit-for-bit when retainedOutputIdentitySha256 matches,
+        //    (d) still be rejected on fresh admission, and
+        //    (e) still reject tampered non-null Occupancy when CoarseCellBudget == 0.
+        var baselineV3Product = (await executor.ExecuteAsync(ExposureMeasurementProducts.Request(baseInput, raw, linear)).ConfigureAwait(false))
+            .Products.Single();
+        var retainedOversizedCameraId = "cam-" + new string('c', 4_184_000);
+        var retainedOversizedInput = baseInput with
+        {
+            Exposure = baseInput.Exposure! with { Camera = baseInput.Exposure.Camera with { CameraId = retainedOversizedCameraId } }
+        };
+        var retainedOversizedRequest = new ProcessingExecutionRequest(
+            BuiltInProcessingRecipes.ExposureMeasurement,
+            ExposureMeasurementProducts.SerializeParameters(retainedOversizedInput, ExposureFocusSamplingPolicy.EligibleFirstWithOccupancy),
+            ProcessingInputSelector.Raw(raw.Variant),
+            [raw, linear],
+            ExposureMeasurementProducts.Variant,
+            InputArtifactId: raw.ArtifactId);
+        var retainedOversizedOutcome = await executor.ExecuteAsync(retainedOversizedRequest).ConfigureAwait(false);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, retainedOversizedOutcome.Status, retainedOversizedOutcome.ReasonCode);
+        var retainedOversizedProduct = retainedOversizedOutcome.Products.Single();
+        Assert.IsGreaterThan(4_180_000, retainedOversizedProduct.Payload.Length);
+        Assert.IsLessThanOrEqualTo(StructuredProcessingProductDescriptorV1.MaximumPayloadBytes, retainedOversizedProduct.Payload.Length);
+        Assert.AreNotEqual(baselineV3Product.OutputIdentitySha256, retainedOversizedProduct.OutputIdentitySha256);
+
+        var retainedOversizedRead = ExposureMeasurementProducts.Read(retainedOversizedProduct);
+        var retainedOversizedArtifact = ToArtifact(retainedOversizedProduct, raw);
+        var retainedOversizedVerified = ExposureMeasurementProducts.Read(retainedOversizedArtifact, retainedOversizedInput);
+        var retainedStreak = retainedOversizedRead.Sources.Exclusions.Single(e =>
+            e.ReasonCode == StellarExclusionReasons.ExtendedRegion &&
+            e.Footprint is { } fp && fp.Contains(jupiter.Pixel, 1.0));
+        Assert.IsNull(retainedStreak.Occupancy,
+            "Oversized retained delta10 v3 product leaves zero occupancy budget and legitimately omits Occupancy.");
+        Assert.AreEqual(retainedStreak, retainedOversizedVerified.Sources.Exclusions.Single(e =>
+            e.ReasonCode == StellarExclusionReasons.ExtendedRegion &&
+            e.Footprint is { } fp && fp.Contains(jupiter.Pixel, 1.0)));
+
+        var retainedAssocOutcome = ExposureAssociationProducts.Associate(
+            raw, retainedOversizedArtifact, retainedOversizedInput, sceneArtifact, ExposureAssociationProducts.Variant);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, retainedAssocOutcome.Status, retainedAssocOutcome.ReasonCode);
+        var retainedEvidence = MeasuredStellarAssociationJson.Parse(retainedAssocOutcome.Products.Single().Payload).Associations!;
+        Assert.IsEmpty(retainedEvidence.PointSourcePlanets!.Associations);
+        Assert.AreEqual(
+            MeasuredStellarAssociationReasonCodes.MeasurementExcludedPrefix + StellarExclusionReasons.ExtendedRegion,
+            Assert.ContainsSingle(retainedEvidence.PointSourcePlanets.UnmatchedPredictions).ReasonCode,
+            "Retained oversized delta10 v3 crossing streak with omitted Occupancy must associate as measurement-excluded:extended-region.");
+
+        var retainedConsumerAssoc = ExposureMeasurementConsumers.Associate(
+            retainedOversizedArtifact, retainedOversizedInput, predScene, new(), new());
+        Assert.IsEmpty(retainedConsumerAssoc.Entries.PointSourcePlanets!.Associations);
+        Assert.AreEqual(
+            MeasuredStellarAssociationReasonCodes.MeasurementExcludedPrefix + StellarExclusionReasons.ExtendedRegion,
+            Assert.ContainsSingle(retainedConsumerAssoc.Entries.PointSourcePlanets.UnmatchedPredictions).ReasonCode);
+
+        // Replaying with the retained output identity reproduces the exact bytes bit-for-bit, while fresh admission rejects.
+        var replayV3Request = ExposureMeasurementProducts.Request(
+            retainedOversizedInput, raw, linear, retainedOversizedProduct.OutputIdentitySha256);
+        var replayV3Product = (await executor.ExecuteAsync(replayV3Request).ConfigureAwait(false)).Products.Single();
+        Assert.AreEqual(retainedOversizedProduct.OutputIdentitySha256, replayV3Product.OutputIdentitySha256);
+        Assert.AreEqual(retainedOversizedProduct.ChecksumSha256, replayV3Product.ChecksumSha256);
+        CollectionAssert.AreEqual(retainedOversizedProduct.Payload.ToArray(), replayV3Product.Payload.ToArray());
+
+        StringAssert.Contains(Assert.ThrowsExactly<InvalidDataException>(() =>
+            ExposureMeasurementProducts.Request(retainedOversizedInput, raw, linear)).Message,
+            "envelope budget", StringComparison.Ordinal);
+
+        // Injecting bogus non-null Occupancy when CoarseCellBudget == 0 MUST still be rejected by both readers.
+        var injectedStreak = retainedStreak with
+        {
+            Occupancy = StellarFootprintOccupancy.Create(retainedStreak.Footprint!.Value, static (_, _) => true, coarseCellBudget: 1, subgridBitBudget: 0)
+        };
+        var injectedPayload = ExposureMeasurementProducts.Serialize(retainedOversizedRead with
+        {
+            Sources = retainedOversizedRead.Sources with { Exclusions = [injectedStreak] }
+        });
+        var injectedHash = ProcessingIdentity.ComputePayloadSha256(injectedPayload);
+        var injectedProduct = retainedOversizedProduct with
+        {
+            Payload = injectedPayload,
+            ChecksumSha256 = injectedHash,
+            ContentIdentitySha256 = injectedHash
+        };
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(injectedProduct));
+        Assert.ThrowsExactly<InvalidDataException>(() =>
+            ExposureMeasurementProducts.Read(ToArtifact(injectedProduct, raw), retainedOversizedInput));
     }
 
     private static ProcessingArtifact ToArtifact(ProcessingProduct product, ProcessingArtifact raw) => new(

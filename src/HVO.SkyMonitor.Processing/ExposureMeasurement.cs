@@ -147,28 +147,47 @@ public static class ExposureMeasurementProducts
         ProcessingArtifact? linear, string? retainedOutputIdentitySha256)
     {
         ArgumentNullException.ThrowIfNull(raw);
-        if (input is null) throw Invalid("input");
+        if (input is null || !IsValidUtf16(raw.Variant) || !IsValidUtf16(linear?.Variant))
+            throw Invalid("input");
         ValidateInput(input);
+        var hasRetainedCandidate = IsSha256(retainedOutputIdentitySha256);
+        if (!hasRetainedCandidate)
+        {
+            ValidateFreshAdmissionEnvelopeBudget(input);
+        }
+        else if (RawMetadataCharCount(input) > StructuredProcessingProductDescriptorV1.MaximumPayloadBytes)
+        {
+            throw Invalid("input envelope budget");
+        }
         var request = new ProcessingExecutionRequest(BuiltInProcessingRecipes.ExposureMeasurement, SerializeInput(input),
             ProcessingInputSelector.Raw(raw.Variant), linear is null ? [raw] : [raw, linear], Variant,
             InputArtifactId: raw.ArtifactId);
         var format = input.Linear?.Layout.PixelFormat;
         if (format is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16))
-            return request;
-
-        if (retainedOutputIdentitySha256 is not null)
         {
-            if (MatchesRetainedOutput(request, input, retainedOutputIdentitySha256))
+            if (hasRetainedCandidate && !MatchesRetainedOutput(request, input, retainedOutputIdentitySha256!))
+                ValidateFreshAdmissionEnvelopeBudget(input);
+            return request;
+        }
+
+        if (hasRetainedCandidate)
+        {
+            if (MatchesRetainedOutput(request, input, retainedOutputIdentitySha256!))
                 return request;
             if (format == CameraPixelFormat.BayerRggb16)
             {
                 var priorBayer = request with { Options = SerializeParameters(input, ExposureFocusSamplingPolicy.BrightestWithBayerCoreCheck) };
-                if (MatchesRetainedOutput(priorBayer, input, retainedOutputIdentitySha256))
+                if (MatchesRetainedOutput(priorBayer, input, retainedOutputIdentitySha256!))
                     return priorBayer;
             }
             var priorEligibleFirst = request with { Options = SerializeParameters(input, ExposureFocusSamplingPolicy.EligibleFirst) };
-            if (MatchesRetainedOutput(priorEligibleFirst, input, retainedOutputIdentitySha256))
+            if (MatchesRetainedOutput(priorEligibleFirst, input, retainedOutputIdentitySha256!))
                 return priorEligibleFirst;
+            var current = request with { Options = SerializeParameters(input, ExposureFocusSamplingPolicy.EligibleFirstWithOccupancy) };
+            if (MatchesRetainedOutput(current, input, retainedOutputIdentitySha256!))
+                return current;
+            ValidateFreshAdmissionEnvelopeBudget(input);
+            return current;
         }
         return request with { Options = SerializeParameters(input, ExposureFocusSamplingPolicy.EligibleFirstWithOccupancy) };
     }
@@ -400,17 +419,20 @@ public static class ExposureMeasurementProducts
     {
         if (input is null || !ValidSource(input.Raw) || input.Raw.OutputIdentitySha256 is not null ||
             string.IsNullOrWhiteSpace(input.OrientationIdentity) || input.OrientationIdentity.Length > 256 ||
+            !IsValidUtf16(input.OrientationIdentity) ||
             input.NativePixelPitchMicrometers is { } pitch && (!double.IsFinite(pitch) || pitch <= 0) ||
             input.PixelScaleArcseconds is { } scale && (!double.IsFinite(scale) || scale <= 0) ||
             input.RigOrientation is { } orient && (!double.IsFinite(orient.BoresightAltitudeDegrees) ||
                 !double.IsFinite(orient.BoresightAzimuthDegrees) || !double.IsFinite(orient.RollAdjustmentDegrees)) ||
             !Enum.IsDefined(input.Calibration) ||
-            input.CalibrationReason is { } reason && (string.IsNullOrWhiteSpace(reason) || reason.Length > 128))
+            input.CalibrationReason is { } reason && (string.IsNullOrWhiteSpace(reason) || reason.Length > 128 || !IsValidUtf16(reason)) ||
+            !IsValidUtf16(input.OpticalCalibrationVersion))
             throw Invalid("input");
 
         if (input.Exposure is { } exposure && (exposure.CaptureId != input.Raw.CaptureId ||
                 exposure.RunId == Guid.Empty || exposure.Camera is not { } camera ||
-                string.IsNullOrWhiteSpace(camera.CameraId) || string.IsNullOrWhiteSpace(camera.AgentId) ||
+                string.IsNullOrWhiteSpace(camera.CameraId) || !IsValidUtf16(camera.CameraId) ||
+                string.IsNullOrWhiteSpace(camera.AgentId) || !IsValidUtf16(camera.AgentId) ||
                 input.RigOrientation is null || string.IsNullOrWhiteSpace(input.OpticalCalibrationVersion) ||
                 input.Step3Disposition is not { } step3 || !Enum.IsDefined(step3) || step3 == LinearExposureDisposition.Pending ||
                 input.Step3Revision is <= 0 || input.Step3Revision is null &&
@@ -430,15 +452,39 @@ public static class ExposureMeasurementProducts
                 ProcessingIdentity.CreateArtifactId(linear.OutputIdentitySha256!) != linear.ArtifactId ||
                 linear.ArtifactId == input.Raw.ArtifactId || linear.CaptureId != input.Raw.CaptureId))
             throw Invalid("linear disposition");
+    }
 
+    private static long RawMetadataCharCount(ExposureMeasurementInputV1 input)
+        => (long)(input.OpticalCalibrationVersion?.Length ?? 0) +
+           (input.Exposure?.Camera?.AgentId?.Length ?? 0) +
+           (input.Exposure?.Camera?.CameraId?.Length ?? 0);
+
+    private static void ValidateFreshAdmissionEnvelopeBudget(ExposureMeasurementInputV1 input)
+    {
         // O(1) lower-bound rejection before canonical JSON measurement so arbitrarily large metadata cannot allocate
         // huge buffers, followed by exact canonical UTF-8 byte accounting (including 6-byte \uXXXX JSON escaping).
-        var rawMetadataChars = (long)(input.OpticalCalibrationVersion?.Length ?? 0) +
-            (input.Exposure?.Camera?.AgentId?.Length ?? 0) +
-            (input.Exposure?.Camera?.CameraId?.Length ?? 0);
-        if (rawMetadataChars > MaximumAdmittedEnvelopeBytes ||
+        if (RawMetadataCharCount(input) > MaximumAdmittedEnvelopeBytes ||
             WorstCaseEnvelopeBytes(input) > MaximumAdmittedEnvelopeBytes)
             throw Invalid("input envelope budget");
+    }
+
+    private static bool IsValidUtf16(string? value)
+    {
+        if (value is null)
+            return true;
+        for (var i = 0; i < value.Length; i++)
+        {
+            var ch = value[i];
+            if (!char.IsSurrogate(ch))
+                continue;
+            if (char.IsHighSurrogate(ch) && i + 1 < value.Length && char.IsLowSurrogate(value[i + 1]))
+            {
+                i++;
+                continue;
+            }
+            return false;
+        }
+        return true;
     }
 
     private static bool ValidSource(ExposureMeasurementSourceV1? source)
@@ -463,14 +509,10 @@ public static class ExposureMeasurementProducts
             value.RawBrightnessUnavailableReason is { Length: > 128 } ||
             (value.LinearOutputClipping is null) != (value.Input.Linear is null))
             throw Invalid("section");
-        var measuredReservedEnvelopeBytes = ReservedEnvelopeBytes(
-            value.Input, value.RawBrightness, value.RawBrightnessUnavailableReason, value.LinearOutputClipping);
-        if (measuredReservedEnvelopeBytes > MaximumAdmittedEnvelopeBytes)
-            throw Invalid("envelope budget");
         if (value.RawBrightness is { } brightness)
         {
             var layout = value.Input.Raw.Layout;
-            var count = (long)layout.Width * layout.Height * (layout.PixelFormat == CameraPixelFormat.Rgb24 ? 3 : 1);
+            var count = SampleCount(layout);
             if (brightness.SampleCount != count || brightness.Minimum > brightness.Maximum ||
                 brightness.Sum < (ulong)count * brightness.Minimum || brightness.Sum > (ulong)count * brightness.Maximum ||
                 brightness.ZeroCount < 0 || brightness.ZeroCount > count ||
@@ -481,8 +523,8 @@ public static class ExposureMeasurementProducts
                     brightness.Minimum >= white && brightness.SensorClipping.Count != count))
                 throw Invalid("brightness");
         }
-        if (value.Input.Linear is { Layout: var linearLayout } && !ValidClipping(value.LinearOutputClipping,
-                linearLayout, (long)linearLayout.Width * linearLayout.Height))
+        if (value.Input.Linear is { Layout: var linearLayout } &&
+            !ValidClipping(value.LinearOutputClipping, linearLayout, SampleCount(linearLayout)))
             throw Invalid("linear clipping");
 
         var measuredLayout = value.Input.Linear?.Layout;
@@ -526,6 +568,8 @@ public static class ExposureMeasurementProducts
                         nonSolidFootprints.Add(fp);
                 }
             }
+            var measuredReservedEnvelopeBytes = ReservedEnvelopeBytes(
+                value.Input, value.RawBrightness, value.RawBrightnessUnavailableReason, value.LinearOutputClipping);
             occupancyBudget = StellarFootprintOccupancy.ComputeProductBudgets(
                 sources.Detections.Count,
                 sources.Exclusions.Count,
@@ -561,10 +605,9 @@ public static class ExposureMeasurementProducts
                 return false;
             if (allowOccupancy)
             {
-                if (item.SampleCount == fpArea)
+                if (item.SampleCount == fpArea || occupancyBudget.CoarseCellBudget <= 0)
                     return item.Occupancy is null;
-                return occupancyBudget.CoarseCellBudget > 0 &&
-                    item.Occupancy is not null &&
+                return item.Occupancy is not null &&
                     item.Occupancy.IsValid(
                         fp, item.Peak, item.SampleCount,
                         occupancyBudget.CoarseCellBudget, occupancyBudget.SubgridBitBudget);
@@ -671,6 +714,16 @@ public static class ExposureMeasurementProducts
 
     private static bool ValidStatus(ExposureMeasurementStatus status, string? reason)
         => Enum.IsDefined(status) && (status == ExposureMeasurementStatus.Usable || !string.IsNullOrWhiteSpace(reason));
+
+    private static long SampleCount(FrameLayoutDescriptor layout)
+        => (long)layout.Width * layout.Height * ChannelCount(layout.PixelFormat);
+
+    private static int ChannelCount(CameraPixelFormat pixelFormat) => pixelFormat switch
+    {
+        CameraPixelFormat.Rgb24 => 3,
+        CameraPixelFormat.Mono8 or CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16 => 1,
+        _ => throw Invalid("pixel format")
+    };
 
     private static bool ValidClipping(ExposureClippingV1? clipping, FrameLayoutDescriptor layout, long count)
     {
