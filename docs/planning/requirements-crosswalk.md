@@ -104,7 +104,12 @@ verification work (folded by the 2026-11-11 Kepler triage in `#524#issuecomment-
 | `tests/HVO.SkyMonitor.Processing.Tests/PresentationDeepSkyLayerTests.cs` | `b8e1c062eca680f6d9eb3c2fcdd4bf0e1b203ccd` | `(absent)` | Not copied; freshly authored tests in `DeepSkySceneV3ParityTests.cs` |
 | `tests/HVO.SkyMonitor.Processing.Tests/PresentationResolvedFootprintTests.cs` | `9fcb1806f43c0d04ec7558641534f0a2524011ac` | `b86ca553364925f54a91e31ec7f7c561a4bbe87c` | Untouched from `214e5ffa0` |
 
-  - Historical `#1191` candidate branch `feature/1191-dso-geometry-foundation` at `cdbb5d83872368167a3eb1b3112da452d4803f50` (branched from `b1cec531b83f1aff93b60c87ad0ad6ff4e481234`; reviewed source-only, unmerged, off-host checkout retired in the 2026-10-26 fleet consolidation and indexed privately at `/home/roys/review-evidence/fleet-consolidation-20261026/FOLLOWUPS.md`; absent from `origin` and zero blobs copied).
+  - Historical `#1191` candidate branch `feature/1191-dso-geometry-foundation` at
+    `cdbb5d83872368167a3eb1b3112da452d4803f50` branched from `b1cec531b83f1aff93b60c87ad0ad6ff4e481234`.
+    The candidate received source-only review and its checkout was retired in the 2026-10-26 fleet consolidation.
+    The revision is absent from `origin` and `#524` copied zero blobs.
+    See [issue #1191](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1191) and
+    [the decision to carry its scope into #524](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/524#issuecomment-6806453915).
 - **Explicit copied-vs-reimplemented attribution:**
   - **Zero code or blobs were copied** by `#524` from unmerged PR `#1185` (`7827ffceaa73d477cc4fea0a990aa63c9b90f382`) or `cdbb5d83872368167a3eb1b3112da452d4803f50`.
   - **Preserved / minimally extended from merged `development/v1` (`214e5ffa0`):** `ResolvedFootprint.cs` (legacy `ResolvedFootprintSampler.Sample` kept byte-frozen; `SampleBoundarySafe` and `AppendBoundarySafeCurve` added with refraction-floor splitting and explicit error-bound observability), `DeepSkyCatalog.cs` (edge-aware `ComputeOutlineReachDegrees` and `ContentSha256`), `DeepSkyScene.cs`, `OpenNgcDeepSkyOptions.cs`, `ProjectedSceneContracts.cs`, `ProjectionSamplingBounds.cs` (exposed `OpticalRadiusDegrees` wrapper), `PresentationDeepSkyLayer.cs`, `ProjectedSceneCaptureProcessingStep.cs`, `VirtualSkyCameraModule.cs`, `SceneRenderers.cs`, `MonoDigitalReadoutRenderer.cs`, and `StellarExposureRenderPlan.cs`.

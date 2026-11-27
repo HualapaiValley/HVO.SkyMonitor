@@ -2922,6 +2922,275 @@ public sealed class DeepSkyExtendedRenderingQualificationTests
             $"6' circular 4,095-vertex outline (~4.68 px^2, tau=1.6, bg=100) must deliver physical attenuation; got {deliveredDeficit:F6} e-/s.");
     }
 
+    [TestMethod]
+    public void MixedFineDeficitUsesExactTransmissionOfTwoAccountedResolvedClouds()
+    {
+        const double focalLength = 1400d;
+        const double background = 100d;
+        const int pixelX = 79;
+        const int pixelY = 80;
+        var projection = new ProjectionContext(
+            ProjectionModel.Perspective, 80, 80, focalLength, focalLength, 160, 160,
+            ProjectionAperture.Rectangular, BoresightAltitudeDegrees: 60, BoresightAzimuthDegrees: 180);
+        var request = CreateRequest(projection, HorizonPolicy.GeometricHorizon);
+        var options = CreateDeterministicMonoOptions(psfSigma: 0.2, psfRadius: 0.5);
+        var projector = ProjectorFactory.Create(projection);
+
+        DeepSkyObject Circle(string id, double x, double y, double diameterArcminutes)
+        {
+            var center = AltAzToJ2000(projector.Unproject(new PixelPoint(x, y))!.Value);
+            return CreateDso(id, id, "DrkN", center.RaHours, center.DecDegrees,
+                diameterArcminutes, diameterArcminutes, 0, null, null, null, null, null);
+        }
+
+        var first = Circle("LDN-MIX-A", 78.5, 80.5, 6d);
+        var second = first with { Id = "LDN-MIX-B" };
+        var third = first with { Id = "LDN-MIX-C" };
+        var fine = Circle("LDN-MIX-FINE", pixelX + 0.5, pixelY + 0.5, 0.6);
+        var settings = CreateSettings(options, request, celestialDiffuseBg: background) with
+        {
+            MaximumSamplePointsPerSource = 1000
+        };
+
+        DeepSkyRenderPlan Render(params DeepSkyObject[] objects) =>
+            DeepSkyRenderPlan.Prepare(request, null, objects, null, options, settings);
+
+        var one = Render(first);
+        var two = Render(first, second);
+        var three = Render(first, second, third);
+        var twoWithFine = Render(first, second, fine);
+        var mixed = Render(first, second, third, fine);
+
+        var fineDiagnostic = mixed.Diagnostics.Single(d => d.ObjectId == fine.Id);
+        Assert.AreEqual(3 * 316, fineDiagnostic.SampledPoints, "The fine grid must evaluate exactly two resolved priors.");
+        Assert.IsTrue(mixed.Diagnostics.Where(d => d.ObjectId != fine.Id).All(d => d.SampledPoints > 316));
+        var t1 = one.ElectronRate(pixelX, pixelY) / background;
+        var t2 = two.ElectronRate(pixelX, pixelY) / background;
+        var t3 = three.ElectronRate(pixelX, pixelY) / background;
+        Assert.IsTrue(t3 / t1 > t2 + 1e-3, "The coincident resolved priors must have correlated subpixel depths.");
+        var deficitBehindTwo = two.ElectronRate(pixelX, pixelY) - twoWithFine.ElectronRate(pixelX, pixelY);
+        Assert.IsTrue(deficitBehindTwo > 0.1);
+        var deficitBehindThree = three.ElectronRate(pixelX, pixelY) - mixed.ElectronRate(pixelX, pixelY);
+        Assert.AreEqual(t3 / t2, deficitBehindThree / deficitBehindTwo, 1e-10);
+
+        // The old shrunken cap excluded positive overlaps this close to tangency.
+        var near = Circle("LDN-MIX-CAP-A", 80d, 80d, 0.6);
+        var nearTangent = AltAzToJ2000(new AltAzPoint(60d + 0.01 * (1d - 5e-10), 180d));
+        var overlap = near with
+        {
+            Id = "LDN-MIX-CAP-B",
+            RightAscensionHours = nearTangent.RaHours,
+            DeclinationDegrees = nearTangent.DecDegrees
+        };
+        Assert.AreEqual(3L * 316, Render(near, overlap).Statistics.TotalSampledPoints,
+            "A positive sky overlap must be eligible for cross-cloud work even at the cap boundary.");
+    }
+
+    [TestMethod]
+    public void FineCircleAtCap25ClipsCellAreasBeforeApplyingPeakOpticalDepth()
+    {
+        const double focalLength = 1400d;
+        const double diameterArcminutes = 0.6;
+        const double depth = 10d;
+        const double background = 100d;
+        var projection = new ProjectionContext(
+            ProjectionModel.Perspective, 80, 80, focalLength, focalLength, 160, 160,
+            ProjectionAperture.Rectangular, BoresightAltitudeDegrees: 60, BoresightAzimuthDegrees: 180);
+        var request = CreateRequest(projection, HorizonPolicy.GeometricHorizon);
+        var options = CreateDeterministicMonoOptions();
+        var center = AltAzToJ2000(new AltAzPoint(60d, 180d));
+        var circle = CreateDso("LDN-F28-CIRCLE", "On-axis dark circle", "DrkN", center.RaHours, center.DecDegrees,
+            diameterArcminutes, diameterArcminutes, 0, null, null, null, null, null);
+        var scenario = new DeepSkySyntheticScenario("f28-circle",
+            Overrides: [new DeepSkySyntheticSourceOverride(circle.Id, PeakOpticalDepth: depth)]);
+        var settings = CreateSettings(options, request, celestialDiffuseBg: background, syntheticScenario: scenario) with
+        {
+            MaximumSamplePointsPerSource = 25
+        };
+
+        var plan = DeepSkyRenderPlan.Prepare(request, null, [circle], null, options, settings);
+        var diagnostic = plan.Diagnostics.Single();
+        var radiusPixels = focalLength * Math.Tan(diameterArcminutes * Math.PI / (2d * 60d * 180d));
+        var maximumDeficit = background * Math.PI * radiusPixels * radiusPixels * (1d - Math.Exp(-depth));
+        var pixelDeficit = SumDarkFixtureRate(plan, projection, background);
+        Assert.IsTrue(diagnostic.Admitted);
+        Assert.AreEqual(21, diagnostic.SampledPoints);
+        Assert.AreEqual(pixelDeficit, diagnostic.AttenuatedDiffuseElectronRate, 1e-8);
+        Assert.IsTrue(pixelDeficit > 0.9 * maximumDeficit && pixelDeficit <= maximumDeficit,
+            $"Integrated deficit {pixelDeficit:G17} must be inside the physical bound {maximumDeficit:G17}.");
+    }
+
+    [TestMethod]
+    public void StarvedUnresolvedEmitterOutsideMinorAxisReceivesUnattenuatedFlux()
+    {
+        const double diameterArcminutes = 0.6;
+        var semiMajor = diameterArcminutes * Math.PI / (2d * 60d * 180d);
+        var projection = new ProjectionContext(
+            ProjectionModel.Perspective, 80, 80, 1400, 1400, 160, 160,
+            ProjectionAperture.Rectangular, BoresightAltitudeDegrees: 60, BoresightAzimuthDegrees: 180);
+        var request = CreateRequest(projection, HorizonPolicy.GeometricHorizon);
+        var options = CreateDeterministicMonoOptions();
+        var centerHorizontal = new AltAzPoint(60d, 180d);
+        var center = AltAzToJ2000(centerHorizontal);
+        var frame = ResolvedSourceFrame.Create(centerHorizontal, HvoObserver.LatitudeDegrees);
+        var cloud = CreateDso("LDN-F30-ELLIPSE", "Narrow dark ellipse", "DrkN", center.RaHours, center.DecDegrees,
+            diameterArcminutes, 0.1 * diameterArcminutes, 0, null, null, null, null, null);
+        var scenario = new DeepSkySyntheticScenario("f30-ellipse",
+            Overrides: [new DeepSkySyntheticSourceOverride(cloud.Id, PeakOpticalDepth: 1.6)]);
+        var settings = CreateSettings(options, request, syntheticScenario: scenario) with
+        {
+            MaximumSamplePointsPerSource = 16,
+            MaximumTemporalSamples = 1
+        };
+
+        DeepSkyObject Emitter(int index, double minorOffset)
+        {
+            var direction = frame.DirectionFromCelestial(0d, minorOffset);
+            var horizontal = new AltAzPoint(
+                Math.Asin(direction.Up) * 180d / Math.PI,
+                Math.Atan2(direction.East, direction.North) * 180d / Math.PI);
+            var coordinates = AltAzToJ2000(horizontal);
+            return CreateDso($"EMN-F30-STARVED-{index}", $"Emitter {index}", "EmN", coordinates.RaHours,
+                coordinates.DecDegrees, 0.001, 0.001, 0, null, 3d, null, null, index + 1);
+        }
+
+        var interior = Enumerable.Range(0, 12).Select(i => Emitter(i, (i - 6) * 0.005 * semiMajor)).ToArray();
+        var outside = Emitter(12, 0.5 * semiMajor);
+        Assert.IsTrue(interior.All(emitter => emitter.RightAscensionHours < outside.RightAscensionHours));
+
+        DeepSkyRenderPlan Render(params DeepSkyObject[] objects) =>
+            DeepSkyRenderPlan.Prepare(request, null, objects, null, options, settings);
+
+        var baseline = Render(interior);
+        var baselineWithOutside = Render([.. interior, outside]);
+        var attenuated = Render([.. interior, cloud]);
+        var attenuatedWithOutside = Render([.. interior, outside, cloud]);
+        Assert.AreEqual(16, attenuatedWithOutside.Diagnostics.Single(d => d.ObjectId == cloud.Id).SampledPoints);
+        Assert.IsTrue(attenuatedWithOutside.Diagnostics.Single(d => d.ObjectId == outside.Id).UsedUnresolvedPsfPath);
+        var expected = SumDarkFixtureRate(baseline, projection, 0d) - SumDarkFixtureRate(baselineWithOutside, projection, 0d);
+        var received = SumDarkFixtureRate(attenuated, projection, 0d) - SumDarkFixtureRate(attenuatedWithOutside, projection, 0d);
+        Assert.IsTrue(expected > 0d);
+        Assert.AreEqual(1d, received / expected, 1e-12, "The starved emitter sits five minor radii from the cloud center.");
+    }
+
+    [TestMethod]
+    [DataRow(700, 316)]
+    [DataRow(1000, 632)]
+    public void RepeatedBorderlineRejectionsRespectActualTargetCapAndPreserveAdmittedOutput(int cap, int expectedTargetEvaluations)
+    {
+        var (projection, request, options, settings, strong, weak, secondWeak, _) = CreateBorderlineDarkFixture();
+        settings = settings with { MaximumSamplePointsPerSource = cap };
+        var baseline = DeepSkyRenderPlan.Prepare(request, null, [strong], null, options, settings);
+        var oneRejected = DeepSkyRenderPlan.Prepare(request, null, [strong, weak], null, options, settings);
+        var twoRejected = DeepSkyRenderPlan.Prepare(request, null, [strong, weak, secondWeak], null, options, settings);
+
+        Assert.AreEqual(316L, baseline.Statistics.TotalSampledPoints);
+        foreach (var (plan, rejectionCount) in new[] { (twoRejected, 2), (oneRejected, 1) })
+        {
+            var rejected = plan.Diagnostics.Where(d => !d.Admitted).ToArray();
+            Assert.HasCount(rejectionCount, rejected);
+            Assert.IsTrue(rejected.All(d => d.Reason == "annotation-only-below-snr"));
+            Assert.AreEqual(baseline.Diagnostics.Single(), plan.Diagnostics.Single(d => d.Admitted));
+
+            // Only the strong cloud can be a fresh cross-evaluation target. The two weak
+            // clouds have identical sample directions and are grouped whenever both are present.
+            var actualTargetEvaluations = plan.Statistics.TotalSampledPoints - rejectionCount * 316L;
+            Assert.IsTrue(actualTargetEvaluations <= cap, $"The strong cloud used {actualTargetEvaluations} actual evaluations.");
+            Assert.AreEqual((long)expectedTargetEvaluations, actualTargetEvaluations);
+            for (var y = 0; y < projection.HeightPixels; y++)
+            {
+                for (var x = 0; x < projection.WidthPixels; x++)
+                {
+                    Assert.AreEqual(baseline.ElectronRate(x, y), plan.ElectronRate(x, y));
+                }
+            }
+        }
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public void CanonicalMarginalSnrRejectsWeakCloudInBothPriorityOrdersAndBackfills(bool weakFirst)
+    {
+        var (projection, request, options, settings, strong, weak, _, backfill) = CreateBorderlineDarkFixture();
+        var first = (weakFirst ? weak : strong) with { MessierNumber = 1 };
+        var second = (weakFirst ? strong : weak) with { MessierNumber = 2 };
+        var capped = settings with { MaximumRenderedSources = 2 };
+        var baseline = DeepSkyRenderPlan.Prepare(request, null, [strong, backfill], null, options, capped);
+        var plan = DeepSkyRenderPlan.Prepare(request, null, [first, second, backfill], null, options, capped);
+
+        var rejected = plan.Diagnostics.Single(d => d.ObjectId == weak.Id);
+        Assert.IsFalse(rejected.Admitted);
+        Assert.AreEqual("annotation-only-below-snr", rejected.Reason);
+        Assert.IsTrue(rejected.PredictedSignal.SignalToNoise < settings.MinimumSignalToNoise);
+        Assert.AreEqual(0d, rejected.AttenuatedDiffuseElectronRate);
+        CollectionAssert.AreEquivalent(new[] { strong.Id, backfill.Id },
+            plan.Diagnostics.Where(d => d.Admitted).Select(d => d.ObjectId).ToArray());
+        Assert.IsTrue(plan.Diagnostics.Where(d => d.Admitted)
+            .All(d => d.PredictedSignal.SignalToNoise >= settings.MinimumSignalToNoise));
+        for (var y = 0; y < projection.HeightPixels; y++)
+        {
+            for (var x = 0; x < projection.WidthPixels; x++)
+            {
+                Assert.AreEqual(baseline.ElectronRate(x, y), plan.ElectronRate(x, y));
+            }
+        }
+    }
+
+    private static (ProjectionContext Projection, VisibleSceneRequest Request, Mono16SceneRenderOptions Options,
+        DeepSkyRenderSettings Settings, DeepSkyObject Strong, DeepSkyObject Weak, DeepSkyObject SecondWeak,
+        DeepSkyObject Backfill) CreateBorderlineDarkFixture()
+    {
+        var projection = new ProjectionContext(
+            ProjectionModel.Perspective, 80, 80, 1400, 1400, 160, 160,
+            ProjectionAperture.Rectangular, BoresightAltitudeDegrees: 60, BoresightAzimuthDegrees: 180);
+        var request = CreateRequest(projection, HorizonPolicy.GeometricHorizon);
+        var options = CreateDeterministicMonoOptions();
+        var pStrong = AltAzToJ2000(new AltAzPoint(60d, 180d));
+        var pWeak = AltAzToJ2000(new AltAzPoint(60.0001, 180d));
+        var pBackfill = AltAzToJ2000(new AltAzPoint(60.1, 180d));
+        var strong = CreateDso("LDN-SNR-A", "Strong cloud", "DrkN", pStrong.RaHours, pStrong.DecDegrees,
+            0.6, 0.6, 0, null, null, null, null, 1);
+        var weak = CreateDso("LDN-SNR-B", "Weak cloud", "DrkN", pWeak.RaHours, pWeak.DecDegrees,
+            0.6, 0.6, 0, null, null, null, null, 2);
+        var secondWeak = weak with { Id = "LDN-SNR-B2", MessierNumber = 3 };
+        var backfill = strong with
+        {
+            Id = "LDN-SNR-C",
+            MessierNumber = 4,
+            RightAscensionHours = pBackfill.RaHours,
+            DeclinationDegrees = pBackfill.DecDegrees
+        };
+        var scenario = new DeepSkySyntheticScenario("borderline-dark",
+            Overrides:
+            [
+                new DeepSkySyntheticSourceOverride(strong.Id, PeakOpticalDepth: 1.6),
+                new DeepSkySyntheticSourceOverride(weak.Id, PeakOpticalDepth: 0.2),
+                new DeepSkySyntheticSourceOverride(secondWeak.Id, PeakOpticalDepth: 0.2)
+            ]);
+        var settings = CreateSettings(options, request, celestialDiffuseBg: 100d, syntheticScenario: scenario) with
+        {
+            MaximumSamplePointsPerSource = 700
+        };
+        var weakSolo = DeepSkyRenderPlan.Prepare(request, null, [weak], null, options, settings).Diagnostics.Single();
+        Assert.IsTrue(weakSolo.PredictedSignal.SignalToNoise > 0d);
+        return (projection, request, options, settings with { MinimumSignalToNoise = 0.65 * weakSolo.PredictedSignal.SignalToNoise },
+            strong, weak, secondWeak, backfill);
+    }
+
+    private static double SumDarkFixtureRate(DeepSkyRenderPlan plan, ProjectionContext projection, double background)
+    {
+        var deficit = 0d;
+        for (var y = 0; y < projection.HeightPixels; y++)
+        {
+            for (var x = 0; x < projection.WidthPixels; x++)
+            {
+                deficit += background - plan.ElectronRate(x, y);
+            }
+        }
+        return deficit;
+    }
+
     private static ImageLayout Mono16Layout(int width, int height) =>
         new(width, height, CameraPixelFormat.Mono16, width * 2);
 
