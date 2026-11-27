@@ -53,6 +53,7 @@ internal sealed partial class CameraAgentScientificExports(
     ILogger<CameraAgentScientificExports> logger) : ICameraAgentScientificExports, IDisposable
 {
     private const long MinimumIngressReserveBytes = 64L * 1024 * 1024;
+    private const long SpoolAllocationUnitBytes = 64 * 1024;
     private const int MaximumCachedBytes = 8 * 1024 * 1024;
     private const string Capacity = "scientific-export.capacity";
     private const string IoUnavailable = "scientific-export.io-unavailable";
@@ -149,16 +150,28 @@ internal sealed partial class CameraAgentScientificExports(
                 {
                     var estimate = ScientificCaptureExport.MaximumOutputBytes(descriptor, format, observation);
                     operation = "capacity-probe";
-                    if (!TryReserveSpool(estimate, source.ByteLength))
+                    reservedBytes = ReserveSpool(estimate, source.ByteLength);
+                    if (reservedBytes == 0)
                         return Busy();
-                    reservedBytes = estimate;
 
                     // Stage privately. On Linux the unlinked file is reclaimed even if the host exits.
                     operation = "spool-open";
-                    output = CreateSpool(options.Value.RawIngressRoot);
+                    var spool = CreateSpool(options.Value.RawIngressRoot);
+                    output = spool;
                     operation = "encode";
-                    receipt = await ScientificCaptureExport.WriteAsync(source, output, descriptor, format, observation, cancellationToken)
+                    receipt = await ScientificCaptureExport.WriteAsync(source, spool, descriptor, format, observation, cancellationToken)
                         .ConfigureAwait(false);
+
+                    // Settle delayed allocation before replacing this reservation with measured disk usage.
+                    operation = "spool-flush";
+                    cancellationToken.ThrowIfCancellationRequested();
+                    CameraAgentFileSystem.FlushFile(spool);
+                    operation = "capacity-probe";
+                    lock (_capacityGate)
+                    {
+                        if (!HasSpoolHeadroom(0, source.ByteLength, _pendingSpoolBytes - reservedBytes))
+                            return Busy();
+                    }
 
                     if (receipt.ByteLength <= MaximumCachedBytes)
                     {
@@ -217,22 +230,32 @@ internal sealed partial class CameraAgentScientificExports(
         }
     }
 
-    private bool TryReserveSpool(long estimate, long sourceBytes)
+    private long ReserveSpool(long estimate, long sourceBytes)
     {
+        // Round up the encoded bound and budget one metadata unit per 64 data units (including a partial group).
+        // The post-write probe covers filesystem-specific overhead beyond this allowance.
+        var dataUnits = checked((estimate + SpoolAllocationUnitBytes - 1) / SpoolAllocationUnitBytes);
+        var metadataUnits = (dataUnits + 63) / 64;
+        var reservation = checked((dataUnits + metadataUnits) * SpoolAllocationUnitBytes);
         lock (_capacityGate)
         {
-            var available = capacityProvider.GetCapacity(options.Value.RawIngressRoot).AvailableBytes;
-            var reserve = Math.Max(MinimumIngressReserveBytes, options.Value.RawIngressReserveBytes);
-            // The latest live ingress attempt can be larger than the archived source being exported.
-            // Use the source as a floor, including before the first capture after startup.
-            var nextCaptureHeadroom = Math.Max(sourceBytes, ingress.LastCapturePayloadBytes);
             // The filesystem may not yet account for concurrent writers that passed the capacity check.
-            if (available < reserve || available - reserve < nextCaptureHeadroom ||
-                available - reserve - nextCaptureHeadroom - _pendingSpoolBytes < estimate)
-                return false;
-            _pendingSpoolBytes += estimate;
-            return true;
+            if (!HasSpoolHeadroom(reservation, sourceBytes, _pendingSpoolBytes))
+                return 0;
+            _pendingSpoolBytes += reservation;
+            return reservation;
         }
+    }
+
+    private bool HasSpoolHeadroom(long spoolBytes, long sourceBytes, long pendingBytes)
+    {
+        var available = capacityProvider.GetCapacity(options.Value.RawIngressRoot).AvailableBytes;
+        var reserve = Math.Max(MinimumIngressReserveBytes, options.Value.RawIngressReserveBytes);
+        // Match ingress's reserve plus payload threshold without adding potentially overflowing byte counts.
+        // The archived source is the floor until a live ingress attempt supplies a larger payload size.
+        var nextCaptureHeadroom = Math.Max(sourceBytes, ingress.LastCapturePayloadBytes);
+        return available >= reserve && available - reserve >= nextCaptureHeadroom &&
+            available - reserve - nextCaptureHeadroom - pendingBytes >= spoolBytes;
     }
 
     private static FileStream CreateSpool(string rawIngressRoot)

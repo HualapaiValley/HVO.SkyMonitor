@@ -106,13 +106,13 @@ public sealed partial class DurableCaptureProcessingTests
                     Assert.AreEqual(0L, reusedBody.Length);
                     break;
             }
-            capacity.Verify(provider => provider.GetCapacity(root), Times.Once());
+            capacity.Verify(provider => provider.GetCapacity(root), Times.Exactly(2));
 
             using var freshBody = new MemoryStream();
             var fresh = await InvokeScientificExportAsync(app, descriptor.Capture.CaptureId, descriptor.Artifact.ArtifactId,
                 HttpMethods.Get, freshBody).ConfigureAwait(false);
             Assert.AreEqual(StatusCodes.Status503ServiceUnavailable, fresh.StatusCode);
-            capacity.Verify(provider => provider.GetCapacity(root), Times.Exactly(2));
+            capacity.Verify(provider => provider.GetCapacity(root), Times.Exactly(3));
         }
         finally { Directory.Delete(root, recursive: true); }
     }

@@ -1,4 +1,6 @@
+using System.Diagnostics;
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
@@ -24,6 +26,8 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
 public sealed partial class DurableCaptureProcessingTests
 {
+    private const long SmallScientificSpoolReservation = 128 * 1024;
+
     [TestMethod]
     [TestCategory("Integration")]
     [DataRow(0.0, "ARC")]
@@ -285,6 +289,69 @@ public sealed partial class DurableCaptureProcessingTests
     }
 
     [TestMethod]
+    [TestCategory("Integration")]
+    public async Task ScientificExportFitsIngressHeadroomAfterRealSpoolAllocation()
+    {
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS()) return;
+
+        const int width = 1936;
+        const int height = 1096;
+        const int stride = width * 2;
+        const long reserve = 128L * 1024 * 1024;
+        var root = CreateTestRoot();
+        try
+        {
+            var payload = new byte[stride * height];
+            RandomNumberGenerator.Fill(payload);
+            var descriptor = ReconstructableCaptureContractTests.CreateManifest(CameraPixelFormat.Mono16, width, height, stride, payload).Descriptor;
+            var ingressRequired = checked(reserve + descriptor.Layout.ByteLength);
+            var available = ingressRequired + 4_390_912; // 65 data units and two metadata units.
+            var capacity = new Mock<IStorageCapacityProvider>(MockBehavior.Strict);
+            capacity.Setup(provider => provider.GetCapacity(root)).Returns(() => new StorageCapacity(long.MaxValue, available));
+            using var exports = CreateScientificExports(root, descriptor, () => new MemoryStream(payload), capacity.Object, ingressReserve: reserve);
+
+            var accepted = await PrepareScientificExportAsync(exports, descriptor).ConfigureAwait(false);
+            Assert.AreEqual(CameraAgentArtifactReadStatus.Found, accepted.Status, accepted.ReasonCode);
+            Assert.IsNotNull(accepted.Download);
+            long allocated;
+            await using (accepted.Download.ConfigureAwait(false))
+            {
+                Assert.AreEqual(4_248_000L, accepted.Download.Receipt.ByteLength);
+                allocated = ReadScientificSpoolAllocation((FileStream)accepted.Download.Content);
+                Assert.IsGreaterThan(accepted.Download.Receipt.ByteLength + 256, allocated);
+                Assert.IsGreaterThanOrEqualTo(ingressRequired, available - allocated);
+                Console.WriteLine($"FITS length {accepted.Download.Receipt.ByteLength}, allocated {allocated}, ingress headroom {available - allocated - reserve}, ingress payload {descriptor.Layout.ByteLength} bytes.");
+            }
+
+            // Keep the boundary independent of background writes to the shared test volume.
+            available = ingressRequired + allocated - 256;
+            var rejected = await PrepareScientificExportAsync(exports, descriptor).ConfigureAwait(false);
+            if (rejected.Download is { } unexpected)
+                await unexpected.DisposeAsync().ConfigureAwait(false);
+            Assert.AreEqual(CameraAgentArtifactReadStatus.Unavailable, rejected.Status);
+            Assert.AreEqual("scientific-export.capacity", rejected.ReasonCode);
+            Assert.IsNull(rejected.Download);
+            Assert.IsEmpty(Directory.GetFileSystemEntries(Path.Combine(root, ".scientific-exports")));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    private static long ReadScientificSpoolAllocation(FileStream spool)
+    {
+        // Linux unlinks the spool at open. stat follows the original process's live file descriptor.
+        var path = OperatingSystem.IsLinux()
+            ? $"/proc/{Environment.ProcessId}/fd/{spool.SafeFileHandle.DangerousGetHandle()}"
+            : spool.Name;
+        var arguments = OperatingSystem.IsLinux() ? new[] { "-L", "-c", "%b", path } : ["-f", "%b", path];
+        using var process = Process.Start(new ProcessStartInfo("stat", arguments) { RedirectStandardOutput = true })
+            ?? throw new InvalidOperationException("Could not start stat for the staged export.");
+        var blocks = process.StandardOutput.ReadToEnd();
+        process.WaitForExit();
+        Assert.AreEqual(0, process.ExitCode);
+        return checked(long.Parse(blocks, CultureInfo.InvariantCulture) * 512);
+    }
+
+    [TestMethod]
     [TestCategory("Unit")]
     [DataRow(ScientificExportFormat.Fits, 64L * 1024 * 1024, 0L)]
     [DataRow(ScientificExportFormat.FitsTileGzip, 0L, 2L)]
@@ -300,9 +367,15 @@ public sealed partial class DurableCaptureProcessingTests
             var ingress = new RawIngressState(TimeProvider.System);
             ingress.RecordCapturePayloadBytes(recentCaptureBytes);
             var headroom = Math.Max(descriptor.Layout.ByteLength, recentCaptureBytes);
-            var available = Math.Max(64L * 1024 * 1024, configuredReserve) + estimate + headroom - 1;
+            var ingressRequired = Math.Max(64L * 1024 * 1024, configuredReserve) + headroom;
+            var stagingRequired = ingressRequired + SmallScientificSpoolReservation;
             var capacity = new Mock<IStorageCapacityProvider>(MockBehavior.Strict);
-            capacity.Setup(provider => provider.GetCapacity(root)).Returns(() => new StorageCapacity(long.MaxValue, available));
+            capacity.SetupSequence(provider => provider.GetCapacity(root))
+                .Returns(new StorageCapacity(long.MaxValue, stagingRequired - 1))
+                .Returns(new StorageCapacity(long.MaxValue, stagingRequired))
+                .Returns(new StorageCapacity(long.MaxValue, ingressRequired - 1))
+                .Returns(new StorageCapacity(long.MaxValue, stagingRequired))
+                .Returns(new StorageCapacity(long.MaxValue, ingressRequired));
             using var exports = CreateScientificExports(root, descriptor, () => new MemoryStream(new byte[4]),
                 capacityProvider: capacity.Object, ingressReserve: configuredReserve, ingress: ingress);
             var rejected = await PrepareScientificExportAsync(exports, descriptor, format).ConfigureAwait(false);
@@ -311,12 +384,17 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.IsNull(rejected.Download);
             Assert.IsFalse(Directory.Exists(Path.Combine(root, ".scientific-exports")));
 
-            available++;
+            var overallocated = await PrepareScientificExportAsync(exports, descriptor, format).ConfigureAwait(false);
+            Assert.AreEqual(CameraAgentArtifactReadStatus.Unavailable, overallocated.Status);
+            Assert.AreEqual("scientific-export.capacity", overallocated.ReasonCode);
+            Assert.IsNull(overallocated.Download);
+            Assert.IsEmpty(Directory.GetFileSystemEntries(Path.Combine(root, ".scientific-exports")));
+
             var accepted = await PrepareScientificExportAsync(exports, descriptor, format).ConfigureAwait(false);
             Assert.IsNotNull(accepted.Download, accepted.ReasonCode);
             await using var download = accepted.Download.ConfigureAwait(false);
             Assert.IsLessThanOrEqualTo(estimate, accepted.Download.Receipt.ByteLength);
-            capacity.Verify(provider => provider.GetCapacity(root), Times.Exactly(2));
+            capacity.Verify(provider => provider.GetCapacity(root), Times.Exactly(5));
         }
         finally { Directory.Delete(root, recursive: true); }
     }
@@ -359,9 +437,10 @@ public sealed partial class DurableCaptureProcessingTests
         {
             var descriptor = ScientificExportTestDescriptor();
             var estimate = ScientificCaptureExport.MaximumOutputBytes(descriptor, ScientificExportFormat.Fits);
+            var available = 64L * 1024 * 1024 + descriptor.Layout.ByteLength + SmallScientificSpoolReservation;
             var capacity = new Mock<IStorageCapacityProvider>();
             capacity.Setup(provider => provider.GetCapacity(root))
-                .Returns(new StorageCapacity(long.MaxValue, 64L * 1024 * 1024 + descriptor.Layout.ByteLength + estimate));
+                .Returns(() => new StorageCapacity(long.MaxValue, available));
             var writing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var resume = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var opens = 0;
@@ -372,6 +451,8 @@ public sealed partial class DurableCaptureProcessingTests
             try
             {
                 await writing.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+                // A second rounded reservation would fit here if the first were only charged its encoded length.
+                available += estimate;
                 var rejected = await PrepareScientificExportAsync(exports, descriptor).ConfigureAwait(false);
                 Assert.IsNull(rejected.Download);
                 Assert.AreEqual("scientific-export.capacity", rejected.ReasonCode);
@@ -400,10 +481,9 @@ public sealed partial class DurableCaptureProcessingTests
         try
         {
             var descriptor = ScientificExportTestDescriptor();
-            var estimate = ScientificCaptureExport.MaximumOutputBytes(descriptor, ScientificExportFormat.Fits);
             var capacity = new Mock<IStorageCapacityProvider>(MockBehavior.Strict);
             capacity.Setup(provider => provider.GetCapacity(root))
-                .Returns(new StorageCapacity(long.MaxValue, 64L * 1024 * 1024 + descriptor.Layout.ByteLength + estimate));
+                .Returns(new StorageCapacity(long.MaxValue, 64L * 1024 * 1024 + descriptor.Layout.ByteLength + SmallScientificSpoolReservation));
             using var cancellation = new CancellationTokenSource();
             var opens = 0;
             using var exports = CreateScientificExports(root, descriptor, () => ++opens == 1
@@ -430,7 +510,7 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.IsNotNull(recovered.Download, recovered.ReasonCode);
             await using var download = recovered.Download.ConfigureAwait(false);
             Assert.AreEqual(CameraAgentArtifactReadStatus.Found, recovered.Status);
-            capacity.Verify(provider => provider.GetCapacity(root), Times.Exactly(2));
+            capacity.Verify(provider => provider.GetCapacity(root), Times.Exactly(3));
         }
         finally { Directory.Delete(root, recursive: true); }
     }
@@ -559,14 +639,14 @@ public sealed partial class DurableCaptureProcessingTests
                 await reuse.Download.Content.ReadExactlyAsync(reusedBytes).ConfigureAwait(false);
                 CollectionAssert.AreEqual(firstBytes, reusedBytes);
             }
-            capacity.Verify(provider => provider.GetCapacity(root), Times.Once());
+            capacity.Verify(provider => provider.GetCapacity(root), Times.Exactly(2));
 
             payload[0] = 1;
             var corrupted = await PrepareScientificExportAsync(exports, descriptor, ScientificExportFormat.FitsTileGzip, reuseRecent: true)
                 .ConfigureAwait(false);
             Assert.AreEqual(ScientificCaptureExport.CorruptSource, corrupted.ReasonCode);
             Assert.IsNull(corrupted.Download);
-            capacity.Verify(provider => provider.GetCapacity(root), Times.Once());
+            capacity.Verify(provider => provider.GetCapacity(root), Times.Exactly(2));
 
             payload[0] = 0;
             site = site with { ObservatoryName = "Renamed observatory" };
@@ -575,7 +655,7 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.IsNotNull(updated.Download, updated.ReasonCode);
             await using var updatedLease = updated.Download.ConfigureAwait(false);
             Assert.AreNotEqual(first.Download.Receipt.Sha256, updated.Download.Receipt.Sha256);
-            capacity.Verify(provider => provider.GetCapacity(root), Times.Exactly(2));
+            capacity.Verify(provider => provider.GetCapacity(root), Times.Exactly(4));
         }
         finally { Directory.Delete(root, recursive: true); }
     }
