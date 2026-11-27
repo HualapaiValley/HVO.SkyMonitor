@@ -1,0 +1,79 @@
+@using HVO.SkyMonitor.Astronomy
+
+<section id="rig-optical-alignment" class="ops-panel optical-alignment" aria-labelledby="optical-alignment-heading">
+    <h2 id="optical-alignment-heading">Optical &amp; sky alignment</h2>
+    <p>Fit the active rig’s native optical geometry from retained sky exposures. Use the <a href="/gallery">archive</a> to find capture IDs with measured astrometry.</p>
+    @if (ActiveAlignment is { } active)
+    {
+        <details>
+            <summary>Active alignment evidence</summary>
+            <p>Fit <code>@active.FitIdentitySha256</code></p>
+            <p>@active.TrainingCount training and @(active.Captures.Count - active.TrainingCount) held-out exposures.</p>
+            <ul>
+                @foreach (var capture in active.Captures)
+                {
+                    <li><a href="@($"/gallery/{capture.Frame.CaptureId:D}")">@capture.Frame.CaptureId</a></li>
+                }
+            </ul>
+        </details>
+    }
+    <form @onsubmit="FitAsync" @onsubmit:preventDefault>
+        <div class="optical-inputs">
+            <label>Training capture IDs<textarea rows="3" maxlength="400" @bind="_training" disabled="@Busy"></textarea><small>Three to eight IDs, separated by spaces or new lines.</small></label>
+            <label>Held-out capture IDs<textarea rows="3" maxlength="200" @bind="_validation" disabled="@Busy"></textarea><small>One to four different IDs to verify the candidate on images it did not fit.</small></label>
+        </div>
+        <label><input type="checkbox" @bind="_fitDistortion" disabled="@Busy" /> Fit radial distortion</label>
+        <div class="optical-actions">
+            <button class="button primary" type="submit" disabled="@(Busy || RigChangePending)">Fit selected captures</button>
+            @if (Busy) { <button type="button" class="button secondary" @onclick="CancelAsync">Cancel</button> }
+        </div>
+    </form>
+    @if (RigChangePending) { <p>Resolve the staged rig change before fitting.</p> }
+    @if (_message is not null) { <p role="status">@_message</p> }
+    @if (_proposal is { } proposal)
+    {
+        <h3>@proposal.Review.Status</h3>
+        <p>@proposal.Result.Reason</p>
+        @if (proposal.Review.Rejections.Count > 0)
+        {
+            <ul>@foreach (var rejection in proposal.Review.Rejections) { <li>@rejection</li> }</ul>
+        }
+        <p>@proposal.Review.Diagnostics.FittedFrames fitted exposures, @proposal.Review.Diagnostics.FittingStars fitting stars. Coverage includes @proposal.Review.Diagnostics.OccupiedRadialBins radial bins and @proposal.Review.Diagnostics.OccupiedAzimuthBins azimuth bins.</p>
+        <p>Fitting RMS @Number(proposal.Review.Diagnostics.FittingRmsPixels) px. Verification RMS @Number(proposal.Review.Diagnostics.VerificationRmsPixels) px.</p>
+        <table>
+            <thead><tr><th scope="col">Optical parameter</th><th scope="col">Current</th><th scope="col">Proposed</th><th scope="col">Standard error</th></tr></thead>
+            <tbody>
+            @foreach (var parameter in proposal.Review.Parameters)
+            {
+                <tr><th scope="row">@parameter.Name (@parameter.Unit)</th><td>@Number(parameter.Nominal)</td><td>@Number(parameter.Value)</td><td>@Number(parameter.StandardError)</td></tr>
+            }
+            </tbody>
+        </table>
+        <details>
+            <summary>Capture evidence and provenance</summary>
+            <dl>
+                <dt>Fit identity</dt><dd>@proposal.Result.IdentitySha256</dd>
+                <dt>Catalog / selection</dt><dd>@proposal.Result.CatalogIdentitySha256 / @proposal.Result.CatalogSelectionIdentitySha256</dd>
+                <dt>Fitter / solver</dt><dd>@OpticalCalibrationOptions.FitterVersion / @AstrometricConventions.SolverVersion</dd>
+                <dt>Fit / solver settings</dt><dd>@proposal.Result.OptionsIdentitySha256 / @proposal.Result.SolverSettingsIdentitySha256</dd>
+            </dl>
+            <ul>
+            @for (var index = 0; index < proposal.Captures.Count; index++)
+            {
+                var capture = proposal.Captures[index];
+                var fit = proposal.Result.Frames.FirstOrDefault(frame => frame.CaptureId == capture.Frame.Frame.CaptureId);
+                var validation = proposal.Result.Validations.FirstOrDefault(frame => frame.CaptureId == capture.Frame.Frame.CaptureId);
+                <li>@(index < proposal.TrainingCount ? "Training" : "Held out") @capture.Frame.Frame.CaptureId. Exposure @(capture.Frame.Frame.ExposureStartUtc.ToString("O")) to @(capture.Frame.Frame.ExposureEndUtc.ToString("O")). Site @capture.Frame.Frame.ObserverIdentitySha256. Clock @capture.Clock.Synchronization. Current assessment @capture.Status (@Number(capture.VerificationRmsPixels) px verification RMS). Proposed assessment @(fit?.Status ?? validation?.Status.ToString() ?? "Not attempted") (@Number(fit?.VerificationRmsPixels ?? validation?.VerificationRmsPixels) px verification RMS).</li>
+            }
+            </ul>
+        </details>
+        @if (proposal.Review.Blocker == "physical-rig")
+        {
+            <p>Physical rigs require separate qualification before an alignment can be accepted here.</p>
+        }
+        <div class="optical-actions">
+            <button class="button primary" type="button" @onclick="() => DecideAsync(true)" disabled="@(Busy || RigChangePending || !proposal.Review.CanAccept)">Accept as rig draft</button>
+            <button class="button secondary" type="button" @onclick="() => DecideAsync(false)" disabled="@Busy">Reject proposal</button>
+        </div>
+    }
+</section>

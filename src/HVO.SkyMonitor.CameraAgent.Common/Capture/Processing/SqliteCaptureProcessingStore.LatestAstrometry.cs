@@ -158,6 +158,24 @@ internal sealed partial class SqliteCaptureProcessingStore
         }
     }
 
+    internal async ValueTask<string?> ReadAstrometrySkipReasonAsync(Guid captureId, CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT reason FROM processing_nodes
+            WHERE capture_id = $capture AND recipe_name = $recipe AND status = 'Skipped'
+            LIMIT 2;
+            """;
+        command.Parameters.AddWithValue("$capture", captureId.ToString("N"));
+        command.Parameters.AddWithValue("$recipe", HVO.SkyMonitor.Processing.BuiltInProcessingRecipes.MeasuredAstrometry);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) return null;
+        var reason = await reader.IsDBNullAsync(0, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(0);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? null : reason;
+    }
+
     internal async ValueTask<HashSet<Guid>> ReadAstrometrySkipChangesAsync(
         IReadOnlyList<AstrometrySkipCheck> checks, CancellationToken cancellationToken)
     {

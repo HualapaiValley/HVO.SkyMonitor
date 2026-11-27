@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.OpticalCalibration;
 using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Gallery;
@@ -18,6 +19,7 @@ public sealed record CameraAgentRetainedAstrometry(Guid CaptureId, string Availa
     [JsonIgnore] public ReconstructionDescriptor? SourceDescriptor { get; init; }
     internal AstrometryLineageInvalidation? LineageInvalidation { get; init; }
     internal bool HasMissingEvidence { get; init; }
+    [JsonIgnore] internal OpticalAlignmentCaptureEvidence? OpticalAlignmentInput { get; init; }
     public string? CalibrationVersion { get; init; }
     public string? ProjectionModel { get; init; }
     public bool HorizontalFlip { get; init; }
@@ -107,6 +109,8 @@ public interface ICameraAgentRetainedAstrometryService
         CameraAgentAstrometryAssessmentIdentity identity, CancellationToken cancellationToken)
         => ValueTask.FromResult(CameraAgentAstrometryPublicationState.Indeterminate);
     ValueTask<CameraAgentRetainedAstrometry> GetAsync(Guid captureId, CancellationToken cancellationToken);
+    ValueTask<OpticalAlignmentCaptureEvidence?> GetOpticalAlignmentInputAsync(Guid captureId, CancellationToken cancellationToken) =>
+        ValueTask.FromResult<OpticalAlignmentCaptureEvidence?>(null);
 
     ValueTask<CameraAgentRetainedAstrometry> GetExactAsync(Guid captureId, CenteredViewArtifact evidence,
         CancellationToken cancellationToken) =>
@@ -127,6 +131,13 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
     private const int LatestNewSkipLimit = 4096;
     private const int LatestSkipRecheckLimit = 64;
     internal const string TemporaryEvidenceUnavailable = "retained-evidence-temporarily-unavailable";
+
+    private static CameraAgentRetainedAstrometry SkippedAssessment(Guid captureId, string? reason) => reason switch
+    {
+        MeasuredAstrometryCaptureProcessingStep.CadenceSkipped => new(captureId, "CadenceSkipped", reason),
+        "processing.dependency-unavailable" => new(captureId, "Unavailable", "astrometry.inputs-unavailable"),
+        _ => new(captureId, "NotRetained", "assessment-not-retained")
+    };
     private const string InvalidEvidence = "retained-evidence-invalid";
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private readonly SemaphoreSlim readGate = new(1, 1);
@@ -164,6 +175,9 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
     public ValueTask<CameraAgentRetainedAstrometry> GetAsync(Guid captureId, CancellationToken cancellationToken) =>
         GetBoundAsync(captureId, null, cancellationToken);
 
+    public async ValueTask<OpticalAlignmentCaptureEvidence?> GetOpticalAlignmentInputAsync(Guid captureId, CancellationToken cancellationToken) =>
+        (await GetBoundAsync(captureId, null, cancellationToken, includeOpticalAlignment: true).ConfigureAwait(false)).OpticalAlignmentInput;
+
     public ValueTask<CameraAgentRetainedAstrometry> GetExactAsync(Guid captureId, CenteredViewArtifact evidence,
         CancellationToken cancellationToken)
     {
@@ -172,14 +186,15 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
     }
 
     private async ValueTask<CameraAgentRetainedAstrometry> GetBoundAsync(Guid captureId, CenteredViewArtifact? exact,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool includeOpticalAlignment = false)
     {
         // Do not accumulate raw buffers behind concurrent Current Sky/archive requests.
         if (!await readGate.WaitAsync(0, cancellationToken).ConfigureAwait(false))
             return new(captureId, "Unavailable", "read-capacity");
         try
         {
-            var view = (await ReadAsync(captureId, cancellationToken, exact: exact).ConfigureAwait(false)).Evidence;
+            var view = (await ReadAsync(captureId, cancellationToken, exact: exact,
+                includeOpticalAlignment: includeOpticalAlignment).ConfigureAwait(false)).Evidence;
             if (view.Solution is null || view.ArtifactId is not { } artifact || view.SolutionIdentitySha256 is not { } solution)
                 return view;
 
@@ -397,7 +412,8 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
     }
 
     private async ValueTask<CandidateProbe> ReadAsync(Guid captureId, CancellationToken cancellationToken,
-        bool acceptedOnly = false, CenteredViewArtifact? exact = null, IRetainedHistoryArtifactRead? history = null)
+        bool acceptedOnly = false, CenteredViewArtifact? exact = null, IRetainedHistoryArtifactRead? history = null,
+        bool includeOpticalAlignment = false)
     {
         if (captureId == Guid.Empty) return new(new(captureId, "Unavailable", "invalid-capture"));
         var acquiredRawRead = false;
@@ -410,7 +426,9 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
             switch (assessment.Kind)
             {
                 case AstrometryAssessmentSelectionKind.Absent:
-                    return new(new(captureId, "NotRetained", "assessment-not-retained"),
+                    var reason = exact is null && !acceptedOnly
+                        ? await store.ReadAstrometrySkipReasonAsync(captureId, cancellationToken).ConfigureAwait(false) : null;
+                    return new(SkippedAssessment(captureId, reason),
                         new(captureId, AstrometryAssessmentSelectionKind.Absent));
                 case AstrometryAssessmentSelectionKind.Pending:
                     return Unavailable(temporary: true);
@@ -483,6 +501,13 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
                 Diagnostics = solution.Assessment.HasMeasuredMapping
                     ? MeasuredAstrometryJson.ReconstructDiagnostics(solution, frozen, associations, options, cancellationToken) : null,
                 SourceDescriptor = descriptor,
+                OpticalAlignmentInput = includeOpticalAlignment && descriptor.Layout.Readout is not null
+                    ? new(new(captureId, solutionArtifact.ArtifactId, solution.SolutionIdentitySha256), descriptor.Profiles.Rig.Sha256,
+                        RetainedAstrometryProducts.CreateOpticalCalibrationFrame(frozen, descriptor.Layout, associations),
+                        new(frozen.CatalogMetadata, frozen.CatalogStars, frozen.CatalogComplete, frozen.CompletenessMagnitudeLimit,
+                            frozen.CatalogCoordinateModel, frozen.CatalogPackage), frozen.Clock, options.Solver ?? new(),
+                        solution.Assessment.Status, solution.Assessment.Quality?.VerificationRmsPixels)
+                    : null,
                 CalibrationVersion = frozen.CalibrationVersion,
                 ProjectionModel = frozen.Projection.Model.ToString(),
                 HorizontalFlip = frozen.Projection.HorizontalFlip,

@@ -147,10 +147,9 @@ internal sealed class MeasuredAstrometryRecipe : IProcessingRecipe
         var lineageFailure = LineageFailure(raw, measuredArtifact, measured, scene, context, calibration, catalog);
         if (lineageFailure is not null) return Fail(lineageFailure);
 
-        // A catalog label is eligibility evidence, not a solver hint. Exclude saturation/trails from this first
-        // fixed-centroid slice even when a presentation policy allows their labels. Preserve original detection IDs.
+        // Scientific selection uses measured morphology and flux after analytical association. Preserve detection IDs.
         cancellationToken.ThrowIfCancellationRequested();
-        var qualified = Qualified(measured);
+        var qualified = Qualified(measured, options.UseScientificAssociations);
         var detections = Detections(qualified);
         // The retained producer rounds covariance to six decimals. A rounded zero/singular matrix is missing
         // covariance, never a manufactured positive floor. The shared estimator explicitly withholds incomplete data.
@@ -222,7 +221,11 @@ internal sealed class MeasuredAstrometryRecipe : IProcessingRecipe
             var solution = new MeasuredAstrometrySolutionV1(MeasuredAstrometrySolutionV1.CurrentSchemaVersion,
                 identity.IdentitySha256, contextInput.IdentitySha256!, measuredArtifact.ArtifactId, measured.AssociationIdentitySha256,
                 measuredArtifact.RecipeIdentitySha256, scene.SceneIdentitySha256, calibration.ReadoutIdentitySha256,
-                context.CatalogPackage, assessment, residuals, uncertainty, uncertaintyReason);
+                context.CatalogPackage, assessment, residuals, uncertainty, uncertaintyReason)
+            {
+                AssociationSelectionVersion = options.UseScientificAssociations
+                    ? MeasuredAstrometrySolutionV1.ScientificSelectionVersion : null
+            };
             var payload = MeasuredAstrometryJson.Serialize(solution);
             cancellationToken.ThrowIfCancellationRequested();
             return ValueTask.FromResult(ProcessingOutcome.Produced(ProcessingRecipeSupport.CreateProduct(FrameArtifactRole.Metadata,
@@ -232,8 +235,8 @@ internal sealed class MeasuredAstrometryRecipe : IProcessingRecipe
         }
     }
 
-    internal static MeasuredStellarAssociationV1[] Qualified(MeasuredStellarAssociationsV1 measured) => measured.Associations
-        .Where(a => a.LabelEligible && !a.Saturated && !a.Trailed && a.Flux > 0).ToArray();
+    internal static MeasuredStellarAssociationV1[] Qualified(MeasuredStellarAssociationsV1 measured, bool scientific) => measured.Associations
+        .Where(a => (scientific || a.LabelEligible) && !a.Saturated && !a.Trailed && a.Flux > 0).ToArray();
 
     internal static AstrometricDetection[] Detections(IEnumerable<MeasuredStellarAssociationV1> qualified) => qualified
         .Select(a => new AstrometricDetection(a.DetectionIndex, new(a.MeasuredX, a.MeasuredY), a.Flux)).OrderBy(a => a.Index).ToArray();
@@ -276,7 +279,7 @@ internal sealed class MeasuredAstrometryRecipe : IProcessingRecipe
             !MeasuredAstrometryJson.Same(ProcessingIdentity.ComputePayloadSha256(raw.Payload), frame.SourcePayloadSha256) ||
             raw.ObservationStartedUtc != frame.ExposureStartUtc || raw.ObservationEndedUtc is not { } observationEnd ||
             ProcessingArtifact.ResolveObservationEndedUtc(frame.ExposureStartUtc, observationEnd, raw.Integration) != frame.ExposureEndUtc ||
-            raw.Integration != frame.ExposureEndUtc - frame.ExposureStartUtc ||
+            raw.Integration <= TimeSpan.Zero ||
             frame.DetectionAlgorithmVersion != measured.Measurement.AlgorithmVersion ||
             !MeasuredAstrometryJson.Same(frame.DetectionSettingsIdentitySha256, measured.Measurement.SettingsIdentitySha256))
             return "astrometry.source-lineage-mismatch";

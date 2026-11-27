@@ -17,6 +17,7 @@ internal sealed record CenteredSceneResources(
 internal sealed record CenteredPredictionFacts(
     ProjectedSceneSource Source,
     CaptureTimingDescriptor Timing,
+    TimeSpan EffectiveExposure,
     CaptureLocationProvenance Location,
     CameraRigConfig Rig,
     FrameLayoutDescriptor Layout,
@@ -39,7 +40,7 @@ internal sealed class CenteredExposureSceneProvider(
         var descriptor = raw.Manifest.Descriptor;
         return new(new(descriptor.Capture.CaptureId, descriptor.Artifact.ArtifactId,
                 CaptureContractJson.ComputeDescriptorSha256(descriptor)),
-            descriptor.Timing, raw.Run.Location, raw.Run.Configuration.Rig, descriptor.Layout, raw.Run.SceneResources,
+            descriptor.Timing, descriptor.Controls.EffectiveExposure, raw.Run.Location, raw.Run.Configuration.Rig, descriptor.Layout, raw.Run.SceneResources,
             CaptureProjectedSceneStager.ResolveOptions(raw.Run.Configuration) ?? new());
     }
 
@@ -71,8 +72,9 @@ internal sealed class CenteredExposureSceneProvider(
             return null;
 
         var timing = facts.Timing;
-        var effectiveUtc = timing.ExposureStartedUtc +
-            TimeSpan.FromTicks((timing.ExposureEndedUtc - timing.ExposureStartedUtc).Ticks / 2);
+        var observationEnd = ProcessingArtifact.ResolveObservationEndedUtc(
+            timing.ExposureStartedUtc, timing.ExposureEndedUtc, facts.EffectiveExposure);
+        var effectiveUtc = timing.ExposureStartedUtc + TimeSpan.FromTicks((observationEnd - timing.ExposureStartedUtc).Ticks / 2);
         var locations = resolveLocations();
         if (locations is null) return null;
         var site = locations.Resolve(facts.Location, timing.ExposureStartedUtc);

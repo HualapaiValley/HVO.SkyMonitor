@@ -13,6 +13,10 @@
                        Description="Keep the camera implementation, native readout, and physical optics explicit while activating them as one capture-time profile.">
     <Actions>
         <button type="button" class="button secondary" disabled="@_busy" @onclick="RefreshAsync">Refresh</button>
+        @if (ActiveRevision is not null)
+        {
+            <a class="button secondary" href="#rig-optical-alignment">Optical alignment</a>
+        }
         <a class="button secondary" href="/operations/camera#rig-advanced-heading">Advanced</a>
         <button type="button" id="rig-edit-active" class="button primary" disabled="@(!CanEditActive)" @onclick="OpenActiveEditDialog">Edit active rig</button>
     </Actions>
@@ -89,6 +93,12 @@ else
             <div><dt>Exposure settings</dt><dd><a href="/operations/schedule">Capture schedule</a></dd></div>
         </dl>
     </section>
+
+    @if (active is not null)
+    {
+        <OpticalAlignmentPanel RigRevisionId="@active.RevisionId" SelectionVersion="@_catalog.Selection.Version"
+                               RigChangePending="@(pending is not null)" ActiveAlignment="@active.OpticalAlignment" DraftAccepted="HorizonSavedAsync" />
+    }
 
     @if (pending is not null || _cancelAttempt is not null)
     {

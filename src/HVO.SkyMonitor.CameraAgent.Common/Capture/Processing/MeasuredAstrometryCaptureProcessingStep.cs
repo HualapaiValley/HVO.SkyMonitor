@@ -21,11 +21,12 @@ internal class MeasuredAstrometryCaptureProcessingStep(CaptureProcessingStepMeta
       IRequiredCaptureProcessingDependencies, IMultiOutputCaptureProcessingGraphStep, IFrozenAuxiliaryInputCaptureProcessingStep
 {
     internal const string Alias = "MeasuredAstrometry";
+    internal const string CadenceSkipped = "astrometry.capture-cadence";
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     protected virtual string AssociationRecipe => BuiltInProcessingRecipes.MeasuredStellarAssociations;
     public bool Enabled => true;
     public string RecipeName => BuiltInProcessingRecipes.MeasuredAstrometry;
-    internal bool UsesAstrometryPrediction => Options.UseAstrometryPrediction;
+    internal virtual bool UsesAstrometryPrediction => Options.UseAstrometryPrediction;
     internal bool HasCrossedSceneDependencies { get; set; }
     public FrameArtifactRole OutputRole => FrameArtifactRole.Metadata;
     public string OutputVariant => Options.OutputVariant;
@@ -35,7 +36,7 @@ internal class MeasuredAstrometryCaptureProcessingStep(CaptureProcessingStepMeta
     public IReadOnlyList<CaptureProcessingDependencyRequirement> DependencyRequirements =>
     [
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata },
-            new HashSet<string> { Options.UseAstrometryPrediction
+            new HashSet<string> { UsesAstrometryPrediction
                 ? BuiltInProcessingRecipes.AstrometryPrediction : BuiltInProcessingRecipes.ProjectedScene },
             new HashSet<string>(ProjectedSceneV1.SupportedSchemaVersions)),
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata },
@@ -71,7 +72,7 @@ internal class MeasuredAstrometryCaptureProcessingStep(CaptureProcessingStepMeta
         }
         if (!context.IsReplayExecution && (CaptureOrdinal(context, descriptor) - 1) % Options.CaptureStride != 0)
         {
-            context.AddProcessingOutcome(ProcessingOutcome.Skipped("astrometry.capture-cadence"));
+            context.AddProcessingOutcome(ProcessingOutcome.Skipped(CadenceSkipped));
             return;
         }
         var raw = CameraAgentRecipeExecutionAdapter.CreateArtifact(context.Config, context.Artifacts!.Raw,
@@ -91,7 +92,8 @@ internal class MeasuredAstrometryCaptureProcessingStep(CaptureProcessingStepMeta
         var input = RetainedAstrometryProducts.CreateContext(raw, measured, scene, catalog, Options.Clock, Options.PreviousAccepted);
         var newContext = RetainedAstrometryProducts.CreateContextProduct(input, raw, measured, scene, OutputVariant + "-context");
         var frozen = CameraAgentRecipeExecutionAdapter.CreateArtifact(context, newContext);
-        var request = RetainedAstrometryProducts.Request(raw, measured, scene, frozen, Options.Recipe, OutputVariant);
+        var recipe = Options.Recipe with { UseScientificAssociations = true };
+        var request = RetainedAstrometryProducts.Request(raw, measured, scene, frozen, recipe, OutputVariant);
         await gate.Semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -170,6 +172,7 @@ internal sealed class ExposureAstrometryCaptureProcessingStep(CaptureProcessingS
 {
     internal const string CenteredAlias = CaptureAnalysisOptionDescriptors.CenteredAstrometryAlias;
     protected override string AssociationRecipe => ExposureAssociationProducts.RecipeName;
+    internal override bool UsesAstrometryPrediction => false;
 
     protected override long CaptureOrdinal(CaptureProcessingContext context, ReconstructionDescriptor descriptor) =>
         context.RawCapture?.Manifest.CenteredExposure?.Source.Ordinal ??

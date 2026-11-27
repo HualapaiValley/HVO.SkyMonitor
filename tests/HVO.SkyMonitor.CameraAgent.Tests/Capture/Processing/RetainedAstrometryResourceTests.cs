@@ -19,6 +19,141 @@ public sealed partial class DurableCaptureProcessingTests
     private static readonly JsonSerializerOptions AstrometryEvidenceJson = new() { WriteIndented = true };
 
     [TestMethod]
+    [TestCategory("Unit")]
+    [Timeout(120_000)]
+    public async Task RetainedAstrometry_FullResolutionCapturePublishesAndAppliesABoundedMapping()
+    {
+        const int size = 3552;
+        var root = CreateTestRoot();
+        try
+        {
+            var projection = new ProjectionContext(ProjectionModel.EquidistantFisheye, size / 2d, size / 2d,
+                1000, 1000, size, size, ProjectionAperture.Circular, 1610, 72, 243, 17);
+            var reference = await MeasuredAstrometryFixture.CreateAtAsync(0, projectionOverride: projection).ConfigureAwait(false);
+            var fixture = await CreateAstrometryDurabilityFixtureAsync(root, reference: reference,
+                recipe: MeasuredAstrometryFixture.PerformanceOptions).ConfigureAwait(false);
+            using var telemetry = new CaptureProcessingTelemetry();
+            using var store = new SqliteCaptureProcessingStore(fixture.Fixture.Options);
+            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            using var gate = new CaptureAstrometryExecutionGate();
+            using var process = Process.GetCurrentProcess();
+            var persistence = CreatePersistence(fixture.Fixture.Options, store, storage, telemetry);
+            var initialBytes = RetainedBytes();
+            var before = Sample();
+            var result = await FrameProcessingWorker.ProcessGraphItemAsync(fixture.Fixture.Item,
+                AstrometryGraph(fixture, new(new ProcessingRecipeExecutor()), gate, persistence: persistence), persistence,
+                telemetry, 1, NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
+            var afterFit = Sample();
+            var addedBytes = RetainedBytes() - initialBytes;
+            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
+            var captureId = fixture.Fixture.Manifest.Descriptor.Capture.CaptureId;
+            var node = await store.ReadNodeAsync(captureId, "astrometry", CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(node);
+            using var artifacts = new CameraAgentArtifactService(fixture.Fixture.Options, store, new CameraAgentPreviewEncoder());
+            using var reader = new CameraAgentRetainedAstrometryService(store, artifacts);
+            var beforeRead = Sample();
+            var view = await reader.GetAsync(captureId, CancellationToken.None).ConfigureAwait(false);
+            var afterRead = Sample();
+            Assert.IsNotNull(view.Mapping, view.Reason);
+            Assert.AreEqual(AstrometricAssessmentStatus.Accepted, view.Solution!.Assessment.Status);
+            Assert.IsLessThan(.5, view.Solution.Residuals.VerificationRmsPixels!.Value);
+            var calculator = view.Mapping.CreateCalculator();
+            var pixels = Enumerable.Repeat(new PixelPoint(size / 2d, size / 2d), AstrometricCaptureCalculator.MaximumTrackSamples).ToArray();
+            var beforeMap = Sample();
+            var track = calculator.MapTrack(pixels);
+            var afterMap = Sample();
+            Assert.IsTrue(track.All(point => point is not null && point.CoordinateEpochUtc == calculator.Frame.MidpointUtc));
+            var compactBytes = MeasuredAstrometryJson.Serialize(view.Solution).Length;
+            Console.WriteLine(JsonSerializer.Serialize(new
+            {
+                size,
+                rawBytes = reference.Raw.Payload.Length,
+                addedRetainedBytes = addedBytes,
+                compactBytes,
+                view.Solution.Residuals.QualifiedCount,
+                view.Solution.Residuals.VerificationRmsPixels,
+                solutionIdentity = view.SolutionIdentitySha256,
+                fitNodeMilliseconds = node.Duration?.TotalMilliseconds,
+                produce = Delta(before, afterFit),
+                reconstruct = Delta(beforeRead, afterRead),
+                calculate = Delta(beforeMap, afterMap)
+            }));
+            Assert.IsLessThan(TimeSpan.FromSeconds(30), Stopwatch.GetElapsedTime(before.Ticks, afterFit.Ticks));
+            Assert.IsLessThan(TimeSpan.FromSeconds(2), Stopwatch.GetElapsedTime(beforeRead.Ticks, afterRead.Ticks));
+            Assert.IsLessThan(TimeSpan.FromSeconds(1), Stopwatch.GetElapsedTime(beforeMap.Ticks, afterMap.Ticks));
+            Assert.IsLessThan(1L << 30, afterFit.Allocations - before.Allocations);
+            Assert.IsLessThan(128L << 20, afterRead.Allocations - beforeRead.Allocations);
+            Assert.IsLessThan(2L << 30, afterMap.WorkingSet);
+            Assert.IsLessThan(12L << 20, addedBytes);
+            Assert.IsLessThanOrEqualTo(MeasuredAstrometryJson.MaximumSolutionBytes, compactBytes);
+
+            var source = fixture.Fixture.Item;
+            var descriptor = fixture.Fixture.Manifest.Descriptor;
+            var frame = source.Submission.Result.Frame!;
+            var submission = source.Submission with
+            {
+                Result = source.Submission.Result with
+                {
+                    Artifacts = new(new FrameArtifact(descriptor.Artifact.ArtifactId, FrameArtifactRole.Raw, frame, []))
+                }
+            };
+            var replay = new CaptureProcessingContext(source.Config, submission, source.RawCapture, null,
+                new(Guid.NewGuid(), ProcessingGraphExecutionClass.Replay, "frozen-revision", new string('F', 64), false, 1, "lease"));
+            foreach (var dependency in new[] { "scene", "measured" })
+            {
+                var persisted = await store.ReadNodeAsync(captureId, dependency, CancellationToken.None).ConfigureAwait(false);
+                var output = persisted!.Outputs.Single();
+                var artifact = await ReadExportAsync(output).ConfigureAwait(false);
+                var product = new ProcessingProduct(artifact.Role, artifact.Variant, output.OutputIdentitySha256,
+                    artifact.MediaType, null, artifact.Payload, output.Artifact.ChecksumSha256,
+                    ProcessingIdentity.CreateRecipeIdentity(artifact.RecipeDescriptor!), output.ProductManifest!.Algorithms,
+                    output.Artifact.SourceArtifactIds, artifact.Integration, artifact.Compatibility)
+                { Kind = artifact.ProductKind, SchemaVersion = artifact.SchemaVersion, ContentIdentitySha256 = artifact.ContentIdentitySha256 };
+                replay.RestoreProduct(dependency, artifact.ArtifactId, product);
+            }
+            var frozen = await Task.WhenAll(node.Outputs.Select(ReadExportAsync)).ConfigureAwait(false);
+            replay.BeginNode("astrometry", ["scene", "measured"]);
+            replay.SetFrozenAuxiliaryInputs(frozen);
+            var replayStep = new MeasuredAstrometryCaptureProcessingStep(new("astrometry", MeasuredAstrometryCaptureProcessingStep.Alias, 2),
+                new() { Catalog = fixture.Options.Catalog! with { Complete = false }, Recipe = new(MaximumExecutionMilliseconds: .000001) },
+                new(new FixedOutcomeExecutor(ProcessingOutcome.TerminalFailure("unexpected-refit"))), gate);
+            await replayStep.ProcessAsync(replay, CancellationToken.None).ConfigureAwait(false);
+            var replayed = replay.ProcessingOutcomes.Single().Products.Single(product => product.SchemaVersion == MeasuredAstrometrySolutionV1.CurrentSchemaVersion);
+            CollectionAssert.AreEqual(MeasuredAstrometryJson.Serialize(view.Solution), replayed.Payload.ToArray());
+            Assert.AreEqual(view.SolutionIdentitySha256, replayed.ContentIdentitySha256);
+
+            async Task<ProcessingArtifact> ReadExportAsync(DurableProcessingOutput output)
+            {
+                var bytes = await File.ReadAllBytesAsync(Path.Combine(root, output.PayloadRelativePath)).ConfigureAwait(false);
+                var manifest = output.ProductManifest!;
+                var export = new StructuredProcessingProductManifestV1(StructuredProcessingProductManifestV1.CurrentSchemaVersion,
+                    new(descriptor, manifest.Artifact, manifest.OutputIdentitySha256, manifest.Algorithms, manifest.Compatibility,
+                        manifest.TotalIntegrationTicks, manifest.ByteLength, manifest.Kind, manifest.ProductSchemaVersion!, manifest.ContentIdentitySha256!),
+                    manifest.RelativeArtifactPath, null);
+                return ImportAstrometryProduct(StructuredProcessingProductManifestJson.Serialize(export), bytes);
+            }
+
+            long RetainedBytes() => Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories).Sum(path => new FileInfo(path).Length);
+
+            (long Ticks, double Cpu, long Allocations, long WorkingSet) Sample()
+            {
+                process.Refresh();
+                return (Stopwatch.GetTimestamp(), process.TotalProcessorTime.TotalMilliseconds, GC.GetTotalAllocatedBytes(true), process.WorkingSet64);
+            }
+
+            static object Delta((long Ticks, double Cpu, long Allocations, long WorkingSet) first,
+                (long Ticks, double Cpu, long Allocations, long WorkingSet) last) => new
+                {
+                    elapsedMilliseconds = Stopwatch.GetElapsedTime(first.Ticks, last.Ticks).TotalMilliseconds,
+                    cpuMilliseconds = last.Cpu - first.Cpu,
+                    allocatedBytes = last.Allocations - first.Allocations,
+                    workingSetBytes = last.WorkingSet
+                };
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [TestMethod]
     [TestCategory("Manual")]
     public async Task RetainedAstrometry_ResourceEvidenceMeasuresBaselineAnalyzerPersistenceAndRead()
     {
@@ -27,6 +162,7 @@ public sealed partial class DurableCaptureProcessingTests
         Directory.CreateDirectory(evidenceRoot);
         var rows = new List<object>();
         var warmEnabled = new List<(double ProducerMs, long ProducerBytes, double ReadMs, long ReadBytes)>();
+        string? acceptedIdentity = null;
         using var process = Process.GetCurrentProcess();
         foreach (var enabled in new[] { false, true })
         {
@@ -59,8 +195,9 @@ public sealed partial class DurableCaptureProcessingTests
                 if (enabled)
                 {
                     Assert.AreEqual(AstrometricAssessmentStatus.Accepted, view.Solution!.Assessment.Status, view.Reason);
-                    Assert.AreEqual("959067FF97697681F5118ED6543F39C40EEACEC4CA43999D083A75316B6B80A9", view.SolutionIdentitySha256,
-                        "The budget must preserve the original accepted solution identity.");
+                    Assert.AreEqual(MeasuredAstrometrySolutionV1.ScientificSelectionVersion, view.Solution.AssociationSelectionVersion);
+                    acceptedIdentity ??= view.SolutionIdentitySha256;
+                    Assert.AreEqual(acceptedIdentity, view.SolutionIdentitySha256, "Repeated fits must preserve the accepted solution identity.");
                 }
                 if (enabled && index > 0) warmEnabled.Add((producerElapsed, produced.Allocated - before.Allocated, readElapsed, read.Allocated - produced.Allocated));
                 rows.Add(new

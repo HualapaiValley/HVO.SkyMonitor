@@ -1,5 +1,6 @@
 @inherits SiteTimeComponent
 @page "/"
+@using HVO.SkyMonitor.Astronomy
 @using HVO.SkyMonitor.CameraAgent.Authorization
 @using HVO.SkyMonitor.CameraAgent.Common.Gallery
 @using HVO.SkyMonitor.CameraAgent.Services
@@ -657,6 +658,10 @@ else
                     <p class="astrometry-reason">@AstrometryAbsence</p>
                 }
                 @{ var calculation = (_astrometryReadRevision, _selectedStage); }
+                @if (CanCalculate && _astrometry?.SourceDescriptor?.Layout.Readout is not null)
+                {
+                    <label>Pixel coordinates<select @bind="_pixelSpace" @bind:after="ChangePixelSpace"><option value="@AstrometricPixelSpace.Readout">Source readout</option><option value="@AstrometricPixelSpace.NativeSensor">Native sensor</option></select></label>
+                }
                 <form @key="(calculation, false)" class="pixel-sky-calculator" @onsubmit="() => CalculatePixelToSky(calculation)" @onsubmit:preventDefault>
                     <p><strong>Pixel to sky</strong><span>@CalculatorAvailability</span></p>
                     <div><label>X pixel<input type="number" step="any" min="0" disabled="@(!CanCalculate)" @bind="_pixelX" /></label><label>Y pixel<input type="number" step="any" min="0" disabled="@(!CanCalculate)" @bind="_pixelY" /></label><button class="button secondary small" type="submit" disabled="@(!CanCalculate)">Pixel to sky</button></div>

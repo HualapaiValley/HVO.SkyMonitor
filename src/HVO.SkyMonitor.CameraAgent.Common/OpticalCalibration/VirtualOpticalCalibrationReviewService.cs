@@ -5,8 +5,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 namespace HVO.SkyMonitor.CameraAgent.Common.OpticalCalibration;
 
 /// <summary>
-/// Operator-facing review of one session optical calibration against the active named rig. Only an accepted
-/// calibration for an active virtual rig with no pending change can be accepted; every other case names its blocker.
+/// Operator-facing review of one session optical calibration against the active named rig.
 /// </summary>
 public sealed record VirtualOpticalCalibrationReview(
     string RigRevisionId,
@@ -34,12 +33,19 @@ public sealed record VirtualOpticalCalibrationDecision(
     string? CandidateRigRevisionId,
     string? CandidateOpticsRevisionId);
 
+/// <summary>Qualification authority for an exact installed-rig revision and optical fit.</summary>
+public interface IOpticalAlignmentQualification
+{
+    ValueTask<bool> IsQualifiedAsync(string rigRevisionId, string fitIdentitySha256, CancellationToken cancellationToken);
+}
+
 /// <summary>
-/// Retains accepted virtual-rig calibrations as immutable optics and rig revisions. Accepting composes a draft
+/// Retains accepted calibrations as immutable optics and rig revisions. Accepting composes a draft
 /// rig revision that activates only through the ordinary named-rig preview and restart path; rejecting or any
 /// failure writes nothing, so the previously accepted calibration stays active and retrievable.
 /// </summary>
-public sealed class VirtualOpticalCalibrationReviewService(SqliteNamedRigProfileStore store)
+public sealed class VirtualOpticalCalibrationReviewService(SqliteNamedRigProfileStore store,
+    IOpticalAlignmentQualification? physicalQualification = null)
 {
     public const string VirtualModuleType = "VirtualSky";
 
@@ -60,14 +66,16 @@ public sealed class VirtualOpticalCalibrationReviewService(SqliteNamedRigProfile
             ?? throw new InvalidDataException("The active named rig revision is missing.");
         OpticsProfile? proposed = null;
         string? blocker = null;
-        if (!string.Equals(active.Module.Type, VirtualModuleType, StringComparison.OrdinalIgnoreCase))
-            blocker = "physical-rig";
-        else if (catalog.Selection.PendingRevisionId is not null)
+        if (catalog.Selection.PendingRevisionId is not null)
             blocker = "rig-change-pending";
-        else if (!result.IsAccepted)
-            blocker = "calibration-not-accepted";
+        else if (!string.Equals(active.Module.Type, VirtualModuleType, StringComparison.OrdinalIgnoreCase) &&
+            (physicalQualification is null || !await physicalQualification.IsQualifiedAsync(active.RevisionId,
+                result.IdentitySha256, cancellationToken).ConfigureAwait(false)))
+            blocker = "physical-rig";
+        if (!result.IsAccepted)
+            blocker ??= "calibration-not-accepted";
         else if (!SameNominal(active.Rig, result.NominalNative))
-            blocker = "nominal-mismatch";
+            blocker ??= "nominal-mismatch";
         else
         {
             try
@@ -77,7 +85,7 @@ public sealed class VirtualOpticalCalibrationReviewService(SqliteNamedRigProfile
             }
             catch (ArgumentException)
             {
-                blocker = "unrepresentable";
+                blocker ??= "unrepresentable";
             }
         }
         return new(active.RevisionId, active.ProfileId, catalog.Selection.Version, active.OpticsRevisionId, result.IdentitySha256, result.Status,
@@ -90,8 +98,11 @@ public sealed class VirtualOpticalCalibrationReviewService(SqliteNamedRigProfile
     /// The review must still describe the active rig at the reviewed selection version, and the retention is one store
     /// transaction; accepting the same calibration again returns the retained draft.
     /// </summary>
-    public async Task<VirtualOpticalCalibrationDecision> AcceptAsync(VirtualOpticalCalibrationReview review,
-        OpticalCalibrationResult result, CancellationToken cancellationToken)
+    public Task<VirtualOpticalCalibrationDecision> AcceptAsync(VirtualOpticalCalibrationReview review,
+        OpticalCalibrationResult result, CancellationToken cancellationToken) => AcceptAsync(review, result, null, cancellationToken);
+
+    internal async Task<VirtualOpticalCalibrationDecision> AcceptAsync(VirtualOpticalCalibrationReview review,
+        OpticalCalibrationResult result, OpticalAlignmentProvenance? provenance, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(review);
         ArgumentNullException.ThrowIfNull(result);
@@ -106,7 +117,7 @@ public sealed class VirtualOpticalCalibrationReviewService(SqliteNamedRigProfile
 
         // The store rechecks the reviewed selection and writes the optics and draft rig revisions atomically.
         var candidate = await store.RetainCalibratedOpticsAsync(current.RigRevisionId, current.SelectionVersion,
-            $"Calibrated optics {result.IdentitySha256[..12]}", optics, cancellationToken).ConfigureAwait(false);
+            $"Calibrated optics {result.IdentitySha256[..12]}", optics, cancellationToken, provenance).ConfigureAwait(false);
         return new("accepted", result.IdentitySha256, current.RigRevisionId, candidate.RevisionId, candidate.OpticsRevisionId);
     }
 

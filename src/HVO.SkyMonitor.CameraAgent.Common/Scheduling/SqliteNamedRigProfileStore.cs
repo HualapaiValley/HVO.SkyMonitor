@@ -5,6 +5,7 @@ using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
+using HVO.SkyMonitor.CameraAgent.Common.OpticalCalibration;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using Microsoft.Data.Sqlite;
@@ -18,7 +19,11 @@ public sealed record NamedRigSelection(string? ActiveRevisionId, string? Pending
 public sealed record NamedRigRevision(
     string RevisionId, string ProfileId, long RevisionNumber, string CameraRevisionId,
     string OpticsRevisionId, string MountRevisionId, CameraModuleDescriptor Module,
-    CameraRigConfig Rig, string? SourceScheduleRevisionId);
+    CameraRigConfig Rig, string? SourceScheduleRevisionId)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public OpticalAlignmentProvenance? OpticalAlignment { get; init; }
+}
 
 public sealed record NamedRigCatalog(
     NamedRigSelection Selection, IReadOnlyList<NamedRigRevision> Revisions);
@@ -549,7 +554,7 @@ public sealed class SqliteNamedRigProfileStore(
     /// any conflict, failure or cancellation writes nothing.
     /// </summary>
     public async Task<NamedRigRevision> RetainCalibratedOpticsAsync(string activeRevisionId, long expectedVersion,
-        string displayName, OpticsProfile optics, CancellationToken cancellationToken)
+        string displayName, OpticsProfile optics, CancellationToken cancellationToken, OpticalAlignmentProvenance? provenance = null)
     {
         ArgumentNullException.ThrowIfNull(optics);
         if (string.IsNullOrWhiteSpace(activeRevisionId) || expectedVersion < 0 || !ValidName(displayName))
@@ -589,7 +594,9 @@ public sealed class SqliteNamedRigProfileStore(
             if (sibling?.Rig.Optics == optics)
             {
                 matchingOpticsRevisionId ??= sibling.OpticsRevisionId;
-                if (sibling.Rig.HorizonObstruction?.ComputeIdentitySha256() == currentHorizonIdentity)
+                if (sibling.Rig.HorizonObstruction?.ComputeIdentitySha256() == currentHorizonIdentity &&
+                    (provenance is null || sibling.OpticalAlignment?.FitIdentitySha256 == provenance.FitIdentitySha256 &&
+                     sibling.OpticalAlignment.Captures.SequenceEqual(provenance.Captures)))
                 {
                     await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
                     return sibling;
@@ -600,7 +607,7 @@ public sealed class SqliteNamedRigProfileStore(
         var opticsRevisionId = matchingOpticsRevisionId ?? await InsertEquipmentAsync(connection, transaction, "optics", displayName.Trim(), optics,
             timeProvider.GetUtcNow().ToUnixTimeMilliseconds(), cancellationToken).ConfigureAwait(false);
         var revision = await ComposeCoreAsync(connection, transaction, schedule, active.ProfileId, active.CameraRevisionId,
-            opticsRevisionId, active.MountRevisionId, cancellationToken).ConfigureAwait(false);
+            opticsRevisionId, active.MountRevisionId, cancellationToken, provenance).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return revision;
     }
@@ -631,7 +638,7 @@ public sealed class SqliteNamedRigProfileStore(
             throw new CaptureScheduleStoreConflictException("A newer rig revision was saved after horizon preview.");
         var rig = active.Rig with { HorizonObstruction = profile };
         var id = Guid.NewGuid().ToString("N");
-        var bytes = JsonSerializer.SerializeToUtf8Bytes(new InstalledRig(active.Module, rig));
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(new InstalledRig(active.Module, rig, active.OpticalAlignment));
         await ExecuteAsync(connection, transaction, """
             INSERT INTO named_rig_revisions VALUES ($id, $profile, $number, $camera, $optics, $mount, $json, $hash, NULL, $now);
             """, cancellationToken, ("$id", id), ("$profile", active.ProfileId), ("$number", number),
@@ -644,7 +651,7 @@ public sealed class SqliteNamedRigProfileStore(
 
     private async Task<NamedRigRevision> ComposeCoreAsync(SqliteConnection connection, SqliteTransaction transaction,
         CaptureScheduleStoreSnapshot schedule, string profileId, string cameraRevisionId, string opticsRevisionId,
-        string mountRevisionId, CancellationToken cancellationToken)
+        string mountRevisionId, CancellationToken cancellationToken, OpticalAlignmentProvenance? provenance = null)
     {
         async Task<T> ReadEquipmentAsync<T>(string revisionId, string kind)
         {
@@ -692,14 +699,15 @@ public sealed class SqliteNamedRigProfileStore(
         next.Parameters.AddWithValue("$profile", profileId);
         var number = (long)(await next.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) ?? 1L);
         var id = Guid.NewGuid().ToString("N");
-        var bytes = JsonSerializer.SerializeToUtf8Bytes(new InstalledRig(camera.Module, rig));
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(new InstalledRig(camera.Module, rig, provenance));
         await ExecuteAsync(connection, transaction, """
             INSERT INTO named_rig_revisions VALUES ($id, $profile, $number, $camera, $optics, $mount, $json, $hash, NULL, $now);
             """, cancellationToken, ("$id", id), ("$profile", profileId), ("$number", number),
             ("$camera", cameraRevisionId), ("$optics", opticsRevisionId), ("$mount", mountRevisionId),
             ("$json", bytes), ("$hash", Convert.ToHexString(SHA256.HashData(bytes))), ("$now", now)).ConfigureAwait(false);
         return new NamedRigRevision(id, profileId, number, cameraRevisionId, opticsRevisionId,
-            mountRevisionId, camera.Module, rig, null);
+            mountRevisionId, camera.Module, rig, null)
+        { OpticalAlignment = provenance };
     }
 
     public async Task<NamedRigPreview> PreviewAsync(string revisionId, CancellationToken cancellationToken)
@@ -1273,7 +1281,8 @@ public sealed class SqliteNamedRigProfileStore(
             ?? throw new InvalidDataException("Named rig revision content is invalid.");
         return new NamedRigRevision(reader.GetString(0), reader.GetString(1), reader.GetInt64(2),
             reader.GetString(3), reader.GetString(4), reader.GetString(5), rig.Module, rig.Rig,
-            await reader.IsDBNullAsync(8, token).ConfigureAwait(false) ? null : reader.GetString(8));
+            await reader.IsDBNullAsync(8, token).ConfigureAwait(false) ? null : reader.GetString(8))
+        { OpticalAlignment = rig.OpticalAlignment };
     }
 
     private async Task<SqliteConnection> OpenAsync(CancellationToken token)
@@ -1306,5 +1315,6 @@ public sealed class SqliteNamedRigProfileStore(
         return await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
     }
 
-    private sealed record InstalledRig(CameraModuleDescriptor Module, CameraRigConfig Rig);
+    private sealed record InstalledRig(CameraModuleDescriptor Module, CameraRigConfig Rig,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] OpticalAlignmentProvenance? OpticalAlignment = null);
 }

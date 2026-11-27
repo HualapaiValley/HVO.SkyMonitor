@@ -188,7 +188,8 @@ public sealed partial class DurableCaptureProcessingTests
             var measured = artifacts[view.Solution!.MeasuredArtifactId];
             var scene = artifacts.Values.Single(p => ProjectedSceneV1.IsSupportedSchemaVersion(p.SchemaVersion));
             var context = artifacts.Values.Single(p => p.SchemaVersion == MeasuredAstrometryContextV1.CurrentSchemaVersion);
-            var request = RetainedAstrometryProducts.Request(raw, measured, scene, context, f.Options.Recipe, original.Variant);
+            var request = RetainedAstrometryProducts.Request(raw, measured, scene, context,
+                f.Options.Recipe with { UseScientificAssociations = true }, original.Variant);
             var verified = RetainedAstrometryProducts.Verify(request, RetainedAstrometryProducts.Product(original));
             Assert.AreEqual(identity, verified.SolutionIdentitySha256);
             var replaySubmission = f.Fixture.Item.Submission with
