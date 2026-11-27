@@ -113,8 +113,8 @@ The renderer integrates each star's trail in temporal slots:
 
 On the rectilinear 6 mm `mono-native` view, the fastest source moves 0.16882 px/s. That view renders at 56 s
 (64 slots) and refuses at 57 s (65 slots); 60 s would need 68. The derived maximum exposure is 56.86 s. The
-renderer-capacity run measures this boundary, and
-[#1179](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1179) tracks raising it. The rectilinear `mono-roi` and
+renderer-capacity run measures this boundary. The [#1179 disposition](#1179-disposition)
+keeps the 64-slot budget. The rectilinear `mono-roi` and
 `mono-roi-bin2` views are not refused at 60 s, and the renderer-capacity run renders them.
 
 ## Tolerances
@@ -393,7 +393,9 @@ report. Every continuity pair is rerun from scratch on the re-frozen manifest, i
 
 ## Reproduction
 
-On an idle host with the verified snapshot installed:
+Run the historical #1168 packs from their recorded source revisions on an
+idle host with the verified snapshot installed. The cloud-readout expectation
+changed later, as recorded in the [#1179 disposition](#1179-disposition).
 
 ```bash
 export HVO_ASTROMETRY_CATALOG_ROOT=<snapshot root> HVO_HEAVY_LOCK=/tmp/hvo-520-heavy.lock
@@ -983,8 +985,8 @@ exposure. Two misses apply:
   withholding alone.
 
 So covariance is withheld at 20 s and 60 s in every family, and uncertainty is supported at 1 s only. Nothing was
-retuned. [#1179](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1179) tracks requalification and whether
-the product should gate covariance release by exposure.
+retuned in #1168. The [#1179 study](../validation/issue-1179-qualification.md) evaluated
+profile-specific floors on fresh captures and retained exposure-gated release.
 
 ### Held-out resources
 
@@ -1064,8 +1066,8 @@ makes no physical claim. Support stands only for a cell that passes in both `fin
 | rectilinear 6 mm, mono | 60 s | Blind and warm acquisition on `mono-roi` and `mono-roi-bin2` only | **Full-frame views refused** at capture: the renderer's limit is 56 s. Measured stars, calibration and uncertainty are not run; resources are not measured at 60 s |
 | equidistant `product-depth`, mag 6.5 render | 20 s, 60 s | Fail-closed: nothing accepted wrongly. CFA accepts 9 of 9 at 20 s | `mono-native` rejects every case at 20 s and 60 s. CFA accepts 3 of 9 per view at 60 s |
 | equidistant `bright-background`, 20 e⁻/s | 20 s, 60 s | All views accept at 20 s; `mono-native` accepts at 60 s | CFA rejects every case at 60 s (fail-closed) |
-| equidistant `clouds-partial` | 20 s, 60 s | CFA views accept every case | **Mono refused** at initialize: the native mono readout does not support clouds |
-| equidistant `overcast` | 20 s, 60 s | Rejected, as declared | Mono refused, as for `clouds-partial` |
+| equidistant `clouds-partial` | 20 s, 60 s | CFA views accept every #1168 case | Mono was refused in #1168. The current full-frame native mono renderer admits clouds. Astrometric mapping for that input is outside the qualified envelope. |
+| equidistant `overcast` | 20 s, 60 s | CFA rejects, as declared | Mono cloud rendering follows the identity-readout limit below. Mono astrometry under overcast is outside the qualified envelope. |
 | other v2 families | 20 s, 60 s | — | Not qualified for long exposure |
 
 **Consumer constraints**, first for #1169 (registered stacking):
@@ -1079,23 +1081,25 @@ makes no physical claim. Support stands only for a cell that passes in both `fin
   timestamp. A start-UTC binding is accepted silently and shifts the ground pose by 0.036° at 20 s and 0.109° at
   60 s.
 
-Neither constraint blocks #1168, which changes no product code.
-[#1179](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1179) remains open for statistical requalification.
-Its [first bounded slice](../validation/issue-1179-exposure-withholding.md) implements the release gate without
-changing the historical evidence or the supported mapping rows above. There is no new long-exposure
-uncertainty claim and no evaluation-set tuning.
+### #1179 disposition
 
-### Explicit non-goals of the exposure-withholding slice
+The [frozen requalification study](../validation/issue-1179-qualification.md)
+tested different per-readout systematic floors on independent VirtualSky
+captures. The shared `astrometric-exposure-release-v1` policy continues to
+withhold all covariance above one second. Use each accepted mapping at its
+exposure midpoint within the supported mapping rows above.
 
-| Gap | Current disposition |
+| Gap from #1168 and #1126 | Disposition |
 | --- | --- |
-| Equidistant 20/60 s and rectilinear 20 s uncertainty | Unsupported; all covariance withheld by the shared estimator. A new frozen tuning and independent held-out campaign is deferred |
-| Rectilinear 6 mm full-frame 60 s temporal budget | Non-goal; existing renderer refusal and ROI-only mapping support remain |
-| Mono cloud readout | Non-goal; existing initialize refusal remains |
-| Stereographic and equidistant ROI+2×2 ambiguity | Non-goal; ambiguous acquisition continues to reject, with no broader acquisition claim |
-| Product-depth and bright-background rejection rates | Non-goal; existing fail-closed envelope remains |
-| Equidistant 60 s CFA trail length | Non-goal; trail-length metadata remains unsupported |
-| Other long-exposure families, gains and physical accuracy | Non-goals; no new qualification |
+| Withholding at equidistant 20 s and 60 s and rectilinear 20 s | Long-exposure covariance release is outside the supported envelope. See the study's held-out withholding, interval and session results. |
+| Overconfident log-focal-scale intervals at equidistant 60 s | Long-exposure covariance is unsupported. The public estimator's exposure gate prevents release even when residual validity passes. |
+| Over-coverage of the up component on rectilinear 20 s mono 2×2 | Long-exposure covariance is unsupported. The untuned one-second path retains its original uncertainty scope. |
+| Rectilinear 6 mm temporal sampling at 60 s | Raising the 64-slot budget is a non-goal. Full-frame captures refuse at the existing limit. The two ROI views retain mapping-only support. |
+| Mono cloud readout | Full-frame native-depth Mono16 identity readout already supports simulated clouds. Crop, binning and sample-code conversion remain refused. The #1179 capacity probe exercises 60 s rendering and the crop and bin refusals. Extending astrometric mapping or uncertainty qualification to cloudy mono inputs is a non-goal. See the [#1004 cloud profile evidence](../validation/cloud-profile-1004.md). |
+| Stereographic and equidistant mono ROI+2×2 ambiguity | Reducing the ambiguity rate is a non-goal. Ambiguous blind solves fail closed. The [v2 envelope](virtual-astrometry-qualification-v2.md#supported-envelope) records the affected cases. |
+| Product-depth and bright-background rejection rates | Higher acceptance on these adverse inputs is a non-goal. Use the explicit fail-closed outcomes in the table above. |
+| Equidistant 60 s CFA trails of at least 3 px | Qualifying trail-length metadata is a non-goal. The length p95 exceeds its limit. Measured mapping support does not depend on that length estimate. |
+| Other long-exposure families, gains and physical accuracy | Outside this VirtualSky envelope. Physical camera and lens qualification belongs to [#1166](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1166). |
 
 ## Observations
 

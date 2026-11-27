@@ -1,10 +1,9 @@
-using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 /// <summary>
-/// Pins the frozen issue #1168 matrix (variants, seeds, refusals) and the truth-trail geometry the long-exposure scorers
+/// Pins the long-exposure matrix (variants, seeds, refusals) and the truth-trail geometry the long-exposure scorers
 /// rely on, so a qualification outcome cannot come from a drifted fixture or a scorer defect.
 /// </summary>
 [TestClass]
@@ -62,7 +61,7 @@ public sealed class VirtualLongExposureFixtureTests
     }
 
     [TestMethod]
-    public void DeclaredRefusal_NamesOnlyTheRectilinearFullFrameSixtySecondAndMonoCloudCells()
+    public void DeclaredRefusal_RespectsTheTemporalBudgetAndMonoCloudReadoutBoundary()
     {
         var none = VirtualAstrometryFixture.Variants[0];
         foreach (var family in VirtualAstrometryFixture.Families.Where(f => f.Name != "rectilinear"))
@@ -84,14 +83,14 @@ public sealed class VirtualLongExposureFixtureTests
         }
         var equidistant = VirtualAstrometryFixture.Families[0];
         foreach (var variant in VirtualAstrometryFixture.Variants.Where(v => v.CloudScenario is not null))
-            foreach (var profile in VirtualAstrometryFixture.Profiles(1, equidistant, variant))
+            foreach (var profile in VirtualAstrometryFixture.Profiles(1, equidistant, none))
             {
                 var refusal = VirtualAstrometryFixture.DeclaredRefusal(equidistant, profile, 20, variant);
-                if (profile.Config.Rig.Sensor.PixelFormat == CameraPixelFormat.BayerRggb16)
-                    Assert.IsNull(refusal, $"{variant.Name} {profile.Name}");
-                else
+                if (profile.Name is "mono-roi" or "mono-bin2" or "mono-roi-bin2")
                     Assert.AreEqual(new VirtualRenderRefusal("initialize", typeof(NotSupportedException).FullName!,
-                        VirtualRenderRefusal.NativeReadoutClouds), refusal, $"{variant.Name} {profile.Name}");
+                        VirtualRenderRefusal.NonIdentityCloudReadout), refusal, $"{variant.Name} {profile.Name}");
+                else
+                    Assert.IsNull(refusal, $"{variant.Name} {profile.Name}");
             }
     }
 

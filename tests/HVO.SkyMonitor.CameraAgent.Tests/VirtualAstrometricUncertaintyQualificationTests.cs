@@ -18,7 +18,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 [TestCategory("Manual")]
 [TestProperty("Area", "Modules.VirtualSky")]
 [DoNotParallelize]
-public sealed class VirtualAstrometricUncertaintyQualificationTests
+public sealed partial class VirtualAstrometricUncertaintyQualificationTests
 {
     // Predeclared on #1105 before held-out evidence; tuning results may not change them.
     private const double CoverageToleranceSigma = 3.5;
@@ -95,30 +95,36 @@ public sealed class VirtualAstrometricUncertaintyQualificationTests
     [TestMethod]
     public Task HeldOutAstrometricUncertainty() => RunAsync(tuning: false);
 
-    private async Task RunAsync(bool tuning)
+    private async Task RunAsync(bool tuning, QualificationCampaign? campaign = null)
     {
         Assert.AreEqual("0", Environment.GetEnvironmentVariable("DOTNET_TieredCompilation"), "The declared measurement disables tiered compilation.");
         var snapshot = VirtualAstrometryQualificationTests.Snapshot();
         var catalog = await snapshot.Catalog.ReadAsync(5, AstrometricCatalogData.MaximumEntries).ConfigureAwait(false);
         Assert.HasCount(1637, catalog.Stars); Assert.IsTrue(catalog.IsCompleteForRequestedMagnitude);
-        if (!tuning) VirtualAstrometryQualificationTests.RequireRevision();
+        if (!tuning || campaign is not null) VirtualAstrometryQualificationTests.RequireRevision();
         Assert.AreEqual(VirtualAstrometryFixture.Variants[0].Name, VirtualAstrometryFixture.Variant.Name, "Uncertainty evidence renders only the unvaried scene.");
         var exposureSeconds = VirtualAstrometryFixture.ExposureSeconds;
         // Tuning an undeclared exposure estimates at the 1 s floors only so that it can report each frame's required floor.
-        var declared = DeclaredFloorPixels.TryGetValue(exposureSeconds, out var floors);
+        var declared = DeclaredFloorPixels.TryGetValue(exposureSeconds, out var historicalFloors);
         Assert.IsTrue(declared || tuning, $"Held-out uncertainty evidence requires floors declared from tuning at {exposureSeconds} s.");
-        floors ??= DeclaredFloorPixels[1];
+        IReadOnlyDictionary<string, double> floors = historicalFloors ?? DeclaredFloorPixels[1];
         var floorSource = declared ? $"declared-{exposureSeconds}s" : "provisional-1s-tuning-only";
         var partitions = tuning ? new[] { (Month: 2, Day: 10, Seed: 110520) }
             : [(Month: 1, Day: 15, Seed: 110501), (Month: 5, Day: 15, Seed: 110505), (Month: 9, Day: 15, Seed: 110509)];
+        if (campaign is not null)
+        {
+            floors = campaign.Floors;
+            floorSource = tuning ? "historical-1168" : "tuning-1179-profile-p90";
+            partitions = campaign.Partitions;
+        }
         var realizations = tuning ? 8 : 20;
         var partition = tuning ? "uncertainty-tuning-not-final" : "uncertainty-held-out";
         var failures = new List<string>(); var frames = new List<Realization>(); var sessions = new List<object>();
         foreach (var (month, day, seed) in partitions)
         {
             foreach (var name in VirtualAstrometryFixture.Profiles(seed).Select(p => p.Name))
-                frames.AddRange(await ProfileAsync(snapshot, catalog, floors, month, day, seed, name, realizations, failures).ConfigureAwait(false));
-            sessions.Add(await SessionChainAsync(snapshot, catalog, floors, month, day, seed, failures).ConfigureAwait(false));
+                frames.AddRange(await ProfileAsync(snapshot, catalog, floors, month, day, seed, name, realizations, failures, campaign).ConfigureAwait(false));
+            sessions.Add(await SessionChainAsync(snapshot, catalog, floors, month, day, seed, failures, campaign).ConfigureAwait(false));
         }
 
         // Coverage is judged per profile and pooled; an unsupported or withheld frame is a failure, never an exclusion.
@@ -176,7 +182,7 @@ public sealed class VirtualAstrometricUncertaintyQualificationTests
             snapshot.DatabaseSha256,
             catalog.IdentitySha256,
             catalog.SelectionIdentitySha256,
-            estimator = AstrometricUncertaintyOptions.EstimatorVersion,
+            estimator = campaign is null ? AstrometricUncertaintyOptions.EstimatorVersion : AstrometricUncertaintyEstimator.QualificationSchema,
             tolerances = new
             {
                 CoverageToleranceSigma,
@@ -207,6 +213,12 @@ public sealed class VirtualAstrometricUncertaintyQualificationTests
         }, EvidenceJsonOptions)).ConfigureAwait(false);
         TestContext.WriteLine(path);
         TestContext.AddResultFile(path);
+        if (campaign is not null)
+        {
+            var lineagePath = Path.Combine(root, "long-exposure-qualification-lineage.json");
+            await File.WriteAllTextAsync(lineagePath, JsonSerializer.Serialize(campaign.Lineage, EvidenceJsonOptions)).ConfigureAwait(false);
+            TestContext.AddResultFile(lineagePath);
+        }
         Assert.IsEmpty(failures, string.Join(Environment.NewLine, failures));
     }
 
@@ -215,7 +227,8 @@ public sealed class VirtualAstrometricUncertaintyQualificationTests
     /// nominal optics, then warm refinement, each frame measured with covariance and estimated at the declared systematic budget.
     /// </summary>
     private static async Task<List<Realization>> ProfileAsync(CatalogSnapshotResult snapshot, AstrometricCatalogData catalog,
-        IReadOnlyDictionary<string, double> floors, int month, int day, int seed, string name, int count, List<string> failures)
+        IReadOnlyDictionary<string, double> floors, int month, int day, int seed, string name, int count, List<string> failures,
+        QualificationCampaign? campaign)
     {
         var results = new List<Realization>(); AstrometricFrameAssessment? prior = null;
         for (var index = 0; index < count; index++)
@@ -230,22 +243,23 @@ public sealed class VirtualAstrometricUncertaintyQualificationTests
             var sceneUtc = captured.Frame!.Metadata.Scene!.SceneUtc!.Value;
             var nominal = VirtualAstrometryFixture.NominalCalibration(profile);
             var caseId = $"{month:D2}-{name}-{index}";
+            var lineage = campaign?.Capture(caseId, profile.Config, input, sceneUtc);
             var ((measured, solved), frame) = VirtualOpticalCalibrationQualificationTests.Sample(() =>
             {
                 var m = VirtualAstrometryFixture.MeasureV2(input, nominal);
                 return (m, VirtualAstrometryFixture.SolveV2(input, nominal, catalog, m, prior));
             });
+            if (lineage is not null) lineage.Mapping = solved.Assessment.Status;
             if (!solved.Assessment.HasMeasuredMapping) { failures.Add($"{caseId}: solve not accepted: {solved.Assessment.Reason}"); continue; }
             prior = solved.Assessment;
-            var (uncertainty, estimator) = VirtualOpticalCalibrationQualificationTests.Sample(() => AstrometricUncertaintyEstimator.Estimate(nominal, catalog,
-                VirtualAstrometryFixture.SolverOptions, solved, VirtualAstrometryFixture.Detections(measured), Covariances(measured),
-                AstrometricClockFacts.NotSupplied, input.Layout.Readout, options: Budget(floors, name)));
-            var repeat = AstrometricUncertaintyEstimator.Estimate(nominal, catalog, VirtualAstrometryFixture.SolverOptions, solved,
-                VirtualAstrometryFixture.Detections(measured), Covariances(measured), AstrometricClockFacts.NotSupplied, input.Layout.Readout, options: Budget(floors, name));
+            var (uncertainty, estimator) = VirtualOpticalCalibrationQualificationTests.Sample(() =>
+                Estimate(nominal, catalog, solved, measured, input, Budget(floors, name), campaign));
+            var repeat = Estimate(nominal, catalog, solved, measured, input, Budget(floors, name), campaign);
             if (repeat.IdentitySha256 != uncertainty.IdentitySha256) failures.Add($"{caseId}: estimate is not deterministic");
-            var required = RequiredFloor(sigma => AstrometricUncertaintyEstimator.Estimate(nominal, catalog, VirtualAstrometryFixture.SolverOptions, solved,
-                VirtualAstrometryFixture.Detections(measured), Covariances(measured), AstrometricClockFacts.NotSupplied, input.Layout.Readout,
-                options: new(SystematicPixelSigma: sigma)).Validity);
+            if (lineage is not null)
+                CheckRelease(nominal, catalog, solved, measured, input, Budget(floors, name), uncertainty, lineage);
+            var required = campaign is { IsTuning: false } ? null :
+                RequiredFloor(sigma => Estimate(nominal, catalog, solved, measured, input, new(SystematicPixelSigma: sigma), campaign).Validity);
             double[]? error = null; double[]? covariance = null; double? distance = null;
             if (uncertainty.IsAvailable)
             {
@@ -268,7 +282,7 @@ public sealed class VirtualAstrometricUncertaintyQualificationTests
     /// calibration component must carry the calibrated lens's own error.
     /// </summary>
     private static async Task<object> SessionChainAsync(CatalogSnapshotResult snapshot, AstrometricCatalogData catalog,
-        IReadOnlyDictionary<string, double> floors, int month, int day, int seed, List<string> failures)
+        IReadOnlyDictionary<string, double> floors, int month, int day, int seed, List<string> failures, QualificationCampaign? campaign)
     {
         var template = VirtualAstrometryFixture.Profiles(seed)[0];
         var nominalRig = template.Config.Rig;
@@ -292,14 +306,17 @@ public sealed class VirtualAstrometricUncertaintyQualificationTests
         {
             var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), snapshot.Catalog, new ProjectedSceneStore());
             await using var lifetime = module.ConfigureAwait(false);
-            await module.InitializeAsync(template.Config with { Rig = VirtualOpticalCalibrationQualificationTests.WithReadout(truthRig, readout) }, CancellationToken.None).ConfigureAwait(false);
+            var config = template.Config with { Rig = VirtualOpticalCalibrationQualificationTests.WithReadout(truthRig, readout) };
+            await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
             var captured = await module.CaptureAsync(VirtualAstrometryQualificationTests.Request(origin.AddHours(hours)), CancellationToken.None).ConfigureAwait(false);
             var input = VirtualAstrometryPixels.FromCapture(captured.Frame!);
+            var sceneUtc = captured.Frame!.Metadata.Scene!.SceneUtc!.Value;
+            campaign?.Capture(SessionCaptureId(caseId, readout, input.StartUtc), config, input, sceneUtc);
             var nominal = VirtualOpticalCalibrationQualificationTests.Calibration(VirtualOpticalCalibrationQualificationTests.WithReadout(nominalRig, readout), nominalRig.Optics.CalibrationVersion!);
             var measured = VirtualAstrometryFixture.MeasureV2(input, nominal);
             var descriptor = input.Layout.Readout!;
             return (new OpticalCalibrationFrame(VirtualAstrometryFixture.FrameContextV2(input), descriptor, CaptureContractJson.ComputeCanonicalJsonSha256(descriptor),
-                VirtualAstrometryFixture.Detections(measured)), input, captured.Frame!.Metadata.Scene!.SceneUtc!.Value);
+                VirtualAstrometryFixture.Detections(measured)), input, sceneUtc);
         }
         var fit = new List<OpticalCalibrationFrame>();
         foreach (var (readout, hours) in new[] { ("native", 5d), ("roi", 6.5), ("native", 8), ("bin2", 9) })
@@ -327,9 +344,13 @@ public sealed class VirtualAstrometricUncertaintyQualificationTests
             var calibration = VirtualOpticalCalibrationQualificationTests.Calibration(VirtualOpticalCalibrationQualificationTests.WithReadout(calibratedRig, readout), version);
             var measured = VirtualAstrometryFixture.MeasureV2(pixels, calibration);
             var solved = VirtualAstrometryFixture.SolveV2(pixels, calibration, catalog, measured);
+            var lineage = campaign?.Lineage[SessionCaptureId(caseId, readout, pixels.StartUtc)];
+            if (lineage is not null) lineage.Mapping = solved.Assessment.Status;
             if (!solved.Assessment.HasMeasuredMapping) { failures.Add($"{caseId}-{readout}: {solved.Assessment.Reason}"); continue; }
-            var uncertainty = AstrometricUncertaintyEstimator.Estimate(calibration, catalog, VirtualAstrometryFixture.SolverOptions, solved,
-                VirtualAstrometryFixture.Detections(measured), Covariances(measured), AstrometricClockFacts.NotSupplied, pixels.Layout.Readout, shared, Budget(floors, $"mono-{readout}"));
+            var budget = Budget(floors, $"mono-{readout}");
+            var uncertainty = Estimate(calibration, catalog, solved, measured, pixels, budget, campaign, shared);
+            if (lineage is not null)
+                CheckRelease(calibration, catalog, solved, measured, pixels, budget, uncertainty, lineage, shared);
             if (uncertainty.Total.Status != AstrometricUncertaintyEstimator.Available)
             {
                 failures.Add($"{caseId}-{readout}: total {uncertainty.Total.Status} {uncertainty.ReasonCode} {uncertainty.Total.ReasonCode}");
@@ -356,7 +377,7 @@ public sealed class VirtualAstrometricUncertaintyQualificationTests
                 uncertainty.Validity
             });
         }
-        var cross = estimates.Count >= 2 ? AstrometricUncertaintyEstimator.CrossCovariance(estimates[0], estimates[1], shared) : null;
+        var cross = campaign is null && estimates.Count >= 2 ? AstrometricUncertaintyEstimator.CrossCovariance(estimates[0], estimates[1], shared) : null;
         return new { caseId, result.IdentitySha256, sharedCalibrationIdentity = shared.IdentitySha256, shared.Covariance, rows, crossCovarianceFirstPair = cross };
     }
 
@@ -368,12 +389,17 @@ public sealed class VirtualAstrometricUncertaintyQualificationTests
     {
         static double Excess(AstrometricModelValidity v) => v.ChiSquare is { } chi && v.DegreesOfFreedom > 0 ? chi / v.DegreesOfFreedom - 1 : double.NaN;
         var low = 0d; var high = 10d;
-        if (!(Excess(validity(low)) > 0)) return 0;
-        if (Excess(validity(high)) > 0) return null;
+        var lowExcess = Excess(validity(low));
+        if (!double.IsFinite(lowExcess)) return null;
+        if (lowExcess <= 0) return 0;
+        var highExcess = Excess(validity(high));
+        if (!double.IsFinite(highExcess) || highExcess > 0) return null;
         for (var i = 0; i < 30; i++)
         {
             var mid = (low + high) / 2;
-            if (Excess(validity(mid)) > 0) low = mid; else high = mid;
+            var midExcess = Excess(validity(mid));
+            if (!double.IsFinite(midExcess)) return null;
+            if (midExcess > 0) low = mid; else high = mid;
         }
         return (low + high) / 2;
     }

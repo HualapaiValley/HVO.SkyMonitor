@@ -43,7 +43,7 @@ internal sealed record VirtualRenderDepth(double MaximumMagnitude, int MaximumRe
 
 /// <summary>
 /// One frozen issue #1168 render variant. Every variant other than <c>none</c> renders the native views only, under the
-/// 1168xx seed family; a cloud scenario is refused on any readout that takes VirtualSky's native-readout path.
+/// 1168xx seed family. Mono cloud captures require a full-frame native-depth identity readout.
 /// </summary>
 /// <param name="ExpectedOutcome">
 /// <see cref="Accepted"/> fails on any rejection; <see cref="AcceptedOrFailClosed"/> records a rejection as the case
@@ -60,8 +60,8 @@ internal sealed record VirtualLongExposureVariant(string Name, VirtualRenderDept
 /// <summary>A predeclared renderer refusal. Any other exception, or this one in an undeclared cell, fails the run.</summary>
 internal sealed record VirtualRenderRefusal(string Stage, string ExceptionType, string Message)
 {
-    internal const string NativeReadoutClouds =
-        "VirtualSky native readout currently supports byte-aligned monochrome identity, digital-sum, and digital-average modes without clouds, sensor-plane transient tracks, or synthetic calibration.";
+    internal const string NonIdentityCloudReadout =
+        "VirtualSky native readout requires byte-aligned monochrome modes without sensor-plane transient tracks or synthetic calibration; clouds require full-frame native-depth identity readout.";
 
     /// <summary>Returns whether <paramref name="exception"/> is exactly this refusal, by exact type and message.</summary>
     internal bool Matches(Exception exception) =>
@@ -151,16 +151,17 @@ internal static class VirtualAstrometryFixture
     }
 
     /// <summary>
-    /// The frozen issue #1168 renderer refusals. The rectilinear 6 mm full-frame views need more than the renderer's 64
-    /// temporal slots at the PSF-limited 0.15 px step for 60 s; the native-readout path refuses every cloud scenario.
+    /// Renderer refusals for these fixed profiles. Rectilinear 6 mm full-frame views exceed 64 temporal slots at 60 s.
+    /// All fixture mono profiles use native-depth codes; cropped and binned mono profiles still refuse clouds after #1004.
     /// </summary>
     internal static VirtualRenderRefusal? DeclaredRefusal(VirtualProjectionFamily family, VirtualAstrometryProfile profile,
         int exposureSeconds, VirtualLongExposureVariant variant)
     {
         var rig = profile.Config.Rig;
-        if (variant.CloudScenario is not null && rig.Sensor.PixelFormat == CameraPixelFormat.Mono16)
-            return new("initialize", typeof(NotSupportedException).FullName!, VirtualRenderRefusal.NativeReadoutClouds);
         var fullFrame = rig.Readout is null || rig.Readout.Roi.Width == rig.Sensor.WidthPixels && rig.Readout.Roi.Height == rig.Sensor.HeightPixels;
+        if (variant.CloudScenario is not null && rig.Sensor.PixelFormat == CameraPixelFormat.Mono16 &&
+            (!fullFrame || rig.Readout is { BinningAlgorithm: not FrameBinningAlgorithm.IdentityV1 }))
+            return new("initialize", typeof(NotSupportedException).FullName!, VirtualRenderRefusal.NonIdentityCloudReadout);
         return family.Name == "rectilinear" && exposureSeconds == 60 && fullFrame
             ? new("capture", typeof(InvalidOperationException).FullName!, "stellar-exposure-temporal-budget-exceeded")
             : null;
