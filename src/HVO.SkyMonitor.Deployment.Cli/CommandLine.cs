@@ -42,7 +42,6 @@ internal static class CommandLine
     /// <summary>The flag every command with a read-only plan accepts; <c>--dry-run</c> is its older name.</summary>
     internal const string PlanOption = "--plan";
 
-    private const string DeprecatedMigrationOption = "--migration-backward-compatible";
 
     private static readonly string[] OwnerRecoveryValueOptions = ["--instance-id", "--product-root", "--password-file"];
 
@@ -102,11 +101,11 @@ internal static class CommandLine
             StateResetValueOptions, StateResetFlags),
         new(["cameraagent", "upgrade"], null,
             "Move an instance to a release's image (--release) or an immutable one (--image-ref).",
-            [.. InstanceValueOptions, "--release", "--image-source", "--image-ref", "--image-archive", "--image-archive-sha256", "--operation-id"],
-            ["--plan", "--dry-run", "--resume", "--restore-only", "--leave-paused", "--json", "--no-download", DeprecatedMigrationOption, "--allow-quarantined-readiness"],
+            [.. InstanceValueOptions, "--release", "--image-source", "--image-ref", "--image-archive", "--image-archive-sha256"],
+            ["--plan", "--dry-run", "--resume", "--json", "--no-download", "--allow-quarantined-readiness"],
             PlanScratchNote),
         new(["cameraagent", "rollback"], null,
-            "Show upgrade recovery guidance or settle a committed legacy rollback with --resume.",
+            "Run the retained previous CameraAgent image on the same state contract.",
             InstanceValueOptions, [.. OperationFlags, "--allow-quarantined-readiness"],
             PlanScratchNote),
         Lifecycle("Start an uninstalled instance again from the state it kept.", "cameraagent", "reinstall"),
@@ -170,7 +169,7 @@ internal static class CommandLine
         ["--elevation"] = ("<metres>", "The camera's elevation (default 0)."),
         ["--time-zone"] = ("<zone>", "The camera's IANA time zone (default UTC)."),
         ["--replay-profile"] = ("<profile>", "Where archived replay runs: in-process (default) or local-runner."),
-        ["--storage-layout"] = ("<layout>", "A new instance's storage: filesystem (default) or silo, a clean install with a stock Silo store."),
+        ["--storage-layout"] = ("<layout>", "A new instance's storage: silo (default) or explicit filesystem."),
         ["--silo-image-archive"] = ("<path>", "With silo: a docker save archive of the pinned Silo image, verified before it is loaded."),
         ["--silo-archive-endpoint"] = ("<url>", "With silo: the optional archive Silo's https:// endpoint, verified read-only."),
         ["--silo-archive-bucket"] = ("<name>", "The archive bucket, which must be versioned."),
@@ -181,7 +180,6 @@ internal static class CommandLine
         ["--memory"] = ("<size>", "The container's memory limit, such as 4g."),
         ["--confirm-instance-id"] = ("<uuid>", "The instance's ID again, to confirm."),
         ["--confirm-removed-operation-id"] = ("<uuid>", "With --resume: confirm this interrupted purge's tree was removed elsewhere."),
-        ["--operation-id"] = ("<uuid>", "With --restore-only or --leave-paused: the interrupted upgrade's operation ID."),
         [PlanOption] = (null, "Show what the command would change, and change nothing."),
         ["--dry-run"] = (null, "The older name of --plan."),
         ["--resume"] = (null, "Finish an interrupted run of the same command."),
@@ -191,9 +189,6 @@ internal static class CommandLine
         ["--repair"] = (null, "Re-record the current mount, keeping the product root already named by the host policy."),
         ["--acknowledge-plaintext-http"] = (null, "Accept plain HTTP on a --bind-address other than loopback."),
         ["--no-download"] = (null, "Pull nothing: the image must already be on this host or in an offline archive."),
-        ["--restore-only"] = (null, "With --resume --operation-id: restore what an interrupted upgrade left, without upgrading."),
-        ["--leave-paused"] = (null, "With --resume --operation-id: retry the interrupted offline release upgrade without changing capture admission."),
-        [DeprecatedMigrationOption] = (null, "Deprecated, and has no effect.")
     };
 
     /// <summary>
@@ -455,8 +450,7 @@ internal static class CommandLine
         {
             return ParseHost(args, context, production);
         }
-        var lifecycle = ParseLifecycle(args, allowTestProductRoot, production);
-        return lifecycle.MigrationBackwardCompatible ? lifecycle with { ParseWarnings = [MigrationAssertionDeprecation] } : lifecycle;
+        return ParseLifecycle(args, allowTestProductRoot, production);
     }
 
     /// <summary>
@@ -466,15 +460,6 @@ internal static class CommandLine
     internal static readonly InstallationWarning ConfigDeprecation = new(
         "option-deprecated",
         "--config is deprecated: use --answers FILE, which reads the same members with \"schemaVersion\": 1 and without dryRun, resume and json.");
-
-    /// <summary>
-    /// <c>--migration-backward-compatible</c> has had no effect since the swap-based upgrade (#1340): the upgrade
-    /// decides from the candidate's declared state contract. It stays accepted, and part of the journaled request
-    /// identity, so an interrupted upgrade begun with it still resumes.
-    /// </summary>
-    internal static readonly InstallationWarning MigrationAssertionDeprecation = new(
-        "option-deprecated",
-        "--migration-backward-compatible is deprecated and has no effect: the upgrade decides from the candidate's declared state contract and snapshots the small databases when it declares a migration. Leave it out; it is still accepted so an interrupted upgrade begun with it resumes.");
 
     public static InstallRequest Parse(string[] args)
         => Parse(args, TestProductRootAdmittedByEnvironment());
@@ -721,8 +706,8 @@ internal static class CommandLine
     internal static CameraAgentStorageLayout ParseStorageLayout(string? value)
         => value switch
         {
-            null or "filesystem" => CameraAgentStorageLayout.Filesystem,
-            "silo" => CameraAgentStorageLayout.Silo,
+            null or "silo" => CameraAgentStorageLayout.Silo,
+            "filesystem" => CameraAgentStorageLayout.Filesystem,
             _ => throw new InstallUsageException("--storage-layout must be filesystem or silo.")
         };
 
@@ -813,16 +798,12 @@ internal static class CommandLine
         {
             AllowTestProductRoot = allowTestProductRoot,
             ProductionProductRoot = productionProductRoot,
-            RestoreOnly = flags.Contains("--restore-only"),
-            LeavePaused = flags.Contains("--leave-paused"),
-            RecoveryOperationId = ParseGuid(Get(values, "--operation-id"), "--operation-id"),
             ImageReference = Get(values, "--image-ref"),
             ImageArchive = Get(values, "--image-archive"),
             ImageArchiveSha256 = Get(values, "--image-archive-sha256"),
             Release = Get(values, "--release"),
             ImageSource = ParseImageSource(Get(values, "--image-source")),
             NoDownload = flags.Contains("--no-download"),
-            MigrationBackwardCompatible = flags.Contains("--migration-backward-compatible"),
             ConfirmationInstanceId = ParseGuid(Get(values, "--confirm-instance-id"), "--confirm-instance-id"),
             ConfirmRemovedOperationId = ParseGuid(
                 Get(values, "--confirm-removed-operation-id"), "--confirm-removed-operation-id"),

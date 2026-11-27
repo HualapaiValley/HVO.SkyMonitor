@@ -1,36 +1,29 @@
+using HVO.SkyMonitor.Deployment.Contracts;
 using ContractReplayProfile = HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile;
 
 namespace HVO.SkyMonitor.Deployment;
 
 /// <summary>
-/// Names the durable CameraAgent state contract an image reads and writes.
+/// Names the durable CameraAgent contract for deployment admission. The new image label and
+/// baseline deployment record schemas distinguish it from the pre-baseline Silo binding.
 /// </summary>
-/// <remarks>
-/// The <c>io.hvo.skymonitor.state-compatibility</c> label previously claimed unbounded
-/// <c>backward-compatible</c> migration. That claim was untrue for CameraAgent state produced before the
-/// image's declared minimum compatible revision, so the label now names a contract identity instead of a
-/// promise, and the persisted-state boundaries decide whether a specific instance may be upgraded in place.
-/// </remarks>
 internal static class CameraAgentStateContract
 {
-    /// <summary>The durable state contract every supported CameraAgent image reads and writes.</summary>
-    public const string Current = "cameraagent-state-v2";
-
-    /// <summary>The superseded unbounded claim retained only so already installed images stay readable.</summary>
-    public const string LegacyUnbounded = "backward-compatible";
+    public const string Current = CameraAgentSiloBinding.StateContract;
+    public const string BaselineRelease = "0.10-beta-1";
+    public const string FreshInstallRequired =
+        $"This installation does not carry the supported CameraAgent state contract. Use a fresh install of {BaselineRelease} or later with a new instance and empty storage.";
 
     public static bool IsCurrent(string? declaration)
         => string.Equals(declaration, Current, StringComparison.Ordinal);
 
-    /// <summary>
-    /// A declaration this deployment understands. The legacy value carries no boundary, so an instance that
-    /// declares it is admitted only after the persisted-state preflight proves the actual boundaries match.
-    /// </summary>
-    public static bool IsKnown(string? declaration)
-        => IsCurrent(declaration) || string.Equals(declaration, LegacyUnbounded, StringComparison.Ordinal);
-
     public static string Describe(string? declaration)
         => string.IsNullOrWhiteSpace(declaration) ? "none" : declaration;
+
+    public static void RequireCurrent(string? declaration)
+    {
+        if (!IsCurrent(declaration)) throw InstallerException.Refused(FreshInstallRequired);
+    }
 }
 
 /// <summary>

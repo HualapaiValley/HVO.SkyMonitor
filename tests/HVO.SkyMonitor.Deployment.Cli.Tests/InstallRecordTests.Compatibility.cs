@@ -7,26 +7,6 @@ public sealed partial class InstallRecordTests
 {
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task Correction1_NewRecord_IsReadableWithTheReleasedStrictDeclarations()
-    {
-        using var root = new ProductRoot();
-        File.SetUnixFileMode(root.Paths.ProductRoot, SafeFileSystem.OwnerDirectoryMode);
-        using var release = ReleaseFixture.Create(root.Paths.ProductRoot);
-        await PathPrograms.SettleAsync(root.Paths, InstallRequest.DefaultProductRoot, release.Folder, ImageA, CancellationToken.None);
-        var location = InstallRecordLocation.For(root.Paths.ProductRoot, InstallRequest.DefaultProductRoot);
-        var manifest = root.Manifest(ImageA, null);
-        await InstallRecordStore.SettleInstanceAsync(location, root.Paths, manifest, InstallRecordEvent.Install, CancellationToken.None);
-        var bytes = await File.ReadAllBytesAsync(location.Path);
-        var previous = JsonSerializer.Deserialize(bytes, LegacyInstallRecordJsonContext.Default.LegacyInstallRecord);
-        Assert.IsNotNull(previous);
-        Assert.AreEqual(1, previous.SchemaVersion);
-        Assert.AreEqual(manifest.InstanceId, previous.Instances.Single().InstanceId);
-        using var sidecar = JsonDocument.Parse(await File.ReadAllBytesAsync(Path.Combine(
-            Path.GetDirectoryName(location.Path)!, "install-programs.json")));
-        Assert.AreEqual(3, sidecar.RootElement.GetProperty("instances")[0].GetProperty("programs").GetArrayLength());
-    }
-    [TestMethod]
-    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task Correction1_TrustedProgramSidecar_UsesPolicyLocationPermissionsAndIdempotence()
     {
         using var host = new PolicyHost();

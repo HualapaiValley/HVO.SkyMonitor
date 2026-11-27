@@ -4,7 +4,7 @@
 `development/v1`; analysis and disposable software measurements only. This
 supplements, rather than reruns or rewrites, [#1607](cameraagent-filesystem-decision-1607.md)
 and [#1608](logichost-upgrade-recovery-1608.md). The
-[approved #1606 contract](../hvo-install-contract.md#skymonitor-approved-target-upgrade-time-checkpoint-recovery)
+[approved #1606 contract](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/7719263037a631fad37b4edcbf6aaffb3d7aa2a5/docs/hvo-install-contract.md#skymonitor-approved-target-upgrade-time-checkpoint-recovery)
 is the common policy for every proposed option.
 
 ## Recommendation and accepted tradeoffs

@@ -82,7 +82,7 @@ public sealed class UpgradeNotesTests
 
         Assert.AreEqual(
             $"{installed} is installed, which is newer than the upgrade target {target}. " +
-            CameraAgentLifecycleManager.ManualRollbackGuidance,
+            "Use cameraagent rollback to select the retained previous image.",
             exception.Message);
     }
 

@@ -75,7 +75,7 @@ public sealed class ProgramOutputTests
           --illumination-mode <mode>             VirtualSky lighting: LegacyScalarSolar (default), SolarDriven or ControlledNight.
           --cpus <count>                         The container's CPU limit.
           --memory <size>                        The container's memory limit, such as 4g.
-          --storage-layout <layout>              A new instance's storage: filesystem (default) or silo, a clean install with a stock Silo store.
+          --storage-layout <layout>              A new instance's storage: silo (default) or explicit filesystem.
           --silo-image-archive <path>            With silo: a docker save archive of the pinned Silo image, verified before it is loaded.
           --silo-archive-endpoint <url>          With silo: the optional archive Silo's https:// endpoint, verified read-only.
           --silo-archive-bucket <name>           The archive bucket, which must be versioned.
@@ -118,7 +118,7 @@ public sealed class ProgramOutputTests
           cameraagent silo-verify        Check, changing nothing, a Silo-layout instance's store, binding, listeners, data root, headroom, archive and first-boot pause.
           cameraagent reset-state        Delete an uninstalled instance's local runtime state, keeping its configuration.
           cameraagent upgrade            Move an instance to a release's image (--release) or an immutable one (--image-ref).
-          cameraagent rollback           Show upgrade recovery guidance or settle a committed legacy rollback with --resume.
+          cameraagent rollback           Run the retained previous CameraAgent image on the same state contract.
           cameraagent reinstall          Start an uninstalled instance again from the state it kept.
           cameraagent uninstall          Remove an instance's containers, keeping its state for cameraagent reinstall.
           cameraagent purge              Remove an uninstalled instance and everything it keeps.
@@ -323,13 +323,13 @@ public sealed class ProgramOutputTests
     }
 
     [TestMethod]
-    public async Task Main_LifecycleUsage_NamesThePlanAndTheDeprecatedMigrationAssertion()
+    public async Task Main_LifecycleUsage_NamesThePlanAndOmitsRemovedOptions()
     {
         var (exitCode, output, _) = await RunCommandLineAsync("cameraagent upgrade --help");
 
         Assert.AreEqual(0, exitCode);
-        StringAssert.Contains(output, "  --plan                           Show what the command would change, and change nothing." + Environment.NewLine, StringComparison.Ordinal);
-        StringAssert.Contains(output, "  --migration-backward-compatible  Deprecated, and has no effect." + Environment.NewLine, StringComparison.Ordinal);
+        StringAssert.Contains(output, "Show what the command would change, and change nothing." + Environment.NewLine, StringComparison.Ordinal);
+        Assert.DoesNotContain("--migration-backward-compatible", output, StringComparison.Ordinal);
         StringAssert.Contains(output, "A plan writes no product file, lock or Compose file; a database caught mid-transaction is read through a private temporary copy that is removed.", StringComparison.Ordinal);
     }
 

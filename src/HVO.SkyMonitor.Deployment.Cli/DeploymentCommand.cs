@@ -175,9 +175,6 @@ internal sealed record LifecycleRequest : DeploymentCommand
     public string ProductRoot { get; init; }
     public bool DryRun { get; init; }
     public bool Resume { get; init; }
-    public bool RestoreOnly { get; init; }
-    public bool LeavePaused { get; init; }
-    public Guid? RecoveryOperationId { get; init; }
     public string? ImageReference { get; init; }
     public string? ImageArchive { get; init; }
     public string? ImageArchiveSha256 { get; init; }
@@ -188,7 +185,6 @@ internal sealed record LifecycleRequest : DeploymentCommand
     /// <summary>How the release's image reaches Docker (<c>--image-source</c>), as <see cref="InstallRequest.ImageSource"/>.</summary>
     public ReleaseImageSource? ImageSource { get; init; }
     public bool NoDownload { get; init; }
-    public bool MigrationBackwardCompatible { get; init; }
     public Guid? ConfirmationInstanceId { get; init; }
 
     /// <summary>
@@ -275,23 +271,6 @@ internal sealed record LifecycleRequest : DeploymentCommand
             throw new InstallUsageException("--resume requires a lifecycle operation.");
         }
         if (Resume && DryRun) throw new InstallUsageException("--resume cannot be combined with --dry-run.");
-        if (RestoreOnly && (!Resume || Operation != LifecycleOperationKind.Upgrade ||
-                            RecoveryOperationId is null || RecoveryOperationId == Guid.Empty))
-        {
-            throw new InstallUsageException(
-                "--restore-only requires upgrade --resume --operation-id and the original image request.");
-        }
-        if (RestoreOnly && Release is not null &&
-            (ImageSource == ReleaseImageSource.Registry || AllowQuarantinedReadiness))
-        {
-            throw new InstallUsageException("Signed restore-only requires the original offline release archive and full application readiness.");
-        }
-        if (LeavePaused && (!Resume || RestoreOnly || Operation != LifecycleOperationKind.Upgrade ||
-                            RecoveryOperationId is null || RecoveryOperationId == Guid.Empty || Release is null ||
-                            ImageSource == ReleaseImageSource.Registry || AllowQuarantinedReadiness))
-            throw new InstallUsageException("--leave-paused requires upgrade --resume --operation-id and the original offline release archive.");
-        if (!RestoreOnly && !LeavePaused && RecoveryOperationId is not null)
-            throw new InstallUsageException("--operation-id requires --restore-only or --leave-paused.");
         if (ConfirmRemovedOperationId is not null &&
             (Operation != LifecycleOperationKind.Purge || !Resume || ConfirmRemovedOperationId == Guid.Empty))
         {
@@ -319,7 +298,6 @@ internal sealed record LifecycleRequest : DeploymentCommand
             ImageReference,
             ImageArchiveSha256,
             NoDownload,
-            MigrationBackwardCompatible,
             // Keep the null slot stable so current password-free operation receipts survive executable replacement.
             OwnerPasswordFile = (string?)null,
             CatalogBundle,
@@ -387,7 +365,7 @@ internal sealed record LifecycleRequest : DeploymentCommand
     private void ValidateOperationOptions()
     {
         var hasImage = ImageReference is not null || ImageArchive is not null || ImageArchiveSha256 is not null ||
-                       Release is not null || ImageSource is not null || NoDownload || MigrationBackwardCompatible;
+                       Release is not null || ImageSource is not null || NoDownload;
         var hasCatalogSource = CatalogBundle is not null;
         switch (Operation)
         {

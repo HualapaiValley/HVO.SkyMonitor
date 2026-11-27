@@ -142,7 +142,7 @@ internal sealed record InstallAnswers
         GeneratePassword = GeneratePassword ?? false,
         NoDownload = NoDownload ?? false,
         ReplayProfile = ReplayProfile ?? CameraAgentReplayProfile.InProcess,
-        StorageLayout = StorageLayout ?? CameraAgentStorageLayout.Filesystem,
+        StorageLayout = StorageLayout ?? CameraAgentStorageLayout.Silo,
         SiloImageArchive = SiloImageArchive,
         SiloArchiveEndpoint = SiloArchiveEndpoint,
         SiloArchiveBucket = SiloArchiveBucket,

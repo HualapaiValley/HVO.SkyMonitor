@@ -298,7 +298,7 @@ internal static class SiloInstallation
     }
 
     /// <summary>The label a CameraAgent image declares when it honors the installer's first-boot pause (#1966).</summary>
-    public const string FirstBootContractLabel = "io.hvo.skymonitor.first-boot-contract";
+    public const string FirstBootContractLabel = CameraAgentImageLabels.FirstBootContractLabel;
 
     public const string FirstBootContract = "cameraagent-first-boot-pause-v1";
 

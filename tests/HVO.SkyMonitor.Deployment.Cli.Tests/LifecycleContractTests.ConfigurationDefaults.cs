@@ -64,7 +64,6 @@ public sealed partial class LifecycleContractTests
             AllowTestProductRoot = true,
             ImageReference = candidateReference,
             NoDownload = true,
-            MigrationBackwardCompatible = true
         };
 
         var upgrade = await CameraAgentLifecycleManager.ExecuteAsync(

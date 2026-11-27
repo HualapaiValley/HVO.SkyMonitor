@@ -36,7 +36,7 @@ public sealed partial class LifecycleContractTests
         try
         {
             await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-                UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => new FakeLifecycleClient(),
+                UpgradeRequest(fixture), fixture.Runner, _ => new FakeLifecycleClient(),
                 _ => new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true },
                 fixture.Uid, fixture.Gid, CancellationToken.None, error: TextWriter.Null));
         }
@@ -59,7 +59,7 @@ public sealed partial class LifecycleContractTests
         try
         {
             Assert.AreEqual("completed", (await CameraAgentLifecycleManager.ExecuteAsync(
-                UpgradeRequest(fixture, assertMigration: false) with { Resume = true }, fixture.Runner, _ => new FakeLifecycleClient(),
+                UpgradeRequest(fixture) with { Resume = true }, fixture.Runner, _ => new FakeLifecycleClient(),
                 _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None,
                 error: TextWriter.Null)).Outcome);
         }
@@ -93,7 +93,7 @@ public sealed partial class LifecycleContractTests
         };
 
         var failed = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => new FakeLifecycleClient(),
+            UpgradeRequest(fixture), fixture.Runner, _ => new FakeLifecycleClient(),
             _ => new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true },
             fixture.Uid, fixture.Gid, CancellationToken.None, error: TextWriter.Null));
 
@@ -118,7 +118,7 @@ public sealed partial class LifecycleContractTests
         };
 
         await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => new FakeLifecycleClient(),
+            UpgradeRequest(fixture), fixture.Runner, _ => new FakeLifecycleClient(),
             _ => new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true },
             fixture.Uid, fixture.Gid, CancellationToken.None, error: TextWriter.Null));
 
@@ -144,7 +144,7 @@ public sealed partial class LifecycleContractTests
         using var error = new StringWriter();
 
         await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => new FakeLifecycleClient(),
+            UpgradeRequest(fixture), fixture.Runner, _ => new FakeLifecycleClient(),
             _ => new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true },
             fixture.Uid, fixture.Gid, CancellationToken.None, error: error));
 

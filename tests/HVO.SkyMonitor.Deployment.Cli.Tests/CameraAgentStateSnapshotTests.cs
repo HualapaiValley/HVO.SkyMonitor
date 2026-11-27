@@ -13,7 +13,7 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 public sealed partial class CameraAgentStateSnapshotTests
 {
     private static readonly ImageInstallationIdentity Image = new(
-        "registry", $"cameraagent@sha256:{new string('b', 64)}", $"sha256:{new string('c', 64)}", "amd64", null);
+        "registry", $"cameraagent@sha256:{new string('b', 64)}", $"sha256:{new string('c', 64)}", "amd64", null, StateContract: CameraAgentStateContract.Current);
 
     /// <summary>
     /// The stores an installer released before the calibration-family store (#1475) snapshots. A snapshot or backup it
@@ -137,10 +137,8 @@ public sealed partial class CameraAgentStateSnapshotTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task VerifyAsync_AcceptsASnapshotAnEarlierInstallerTookWithoutTheCalibrationFamiliesStore()
+    public async Task VerifyAsync_RejectsAnEarlierCheckpointWithoutProtectedState()
     {
-        // Verification requires every store SqliteStores lists, so listing the calibration-family store would make this
-        // installer refuse every snapshot and backup an earlier installer took (#1475).
         Assert.DoesNotContain(CameraAgentStateLayout.CalibrationFamiliesStore, CameraAgentStateLayout.SqliteStores);
         using var root = new SnapshotRoot();
         CreateDatabase(CameraAgentStateSnapshot.StorePath(root.Paths.StateRoot, "raw/journal/raw-ingress.db"), 5);
@@ -155,8 +153,9 @@ public sealed partial class CameraAgentStateSnapshotTests
             ProtectedFiles = null
         };
         snapshot = await RewriteSnapshotManifestAsync(root, snapshot, earlier);
-        var manifest = await CameraAgentStateSnapshot.VerifyAsync(root.Paths, root.InstanceId, snapshot, CancellationToken.None);
-        CollectionAssert.AreEquivalent(StoresBeforeCalibrationFamilies, manifest.Databases.Select(static database => database.RelativePath).ToArray());
+        var refusal = await Assert.ThrowsExactlyAsync<InstallerException>(() =>
+            CameraAgentStateSnapshot.VerifyAsync(root.Paths, root.InstanceId, snapshot, CancellationToken.None));
+        StringAssert.Contains(refusal.Message, "protected-state inventory", StringComparison.Ordinal);
         var original = await SafeFileSystem.ComputeSha256Async(CameraAgentStateSnapshot.StorePath(root.Paths.StateRoot, "raw/journal/raw-ingress.db"), CancellationToken.None);
         CreateDatabase(CameraAgentStateSnapshot.StorePath(root.Paths.StateRoot, CameraAgentStateSnapshot.RetainedIntegrityStore), 1);
         await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentStateSnapshot.PlanRestoreAsync(root.Paths, root.InstanceId, snapshot, [], CancellationToken.None));

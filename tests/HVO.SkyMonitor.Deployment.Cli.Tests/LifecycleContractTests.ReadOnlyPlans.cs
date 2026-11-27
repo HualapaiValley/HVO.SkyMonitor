@@ -26,7 +26,7 @@ public sealed partial class LifecycleContractTests
         var plans = new (string Name, Func<Task<LifecycleResult>> Run)[]
         {
             ("upgrade", () => CameraAgentLifecycleManager.ExecuteAsync(
-                UpgradeRequest(installed, assertMigration: false) with { DryRun = true }, installed.Runner, _ => new FakeLifecycleClient(),
+                UpgradeRequest(installed) with { DryRun = true }, installed.Runner, _ => new FakeLifecycleClient(),
                 _ => new FakeOwnerClient(installed.ApplicationIdentity), installed.Uid, installed.Gid, CancellationToken.None)),
             ("uninstall", () => CameraAgentLifecycleManager.ExecuteAsync(
                 installed.Request(LifecycleOperationKind.Uninstall) with { DryRun = true }, installed.Runner, null, null,
@@ -143,12 +143,12 @@ public sealed partial class LifecycleContractTests
                     NoDownload = true
                 },
                 "The candidate image is already active."),
-            ("manual-rollback", installed, installed.Request(LifecycleOperationKind.Rollback), CameraAgentLifecycleManager.ManualRollbackGuidance),
+            ("manual-rollback", installed, installed.Request(LifecycleOperationKind.Rollback), "No previous image is retained for rollback."),
             ("reinstall-installed", installed, installed.Request(LifecycleOperationKind.Reinstall), "Reinstall requires a preserved uninstalled instance."),
             ("purge-installed", installed,
                 installed.Request(LifecycleOperationKind.Purge) with { ConfirmationInstanceId = installed.InstanceId },
                 "Purge requires a completed preserve-by-default uninstall."),
-            ("upgrade-uninstalled", uninstalled, UpgradeRequest(uninstalled, assertMigration: false),
+            ("upgrade-uninstalled", uninstalled, UpgradeRequest(uninstalled),
                 "An uninstalled instance must be reinstalled before image lifecycle operations.")
         };
         foreach (var (name, fixture, request, message) in refusals)
@@ -177,7 +177,7 @@ public sealed partial class LifecycleContractTests
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed, installedImage: CurrentStateContract);
         fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
             CandidateReference, CandidateImageId, fixture.Uid, fixture.Gid);
-        fixture.Runner.CandidateLabels["io.hvo.skymonitor.state-compatibility"] = "cameraagent-state-v1";
+        fixture.Runner.CandidateLabels["io.hvo.skymonitor.state-contract"] = "cameraagent-state-v1";
         fixture.Runner.CandidateHeld = [];
 
         var failure = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
@@ -186,7 +186,7 @@ public sealed partial class LifecycleContractTests
             fixture.Uid, fixture.Gid, CancellationToken.None));
 
         Assert.IsFalse(failure.IsRefusal, failure.Message);
-        StringAssert.StartsWith(failure.Message, "The candidate image declares state compatibility 'cameraagent-state-v1'", StringComparison.Ordinal);
+        StringAssert.StartsWith(failure.Message, "This installation does not carry the supported CameraAgent state contract", StringComparison.Ordinal);
         Assert.AreEqual(1, fixture.Runner.PullCount);
         var journal = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
         Assert.AreEqual(InstallationStatus.Failed, journal!.Status);
@@ -221,7 +221,6 @@ public sealed partial class LifecycleContractTests
         {
             Release = release.Folder,
             ImageSource = ReleaseImageSource.Registry,
-            MigrationBackwardCompatible = true
         };
         var before = FileSystemActivity.Snapshot(fixture.Root);
 
@@ -273,7 +272,6 @@ public sealed partial class LifecycleContractTests
             {
                 Release = release.Folder,
                 ImageSource = ReleaseImageSource.Registry,
-                MigrationBackwardCompatible = true
             },
             fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
             fixture.Uid, fixture.Gid, CancellationToken.None));
@@ -341,7 +339,6 @@ public sealed partial class LifecycleContractTests
             {
                 Release = release.Folder,
                 ImageSource = ReleaseImageSource.Registry,
-                MigrationBackwardCompatible = true
             },
             fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
             fixture.Uid, fixture.Gid, CancellationToken.None));

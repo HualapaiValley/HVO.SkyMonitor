@@ -172,7 +172,7 @@ class ImageReproducibility(unittest.TestCase):
         for compatible in (True, False):
             with self.subTest(compatible=compatible):
                 if not compatible:
-                    labels['io.hvo.skymonitor.minimum-compatible-revision'] = '0' * 40
+                    labels['io.hvo.skymonitor.state-contract'] = 'foreign-state-v1'
                 result = subprocess.run(['jq', '-e', '--arg', 'revision', revision, assertions[0]],
                                         input=json.dumps(image), text=True, capture_output=True)
                 self.assertEqual(result.returncode == 0, compatible, result.stderr + result.stdout)

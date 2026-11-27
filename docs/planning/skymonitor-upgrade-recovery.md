@@ -2,9 +2,10 @@
 
 Contract revision [#1606](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1606),
 2026-10-23; source baseline `4df5193e5967a7b02d1a31c7faf1a782e050da5d`.
-The [install contract section 6](../hvo-install-contract.md#skymonitor-approved-target-upgrade-time-checkpoint-recovery)
-owns approved target behavior. This map identifies delivered inputs and remaining
-work; it implements no runtime backend, on-disk migration or new command.
+The Nov 27 cutover decision establishes a fresh [CameraAgent state contract](../hvo-install-contract.md#cameraagent-state-contract-baseline).
+The earlier #1606 and #1615 studies below document the design work leading to
+that decision. [#1972](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1972)
+owns complete backup and recovery of the new layout.
 
 > The retired LogicHost recovery inputs and #1608 study guidance remain in the
 > [pre-retirement implementation map](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/66e6aa237b40c70342815af6e2511122daa56bb6/docs/planning/skymonitor-upgrade-recovery.md).
@@ -63,21 +64,14 @@ seams. Coordinate host-policy changes with #1292.
 
 | Requirement | Delivered inputs / relevant paths | Remaining adoption and qualification |
 | --- | --- | --- |
-| `UPGRADE-RECOVERY-001`: pending-upgrade checkpoint/image pairing; no downgrade | `src/HVO.SkyMonitor.Deployment.Cli/CameraAgentStateSnapshot.cs`, `CameraAgentLifecycle*.cs`, `CameraAgentStateMigration.cs`; `docs/hvo-install-contract.md` section 6. #1945 refuses new manual rollback plans and execution, including with a retained predecessor checkpoint. | Complete exact pending checkpoint/config/catalog/image pairing, qualify supported forward inputs, and replace reverse-readability reliance for swap upgrades. |
+| `UPGRADE-RECOVERY-001`: pending-upgrade checkpoint/image pairing; no downgrade | `src/HVO.SkyMonitor.Deployment.Cli/CameraAgentStateSnapshot.cs`, `CameraAgentLifecycle*.cs`,; `docs/hvo-install-contract.md` section 6. #2176 enables same-contract image rollback with live state preserved. | Complete exact pending checkpoint/config/catalog/image pairing, qualify supported forward inputs, and qualify recovery against the new layout. |
 | `UPGRADE-RECOVERY-002`: complete logical point and non-rewindable facts | `src/HVO.SkyMonitor.Deployment.Cli/CameraAgentStateLayout.cs`, `CameraAgentStateCounters*.cs`; `docs/runbooks/product-instance-layout.md` | Inventory every DB, recovery file, mutable file/config/key and referenced payload, including external roots. Prove coherent DB/file generations and identity/catalog pairing. Replace broad store exclusions/best-effort carry with minimal verified exceptions or proof that the fence prevents new external facts. |
 | `UPGRADE-RECOVERY-003`: all-writer fence, candidate health and durable decision before admission | `src/HVO.SkyMonitor.Deployment.Cli/CameraAgentLifecycle*.cs`; current authenticated lifecycle/drain operations and host health endpoints. #1945 reports Docker `/alive` and application `/health` separately and tests a newly settled exposure after pending recovery. | Prove every writer and external acknowledgement is fenced. Qualify semantic health, dependency/auth/read checks and isolated persistence/retrieval probe under a timeout. Commit durably before resuming; interrupted decision never rewinds acknowledged work. |
 | `UPGRADE-RECOVERY-004`: durable CameraAgent protected/unprotected path and interruption-safe restore | Snapshot/journal/retention code in `src/HVO.SkyMonitor.Deployment.Cli/`; `tests/HVO.SkyMonitor.Deployment.Cli.Tests/CameraAgentStateSnapshotTests.cs`, `LifecycleContractTests.SnapshotRecovery.cs`, `LifecycleContractTests.RecoveryReads.cs` | Detect actual qualified capability; verify completion or warn and durably record unprotected without demanding backup proof. Missing/partial/damaged/space-exhausted checkpoints never claim protection. Journal/capsule/receipt survive outside reverted roots. Failed unprotected mutation cannot start an old binary. |
 | `UPGRADE-RECOVERY-005`: bounded studies and risk-based evidence | `docs/planning/performance-validation.md`; `scripts/ci:classify`; `docs/development-v1.md`; [#1615 cost comparison](../validation/upgrade-recovery-cost-1615.md) | #1607 evidence plus #1615's current-source and recurring-cost reassessment select simpler current primitives first, with a reversible controlled-snapshot alternative. Its exact proposed test replacements/reuse remain subject to subsequent reviewed adoption. |
 
-Existing `PreviousReleaseStoreReadabilityTests` under
-`tests/HVO.SkyMonitor.CameraAgent.Tests/State/` and
-`CameraAgentSnapshotRollbackExceptionTests` under
-`tests/HVO.SkyMonitor.Deployment.Cli.Tests/`, plus the frozen
-`tests/fixtures/state-compatibility/previous-release/` still enforce the delivered
-policy. This documentation does not remove or relax them. Their eventual
-replacement must prove supported forward migration and whole-point recovery
-before dropping the universal old-reader obligation. Existing explicit
-backup/restore remains independently supported and tested.
+The baseline lifecycle tests cover the installed contract and a synthetic next build,
+including interrupted checkpoint recovery, reinstall and same-contract rollback.
 
 ## Ordering and Forward-Only Conversions
 

@@ -120,7 +120,7 @@ public sealed class CameraAgentStateContractsLabelTests
 
     private static SortedDictionary<string, (long Writes, long Min, long Max)> ReadContract()
     {
-        var labels = CameraAgentStateCompatibilityLabelTests.ReadImageLabels();
+        var labels = CameraAgentStateContractLabelTests.ReadImageLabels();
         Assert.IsTrue(labels.TryGetValue(Label, out var text), $"the CameraAgent image has no {Label} label");
         using var document = JsonDocument.Parse(text, new JsonDocumentOptions { AllowDuplicateProperties = false });
         var contract = new SortedDictionary<string, (long Writes, long Min, long Max)>(StringComparer.Ordinal);

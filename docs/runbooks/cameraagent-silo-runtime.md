@@ -72,12 +72,13 @@ this runtime for qualification and disposable installs until then.
 ## Install
 
 ```bash
-hvo-sky-install cameraagent install --storage-layout silo --friendly-name "North Camera" \
+hvo-sky-install cameraagent install --friendly-name "North Camera" \
   --catalog-bundle /path/to/catalog.bundle --release /path/to/release   # or --image-ref for an image-only install
 ```
 
-The interactive install wizard does not ask for the Silo layout. It refuses `--storage-layout silo` and every
-`--silo-*` option before it opens, so give every answer on the command line as above.
+Silo is the default for the command line, answers files, and the interactive wizard. The wizard
+keeps an explicit `--silo-image-archive` or the full group of optional Silo archive arguments in
+the answers it checks and saves. Supply these options when starting the wizard.
 
 Before anything is created, the installer refuses an install when any of the following holds:
 - the instance already exists in the other layout, or is an installed Silo-layout instance given any other input (an
@@ -172,7 +173,7 @@ headroom and optional archive again, and confirms that CameraAgent reports the f
 - **Re-run of a completed install.** With the same inputs, the installer verifies the instance as `silo-verify` does:
   container, store, binding, listeners, headroom and archive. It reports every item unchanged and changes nothing.
   With any other input, it refuses and names `silo-verify` as the supported check. A Silo-layout instance is never
-  upgraded, reconfigured or converted in place in this release.
+  reconfigured or converted in place. Image upgrades use the same state contract.
 
 ## Optional archive configuration
 
@@ -595,7 +596,7 @@ The 312 Mb/s comparison remains open for installed workload qualification. [#196
 - `cameraagent uninstall` pauses capture, then `compose down` removes both containers and both networks. It keeps the
   state root and the Silo data root. The Silo image stays in Docker.
 - `cameraagent purge` deletes the whole instance root, including the Silo data root.
-- `upgrade`, `rollback`, `reinstall`, `backup`, `restore`, `reset-state` and the catalog commands refuse a Silo-layout
+- `backup`, `restore`, `reset-state` and the catalog commands refuse a Silo-layout
   instance before changing anything. Installers released before #1966 refuse it as well, because its manifest declares
   `cameraagent-silo-install-v1`.
 - `cameraagent owner-recovery` and the lifecycle control worker refuse a Silo-layout instance as well. Only status,

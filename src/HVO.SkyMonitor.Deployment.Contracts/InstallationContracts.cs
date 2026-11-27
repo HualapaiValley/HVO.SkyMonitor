@@ -4,10 +4,10 @@ namespace HVO.SkyMonitor.Deployment.Contracts;
 
 public static class DeploymentSchemaVersions
 {
-    public const int InstanceManifest = 1;
-    public const int InstallationState = 1;
-    public const int InstallationResult = 1;
-    public const int LifecycleOperation = 1;
+    public const int InstanceManifest = 2;
+    public const int InstallationState = 2;
+    public const int InstallationResult = 2;
+    public const int LifecycleOperation = 4;
     public const int StatePreflightReport = 1;
     public const int StateResetEvidence = 1;
     public const int LifecycleEvent = 1;
@@ -141,17 +141,16 @@ public sealed record ImageInstallationIdentity(
     string ImageId,
     string Architecture,
     string? ArchiveSha256,
-    string? UpgradeCompatibility = null,
+    string? StateContract = null,
     string? SourceRevision = null,
     string? Component = null,
     string? ConfigurationContract = null,
     string? CatalogContract = null,
     string? ReplayRunnerContract = null,
-    string? MinimumCompatibleRevision = null,
     string? IdentityMigration = null,
     string? RawIngressSchema = null,
     string? CatalogManifestVersion = null,
-    string? RawIngressMigration = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? FirstBootContract = null);
 
 public sealed record DockerDaemonIdentity(
     string Id,
@@ -208,7 +207,7 @@ public sealed record InstanceManifest(
     ImageInstallationIdentity Image,
     ImageInstallationIdentity? PreviousImage,
     DockerDaemonIdentity DockerDaemon,
-    string UpgradeCompatibility,
+    string StateContract,
     DateTimeOffset CreatedUtc,
     CatalogInstallationIdentity? PreviousCatalog = null,
     InstanceLifecycleCondition LifecycleCondition = InstanceLifecycleCondition.Installed,
@@ -291,10 +290,7 @@ public sealed record LifecycleOperationState(
     LifecycleContinuityBoundary? PostMutationContinuity = null,
     [property: JsonPropertyName("originalOwnerBootstrapState")]
     string? ExpectedOwnerBootstrapState = null,
-    Guid? RestoreResumeCommandId = null,
-    LifecycleResumeReceipt? RestoreResumeReceipt = null,
     bool StateSnapshotRequired = false,
-    string? StateMigration = null,
     LifecycleStateSnapshot? StateSnapshot = null,
     DateTimeOffset? StateSnapshotRestoredUtc = null,
     LifecycleStateSnapshot? RetainedStateSnapshot = null,
@@ -303,17 +299,7 @@ public sealed record LifecycleOperationState(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] CatalogInstallationIdentity? OriginalDeepSkyCatalog = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] CatalogInstallationIdentity? CandidateDeepSkyCatalog = null,
     bool DeepSkyTransition = false,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SignedReleaseChecksumsSha256 = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] LifecycleStateSnapshot? LeavePausedOriginalSnapshot = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Guid? LeavePausedOriginalRestorePlanId = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Guid? SignedRecoveryPauseCommandId = null)
-{
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? SignedRetryAdmissionOutcome { get; init; }
-
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public Guid? AuthorizedSignedRestoreSnapshotId { get; init; }
-}
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SignedReleaseChecksumsSha256 = null);
 
 public sealed record LifecycleAdmissionObservation(
     string State, long Version, long CaptureSequence, DateTimeOffset ObservedUtc,

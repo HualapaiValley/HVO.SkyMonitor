@@ -107,33 +107,15 @@ column change, so any column change bumps the schema version (currently 4). Star
 migrates the supported schema-3 predecessor by adding the retained script-stop audit table;
 other older schemas are refused. Startup verifies the version, the exact schema object
 count, and `PRAGMA integrity_check`, and refuses a newer, drifted, or corrupt database.
-The image declares writes 4 and reads 3 to 4. The current image's
-`minimum-compatible-revision` covers raw schema 17, processing schema 12, and
-settled environmental schema 5. The install contract describes the reader
-boundary and when it selects a paired checkpoint. [Install contract](../hvo-install-contract.md#6-upgrade-and-rollback)
-
-The combined beta (`0.9.1-rc.2`) declared
-`e7b9af4b98d1521c3939ef5925608a3663c63302` as its minimum, covering the processing
-schema-10 retained-astrometry reader and the corrected environmental schema-5
-settlement reader. The earlier `e9bc66a58ec4f9902f7d6f25c89057832eff9fbc` was the
-corrected environmental-only reader boundary. A change in the declared minimum
-selects a paired checkpoint before startup, even when the schema numbers match.
-
-The earlier combined-reader boundary `bc5ca7489c4090c299c416309519ab72da4a8cdb` first extended
-checkpointing beyond the processing-only boundary in development/v1 `38320d3a`. Adoption from
-that schema-3 automation reader still takes a paired checkpoint before startup. Rollback
-restores that checkpoint, including automation schema 3.
+The image declares writes 4 and reads 3 to 4. The installer lifecycle starts with the
+[0.10-beta-1 state contract](../hvo-install-contract.md#cameraagent-state-contract-baseline).
 
 Every open re-asserts that write-ahead logging is actually in force and that neither the database nor its `-wal`, `-shm`, or `-journal`
 sidecars is a symbolic link.
 
 The store is a separate file on purpose. The raw ingress journal pins its own exact
 schema version and object count and refuses a database it does not recognize, so
-adding automation tables there would make an installer rollback to a baseline image
-fail to start. A baseline image never opens this file; a rollback leaves it in place
-and a roll-forward finds the same definitions and run history. A previous binary that
-already reads this database but cannot read schema 4 requires the paired pre-upgrade
-checkpoint, including the database and its matching protected state.
+keeping automation tables separate lets the raw journal keep its own schema.
 
 Tables:
 

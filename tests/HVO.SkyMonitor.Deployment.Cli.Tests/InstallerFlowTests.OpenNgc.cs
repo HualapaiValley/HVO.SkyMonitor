@@ -77,7 +77,6 @@ public sealed partial class InstallerFlowTests
                     Operation = LifecycleOperationKind.Upgrade,
                     ImageReference = OpenNgcUpgradeReference,
                     NoDownload = true,
-                    MigrationBackwardCompatible = true
                 },
                 lifecycleRunner, _ => new OpenNgcInstallerLifecycleClient(), _ => owner,
                 RuntimeUid, RuntimeGid, CancellationToken.None);

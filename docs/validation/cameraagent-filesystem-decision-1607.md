@@ -17,7 +17,7 @@ Keeping the mechanism does **not** mean that today's selected-store snapshot
 already meets #1606. Complete mutable-file/config/identity/key coverage, pinned
 physical references, an all-writer fence, exact checkpoint/image/catalog pairing,
 and durable protected/unprotected decisions remain required by the
-[approved contract](../hvo-install-contract.md#skymonitor-approved-target-upgrade-time-checkpoint-recovery).
+[approved contract](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/7719263037a631fad37b4edcbf6aaffb3d7aa2a5/docs/hvo-install-contract.md#skymonitor-approved-target-upgrade-time-checkpoint-recovery).
 The [implementation map](../planning/skymonitor-upgrade-recovery.md) records these
 gaps. No downgrade, scheduled snapshot, reverse migration or new routine CI
 campaign follows from this decision.
@@ -47,7 +47,7 @@ prerequisite for each upgrade.
 Current `CameraAgentStateSnapshot.cs` uses SQLite online backup, self-contained
 copies, integrity/schema/row-count checks, SHA-256 manifests, durable directory
 publication, staged restoration and stale-sidecar removal. The current
-[runbook](../runbooks/deployment-installer.md#swap-upgrade-and-database-snapshots)
+[runbook](../runbooks/deployment-installer.md#checkpoint-and-image-recovery)
 also records configured-root outbox discovery and the maintenance/deletion
 barrier protecting physical files a restored DB can reference. Those safeguards
 remain credited; capture pause alone is not proof that every writer is fenced.

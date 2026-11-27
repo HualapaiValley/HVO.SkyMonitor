@@ -333,21 +333,6 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
             reason,
             cancellationToken);
 
-    /// <summary>Resumes only the last effective direct-upgrade pause, checked inside the resume transaction.</summary>
-    public Task<CaptureControlCommandResult> ResumeOwnedUpgradeAsync(
-        Guid upgradeOperationId, Guid pauseCommandId, Guid resumeCommandId, long expectedVersion,
-        CancellationToken cancellationToken)
-        => ExecuteCommandAsync(
-            CaptureControlTarget.Running,
-            $"lifecycle:{resumeCommandId:D}:resume-owned-upgrade",
-            expectedVersion,
-            $"installer-lifecycle:{resumeCommandId:D}",
-            $"transactional lifecycle operation {upgradeOperationId:D} resume for pause {pauseCommandId:D}",
-            cancellationToken,
-            new CapturePauseOwnership(
-                $"lifecycle:{pauseCommandId:D}:pause", null, $"installer-lifecycle:{pauseCommandId:D}",
-                $"transactional lifecycle operation {upgradeOperationId:D} pause"));
-
     /// <summary>
     /// Reads the most recent durable pause and resume commands, newest first. The read is bounded by
     /// <paramref name="limit"/> through the table's insertion order and never scans the full command history.

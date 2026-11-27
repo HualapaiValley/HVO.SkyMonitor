@@ -305,8 +305,7 @@ public sealed partial class InstallerFlowTests
         ProductRoot = root,
         CatalogBundle = bundle,
         ImageReference = SiloCameraAgentImage,
-        Port = SelectFreePort(),
-        StorageLayout = CameraAgentStorageLayout.Silo
+        Port = SelectFreePort()
     };
 
     /// <summary>A Silo data root is admitted only on local ext4 with its headroom reserve free; a host without both cannot run this flow.</summary>

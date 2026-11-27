@@ -89,7 +89,7 @@ singular product layout.
 
 ## Upgrade Recovery Boundary (Approved Target)
 
-The [SkyMonitor recovery contract](../hvo-install-contract.md#skymonitor-approved-target-upgrade-time-checkpoint-recovery)
+The [SkyMonitor recovery contract](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/7719263037a631fad37b4edcbf6aaffb3d7aa2a5/docs/hvo-install-contract.md#skymonitor-approved-target-upgrade-time-checkpoint-recovery)
 in #1606 is approved target behavior, not a new snapshot backend or a change to
 the host policy enforced today. The single-mount rule and separate instance and
 catalog binds above remain in force; #1292 owns host-policy implementation.
