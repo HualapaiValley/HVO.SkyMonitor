@@ -111,7 +111,7 @@ proposed decision, rationale, and verification gate.
 | **Detector backlog** (Stage 1 screening slower than frame rate) | Screening drops oldest unscreened summary slot only after bounded queue limit; raw/packet ring continues independently; emits `ScreeningOverload` counter. | Active triggered promotions retain priority over new low-confidence triggers; no silent loss of already-pinned events. | Backpressure telemetry + health degradation; recommends lower resolution/binning or reduced FPS. |
 | **Ring reservation exhaustion / wrap during active event** (concurrent bursts or `pre + event + post` exceeding `MaximumPinnedRingBytes` / `MaximumScratchRingBytes`) | Refuse new low-priority trigger reservations first; if an active promotion exhausts its reserved RAM/scratch ceiling mid-event, close appending cleanly and flush already-captured segments. | If pre-roll was partially overwritten before trigger pin, tag `Completeness = TruncatedPreRoll`; if stopped mid-event, tag `Completeness = TruncatedPostRoll` with reason `stream-promotion.ring-reservation-exhausted`; refused triggers write lightweight SQLite/telemetry `PromotionSuppressedRingBudget` audit rows. | Never allocates unbounded RAM or disk; exposes `RingReservationExhausted` and `PromotionSuppressedRingBudget` counters in health/UI. |
 | **Accelerator loss / OOM** (CUDA/TensorRT/OpenVINO/NPU device reset or external bridge timeout) | Cancel in-flight Stage 2 inference; mark accelerator provider `Unavailable` with cooldown; fall back to CPU EP (if configured) or deterministic Stage 1 assessment only. | Promoted native evidence and Stage 1 deterministic assessment are already durable and completely unaffected. | Quarantine failed Stage 2 attempt with reason code; operator may re-run Stage 2 via archived replay once accelerator recovers. |
-| **Host / process restart** | Volatile RAM ring is lost (expected and explicitly documented for unpromoted samples). | Startup reconciler runs `SiloPublisher.ResumeAsync` and inspects SQLite promotion/segment state: uncommitted pre-P3 staged groups resume from P1 or are abandoned; durable P3 `publish` records roll forward to P4 only after authenticating the journal prefix and verifying manifest + required-member identity and exact bytes (`cameraagent-silo-cutover.md` Section 5.3); any `PendingFinalization` rows preserve protection on already-P4 segments and resume finalization once spool capacity drains; incomplete pre-stage temp files are deleted. | Rebuilds clean state bounded by unreleased staged groups + Silo journal cursor; no full-history scan and zero partial events surfaced. |
+| **Host / process restart** | Volatile RAM ring is lost (expected and explicitly documented for unpromoted samples). | Startup reconciler runs `SiloPublisher.ResumeAsync` and inspects SQLite promotion/segment state: uncommitted pre-P3 staged groups resume from P1 or are abandoned; durable P3 `publish` records roll forward to P4 only after authenticating the journal prefix and verifying manifest + required-member identity and exact bytes (`cameraagent-silo-cutover.md` Section 5.3); any non-terminal promotion rows (`Pending`, `Staged`, `PublishedP4`, or `PendingFinalization`) preserve protection on already-P4 segments and `PendingFinalization` rows resume finalization once spool capacity drains (if local SQLite promotion rows have been lost and segment ownership is unknown, expiry and orphan reclamation remain fenced per `cameraagent-silo-cutover.md` Section 7.5); incomplete pre-stage temp files are deleted. | Rebuilds clean state bounded by unreleased staged groups + Silo journal cursor; no full-history scan and zero partial events surfaced. |
 | **Disk / spool pressure or mid-event spool exhaustion** (`CameraAgent:Silo:MaximumStagedBytes`, `MaximumStagedFiles`, or 10 GiB headroom reserve breached, including `SiloSpoolFullException` between multi-segment groups) | Pause optional NVMe ring spill and new stream promotions first; shed non-essential `ProcessedClip` rendering before shedding `NativeClip` segments; hold in-flight un-staged segments in bounded scratch only until drain or wait-budget expiry; engage Silo pressure pause when spool hits ceiling. | Existing committed Silo events and V1 captures are untouched. Because `SiloFilePayloadSpool.StageAsync` (`SiloFilePayloadSpool.cs:72`) enforces `_maximumBytes` and `_maximumFiles` across all writers, if spool capacity remains full when the wait budget expires and `k ≥ 1` segments reached P4: persist a **restartable `PendingFinalization` row** in SQLite (requiring **zero free spool bytes or file slots**), protect verified P4 segments `0..k-1` from orphan reclamation/expiry, write a `PromotionTruncatedSpoolExhausted` audit row, and complete final `transient-event-v2` P4 publication (`Completeness = SpoolExhaustedTruncated`, `missingSegmentRange`) with priority as soon as spool drains (Section 6.2). If zero segments reached P4, record `FailedSpoolExhausted` / `PromotionSuppressedDiskPressure` and release scratch. | Until final P4 completes, the truncated event stays hidden from the browsable P4 catalog and `ReplayRunner`, while operator health checks, telemetry (`PendingFinalizationCount`), and the `TransientPage` pending-promotions banner surface `(eventId, promotionId, verifiedSegmentCount, PendingFinalization)`. Automatically completes final P4 after drain (including across restarts) and resumes new promotions once spool falls below low-water mark. |
 | **Incomplete event promotion / crash between P3 and P4** (crash or Silo unavailability mid-copy or post-P3) | Stage group bytes into `SiloFilePayloadSpool` before SQLite claim; Silo publication advances asynchronously through P1 (`payloads-qualified`) -> P2 (`manifest-qualified`) -> P3 (`recorded`, commit point) -> P4 (`visible`). | **Single consistent visibility boundary (`cameraagent-silo-cutover.md:349`):** Under Silo layout, neither operator views (`TransientPage`/`TransientDetail`) nor `ReplayRunner` observe an event at local spool commit, P1, P2, or P3. An event revision becomes visible as `Validated`/`Provisional` **only after P4** indexes the P3 journal sequence in SQLite. If a crash occurs between P3 and P4, startup recovery authenticates the P3 record and rolls it forward idempotently to P4 after verifying exact bytes (or keeps readers closed with `temporarily-unavailable` / `missing` / `unverified` / `conflict` per Section 5.3). Pre-P3 incomplete copies are retried from spool or abandoned before visibility. | Exact-byte idempotent retry via `SiloPublisher`; never leaves half-written or unverified P3 manifests visible to UI or replay. |
 
@@ -311,7 +311,7 @@ truncation metadata inside **required, SHA-256-verified JSON payload members**
      2. Every P4-committed `transient-event-segment-v1` publication restores its `transient-segment-payload` and `transient-segment-descriptor` artifact revisions and exact locators in the Silo catalog `roles`/`locators` tables.
      3. Every P4-committed `transient-event-v2` publication locates its required `role: "transient-event-promotion"` member (`p/meta/`), fetches and SHA-256-verifies that `transient-event-promotion-v1` JSON payload by exact version, and parses `completeness`, `missingSegmentRange`, `coalescedTriggerCount`, and ordered `segments[]`.
      4. For each `segments[]` entry, rebuild verifies that `(payloadArtifactId, payloadArtifactRevision, payloadSha256)` and `(descriptorArtifactId, descriptorArtifactRevision, descriptorSha256)` match the `SiloGroupManifest.Dependencies` of the `transient-event-v2` manifest and resolve to the rebuilt `roles`/`locators` from the `transient-event-segment-v1` publications — deterministically recovering exact segment order, frame/PTS ranges, and truncation state (`SpoolExhaustedTruncated`, `missingSegmentRange`) solely from Silo objects after complete loss of local SQLite promotion rows.
-     5. Any P4 `transient-event-segment-v1` group whose member artifact revisions are not referenced by any P4 `transient-event-v2` manifest (and not held by an active local `PendingFinalization` claim) is cleanly identified as an unlinked/orphaned segment eligible for retention sweep.
+     5. Any P4 `transient-event-segment-v1` group whose member artifact revisions are not referenced by any P4 `transient-event-v2` manifest is classified under the same four-state hold rule as Section 6.2: when local SQLite promotion state is intact, any segment held by a non-terminal promotion row (`Pending`, `Staged`, `PublishedP4`, or `PendingFinalization`) remains **protected** from orphan reclamation and policy expiry, and only segments not referenced by any P4 `transient-event-v2` manifest **and** not held by any active non-terminal promotion row are eligible for retention sweep. When local SQLite promotion rows have been lost and segment ownership is unknown, unlinked P4 segments are surfaced as unlinked/unverified only and **expiry and orphan reclamation remain fenced** until explicit operator confirmation (`cameraagent-silo-cutover.md` Section 7.5).
    - **Visibility invariant:** Under the Silo layout, a `transient-event-v2`
      promotion is never browsable or replayable until its final manifest group
      reaches Silo **P4** (`visible` in SQLite catalog, matching
@@ -582,7 +582,11 @@ finish (AD-3).
        orphan reclamation and policy expiry** across retries and restarts until
        either the final `transient-event-v2` manifest group reaches Silo P4
        (transferring `Reopen` dependency ownership into Silo) or an operator
-       explicitly abandons the promotion.
+       explicitly abandons the promotion. When local SQLite promotion rows have
+       been lost (e.g., during cold catalog rebuild from Silo) and segment
+       ownership is unknown, expiry and orphan reclamation remain fenced until
+       explicit operator confirmation (`cameraagent-silo-cutover.md` Section
+       7.5).
     5. **Exact operator visibility until final P4 completes:** Preserving the
        single P4 visibility boundary (`cameraagent-silo-cutover.md:349`), the
        truncated event remains **hidden** from the browsable P4 event catalog
@@ -596,39 +600,54 @@ finish (AD-3).
     6. **Priority finalization upon drain and crash/restart recovery:** On
        process restart or as other concurrent publishers drain to P4 and
        release `SiloFilePayloadSpool` bytes/file slots, startup reconciliation
-       runs `SiloPublisher.ResumeAsync` first, reloads `PendingFinalization`
-       rows (keeping their verified P4 segments protected), and schedules
-       `PendingFinalization` groups **ahead of all new V2 stream triggers**
-       (optionally bounded by a dedicated soft finalization reserve carved out
-       of `MaximumStagedBytes` / `MaximumStagedFiles` for non-finalization
-       stream writers without weakening `SiloFilePayloadSpool`'s hard ceiling).
-       If full stills still exceed freed spool capacity while minimal metadata
-       fits, the coordinator may shed non-essential scratch stills/display
-       renders and finalize the compact metadata-only `transient-event-v2`
-       manifest referencing segments `0..k-1`. Once the final
-       `transient-event-v2` group reaches **P4**, the `PendingFinalization`
-       alert clears and the event enters the browsable catalog with badge
-       `SpoolExhaustedTruncated` and `missingSegmentRange`. Only segment groups
-       not referenced by any P4 `transient-event-v2` manifest **and** not held
-       by any active `PendingFinalization` row become eligible for orphan
-       reclamation.
+       runs `SiloPublisher.ResumeAsync` first, reloads all non-terminal
+       promotion rows (`Pending`, `Staged`, `PublishedP4`, and
+       `PendingFinalization`, keeping all their verified P4 segments
+       protected), and schedules `PendingFinalization` groups **ahead of all
+       new V2 stream triggers** (optionally bounded by a dedicated soft
+       finalization reserve carved out of `MaximumStagedBytes` /
+       `MaximumStagedFiles` for non-finalization stream writers without
+       weakening `SiloFilePayloadSpool`'s hard ceiling). If full stills still
+       exceed freed spool capacity while minimal metadata fits, the coordinator
+       may shed non-essential scratch stills/display renders and finalize the
+       compact metadata-only `transient-event-v2` manifest referencing segments
+       `0..k-1`. Once the final `transient-event-v2` group reaches **P4**, the
+       `PendingFinalization` alert clears and the event enters the browsable
+       catalog with badge `SpoolExhaustedTruncated` and `missingSegmentRange`.
+       Only segment groups not referenced by any P4 `transient-event-v2`
+       manifest **and** not held by any active non-terminal promotion row
+       (`Pending`, `Staged`, `PublishedP4`, or `PendingFinalization`) become
+       eligible for orphan reclamation when local promotion state is intact; if
+       local promotion rows have been lost and ownership is unknown, expiry and
+       orphan reclamation remain fenced until explicit operator confirmation
+       (`cameraagent-silo-cutover.md` Section 7.5).
   - **Required concrete verification scenario (executed in `V2-4` / `W9` / `W11`):**
     1. Run a multi-segment promotion until segment `0` reaches Silo **P4**
        (`PublishedP4`).
     2. Fill `SiloFilePayloadSpool` to exhaustion (testing both byte ceiling
        `_maximumBytes` and file-slot ceiling `_maximumFiles`) via another
        concurrent publisher so staging segment `1` throws
-       `SiloSpoolFullException` and **zero** spool bytes/file slots remain for
-       finalization.
-    3. Expire the scratch/wait budget and assert: SQLite commits
+       `SiloSpoolFullException` and enters the scratch/wait window with
+       **zero** spool bytes/file slots remaining.
+    3. **Pre-`PendingFinalization` orphan/rebuild sweep check (before wait-budget
+       expiry):** While segment `0` is held in `PublishedP4` and segment `1` is
+       still waiting for spool capacity (before any transition to
+       `PendingFinalization`), invoke an orphan-reclamation / catalog-rebuild
+       sweep with local promotion state intact and assert that segment `0` is
+       **protected** under the four-state hold rule (`Pending`, `Staged`,
+       `PublishedP4`, `PendingFinalization`) — neither marked orphaned nor
+       swept. Also verify the cold-loss path where local promotion rows are
+       absent: segment `0` is surfaced as unlinked/unverified and expiry/orphan
+       reclamation remains fenced (`cameraagent-silo-cutover.md` Section 7.5).
+    4. Expire the scratch/wait budget and assert: SQLite commits
        `PendingFinalization` (`SpoolExhaustedTruncated`, `missingSegmentRange`,
        segment `0` member identities) without requiring free spool capacity;
        segment `0` remains protected; operator health/telemetry reports
        `PendingFinalization` while P4 catalog/replay hides the event.
-    4. Trigger a **forced process restart** while the spool remains full and
+    5. Trigger a **forced process restart** while the spool remains full and
        assert: `SiloPublisher.ResumeAsync` and startup reconciliation do **not**
        evict or mark segment `0` orphaned and keep `PendingFinalization` active.
-    5. Allow the blocking publisher to drain to P4, releasing spool bytes and
+    6. Allow the blocking publisher to drain to P4, releasing spool bytes and
        file slots, and assert: the coordinator automatically stages and
        completes the final `transient-event-v2` manifest group to **P4**
        (`visible`), exposing the truncated event with verified segment `0`
@@ -667,23 +686,39 @@ finish (AD-3).
     evidence (years). Exact retained still + metadata percentages relative to a
     30-second native event payload depend explicitly on frame rate and still
     compression:
-    - **`P1` (ASI174 5 fps, 150 raw frames = `706.3 MB`) & `P3` (ASI676MC 5 fps, 150 raw frames = `3.79 GB`):**
+    - **`P1` (ASI174 5 fps, 150 raw frames = `706,252,800 B` / `706.3 MB` / `673.5 MiB`):**
       - **3 uncompressed full-frame linear `ScientificStills`** (pre-event,
-        peak, residual composite) = `3 / 150 = 2.00%` of raw payload (`14.13 MB`
-        for `P1`; `75.70 MB` for `P3`) before metadata, or **`~2.01–2.03%`**
-        including ~`50–200 KiB` JSON metadata/timing/overlays.
-      - **Losslessly compressed stills** (e.g., Rice/gzip `fits.fz` at ~2–3× on
-        16-bit sky frames, scene-dependent) or retaining **1 uncompressed peak
-        still** + metadata reduces long-term retention to **`~0.67–1.0%`** of
-        raw payload.
-    - **`P2` (ASI174 25 fps Mono8, 750 raw frames = `1.77 GB`):**
-      - **3 uncompressed full-frame linear `ScientificStills`** = `3 / 750 =
-        0.40%` (`7.06 MB`), or **`~0.41%`** including metadata/overlays.
-    - **`P4` (1080p RTSP H.264 25 fps @ 6 Mbps, ~`22.5 MB` compressed native clip):**
+        peak, residual composite) = `14,125,056 B` (`14.13 MB` / `13.47 MiB`) =
+        `3 / 150 = 2.00%` of raw payload before metadata; adding `50–200 KiB`
+        (`51,200–204,800 B`) of JSON metadata/timing/overlays gives
+        **`2.00725–2.02900%`** (**`~2.01–2.03%`**).
+      - Retaining **1 uncompressed peak still** + `50–200 KiB` metadata gives
+        `0.67392–0.69566%` (`~0.67–0.70%`), and **3 losslessly compressed
+        stills** (e.g., Rice/gzip `fits.fz` at ~2–3× on 16-bit sky frames,
+        scene-dependent) + `50–200 KiB` metadata gives `0.67392–1.02900%`
+        (`~0.67–1.03%`) of raw payload.
+    - **`P3` (ASI676MC 5 fps, 150 raw frames = `3,785,011,200 B` / `3.79 GB` / `3.53 GiB`):**
+      - **3 uncompressed full-frame linear `ScientificStills`** (pre-event,
+        peak, residual composite) = `75,700,224 B` (`75.70 MB` / `72.19 MiB`) =
+        `3 / 150 = 2.00%` of raw payload before metadata; adding `50–200 KiB`
+        (`51,200–204,800 B`) of JSON metadata/timing/overlays gives
+        **`2.00135–2.00541%`** (**`~2.001–2.005%`**).
+      - Retaining **1 uncompressed peak still** + `50–200 KiB` metadata gives
+        `0.66802–0.67208%` (`~0.67%`), and **3 losslessly compressed stills**
+        (e.g., Rice/gzip `fits.fz` at ~2–3× on 16-bit sky frames,
+        scene-dependent) + `50–200 KiB` metadata gives `0.66802–1.00541%`
+        (`~0.67–1.01%`) of raw payload.
+    - **`P2` (ASI174 25 fps Mono8, 750 raw frames = `1,765,632,000 B` / `1.77 GB` / `1.64 GiB`):**
+      - **3 uncompressed full-frame linear `ScientificStills`** = `7,062,528 B`
+        (`7.06 MB` / `6.74 MiB`) = `3 / 750 = 0.40%` before metadata; adding
+        `50–200 KiB` (`51,200–204,800 B`) of JSON metadata/timing/overlays
+        gives **`0.40290–0.41160%`** (**`~0.403–0.412%`**).
+    - **`P4` (1080p RTSP H.264 25 fps @ 6 Mbps, `22,500,000 B` / ~`22.5 MB` compressed native clip):**
       - **3 compressed `DerivedEncodedStills`** (JPEG/PNG, ~`0.3–1.0 MB` total)
-        + ~`50–200 KiB` metadata/overlays = **`~1.5–5.3%`** of the compressed
-        native clip (uncompressed 3× decoded Y8 stills = `6.22 MB` / `~27.6%`,
-        so `DerivedEncodedStills` are stored compressed).
+        + `50–200 KiB` (`51,200–204,800 B`) metadata/overlays = **`~1.56–5.35%`**
+        of the compressed native clip (uncompressed 3× decoded Y8 stills =
+        `6,220,800 B` / `6.22 MB` / `~27.65%`, so `DerivedEncodedStills` are
+        stored compressed).
 
 ### 6.3 Target Hardware Capacity Profiles (Initial Analytical Envelope)
 
@@ -707,9 +742,9 @@ workloads before moving out of prototype/qualification.
 | --- | --- | --- | --- |
 | **`W7-Raw5fps`** | Synthetic `VirtualSky` ASI174 1936×1216 Mono16 stream at 5 fps (`4,708,352 B/frame`, seeded, hidden oracle outside detector) | 5 min warm-up + 30 min measured; injected meteors, fireballs, satellites, aircraft, cosmic rays | Baseline raw linear ingestion, 1 s chunk screening, and 200 ms frame-budget headroom |
 | **`W8-Rtsp25fps`** | Reproducible local loopback RTSP/H.264 stream (1920×1080 @ 25 fps, 6 Mbps, 1 s GOP / 25 frames, known PTS/DTS) with scripted packet drops, 3 s reconnects, and PTS discontinuities | 30 min measured | Encoded stream demux/decode isolation, IDR-aligned native clip copy, gap ledger accuracy, reconnect recovery |
-| **`W9-EventLengths`** | Scripted 5 s, 10 s, and 20 s synthetic fireball/fragmentation events with 5 s pre-roll and 5 s post-roll (15 s, 20 s, and 30 s total promoted spans over a 20 s pre-trigger ring via trigger pinning + incremental segment draining) | 5 independent trials per duration (median/min/max) + 30-event latency run for p95 | Pre-trigger completeness, ring-pin/drain survival beyond ring length, IDR retention across ring wrap, coalescing, `MaxDurationCapped`, `SpoolExhaustedTruncated`, Silo segmented-group promotion & P3/P4 finalization latency (including the Section 6.2 segment-at-P4 + full-spool + restart + drain scenario) |
+| **`W9-EventLengths`** | Scripted 5 s, 10 s, and 20 s synthetic fireball/fragmentation events with 5 s pre-roll and 5 s post-roll (15 s, 20 s, and 30 s total promoted spans over a 20 s pre-trigger ring via trigger pinning + incremental segment draining) | 5 independent trials per duration (median/min/max) + 30-event latency run for p95 | Pre-trigger completeness, ring-pin/drain survival beyond ring length, IDR retention across ring wrap, coalescing, `MaxDurationCapped`, `SpoolExhaustedTruncated`, Silo segmented-group promotion & P3/P4 finalization latency (including the Section 6.2 segment-at-P4 + full-spool + pre-`PendingFinalization` sweep + restart + drain scenario) |
 | **`W10-NoEventSoak`** | Continuous quiet-sky stream with slow star drift, twilight/cloud luminance changes, and zero injected meteors | 4-hour sustained run (accelerated + wall-clock trials) | Verify zero unbounded memory/RSS/LOH/disk growth, zero Silo writes during quiet sky, and steady CPU/thermal profile |
-| **`W11-FalseTriggerBurst`** | Synthetic lightning/headlight/broken-cloud burst injecting 60 triggers in 5 minutes while Silo spool approaches `MaximumStagedBytes` / `MaximumStagedFiles` (including the Section 6.2 `PendingFinalization` full-spool + restart + drain scenario) | 15 min burst + recovery drain | Cooldown/coalescing behavior, pressure-fence activation, `PendingFinalization` survival without premature segment eviction, zero OOM, zero acquisition halt, clean drain recovery |
+| **`W11-FalseTriggerBurst`** | Synthetic lightning/headlight/broken-cloud burst injecting 60 triggers in 5 minutes while Silo spool approaches `MaximumStagedBytes` / `MaximumStagedFiles` (including the Section 6.2 pre-`PendingFinalization` sweep + `PendingFinalization` full-spool + restart + drain scenario) | 15 min burst + recovery drain | Cooldown/coalescing behavior, pressure-fence activation, `PendingFinalization` survival without premature segment eviction, zero OOM, zero acquisition halt, clean drain recovery |
 | **`W12-AcceleratorParity`** | Frozen promoted event fixture set evaluated across Stage 1 deterministic CPU, Stage 2 ONNX CPU EP, and (when available) GPU/NPU EP and `#140` local executable bridge | 30 measured inferences per provider after warm-up | Verify append-only producer provenance, identical Stage 1 event/geometry hashes, accelerator-loss fallback, and provider latency/memory/power delta |
 
 ### 7.2 Mandatory Measurement Record
